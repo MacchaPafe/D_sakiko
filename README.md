@@ -4,6 +4,7 @@
 2. GPT-SoVITS音色提取合成项目（对一些文件源码进行了改动以适应本项目）	https://github.com/RVC-Boss/GPT-SoVITS
 3. Bert-base-Chinese NLP中文预训练模型及OCEMOTION中文七种情感分类数据集，将bert微调为七分类文本情感识别模型
 	Bert-base-Chinese：https://huggingface.co/google-bert/bert-base-chinese 	OCEMOTION：https://aistudio.baidu.com/datasetdetail/100731
+
 4.Deepseek V3 在线API调用，以及PyQT5前端界面
 
 感谢大佬们的库，调库侠泪流满面...
@@ -24,7 +25,7 @@
 
 另外Live2D界面的帧率也不高，我自己的3800X算出来只有不到30帧...经测试非常依赖CPU单核性能。该问题在Arkueid大佬编写的live2D-py库中也有涉及，因为祥子的Live2D模型是旧版本（.moc格式，实际上邦邦所有角色都是旧模型），而live2D-py库没有针对旧版本模型进行优化，只对新版本（.moc3）有调用c语言源码库。也许换成新版本模型性能就会大幅提升，但目前暂未测试。因此目前只是一个初版，后续的性能优化是最重点的工作。
 
-目前正在挂到github上...
+目前正在挂到github上... https://github.com/MacchaPafe/D_sakiko
 
 
 作者：要抹茶要乐奈   b站：https://space.bilibili.com/443409863?spm_id_from=333.1007.0.0
