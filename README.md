@@ -1,7 +1,7 @@
 数字祥子项目
 基于：
 1. live2D-py库	https://github.com/Arkueid/live2d-py
-2. GPT-SoVITS音色提取合成项目	https://github.com/RVC-Boss/GPT-SoVITS（对一些文件源码进行了改动以适应本项目）
+2. GPT-SoVITS音色提取合成项目（对一些文件源码进行了改动以适应本项目）	https://github.com/RVC-Boss/GPT-SoVITS
 3. Bert-base-Chinese NLP中文预训练模型及OCEMOTION中文七种情感分类数据集，将bert微调为七分类文本情感识别模型
 	Bert-base-Chinese：https://huggingface.co/google-bert/bert-base-chinese 	OCEMOTION：https://aistudio.baidu.com/datasetdetail/100731
 4.Deepseek V3 在线API调用，以及PyQT5前端界面
