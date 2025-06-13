@@ -1,20 +1,24 @@
+import re
 import time
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor
+
+
 
 
 class CommunicateThreadDP2QT(QThread):
     response_signal=pyqtSignal(str)
-    def __init__(self,dp2qt_queue):
+    def __init__(self,dp2qt_queue,main_timer):
         super().__init__()
         self.this_turn_response=''
         self.dp2qt_queue=dp2qt_queue
+        self.main_timer=main_timer
 
     def run(self):
         while True:
-            if not self.dp2qt_queue.empty():
+            if not self.dp2qt_queue.empty() and not self.main_timer.isActive():     #解决了特定情况下显示不全回答的bug
                 self.this_turn_response=self.dp2qt_queue.get()
                 self.response_signal.emit(self.this_turn_response)
             time.sleep(0.5)
@@ -34,10 +38,10 @@ class CommunicateThreadMessages(QThread):
             time.sleep(0.5)
 
 class ChatGUI(QWidget):
-    def __init__(self,dp2qt_queue,qt2dp_queue,QT_message_queue):
+    def __init__(self,dp2qt_queue,qt2dp_queue,QT_message_queue,characters):
         super().__init__()
-        self.setWindowTitle("小祥对话框")
-        self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
+        self.setWindowTitle("对话框")
+        #self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
         self.screen = QDesktopWidget().screenGeometry()
         self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
         self.chat_display = QTextBrowser()
@@ -62,7 +66,7 @@ class ChatGUI(QWidget):
         self.timer.timeout.connect(self.stream_print)
         #处理模型的回答
         self.dp2qt_queue=dp2qt_queue
-        self.get_response_thread=CommunicateThreadDP2QT(self.dp2qt_queue)
+        self.get_response_thread=CommunicateThreadDP2QT(self.dp2qt_queue,self.timer)
         self.get_response_thread.response_signal.connect(self.handle_response)
         self.get_response_thread.start()
         #处理用户输入
@@ -75,70 +79,135 @@ class ChatGUI(QWidget):
         self.get_message_thread.message_signal.connect(self.handle_messages)
         self.get_message_thread.start()
 
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #E6F2FF;
-                color: #7799CC;
-            }
+        self.character_list:list = characters
+        self.current_char_index = 0
+        self.character_chat_history=[]
+        for _ in self.character_list:
+            self.character_chat_history.append('')
+        if self.character_list[self.current_char_index].icon_path is not None:
+            self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))
 
-            QTextBrowser{
-                background-color: #FFFFFF;
-                border: 3px solid #B3D1F2;
-                border-radius:9px;
-                padding: 5px;
-            }
-
-            QLineEdit {
-                background-color: #FFFFFF;
-                border: 2px solid #B3D1F2;
-                border-radius: 9px;
-                padding: 5px;
-            }
-            
-            QPushButton {                
-                background-color: #7FB2EB;
-                color: #ffffff;
-                border-radius: 6px;
-                padding: 6px;
-            }
-
-            QPushButton:hover {
-                background-color: #3FB2EB;
-            }
-            
-            QScrollBar:vertical {
-                border: none;
-                background: #D0E2F0;
-                width: 10px;
-                margin: 0px 0px 0px 0px;
-            }
-            
-            QScrollBar::handle:vertical {
-                background: #B3D1F2;
-                min-height: 20px;
-                border-radius: 3px;
-            }
-
-        """)
+        if self.character_list[self.current_char_index].qt_css is not None:
+            self.setStyleSheet(self.character_list[self.current_char_index].qt_css)
+        else:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #E6F2FF;
+                    color: #7799CC;
+                }
+    
+                QTextBrowser{
+                    background-color: #FFFFFF;
+                    border: 3px solid #B3D1F2;
+                    border-radius:9px;
+                    padding: 5px;
+                }
+    
+                QLineEdit {
+                    background-color: #FFFFFF;
+                    border: 2px solid #B3D1F2;
+                    border-radius: 9px;
+                    padding: 5px;
+                }
+                
+                QPushButton {                
+                    background-color: #7FB2EB;
+                    color: #ffffff;
+                    border-radius: 6px;
+                    padding: 6px;
+                }
+    
+                QPushButton:hover {
+                    background-color: #3FB2EB;
+                }
+                
+                QScrollBar:vertical {
+                    border: none;
+                    background: #D0E2F0;
+                    width: 10px;
+                    margin: 0px 0px 0px 0px;
+                }
+                
+                QScrollBar::handle:vertical {
+                    background: #B3D1F2;
+                    min-height: 20px;
+                    border-radius: 3px;
+                }
+    
+            """)
         self.user_last_turn_input=''
+        self.translation=''
 
 
+    def change_char(self):
+        record = self.chat_display.toHtml()
+        self.character_chat_history[self.current_char_index] = record
+        self.chat_display.clear()
+        if len(self.character_list) == 1:
+            self.current_char_index = 0
+        else:
+            if self.current_char_index < len(self.character_list) - 1:
+                self.current_char_index += 1
+            else:
+                self.current_char_index = 0
+        if self.character_list[self.current_char_index].qt_css is not None:
+            self.setStyleSheet(self.character_list[self.current_char_index].qt_css)
+        self.chat_display.setHtml(self.character_chat_history[self.current_char_index])
+        if self.character_list[self.current_char_index].icon_path is not None:
+            self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))
 
     def handle_response(self,response_text):
-        self.full_response = response_text+"\n"
+        if response_text=='changechange':
+            self.change_char()
+            return
+        response_text=response_text.replace("\n\n",'')
+        response_text=response_text.replace("\n", '')
+        response_text = response_text.replace("。。", '。')
+        pattern = r'(.*?)(?:\[翻译\](.+?)\[翻译结束\])'
+        response_tuple_list=re.findall(pattern,response_text,flags=re.DOTALL)
+        if not response_tuple_list:
+            self.full_response = response_text+"\n"
+            self.translation =''
+        else:
+            self.full_response=response_tuple_list[0][0]+'\n'
+            self.translation=response_tuple_list[0][1]
+
         self.current_index = 0
-        self.chat_display.append("祥子：")
-        self.timer.start(60)
+        self.chat_display.append(f"{self.character_list[self.current_char_index].character_name}：")
+        self.timer.start(30)
 
     def stream_print(self):     #模拟流式打印
+        cursor = self.chat_display.textCursor()
         if self.current_index < len(self.full_response):
-            cursor = self.chat_display.textCursor()
             cursor.movePosition(cursor.End)
             cursor.insertText(self.full_response[self.current_index])
             self.chat_display.setTextCursor(cursor)
             self.current_index += 1
         else:
             self.timer.stop()
+            if self.translation!='':
+                cursor.movePosition(cursor.End)
+                cursor.insertHtml(f'<span style="color: #B3D1F2; font-style: italic;">{self.translation}</span><br>')
+                self.translation=''
+                self.chat_display.moveCursor(QTextCursor.End)
+
+    def is_display(self,text):
+        text1=re.findall('切换GPT-SoVITS',text,flags=re.DOTALL)
+        text2 = re.findall('已切换为', text, flags=re.DOTALL)
+        text3=re.findall('整理语言',text,flags=re.DOTALL)
+        if text1 or text2 or text3:
+            return False
+        else:
+            return True
+
+    def is_display2(self, text):
+        flag=True
+        user_input_no_display_list=['s','l','m','clr','conv','v',
+                                    'clr','mask']
+        for x in user_input_no_display_list:
+            if text == x:
+                flag = False
+        return flag
 
     def handle_user_input(self):
         user_this_turn_input=self.user_input.text()
@@ -148,18 +217,21 @@ class ChatGUI(QWidget):
         current_text = self.messages_box.toPlainText()
         if (user_this_turn_input!='clr'
             and current_text!="小祥思考中..."
-            and current_text!="祥子在整理语言..."):
+            and current_text!=f"{self.character_list[self.current_char_index].character_name}思考中..."
+            and self.is_display(current_text)
+            and self.qt2dp_queue.empty()):
             self.qt2dp_queue.put(user_this_turn_input)
         self.user_input.clear()
-        user_input_no_display_list=["0：中英混合  1：日英混合\n更改后会自动切换为对应语言的语音","输入内容不合法，重新输入",
+        user_input_no_display_list=[
                                     "0：deepseek-r1:14b（需安装Ollama与对应本地大模型，选项1相同）  1：deepseek-r1:32b  \n2：调用deepseek-V3官方API（无需安装Ollama，只需联网)",
-                                    "小祥思考中...","祥子在整理语言..."]
-        if (user_this_turn_input!='lan' and user_this_turn_input!='model'
-            and user_this_turn_input!='clr' and user_this_turn_input!='conv'):     #判断是否显示的逻辑，比较笨的方法
+                                    f"{self.character_list[self.current_char_index].character_name}思考中...",'小祥思考中...']
+        if self.is_display2(user_this_turn_input):     #判断是否显示的逻辑，比较笨的方法
             flag=True
             for x in user_input_no_display_list:
                 if current_text==x:
                     flag=False
+            if flag:
+                flag=self.is_display(current_text)
             if flag:
                 self.full_response = user_this_turn_input + "\n"
                 self.current_index = 0
@@ -193,7 +265,7 @@ if __name__=='__main__':
                 if user_input == '思考中' or user_input == '有错误发生':
                     QT_message_queue.put(user_input)
 
-                response = user_input + "。"
+                response = user_input + "祥子选择入学有特待生制度的羽丘女子学园，在校期间几乎不和任何人交流，\n期间她多次和睦在羽泽咖啡店会面，要求她不要向前队友透露自己的动向，但素世还是从爱音口中得知了祥子就在羽丘的消息，多次堵校门，这让祥子很厌烦。于是祥子决定与长崎爽世正式谈话，并顺便观看其所在乐队的演出。"
                 time.sleep(2)
                 dp2qt_queue.put(response)
         dp2qt_queue.put("结束了")

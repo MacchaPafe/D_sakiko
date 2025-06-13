@@ -1,45 +1,69 @@
-import argparse
 import os
-import soundfile as sf
-
-from tools.i18n.i18n import I18nAuto
-from inference_webui import change_gpt_weights, change_sovits_weights, get_tts_wav
-
-i18n = I18nAuto()
+import time
 
 
 generate_count=0
-def synthesize(GPT_model_path, SoVITS_model_path, ref_audio_path, ref_text_path, ref_language, target_text, target_language, output_path, speed,how_to_cut):
-    # Read reference text
-    with open(ref_text_path, 'r', encoding='utf-8') as file:
-        ref_text = file.read()
+def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
+    from inference_webui import change_gpt_weights, change_sovits_weights, get_tts_wav
+    import soundfile as sf
+    from tools.i18n.i18n import I18nAuto
+    i18n = I18nAuto()
 
-    '''# Read target text
-    with open(target_text_path, 'r', encoding='utf-8') as file:
-        target_text = file.read()'''
+    while True:
+        while True:
+            if not to_gptsovits_queue.empty():
 
-    # Change model weights
-    change_gpt_weights(gpt_path=GPT_model_path)
-    change_sovits_weights(sovits_path=SoVITS_model_path)
+                info=to_gptsovits_queue.get()
+                if info[0]==0:
+                    from_gptsovits_queue.put('wait')
+                    change_gpt_weights(gpt_path=info[1])
+                    change_sovits_weights(sovits_path=info[2])
+                    from_gptsovits_queue.put('done')
+                    continue
+                else:
+                    break
+            time.sleep(0.5)
 
-    # Synthesize audio
-    synthesis_result = get_tts_wav(ref_wav_path=ref_audio_path, 
-                                   prompt_text=ref_text, 
-                                   prompt_language=i18n(ref_language), 
-                                   text=target_text, 
-                                   text_language=i18n(target_language),
-                                   speed=speed,how_to_cut=how_to_cut,top_p=1, temperature=1)
-    
-    result_list = list(synthesis_result)
-    global generate_count
-    if result_list:
-        last_sampling_rate, last_audio_data = result_list[-1]
-        output_wav_path = os.path.join(output_path, f"output{generate_count}.wav")
-        generate_count+=1
-        sf.write(output_wav_path, last_audio_data, last_sampling_rate)
-        return output_wav_path
+        if info=='bye':
+            break
 
-def main():
+        ref_text_path=info[2]
+        with open(ref_text_path, 'r', encoding='utf-8') as file:
+            ref_text = file.read()
+
+        '''# Read target text
+        with open(target_text_path, 'r', encoding='utf-8') as file:
+            target_text = file.read()'''
+        global generate_count
+
+        try:
+        # Synthesize audio
+            synthesis_result = get_tts_wav(ref_wav_path=info[1],
+                                       prompt_text=ref_text,
+                                       prompt_language=i18n(info[3]),
+                                       text=info[4],
+                                       text_language=i18n(info[5]),
+                                       speed=info[7],how_to_cut=info[8],top_p=1, temperature=1
+                                       ,sample_steps=16
+                                       ,pause_second=0.4,
+                                        message_queue=from_gptsovits_queue2
+                                       )
+            result_list = list(synthesis_result)
+            if result_list:
+                last_sampling_rate, last_audio_data = result_list[-1]
+                output_wav_path = os.path.join(info[6], f"output{generate_count}.wav")
+                generate_count+=1
+                sf.write(output_wav_path, last_audio_data, last_sampling_rate)
+                from_gptsovits_queue.put(output_wav_path)
+        except Exception as e:
+            print( '语音合成错误信息：',e)
+            generate_count += 1
+            from_gptsovits_queue.put('../reference_audio\\silent_audio\\silence.wav')
+
+
+
+
+'''def main():
     parser = argparse.ArgumentParser(description="GPT-SoVITS Command Line Tool")
     parser.add_argument('--gpt_model', required=True, help="Path to the GPT model file")
     parser.add_argument('--sovits_model', required=True, help="Path to the SoVITS model file")
@@ -55,5 +79,5 @@ def main():
     synthesize(args.gpt_model, args.sovits_model, args.ref_audio, args.ref_text, args.ref_language, args.target_text, args.target_language, args.output_path,speed=1,how_to_cut="不切")
 
 if __name__ == '__main__':
-    main()
+    main()'''
 
