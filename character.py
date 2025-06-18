@@ -38,6 +38,10 @@ class GetCharacterAttributes:
         self.character_num = 0
         self.character_class_list=[]
         self.load_data()
+        print('所有角色：')
+        for char in self.character_class_list:
+            print(char.character_name, end=' ')
+        print('\n')
 
     def load_data(self):
         for char in os.listdir("../live2d_related"):
@@ -48,7 +52,7 @@ class GetCharacterAttributes:
                 character.character_folder_name=char
 
                 if not os.path.exists(os.path.join(full_path,'name.txt')):
-                    raise FileNotFoundError("没有找到name.txt文件！")
+                    raise FileNotFoundError(f"没有找到角色：'{char}'的name.txt文件！")
                 with open(os.path.join(full_path,'name.txt'),'r',encoding='utf-8') as f:
                     character.character_name=f.read()
                     f.close()
@@ -60,42 +64,42 @@ class GetCharacterAttributes:
 
                 live2d_json=glob.glob(os.path.join(full_path,'live2D_model',f"*.model.json"))
                 if not live2d_json:
-                    raise FileNotFoundError("没有找到Live2D模型json文件(.model.json)")
+                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的Live2D模型json文件(.model.json)")
                 live2d_json=max(live2d_json, key=os.path.getmtime)
                 character.live2d_json=live2d_json
 
                 if not os.path.exists(os.path.join(full_path, 'character_description.txt')):
-                    raise FileNotFoundError("没有找到角色描述文件！")
+                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的角色描述文件！")
                 with open(os.path.join(full_path,'character_description.txt'),'r',encoding='utf-8') as f:
                     character.character_description=f.read()
                     f.close()
 
                 gpt_model_path=glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.ckpt"))
                 if not gpt_model_path:
-                    raise FileNotFoundError(f"没有找到GPT模型文件(.ckpt)")
+                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的GPT模型文件(.ckpt)")
                 gpt_model_path=max(gpt_model_path,key=os.path.getmtime)
                 character.GPT_model_path=gpt_model_path
 
                 SoVITS_model_file = glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.pth"))
                 if not SoVITS_model_file:
-                    raise FileNotFoundError(f"没有找到SoVITS模型文件(.pth)")
+                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的SoVITS模型文件(.pth)")
                 SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)
                 character.sovits_model_path=SoVITS_model_file
 
                 ref_audio_file_wav = glob.glob(os.path.join("../reference_audio",char, f"*.wav"))
                 ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio",char, f"*.mp3"))
                 if not ref_audio_file_wav + ref_audio_file_mp3:
-                    raise FileNotFoundError(f"没有找到推理参考音频文件(.wav/.mp3)")
+                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)")
                 ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
                 character.gptsovits_ref_audio=ref_audio
                 
                 if char!='sakiko':
                     if not os.path.exists(os.path.join("../reference_audio",char, 'reference_text.txt')):
-                        raise FileNotFoundError(f"没有找到推理参考音频的文本文件！(reference_text.txt)")
+                        raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的推理参考音频的文本文件！(reference_text.txt)")
                     character.gptsovits_ref_audio_text=os.path.join("../reference_audio",char, 'reference_text.txt')
 
                 if not os.path.exists(os.path.join('../reference_audio',char,'reference_audio_language.txt')):
-                    raise FileNotFoundError("没有找到参考音频语言文件！")
+                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的参考音频语言文件！")
                 ref_audio_language_file =os.path.join('../reference_audio',char,'reference_audio_language.txt')
                 with open(ref_audio_language_file, "r", encoding="utf-8") as f:
                     try:
@@ -107,7 +111,7 @@ class GetCharacterAttributes:
                         character.gptsovits_ref_audio_lan = ref_audio_language
                         f.close()
                     except Exception:
-                        raise ValueError("参考音频的语言参数文件读取错误")
+                        raise ValueError(f"角色：'{character.character_name}'的参考音频的语言参数文件读取错误")
 
                 if os.path.exists(os.path.join("../reference_audio",char, 'QT_style.json')):
                     with open(os.path.join("../reference_audio",char, 'QT_style.json'),'r',encoding="utf-8") as f:
@@ -115,6 +119,7 @@ class GetCharacterAttributes:
                         f.close()
 
                 self.character_class_list.append(character)
+
 
 if __name__=="__main__":
 

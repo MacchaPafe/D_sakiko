@@ -1,7 +1,7 @@
 import re
-import time
+import time,os
 from ollama import chat
-import requests
+import requests,json
 
 
 
@@ -35,8 +35,17 @@ class DSLocalAndVoiceGen:
 
 	def initial(self):
 		for character in self.character_list:
-			self.all_character_msg.append([{"role":"user",
-				   				"content":f'{character.character_description}'}])
+			self.all_character_msg.append([{"role": "user",
+											"content": f'{character.character_description}'}])
+		if os.path.getsize('../reference_audio/history_messages_dp.json')!=0:
+			with open('../reference_audio/history_messages_dp.json','r',encoding='utf-8') as f:
+				json_data=json.load(f)
+			for index, character in enumerate(self.character_list):
+				for data in json_data:
+					if data['character'] == character.character_name:
+						self.all_character_msg[index] = data['history']
+
+
 		if self.character_list[self.current_char_index].character_name == '祥子':
 			self.if_sakiko = True
 		else:
@@ -56,6 +65,13 @@ class DSLocalAndVoiceGen:
 		else:
 			self.if_sakiko = False
 
+	def trim_list_to_64kb(self,data_list):
+		MAX_SIZE = 64 * 1024  # 64KB
+		while len(json.dumps(data_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
+			del data_list[1]
+
+		return data_list
+
 	def text_generator(self,
 					   text_queue,
 					   is_audio_play_complete,
@@ -73,7 +89,7 @@ class DSLocalAndVoiceGen:
 			while not AudioGenerator.is_change_complete:
 				time.sleep(0.4)
 
-			message_queue.put(f"输入bye：退出程序	l：更改语言	m：更改LLM \n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清屏	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+"	s：切换角色"+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
+			message_queue.put(f"输入bye：退出程序	l：更改语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+"	s：切换角色"+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
 			while True:
 				if not qt2dp_queue.empty():
 					user_input=qt2dp_queue.get()
@@ -171,7 +187,7 @@ class DSLocalAndVoiceGen:
 				try:
 					response = chat(
 						model=self.model_choice,
-						messages=self.all_character_msg[self.current_char_index],
+						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
 						stream=False
 					)
 				except Exception:
@@ -192,6 +208,7 @@ class DSLocalAndVoiceGen:
 					"stream": False
 				}
 				try:
+
 					response = requests.post("https://api.deepseek.com/chat/completions", headers=self.headers, json=data)
 				except Exception:
 					message_queue.put("与DeepSeek建立连接失败，请检查网络。")
@@ -200,6 +217,7 @@ class DSLocalAndVoiceGen:
 					time.sleep(2)
 					continue
 				if response.status_code == 200:
+
 					response=response.json()
 					response=response['choices'][0]
 				else:

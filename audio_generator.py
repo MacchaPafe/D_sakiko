@@ -57,11 +57,11 @@ class AudioGenerate:
             '燈':'ともり',
             '灯': 'ともり',
             '椎名立希':'しいなたき',
-            '立希': 'たき' if self.if_sakiko else 'りっき',    #RikkiだよRikki！
+            
             '素世': 'そよ',
             '爽世': 'そよ',
-            '千早愛音':'ちはやあのん',
-            '愛音': 'あのん',
+            '千早愛音':'ちはやアノン',
+            '愛音': 'アノン',
             '要楽奈':'かなめらーな',
             '楽奈': 'らーな',
             '春日影':'はるひかげ',
@@ -242,6 +242,7 @@ class AudioGenerate:
                     self.speed=0.9
                 text = re.sub(r'CRYCHIC', 'クライシック',text,flags=re.IGNORECASE)
                 text = re.sub(r'\bave\s*mujica\b', 'あヴぇムジカ', text, flags=re.IGNORECASE)
+                text = re.sub(r'立希', 'たき' if not self.if_sakiko else 'りっき', text, flags=re.IGNORECASE)  #りっきだよ、りっき！
                 for key, value in self.replacements_jap.items():
                     text = re.sub(re.escape(key), value, text,flags=re.IGNORECASE)
 
@@ -253,22 +254,22 @@ class AudioGenerate:
                 for key, value in self.replacements_chi.items():
                     text = re.sub(re.escape(key), value, text, flags=re.IGNORECASE)
 
-            if text=="不能送去合成":
-                time.sleep(3)
-                self.audio_file_path='../reference_audio/silent_audio/silence.wav'
-                self.is_completed = True
-                return
+            # if text=="不能送去合成":
+            #     text="嗯"
+            #     self.audio_file_path='../reference_audio/silent_audio/silence.wav'
+            #     self.is_completed = True
+            #     return
 
             pattern = r'^[^A-Za-z0-9\u3040-\u30FF\u4E00-\u9FFF]+'    #去除句首的所有标点
             text=re.sub(pattern, '', text)
             text=text.replace(' ','')  #空格替换为逗号
             text = text.replace('...', '，')
-            #print("sssssssss",text,'wwwwwwwwwwwwwwww')
-            if text=='':
-                time.sleep(3)
-                self.audio_file_path = '../reference_audio/silent_audio/silence.wav'
-                self.is_completed = True
-                return
+
+            if text=='' or text=='不能送去合成':
+                text='今年'
+                flag=False
+            else:
+                flag=True
             if self.if_sakiko:
                 if self.sakiko_which_state:     #黑白祥
                     ref_audio_file=self.ref_audio_file_black_sakiko
@@ -289,15 +290,16 @@ class AudioGenerate:
                                       self.program_output_path,
                                       self.speed,
                                       '不切']
-
+            #print("sssssssss",text,'wwwwwwwwwwwwwwww')
             self.to_gptsovits_com_queue.put(self.neccerary_matirials)
             while True:
                 if not self.from_gptsovits_com_queue2.empty():
                     self.message_queue.put(self.from_gptsovits_com_queue2.get())
 
                 if not self.from_gptsovits_com_queue.empty():
-
-                    self.audio_file_path=self.from_gptsovits_com_queue.get()
+                    self.audio_file_path = self.from_gptsovits_com_queue.get()
+                    if not flag:
+                        self.audio_file_path='../reference_audio/silent_audio/silence.wav'
                     #print(self.audio_file_path)
                     break
 

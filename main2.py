@@ -45,6 +45,7 @@ def main_thread():
 
         time.sleep(1)   #防GIL
         if not text_queue.empty():
+
             this_turn_response=text_queue.get()
             if this_turn_response=='bye':
                 emotion_queue.put('bye')    #退出live2D线程
@@ -137,7 +138,7 @@ def main_thread():
                     break
 
                 while not live2d_player.live2d_this_turn_motion_complete:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
-                    time.sleep(0.5)
+                    time.sleep(0.2)
                 audio_file_path_queue.put(audio_gen.audio_file_path)    #音频文件队列
                 if cleaned_text!="不能送去合成":
 
@@ -163,6 +164,9 @@ def main_thread():
 
 
 if __name__=='__main__':
+
+    os.system('cls')
+    print("数字祥子程序...这个黑窗口无用，但不能关掉")
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
 
@@ -193,15 +197,16 @@ if __name__=='__main__':
     emotion_detector=inference_emotion_detect.EmotionDetect()
     emotion_model = emotion_detector.launch_emotion_detect()
 
-    os.system('cls')
-    print("数字祥子程序...这个黑窗口无用，但不能关掉")
+
+
 
 
     qt_app=QApplication(sys.argv)
     qt_win=qtUI.ChatGUI(dp2qt_queue=dp2qt_queue,
                         qt2dp_queue=qt2dp_queue,
                         QT_message_queue=QT_message_queue
-                        ,characters=characters)
+                        ,characters=characters,
+                        dp_chat=dp_chat)
 
     font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")    #设置字体
     font_family = QFontDatabase.applicationFontFamilies(font_id)[0]

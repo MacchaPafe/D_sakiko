@@ -134,8 +134,15 @@ i18n = I18nAuto(language=language)
 
 if torch.cuda.is_available():
     device = "cuda"
+    device_name = torch.cuda.get_device_name(0)
+    if "RTX 50" in device_name.replace("Ti", ""):  # 忽略 Ti 字样影响
+        print("RTX 50 系显卡在推理音频时有bug，该问题暂时实在无法解决，改为使用CPU推理，这里说声抱歉。")
+        device="cpu"
+        device_name='CPU'
 else:
     device = "cpu"
+    device_name='CPU'
+print(f"GPT_SoVITS推理设备：{device_name}")
 
 dict_language_v1 = {
     i18n("中文"): "all_zh",  # 全部按中文识别

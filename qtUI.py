@@ -1,7 +1,11 @@
+import os.path
 import re
 import time
+import json
+import glob
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget
+
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor
 
@@ -38,7 +42,7 @@ class CommunicateThreadMessages(QThread):
             time.sleep(0.5)
 
 class ChatGUI(QWidget):
-    def __init__(self,dp2qt_queue,qt2dp_queue,QT_message_queue,characters):
+    def __init__(self,dp2qt_queue,qt2dp_queue,QT_message_queue,characters,dp_chat):
         super().__init__()
         self.setWindowTitle("对话框")
         #self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
@@ -51,13 +55,21 @@ class ChatGUI(QWidget):
         self.messages_box.setMaximumHeight(int(0.085*self.screen.height()))
         self.user_input = QLineEdit()
         self.user_input.setPlaceholderText("在这里输入内容")
-        self.send_button=QPushButton("发送")
+        self.send_button=QPushButton("保存聊天记录")
 
         layout = QVBoxLayout()
         layout.addWidget(self.chat_display)
         layout.addWidget(self.messages_box)
         layout.addWidget(self.user_input)
-        layout.addWidget(self.send_button)
+
+
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(self.send_button)
+        self.play_button = QPushButton("播放上一条语音")
+        input_layout.addWidget(self.play_button)
+
+        layout.addLayout(input_layout)
+
         self.setLayout(layout)
         #处理流式输出
         self.full_response = ""
@@ -71,7 +83,8 @@ class ChatGUI(QWidget):
         self.get_response_thread.start()
         #处理用户输入
         self.qt2dp_queue=qt2dp_queue
-        self.send_button.clicked.connect(self.handle_user_input)
+        self.send_button.clicked.connect(self.save_data)
+        self.play_button.clicked.connect(self.play_last_audio)
         self.user_input.returnPressed.connect(self.handle_user_input)
         #处理各种消息
         self.QT_message_queue=QT_message_queue
@@ -84,6 +97,16 @@ class ChatGUI(QWidget):
         self.character_chat_history=[]
         for _ in self.character_list:
             self.character_chat_history.append('')
+        if os.path.getsize('../reference_audio/history_messages_qt.json')!=0:
+            with open('../reference_audio/history_messages_qt.json','r',encoding='utf-8') as f:
+                json_data = json.load(f)
+            for index,character in enumerate(self.character_list):
+                for data in json_data:
+                    if data['character']==character.character_name:
+                        self.character_chat_history[index]=data['history']
+
+            self.chat_display.setHtml(self.character_chat_history[self.current_char_index])
+
         if self.character_list[self.current_char_index].icon_path is not None:
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))
 
@@ -137,6 +160,15 @@ class ChatGUI(QWidget):
             """)
         self.user_last_turn_input=''
         self.translation=''
+        self.dp_chat=dp_chat    #仅为了保存聊天记录用
+
+
+    def play_last_audio(self):
+        file=glob.glob(os.path.join("../reference_audio/generated_audios_temp",f"*.wav"))
+        if not file:
+            self.play_button.setText("暂无可播放音频...")
+        else:
+            self.play_button.setText("播放上一条语音")
 
 
     def change_char(self):
@@ -195,7 +227,8 @@ class ChatGUI(QWidget):
         text1=re.findall('切换GPT-SoVITS',text,flags=re.DOTALL)
         text2 = re.findall('已切换为', text, flags=re.DOTALL)
         text3=re.findall('整理语言',text,flags=re.DOTALL)
-        if text1 or text2 or text3:
+        text4=re.findall('思考中',text,flags=re.DOTALL)
+        if text1 or text2 or text3 or text4:
             return False
         else:
             return True
@@ -203,21 +236,21 @@ class ChatGUI(QWidget):
     def is_display2(self, text):
         flag=True
         user_input_no_display_list=['s','l','m','clr','conv','v',
-                                    'clr','mask']
+                                    'clr','mask','save']
         for x in user_input_no_display_list:
             if text == x:
                 flag = False
         return flag
 
     def handle_user_input(self):
+        self.setWindowTitle("对话框")
         user_this_turn_input=self.user_input.text()
         user_this_turn_input=user_this_turn_input.strip(' ')
         if user_this_turn_input=='':
             user_this_turn_input="（什么也没说）"
         current_text = self.messages_box.toPlainText()
         if (user_this_turn_input!='clr'
-            and current_text!="小祥思考中..."
-            and current_text!=f"{self.character_list[self.current_char_index].character_name}思考中..."
+            and user_this_turn_input!='save'
             and self.is_display(current_text)
             and self.qt2dp_queue.empty()):
             self.qt2dp_queue.put(user_this_turn_input)
@@ -240,8 +273,32 @@ class ChatGUI(QWidget):
         if user_this_turn_input=='clr':
             self.chat_display.clear()
 
+        if user_this_turn_input=='save':
+            self.save_data()
+
+    def save_data(self):
+        dp_messages=self.dp_chat.all_character_msg
+        final_data_dp=[]
+        for index,char_msg in enumerate(dp_messages):
+            print(index)
+            final_data_dp.append({'character':self.character_list[index].character_name,'history':char_msg})
+        with open('../reference_audio/history_messages_dp.json', 'w', encoding='utf-8') as f:
+            json.dump(final_data_dp, f, ensure_ascii=False, indent=4)
+            f.close()
+
+        record = self.chat_display.toHtml()
+        self.character_chat_history[self.current_char_index] = record
+        final_data_qt=[]
+        for index,char_msg in enumerate(self.character_chat_history):
+            final_data_qt.append({'character':self.character_list[index].character_name,'history':char_msg})
+        with open('../reference_audio/history_messages_qt.json', 'w', encoding='utf-8') as f:
+            json.dump(final_data_qt, f, ensure_ascii=False, indent=4)
+            f.close()
+        self.setWindowTitle("已保存最新的聊天记录！")
+
     def handle_messages(self,message):
         if message=='bye':
+            self.save_data()
             self.close()
         self.messages_box.clear()
         self.messages_box.append(message)
