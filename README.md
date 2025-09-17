@@ -68,5 +68,5 @@ v2.0 更新项目：
 目前正在挂到github上... https://github.com/MacchaPafe/D_sakiko
 
 
-作者：要抹茶要乐奈   b站：https://space.bilibili.com/443409863?spm_id_from=333.1007.0.0
+作者：抹茶星冰奈   b站：https://space.bilibili.com/443409863?spm_id_from=333.1007.0.0
 
