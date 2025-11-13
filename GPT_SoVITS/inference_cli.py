@@ -45,7 +45,7 @@ def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
                                        text_language=i18n(info[5]),
                                        speed=info[7],how_to_cut=info[8],top_p=1, temperature=1
                                        ,sample_steps=16
-                                       ,pause_second=0.5,
+                                       ,pause_second=info[9],
                                         message_queue=from_gptsovits_queue2
                                        )
             result_list = list(synthesis_result)

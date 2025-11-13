@@ -36,6 +36,7 @@ class AudioGenerate:
         self.ref_text_file_black_sakiko = '../reference_audio/sakiko/reference_text_black_sakiko.txt'
         self.program_output_path="../reference_audio/generated_audios_temp"
         self.speed=1.0
+        self.pause_second=0.5
 
         self.audio_file_path='../reference_audio\\silent_audio\\silence.wav'
         self.is_completed=False
@@ -264,10 +265,10 @@ class AudioGenerate:
             self.is_completed = False
             self.sakiko_which_state=dp_chat.sakiko_state
             if self.audio_language_choice=='日英混合':
-                if self.if_sakiko:
-                    self.speed=0.9
-                else:
-                    self.speed=0.88
+                # if self.if_sakiko:
+                #     self.speed=0.9
+                # else:
+                #     self.speed=0.88
                 text = re.sub(r'CRYCHIC', 'クライシック',text,flags=re.IGNORECASE)
                 text = re.sub(r'\bave\s*mujica\b', 'あヴぇムジカ', text, flags=re.IGNORECASE)
                 text = re.sub(r'立希',( 'たき' if self.if_sakiko else 'りっき'), text, flags=re.IGNORECASE)  #りっきだよ、りっき！
@@ -275,10 +276,10 @@ class AudioGenerate:
                     text = re.sub(re.escape(key), value, text,flags=re.IGNORECASE)
 
             else:
-                if self.if_sakiko:
-                    self.speed=0.83
-                else:
-                    self.speed = 0.9
+                # if self.if_sakiko:
+                #     self.speed=0.83
+                # else:
+                #     self.speed = 0.9
                 for key, value in self.replacements_chi.items():
                     text = re.sub(re.escape(key), value, text, flags=re.IGNORECASE)
 
@@ -317,7 +318,9 @@ class AudioGenerate:
                                       self.audio_language_choice,
                                       self.program_output_path,
                                       self.speed,
-                                      '不切']
+                                      '不切',
+                                      self.pause_second
+                                      ]
             #print("sssssssss",text,'wwwwwwwwwwwwwwww')
             self.to_gptsovits_com_queue.put(self.neccerary_matirials)
             while True:

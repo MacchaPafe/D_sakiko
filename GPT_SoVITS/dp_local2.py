@@ -120,7 +120,7 @@ class DSLocalAndVoiceGen:
 			while not AudioGenerator.is_change_complete:
 				time.sleep(0.4)
 
-			message_queue.put(f"输入bye：退出程序	l：切换语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+"	s：切换角色"+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
+			message_queue.put(f"输入bye：退出程序	l：切换语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
 			while True:
 				if not qt2dp_queue.empty():
 					user_input=qt2dp_queue.get()
@@ -266,7 +266,7 @@ class DSLocalAndVoiceGen:
 				else:
 					time.sleep(2)
 					if response.status_code==402:
-						message_queue.put("deepseek账户余额不足。本次对话未能成功。")
+						message_queue.put("deepseek账户余额不足，请联系UP充值")
 					elif response.status_code==401:
 						message_queue.put("deepseek API key认证出错，请检查正确性")
 					elif response.status_code==429:

@@ -4,12 +4,13 @@ import time
 import json
 
 import numpy as np
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, QSlider, QLabel
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
 import sounddevice as sd
 from opencc import OpenCC
+from sympy.physics.units import current
 
 
 class CommunicateThreadDP2QT(QThread):
@@ -75,6 +76,127 @@ class TranscriptionWorker(QObject):
             self.finished.emit(f"识别错误 {e}")
 
 
+class MoreFunctionWindow(QWidget):
+    def __init__(self,qt_css,parent_window_close_fun):
+        super().__init__()
+        self.setWindowTitle("更多功能...")
+        self.screen = QDesktopWidget().screenGeometry()
+        self.resize(int(0.2 * self.screen.width()), int(0.2 * self.screen.height()))
+        layout = QVBoxLayout()
+        self.open_motion_editor_button =QPushButton("运行动作组编辑程序")
+        self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)
+        layout.addWidget(self.open_motion_editor_button)
+        self.close_program_button=QPushButton("退出程序")
+        self.close_program_button.clicked.connect(parent_window_close_fun)
+        self.close_program_button.clicked.connect(self.close)
+        layout.addWidget(self.close_program_button)
+        self.text_label=QLabel("更多小功能还在开发中...")
+        self.text_label.setAlignment(Qt.AlignCenter)
+
+        layout.addWidget(self.text_label)
+        self.setLayout(layout)
+        if qt_css is not None:
+            self.setStyleSheet(qt_css)
+        else:
+            self.setStyleSheet("""
+                            QWidget {
+                                background-color: #E6F2FF;
+                                color: #7799CC;
+                            }
+
+                            QTextBrowser{
+                                text-decoration: none;
+                                background-color: #FFFFFF;
+                                border: 3px solid #B3D1F2;
+                                border-radius:9px;
+                                padding: 5px;
+                            }
+
+                            QLineEdit {
+                                background-color: #FFFFFF;
+                                border: 2px solid #B3D1F2;
+                                border-radius: 9px;
+                                padding: 5px;
+                            }
+
+                            QPushButton {                
+                                background-color: #7FB2EB;
+                                color: #ffffff;
+                                border-radius: 6px;
+                                padding: 6px;
+                            }
+
+                            QPushButton:hover {
+                                background-color: #3FB2EB;
+                            }
+
+                            QScrollBar:vertical {
+                                border: none;
+                                background: #D0E2F0;
+                                width: 10px;
+                                margin: 0px 0px 0px 0px;
+                            }
+
+                            QScrollBar::handle:vertical {
+                                background: #B3D1F2;
+                                min-height: 20px;
+                                border-radius: 3px;
+                            }
+
+                            QSlider::groove:horizontal {
+                                /* 滑槽背景 */
+                                border: 1px solid #B3D1F2;  /* 使用边框色作为滑槽边框 */
+                                height: 8px;
+                                background: #D0E2F0;       /* 使用浅色背景 */
+                                margin: 2px 0;
+                                border-radius: 4px;
+                            }
+
+                            QSlider::handle:horizontal {
+                                /* 滑块手柄 */
+                                background: #7FB2EB;       /* 使用按钮的亮蓝色 */
+                                border: 1px solid #4F80E0;
+                                width: 16px;
+                                margin: -4px 0;            /* 垂直方向上的偏移，使手柄在滑槽上居中 */
+                                border-radius: 8px;        /* 使手柄成为圆形 */
+                            }
+
+                            QSlider::handle:horizontal:hover {
+                                /* 鼠标悬停时的手柄颜色 */
+                                background: #3FB2EB;       /* 使用按钮的 hover 亮色 */
+                                border: 1px solid #3F60D0;
+                            }
+
+                            QSlider::sub-page:horizontal {
+                                /* 进度条（已滑过部分） */
+                                background: #AACCFF;       /* 使用一个中间的蓝色，比滑槽背景深，比手柄浅 */
+                                border-radius: 4px;
+                                margin: 2px 0;
+                            }
+
+                        """)
+    def on_click_open_motion_editor_button(self):
+        import sys
+        current_script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        #  构造 .bat 文件的完整路径
+        # run_2.bat 在当前脚本目录的父目录中 (../run_2.bat)
+        parent_dir = os.path.dirname(current_script_dir)
+        bat_file_name = "运行动作组编辑程序.bat"
+        # 完整的 .bat 文件路径
+        bat_path = os.path.join(parent_dir, bat_file_name)
+        # 检查文件是否存在
+        if not os.path.exists(bat_path):
+            print(f".bat 文件未找到:\n{bat_path}")
+            return
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([bat_path], shell=True)
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
+        self.close()
 
 
 class ChatGUI(QWidget):
@@ -86,6 +208,7 @@ class ChatGUI(QWidget):
                  dp_chat,
                  audio_gen,live2d_mod,emotion_queue,audio_file_path_queue,emotion_model):
         super().__init__()
+        self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
         self.setWindowTitle("数字小祥")
         #self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
         self.screen = QDesktopWidget().screenGeometry()
@@ -119,17 +242,12 @@ class ChatGUI(QWidget):
         input_layout.addWidget(self.user_input)
         input_layout.addWidget(self.voice_button)
 
-        layout.addLayout(input_layout)
+        #layout.addLayout(input_layout)
 
 
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.send_button)
-        #self.play_button = QPushButton("开发中")
-        #input_layout.addWidget(self.play_button)
 
-        layout.addLayout(button_layout)
-
-        self.setLayout(layout)
         #处理流式输出
         self.full_response = ""
         self.current_index = 0
@@ -218,13 +336,93 @@ class ChatGUI(QWidget):
                     min-height: 20px;
                     border-radius: 3px;
                 }
+                
+                QSlider::groove:horizontal {
+                    /* 滑槽背景 */
+                    border: 1px solid #B3D1F2;  /* 使用边框色作为滑槽边框 */
+                    height: 8px;
+                    background: #D0E2F0;       /* 使用浅色背景 */
+                    margin: 2px 0;
+                    border-radius: 4px;
+                }
+            
+                QSlider::handle:horizontal {
+                    /* 滑块手柄 */
+                    background: #7FB2EB;       /* 使用按钮的亮蓝色 */
+                    border: 1px solid #4F80E0;
+                    width: 16px;
+                    margin: -4px 0;            /* 垂直方向上的偏移，使手柄在滑槽上居中 */
+                    border-radius: 8px;        /* 使手柄成为圆形 */
+                }
+            
+                QSlider::handle:horizontal:hover {
+                    /* 鼠标悬停时的手柄颜色 */
+                    background: #3FB2EB;       /* 使用按钮的 hover 亮色 */
+                    border: 1px solid #3F60D0;
+                }
+            
+                QSlider::sub-page:horizontal {
+                    /* 进度条（已滑过部分） */
+                    background: #AACCFF;       /* 使用一个中间的蓝色，比滑槽背景深，比手柄浅 */
+                    border-radius: 4px;
+                    margin: 2px 0;
+                }
     
             """)
         self.user_last_turn_input=''
         self.translation=''
         self.dp_chat=dp_chat    #仅为了保存聊天记录用
 
-        self.audio_gen=audio_gen    #仅为了获得音频文件路径
+        self.is_ch = False
+        self.saved_talk_speed_and_pause_second = [{'talk_speed': 0, 'pause_second': 0.5} for _ in self.character_list]
+        for i, character in enumerate(self.character_list):
+            if not self.is_ch:
+                if self.character_list[self.current_char_index].character_name == '祥子':
+                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.9
+                else:
+                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.88
+            else:
+                if self.character_list[self.current_char_index].character_name == '祥子':
+                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.83
+                else:
+                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.9
+
+        self.talk_speed_label = QLabel(f"语速调节：{self.audio_gen.speed}")  # 此时的数值不是真实的，audio_gen还没有初始化完成
+        self.talk_speed_slider = QSlider(Qt.Horizontal)
+        self.talk_speed_slider.setRange(60, 140)
+        self.talk_speed_slider.valueChanged.connect(self.set_talk_speed)
+
+
+
+        self.more_function_button =QPushButton("More")
+        self.more_function_button.clicked.connect(self.open_more_function_window)
+        self.change_character_button = QPushButton("切换角色")
+        self.change_character_button.clicked.connect(self.change_character_button_function)
+
+        self.pause_second_label=QLabel(f"句间停顿时间(s)：{self.audio_gen.pause_second}")
+        self.pause_second_slider=QSlider(Qt.Horizontal)
+        self.pause_second_slider.valueChanged.connect(self.set_pause_second)
+        self.pause_second_slider.setRange(10,80)
+        self.pause_second_slider.setValue(50)
+
+        slider_layout = QHBoxLayout()
+        slider_layout.addWidget(self.talk_speed_label)
+        slider_layout.addWidget(self.talk_speed_slider)
+        slider_layout.addWidget(self.pause_second_label)
+        slider_layout.addWidget(self.pause_second_slider)
+        layout.addLayout(slider_layout)
+
+        button_layout.addWidget(self.change_character_button)
+        button_layout.addWidget(self.more_function_button)
+        layout.addLayout(button_layout)
+
+        layout.addLayout(input_layout)
+
+
+        self.talk_speed_reset()
+
+        self.setLayout(layout)  #因为需要character_list等参数，所以放在最后初始化
+
         self.live2d_mod=live2d_mod
         self.emotion_queue=emotion_queue
         self.emotion_model=emotion_model
@@ -239,6 +437,62 @@ class ChatGUI(QWidget):
         self.voice_is_valid=False
         self.load_whisper_model()
 
+    def set_pause_second(self):
+        pause_second_value=self.pause_second_slider.value()
+        self.audio_gen.pause_second=pause_second_value/100
+        self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen.pause_second:.2f}")
+        self.saved_talk_speed_and_pause_second[self.current_char_index]['pause_second']=self.audio_gen.pause_second
+
+
+    def open_more_function_window(self):
+        self.more_function_win=MoreFunctionWindow(self.character_list[self.current_char_index].qt_css,self.close_program)
+        self.more_function_win.show()
+
+    def close_program(self):
+        self.user_input.setText('bye')
+        self.user_input.returnPressed.emit()
+
+    def change_character_button_function(self):
+        self.user_input.setText('s')
+        self.user_input.returnPressed.emit()
+        self.user_input.clear()
+
+    def talk_speed_reset(self):
+        # if not self.is_ch:
+        #     if self.character_list[self.current_char_index].character_name=='祥子':
+        #         self.talk_speed_slider.setValue(0.9*100)
+        #         self.audio_gen.speed=0.9
+        #         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed}")
+        #     else:
+        #         self.talk_speed_slider.setValue(0.88*100)
+        #         self.audio_gen.speed=0.88
+        #         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed}")
+        # else:
+        #     if self.character_list[self.current_char_index].character_name=='祥子':
+        #         self.talk_speed_slider.setValue(0.83*100)
+        #         self.audio_gen.speed=0.83
+        #         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed}")
+        #     else:
+        #         self.talk_speed_slider.setValue(0.9*100)
+        #         self.audio_gen.speed=0.9
+        #         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed}")
+        saved_speed=self.saved_talk_speed_and_pause_second[self.current_char_index]['talk_speed']
+        self.talk_speed_slider.setValue(saved_speed*100)
+        self.audio_gen.speed=saved_speed
+        self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed:.2f}")
+
+    def pause_second_reset(self):
+        saved_value=self.saved_talk_speed_and_pause_second[self.current_char_index]['pause_second']
+        self.pause_second_slider.setValue(saved_value*100)
+        self.audio_gen.pause_second = saved_value
+        self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen.pause_second:.2f}")
+
+
+    def set_talk_speed(self):
+        speed_value=self.talk_speed_slider.value()
+        self.audio_gen.speed=speed_value/100
+        self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed:.2f}")
+        self.saved_talk_speed_and_pause_second[self.current_char_index]['talk_speed']=self.audio_gen.speed
 
     def load_whisper_model(self):
         self.model_loader= ModelLoaderThread("./pretrained_models/faster_whisper_small", device="cpu", compute_type="int8")
@@ -352,12 +606,6 @@ class ChatGUI(QWidget):
             self.setWindowTitle("数字小祥")
 
     def closeEvent(self, event):
-        """
-        (極其重要)
-        當使用者點擊 'X' 關閉視窗時，我們必須手動停止並關閉
-        那個持久化的音訊串流，否則程式會卡住或崩潰。
-        """
-
         if self.stream:
             try:
                 self.stream.stop()
@@ -365,7 +613,6 @@ class ChatGUI(QWidget):
             except Exception as e:
                 print(f"關閉串流時出錯: {e}", file=sys.stderr)
 
-        # 允許視窗關閉
         event.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
@@ -408,6 +655,8 @@ class ChatGUI(QWidget):
         self.chat_display.setHtml(self.character_chat_history[self.current_char_index].replace('underline','none'))
         if self.character_list[self.current_char_index].icon_path is not None:
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))
+        self.talk_speed_reset()  #切换角色后重置默认语速
+        self.pause_second_reset()  #切换角色后重置默认句间停顿时间
 
     def handle_response(self,response_text):
         if response_text=='changechange':
@@ -506,6 +755,11 @@ class ChatGUI(QWidget):
         if user_this_turn_input=='save':
             self.save_data()
 
+        if user_this_turn_input=='l':   #切换语言时也会变更语速
+            self.is_ch=not self.is_ch
+            self.talk_speed_reset()
+            self.pause_second_reset()
+
     def save_data(self):
         dp_messages=self.dp_chat.all_character_msg
         final_data_dp=[]
@@ -556,8 +810,21 @@ if __name__=='__main__':
                 dp2qt_queue.put(response)
         dp2qt_queue.put("结束了")
 
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, script_dir)
+    import character
+    get_all = character.GetCharacterAttributes()
+    characters = get_all.character_class_list
+
     app = QApplication(sys.argv)
-    win = ChatGUI(dp2qt_queue, qt2dp_queue, QT_message_queue)
+    class AudioGenMock:
+        def __init__(self):
+            self.speed=1.0
+            self.pause_second=0.3
+            self.audio_file_path="../reference_audio/audio_cache/temp_output.wav"
+    audio_gen_mock = AudioGenMock()
+    win = ChatGUI(dp2qt_queue, qt2dp_queue, QT_message_queue, characters, None, audio_gen_mock,None,None,None,None)
 
     font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")
     font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
