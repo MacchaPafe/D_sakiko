@@ -1,4 +1,11 @@
 本程序免费开源，使用up自己的大模型API，希望大家可以多多支持！
+
+程序包下载：
+
+百度网盘：https://pan.baidu.com/s/1kLJT0mZ_gGQ2yRUrMJU_Tw?pwd=7vsd 提取码: 7vsd
+
+天翼云盘（不限速）：https://cloud.189.cn/t/b2EjU36Nj67b（访问码：0fe8）
+
 爱发电 https://afdian.com/a/MacchaPafe
 
 2025.11.10 v2.3
@@ -12,6 +19,8 @@
 4.增加OpenAI ChatGPT以及Google Gemini API选择（做的测试还不够多，也许会有潜在bug）
 
 5.增强交互逻辑，多了几个按钮
+
+6.底层torch升级，从2.3版本开始，已成功支持50系显卡推理。
 
 2025.6.23 v2.2
 
