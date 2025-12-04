@@ -22,14 +22,16 @@ jobs:
          pip install --upgrade pip
          pip install Cython
       - name: Generate source file
+        working-directory: GPT_SoVITS
         run: |
-          python GPT_SoVITS/live2d_1_generate.py
+          python live2d_1_generate.py
         env:
           LIVE2D_KEY: ${{ secrets.LIVE2D_KEY }}
       - name: Build Pyd files
-        run: python GPT_SoVITS/setup_live2d.py build_ext --inplace
+        working-directory: GPT_SoVITS
+        run: python setup_live2d.py build_ext --inplace
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: live2d_1.cpython-311-darwin.so
-          path: ./GPT_SoVITS/live2d_1.cpython-311-darwin.so
+          path: GPT_SoVITS/live2d_1.cpython-311-darwin.so
