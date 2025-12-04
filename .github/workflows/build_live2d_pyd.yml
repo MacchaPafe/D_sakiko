@@ -27,7 +27,7 @@ jobs:
         env:
           LIVE2D_KEY: ${{ secrets.LIVE2D_KEY }}
       - name: Build Pyd files
-        run: python setup_live2d.py build_ext --inplace
+        run: python GPT_SoVITS/setup_live2d.py build_ext --inplace
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
