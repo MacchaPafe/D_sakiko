@@ -18,6 +18,7 @@ import warnings
 
 import torch
 import torchaudio
+import soundfile as sf
 from text.LangSegmenter import LangSegmenter
 
 logging.getLogger("markdown_it").setLevel(logging.ERROR)
@@ -872,7 +873,16 @@ def get_tts_wav(
             phoneme_ids1 = torch.LongTensor(phones2).to(device).unsqueeze(0)
             # print(11111111, phoneme_ids0, phoneme_ids1)
             fea_ref, ge = vq_model.decode_encp(prompt.unsqueeze(0), phoneme_ids0, refer)
-            ref_audio, sr = torchaudio.load(ref_wav_path)
+            
+            # 使用 soundfile 直接加载音频，避免一些场景（比如一些特定 macOS 配置）下的 torchaudio 加载问题
+            # ref_audio, sr = torchaudio.load(ref_wav_path)
+            ref_audio, sr = sf.read(ref_wav_path)
+            ref_audio = torch.from_numpy(ref_audio).float()
+            if ref_audio.ndim == 1:
+                ref_audio = ref_audio.unsqueeze(0)
+            else:
+                ref_audio = ref_audio.transpose(0, 1)
+                
             ref_audio = ref_audio.to(device).float()
             if ref_audio.shape[0] == 2:
                 ref_audio = ref_audio.mean(0).unsqueeze(0)

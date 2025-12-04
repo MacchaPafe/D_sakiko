@@ -52,7 +52,7 @@ class Live2DModule:
         self.BACK_IMAGE=None
         self.BACKGROUND_POSITION=((-1.0, 1.0, 0), (1.0, -1.0, 0), (1.0, 1.0, 0), (-1.0, -1.0, 0))
         self.motion_is_over=False
-        self.wavHandler=WavHandler()
+        self.wavHandler=None
         self.lipSyncN:float=1.4
         self.live2d_this_turn_motion_complete=True
         self.think_motion_is_over=True
@@ -100,11 +100,11 @@ class Live2DModule:
 
 
     # 动作播放开始后调用
-    def onStartCallback(self):
+    def onStartCallback(self, *args):
         self.motion_is_over=False
         #print(f"touched and motion [] is started")
 
-    def onStartCallback_think_motion_version(self):
+    def onStartCallback_think_motion_version(self, *args):
         self.think_motion_is_over = False
         if self.if_sakiko:
             pygame.display.set_caption("小祥思考中")
@@ -128,7 +128,7 @@ class Live2DModule:
         global idle_recover_timer
         idle_recover_timer = time.time()
 
-    def onFinishCallback_think_motion_version(self):
+    def onFinishCallback_think_motion_version(self, *args):
         self.think_motion_is_over=True
 
 
@@ -138,19 +138,33 @@ class Live2DModule:
                     audio_file_queue,
                     is_text_generating_queue,
                     char_is_converted_queue,
-                    change_char_queue):
+                    change_char_queue,
+                    desktop_w,
+                    desktop_h,
+                    is_motion_complete_value=None):
+        if self.wavHandler is None:
+            self.wavHandler = WavHandler()
         #print("正在开启Live2D模块")
-        import tkinter as tk    # 获取屏幕分辨率
-        root = tk.Tk()
-        desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
-        root.destroy()
+        # import tkinter as tk    # 获取屏幕分辨率
+        # root = tk.Tk()
+        # desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
+        # root.destroy()
         win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
         pygame_win_pos_w,pygame_win_pos_h=int(0.5*desktop_w-win_w_and_h),int(0.5*desktop_h-0.5*win_w_and_h)
         #以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
-        import ctypes
-        caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
-                          +ctypes.windll.user32.GetSystemMetrics(33)
-                          +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
+        
+        caption_height = 0
+        # 只在 Windows 上使用这些 ctype 方法
+        # macOS 窗口标题栏很小，本身就不需要
+        if os.name == 'nt':
+            try:
+                import ctypes
+                caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
+                                +ctypes.windll.user32.GetSystemMetrics(33)
+                                +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
+            except Exception:
+                pass
+        
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
         pygame.init()
         live2d.init()
@@ -159,7 +173,7 @@ class Live2DModule:
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
         model = live2d.LAppModel()
-        model.LoadModelJson(self.PATH_JSON)
+        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
 
         model.Resize(win_w_and_h, win_w_and_h)
         model.SetAutoBlinkEnable(True)
@@ -209,9 +223,9 @@ class Live2DModule:
                 else:
                     self.change_character()
                     if self.if_sakiko and self.sakiko_state:
-                        model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
+                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
                     else:
-                        model.LoadModelJson(self.PATH_JSON)
+                        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
                     model.Resize(win_w_and_h, win_w_and_h)
                     model.SetAutoBlinkEnable(True)
                     model.SetAutoBreathEnable(True)
@@ -296,20 +310,22 @@ class Live2DModule:
                 self.think_motion_is_over=True
 
             self.live2d_this_turn_motion_complete=not pygame.mixer.music.get_busy()
+            if is_motion_complete_value is not None:
+                is_motion_complete_value.value = self.live2d_this_turn_motion_complete
 
             if not char_is_converted_queue.empty():
                 if self.if_sakiko:
                     conv_index=char_is_converted_queue.get()
                     if conv_index!='maskoff':
                         if not conv_index:      #切换为白祥
-                            model.LoadModelJson(self.PATH_JSON)
+                            model.LoadModelJson(self.PATH_JSON, disable_precision=True)
                             model.Resize(win_w_and_h, win_w_and_h)
                             model.StartMotion(mtn_group[3], randint(40,42), 2, self.onStartCallback, self.onFinishCallback)
                             model.SetExpression("idle")
                             self.sakiko_state=False
 
                         else:       #切换为黑祥
-                            model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
+                            model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
                             model.Resize(win_w_and_h, win_w_and_h)
                             self.if_mask = True
                             x=randint(43,46)
@@ -356,63 +372,62 @@ class Live2DModule:
                 last_emotion=emotion
                 if self.if_sakiko:
                     if emotion=='LABEL_0': #happiness
-                            model.StartMotion(mtn_group[3], randint(0, 5), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(0, 5), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_1':    #sadness
-                            model.StartMotion(mtn_group[3], randint(6, 9), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(6, 9), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_2':    #anger
 
-                            model.StartMotion(mtn_group[3],randint(10, 16), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
+                            model.StartMotion(mtn_group[3],randint(10, 16), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
                     elif emotion=='LABEL_3':    #disgust
-                            model.StartMotion(mtn_group[3], randint(17, 18), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(17, 18), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_4':    #like
-                            model.StartMotion(mtn_group[3], randint(19, 22), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(19, 22), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_5':    #surprise
-                            model.StartMotion(mtn_group[3], randint(23, 26), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(23, 26), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_6':    #fear
-                            model.StartMotion(mtn_group[3], randint(27, 28), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(27, 28), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
                     else:
                             pass
                 else:
                     if emotion == 'LABEL_0':  # happiness
                         model.StartMotion(mtn_group[3], randint(0, 5), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_1':  # sadness
                         model.StartMotion(mtn_group[3], randint(6, 11), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_2':  # anger
 
                         model.StartMotion(mtn_group[3], randint(12, 17), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_3':  # disgust
                         model.StartMotion(mtn_group[3], randint(18, 23), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_4':  # like
                         model.StartMotion(mtn_group[3], randint(24, 29), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_5':  # surprise
                         model.StartMotion(mtn_group[3], randint(30, 35), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_6':  # fear
                         model.StartMotion(mtn_group[3], randint(36, 41), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
                     else:
                         pass
@@ -448,6 +463,8 @@ if __name__=='__main__':        #单独测试live2d
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
+    os.chdir(script_dir)
+
     import character
 
     get_all = character.GetCharacterAttributes()
@@ -463,5 +480,11 @@ if __name__=='__main__':        #单独测试live2d
     is_text_generating_queue = Queue()
     char_is_converted_queue=Queue()
     change_char_queue=Queue()
-    a.play_live2d(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue)
+    
+    import tkinter as tk
+    root = tk.Tk()
+    w, h = root.winfo_screenwidth(), root.winfo_screenheight()
+    root.destroy()
+    
+    a.play_live2d(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue, w, h)
 

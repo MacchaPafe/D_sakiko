@@ -4,6 +4,7 @@ sys.path.insert(0, script_dir)
 
 from queue import Queue
 import threading
+import multiprocessing
 import time
 import re
 
@@ -136,7 +137,7 @@ def main_thread():
                         dp2qt_queue.put(orig_text + '\n[翻译]' + trans_text + '[翻译结束]')
                     break
 
-                while not live2d_player.live2d_this_turn_motion_complete:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                while not is_motion_complete.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.2)
                 audio_file_path_queue.put(audio_gen.audio_file_path)    #音频文件队列
                 if cleaned_text!="不能送去合成":
@@ -152,7 +153,7 @@ def main_thread():
                     emotion_this_three_sentences ='LABEL_0'
                 if i==0:
                     is_text_generating_queue.get() #让模型停止思考动作
-                while not live2d_player.live2d_this_turn_motion_complete:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                while not is_motion_complete.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.5)
                 emotion_queue.put(emotion_this_three_sentences)     #情感标签队列
                 if not is_ja:
@@ -163,8 +164,16 @@ def main_thread():
 
 
 if __name__=='__main__':
+    multiprocessing.set_start_method('spawn', force=True)
 
-    os.system('cls')
+    if os.name == 'nt':
+        os.system('cls')
+    else:
+        os.system('clear')
+    # 添加本文件的目录到导入 Path
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
     print("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
@@ -172,16 +181,18 @@ if __name__=='__main__':
 
     #模块间传参队列
     text_queue=Queue()
-    emotion_queue=Queue()
-    audio_file_path_queue=Queue()
+    emotion_queue=multiprocessing.Queue()
+    audio_file_path_queue=multiprocessing.Queue()
     is_audio_play_complete=Queue()
-    is_text_generating_queue=Queue()
+    is_text_generating_queue=multiprocessing.Queue()
     dp2qt_queue=Queue()
     qt2dp_queue=Queue()
     QT_message_queue=Queue()
-    char_is_converted_queue=Queue()
-    change_char_queue=Queue()
+    char_is_converted_queue=multiprocessing.Queue()
+    change_char_queue=multiprocessing.Queue()
     to_audio_generator_text_queue=Queue()
+    
+    is_motion_complete = multiprocessing.Value('b', True)
 
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters)
 
@@ -206,21 +217,25 @@ if __name__=='__main__':
                         QT_message_queue=QT_message_queue
                         ,characters=characters,
                         dp_chat=dp_chat,
-                        audio_gen=audio_gen,live2d_mod=live2d_player,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model
+                        audio_gen=audio_gen,live2d_mod=live2d_player,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model,
+                        is_motion_complete=is_motion_complete
                         )
 
     font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")    #设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    font = QFont(font_family, 12)
-    qt_app.setFont(font)
+    font_family = QFontDatabase.applicationFontFamilies(font_id)
+    if font_family:
+        font = QFont(font_family[0], 12)
+        qt_app.setFont(font)
 
     from PyQt5.QtWidgets import QDesktopWidget          #设置qt窗口位置，与live2d对齐
-    screen_w_mid=int(0.5*QDesktopWidget().screenGeometry().width())
-    screen_h_mid=int(0.5*QDesktopWidget().screenGeometry().height())
-    qt_win.move(screen_w_mid,int(screen_h_mid-0.35*QDesktopWidget().screenGeometry().height()))   #因为窗口高度设置的是0.7倍桌面宽
+    desktop_w = QDesktopWidget().screenGeometry().width()
+    desktop_h = QDesktopWidget().screenGeometry().height()
+    screen_w_mid=int(0.5*desktop_w)
+    screen_h_mid=int(0.5*desktop_h)
+    qt_win.move(screen_w_mid,int(screen_h_mid-0.35*desktop_h))   #因为窗口高度设置的是0.7倍桌面宽
 
 
-    tr1=threading.Thread(target=live2d_player.play_live2d,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue))
+    tr1=multiprocessing.Process(target=live2d_player.play_live2d,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue, desktop_w, desktop_h, is_motion_complete))
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
                                                              is_audio_play_complete,
                                                              is_text_generating_queue,

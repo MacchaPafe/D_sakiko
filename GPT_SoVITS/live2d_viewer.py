@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import sys,os
 import re
 
@@ -104,19 +105,31 @@ class Live2DModule:
 
     def play_live2d(self,
                     motion_queue,
-                    change_char_queue):
+                    change_char_queue,
+                    desktop_w,
+                    desktop_h):
+        # 不使用 tkinter 获得屏幕分辨率，而改用 PyQt 获得的内容传入参数
+        # 因为在 macOS 上，同一线程同时注册 PyQt 和 tkinter 窗口会立刻崩溃
+
         #print("正在开启Live2D模块")
-        import tkinter as tk    # 获取屏幕分辨率
-        root = tk.Tk()
-        desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
-        root.destroy()
+        # import tkinter as tk    # 获取屏幕分辨率
+        # root = tk.Tk()
+        # desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
+        # root.destroy()
         win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
         pygame_win_pos_w,pygame_win_pos_h=int(0.5*desktop_w-win_w_and_h),int(0.5*desktop_h-0.5*win_w_and_h)
         #以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
-        import ctypes
-        caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
-                          +ctypes.windll.user32.GetSystemMetrics(33)
-                          +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
+        
+        caption_height = 0
+        if os.name == 'nt':
+            try:
+                import ctypes
+                caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
+                                +ctypes.windll.user32.GetSystemMetrics(33)
+                                +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
+            except Exception:
+                pass
+        
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
         pygame.init()
         live2d.init()
@@ -125,7 +138,7 @@ class Live2DModule:
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
         model = live2d.LAppModel()
-        model.LoadModelJson(self.PATH_JSON)
+        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
 
         model.Resize(win_w_and_h, win_w_and_h)
         model.SetAutoBlinkEnable(True)
@@ -158,9 +171,9 @@ class Live2DModule:
                     continue
                 self.change_character()
                 if self.if_sakiko and self.sakiko_state:
-                    model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
+                    model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
                 else:
-                    model.LoadModelJson(self.PATH_JSON)
+                    model.LoadModelJson(self.PATH_JSON, disable_precision=True)
                 model.Resize(win_w_and_h, win_w_and_h)
                 model.SetAutoBlinkEnable(True)
                 model.SetAutoBreathEnable(True)
@@ -678,26 +691,33 @@ class ViewerGUI(QWidget):
 if __name__ == "__main__":
     live2d_player = Live2DModule()
     get_char_attr = character.GetCharacterAttributes()
-    motion_queue = Queue()
-    change_char_queue=Queue()
+    motion_queue = multiprocessing.Queue()
+    change_char_queue=multiprocessing.Queue()
 
     live2d_player.live2D_initialize(get_char_attr.character_class_list)
-    live2d_thread=threading.Thread(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue))
+    # live2d_thread=threading.Thread(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue))
 
 
     app = QApplication(sys.argv)
 
     window = ViewerGUI(get_char_attr.character_class_list,motion_queue,change_char_queue)
+    # 如果出现加载字体问题，则忽略设置字体
     font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")  # 设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    font = QFont(font_family, 12)
-    app.setFont(font)
+    font_family = QFontDatabase.applicationFontFamilies(font_id)
+    if font_family:
+        font = QFont(font_family[0], 12)
+        app.setFont(font)
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
-    screen_w_mid = int(0.5 * QDesktopWidget().screenGeometry().width())
-    screen_h_mid = int(0.5 * QDesktopWidget().screenGeometry().height())
+    desktop_w = QDesktopWidget().screenGeometry().width()
+    desktop_h = QDesktopWidget().screenGeometry().height()
+    
+    live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h))
+
+    screen_w_mid = int(0.5 * desktop_w)
+    screen_h_mid = int(0.5 * desktop_h)
     window.move(screen_w_mid,
-                int(screen_h_mid - 0.35 * QDesktopWidget().screenGeometry().height()))  # 因为窗口高度设置的是0.7倍桌面宽
+                int(screen_h_mid - 0.35 * desktop_h))  # 因为窗口高度设置的是0.7倍桌面宽
 
     live2d_thread.start()
     window.show()

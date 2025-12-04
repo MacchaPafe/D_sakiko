@@ -177,23 +177,10 @@ class MoreFunctionWindow(QWidget):
                         """)
     def on_click_open_motion_editor_button(self):
         import sys
-        current_script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-        #  构造 .bat 文件的完整路径
-        # run_2.bat 在当前脚本目录的父目录中 (../run_2.bat)
-        parent_dir = os.path.dirname(current_script_dir)
-        bat_file_name = "运行动作组编辑程序.bat"
-        # 完整的 .bat 文件路径
-        bat_path = os.path.join(parent_dir, bat_file_name)
-        # 检查文件是否存在
-        if not os.path.exists(bat_path):
-            print(f".bat 文件未找到:\n{bat_path}")
-            return
         try:
-            # 使用 subprocess 模块启动 .bat 文件
+            # 要求当前 Python 解释器执行文件
             import subprocess
-            # 使用 shell=True 让系统直接执行批处理文件
-            # Windows 会使用 cmd.exe 来执行 .bat 文件
-            subprocess.Popen([bat_path], shell=True)
+            subprocess.run([sys.executable, "live2d_viewer.py"], shell=True)
         except Exception as e:
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
@@ -206,8 +193,10 @@ class ChatGUI(QWidget):
                  QT_message_queue,
                  characters,
                  dp_chat,
-                 audio_gen,live2d_mod,emotion_queue,audio_file_path_queue,emotion_model):
+                 audio_gen,live2d_mod,emotion_queue,audio_file_path_queue,emotion_model,
+                 is_motion_complete=None):
         super().__init__()
+        self.is_motion_complete = is_motion_complete
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
         self.setWindowTitle("数字小祥")
         #self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
@@ -477,13 +466,13 @@ class ChatGUI(QWidget):
         #         self.audio_gen.speed=0.9
         #         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed}")
         saved_speed=self.saved_talk_speed_and_pause_second[self.current_char_index]['talk_speed']
-        self.talk_speed_slider.setValue(saved_speed*100)
+        self.talk_speed_slider.setValue(int(saved_speed*100))
         self.audio_gen.speed=saved_speed
         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed:.2f}")
 
     def pause_second_reset(self):
         saved_value=self.saved_talk_speed_and_pause_second[self.current_char_index]['pause_second']
-        self.pause_second_slider.setValue(saved_value*100)
+        self.pause_second_slider.setValue(int(saved_value*100))
         self.audio_gen.pause_second = saved_value
         self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen.pause_second:.2f}")
 
@@ -617,7 +606,13 @@ class ChatGUI(QWidget):
 
     def play_history_audio(self,audio_path_and_emotion):
 
-        if self.live2d_mod.live2d_this_turn_motion_complete:
+        can_play = True
+        if self.is_motion_complete is not None:
+            can_play = self.is_motion_complete.value
+        elif hasattr(self.live2d_mod, 'live2d_this_turn_motion_complete'):
+            can_play = self.live2d_mod.live2d_this_turn_motion_complete
+
+        if can_play:
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
             match=re.match(r"(.+?)\[(.+?)\]$", audio_path_and_emotion)
@@ -826,10 +821,12 @@ if __name__=='__main__':
     audio_gen_mock = AudioGenMock()
     win = ChatGUI(dp2qt_queue, qt2dp_queue, QT_message_queue, characters, None, audio_gen_mock,None,None,None,None)
 
+    # 如果出现字体加载问题，则暂时不加载字体
     font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    font = QFont(font_family, 12)
-    app.setFont(font)
+    font_family = QFontDatabase.applicationFontFamilies(font_id)
+    if font_family:
+        font = QFont(font_family[0], 12)
+        app.setFont(font)
 
     t1 = threading.Thread(target=dp_thread, args=(dp2qt_queue, qt2dp_queue, QT_message_queue))
     t1.start()
