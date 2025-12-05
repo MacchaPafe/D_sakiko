@@ -18,6 +18,10 @@ import inference_emotion_detect
 import live2d_module
 import qtUI
 
+import faulthandler
+
+faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
+
 def merge_short_sentences(sentences, min_length=25):
     merged = []
     i = 0
@@ -161,14 +165,32 @@ def main_thread():
             is_audio_play_complete.put('yes')   #不让LLM模块提前进入下一个循环
     # print("主线程已退出完成")
 
+def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, desktop_w, desktop_h, is_motion_complete):
+    """
+    Live2D 子进程入口函数
+    不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
+    """
+    try:
+        # 在子进程中重新导入和创建 characters
+        import character
+        get_all = character.GetCharacterAttributes()
+        characters = get_all.character_class_list
+        
+        import live2d_module
+        live2d_player = live2d_module.Live2DModule()
+        live2d_player.live2D_initialize(characters)
+        live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, desktop_w, desktop_h, is_motion_complete)
+    except Exception as e:
+        print(f"[Live2D进程错误] {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
 
 if __name__=='__main__':
-    multiprocessing.set_start_method('spawn', force=True)
-
+    # 在 Windows 上必须设置 spawn 方法
     if os.name == 'nt':
-        os.system('cls')
-    else:
-        os.system('clear')
+        multiprocessing.set_start_method('spawn', force=True)
+
     # 添加本文件的目录到导入 Path
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -233,8 +255,8 @@ if __name__=='__main__':
     screen_h_mid=int(0.5*desktop_h)
     qt_win.move(screen_w_mid,int(screen_h_mid-0.35*desktop_h))   #因为窗口高度设置的是0.7倍桌面宽
 
-
-    tr1=multiprocessing.Process(target=live2d_player.play_live2d,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue, desktop_w, desktop_h, is_motion_complete))
+    # 不传递 characters 给子进程，在子进程中重新创建，避免 Windows 下 pickle 序列化截断问题
+    tr1=multiprocessing.Process(target=run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue, desktop_w, desktop_h, is_motion_complete))
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
                                                              is_audio_play_complete,
                                                              is_text_generating_queue,

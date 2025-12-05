@@ -64,9 +64,9 @@ class LAppModel(live2d.LAppModel):
         function = live2d.LAppModel.LoadModelJson
         if "disable_precision" in function.__code__.co_varnames:
             # 存在参数，说明是 0.5.4 版本及之后
-            return super().LoadModelJson(modelSettingPath, disable_precision) # type: ignore （忽略 0.5.3 以下版本下对于这行代码的警告）
+            return super().LoadModelJson(modelSettingPath, disable_precision=disable_precision) # type: ignore （忽略 0.5.3 以下版本下对于这行代码的警告）
         else:
-            # 不存在参数，说明是 0.5.3 版本及之前
+            # 不存在参数,说明是 0.5.3 版本及之前
             # 直接忽略 disable_precision 参数
             return super().LoadModelJson(modelSettingPath)
 
