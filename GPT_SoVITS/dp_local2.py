@@ -130,6 +130,7 @@ class DSLocalAndVoiceGen:
 
 			if user_input == 'bye':
 				text_queue.put('bye')
+				# print("DeepSeek API 生成模块退出，发送 bye 信号。")
 				break
 
 			if user_input=='mask':
@@ -339,3 +340,5 @@ class DSLocalAndVoiceGen:
 
 			while is_audio_play_complete.get() is None:
 				time.sleep(0.5)		#不加就无法正常运行
+
+		# print("DeepSeek API 生成模块已退出完成")
