@@ -23,6 +23,8 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPush
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
 import character
+# 兼容性 Hook
+from live2d_module import LAppModel
 
 class BackgroundRen(object):
 
@@ -137,7 +139,7 @@ class Live2DModule:
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
-        model = live2d.LAppModel()
+        model = LAppModel()
         model.LoadModelJson(self.PATH_JSON, disable_precision=True)
 
         model.Resize(win_w_and_h, win_w_and_h)

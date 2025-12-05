@@ -25,6 +25,7 @@ def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
             time.sleep(0.5)
 
         if info=='bye':
+            # print("推理模块收到退出信号，正在退出...")
             break
 
         ref_text_path=info[2]
@@ -63,6 +64,7 @@ def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
             print( '语音合成错误信息：',e)
             generate_count += 1
             from_gptsovits_queue.put('../reference_audio\\silent_audio\\silence.wav')
+    # print("推理模块已退出完成")
 
 
 

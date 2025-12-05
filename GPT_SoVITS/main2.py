@@ -48,12 +48,10 @@ def main_thread():
 
             this_turn_response=text_queue.get()
             if this_turn_response=='bye':
-                emotion_queue.put('bye')    #退出live2D线程
+                # print("主线程收到退出信号，正在退出...")
+                emotion_queue.put('bye')    #退出live2D进程
+                # 这里不要管动画有没有放完；后面有 join 阻塞 live2d 进程，在 live2d 放完前，主进程不会退出
                 dp2qt_queue.put("（再见）")
-                while True:
-                    if not live2d_player.run:
-                        break
-                    time.sleep(1)
                 QT_message_queue.put('bye')
                 to_audio_generator_text_queue.put('bye')
                 break
@@ -161,6 +159,7 @@ def main_thread():
                 else:
                     dp2qt_queue.put(output_for_audio+'\n[翻译]'+this_turn_response[i][1]+'[翻译结束]')
             is_audio_play_complete.put('yes')   #不让LLM模块提前进入下一个循环
+    # print("主线程已退出完成")
 
 
 if __name__=='__main__':
@@ -254,6 +253,43 @@ if __name__=='__main__':
 
     qt_win.show()
     qt_app.exec_()
+
+    # print("PyQt 窗口关闭，程序正在清理...")
+    # 尝试退出所有子程序。
+    # 由于有些程序可能已经退出，所以使用 try-except 来捕获异常，防止程序崩溃。
+    try:
+        text_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # DeepSeek 推理线程
+        qt2dp_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # live2d 播放进程
+        emotion_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # 主窗口
+        QT_message_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # 语音生成线程
+        to_audio_generator_text_queue.put('bye')
+    except Exception:
+        pass
+
+    tr1.join()
+    # print("Live2D 线程已确认退出")
+    tr2.join()
+    # print("DP 线程已确认退出")
+    tr3.join()
+    # print("音频生成线程已确认退出")
+    tr4.join()
+    # print("主线程已确认退出")
 
     with open('../if_delete_audio_cache.txt', "r", encoding="utf-8") as f:
         try:

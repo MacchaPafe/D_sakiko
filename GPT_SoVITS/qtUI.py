@@ -180,7 +180,7 @@ class MoreFunctionWindow(QWidget):
         try:
             # 要求当前 Python 解释器执行文件
             import subprocess
-            subprocess.run([sys.executable, "live2d_viewer.py"], shell=True)
+            subprocess.Popen([sys.executable, "live2d_viewer.py"])
         except Exception as e:
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
@@ -595,7 +595,8 @@ class ChatGUI(QWidget):
             self.setWindowTitle("数字小祥")
 
     def closeEvent(self, event):
-        if self.stream:
+        # 通过 hasattr 检查 self.stream 是否存在，避免访问未定义的自身属性
+        if hasattr(self, "stream") and self.stream:
             try:
                 self.stream.stop()
                 self.stream.close()
@@ -776,6 +777,7 @@ class ChatGUI(QWidget):
 
     def handle_messages(self,message):
         if message=='bye':
+            print("PyQt5 收到退出指令，正在保存数据并关闭程序...")
             self.save_data()
             self.close()
         self.messages_box.clear()

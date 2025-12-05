@@ -6,6 +6,7 @@ import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
+import sys
 
 
 
@@ -45,6 +46,30 @@ class BackgroundRen(object):
         glEnd()
 
 idle_recover_timer=time.time()
+
+
+class LAppModel(live2d.LAppModel):
+    """
+    此自定义类继承 LAppModel，用于同时支持 0.5.3 以下和 0.5.4 版本的 live2d-py 库。
+    在 0.5.4 版本中，LoadModelJson 函数新增了 disable_precision 参数。这在 macOS 上是一个关键参数，如果不启用此选项，程序会直接因为 OpenGL 错误崩溃。
+    但在 0.5.3 以下版本中，该参数并不存在。因此我们需要通过继承来实现兼容。
+
+    目前 Windows 打包版的 live2d-py 版本为 0.5.3，如果后续升级到 0.5.4 版本，就不需要这个自定义类了。
+    """
+    def LoadModelJson(self, modelSettingPath: str, disable_precision: bool = False):
+        """
+        Hook LoadModelJson to support both live2d-py 0.5.3 and 0.5.4.
+        """
+        # 开始一个神秘的检查：通过检查父类的 LoadModelJson 函数的参数列表是否存在 disable_precision 参数，来判断 live2d-py 版本
+        function = live2d.LAppModel.LoadModelJson
+        if "disable_precision" in function.__code__.co_varnames:
+            # 存在参数，说明是 0.5.4 版本及之后
+            return super().LoadModelJson(modelSettingPath, disable_precision) # type: ignore （忽略 0.5.3 以下版本下对于这行代码的警告）
+        else:
+            # 不存在参数，说明是 0.5.3 版本及之前
+            # 直接忽略 disable_precision 参数
+            return super().LoadModelJson(modelSettingPath)
+
 
 class Live2DModule:
     def __init__(self):
@@ -96,7 +121,7 @@ class Live2DModule:
         if not (back_img_png+back_img_jpg):
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
         self.BACK_IMAGE=max((back_img_jpg+back_img_png),key=os.path.getmtime)
-        #print("Live2D初始化...OK")
+        # print("Live2D初始化...OK")
 
 
     # 动作播放开始后调用
@@ -144,7 +169,7 @@ class Live2DModule:
                     is_motion_complete_value=None):
         if self.wavHandler is None:
             self.wavHandler = WavHandler()
-        #print("正在开启Live2D模块")
+        # print("正在开启Live2D模块")
         # import tkinter as tk    # 获取屏幕分辨率
         # root = tk.Tk()
         # desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
@@ -152,10 +177,21 @@ class Live2DModule:
         win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
         pygame_win_pos_w,pygame_win_pos_h=int(0.5*desktop_w-win_w_and_h),int(0.5*desktop_h-0.5*win_w_and_h)
         #以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
-        
+
+        # macOS 适配性检查
+        # 在 macOS 下，live2d-py 库必须是最新的 0.5.4 版本，否则会导致 “disable_precision” 参数无效
+        if sys.platform == "darwin":
+            # 由于 live2d-py 库没有一个 __version__ 属性判断版本，我们不得不采用一个比较难看的判断方式
+            function = live2d.LAppModel.LoadModelJson
+            # 在 0.5.4 版本之前，这个函数只有一个参数，而在 0.5.4 版本及之后，新增了一个 disable_precision 参数
+            # 如果 disable_precision 参数不存在，说明不是 0.5.4 版本及之后的库
+            if "disable_precision" not in function.__code__.co_varnames:
+                raise RuntimeError("当前 live2d-py 库版本低于 0.5.4。\nmacOS 用户请确保 live2d-py 库版本为 0.5.4 及以上，否则程序将因为 OpenGL 错误崩溃。请运行 pip install --upgrade live2d-py 来升级该库。对于打包版用户，请向分发者寻求帮助。")
+
         caption_height = 0
         # 只在 Windows 上使用这些 ctype 方法
         # macOS 窗口标题栏很小，本身就不需要
+        # print("正在执行 ctypes 方法以获取标题栏高度...")
         if os.name == 'nt':
             try:
                 import ctypes
@@ -166,13 +202,15 @@ class Live2DModule:
                 pass
         
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
+        # print("准备初始化 pygame...")
         pygame.init()
         live2d.init()
+        # print("Live2D模块初始化...OK")
 
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
-        model = live2d.LAppModel()
+        model = LAppModel()
         model.LoadModelJson(self.PATH_JSON, disable_precision=True)
 
         model.Resize(win_w_and_h, win_w_and_h)
@@ -181,6 +219,8 @@ class Live2DModule:
         if self.if_sakiko:
             model.SetExpression('serious')
         glEnable(GL_TEXTURE_2D)
+
+        # print("Live2D模型加载...OK")
 
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
         texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
@@ -362,6 +402,7 @@ class Live2DModule:
                     glUseProgram(0)
                     pygame.display.flip()
                     if self.motion_is_over:
+                        # print("Live2D模块退出动画播放完成，正在退出...")
                         self.run=False
                     continue
 
@@ -456,6 +497,7 @@ class Live2DModule:
         live2d.dispose()
         #结束pygame
         pygame.quit()
+        # print("Live2D模块已退出完成")
 
 
 if __name__=='__main__':        #单独测试live2d
