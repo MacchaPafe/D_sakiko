@@ -31,9 +31,14 @@ class DSLocalAndVoiceGen:
 					base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
 				)
 				print("已使用Google Gemini API")
+			elif active_provider['name']=="Doubao-Flash":
+				self.other_client=OpenAI(
+					api_key=active_provider['api_key'],
+					base_url="https://ark.cn-beijing.volces.com/api/v3/"
+				)
+				print("已使用Doubao-Flash API")
+			self.active_provider_name=active_provider['name']
 			self.model_choice=active_provider['model']
-
-
 
 		self.all_character_msg=[]
 		self.LLM_list=["deepseek-r1:14b","deepseek-r1:32b","deepseek-V3 非本地API","deepseek-R1 非本地API（暂时不能用）"]
@@ -251,7 +256,6 @@ class DSLocalAndVoiceGen:
 					"stream": False
 				}
 				try:
-
 					response = requests.post("https://api.deepseek.com/chat/completions", headers=self.headers, json=data)
 				except Exception:
 					message_queue.put("与DeepSeek建立连接失败，请检查网络。")
@@ -281,11 +285,22 @@ class DSLocalAndVoiceGen:
 					continue
 			elif not self.is_deepseek:		#使用非Deepseek的模型
 				try:
-					response = self.other_client.chat.completions.create(
-						model=self.model_choice,
-						messages=self.all_character_msg[self.current_char_index],
-						stream=False
-					)
+					msg_to_send = self.all_character_msg[self.current_char_index]
+					# t0 = time.time()
+					response = None
+					if self.active_provider_name=="Doubao-Flash":
+						response = self.other_client.chat.completions.create(
+							model=self.model_choice,
+							messages=msg_to_send,
+							stream=False,
+							# extra_body={"thinking": {"type":"disabled"}}
+						)
+					else:
+						response = self.other_client.chat.completions.create(
+							model=self.model_choice,
+							messages=msg_to_send,
+							stream=False
+						)
 				except Exception as err:
 					message_queue.put("模型API调用出错...请检查网络，然后重试一下吧")
 					print("模型API调用出错：", err)

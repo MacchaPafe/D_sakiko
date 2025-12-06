@@ -169,7 +169,6 @@ if __name__=='__main__':
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
 
-
     #模块间传参队列
     text_queue=Queue()
     emotion_queue=Queue()
@@ -182,23 +181,16 @@ if __name__=='__main__':
     char_is_converted_queue=Queue()
     change_char_queue=Queue()
     to_audio_generator_text_queue=Queue()
-
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters)
 
     audio_gen=audio_generator.AudioGenerate()
-
 
     audio_gen.initialize(characters,QT_message_queue)
 
     live2d_player=live2d_module.Live2DModule()
     live2d_player.live2D_initialize(characters)
-
     emotion_detector=inference_emotion_detect.EmotionDetect()
     emotion_model = emotion_detector.launch_emotion_detect()
-
-
-
-
 
     qt_app=QApplication(sys.argv)
     qt_win=qtUI.ChatGUI(dp2qt_queue=dp2qt_queue,
