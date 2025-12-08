@@ -1,4 +1,5 @@
-import os,glob
+import os,glob,json
+
 
 
 class CharacterAttributes:
@@ -119,6 +120,38 @@ class GetCharacterAttributes:
                         f.close()
 
                 self.character_class_list.append(character)
+        #新增调整角色顺序的功能
+        if os.path.exists("../reference_audio/character_order.json"):
+            with open("../reference_audio/character_order.json",'r',encoding='utf-8') as f:
+                char_order_list=json.load(f)
+                f.close()
+            if len(self.character_class_list)>int(char_order_list['character_num']):
+                is_convert_1=False
+                print("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
+            elif len(self.character_class_list)<int(char_order_list['character_num']):
+                is_convert_1=False
+                print("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
+            else:
+                is_convert_1=True
+            this_character_names=[char.character_name for char in self.character_class_list]
+            is_convert_2=True
+            if is_convert_1:
+                for name in this_character_names:
+                    if name not in char_order_list['character_names']:
+                        print("似乎有角色的名字被修改了，之前设置的角色顺序不适用，重新设置一下吧")
+                        is_convert_2=False
+                        break
+            if is_convert_1 and is_convert_2:
+                new_character_class_list=[]
+                char_name2char={char.character_name:char for char in self.character_class_list}
+                for name in char_order_list['character_names']:
+                    new_character_class_list.append(char_name2char[name])
+
+                self.character_class_list=new_character_class_list
+        else:
+            pass
+
+
 
 
 if __name__=="__main__":

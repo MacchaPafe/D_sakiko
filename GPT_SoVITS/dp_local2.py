@@ -1,5 +1,7 @@
 import re
 import time,os
+
+import httpx
 from ollama import chat
 import requests,json
 from openai import OpenAI
@@ -24,13 +26,20 @@ class DSLocalAndVoiceGen:
 				self.other_client=OpenAI(
 					api_key=active_provider['api_key']
 				)
-				print("已使用OpenAI API")
+				print("已使用自建OpenAI API")
 			elif active_provider['name']=="Google":
 				self.other_client=OpenAI(
 					api_key=active_provider['api_key'],
-					base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+					base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+					# http_client=httpx.Client(
+					# 			proxies={
+					# 				"http://": "socks5://127.0.0.1:21881",
+					# 				"https://": "socks5://127.0.0.1:21881",
+					# 			},
+					# 			timeout=20.0 # 代理连接慢，建议将超时时间设置得长一些
+					# 		)
 				)
-				print("已使用Google Gemini API")
+				print("已使用自建Google Gemini API")
 			self.model_choice=active_provider['model']
 
 
@@ -78,9 +87,13 @@ class DSLocalAndVoiceGen:
 		else:
 			self.if_sakiko = False
 
-		if os.path.getsize('../API Key.txt')!=0:
-			with open('../API Key.txt','r',encoding='utf-8') as f:
-				self.headers={"Content-Type": "application/json","Authorization": f"Bearer {f.read()}"}
+		if self.is_deepseek:
+			if os.path.getsize('../API Key.txt')!=0:
+				print("已使用自建DeepSeek API")
+				with open('../API Key.txt','r',encoding='utf-8') as f:
+					self.headers={"Content-Type": "application/json","Authorization": f"Bearer {f.read()}"}
+			else:
+				print("正在使用Up的DeepSeek API")
 
 
 	def change_character(self):
@@ -266,13 +279,13 @@ class DSLocalAndVoiceGen:
 				else:
 					time.sleep(2)
 					if response.status_code==402:
-						message_queue.put("deepseek账户余额不足，请联系UP充值")
+						message_queue.put("账户余额不足，如果正在用up的api，请联系UP充值")
 					elif response.status_code==401:
 						message_queue.put("deepseek API key认证出错，请检查正确性")
 					elif response.status_code==429:
 						message_queue.put("请求速度太快，被限制了（应该不会出现这个错误吧，")
 					elif response.status_code==500 or response.status_code==503:
-						message_queue.put("deepseek的服务器可能崩了，可等待一会后重试。")
+						message_queue.put("deepseek服务器可能崩了，可等待一会后重试。")
 					else:
 						message_queue.put("出现了未知错误，可尝试重新对话一次。")
 					is_text_generating_queue.get()
@@ -284,8 +297,15 @@ class DSLocalAndVoiceGen:
 					response = self.other_client.chat.completions.create(
 						model=self.model_choice,
 						messages=self.all_character_msg[self.current_char_index],
-						stream=False
+						stream=False,
+						timeout=30
 					)
+					if response.choices[0].message.content is None:
+						message_queue.put("模型API返回内容为空，请检查网络，然后重试一下吧")
+						print("模型API返回内容为空!")
+						is_text_generating_queue.get()
+						time.sleep(2)
+						continue
 				except Exception as err:
 					message_queue.put("模型API调用出错...请检查网络，然后重试一下吧")
 					print("模型API调用出错：", err)

@@ -10,7 +10,6 @@ from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
 import sounddevice as sd
 from opencc import OpenCC
-from sympy.physics.units import current
 
 
 class CommunicateThreadDP2QT(QThread):
@@ -86,6 +85,11 @@ class MoreFunctionWindow(QWidget):
         self.open_motion_editor_button =QPushButton("运行动作组编辑程序")
         self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)
         layout.addWidget(self.open_motion_editor_button)
+
+        self.open_start_config_button=QPushButton("启动参数配置")
+        self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)
+        layout.addWidget(self.open_start_config_button)
+
         self.close_program_button=QPushButton("退出程序")
         self.close_program_button.clicked.connect(parent_window_close_fun)
         self.close_program_button.clicked.connect(self.close)
@@ -182,6 +186,28 @@ class MoreFunctionWindow(QWidget):
         # run_2.bat 在当前脚本目录的父目录中 (../run_2.bat)
         parent_dir = os.path.dirname(current_script_dir)
         bat_file_name = "运行动作组编辑程序.bat"
+        # 完整的 .bat 文件路径
+        bat_path = os.path.join(parent_dir, bat_file_name)
+        # 检查文件是否存在
+        if not os.path.exists(bat_path):
+            print(f".bat 文件未找到:\n{bat_path}")
+            return
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([bat_path], shell=True)
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
+        self.close()
+    def on_click_open_start_config_button(self):
+        import sys
+        current_script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        #  构造 .bat 文件的完整路径
+        # run_2.bat 在当前脚本目录的父目录中 (../run_2.bat)
+        parent_dir = os.path.dirname(current_script_dir)
+        bat_file_name = "启动参数配置.bat"
         # 完整的 .bat 文件路径
         bat_path = os.path.join(parent_dir, bat_file_name)
         # 检查文件是否存在
@@ -388,6 +414,7 @@ class ChatGUI(QWidget):
                     self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.9
 
         self.talk_speed_label = QLabel(f"语速调节：{self.audio_gen.speed}")  # 此时的数值不是真实的，audio_gen还没有初始化完成
+        self.talk_speed_label.setToolTip("调整生成语音的语速，数值越大语速越快。如果觉得生成质量不佳，适当调整一下。")
         self.talk_speed_slider = QSlider(Qt.Horizontal)
         self.talk_speed_slider.setRange(60, 140)
         self.talk_speed_slider.valueChanged.connect(self.set_talk_speed)
@@ -400,6 +427,7 @@ class ChatGUI(QWidget):
         self.change_character_button.clicked.connect(self.change_character_button_function)
 
         self.pause_second_label=QLabel(f"句间停顿时间(s)：{self.audio_gen.pause_second}")
+        self.pause_second_label.setToolTip("调整句子之间的停顿时间，数值越大停顿越久。如果觉得生成质量不佳，适当调整一下。")
         self.pause_second_slider=QSlider(Qt.Horizontal)
         self.pause_second_slider.valueChanged.connect(self.set_pause_second)
         self.pause_second_slider.setRange(10,80)
@@ -521,9 +549,9 @@ class ChatGUI(QWidget):
             self.voice_button.setEnabled(True)
 
         except Exception as e:
-            self.setWindowTitle(f"错误：无法启动麦克风串流。")
-            self.setWindowTitle(f"请检查麦克风是否连接或被其他程序占用。")
-            self.setWindowTitle(f"错误信息: {e}")
+            print(f"错误：无法启动麦克风串流。")
+            print(f"请检查麦克风是否连接或被其他程序占用。")
+            print(f"错误信息: {e}")
             self.voice_button.setEnabled(False)  # 保持按鈕禁用
 
     def audio_callback(self, indata, frames, time, status):
@@ -652,7 +680,8 @@ class ChatGUI(QWidget):
                 self.current_char_index = 0
         if self.character_list[self.current_char_index].qt_css is not None:
             self.setStyleSheet(self.character_list[self.current_char_index].qt_css)
-        self.chat_display.setHtml(self.character_chat_history[self.current_char_index].replace('underline','none'))
+        chat_history_html_content = re.sub(r'font-family:\s*[^;"]+;', '', self.character_chat_history[self.current_char_index].replace('underline','none'))
+        self.chat_display.setHtml(chat_history_html_content)
         if self.character_list[self.current_char_index].icon_path is not None:
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))
         self.talk_speed_reset()  #切换角色后重置默认语速
