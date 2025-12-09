@@ -90,7 +90,7 @@ if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 #is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
 with open('../is_fp32.txt','r') as f:
-    is_half=not bool(f.read())
+    is_half=not bool(int(f.read()))
 punctuation = set(["!", "?", "…", ",", ".", "-", " "])
 
 import librosa

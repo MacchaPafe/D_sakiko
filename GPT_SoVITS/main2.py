@@ -230,6 +230,43 @@ if __name__=='__main__':
 
 
 
+    def get_timestamp_from_filename(filepath):
+        """
+        从路径中提取时间戳，只为读取字体文件使用
+        假设文件名格式为: .../custom_font_1715668823.ttf
+        """
+        try:
+            # 1. 只取文件名: "custom_font_1715668823.ttf"
+            filename = os.path.basename(filepath)
+
+            # 2. 去掉后缀: "custom_font_1715668823"
+            name_no_ext = os.path.splitext(filename)[0]
+
+            # 3. 取最后一个下划线后面的部分: "1715668823"
+            timestamp_str = name_no_ext.split('_')[-1]
+
+            return int(timestamp_str)
+        except (IndexError, ValueError):
+            return 0  # 如果文件名格式不对，返回0，当作最老的处理
+    font_path = ''
+    import glob
+
+    font_files = glob.glob(os.path.join('../font/', 'custom_font_*.*'))
+    if not font_files:
+        font_path = '../font/ft.ttf'  # 默认字体路径
+    else:
+        # 比文件名里的数字大小，而不是比文件系统的元数据
+        font_path = max(font_files, key=get_timestamp_from_filename)
+        print(f"检测到最新导入的字体: {font_path}")
+
+        # --- 清理旧文件 (逻辑不变) ---
+        for f in font_files:
+            if os.path.abspath(f) != os.path.abspath(font_path):
+                try:
+                    os.remove(f)
+                    print(f"清理旧版本: {f}")
+                except Exception:
+                    pass  # 删不掉就跳过
 
 
     qt_app=QApplication(sys.argv)
@@ -242,7 +279,7 @@ if __name__=='__main__':
                         is_motion_complete=is_motion_complete
                         )
 
-    font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")    #设置字体
+    font_id = QFontDatabase.addApplicationFont(font_path)    #设置字体
     font_family = QFontDatabase.applicationFontFamilies(font_id)
     if font_family:
         font = QFont(font_family[0], 12)

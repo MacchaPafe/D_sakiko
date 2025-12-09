@@ -1,14 +1,20 @@
 import os
 import time
 
-
+if os.path.exists('../reference_audio/GSV_sample_rate.txt'):
+    with (open('../reference_audio/GSV_sample_rate.txt', 'r', encoding='utf-8') as f):
+        gsv_sam_rate = int(f.read())
+else:
+    # 在指定位置创建文件并写入初始值
+    with open('../reference_audio/GSV_sample_rate.txt', 'w', encoding='utf-8') as f:
+        f.write('16')
+    gsv_sam_rate = 16
 
 def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
     from inference_webui import change_gpt_weights, change_sovits_weights, get_tts_wav
     import soundfile as sf
     from tools.i18n.i18n import I18nAuto
     i18n = I18nAuto()
-
     while True:
         while True:
             if not to_gptsovits_queue.empty():
@@ -22,7 +28,7 @@ def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
                     continue
                 else:
                     break
-            time.sleep(0.5)
+            time.sleep(0.2)
 
         if info=='bye':
             # print("推理模块收到退出信号，正在退出...")
@@ -45,7 +51,7 @@ def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
                                        text=info[4],
                                        text_language=i18n(info[5]),
                                        speed=info[7],how_to_cut=info[8],top_p=1, temperature=1
-                                       ,sample_steps=16
+                                       ,sample_steps=gsv_sam_rate
                                        ,pause_second=info[9],
                                         message_queue=from_gptsovits_queue2
                                        )
