@@ -101,84 +101,7 @@ class MoreFunctionWindow(QWidget):
         self.setLayout(layout)
         if qt_css is not None:
             self.setStyleSheet(qt_css)
-        else:
-            self.setStyleSheet("""
-                            QWidget {
-                                background-color: #E6F2FF;
-                                color: #7799CC;
-                            }
 
-                            QTextBrowser{
-                                text-decoration: none;
-                                background-color: #FFFFFF;
-                                border: 3px solid #B3D1F2;
-                                border-radius:9px;
-                                padding: 5px;
-                            }
-
-                            QLineEdit {
-                                background-color: #FFFFFF;
-                                border: 2px solid #B3D1F2;
-                                border-radius: 9px;
-                                padding: 5px;
-                            }
-
-                            QPushButton {                
-                                background-color: #7FB2EB;
-                                color: #ffffff;
-                                border-radius: 6px;
-                                padding: 6px;
-                            }
-
-                            QPushButton:hover {
-                                background-color: #3FB2EB;
-                            }
-
-                            QScrollBar:vertical {
-                                border: none;
-                                background: #D0E2F0;
-                                width: 10px;
-                                margin: 0px 0px 0px 0px;
-                            }
-
-                            QScrollBar::handle:vertical {
-                                background: #B3D1F2;
-                                min-height: 20px;
-                                border-radius: 3px;
-                            }
-
-                            QSlider::groove:horizontal {
-                                /* 滑槽背景 */
-                                border: 1px solid #B3D1F2;  /* 使用边框色作为滑槽边框 */
-                                height: 8px;
-                                background: #D0E2F0;       /* 使用浅色背景 */
-                                margin: 2px 0;
-                                border-radius: 4px;
-                            }
-
-                            QSlider::handle:horizontal {
-                                /* 滑块手柄 */
-                                background: #7FB2EB;       /* 使用按钮的亮蓝色 */
-                                border: 1px solid #4F80E0;
-                                width: 16px;
-                                margin: -4px 0;            /* 垂直方向上的偏移，使手柄在滑槽上居中 */
-                                border-radius: 8px;        /* 使手柄成为圆形 */
-                            }
-
-                            QSlider::handle:horizontal:hover {
-                                /* 鼠标悬停时的手柄颜色 */
-                                background: #3FB2EB;       /* 使用按钮的 hover 亮色 */
-                                border: 1px solid #3F60D0;
-                            }
-
-                            QSlider::sub-page:horizontal {
-                                /* 进度条（已滑过部分） */
-                                background: #AACCFF;       /* 使用一个中间的蓝色，比滑槽背景深，比手柄浅 */
-                                border-radius: 4px;
-                                margin: 2px 0;
-                            }
-
-                        """)
     def on_click_open_motion_editor_button(self):
         import sys
         current_script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -224,6 +147,28 @@ class MoreFunctionWindow(QWidget):
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
 
+class WarningWindow(QWidget):
+    def __init__(self,warning_text,css,parent_window_fun):
+        super().__init__()
+        self.setWindowTitle("确认操作")
+        self.label=QLabel(warning_text)
+        layout=QVBoxLayout()
+        layout.addWidget(self.label)
+        self.btn_layout=QHBoxLayout()
+        self.confirm_btn=QPushButton("确定")
+        self.cancel_btn=QPushButton("取消")
+        self.btn_layout.addWidget(self.confirm_btn)
+        self.btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(self.btn_layout)
+        self.setLayout(layout)
+        self.setStyleSheet(css)
+        self.confirm_btn.clicked.connect(parent_window_fun)
+        self.confirm_btn.clicked.connect(self.close)
+        self.cancel_btn.clicked.connect(self.close)
+
+
+
+
 
 class ChatGUI(QWidget):
     def __init__(self,
@@ -268,9 +213,6 @@ class ChatGUI(QWidget):
         input_layout.addWidget(self.user_input)
         input_layout.addWidget(self.voice_button)
 
-        #layout.addLayout(input_layout)
-
-
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.send_button)
 
@@ -311,6 +253,83 @@ class ChatGUI(QWidget):
 
             self.chat_display.setHtml(self.character_chat_history[self.current_char_index])
 
+        self.default_css = """
+                        QWidget {
+                            background-color: #E6F2FF;
+                            color: #7799CC;
+                        }
+
+                        QTextBrowser{
+                            text-decoration: none;
+                            background-color: #FFFFFF;
+                            border: 3px solid #B3D1F2;
+                            border-radius:9px;
+                            padding: 5px;
+                        }
+
+                        QLineEdit {
+                            background-color: #FFFFFF;
+                            border: 2px solid #B3D1F2;
+                            border-radius: 9px;
+                            padding: 5px;
+                        }
+
+                        QPushButton {                
+                            background-color: #7FB2EB;
+                            color: #ffffff;
+                            border-radius: 6px;
+                            padding: 6px;
+                        }
+
+                        QPushButton:hover {
+                            background-color: #3FB2EB;
+                        }
+
+                        QScrollBar:vertical {
+                            border: none;
+                            background: #D0E2F0;
+                            width: 10px;
+                            margin: 0px 0px 0px 0px;
+                        }
+
+                        QScrollBar::handle:vertical {
+                            background: #B3D1F2;
+                            min-height: 20px;
+                            border-radius: 3px;
+                        }
+
+                        QSlider::groove:horizontal {
+                            /* 滑槽背景 */
+                            border: 1px solid #B3D1F2;  /* 使用边框色作为滑槽边框 */
+                            height: 8px;
+                            background: #D0E2F0;       /* 使用浅色背景 */
+                            margin: 2px 0;
+                            border-radius: 4px;
+                        }
+
+                        QSlider::handle:horizontal {
+                            /* 滑块手柄 */
+                            background: #7FB2EB;       /* 使用按钮的亮蓝色 */
+                            border: 1px solid #4F80E0;
+                            width: 16px;
+                            margin: -4px 0;            /* 垂直方向上的偏移，使手柄在滑槽上居中 */
+                            border-radius: 8px;        /* 使手柄成为圆形 */
+                        }
+
+                        QSlider::handle:horizontal:hover {
+                            /* 鼠标悬停时的手柄颜色 */
+                            background: #3FB2EB;       /* 使用按钮的 hover 亮色 */
+                            border: 1px solid #3F60D0;
+                        }
+
+                        QSlider::sub-page:horizontal {
+                            /* 进度条（已滑过部分） */
+                            background: #AACCFF;       /* 使用一个中间的蓝色，比滑槽背景深，比手柄浅 */
+                            border-radius: 4px;
+                            margin: 2px 0;
+                        }
+
+                    """
 
         if self.character_list[self.current_char_index].icon_path is not None:
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))
@@ -318,83 +337,7 @@ class ChatGUI(QWidget):
         if self.character_list[self.current_char_index].qt_css is not None:
             self.setStyleSheet(self.character_list[self.current_char_index].qt_css)
         else:
-            self.setStyleSheet("""
-                QWidget {
-                    background-color: #E6F2FF;
-                    color: #7799CC;
-                }
-    
-                QTextBrowser{
-                    text-decoration: none;
-                    background-color: #FFFFFF;
-                    border: 3px solid #B3D1F2;
-                    border-radius:9px;
-                    padding: 5px;
-                }
-    
-                QLineEdit {
-                    background-color: #FFFFFF;
-                    border: 2px solid #B3D1F2;
-                    border-radius: 9px;
-                    padding: 5px;
-                }
-                
-                QPushButton {                
-                    background-color: #7FB2EB;
-                    color: #ffffff;
-                    border-radius: 6px;
-                    padding: 6px;
-                }
-    
-                QPushButton:hover {
-                    background-color: #3FB2EB;
-                }
-                
-                QScrollBar:vertical {
-                    border: none;
-                    background: #D0E2F0;
-                    width: 10px;
-                    margin: 0px 0px 0px 0px;
-                }
-                
-                QScrollBar::handle:vertical {
-                    background: #B3D1F2;
-                    min-height: 20px;
-                    border-radius: 3px;
-                }
-                
-                QSlider::groove:horizontal {
-                    /* 滑槽背景 */
-                    border: 1px solid #B3D1F2;  /* 使用边框色作为滑槽边框 */
-                    height: 8px;
-                    background: #D0E2F0;       /* 使用浅色背景 */
-                    margin: 2px 0;
-                    border-radius: 4px;
-                }
-            
-                QSlider::handle:horizontal {
-                    /* 滑块手柄 */
-                    background: #7FB2EB;       /* 使用按钮的亮蓝色 */
-                    border: 1px solid #4F80E0;
-                    width: 16px;
-                    margin: -4px 0;            /* 垂直方向上的偏移，使手柄在滑槽上居中 */
-                    border-radius: 8px;        /* 使手柄成为圆形 */
-                }
-            
-                QSlider::handle:horizontal:hover {
-                    /* 鼠标悬停时的手柄颜色 */
-                    background: #3FB2EB;       /* 使用按钮的 hover 亮色 */
-                    border: 1px solid #3F60D0;
-                }
-            
-                QSlider::sub-page:horizontal {
-                    /* 进度条（已滑过部分） */
-                    background: #AACCFF;       /* 使用一个中间的蓝色，比滑槽背景深，比手柄浅 */
-                    border-radius: 4px;
-                    margin: 2px 0;
-                }
-    
-            """)
+            self.setStyleSheet(self.default_css)
         self.user_last_turn_input=''
         self.translation=''
         self.dp_chat=dp_chat    #仅为了保存聊天记录用
@@ -473,7 +416,8 @@ class ChatGUI(QWidget):
 
 
     def open_more_function_window(self):
-        self.more_function_win=MoreFunctionWindow(self.character_list[self.current_char_index].qt_css,self.close_program)
+        css=self.character_list[self.current_char_index].qt_css if self.character_list[self.current_char_index].qt_css is not None else self.default_css
+        self.more_function_win=MoreFunctionWindow(css,self.close_program)
         self.more_function_win.show()
 
     def close_program(self):
@@ -750,6 +694,10 @@ class ChatGUI(QWidget):
         return flag
 
     def handle_user_input(self):
+        def clr_history():
+            self.chat_display.clear()
+            self.qt2dp_queue.put('clr')
+
         self.setWindowTitle("数字小祥")
         user_this_turn_input=self.user_input.text()
         user_this_turn_input=user_this_turn_input.strip(' ')
@@ -779,7 +727,9 @@ class ChatGUI(QWidget):
                 self.chat_display.append(f'<a style="text-decoration: none; color: {text_color};">你：')
                 self.timer.start(20)
         if user_this_turn_input=='clr':
-            self.chat_display.clear()
+            css=self.character_list[self.current_char_index].qt_css if self.character_list[self.current_char_index].qt_css is not None else self.default_css
+            self.pop_up_clr_warning_win=WarningWindow("确定要清空当前角色的聊天记录吗？角色记忆也将同步被删除",css,clr_history)
+            self.pop_up_clr_warning_win.show()
 
         if user_this_turn_input=='save':
             self.save_data()
