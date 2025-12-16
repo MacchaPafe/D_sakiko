@@ -195,6 +195,8 @@ if __name__=='__main__':
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+    from qconfig import d_sakiko_config
+
     print("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
@@ -350,19 +352,9 @@ if __name__=='__main__':
     tr4.join()
     # print("主线程已确认退出")
 
-    with open('../if_delete_audio_cache.txt', "r", encoding="utf-8") as f:
-        try:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    if_delete = int(line)
-                    break
-        except Exception:
-            if_delete = 0
-            raise Warning("if_delete_audio_cache.txt的文件参数设置错误，应该输入一个数字！")
+    if_delete = d_sakiko_config.delete_audio_cache_on_exit.value
 
-
-    if if_delete!=0:
+    if if_delete:
         folder_path = '../reference_audio/generated_audios_temp'    #删除音频缓存
 
         for filename in os.listdir(folder_path):

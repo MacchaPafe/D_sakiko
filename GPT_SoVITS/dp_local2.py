@@ -4,7 +4,10 @@ import time,os
 import httpx
 from ollama import chat
 import requests,json
-from openai import OpenAI
+import litellm
+from litellm import completion
+
+from qconfig import d_sakiko_config
 
 
 class DSLocalAndVoiceGen:
@@ -13,61 +16,17 @@ class DSLocalAndVoiceGen:
 		# 	cha_describe=f.read()
 		self.character_list=characters
 
-		with open("../API_Choice.json", "r", encoding="utf-8") as f:
-			config = json.load(f)
-		self.is_deepseek=True
-		for provider in config["llm_choose"]:
-			if provider["if_choose"]:
-				active_provider = provider
-				self.is_deepseek=False
-				break
-		if not self.is_deepseek:
-			if active_provider['name']=="OpenAI":
-				self.other_client=OpenAI(
-					api_key=active_provider['api_key']
-				)
-				print("已使用自建OpenAI API")
-			elif active_provider['name']=="Google":
-				self.other_client=OpenAI(
-					api_key=active_provider['api_key'],
-					base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-					# http_client=httpx.Client(
-					# 			proxies={
-					# 				"http://": "socks5://127.0.0.1:21881",
-					# 				"https://": "socks5://127.0.0.1:21881",
-					# 			},
-					# 			timeout=20.0 # 代理连接慢，建议将超时时间设置得长一些
-					# 		)
-				)
-				print("已使用自建Google Gemini API")
-			self.model_choice=active_provider['model']
-
-
-
 		self.all_character_msg=[]
-		self.LLM_list=["deepseek-r1:14b","deepseek-r1:32b","deepseek-V3 非本地API","deepseek-R1 非本地API（暂时不能用）"]
-		if self.is_deepseek:
-			self.model_choice=self.LLM_list[2]
-
 
 		self.audio_language = ["中英混合", "日英混合"]
 		self.audio_language_choice = self.audio_language[1]
 		self.is_think_content_output_complete=False
-		self.is_use_ds_api=True
 		self.model=__import__('live2d_1').get_live2d()
-		self.headers = {"Content-Type": "application/json","Authorization": f"Bearer {self.model}"}
 		self.sakiko_state=True
 		self.if_generate_audio=True
 		self.current_char_index=0
 		self.if_sakiko=False
 		self.initial()
-
-	# def stream_print(self,text):		#引入PyQT后作废
-	# 	for char in text:
-	# 		print(char, end='', flush=True)
-	# 		time.sleep(0.07)  # 每个字间隔70毫秒，模拟流式打印
-	# 	print()
-	# 	time.sleep(1)
 
 	def initial(self):
 		for character in self.character_list:
@@ -87,15 +46,6 @@ class DSLocalAndVoiceGen:
 		else:
 			self.if_sakiko = False
 
-		if self.is_deepseek:
-			if os.path.getsize('../API Key.txt')!=0:
-				print("已使用自建DeepSeek API")
-				with open('../API Key.txt','r',encoding='utf-8') as f:
-					self.headers={"Content-Type": "application/json","Authorization": f"Bearer {f.read()}"}
-			else:
-				#print("正在使用Up的DeepSeek API")
-				pass
-
 
 	def change_character(self):
 		if len(self.character_list) == 1:
@@ -111,11 +61,40 @@ class DSLocalAndVoiceGen:
 			self.if_sakiko = False
 
 	def trim_list_to_64kb(self,data_list):
+		"""
+		将聊天上下文缩短到 64kb 大小
+		"""
 		MAX_SIZE = 64 * 1024  # 64KB
 		while len(json.dumps(data_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
 			del data_list[1]
 
 		return data_list
+	
+	@staticmethod
+	def concat_provider_and_model(provider: str, model: str) -> str:
+		"""
+		智能的将模型提供商和模型名称连接在一起。
+		如果 model 不包含 / 符号，那么就将 provider 和 model 用 / 连接起来。
+		如果 model 已经包含 / 符号，我们认为此时包含了提供商信息，那么就直接返回 model。
+		
+		:param provider: 模型提供商，如 openai、deepseek
+		:param model: 模型名称，如 gpt-4、deepseek-chat。也可以输入 deepseek/deepseek-chat 这种带提供商前缀的完整名称。此时，输入的 provider 会被忽略。
+		"""
+		if '/' in model:
+			return model
+		else:
+			return f"{provider}/{model}"
+	
+	def report_message_to_main_ui(self, message_queue, is_text_generating_queue, message: str):
+		"""
+		向主界面的消息栏汇报一条错误信息，并且删除最新正在发给模型的对话记录。
+		"""
+		message_queue.put(message)
+		is_text_generating_queue.get()
+		# 删除未能成功发送的信息
+		self.all_character_msg[self.current_char_index].pop()
+		# 源代码如此，我也不知道为啥要休息一会
+		time.sleep(2)
 
 	def text_generator(self,
 					   text_queue,
@@ -186,47 +165,11 @@ class DSLocalAndVoiceGen:
 				change_char_queue.put(user_input)
 				continue
 
-
-			while True:
-				if user_input == 'm':
-					if self.is_deepseek:
-						message_queue.put("0：deepseek-r1:14b（需安装Ollama与对应本地大模型，选项1相同）  1：deepseek-r1:32b  \n2：调用deepseek-V3官方API（无需安装Ollama，只需联网)")
-					else:
-						message_queue.put("已使用非Deepseek大模型，暂不支持切换其他模型")
-						time.sleep(2)
-						break
-					while True:
-						if not qt2dp_queue.empty():
-							user_wants_model = qt2dp_queue.get()
-							break
-						time.sleep(0.5)
-				else:
-					break
-				if user_wants_model.isdigit() and 0 <= int(user_wants_model) <= 1:
-					self.is_use_ds_api=False
-					self.model_choice = self.LLM_list[int(user_wants_model)]
-					break
-				elif user_wants_model.isdigit() and 2<=int(user_wants_model)<=3:
-					self.is_use_ds_api=True
-					self.model_choice = self.LLM_list[2]
-					break
-				else:
-					message_queue.put("输入内容不合法，重新输入")
-					time.sleep(2)
-					continue
-
 			if user_input == 'l':
 				self.audio_language_choice = "中英混合" if self.audio_language_choice == '日英混合' else '日英混合'
 				message_queue.put("已切换语言为："+("中文" if self.audio_language_choice=='中英混合' else "日文"))
 				time.sleep(2)
 				continue
-			if user_input == 'm':
-				if self.is_deepseek:
-					message_queue.put(f"已修改LLM为：{self.model_choice}")
-					time.sleep(2)
-					continue
-				else:
-					continue
 
 			if self.audio_language_choice=='日英混合':
 				user_input=user_input+'（本句话你的回答请务必用日语，并且请将额外的中文翻译内容放到“[翻译]”这一标记格式之后，并以“[翻译结束]”作为翻译的结束标志，每三句话翻译一次！请务必严格遵守这一格式回答！！）'
@@ -246,80 +189,87 @@ class DSLocalAndVoiceGen:
 			message_queue.put("小祥思考中..." if self.if_sakiko else f"{self.character_list[self.current_char_index].character_name}思考中...")
 			is_text_generating_queue.put('no_complete')		#正在生成文字的标志
 			# --------------------------
-			if not self.is_use_ds_api and self.is_deepseek:		#使用本地Ollama模型
-				try:
-					response = chat(
-						model=self.model_choice,
+			# 优先处理使用 Up API 的情况
+
+			try:
+				if d_sakiko_config.use_default_deepseek_api.value:
+					response = completion(
+						model="deepseek/deepseek-chat",
 						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
-						stream=False
+						api_key=self.model
 					)
-				except Exception:
-					message_queue.put("本地Ollama API调用出错！输入bye退出并重新启动程序，或使用联网deepseek模式。")
-					is_text_generating_queue.get()	#不加这行，出错后模型会一直保持思考状态
-					self.all_character_msg[self.current_char_index].pop()
-					time.sleep(2)
-					continue
-			elif self.is_use_ds_api and self.is_deepseek:
-				online_model=''
-				if self.model_choice==self.LLM_list[2]:
-					online_model='deepseek-chat'
-				elif self.model_choice==self.LLM_list[3]:
-					online_model='deepseek-reasoner'
-				data = {
-					"model": online_model,
-					"messages": self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
-					"stream": False
-				}
-				try:
-
-					response = requests.post("https://api.deepseek.com/chat/completions", headers=self.headers, json=data)
-				except Exception:
-					message_queue.put("与DeepSeek建立连接失败，请检查网络。")
-					is_text_generating_queue.get()  # 不加这行，出错后模型会一直保持思考状态
-					self.all_character_msg[self.current_char_index].pop()
-					time.sleep(2)
-					continue
-				if response.status_code == 200:
-
-					response=response.json()
-					response=response['choices'][0]
+				# 第二优先级是检查自定义 API Url
+				# 只要存在自定义 API，就使用自定义 API
+				elif d_sakiko_config.enable_custom_llm_api_provider.value:
+					response = completion(
+						model=d_sakiko_config.custom_llm_api_model.value,
+						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						api_key=d_sakiko_config.custom_llm_api_key.value,
+						# 自定义 API 地址
+						base_url=d_sakiko_config.custom_llm_api_url.value
+					)
+				# 最后：使用选择的预定义 API 提供商
 				else:
-					time.sleep(2)
-					if response.status_code==402:
-						message_queue.put("账户余额不足，如果正在用up的api，请联系UP充值")
-					elif response.status_code==401:
-						message_queue.put("deepseek API key认证出错，请检查正确性")
-					elif response.status_code==429:
-						message_queue.put("请求速度太快，被限制了（应该不会出现这个错误吧，")
-					elif response.status_code==500 or response.status_code==503:
-						message_queue.put("deepseek服务器可能崩了，可等待一会后重试。")
-					else:
-						message_queue.put("出现了未知错误，可尝试重新对话一次。")
-					is_text_generating_queue.get()
-					self.all_character_msg[self.current_char_index].pop()
-					time.sleep(2)
-					continue
-			elif not self.is_deepseek:		#使用非Deepseek的模型
-				try:
-					response = self.other_client.chat.completions.create(
-						model=self.model_choice,
-						messages=self.all_character_msg[self.current_char_index],
-						stream=False,
-						timeout=30
+					response = completion(
+						model=self.concat_provider_and_model(d_sakiko_config.llm_api_provider.value, d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value]),
+						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						api_key=d_sakiko_config.llm_api_key.value[d_sakiko_config.llm_api_provider.value]
 					)
-					if response.choices[0].message.content is None:
-						message_queue.put("模型API返回内容为空，请检查网络，然后重试一下吧")
-						print("模型API返回内容为空!")
-						is_text_generating_queue.get()
-						time.sleep(2)
-						continue
-				except Exception as err:
-					message_queue.put("模型API调用出错...请检查网络，然后重试一下吧")
-					print("模型API调用出错：", err)
-					is_text_generating_queue.get()
-					self.all_character_msg[self.current_char_index].pop()
-					time.sleep(2)
-					continue
+			except litellm.exceptions.Timeout:
+				self.report_message_to_main_ui(
+					message_queue,
+					is_text_generating_queue,
+					"请求超时，请检查网络连接或稍后再试。"
+				)
+				continue
+			except litellm.exceptions.AuthenticationError:
+				self.report_message_to_main_ui(
+					message_queue,
+					is_text_generating_queue,
+					"API Key 认证失败，请检查 Key 是否正确。"
+				)
+				continue
+			except litellm.exceptions.RateLimitError:
+				self.report_message_to_main_ui(
+					message_queue,
+					is_text_generating_queue,
+					"请求过于频繁，请稍后再试。"
+				)
+				continue
+			except litellm.exceptions.APIConnectionError:
+				self.report_message_to_main_ui(
+					message_queue,
+					is_text_generating_queue,
+					"与大模型网站建立连接失败，请检查网络。"
+				)
+				continue
+			# 特殊捕获一个 API Key 余额不足的错误
+			except litellm.exceptions.BadRequestError as e:
+				code = e.response.status_code
+				if code == 402:
+					self.report_message_to_main_ui(
+						message_queue,
+						is_text_generating_queue,
+						"账户余额不足，如果正在用up的api，请联系UP充值"
+					)
+				else:
+					self.report_message_to_main_ui(
+						message_queue,
+						is_text_generating_queue,
+						f"未知的请求错误，状态码：{code}。"
+					)
+				continue
+			except Exception:
+				self.report_message_to_main_ui(
+					message_queue,
+					is_text_generating_queue,
+					"出现了未知错误，请再试一次。"
+				)
+				import traceback
+				traceback.print_exc()
+
+				continue
+
 				# if response.status_code == 200:
 				# 	pass
 				# else:
@@ -342,12 +292,8 @@ class DSLocalAndVoiceGen:
 				# 	continue
 
 			# 去掉多余的字符，使用正则表达式
-			if self.is_deepseek:
-				cleaned_text_of_model_response = re.sub(r'<think>.*?</think>', '', response["message"]["content"],flags=re.DOTALL).strip()
-				model_this_turn_msg = {"role": "assistant", "content": response["message"]["content"]}
-			else:
-				cleaned_text_of_model_response = re.sub(r'<think>.*?</think>', '', response.choices[0].message.content.strip(), flags=re.DOTALL).strip()
-				model_this_turn_msg = {"role": "assistant", "content": response.choices[0].message.content.strip()}
+			cleaned_text_of_model_response = re.sub(r'<think>.*?</think>', '', response.choices[0].message.content.strip(), flags=re.DOTALL).strip()
+			model_this_turn_msg = {"role": "assistant", "content": response.choices[0].message.content.strip()}
 			#print("aaaaaaaaaaaaaaaa",cleaned_text_of_model_response,'bbbbbbbbbbbbbbbbbb')
 			text_queue.put(cleaned_text_of_model_response)
 

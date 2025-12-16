@@ -21,6 +21,12 @@ import torchaudio
 import soundfile as sf
 from text.LangSegmenter import LangSegmenter
 
+
+# 扩展搜索模块路径到自身路径
+sys.path.insert(0, os.path.dirname(__file__))
+
+from qconfig import d_sakiko_config
+
 logging.getLogger("markdown_it").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 logging.getLogger("httpcore").setLevel(logging.ERROR)
@@ -89,8 +95,7 @@ is_share = eval(is_share)'''
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 #is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
-with open('../is_fp32.txt','r') as f:
-    is_half=not bool(int(f.read()))
+is_half = not d_sakiko_config.enable_fp32_inference.value
 punctuation = set(["!", "?", "…", ",", ".", "-", " "])
 
 import librosa

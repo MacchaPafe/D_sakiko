@@ -1,13 +1,127 @@
-import sys,json,os,shutil,glob,time
+import sys
+import json
+import os
+import shutil
+import glob
+import time
+
 from PyQt5.QtWidgets import (QApplication, QWidget, QRadioButton,
                              QVBoxLayout, QLabel, QButtonGroup, QHBoxLayout, QLineEdit, QPushButton, QListWidget,
-                             QAbstractItemView, QSizePolicy, QFileDialog)
+                             QAbstractItemView, QSizePolicy, QFileDialog, QComboBox, QStackedWidget, QFormLayout,
+                             QDialog, QDialogButtonBox)
+from PyQt5.QtCore import Qt
 
 
+# 设置这个变量来缩短 litellm 的加载时间，禁止其请求网络
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+import litellm
+
+
+# 将当前文件夹加入 sys.path，强制搜索当前目录的模块（即使 os.getcwd() 不是当前目录）
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
+
 import character
+from qconfig import d_sakiko_config, PROVIDER_FRIENDLY_NAME_MAP, FAMOUS_CHAT_PROVIDERS, OTHER_CHAT_PROVIDERS
+
+
+class AdaptiveStackedWidget(QStackedWidget):
+    """
+    A QStackedWidget that automatically adjusts its size to fit the currently active widget.
+    
+    This solves the issue where QStackedWidget retains the size of the largest widget
+    or doesn't shrink when switching to a smaller widget.
+    """
+    def __init__(self):
+        super().__init__()
+        # Update geometry when the current page changes
+        self.currentChanged.connect(self.updateGeometry)
+
+    def sizeHint(self):
+        """Return the size hint of the currently active widget."""
+        if self.currentWidget():
+            return self.currentWidget().sizeHint()
+        return super().sizeHint()
+
+    def minimumSizeHint(self):
+        """Return the minimum size hint of the currently active widget."""
+        if self.currentWidget():
+            return self.currentWidget().minimumSizeHint()
+        return super().minimumSizeHint()
+
+
+class MoreProvidersDialog(QDialog):
+    """
+    A dialog to select from a larger list of LLM providers.
+    
+    Features:
+    - Searchable list of providers.
+    - Returns the selected provider string.
+    """
+    def __init__(self, parent=None, providers=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择更多 LLM 供应商")
+        self.resize(400, 500)
+        self.selected_provider = None
+        self.providers = providers or []
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Search filter input
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("搜索供应商...")
+        self.filter_input.textChanged.connect(self.filter_items)
+        layout.addWidget(self.filter_input)
+
+        # List of providers
+        self.list_widget = QListWidget()
+        self.list_widget.addItems(self.providers)
+        layout.addWidget(self.list_widget)
+
+        # Dialog buttons (OK/Cancel)
+        buttons_layout = QHBoxLayout()
+        accept = QPushButton("确定")
+        reject = QPushButton("取消")
+        accept.clicked.connect(self.accept_selection)
+        reject.clicked.connect(self.reject)
+        buttons_layout.addStretch(1)
+        buttons_layout.addWidget(accept, alignment=Qt.AlignmentFlag.AlignHCenter, stretch=2)
+        buttons_layout.addStretch(1)
+        buttons_layout.addWidget(reject, alignment=Qt.AlignmentFlag.AlignHCenter, stretch=2)
+        buttons_layout.addStretch(1)
+
+        layout.addLayout(buttons_layout)
+
+        # Apply styles to match the main window
+        self.setStyleSheet("""
+            QDialog { background-color: #E6F2FF; color: #7799CC; }
+            QLineEdit { background-color: #FFFFFF; border: 2px solid #B3D1F2; border-radius: 9px; padding: 5px; font-weight: bold; }
+            QListWidget { background-color: #FFFFFF; border: 3px solid #B3D1F2; border-radius: 9px; padding: 5px; color: #7799CC; outline: 0px; }
+            QListWidget::item { height: 30px; padding-left: 10px; border-radius: 5px; margin-bottom: 2px; }
+            QListWidget::item:hover { background-color: #E6F2FF; color: #7799CC; }
+            QListWidget::item:selected { background-color: #7FB2EB; color: #FFFFFF; }
+        """)
+
+    def filter_items(self, text):
+        """Filter the list items based on the search text."""
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
+
+    def accept_selection(self):
+        """Handle OK button click."""
+        selected_items = self.list_widget.selectedItems()
+        if selected_items:
+            self.selected_provider = selected_items[0].text()
+            self.accept()
+        else:
+            # If nothing selected, treat as cancel or just do nothing
+            # Here we choose to do nothing to let user select again
+            pass
+
 
 class conf_ui(QWidget):
     def __init__(self):
@@ -23,55 +137,87 @@ class conf_ui(QWidget):
         label_api = QLabel('1.当前大模型API配置：')
         layout.addWidget(label_api)
 
-        self.radio1 = QRadioButton('使用up的deepseek')
-        self.radio2 = QRadioButton('你的deepseek API')
-        self.radio3 = QRadioButton('OpenAI ChatGPT')
-        self.radio4 = QRadioButton('Google Gemini')
-        with open('../API_Choice.json','r',encoding='utf-8') as f:
-            self.current_api_conf=json.load(f)
-        self.llm_name='deepseek_up'
-        if os.path.getsize('../API Key.txt')!=0:
-            self.llm_name='deepseek_user'
-        for llm_choice in self.current_api_conf['llm_choose']:
-            if llm_choice['if_choose']:
-                self.llm_name=llm_choice['name']
-                break
+        # LLM Provider Selection
+        self.llm_provider_combobox = QComboBox()
+        layout.addWidget(self.llm_provider_combobox)
 
-        if self.llm_name=='deepseek_up':
-            self.radio1.setChecked(True)
-        elif self.llm_name=='deepseek_user':
-            self.radio2.setChecked(True)
-        elif self.llm_name=='OpenAI':
-            self.radio3.setChecked(True)
-        elif self.llm_name=='Google':
-            self.radio4.setChecked(True)
+        # Stacked Widget for different provider settings
+        # Use AdaptiveStackedWidget to resize based on content
+        self.llm_stack = AdaptiveStackedWidget()
+        layout.addWidget(self.llm_stack)
 
-        self.api_buttonGroup = QButtonGroup()
-        self.api_buttonGroup.addButton(self.radio1)
-        self.api_buttonGroup.addButton(self.radio2)
-        self.api_buttonGroup.addButton(self.radio3)
-        self.api_buttonGroup.addButton(self.radio4)
-        self.api_buttonGroup.buttonClicked.connect(self.radio_button_clicked)
+        # Page 0: Up's DeepSeek API (No config needed)
+        self.page_up_api = QWidget()
+        self.page_up_api.setObjectName("page_up_api")
+        layout_up = QVBoxLayout()
+        up_hint_label = QLabel("使用 Up 主提供的 DeepSeek API，无需额外配置。")
+        up_hint_label.setMinimumHeight(30)
+        layout_up.addWidget(up_hint_label)
+        self.page_up_api.setLayout(layout_up)
+        self.llm_stack.addWidget(self.page_up_api)
 
-        self.api_button_layout=QHBoxLayout()
-        self.api_button_layout.addWidget(self.radio1)
-        self.api_button_layout.addWidget(self.radio2)
-        self.api_button_layout.addWidget(self.radio3)
-        self.api_button_layout.addWidget(self.radio4)
-        layout.addLayout(self.api_button_layout)
+        # Page 1: Custom API (URL, Model, Key)
+        self.page_custom_api = QWidget()
+        self.page_custom_api.setObjectName("page_custom_api")
+        layout_custom = QFormLayout()
+        self.custom_url_input = QLineEdit()
+        self.custom_url_input.setMinimumWidth(300)
+        self.custom_url_input.setPlaceholderText("https://api.your-llm-provider.com/v1")
+        self.custom_model_input = QLineEdit()
+        self.custom_model_input.setMinimumWidth(300)
+        self.custom_model_input.setPlaceholderText("openai/gpt-5")
+        self.custom_model_input.setToolTip("请输入完整的模型名称，例如 openai/gpt-5、gemini/gemini-2.5-pro 等。")
+        
+        # Custom API Key with Toggle
+        self.custom_key_layout = QHBoxLayout()
+        self.custom_key_input = QLineEdit()
+        self.custom_key_input.setEchoMode(QLineEdit.Password)
+        self.custom_key_input.setMinimumWidth(260)
+        self.custom_key_toggle = QPushButton("👁")
+        self.custom_key_toggle.setFixedWidth(30)
+        self.custom_key_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.custom_key_toggle.clicked.connect(lambda: self.toggle_password(self.custom_key_input))
+        self.custom_key_layout.addWidget(self.custom_key_input)
+        self.custom_key_layout.addWidget(self.custom_key_toggle)
+        
+        layout_custom.addRow("API URL:", self.custom_url_input)
+        layout_custom.addRow("模型名称:", self.custom_model_input)
+        layout_custom.addRow("API Key:", self.custom_key_layout)
+        self.page_custom_api.setLayout(layout_custom)
+        self.llm_stack.addWidget(self.page_custom_api)
 
-        self.api_info_layout=QHBoxLayout()
-        self.api_llm_model_label=QLabel('具体模型名称')
-        self.api_llm_model_input=QLineEdit()
-        self.api_llm_model_input.setToolTip('请严格按照官方给出的名字填写')
-        self.api_key_label=QLabel('API Key')
-        self.api_key_input=QLineEdit()
-        self.api_info_layout.addWidget(self.api_llm_model_label)
-        self.api_info_layout.addWidget(self.api_llm_model_input)
-        self.api_info_layout.addWidget(self.api_key_label)
-        self.api_info_layout.addWidget(self.api_key_input)
-        layout.addLayout(self.api_info_layout)
-        self.set_api_conf_value()
+        # Page 2: Standard API (Model, Key)
+        self.page_standard_api = QWidget()
+        self.page_standard_api.setObjectName("page_standard_api")
+        layout_standard = QFormLayout()
+        self.standard_model_combo = QComboBox()
+        self.standard_model_combo.setEditable(True) # Allow custom model names
+        self.standard_model_combo.setMinimumWidth(300)
+        self.standard_model_combo.setToolTip("点击下拉框最右侧可以从模型列表中选择。不要选择非文本输出类模型！")
+        
+        # Standard API Key with Toggle
+        self.standard_key_layout = QHBoxLayout()
+        self.standard_key_input = QLineEdit()
+        self.standard_key_input.setEchoMode(QLineEdit.Password)
+        self.standard_key_input.setMinimumWidth(260)
+        self.standard_key_toggle = QPushButton("👁")
+        self.standard_key_toggle.setFixedWidth(30)
+        self.standard_key_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.standard_key_toggle.clicked.connect(lambda: self.toggle_password(self.standard_key_input))
+        self.standard_key_layout.addWidget(self.standard_key_input)
+        self.standard_key_layout.addWidget(self.standard_key_toggle)
+
+        layout_standard.addRow("模型名称:", self.standard_model_combo)
+        layout_standard.addRow("API Key:", self.standard_key_layout)
+        self.page_standard_api.setLayout(layout_standard)
+        self.llm_stack.addWidget(self.page_standard_api)
+
+        # Connect signals for auto-save
+        self.custom_url_input.editingFinished.connect(self.save_config)
+        self.custom_model_input.editingFinished.connect(self.save_config)
+        self.custom_key_input.editingFinished.connect(self.save_config)
+        self.standard_key_input.editingFinished.connect(self.save_config)
+        self.standard_model_combo.currentTextChanged.connect(self.save_config)
 
         label_2 = QLabel('2.退出程序后是否删除缓存音频：（鼠标悬浮查看说明）')
         label_2.setToolTip("删除历史生成音频可以节省硬盘空间，但如果没备份的话，点击历史消息就无法再播放对应历史音频！如果确定要删除，建议备份生成不错的那几句。")
@@ -82,20 +228,12 @@ class conf_ui(QWidget):
         self.btn_group_2= QButtonGroup()
         self.btn_group_2.addButton(self.radio_2_1)
         self.btn_group_2.addButton(self.radio_2_2)
-        with open('../if_delete_audio_cache.txt', "r", encoding="utf-8") as f:
-            try:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        if_delete = int(line)
-                        break
-            except Exception:
-                if_delete = 0
-                print("if_delete_audio_cache.txt的文件参数设置错误，应该输入一个数字！")
-        if if_delete==0:
+        # 如果设置为不删除缓存音频，则选中“不删除”选项
+        if not d_sakiko_config.delete_audio_cache_on_exit.value:
             self.radio_2_1.setChecked(True)
         else:
             self.radio_2_2.setChecked(True)
+
         radio_2_layout=QHBoxLayout()
         radio_2_layout.addWidget(self.radio_2_1)
         radio_2_layout.addWidget(self.radio_2_2)
@@ -111,16 +249,12 @@ class conf_ui(QWidget):
         self.btn_group_3= QButtonGroup()
         self.btn_group_3.addButton(self.radio_3_1)
         self.btn_group_3.addButton(self.radio_3_2)
-        with open('../is_fp32.txt', "r", encoding="utf-8") as f:
-            try:
-                if_fp16=not int(f.read())
-            except Exception:
-                if_fp16=0
-                print("is_fp32.txt的文件参数设置错误")
-        if not if_fp16:
+
+        if d_sakiko_config.enable_fp32_inference.value:
             self.radio_3_1.setChecked(True)
         else:
             self.radio_3_2.setChecked(True)
+
         radio_3_layout=QHBoxLayout()
         radio_3_layout.addWidget(self.radio_3_1)
         radio_3_layout.addWidget(self.radio_3_2)
@@ -129,47 +263,16 @@ class conf_ui(QWidget):
 
         label_4=QLabel('4.可设置GPT-SoVITS推理采样步数：（鼠标悬浮查看说明）')
         label_4.setToolTip("降低采样步数可降低生成时间，但生成质量也会降低；步数越高，音质越好，推理时间也会相应增加。建议根据自己的硬件性能和需求进行调整。默认是16。")    #共有四档，4、8、16、32
-        self.radio_4_1 = QRadioButton('4')
-        self.radio_4_1.setToolTip("降低采样步数可降低生成时间，但生成质量也会降低；步数越高，音质越好，推理时间也会相应增加。建议根据自己的硬件性能和需求进行调整。默认是16。")
-        self.radio_4_2 = QRadioButton('8')
-        self.radio_4_2.setToolTip("降低采样步数可降低生成时间，但生成质量也会降低；步数越高，音质越好，推理时间也会相应增加。建议根据自己的硬件性能和需求进行调整。默认是16。")
-        self.radio_4_3 = QRadioButton('16')
-        self.radio_4_3.setToolTip("降低采样步数可降低生成时间，但生成质量也会降低；步数越高，音质越好，推理时间也会相应增加。建议根据自己的硬件性能和需求进行调整。默认是16。")
-        self.radio_4_4 = QRadioButton('32')
-        self.radio_4_4.setToolTip("降低采样步数可降低生成时间，但生成质量也会降低；步数越高，音质越好，推理时间也会相应增加。建议根据自己的硬件性能和需求进行调整。默认是16。")
-        self.btn_group_4= QButtonGroup()
-        self.btn_group_4.addButton(self.radio_4_1)
-        self.btn_group_4.addButton(self.radio_4_2)
-        self.btn_group_4.addButton(self.radio_4_3)
-        self.btn_group_4.addButton(self.radio_4_4)
-        if os.path.exists('../reference_audio/GSV_sample_rate.txt'):
-            with open('../reference_audio/GSV_sample_rate.txt', "r", encoding="utf-8") as f:
-                try:
-                    sampling_rate=int(f.read())
-                except Exception:
-                    sampling_rate = 16
-                    print("sovits_sampling_steps.txt的文件参数设置错误，应该输入一个数字！")
-        else:
-            with open('../reference_audio/GSV_sample_rate.txt', "w", encoding="utf-8") as f:
-                f.write('16')
-            sampling_rate=16
-        if sampling_rate==4:
-            self.radio_4_1.setChecked(True)
-        elif sampling_rate==8:
-            self.radio_4_2.setChecked(True)
-        elif sampling_rate==16:
-            self.radio_4_3.setChecked(True)
-        elif sampling_rate==32:
-            self.radio_4_4.setChecked(True)
-        else:
-            self.radio_4_3.setChecked(True)
-        radio_4_layout=QHBoxLayout()
-        radio_4_layout.addWidget(self.radio_4_1)
-        radio_4_layout.addWidget(self.radio_4_2)
-        radio_4_layout.addWidget(self.radio_4_3)
-        radio_4_layout.addWidget(self.radio_4_4)
+        
+        self.sample_step_combobox = QComboBox()
+        self.sample_step_combobox.addItems(['4', '8', '16', '32'])
+        # 读取并且显示当前的采样步数设置
+        current_step=str(d_sakiko_config.sovits_inference_sampling_steps.value)
+        index=self.sample_step_combobox.findText(current_step)
+        if index >=0:
+            self.sample_step_combobox.setCurrentIndex(index)
         layout.addWidget(label_4)
-        layout.addLayout(radio_4_layout)
+        layout.addWidget(self.sample_step_combobox)
 
         label_5=QLabel('5.调整角色登场顺序：（拖拽调整位置）')
         characters=character.GetCharacterAttributes()
@@ -332,97 +435,357 @@ class conf_ui(QWidget):
                                         background-color: #9FC5EE;  /* 当列表失去焦点但仍被选中时的颜色 */
                                     }
 
+                                    /* QStackedWidget Style */
+                                    QStackedWidget {
+                                        border: 3px solid #B3D1F2;
+                                        border-radius: 9px;
+                                        background-color: #FFFFFF;
+                                    }
+                                    
+                                    /* Make pages inside QStackedWidget transparent to show the white background */
+                                    #page_up_api, #page_custom_api, #page_standard_api {
+                                        background-color: transparent;
+                                    }
+
+                                    /* QComboBox Style */
+                                    QComboBox {
+                                        background-color: #FFFFFF;
+                                        border: 2px solid #B3D1F2;
+                                        border-radius: 9px;
+                                        padding: 5px;
+                                        font-weight: bold;
+                                        color: #7799CC;
+                                        text-align: center;
+                                    }
+                                    QComboBox:hover {
+                                        border: 2px solid #7FB2EB;
+                                    }
+                                    QComboBox::drop-down {
+                                        subcontrol-origin: padding;
+                                        subcontrol-position: top right;
+                                        width: 20px;
+                                        border-left-width: 0px;
+                                        border-top-right-radius: 9px;
+                                        border-bottom-right-radius: 9px;
+                                        text-align: center;
+                                    }
+                                    QComboBox QAbstractItemView {
+                                        background-color: #FFFFFF;
+                                        border: 2px solid #B3D1F2;
+                                        border-radius: 9px;
+                                        selection-background-color: #E6F2FF;
+                                        selection-color: #7799CC;
+                                        outline: none;
+                                        color: #7799CC;
+                                        text-align: center;
+                                    }
+
+                                    /* ScrollBar Styles */
+                                    QScrollBar:vertical {
+                                        border: none;
+                                        background: #F0F6FF;
+                                        width: 12px;
+                                        margin: 0px;
+                                        border-radius: 6px;
+                                    }
+                                    QScrollBar::handle:vertical {
+                                        background: #B3D1F2;
+                                        min-height: 20px;
+                                        border-radius: 6px;
+                                    }
+                                    QScrollBar::handle:vertical:hover {
+                                        background: #7FB2EB;
+                                    }
+                                    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                                        height: 0px;
+                                    }
+                                    QScrollBar:horizontal {
+                                        border: none;
+                                        background: #F0F6FF;
+                                        height: 12px;
+                                        margin: 0px;
+                                        border-radius: 6px;
+                                    }
+                                    QScrollBar::handle:horizontal {
+                                        background: #B3D1F2;
+                                        min-width: 20px;
+                                        border-radius: 6px;
+                                    }
+                                    QScrollBar::handle:horizontal:hover {
+                                        background: #7FB2EB;
+                                    }
+                                    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                                        width: 0px;
+                                    }
+
                                 """)
+        
 
-    def set_api_conf_value(self):
-        if self.llm_name in ['deepseek_up','deepseek_user']:
-            self.api_llm_model_input.setText('deepseek V3')
-            self.api_llm_model_input.setDisabled(True)
-        elif self.llm_name=='OpenAI':
-            self.api_llm_model_input.setText(self.current_api_conf['llm_choose'][0]['model'])
-            self.api_llm_model_input.setDisabled(False)
-        elif self.llm_name=='Google':
-            self.api_llm_model_input.setText(self.current_api_conf['llm_choose'][1]['model'])
-            self.api_llm_model_input.setDisabled(False)
+        # Populate ComboBox
+        self.populate_llm_combobox()
+        
+        self.load_config_to_ui()
+        self.llm_provider_combobox.currentIndexChanged.connect(self.on_llm_provider_changed)
 
-        if self.llm_name =='deepseek_up':
-            self.api_key_input.setText('')
-            self.api_key_input.setDisabled(True)
-        elif self.llm_name=='deepseek_user':
-            with open('../API Key.txt','r',encoding='utf-8') as f:
-                api_key=f.read()
-            self.api_key_input.setText(api_key)
-            self.api_key_input.setDisabled(False)
-        elif self.llm_name=='OpenAI':
-            self.api_key_input.setText(self.current_api_conf['llm_choose'][0]['api_key'])
-            self.api_key_input.setDisabled(False)
-        elif self.llm_name=='Google':
-            self.api_key_input.setText(self.current_api_conf['llm_choose'][1]['api_key'])
-            self.api_key_input.setDisabled(False)
+    def toggle_password(self, line_edit):
+        if line_edit.echoMode() == QLineEdit.Password:
+            line_edit.setEchoMode(QLineEdit.Normal)
+        else:
+            line_edit.setEchoMode(QLineEdit.Password)
 
-    def radio_button_clicked(self,button):
-        if button.text()=='使用up的deepseek':
-            self.llm_name='deepseek_up'
-            self.current_api_conf['llm_choose'][0]['if_choose'] = False
-            self.current_api_conf['llm_choose'][1]['if_choose'] = False
-        elif button.text()=='你的deepseek API':
-            self.llm_name='deepseek_user'
-            self.current_api_conf['llm_choose'][0]['if_choose'] = False
-            self.current_api_conf['llm_choose'][1]['if_choose'] = False
-        elif button.text()=='OpenAI ChatGPT':
-            self.llm_name='OpenAI'
-            self.current_api_conf['llm_choose'][0]['if_choose'] = True
-            self.current_api_conf['llm_choose'][1]['if_choose'] = False
-        elif button.text()=='Google Gemini':
-            self.llm_name='Google'
-            self.current_api_conf['llm_choose'][0]['if_choose'] = False
-            self.current_api_conf['llm_choose'][1]['if_choose'] = True
+    def update_model_list(self, provider):
+        """
+        Update the model list for the given provider using litellm.
+        """
+        self.standard_model_combo.blockSignals(True)
+        self.standard_model_combo.clear()
+        
+        # Add current configured model first if it exists
+        current_model = d_sakiko_config.llm_api_model.value.get(provider)
+        if current_model:
+            self.standard_model_combo.addItem(current_model)
+            
+        try:
+            # Get valid models from litellm
+            # Note: litellm.utils.get_valid_models() returns a list of all models
+            all_models = litellm.utils.get_valid_models(custom_llm_provider=provider)
+            
+            # Simple filtering based on provider name
+            # This is a heuristic as litellm doesn't strictly categorize by provider in this list
+            provider_lower = provider.lower()
+            filtered_models = []
+            
+            # Common prefixes/keywords for providers
+            keywords = {
+                "openai": ["gpt", "dall-e", "tts", "whisper"],
+                "anthropic": ["claude"],
+                "google": ["gemini", "palm"],
+                "deepseek": ["deepseek"],
+                "azure": ["azure"],
+                "cohere": ["command"],
+                "mistral": ["mistral", "mixtral"],
+                "ollama": ["llama", "mistral", "gemma"],
+                "groq": ["llama", "mixtral", "gemma"],
+            }
+            
+            target_keywords = keywords.get(provider_lower, [provider_lower])
+            
+            for model in all_models:
+                model_lower = model.lower()
+                # Check if model matches any keyword for the provider
+                if any(k in model_lower for k in target_keywords):
+                    filtered_models.append(model)
+            
+            # Sort and add to combobox
+            filtered_models.sort()
+            for model in filtered_models:
+                if model != current_model: # Avoid duplicate
+                    self.standard_model_combo.addItem(model)
+                    
+        except Exception as e:
+            print(f"Error fetching models for {provider}: {e}")
+            
+        self.standard_model_combo.blockSignals(False)
 
-        self.set_api_conf_value()
-        self.save_success_label.setText('')
+    def load_settings_for_provider(self, provider):
+        """
+        Load settings (API Key, Model, URL) for the specified provider from config.
+        """
+        if provider == "deepseek_up":
+            return
+            
+        keys = d_sakiko_config.llm_api_key.value
+        models = d_sakiko_config.llm_api_model.value
+        
+        if provider == "custom":
+            self.custom_url_input.setText(d_sakiko_config.custom_llm_api_url.value)
+            self.custom_model_input.setText(d_sakiko_config.custom_llm_api_model.value)
+            self.custom_key_input.setText(keys.get("custom_llm_api_key", ""))
+        else:
+            # Standard provider
+            # 1. Update model list
+            self.update_model_list(provider)
+            
+            # 2. Set current model
+            # If the provider in config matches the current one, use the configured model
+            # Otherwise, we might want a default or the first one in the list
+            if models.get(provider):
+                current_model = models.get(provider)
+                self.standard_model_combo.setCurrentText(current_model)
+            
+            # 3. Set API Key
+            self.standard_key_input.setText(keys.get(provider, ""))
 
-    def save_config(self):
-        if self.llm_name=='deepseek_up':
-            with open('../API Key.txt','w',encoding='utf-8') as f:
-                f.write('')
-        elif self.llm_name=='deepseek_user':
-            with open('../API Key.txt','w',encoding='utf-8') as f:
-                f.write(self.api_key_input.text())
-        elif self.llm_name=='OpenAI':
-            self.current_api_conf['llm_choose'][0]['model']=self.api_llm_model_input.text()
-            self.current_api_conf['llm_choose'][0]['api_key']=self.api_key_input.text()
-        elif self.llm_name=='Google':
-            self.current_api_conf['llm_choose'][1]['model']=self.api_llm_model_input.text()
-            self.current_api_conf['llm_choose'][1]['api_key']=self.api_key_input.text()
+    def load_config_to_ui(self):
+        """
+        Load configuration from d_sakiko_config and update UI elements.
+        """
+        use_up = d_sakiko_config.use_default_deepseek_api.value
+        enable_custom = d_sakiko_config.enable_custom_llm_api_provider.value
+        provider = d_sakiko_config.llm_api_provider.value
+        
+        target_data = "deepseek_up"
+        if not use_up:
+            if enable_custom:
+                target_data = "custom"
+            else:
+                target_data = provider
+                # Ensure provider exists in combobox
+                index = self.llm_provider_combobox.findData(target_data)
+                if index == -1:
+                    custom_index = self.llm_provider_combobox.findData("custom")
+                    self.llm_provider_combobox.insertItem(custom_index, target_data, target_data)
+        
+        index = self.llm_provider_combobox.findData(target_data)
+        if index >= 0:
+            # Block signals to prevent triggering on_llm_provider_changed automatically
+            # We want to control the loading process
+            self.llm_provider_combobox.blockSignals(True)
+            self.llm_provider_combobox.setCurrentIndex(index)
+            self.llm_provider_combobox.blockSignals(False)
+            
+            # Manually load settings and set stack page
+            self.load_settings_for_provider(target_data)
+            
+            if target_data == "deepseek_up":
+                self.llm_stack.setCurrentIndex(0)
+            elif target_data == "custom":
+                self.llm_stack.setCurrentIndex(1)
+            else:
+                self.llm_stack.setCurrentIndex(2)
 
-        with open('../API_Choice.json','w',encoding='utf-8') as f:
-            json.dump(self.current_api_conf,f,ensure_ascii=False,indent=4)
+    def populate_llm_combobox(self):
+        """
+        Populate the LLM provider ComboBox with default options.
+        
+        Options include:
+        1. Up's DeepSeek API (Default)
+        2. Famous Providers (OpenAI, Google, etc.) from FAMOUS_CHAT_PROVIDERS
+        3. Custom API
+        4. "More..." option to open the full provider list
+        """
+        self.llm_provider_combobox.clear()
+        self.llm_provider_combobox.addItem("Up 的 DeepSeek API", "deepseek_up")
+        
+        # Add famous providers with friendly names
+        for provider in FAMOUS_CHAT_PROVIDERS:
+            friendly_name = PROVIDER_FRIENDLY_NAME_MAP.get(provider, provider)
+            self.llm_provider_combobox.addItem(friendly_name, provider)
+            
+        self.llm_provider_combobox.addItem("自定义 API（与 OpenAI 兼容的任意网站）", "custom")
+        self.llm_provider_combobox.addItem("更多...", "more")
 
+    def on_llm_provider_changed(self, index):
+        data = self.llm_provider_combobox.itemData(index)
+        
+        # Handle "More..." selection
+        if data == "more":
+            # Block signals to prevent recursive calls when we modify the combobox
+            self.llm_provider_combobox.blockSignals(True)
+            # 弹出窗口来允许用户选择更多的提供商
+            dialog = MoreProvidersDialog(self, sorted(OTHER_CHAT_PROVIDERS))
+            if dialog.exec_() == QDialog.Accepted and dialog.selected_provider:
+                provider = dialog.selected_provider
+                
+                # Check if the provider is already in the list
+                existing_index = self.llm_provider_combobox.findData(provider)
+                
+                if existing_index == -1:
+                    # Insert the new provider before "Custom" (which is usually near the end)
+                    # Current order: [Up, Famous..., Custom, More]
+                    custom_index = self.llm_provider_combobox.findData("custom")
+                    if custom_index == -1:
+                        # Fallback if custom is missing for some reason
+                        custom_index = self.llm_provider_combobox.count() - 1
+                    
+                    self.llm_provider_combobox.insertItem(custom_index, provider, provider)
+                    self.llm_provider_combobox.setCurrentIndex(custom_index)
+                else:
+                    # If already exists, just select it
+                    self.llm_provider_combobox.setCurrentIndex(existing_index)
+            else:
+                # If user cancelled, revert to the first item (Up's API) or handle gracefully
+                # Here we revert to index 0 to avoid staying on "More..."
+                self.llm_provider_combobox.setCurrentIndex(0)
+
+            # Unblock signals
+            self.llm_provider_combobox.blockSignals(False)
+            
+            # Manually trigger the change handler for the new selection
+            # This ensures the correct page is shown in the stacked widget
+            self.on_llm_provider_changed(self.llm_provider_combobox.currentIndex())
+            return
+
+        
+        # Load settings for the new provider BEFORE saving
+        # This ensures the UI fields are populated with the correct data for the selected provider
+        self.load_settings_for_provider(data)
+
+        # Standard logic for switching pages
+        if data == "deepseek_up":
+            self.llm_stack.setCurrentIndex(0)
+        elif data == "custom":
+            self.llm_stack.setCurrentIndex(1)
+        else:
+            self.llm_stack.setCurrentIndex(2)
+        
+        self.save_config()
+    
+    def save_ui_to_config(self):
+        """
+        Save the current UI state to the configuration file. However, we don't save the config to disk.
+        
+        This method retrieves values from the active page in the StackedWidget
+        and updates the d_sakiko_config object. It handles three cases:
+        1. Up's DeepSeek API: Sets use_default_deepseek_api to True.
+        2. Custom API: Sets enable_custom_llm_api_provider to True and saves URL/Model/Key.
+        3. Standard Provider: Updates llm_api_provider, llm_api_model, and saves the Key.
+        """
+        # Save LLM Settings
+        index = self.llm_provider_combobox.currentIndex()
+        provider_data = self.llm_provider_combobox.itemData(index)
+        
+        if provider_data == "deepseek_up":
+            # 只更新这个“是否使用 Up 的 DeepSeek API”选项   
+            d_sakiko_config.use_default_deepseek_api.value = True
+        elif provider_data == "custom":
+            d_sakiko_config.use_default_deepseek_api.value = False
+            # 启用自定义 OpenAI 兼容 API 提供商
+            # 这会覆盖其他已经启用的标准提供商
+            d_sakiko_config.enable_custom_llm_api_provider.value = True
+            d_sakiko_config.custom_llm_api_url.value = self.custom_url_input.text()
+            d_sakiko_config.custom_llm_api_model.value = self.custom_model_input.text()
+            
+            # Update key in the dictionary
+            d_sakiko_config.custom_llm_api_key.value = self.custom_key_input.text()
+        else:
+            d_sakiko_config.use_default_deepseek_api.value = False
+            d_sakiko_config.enable_custom_llm_api_provider.value = False
+            # 存储选择的标准提供商
+            d_sakiko_config.llm_api_provider.value = provider_data
+            d_sakiko_config.llm_api_model.value[provider_data] = self.standard_model_combo.currentText()
+            
+            # Update key in the dictionary
+            keys = d_sakiko_config.llm_api_key.value
+            keys[provider_data] = self.standard_key_input.text()
+            d_sakiko_config.llm_api_key.value = keys
+        
+        # 设置退出时是否删除缓存音频
         if self.radio_2_1.isChecked():
-            with open('../if_delete_audio_cache.txt','w',encoding='utf-8') as f:
-                f.write('0')
+            d_sakiko_config.delete_audio_cache_on_exit.value = False
         else:
-            with open('../if_delete_audio_cache.txt','w',encoding='utf-8') as f:
-                f.write('1')
-
+            d_sakiko_config.delete_audio_cache_on_exit.value = True
+        
+        # 设置是否启用fp16推理
         if self.radio_3_1.isChecked():
-            with open('../is_fp32.txt','w',encoding='utf-8') as f:
-                f.write('1')
+            d_sakiko_config.enable_fp32_inference.value = True
         else:
-            with open('../is_fp32.txt','w',encoding='utf-8') as f:
-                f.write('0')
+            d_sakiko_config.enable_fp32_inference.value = False
+        
+        data = self.sample_step_combobox.currentText()
+        d_sakiko_config.sovits_inference_sampling_steps.value = int(data)
 
-        if self.radio_4_1.isChecked():
-            sampling_steps=4
-        elif self.radio_4_2.isChecked():
-            sampling_steps=8
-        elif self.radio_4_3.isChecked():
-            sampling_steps=16
-        elif self.radio_4_4.isChecked():
-            sampling_steps=32
-        with open('../reference_audio/GSV_sample_rate.txt','w',encoding='utf-8') as f:
-            f.write(str(sampling_steps))
-
+        # 存储角色顺序
         ordered_names=[]
         count = self.character_list_widget.count()
         for i in range(count):
@@ -432,8 +795,14 @@ class conf_ui(QWidget):
             "character_num": len(ordered_names),
             "character_names": ordered_names,
         }
-        with open('../reference_audio/character_order.json','w',encoding='utf-8') as f:
-            json.dump(order_data_to_save,f,ensure_ascii=False,indent=4)
+        d_sakiko_config.character_order.value = order_data_to_save
+
+    def save_config(self):
+        """
+        Save the current UI state to the config, and then save the config to disk.
+        """
+        self.save_ui_to_config()
+        d_sakiko_config.save()
 
         self.save_success_label.setText('保存成功！下次启动将应用配置')
 
@@ -478,6 +847,10 @@ class conf_ui(QWidget):
 
 
 if __name__ == '__main__':
+    import os
+
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
     app = QApplication(sys.argv)
     win = conf_ui()
 

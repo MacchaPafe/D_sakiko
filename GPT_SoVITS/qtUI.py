@@ -112,24 +112,13 @@ class MoreFunctionWindow(QWidget):
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
     def on_click_open_start_config_button(self):
-        import sys
-        current_script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-        #  构造 .bat 文件的完整路径
-        # run_2.bat 在当前脚本目录的父目录中 (../run_2.bat)
-        parent_dir = os.path.dirname(current_script_dir)
-        bat_file_name = "启动参数配置.bat"
-        # 完整的 .bat 文件路径
-        bat_path = os.path.join(parent_dir, bat_file_name)
-        # 检查文件是否存在
-        if not os.path.exists(bat_path):
-            print(f".bat 文件未找到:\n{bat_path}")
-            return
         try:
             # 使用 subprocess 模块启动 .bat 文件
             import subprocess
+            import sys
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
-            subprocess.Popen([bat_path], shell=True)
+            subprocess.Popen([sys.executable, "dsakiko_configuration.py"])
         except Exception as e:
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
