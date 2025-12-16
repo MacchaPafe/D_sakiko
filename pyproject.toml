@@ -1,0 +1,105 @@
+[project]
+name = "d-sakiko"
+version = "0.1.0"
+description = "Deepseek V3-GPT_SoVITS主框架实现语音聊天Live2D数字小祥"
+readme = "README.md"
+# macOS 下仅测试了 Python 3.11 可行
+requires-python = ">=3.11, <3.12"
+dependencies = [
+    # Dependencies for GPT-SoVITS
+    "av>=11",
+    "chardet>=5.2.0",
+    "cn2an>=0.5.23",
+    "ctranslate2>=4.0,<5",
+    "fast-langdetect>=0.3.1",
+    "fastapi[standard]>=0.115.2",
+    "faster-whisper>=1.2.1",
+    "ffmpeg-python>=0.2.0",
+    "funasr==1.0.27",
+    "g2p-en>=2.1.0",
+    "g2pk2>=0.0.3",
+    "gradio<5",
+    "jieba>=0.42.1",
+    "jieba-fast>=0.53",
+    "ko-pron>=1.3",
+    "librosa==0.10.2",
+    # Live2d animation for python
+    "live2d-py>=0.5.4",
+    "modelscope>=1.32.0",
+    "numba>=0.62.1",
+    "numpy<2.0",
+    "onnxruntime==1.19 ; platform_machine == 'aarch64' or platform_machine == 'arm64'",
+    "onnxruntime-gpu==1.19 ; platform_machine == 'AMD64' or platform_machine == 'x86_64'",
+    "opencc>=1.1.9",
+    "peft>=0.18.0",
+    "psutil>=7.1.3",
+    "pydantic<=2.10.6",
+    "pygame>=2.6.1",
+    "pyopenjtalk>=0.4.1",
+    "pypinyin>=0.55.0",
+    "python-mecab-ko>=1.3.7 ; sys_platform != 'win32'",
+    "pytorch-lightning>=2.4",
+    "pyyaml>=6.0.3",
+    "rotary-embedding-torch>=0.8.9",
+    "scipy>=1.16.3",
+    "sentencepiece>=0.2.1",
+    "split-lang>=2.1.1",
+    "tensorboard>=2.20.0",
+    "tojyutping>=3.2.0",
+    "torch>=2.7, <2.8",
+    "torchaudio>=2.7, <2.8",
+    "torchmetrics<=1.5",
+    "tqdm>=4.67.1",
+    "transformers>=4.57",
+    "wordsegment>=1.3.1",
+    "x-transformers>=2.11.23",
+    # pyqt5==5.15.11 所引用的 pyqt5-qt5==5.15.11 只在 macOS 与 Linux 上有预编译包
+    # 因此需要为 macOS/Linux 安装 pyqt5==5.15.11
+    "pyqt5>=5.15.11; sys_platform != 'win32'",
+    # 在 Windows 下，我们需要强制使用 pyqt5>=5.15.11，但配合软件包 pyqt5-qt5==5.15.2
+    # 这是因为 Windows 下 pyqt5==5.15.2 没有 py311 的预构建包（那会还不存在 Python 3.11 呢），所以我们必须使用 pyqt>=5.15.11
+    # 但 pyqt5-qt5>=5.15.11 只在 macOS 和 Linux 上有预构建包，这就导致我们不得不搭配两个版本不同的软件包
+    # 参考 https://github.com/astral-sh/uv/issues/11865
+    "pyqt5>=5.15.11; sys_platform == 'win32'",
+    "pyqt5-qt5>=5.15,<=5.15.2; sys_platform == 'win32'",
+    "sounddevice>=0.5.3",
+    "ollama>=0.6.1",
+    "openai>=2.8.1",
+    "cython>=3.2.2",
+    # macOS 加载声音支持
+    "soundfile>=0.13.1",
+    "litellm>=1.80.9",
+]
+
+[tool.uv]
+# Supported platform
+required-environments = [
+    # Windows on AMD64
+    "sys.platform == 'win32' and platform.machine == 'AMD64'",
+    # macOS on ARM64(Apple Silicon)
+    "sys.platform == 'darwin' and platform.machine == 'arm64'",
+    # Linux distributions on AMD64
+    "sys.platform == 'linux' and platform.machine == 'x86_64'",
+]
+
+[dependency-groups]
+dev = [
+    "Cython~=3.2.1",
+    "pyinstaller>=6.17.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
+]

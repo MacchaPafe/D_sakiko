@@ -4,6 +4,7 @@ sys.path.insert(0, script_dir)
 
 from queue import Queue
 import threading
+import multiprocessing
 import time
 import re
 
@@ -16,6 +17,10 @@ import audio_generator
 import inference_emotion_detect
 import live2d_module
 import qtUI
+
+import faulthandler
+
+faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []
@@ -165,6 +170,12 @@ def main_thread():
 if __name__=='__main__':
 
     os.system('cls')
+    # 添加本文件的目录到导入 Path
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+    from qconfig import d_sakiko_config
+
     print("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
@@ -250,9 +261,10 @@ if __name__=='__main__':
 
 
     font_id = QFontDatabase.addApplicationFont(font_path)    #设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    font = QFont(font_family, 12)
-    qt_app.setFont(font)
+    font_family = QFontDatabase.applicationFontFamilies(font_id)
+    if font_family:
+        font = QFont(font_family[0], 12)
+        qt_app.setFont(font)
 
     from PyQt5.QtWidgets import QDesktopWidget          #设置qt窗口位置，与live2d对齐
     screen_w_mid=int(0.5*QDesktopWidget().screenGeometry().width())
@@ -280,19 +292,45 @@ if __name__=='__main__':
     qt_win.show()
     qt_app.exec_()
 
-    with open('../if_delete_audio_cache.txt', "r", encoding="utf-8") as f:
-        try:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    if_delete = int(line)
-                    break
-        except Exception:
-            if_delete = 0
-            raise Warning("if_delete_audio_cache.txt的文件参数设置错误，应该输入一个数字！")
+    # 尝试退出所有子程序。
+    # 由于有些程序可能已经退出，所以使用 try-except 来捕获异常，防止程序崩溃。
+    try:
+        text_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # DeepSeek 推理线程
+        qt2dp_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # live2d 播放进程
+        emotion_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # 主窗口
+        QT_message_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # 语音生成线程
+        to_audio_generator_text_queue.put('bye')
+    except Exception:
+        pass
 
+    tr1.join()
+    # print("Live2D 线程已确认退出")
+    tr2.join()
+    # print("DP 线程已确认退出")
+    tr3.join()
+    # print("音频生成线程已确认退出")
+    tr4.join()
+    # print("主线程已确认退出")
 
-    if if_delete!=0:
+    if_delete = d_sakiko_config.delete_audio_cache_on_exit.value
+
+    if if_delete:
         folder_path = '../reference_audio/generated_audios_temp'    #删除音频缓存
 
         for filename in os.listdir(folder_path):
