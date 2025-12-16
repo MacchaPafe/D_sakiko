@@ -726,6 +726,8 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
     os.chdir(old_cwd)
 
 
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 # 全局唯一配置实例
 d_sakiko_config = DSakikoConfig()
 d_sakiko_config.load()
