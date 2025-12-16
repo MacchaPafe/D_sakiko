@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QRadioButton,
                              QVBoxLayout, QLabel, QButtonGroup, QHBoxLayout, QLineEdit, QPushButton, QListWidget,
                              QAbstractItemView, QSizePolicy, QFileDialog, QComboBox, QStackedWidget, QFormLayout,
                              QDialog, QDialogButtonBox)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 
 
 # 设置这个变量来缩短 litellm 的加载时间，禁止其请求网络
@@ -212,13 +212,6 @@ class conf_ui(QWidget):
         self.page_standard_api.setLayout(layout_standard)
         self.llm_stack.addWidget(self.page_standard_api)
 
-        # Connect signals for auto-save
-        self.custom_url_input.editingFinished.connect(self.save_config)
-        self.custom_model_input.editingFinished.connect(self.save_config)
-        self.custom_key_input.editingFinished.connect(self.save_config)
-        self.standard_key_input.editingFinished.connect(self.save_config)
-        self.standard_model_combo.currentTextChanged.connect(self.save_config)
-
         label_2 = QLabel('2.退出程序后是否删除缓存音频：（鼠标悬浮查看说明）')
         label_2.setToolTip("删除历史生成音频可以节省硬盘空间，但如果没备份的话，点击历史消息就无法再播放对应历史音频！如果确定要删除，建议备份生成不错的那几句。")
         self.radio_2_1 = QRadioButton('不删除')
@@ -310,6 +303,12 @@ class conf_ui(QWidget):
         self.save_btn.clicked.connect(self.save_config)
         layout.addWidget(self.save_btn)
         self.save_success_label=QLabel('')
+        self.save_success_label.setWordWrap(True)
+
+        self.clear_success_label_timer = QTimer()
+        self.clear_success_label_timer.timeout.connect(self.clear_save_success_label)
+        self.clear_success_label_timer.setSingleShot(True)
+        self.clear_success_label_timer.setInterval(3000)  # 3秒后触发
 
         self.exit_btn=QPushButton('关闭窗口')
         self.exit_btn.clicked.connect(self.close)
@@ -532,6 +531,19 @@ class conf_ui(QWidget):
             line_edit.setEchoMode(QLineEdit.Normal)
         else:
             line_edit.setEchoMode(QLineEdit.Password)
+    
+    def clear_save_success_label(self):
+        """
+        清除“保存成功”这个提示标签的文字。
+        """
+        self.save_success_label.setText('')
+    
+    def show_save_status(self, message: str):
+        """
+        在点击保存按键时，显示保存状态信息，并在3秒后自动清除。
+        """
+        self.save_success_label.setText(message)
+        self.clear_success_label_timer.start()  # 启动定时器，3秒后清除
 
     def update_model_list(self, provider):
         """
@@ -728,10 +740,8 @@ class conf_ui(QWidget):
             self.llm_stack.setCurrentIndex(1)
         else:
             self.llm_stack.setCurrentIndex(2)
-        
-        self.save_config()
-    
-    def save_ui_to_config(self):
+            
+    def save_ui_to_config(self) -> bool:
         """
         Save the current UI state to the configuration file. However, we don't save the config to disk.
         
@@ -749,6 +759,11 @@ class conf_ui(QWidget):
             # 只更新这个“是否使用 Up 的 DeepSeek API”选项   
             d_sakiko_config.use_default_deepseek_api.value = True
         elif provider_data == "custom":
+            if not self.custom_url_input.text() or not self.custom_model_input.text() or not self.custom_key_input.text():
+                # 如果有任何一个字段为空，则不保存配置，保持原样
+                self.show_save_status('自定义 API 的 URL、模型名称和 API Key 都不能为空，配置未保存。')
+                return False
+
             d_sakiko_config.use_default_deepseek_api.value = False
             # 启用自定义 OpenAI 兼容 API 提供商
             # 这会覆盖其他已经启用的标准提供商
@@ -759,6 +774,11 @@ class conf_ui(QWidget):
             # Update key in the dictionary
             d_sakiko_config.custom_llm_api_key.value = self.custom_key_input.text()
         else:
+            if not self.standard_key_input.text() or not provider_data:
+                # 如果 API Key 为空，则不保存配置，保持原样
+                self.show_save_status('API Key 和模型类型不能为空。配置未保存。')
+                return False
+            
             d_sakiko_config.use_default_deepseek_api.value = False
             d_sakiko_config.enable_custom_llm_api_provider.value = False
             # 存储选择的标准提供商
@@ -797,14 +817,16 @@ class conf_ui(QWidget):
         }
         d_sakiko_config.character_order.value = order_data_to_save
 
+        return True
+
     def save_config(self):
         """
         Save the current UI state to the config, and then save the config to disk.
         """
-        self.save_ui_to_config()
-        d_sakiko_config.save()
+        if self.save_ui_to_config():
+            d_sakiko_config.save()
 
-        self.save_success_label.setText('保存成功！下次启动将应用配置')
+            self.show_save_status("保存成功！大模型相关配置立刻生效，音频推理与角色顺序等配置在下次启动时应用")
 
     def user_select_font_file(self):
         file_path, file_type = QFileDialog.getOpenFileName(
