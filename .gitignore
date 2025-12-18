@@ -24,3 +24,7 @@
 
 **/.DS_Store
 d_sakiko_config.json
+
+.idea/**
+.vscode/**
+**/__pycache__/**
