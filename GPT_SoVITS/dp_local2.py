@@ -30,7 +30,7 @@ class DSLocalAndVoiceGen:
 
 	def initial(self):
 		for character in self.character_list:
-			self.all_character_msg.append([{"role": "user",
+			self.all_character_msg.append([{"role": "system",
 											"content": f'{character.character_description}'}])
 		if os.path.getsize('../reference_audio/history_messages_dp.json')!=0:
 			with open('../reference_audio/history_messages_dp.json','r',encoding='utf-8') as f:
@@ -45,6 +45,9 @@ class DSLocalAndVoiceGen:
 			self.if_sakiko = True
 		else:
 			self.if_sakiko = False
+		
+		print(self.all_character_msg[self.current_char_index])
+		print(len(json.dumps(self.all_character_msg[self.current_char_index]).encode('utf-8')))
 
 
 	def change_character(self):
@@ -195,7 +198,7 @@ class DSLocalAndVoiceGen:
 				if d_sakiko_config.use_default_deepseek_api.value:
 					response = completion(
 						model="deepseek/deepseek-chat",
-						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						messages=self.all_character_msg[self.current_char_index],
 						api_key=self.model
 					)
 				# 第二优先级是检查自定义 API Url
@@ -203,7 +206,7 @@ class DSLocalAndVoiceGen:
 				elif d_sakiko_config.enable_custom_llm_api_provider.value:
 					response = completion(
 						model=d_sakiko_config.custom_llm_api_model.value,
-						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						messages=self.all_character_msg[self.current_char_index],
 						api_key=d_sakiko_config.custom_llm_api_key.value,
 						# 自定义 API 地址
 						base_url=d_sakiko_config.custom_llm_api_url.value
@@ -212,7 +215,7 @@ class DSLocalAndVoiceGen:
 				else:
 					response = completion(
 						model=self.concat_provider_and_model(d_sakiko_config.llm_api_provider.value, d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value]),
-						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						messages=self.all_character_msg[self.current_char_index],
 						api_key=d_sakiko_config.llm_api_key.value[d_sakiko_config.llm_api_provider.value]
 					)
 			except litellm.exceptions.Timeout:
@@ -290,12 +293,10 @@ class DSLocalAndVoiceGen:
 				# 	self.all_character_msg[self.current_char_index].pop()
 				# 	time.sleep(2)
 				# 	continue
-
-			# 去掉多余的字符，使用正则表达式
-			cleaned_text_of_model_response = re.sub(r'<think>.*?</think>', '', response.choices[0].message.content.strip(), flags=re.DOTALL).strip()
+			
 			model_this_turn_msg = {"role": "assistant", "content": response.choices[0].message.content.strip()}
 			#print("aaaaaaaaaaaaaaaa",cleaned_text_of_model_response,'bbbbbbbbbbbbbbbbbb')
-			text_queue.put(cleaned_text_of_model_response)
+			text_queue.put(response.choices[0].message.content.strip())
 
 			self.all_character_msg[self.current_char_index].append(model_this_turn_msg)
 

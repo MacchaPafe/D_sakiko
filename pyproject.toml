@@ -69,6 +69,8 @@ dependencies = [
     # macOS 加载声音支持
     "soundfile>=0.13.1",
     "litellm>=1.80.9",
+    "pyqt-fluent-widgets>=1.10.4",
+    "basedpyright>=1.36.1",
 ]
 
 [tool.uv]
