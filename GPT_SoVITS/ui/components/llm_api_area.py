@@ -7,7 +7,7 @@ os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import litellm
 from PyQt5.QtWidgets import QVBoxLayout, QStackedWidget, QWidget, QFormLayout, QHBoxLayout, QDialog
 
-from ..qconfig import d_sakiko_config, OTHER_CHAT_PROVIDERS, FAMOUS_CHAT_PROVIDERS, PROVIDER_FRIENDLY_NAME_MAP
+from qconfig import d_sakiko_config, OTHER_CHAT_PROVIDERS, FAMOUS_CHAT_PROVIDERS, PROVIDER_FRIENDLY_NAME_MAP
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
@@ -27,21 +27,20 @@ class MoreProvidersDialog(MessageBoxBase):
 
     def __init__(self, parent=None, providers=None):
         super().__init__(parent)
-        self.setWindowTitle("选择更多 LLM 供应商")
+
         self.selected_provider = None
         self.providers = providers or []
 
-        layout = QVBoxLayout(self)
         # Search filter input
         self.filter_input = LineEdit()
         self.filter_input.setPlaceholderText("搜索供应商...")
         self.filter_input.textChanged.connect(self.filter_items)
-        layout.addWidget(self.filter_input)
+        self.viewLayout.addWidget(self.filter_input)
 
         # List of providers
         self.list_widget = ListWidget()
         self.list_widget.addItems(self.providers)
-        layout.addWidget(self.list_widget)
+        self.viewLayout.addWidget(self.list_widget)
 
         # Dialog buttons (OK/Cancel)
         self.yesButton.setText(self.tr("确定"))
@@ -96,16 +95,16 @@ class LLMAPIArea(TransparentScrollArea):
     def __init__(self, parent):
         super().__init__(parent)
 
-        self.vBoxLayout = QVBoxLayout(self.view)
+        self.v_box_layout = QVBoxLayout(self.view)
 
         # LLM Provider Selection
         self.llm_provider_combobox = ComboBox()
-        self.vBoxLayout.addWidget(self.llm_provider_combobox)
+        self.v_box_layout.addWidget(self.llm_provider_combobox)
 
         # Stacked Widget for different provider settings
         # Use AdaptiveStackedWidget to resize based on content
         self.llm_stack = AdaptiveStackedWidget()
-        self.vBoxLayout.addWidget(self.llm_stack)
+        self.v_box_layout.addWidget(self.llm_stack)
 
         # Page 0: Up's DeepSeek API (No config needed)
 
@@ -167,6 +166,9 @@ class LLMAPIArea(TransparentScrollArea):
         # 加载模型选择框的内容
         self.populate_llm_combobox()
         self.llm_provider_combobox.currentIndexChanged.connect(self.on_llm_provider_changed)
+
+        # 加载初始内容
+        self.load_config_to_ui()
 
     def update_model_list(self, provider):
         """
@@ -235,7 +237,7 @@ class LLMAPIArea(TransparentScrollArea):
         if provider == "custom":
             self.custom_url_input.setText(d_sakiko_config.custom_llm_api_url.value)
             self.custom_model_input.setText(d_sakiko_config.custom_llm_api_model.value)
-            self.custom_key_input.setText(keys.get("custom_llm_api_key", ""))
+            self.custom_key_input.setText(d_sakiko_config.custom_llm_api_key.value)
         else:
             # Standard provider
             # 1. Update model list
@@ -295,13 +297,13 @@ class LLMAPIArea(TransparentScrollArea):
                         # Fallback if custom is missing for some reason
                         custom_index = self.llm_provider_combobox.count() - 1
 
-                    self.llm_provider_combobox.insertItem(custom_index, provider, provider)
+                    self.llm_provider_combobox.insertItem(custom_index, provider, userData=provider)
                     self.llm_provider_combobox.setCurrentIndex(custom_index)
                 else:
                     # If already exists, just select it
                     self.llm_provider_combobox.setCurrentIndex(existing_index)
             else:
-                # If user cancelled, revert to the first item (Up's API) or handle gracefully
+                # If user canceled, revert to the first item (Up's API) or handle gracefully
                 # Here we revert to index 0 to avoid staying on "More..."
                 self.llm_provider_combobox.setCurrentIndex(0)
 
@@ -324,3 +326,125 @@ class LLMAPIArea(TransparentScrollArea):
             self.llm_stack.setCurrentIndex(1)
         else:
             self.llm_stack.setCurrentIndex(2)
+
+    def load_config_to_ui(self):
+        """
+        从 d_sakiko_config 实例中加载 LLM 相关的配置到 UI 组件中。
+        """
+        use_up = d_sakiko_config.use_default_deepseek_api.value
+        enable_custom = d_sakiko_config.enable_custom_llm_api_provider.value
+        provider = d_sakiko_config.llm_api_provider.value
+
+        target_data = "deepseek_up"
+        if not use_up:
+            if enable_custom:
+                target_data = "custom"
+            else:
+                target_data = provider
+                # Ensure provider exists in combobox
+                index = self.llm_provider_combobox.findData(target_data)
+                if index == -1:
+                    custom_index = self.llm_provider_combobox.findData("custom")
+                    self.llm_provider_combobox.insertItem(custom_index, target_data, userData=target_data)
+
+        index = self.llm_provider_combobox.findData(target_data)
+        if index >= 0:
+            # Block signals to prevent triggering on_llm_provider_changed automatically
+            # We want to control the loading process
+            self.llm_provider_combobox.blockSignals(True)
+            self.llm_provider_combobox.setCurrentIndex(index)
+            self.llm_provider_combobox.blockSignals(False)
+
+            # Manually load settings and set stack page
+            self.load_settings_for_provider(target_data)
+
+            if target_data == "deepseek_up":
+                self.llm_stack.setCurrentIndex(0)
+            elif target_data == "custom":
+                self.llm_stack.setCurrentIndex(1)
+            else:
+                self.llm_stack.setCurrentIndex(2)
+
+    def reset_error_indicators(self):
+        """Reset error indicators on input fields."""
+        self.custom_url_input.setError(False)
+        self.custom_model_input.setError(False)
+        self.custom_key_input.setError(False)
+        self.standard_key_input.setError(False)
+
+    def save_ui_to_config(self) -> bool:
+        """
+        将当前 ui 的设置存储到 d_sakiko_config 中
+
+        根据当前选择不同，存在三种处理情况：
+        1. Up 的 DeepSeek API: 设置 use_default_deepseek_api 为 True.
+        2. 自定义 API 网站: 设置 enable_custom_llm_api_provider 为 True 并保存 URL/Model/Key.
+        3. 标准提供商（常见的 API 网站）: 更新 llm_api_provider, llm_api_model 配置, 并保存 API Key.
+
+        :return: bool - 如果保存成功返回 True，否则返回 False（例如缺少必填字段时）
+        """
+        # Save LLM Settings (来自 LLMAPIArea)
+        index = self.llm_provider_combobox.currentIndex()
+        provider_data = self.llm_provider_combobox.itemData(index)
+
+        if provider_data == "deepseek_up":
+            # 只更新这个“是否使用 Up 的 DeepSeek API”选项
+            d_sakiko_config.use_default_deepseek_api.value = True
+
+            self.reset_error_indicators()
+            return True
+
+        elif provider_data == "custom":
+            if (
+                    not self.custom_url_input.text()
+                    or not self.custom_model_input.text()
+                    or not self.custom_key_input.text()
+            ):
+                # 如果有任何一个字段为空，则不保存配置，保持原样
+                # 并且给出错误颜色提示
+                if not self.custom_url_input.text():
+                    self.custom_url_input.setError(True)
+                    self.custom_url_input.setFocus()
+                if not self.custom_model_input.text():
+                    self.custom_model_input.setError(True)
+                    self.custom_model_input.setFocus()
+                if not self.custom_key_input.text():
+                    self.custom_key_input.setError(True)
+                    self.custom_key_input.setFocus()
+                return False
+
+            d_sakiko_config.use_default_deepseek_api.value = False
+            # 启用自定义 OpenAI 兼容 API 提供商
+            # 这会覆盖其他已经启用的标准提供商
+            d_sakiko_config.enable_custom_llm_api_provider.value = True
+            d_sakiko_config.custom_llm_api_url.value = self.custom_url_input.text()
+            d_sakiko_config.custom_llm_api_model.value = self.custom_model_input.text()
+
+            # Update key in the dictionary
+            d_sakiko_config.custom_llm_api_key.value = self.custom_key_input.text()
+
+            self.reset_error_indicators()
+            return True
+        else:
+            if not self.standard_key_input.text() or not provider_data:
+                # 如果 API Key 为空，则不保存配置，保持原样
+                if not self.standard_key_input.text():
+                    self.standard_key_input.setError(True)
+                    self.standard_key_input.setFocus()
+                if not provider_data:
+                    self.llm_provider_combobox.setFocus()
+                return False
+
+            d_sakiko_config.use_default_deepseek_api.value = False
+            d_sakiko_config.enable_custom_llm_api_provider.value = False
+            # 存储选择的标准提供商
+            d_sakiko_config.llm_api_provider.value = provider_data
+            d_sakiko_config.llm_api_model.value[provider_data] = self.standard_model_combo.currentText()
+
+            # Update key in the dictionary
+            keys = d_sakiko_config.llm_api_key.value
+            keys[provider_data] = self.standard_key_input.text()
+            d_sakiko_config.llm_api_key.value = keys
+
+            self.reset_error_indicators()
+            return True

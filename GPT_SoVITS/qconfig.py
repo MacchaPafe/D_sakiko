@@ -4,10 +4,10 @@ import json
 import os
 import warnings
 import contextlib
-
+from pathlib import Path
 
 with contextlib.redirect_stdout(None):
-    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator
+    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig
 
 
 class DSakikoConfig(QConfig):
@@ -23,7 +23,6 @@ class DSakikoConfig(QConfig):
     # 自定义 API Key 相关的配置（依赖库为 litellm）
     # LLM 的模型名称一般为“模型供应商/模型名称”，比如 "openai/gpt-5", "deepseek/deepseek-chat"
 
-    # 直接受到 litellm 支持的 LLM 提供商（例如：OpenAI, Google, Anthropic, DeepSeek）
     # 这个选项只存储 LLM 提供商字段
     llm_api_provider = ConfigItem("llm_setting", "llm_api_provider", "deepseek")
     # 具体模型名称（例如：gpt-5, gemini-2.5-pro, deepseek-chat）
@@ -62,6 +61,50 @@ class DSakikoConfig(QConfig):
             "爱音",
             "祥子"
         ]})
+
+    # 颜色主题默认信息
+    theme_color = ConfigItem("theme_color_setting", "theme_color", [
+        {
+            "name": "高松灯",
+            "color": "#77BBDDA2"
+        },
+        {
+            "name": "长崎素世",
+            "color": "#FFDD88A2"
+        },
+        {
+            "name": "千早爱音",
+            "color": "#FF8899A2"
+        },
+        {
+            "name": "椎名立希",
+            "color": "#7777AAA2"
+        },
+        {
+            "name": "要乐奈",
+            "color": "#77DD77A2"
+        },
+        {
+            "name": "丰川祥子",
+            "color": "#7799CCA2"
+        },
+        {
+            "name": "若叶睦",
+            "color": "#779977A2"
+        },
+        {
+            "name": "三角初华",
+            "color": "#BB9955A2"
+        },
+        {
+            "name": "八幡海玲",
+            "color": "#335566A2"
+        },
+        {
+            "name": "祐天寺若麦",
+            "color": "#AA4477A2"
+        },
+    ])
 
 
 # 这个字典存储了所有可能的“LLM 供应商显示名称”->“实际请求时需要的前缀名称”的映射关系
@@ -348,6 +391,6 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # 全局唯一配置实例
 d_sakiko_config = DSakikoConfig()
-d_sakiko_config.load()
+qconfig.load("../d_sakiko_config.json", d_sakiko_config)
 # 尝试从旧配置文件迁移配置
 migrate_from_old_config(d_sakiko_config)

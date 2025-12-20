@@ -1,6 +1,6 @@
 import os,glob,json
 
-from .qconfig import d_sakiko_config
+from qconfig import d_sakiko_config
 
 
 class CharacterAttributes:
