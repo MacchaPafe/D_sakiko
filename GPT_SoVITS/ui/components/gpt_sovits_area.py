@@ -26,6 +26,7 @@ class GPTSoVITSArea(TransparentScrollArea):
 
         # 统一：用 SettingCardGroup + ComboBoxSettingCard 来承载设置项（风格与 custom_setting_area.py 对齐）
         self.audio_setting_group = SettingCardGroup(self.tr("音频"), self.view)
+        self.audio_setting_group.titleLabel.setVisible(False)
 
         self.delete_audio_card = ComboBoxSettingCard(
             d_sakiko_config.delete_audio_cache_on_exit,

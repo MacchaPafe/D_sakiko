@@ -5,15 +5,16 @@ import os
 import shutil
 import time
 
-from PyQt5.QtGui import QColor
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import QVBoxLayout, QAbstractItemView, QHBoxLayout, QSizePolicy, QFileDialog
+from PyQt5.QtWidgets import QVBoxLayout, QFileDialog
 
 import character
 from qconfig import d_sakiko_config
 
+from ..custom_widgets.character_setting_card import CharacterSettingCard
+
 with contextlib.redirect_stdout(None):
-    from qfluentwidgets import BodyLabel, ListWidget, PushButton, SettingCardGroup, ComboBoxSettingCard, FluentIcon, \
+    from qfluentwidgets import SettingCardGroup, ComboBoxSettingCard, FluentIcon, \
     InfoBarIcon, PushSettingCard
 
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
@@ -29,22 +30,15 @@ class CustomSettingArea(TransparentScrollArea):
 
         self.v_box_layout = QVBoxLayout(self.view)
 
-        # 设置角色登场顺序
-        self.character_order_label = BodyLabel(self.tr("调整角色登场顺序：（拖拽调整位置）"), self)
-        characters = character.GetCharacterAttributes()
-        character_list = characters.character_class_list
-        # 读取角色列表
-        self.character_names = [char.character_name for char in character_list]
-        # 将角色列表放在 listview 中，允许拖拽排序
-        self.character_list_widget = ListWidget()
-        self.character_list_widget.setDragDropMode(QAbstractItemView.InternalMove)
-        self.character_list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.character_list_widget.addItems(self.character_names)
-        self.v_box_layout.addWidget(self.character_order_label)
-        self.v_box_layout.addWidget(self.character_list_widget)
-
-        # 自定义主题颜色
         self.personal_group = SettingCardGroup(self.tr("个性化"), self.view)
+        self.personal_group.titleLabel.setVisible(False)
+
+        # 设置角色登场顺序
+        self.character_setting_card = CharacterSettingCard(icon=FluentIcon.PEOPLE,
+                                                           title=self.tr("角色登场顺序"),
+                                                           content=self.tr("拖动修改角色登场顺序"),
+                                                           parent=self.personal_group)
+        # 自定义主题颜色
         self.font_card = PushSettingCard(
             self.tr("选择..."),
             FluentIcon.FONT,
@@ -69,6 +63,7 @@ class CustomSettingArea(TransparentScrollArea):
 
         self.font_card.clicked.connect(self.user_select_font_file)
 
+        self.personal_group.addSettingCard(self.character_setting_card)
         self.personal_group.addSettingCard(self.font_card)
         self.personal_group.addSettingCard(self.theme_card)
         self.personal_group.addSettingCard(self.theme_color_card)
@@ -79,33 +74,13 @@ class CustomSettingArea(TransparentScrollArea):
         """
         从 d_sakiko_config 中加载设置到 UI 上。
         """
-        # 加载角色顺序
-        order_data = d_sakiko_config.character_order.value
-        if (
-            isinstance(order_data, dict)
-            and "character_num" in order_data
-            and "character_names" in order_data
-        ):
-            character_names = order_data["character_names"]
-            self.character_list_widget.clear()
-            self.character_list_widget.addItems(character_names)
+        self.character_setting_card.load_config_to_ui()
 
     def save_ui_to_config(self) -> bool:
         """
         将 UI 上的设置保存到 d_sakiko_config 中。
         """
-        # 保存角色顺序
-        ordered_names = []
-        count = self.character_list_widget.count()
-        for i in range(count):
-            item = self.character_list_widget.item(i)
-            ordered_names.append(item.text())
-        order_data_to_save = {
-            "character_num": len(ordered_names),
-            "character_names": ordered_names,
-        }
-        d_sakiko_config.character_order.value = order_data_to_save
-        return True
+        return self.character_setting_card.save_ui_to_config()
 
     def user_select_font_file(self):
         file_path, file_type = QFileDialog.getOpenFileName(

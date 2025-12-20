@@ -15,7 +15,7 @@ from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 # 去广告
 with contextlib.redirect_stdout(None):
-    from qfluentwidgets import SegmentedWidget, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon
+    from qfluentwidgets import Pivot, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon
 
 # 将当前文件夹加入 sys.path，强制搜索当前目录的模块（即使 os.getcwd() 不是当前目录）
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +32,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         self.v_box_layout = QVBoxLayout(self.view)
 
         # 分栏组件
-        self.pivot = SegmentedWidget(self)
+        self.pivot = Pivot(self)
         # 存放各个分栏下的内容
         self.stacked_widget = QStackedWidget(self)
 
