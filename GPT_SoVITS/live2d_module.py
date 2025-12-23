@@ -1,8 +1,10 @@
+import math
 import time
 from random import randint
 from live2d.utils.lipsync import WavHandler
 import live2d.v2 as live2d
 import pygame
+from live2d.v2.core import UtSystem
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
@@ -56,7 +58,7 @@ class LAppModel(live2d.LAppModel):
 
     目前 Windows 打包版的 live2d-py 版本为 0.5.3，如果后续升级到 0.5.4 版本，就不需要这个自定义类了。
     """
-    def LoadModelJson(self, modelSettingPath: str, disable_precision: bool = False):
+    def LoadModelJson(self, modelSettingPath: str, version: str = "#version 120\n", disable_precision: bool = False):
         """
         Hook LoadModelJson to support both live2d-py 0.5.3 and 0.5.4.
         """
@@ -64,11 +66,66 @@ class LAppModel(live2d.LAppModel):
         function = live2d.LAppModel.LoadModelJson
         if "disable_precision" in function.__code__.co_varnames:
             # 存在参数，说明是 0.5.4 版本及之后
-            return super().LoadModelJson(modelSettingPath, disable_precision=disable_precision) # type: ignore （忽略 0.5.3 以下版本下对于这行代码的警告）
+            return super().LoadModelJson(modelSettingPath, version=version, disable_precision=disable_precision) # type: ignore （忽略 0.5.3 以下版本下对于这行代码的警告）
         else:
             # 不存在参数,说明是 0.5.3 版本及之前
             # 直接忽略 disable_precision 参数
             return super().LoadModelJson(modelSettingPath)
+
+    def Update(self, breath_weight_1=0.5, breath_weight_2=1.0):
+        """
+        Hook Update 函数，以便手动设置呼吸相关移动参数
+        """
+        self.dragMgr.update()
+        self.setDrag(self.dragMgr.getX(), self.dragMgr.getY())
+
+        time_m_sec = UtSystem.getUserTimeMSec() - self.startTimeMSec
+        time_sec = time_m_sec / 1000.0
+        t = time_sec * 2 * math.pi
+        if self.mainMotionManager.isFinished():
+            if callable(self.finishCallback):
+                self.finishCallback()
+                self.finishCallback = None
+
+        updated = False
+        if self.__clearFlag:
+            self.mainMotionManager.stopAllMotions()
+            if self.pose:
+                self.pose.initParam(self.live2DModel)
+
+            self.__clearFlag = False
+        else:
+            self.live2DModel.loadParam()
+            updated = self.mainMotionManager.updateParam(self.live2DModel)
+        self.live2DModel.saveParam()
+
+        if not updated:
+            if self.autoBlink and self.eyeBlink is not None:
+                self.eyeBlink.updateParam(self.live2DModel)
+
+        if self.expressionManager is not None and self.expressions is not None and not self.expressionManager.isFinished():
+            self.expressionManager.updateParam(self.live2DModel)
+
+        self.live2DModel.addToParamFloat("PARAM_ANGLE_X", self.dragX * 30, 1)
+        self.live2DModel.addToParamFloat("PARAM_ANGLE_Y", self.dragY * 30, 1)
+        self.live2DModel.addToParamFloat("PARAM_ANGLE_Z", (self.dragX * self.dragY) * -30, 1)
+        self.live2DModel.addToParamFloat("PARAM_BODY_ANGLE_X", self.dragX * 10, 1)
+        self.live2DModel.addToParamFloat("PARAM_EYE_BALL_X", self.dragX, 1)
+        self.live2DModel.addToParamFloat("PARAM_EYE_BALL_Y", self.dragY, 1)
+
+        if self.autoBreath:
+            # 这里进行了修改：将参数从默认的 0.5/1 替换为了 breath_weight_1/breath_weight_2
+            self.live2DModel.addToParamFloat("PARAM_ANGLE_X", float((15 * math.sin(t / 6.5345))), breath_weight_1)
+            self.live2DModel.addToParamFloat("PARAM_ANGLE_Y", float((8 * math.sin(t / 3.5345))), breath_weight_1)
+            self.live2DModel.addToParamFloat("PARAM_ANGLE_Z", float((10 * math.sin(t / 5.5345))), breath_weight_1)
+            self.live2DModel.addToParamFloat("PARAM_BODY_ANGLE_X", float((4 * math.sin(t / 15.5345))), breath_weight_1)
+            self.live2DModel.setParamFloat("PARAM_BREATH", float((0.5 + 0.5 * math.sin(t / 3.2345))), breath_weight_1)
+
+        if self.physics is not None:
+            self.physics.updateParam(self.live2DModel)
+
+        if self.pose is not None:
+            self.pose.updateParam(self.live2DModel)
 
 
 class Live2DModule:
