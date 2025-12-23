@@ -36,7 +36,23 @@ ref_audio_language_list = [
 ]
 
 class GetCharacterAttributes:
+    """
+    从各个文件夹中读取角色信息、模型等内容并整合，以便各个模块直接使用
+    显然启动程序时扫描一次角色信息就够，因此，此类设计为单例模式
+    """
+    __instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls.__instance:
+            cls.__instance = super().__new__(cls)
+        return cls.__instance
+
     def __init__(self):
+        # 限制运行时总共只扫描一次
+        if hasattr(self, 'initialized') and self.initialized:
+            return
+        self.initialized = True
+
         self.character_num = 0
         self.character_class_list=[]
         self.load_data()
@@ -145,6 +161,11 @@ class GetCharacterAttributes:
                 new_character_class_list.append(char_name2char[name])
 
             self.character_class_list=new_character_class_list
+
+        # 将最终的结果同步到配置中
+        d_sakiko_config.character_order.value['character_names']=[char.character_name for char in self.character_class_list]
+        d_sakiko_config.character_order.value['character_num']=self.character_num
+        d_sakiko_config.save()
 
 
 if __name__=="__main__":
