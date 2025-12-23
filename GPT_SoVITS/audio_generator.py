@@ -125,6 +125,7 @@ class AudioGenerate:
         self.gptsovits_process =Process(target=synthesize,args=(self.to_gptsovits_com_queue,
                                                                 self.from_gptsovits_com_queue,
                                                                 self.from_gptsovits_com_queue2))
+        self.if_small_theater_mode=False
         self.sakiko_which_state=True
         self.message_queue=None
         self.is_change_complete=False
@@ -225,6 +226,30 @@ class AudioGenerate:
         self.from_gptsovits_com_queue.get()
         self.is_change_complete = True
 
+    def change_character_multi_char_ver(self,character_index):
+        self.current_character_index = character_index
+        if self.character_list[self.current_character_index].character_name == '祥子':
+            self.if_sakiko = True
+        else:
+            self.if_sakiko = False
+        self.GPT_model_file=self.character_list[self.current_character_index].GPT_model_path
+        self.SoVITS_model_file = self.character_list[self.current_character_index].sovits_model_path
+        self.ref_text_file=self.character_list[self.current_character_index].gptsovits_ref_audio_text
+        self.ref_audio_language = self.character_list[self.current_character_index].gptsovits_ref_audio_lan
+        if not self.if_sakiko:
+            self.ref_audio_file=self.character_list[self.current_character_index].gptsovits_ref_audio
+        self.neccerary_matirials=[0,self.GPT_model_file,self.SoVITS_model_file]
+        self.to_gptsovits_com_queue.put(self.neccerary_matirials)
+
+        self.is_change_complete = False
+        while self.from_gptsovits_com_queue.empty():
+            time.sleep(0.2)
+        self.from_gptsovits_com_queue.get()
+        while self.from_gptsovits_com_queue.empty():
+            time.sleep(0.4)
+        self.from_gptsovits_com_queue.get()
+        self.is_change_complete = True
+
 
 
 
@@ -266,7 +291,8 @@ class AudioGenerate:
                 break
 
             self.is_completed = False
-            self.sakiko_which_state=dp_chat.sakiko_state
+            if not self.if_small_theater_mode:
+                self.sakiko_which_state=dp_chat.sakiko_state
             if self.audio_language_choice=='日英混合':
                 # if self.if_sakiko:
                 #     self.speed=0.9

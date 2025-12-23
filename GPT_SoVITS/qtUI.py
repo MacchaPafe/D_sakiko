@@ -90,14 +90,19 @@ class MoreFunctionWindow(QWidget):
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)
         layout.addWidget(self.open_start_config_button)
 
+        self.open_small_theater_btn=QPushButton("小剧场模式（Beta）")
+        self.open_small_theater_btn.clicked.connect(self.on_click_open_small_theater)
+        layout.addWidget(self.open_small_theater_btn)
+
+        self.text_label = QLabel("更多小功能还在开发中...")
+        self.text_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.text_label)
+
         self.close_program_button=QPushButton("退出程序")
         self.close_program_button.clicked.connect(parent_window_close_fun)
         self.close_program_button.clicked.connect(self.close)
         layout.addWidget(self.close_program_button)
-        self.text_label=QLabel("更多小功能还在开发中...")
-        self.text_label.setAlignment(Qt.AlignCenter)
 
-        layout.addWidget(self.text_label)
         self.setLayout(layout)
         if qt_css is not None:
             self.setStyleSheet(qt_css)
@@ -119,6 +124,29 @@ class MoreFunctionWindow(QWidget):
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([sys.executable, "dsakiko_configuration.py"])
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
+        self.close()
+
+    def on_click_open_small_theater(self):
+        import sys
+        current_script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        #  构造 .bat 文件的完整路径
+        # run_2.bat 在当前脚本目录的父目录中 (../run_2.bat)
+        parent_dir = os.path.dirname(current_script_dir)
+        bat_file_name = "运行小剧场模式.bat"
+        # 完整的 .bat 文件路径
+        bat_path = os.path.join(parent_dir, bat_file_name)
+        # 检查文件是否存在
+        if not os.path.exists(bat_path):
+            print(f".bat 文件未找到:\n{bat_path}")
+            return
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([bat_path], shell=True)
         except Exception as e:
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
