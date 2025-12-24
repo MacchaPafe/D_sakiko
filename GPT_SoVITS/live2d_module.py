@@ -566,7 +566,7 @@ if __name__=='__main__':        #单独测试live2d
 
     import character
 
-    get_all = character.GetCharacterAttributes()
+    get_all = character.CharacterManager()
 
     characters = get_all.character_class_list
     a=Live2DModule()

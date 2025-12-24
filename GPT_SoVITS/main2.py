@@ -173,7 +173,7 @@ def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_
     try:
         # 在子进程中重新导入和创建 characters
         import character
-        get_all = character.GetCharacterAttributes()
+        get_all = character.CharacterManager()
         characters = get_all.character_class_list
         
         import live2d_module
@@ -198,7 +198,7 @@ if __name__=='__main__':
     from qconfig import d_sakiko_config
 
     print("数字小祥程序...")
-    get_all=character.GetCharacterAttributes()
+    get_all=character.CharacterManager()
     characters=get_all.character_class_list
 
 

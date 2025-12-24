@@ -1410,7 +1410,7 @@ if __name__ == "__main__":
     import os
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    get_char_attr = character.GetCharacterAttributes()
+    get_char_attr = character.CharacterManager()
 
     dp_module = DSLocalAndVoiceGen(get_char_attr.character_class_list)
     audio_gen = AudioGenerate()

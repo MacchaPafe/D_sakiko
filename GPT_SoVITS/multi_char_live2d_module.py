@@ -714,7 +714,7 @@ def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_t
     import character
     from multi_char_live2d_module import Live2DModule
 
-    get_char_attr = character.GetCharacterAttributes()
+    get_char_attr = character.CharacterManager()
     live2d_player = Live2DModule(get_char_attr.character_class_list)
     live2d_player.play_live2d(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue)
 
@@ -728,6 +728,6 @@ if __name__ == "__main__":
 
     motion_queue = Queue()
     change_char_queue = Queue()
-    char_getter = character.GetCharacterAttributes()
+    char_getter = character.CharacterManager()
     live2d_module = Live2DModule(char_getter.character_class_list)
     live2d_module.play_live2d(motion_queue, change_char_queue,motion_queue)

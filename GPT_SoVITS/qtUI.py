@@ -796,7 +796,7 @@ if __name__=='__main__':
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
     import character
-    get_all = character.GetCharacterAttributes()
+    get_all = character.CharacterManager()
     characters = get_all.character_class_list
 
     app = QApplication(sys.argv)

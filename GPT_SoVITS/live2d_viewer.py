@@ -692,7 +692,7 @@ class ViewerGUI(QWidget):
 
 if __name__ == "__main__":
     live2d_player = Live2DModule()
-    get_char_attr = character.GetCharacterAttributes()
+    get_char_attr = character.CharacterManager()
     motion_queue = multiprocessing.Queue()
     change_char_queue=multiprocessing.Queue()
 

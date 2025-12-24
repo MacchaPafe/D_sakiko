@@ -257,7 +257,7 @@ if __name__ == "__main__":
 	import character
 	from queue import Queue
 
-	get_all = character.GetCharacterAttributes()
+	get_all = character.CharacterManager()
 	characters = get_all.character_class_list
 	ds_local_and_voice_gen=DSLocalAndVoiceGen(characters)
 	# user_input={'character_0':{'talk_style':'素世是香澄的后辈，但尽管如此，香澄还是会保持她活泼以及热情高涨的说话风格。','interaction_details':'香澄也许会直接称呼素世为そよちゃん'},
