@@ -1393,6 +1393,9 @@ if __name__ == "__main__":
     mp.freeze_support()
     ctx = mp.get_context("spawn")
 
+    import os
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
     get_char_attr = character.GetCharacterAttributes()
 
     dp_module = DSLocalAndVoiceGen(get_char_attr.character_class_list)
