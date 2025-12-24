@@ -68,7 +68,7 @@ dependencies = [
     "cython>=3.2.2",
     # macOS 加载声音支持
     "soundfile>=0.13.1",
-    "litellm>=1.80.9",
+    "litellm>=1.80.11",
     "pyqt-fluent-widgets>=1.10.4",
     "basedpyright>=1.36.1",
 ]

@@ -16,9 +16,11 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPush
 
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
+import faulthandler
 import character
 
 
+faulthandler.enable(open("faulthandler_log.txt", "w"), all_threads=True)
 
 
 # 将你的主题色定义为变量，方便微调
@@ -229,7 +231,11 @@ class CommunicateThreadMessages(QThread):
 
     def run(self):
         while True:
-            self.message=self.message_queue.get()
+            try:
+                self.message=self.message_queue.get()
+            except (ValueError, EOFError):
+                # Queue closed
+                break
             if self.message=='EXIT':
                 break
             self.message_signal.emit(self.message)
@@ -839,6 +845,8 @@ class ViewerGUI(QWidget):
         self.response_thread.response_signal.connect(self.handle_response)
         self.response_thread.start()
 
+        # 提前初始化设置窗口，传入屏幕尺寸信息
+        self.settings_dialog = SettingsDialog(self, self.screen,self.audio_gen_module)
 
         self.user_input = {}
         self.character_list = characters
@@ -858,11 +866,14 @@ class ViewerGUI(QWidget):
             self.history_data_list,self.dialogs_matching=data
             self.refresh_chat_display()
 
-        self.two_char_names=[]
-        self.set_two_char_names()
+        self.two_char_names=[self.character_list[self.current_char_index[0]].character_name,self.character_list[self.current_char_index[1]].character_name]
+        if self.character_list[self.current_char_index[0]].character_name=='祥子':
+            self.two_char_names[0]='祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
+        if self.character_list[self.current_char_index[1]].character_name=='祥子':
+            self.two_char_names[0]='祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
         self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} ")
         self.display_timer = QTimer()
-        self.display_timer.timeout.connect(self.display_timer_timeout)
+        self.display_timer.timeout.connect(lambda: self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} "))
 
         # === BGM 播放模块 ===
         self.bgm_player = QMediaPlayer()
@@ -1421,9 +1432,12 @@ if __name__ == "__main__":
 
     window = ViewerGUI(get_char_attr.character_class_list, qt2dp_queue, message_queue, dp2qt_queue,to_audio_gen_queue, audio_gen,to_live2d_module_queue,change_char_queue,tell_qt_this_turn_finish_queue)
     font_id = QFontDatabase.addApplicationFont("../font/msyh.ttc")  # 设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    font = QFont(font_family, 12)
-    app.setFont(font)
+    font_family = QFontDatabase.applicationFontFamilies(font_id)
+    # 在成功加载后才使用该字体
+    if font_family:
+        font = QFont(font_family[0], 12)
+        app.setFont(font)
+
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     screen_w_mid = int(0.55 * QDesktopWidget().screenGeometry().width())
@@ -1435,7 +1449,29 @@ if __name__ == "__main__":
     dp_thread.start()
     audio_generate_thread.start()
     window.show()
-    sys.exit(app.exec_())
+    app.exec_()
+
+    # 开始清理
+    try:
+        change_char_queue.put("EXIT", block=False)
+    except Exception:
+        pass
+    try:
+        tell_qt_this_turn_finish_queue.put("EXIT", block=False)
+    except Exception:
+        pass
+    try:
+        to_audio_gen_queue.put("bye", block=False)
+    except Exception:
+        pass
+    try:
+        qt2dp_queue.put("EXIT", block=False)
+    except Exception:
+        pass
+
+    dp_thread.join()
+    audio_generate_thread.join()
+    live2d_thread.join()
 
 '''
 按钮改为图标式

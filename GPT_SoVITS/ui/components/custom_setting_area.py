@@ -15,7 +15,7 @@ from ..custom_widgets.character_setting_card import CharacterSettingCard
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import SettingCardGroup, ComboBoxSettingCard, FluentIcon, \
-    InfoBarIcon, PushSettingCard
+    InfoBarIcon, PushSettingCard, setTheme
 
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 from ..custom_widgets.custom_color_setting_card import CustomColorSettingCard
@@ -69,6 +69,8 @@ class CustomSettingArea(TransparentScrollArea):
         self.personal_group.addSettingCard(self.theme_color_card)
 
         self.v_box_layout.addWidget(self.personal_group)
+
+        self.theme_card.comboBox.currentIndexChanged.connect(lambda: setTheme(d_sakiko_config.get(d_sakiko_config.themeMode), lazy=True))
 
     def load_config_to_ui(self):
         """
