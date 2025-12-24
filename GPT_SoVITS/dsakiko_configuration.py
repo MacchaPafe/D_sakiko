@@ -15,7 +15,8 @@ from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 # 去广告
 with contextlib.redirect_stdout(None):
-    from qfluentwidgets import Pivot, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon
+    from qfluentwidgets import Pivot, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon, FluentWindow, \
+    FluentIcon
 
 # 将当前文件夹加入 sys.path，强制搜索当前目录的模块（即使 os.getcwd() 不是当前目录）
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -66,13 +67,7 @@ class DSakikoConfigArea(TransparentScrollArea):
 
         self.custom_setting_area.status_signal.connect(self.show_status)
 
-        d_sakiko_config.themeColorChanged.connect(self.on_theme_change)
-
         self.resize(500, 600)
-
-    def on_theme_change(self, color: QColor):
-        # 不知道为啥“保存配置”这个按钮的主题颜色不会自动更新，所以手动更新一下
-        QTimer.singleShot(500, lambda: self.save_button.update())
 
     def add_sub_interface(self, widget: QLabel, object_name: str, text: str):
         """
@@ -152,9 +147,9 @@ if __name__ == '__main__':
 
     app = QApplication(sys.argv)
     area = DSakikoConfigArea()
-    w = QMainWindow()
+    w = FluentWindow()
     w.setMinimumSize(600, 800)
-    w.setCentralWidget(area)
+    w.addSubInterface(area, FluentIcon.HOME, w.tr("设置"))
     # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
     # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
     area.closeEvent = lambda e: app.quit()

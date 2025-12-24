@@ -282,7 +282,7 @@ class LLMAPIArea(TransparentScrollArea):
             # Block signals to prevent recursive calls when we modify the combobox
             self.llm_provider_combobox.blockSignals(True)
             # 弹出窗口来允许用户选择更多的提供商
-            dialog = MoreProvidersDialog(self, sorted(OTHER_CHAT_PROVIDERS))
+            dialog = MoreProvidersDialog(self.window(), sorted(OTHER_CHAT_PROVIDERS))
             if dialog.exec_() == QDialog.Accepted and dialog.selected_provider:
                 provider = dialog.selected_provider
 

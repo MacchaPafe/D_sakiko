@@ -243,7 +243,7 @@ class CustomColorSettingCard(SimpleExpandGroupSettingCard):
         self._loadItems()
 
     def _onThemeColorChanged(self, color):
-        setThemeColor(color)
+        setThemeColor(color, lazy=True)
         for w in self.colorWidgets:
             if w.color.name(QColor.HexArgb) == color.name(QColor.HexArgb):
                 w.setChecked(True)

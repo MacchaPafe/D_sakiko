@@ -4,10 +4,27 @@ import json
 import os
 import warnings
 import contextlib
-from pathlib import Path
+
+from PyQt5.QtGui import QColor
 
 with contextlib.redirect_stdout(None):
-    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig
+    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig, ConfigValidator
+
+
+class ThemeColorValidator(ConfigValidator):
+    def validate(self, value):
+        if not isinstance(value, list):
+            return False
+        for item in value:
+            if not isinstance(item, dict):
+                return False
+            if "name" not in item or "color" not in item:
+                return False
+            if not isinstance(item["name"], str) or not isinstance(item["color"], str):
+                return False
+            if not QColor(item["color"]).isValid():
+                return False
+        return True
 
 
 class DSakikoConfig(QConfig):
@@ -65,46 +82,47 @@ class DSakikoConfig(QConfig):
     # 颜色主题默认信息
     theme_color = ConfigItem("theme_color_setting", "theme_color", [
         {
-            "name": "高松灯",
-            "color": "#77BBDDA2"
+            "name": "千早爱音",
+            "color": "#FF8899"
         },
         {
             "name": "长崎素世",
-            "color": "#FFDD88A2"
+            "color": "#FFDD88"
         },
         {
-            "name": "千早爱音",
-            "color": "#FF8899A2"
+            "name": "高松灯",
+            "color": "#77BBDD"
         },
         {
             "name": "椎名立希",
-            "color": "#7777AAA2"
+            "color": "#7777AA"
         },
         {
             "name": "要乐奈",
-            "color": "#77DD77A2"
+            "color": "#77DD77"
         },
         {
             "name": "丰川祥子",
-            "color": "#7799CCA2"
+            "color": "#7799CC"
         },
         {
             "name": "若叶睦",
-            "color": "#779977A2"
+            "color": "#779977"
         },
         {
             "name": "三角初华",
-            "color": "#BB9955A2"
+            "color": "#BB9955"
         },
         {
             "name": "八幡海玲",
-            "color": "#335566A2"
+            "color": "#335566"
         },
         {
             "name": "祐天寺若麦",
-            "color": "#AA4477A2"
+            "color": "#AA4477"
         },
-    ])
+    ],
+     validator=ThemeColorValidator())
 
 
 # 这个字典存储了所有可能的“LLM 供应商显示名称”->“实际请求时需要的前缀名称”的映射关系
