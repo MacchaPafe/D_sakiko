@@ -401,7 +401,7 @@ class ElementEditorDialog(QDialog):
     def __init__(self, data_dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("修改对话数据")
-
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.data = data_dict  # 引用传递，直接改这个字典
 
         layout = QFormLayout(self)
@@ -483,6 +483,7 @@ class CharacterSelectDialog(QDialog):
     def __init__(self, character_list, current_indices, parent=None):
         super().__init__(parent)
         self.setWindowTitle("选择两名角色")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         screen = QDesktopWidget().screenGeometry()
         scr_w = screen.width()
         scr_h = screen.height()
@@ -591,6 +592,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None, screen_geo=None,audio_gen_module=None):
         super().__init__(parent)
         self.setWindowTitle("小剧场控制台")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.audio_gen_module=audio_gen_module
         # 1. 动态设置窗口大小 (宽20%，高25%)
         if screen_geo:
@@ -663,11 +665,19 @@ class SettingsDialog(QDialog):
         self.pause_second_slider.setValue(50)
         pause_second_layout.addWidget(self.pause_second_label)
         pause_second_layout.addWidget(self.pause_second_slider)
+        bgm_volume_layout=QHBoxLayout()
+        self.bgm_volume_label=QLabel(f"BGM音量调节：30")
+        self.bgm_volume_slider=QSlider(Qt.Horizontal)
+        self.bgm_volume_slider.valueChanged.connect(self.change_bgm_volume)
+        self.bgm_volume_slider.setRange(0,100)
+        self.bgm_volume_slider.setValue(30)
+        bgm_volume_layout.addWidget(self.bgm_volume_label)
+        bgm_volume_layout.addWidget(self.bgm_volume_slider)
         audio_talk_layout.addLayout(talk_speed_layout)
         audio_talk_layout.addLayout(pause_second_layout)
         audio_talk_speed_group.setLayout(audio_talk_layout)
         layout.addWidget(audio_talk_speed_group)
-
+        layout.addLayout(bgm_volume_layout)
 
         self.setLayout(layout)
 
@@ -687,6 +697,11 @@ class SettingsDialog(QDialog):
         pause_second_value = self.pause_second_slider.value()
         self.audio_gen_module.pause_second = pause_second_value / 100
         self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen_module.pause_second:.2f}")
+
+    def change_bgm_volume(self):
+        value=self.bgm_volume_slider.value()
+        self.parent_gui.bgm_player.setVolume(value)
+        self.bgm_volume_label.setText(f"BGM音量调节：{value}")
 
 
 class ViewerGUI(QWidget):
@@ -830,8 +845,6 @@ class ViewerGUI(QWidget):
         self.response_thread.response_signal.connect(self.handle_response)
         self.response_thread.start()
 
-        # 提前初始化设置窗口，传入屏幕尺寸信息
-        self.settings_dialog = SettingsDialog(self, self.screen,self.audio_gen_module)
 
         self.user_input = {}
         self.character_list = characters
@@ -851,14 +864,11 @@ class ViewerGUI(QWidget):
             self.history_data_list,self.dialogs_matching=data
             self.refresh_chat_display()
 
-        self.two_char_names=[self.character_list[self.current_char_index[0]].character_name,self.character_list[self.current_char_index[1]].character_name]
-        if self.character_list[self.current_char_index[0]].character_name=='祥子':
-            self.two_char_names[0]='祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
-        if self.character_list[self.current_char_index[1]].character_name=='祥子':
-            self.two_char_names[0]='祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
+        self.two_char_names=[]
+        self.set_two_char_names()
         self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} ")
         self.display_timer = QTimer()
-        self.display_timer.timeout.connect(lambda: self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} "))
+        self.display_timer.timeout.connect(self.display_timer_timeout)
 
         # === BGM 播放模块 ===
         self.bgm_player = QMediaPlayer()
@@ -880,6 +890,12 @@ class ViewerGUI(QWidget):
         self.bgm_player.setVolume(30)  # 音量 0-100 (Pygame是0.0-1.0，注意区别)
         self.bgm_player.play()
         self.bgm_player.pause()
+
+        self.settings_dialog = SettingsDialog(self, self.screen, self.audio_gen_module)
+
+    def display_timer_timeout(self):
+        self.set_two_char_names()
+        self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]}")
 
     def open_settings_dialog(self):
         """打开设置面板"""
@@ -917,16 +933,19 @@ class ViewerGUI(QWidget):
             new_indices = dialog.get_result()
             if new_indices != self.current_char_index:
                 self.current_char_index = new_indices
-                self.two_char_names = [self.character_list[self.current_char_index[0]].character_name,
-                                       self.character_list[self.current_char_index[1]].character_name]
-                if self.character_list[self.current_char_index[0]].character_name == '祥子':
-                    self.two_char_names[0] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
-                if self.character_list[self.current_char_index[1]].character_name == '祥子':
-                    self.two_char_names[1] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
+                self.set_two_char_names()
                 self.messages_box.setText(f"切换角色为：{self.two_char_names[0]} 和 {self.two_char_names[1]} ")
                 self.to_live2d_change_character_queue.put(self.current_char_index)
                 self.display_timer.setSingleShot(True)
                 self.display_timer.start(2500)
+
+    def set_two_char_names(self):
+        self.two_char_names = [self.character_list[self.current_char_index[0]].character_name,
+                               self.character_list[self.current_char_index[1]].character_name]
+        if self.character_list[self.current_char_index[0]].character_name == '祥子':
+            self.two_char_names[0] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
+        if self.character_list[self.current_char_index[1]].character_name == '祥子':
+            self.two_char_names[1] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
 
     def convert_sakiko_state(self):
         sakiko_exists=False
@@ -938,12 +957,7 @@ class ViewerGUI(QWidget):
             self.message_queue.put("祥子好像不在...")
             return
         self.sakiko_state=not self.sakiko_state
-        self.two_char_names = [self.character_list[self.current_char_index[0]].character_name,
-                               self.character_list[self.current_char_index[1]].character_name]
-        if self.character_list[self.current_char_index[0]].character_name == '祥子':
-            self.two_char_names[0] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
-        if self.character_list[self.current_char_index[1]].character_name == '祥子':
-            self.two_char_names[0] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
+        self.set_two_char_names()
         self.audio_gen_module.sakiko_which_state=self.sakiko_state
         self.message_queue.put(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} ")
 
