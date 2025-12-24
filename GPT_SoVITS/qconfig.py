@@ -409,6 +409,8 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # 全局唯一配置实例
 d_sakiko_config = DSakikoConfig()
+# 手动设置一个默认值（可以被其他的覆盖）
+d_sakiko_config.themeColor.value = "#7799CC"
 qconfig.load("../d_sakiko_config.json", d_sakiko_config)
 # 尝试从旧配置文件迁移配置
 migrate_from_old_config(d_sakiko_config)

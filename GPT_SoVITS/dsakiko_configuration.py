@@ -67,7 +67,7 @@ class DSakikoConfigArea(TransparentScrollArea):
 
         self.custom_setting_area.status_signal.connect(self.show_status)
 
-        self.resize(500, 600)
+        self.setMinimumSize(500, 600)
 
     def add_sub_interface(self, widget: QLabel, object_name: str, text: str):
         """
@@ -144,6 +144,11 @@ class DSakikoConfigArea(TransparentScrollArea):
 
 if __name__ == '__main__':
     import os
+
+    # Windows 下 PyQt5 高 DPI 适配
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
 
     app = QApplication(sys.argv)
     area = DSakikoConfigArea()
