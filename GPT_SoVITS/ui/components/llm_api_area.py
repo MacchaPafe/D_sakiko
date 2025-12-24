@@ -5,7 +5,7 @@ import os
 # 设置这个变量来缩短 litellm 的加载时间，禁止其请求网络
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import litellm
-from PyQt5.QtWidgets import QVBoxLayout, QStackedWidget, QWidget, QFormLayout, QHBoxLayout, QDialog
+from PyQt5.QtWidgets import QVBoxLayout, QStackedWidget, QWidget, QHBoxLayout, QDialog
 
 from qconfig import d_sakiko_config, OTHER_CHAT_PROVIDERS, FAMOUS_CHAT_PROVIDERS, PROVIDER_FRIENDLY_NAME_MAP
 
@@ -123,7 +123,10 @@ class LLMAPIArea(TransparentScrollArea):
         # Page 1: 自定义 API (包含自定义 Base URL, 模型, API Key)
         self.page_custom_api = QWidget()
         self.page_custom_api.setObjectName("page_custom_api")
-        layout_custom = QFormLayout()
+        layout_custom = QVBoxLayout()
+        layout_custom.setContentsMargins(0, 20, 0, 20)
+        layout_custom.setSpacing(10)
+
         self.custom_url_input = LineEdit()
         self.custom_url_input.setMinimumWidth(300)
         self.custom_url_input.setPlaceholderText("https://api.your-llm-provider.com/v1")
@@ -138,16 +141,39 @@ class LLMAPIArea(TransparentScrollArea):
         self.custom_key_input.setMinimumWidth(260)
         self.custom_key_layout.addWidget(self.custom_key_input)
 
-        layout_custom.addRow("API URL:", self.custom_url_input)
-        layout_custom.addRow("模型名称:", self.custom_model_input)
-        layout_custom.addRow("API Key:", self.custom_key_layout)
+        # Row 1: URL
+        h_layout_1 = QHBoxLayout()
+        label_1 = BodyLabel(self.tr("API URL:"), self.page_custom_api)
+        label_1.setFixedWidth(110)
+        h_layout_1.addWidget(label_1)
+        h_layout_1.addWidget(self.custom_url_input)
+        layout_custom.addLayout(h_layout_1)
+
+        # Row 2: Model
+        h_layout_2 = QHBoxLayout()
+        label_2 = BodyLabel(self.tr("模型名称:"), self.page_custom_api)
+        label_2.setFixedWidth(110)
+        h_layout_2.addWidget(label_2)
+        h_layout_2.addWidget(self.custom_model_input)
+        layout_custom.addLayout(h_layout_2)
+
+        # Row 3: Key
+        label_3 = BodyLabel(self.tr("API Key:"), self.page_custom_api)
+        label_3.setFixedWidth(110)
+        self.custom_key_layout.insertWidget(0, label_3)
+        layout_custom.addLayout(self.custom_key_layout)
+
+        layout_custom.addStretch(1)
         self.page_custom_api.setLayout(layout_custom)
         self.llm_stack.addWidget(self.page_custom_api)
 
         # Page 2: Standard API (Model, Key)
         self.page_standard_api = QWidget()
         self.page_standard_api.setObjectName("page_standard_api")
-        layout_standard = QFormLayout()
+        layout_standard = QVBoxLayout()
+        layout_standard.setContentsMargins(0, 20, 0, 20)
+        layout_standard.setSpacing(10)
+
         self.standard_model_combo = EditableComboBox()
         self.standard_model_combo.setMinimumWidth(300)
         self.standard_model_combo.setToolTip("点击下拉框最右侧可以从模型列表中选择。不要选择非文本输出类模型！")
@@ -158,8 +184,21 @@ class LLMAPIArea(TransparentScrollArea):
         self.standard_key_input.setMinimumWidth(260)
         self.standard_key_layout.addWidget(self.standard_key_input)
 
-        layout_standard.addRow("模型名称:", self.standard_model_combo)
-        layout_standard.addRow("API Key:", self.standard_key_layout)
+        # Row 1: Model
+        h_layout_s1 = QHBoxLayout()
+        label_s1 = BodyLabel(self.tr("模型名称:"), self.page_standard_api)
+        label_s1.setFixedWidth(110)
+        h_layout_s1.addWidget(label_s1)
+        h_layout_s1.addWidget(self.standard_model_combo)
+        layout_standard.addLayout(h_layout_s1)
+
+        # Row 2: Key
+        label_s2 = BodyLabel(self.tr("API Key:"), self.page_standard_api)
+        label_s2.setFixedWidth(110)
+        self.standard_key_layout.insertWidget(0, label_s2)
+        layout_standard.addLayout(self.standard_key_layout)
+
+        layout_standard.addStretch(1)
         self.page_standard_api.setLayout(layout_standard)
         self.llm_stack.addWidget(self.page_standard_api)
 
