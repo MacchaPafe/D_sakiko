@@ -5,16 +5,13 @@ from PyQt5.QtWidgets import QVBoxLayout
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import (
-        BodyLabel,
-        ToolTipFilter,
-        ToolTipPosition,
-        ComboBox,
         SettingCardGroup,
         ComboBoxSettingCard,
         FluentIcon,
-    )
+)
 
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
+from ..custom_widgets.custom_switch_setting_card import SwitchSettingCard
 from qconfig import d_sakiko_config
 
 
@@ -28,12 +25,11 @@ class GPTSoVITSArea(TransparentScrollArea):
         self.audio_setting_group = SettingCardGroup(self.tr("音频"), self.view)
         self.audio_setting_group.titleLabel.setVisible(False)
 
-        self.delete_audio_card = ComboBoxSettingCard(
-            d_sakiko_config.delete_audio_cache_on_exit,
+        self.delete_audio_card = SwitchSettingCard(
             FluentIcon.DELETE,
             self.tr("退出时删除缓存音频"),
             self.tr("删除可节省空间，但未备份的历史消息将无法回放对应音频"),
-            texts=[self.tr("不删除"), self.tr("删除")],
+            d_sakiko_config.delete_audio_cache_on_exit,
             parent=self.audio_setting_group,
         )
 
@@ -51,7 +47,7 @@ class GPTSoVITSArea(TransparentScrollArea):
             d_sakiko_config.sovits_inference_sampling_steps,
             FluentIcon.TILES,
             self.tr("推理采样步数"),
-            self.tr("降低采样步数可降低生成时间，但生成质量也会降低\n步数越高，音质越好，推理时间也会相应增加"),
+            self.tr("降低采样步数可降低生成时间，但生成质量也会降低\n步数越高，音质越好，推理时间也会相应增加（重启后生效）"),
             texts=['4', '8', '16', '32'],
             parent=self.audio_setting_group
         )

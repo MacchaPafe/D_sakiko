@@ -11,7 +11,7 @@ from qconfig import d_sakiko_config, OTHER_CHAT_PROVIDERS, FAMOUS_CHAT_PROVIDERS
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
-        ListWidget
+    ListWidget, ToolTipFilter
 
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 
@@ -134,6 +134,7 @@ class LLMAPIArea(TransparentScrollArea):
         self.custom_model_input.setMinimumWidth(300)
         self.custom_model_input.setPlaceholderText("openai/gpt-5")
         self.custom_model_input.setToolTip("请输入完整的模型名称，例如 openai/gpt-5、gemini/gemini-2.5-pro 等。")
+        self.custom_model_input.installEventFilter(ToolTipFilter(self.custom_model_input))
 
         # Custom API Key Input
         self.custom_key_layout = QHBoxLayout()
@@ -177,6 +178,7 @@ class LLMAPIArea(TransparentScrollArea):
         self.standard_model_combo = EditableComboBox()
         self.standard_model_combo.setMinimumWidth(300)
         self.standard_model_combo.setToolTip("点击下拉框最右侧可以从模型列表中选择。不要选择非文本输出类模型！")
+        self.standard_model_combo.installEventFilter(ToolTipFilter(self.standard_model_combo))
 
         # Standard API Key with Toggle
         self.standard_key_layout = QHBoxLayout()

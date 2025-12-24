@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QButtonGroup
 
 from qfluentwidgets import (RadioButton, LineEdit, ToolButton, PushButton,
                             FluentIcon as FIF, ColorDialog, setThemeColor,
-                            FluentIconBase, SimpleExpandGroupSettingCard)
+                            FluentIconBase, SimpleExpandGroupSettingCard, ToolTipFilter)
 
 from qconfig import d_sakiko_config
 
@@ -64,9 +64,11 @@ class ColorItemWidget(QWidget):
 
         self.editButton = ToolButton(FIF.EDIT, self)
         self.editButton.setToolTip("编辑颜色")
+        self.editButton.installEventFilter(ToolTipFilter(self.editButton))
 
         self.deleteButton = ToolButton(FIF.DELETE, self)
         self.deleteButton.setToolTip("删除")
+        self.deleteButton.installEventFilter(ToolTipFilter(self.deleteButton))
 
         self.h_box_layout.addWidget(self.radioButton)
         self.h_box_layout.addWidget(self.colorIndicator)

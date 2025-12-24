@@ -53,7 +53,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         self.pivot.setCurrentItem(self.llm_api_area.objectName())
 
         # 添加标题和分栏组件到主布局
-        self.v_box_layout.setContentsMargins(30, 0, 30, 30)
+        self.v_box_layout.setContentsMargins(30, 10, 30, 30)
         self.v_box_layout.addWidget(self.pivot, 0, Qt.AlignmentFlag.AlignHCenter)
         self.v_box_layout.addWidget(self.stacked_widget, 1, Qt.AlignmentFlag.AlignHCenter)
 
@@ -153,7 +153,7 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     area = DSakikoConfigArea()
     w = FluentWindow()
-    w.setMinimumSize(600, 800)
+    w.setMinimumSize(650, 800)
     w.addSubInterface(area, FluentIcon.HOME, w.tr("设置"))
     # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
     # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
