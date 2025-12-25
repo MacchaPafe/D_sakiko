@@ -1117,7 +1117,7 @@ class ViewerGUI(QWidget):
         )
         html_translation_content=f'<span style="color: #B3D1F2; font-style: italic;">{this_turn_elements["translation"]}</span><br>'
         for dialog in self.dialogs_matching:
-            key, val = next(iter(dialog.items()))
+            key, val = next(iter(dialog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              items()))
             if val[0] == current_index:
                 self.chat_display.append(f'<a href="replaydialog:{val[0]},{val[1]}" style="color: #ED784A">{key}\n</a>')
                 break

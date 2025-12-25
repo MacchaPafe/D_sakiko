@@ -17,6 +17,7 @@ ref_audio_language_list = [
     "多语种混合(粤语)"
 ]
 
+
 class Character:
     def __init__(self):
         # live2d_related 下的角色文件夹名称
@@ -43,10 +44,25 @@ class Character:
         self.qt_css=None
         # 角色的 RAG 知识库路径，可以是 knowledge.txt 文件或 knowledge_db 文件夹（还没做完）
         self.personal_knowledge_path = None
+        # 标记该角色是否为用户扮演的角色（无语音模型，仅有人设）
+        self.is_user = False
 
     def print_attributes(self):
         for key, value in self.__dict__.items():
             print(f"{key} = {value}")
+
+    @staticmethod
+    def create_user(name="User", description="", icon_path=None):
+        """
+        创建一个用户角色实例
+        """
+        character = Character()
+        character.character_name = name
+        character.character_description = description
+        character.icon_path = icon_path
+        character.is_user = True
+        # 用户角色没有模型路径，保持默认的空值或None
+        return character
 
     @staticmethod
     def load_from_folder(folder_path):
@@ -172,6 +188,9 @@ class CharacterManager:
 
         self.character_num = 0
         self.character_class_list=[]
+        # 用户对自己的人格设定
+        self.user_characters=[]
+
         self.load_data()
         print('所有角色：')
         for char in self.character_class_list:
@@ -182,6 +201,7 @@ class CharacterManager:
         """
         加载并获得角色的所有信息
         """
+        # 1. 加载普通角色
         # 扫描 live2d_related 文件夹下的各个角色文件夹
         # 我们认为每个子文件夹都是一个角色
         for char_folder in os.listdir("../live2d_related"):
@@ -191,6 +211,23 @@ class CharacterManager:
                 if character:
                     self.character_num += 1
                     self.character_class_list.append(character)
+
+        # 2. 加载用户角色
+        # 尝试从配置中读取用户角色列表，如果不存在则创建一个默认的
+        user_configs = d_sakiko_config.user_characters.value
+        
+        if not user_configs:
+            # 如果没有配置或配置为空，生成一个默认用户角色
+            default_user = Character.create_user(name="User", description="")
+            self.user_characters.append(default_user)
+        else:
+            for conf in user_configs:
+                user = Character.create_user(
+                    name=conf.get('name', 'User'),
+                    description=conf.get('description', ''),
+                    icon_path=conf.get('avatar_path', None)
+                )
+                self.user_characters.append(user)
 
         #新增调整角色顺序的功能
         if len(self.character_class_list)>int(d_sakiko_config.character_order.value['character_num']):
@@ -219,8 +256,24 @@ class CharacterManager:
             self.character_class_list=new_character_class_list
 
         # 将最终的结果同步到配置中
-        d_sakiko_config.character_order.value['character_names']=[char.character_name for char in self.character_class_list]
-        d_sakiko_config.character_order.value['character_num']=self.character_num
+        self.save_data()
+
+    def save_data(self):
+        """
+        保存角色列表缓存信息和用户自定义人格等内容到配置文件中
+        """
+        d_sakiko_config.character_order.value['character_names'] = [char.character_name for char in
+                                                                    self.character_class_list]
+        d_sakiko_config.character_order.value['character_num'] = self.character_num
+        d_sakiko_config.user_characters.value = [
+            {
+                'name': user_char.character_name,
+                'description': user_char.character_description,
+                'avatar_path': user_char.icon_path
+            }
+            for user_char in self.user_characters
+        ]
+
         d_sakiko_config.save()
 
 # Alias for backward compatibility

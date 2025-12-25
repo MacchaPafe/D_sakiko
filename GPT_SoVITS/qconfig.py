@@ -78,6 +78,11 @@ class DSakikoConfig(QConfig):
             "爱音",
             "祥子"
         ]})
+    
+    # 用户角色列表存储
+    user_characters = ConfigItem(
+        "User", "UserCharacters", []
+    )
 
     # 颜色主题默认信息
     theme_color = ConfigItem("theme_color_setting", "theme_color", [
