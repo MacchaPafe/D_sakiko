@@ -220,8 +220,9 @@ class DSLocalAndVoiceGen:
 				continue
 			# 特殊捕获一个 API Key 余额不足的错误
 			except litellm.exceptions.BadRequestError as e:
-				code = e.response.status_code
-				if code == 402:
+				# 悲伤的是，litellm 把异常封装的过头了，根本获得不了原始的状态码
+				# 特殊处理 DeepSeek 无余额时返回的内容；其他 API 接口我也不清楚是否能捕获
+				if "Insufficient Balance" in e.message:
 					self.report_message_to_main_ui(
 						message_queue,
 						text_queue,
@@ -231,8 +232,15 @@ class DSLocalAndVoiceGen:
 					self.report_message_to_main_ui(
 						message_queue,
 						text_queue,
-						f"未知的请求错误，状态码：{code}。"
+						f"未知的请求错误，状态码：{e.status_code}。"
 					)
+				continue
+			except litellm.exceptions.PermissionDeniedError:
+				self.report_message_to_main_ui(
+					message_queue,
+					text_queue,
+					f"无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够"
+				)
 				continue
 			except Exception:
 				self.report_message_to_main_ui(
