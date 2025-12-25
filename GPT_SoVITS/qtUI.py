@@ -473,7 +473,7 @@ class ChatGUI(QWidget):
     def on_model_loaded(self,model):
         self.whisper_model=model
         self.setWindowTitle("数字小祥")
-        self.start_input_stream()
+        self.voice_button.setEnabled(True)
 
     def start_input_stream(self):
         try:
@@ -485,13 +485,21 @@ class ChatGUI(QWidget):
             )
             # 啟動串流，它將在背景執行緒中持續呼叫 audio_callback
             self.stream.start()
-            self.voice_button.setEnabled(True)
 
         except Exception as e:
             print(f"错误：无法启动麦克风串流。")
             print(f"请检查麦克风是否连接或被其他程序占用。")
             print(f"错误信息: {e}")
             self.voice_button.setEnabled(False)  # 保持按鈕禁用
+
+    def stop_input_stream(self):
+        if hasattr(self, "stream") and self.stream:
+            try:
+                self.stream.stop()
+                self.stream.close()
+                self.stream = None
+            except Exception as e:
+                print(f"关闭串流时出错: {e}", file=sys.stderr)
 
     def audio_callback(self, indata, frames, time, status):
         if self.is_recording:
@@ -502,6 +510,9 @@ class ChatGUI(QWidget):
         self.voice_is_valid=True
 
     def voice_dectect(self):
+        self.start_input_stream()
+        if not hasattr(self, 'stream') or self.stream is None:
+            return
 
         self.voice_is_valid=False
         self.is_recording=True
@@ -521,6 +532,8 @@ class ChatGUI(QWidget):
         self.record_timer.stop()
         self.user_input.setText('stop_talking')
         self.user_input.returnPressed.emit()
+
+        self.stop_input_stream()
 
         if not self.voice_is_valid:
             self.setWindowTitle("录音时间过短，请重试...")
@@ -573,14 +586,7 @@ class ChatGUI(QWidget):
             self.setWindowTitle("数字小祥")
 
     def closeEvent(self, event):
-        # 通过 hasattr 检查 self.stream 是否存在，避免访问未定义的自身属性
-        if hasattr(self, "stream") and self.stream:
-            try:
-                self.stream.stop()
-                self.stream.close()
-            except Exception as e:
-                print(f"關閉串流時出錯: {e}", file=sys.stderr)
-
+        self.stop_input_stream()
         event.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
