@@ -61,8 +61,8 @@ class DSLocalAndVoiceGen:
     @staticmethod
     def report_message_to_main_ui(message_queue, text_queue, message: str):
         """
-		向主界面的消息栏汇报一条错误信息，并且删除最新正在发给模型的对话记录。
-		"""
+        向主界面的消息栏汇报一条错误信息，并且删除最新正在发给模型的对话记录。
+        """
         message_queue.put(message)
         # 返回一个“错误”了的信息
         text_queue.put('error')
@@ -94,40 +94,40 @@ class DSLocalAndVoiceGen:
                 break
 
             user_prompt = f'''
-				请根据以下信息生成对话：
+                请根据以下信息生成对话：
 
-				### 【关于角色A】
-				- **姓名**：{self.character_list[self.current_character_num[0]].character_name}
-				- **角色描述**：{self.character_list[self.current_character_num[0]].character_description} 
-				- **说话风格**：{user_input['character_0']['talk_style']} 
+                ### 【关于角色A】
+                - **姓名**：{self.character_list[self.current_character_num[0]].character_name}
+                - **角色描述**：{self.character_list[self.current_character_num[0]].character_description} 
+                - **说话风格**：{user_input['character_0']['talk_style']} 
 
-				### 【关于角色B】
-				- **姓名**：{self.character_list[self.current_character_num[1]].character_name}
-				- **角色描述**：{self.character_list[self.current_character_num[1]].character_description} 
-				- **说话风格**：{user_input['character_1']['talk_style']}
+                ### 【关于角色B】
+                - **姓名**：{self.character_list[self.current_character_num[1]].character_name}
+                - **角色描述**：{self.character_list[self.current_character_num[1]].character_description} 
+                - **说话风格**：{user_input['character_1']['talk_style']}
 
-				### 【当前情境/话题】
-				{user_input['situation']}
+                ### 【当前情境/话题】
+                {user_input['situation']}
 
-				### 【两角色之间的互动细节】
-				角色{self.character_list[self.current_character_num[0]].character_name}:{user_input['character_0']['interaction_details']}
-				角色{self.character_list[self.current_character_num[1]].character_name}:{user_input['character_1']['interaction_details']}
+                ### 【两角色之间的互动细节】
+                角色{self.character_list[self.current_character_num[0]].character_name}:{user_input['character_0']['interaction_details']}
+                角色{self.character_list[self.current_character_num[1]].character_name}:{user_input['character_1']['interaction_details']}
 
-				### 【要求】
-				- 对话轮数：15轮左右。
-				- 语言：日语，携带同步中文翻译，放到JSON指定的字段中。
-				- 请打破‘一人一句’的轮流发言限制，允许同一角色连续多次发言。为了体现真实感，如果角色在一段话中出现了明显的情绪转折、语气停顿或话题递进，请务必将其拆分为两个或多个连续的 JSON 块（例如：A -> A -> B -> A -> A）。不要把所有内容硬塞进一条消息里。
-				- 格式：务必严格按照指定的JSON格式输出，不要有多余的文字说明！！
+                ### 【要求】
+                - 对话轮数：15轮左右。
+                - 语言：日语，携带同步中文翻译，放到JSON指定的字段中。
+                - 请打破‘一人一句’的轮流发言限制，允许同一角色连续多次发言。为了体现真实感，如果角色在一段话中出现了明显的情绪转折、语气停顿或话题递进，请务必将其拆分为两个或多个连续的 JSON 块（例如：A -> A -> B -> A -> A）。不要把所有内容硬塞进一条消息里。
+                - 格式：务必严格按照指定的JSON格式输出，不要有多余的文字说明！！
 
-				现在开始生成JSON。
-			'''
+                现在开始生成JSON。
+            '''
 
             user_this_turn_msg = [{"role": "system", "content": self.base_prompt},
                                   {"role": "user", "content": user_prompt}]
             message_queue.put("生成文本中...")
             time.sleep(2)
             test_text = '''
-			[
+            [
   {
     "speaker": "香澄",
     "emotion": "surprise",
@@ -159,7 +159,7 @@ class DSLocalAndVoiceGen:
     "translation": "诶！当然可以啦！"
   }
 ]
-			'''
+            '''
             # time.sleep(2)
             # text_queue.put(test_text)
             # continue
@@ -220,8 +220,9 @@ class DSLocalAndVoiceGen:
                 continue
             # 特殊捕获一个 API Key 余额不足的错误
             except litellm.exceptions.BadRequestError as e:
-                code = e.response.status_code
-                if code == 402:
+                # 悲伤的是，litellm 把异常封装的过头了，根本获得不了原始的状态码
+                # 特殊处理 DeepSeek 无余额时返回的内容；其他 API 接口我也不清楚是否能捕获
+                if "Insufficient Balance" in e.message:
                     self.report_message_to_main_ui(
                         message_queue,
                         text_queue,
@@ -231,8 +232,15 @@ class DSLocalAndVoiceGen:
                     self.report_message_to_main_ui(
                         message_queue,
                         text_queue,
-                        f"未知的请求错误，状态码：{code}。"
+                        f"未知的请求错误，状态码：{e.status_code}。"
                     )
+                continue
+            except litellm.exceptions.PermissionDeniedError:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    text_queue,
+                    f"无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够"
+                )
                 continue
             except Exception:
                 self.report_message_to_main_ui(

@@ -194,6 +194,7 @@ class DSLocalAndVoiceGen:
 
 			try:
 				if d_sakiko_config.use_default_deepseek_api.value:
+					print("使用 UP 的 DeepSeek API 进行对话生成")
 					response = completion(
 						model="deepseek/deepseek-chat",
 						messages=self.all_character_msg[self.current_char_index],
@@ -202,6 +203,9 @@ class DSLocalAndVoiceGen:
 				# 第二优先级是检查自定义 API Url
 				# 只要存在自定义 API，就使用自定义 API
 				elif d_sakiko_config.enable_custom_llm_api_provider.value:
+					print("使用自定义大模型 API 进行对话生成")
+					print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
+					print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
 					response = completion(
 						model=d_sakiko_config.custom_llm_api_model.value,
 						messages=self.all_character_msg[self.current_char_index],
@@ -211,6 +215,9 @@ class DSLocalAndVoiceGen:
 					)
 				# 最后：使用选择的预定义 API 提供商
 				else:
+					print("使用预定义大模型 API 进行对话生成")
+					print("Provider: ", d_sakiko_config.llm_api_provider.value)
+					print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
 					response = completion(
 						model=self.concat_provider_and_model(d_sakiko_config.llm_api_provider.value, d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value]),
 						messages=self.all_character_msg[self.current_char_index],
@@ -246,8 +253,9 @@ class DSLocalAndVoiceGen:
 				continue
 			# 特殊捕获一个 API Key 余额不足的错误
 			except litellm.exceptions.BadRequestError as e:
-				code = e.response.status_code
-				if code == 402:
+				# 悲伤的是，litellm 把异常封装的过头了，根本获得不了原始的状态码
+				# 特殊处理 DeepSeek 无余额时返回的内容；其他 API 接口我也不清楚是否能捕获
+				if "Insufficient Balance" in e.message:
 					self.report_message_to_main_ui(
 						message_queue,
 						is_text_generating_queue,
@@ -257,8 +265,15 @@ class DSLocalAndVoiceGen:
 					self.report_message_to_main_ui(
 						message_queue,
 						is_text_generating_queue,
-						f"未知的请求错误，状态码：{code}。"
+						f"未知的请求错误，状态码：{e.status_code}。"
 					)
+				continue
+			except litellm.exceptions.PermissionDeniedError:
+				self.report_message_to_main_ui(
+					message_queue,
+					is_text_generating_queue,
+					f"无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够"
+				)
 				continue
 			except Exception:
 				self.report_message_to_main_ui(
