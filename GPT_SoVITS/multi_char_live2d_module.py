@@ -5,6 +5,68 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob, os,time
 from random import randint
+import sys
+
+
+def _load_cjk_font(size: int, bold: bool = False) -> pygame.font.Font:
+    """尽量加载支持中日韩(CJK)字符的字体。
+
+    优先：项目内置 font/msyh.ttc
+    其次：在系统字体里按候选列表匹配（Windows/macOS/Linux）
+
+    说明：macOS 上原先写死的 "Microsoft YaHei" 往往不存在，
+    pygame 会回退到不含中文的默认字体，从而显示为“方块”。
+    """
+
+    if not pygame.font.get_init():
+        pygame.font.init()
+
+    # 1) 项目内置字体（相对仓库根目录）
+    # script_dir = os.path.dirname(os.path.abspath(__file__))
+    # project_root = os.path.abspath(os.path.join(script_dir, ".."))
+    # bundled_font_path = os.path.join(project_root, "font", "msyh.ttc")
+    # if os.path.exists(bundled_font_path):
+    #     font = pygame.font.Font(bundled_font_path, size)
+    #     font.set_bold(bold)
+    #     return font
+
+    # 2) 系统字体候选（尽量覆盖 Win/macOS/Linux）
+    candidates = [
+        # Windows
+        "Microsoft YaHei",
+        "Microsoft YaHei UI",
+        "SimHei",
+        "SimSun",
+        "MS Gothic",
+        # macOS
+        "PingFang SC",
+        "Hiragino Sans GB",
+        "Heiti SC",
+        "STHeiti",
+        # 常见跨平台/发行版字体
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "WenQuanYi Micro Hei",
+        "Arial Unicode MS",
+    ]
+
+    for name in candidates:
+        try:
+            matched_path = pygame.font.match_font(name)
+        except Exception:
+            matched_path = None
+        if matched_path:
+            font = pygame.font.Font(matched_path, size)
+            font.set_bold(bold)
+            return font
+
+    # 3) 最后兜底：默认字体（可能不含中文，但避免崩溃）
+    font = pygame.font.Font(None, size)
+    font.set_bold(bold)
+    return font
+
+from live2d_module import LAppModel
+
 
 class TextOverlay:
     def __init__(self, window_size,char_names):
@@ -23,8 +85,9 @@ class TextOverlay:
         self.font_size_main = max(12, int(self.surface_h * 0.155))
         self.font_size_name = max(10, int(self.surface_h * 0.15))
 
-        self.main_font = pygame.font.SysFont("Microsoft YaHei", self.font_size_main, bold=True)
-        self.name_font = pygame.font.SysFont("Microsoft YaHei", self.font_size_name, bold=True)
+        # macOS 下常见问题：找不到“微软雅黑”导致回退字体不含中文，显示成方块
+        self.main_font = _load_cjk_font(self.font_size_main, bold=True)
+        self.name_font = _load_cjk_font(self.font_size_name, bold=True)
 
         # === 3. 动态计算 UI 元素的尺寸参数 ===
         # 名字框高度：占画布高度的 22%
@@ -382,26 +445,50 @@ class Live2DModule:
                     to_live2d_module_queue,
                     tell_qt_this_turn_finish_queue):
         # print("正在开启Live2D模块")
-        import ctypes
+        # 只在 Windows 下处理高DPI问题，因为 MacOS 下 PyQt 根本就没有模糊问题
+        # 还有获得窗口位置的 api 是 Windows 特有的，MacOS 不能用
+        if sys.platform == "win32":
+            import ctypes
 
-        # 1. 【关键】开启高DPI感知，解决模糊问题
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            ctypes.windll.user32.SetProcessDPIAware()
+            # 1. 【关键】开启高DPI感知，解决模糊问题
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                ctypes.windll.user32.SetProcessDPIAware()
 
-        # 2. 直接用 ctypes 获取真实分辨率，不再需要 tkinter
-        user32 = ctypes.windll.user32
-        desktop_w = user32.GetSystemMetrics(0)
-        desktop_h = user32.GetSystemMetrics(1)
-        win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
-        pygame_win_pos_w, pygame_win_pos_h = int(0.55 * desktop_w - 1.33*win_w_and_h), int(
-            0.5 * desktop_h - 0.5 * win_w_and_h)
-        # 以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
-        caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
-                          + ctypes.windll.user32.GetSystemMetrics(33)
-                          + ctypes.windll.user32.GetSystemMetrics(92))  # 标题栏高度+厚度
-        os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h + caption_height}"  # 设置窗口位置，与qt窗口对齐
+            # 2. 直接用 ctypes 获取真实分辨率，不再需要 tkinter
+            user32 = ctypes.windll.user32
+            desktop_w = user32.GetSystemMetrics(0)
+            desktop_h = user32.GetSystemMetrics(1)
+            win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
+            pygame_win_pos_w, pygame_win_pos_h = int(0.55 * desktop_w - 1.33*win_w_and_h), int(
+                0.5 * desktop_h - 0.5 * win_w_and_h)
+            # 以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
+            caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
+                              + ctypes.windll.user32.GetSystemMetrics(33)
+                              + ctypes.windll.user32.GetSystemMetrics(92))  # 标题栏高度+厚度
+            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h + caption_height}"  # 设置窗口位置，与qt窗口对齐
+        else:
+            # MacOS / Linux 适配方案
+            # 提前初始化 display 模块以获取屏幕信息
+            if not pygame.display.get_init():
+                pygame.display.init()
+            
+            info = pygame.display.Info()
+            desktop_w = info.current_w
+            desktop_h = info.current_h
+            
+            # 保持与 Windows 相同的窗口大小比例 (屏幕高度的 70%)
+            win_w_and_h = int(0.7 * desktop_h)
+            
+            # 计算窗口位置 (保持相对位置逻辑一致)
+            pygame_win_pos_w = int(0.55 * desktop_w - 1.33 * win_w_and_h)
+            pygame_win_pos_h = int(0.5 * desktop_h - 0.5 * win_w_and_h)
+            
+            # 设置窗口位置环境变量
+            # MacOS/Linux 不需要像 Windows 那样复杂的标题栏高度补偿，或者难以精确获取，直接使用计算出的位置
+            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h}"
+
         pygame.init()
         live2d.init()
 
@@ -409,10 +496,10 @@ class Live2DModule:
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
         pygame.display.set_caption('数字小祥 小剧场')
-        model_0 = live2d.LAppModel()
-        model_0.LoadModelJson(self.PATH_JSON_0)
-        model_1 = live2d.LAppModel()
-        model_1.LoadModelJson(self.PATH_JSON_1)
+        model_0 = LAppModel()
+        model_0.LoadModelJson(self.PATH_JSON_0, disable_precision=True)
+        model_1 = LAppModel()
+        model_1.LoadModelJson(self.PATH_JSON_1, disable_precision=True)
         model_0.Resize(int(win_w_and_h*1.33), win_w_and_h)
         model_0.SetAutoBlinkEnable(True)
         model_0.SetAutoBreathEnable(True)
@@ -469,9 +556,9 @@ class Live2DModule:
                             sakiko_idx=i
                     this_sakiko_model=model_0 if sakiko_idx == 0 else model_1
                     if "live2D_model_costume" in this_sakiko_model.modelHomeDir:
-                        this_sakiko_model.LoadModelJson('../live2d_related/sakiko/live2D_model/3.model.json')
+                        this_sakiko_model.LoadModelJson('../live2d_related/sakiko/live2D_model/3.model.json', disable_precision=True)
                     else:
-                        this_sakiko_model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                        this_sakiko_model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
                         this_sakiko_model.StartMotion('rana', 45, 3)
                     this_sakiko_model.Resize(int(win_w_and_h*1.33), win_w_and_h)
                     this_sakiko_model.SetAutoBlinkEnable(True)
@@ -503,8 +590,8 @@ class Live2DModule:
                 if self.playlist_pointer != len(self.playlist):
                     is_change=False
                 if is_change:
-                    model_0.LoadModelJson(self.character_list[self.current_character_num[0]].live2d_json)
-                    model_1.LoadModelJson(self.character_list[self.current_character_num[1]].live2d_json)
+                    model_0.LoadModelJson(self.character_list[self.current_character_num[0]].live2d_json, disable_precision=True)
+                    model_1.LoadModelJson(self.character_list[self.current_character_num[1]].live2d_json, disable_precision=True)
                     model_0.Resize(int(win_w_and_h*1.33), win_w_and_h)
                     model_0.SetAutoBlinkEnable(True)
                     model_0.SetAutoBreathEnable(True)
@@ -573,10 +660,10 @@ class Live2DModule:
                                 num=randint(36, 41) if this_turn_elements['char_name']!='祥子' else randint(27, 28)
                             else:  # 大模型返回有问题，做待机动作
                                 num=randint(43, 50) if this_turn_elements['char_name']!='祥子' else randint(29, 35)
-                            this_turn_model.StartMotion('rana', num, 3,lambda: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
+                            this_turn_model.StartMotion('rana', num, 3,lambda *args: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
                             this_turn_elements['live2d_motion_num']=num
                         else:
-                            this_turn_model.StartMotion('rana', int(this_turn_elements['live2d_motion_num']), 3,lambda: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
+                            this_turn_model.StartMotion('rana', int(this_turn_elements['live2d_motion_num']), 3,lambda *args: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
 
                         tell_qt_this_turn_finish_queue.put(this_turn_elements)
                         overlay.set_text(this_turn_elements['char_name'],
@@ -613,6 +700,23 @@ class Live2DModule:
         live2d.dispose()
         # 结束pygame
         pygame.quit()
+
+
+def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue):
+    """Live2D 子进程入口。
+
+    注意：该函数必须在模块顶层定义，才能在 Windows/macOS 的 spawn 模式下被 pickle。
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+
+    import character
+    from multi_char_live2d_module import Live2DModule
+
+    get_char_attr = character.GetCharacterAttributes()
+    live2d_player = Live2DModule(get_char_attr.character_class_list)
+    live2d_player.play_live2d(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue)
 
 
 if __name__ == "__main__":

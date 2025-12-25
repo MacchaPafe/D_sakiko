@@ -4,6 +4,7 @@ sys.path.insert(0, script_dir)
 
 from queue import Queue
 import threading
+import multiprocessing
 import time
 import re
 
@@ -16,6 +17,10 @@ import audio_generator
 import inference_emotion_detect
 import live2d_module
 import qtUI
+
+import faulthandler
+
+faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []
@@ -47,12 +52,10 @@ def main_thread():
 
             this_turn_response=text_queue.get()
             if this_turn_response=='bye':
-                emotion_queue.put('bye')    #退出live2D线程
+                # print("主线程收到退出信号，正在退出...")
+                emotion_queue.put('bye')    #退出live2D进程
+                # 这里不要管动画有没有放完；后面有 join 阻塞 live2d 进程，在 live2d 放完前，主进程不会退出
                 dp2qt_queue.put("（再见）")
-                while True:
-                    if not live2d_player.run:
-                        break
-                    time.sleep(1)
                 QT_message_queue.put('bye')
                 to_audio_generator_text_queue.put('bye')
                 break
@@ -136,7 +139,7 @@ def main_thread():
                         dp2qt_queue.put(orig_text + '\n[翻译]' + trans_text + '[翻译结束]')
                     break
 
-                while not live2d_player.live2d_this_turn_motion_complete:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                while not is_motion_complete.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.2)
                 audio_file_path_queue.put(audio_gen.audio_file_path)    #音频文件队列
                 if cleaned_text!="不能送去合成":
@@ -152,7 +155,7 @@ def main_thread():
                     emotion_this_three_sentences ='LABEL_0'
                 if i==0:
                     is_text_generating_queue.get() #让模型停止思考动作
-                while not live2d_player.live2d_this_turn_motion_complete:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                while not is_motion_complete.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.5)
                 emotion_queue.put(emotion_this_three_sentences)     #情感标签队列
                 if not is_ja:
@@ -160,11 +163,40 @@ def main_thread():
                 else:
                     dp2qt_queue.put(output_for_audio+'\n[翻译]'+this_turn_response[i][1]+'[翻译结束]')
             is_audio_play_complete.put('yes')   #不让LLM模块提前进入下一个循环
+    # print("主线程已退出完成")
+
+def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, desktop_w, desktop_h, is_motion_complete):
+    """
+    Live2D 子进程入口函数
+    不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
+    """
+    try:
+        # 在子进程中重新导入和创建 characters
+        import character
+        get_all = character.GetCharacterAttributes()
+        characters = get_all.character_class_list
+        
+        import live2d_module
+        live2d_player = live2d_module.Live2DModule()
+        live2d_player.live2D_initialize(characters)
+        live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, desktop_w, desktop_h, is_motion_complete)
+    except Exception as e:
+        print(f"[Live2D进程错误] {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__=='__main__':
+    # 在 Windows 上必须设置 spawn 方法
+    if os.name == 'nt':
+        multiprocessing.set_start_method('spawn', force=True)
 
-    os.system('cls')
+    # 添加本文件的目录到导入 Path
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+    from qconfig import d_sakiko_config
+
     print("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
@@ -172,16 +204,18 @@ if __name__=='__main__':
 
     #模块间传参队列
     text_queue=Queue()
-    emotion_queue=Queue()
-    audio_file_path_queue=Queue()
+    emotion_queue=multiprocessing.Queue()
+    audio_file_path_queue=multiprocessing.Queue()
     is_audio_play_complete=Queue()
-    is_text_generating_queue=Queue()
+    is_text_generating_queue=multiprocessing.Queue()
     dp2qt_queue=Queue()
     qt2dp_queue=Queue()
     QT_message_queue=Queue()
-    char_is_converted_queue=Queue()
-    change_char_queue=Queue()
+    char_is_converted_queue=multiprocessing.Queue()
+    change_char_queue=multiprocessing.Queue()
     to_audio_generator_text_queue=Queue()
+    
+    is_motion_complete = multiprocessing.Value('b', True)
 
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters)
 
@@ -243,24 +277,25 @@ if __name__=='__main__':
                         QT_message_queue=QT_message_queue
                         ,characters=characters,
                         dp_chat=dp_chat,
-                        audio_gen=audio_gen,live2d_mod=live2d_player,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model
+                        audio_gen=audio_gen,live2d_mod=live2d_player,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model,
+                        is_motion_complete=is_motion_complete
                         )
 
-
-
-
     font_id = QFontDatabase.addApplicationFont(font_path)    #设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    font = QFont(font_family, 12)
-    qt_app.setFont(font)
+    font_family = QFontDatabase.applicationFontFamilies(font_id)
+    if font_family:
+        font = QFont(font_family[0], 12)
+        qt_app.setFont(font)
 
     from PyQt5.QtWidgets import QDesktopWidget          #设置qt窗口位置，与live2d对齐
-    screen_w_mid=int(0.5*QDesktopWidget().screenGeometry().width())
-    screen_h_mid=int(0.5*QDesktopWidget().screenGeometry().height())
-    qt_win.move(screen_w_mid,int(screen_h_mid-0.35*QDesktopWidget().screenGeometry().height()))   #因为窗口高度设置的是0.7倍桌面宽
+    desktop_w = QDesktopWidget().screenGeometry().width()
+    desktop_h = QDesktopWidget().screenGeometry().height()
+    screen_w_mid=int(0.5*desktop_w)
+    screen_h_mid=int(0.5*desktop_h)
+    qt_win.move(screen_w_mid,int(screen_h_mid-0.35*desktop_h))   #因为窗口高度设置的是0.7倍桌面宽
 
-
-    tr1=threading.Thread(target=live2d_player.play_live2d,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue))
+    # 不传递 characters 给子进程，在子进程中重新创建，避免 Windows 下 pickle 序列化截断问题
+    tr1=multiprocessing.Process(target=run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue, desktop_w, desktop_h, is_motion_complete))
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
                                                              is_audio_play_complete,
                                                              is_text_generating_queue,
@@ -280,19 +315,46 @@ if __name__=='__main__':
     qt_win.show()
     qt_app.exec_()
 
-    with open('../if_delete_audio_cache.txt', "r", encoding="utf-8") as f:
-        try:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    if_delete = int(line)
-                    break
-        except Exception:
-            if_delete = 0
-            raise Warning("if_delete_audio_cache.txt的文件参数设置错误，应该输入一个数字！")
+    # print("PyQt 窗口关闭，程序正在清理...")
+    # 尝试退出所有子程序。
+    # 由于有些程序可能已经退出，所以使用 try-except 来捕获异常，防止程序崩溃。
+    try:
+        text_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # DeepSeek 推理线程
+        qt2dp_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # live2d 播放进程
+        emotion_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # 主窗口
+        QT_message_queue.put('bye')
+    except Exception:
+        pass
+    try:
+        # 语音生成线程
+        to_audio_generator_text_queue.put('bye')
+    except Exception:
+        pass
 
+    tr1.join()
+    # print("Live2D 线程已确认退出")
+    tr2.join()
+    # print("DP 线程已确认退出")
+    tr3.join()
+    # print("音频生成线程已确认退出")
+    tr4.join()
+    # print("主线程已确认退出")
 
-    if if_delete!=0:
+    if_delete = d_sakiko_config.delete_audio_cache_on_exit.value
+
+    if if_delete:
         folder_path = '../reference_audio/generated_audios_temp'    #删除音频缓存
 
         for filename in os.listdir(folder_path):

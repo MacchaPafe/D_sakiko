@@ -1,14 +1,13 @@
 import os
 import time
 
-if os.path.exists('../reference_audio/GSV_sample_rate.txt'):
-    with (open('../reference_audio/GSV_sample_rate.txt', 'r', encoding='utf-8') as f):
-        gsv_sam_rate = int(f.read())
-else:
-    # 在指定位置创建文件并写入初始值
-    with open('../reference_audio/GSV_sample_rate.txt', 'w', encoding='utf-8') as f:
-        f.write('16')
-    gsv_sam_rate = 16
+os.chdir(os.path.dirname(__file__))
+
+from qconfig import d_sakiko_config
+
+
+# 读取 GPT_SoVITS 生成时的采样步数信息
+gsv_sam_rate = d_sakiko_config.sovits_inference_sampling_steps.value
 
 def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
     from inference_webui import change_gpt_weights, change_sovits_weights, get_tts_wav
@@ -31,6 +30,7 @@ def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
             time.sleep(0.2)
 
         if info=='bye':
+            # print("推理模块收到退出信号，正在退出...")
             break
 
         ref_text_path=info[2]
@@ -69,6 +69,7 @@ def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
             print( '语音合成错误信息：',e)
             generate_count += 1
             from_gptsovits_queue.put('../reference_audio\\silent_audio\\silence.wav')
+    # print("推理模块已退出完成")
 
 
 
