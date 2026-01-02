@@ -61,10 +61,6 @@ class DSakikoConfigArea(TransparentScrollArea):
         self.save_button.clicked.connect(self.save_config)
         self.v_box_layout.addWidget(self.save_button)
 
-        self.exit_button = PushButton(self.tr("关闭窗口"), self)
-        self.exit_button.clicked.connect(self.close)
-        self.v_box_layout.addWidget(self.exit_button)
-
         self.custom_setting_area.status_signal.connect(self.show_status)
 
         self.setMinimumSize(500, 600)
@@ -100,7 +96,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         """
         在点击保存按键时，显示保存状态信息，并在3秒后自动清除。
         """
-        InfoBar.new(icon=icon, title="", content=message, isClosable=True, position=InfoBarPosition.BOTTOM, duration=3000,
+        InfoBar.new(icon=icon, title="", content=message, isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=3000,
                     parent=self)
 
     def load_config_to_ui(self):
@@ -142,6 +138,17 @@ class DSakikoConfigArea(TransparentScrollArea):
             self.show_status(InfoBarIcon.SUCCESS, self.tr("保存成功！大模型相关配置立刻生效，音频推理与角色顺序等配置在下次启动时应用"))
 
 
+class DSakikoConfigWindow(FluentWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(self.tr("数字小祥配置"))
+
+        self.setMinimumSize(650, 800)
+
+        area = DSakikoConfigArea()
+        self.addSubInterface(area, FluentIcon.HOME, self.tr("设置"))
+
+
 if __name__ == '__main__':
     import os
 
@@ -155,9 +162,6 @@ if __name__ == '__main__':
     w = FluentWindow()
     w.setMinimumSize(650, 800)
     w.addSubInterface(area, FluentIcon.HOME, w.tr("设置"))
-    # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
-    # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
-    area.closeEvent = lambda e: app.quit()
 
     w.show()
     sys.exit(app.exec_())

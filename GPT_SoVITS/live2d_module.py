@@ -100,11 +100,11 @@ class Live2DModule:
 
 
     # 动作播放开始后调用
-    def onStartCallback(self):
+    def onStartCallback(self, *args):
         self.motion_is_over=False
         #print(f"touched and motion [] is started")
 
-    def onStartCallback_think_motion_version(self):
+    def onStartCallback_think_motion_version(self, *args):
         self.think_motion_is_over = False
         if self.if_sakiko:
             pygame.display.set_caption("小祥思考中")
@@ -122,13 +122,13 @@ class Live2DModule:
             self.wavHandler.Start(audio_file_path)
 
     # 动作播放结束后调用
-    def onFinishCallback(self):
+    def onFinishCallback(self, *args):
         #print("motion finished")
         self.motion_is_over=True
         global idle_recover_timer
         idle_recover_timer = time.time()
 
-    def onFinishCallback_think_motion_version(self):
+    def onFinishCallback_think_motion_version(self, *args):
         self.think_motion_is_over=True
 
 
@@ -356,63 +356,62 @@ class Live2DModule:
                 last_emotion=emotion
                 if self.if_sakiko:
                     if emotion=='LABEL_0': #happiness
-                            model.StartMotion(mtn_group[3], randint(0, 5), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(0, 5), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_1':    #sadness
-                            model.StartMotion(mtn_group[3], randint(6, 9), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(6, 9), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_2':    #anger
 
-                            model.StartMotion(mtn_group[3],randint(10, 16), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
+                            model.StartMotion(mtn_group[3],randint(10, 16), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
                     elif emotion=='LABEL_3':    #disgust
-                            model.StartMotion(mtn_group[3], randint(17, 18), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(17, 18), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_4':    #like
-                            model.StartMotion(mtn_group[3], randint(19, 22), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(19, 22), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_5':    #surprise
-                            model.StartMotion(mtn_group[3], randint(23, 26), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(23, 26), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
 
                     elif emotion=='LABEL_6':    #fear
-                            model.StartMotion(mtn_group[3], randint(27, 28), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
+                            model.StartMotion(mtn_group[3], randint(27, 28), 3, lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
                     else:
                             pass
                 else:
                     if emotion == 'LABEL_0':  # happiness
                         model.StartMotion(mtn_group[3], randint(0, 5), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_1':  # sadness
                         model.StartMotion(mtn_group[3], randint(6, 11), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_2':  # anger
 
                         model.StartMotion(mtn_group[3], randint(12, 17), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_3':  # disgust
                         model.StartMotion(mtn_group[3], randint(18, 23), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_4':  # like
                         model.StartMotion(mtn_group[3], randint(24, 29), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_5':  # surprise
                         model.StartMotion(mtn_group[3], randint(30, 35), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
 
                     elif emotion == 'LABEL_6':  # fear
                         model.StartMotion(mtn_group[3], randint(36, 41), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
+                                          lambda *args: self.onStartCallback_emotion_version(this_turn_audio_file_path),
                                           self.onFinishCallback)
                     else:
                         pass

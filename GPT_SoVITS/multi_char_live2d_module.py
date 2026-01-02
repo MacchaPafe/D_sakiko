@@ -372,7 +372,7 @@ class Live2DModule:
         if audio_file_path!='../reference_audio/silent_audio/silence.wav':  #该函数无法处理无声音频
             self.wavHandler.Start(audio_file_path)
 
-    def onFinishCallback_motion(self):
+    def onFinishCallback_motion(self, *args):
         self.motion_is_over=True
 
 
@@ -573,10 +573,10 @@ class Live2DModule:
                                 num=randint(36, 41) if this_turn_elements['char_name']!='祥子' else randint(27, 28)
                             else:  # 大模型返回有问题，做待机动作
                                 num=randint(43, 50) if this_turn_elements['char_name']!='祥子' else randint(29, 35)
-                            this_turn_model.StartMotion('rana', num, 3,lambda: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
+                            this_turn_model.StartMotion('rana', num, 3,lambda *args: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
                             this_turn_elements['live2d_motion_num']=num
                         else:
-                            this_turn_model.StartMotion('rana', int(this_turn_elements['live2d_motion_num']), 3,lambda: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
+                            this_turn_model.StartMotion('rana', int(this_turn_elements['live2d_motion_num']), 3,lambda *args: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
 
                         tell_qt_this_turn_finish_queue.put(this_turn_elements)
                         overlay.set_text(this_turn_elements['char_name'],

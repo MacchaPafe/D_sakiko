@@ -44,9 +44,6 @@ class DSLocalAndVoiceGen:
 			self.if_sakiko = True
 		else:
 			self.if_sakiko = False
-		
-		print(self.all_character_msg[self.current_char_index])
-		print(len(json.dumps(self.all_character_msg[self.current_char_index]).encode('utf-8')))
 
 
 	def change_character(self):
@@ -194,33 +191,26 @@ class DSLocalAndVoiceGen:
 
 			try:
 				if d_sakiko_config.use_default_deepseek_api.value:
-					print("使用 UP 的 DeepSeek API 进行对话生成")
 					response = completion(
 						model="deepseek/deepseek-chat",
-						messages=self.all_character_msg[self.current_char_index],
+						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
 						api_key=self.model
 					)
 				# 第二优先级是检查自定义 API Url
 				# 只要存在自定义 API，就使用自定义 API
 				elif d_sakiko_config.enable_custom_llm_api_provider.value:
-					print("使用自定义大模型 API 进行对话生成")
-					print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
-					print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
 					response = completion(
 						model=d_sakiko_config.custom_llm_api_model.value,
-						messages=self.all_character_msg[self.current_char_index],
+						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
 						api_key=d_sakiko_config.custom_llm_api_key.value,
 						# 自定义 API 地址
 						base_url=d_sakiko_config.custom_llm_api_url.value
 					)
 				# 最后：使用选择的预定义 API 提供商
 				else:
-					print("使用预定义大模型 API 进行对话生成")
-					print("Provider: ", d_sakiko_config.llm_api_provider.value)
-					print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
 					response = completion(
 						model=self.concat_provider_and_model(d_sakiko_config.llm_api_provider.value, d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value]),
-						messages=self.all_character_msg[self.current_char_index],
+						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
 						api_key=d_sakiko_config.llm_api_key.value[d_sakiko_config.llm_api_provider.value]
 					)
 			except litellm.exceptions.Timeout:

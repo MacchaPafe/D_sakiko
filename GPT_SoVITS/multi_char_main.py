@@ -845,6 +845,27 @@ class ViewerGUI(QWidget):
         self.response_thread.response_signal.connect(self.handle_response)
         self.response_thread.start()
 
+        # === BGM 播放模块 ===
+        self.bgm_player = QMediaPlayer()
+        self.bgm_playlist = QMediaPlaylist()
+
+        # 1. 设置 BGM 文件路径 (建议用绝对路径，防止 QUrl 找不到文件)
+        # 假设你的 BGM 在项目根目录下的 assets 文件夹里
+        bgm_path = os.path.abspath("../reference_audio/small_theater_bgm/Normal.mp3")
+        url = QUrl.fromLocalFile(bgm_path)
+
+        # 2. 添加到播放列表
+        self.bgm_playlist.addMedia(QMediaContent(url))
+
+        # 3. 设置循环模式 (CurrentItemInLoop = 单曲循环)
+        self.bgm_playlist.setPlaybackMode(QMediaPlaylist.CurrentItemInLoop)
+
+        # 4. 载入并播放
+        self.bgm_player.setPlaylist(self.bgm_playlist)
+        self.bgm_player.setVolume(30)  # 音量 0-100 (Pygame是0.0-1.0，注意区别)
+        self.bgm_player.play()
+        self.bgm_player.pause()
+
         # 提前初始化设置窗口，传入屏幕尺寸信息
         self.settings_dialog = SettingsDialog(self, self.screen,self.audio_gen_module)
 
@@ -874,27 +895,6 @@ class ViewerGUI(QWidget):
         self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} ")
         self.display_timer = QTimer()
         self.display_timer.timeout.connect(lambda: self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} "))
-
-        # === BGM 播放模块 ===
-        self.bgm_player = QMediaPlayer()
-        self.bgm_playlist = QMediaPlaylist()
-
-        # 1. 设置 BGM 文件路径 (建议用绝对路径，防止 QUrl 找不到文件)
-        # 假设你的 BGM 在项目根目录下的 assets 文件夹里
-        bgm_path = os.path.abspath("../reference_audio/small_theater_bgm/Normal.mp3")
-        url = QUrl.fromLocalFile(bgm_path)
-
-        # 2. 添加到播放列表
-        self.bgm_playlist.addMedia(QMediaContent(url))
-
-        # 3. 设置循环模式 (CurrentItemInLoop = 单曲循环)
-        self.bgm_playlist.setPlaybackMode(QMediaPlaylist.CurrentItemInLoop)
-
-        # 4. 载入并播放
-        self.bgm_player.setPlaylist(self.bgm_playlist)
-        self.bgm_player.setVolume(30)  # 音量 0-100 (Pygame是0.0-1.0，注意区别)
-        self.bgm_player.play()
-        self.bgm_player.pause()
 
         self.settings_dialog = SettingsDialog(self, self.screen, self.audio_gen_module)
 

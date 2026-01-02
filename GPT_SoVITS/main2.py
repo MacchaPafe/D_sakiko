@@ -9,6 +9,7 @@ import time
 import re
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QFontDatabase
 
 import character
@@ -247,6 +248,9 @@ if __name__=='__main__':
                 except Exception:
                     pass  # 删不掉就跳过
 
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
 
     qt_app=QApplication(sys.argv)
     qt_win=qtUI.ChatGUI(dp2qt_queue=dp2qt_queue,
