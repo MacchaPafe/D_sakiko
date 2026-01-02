@@ -2,10 +2,16 @@
 import dataclasses
 import re
 import warnings
+import os
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Optional, List, Union
 import json
 
+import jinja2
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from character import Character
 from emotion_enum import EmotionEnum
 
@@ -111,19 +117,148 @@ class Message:
             raise ValueError(f"未知的角色视角: {role}")
 
 
+class SystemPromptGenerator(ABC):
+    @abstractmethod
+    def generate(self) -> str:
+        """
+        生成 System Prompt
+        """
+        pass
+
+    @abstractmethod
+    def to_dict(self) -> Dict:
+        """
+        序列化配置，以便存储到 JSON
+        """
+        pass
+
+    @classmethod
+    @abstractmethod
+    def from_dict(cls, data: Dict) -> "SystemPromptGenerator":
+        """
+        从字典反序列化
+        """
+        pass
+
+
+class StaticPromptGenerator(SystemPromptGenerator):
+    def __init__(self, prompt_content: str):
+        self.prompt_content = prompt_content
+
+    def generate(self) -> str:
+        return self.prompt_content
+
+    def to_dict(self) -> Dict:
+        return {"type": "static", "content": self.prompt_content}
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "StaticPromptGenerator":
+        return cls(prompt_content=data.get("content", ""))
+
+
+class SingleCharacterPromptGenerator(SystemPromptGenerator):
+    def __init__(self, character_name: str, user_character_name: str = "User"):
+        self.character_name = character_name
+        self.user_character_name = user_character_name
+        
+        # 加载模板
+        # 模板位于 ../templates/single_character.jinja (相对于此文件)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        template_path = os.path.join(current_dir, "..", "templates", "single_character.jinja")
+
+        with open(template_path, "r", encoding="utf-8") as f:
+            self.template = jinja2.Template(f.read())
+
+    def generate(self) -> str:
+        # 延迟导入以避免循环依赖
+        from character import CharacterManager
+        char_manager = CharacterManager()
+        
+        # 获取角色描述
+        character_description = ""
+        
+        target_char = None
+        for char in char_manager.character_class_list:
+            if char.character_name == self.character_name:
+                target_char = char
+                break
+        
+        if target_char:
+            character_description = target_char.character_description
+        
+        # 获取用户描述
+        user_character_description = ""
+        if self.user_character_name != "User":
+            for char in char_manager.user_characters:
+                if char.character_name == self.user_character_name:
+                    user_character_description = char.character_description
+                    break
+        
+        return self.template.render(
+            character_name=self.character_name,
+            character_description=character_description,
+            user_character_name=self.user_character_name,
+            user_character_description=user_character_description,
+            anime_name="", 
+            ensure_age=True 
+        )
+
+    def to_dict(self) -> Dict:
+        return {
+            "type": "single_character",
+            "character_name": self.character_name,
+            "user_character_name": self.user_character_name
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "SingleCharacterPromptGenerator":
+        return cls(
+            character_name=data["character_name"],
+            user_character_name=data.get("user_character_name", "User")
+        )
+
+
+class MultiCharacterPromptGenerator(SystemPromptGenerator):
+    def __init__(self, character_names: List[str]):
+        self.character_names = character_names
+        # 暂时留空实现
+    
+    def generate(self) -> str:
+        return "" # TODO: Implement
+
+    def to_dict(self) -> Dict:
+        return {
+            "type": "multi_character",
+            "character_names": self.character_names
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "MultiCharacterPromptGenerator":
+        return cls(character_names=data["character_names"])
+
+
 class Chat:
     """
     每个对话中包含的一切信息
     """
-    def __init__(self, name: str = "新对话", start_message: str = "", message_list: Optional[List[Message]] = None):
+    def __init__(self, name: str = "新对话",
+                 prompt_generator: Optional[SystemPromptGenerator] = None,
+                 start_message: str = "", message_list: Optional[List[Message]] = None):
         """
         创建一个新的对话
 
         :param name: 对话名称（可省略）
+        :param prompt_generator: 系统提示词生成器（可省略，默认为 StaticPromptGenerator("")）
         :param start_message: 对话的起始消息（理论可省略，但多角色对话模式下强烈建议不要省略，否则可能导致 AI 生成质量下降）
         :param message_list: 对话中的消息列表（可省略，默认为空列表）
         """
         self.name = name
+
+        if prompt_generator is None:
+            self.prompt_generator = StaticPromptGenerator("")
+        else:
+            self.prompt_generator = prompt_generator
+
         self.start_message = start_message
 
         # 存储对话中所有的消息
@@ -132,6 +267,23 @@ class Chat:
             self.message_list = message_list
         else:
             self.message_list = []
+
+    @classmethod
+    def new_single_chat(cls, character: Character, user_character: Optional[Character] = None, name: str = "新对话") -> "Chat":
+        """
+        创建一个新的用户-单角色对话
+
+        :param character: 对话中的角色。在创建时，会自动拼接从角色信息中 System Prompt
+        :param user_character: 可选的用户角色。如果提供了该参数，则会在起始消息中包含用户角色的设定描述。否则，用户角色将被视为普通用户，不包含任何设定描述。
+        这样做的目的是允许用户自定义其在对话中的人格设定
+        :param name: 对话名称（可省略）
+        :returns: 新的 Chat 实例
+        """
+        user_name = user_character.character_name if user_character else "User"
+        generator = SingleCharacterPromptGenerator(character.character_name, user_name)
+        
+        chat = cls(name=name, prompt_generator=generator, start_message="", message_list=[])
+        return chat
     
     def __repr__(self) -> str:
         return f"Chat(name={self.name}, messages={self.message_list})"
@@ -145,6 +297,7 @@ class Chat:
         """
         return {
             "name": self.name,
+            "prompt_config": self.prompt_generator.to_dict(),
             "message_list": [msg.as_dict() for msg in self.message_list],
             "start_message": self.start_message
         }
@@ -154,8 +307,21 @@ class Chat:
         """
         从存储字典中加载一个 Chat 实例
         """
+        prompt_config = data.get("prompt_config", {})
+        generator_type = prompt_config.get("type", "static")
+        
+        generator: SystemPromptGenerator
+        if generator_type == "single_character":
+            generator = SingleCharacterPromptGenerator.from_dict(prompt_config)
+        elif generator_type == "multi_character":
+            generator = MultiCharacterPromptGenerator.from_dict(prompt_config)
+        else:
+            # 兼容旧数据或 static 类型
+            generator = StaticPromptGenerator.from_dict(prompt_config)
+
         return cls(
             name=data["name"],
+            prompt_generator=generator,
             message_list=[Message.from_dict(msg_data) for msg_data in data["message_list"]],
             start_message=data.get("start_message", "")
         )
@@ -218,11 +384,14 @@ class Chat:
         audio_info_index = 0
         message_list = []
 
+        system_prompt = None
+
         for index, item in enumerate(history):
             if index == 0 and item["role"] in ["system", "user"]:
                 # 跳过第一个 system 或 user 消息（通常是角色设定）
                 # 用 user 消息给模型设定指示是本程序之前的一个错误做法；因此，这里同样跳过 user 的消息，因为其大概率是给模型背景信息
                 # 背景信息（system 指令）应当根据角色的数据动态生成，而不应当直接存储。
+                system_prompt = item["content"]
                 continue
 
             if item["role"] == "assistant":
@@ -297,7 +466,8 @@ class Chat:
                 )
                 message_list.append(msg)
 
-        return cls(name=f"与{character_name}的对话", message_list=message_list)
+        return cls(name=f"与{character_name}的对话", message_list=message_list,
+                   prompt_generator=StaticPromptGenerator(system_prompt if system_prompt is not None else ""))
 
     @classmethod
     def load_from_theater_record(cls, file="../reference_audio/small_theater_history.json") -> "Chat":
@@ -331,7 +501,7 @@ class Chat:
 
         # 理论上应该只有两个角色参与对话。嗯，应该吧……只要没有人手动改存档
         name = f"{all_characters[0]} 与 {all_characters[1]} 的小剧场对话" if len(all_characters) >= 2 else "小剧场对话"
-        return cls(name=name, message_list=message_list)
+        return cls(name=name, message_list=message_list, prompt_generator=MultiCharacterPromptGenerator(all_characters))
 
     @property
     def involved_characters(self) -> List[str]:
@@ -365,6 +535,13 @@ class Chat:
             })
             has_start_message = True
 
+        system_prompt_content = self.prompt_generator.generate()
+        if system_prompt_content:
+            llm_history.append({
+                "role": "system",
+                "content": system_prompt_content
+            })
+
         for msg in self.message_list:
             role = "assistant" if msg.character_name == perspective else "user"
             llm_history.append({
@@ -384,7 +561,7 @@ class Chat:
         请注意：列表会被原地修改，返回值和输入参数是同一个对象
         """
         if not message_list:
-            return
+            return message_list
 
         merged_list = [message_list[0]]
         for msg in message_list[1:]:
@@ -399,6 +576,20 @@ class Chat:
         message_list.clear()
         message_list.extend(merged_list)
         return message_list
+
+    def add_message(self, message: Message) -> None:
+        """
+        向当前对话中添加一条消息
+
+        :param message: 需要添加的消息
+        """
+        self.message_list.append(message)
+
+    def clear_message_list(self) -> None:
+        """
+        清空当前对话中的所有消息
+        """
+        self.message_list.clear()
 
     def is_my_turn(self, perspective: str) -> bool:
         """
@@ -452,8 +643,14 @@ class ChatManager:
                 qt_data = None
 
         chat_list = []
+        current_qt_data = None
+        for one_qt_data in qt_data or []:
+            if one_qt_data.get("character") == llm_data[0].get("character"):
+                current_qt_data = one_qt_data
+                break
+
         for one_chat_data in llm_data:
-            chat = Chat.load_from_main_record(one_chat_data, qt_data)
+            chat = Chat.load_from_main_record(one_chat_data, current_qt_data)
             chat_list.append(chat)
 
         return cls(chat_list=chat_list)
@@ -508,3 +705,29 @@ class ChatManager:
             data = json.load(f)
 
         return cls.from_dict(data)
+
+
+_global_chat_manager = None
+
+
+def get_chat_manager() -> ChatManager:
+    """
+    获取全局的 ChatManager 实例。如果尚未创建，则创建一个新的实例。
+    创建新的实例时，尝试从默认存储文件加载对话记录；如果加载失败，则尝试从主程序的对话记录中转换数据。
+
+    :returns: 全局的 ChatManager 实例
+    """
+    global _global_chat_manager
+    if _global_chat_manager is None:
+        try:
+            _global_chat_manager = ChatManager.load()
+        except Exception:
+            _global_chat_manager = ChatManager.load_from_main_record(llm_file="../reference_audio/history_messages_dp.json",
+                                                                     qt_file="../reference_audio/history_messages_qt.json")
+            _global_chat_manager.add_theater_mode_history(file="../reference_audio/small_theater_history.json")
+
+    return _global_chat_manager
+
+
+if __name__ == "__main__":
+    get_chat_manager().save()

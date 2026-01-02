@@ -5,11 +5,14 @@ import json
 
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, QSlider, QLabel
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, pyqtSlot
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
 import sounddevice as sd
 from opencc import OpenCC
+
+from ui.components.user_character_card import UserCharacterWidget
+from character import Character, CharacterManager
 
 
 class CommunicateThreadDP2QT(QThread):
@@ -118,12 +121,10 @@ class MoreFunctionWindow(QWidget):
         self.close()
     def on_click_open_start_config_button(self):
         try:
-            # 使用 subprocess 模块启动 .bat 文件
-            import subprocess
-            import sys
-            # 使用 shell=True 让系统直接执行批处理文件
-            # Windows 会使用 cmd.exe 来执行 .bat 文件
-            subprocess.Popen([sys.executable, "dsakiko_configuration.py"])
+            from dsakiko_configuration import DSakikoConfigWindow
+
+            w = DSakikoConfigWindow("DSakikoConfigArea")
+            w.show()
         except Exception as e:
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
@@ -179,6 +180,17 @@ class ChatGUI(QWidget):
         #self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
         self.screen = QDesktopWidget().screenGeometry()
         self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
+
+        self.header_layout = QHBoxLayout()
+        self.header_layout.setSpacing(10)
+        self.user_character_avatar = UserCharacterWidget(dp_chat.user_character
+                                                         if isinstance(dp_chat.user_character, Character)
+                                                         # 反正是单例模式，再建一个对象不会有很大开销的
+                                                         else CharacterManager().user_characters[0],
+                                                         radius=10)
+        self.user_character_avatar.setting_requested.connect(self.on_open_user_character_setting)
+        self.header_layout.addWidget(self.user_character_avatar, alignment=Qt.AlignmentFlag.AlignLeft)
+
         self.chat_display = QTextBrowser()
         self.chat_display.setPlaceholderText("这里显示聊天记录...")
         self.chat_display.setOpenExternalLinks(False)
@@ -201,6 +213,7 @@ class ChatGUI(QWidget):
         self.send_button=QPushButton("保存聊天记录")
 
         layout = QVBoxLayout()
+        layout.addLayout(self.header_layout)
         layout.addWidget(self.chat_display)
         layout.addWidget(self.messages_box)
 
@@ -402,6 +415,13 @@ class ChatGUI(QWidget):
         self.record_data=[]
         self.voice_is_valid=False
         self.load_whisper_model()
+
+    @pyqtSlot()
+    def on_open_user_character_setting(self):
+        from dsakiko_configuration import DSakikoConfigWindow
+
+        w = DSakikoConfigWindow("CharacterArea")
+        w.show()
 
     def set_pause_second(self):
         pause_second_value=self.pause_second_slider.value()

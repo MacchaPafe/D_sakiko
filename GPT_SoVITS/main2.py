@@ -1,4 +1,7 @@
 import os,sys
+
+from PyQt5.QtCore import Qt
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
@@ -197,6 +200,10 @@ if __name__=='__main__':
 
     from qconfig import d_sakiko_config
 
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
+
     print("数字小祥程序...")
     get_all=character.CharacterManager()
     characters=get_all.character_class_list
@@ -217,7 +224,7 @@ if __name__=='__main__':
     
     is_motion_complete = multiprocessing.Value('b', True)
 
-    dp_chat=dp_local2.DSLocalAndVoiceGen(characters)
+    dp_chat=dp_local2.DSLocalAndVoiceGen()
 
     audio_gen=audio_generator.AudioGenerate()
 

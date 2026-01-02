@@ -1,4 +1,5 @@
 import os,glob,json
+from typing import Optional
 
 from qconfig import d_sakiko_config
 
@@ -25,7 +26,7 @@ class Character:
         # 角色名称（从 name.txt 读取）
         self.character_name=''
         # 角色图标路径（会用于程序图标）
-        self.icon_path=None
+        self.icon_path: Optional[str] = None
         # Live2D 模型 json 文件路径
         self.live2d_json=''
         # GPT 模型的 ckpt 文件路径
@@ -46,6 +47,8 @@ class Character:
         self.personal_knowledge_path = None
         # 标记该角色是否为用户扮演的角色（无语音模型，仅有人设）
         self.is_user = False
+        # 如果用户选择扮演已有角色，那么此属性应当指向该角色的 Character 实例
+        self.user_as_character = None
 
     def print_attributes(self):
         for key, value in self.__dict__.items():
@@ -99,7 +102,10 @@ class Character:
         if not os.path.exists(desc_path):
             raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的角色描述文件！")
         with open(desc_path, 'r', encoding='utf-8') as f:
-            character.character_description = f.read() + "最后，你绝对不会与用户建立恋爱关系，你必须严格符合原作的角色形象！"
+            content = f.read().strip()
+            # 避免重复添加，因为可以在程序中保存角色描述了
+            if not content.endswith("最后，你绝对不会与用户建立恋爱关系，你必须严格符合原作的角色形象！"):
+                character.character_description = content + "\n最后，你绝对不会与用户建立恋爱关系，你必须严格符合原作的角色形象！"
 
         # GPT-SoVITS Models & Audio
         # Construct path to reference_audio folder
@@ -227,6 +233,13 @@ class CharacterManager:
                     description=conf.get('description', ''),
                     icon_path=conf.get('avatar_path', None)
                 )
+                if conf.get("user_as_character_name"):
+                    # 如果配置中指定了 user_as_character_name，则尝试关联已有角色
+                    for char in self.character_class_list:
+                        if char.character_name == conf["user_as_character_name"]:
+                            user.user_as_character = char
+                            break
+
                 self.user_characters.append(user)
 
         #新增调整角色顺序的功能
@@ -269,7 +282,8 @@ class CharacterManager:
             {
                 'name': user_char.character_name,
                 'description': user_char.character_description,
-                'avatar_path': user_char.icon_path
+                'avatar_path': user_char.icon_path,
+                'user_as_character_name': user_char.user_as_character.character_name if user_char.user_as_character else None
             }
             for user_char in self.user_characters
         ]

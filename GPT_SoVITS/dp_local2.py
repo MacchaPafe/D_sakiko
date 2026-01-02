@@ -1,21 +1,22 @@
 import re
 import time,os
 
-from ollama import chat
 import requests,json
 import litellm
 from litellm import completion
 
+from GPT_SoVITS.emotion_enum import EmotionEnum
+from character import CharacterManager
+from chat.chat import Message, get_chat_manager
 from qconfig import d_sakiko_config
 
 
 class DSLocalAndVoiceGen:
-	def __init__(self,characters):
+	def __init__(self):
 		# with open('../reference_audio/character_description.txt','r',encoding='utf-8') as f:
 		# 	cha_describe=f.read()
-		self.character_list=characters
-
-		self.all_character_msg=[]
+		self.chat_manager = get_chat_manager()
+		self.character_manager = CharacterManager()
 
 		self.audio_language = ["中英混合", "日英混合"]
 		self.audio_language_choice = self.audio_language[1]
@@ -23,37 +24,37 @@ class DSLocalAndVoiceGen:
 		self.model=__import__('live2d_1').get_live2d()
 		self.sakiko_state=True
 		self.if_generate_audio=True
-		self.current_char_index=0
-		self.if_sakiko=False
-		self.initial()
 
-	def initial(self):
-		for character in self.character_list:
-			self.all_character_msg.append([{"role": "system",
-											"content": f'{character.character_description}'}])
-		if os.path.getsize('../reference_audio/history_messages_dp.json')!=0:
-			with open('../reference_audio/history_messages_dp.json','r',encoding='utf-8') as f:
-				json_data=json.load(f)
-			for index, character in enumerate(self.character_list):
-				for data in json_data:
-					if data['character'] == character.character_name:
-						self.all_character_msg[index] = data['history']
+		# 设置当前正在和我们对话的角色
+		self.current_character = self.character_manager.character_class_list[0]
+		self.current_chat = self.chat_manager.chat_list[0]
+		# 尝试根据角色名称寻找到对应的第一个聊天记录
+		for one_chat in self.chat_manager.chat_list:
+			if self.current_character.character_name in one_chat.involved_characters:
+				self.current_chat = one_chat
+				break
 
+		# 设置用户的角色
+		self.user_character = self.character_manager.user_characters[0]
+		# 尝试根据聊天记录中的角色名称寻找用户角色
+		for one_character in self.character_manager.user_characters:
+			if one_character.character_name in self.current_chat.involved_characters:
+				self.user_character = one_character
+				break
 
-		if self.character_list[self.current_char_index].character_name == '祥子':
+		if "祥子" in self.current_chat.involved_characters:
 			self.if_sakiko = True
 		else:
 			self.if_sakiko = False
 
 	def change_character(self):
-		if len(self.character_list) == 1:
-			self.current_char_index = 0
-		else:
-			if self.current_char_index < len(self.character_list) - 1:
-				self.current_char_index += 1
-			else:
-				self.current_char_index = 0
-		if self.character_list[self.current_char_index].character_name == '祥子':
+		current_character_index = self.character_manager.character_class_list.index(self.current_character)
+		next_character_index = (current_character_index + 1) % len(self.character_manager.character_class_list)
+
+		self.current_character = self.character_manager.character_class_list[next_character_index]
+		self.current_chat = self.chat_manager.chat_list[next_character_index]
+
+		if "祥子" in self.current_chat.involved_characters:
 			self.if_sakiko = True
 		else:
 			self.if_sakiko = False
@@ -90,7 +91,7 @@ class DSLocalAndVoiceGen:
 		message_queue.put(message)
 		is_text_generating_queue.get()
 		# 删除未能成功发送的信息
-		self.all_character_msg[self.current_char_index].pop()
+		self.current_chat.message_list.pop()
 		# 源代码如此，我也不知道为啥要休息一会
 		time.sleep(2)
 
@@ -147,15 +148,14 @@ class DSLocalAndVoiceGen:
 				continue
 			elif user_input=='s':
 				self.change_character()
-				message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在切换GPT-SoVITS模型...")
+				message_queue.put(f"已切换为：{self.current_character.character_name}\n正在切换GPT-SoVITS模型...")
 				change_char_queue.put('yes')
 				dp2qt_queue.put("changechange")
 				AudioGenerator.change_character()
 				time.sleep(2)
 				continue
 			elif user_input=='clr':
-				self.all_character_msg[self.current_char_index]=[{"role": "user",
-																 "content": f'{self.character_list[self.current_char_index].character_description}'}]
+				self.current_chat.clear_message_list()
 				message_queue.put("已清空角色的聊天记录")
 				time.sleep(2)
 				continue
@@ -181,10 +181,19 @@ class DSLocalAndVoiceGen:
 					user_input = user_input + '（本句话用白祥语气回答!）'
 
 			# -----------------------------
-			user_this_turn_msg = {"role": "user",
-								  "content": user_input}
-			self.all_character_msg[self.current_char_index].append(user_this_turn_msg)
-			message_queue.put("小祥思考中..." if self.if_sakiko else f"{self.character_list[self.current_char_index].character_name}思考中...")
+			self.current_chat.add_message(
+				Message(
+					character_name=self.user_character.character_name,
+					text=user_input,
+					translation="",
+					emotion=0,
+					audio_path=""
+				)
+			)
+
+			print(self.current_chat.build_llm_query(perspective=self.current_character.character_name))
+
+			message_queue.put("小祥思考中..." if self.if_sakiko else f"{self.current_character.character_name}思考中...")
 			is_text_generating_queue.put('no_complete')		#正在生成文字的标志
 			# --------------------------
 			# 优先处理使用 Up API 的情况
@@ -193,7 +202,7 @@ class DSLocalAndVoiceGen:
 				if d_sakiko_config.use_default_deepseek_api.value:
 					response = completion(
 						model="deepseek/deepseek-chat",
-						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						messages=self.trim_list_to_64kb(self.current_chat.build_llm_query(perspective=self.current_character)),
 						api_key=self.model
 					)
 				# 第二优先级是检查自定义 API Url
@@ -201,7 +210,7 @@ class DSLocalAndVoiceGen:
 				elif d_sakiko_config.enable_custom_llm_api_provider.value:
 					response = completion(
 						model=d_sakiko_config.custom_llm_api_model.value,
-						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						messages=self.trim_list_to_64kb(self.current_chat.build_llm_query(perspective=self.current_character)),
 						api_key=d_sakiko_config.custom_llm_api_key.value,
 						# 自定义 API 地址
 						base_url=d_sakiko_config.custom_llm_api_url.value
@@ -210,7 +219,7 @@ class DSLocalAndVoiceGen:
 				else:
 					response = completion(
 						model=self.concat_provider_and_model(d_sakiko_config.llm_api_provider.value, d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value]),
-						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						messages=self.trim_list_to_64kb(self.current_chat.build_llm_query(perspective=self.current_character)),
 						api_key=d_sakiko_config.llm_api_key.value[d_sakiko_config.llm_api_provider.value]
 					)
 			except litellm.exceptions.Timeout:
@@ -288,12 +297,22 @@ class DSLocalAndVoiceGen:
 				# 	self.all_character_msg[self.current_char_index].pop()
 				# 	time.sleep(2)
 				# 	continue
-			
-			model_this_turn_msg = {"role": "assistant", "content": response.choices[0].message.content.strip()}
-			#print("aaaaaaaaaaaaaaaa",cleaned_text_of_model_response,'bbbbbbbbbbbbbbbbbb')
-			text_queue.put(response.choices[0].message.content.strip())
 
-			self.all_character_msg[self.current_char_index].append(model_this_turn_msg)
+			response_message = response.choices[0].message.content.strip()
+			text_queue.put(response_message)
+
+			self.chat_manager.save()
+
+			# TODO：这里应该加一个逻辑：直到 AudioGenerator 为我们返回生成语言内容前，都不应该继续往下走
+			# 因为我们需要在信息中记录语音的路径等信息
+			# 现在作为 demo 先这么跑着
+			self.current_chat.add_message(Message(
+				character_name=self.current_character.character_name,
+				text=response_message,
+				translation="",
+				emotion=EmotionEnum.from_string("0"),
+				audio_path=""
+			))
 
 			# if self.model_choice==self.LLM_list[0] or self.model_choice==self.LLM_list[1]:	#本地模型以及联机调用r1的情况下，打印思考文本
 			# 	think_content = re.search(r'<think>(.*?)</think>', response["message"]["content"], flags=re.DOTALL).group(1)

@@ -143,10 +143,11 @@ class ChatTestCase(unittest.TestCase):
         """
         chat = Chat.load_from_main_record(self.llm_dialog_history, self.qt_dialog_history)
         query = chat.build_llm_query("素世")
-        self.assertEqual(query[0]["role"], "user")
-        self.assertEqual(query[1]["role"], "assistant")
-        self.assertIn("User", query[0]["content"])
-        self.assertIn("素世", query[1]["content"])
+        self.assertEqual(query[0]["role"], "system")
+        self.assertEqual(query[1]["role"], "user")
+        self.assertEqual(query[2]["role"], "assistant")
+        self.assertIn("User", query[1]["content"])
+        self.assertIn("素世", query[2]["content"])
 
         self.assertFalse(chat.is_my_turn("素世"))
 

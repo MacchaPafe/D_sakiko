@@ -1,8 +1,8 @@
 import sys
 import contextlib
 import os
+from typing import Optional
 
-from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QApplication,
                              QVBoxLayout, QLabel,
                              QStackedWidget, QMainWindow)
@@ -16,7 +16,7 @@ from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
 # 去广告
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import Pivot, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon, FluentWindow, \
-    FluentIcon
+    FluentIcon, NavigationItemPosition
 
 # 将当前文件夹加入 sys.path，强制搜索当前目录的模块（即使 os.getcwd() 不是当前目录）
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,12 +24,15 @@ sys.path.insert(0, script_dir)
 
 
 from qconfig import d_sakiko_config
+from ui.interfaces.character_area import CharacterArea
+
 
 
 class DSakikoConfigArea(TransparentScrollArea):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
+        self.setObjectName("DSakikoConfigArea")
         self.v_box_layout = QVBoxLayout(self.view)
 
         # 分栏组件
@@ -60,10 +63,6 @@ class DSakikoConfigArea(TransparentScrollArea):
         self.save_button = PrimaryPushButton(self.tr("保存配置"), self)
         self.save_button.clicked.connect(self.save_config)
         self.v_box_layout.addWidget(self.save_button)
-
-        self.exit_button = PushButton(self.tr("关闭窗口"), self)
-        self.exit_button.clicked.connect(self.close)
-        self.v_box_layout.addWidget(self.exit_button)
 
         self.custom_setting_area.status_signal.connect(self.show_status)
 
@@ -100,7 +99,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         """
         在点击保存按键时，显示保存状态信息，并在3秒后自动清除。
         """
-        InfoBar.new(icon=icon, title="", content=message, isClosable=True, position=InfoBarPosition.BOTTOM, duration=3000,
+        InfoBar.new(icon=icon, title="", content=message, isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=3000,
                     parent=self)
 
     def load_config_to_ui(self):
@@ -142,6 +141,35 @@ class DSakikoConfigArea(TransparentScrollArea):
             self.show_status(InfoBarIcon.SUCCESS, self.tr("保存成功！大模型相关配置立刻生效，音频推理与角色顺序等配置在下次启动时应用"))
 
 
+class DSakikoConfigWindow(FluentWindow):
+    def __init__(self, request_interface: Optional[str] = None):
+        """
+        数字小祥配置窗口
+
+        :param request_interface: 可选，启动时要求直接切换到的分栏界面标识符。可选的字符串为：
+        `DSakikoConfigArea`（设置界面)
+        `CharacterArea`（角色设置界面)
+        """
+        super().__init__()
+        self.setWindowTitle(self.tr("数字小祥配置"))
+
+        # 用户人设存储界面
+        self.user_character_area = CharacterArea(self)
+        self.addSubInterface(self.user_character_area, FluentIcon.PEOPLE, self.tr("角色与用户人设"), position=NavigationItemPosition.TOP)
+        # 设置界面
+        self.config_area = DSakikoConfigArea(self)
+        self.addSubInterface(self.config_area, FluentIcon.SETTING, self.tr("设置"), position=NavigationItemPosition.BOTTOM)
+
+        self.all_interfaces = [self.user_character_area, self.config_area]
+
+        self.setMinimumSize(700, 800)
+
+        for widget in self.all_interfaces:
+            if widget.objectName() == request_interface:
+                self.switchTo(widget)
+                break
+
+
 if __name__ == '__main__':
     import os
 
@@ -151,13 +179,7 @@ if __name__ == '__main__':
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
 
     app = QApplication(sys.argv)
-    area = DSakikoConfigArea()
-    w = FluentWindow()
-    w.setMinimumSize(650, 800)
-    w.addSubInterface(area, FluentIcon.HOME, w.tr("设置"))
-    # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
-    # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
-    area.closeEvent = lambda e: app.quit()
+    w = DSakikoConfigWindow("DSakikoConfigArea")
 
     w.show()
     sys.exit(app.exec_())

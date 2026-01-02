@@ -71,6 +71,7 @@ dependencies = [
     "litellm>=1.80.11",
     "pyqt-fluent-widgets>=1.10.4",
     "basedpyright>=1.36.1",
+    "jinja2>=3.1.6",
 ]
 
 [tool.uv]
