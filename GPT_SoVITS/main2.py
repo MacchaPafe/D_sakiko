@@ -124,9 +124,9 @@ def main_thread():
                     emotion_this_three_sentences = emotion_model(cleaned_text)[0]['label']
                     is_text_generating_queue.get()  #让模型停止思考动作
 
-                    emotion_queue.put(emotion_this_three_sentences)
                     if not is_ja:
                         dp2qt_queue.put(''.join(this_turn_response[:]))
+                        live2d_player.new_text = ''.join(this_turn_response[:])
                     else:
                         orig_text=''
                         trans_text=''
@@ -134,6 +134,8 @@ def main_thread():
                             orig_text=orig_text+orig+'。'
                             trans_text=trans_text+trans+'。'
                         dp2qt_queue.put(orig_text + '\n[翻译]' + trans_text + '[翻译结束]')
+                        live2d_player.new_text = orig_text
+                    emotion_queue.put(emotion_this_three_sentences)
                     break
 
                 while not live2d_player.live2d_this_turn_motion_complete:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
@@ -154,11 +156,14 @@ def main_thread():
                     is_text_generating_queue.get() #让模型停止思考动作
                 while not live2d_player.live2d_this_turn_motion_complete:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.5)
-                emotion_queue.put(emotion_this_three_sentences)     #情感标签队列
+
                 if not is_ja:
                     dp2qt_queue.put(output_for_audio)
+                    live2d_player.new_text = output_for_audio
                 else:
                     dp2qt_queue.put(output_for_audio+'\n[翻译]'+this_turn_response[i][1]+'[翻译结束]')
+                    live2d_player.new_text = re.sub(r"（.*?）",'',output_for_audio).strip()
+                emotion_queue.put(emotion_this_three_sentences)  # 情感标签队列
             is_audio_play_complete.put('yes')   #不让LLM模块提前进入下一个循环
 
 
@@ -280,16 +285,22 @@ if __name__=='__main__':
     qt_win.show()
     qt_app.exec_()
 
-    with open('../if_delete_audio_cache.txt', "r", encoding="utf-8") as f:
-        try:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    if_delete = int(line)
-                    break
-        except Exception:
-            if_delete = 0
-            raise Warning("if_delete_audio_cache.txt的文件参数设置错误，应该输入一个数字！")
+    if not os.path.exists('../dsakiko_config.json'):
+        with open('../if_delete_audio_cache.txt', "r", encoding="utf-8") as f:
+            try:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        if_delete = int(line)
+                        break
+            except Exception:
+                if_delete = 0
+    else:
+        with open('../dsakiko_config.json','r',encoding='utf-8') as f:
+            import json
+            config=json.load(f)
+            if_delete=config["audio_setting"]["if_delete_audio_cache"]
+            f.close()
 
 
     if if_delete!=0:
@@ -308,7 +319,13 @@ if __name__=='__main__':
         runtime\Lib\site-packages\pygame\__init__.py 336
         AR\models\\t2s_model.py 845
         runtime\Lib\site-packages\live2d\\utils\lipsync.py   55 防止出现nan，使程序崩溃
+        runtime\Lib\site-packages/live2d/v2/core/graphics/draw_param_opengl.py  45  330 解决腮红变黑问题
         runtime\Lib\site-packages\\faster_whisper\\transcribe.py
         inference_webui.py 大改
         inference_cli.py 大改
 '''
+"""
+更改角色皮肤
+可更改参考音频
+可重新生成音频
+"""

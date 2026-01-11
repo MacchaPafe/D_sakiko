@@ -1,45 +1,57 @@
 import re
-import time,os
+import time,os,random
+from copy import deepcopy
 
 from ollama import chat
 import requests,json
-from openai import OpenAI
+from openai import OpenAI, base_url
 
 
 class DSLocalAndVoiceGen:
 	def __init__(self,characters):
-		# with open('../reference_audio/character_description.txt','r',encoding='utf-8') as f:
-		# 	cha_describe=f.read()
 		self.character_list=characters
 
-		with open("../API_Choice.json", "r", encoding="utf-8") as f:
-			config = json.load(f)
-		self.is_deepseek=True
-		for provider in config["llm_choose"]:
-			if provider["if_choose"]:
-				active_provider = provider
-				self.is_deepseek=False
-				break
-		if not self.is_deepseek:
-			if active_provider['name']=="OpenAI":
-				self.other_client=OpenAI(
-					api_key=active_provider['api_key']
-				)
-				print("已使用自建OpenAI API")
-			elif active_provider['name']=="Google":
-				self.other_client=OpenAI(
-					api_key=active_provider['api_key'],
-					base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-					# http_client=httpx.Client(
-					# 			proxies={
-					# 				"http://": "socks5://127.0.0.1:21881",
-					# 				"https://": "socks5://127.0.0.1:21881",
-					# 			},
-					# 			timeout=20.0 # 代理连接慢，建议将超时时间设置得长一些
-					# 		)
-				)
-				print("已使用自建Google Gemini API")
-			self.model_choice=active_provider['model']
+		if not os.path.exists('../dsakiko_config.json'):
+			with open("../API_Choice.json", "r", encoding="utf-8") as f:
+				config = json.load(f)
+			self.is_deepseek=True
+			for provider in config["llm_choose"]:
+				if provider["if_choose"]:
+					active_provider = provider
+					self.is_deepseek=False
+					break
+			if not self.is_deepseek:
+				if active_provider['name']=="OpenAI":
+					self.other_client=OpenAI(
+						api_key=active_provider['api_key']
+					)
+					print("已使用个人OpenAI API")
+				elif active_provider['name']=="Google":
+					self.other_client=OpenAI(
+						api_key=active_provider['api_key'],
+						base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+					)
+					print("已使用个人Google API")
+				self.model_choice=active_provider['model']
+		else:
+			with (open('../dsakiko_config.json','r',encoding='utf-8') as f):
+				config=json.load(f)
+				llm_config=config["llm_setting"]
+			self.is_deepseek=llm_config["is_deepseek"]
+			if not self.is_deepseek:
+				for provider in llm_config["other_provider"]:
+					if provider["if_choose"]:
+						active_provider = provider
+						break
+				try:
+					self.other_client=OpenAI(
+						api_key=active_provider['api_key'],
+						base_url=active_provider["base_url"]
+					)
+					print(f"已使用个人{active_provider['name']} API")
+					self.model_choice=active_provider['model']
+				except Exception as err:
+					raise Warning(f"dsakiko_config.json配置文件有误，重新运行一遍启动配置程序应该可以解决问题。错误信息：",err)
 
 
 
@@ -59,6 +71,7 @@ class DSLocalAndVoiceGen:
 		self.if_generate_audio=True
 		self.current_char_index=0
 		self.if_sakiko=False
+		self.idle_texts=[]
 		self.initial()
 
 	# def stream_print(self,text):		#引入PyQT后作废
@@ -70,8 +83,9 @@ class DSLocalAndVoiceGen:
 
 	def initial(self):
 		for character in self.character_list:
-			self.all_character_msg.append([{"role": "user",
+			self.all_character_msg.append([{"role": "system",
 											"content": f'{character.character_description}'}])
+
 		if os.path.getsize('../reference_audio/history_messages_dp.json')!=0:
 			with open('../reference_audio/history_messages_dp.json','r',encoding='utf-8') as f:
 				json_data=json.load(f)
@@ -79,21 +93,34 @@ class DSLocalAndVoiceGen:
 				for data in json_data:
 					if data['character'] == character.character_name:
 						self.all_character_msg[index] = data['history']
+						if self.all_character_msg[index][0]['role']=='user':
+							self.all_character_msg[index][0]['role']='system'
 
 
 		if self.character_list[self.current_char_index].character_name == '祥子':
 			self.if_sakiko = True
 		else:
 			self.if_sakiko = False
-
-		if self.is_deepseek:
-			if os.path.getsize('../API Key.txt')!=0:
-				print("已使用自建DeepSeek API")
-				with open('../API Key.txt','r',encoding='utf-8') as f:
-					self.headers={"Content-Type": "application/json","Authorization": f"Bearer {f.read()}"}
-			else:
-				#print("正在使用Up的DeepSeek API")
-				pass
+		with open('./text/restr.rep', 'r', encoding='utf-8') as f:
+			self.restr = f.read()
+		if not os.path.exists('../dsakiko_config.json'):
+			if self.is_deepseek:
+				if os.path.getsize('../API Key.txt')!=0:
+					print("已使用个人DeepSeek API")
+					with open('../API Key.txt','r',encoding='utf-8') as f:
+						self.headers={"Content-Type": "application/json","Authorization": f"Bearer {f.read()}"}
+				else:
+					#print("正在使用Up的DeepSeek API")
+					pass
+		else:
+			if self.is_deepseek:
+				with open('../dsakiko_config.json','r',encoding='utf-8') as f:
+					config=json.load(f)
+				if config["llm_setting"]["deepseek_key"] in ['','use_api_of_up']:
+					pass
+				else:
+					print("已使用个人DeepSeek API")
+					self.headers={"Content-Type": "application/json","Authorization": f"Bearer {config['llm_setting']['deepseek_key']}"}
 
 
 	def change_character(self):
@@ -109,12 +136,12 @@ class DSLocalAndVoiceGen:
 		else:
 			self.if_sakiko = False
 
-	def trim_list_to_64kb(self,data_list):
-		MAX_SIZE = 64 * 1024  # 64KB
+	def trim_list_to_340kb(self, data_list):
+		working_list=deepcopy(data_list)
+		MAX_SIZE = 340 * 1024  #主流大模型的上下文现在基本都超过了100万token，差不多500KB，这里设置340KB以防万一
 		while len(json.dumps(data_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
-			del data_list[1]
-
-		return data_list
+			del working_list[1]
+		return working_list
 
 	def text_generator(self,
 					   text_queue,
@@ -133,7 +160,9 @@ class DSLocalAndVoiceGen:
 			while not AudioGenerator.is_change_complete:
 				time.sleep(0.4)
 
-			message_queue.put(f"输入bye：退出程序	l：切换语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
+			#message_queue.put(f"输入bye：退出程序	l：切换语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
+			message_queue.put('...')
+			#message_queue.put("语音："+("开启" if self.if_generate_audio else "关闭")+"语言："+("中文" if self.audio_language_choice=="中英混合" else "日文"))
 			while True:
 				if not qt2dp_queue.empty():
 					user_input=qt2dp_queue.get()
@@ -149,7 +178,7 @@ class DSLocalAndVoiceGen:
 				if self.if_sakiko:
 					char_is_converted_queue.put('maskoff')
 				else:
-					message_queue.put("祥子暂时不在<w>")
+					message_queue.put("祥子好像不在<w>")
 				time.sleep(2)
 				continue
 			elif user_input=='conv':
@@ -158,7 +187,7 @@ class DSLocalAndVoiceGen:
 					message_queue.put("已切换为"+("黑祥"if self.sakiko_state else "白祥"))
 					char_is_converted_queue.put(self.sakiko_state)
 				else:
-					message_queue.put("祥子暂时不在<w>")
+					message_queue.put("祥子好像不在<w>")
 				time.sleep(2)
 				continue
 			elif user_input =='v':
@@ -241,14 +270,17 @@ class DSLocalAndVoiceGen:
 			user_this_turn_msg = {"role": "user",
 								  "content": user_input}
 			self.all_character_msg[self.current_char_index].append(user_this_turn_msg)
-			message_queue.put("小祥思考中..." if self.if_sakiko else f"{self.character_list[self.current_char_index].character_name}思考中...")
+			to_llm_msg=deepcopy(self.all_character_msg[self.current_char_index])
+			to_llm_msg[0]['content']+=self.restr
+			print(to_llm_msg[0]['content'])
+			message_queue.put(f"{self.character_list[self.current_char_index].character_name}思考中...")
 			is_text_generating_queue.put('no_complete')		#正在生成文字的标志
 			# --------------------------
 			if not self.is_use_ds_api and self.is_deepseek:		#使用本地Ollama模型
 				try:
 					response = chat(
 						model=self.model_choice,
-						messages=self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+						messages=self.trim_list_to_340kb(to_llm_msg),
 						stream=False
 					)
 				except Exception:
@@ -265,11 +297,11 @@ class DSLocalAndVoiceGen:
 					online_model='deepseek-reasoner'
 				data = {
 					"model": online_model,
-					"messages": self.trim_list_to_64kb(self.all_character_msg[self.current_char_index]),
+					"messages": self.trim_list_to_340kb(to_llm_msg),
 					"stream": False
 				}
 				try:
-
+					print(to_llm_msg)
 					response = requests.post("https://api.deepseek.com/chat/completions", headers=self.headers, json=data)
 				except Exception:
 					message_queue.put("与DeepSeek建立连接失败，请检查网络。")
@@ -301,7 +333,7 @@ class DSLocalAndVoiceGen:
 				try:
 					response = self.other_client.chat.completions.create(
 						model=self.model_choice,
-						messages=self.all_character_msg[self.current_char_index],
+						messages=to_llm_msg,
 						stream=False,
 						timeout=30
 					)
@@ -318,26 +350,6 @@ class DSLocalAndVoiceGen:
 					self.all_character_msg[self.current_char_index].pop()
 					time.sleep(2)
 					continue
-				# if response.status_code == 200:
-				# 	pass
-				# else:
-				# 	time.sleep(2)
-				# 	if response.status_code==402:
-				# 		message_queue.put("账户余额不足。本次对话未能成功。")
-				# 	elif response.status_code==401:
-				# 		message_queue.put("API key认证出错，请检查正确性")
-				# 	elif response.status_code==429:
-				# 		message_queue.put("请求速度太快，被限制了（应该不会出现这个错误吧，")
-				# 	elif response.status_code==500 or response.status_code==503:
-				# 		message_queue.put("API服务器可能崩了，可等待一会后重试。")
-				# 	elif response.status_code==403:
-				# 		message_queue.put("出现地区错误，试试科学上网...")
-				# 	else:
-				# 		message_queue.put("出现了未知错误，可尝试重新对话一次。")
-				# 	is_text_generating_queue.get()
-				# 	self.all_character_msg[self.current_char_index].pop()
-				# 	time.sleep(2)
-				# 	continue
 
 			# 去掉多余的字符，使用正则表达式
 			if self.is_deepseek:
@@ -350,17 +362,6 @@ class DSLocalAndVoiceGen:
 			text_queue.put(cleaned_text_of_model_response)
 
 			self.all_character_msg[self.current_char_index].append(model_this_turn_msg)
-
-			# if self.model_choice==self.LLM_list[0] or self.model_choice==self.LLM_list[1]:	#本地模型以及联机调用r1的情况下，打印思考文本
-			# 	think_content = re.search(r'<think>(.*?)</think>', response["message"]["content"], flags=re.DOTALL).group(1)
-			# 	print("LLM的思考过程：",end='')
-			# 	self.stream_print(think_content)
-			# elif self.model_choice==self.LLM_list[3]:
-			# 	think_content=response['message']['reasoning_content']
-			# 	print("LLM的思考过程：", end='')
-			# 	self.stream_print(think_content)
-			# else:
-			# 	pass
 
 			while is_audio_play_complete.get() is None:
 				time.sleep(0.5)		#不加就无法正常运行

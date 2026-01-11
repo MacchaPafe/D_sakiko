@@ -88,8 +88,15 @@ is_share = eval(is_share)'''
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 #is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
-with open('../is_fp32.txt','r') as f:
-    is_half=not bool(int(f.read()))
+if not os.path.exists('../dsakiko_config.json'):
+    with open('../is_fp32.txt','r') as f:
+        is_half=not bool(int(f.read()))
+else:
+    import json
+    with open('../dsakiko_config.json','r',encoding='utf-8') as f:
+        config=json.load(f)
+        is_half=config["audio_setting"]["enable_fp16_inference"]
+        f.close()
 punctuation = set(["!", "?", "…", ",", ".", "-", " "])
 
 import librosa

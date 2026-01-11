@@ -7,34 +7,50 @@ from openai import OpenAI
 
 class DSLocalAndVoiceGen:
 	def __init__(self,characters):
-		# with open('../reference_audio/character_description.txt','r',encoding='utf-8') as f:
-		# 	cha_describe=f.read()
 		self.character_list=characters
 		self.current_character_num=[0,1]
-
-		with open("../API_Choice.json", "r", encoding="utf-8") as f:
-			config = json.load(f)
-		self.is_deepseek=True
-		for provider in config["llm_choose"]:
-			if provider["if_choose"]:
-				active_provider = provider
-				self.is_deepseek=False
-				break
-		if not self.is_deepseek:
-			if active_provider['name']=="OpenAI":
-				self.other_client=OpenAI(
-					api_key=active_provider['api_key']
-				)
-				print("已使用自建OpenAI API")
-			elif active_provider['name']=="Google":
-				self.other_client=OpenAI(
-					api_key=active_provider['api_key'],
-					base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-				)
-				print("已使用自建Google Gemini API")
-			self.model_choice=active_provider['model']
-
-
+		if not os.path.exists("../dsakiko_config.json"):
+			with open("../API_Choice.json", "r", encoding="utf-8") as f:
+				config = json.load(f)
+			self.is_deepseek=True
+			for provider in config["llm_choose"]:
+				if provider["if_choose"]:
+					active_provider = provider
+					self.is_deepseek=False
+					break
+			if not self.is_deepseek:
+				if active_provider['name']=="OpenAI":
+					self.other_client=OpenAI(
+						api_key=active_provider['api_key']
+					)
+					print("已使用自建OpenAI API")
+				elif active_provider['name']=="Google":
+					self.other_client=OpenAI(
+						api_key=active_provider['api_key'],
+						base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+					)
+					print("已使用自建Google Gemini API")
+				self.model_choice=active_provider['model']
+		else:
+			with (open('../dsakiko_config.json', 'r', encoding='utf-8') as f):
+				config = json.load(f)
+				llm_config = config["llm_setting"]
+			self.is_deepseek = llm_config["is_deepseek"]
+			if not self.is_deepseek:
+				for provider in llm_config["other_provider"]:
+					if provider["if_choose"]:
+						active_provider = provider
+						break
+				try:
+					self.other_client = OpenAI(
+						api_key=active_provider['api_key'],
+						base_url=active_provider["base_url"]
+					)
+					print(f"已使用个人{active_provider['name']} API")
+					self.model_choice = active_provider['model']
+				except Exception as err:
+					raise Warning(
+						f"dsakiko_config.json配置文件有误，重新运行一遍启动配置程序应该可以解决问题。错误信息：", err)
 
 		#self.all_character_msg=[]
 
@@ -76,14 +92,25 @@ class DSLocalAndVoiceGen:
 								  ...
 								]
 								'''
-		if self.is_deepseek:
-			if os.path.getsize('../API Key.txt')!=0:
-				print("已使用自建DeepSeek API")
-				with open('../API Key.txt','r',encoding='utf-8') as f:
-					self.headers={"Content-Type": "application/json","Authorization": f"Bearer {f.read()}"}
-			else:
-				#print("正在使用Up的DeepSeek API")
-				pass
+		if not os.path.exists('../dsakiko_config.json'):
+			if self.is_deepseek:
+				if os.path.getsize('../API Key.txt') != 0:
+					print("已使用个人DeepSeek API")
+					with open('../API Key.txt', 'r', encoding='utf-8') as f:
+						self.headers = {"Content-Type": "application/json", "Authorization": f"Bearer {f.read()}"}
+				else:
+					# print("正在使用Up的DeepSeek API")
+					pass
+		else:
+			if self.is_deepseek:
+				with open('../dsakiko_config.json', 'r', encoding='utf-8') as f:
+					config = json.load(f)
+				if config["llm_setting"]["deepseek_key"] in ['', 'use_api_of_up']:
+					pass
+				else:
+					print("已使用个人DeepSeek API")
+					self.headers = {"Content-Type": "application/json",
+									"Authorization": f"Bearer {config['llm_setting']['deepseek_key']}"}
 
 	def text_generator(self,
 					   text_queue,
@@ -140,7 +167,7 @@ class DSLocalAndVoiceGen:
 
 			user_this_turn_msg = [{"role":"system","content":self.base_prompt},
 								  {"role": "user","content": user_prompt}]
-			message_queue.put("生成文本中...")
+			message_queue.put("调用大模型生成文本中...  ")
 			time.sleep(2)
 			test_text='''
 			[
@@ -238,7 +265,7 @@ class DSLocalAndVoiceGen:
 						model=self.model_choice,
 						messages=user_this_turn_msg,
 						stream=False,
-						timeout=30
+						timeout=100
 					)
 					if response.choices[0].message.content is None:
 						message_queue.put("模型API返回内容为空，请检查网络，然后重试一下吧")

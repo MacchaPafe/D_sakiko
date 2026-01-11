@@ -72,7 +72,7 @@ class GetCharacterAttributes:
                 if not os.path.exists(os.path.join(full_path, 'character_description.txt')):
                     raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的角色描述文件！")
                 with open(os.path.join(full_path,'character_description.txt'),'r',encoding='utf-8') as f:
-                    character.character_description=f.read()+"最后，你绝对不会与用户建立恋爱关系，你必须严格符合原作的角色形象！"
+                    character.character_description=f.read()
                     f.close()
 
                 gpt_model_path=glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.ckpt"))
@@ -125,31 +125,38 @@ class GetCharacterAttributes:
             with open("../reference_audio/character_order.json",'r',encoding='utf-8') as f:
                 char_order_list=json.load(f)
                 f.close()
-            if len(self.character_class_list)>int(char_order_list['character_num']):
-                is_convert_1=False
-                print("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
-            elif len(self.character_class_list)<int(char_order_list['character_num']):
-                is_convert_1=False
-                print("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
-            else:
-                is_convert_1=True
-            this_character_names=[char.character_name for char in self.character_class_list]
-            is_convert_2=True
-            if is_convert_1:
-                for name in this_character_names:
-                    if name not in char_order_list['character_names']:
-                        print("似乎有角色的名字被修改了，之前设置的角色顺序不适用，重新设置一下吧")
-                        is_convert_2=False
-                        break
-            if is_convert_1 and is_convert_2:
-                new_character_class_list=[]
-                char_name2char={char.character_name:char for char in self.character_class_list}
-                for name in char_order_list['character_names']:
-                    new_character_class_list.append(char_name2char[name])
-
-                self.character_class_list=new_character_class_list
+        elif os.path.exists("../dsakiko_config.json"):
+            with open("../dsakiko_config.json",'r',encoding='utf-8') as f:
+                config=json.load(f)
+                char_order_list=config["character_setting"]["character_order"]
+                f.close()
         else:
-            pass
+            print("[Warning]没有找到启动配置文件！")
+            return
+        if len(self.character_class_list)>int(char_order_list['character_num']):
+            is_convert_1=False
+            print("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
+        elif len(self.character_class_list)<int(char_order_list['character_num']):
+            is_convert_1=False
+            print("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
+        else:
+            is_convert_1=True
+        this_character_names=[char.character_name for char in self.character_class_list]
+        is_convert_2=True
+        if is_convert_1:
+            for name in this_character_names:
+                if name not in char_order_list['character_names']:
+                    print("似乎有角色的名字被修改了，之前设置的角色顺序不适用，重新设置一下吧")
+                    is_convert_2=False
+                    break
+        if is_convert_1 and is_convert_2:
+            new_character_class_list=[]
+            char_name2char={char.character_name:char for char in self.character_class_list}
+            for name in char_order_list['character_names']:
+                new_character_class_list.append(char_name2char[name])
+
+            self.character_class_list=new_character_class_list
+
 
 
 

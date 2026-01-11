@@ -1,14 +1,20 @@
 import os
 import time
 
-if os.path.exists('../reference_audio/GSV_sample_rate.txt'):
-    with (open('../reference_audio/GSV_sample_rate.txt', 'r', encoding='utf-8') as f):
-        gsv_sam_rate = int(f.read())
+if not os.path.exists('../dsakiko_config.json'):
+    if os.path.exists('../reference_audio/GSV_sample_rate.txt'):
+        with (open('../reference_audio/GSV_sample_rate.txt', 'r', encoding='utf-8') as f):
+            gsv_sam_rate = int(f.read())
+    else:
+        # 在指定位置创建文件并写入初始值
+        with open('../reference_audio/GSV_sample_rate.txt', 'w', encoding='utf-8') as f:
+            f.write('16')
+        gsv_sam_rate = 16
 else:
-    # 在指定位置创建文件并写入初始值
-    with open('../reference_audio/GSV_sample_rate.txt', 'w', encoding='utf-8') as f:
-        f.write('16')
-    gsv_sam_rate = 16
+    with (open('../dsakiko_config.json', 'r', encoding='utf-8') as f):
+        import json
+        config = json.load(f)
+        gsv_sam_rate = config["audio_setting"]["sovits_inference_sampling_steps"]
 
 def synthesize(to_gptsovits_queue,from_gptsovits_queue,from_gptsovits_queue2):
     from inference_webui import change_gpt_weights, change_sovits_weights, get_tts_wav

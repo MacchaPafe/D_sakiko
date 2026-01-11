@@ -7,7 +7,7 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 
-
+from multi_char_live2d_module import TextOverlay
 
 
 class BackgroundRen(object):
@@ -62,6 +62,8 @@ class Live2DModule:
         self.if_mask=True
         self.character_list=[]
         self.current_character_num=0
+        self.is_display_text=True
+        self.new_text=''
 
     def change_character(self):
         if len(self.character_list)==1:
@@ -166,6 +168,8 @@ class Live2DModule:
         model.SetAutoBreathEnable(True)
         if self.if_sakiko:
             model.SetExpression('serious')
+
+        overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.character_list[self.current_character_num].character_name])
         glEnable(GL_TEXTURE_2D)
 
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
@@ -208,6 +212,7 @@ class Live2DModule:
                     self.onFinishCallback()
                 else:
                     self.change_character()
+                    overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
                     if self.if_sakiko and self.sakiko_state:
                         model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
                     else:
@@ -417,6 +422,7 @@ class Live2DModule:
                     else:
                         pass
                 self.think_motion_is_over=True  #放在这里就对了。。
+                overlay.set_text(self.character_list[self.current_character_num].character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 
 
             # 清除缓冲区
@@ -433,6 +439,9 @@ class Live2DModule:
                 idle_recover_timer = time.time()
 
             model.Draw()
+            overlay.update()
+            if self.is_display_text:
+                overlay.draw()
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()

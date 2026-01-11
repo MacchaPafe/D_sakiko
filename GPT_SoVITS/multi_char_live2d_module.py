@@ -7,7 +7,7 @@ import glob, os,time
 from random import randint
 
 class TextOverlay:
-    def __init__(self, window_size,char_names):
+    def __init__(self, window_size:tuple,char_names:list):
         self.win_w, self.win_h = window_size
         self.texture_id = glGenTextures(1)
 
@@ -20,7 +20,7 @@ class TextOverlay:
         # === 2. 动态计算字体大小 (基于画布高度) ===
         # 设定字号为画布高度的 14% (主文本) 和 12% (名字)
         # max(12, ...) 是为了防止窗口太小时字号变为 0 或太小看不清
-        self.font_size_main = max(12, int(self.surface_h * 0.155))
+        self.font_size_main = max(12, int(self.surface_h * 0.14))
         self.font_size_name = max(10, int(self.surface_h * 0.15))
 
         self.main_font = pygame.font.SysFont("Microsoft YaHei", self.font_size_main, bold=True)
@@ -69,15 +69,17 @@ class TextOverlay:
         self.is_typing = False  # 是否正在打字中
 
         try:
-            raw_star = pygame.image.load('./star.png').convert_alpha()
+            raw_star = pygame.image.load('./icons/star.png').convert_alpha()
             # 动态缩放：让星星的大小等于主字体的大小 (或者稍微大一点，比如 1.2倍)
             star_size = int(self.font_size_main * 1.0)
             self.star_img = pygame.transform.smoothscale(raw_star, (star_size, star_size))
         except Exception as e:
             print(f"星星图标加载失败: {e}")
             self.star_img = None  # 标记为 None，防止后面报错
-
-        self.set_text(f"{char_names[0]} & {char_names[1]}", "...")
+        if len(char_names)==1:
+            self.set_text(char_names[0], "...")
+        else:
+            self.set_text(f"{char_names[0]} & {char_names[1]}", "...")
 
     def set_text(self, char_name, text):
         """

@@ -774,13 +774,13 @@ class ViewerGUI(QWidget):
             return btn
 
         self.play_bgm_btn=create_tool_btn("播放/暂停bgm",self.toggle_bgm)
-        self.play_bgm_btn.setIcon(QIcon('./music.png'))
+        self.play_bgm_btn.setIcon(QIcon('./icons/music.png'))
         self.btn_save = create_tool_btn( "保存对话记录", self.save_history_data)
-        self.btn_save.setIcon(QIcon('./save.png'))
+        self.btn_save.setIcon(QIcon('./icons/save.png'))
         self.btn_settings = create_tool_btn( "设置", self.open_settings_dialog)
-        self.btn_settings.setIcon(QIcon('./setting.png'))
+        self.btn_settings.setIcon(QIcon('./icons/setting.png'))
         self.btn_close = create_tool_btn( "退出小剧场", self.close_program)
-        self.btn_close.setIcon(QIcon('./exit.png'))
+        self.btn_close.setIcon(QIcon('./icons/exit.png'))
 
         # 布局：左边是消息框，中间弹簧，右边是三个按钮
         self.top_layout.addWidget(self.messages_box,1)
