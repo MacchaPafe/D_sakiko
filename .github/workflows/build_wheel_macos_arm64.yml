@@ -30,20 +30,23 @@ jobs:
             cmake \
             ninja
 
-      - name: Build pyopenjtalk wheel
+      - name: Build wheels (pyopenjtalk + opencc)
         env:
           PYOPENJTALK_VERSION: '0.4.1'
+          OPENCC_VERSION: '1.1.9'
           MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: |
           mkdir -p wheels_out
           python -m pip wheel "pyopenjtalk==${PYOPENJTALK_VERSION}" --no-deps -w wheels_out
+          # OpenCC's setup.py builds a static libopencc into the wheel (no Homebrew runtime dependency).
+          python -m pip wheel "OpenCC==${OPENCC_VERSION}" --no-deps -w wheels_out
           ls -lh wheels_out
           shasum -a 256 wheels_out/*.whl | tee wheels_out/SHA256SUMS.txt
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pyopenjtalk-cp311-macos-arm64
+          name: wheels-cp311-macos-arm64
           path: |
             wheels_out/*.whl
             wheels_out/SHA256SUMS.txt

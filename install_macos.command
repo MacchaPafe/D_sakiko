@@ -19,6 +19,14 @@ ask_yes_no() {
     done
 }
 
+# Enforce Apple Silicon only (arm64)
+ARCH="$(uname -m)"
+if [[ "$ARCH" != "arm64" ]]; then
+    echo "错误：当前仅支持 Apple Silicon (arm64) 的 macOS。检测到架构：$ARCH"
+    echo "如果你使用的是 Intel Mac（x86_64），当前版本不再提供支持。"
+    exit 1
+fi
+
 # Detect region/Ask user
 IS_CN=false
 if ask_yes_no "您是否位于中国大陆？（这将配置镜像源以加速下载）"; then
@@ -82,14 +90,103 @@ brew install python@3.11
 echo "正在安装 uv..."
 brew install uv
 
-# 4. Install Dependencies
+# 4. Install Dependencies (prefer local build if toolchain exists)
 echo "正在安装项目依赖..."
 cd "$(dirname "$0")"
 
-# Ensure uv uses the installed python 3.11 if possible, or downloads one.
-# uv sync will create .venv and install dependencies from pyproject.toml
-echo "正在运行 uv sync..."
-uv sync
+# Versions (can be overridden by env)
+PYOPENJTALK_VERSION="${PYOPENJTALK_VERSION:-0.4.1}"
+OPENCC_VERSION="${OPENCC_VERSION:-1.1.9}"
+
+# Local wheels directory (optional)
+WHEELS_DIR="${PYOPENJTALK_WHEEL_DIR:-$(pwd)/wheels}"
+
+has_xcode_clt() {
+    # Xcode Command Line Tools are considered available if xcode-select path exists and clang is in PATH.
+    xcode-select -p >/dev/null 2>&1 && command -v clang >/dev/null 2>&1
+}
+
+wheel_available() {
+    local pattern="$1"
+    shopt -s nullglob
+    local matches=( $pattern )
+    shopt -u nullglob
+    (( ${#matches[@]} > 0 ))
+}
+
+# Detect whether required local wheels exist
+PYOPENJTALK_WHEEL_GLOB="$WHEELS_DIR/pyopenjtalk-${PYOPENJTALK_VERSION}-*cp311*-macosx_*_arm64.whl"
+OPENCC_WHEEL_GLOB="$WHEELS_DIR/[oO]pen[Cc][Cc]-${OPENCC_VERSION}-*cp311*-macosx_*_arm64.whl"
+
+PYOPENJTALK_WHEEL_OK=false
+OPENCC_WHEEL_OK=false
+
+if [[ -d "$WHEELS_DIR" ]]; then
+    if wheel_available "$PYOPENJTALK_WHEEL_GLOB"; then PYOPENJTALK_WHEEL_OK=true; fi
+    if wheel_available "$OPENCC_WHEEL_GLOB"; then OPENCC_WHEEL_OK=true; fi
+fi
+
+WHEELS_OK=false
+if [[ "$PYOPENJTALK_WHEEL_OK" == "true" && "$OPENCC_WHEEL_OK" == "true" ]]; then
+    WHEELS_OK=true
+fi
+
+# Control: set FORCE_WHEELS=1 to always prefer bundled wheels when available.
+FORCE_WHEELS="${FORCE_WHEELS:-0}"
+
+USE_WHEELS=false
+USE_LOCAL_BUILD=false
+
+if [[ "$FORCE_WHEELS" == "1" && "$WHEELS_OK" == "true" ]]; then
+    USE_WHEELS=true
+elif has_xcode_clt; then
+    # Prefer local compilation when toolchain exists.
+    USE_LOCAL_BUILD=true
+elif [[ "$WHEELS_OK" == "true" ]]; then
+    # No toolchain, but wheels exist.
+    USE_WHEELS=true
+else
+    # Neither toolchain nor wheels. Offer installing Xcode Command Line Tools.
+    echo "未检测到可用的编译环境（Xcode 命令行工具），且本地 wheels 不完整。"
+    echo "- 需要的 wheels："
+    echo "  - $PYOPENJTALK_WHEEL_GLOB"
+    echo "  - $OPENCC_WHEEL_GLOB"
+    if ask_yes_no "是否现在安装 Xcode 命令行工具？（安装完成后可直接本地编译）"; then
+        echo "正在触发 Xcode 命令行工具安装（将弹出系统安装窗口）..."
+        xcode-select --install || true
+        echo "请完成弹窗中的安装。安装完成后按回车继续检查。"
+        read -r
+        if has_xcode_clt; then
+            USE_LOCAL_BUILD=true
+        else
+            echo "仍未检测到 Xcode 命令行工具。你可以："
+            echo "完成安装后重新运行本脚本"
+            exit 1
+        fi
+    else
+        echo "已取消安装。"
+        exit 1
+    fi
+fi
+
+if [[ "$USE_LOCAL_BUILD" == "true" ]]; then
+    echo "检测到编译环境：将优先本地编译安装（无需依赖本地 wheels）。"
+    echo "正在确保构建依赖（cmake）已安装..."
+    brew install cmake ninja
+    echo "正在运行 uv sync（可能会编译 C/C++ 扩展，耗时较长）..."
+    uv sync
+elif [[ "$USE_WHEELS" == "true" ]]; then
+    echo "将使用本地 wheels 加速安装（避免本机编译）..."
+    if [[ ! -d "$WHEELS_DIR" ]]; then
+        echo "错误：未找到本地 wheels 目录：$WHEELS_DIR"
+        exit 1
+    fi
+    echo "正在运行 uv sync..."
+    uv sync --find-links "$WHEELS_DIR"
+else
+    echo "内部错误：未选择安装策略。"
+    exit 1
+fi
 
 # 5. Handle macOS Gatekeeper for .so files
 # ===========================================
