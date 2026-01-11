@@ -127,9 +127,10 @@ def main_thread():
                     emotion_this_three_sentences = emotion_model(cleaned_text)[0]['label']
                     is_text_generating_queue.get()  #让模型停止思考动作
 
-                    emotion_queue.put(emotion_this_three_sentences)
                     if not is_ja:
                         dp2qt_queue.put(''.join(this_turn_response[:]))
+                        # 通过队列发送新文本到 Live2D 进程
+                        live2d_text_queue.put(''.join(this_turn_response[:]))
                     else:
                         orig_text=''
                         trans_text=''
@@ -137,9 +138,12 @@ def main_thread():
                             orig_text=orig_text+orig+'。'
                             trans_text=trans_text+trans+'。'
                         dp2qt_queue.put(orig_text + '\n[翻译]' + trans_text + '[翻译结束]')
+                        # 通过队列发送新文本到 Live2D 进程
+                        live2d_text_queue.put(orig_text)
+                    emotion_queue.put(emotion_this_three_sentences)
                     break
 
-                while not is_motion_complete.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                while not motion_complete_value.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.2)
                 audio_file_path_queue.put(audio_gen.audio_file_path)    #音频文件队列
                 if cleaned_text!="不能送去合成":
@@ -155,17 +159,22 @@ def main_thread():
                     emotion_this_three_sentences ='LABEL_0'
                 if i==0:
                     is_text_generating_queue.get() #让模型停止思考动作
-                while not is_motion_complete.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                while not motion_complete_value.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.5)
-                emotion_queue.put(emotion_this_three_sentences)     #情感标签队列
+
                 if not is_ja:
                     dp2qt_queue.put(output_for_audio)
+                    # 通过队列发送新文本到 Live2D 进程
+                    live2d_text_queue.put(output_for_audio)
                 else:
                     dp2qt_queue.put(output_for_audio+'\n[翻译]'+this_turn_response[i][1]+'[翻译结束]')
+                    # 通过队列发送新文本到 Live2D 进程
+                    live2d_text_queue.put(re.sub(r"（.*?）",'',output_for_audio).strip())
+                emotion_queue.put(emotion_this_three_sentences)  # 情感标签队列
             is_audio_play_complete.put('yes')   #不让LLM模块提前进入下一个循环
-    # print("主线程已退出完成")
 
-def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, desktop_w, desktop_h, is_motion_complete):
+
+def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w, desktop_h):
     """
     Live2D 子进程入口函数
     不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
@@ -175,11 +184,11 @@ def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_
         import character
         get_all = character.GetCharacterAttributes()
         characters = get_all.character_class_list
-        
+
         import live2d_module
         live2d_player = live2d_module.Live2DModule()
         live2d_player.live2D_initialize(characters)
-        live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, desktop_w, desktop_h, is_motion_complete)
+        live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w, desktop_h)
     except Exception as e:
         print(f"[Live2D进程错误] {type(e).__name__}: {str(e)}")
         import traceback
@@ -214,8 +223,10 @@ if __name__=='__main__':
     char_is_converted_queue=multiprocessing.Queue()
     change_char_queue=multiprocessing.Queue()
     to_audio_generator_text_queue=Queue()
-    
-    is_motion_complete = multiprocessing.Value('b', True)
+    # Live2D 跨进程通信
+    live2d_text_queue=multiprocessing.Queue()  # 用于传递要显示的文本
+    is_display_text_value=multiprocessing.Value('b', True)  # 是否显示文本
+    motion_complete_value=multiprocessing.Value('b', True)  # 动作是否完成
 
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters)
 
@@ -277,9 +288,7 @@ if __name__=='__main__':
                         QT_message_queue=QT_message_queue
                         ,characters=characters,
                         dp_chat=dp_chat,
-                        audio_gen=audio_gen,live2d_mod=live2d_player,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model,
-                        is_motion_complete=is_motion_complete
-                        )
+                        audio_gen=audio_gen,live2d_text_queue=live2d_text_queue,is_display_text_value=is_display_text_value,motion_complete_value=motion_complete_value,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model                        )
 
     font_id = QFontDatabase.addApplicationFont(font_path)    #设置字体
     font_family = QFontDatabase.applicationFontFamilies(font_id)
@@ -295,7 +304,7 @@ if __name__=='__main__':
     qt_win.move(screen_w_mid,int(screen_h_mid-0.35*desktop_h))   #因为窗口高度设置的是0.7倍桌面宽
 
     # 不传递 characters 给子进程，在子进程中重新创建，避免 Windows 下 pickle 序列化截断问题
-    tr1=multiprocessing.Process(target=run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue, desktop_w, desktop_h, is_motion_complete))
+    tr1=multiprocessing.Process(target=run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h))
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
                                                              is_audio_play_complete,
                                                              is_text_generating_queue,
@@ -370,7 +379,13 @@ if __name__=='__main__':
         runtime\Lib\site-packages\pygame\__init__.py 336
         AR\models\\t2s_model.py 845
         runtime\Lib\site-packages\live2d\\utils\lipsync.py   55 防止出现nan，使程序崩溃
+        runtime\Lib\site-packages/live2d/v2/core/graphics/draw_param_opengl.py  45  330 解决腮红变黑问题
         runtime\Lib\site-packages\\faster_whisper\\transcribe.py
         inference_webui.py 大改
         inference_cli.py 大改
 '''
+"""
+更改角色皮肤
+可更改参考音频
+可重新生成音频
+"""

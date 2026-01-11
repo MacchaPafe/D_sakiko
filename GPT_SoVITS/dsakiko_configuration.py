@@ -69,7 +69,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         """
         添加一个 Qt 组件为一个分栏项目。
 
-        :param widget: 要添加的 Qt 组件实例。   
+        :param widget: 要添加的 Qt 组件实例。
         :param object_name: 该组件的标识符，需要是唯一的，取什么都行
         :param text: 分栏标题上显示的文字
         """
@@ -91,7 +91,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         """
         widget = self.stacked_widget.widget(index)
         self.pivot.setCurrentItem(widget.objectName())
-    
+
     def show_status(self, icon: InfoBarIcon, message: str):
         """
         在点击保存按键时，显示保存状态信息，并在3秒后自动清除。

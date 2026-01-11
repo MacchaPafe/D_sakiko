@@ -57,7 +57,7 @@ class CustomSettingArea(TransparentScrollArea):
         self.theme_color_card = CustomColorSettingCard(
             FluentIcon.PALETTE,
             self.tr('主题颜色'),
-            self.tr('选择应用的主题色'),
+            self.tr('选择设置界面的主题色'),
             self.personal_group,
         )
 

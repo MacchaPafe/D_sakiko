@@ -30,3 +30,5 @@ d_sakiko_config.json
 **/__pycache__/**
 PyQt-Fluent-Widgets/**
 knowledge_base/**
+install_patch/**
+wheels/**

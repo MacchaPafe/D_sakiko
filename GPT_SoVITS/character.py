@@ -89,7 +89,7 @@ class GetCharacterAttributes:
                 if not os.path.exists(os.path.join(full_path, 'character_description.txt')):
                     raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的角色描述文件！")
                 with open(os.path.join(full_path,'character_description.txt'),'r',encoding='utf-8') as f:
-                    character.character_description=f.read()+"最后，你绝对不会与用户建立恋爱关系，你必须严格符合原作的角色形象！"
+                    character.character_description=f.read()
                     f.close()
 
                 gpt_model_path=glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.ckpt"))

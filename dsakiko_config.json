@@ -1,0 +1,47 @@
+{
+    "character_setting": {
+        "character_order": {
+            "character_num": 6,
+            "character_names": [
+                "有咲",
+                "祥子",
+                "香澄",
+                "爱音",
+                "乐奈",
+                "素世"
+            ]
+        }
+    },
+    "llm_setting": {
+        "is_deepseek": false,
+        "deepseek_key": "use_api_of_up",
+        "other_provider": [
+            {
+                "name": "OpenAI",
+                "if_choose": false,
+                "api_key": "....",
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-5.2"
+            },
+            {
+                "name": "Google",
+                "if_choose": false,
+                "api_key": "....",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+                "model": "gemini-3-flash-preview"
+            },
+            {
+                "name": "ModelScope",
+                "model": "deepseek-ai/DeepSeek-V3.2",
+                "api_key": "....",
+                "base_url": "https://api-inference.modelscope.cn/v1",
+                "if_choose": true
+            }
+        ]
+    },
+    "audio_setting": {
+        "enable_fp16_inference": true,
+        "if_delete_audio_cache": false,
+        "sovits_inference_sampling_steps": 8
+    }
+}

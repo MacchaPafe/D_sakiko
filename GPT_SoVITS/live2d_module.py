@@ -9,8 +9,9 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 import sys
+import queue
 
-
+from multi_char_live2d_module import TextOverlay
 
 
 class BackgroundRen(object):
@@ -144,6 +145,8 @@ class Live2DModule:
         self.if_mask=True
         self.character_list=[]
         self.current_character_num=0
+        self.is_display_text=True
+        self.new_text=''
 
     def change_character(self):
         if len(self.character_list)==1:
@@ -221,9 +224,11 @@ class Live2DModule:
                     is_text_generating_queue,
                     char_is_converted_queue,
                     change_char_queue,
+                    live2d_text_queue,
+                    is_display_text_value,
+                    motion_complete_value,
                     desktop_w,
-                    desktop_h,
-                    is_motion_complete_value=None):
+                    desktop_h):
         if self.wavHandler is None:
             self.wavHandler = WavHandler()
         # print("正在开启Live2D模块")
@@ -275,6 +280,8 @@ class Live2DModule:
         model.SetAutoBreathEnable(True)
         if self.if_sakiko:
             model.SetExpression('serious')
+
+        overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.character_list[self.current_character_num].character_name])
         glEnable(GL_TEXTURE_2D)
 
         # print("Live2D模型加载...OK")
@@ -305,6 +312,18 @@ class Live2DModule:
                 else:
                     pass
 
+            # 从队列中获取要显示的新文本（只取最新，避免积压导致延迟）
+            latest_text = None
+            while True:
+                try:
+                    latest_text = live2d_text_queue.get_nowait()
+                except queue.Empty:
+                    break
+                except Exception:
+                    break
+            if latest_text is not None:
+                self.new_text = latest_text
+
             if not change_char_queue.empty():
                 x=change_char_queue.get()
                 if x =='start_talking':   #录音时
@@ -319,6 +338,7 @@ class Live2DModule:
                     self.onFinishCallback()
                 else:
                     self.change_character()
+                    overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
                     if self.if_sakiko and self.sakiko_state:
                         model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
                     else:
@@ -407,8 +427,8 @@ class Live2DModule:
                 self.think_motion_is_over=True
 
             self.live2d_this_turn_motion_complete=not pygame.mixer.music.get_busy()
-            if is_motion_complete_value is not None:
-                is_motion_complete_value.value = self.live2d_this_turn_motion_complete
+            # 更新到共享变量
+            motion_complete_value.value = self.live2d_this_turn_motion_complete
 
             if not char_is_converted_queue.empty():
                 if self.if_sakiko:
@@ -530,6 +550,7 @@ class Live2DModule:
                     else:
                         pass
                 self.think_motion_is_over=True  #放在这里就对了。。
+                overlay.set_text(self.character_list[self.current_character_num].character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 
 
             # 清除缓冲区
@@ -546,6 +567,10 @@ class Live2DModule:
                 idle_recover_timer = time.time()
 
             model.Draw()
+            overlay.update()
+            # 从共享变量读取是否显示文本
+            if is_display_text_value.value:
+                overlay.draw()
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()
@@ -585,5 +610,24 @@ if __name__=='__main__':        #单独测试live2d
     w, h = root.winfo_screenwidth(), root.winfo_screenheight()
     root.destroy()
     
-    a.play_live2d(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue, w, h)
+    class _SharedBool:
+        def __init__(self, value: bool):
+            self.value = value
+
+    live2d_text_queue = Queue()
+    is_display_text_value = _SharedBool(True)
+    motion_complete_value = _SharedBool(True)
+
+    a.play_live2d(
+        emotion_queue,
+        audio_file_path_queue,
+        is_text_generating_queue,
+        char_is_converted_queue,
+        change_char_queue,
+        live2d_text_queue,
+        is_display_text_value,
+        motion_complete_value,
+        w,
+        h,
+    )
 

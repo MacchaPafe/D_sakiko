@@ -124,7 +124,7 @@ class DSLocalAndVoiceGen:
 
 			user_this_turn_msg = [{"role":"system","content":self.base_prompt},
 								  {"role": "user","content": user_prompt}]
-			message_queue.put("生成文本中...")
+			message_queue.put("调用大模型生成文本中...  ")
 			time.sleep(2)
 			test_text='''
 			[
