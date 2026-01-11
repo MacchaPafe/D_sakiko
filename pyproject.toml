@@ -29,7 +29,10 @@ dependencies = [
     "numba>=0.62.1",
     "numpy<2.0",
     "onnxruntime==1.19 ; platform_machine == 'aarch64' or platform_machine == 'arm64'",
-    "onnxruntime-gpu==1.19 ; platform_machine == 'AMD64' or platform_machine == 'x86_64'",
+    # 只在如下环境下安装 onnxruntime-gpu：
+    # 非 MacOS 平台
+    # 且系统架构为 AMD64 或 x86_64（就是一般的 Intel/AMD 64 位处理器）
+    "onnxruntime-gpu==1.19 ; sys_platform != 'darwin' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "opencc>=1.1.9",
     "peft>=0.18.0",
     "psutil>=7.1.3",
@@ -70,7 +73,6 @@ dependencies = [
     "soundfile>=0.13.1",
     "litellm>=1.80.11",
     "pyqt-fluent-widgets>=1.10.4",
-    "basedpyright>=1.36.1",
 ]
 
 [tool.uv]

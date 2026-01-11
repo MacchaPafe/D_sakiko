@@ -510,6 +510,7 @@ class ChatGUI(QWidget):
         self.voice_is_valid=True
 
     def voice_dectect(self):
+        self.setWindowTitle("正在准备录音...")
         self.start_input_stream()
         if not hasattr(self, 'stream') or self.stream is None:
             return
@@ -520,8 +521,7 @@ class ChatGUI(QWidget):
         self.record_timer.start(300)
         self.user_input.setText('start_talking')
         self.user_input.returnPressed.emit()
-        self.setWindowTitle("正在录音...松开结束")
-
+        QTimer.singleShot(1000, lambda: self.setWindowTitle("正在录音...松开结束"))
 
     def voice_decect_end(self):
         if not self.is_recording:

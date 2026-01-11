@@ -61,10 +61,6 @@ class DSakikoConfigArea(TransparentScrollArea):
         self.save_button.clicked.connect(self.save_config)
         self.v_box_layout.addWidget(self.save_button)
 
-        self.exit_button = PushButton(self.tr("关闭窗口"), self)
-        self.exit_button.clicked.connect(self.close)
-        self.v_box_layout.addWidget(self.exit_button)
-
         self.custom_setting_area.status_signal.connect(self.show_status)
 
         self.setMinimumSize(500, 600)
@@ -139,7 +135,18 @@ class DSakikoConfigArea(TransparentScrollArea):
         if self.save_ui_to_config():
             d_sakiko_config.save()
 
-            self.show_status(InfoBarIcon.SUCCESS, self.tr("保存成功！大模型相关配置立刻生效，音频推理与角色顺序等配置在下次启动时应用"))
+            self.show_status(InfoBarIcon.SUCCESS, self.tr("保存成功！配置在下次启动时应用"))
+
+
+class DSakikoConfigWindow(FluentWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(self.tr("数字小祥配置"))
+
+        self.setMinimumSize(650, 800)
+
+        area = DSakikoConfigArea()
+        self.addSubInterface(area, FluentIcon.HOME, self.tr("设置"))
 
 
 if __name__ == '__main__':

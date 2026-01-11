@@ -28,3 +28,5 @@ d_sakiko_config.json
 .idea/**
 .vscode/**
 **/__pycache__/**
+PyQt-Fluent-Widgets/**
+knowledge_base/**
