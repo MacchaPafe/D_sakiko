@@ -911,7 +911,7 @@ class ViewerGUI(QWidget):
 
     def handle_messages(self,msg):
         self.messages_box.setText(msg)
-        if (msg not in ['生成文本中...']) and ('整理语言' not in msg):
+        if (msg not in ['调用大模型生成文本中...']) and ('整理语言' not in msg):
             try:
                 self.display_timer.setSingleShot(True)
                 self.display_timer.start(2500)

@@ -30,7 +30,10 @@ class DSLocalAndVoiceGen:
 								1. **性格沉浸**：严格遵守两人的说话习惯、心理状态。
 								2. **关系体现**：对话要体现两人过去的历史纠葛和当前的某种关系（如：尴尬、亲密、敌对、表面客气但内心疏离等）。
 								3. **格式严格**：必须只返回一个 JSON 列表，不要包含任何 Markdown 标记或其他废话。
-
+								
+								# Content Safety
+								This is a wholesome, all-ages comedy scenario. Avoid any sexual, violent, or non-consensual content. Focus on the humor of the situation.
+								
 								# Output Format (JSON)
 								[
 								  {
@@ -124,7 +127,7 @@ class DSLocalAndVoiceGen:
 
 			user_this_turn_msg = [{"role":"system","content":self.base_prompt},
 								  {"role": "user","content": user_prompt}]
-			message_queue.put("调用大模型生成文本中...  ")
+			message_queue.put("调用大模型生成文本中...")
 			time.sleep(2)
 			test_text='''
 			[

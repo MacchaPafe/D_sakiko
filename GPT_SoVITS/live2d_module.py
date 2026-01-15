@@ -1,4 +1,5 @@
 import math
+import re
 import time
 from random import randint
 from live2d.utils.lipsync import WavHandler
@@ -135,7 +136,7 @@ class Live2DModule:
         self.BACK_IMAGE=None
         self.BACKGROUND_POSITION=((-1.0, 1.0, 0), (1.0, -1.0, 0), (1.0, 1.0, 0), (-1.0, -1.0, 0))
         self.motion_is_over=False
-        self.wavHandler=None
+        self.wavHandler=WavHandler()
         self.lipSyncN:float=1.4
         self.live2d_this_turn_motion_complete=True
         self.think_motion_is_over=True
@@ -180,8 +181,9 @@ class Live2DModule:
         back_img_jpg = glob.glob(os.path.join("../live2d_related", f"*.jpg"))
         if not (back_img_png+back_img_jpg):
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
-        self.BACK_IMAGE=max((back_img_jpg+back_img_png),key=os.path.getmtime)
-        # print("Live2D初始化...OK")
+        self.BACK_IMAGE = back_img_jpg + back_img_png
+        self.back_img_index = 0
+        #print("Live2D初始化...OK")
 
 
     # 动作播放开始后调用
@@ -262,12 +264,10 @@ class Live2DModule:
                                 +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
             except Exception:
                 pass
-        
+
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
-        # print("准备初始化 pygame...")
         pygame.init()
         live2d.init()
-        # print("Live2D模块初始化...OK")
 
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
@@ -284,10 +284,8 @@ class Live2DModule:
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.character_list[self.current_character_num].character_name])
         glEnable(GL_TEXTURE_2D)
 
-        # print("Live2D模型加载...OK")
-
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
-        texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
+        texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
         glBindTexture(GL_TEXTURE_2D, texture)
         mtn_group = ['idle', 'start', 'shake','rana']
 
@@ -336,6 +334,35 @@ class Live2DModule:
                         model.StartMotion(mtn_group[3], 60, 4, self.onStartCallback)
                 elif x=='stop_talking':   #录音结束
                     self.onFinishCallback()
+                elif x=='change_l2d_background':
+                    glActiveTexture(GL_TEXTURE0)  # 必加，否则白屏
+                    glDeleteTextures([texture])
+                    self.back_img_index += 1
+                    if self.back_img_index >= len(self.BACK_IMAGE):
+                        self.back_img_index = 0
+                    texture = BackgroundRen.render(
+                        pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
+                    glBindTexture(GL_TEXTURE_2D, texture)
+                    BackgroundRen.blit(*self.BACKGROUND_POSITION)
+                elif x.startswith('change_l2d_model'):
+                    match=re.search(r"change_l2d_model#(.*)", x)
+                    if match:
+                        new_model_path = match.group(1)
+                        print("正在切换Live2D模型，路径为：", new_model_path)
+                        try:
+                            new_model=LAppModel()
+                            new_model.LoadModelJson(new_model_path, disable_precision=True)
+                            new_model.Resize(win_w_and_h, win_w_and_h)
+                            new_model.SetAutoBlinkEnable(True)
+                            new_model.SetAutoBreathEnable(True)
+                        except Exception as e:
+                            print("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：", e)
+                            new_model=None
+                        if new_model is not None:
+                            del model
+                            model=new_model
+                            print("Live2D模型切换成功！")
+                            self.character_list[self.current_character_num].live2d_json = new_model_path
                 else:
                     self.change_character()
                     overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
@@ -479,7 +506,6 @@ class Live2DModule:
                     glUseProgram(0)
                     pygame.display.flip()
                     if self.motion_is_over:
-                        # print("Live2D模块退出动画播放完成，正在退出...")
                         self.run=False
                     continue
 
@@ -557,7 +583,7 @@ class Live2DModule:
             #live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
-            model.Update()
+            model.Update(breath_weight_1=0.25)
             # 渲染背景图片
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
             # 渲染live2d到屏幕
@@ -579,7 +605,6 @@ class Live2DModule:
         live2d.dispose()
         #结束pygame
         pygame.quit()
-        # print("Live2D模块已退出完成")
 
 
 if __name__=='__main__':        #单独测试live2d
@@ -604,30 +629,5 @@ if __name__=='__main__':        #单独测试live2d
     is_text_generating_queue = Queue()
     char_is_converted_queue=Queue()
     change_char_queue=Queue()
-    
-    import tkinter as tk
-    root = tk.Tk()
-    w, h = root.winfo_screenwidth(), root.winfo_screenheight()
-    root.destroy()
-    
-    class _SharedBool:
-        def __init__(self, value: bool):
-            self.value = value
-
-    live2d_text_queue = Queue()
-    is_display_text_value = _SharedBool(True)
-    motion_complete_value = _SharedBool(True)
-
-    a.play_live2d(
-        emotion_queue,
-        audio_file_path_queue,
-        is_text_generating_queue,
-        char_is_converted_queue,
-        change_char_queue,
-        live2d_text_queue,
-        is_display_text_value,
-        motion_complete_value,
-        w,
-        h,
-    )
+    a.play_live2d(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue)
 

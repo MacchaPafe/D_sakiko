@@ -21,6 +21,7 @@
 /GPT_SoVITS/ffmpeg.exe
 /GPT_SoVITS/test_danmu.py
 /GPT_SoVITS/faulthandler_log.txt
+/GPT_SoVITS/eres2net/**
 
 **/.DS_Store
 d_sakiko_config.json

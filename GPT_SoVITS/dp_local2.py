@@ -128,14 +128,14 @@ class DSLocalAndVoiceGen:
                 text_queue.put('bye')
                 break
 
-            elif user_input=='mask':
+            elif user_input == 'mask':
                 if self.if_sakiko:
                     char_is_converted_queue.put('maskoff')
                 else:
                     message_queue.put("祥子好像不在<w>")
                 time.sleep(2)
                 continue
-            elif user_input=='conv':
+            elif user_input == 'conv':
                 if self.if_sakiko:
                     self.sakiko_state=not self.sakiko_state
                     message_queue.put("已切换为"+("黑祥"if self.sakiko_state else "白祥"))
@@ -144,26 +144,33 @@ class DSLocalAndVoiceGen:
                     message_queue.put("祥子好像不在<w>")
                 time.sleep(2)
                 continue
-            elif user_input =='v':
-                self.if_generate_audio=not self.if_generate_audio
-                message_queue.put("已"+("开启" if self.if_generate_audio else "关闭")+"语音合成")
+            elif user_input == 'v':
+                self.if_generate_audio = not self.if_generate_audio
+                message_queue.put("已" + ("开启" if self.if_generate_audio else "关闭") + "语音合成")
                 time.sleep(2)
                 continue
-            elif user_input=='s':
+            elif user_input == 's':
                 self.change_character()
-                message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在切换GPT-SoVITS模型...")
+                message_queue.put(
+                    f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在切换GPT-SoVITS模型...")
                 change_char_queue.put('yes')
                 dp2qt_queue.put("changechange")
                 AudioGenerator.change_character()
                 time.sleep(2)
                 continue
-            elif user_input=='clr':
-                self.all_character_msg[self.current_char_index]=[{"role": "user",
-                                                                 "content": f'{self.character_list[self.current_char_index].character_description}'}]
+            elif user_input == 'clr':
+                self.all_character_msg[self.current_char_index] = [{"role": "system",
+                                                                    "content": f'{self.character_list[self.current_char_index].character_description}'}]
                 message_queue.put("已清空角色的聊天记录")
                 time.sleep(2)
                 continue
-            elif user_input in ['start_talking','stop_talking']:
+            elif user_input in ['start_talking', 'stop_talking']:
+                change_char_queue.put(user_input)
+                continue
+            elif user_input == 'change_l2d_background':
+                change_char_queue.put('change_l2d_background')
+                continue
+            elif user_input.startswith('change_l2d_model'):
                 change_char_queue.put(user_input)
                 continue
 

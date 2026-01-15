@@ -1,3 +1,4 @@
+import os
 import re
 
 import time
@@ -34,6 +35,19 @@ class AudioGenerate:
         self.ref_text_file=''
         self.ref_text_file_white_sakiko = '../reference_audio/sakiko/reference_text_white_sakiko.txt'
         self.ref_text_file_black_sakiko = '../reference_audio/sakiko/reference_text_black_sakiko.txt'
+        #加载祥子的默认参考音频（如果有设置过）
+        if os.path.exists(os.path.join("../reference_audio",'sakiko', f"default_ref_audio_black.txt")):
+            with open(os.path.join("../reference_audio",'sakiko', f"default_ref_audio_black.txt"),'r',encoding='utf-8') as f:
+                default_ref_audio_black_path=f.read().strip()
+                f.close()
+            if os.path.exists(default_ref_audio_black_path):
+                self.ref_audio_file_black_sakiko=default_ref_audio_black_path
+        if os.path.exists(os.path.join("../reference_audio",'sakiko', f"default_ref_audio_white.txt")):
+            with open(os.path.join("../reference_audio",'sakiko', f"default_ref_audio_white.txt"),'r',encoding='utf-8') as f:
+                default_ref_audio_white_path=f.read().strip()
+                f.close()
+            if os.path.exists(default_ref_audio_white_path):
+                self.ref_audio_file_white_sakiko=default_ref_audio_white_path
         self.program_output_path="../reference_audio/generated_audios_temp"
         self.speed=1.0
         self.pause_second=0.5
@@ -299,8 +313,8 @@ class AudioGenerate:
                 # else:
                 #     self.speed=0.88
                 text = re.sub(r'CRYCHIC', 'クライシック',text,flags=re.IGNORECASE)
-                text = re.sub(r'\bave\s*mujica\b', 'あヴぇムジカ', text, flags=re.IGNORECASE)
-                text = re.sub(r'立希',( 'たき' if self.if_sakiko else 'りっき'), text, flags=re.IGNORECASE)  #りっきだよ、りっき！
+                text = re.sub(r'\bave\s*mujica\b', 'アヴェムジカ', text, flags=re.IGNORECASE)
+                text = re.sub(r'立希',( 'りっき' if self.character_list[self.current_character_index].character_name=="爱音" else 'りっき'), text, flags=re.IGNORECASE)  #りっきだよ、りっき！
                 for key, value in self.replacements_jap.items():
                     text = re.sub(re.escape(key), value, text,flags=re.IGNORECASE)
 
