@@ -5,7 +5,7 @@ import live2d.v2 as live2d
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
-import glob,os
+import glob,re,os
 
 from multi_char_live2d_module import TextOverlay
 
@@ -97,7 +97,8 @@ class Live2DModule:
         back_img_jpg = glob.glob(os.path.join("../live2d_related", f"*.jpg"))
         if not (back_img_png+back_img_jpg):
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
-        self.BACK_IMAGE=max((back_img_jpg+back_img_png),key=os.path.getmtime)
+        self.BACK_IMAGE=back_img_jpg+back_img_png
+        self.back_img_index=0
         #print("Live2D初始化...OK")
 
 
@@ -159,7 +160,7 @@ class Live2DModule:
 
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-        #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
+        pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
         model = live2d.LAppModel()
         model.LoadModelJson(self.PATH_JSON)
 
@@ -173,7 +174,7 @@ class Live2DModule:
         glEnable(GL_TEXTURE_2D)
 
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
-        texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
+        texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
         glBindTexture(GL_TEXTURE_2D, texture)
         mtn_group = ['idle', 'start', 'shake','rana']
 
@@ -210,6 +211,35 @@ class Live2DModule:
                         model.StartMotion(mtn_group[3], 60, 4, self.onStartCallback)
                 elif x=='stop_talking':   #录音结束
                     self.onFinishCallback()
+                elif x=='change_l2d_background':
+                    glActiveTexture(GL_TEXTURE0)  # 必加，否则白屏
+                    glDeleteTextures([texture])
+                    self.back_img_index += 1
+                    if self.back_img_index >= len(self.BACK_IMAGE):
+                        self.back_img_index = 0
+                    texture = BackgroundRen.render(
+                        pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
+                    glBindTexture(GL_TEXTURE_2D, texture)
+                    BackgroundRen.blit(*self.BACKGROUND_POSITION)
+                elif x.startswith('change_l2d_model'):
+                    match=re.search(r"change_l2d_model#(.*)", x)
+                    if match:
+                        new_model_path = match.group(1)
+                        print("正在切换Live2D模型，路径为：", new_model_path)
+                        try:
+                            new_model=live2d.LAppModel()
+                            new_model.LoadModelJson(new_model_path)
+                            new_model.Resize(win_w_and_h, win_w_and_h)
+                            new_model.SetAutoBlinkEnable(True)
+                            new_model.SetAutoBreathEnable(True)
+                        except Exception as e:
+                            print("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：", e)
+                            new_model=None
+                        if new_model is not None:
+                            del model
+                            model=new_model
+                            print("Live2D模型切换成功！")
+                            self.character_list[self.current_character_num].live2d_json = new_model_path
                 else:
                     self.change_character()
                     overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
@@ -429,7 +459,7 @@ class Live2DModule:
             #live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
-            model.Update()
+            model.Update(breath_weight_1=0.25)
             # 渲染背景图片
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
             # 渲染live2d到屏幕

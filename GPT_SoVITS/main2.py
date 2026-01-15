@@ -230,7 +230,7 @@ if __name__=='__main__':
     else:
         # 比文件名里的数字大小，而不是比文件系统的元数据
         font_path = max(font_files, key=get_timestamp_from_filename)
-        print(f"检测到最新导入的字体: {font_path}")
+        #print(f"检测到最新导入的字体: {font_path}")
 
         # --- 清理旧文件 (逻辑不变) ---
         for f in font_files:
@@ -313,13 +313,13 @@ if __name__=='__main__':
 '''
 修改库的源码：ffmpeg/_run.py 196
         jieba_fast/__init__.py 117/136/150/168/170
-        project\\runtime\Lib\site-packages\\torch\\nn\modules\module.py 30/2043
         AR/models/t2s_model.py 560/736/875
         text/chinese2.py 27
         runtime\Lib\site-packages\pygame\__init__.py 336
         AR\models\\t2s_model.py 845
         runtime\Lib\site-packages\live2d\\utils\lipsync.py   55 防止出现nan，使程序崩溃
         runtime\Lib\site-packages/live2d/v2/core/graphics/draw_param_opengl.py  45  330 解决腮红变黑问题
+        runtime/Lib/site-packages/live2d/v2/lapp_model.py  173
         runtime\Lib\site-packages\\faster_whisper\\transcribe.py
         inference_webui.py 大改
         inference_cli.py 大改

@@ -87,12 +87,22 @@ class GetCharacterAttributes:
                 SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)
                 character.sovits_model_path=SoVITS_model_file
 
-                ref_audio_file_wav = glob.glob(os.path.join("../reference_audio",char, f"*.wav"))
-                ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio",char, f"*.mp3"))
-                if not ref_audio_file_wav + ref_audio_file_mp3:
-                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)")
-                ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
-                character.gptsovits_ref_audio=ref_audio
+                #加载上次设置的参考音频（如果有设置过），而不是每次都用最新的参考音频
+                if char!='sakiko':
+                    if os.path.exists(os.path.join("../reference_audio",char, f"default_ref_audio.txt")):
+                        with open(os.path.join("../reference_audio",char, f"default_ref_audio.txt"),'r',encoding='utf-8') as f:
+                            default_ref_audio_path=f.read().strip()
+                            f.close()
+                        if os.path.exists(default_ref_audio_path):
+                            character.gptsovits_ref_audio=default_ref_audio_path
+                    else:
+                        ref_audio_file_wav = glob.glob(os.path.join("../reference_audio", char, f"*.wav"))
+                        ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio", char, f"*.mp3"))
+                        if not ref_audio_file_wav + ref_audio_file_mp3:
+                            raise FileNotFoundError(
+                                f"没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)")
+                        ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
+                        character.gptsovits_ref_audio=ref_audio
                 
                 if char!='sakiko':
                     if not os.path.exists(os.path.join("../reference_audio",char, 'reference_text.txt')):

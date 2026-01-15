@@ -332,7 +332,7 @@ dialogWindowDefaultCss=f'''
         }}
         '''
 
-class MoreFunctionWindow(QWidget):
+class MoreFunctionWindow(QDialog):
     def __init__(self,parent_window_close_fun):
         super().__init__()
         self.setWindowTitle("更多功能...")
@@ -431,10 +431,11 @@ class MoreFunctionWindow(QWidget):
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
 
-class WarningWindow(QWidget):
+class WarningWindow(QDialog):
     def __init__(self,warning_text,css,parent_window_fun):
         super().__init__()
         self.setWindowTitle("确认操作")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.label=QLabel(warning_text)
         layout=QVBoxLayout()
         layout.addWidget(self.label)
@@ -471,7 +472,11 @@ class SettingWindow(QDialog):
         self.change_reference_audio_btn.clicked.connect(self.open_change_ref_audio_window)
         self.switch_live2d_text_btn=QPushButton("开启/关闭Live2D界面文本显示")
         self.switch_live2d_text_btn.clicked.connect(self.parent_window.toggle_live2d_text_display)
-        self.convert_sakiko_state_btn=QPushButton("切换祥子状态")
+        self.change_l2d_background_btn=QPushButton("切换Live2D背景")
+        self.change_l2d_background_btn.clicked.connect(self.change_l2d_background)
+        self.change_l2d_model_btn=QPushButton("更改当前角色Live2D模型")
+        self.change_l2d_model_btn.clicked.connect(self.change_live2d_model_1)
+        self.convert_sakiko_state_btn=QPushButton("黑/白祥")
         self.convert_sakiko_state_btn.clicked.connect(self.convert_sakiko_state)
         self.sakiko_mask_btn=QPushButton("面具")
         self.sakiko_mask_btn.clicked.connect(self.sakiko_mask)
@@ -481,11 +486,13 @@ class SettingWindow(QDialog):
         setting_layout.addWidget(self.switch_voice_btn,2,0,1,2)
         #setting_layout.addWidget(self.change_theme_color_btn,3,0,1,2)
         setting_layout.addWidget(self.switch_live2d_text_btn,4,0,1,2)
+        setting_layout.addWidget(self.change_l2d_background_btn,5,0,1,2)
         setting_group=QGroupBox("设置组1")
         setting_group.setLayout(setting_layout)
         setting_layout_2=QGridLayout()
         setting_layout_2.addWidget(self.change_theme_color_btn,0,0,1,2)
         setting_layout_2.addWidget(self.change_reference_audio_btn,1,0,1,2)
+        setting_layout_2.addWidget(self.change_l2d_model_btn,2,0,1,2)
         setting_group_2=QGroupBox("设置组2")
         setting_group_2.setLayout(setting_layout_2)
         layout=QVBoxLayout()
@@ -522,14 +529,91 @@ class SettingWindow(QDialog):
         self.parent_window.user_input.returnPressed.emit()  # noqa
         self.parent_window.user_input.clear()
     def open_color_picker(self):
-        self.color_picker = ColorPicker(self.parent_window_set_theme_color,self.current_color)
-        self.color_picker.show()
+        color_picker = ColorPicker(self.parent_window_set_theme_color,self.current_color)
+        color_picker.exec_()
     def parent_window_set_theme_color(self,color):
         self.parent_window.setStyleSheet(ThemeManager.generate_stylesheet(color))
         self.parent_window.set_btn_color(color)
     def open_change_ref_audio_window(self):
-        self.change_ref_audio_window=ChangeReferenceAudioWindow(self.audio_gen_module,QDesktopWidget().screenGeometry())
-        self.change_ref_audio_window.show()
+        change_ref_audio_window=ChangeReferenceAudioWindow(self.audio_gen_module,QDesktopWidget().screenGeometry())
+        change_ref_audio_window.exec_()
+    def change_l2d_background(self):
+        self.parent_window.user_input.setText('change_l2d_background')
+        self.parent_window.user_input.returnPressed.emit()  # noqa
+        self.parent_window.user_input.clear()
+
+    def change_live2d_model_1(self):
+        current_char_folder_name=self.parent_window.character_list[self.audio_gen_module.current_character_index].character_folder_name
+        change_l2d_model_window=ChangeL2DModelWindow(current_char_folder_name,self.change_live2d_model_2)
+        change_l2d_model_window.exec_()
+    def change_live2d_model_2(self,new_model_json):
+        self.parent_window.user_input.setText(f'change_l2d_model#{new_model_json}')
+        self.parent_window.user_input.returnPressed.emit()  # noqa
+        self.parent_window.user_input.clear()
+
+
+
+class ChangeL2DModelWindow(QDialog):
+    def __init__(self,current_char_folder_name,change_l2d_model_func):
+        super().__init__()
+        self.setWindowTitle('更改当前角色Live2D模型')
+        screen=QDesktopWidget().screenGeometry()
+        self.resize(int(screen.width()*0.2),int(screen.height()*0.3))
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        import glob
+        default_live2d_json = glob.glob(os.path.join(f'../live2d_related/{current_char_folder_name}', 'live2D_model', f"*.model.json"))
+        default_live2d_json=default_live2d_json[0] if default_live2d_json else None
+        self.current_char_l2d_models=[{"model_name":"默认","model_json_path":default_live2d_json}]
+        self.find_extra_models(current_char_folder_name)
+        layout=QVBoxLayout()
+        display_group=QGroupBox("选择Live2D模型:")
+        display_layout=QVBoxLayout()
+        for model in self.current_char_l2d_models:
+            model_layout=QHBoxLayout()
+            name_label=QLabel(model["model_name"])
+            select_btn=QToolButton()
+            select_btn.setText("选择")
+            select_btn.clicked.connect(lambda checked, path=model["model_json_path"]: change_l2d_model_func(path))  # noqa
+            model_layout.addWidget(name_label)
+            model_layout.addWidget(select_btn)
+            display_layout.addLayout(model_layout)
+        display_group.setLayout(display_layout)
+        layout.addWidget(display_group)
+        self.setLayout(layout)
+        self.setStyleSheet(dialogWindowDefaultCss)
+
+
+    def find_extra_models(self,current_char_folder_name):
+        base_path = f"../live2d_related/{current_char_folder_name}/extra_model"
+        if not os.path.exists(base_path):
+            os.makedirs(base_path)
+            print(f"提示：目录 {base_path} 不存在，已自动创建。加入更多live2D模型的方法为：在该文件夹中新建名为新模型名称的文件夹，然后在其中放入新模型的组成材料（.model.json结尾的配置文件、moc模型、.physics.json以及贴图文件）。")
+            return
+
+        model_dirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+
+        for model_dir_name in model_dirs:
+            # 构建这个模型文件夹的完整路径，例如 ../live2d_related/miku/extra_model/Miku
+            model_dir_path = os.path.join(base_path, model_dir_name)
+            #在这个具体的模型文件夹里，递归查找 .model.json
+            # 这里再用 os.walk 就非常安全了，它只会在 Miku 这个文件夹里找
+
+            for file in os.listdir(model_dir_path):
+                if file.endswith(".model.json"):
+                    full_path = os.path.join(model_dir_path, file)
+                    # 将路径标准化（把反斜杠\变成正斜杠/），避免Windows路径问题
+                    full_path = full_path.replace("\\", "/")
+                    self.current_char_l2d_models.append({"model_name":model_dir_name,"model_json_path":full_path})
+                    #把默认模型文件夹中的所有.exp.json和.mtn文件都复制一份到新模型文件夹中，这样，用户只需准备.model.json和.moc就行了
+                    # if
+                    # try:
+                    #     default_model_folder = os.path.dirname(f"../live2d_related/{current_char_folder_name}/live2D_model")  # ../live2d_related/miku/live2D_model
+                    #     for default_file in os.listdir(default_model_folder):
+                    #         if default_file.endswith(".exp.json") or default_file.endswith(".mtn"):
+                    #             import shutil
+                    #             shutil.copy(os.path.join(default_model_folder, default_file), model_dir_path)
+
+                    break  # 找到一个就跳出当前文件夹的循环
 
 
 class ChangeReferenceAudioWindow(QDialog):
@@ -624,14 +708,23 @@ class ChangeReferenceAudioWindow(QDialog):
         self.audio_player.play()
 
     def replace_ref_audio(self,new_ref_audio_file):
-        if self.audio_gen_module.if_sakiko:
-            if self.audio_gen_module.sakiko_which_state:
-                self.audio_gen_module.ref_audio_file_black_sakiko=new_ref_audio_file
+        try:
+            if self.audio_gen_module.if_sakiko:
+                if self.audio_gen_module.sakiko_which_state:
+                    self.audio_gen_module.ref_audio_file_black_sakiko=new_ref_audio_file
+                    with open('../reference_audio/sakiko/default_ref_audio_black.txt','w',encoding='utf-8') as f:
+                        f.write(new_ref_audio_file)
+                else:
+                    self.audio_gen_module.ref_audio_file_white_sakiko=new_ref_audio_file
+                    with open('../reference_audio/sakiko/default_ref_audio_white.txt','w',encoding='utf-8') as f:
+                        f.write(new_ref_audio_file)
             else:
-                self.audio_gen_module.ref_audio_file_white_sakiko=new_ref_audio_file
-        else:
-            self.audio_gen_module.ref_audio_file=new_ref_audio_file
-            self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].gptsovits_ref_audio=new_ref_audio_file
+                self.audio_gen_module.ref_audio_file=new_ref_audio_file
+                self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].gptsovits_ref_audio=new_ref_audio_file
+                with open(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
+                    f.write(new_ref_audio_file)
+        except Exception as e:
+            print("更改参考音频出现错误，错误信息：",e)
         self.current_ref_audio_label.setText(f"当前参考音频:{os.path.basename(new_ref_audio_file)}")
 
     def change_ref_text(self):
@@ -654,7 +747,7 @@ class ChangeReferenceAudioWindow(QDialog):
 
 
 
-class ColorPicker(QWidget):
+class ColorPicker(QDialog):
     def __init__(self,parent_window_set_color_fun,current_color="#7799CC"):
         super().__init__()
         self.setStyleSheet(dialogWindowDefaultCss)
@@ -700,7 +793,7 @@ class ColorPicker(QWidget):
             "六花": "#AAEE22",  # LOCK (朝日六花)
             "msk": "#EEBB44",  # MASKING (佐藤真苏姬)
             "pareo": "#FF99BB",  # PAREO (鳰原令王那)
-            "chu2": "#00BBFF",  # CHU² (珠手知由)
+            "CHU²": "#00BBFF",  # CHU² (珠手知由)
 
             "灯":"#77BBDD",
             "爱音":"#FF8899",
@@ -785,9 +878,9 @@ class ChatGUI(QWidget):
         super().__init__()
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
         self.setWindowTitle("数字小祥")
-        #self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
+        self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
         self.screen = QDesktopWidget().screenGeometry()
-        self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
+        self.resize(int(0.37 * self.screen.width()), int(0.7 * self.screen.height()))
         self.chat_display = QTextBrowser()
         self.chat_display.setPlaceholderText("这里显示聊天记录...")
         self.chat_display.setOpenExternalLinks(False)
@@ -1070,15 +1163,12 @@ class ChatGUI(QWidget):
     def open_setting_window(self):
         color =ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css) if self.character_list[self.current_char_index].qt_css is not None else "#7799CC"
 
-        self.setting_window=SettingWindow(self,self.screen,color,self.audio_gen)
-        self.setting_window.show()
+        setting_window=SettingWindow(self,self.screen,color,self.audio_gen)
+        setting_window.exec_()
 
     def open_more_function_window(self):
-        css=ThemeManager.generate_stylesheet(
-                ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
-                ) if self.character_list[self.current_char_index].qt_css is not None else ThemeManager.generate_stylesheet('#7799CC')
-        self.more_function_win=MoreFunctionWindow(self.close_program)
-        self.more_function_win.show()
+        more_function_win=MoreFunctionWindow(self.close_program)
+        more_function_win.exec_()
 
     def close_program(self):
         self.user_input.setText('bye')
@@ -1338,21 +1428,24 @@ class ChatGUI(QWidget):
                 cursor.insertHtml(f'<span style="color: #B3D1F2; font-style: italic;">{self.translation}</span><br>')
                 self.translation=''
                 self.chat_display.moveCursor(QTextCursor.End)
-
-    def is_display(self,text):
+    @staticmethod
+    def is_display(text):
         text1=re.findall('切换GPT-SoVITS',text,flags=re.DOTALL)
         text2 = re.findall('已切换为', text, flags=re.DOTALL)
         text3=re.findall('整理语言',text,flags=re.DOTALL)
         text4=re.findall('思考中',text,flags=re.DOTALL)
         return not (text1 or text2 or text3 or text4)
 
-    def is_display2(self, text):
+    @staticmethod
+    def is_display2(text):
         flag=True
         user_input_no_display_list=['s','l','m','clr','conv','v',
-                                    'clr','mask','save','start_talking','stop_talking']
+                                    'clr','mask','save','start_talking','stop_talking','change_l2d_background']
         for x in user_input_no_display_list:
             if text == x:
                 flag = False
+        if text.startswith('change_l2d_model'):
+            flag = False
         return flag
 
     def handle_user_input(self):
@@ -1393,8 +1486,8 @@ class ChatGUI(QWidget):
                 ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
             ) if self.character_list[self.current_char_index].qt_css is not None else ThemeManager.generate_stylesheet(
                 '#7799CC')
-            self.pop_up_clr_warning_win=WarningWindow("确定要清空当前角色的聊天记录吗？角色记忆也将同步被删除",css,clr_history)
-            self.pop_up_clr_warning_win.show()
+            pop_up_clr_warning_win=WarningWindow("确定要清空当前角色的聊天记录吗？角色记忆也将同步被删除",css,clr_history)
+            pop_up_clr_warning_win.exec_()
 
         if user_this_turn_input=='save':
             self.save_data()

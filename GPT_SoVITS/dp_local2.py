@@ -4,13 +4,55 @@ from copy import deepcopy
 
 from ollama import chat
 import requests,json
-from openai import OpenAI, base_url
+from openai import OpenAI
 
 
 class DSLocalAndVoiceGen:
 	def __init__(self,characters):
 		self.character_list=characters
+		self.all_character_msg=[]
+		self.LLM_list=["deepseek-r1:14b","deepseek-r1:32b","deepseek-V3 非本地API","deepseek-R1 非本地API（暂时不能用）"]
+		# if self.is_deepseek:
+		# 	self.model_choice=self.LLM_list[2]
+		self.choose_llm_api()
 
+		self.audio_language = ["中英混合", "日英混合"]
+		self.audio_language_choice = self.audio_language[1]
+		self.is_think_content_output_complete=False
+		self.is_use_ds_api=True
+		self.model=__import__('live2d_1').get_live2d()
+		self.headers = {"Content-Type": "application/json","Authorization": f"Bearer {self.model}"}
+		self.sakiko_state=True
+		self.if_generate_audio=True
+		self.current_char_index=0
+		self.if_sakiko=False
+		self.idle_texts=[]
+		self.initial()
+
+	def initial(self):
+		for character in self.character_list:
+			self.all_character_msg.append([{"role": "system",
+											"content": f'{character.character_description}'}])
+
+		if os.path.getsize('../reference_audio/history_messages_dp.json')!=0:
+			with open('../reference_audio/history_messages_dp.json','r',encoding='utf-8') as f:
+				json_data=json.load(f)
+			for index, character in enumerate(self.character_list):
+				for data in json_data:
+					if data['character'] == character.character_name:
+						self.all_character_msg[index] = data['history']
+						if self.all_character_msg[index][0]['role']=='user':
+							self.all_character_msg[index][0]['role']='system'
+
+
+		if self.character_list[self.current_char_index].character_name == '祥子':
+			self.if_sakiko = True
+		else:
+			self.if_sakiko = False
+		with open('./text/restr.rep', 'r', encoding='utf-8') as f:
+			self.restr = f.read()
+
+	def choose_llm_api(self):
 		if not os.path.exists('../dsakiko_config.json'):
 			with open("../API_Choice.json", "r", encoding="utf-8") as f:
 				config = json.load(f)
@@ -52,57 +94,8 @@ class DSLocalAndVoiceGen:
 					self.model_choice=active_provider['model']
 				except Exception as err:
 					raise Warning(f"dsakiko_config.json配置文件有误，重新运行一遍启动配置程序应该可以解决问题。错误信息：",err)
-
-
-
-		self.all_character_msg=[]
-		self.LLM_list=["deepseek-r1:14b","deepseek-r1:32b","deepseek-V3 非本地API","deepseek-R1 非本地API（暂时不能用）"]
 		if self.is_deepseek:
 			self.model_choice=self.LLM_list[2]
-
-
-		self.audio_language = ["中英混合", "日英混合"]
-		self.audio_language_choice = self.audio_language[1]
-		self.is_think_content_output_complete=False
-		self.is_use_ds_api=True
-		self.model=__import__('live2d_1').get_live2d()
-		self.headers = {"Content-Type": "application/json","Authorization": f"Bearer {self.model}"}
-		self.sakiko_state=True
-		self.if_generate_audio=True
-		self.current_char_index=0
-		self.if_sakiko=False
-		self.idle_texts=[]
-		self.initial()
-
-	# def stream_print(self,text):		#引入PyQT后作废
-	# 	for char in text:
-	# 		print(char, end='', flush=True)
-	# 		time.sleep(0.07)  # 每个字间隔70毫秒，模拟流式打印
-	# 	print()
-	# 	time.sleep(1)
-
-	def initial(self):
-		for character in self.character_list:
-			self.all_character_msg.append([{"role": "system",
-											"content": f'{character.character_description}'}])
-
-		if os.path.getsize('../reference_audio/history_messages_dp.json')!=0:
-			with open('../reference_audio/history_messages_dp.json','r',encoding='utf-8') as f:
-				json_data=json.load(f)
-			for index, character in enumerate(self.character_list):
-				for data in json_data:
-					if data['character'] == character.character_name:
-						self.all_character_msg[index] = data['history']
-						if self.all_character_msg[index][0]['role']=='user':
-							self.all_character_msg[index][0]['role']='system'
-
-
-		if self.character_list[self.current_char_index].character_name == '祥子':
-			self.if_sakiko = True
-		else:
-			self.if_sakiko = False
-		with open('./text/restr.rep', 'r', encoding='utf-8') as f:
-			self.restr = f.read()
 		if not os.path.exists('../dsakiko_config.json'):
 			if self.is_deepseek:
 				if os.path.getsize('../API Key.txt')!=0:
@@ -121,6 +114,8 @@ class DSLocalAndVoiceGen:
 				else:
 					print("已使用个人DeepSeek API")
 					self.headers={"Content-Type": "application/json","Authorization": f"Bearer {config['llm_setting']['deepseek_key']}"}
+
+
 
 
 	def change_character(self):
@@ -197,7 +192,7 @@ class DSLocalAndVoiceGen:
 				continue
 			elif user_input=='s':
 				self.change_character()
-				message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在切换GPT-SoVITS模型...")
+				message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在加载GPT-SoVITS模型...")
 				change_char_queue.put('yes')
 				dp2qt_queue.put("changechange")
 				AudioGenerator.change_character()
@@ -210,6 +205,12 @@ class DSLocalAndVoiceGen:
 				time.sleep(2)
 				continue
 			elif user_input in ['start_talking','stop_talking']:
+				change_char_queue.put(user_input)
+				continue
+			elif user_input == 'change_l2d_background':
+				change_char_queue.put('change_l2d_background')
+				continue
+			elif user_input.startswith('change_l2d_model'):
 				change_char_queue.put(user_input)
 				continue
 
@@ -272,10 +273,10 @@ class DSLocalAndVoiceGen:
 			self.all_character_msg[self.current_char_index].append(user_this_turn_msg)
 			to_llm_msg=deepcopy(self.all_character_msg[self.current_char_index])
 			to_llm_msg[0]['content']+=self.restr
-			print(to_llm_msg[0]['content'])
 			message_queue.put(f"{self.character_list[self.current_char_index].character_name}思考中...")
 			is_text_generating_queue.put('no_complete')		#正在生成文字的标志
 			# --------------------------
+			self.choose_llm_api()
 			if not self.is_use_ds_api and self.is_deepseek:		#使用本地Ollama模型
 				try:
 					response = chat(
@@ -301,7 +302,6 @@ class DSLocalAndVoiceGen:
 					"stream": False
 				}
 				try:
-					print(to_llm_msg)
 					response = requests.post("https://api.deepseek.com/chat/completions", headers=self.headers, json=data)
 				except Exception:
 					message_queue.put("与DeepSeek建立连接失败，请检查网络。")
