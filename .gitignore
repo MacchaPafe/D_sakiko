@@ -20,5 +20,8 @@
 /GPT_SoVITS/audio_shiyan.py
 /GPT_SoVITS/ffmpeg.exe
 /GPT_SoVITS/test_danmu.py
+/GPT_SoVITS/eres2net/**
 
-
+# Python rubbish
+__pycache__/**
+*.pyc
