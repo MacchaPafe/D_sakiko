@@ -35,12 +35,12 @@ Google Drive:```https://drive.google.com/file/d/1bo07QBC2_gbX395GstgmEQb7CS_qGIF
 ## MacOS：
 百度网盘：
 
-MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md)  作者 @yan-xiaoo 
+MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md)  作者 [@yan-xiaoo](https://github.com/yan-xiaoo)
 
 
 # 版本更新记录
 ## 2026.1.16 v2.6
-* **MacOS版本正式发布！** @yan-xiaoo 为适配移植MacOS做了大量工作，包括不限于借助QFluentwidgets库实现更好看的界面、重构底层数据结构优化代码等等，感谢他的付出！MacOS版本详情见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md) 
+* **MacOS版本正式发布！** [@yan-xiaoo](https://github.com/yan-xiaoo) 为适配移植MacOS做了大量工作，包括不限于借助QFluentwidgets库实现更好看的界面、重构底层数据结构优化代码等等，感谢他的付出！MacOS版本详情见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md) 
 包括极其详细的特性、安装方法、故障排除方法等等内容。
 * **Windows版界面大换新**：采用了更现代化的设计风格，各参数设置项独立了出来，无需再输入命令
 * **界面配色实现一键切换**：无需再像介绍视频中那样修改QT_style文件了。预设提供了所有邦邦角色的主题色方案，同时也支持自定义主题色
@@ -55,7 +55,7 @@ MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件
      - 在extra_models文件夹中继续新建一个文件夹，命名为你新模型的名称;
      - 将模型的组成文件，即.moc/.moc3模型文件、贴图文件、.model3.json文件、.physics.json以及mtn动作文件、.exp.json表情文件全部放入该文件夹中;
      - 实时识别，准备好后即可切换新模型
-* **更新支持GPT-SoVITS最新版本V2ProPLus**：V2PP在质量、推理速度上均有大幅提升。新版本同时兼容旧模型，可放心升级。感谢 @yan-xiaoo 完成升级工作！
+* **更新支持GPT-SoVITS最新版本V2ProPLus**：V2PP在质量、推理速度上均有大幅提升。新版本同时兼容旧模型，可放心升级。感谢 [@yan-xiaoo](https://github.com/yan-xiaoo) 完成升级工作！
 * 此外还有一些优化和bug修复工作：
     1. 修复了Live2D角色腮红发黑的问题
     2. 修复语音合成失败后程序有时卡死的问题
