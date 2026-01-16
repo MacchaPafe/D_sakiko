@@ -250,7 +250,10 @@ class CommunicateThreadDP2QT(QThread):
 
     def run(self):
         while True:
-            data = self.dp2qt_queue.get()
+            try:
+                data = self.dp2qt_queue.get()
+            except EOFError:
+                break
             if data=='EXIT':
                 break
             self.response_signal.emit(data)
