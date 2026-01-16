@@ -7,7 +7,15 @@ os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import litellm
 from PyQt5.QtWidgets import QVBoxLayout, QStackedWidget, QWidget, QHBoxLayout, QDialog
 
-from qconfig import d_sakiko_config, OTHER_CHAT_PROVIDERS, FAMOUS_CHAT_PROVIDERS, PROVIDER_FRIENDLY_NAME_MAP
+from qconfig import (
+    d_sakiko_config,
+    OTHER_CHAT_PROVIDERS,
+    FAMOUS_CHAT_PROVIDERS,
+    PROVIDER_FRIENDLY_NAME_MAP,
+    THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS,
+    THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP,
+    THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS,
+)
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
@@ -204,6 +212,44 @@ class LLMAPIArea(TransparentScrollArea):
         self.page_standard_api.setLayout(layout_standard)
         self.llm_stack.addWidget(self.page_standard_api)
 
+        # Page 3: Third-party OpenAI-compatible preset (Model (plain input), Key)
+        self.page_third_party_api = QWidget()
+        self.page_third_party_api.setObjectName("page_third_party_api")
+        layout_third_party = QVBoxLayout()
+        layout_third_party.setContentsMargins(0, 20, 0, 20)
+        layout_third_party.setSpacing(10)
+
+        self.third_party_model_input = LineEdit()
+        self.third_party_model_input.setMinimumWidth(300)
+        self.third_party_model_input.setPlaceholderText("deepseek-ai/DeepSeek-V3.2")
+        self.third_party_model_input.setToolTip(
+            "请输入网页中看到的完整模型标识（如 deepseek-ai/DeepSeek-V3.2）。"
+        )
+        self.third_party_model_input.installEventFilter(ToolTipFilter(self.third_party_model_input))
+
+        self.third_party_key_layout = QHBoxLayout()
+        self.third_party_key_input = PasswordLineEdit()
+        self.third_party_key_input.setMinimumWidth(260)
+        self.third_party_key_layout.addWidget(self.third_party_key_input)
+
+        # Row 1: Model
+        h_layout_t1 = QHBoxLayout()
+        label_t1 = BodyLabel(self.tr("模型名称:"), self.page_third_party_api)
+        label_t1.setFixedWidth(110)
+        h_layout_t1.addWidget(label_t1)
+        h_layout_t1.addWidget(self.third_party_model_input)
+        layout_third_party.addLayout(h_layout_t1)
+
+        # Row 2: Key
+        label_t2 = BodyLabel(self.tr("API Key:"), self.page_third_party_api)
+        label_t2.setFixedWidth(110)
+        self.third_party_key_layout.insertWidget(0, label_t2)
+        layout_third_party.addLayout(self.third_party_key_layout)
+
+        layout_third_party.addStretch(1)
+        self.page_third_party_api.setLayout(layout_third_party)
+        self.llm_stack.addWidget(self.page_third_party_api)
+
         # 加载模型选择框的内容
         self.populate_llm_combobox()
         self.llm_provider_combobox.currentIndexChanged.connect(self.on_llm_provider_changed)
@@ -279,6 +325,15 @@ class LLMAPIArea(TransparentScrollArea):
             self.custom_url_input.setText(d_sakiko_config.custom_llm_api_url.value)
             self.custom_model_input.setText(d_sakiko_config.custom_llm_api_model.value)
             self.custom_key_input.setText(d_sakiko_config.custom_llm_api_key.value)
+        elif provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            meta = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.get(provider, {})
+            placeholder = meta.get("model_placeholder")
+            if placeholder:
+                self.third_party_model_input.setPlaceholderText(placeholder)
+
+            # 第三方端点不提供模型补全，直接加载保存的完整模型名
+            self.third_party_model_input.setText(models.get(provider, ""))
+            self.third_party_key_input.setText(keys.get(provider, ""))
         else:
             # Standard provider
             # 1. Update model list
@@ -306,6 +361,10 @@ class LLMAPIArea(TransparentScrollArea):
         """
         self.llm_provider_combobox.clear()
         self.llm_provider_combobox.addItem("Up 的 DeepSeek API", userData="deepseek_up")
+
+        # Add third-party OpenAI-compatible presets (fixed base_url)
+        for endpoint in THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS:
+            self.llm_provider_combobox.addItem(endpoint["display_name"], userData=endpoint["id"])
 
         # Add famous providers with friendly names
         for provider in FAMOUS_CHAT_PROVIDERS:
@@ -365,6 +424,8 @@ class LLMAPIArea(TransparentScrollArea):
             self.llm_stack.setCurrentIndex(0)
         elif data == "custom":
             self.llm_stack.setCurrentIndex(1)
+        elif data in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            self.llm_stack.setCurrentIndex(3)
         else:
             self.llm_stack.setCurrentIndex(2)
 
@@ -403,6 +464,8 @@ class LLMAPIArea(TransparentScrollArea):
                 self.llm_stack.setCurrentIndex(0)
             elif target_data == "custom":
                 self.llm_stack.setCurrentIndex(1)
+            elif target_data in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+                self.llm_stack.setCurrentIndex(3)
             else:
                 self.llm_stack.setCurrentIndex(2)
 
@@ -412,6 +475,8 @@ class LLMAPIArea(TransparentScrollArea):
         self.custom_model_input.setError(False)
         self.custom_key_input.setError(False)
         self.standard_key_input.setError(False)
+        self.third_party_model_input.setError(False)
+        self.third_party_key_input.setError(False)
 
     def save_ui_to_config(self) -> bool:
         """
@@ -463,6 +528,39 @@ class LLMAPIArea(TransparentScrollArea):
 
             # Update key in the dictionary
             d_sakiko_config.custom_llm_api_key.value = self.custom_key_input.text()
+
+            self.reset_error_indicators()
+            return True
+        elif provider_data in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            # 检查是否填写了所有需要的内容
+            if not self.third_party_model_input.text() or not self.third_party_key_input.text() or not provider_data:
+                if not self.third_party_model_input.text():
+                    self.third_party_model_input.setError(True)
+                    self.third_party_model_input.setFocus()
+                if not self.third_party_key_input.text():
+                    self.third_party_key_input.setError(True)
+                    self.third_party_key_input.setFocus()
+                if not provider_data:
+                    self.llm_provider_combobox.setFocus()
+                return False
+
+            d_sakiko_config.use_default_deepseek_api.value = False
+            d_sakiko_config.enable_custom_llm_api_provider.value = False
+
+            # 存储选择的第三方端点 provider
+            d_sakiko_config.llm_api_provider.value = provider_data
+            d_sakiko_config.llm_api_model.value[provider_data] = self.third_party_model_input.text()
+
+            # Update key in the dictionary
+            keys = d_sakiko_config.llm_api_key.value
+            keys[provider_data] = self.third_party_key_input.text()
+            d_sakiko_config.llm_api_key.value = keys
+
+            # Update base_url in the dictionary (fixed)
+            base_urls = d_sakiko_config.llm_api_base_url.value
+            meta = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.get(provider_data, {})
+            base_urls[provider_data] = meta.get("base_url", "")
+            d_sakiko_config.llm_api_base_url.value = base_urls
 
             self.reset_error_indicators()
             return True

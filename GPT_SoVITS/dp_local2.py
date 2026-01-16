@@ -5,7 +5,8 @@ import json
 import litellm
 from litellm import completion
 
-from qconfig import d_sakiko_config
+from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
+from llm_model_utils import ensure_openai_compatible_model
 
 
 class DSLocalAndVoiceGen:
@@ -85,6 +86,17 @@ class DSLocalAndVoiceGen:
             return model
         else:
             return f"{provider}/{model}"
+
+    @staticmethod
+    def normalize_model_for_provider(provider: str, model: str) -> str:
+        """根据 provider 类型决定是否尝试自动补全前缀。
+
+        - 第三方 OpenAI 兼容端点：强制走 openai/ 路由（若未带 openai/ 则自动补齐）。
+        - litellm 内置 provider：若用户未输入前缀，则尝试补全为 provider/model。
+        """
+        if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            return ensure_openai_compatible_model(model)
+        return DSLocalAndVoiceGen.concat_provider_and_model(provider, model)
 
     def report_message_to_main_ui(self, message_queue, is_text_generating_queue, message: str):
         """
@@ -217,7 +229,8 @@ class DSLocalAndVoiceGen:
                     print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
                     print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
                     response = completion(
-                        model=d_sakiko_config.custom_llm_api_model.value,
+                        # 自定义 API 与 OpenAI 兼容，litellm 需要通过 openai/ 前缀路由
+                        model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
                         messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
                         api_key=d_sakiko_config.custom_llm_api_key.value,
                         # 自定义 API 地址
@@ -228,10 +241,20 @@ class DSLocalAndVoiceGen:
                     print("使用预定义大模型 API 进行对话生成")
                     print("Provider: ", d_sakiko_config.llm_api_provider.value)
                     print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
+                    provider = d_sakiko_config.llm_api_provider.value
+                    model = d_sakiko_config.llm_api_model.value.get(provider, "")
+                    api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
+                    base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
+
+                    completion_kwargs = {}
+                    if base_url:
+                        completion_kwargs["base_url"] = base_url
+
                     response = completion(
-                        model=self.concat_provider_and_model(d_sakiko_config.llm_api_provider.value, d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value]),
+                        model=self.normalize_model_for_provider(provider, model),
                         messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
-                        api_key=d_sakiko_config.llm_api_key.value[d_sakiko_config.llm_api_provider.value]
+                        api_key=api_key,
+                        **completion_kwargs,
                     )
             except litellm.exceptions.Timeout:
                 self.report_message_to_main_ui(

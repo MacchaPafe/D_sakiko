@@ -49,6 +49,11 @@ class DSakikoConfig(QConfig):
     # 采用字典形式存储。键为所有可能的 llm_api_provider，再加上一个“custom_llm_api_key“，值为对应的 API Key
     llm_api_key = ConfigItem("llm_setting", "llm_api_key", {})
 
+    # 可选的 API Base URL（用于第三方 OpenAI 兼容端点等场景）
+    # 采用字典形式存储。键为 llm_api_provider（如 modelscope），值为对应的 base_url。
+    # 对于 litellm 自带 provider（openai/deepseek/gemini 等），通常不需要填写。
+    llm_api_base_url = ConfigItem("llm_setting", "llm_api_base_url", {"modelscope": "https://api-inference.modelscope.cn/v1"})
+
     # 是否自定义 API 提供商
     enable_custom_llm_api_provider = OptionsConfigItem("llm_setting", "enable_custom_llm_api_provider", False,
                                                                validator=BoolValidator())
@@ -246,6 +251,21 @@ OTHER_CHAT_PROVIDERS = [
     "amazon_nova",
 ]
 OTHER_CHAT_PROVIDERS.sort()
+
+
+# 第三方 OpenAI 兼容端点（固定 base_url，界面只需要模型名+API Key，且不提供模型补全）
+# 注意：这里的 id 是本项目内部 provider id，不代表 litellm 的 provider 前缀。
+THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS = [
+    {
+        "id": "modelscope",
+        "display_name": "ModelScope（魔搭社区）",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "model_placeholder": "deepseek-ai/DeepSeek-V3.2",
+    }
+]
+
+THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP = {e["id"]: e for e in THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS}
+THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS = set(THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.keys())
 
 
 def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
