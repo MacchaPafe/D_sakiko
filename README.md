@@ -33,7 +33,9 @@
 
 Google Drive:```https://drive.google.com/file/d/1bo07QBC2_gbX395GstgmEQb7CS_qGIFj/view?usp=sharing```
 ## MacOS：
-百度网盘：
+百度网盘： ```https://pan.baidu.com/s/1UrOc8sdQd4DeYtjo0ISTuA?pwd=m49g``` 提取码: m49g 
+
+天翼云盘：```https://cloud.189.cn/t/Q7Z7r2nYNvyu``` （访问码：yf5b）
 
 MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md)  作者@yan-xiaoo
 
@@ -51,7 +53,7 @@ MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件
   1. 增加了像小剧场模式中类似的文本显示框，其中流式打印文字（可在设置中关闭）
   2. 可随时切换Live2D背景，按顺序切换live2d_related文件夹中的所有png/jpg文件
   3. 可随时切换当前Live2D角色模型。按照以下方法准备新模型，即可在程序运行过程中切换角色模型：
-     - 在```live2d_related/你的角色文件夹/```中新建一个名为extra_models的文件夹;
+     - 在```live2d_related/你的角色文件夹/```中新建一个名为extra_model的文件夹（必须为此名称）;
      - 在extra_models文件夹中继续新建一个文件夹，命名为你新模型的名称;
      - 将模型的组成文件，即.moc/.moc3模型文件、贴图文件、.model3.json文件、.physics.json以及mtn动作文件、.exp.json表情文件全部放入该文件夹中;
      - 实时识别，准备好后即可切换新模型
