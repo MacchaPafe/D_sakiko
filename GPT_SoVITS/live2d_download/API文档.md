@@ -122,6 +122,31 @@ cancel.cancel()
 time.sleep(1)  # 等待下载线程结束
 ```
 
+### 获得服装的名称和图标
+
+```python
+from live2d_download.bestdori_client import BestdoriClient
+from live2d_download.live2d_service import Live2dService
+
+client = BestdoriClient()
+service = Live2dService(client)
+
+# 查找一个 live2d 服装的名称
+print(service.get_costume_name("036_live_default")) # 开始吧，一辈子的约定
+# 这个服装没有在国服上线，所以无法查找到简体中文名称
+print(service.get_costume_name("036_live_event_307_ssr")) # None
+# 但如果允许使用其他语言名称，则可以找到
+print(service.get_costume_name("036_live_event_307_ssr", other_language=True)) # 想いを綴るひとひら
+# 这个服装不存在，因此一定无法找到名称
+print(service.get_costume_name("999_unknown_costume", other_language=True)) # None
+
+# 获得服装的图标
+icon_data = service.get_costume_icon("036_live_default")
+if icon_data:
+    with open("036_live_default_icon.png", "wb") as f:
+        f.write(icon_data)
+```
+
 ## 下载流程
 
 ### 1. 整体流程
@@ -375,7 +400,7 @@ class Server(Enum):
 
 class Language(Enum):
     JAPANESE = 0              # 日语原文
-    KANA = 1                  # 日语假名的罗马音拼写
+    ENGLISH = 1               # 英语
     TRADITIONAL_CHINESE = 2   # 繁体中文
     SIMPLIFIED_CHINESE = 3    # 简体中文
     KOREAN = 4                # 韩文

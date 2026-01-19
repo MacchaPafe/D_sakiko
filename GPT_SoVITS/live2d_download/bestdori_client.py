@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from pathlib import Path
 import random
-from typing import Any, Iterator, List, Optional
+from typing import Any, Iterator, Optional
 import time
 import requests
-from enum import Enum
 
-from .models import CancelToken, CancelledError, HttpStatusError, Server
+from .models import CancelToken, HttpStatusError, Server
 from .cache import CacheManager, cache_manager
 
 @dataclass

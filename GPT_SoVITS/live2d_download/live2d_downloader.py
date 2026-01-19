@@ -67,6 +67,7 @@ class Live2dDownloader:
         costume: Live2dCostume,
         *,
         root_dir: Path,
+        download_name_and_icon: bool = True,
         overwrite: bool = False,
         cancel: Optional[CancelToken] = None,
         progress: Optional[ProgressCallback] = None,
@@ -83,6 +84,22 @@ class Live2dDownloader:
         # 实际下载到的目标文件夹，为 root_dir / live2d_name（live2d 内部名称）
         model_dir = root_dir / live2d_name
         model_dir.mkdir(parents=True, exist_ok=True)
+
+        # 获得名称和图标（不计入进度信息）
+        if download_name_and_icon:
+            costume_name = self.service.get_costume_name(live2d_name, other_language=True)
+            if costume_name is not None:
+                if cancel:
+                    cancel.raise_if_cancelled()
+                with open(model_dir / "name.txt", "w", encoding="utf-8") as f:
+                    f.write(costume_name)
+
+            icon_data = self.service.get_costume_icon(live2d_name)
+            if icon_data is not None:
+                if cancel:
+                    cancel.raise_if_cancelled()
+                with open(model_dir / "icon.png", "wb") as f:
+                    f.write(icon_data)
 
         files_total = len(costume.files)
         files_done = 0

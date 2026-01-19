@@ -1,11 +1,10 @@
 from dataclasses import dataclass
 from typing import Any, Optional
-from enum import Enum
 import re
 
 from rapidfuzz import fuzz
 
-from .models import Live2dCostume, Server, Language
+from .models import Live2dCostume, Language
 from .bestdori_client import BestdoriClient
 
 @dataclass(frozen=True)
@@ -122,7 +121,7 @@ class Live2dService:
         """
         costumes = self.client.get_live2d_assets_map()
         live2d_costumes = []
-        for live2d_name, id in costumes.items():
+        for live2d_name, id_ in costumes.items():
             formated_id = f"{chara_id:03d}"
             if live2d_name.startswith(formated_id) and not live2d_name.endswith("general"):
                 if not include_live_event and live2d_name.endswith("live_event"):
@@ -150,6 +149,28 @@ class Live2dService:
         for costume_id, value in costumes.items():
             if value["assetBundleName"] == live2d_name:
                 return self.client.get_costume_icon(int(costume_id), live2d_name)
+        return None
+    
+    def get_costume_name(self, live2d_name: str, other_language=False) -> Optional[str]:
+        """
+        获得指定服装的显示名称（非内部标识符）。
+        如果找不到对应服装，或者服装在当前语言下不存在名称，返回 None。
+
+        :param live2d_name: 服装的内部标识符名称，例如 "036_dream_festival_3_ur"
+        :param other_language: 如果设置为 True，那么在当前语言的名称不存在时，尝试返回其他语言的名称。
+        """
+        costumes = self.client.get_costume_index()
+        for _, value in costumes.items():
+            if value["assetBundleName"] == live2d_name:
+                names = value["description"]
+                name = names[self.language.value]
+                # 优先返回当前语言名称
+                if name:
+                    return name
+                if other_language:
+                    for lang_name in names:
+                        if lang_name:
+                            return lang_name
         return None
 
     def build_costume(self, live2d_name: str) -> Live2dCostume:
