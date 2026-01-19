@@ -18,7 +18,8 @@ def migrate_from_old_config():
                   "./setting.png",
                   "./music.png",
                   "./star.png",
-                  "./save.png"]
+                  "./save.png",
+                  "../聊天记录注意事项！.txt"]
     for png_file in old_png_file:
         if os.path.exists(png_file):
             try:

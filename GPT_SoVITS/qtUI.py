@@ -457,7 +457,7 @@ class SettingWindow(QDialog):
         super().__init__()
         self.parent_window=parent_window
         self.audio_gen_module=audio_gen_module
-        self.setWindowTitle('标题')
+        self.setWindowTitle('设置')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.resize(int(desktop_size.width()*0.2),int(desktop_size.height()*0.4))
         self.change_lan_btn=QPushButton("切换语言")
@@ -487,13 +487,13 @@ class SettingWindow(QDialog):
         #setting_layout.addWidget(self.change_theme_color_btn,3,0,1,2)
         setting_layout.addWidget(self.switch_live2d_text_btn,4,0,1,2)
         setting_layout.addWidget(self.change_l2d_background_btn,5,0,1,2)
-        setting_group=QGroupBox("设置组1")
+        setting_group=QGroupBox("常用设置")
         setting_group.setLayout(setting_layout)
         setting_layout_2=QGridLayout()
         setting_layout_2.addWidget(self.change_theme_color_btn,0,0,1,2)
         setting_layout_2.addWidget(self.change_reference_audio_btn,1,0,1,2)
         setting_layout_2.addWidget(self.change_l2d_model_btn,2,0,1,2)
-        setting_group_2=QGroupBox("设置组2")
+        setting_group_2=QGroupBox("角色与外观")
         setting_group_2.setLayout(setting_layout_2)
         layout=QVBoxLayout()
         sakiko_group=QGroupBox("祥子的状态")
@@ -568,15 +568,19 @@ class ChangeL2DModelWindow(QDialog):
         layout=QVBoxLayout()
         display_group=QGroupBox("选择Live2D模型:")
         display_layout=QVBoxLayout()
-        for model in self.current_char_l2d_models:
-            model_layout=QHBoxLayout()
-            name_label=QLabel(model["model_name"])
-            select_btn=QToolButton()
-            select_btn.setText("选择")
-            select_btn.clicked.connect(lambda checked, path=model["model_json_path"]: change_l2d_model_func(path))  # noqa
-            model_layout.addWidget(name_label)
-            model_layout.addWidget(select_btn)
-            display_layout.addLayout(model_layout)
+        if current_char_folder_name!='sakiko':
+            for model in self.current_char_l2d_models:
+                model_layout=QHBoxLayout()
+                name_label=QLabel(model["model_name"])
+                select_btn=QToolButton()
+                select_btn.setText("选择")
+                select_btn.clicked.connect(lambda checked, path=model["model_json_path"]: change_l2d_model_func(path))  # noqa
+                model_layout.addWidget(name_label)
+                model_layout.addWidget(select_btn)
+                display_layout.addLayout(model_layout)
+        else:
+            label=QLabel("祥子暂时不能更换L2D模型。可手动修改sakiko文件夹内的模型文件。")
+            display_layout.addWidget(label)
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
         self.setLayout(layout)
@@ -587,7 +591,7 @@ class ChangeL2DModelWindow(QDialog):
         base_path = f"../live2d_related/{current_char_folder_name}/extra_model"
         if not os.path.exists(base_path):
             os.makedirs(base_path)
-            print(f"提示：目录 {base_path} 不存在，已自动创建。加入更多live2D模型的方法为：在该文件夹中新建名为新模型名称的文件夹，然后在其中放入新模型的组成材料（.model.json结尾的配置文件、moc模型、.physics.json以及贴图文件）。")
+            print(f"\n提示：目录 {base_path} 不存在，已自动创建。加入更多live2D模型的方法为：在该文件夹中新建名为新模型名称的文件夹，然后在其中放入新模型的组成材料（.model.json结尾的配置文件、moc模型、.physics.json、mtn动作文件以及贴图文件）。\n")
             return
 
         model_dirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
@@ -596,7 +600,6 @@ class ChangeL2DModelWindow(QDialog):
             # 构建这个模型文件夹的完整路径，例如 ../live2d_related/miku/extra_model/Miku
             model_dir_path = os.path.join(base_path, model_dir_name)
             #在这个具体的模型文件夹里，递归查找 .model.json
-            # 这里再用 os.walk 就非常安全了，它只会在 Miku 这个文件夹里找
 
             for file in os.listdir(model_dir_path):
                 if file.endswith(".model.json"):
@@ -793,7 +796,7 @@ class ColorPicker(QDialog):
             "六花": "#AAEE22",  # LOCK (朝日六花)
             "msk": "#EEBB44",  # MASKING (佐藤真苏姬)
             "pareo": "#FF99BB",  # PAREO (鳰原令王那)
-            "CHU²": "#00BBFF",  # CHU² (珠手知由)
+            "chu2": "#00BBFF",  # CHU² (珠手知由)
 
             "灯":"#77BBDD",
             "爱音":"#FF8899",

@@ -66,8 +66,8 @@ if not os.path.exists('../dsakiko_config.json'):
 else:
     import json
     with open('../dsakiko_config.json','r',encoding='utf-8') as f:
-        config=json.load(f)
-        is_half=config["audio_setting"]["enable_fp16_inference"]
+        dsakiko_config=json.load(f)
+        is_half=dsakiko_config["audio_setting"]["enable_fp16_inference"]
         f.close()
 punctuation = set(["!", "?", "…", ",", ".", "-", " "])
 
@@ -230,7 +230,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         sovits_path = name2sovits_path[sovits_path]
     global vq_model, hps, version, model_version, dict_language, if_lora_v3
     version, model_version, if_lora_v3 = get_sovits_version_from_path_fast(sovits_path)
-    print(f"GPT-SoVITS 模型路径：{sovits_path}, 版本：{version}, 模型版本 {model_version}")
+    print(f"GPT-SoVITS 模型版本 {model_version}")
     # is_exist = is_exist_s2gv3 if model_version == "v3" else is_exist_s2gv4
     path_sovits = path_sovits_v3 if model_version == "v3" else path_sovits_v4
     # if if_lora_v3 == True and is_exist == False:

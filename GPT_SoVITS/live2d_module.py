@@ -225,7 +225,7 @@ class Live2DModule:
                     match=re.search(r"change_l2d_model#(.*)", x)
                     if match:
                         new_model_path = match.group(1)
-                        print("正在切换Live2D模型，路径为：", new_model_path)
+                        #print("正在切换Live2D模型，路径为：", new_model_path)
                         try:
                             new_model=live2d.LAppModel()
                             new_model.LoadModelJson(new_model_path)

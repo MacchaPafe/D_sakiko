@@ -26,7 +26,7 @@ class DSLocalAndVoiceGen:
 		self.if_generate_audio=True
 		self.current_char_index=0
 		self.if_sakiko=False
-		self.idle_texts=[]
+		self.idle_texts=["等待话题中...","新的对话内容是...?","就绪","倾听中..."]
 		self.initial()
 
 	def initial(self):
@@ -156,7 +156,7 @@ class DSLocalAndVoiceGen:
 				time.sleep(0.4)
 
 			#message_queue.put(f"输入bye：退出程序	l：切换语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
-			message_queue.put('...')
+			message_queue.put(self.idle_texts[random.randint(0,len(self.idle_texts)-1)])
 			#message_queue.put("语音："+("开启" if self.if_generate_audio else "关闭")+"语言："+("中文" if self.audio_language_choice=="中英混合" else "日文"))
 			while True:
 				if not qt2dp_queue.empty():
