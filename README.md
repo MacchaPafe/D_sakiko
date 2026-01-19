@@ -54,7 +54,7 @@ MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件
   2. 可随时切换Live2D背景，按顺序切换live2d_related文件夹中的所有png/jpg文件
   3. 可随时切换当前Live2D角色模型。按照以下方法准备新模型，即可在程序运行过程中切换角色模型：
      - 在```live2d_related/你的角色文件夹/```中新建一个名为extra_model的文件夹（必须为此名称）;
-     - 在extra_models文件夹中继续新建一个文件夹，命名为你新模型的名称;
+     - 在extra_model文件夹中继续新建一个文件夹，命名为你新模型的名称;
      - 将模型的组成文件，即.moc/.moc3模型文件、贴图文件、.model3.json文件、.physics.json以及mtn动作文件、.exp.json表情文件全部放入该文件夹中;
      - 实时识别，准备好后即可切换新模型
 * **更新支持GPT-SoVITS最新版本V2ProPLus**：V2PP在质量、推理速度上均有大幅提升。新版本同时兼容旧模型，可放心升级。感谢 [@yan-xiaoo](https://github.com/yan-xiaoo) 完成升级工作！
