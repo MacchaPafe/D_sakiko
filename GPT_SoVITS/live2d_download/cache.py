@@ -126,14 +126,18 @@ class CacheManager:
         将相对缓存路径转换为缓存目录下的（较）绝对路径，且不允许任何越界情况出现
         如果越界出现，则报错 ValueError
         """
-        rel_path = validate_rel_path(str(rel))
+        # NOTE: Windows 下 str(PureWindowsPath) 会包含反斜杠（\），
+        # 但我们这里期望相对路径始终使用 POSIX 分隔符，以便通过 validate_rel_path 的安全校验。
+        rel_str = rel.as_posix() if isinstance(rel, pathlib.PurePath) else rel
+        rel_path = validate_rel_path(rel_str)
         return self.cache_dir / rel_path
     
     def ensure_parent_dir(self, rel: Union[str, pathlib.PurePath]) -> None:
         """
         确保相对缓存路径所在的父目录存在
         """
-        rel_path = validate_rel_path(str(rel))
+        rel_str = rel.as_posix() if isinstance(rel, pathlib.PurePath) else rel
+        rel_path = validate_rel_path(rel_str)
         full_path = self.cache_dir / rel_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
     
