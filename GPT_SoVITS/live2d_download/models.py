@@ -127,7 +127,8 @@ class AssetKey:
         例如，AssetKey("036_general", "angry01.mtn") 会被转换为
         "036_general/angry01.mtn"
         """
-        return pathlib.PurePath(self.bundle_name) / self.file_name
+        # 这里使用 POSIX 路径语义，避免在 Windows 上被 stringify 成反斜杠分隔。
+        return pathlib.PurePosixPath(self.bundle_name) / self.file_name
 
 
 @dataclass(frozen=True)
@@ -161,8 +162,8 @@ class Language(Enum):
     # 你知道吗？这些 ID 是有意义的。Bestdori 网站返回的数据中，所有“名称”相关字段都是一个列表；而这些 ID 正好是对应语言文本的下标。
     # 日语原文
     JAPANESE = 0
-    # 日语假名的罗马音拼写
-    KANA = 1
+    # 英语
+    ENGLISH = 1
     # 繁体中文
     TRADITIONAL_CHINESE = 2
     # 简体中文

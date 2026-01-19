@@ -10,7 +10,7 @@ import os
 import pathlib
 import tempfile
 import time
-from typing import BinaryIO, Callable, overload
+from typing import BinaryIO, Callable, overload, Union, Optional
 
 import platformdirs
 
@@ -24,7 +24,7 @@ class CacheManager:
     def __init__(self, cache_dir: pathlib.Path = platformdirs.user_cache_path(APP_NAME, ensure_exists=True)):
         self.cache_dir = cache_dir
     
-    def read_cache(self, filename: str) -> str | bytes | None:
+    def read_cache(self, filename: str) -> Union[str, bytes, None]:
         """
         读取缓存目录下名为 filename 的文件内容。
 
@@ -57,7 +57,7 @@ class CacheManager:
         将二进制数据写入缓存目录下名为 filename 的文件中。
         """
     
-    def write_cache(self, filename: str, data: str | bytes) -> None:
+    def write_cache(self, filename: str, data: Union[str, bytes]) -> None:
         file_path = self.cache_dir / filename
         file_path.parent.mkdir(parents=True, exist_ok=True)
         mode = "w" if isinstance(data, str) else "wb"
@@ -68,7 +68,7 @@ class CacheManager:
             with open(file_path, mode) as f:
                 f.write(data)
     
-    def read_json(self, filename: str) -> dict | None:
+    def read_json(self, filename: str) -> Optional[dict]:
         """
         读取缓存目录下名为 filename 的 JSON 文件内容，并反序列化为字典。
 
@@ -90,7 +90,7 @@ class CacheManager:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
     
-    def read_expire_json(self, filename: str, expire_seconds: int) -> dict | None:
+    def read_expire_json(self, filename: str, expire_seconds: int) -> Optional[dict]:
         """
         读取缓存目录下名为 filename 的 JSON 文件内容，并反序列化为字典。
 
@@ -121,19 +121,23 @@ class CacheManager:
                 "created_at": time.time()
             }, f, indent=4)
     
-    def resolve_path(self, rel: str | pathlib.PurePath) -> pathlib.Path:
+    def resolve_path(self, rel: Union[str, pathlib.PurePath]) -> pathlib.Path:
         """
         将相对缓存路径转换为缓存目录下的（较）绝对路径，且不允许任何越界情况出现
         如果越界出现，则报错 ValueError
         """
-        rel_path = validate_rel_path(str(rel))
+        # NOTE: Windows 下 str(PureWindowsPath) 会包含反斜杠（\），
+        # 但我们这里期望相对路径始终使用 POSIX 分隔符，以便通过 validate_rel_path 的安全校验。
+        rel_str = rel.as_posix() if isinstance(rel, pathlib.PurePath) else rel
+        rel_path = validate_rel_path(rel_str)
         return self.cache_dir / rel_path
     
-    def ensure_parent_dir(self, rel: str | pathlib.PurePath) -> None:
+    def ensure_parent_dir(self, rel: Union[str, pathlib.PurePath]) -> None:
         """
         确保相对缓存路径所在的父目录存在
         """
-        rel_path = validate_rel_path(str(rel))
+        rel_str = rel.as_posix() if isinstance(rel, pathlib.PurePath) else rel
+        rel_path = validate_rel_path(rel_str)
         full_path = self.cache_dir / rel_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -144,8 +148,8 @@ class CacheManager:
         """
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        tmp_fd: int | None = None
-        tmp_path: pathlib.Path | None = None
+        tmp_fd: Optional[int] = None
+        tmp_path: Optional[pathlib.Path] = None
         try:
             fd, tmp_name = tempfile.mkstemp(prefix=dest.name + ".tmp.", dir=str(dest.parent))
             tmp_fd = fd

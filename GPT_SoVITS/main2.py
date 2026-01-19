@@ -266,7 +266,7 @@ if __name__=='__main__':
 
     font_files = glob.glob(os.path.join('../font/', 'custom_font_*.*'))
     if not font_files:
-        font_path = '../font/ft.ttf'  # 默认字体路径
+        font_path = '../font/msyh.ttc'  # 默认字体路径
     else:
         # 比文件名里的数字大小，而不是比文件系统的元数据
         font_path = max(font_files, key=get_timestamp_from_filename)
