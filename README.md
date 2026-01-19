@@ -31,11 +31,15 @@
 
 天翼云盘（不限速）：```https://cloud.189.cn/t/b2EjU36Nj67b``` （访问码：0fe8）
 
-Google Drive:```https://drive.google.com/file/d/1bo07QBC2_gbX395GstgmEQb7CS_qGIFj/view?usp=sharing```
+Google Drive:```https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing```
+
 ## MacOS：
 百度网盘： ```https://pan.baidu.com/s/1UrOc8sdQd4DeYtjo0ISTuA?pwd=m49g``` 提取码: m49g 
 
 天翼云盘：```https://cloud.189.cn/t/Q7Z7r2nYNvyu``` （访问码：yf5b）
+
+Google Drive：```https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing```
+
 
 MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md)  作者 [@yan-xiaoo](https://github.com/yan-xiaoo)
 
