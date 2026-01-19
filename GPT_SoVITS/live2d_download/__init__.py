@@ -1,0 +1,1 @@
+# 此功能包实现了从 bestdori.com 下载 Bang Dream! 游戏中角色的 Live2D 服装的功能。
