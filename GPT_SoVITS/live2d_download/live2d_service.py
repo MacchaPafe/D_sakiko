@@ -170,7 +170,7 @@ class Live2dService:
                 if other_language:
                     for lang_name in names:
                         if lang_name:
-                            return lang_name
+                            return lang_name+"（日服）"
         return None
 
     def build_costume(self, live2d_name: str) -> Live2dCostume:

@@ -127,7 +127,8 @@ class AssetKey:
         例如，AssetKey("036_general", "angry01.mtn") 会被转换为
         "036_general/angry01.mtn"
         """
-        return pathlib.PurePath(self.bundle_name) / self.file_name
+        # 这里使用 POSIX 路径语义，避免在 Windows 上被 stringify 成反斜杠分隔。
+        return pathlib.PurePosixPath(self.bundle_name) / self.file_name
 
 
 @dataclass(frozen=True)

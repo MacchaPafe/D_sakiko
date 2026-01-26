@@ -1,5 +1,5 @@
 import time
-from random import randint
+from random import random
 from live2d.utils.lipsync import WavHandler
 import live2d.v2 as live2d
 import pygame
@@ -73,8 +73,12 @@ class Live2DModule:
                 self.current_character_num+=1
             else:
                 self.current_character_num=0
-
-        self.PATH_JSON=self.character_list[self.current_character_num].live2d_json
+        if os.path.exists(self.character_list[self.current_character_num].live2d_json): #防止切换到一个已删除的模型导致崩溃
+            self.PATH_JSON=self.character_list[self.current_character_num].live2d_json
+        else:
+            default_path=f"../live2d_related/{self.character_list[self.current_character_num].character_folder_name}/live2D_model"
+            self.character_list[self.current_character_num].live2d_json=glob.glob(os.path.join(default_path, f"*.model.json"))[0]
+            self.PATH_JSON=self.character_list[self.current_character_num].live2d_json
 
         if self.character_list[self.current_character_num].character_name=='祥子':
             self.if_sakiko=True
@@ -173,10 +177,18 @@ class Live2DModule:
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.character_list[self.current_character_num].character_name])
         glEnable(GL_TEXTURE_2D)
 
-        #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
+        #texture_thinking=BackgroundRen.render(pygame.image.load('X:/D_Sakiko2.0/live2d_related/costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
         texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
         glBindTexture(GL_TEXTURE_2D, texture)
-        mtn_group = ['idle', 'start', 'shake','rana']
+        mtn_group_mapping={
+            "LABEL_0":"happiness",
+            "LABEL_1":"sadness",
+            "LABEL_2": "anger",
+            "LABEL_3": "disgust",
+            "LABEL_4": "like",
+            "LABEL_5": "surprise",
+            "LABEL_6": "fear"
+        }
 
         mouse_position_x = None
         last_saved_time=time.time()     #待机动作计时器
@@ -202,13 +214,7 @@ class Live2DModule:
             if not change_char_queue.empty():
                 x=change_char_queue.get()
                 if x =='start_talking':   #录音时
-                    if self.if_sakiko:
-                        if self.sakiko_state:   #黑祥
-                            model.StartMotion(mtn_group[3], 44, 3, self.onStartCallback)
-                        else:                   #白祥
-                            model.StartMotion(mtn_group[3], 0, 3, self.onStartCallback)
-                    else:
-                        model.StartMotion(mtn_group[3], 60, 4, self.onStartCallback)
+                    model.StartRandomMotion("talking_motion", 4, self.onStartCallback)
                 elif x=='stop_talking':   #录音结束
                     self.onFinishCallback()
                 elif x=='change_l2d_background':
@@ -239,12 +245,13 @@ class Live2DModule:
                             del model
                             model=new_model
                             print("Live2D模型切换成功！")
+                            model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
                             self.character_list[self.current_character_num].live2d_json = new_model_path
                 else:
                     self.change_character()
                     overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
                     if self.if_sakiko and self.sakiko_state:
-                        model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
+                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
                     else:
                         model.LoadModelJson(self.PATH_JSON)
                     model.Resize(win_w_and_h, win_w_and_h)
@@ -254,22 +261,14 @@ class Live2DModule:
                         model.SetExpression('serious')
                     else:
                         model.SetExpression('idle')
-                    if self.if_sakiko:
-                        if self.sakiko_state:
-                            model.StartMotion(mtn_group[3], randint(43,44), 3, self.onStartCallback,self.onFinishCallback)
-                        else:
-                            model.StartMotion(mtn_group[3], randint(40, 42), 3, self.onStartCallback,self.onFinishCallback)
-                    else:
-                        model.StartMotion(mtn_group[3], randint(56, 58), 3, self.onStartCallback,self.onFinishCallback)
+
+                    model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)
                     if self.character_list[self.current_character_num].icon_path is not None:
                         pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
 
             if not is_text_generating_queue.empty() and self.think_motion_is_over:  # 思考时
                 if time.time()-last_saved_time_think>interval_think:
-                    if self.if_sakiko:
-                        model.StartMotion(mtn_group[3], randint(36,39), 3, self.onStartCallback_think_motion_version, self.onFinishCallback_think_motion_version)
-                    else:
-                        model.StartMotion(mtn_group[3], randint(51,53), 3, self.onStartCallback_think_motion_version, self.onFinishCallback_think_motion_version)
+                    model.StartRandomMotion("text_generating",3,self.onStartCallback_think_motion_version, self.onFinishCallback_think_motion_version)
 
                     last_saved_time_think=time.time()
                     interval_think=15
@@ -281,52 +280,17 @@ class Live2DModule:
                     pygame.display.set_caption(f"{self.character_list[self.current_character_num].character_name}")
 
             if self.motion_is_over and not pygame.mixer.music.get_busy():  #恢复idle动作
-
                 if is_text_generating_queue.empty() and time.time()-idle_recover_timer>2.5:
-
-                    if self.if_sakiko:
-                        model.StartMotion(mtn_group[0], 2, 1, self.onStartCallback)
-                    else:
-                        model.StartMotion(mtn_group[3], 59, 1, self.onStartCallback)
-
-            # if self.motion_is_over and pygame.mixer.music.get_busy():
-            #     if last_emotion=='LABEL_0': #happiness
-            #             model.StartMotion(mtn_group[3], randint(0, 5), 3, self.onStartCallback(), self.onFinishCallback)
-            #
-            #     elif last_emotion=='LABEL_1':    #sadness
-            #             model.StartMotion(mtn_group[3], randint(6, 9), 3, self.onStartCallback(), self.onFinishCallback)
-            #
-            #     elif last_emotion=='LABEL_2':    #anger
-            #             model.StartMotion(mtn_group[3], randint(10, 16), 3, self.onStartCallback(), self.onFinishCallback)
-            #
-            #     elif last_emotion=='LABEL_3':    #disgust
-            #             model.StartMotion(mtn_group[3], randint(17, 18), 3, self.onStartCallback(), self.onFinishCallback)
-            #
-            #     elif last_emotion=='LABEL_4':    #like
-            #             model.StartMotion(mtn_group[3], randint(19, 22), 3, self.onStartCallback(), self.onFinishCallback)
-            #
-            #     elif last_emotion=='LABEL_5':    #surprise
-            #             model.StartMotion(mtn_group[3], randint(23, 26), 3, self.onStartCallback(), self.onFinishCallback)
-            #
-            #     elif last_emotion=='LABEL_6':    #fear
-            #             model.StartMotion(mtn_group[3], randint(27, 28), 3, self.onStartCallback(), self.onFinishCallback)
-            #     else:
-            #             pass
-
+                    model.StartRandomMotion("idle_motion", 1, self.onStartCallback)
 
             if (time.time()-last_saved_time)>25 :   #待机动作
                 if self.live2d_this_turn_motion_complete and is_text_generating_queue.empty():
-                    if self.if_sakiko:
-                        model.StartMotion(mtn_group[3], randint(29, 35), 1, self.onStartCallback, self.onFinishCallback)
-                    else:
-                        model.StartMotion(mtn_group[3], randint(43, 50), 1, self.onStartCallback,self.onFinishCallback)
+                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback)
                 last_saved_time=time.time()
 
             if mouse_position_x != 0:  # 点击画面随机做动作
                 if self.if_sakiko:
-                    model.StartMotion(mtn_group[3], randint(0,35), 2, self.onStartCallback, self.onFinishCallback)
-                else:
-                    model.StartMotion(mtn_group[3], randint(0, 59), 2, self.onStartCallback,self.onFinishCallback)
+                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback)
                 mouse_position_x = 0
                 self.think_motion_is_over=True
 
@@ -339,39 +303,30 @@ class Live2DModule:
                         if not conv_index:      #切换为白祥
                             model.LoadModelJson(self.PATH_JSON)
                             model.Resize(win_w_and_h, win_w_and_h)
-                            model.StartMotion(mtn_group[3], randint(40,42), 2, self.onStartCallback, self.onFinishCallback)
+                            model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback)
                             model.SetExpression("idle")
                             self.sakiko_state=False
 
                         else:       #切换为黑祥
-                            model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
+                            model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
                             model.Resize(win_w_and_h, win_w_and_h)
-                            self.if_mask = True
-                            x=randint(43,46)
-                            if x==45 or x==46:
-                                self.if_mask=False
-                            model.StartMotion(mtn_group[3], x, 2, self.onStartCallback, self.onFinishCallback)
+
+                            self.if_mask=random()<0.5
+                            model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback)
                             model.SetExpression("serious")
                             self.sakiko_state=True
                     else:
-                        if self.sakiko_state:
-                            if self.if_mask:
-
-                                model.StartMotion(mtn_group[3], randint(45,46), 3, self.onStartCallback, self.onFinishCallback)
-                            else:
-                                model.StartMotion(mtn_group[3], 47, 3, self.onStartCallback, self.onFinishCallback)
+                        if self.sakiko_state:   #黑祥
+                            model.StartRandomMotion("change_character_maskoff" if self.if_mask else "maskon",3,self.onStartCallback,self.onFinishCallback)
                             self.if_mask = not self.if_mask
                         else:
-                            model.StartMotion(mtn_group[3], 36, 3, self.onStartCallback, self.onFinishCallback)
+                            model.StartMotion("text_generating", 0, 3, self.onStartCallback, self.onFinishCallback)
 
             if not emotion_queue.empty():
                 emotion = emotion_queue.get()
                 if emotion=='bye':
                     if not if_bye:
-                        if self.if_sakiko:
-                            model.StartMotion(mtn_group[3],29,3,self.onStartCallback,self.onFinishCallback)
-                        else:
-                            model.StartMotion(mtn_group[3], randint(54, 55), 3, self.onStartCallback,self.onFinishCallback)
+                        model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
                     if_bye=True
                     emotion_queue.put("bye")    #为了动作结束前一直进入该if分支
                     glClear(GL_COLOR_BUFFER_BIT)
@@ -385,72 +340,7 @@ class Live2DModule:
                     continue
 
                 this_turn_audio_file_path=audio_file_queue.get()
-
-
-
-                last_emotion=emotion
-                if self.if_sakiko:
-                    if emotion=='LABEL_0': #happiness
-                            model.StartMotion(mtn_group[3], randint(0, 5), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
-                    elif emotion=='LABEL_1':    #sadness
-                            model.StartMotion(mtn_group[3], randint(6, 9), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
-                    elif emotion=='LABEL_2':    #anger
-
-                            model.StartMotion(mtn_group[3],randint(10, 16), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
-                    elif emotion=='LABEL_3':    #disgust
-                            model.StartMotion(mtn_group[3], randint(17, 18), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
-                    elif emotion=='LABEL_4':    #like
-                            model.StartMotion(mtn_group[3], randint(19, 22), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
-                    elif emotion=='LABEL_5':    #surprise
-                            model.StartMotion(mtn_group[3], randint(23, 26), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-
-                    elif emotion=='LABEL_6':    #fear
-                            model.StartMotion(mtn_group[3], randint(27, 28), 3, lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path), self.onFinishCallback)
-                    else:
-                            pass
-                else:
-                    if emotion == 'LABEL_0':  # happiness
-                        model.StartMotion(mtn_group[3], randint(0, 5), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
-                                          self.onFinishCallback)
-
-                    elif emotion == 'LABEL_1':  # sadness
-                        model.StartMotion(mtn_group[3], randint(6, 11), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
-                                          self.onFinishCallback)
-
-                    elif emotion == 'LABEL_2':  # anger
-
-                        model.StartMotion(mtn_group[3], randint(12, 17), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
-                                          self.onFinishCallback)
-
-                    elif emotion == 'LABEL_3':  # disgust
-                        model.StartMotion(mtn_group[3], randint(18, 23), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
-                                          self.onFinishCallback)
-
-                    elif emotion == 'LABEL_4':  # like
-                        model.StartMotion(mtn_group[3], randint(24, 29), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
-                                          self.onFinishCallback)
-
-                    elif emotion == 'LABEL_5':  # surprise
-                        model.StartMotion(mtn_group[3], randint(30, 35), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
-                                          self.onFinishCallback)
-
-                    elif emotion == 'LABEL_6':  # fear
-                        model.StartMotion(mtn_group[3], randint(36, 41), 3,
-                                          lambda: self.onStartCallback_emotion_version(this_turn_audio_file_path),
-                                          self.onFinishCallback)
-                    else:
-                        pass
+                model.StartRandomMotion(mtn_group_mapping[emotion],3,lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path),self.onFinishCallback)
                 self.think_motion_is_over=True  #放在这里就对了。。
                 overlay.set_text(self.character_list[self.current_character_num].character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 

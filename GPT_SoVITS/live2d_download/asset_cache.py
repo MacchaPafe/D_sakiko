@@ -4,7 +4,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path,PurePosixPath
 from threading import Lock
 from typing import Callable, Optional
 
@@ -56,7 +56,7 @@ class AssetCache:
     def get_cache_path(self, key: AssetKey) -> Path:
         # 将 server 纳入路径，避免跨服串用。
         server_part = key.server.value if key.server is not None else "_unknown_server"
-        rel = Path(self.namespace) / "assets" / server_part / Path(key.bundle_name) / key.file_name
+        rel = PurePosixPath(self.namespace) / "assets" / server_part / Path(key.bundle_name) / key.file_name
         return self.cache.resolve_path(rel)
 
     def get_or_download(
