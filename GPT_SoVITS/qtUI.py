@@ -7,14 +7,16 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
-    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog
+    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor
 
 import sounddevice as sd
 from opencc import OpenCC
-
-
+import os,sys
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, script_dir)
+from ui_constants import dialogWindowDefaultCss,char_info_json
 class ThemeManager: #主题颜色设定
     @staticmethod
     def generate_stylesheet(base_hex_color):
@@ -263,74 +265,6 @@ class TranscriptionWorker(QObject):
         except Exception as e:
             self.finished.emit(f"识别错误 {e}")  # noqa
 
-dialogWindowDefaultCss=f'''
-        QWidget {{
-            background-color: "#F0F4F9";
-            color: "#7799CC";
-        }}
-        QDialog {{
-            background-color: "#F0F4F9";
-            color: "#7799CC";
-        }}
-        /* ================= 2. 卡片化容器 (GroupBox & Dialog) ================= */
-        /* Fluent 风格的核心：白色悬浮卡片 */
-        QGroupBox{{
-            background-color: #FFFFFF; /* 纯白背景 */
-            border: 1px solid #E5E5E5; /* 极细的灰色边框 */
-            border-radius: 8px;        /* 较大的圆角 */
-        }}
-        
-        QGroupBox {{
-            margin-top: 24px; /* 留出标题空间 */
-        }}
-        
-        QGroupBox::title {{
-            subcontrol-origin: margin;
-            subcontrol-position: top left;
-            left: 10px;
-            top: 5px;
-            color: "#7799CC";
-            background-color: transparent;
-        }}
-        
-        QPushButton {{
-            background-color: #FFFFFF;
-            border: 1px solid #D0D0D0;
-            border-bottom: 1px solid #C0C0C0; /* 底部厚一点模拟立体感 */
-            border-radius: 4px;
-            color: "#7799CC";
-            padding: 5px 15px;
-        }}
-        
-        QPushButton:hover {{
-            background-color: #F9F9F9;
-            border-color: #C0C0C0;
-        }}
-        
-        QPushButton:pressed {{
-            background-color: #F0F0F0;
-            border-top: 1px solid #C0C0C0; /* 按下时阴影反转 */
-            border-bottom: 1px solid #D0D0D0;
-            color: "#5F6368";
-        }}
-        QLabel {{
-        background-color: transparent; /* 标签背景透明 */
-  
-        padding: 5px 0; /* 增加内边距，使标签不显得拥挤 */
-        color: #7799CC
-        
-        }}
-        QToolButton {{
-            color: #7799CC;
-            background-color: transparent;
-            border: none;
-            border-radius: 4px;
-        }}
-
-        QToolButton:hover {{
-            background-color: rgba(0, 0, 0, 0.05);
-        }}
-        '''
 
 class MoreFunctionWindow(QDialog):
     def __init__(self,parent_window_close_fun):
@@ -351,6 +285,10 @@ class MoreFunctionWindow(QDialog):
         self.open_small_theater_btn.clicked.connect(self.on_click_open_small_theater)  # noqa
         layout.addWidget(self.open_small_theater_btn)
 
+        open_live2d_downloader_btn=QPushButton("Live2D模型下载器")
+        open_live2d_downloader_btn.clicked.connect(self.on_click_open_live2d_downloader)  # noqa
+        layout.addWidget(open_live2d_downloader_btn)
+
         self.text_label = QLabel("更多小功能还在开发中...")
         self.text_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.text_label)
@@ -363,15 +301,40 @@ class MoreFunctionWindow(QDialog):
         self.setLayout(layout)
         self.setStyleSheet(dialogWindowDefaultCss)
 
-    def on_click_open_motion_editor_button(self):
+    @staticmethod
+    def exec_bat(bat_name):
         import sys
+        current_script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))  # noqa
+        #  构造 .bat 文件的完整路径
+        # run_2.bat 在当前脚本目录的父目录中 (../run_2.bat)
+        parent_dir = os.path.dirname(current_script_dir)
+        # 完整的 .bat 文件路径
+        bat_path = os.path.join(parent_dir, bat_name)
+        # 检查文件是否存在
+        if not os.path.exists(bat_path):
+            print(f".bat 文件未找到:\n{bat_path}")
+            return
         try:
-            # 要求当前 Python 解释器执行文件
+            # 使用 subprocess 模块启动 .bat 文件
             import subprocess
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([bat_path], shell=True)
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
+
+    def on_click_open_motion_editor_button(self):
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            import sys
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([sys.executable, "live2d_viewer.py"])
         except Exception as e:
             print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
+
     def on_click_open_start_config_button(self):
         try:
             # 使用 subprocess 模块启动 .bat 文件
@@ -394,6 +357,22 @@ class MoreFunctionWindow(QDialog):
             subprocess.Popen([sys.executable, "multi_char_main.py"])
         except Exception as e:
             print("启动失败", f"启动程序时发生错误:\n{e}")
+        self.close()
+
+    @staticmethod
+    def open_live2d_downloader():
+        import sys
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([sys.executable, "live2d_downloader_ui.py"])
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
+
+    def on_click_open_live2d_downloader(self):
+        self.open_live2d_downloader()
         self.close()
 
 class WarningWindow(QDialog):
@@ -420,7 +399,7 @@ class WarningWindow(QDialog):
 class SettingWindow(QDialog):
     def __init__(self,parent_window,desktop_size,color,audio_gen_module):
         super().__init__()
-        self.parent_window=parent_window
+        self.parent_window:ChatGUI=parent_window
         self.audio_gen_module=audio_gen_module
         self.setWindowTitle('设置')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
@@ -512,6 +491,15 @@ class SettingWindow(QDialog):
         change_l2d_model_window=ChangeL2DModelWindow(current_char_folder_name,self.change_live2d_model_2)
         change_l2d_model_window.exec_()
     def change_live2d_model_2(self,new_model_json):
+        from character import is_old_l2d_json,convert_old_l2d_json
+        if is_old_l2d_json(new_model_json):
+            try:
+                convert_old_l2d_json(new_model_json)
+            except Exception as e:
+                self.parent_window.QT_message_queue(f"切换模型失败，转换旧版Live2D配置文件时出错。")
+                print("错误：切换模型失败，转换旧版Live2D配置文件时出错。\n",e)
+                return
+            print("成功转换旧版Live2D配置文件。\n")
         self.parent_window.user_input.setText(f'change_l2d_model#{new_model_json}')
         self.parent_window.user_input.returnPressed.emit()  # noqa
         self.parent_window.user_input.clear()
@@ -525,38 +513,83 @@ class ChangeL2DModelWindow(QDialog):
         screen=QDesktopWidget().screenGeometry()
         self.resize(int(screen.width()*0.2),int(screen.height()*0.3))
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.current_char_folder_name=current_char_folder_name
+        self.change_l2d_model_func=change_l2d_model_func
+        self.refresh_ui()
+        self.setStyleSheet(dialogWindowDefaultCss)
+
+    def refresh_ui(self):
+        # 1. 【修复问题二】先清理旧的布局和控件
+        if self.layout() is not None:
+            # 这是一个标准的清除布局内所有组件的方法
+            old_layout = self.layout()
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()  # 销毁控件
+            # 移除旧布局本身（通过将其父对象设为新的临时 Widget 然后销毁）
+            QWidget().setLayout(old_layout)
+
         import glob
-        default_live2d_json = glob.glob(os.path.join(f'../live2d_related/{current_char_folder_name}', 'live2D_model', f"*.model.json"))
-        default_live2d_json=default_live2d_json[0] if default_live2d_json else None
-        self.current_char_l2d_models=[{"model_name":"默认","model_json_path":default_live2d_json}]
-        self.find_extra_models(current_char_folder_name)
-        layout=QVBoxLayout()
-        display_group=QGroupBox("选择Live2D模型:")
-        display_layout=QVBoxLayout()
-        if current_char_folder_name!='sakiko':
+        default_live2d_json = glob.glob(
+            os.path.join(f'../live2d_related/{self.current_char_folder_name}', 'live2D_model', f"*.model.json"))
+        default_live2d_json = default_live2d_json[0] if default_live2d_json else None
+        self.current_char_l2d_models = [{"model_name": "默认", "model_json_path": default_live2d_json}]
+        self.find_extra_models(self.current_char_folder_name)
+        layout = QVBoxLayout()
+        title_layout=QHBoxLayout()
+        title_label = QLabel("选择一个Live2D模型：")
+        refresh_btn=QToolButton()
+        refresh_btn.setIcon(QIcon("./icons/refresh.svg"))
+        refresh_btn.clicked.connect(self.refresh_ui)  # noqa
+        title_layout.addWidget(title_label)
+        title_layout.addWidget(refresh_btn)
+        layout.addLayout(title_layout)
+        display_group = QGroupBox(f"共有 {len(self.current_char_l2d_models)} 套服装")
+        display_layout = QVBoxLayout()
+        def delete_model_folder(path):
+            import shutil
+            try:
+                reply = QMessageBox.question(self, '确认删除', f"确定要删除该模型吗？\n{path}",
+                                             QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    shutil.rmtree(path)
+                    self.refresh_ui()
+            except Exception as e:
+                print(f"删除Live2D模型文件夹失败\n", e)
+        if self.current_char_folder_name != 'sakiko':
             for model in self.current_char_l2d_models:
-                model_layout=QHBoxLayout()
-                name_label=QLabel(model["model_name"])
-                select_btn=QToolButton()
+                model_layout = QHBoxLayout()
+                name_label = QLabel(model["model_name"])
+                select_btn = QToolButton()
                 select_btn.setText("选择")
-                select_btn.clicked.connect(lambda checked, path=model["model_json_path"]: change_l2d_model_func(path))  # noqa
+                select_btn.clicked.connect(
+                    lambda checked, path=model["model_json_path"]: self.change_l2d_model_func(path))  # noqa
+                delete_btn = QToolButton()
+                delete_btn.setIcon(QIcon("./icons/delete.svg"))
+                delete_target_path = f'../live2d_related/{self.current_char_folder_name}/extra_model/{model["model_name"]}'
+                delete_btn.clicked.connect(lambda checked=False, p=delete_target_path: delete_model_folder(p))
                 model_layout.addWidget(name_label)
                 model_layout.addWidget(select_btn)
+                if model["model_name"] != "默认": #默认模型不允许删除
+                    model_layout.addWidget(delete_btn)
                 display_layout.addLayout(model_layout)
         else:
-            label=QLabel("祥子暂时不能更换L2D模型。可手动修改sakiko文件夹内的模型文件。")
+            label = QLabel("祥子暂时不能更换L2D模型。可手动修改sakiko文件夹内的模型文件。")
             display_layout.addWidget(label)
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
+        open_downloader_btn = QPushButton("打开Live2D服装下载器")
+        open_downloader_btn.clicked.connect(lambda _:MoreFunctionWindow.open_live2d_downloader())  # noqa
+        layout.addWidget(open_downloader_btn)
         self.setLayout(layout)
-        self.setStyleSheet(dialogWindowDefaultCss)
-
 
     def find_extra_models(self,current_char_folder_name):
         base_path = f"../live2d_related/{current_char_folder_name}/extra_model"
         if not os.path.exists(base_path):
             os.makedirs(base_path)
-            print(f"\n提示：目录 {base_path} 不存在，已自动创建。加入更多live2D模型的方法为：在该文件夹中新建名为新模型名称的文件夹，然后在其中放入新模型的组成材料（.model.json结尾的配置文件、moc模型、.physics.json、mtn动作文件以及贴图文件）。\n")
+            # print(f"\n提示：目录 {base_path} 不存在，已自动创建。加入更多live2D模型的方法为：在该文件夹中新建名为新模型名称的文件夹，然后在其中放入新模型的组成材料（.model.json结尾的配置文件、moc模型、.physics.json、mtn动作文件以及贴图文件）。\n")
             return
 
         model_dirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
@@ -572,15 +605,6 @@ class ChangeL2DModelWindow(QDialog):
                     # 将路径标准化（把反斜杠\变成正斜杠/），避免Windows路径问题
                     full_path = full_path.replace("\\", "/")
                     self.current_char_l2d_models.append({"model_name":model_dir_name,"model_json_path":full_path})
-                    #把默认模型文件夹中的所有.exp.json和.mtn文件都复制一份到新模型文件夹中，这样，用户只需准备.model.json和.moc就行了
-                    # if
-                    # try:
-                    #     default_model_folder = os.path.dirname(f"../live2d_related/{current_char_folder_name}/live2D_model")  # ../live2d_related/miku/live2D_model
-                    #     for default_file in os.listdir(default_model_folder):
-                    #         if default_file.endswith(".exp.json") or default_file.endswith(".mtn"):
-                    #             import shutil
-                    #             shutil.copy(os.path.join(default_model_folder, default_file), model_dir_path)
-
                     break  # 找到一个就跳出当前文件夹的循环
 
 
@@ -720,60 +744,6 @@ class ColorPicker(QDialog):
         super().__init__()
         self.setStyleSheet(dialogWindowDefaultCss)
         self.current_color:str=current_color
-        self.char_to_theme_color={
-            "香澄":"#FF5522",
-            "多惠":"#0077DD",
-            "里美":"#FF55BB",
-            "沙绫":"#FFA30F",
-            "有咲":"#AA66DD",
-            # --- Afterglow ---
-            "美竹兰": "#EE0022",  # 美竹兰
-            "摩卡": "#00CCAA",  # 青叶摩卡
-            "绯玛丽": "#FF9999",  # 上原绯玛丽
-            "巴": "#BB0033",  # 宇田川巴
-            "羽泽鸫": "#FFEE88",  # 羽泽鸫
-            # --- Roselia ---
-            "友希那": "#881188",  # 凑友希那
-            "纱夜": "#00AABB",  # 冰川纱夜
-            "莉莎": "#DD2200",  # 今井莉莎
-            "亚子": "#DD0088",  # 宇田川亚子
-            "燐子": "#BBBBBB",  # 白金磷子
-            # --- Pastel*Palettes ---
-            "丸山彩": "#FF88BB",  # 丸山彩
-            "日菜": "#55DDEE",  # 冰川日菜
-            "千圣": "#FFEEAA",  # 白鹭千圣
-            "麻弥": "#99DD88",  # 大和麻弥
-            "伊芙": "#DDBBFF",  # 若宫伊芙
-            # --- Hello, Happy World! ---
-            "弦卷心": "#FFEE22",  # 弦卷心
-            "濑田薰": "#AA33CC",  # 濑田薰
-            "育美": "#FF9922",  # 北泽育美
-            "花音": "#44DDFF",  # 松原花音
-            "美咲": "#006699",  # 奥泽美咲
-            # --- Morfonica ---
-            "真白": "#6677CC",  # 仓田真白
-            "透子": "#EE6666",  # 桐谷透子
-            "七深": "#EE7744",  # 广町七深
-            "筑紫": "#EE7788",  # 二叶筑紫
-            "瑠唯": "#669988",  # 八潮琉唯
-            # --- RAISE A SUILEN ---
-            "layer": "#CC0000",  # LAYER (和奏)
-            "六花": "#AAEE22",  # LOCK (朝日六花)
-            "msk": "#EEBB44",  # MASKING (佐藤真苏姬)
-            "pareo": "#FF99BB",  # PAREO (鳰原令王那)
-            "chu2": "#00BBFF",  # CHU² (珠手知由)
-
-            "灯":"#77BBDD",
-            "爱音":"#FF8899",
-            "乐奈":"#77DD77",
-            "素世":"#FFDD88",
-            "立希":"#7777AA",
-            "祥子":"#7799CC",
-            "睦":"#779977",
-            "初华":"#BB9955",
-            "海铃":"#335566",
-            "喵梦":"#AA4477",
-        }
         self.screen = QDesktopWidget().screenGeometry()
         self.parent_window_set_theme_color=parent_window_set_color_fun
         self.initUI()
@@ -787,19 +757,19 @@ class ColorPicker(QDialog):
         preset_layout=QGridLayout()
         preset_layout.setHorizontalSpacing(int(self.screen.height() * 0.04 * 0.25))
         preset_layout.setVerticalSpacing(int(self.screen.height() * 0.05 * 0.25))
-        for i,(char_name,color) in enumerate(self.char_to_theme_color.items()):
+        for i,(char_name,info) in enumerate(char_info_json.items()):
             btn=QToolButton()
             btn.setText(char_name)
             btn.setFixedSize(int(self.screen.height() * 0.06), int(self.screen.height() * 0.075))
             btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-            btn.clicked.connect(lambda checked, col=color: self.set_theme_color(col))
+            btn.clicked.connect(lambda checked, col=info["theme_color"]: self.set_theme_color(col))
             if os.path.exists(f'./char_headprof/{char_name}.png'):
                 btn.setIcon(QIcon(f'./char_headprof/{char_name}.png'))
                 btn.setIconSize(
                     QSize(int(self.screen.height() * 0.06 * 0.7), int(self.screen.height() * 0.075 * 0.7)))
             btn.setStyleSheet(f"""
                     QToolButton {{
-                        background-color: {color}; 
+                        background-color: {info["theme_color"]}; 
                         color: #FFFFFF;  /* 强制文字白色，防止和背景混色 */
                         font-weight: bold;
                         border-radius: 6px; /* 加点圆角更好看 */

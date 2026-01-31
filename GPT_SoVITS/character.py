@@ -1,4 +1,4 @@
-import os,glob,json
+import os,glob,json,copy
 
 from qconfig import d_sakiko_config
 
@@ -34,6 +34,72 @@ ref_audio_language_list = [
     "多语种混合",
     "多语种混合(粤语)"
 ]
+
+def is_old_l2d_json(old_l2d_json_path) -> bool:
+    """
+        判断是否为老版 Live2D model.json 格式。
+    """
+    try:
+        with open(old_l2d_json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"错误，读取 Live2D JSON 文件失败: {e}")
+        return False
+
+    if 'motions' in data and 'rana' in data['motions']:
+        return True
+    return False
+
+def convert_old_l2d_json(old_l2d_json_path):
+    """
+        读取老版 Live2D model.json，转换为新版格式并返回字典。
+    """
+    with open(old_l2d_json_path, 'r', encoding='utf-8') as f:
+        old_data = json.load(f)
+
+
+    new_data = copy.deepcopy(old_data)
+    if 'controllers' in new_data:
+        del new_data['controllers']
+
+    if 'hit_areas' in new_data:
+        del new_data['hit_areas']
+    # 处理 Motions
+    old_rana_list = old_data.get('motions', {}).get('rana', [])
+    if not old_rana_list:
+        return  # 如果没有rana字段，认为是新版格式，直接返回
+    # 定义新版 13 个分类的切片映射关系
+    # 格式: (新键名, 起始索引, 结束索引)
+    motion_mapping = [
+        ("happiness", 0, 6),  # 0-5 (共6个)
+        ("sadness", 6, 12),  # 6-11 (共6个)
+        ("anger", 12, 18),  # 12-17 (共6个)
+        ("disgust", 18, 24),  # 18-23 (共6个)
+        ("like", 24, 30),  # 24-29 (共6个)
+        ("surprise", 30, 36),  # 30-35 (共6个)
+        ("fear", 36, 42),  # 36-41 (共6个)
+        ("IDLE", 42, 51),  # 42-50 (共9个)
+        ("text_generating", 51, 54),  # 51-53 (共3个)
+        ("bye", 54, 56),  # 54-55 (共2个)
+        ("change_character", 56, 59),  # 56-58 (共3个)
+        ("idle_motion", 59, 60),  # 59 (共1个)
+        ("talking_motion", 60, 61)  # 60 (共1个)
+    ]
+
+    new_motions = {}
+    for name, start_idx, end_idx in motion_mapping:
+        # 进行切片操作。如果 old_rana_list 长度不够，Python 不会报错，只会返回空列表或部分列表
+        new_motions[name] = old_rana_list[start_idx:end_idx]
+
+    # 将重构好的 motions 覆盖回去
+    new_data['motions'] = new_motions
+
+    with open(old_l2d_json_path, 'w', encoding='utf-8') as f:
+        json.dump(new_data, f, ensure_ascii=False, indent=4)
+        f.close()
+
+
+
 
 class GetCharacterAttributes:
     """
@@ -84,7 +150,17 @@ class GetCharacterAttributes:
                 if not live2d_json:
                     raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的Live2D模型json文件(.model.json)")
                 live2d_json=max(live2d_json, key=os.path.getmtime)
-                character.live2d_json=live2d_json
+                if is_old_l2d_json(live2d_json):
+                    try:
+                        convert_old_l2d_json(live2d_json)
+                    except Exception as e:
+                        print(f"角色：'{character.character_name}'的旧版Live2D模型json文件(.model.json)转换失败！本次运行跳过该角色。错误信息：{e}")
+                        del character
+                        continue
+                    print(f"已将角色：{character.character_name} 的旧版Live2D模型json文件(.model.json)转换为新版格式并覆盖保存。")
+                    character.live2d_json=live2d_json
+                else:
+                    character.live2d_json=live2d_json
 
                 if not os.path.exists(os.path.join(full_path, 'character_description.txt')):
                     raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的角色描述文件！")
