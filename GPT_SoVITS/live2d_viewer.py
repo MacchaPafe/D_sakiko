@@ -5,6 +5,8 @@ import pathlib
 
 from PyQt5.QtCore import Qt
 
+from live2d_module import LAppModel
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
@@ -22,8 +24,6 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QDe
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
 import character
-# 兼容性 Hook
-from live2d_module import LAppModel
 
 class BackgroundRen(object):
 
@@ -121,7 +121,7 @@ class Live2DModule:
         win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
         pygame_win_pos_w,pygame_win_pos_h=int(0.5*desktop_w-win_w_and_h),int(0.5*desktop_h-0.5*win_w_and_h)
         #以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
-        
+
         caption_height = 0
         if os.name == 'nt':
             try:
@@ -131,7 +131,7 @@ class Live2DModule:
                                 +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
             except Exception:
                 pass
-        
+
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
         pygame.init()
         live2d.init()
@@ -373,7 +373,7 @@ class ViewerGUI(QWidget):
         self.load_suitable_model()
         self.message_box.append("当前角色："+self.character_list[self.current_char_index].character_name)
         self.update_button_states()
-    
+
     def load_suitable_model(self):
         """
         根据 self.use_default_model 和 self.extra_model_name 的值，加载合适的模型。
@@ -382,7 +382,7 @@ class ViewerGUI(QWidget):
             self.load_model(None)
         else:
             self.load_model(self.extra_model_name.get(self.current_char_index))
-    
+
     def use_default_model_for_current_character(self):
         """
         切换显示模块使用当前角色的默认模型，并且更新类属性，保存这一设置
@@ -390,7 +390,7 @@ class ViewerGUI(QWidget):
         self.use_default_model[self.current_char_index] = True
         self.extra_model_name[self.current_char_index] = None
         self.load_model(None)
-    
+
     def use_extra_model_for_current_character(self, extra_model_name):
         """
         切换为使用当前角色的 extra_model 中的模型，并且更新类属性，保存这一设置
@@ -433,7 +433,7 @@ class ViewerGUI(QWidget):
                 self.current_char_folder_path = pathlib.Path("../live2d_related") / self.character_list[self.current_char_index].character_folder_name / "extra_model" / extra_model_name
             else:
                 self.current_char_folder_path = pathlib.Path("../live2d_related") / self.character_list[self.current_char_index].character_folder_name / "live2D_model"
-            
+
             with open(self.current_char_folder_path / '3.model.json','r',encoding='utf-8') as f:
                 self.all_motion_data=json.load(f)
 
@@ -456,7 +456,7 @@ class ViewerGUI(QWidget):
             if full_path.is_file() and filename.lower().endswith('.mtn'):
                 full_path=full_path.as_posix()
                 all_paths.append(full_path)
-        
+
         all_paths.sort()
         for idx, path in enumerate(all_paths, start=1):
             self.all_mnt_display.append(f'<a href="{path}" style="text-decoration: none; color: #7799CC;">{idx}. {os.path.basename(path)}</a>'+'\n')
@@ -479,7 +479,7 @@ class ViewerGUI(QWidget):
         self.load_suitable_model()
         self.message_box.append("当前角色：" + self.character_list[self.current_char_index].character_name)
         self.change_char_queue.put("change_character")
-    
+
     def change_costume(self):
         """
         弹出管理对话框，允许用户选择并切换切换角色的服装
@@ -507,7 +507,7 @@ class ViewerGUI(QWidget):
             # 其他情况，理论上不应该发生
             self.message_box.append("无法识别所选模型的类型，未进行切换。")
             return
-        
+
         self.message_box.append(f"已切换到角色 {self.character_list[self.current_char_index].character_name} 的新服装模型。")
         self.change_char_queue.put(new_model_path)
 
@@ -870,7 +870,7 @@ if __name__ == "__main__":
 
     desktop_w = QDesktopWidget().screenGeometry().width()
     desktop_h = QDesktopWidget().screenGeometry().height()
-    
+
     live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h))
 
     screen_w_mid = int(0.5 * desktop_w)
