@@ -24,8 +24,6 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QDe
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
 import character
-# 兼容性 Hook
-from live2d_module import LAppModel
 
 class BackgroundRen(object):
 
@@ -176,7 +174,7 @@ class Live2DModule:
                         pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
                 # 传入一个路径，表示要求加载同角色一个新的 live2d 模型
                 elif os.path.exists(x):
-                    model.LoadModelJson(x, disable_precision=True)
+                    model.LoadModelJson(x)
                     model.Resize(win_w_and_h, win_w_and_h)
                     model.SetAutoBlinkEnable(True)
                     model.SetAutoBreathEnable(True)
