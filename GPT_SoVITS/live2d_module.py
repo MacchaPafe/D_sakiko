@@ -5,7 +5,6 @@ from random import random
 from live2d.utils.lipsync import WavHandler
 import live2d.v2 as live2d
 import pygame
-from live2d.v2.core import UtSystem
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
@@ -50,85 +49,6 @@ class BackgroundRen(object):
         glEnd()
 
 idle_recover_timer=time.time()
-
-
-class LAppModel(live2d.LAppModel):
-    """
-    此自定义类继承 LAppModel，用于同时支持 0.5.3 以下和 0.5.4 版本的 live2d-py 库。
-    在 0.5.4 版本中，LoadModelJson 函数新增了 disable_precision 参数。这在 macOS 上是一个关键参数，如果不启用此选项，程序会直接因为 OpenGL 错误崩溃。
-    但在 0.5.3 以下版本中，该参数并不存在。因此我们需要通过继承来实现兼容。
-
-    目前 Windows 打包版的 live2d-py 版本为 0.5.3，如果后续升级到 0.5.4 版本，就不需要这个自定义类了。
-    """
-    def LoadModelJson(self, modelSettingPath: str, version: str = "#version 120\n", disable_precision: bool = False):
-        """
-        Hook LoadModelJson to support both live2d-py 0.5.3 and 0.5.4.
-        """
-        # 开始一个神秘的检查：通过检查父类的 LoadModelJson 函数的参数列表是否存在 disable_precision 参数，来判断 live2d-py 版本
-        function = live2d.LAppModel.LoadModelJson
-        if "disable_precision" in function.__code__.co_varnames:
-            # 存在参数，说明是 0.5.4 版本及之后
-            return super().LoadModelJson(modelSettingPath, version=version, disable_precision=disable_precision) # type: ignore （忽略 0.5.3 以下版本下对于这行代码的警告）
-        else:
-            # 不存在参数,说明是 0.5.3 版本及之前
-            # 直接忽略 disable_precision 参数
-            return super().LoadModelJson(modelSettingPath)
-
-    def Update(self, breath_weight_1=0.5, breath_weight_2=1.0):
-        """
-        Hook Update 函数，以便手动设置呼吸相关移动参数
-        """
-        self.dragMgr.update()
-        self.setDrag(self.dragMgr.getX(), self.dragMgr.getY())
-
-        time_m_sec = UtSystem.getUserTimeMSec() - self.startTimeMSec
-        time_sec = time_m_sec / 1000.0
-        t = time_sec * 2 * math.pi
-        if self.mainMotionManager.isFinished():
-            if callable(self.finishCallback):
-                self.finishCallback()
-                self.finishCallback = None
-
-        updated = False
-        if self.__clearFlag:
-            self.mainMotionManager.stopAllMotions()
-            if self.pose:
-                self.pose.initParam(self.live2DModel)
-
-            self.__clearFlag = False
-        else:
-            self.live2DModel.loadParam()
-            updated = self.mainMotionManager.updateParam(self.live2DModel)
-        self.live2DModel.saveParam()
-
-        if not updated:
-            if self.autoBlink and self.eyeBlink is not None:
-                self.eyeBlink.updateParam(self.live2DModel)
-
-        if self.expressionManager is not None and self.expressions is not None and not self.expressionManager.isFinished():
-            self.expressionManager.updateParam(self.live2DModel)
-
-        self.live2DModel.addToParamFloat("PARAM_ANGLE_X", self.dragX * 30, 1)
-        self.live2DModel.addToParamFloat("PARAM_ANGLE_Y", self.dragY * 30, 1)
-        self.live2DModel.addToParamFloat("PARAM_ANGLE_Z", (self.dragX * self.dragY) * -30, 1)
-        self.live2DModel.addToParamFloat("PARAM_BODY_ANGLE_X", self.dragX * 10, 1)
-        self.live2DModel.addToParamFloat("PARAM_EYE_BALL_X", self.dragX, 1)
-        self.live2DModel.addToParamFloat("PARAM_EYE_BALL_Y", self.dragY, 1)
-
-        if self.autoBreath:
-            # 这里进行了修改：将参数从默认的 0.5/1 替换为了 breath_weight_1/breath_weight_2
-            self.live2DModel.addToParamFloat("PARAM_ANGLE_X", float((15 * math.sin(t / 6.5345))), breath_weight_1)
-            self.live2DModel.addToParamFloat("PARAM_ANGLE_Y", float((8 * math.sin(t / 3.5345))), breath_weight_1)
-            self.live2DModel.addToParamFloat("PARAM_ANGLE_Z", float((10 * math.sin(t / 5.5345))), breath_weight_1)
-            self.live2DModel.addToParamFloat("PARAM_BODY_ANGLE_X", float((4 * math.sin(t / 15.5345))), breath_weight_1)
-            self.live2DModel.setParamFloat("PARAM_BREATH", float((0.5 + 0.5 * math.sin(t / 3.2345))), breath_weight_1)
-
-        if self.physics is not None:
-            self.physics.updateParam(self.live2DModel)
-
-        if self.pose is not None:
-            self.pose.updateParam(self.live2DModel)
-
 
 class Live2DModule:
     def __init__(self):
@@ -191,18 +111,18 @@ class Live2DModule:
 
 
     # 动作播放开始后调用
-    def onStartCallback(self, *args):
+    def onStartCallback(self,*args):
         self.motion_is_over=False
         #print(f"touched and motion [] is started")
 
-    def onStartCallback_think_motion_version(self, *args):
+    def onStartCallback_think_motion_version(self,*args):
         self.think_motion_is_over = False
         if self.if_sakiko:
             pygame.display.set_caption("小祥思考中")
         else:
             pygame.display.set_caption(f"{self.character_list[self.current_character_num].character_name}思考中")
 
-    def onStartCallback_emotion_version(self,audio_file_path):
+    def onStartCallback_emotion_version(self,audio_file_path,*args):
         self.motion_is_over=False
         #print(f"touched and motion [] is started")
         # 播放音频
@@ -219,7 +139,7 @@ class Live2DModule:
         global idle_recover_timer
         idle_recover_timer = time.time()
 
-    def onFinishCallback_think_motion_version(self, *args):
+    def onFinishCallback_think_motion_version(self):
         self.think_motion_is_over=True
 
 
@@ -275,8 +195,8 @@ class Live2DModule:
 
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-        #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
-        model = LAppModel()
+        pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
+        model = live2d.LAppModel()
         model.LoadModelJson(self.PATH_JSON, disable_precision=True)
 
         model.Resize(win_w_and_h, win_w_and_h)
@@ -356,7 +276,7 @@ class Live2DModule:
                         new_model_path = match.group(1)
                         #print("正在切换Live2D模型，路径为：", new_model_path)
                         try:
-                            new_model=LAppModel()
+                            new_model=live2d.LAppModel()
                             new_model.LoadModelJson(new_model_path, disable_precision=True)
                             new_model.Resize(win_w_and_h, win_w_and_h)
                             new_model.SetAutoBlinkEnable(True)
@@ -368,8 +288,10 @@ class Live2DModule:
                             del model
                             model=new_model
                             print("Live2D模型切换成功！")
-                            model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
+                            #model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
                             self.character_list[self.current_character_num].live2d_json = new_model_path
+                        else:
+                            del new_model
                 else:
                     self.change_character()
                     overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
@@ -465,7 +387,7 @@ class Live2DModule:
                     continue
 
                 this_turn_audio_file_path=audio_file_queue.get()
-                model.StartRandomMotion(mtn_group_mapping[emotion],3,lambda *args:self.onStartCallback_emotion_version(this_turn_audio_file_path),self.onFinishCallback)
+                model.StartRandomMotion(mtn_group_mapping[emotion],3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
                 self.think_motion_is_over=True  #放在这里就对了。。
                 overlay.set_text(self.character_list[self.current_character_num].character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 
@@ -474,7 +396,7 @@ class Live2DModule:
             #live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
-            model.Update(breath_weight_1=0.25)
+            model.Update()
             # 渲染背景图片
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
             # 渲染live2d到屏幕

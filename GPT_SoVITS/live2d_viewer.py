@@ -6,8 +6,6 @@ from typing import Optional
 
 from PyQt5.QtCore import Qt
 
-from live2d_module import LAppModel
-
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
@@ -20,7 +18,7 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
-    QApplication, QLabel
+    QApplication, QLabel, QDesktopWidget
 
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
@@ -140,7 +138,7 @@ class Live2DModule:
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
-        model = LAppModel()
+        model = live2d.LAppModel()
         model.LoadModelJson(self.PATH_JSON, disable_precision=True)
 
         model.Resize(win_w_and_h, win_w_and_h)
@@ -867,7 +865,6 @@ if __name__ == "__main__":
     if font_family:
         font = QFont(font_family[0], 12)
         app.setFont(font)
-    from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     desktop_w = QDesktopWidget().screenGeometry().width()
     desktop_h = QDesktopWidget().screenGeometry().height()

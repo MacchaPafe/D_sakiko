@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout,
                              QButtonGroup, QToolButton, QDesktopWidget, QListWidgetItem, QProgressBar)
 from PyQt5.QtCore import Qt, QSize, QObject, pyqtSignal, QRunnable, QThread, QThreadPool
 from pathlib import Path
-import os,sys,shutil
+import os,sys,shutil,re
 
 import platformdirs
 
@@ -320,11 +320,14 @@ class CostumeItemWidget(QWidget):
                 self.lbl_name.setText(name)
             else:
                 if "casual" in self.costume_id:
-                    self.lbl_name.setText("常服")
+                    extra_text_match=re.search(r"casual(.*)",self.costume_id)
+                    self.lbl_name.setText("常服"+(extra_text_match.group(1) if extra_text_match else ""))
                 elif "school_summer" in self.costume_id:
-                    self.lbl_name.setText("夏季校服")
+                    extra_text_match = re.search(r"school_summer(.*)", self.costume_id)
+                    self.lbl_name.setText("夏季校服"+(extra_text_match.group(1) if extra_text_match else ""))
                 elif "school_winter" in self.costume_id:
-                    self.lbl_name.setText("冬季校服")
+                    extra_text_match = re.search(r"school_winter(.*)", self.costume_id)
+                    self.lbl_name.setText("冬季校服"+(extra_text_match.group(1) if extra_text_match else ""))
                 else:
                     self.lbl_name.setText("未定名称")
         else:
@@ -389,9 +392,11 @@ class CostumeItemWidget(QWidget):
             if current_config.download_for_existing_char:
                 ui_constants.AddCostume.add_costume_for_existed_char(current_config.selected_existing_character,
                                                                      self.costume_id,
-                                                                     self.lbl_name.text())
+                                                                     self.lbl_name.text() if not self.lbl_name.text() in ["未知服装","未定名称"] else self.costume_id,)
             else:
-                ui_constants.AddCostume.add_costume_for_new_character(current_config.bestdori_char_name,ui_constants.char_info_json[current_config.bestdori_char_name]["romaji"],)
+                ui_constants.AddCostume.add_costume_for_new_character(current_config.bestdori_char_name,
+                                                                      ui_constants.char_info_json[current_config.bestdori_char_name]["romaji"],
+                                                                      self.costume_id)
 
             self.lbl_progress_status.setText("服装添加完成！")
         except Exception as e:

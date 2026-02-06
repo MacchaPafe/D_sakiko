@@ -135,11 +135,15 @@ class GetCharacterAttributes:
                 character=CharacterAttributes()
                 character.character_folder_name=char
 
+                is_ready = True  # 为了显示全报错信息
                 if not os.path.exists(os.path.join(full_path,'name.txt')):
-                    raise FileNotFoundError(f"没有找到角色：'{char}'的name.txt文件！")
-                with open(os.path.join(full_path,'name.txt'),'r',encoding='utf-8') as f:
-                    character.character_name=f.read()
-                    f.close()
+                    print(f"[Error]没有找到角色：'{char}'的name.txt文件！")
+                    is_ready=False
+                    character.character_name=char   #只是为了下面不报错
+                else:
+                    with open(os.path.join(full_path,'name.txt'),'r',encoding='utf-8') as f:
+                        character.character_name=f.read()
+                        f.close()
 
                 program_icon_path = glob.glob(os.path.join(full_path, f"*.png"))
                 if program_icon_path:
@@ -148,37 +152,46 @@ class GetCharacterAttributes:
 
                 live2d_json=glob.glob(os.path.join(full_path,'live2D_model',f"*.model.json"))
                 if not live2d_json:
-                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的Live2D模型json文件(.model.json)")
-                live2d_json=max(live2d_json, key=os.path.getmtime)
-                if is_old_l2d_json(live2d_json):
-                    try:
-                        convert_old_l2d_json(live2d_json)
-                    except Exception as e:
-                        print(f"角色：'{character.character_name}'的旧版Live2D模型json文件(.model.json)转换失败！本次运行跳过该角色。错误信息：{e}")
-                        del character
-                        continue
-                    print(f"已将角色：{character.character_name} 的旧版Live2D模型json文件(.model.json)转换为新版格式并覆盖保存。")
-                    character.live2d_json=live2d_json
+                    print(f"[Error]没有找到角色：'{character.character_name}'的Live2D模型json文件(.model.json)")
+                    is_ready=False
                 else:
-                    character.live2d_json=live2d_json
+                    live2d_json=max(live2d_json, key=os.path.getmtime)
+                    if is_old_l2d_json(live2d_json):
+                        try:
+                            convert_old_l2d_json(live2d_json)
+                        except Exception as e:
+                            print(f"[Error]角色：'{character.character_name}'的旧版Live2D模型json文件(.model.json)转换失败！错误信息：{e}")
+                            del character
+                            continue
+                        print(f"已将角色：{character.character_name} 的旧版Live2D模型json文件(.model.json)转换为新版格式并覆盖保存。")
+                        character.live2d_json=live2d_json
+                    else:
+                        character.live2d_json=live2d_json
 
                 if not os.path.exists(os.path.join(full_path, 'character_description.txt')):
-                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的角色描述文件！")
-                with open(os.path.join(full_path,'character_description.txt'),'r',encoding='utf-8') as f:
-                    character.character_description=f.read()
-                    f.close()
+                    print(f"[Error]没有找到角色：'{character.character_name}'的角色描述文件！")
+                    is_ready=False
+                else:
+                    with open(os.path.join(full_path,'character_description.txt'),'r',encoding='utf-8') as f:
+                        character.character_description=f.read()
+                        f.close()
 
                 gpt_model_path=glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.ckpt"))
                 if not gpt_model_path:
-                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的GPT模型文件(.ckpt)")
-                gpt_model_path=max(gpt_model_path,key=os.path.getmtime)
-                character.GPT_model_path=gpt_model_path
+                    print(f"[Error]没有找到角色：'{character.character_name}'的GPT模型文件(.ckpt)，前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。")
+                    is_ready=False
+                else:
+                    gpt_model_path=max(gpt_model_path,key=os.path.getmtime)
+                    character.GPT_model_path=gpt_model_path
 
                 SoVITS_model_file = glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.pth"))
                 if not SoVITS_model_file:
-                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的SoVITS模型文件(.pth)")
-                SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)
-                character.sovits_model_path=SoVITS_model_file
+                    print(
+                        f"[Error]没有找到角色：'{character.character_name}'的SoVITS模型文件(.ckpt)，请前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。")
+                    is_ready=False
+                else:
+                    SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)
+                    character.sovits_model_path=SoVITS_model_file
 
                 #加载上次设置的参考音频（如果有设置过），而不是每次都用最新的参考音频
                 if char!='sakiko':
@@ -192,37 +205,48 @@ class GetCharacterAttributes:
                         ref_audio_file_wav = glob.glob(os.path.join("../reference_audio", char, f"*.wav"))
                         ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio", char, f"*.mp3"))
                         if not ref_audio_file_wav + ref_audio_file_mp3:
-                            raise FileNotFoundError(
-                                f"没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)")
-                        ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
-                        character.gptsovits_ref_audio=ref_audio
+                            print(
+                                f"[Error]没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)")
+                            is_ready=False
+                        else:
+                            ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
+                            character.gptsovits_ref_audio=ref_audio
                 
                 if char!='sakiko':
                     if not os.path.exists(os.path.join("../reference_audio",char, 'reference_text.txt')):
-                        raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的推理参考音频的文本文件！(reference_text.txt)")
-                    character.gptsovits_ref_audio_text=os.path.join("../reference_audio",char, 'reference_text.txt')
+                        print(f"[Error]没有找到角色：'{character.character_name}'的推理参考音频的文本文件！(reference_text.txt)")
+                        is_ready=False
+                    else:
+                        character.gptsovits_ref_audio_text=os.path.join("../reference_audio",char, 'reference_text.txt')
 
                 if not os.path.exists(os.path.join('../reference_audio',char,'reference_audio_language.txt')):
-                    raise FileNotFoundError(f"没有找到角色：'{character.character_name}'的参考音频语言文件！")
-                ref_audio_language_file =os.path.join('../reference_audio',char,'reference_audio_language.txt')
-                with open(ref_audio_language_file, "r", encoding="utf-8") as f:
-                    try:
-                        for line in f:
-                            line = line.strip()
-                            if line and not line.startswith("#"):
-                                ref_audio_language = ref_audio_language_list[int(line) - 1]
-                                break
-                        character.gptsovits_ref_audio_lan = ref_audio_language
-                        f.close()
-                    except Exception:
-                        raise ValueError(f"角色：'{character.character_name}'的参考音频的语言参数文件读取错误")
+                    print(f"[Error]没有找到角色：'{character.character_name}'的参考音频语言文件！")
+                    is_ready=False
+                else:
+                    ref_audio_language_file =os.path.join('../reference_audio',char,'reference_audio_language.txt')
+                    with open(ref_audio_language_file, "r", encoding="utf-8") as f:
+                        try:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith("#"):
+                                    ref_audio_language = ref_audio_language_list[int(line) - 1]
+                                    break
+                            character.gptsovits_ref_audio_lan = ref_audio_language
+                            f.close()
+                        except Exception:
+                            print(f"[Warning]角色：'{character.character_name}'的参考音频的语言参数文件读取错误，使用默认语言日文。")
+                            character.gptsovits_ref_audio_lan = "日文"
 
                 if os.path.exists(os.path.join("../reference_audio",char, 'QT_style.json')):
                     with open(os.path.join("../reference_audio",char, 'QT_style.json'),'r',encoding="utf-8") as f:
                         character.qt_css=f.read()
                         f.close()
 
-                self.character_class_list.append(character)
+                if is_ready:
+                    self.character_class_list.append(character)
+                else:
+                    print(f"加载角色：'{char}' 时出现以上错误，跳过该角色的加载。\n")
+
         #新增调整角色顺序的功能
         if len(self.character_class_list)>int(d_sakiko_config.character_order.value['character_num']):
             is_convert_1=False
