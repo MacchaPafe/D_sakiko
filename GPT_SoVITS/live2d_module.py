@@ -107,18 +107,18 @@ class Live2DModule:
 
 
     # 动作播放开始后调用
-    def onStartCallback(self):
+    def onStartCallback(self,*args):
         self.motion_is_over=False
         #print(f"touched and motion [] is started")
 
-    def onStartCallback_think_motion_version(self):
+    def onStartCallback_think_motion_version(self,*args):
         self.think_motion_is_over = False
         if self.if_sakiko:
             pygame.display.set_caption("小祥思考中")
         else:
             pygame.display.set_caption(f"{self.character_list[self.current_character_num].character_name}思考中")
 
-    def onStartCallback_emotion_version(self,audio_file_path):
+    def onStartCallback_emotion_version(self,audio_file_path,*args):
         self.motion_is_over=False
         #print(f"touched and motion [] is started")
         # 播放音频
@@ -245,8 +245,10 @@ class Live2DModule:
                             del model
                             model=new_model
                             print("Live2D模型切换成功！")
-                            model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
+                            #model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
                             self.character_list[self.current_character_num].live2d_json = new_model_path
+                        else:
+                            del new_model
                 else:
                     self.change_character()
                     overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
@@ -340,7 +342,7 @@ class Live2DModule:
                     continue
 
                 this_turn_audio_file_path=audio_file_queue.get()
-                model.StartRandomMotion(mtn_group_mapping[emotion],3,lambda :self.onStartCallback_emotion_version(this_turn_audio_file_path),self.onFinishCallback)
+                model.StartRandomMotion(mtn_group_mapping[emotion],3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
                 self.think_motion_is_over=True  #放在这里就对了。。
                 overlay.set_text(self.character_list[self.current_character_num].character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 

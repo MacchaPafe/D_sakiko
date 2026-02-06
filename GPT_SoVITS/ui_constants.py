@@ -1,3 +1,5 @@
+from random import randint
+
 dialogWindowDefaultCss = f'''
         QWidget {{
             background-color: "#F0F4F9";
@@ -393,5 +395,97 @@ class AddCostume:
             json.dump(model_json_content,f, indent=4, ensure_ascii=False)
 
     @staticmethod
-    def add_costume_for_new_character(character_ui_name,character_folder_name):
-        pass
+    def add_costume_for_new_character(character_ui_name,character_folder_name,live2d_name):
+        if os.path.exists(f"../live2d_related/{character_folder_name}"):
+            raise FileExistsError(f"角色{character_folder_name}已存在，无法作为新角色添加服装!")
+        if not os.path.exists(f"./.model_download_cache/{live2d_name}"):    #检查缓存文件夹是否存在
+            raise FileNotFoundError(f"未找到已下载服装的缓存文件夹，下载过程可能出现了某些未知错误:./.model_download_cache/{live2d_name}!")
+        os.makedirs(f"../live2d_related/{character_folder_name}")
+        with open(f"../live2d_related/{character_folder_name}/name.txt",'w',encoding='utf-8') as f:
+            f.write(character_ui_name)
+        with open(f"../live2d_related/{character_folder_name}/character_description.txt",'w',encoding='utf-8') as f:
+            f.write("在这里完善角色："+character_ui_name+" 的介绍吧！")
+        save_model_folder_path=f"../live2d_related/{character_folder_name}/live2D_model"
+        os.makedirs(save_model_folder_path)
+        #从从下载缓存文件夹中复制下载到的文件
+        cache_mocs=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}",f"*.moc"))
+        for file in cache_mocs:
+            shutil.copy(file,save_model_folder_path)
+        cache_physics=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}",f"*.physics.json"))
+        for file in cache_physics:
+            shutil.copy(file,save_model_folder_path)
+        cache_textures=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}/textures",f"*.png"))
+        for file in cache_textures:
+            shutil.copy(file,save_model_folder_path)
+        cache_motions=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}/motions",f"*.mtn"))
+        for file in cache_motions:
+            shutil.copy(file,save_model_folder_path)
+        cache_expressions=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}/expressions",f"*.exp.json"))
+        for file in cache_expressions:
+            shutil.copy(file,save_model_folder_path)
+        #创建model.json文件
+        model_json_content={"model":f"{os.path.basename(cache_mocs[0])}",
+                            "textures":[f"{os.path.basename(tex)}" for tex in cache_textures],
+                            }
+        if cache_physics:
+            model_json_content["physics"]=f"{os.path.basename(cache_physics[0])}"
+            model_json_content["physics_v2"]= {"file":f"{os.path.basename(cache_physics[0])}"}
+
+        possible_motion_groups={
+            "happiness":["smile","kime","nnf03","nnf04"],
+            "sadness":["sad","cry","serious"],
+            "anger":["angry","serious"],
+            "disgust":["angry","serious","scared"],
+            "like":["smile","kime","jaan","gattsu","oowarai","nnf04"],
+            "surprise":["surprised","scared","jaan","oowarai","odoodo"],
+            "fear":["scared","cry","serious","sneeze","odoodo"],
+            "IDLE":["kime","nnf","smile01","wink","sleep","niyaniya","nf_left","nf_right"],
+            "text_generating":["thinking","eeto"],
+            "bye":["bye","wink","smile"],
+            "change_character":["bye","smile","kime","shame","gattsu","jaan"],
+            "idle_motion":["idle","smile"],
+            "talking_motion":["nnf02","nod"]
+        }
+        motions={}
+        count=0
+        stop_count_value=[5,11,17,23,29,35,41,50,53,55,58,59,60]
+        for i,(group_name,possible_motion_list) in enumerate(possible_motion_groups.items()):
+            motions[group_name]=[]
+            for possible_motion in possible_motion_list:
+                for motion_file in cache_motions:
+                    if os.path.basename(motion_file).startswith(possible_motion):
+                        motions[group_name].append({"name":f"{group_name}_{count}","file":os.path.basename(motion_file)})
+                        count+=1
+                        if count == stop_count_value[i]:
+                            break
+                if count == stop_count_value[i]:
+                    break
+            if count != stop_count_value[i]:   #这一组没有填充指定数量的动作
+                count=stop_count_value[i]
+                if not motions[group_name]:   #如果这一组一个动作都没有
+                    motions[group_name].append({"name":f"{group_name}_{count}","file":os.path.basename(cache_motions[randint(0,len(cache_motions)-1)])})
+        model_json_content["motions"]=motions
+        with open(f"{save_model_folder_path}/3.model.json",'w',encoding='utf-8') as f:
+            json.dump(model_json_content,f, indent=4, ensure_ascii=False)
+
+        #创建reference_audio内的空文件夹
+        os.makedirs(f"../reference_audio/{character_folder_name}",exist_ok=True)
+        os.makedirs(f"../reference_audio/{character_folder_name}/GPT-SoVITS_models",exist_ok=True)
+        with open(f"../reference_audio/{character_folder_name}/GPT-SoVITS_models/在这里放入角色的GPT-SoVITS模型（.pth和.ckpt）",'w',encoding='utf-8') as f:
+            f.write('')
+        with open(f"../reference_audio/{character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
+            f.write('''QWidget {
+                    color: #77DD77;
+                    }''')
+        with open(f"../reference_audio/{character_folder_name}/reference_audio_language.txt",'w',encoding='utf-8') as f:
+            f.write('''#填写说明：只需把下面的数字3修改为其他数字即可，范围为1-11，分别对应你的参考音频语言为   1：中文  2：英文  3：日文  4：粤语  5：韩文  6：中英混合  7：日英混合  8：粤英混合  9：韩英混合  10：多语种混合  11：多语种混合（粤语） 
+#不能有任何其他内容，包括空格、换行、缩进等，否则会报错
+3''')
+        with open(f"../reference_audio/{character_folder_name}/reference_text.txt",'w',encoding='utf-8') as f:
+            f.write('')
+
+
+
+
+
+
