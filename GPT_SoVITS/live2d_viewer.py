@@ -1,6 +1,7 @@
 import json
 import sys,os
-import re
+import pathlib
+from typing import Optional
 
 from PyQt5.QtCore import Qt
 
@@ -12,14 +13,15 @@ import threading
 from queue import Queue
 
 import live2d.v2 as live2d
+from qtUI import ChangeL2DModelWindow
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
-    QGridLayout, QApplication, QLabel
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
+    QApplication, QLabel
 
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
 import character
 
@@ -58,6 +60,7 @@ class BackgroundRen(object):
         glEnd()
 
 idle_recover_timer=time.time()
+
 
 class Live2DModule:
     def __init__(self):
@@ -156,20 +159,25 @@ class Live2DModule:
                 if x=="exit":
                     self.run=False
                     continue
-                self.change_character()
-                if self.if_sakiko and self.sakiko_state:
-                    model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
-                else:
-                    model.LoadModelJson(self.PATH_JSON)
-                model.Resize(win_w_and_h, win_w_and_h)
-                model.SetAutoBlinkEnable(True)
-                model.SetAutoBreathEnable(True)
+                # 传入 change_character 字符串，表示要求切换角色
+                if x == "change_character":
+                    self.change_character()
+                    if self.if_sakiko and self.sakiko_state:
+                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                    else:
+                        model.LoadModelJson(self.PATH_JSON)
+                    model.Resize(win_w_and_h, win_w_and_h)
+                    model.SetAutoBlinkEnable(True)
+                    model.SetAutoBreathEnable(True)
 
-                if self.character_list[self.current_character_num].icon_path is not None:
-                    pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
-
-
-
+                    if self.character_list[self.current_character_num].icon_path is not None:
+                        pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
+                # 传入一个路径，表示要求加载同角色一个新的 live2d 模型
+                elif os.path.exists(x):
+                    model.LoadModelJson(x)
+                    model.Resize(win_w_and_h, win_w_and_h)
+                    model.SetAutoBlinkEnable(True)
+                    model.SetAutoBreathEnable(True)
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
@@ -196,150 +204,6 @@ class Live2DModule:
         pygame.quit()
 
 
-
-class ConfirmWindow(QWidget):
-    def __init__(self,parent_window,selected_motion,group_motions,selected_group_index):
-        super().__init__()
-        self.parent_window = parent_window
-        self.setWindowTitle("确认替换窗口")
-        self.setWindowFlags(Qt.Window)
-        self.screen = QDesktopWidget().screenGeometry()
-        self.resize(int(0.3 * self.screen.width()), int(0.3 * self.screen.height()))
-        self.selected_motion_display = QTextBrowser()
-        self.selected_motion_display.setOpenExternalLinks(False)
-        self.selected_motion_display.setOpenLinks(False)
-        self.selected_motion_display.anchorClicked.connect(self.play_motion)
-        self.current_group_mnt_display = QTextBrowser()
-        self.current_group_mnt_display.setOpenExternalLinks(False)
-        self.current_group_mnt_display.setOpenLinks(False)
-        self.current_group_mnt_display.anchorClicked.connect(self.play_motion_group_ver)
-        self.btn_confirm=QPushButton("确认")
-        self.btn_cancel=QPushButton("关闭窗口")
-        self.btn_confirm.clicked.connect(self.on_confirm)
-        self.btn_cancel.clicked.connect(self.on_cancel)
-
-        self.selected_motion_title = QLabel("刚选择的动作文件")
-        self.current_group_mnt_title = QLabel("选择要替换的动作")
-
-        self.selected_motion_title.setAlignment(Qt.AlignCenter)
-        self.current_group_mnt_title.setAlignment(Qt.AlignCenter)
-
-        # 2.1 顶部左右并排的显示区
-        top_display_layout = QHBoxLayout()
-
-        # --- 创建左侧垂直布局 (标题 + 文本框) ---
-        left_column_layout = QVBoxLayout()
-        left_column_layout.addWidget(self.selected_motion_title)
-        left_column_layout.addWidget(self.selected_motion_display)
-
-        # --- 创建右侧垂直布局 (标题 + 文本框) ---
-        right_column_layout = QVBoxLayout()
-        right_column_layout.addWidget(self.current_group_mnt_title)
-        right_column_layout.addWidget(self.current_group_mnt_display)
-
-        # --- 将两个垂直布局添加到顶部的水平布局中 ---
-        top_display_layout.addLayout(left_column_layout)
-        top_display_layout.addLayout(right_column_layout)
-
-        btn_layout=QHBoxLayout()
-        btn_layout.addWidget(self.btn_confirm)
-        btn_layout.addWidget(self.btn_cancel)
-        main_layout=QVBoxLayout()
-        main_layout.addLayout(top_display_layout)
-        main_layout.addLayout(btn_layout)
-        self.setLayout(main_layout)
-        self.setStyleSheet("""
-                                QWidget {
-                                    background-color: #E6F2FF;
-                                    color: #7799CC;
-                                }
-
-                                QTextBrowser{
-                                    text-decoration: none;
-                                    background-color: #FFFFFF;
-                                    border: 3px solid #B3D1F2;
-                                    border-radius:9px;
-                                    padding: 5px;
-                                }
-
-                                QPushButton {                
-                                    background-color: #7FB2EB;
-                                    color: #ffffff;
-                                    border-radius: 6px;
-                                    padding: 6px;
-                                }
-
-                                QPushButton:hover {
-                                    background-color: #3FB2EB;
-                                }
-
-                                QPushButton:disabled {
-                                    background-color: #D0E2F0;
-                                    color: #7799CC;
-                                }    
-
-                                QScrollBar:vertical {
-                                    border: none;
-                                    background: #D0E2F0;
-                                    width: 10px;
-                                    margin: 0px 0px 0px 0px;
-                                }
-
-                                QScrollBar::handle:vertical {
-                                    background: #B3D1F2;
-                                    min-height: 20px;
-                                    border-radius: 3px;
-                                }
-
-                            """)
-        self._group_motions=group_motions
-        self.group_motions={}
-        for i,motion in enumerate(self._group_motions):
-            self.group_motions[i+1]=motion
-        self.user_selection_key=None
-        self.selected_group_index=selected_group_index  #用户选择的动作组编号，仅作为传回主窗口的confirm_window_confirmed函数的一个入参
-        self.fill_2_displays(selected_motion)
-
-
-    def fill_2_displays(self,selected_motion):
-        self.selected_motion_display.append(f'<a href="{selected_motion}" style="text-decoration: none; color: #7799CC;">{os.path.basename(selected_motion)}</a>'+'\n')
-
-        for key,motion in self.group_motions.items():
-            self.current_group_mnt_display.append(f'<a href="{motion}[{key}]" style="text-decoration: none; color: #7799CC;">★{key}：{os.path.basename(motion)}</a>'+'\n')
-
-    def play_motion(self,motion_path):
-        self.parent_window.motion_queue.put(motion_path.toString())
-
-    def play_motion_group_ver(self,key_and_motion_path):
-        key_and_motion_path=key_and_motion_path.toString()
-        match = re.match(r"(.+?)\[(.+?)\]$", key_and_motion_path)
-        if match:
-            motion_path = match.group(1)
-            key = int(match.group(2))
-            self.user_selection_key=key #用户选择的要替换的动作组内动作编号
-            self.parent_window.motion_queue.put(motion_path)
-            self.current_group_mnt_display.clear()
-            for _key,motion in self.group_motions.items():
-                if _key!=key:
-                    self.current_group_mnt_display.append(f'<a href="{motion}[{_key}]" style="text-decoration: none; color: #7799CC;">★{_key}：{os.path.basename(motion)}</a>'+'\n')
-                else:
-                    self.current_group_mnt_display.append(f'<a href="{motion}[{_key}]" style="text-decoration: none; color: #ED784A;">★{_key}：{os.path.basename(motion)}</a>'+'\n')
-
-
-
-
-    def on_confirm(self):
-        if self.user_selection_key is None:
-            self.setWindowTitle("请选择要替换的动作！")
-            return
-        self.parent_window.confirm_window_confirmed(self.selected_group_index,self.user_selection_key)
-        self.close()  # 关闭子窗口
-
-
-    def on_cancel(self):
-        self.close()  # 关闭子窗口
-
-
 class ViewerGUI(QWidget):
     def __init__(self,
                  characters,
@@ -361,38 +225,25 @@ class ViewerGUI(QWidget):
         self.message_box=QTextBrowser()
         self.btn_change_char=QPushButton("切换角色")
         self.btn_change_char.clicked.connect(self.change_char)
+        self.btn_change_costume = QPushButton("切换当前角色服装")
+        self.btn_change_costume.clicked.connect(self.change_costume)
         self.exit_edit=QPushButton("关闭程序")
         self.exit_edit.clicked.connect(self.exit)
         special_btn_layout=QHBoxLayout()
         special_btn_layout.addWidget(self.btn_change_char)
+        special_btn_layout.addWidget(self.btn_change_costume)
         special_btn_layout.addWidget(self.exit_edit)
-        self.btn_add_mtn_to_group1=QPushButton("替换动作到动作组1（高兴）")
-        self.btn_add_mtn_to_group2=QPushButton("替换动作到动作组2（伤心）")
-        self.btn_add_mtn_to_group3 = QPushButton("替换动作到动作组3（生气）")
-        self.btn_add_mtn_to_group4 = QPushButton("替换动作到动作组4（反感）")
-        self.btn_add_mtn_to_group5 = QPushButton("替换动作到动作组5（喜欢）")
-        self.btn_add_mtn_to_group6 = QPushButton("替换动作到动作组6（惊讶）")
-        self.btn_add_mtn_to_group7 = QPushButton("替换动作到动作组7（害怕）")
-        self.btn_add_mtn_to_group8=QPushButton("替换动作到动作组8（待机时随机）")
-        self.btn_add_mtn_to_group9=QPushButton("替换动作到动作组9（思考时）")
-        self.btn_add_mtn_to_group10=QPushButton("替换动作到动作组10（退出程序）")
-        self.btn_add_mtn_to_group11=QPushButton("替换动作到动作组11（登场动作）")
-        self.btn_add_mtn_to_group12=QPushButton("替换动作到动作组12（待机）")
-        self.btn_add_mtn_to_group13 = QPushButton("替换动作到动作组13（按下语音按钮）")
-
-        self.btn_add_mtn_to_group1.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(1))
-        self.btn_add_mtn_to_group2.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(2))
-        self.btn_add_mtn_to_group3.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(3))
-        self.btn_add_mtn_to_group4.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(4))
-        self.btn_add_mtn_to_group5.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(5))
-        self.btn_add_mtn_to_group6.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(6))
-        self.btn_add_mtn_to_group7.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(7))
-        self.btn_add_mtn_to_group8.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(8))
-        self.btn_add_mtn_to_group9.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(9))
-        self.btn_add_mtn_to_group10.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(10))
-        self.btn_add_mtn_to_group11.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(11))
-        self.btn_add_mtn_to_group12.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(12))
-        self.btn_add_mtn_to_group13.clicked.connect(lambda: self.btn_add_mtn_to_group_clicked(13))
+        # 操作栏（替代原先 13 个“替换到动作组X”按钮）
+        self.btn_add_motion = QPushButton("添加")
+        self.btn_replace_motion = QPushButton("替换")
+        self.btn_delete_motion = QPushButton("删除")
+        self.btn_add_motion.clicked.connect(self.on_add_motion)
+        self.btn_replace_motion.clicked.connect(self.on_replace_motion)
+        self.btn_delete_motion.clicked.connect(self.on_delete_motion)
+        op_btn_layout = QHBoxLayout()
+        op_btn_layout.addWidget(self.btn_add_motion)
+        op_btn_layout.addWidget(self.btn_replace_motion)
+        op_btn_layout.addWidget(self.btn_delete_motion)
 
         # ---创建两个标题 QLabel ---
         self.all_mnt_title = QLabel("所有mtn文件")
@@ -419,35 +270,10 @@ class ViewerGUI(QWidget):
         top_display_layout.addLayout(left_column_layout)
         top_display_layout.addLayout(right_column_layout)
 
-        # 2.2 中部的情绪按钮网格 (推荐 3x3 布局)
-        button_grid_layout = QGridLayout()
-
-        # (行, 列)
-        # 第 1 行
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group1, 0, 0)  # 高兴
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group2, 0, 1)  # 伤心
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group3, 0, 2)  # 生气
-
-        # 第 2 行
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group4, 1, 0)  # 反感
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group5, 1, 1)  # 喜欢
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group6, 1, 2)  # 惊讶
-
-        # 第 3 行
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group7, 2, 0)  # 害怕
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group8, 2, 1)  # 待机时随机做的动作
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group9, 2, 2)  # 思考时
-        # 第 4 行
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group10, 3, 0)  # 退出程序
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group11, 3, 1)  # 登场动作
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group12, 3, 2)  # 待机
-        # 第 5 行
-        button_grid_layout.addWidget(self.btn_add_mtn_to_group13, 4, 1)  # 按下语音按钮
-
         # --- 3. 将所有子布局添加到主布局 ---
         main_layout.addLayout(top_display_layout, stretch=5)  # stretch=5 让显示区占据更多垂直空间
         main_layout.addWidget(self.message_box, stretch=1)  # stretch=1 给日志区一点空间
-        main_layout.addLayout(button_grid_layout, stretch=1)  # stretch=1 分配较少空间给按钮
+        main_layout.addLayout(op_btn_layout, stretch=1)  # 操作栏
         main_layout.addLayout(special_btn_layout)  # 单独的按钮
         self.setLayout(main_layout)
         self.setStyleSheet("""
@@ -500,61 +326,130 @@ class ViewerGUI(QWidget):
         self.motion_queue=motion_queue
         self.change_char_queue=change_char_queue
         self.all_motion_data=None   # 存储当前角色的所有动作数据
-        self.current_char_folder_path = ""  # 存储当前角色的动作文件夹路径
-        self.load_mtns()
+
+        # 选中状态：左侧动作文件 / 右侧动作组或动作
+        self.left_selected_motion_path: Optional[str] = None
+        self.right_selected_group: Optional[str] = None
+        self.right_selected_index: Optional[int] = None
+
+        # 动作组标题显示（key -> 显示名）
+        self.group_display_titles = {
+            "happiness": "1. 开心",
+            "sadness": "2. 伤心",
+            "anger": "3. 生气",
+            "disgust": "4. 反感",
+            "like": "5. 喜欢",
+            "surprise": "6. 惊讶",
+            "fear": "7. 害怕",
+            "IDLE": "8. 待机时随机",
+            "text_generating": "9. 思考时",
+            "bye": "10. 退出程序",
+            "change_character": "11. 登场动作",
+            "idle_motion": "12. 待机",
+            "talking_motion": "13. 按下语音按钮",
+        }
+
+        self.current_char_base_folder_name = ""  # 存储当前角色的基础文件夹名称（其实就是角色名称）
+
+        self.current_char_folder_path = pathlib.Path("")  # 存储当前角色的动作文件夹路径（这个路径可能为默认 live2d 模型的路径，也可能为 extra_model 中的某个模型路径，取决于用户选择）
+
+        # 默认使用默认模型（这句话多少有点废话了）
+        self.use_default_model = {0: True} # 角色 index-bool；True 表示使用默认模型，False 表示使用 extra_model 中的模型
+        self.extra_model_name = {0: None} # 角色 index-str；如果 use_default_model 为 False，那么该变量存储要使用的 extra_model 名称
+        # 如果角色 index 不存在于上述两个字典中，则表示该角色第一次加载模型，默认使用默认模型
+
+        self.load_suitable_model()
         self.message_box.append("当前角色："+self.character_list[self.current_char_index].character_name)
-        self.confirm_window=None
-        self.user_selection=None
+        self.update_button_states()
 
-
-    def load_mtns(self):
-        if self.character_list[self.current_char_index].character_name == '祥子':
-            self.current_mnt_display.append("祥子暂时不能编辑动作组")
-            self.btn_add_mtn_to_group1.setEnabled(False)
-            self.btn_add_mtn_to_group2.setEnabled(False)
-            self.btn_add_mtn_to_group3.setEnabled(False)
-            self.btn_add_mtn_to_group4.setEnabled(False)
-            self.btn_add_mtn_to_group5.setEnabled(False)
-            self.btn_add_mtn_to_group6.setEnabled(False)
-            self.btn_add_mtn_to_group7.setEnabled(False)
-            self.btn_add_mtn_to_group8.setEnabled(False)
-            self.btn_add_mtn_to_group9.setEnabled(False)
-            self.btn_add_mtn_to_group10.setEnabled(False)
-            self.btn_add_mtn_to_group11.setEnabled(False)
-            self.btn_add_mtn_to_group12.setEnabled(False)
-            self.btn_add_mtn_to_group13.setEnabled(False)
+    def load_suitable_model(self):
+        """
+        根据 self.use_default_model 和 self.extra_model_name 的值，加载合适的模型。
+        """
+        if self.use_default_model.get(self.current_char_index, True):
+            self.load_model(None)
         else:
-            self.current_char_folder_path = f"../live2d_related/{self.character_list[self.current_char_index].character_folder_name}/live2D_model"
-            with open(os.path.join(self.current_char_folder_path, '3.model.json'),'r',encoding='utf-8') as f:
+            self.load_model(self.extra_model_name.get(self.current_char_index))
+
+    def use_default_model_for_current_character(self):
+        """
+        切换显示模块使用当前角色的默认模型，并且更新类属性，保存这一设置
+        """
+        self.use_default_model[self.current_char_index] = True
+        self.extra_model_name[self.current_char_index] = None
+        self.load_model(None)
+
+    def use_extra_model_for_current_character(self, extra_model_name):
+        """
+        切换为使用当前角色的 extra_model 中的模型，并且更新类属性，保存这一设置
+
+        :param extra_model_name: 要使用的 extra_model 名称。
+        """
+        self.use_default_model[self.current_char_index] = False
+        self.extra_model_name[self.current_char_index] = extra_model_name
+        self.load_model(extra_model_name)
+
+    def load_model(self, extra_model_name=None):
+        """
+        加载一个角色模型的所有动作名称信息。
+
+        :param extra_model_name: 如果该参数不是 None，那么改为加载该角色文件夹中 extra_model/{extra_model_name} 文件夹中的模型，而非默认模型。
+        """
+        if self.character_list[self.current_char_index].character_name == '祥子':
+            self.current_mnt_display.clear()
+            self.current_mnt_display.append("祥子暂时不能编辑动作组")
+            self.btn_change_costume.setEnabled(False)
+            # 仍然设置一个可用的动作文件夹路径，保证左侧 mtn 列表可用
+            self.current_char_base_folder_name = self.character_list[self.current_char_index].character_folder_name
+            costume_path = pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "live2D_model_costume"
+            default_path = pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "live2D_model"
+            if costume_path.exists():
+                self.current_char_folder_path = costume_path
+            else:
+                self.current_char_folder_path = default_path
+
+            self.all_motion_data = None
+            self.left_selected_motion_path = None
+            self.right_selected_group = None
+            self.right_selected_index = None
+            self.update_button_states(disable_all=True)
+        else:
+            self.btn_change_costume.setEnabled(True)
+
+            self.current_char_base_folder_name = self.character_list[self.current_char_index].character_folder_name
+            if extra_model_name is not None:
+                self.current_char_folder_path = pathlib.Path("../live2d_related") / self.character_list[self.current_char_index].character_folder_name / "extra_model" / extra_model_name
+            else:
+                self.current_char_folder_path = pathlib.Path("../live2d_related") / self.character_list[self.current_char_index].character_folder_name / "live2D_model"
+
+            with open(self.current_char_folder_path / '3.model.json','r',encoding='utf-8') as f:
                 self.all_motion_data=json.load(f)
 
-            current_mnt_display_titles=["1.开心：","2.伤心：","3.生气：","4.反感：","5.喜欢：","6.惊讶：","7.害怕：",'8.待机时随机做的动作：','9.思考时：','10.退出程序：','11.登场动作：','12.待机','13.按下语音按钮']
-            current_mnt_display_titles_pointer=0
-            in_group_counter=1
-            for idx,motion in enumerate(self.all_motion_data['motions']['rana']):
-                if idx in [0,6,12,18,24,30,36,42,51,54,56,59,60]:
-                    self.current_mnt_display.append(f'<a style="color: #FFB099;">{current_mnt_display_titles[current_mnt_display_titles_pointer]}</a>'+'\n')
-                    current_mnt_display_titles_pointer+=1
-                    in_group_counter=1
-                abs_path=os.path.abspath(f"../live2d_related/{self.character_list[self.current_char_index].character_folder_name}/live2D_model/{motion['file']}").replace('\\','/')
-                self.current_mnt_display.append(f'<a href="{abs_path}" style="text-decoration: none; color: #7799CC;">★{in_group_counter}：{motion["file"]}</a>'+'\n')
-                in_group_counter+=1
+            # 切换角色/模型时，重置选中状态
+            self.left_selected_motion_path = None
+            self.right_selected_group = None
+            self.right_selected_index = None
 
-        folder_path=f"../live2d_related/{self.character_list[self.current_char_index].character_folder_name}/live2D_model"
-        idx=1
+            self.current_mnt_display.clear()
+            self.refresh_current_mnt_display(preserve_scroll=False)
+            self.update_button_states()
 
+        # 重新填充左侧可选 mtn 文件列表
+        self.all_mnt_display.clear()
+        folder_path=self.current_char_folder_path
+
+        all_paths = []
         for filename in os.listdir(folder_path):
-            full_path = os.path.join(folder_path, filename)
-            if os.path.isfile(full_path) and filename.lower().endswith('.mtn'):
-                full_path=full_path.replace('\\','/')
-                self.all_mnt_display.append(f'<a href="{full_path}" style="text-decoration: none; color: #7799CC;">{idx}. {filename}</a>'+'\n')
-                idx+=1
+            full_path = (folder_path / filename).resolve()
+            if full_path.is_file() and filename.lower().endswith('.mtn'):
+                full_path=full_path.as_posix()
+                all_paths.append(full_path)
 
-
-
+        all_paths.sort()
+        for idx, path in enumerate(all_paths, start=1):
+            self.all_mnt_display.append(f'<a href="{path}" style="text-decoration: none; color: #7799CC;">{idx}. {os.path.basename(path)}</a>'+'\n')
 
     def change_char(self):
-
         if len(self.character_list) == 1:
             self.current_char_index = 0
         else:
@@ -568,114 +463,379 @@ class ViewerGUI(QWidget):
         self.all_mnt_display.clear()
         self.current_mnt_display.clear()
         self.message_box.clear()
-        self.load_mtns()
+        # 加载新角色的默认模型
+        self.load_suitable_model()
         self.message_box.append("当前角色：" + self.character_list[self.current_char_index].character_name)
-        self.change_char_queue.put("1")
+        self.change_char_queue.put("change_character")
 
+    def change_costume(self):
+        """
+        弹出管理对话框，允许用户选择并切换切换角色的服装
+        """
+        dialog = ChangeL2DModelWindow(self.current_char_base_folder_name, lambda path: self._on_change_costume_confirmed(path))
+        dialog.exec()
 
+    def _on_change_costume_confirmed(self, new_model_path):
+        """
+        在用户选择了一个新的服装模型后，执行切换动作。
+        由于这个参数是从 ChangeL2DModelWindow 窗口传回来的，不能修改原代码的实现，这个 new_model_path 参数直接指向了 3.model.json
+        我们需要解析上一层文件夹的路径，来确定这是个默认模型还是自定义模型；如果是自定义模型，它的文件夹名称（模型名称）是什么。
+        """
+        print(f"用户选择了新的服装模型路径：{new_model_path}")
+        parent_path = pathlib.Path(new_model_path).parent
+        extra_model_folder = pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "extra_model"
+        if parent_path == pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "live2D_model":
+            # 用户选择了默认模型
+            self.use_default_model_for_current_character()
+        elif parent_path.parent == extra_model_folder:
+            # 用户选择了 extra_model 中的某个模型
+            extra_model_name = parent_path.name
+            self.use_extra_model_for_current_character(extra_model_name)
+        else:
+            # 其他情况，理论上不应该发生
+            self.message_box.append("无法识别所选模型的类型，未进行切换。")
+            return
 
+        self.message_box.append(f"已切换到角色 {self.character_list[self.current_char_index].character_name} 的新服装模型。")
+        self.change_char_queue.put(new_model_path)
 
     def play_motion_cur_mtn_ver(self,motion_path):
 
-        motion_path=motion_path.toString()
-        self.message_box.clear()
-        self.message_box.append(f"当前选中动作，右边栏的：\n{os.path.basename(motion_path)}")
-        self.btn_add_mtn_to_group1.setEnabled(False)
-        self.btn_add_mtn_to_group2.setEnabled(False)
-        self.btn_add_mtn_to_group3.setEnabled(False)
-        self.btn_add_mtn_to_group4.setEnabled(False)
-        self.btn_add_mtn_to_group5.setEnabled(False)
-        self.btn_add_mtn_to_group6.setEnabled(False)
-        self.btn_add_mtn_to_group7.setEnabled(False)
-        self.btn_add_mtn_to_group8.setEnabled(False)
-        self.btn_add_mtn_to_group9.setEnabled(False)
-        self.btn_add_mtn_to_group10.setEnabled(False)
-        self.btn_add_mtn_to_group11.setEnabled(False)
-        self.btn_add_mtn_to_group12.setEnabled(False)
-        self.btn_add_mtn_to_group13.setEnabled(False)
+        # 右侧栏点击：可能是组标题，也可能是某个具体动作
+        url_str = motion_path.toString()
+        if self.character_list[self.current_char_index].character_name == '祥子':
+            return
+        if self.all_motion_data is None:
+            return
 
-        self.motion_queue.put(motion_path)
-        self.user_selection = motion_path
+        if url_str.startswith("group:"):
+            group_key = url_str.split(":", 1)[1]
+            self.right_selected_group = group_key
+            self.right_selected_index = None
+            self.message_box.clear()
+            self.message_box.append(f"已选中动作组：{self.group_display_titles.get(group_key, group_key)}\n"
+                                    f"选择左侧动作后，点击『添加』将动作添加到该组中。")
+            self.refresh_current_mnt_display(preserve_scroll=True)
+            self.update_button_states()
+            return
 
+        if url_str.startswith("item:"):
+            # item:{group}:{index}
+            try:
+                _, group_key, index_str = url_str.split(":", 2)
+                index = int(index_str)
+            except Exception:
+                return
+
+            self.right_selected_group = group_key
+            self.right_selected_index = index
+
+            try:
+                motion_filename = self.all_motion_data['motions'][group_key][index]['file']
+            except Exception:
+                return
+
+            abs_path = (self.current_char_folder_path / motion_filename).resolve().as_posix()
+            self.motion_queue.put(abs_path)
+            self.message_box.clear()
+            self.message_box.append(
+                f"已选中动作：{motion_filename}\n"
+                f"可删除/替换动作，或者添加左侧动作到该组中。"
+            )
+            self.refresh_current_mnt_display(preserve_scroll=True)
+            self.update_button_states()
+            return
+
+        # 兼容旧格式：如果仍然是路径链接，就当作“预览动作”
+        if os.path.exists(url_str):
+            self.motion_queue.put(url_str)
+            self.message_box.clear()
+            self.message_box.append(f"当前预览动作：\n{os.path.basename(url_str)}")
 
     def play_motion_all_mtn_ver(self,motion_path):
 
         motion_path=motion_path.toString()
+        self.left_selected_motion_path = motion_path
         self.message_box.clear()
-        self.message_box.append(f"当前选中动作，左边栏的：\n{os.path.basename(motion_path)}")
-        if self.character_list[self.current_char_index].character_name != '祥子':
-            self.btn_add_mtn_to_group1.setEnabled(True)
-            self.btn_add_mtn_to_group2.setEnabled(True)
-            self.btn_add_mtn_to_group3.setEnabled(True)
-            self.btn_add_mtn_to_group4.setEnabled(True)
-            self.btn_add_mtn_to_group5.setEnabled(True)
-            self.btn_add_mtn_to_group6.setEnabled(True)
-            self.btn_add_mtn_to_group7.setEnabled(True)
-            self.btn_add_mtn_to_group8.setEnabled(True)
-            self.btn_add_mtn_to_group9.setEnabled(True)
-            self.btn_add_mtn_to_group10.setEnabled(True)
-            self.btn_add_mtn_to_group11.setEnabled(True)
-            self.btn_add_mtn_to_group12.setEnabled(True)
-            self.btn_add_mtn_to_group13.setEnabled(True)
-        else:
-            self.btn_add_mtn_to_group1.setEnabled(False)
-            self.btn_add_mtn_to_group2.setEnabled(False)
-            self.btn_add_mtn_to_group3.setEnabled(False)
-            self.btn_add_mtn_to_group4.setEnabled(False)
-            self.btn_add_mtn_to_group5.setEnabled(False)
-            self.btn_add_mtn_to_group6.setEnabled(False)
-            self.btn_add_mtn_to_group7.setEnabled(False)
-            self.btn_add_mtn_to_group8.setEnabled(False)
-            self.btn_add_mtn_to_group9.setEnabled(False)
-            self.btn_add_mtn_to_group10.setEnabled(False)
-            self.btn_add_mtn_to_group11.setEnabled(False)
-            self.btn_add_mtn_to_group12.setEnabled(False)
-            self.btn_add_mtn_to_group13.setEnabled(False)
+        self.message_box.append(f"当前选中动作（左侧）：\n{os.path.basename(motion_path)}")
 
-        self.user_selection = motion_path
+        if os.path.exists(motion_path):
+            self.motion_queue.put(motion_path)
 
-        self.motion_queue.put(motion_path)
+        self.update_button_states()
 
-    def btn_add_mtn_to_group_clicked(self,group_index):
-        mtn_index={1:0,2:6,3:12,4:18,5:24,6:30,7:36,8:42,9:51,10:54,11:56,12:59,13:60,14:61}
-        group_motions=self.all_motion_data['motions']['rana'][mtn_index[group_index]:mtn_index[group_index+1]]
-        group_motions_abs_path=[os.path.abspath(f"{self.current_char_folder_path}/{item['file']}").replace('\\','/') for item in group_motions]
+    def update_button_states(self, disable_all: bool = False):
+        if disable_all or self.character_list[self.current_char_index].character_name == '祥子':
+            self.btn_add_motion.setEnabled(False)
+            self.btn_replace_motion.setEnabled(False)
+            self.btn_delete_motion.setEnabled(False)
+            return
 
-        if self.user_selection is None:
+        has_left = self.left_selected_motion_path is not None
+        has_right_group = self.right_selected_group is not None
+        has_right_item = self.right_selected_index is not None
+
+        # 添加：左侧有动作 & 右侧选择了组（标题或动作均可，动作时表示插入）
+        self.btn_add_motion.setEnabled(has_left and has_right_group)
+        # 替换：左侧有动作 & 右侧选择了具体动作
+        self.btn_replace_motion.setEnabled(has_left and has_right_item)
+        # 删除：右侧选择了具体动作
+        self.btn_delete_motion.setEnabled(has_right_item)
+
+    def refresh_current_mnt_display(self, preserve_scroll: bool = True):
+        if self.all_motion_data is None:
+            self.current_mnt_display.clear()
+            return
+
+        scroll_bar = self.current_mnt_display.verticalScrollBar()
+        saved_pos = scroll_bar.value() if (preserve_scroll and scroll_bar is not None) else 0
+
+        # 使用自定义 URL scheme：
+        # - group:{group_key}
+        # - item:{group_key}:{index}
+        html_parts: list[str] = []
+        motions = self.all_motion_data.get('motions', {})
+        for group_key, motion_values in motions.items():
+            title = self.group_display_titles.get(group_key, group_key)
+            if group_key == self.right_selected_group and self.right_selected_index is None:
+                title_color = "#ED784A"
+            else:
+                title_color = "#FFB099"
+
+            html_parts.append(
+                f'<div style="margin-top:8px;">'
+                f'<a href="group:{group_key}" style="text-decoration:none; color:{title_color}; font-weight:bold;">'
+                f'【{title}】'
+                f'</a>'
+                f'</div>'
+            )
+
+            for idx, motion in enumerate(motion_values):
+                file_name = motion.get('file', '')
+                if group_key == self.right_selected_group and self.right_selected_index == idx:
+                    item_color = "#ED784A"
+                else:
+                    item_color = "#7799CC"
+                html_parts.append(
+                    f'<div style="margin-left:12px;">'
+                    f'<a href="item:{group_key}:{idx}" style="text-decoration:none; color:{item_color};">'
+                    f'★{idx + 1}：{file_name}'
+                    f'</a></div>'
+                )
+
+        self.current_mnt_display.setHtml("\n".join(html_parts))
+
+        if scroll_bar is not None:
+            scroll_bar.setValue(saved_pos)
+
+    def _write_motion_json(self):
+        if self.all_motion_data is None:
+            return
+        with open(self.current_char_folder_path / '3.model.json', 'w', encoding='utf-8') as f:
+            json.dump(self.all_motion_data, f, indent=4, ensure_ascii=False)
+
+    def _generate_unique_motion_name(self, group_key: str) -> str:
+        """生成动作 name：{group_key}_{n}，n 为从 1 开始的最小可用正整数。
+
+        扫描整个 model.json 的 motions，确保 name 不重复。
+        """
+        if self.all_motion_data is None:
+            return f"{group_key}_1"
+
+        existing_names: set[str] = set()
+        motions = self.all_motion_data.get('motions', {})
+        for _g, motion_list in motions.items():
+            for entry in motion_list:
+                if isinstance(entry, dict):
+                    name = entry.get('name')
+                    if isinstance(name, str) and name:
+                        existing_names.add(name)
+
+        n = 1
+        while True:
+            candidate = f"{group_key}_{n}"
+            if candidate not in existing_names:
+                return candidate
+            n += 1
+
+    def _make_motion_entry(self, file_name: str, reference_entry: Optional[dict], motion_name: str) -> dict:
+        if reference_entry is None:
+            return {"name": motion_name, "file": file_name}
+        # 复制参考 entry 的所有字段，但覆盖 name/file
+        new_entry = dict(reference_entry)
+        new_entry["name"] = motion_name
+        new_entry["file"] = file_name
+        return new_entry
+
+    def _reload_after_change(self):
+        # 尽量保留用户的选中状态，便于连续编辑
+        old_left = self.left_selected_motion_path
+        old_group = self.right_selected_group
+        old_index = self.right_selected_index
+
+        # 保存左右滚动位置
+        scroll_bar_right = self.current_mnt_display.verticalScrollBar()
+        scroll_bar_left = self.all_mnt_display.verticalScrollBar()
+        saved_position_right = scroll_bar_right.value() if scroll_bar_right is not None else 0
+        saved_position_left = scroll_bar_left.value() if scroll_bar_left is not None else 0
+
+        # 重新加载并刷新
+        self.load_suitable_model()
+
+        # 恢复选中状态（仅在可编辑角色时）
+        if self.character_list[self.current_char_index].character_name != '祥子' and self.all_motion_data is not None:
+            self.left_selected_motion_path = old_left
+            self.right_selected_group = old_group
+            self.right_selected_index = old_index
+
+            motions = self.all_motion_data.get('motions', {})
+            if self.right_selected_group not in motions:
+                self.right_selected_group = None
+                self.right_selected_index = None
+            else:
+                motion_list = motions[self.right_selected_group]
+                if self.right_selected_index is not None:
+                    if len(motion_list) == 0:
+                        self.right_selected_index = None
+                    else:
+                        self.right_selected_index = max(0, min(self.right_selected_index, len(motion_list) - 1))
+
+            self.refresh_current_mnt_display(preserve_scroll=True)
+            self.update_button_states()
+
+        # 恢复滚动条
+        scroll_bar_right = self.current_mnt_display.verticalScrollBar()
+        scroll_bar_left = self.all_mnt_display.verticalScrollBar()
+        if scroll_bar_right is not None:
+            scroll_bar_right.setValue(saved_position_right)
+        if scroll_bar_left is not None:
+            scroll_bar_left.setValue(saved_position_left)
+
+    def on_add_motion(self):
+        if self.all_motion_data is None:
+            self.message_box.clear()
+            self.message_box.append("动作数据未加载成功，无法添加动作！")
+            return
+        if self.left_selected_motion_path is None:
             self.message_box.clear()
             self.message_box.append("请先从左侧栏选择一个动作文件！")
             return
-        self.confirm_window = ConfirmWindow(self,self.user_selection,group_motions_abs_path,group_index)
+        if self.right_selected_group is None:
+            self.message_box.clear()
+            self.message_box.append("请先在右侧选择一个动作组标题或动作条目！")
+            return
 
-        self.confirm_window.show()
-        self.confirm_window.activateWindow()
+        group_key = self.right_selected_group
+        target_list = self.all_motion_data.get('motions', {}).get(group_key)
+        if target_list is None:
+            self.message_box.clear()
+            self.message_box.append(f"动作组 '{group_key}' 不存在，无法添加！")
+            return
 
-    def confirm_window_confirmed(self,group_index,in_group_key):
-        mtn_index = {1: 0, 2: 6, 3: 12, 4: 18, 5: 24, 6: 30, 7: 36, 8: 42, 9: 51, 10: 54, 11: 56, 12: 59, 13: 60}
-        target_index = mtn_index[group_index] + in_group_key - 1
-        self.all_motion_data['motions']['rana'][target_index]['file'] = os.path.basename(self.user_selection)
-        with open(os.path.join(self.current_char_folder_path, '3.model.json'), 'w', encoding='utf-8') as f:
-            json.dump(self.all_motion_data, f, indent=4, ensure_ascii=False)
-        scroll_bar_right = self.current_mnt_display.verticalScrollBar()
-        scroll_bar_left= self.all_mnt_display.verticalScrollBar()
-        saved_position_right = scroll_bar_right.value()
-        saved_position_left=scroll_bar_left.value()
-        self.current_mnt_display.clear()
-        self.all_mnt_display.clear()
-        time.sleep(0.4)
-        self.load_mtns()
-        scroll_bar_right.setValue(saved_position_right) #恢复之前用户浏览的位置
-        scroll_bar_left.setValue(saved_position_left)
+        file_name = os.path.basename(self.left_selected_motion_path)
+
+        # 新动作的 name：{group}_{n}，n 取最小可用
+        new_motion_name = self._generate_unique_motion_name(group_key)
+
+        # 找一个参考 entry 来复制参数（fade 等）
+        reference_entry = target_list[0] if len(target_list) > 0 else None
+        new_entry = self._make_motion_entry(file_name, reference_entry, new_motion_name)
+
+        if self.right_selected_index is None:
+            # 选中的是组标题：追加到末尾
+            target_list.append(new_entry)
+            self.message_box.clear()
+            self.message_box.append(f"已添加动作到组 {self.group_display_titles.get(group_key, group_key)}：{file_name}")
+        else:
+            # 选中的是具体动作：插入到该动作之后
+            insert_pos = self.right_selected_index + 1
+            if insert_pos < 0:
+                insert_pos = 0
+            if insert_pos > len(target_list):
+                insert_pos = len(target_list)
+            target_list.insert(insert_pos, new_entry)
+            self.message_box.clear()
+            self.message_box.append(
+                f"已在组 {self.group_display_titles.get(group_key, group_key)} 中添加动作：{file_name}"
+            )
+
+        self._write_motion_json()
+        self._reload_after_change()
+
+    def on_replace_motion(self):
+        if self.all_motion_data is None:
+            self.message_box.clear()
+            self.message_box.append("动作数据未加载成功，无法替换动作！")
+            return
+        if self.left_selected_motion_path is None:
+            self.message_box.clear()
+            self.message_box.append("请先从左侧栏选择一个动作文件！")
+            return
+        if self.right_selected_group is None or self.right_selected_index is None:
+            self.message_box.clear()
+            self.message_box.append("请先在右侧选中一个具体动作条目，再进行替换！")
+            return
+
+        group_key = self.right_selected_group
+        idx = self.right_selected_index
+        target_list = self.all_motion_data.get('motions', {}).get(group_key)
+        if target_list is None or idx < 0 or idx >= len(target_list):
+            self.message_box.clear()
+            self.message_box.append("右侧选中动作无效，无法替换！")
+            return
+
+        file_name = os.path.basename(self.left_selected_motion_path)
+        target_list[idx]['file'] = file_name
+        self._write_motion_json()
+        self.message_box.clear()
+        self.message_box.append(
+            f"已替换组 {self.group_display_titles.get(group_key, group_key)} 的第 {idx + 1} 个动作为：{file_name}"
+        )
+        self._reload_after_change()
+
+    def on_delete_motion(self):
+        if self.all_motion_data is None:
+            self.message_box.clear()
+            self.message_box.append("动作数据未加载成功，无法删除动作！")
+            return
+        if self.right_selected_group is None or self.right_selected_index is None:
+            self.message_box.clear()
+            self.message_box.append("请先在右侧选中一个具体动作条目，再进行删除！")
+            return
+
+        group_key = self.right_selected_group
+        idx = self.right_selected_index
+        target_list = self.all_motion_data.get('motions', {}).get(group_key)
+        if target_list is None or idx < 0 or idx >= len(target_list):
+            self.message_box.clear()
+            self.message_box.append("右侧选中动作无效，无法删除！")
+            return
+
+        removed = target_list.pop(idx)
+        removed_name = removed.get('file', '') if isinstance(removed, dict) else str(removed)
+        self._write_motion_json()
+
+        # 删除后，将右侧选中移动到同组的一个合理位置
+        if len(target_list) == 0:
+            self.right_selected_index = None
+        else:
+            self.right_selected_index = min(idx, len(target_list) - 1)
+
+        self.message_box.clear()
+        self.message_box.append(
+            f"已从组 {self.group_display_titles.get(group_key, group_key)} 删除动作：{removed_name}"
+        )
+        self._reload_after_change()
 
     def exit(self):
         self.change_char_queue.put("exit")
         self.close()
 
 
-
-
-
 if __name__ == "__main__":
+    # 设置当前工作目录为脚本所在目录，避免相对路径问题
+    os.chdir(os.path.abspath(os.path.dirname(__file__)))
+
     live2d_player = Live2DModule()
     get_char_attr = character.GetCharacterAttributes()
     motion_queue = Queue()

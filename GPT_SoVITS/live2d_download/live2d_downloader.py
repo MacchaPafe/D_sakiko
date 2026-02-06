@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -193,6 +194,41 @@ class Live2dDownloader:
         return _safe_progress
 
     @staticmethod
+    def _is_within_directory(base_dir: Path, target_path: Path) -> bool:
+        """判断 target_path 是否位于 base_dir 之内（含自身）。
+
+        Windows 兼容：Path.resolve() 可能对同一路径返回带/不带 \\?\ 前缀的不同表示，
+        直接用 Path.is_relative_to 会误判“越界写入”。这里用 commonpath + 规范化字符串做比较。
+        """
+
+        def _norm_windows_path(p: Path) -> str:
+            s = os.path.normcase(os.path.normpath(str(p)))
+            # 统一处理 Win32 long path 前缀：\\?\C:\... 或 \\?\UNC\server\share\...
+            if s.startswith("\\\\?\\unc\\"):
+                # \\?\UNC\server\share -> \\server\share
+                s = "\\\\" + s[len("\\\\?\\unc\\"):]
+            elif s.startswith("\\\\?\\"):
+                s = s[len("\\\\?\\"):]
+            return s.rstrip("\\/")
+
+        if os.name == "nt":
+            base_s = _norm_windows_path(base_dir)
+            target_s = _norm_windows_path(target_path)
+            try:
+                common = os.path.commonpath([base_s, target_s])
+            except ValueError:
+                # 例如不同盘符会抛 ValueError
+                return False
+            return common == base_s
+
+        # 非 Windows：用 pathlib 的语义化判断
+        try:
+            target_path.relative_to(base_dir)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
     def _safe_prepare_destination(model_dir: Path, rel_path: Path) -> Path:
         """在 model_dir 下为 rel_path 创建目录并返回最终 full_path。
 
@@ -200,16 +236,12 @@ class Live2dDownloader:
         - 拒绝在任何 symlink 目录之下写入
         - 拒绝写入到 symlink 文件
         """
-        model_root = model_dir.resolve()
+        model_root = model_dir.resolve(strict=False)
 
         full_path = model_dir / rel_path
         full_resolved = full_path.resolve(strict=False)
-        try:
-            is_inside = full_resolved.is_relative_to(model_root)
-        except AttributeError:
-            # Python < 3.9 兼容（本项目一般不需要，但保底一下）
-            is_inside = str(full_resolved).startswith(str(model_root) + "/")
-        if not is_inside:
+
+        if not Live2dDownloader._is_within_directory(model_root, full_resolved):
             raise ValueError(f"非法路径（越界写入）: {rel_path.as_posix()}")
 
         # 逐级创建目录并检查 symlink，避免 parents=True 跟随已有 symlink 目录
