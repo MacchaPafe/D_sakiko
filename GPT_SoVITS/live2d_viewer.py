@@ -2,6 +2,7 @@ import json
 import multiprocessing
 import sys,os
 import pathlib
+from typing import Optional
 
 from PyQt5.QtCore import Qt
 
@@ -18,10 +19,10 @@ import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
     QApplication, QLabel
 
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
 import character
 
@@ -340,9 +341,9 @@ class ViewerGUI(QWidget):
         self.all_motion_data=None   # 存储当前角色的所有动作数据
 
         # 选中状态：左侧动作文件 / 右侧动作组或动作
-        self.left_selected_motion_path: str | None = None
-        self.right_selected_group: str | None = None
-        self.right_selected_index: int | None = None
+        self.left_selected_motion_path: Optional[str] = None
+        self.right_selected_group: Optional[str] = None
+        self.right_selected_index: Optional[int] = None
 
         # 动作组标题显示（key -> 显示名）
         self.group_display_titles = {
@@ -670,7 +671,7 @@ class ViewerGUI(QWidget):
                 return candidate
             n += 1
 
-    def _make_motion_entry(self, file_name: str, reference_entry: dict | None, motion_name: str) -> dict:
+    def _make_motion_entry(self, file_name: str, reference_entry: Optional[dict], motion_name: str) -> dict:
         if reference_entry is None:
             return {"name": motion_name, "file": file_name}
         # 复制参考 entry 的所有字段，但覆盖 name/file
