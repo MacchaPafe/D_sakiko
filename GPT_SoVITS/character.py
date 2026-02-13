@@ -99,8 +99,6 @@ def convert_old_l2d_json(old_l2d_json_path):
         f.close()
 
 
-
-
 class GetCharacterAttributes:
     """
     从各个文件夹中读取角色信息、模型等内容并整合，以便各个模块直接使用
@@ -120,7 +118,7 @@ class GetCharacterAttributes:
         self.initialized = True
 
         self.character_num = 0
-        self.character_class_list=[]
+        self.character_class_list: list[CharacterAttributes] = []
         self.load_data()
         print('所有角色：')
         for char in self.character_class_list:
@@ -128,6 +126,9 @@ class GetCharacterAttributes:
         print('\n')
 
     def load_data(self):
+        # 有多少角色没有完整的信息（is_ready = False）
+        partial_character_count = 0
+
         for char in os.listdir("../live2d_related"):
             full_path = os.path.join("../live2d_related", char)
             if  os.path.isdir(full_path):    #只遍历文件夹
@@ -211,7 +212,7 @@ class GetCharacterAttributes:
                         else:
                             ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
                             character.gptsovits_ref_audio=ref_audio
-                
+
                 if char!='sakiko':
                     if not os.path.exists(os.path.join("../reference_audio",char, 'reference_text.txt')):
                         print(f"[Error]没有找到角色：'{character.character_name}'的推理参考音频的文本文件！(reference_text.txt)")
@@ -246,14 +247,20 @@ class GetCharacterAttributes:
                     self.character_class_list.append(character)
                 else:
                     print(f"加载角色：'{char}' 时出现以上错误，跳过该角色的加载。\n")
+                    partial_character_count += 1
 
         #新增调整角色顺序的功能
         if len(self.character_class_list)>int(d_sakiko_config.character_order.value['character_num']):
             is_convert_1=False
             print("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
         elif len(self.character_class_list)<int(d_sakiko_config.character_order.value['character_num']):
-            is_convert_1=False
-            print("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
+            # 经过测试，事实上，如果一个角色是在加载时被判定为不完整而被跳过的，那么它不会影响角色顺序的应用
+            # 只有目前角色数量 + 不完整角色数量 != 之前设置的角色数量时，才会出现角色被删除的情况，才需要重置角色顺序
+            if len(self.character_class_list) + partial_character_count != int(d_sakiko_config.character_order.value['character_num']):
+                is_convert_1=False
+                print("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
+            else:
+                is_convert_1 = True
         else:
             is_convert_1=True
         this_character_names=[char.character_name for char in self.character_class_list]
