@@ -2,24 +2,23 @@ import time,os
 
 import litellm
 
+from character import CharacterAttributes
+from chat.chat import get_chat_manager
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from litellm import completion
 from llm_model_utils import ensure_openai_compatible_model
 
 
 class DSLocalAndVoiceGen:
-	def __init__(self,characters):
+	def __init__(self, characters: list[CharacterAttributes]):
+		# 所有角色的列表
 		self.character_list=characters
+		# 当前选中的两个对话角色的索引，默认为0和1
 		self.current_character_num=[0,1]
 
 		self.audio_language = ["中英混合", "日英混合"]
 		self.audio_language_choice = self.audio_language[1]
-		self.is_think_content_output_complete=False
 		self.model=__import__('live2d_1').get_live2d()
-		self.sakiko_state=True
-		self.if_generate_audio=True
-		#self.current_char_index=0
-		self.if_sakiko=False
 		self.base_prompt = '''
 								# Role
 								你是一位精通心理学和戏剧创作的资深编剧，擅长创作符合ACG角色设定的沉浸式对话（小剧场）。
@@ -141,44 +140,6 @@ class DSLocalAndVoiceGen:
 								  {"role": "user","content": user_prompt}]
 			message_queue.put("调用大模型生成文本中...")
 			time.sleep(2)
-			test_text='''
-			[
-  {
-    "speaker": "香澄",
-    "emotion": "surprise",
-    "text": "あら？楽奈ちゃん！",
-    "translation": "哎呀？乐奈酱！"
-  },
-  {
-    "speaker": "香澄",
-    "emotion": "happiness",
-    "text": "どうしたの？RiNGに一人で来るなんて珍しいね！",
-    "translation": "怎么了？一个人来RiNG真是少见呢！"
-  },
-  {
-    "speaker": "楽奈",
-    "emotion": "like",
-    "text": "香澄。",
-    "translation": "香澄。"
-  },
-  {
-    "speaker": "楽奈",
-    "emotion": "like",
-    "text": "ギターを弾きたい。",
-    "translation": "想弹吉他。"
-  },
-  {
-    "speaker": "香澄",
-    "emotion": "happiness",
-    "text": "ええ！もちろんいいよ！",
-    "translation": "诶！当然可以啦！"
-  }
-]
-			'''
-			# time.sleep(2)
-			# text_queue.put(test_text)
-			# continue
-			# --------------------------
 			try:
 				if d_sakiko_config.use_default_deepseek_api.value:
 					response = completion(
