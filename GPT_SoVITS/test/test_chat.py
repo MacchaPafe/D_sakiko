@@ -6,7 +6,7 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from chat.chat import Chat
+from chat.chat import Chat, ChatManager
 from emotion_enum import EmotionEnum
 
 
@@ -56,6 +56,11 @@ class ChatTestCase(unittest.TestCase):
                     "translation": "……唉。",
                     "live2d_motion_num": 18
                 }
+            ],
+            [
+                {
+                    "新的对话0": [0, 2]
+                }
             ]
         ]
         # 小剧场测试需要从文件读取数据
@@ -81,7 +86,6 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(user_message.translation, "")
         self.assertEqual(user_message.emotion, EmotionEnum.HAPPINESS)
         self.assertEqual(user_message.audio_path, "")
-        self.assertIsNone(user_message.live2d_motion_number)
 
         assistant_message = chat.message_list[1]
         self.assertEqual(assistant_message.character_name, "素世")
@@ -89,13 +93,13 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(assistant_message.translation, "你好。今天在吹奏乐部练习了低音提琴，虽然有点累，但很充实。回家后一边喝蔬菜通心粉汤，一边泡了红茶。偶尔这样安静地度过也不坏呢。")
         self.assertEqual(assistant_message.emotion, EmotionEnum.HAPPINESS)
         self.assertTrue(assistant_message.audio_path.endswith("output38.wav"))
-        self.assertIsNone(assistant_message.live2d_motion_number)
 
     def test_compatibility_of_theater_mode(self):
         """
         测试 Chat 类是否能读取旧版本的小剧场模式存档
         """
-        chat = Chat.load_from_theater_record(file=self.theater_dialog_temp_file.name)
+        chat_manager = ChatManager.load_from_theater_record(file=self.theater_dialog_temp_file.name)
+        chat = chat_manager.chat_list[0]
         # 测试读取内容是否正确
         first_message = chat.message_list[0]
         self.assertEqual(first_message.character_name, "素世")
@@ -103,7 +107,6 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(first_message.translation, "啊……！祥子！")
         self.assertEqual(first_message.emotion, EmotionEnum.SURPRISE)
         self.assertTrue(first_message.audio_path.endswith("output75.wav"))
-        self.assertEqual(first_message.live2d_motion_number, 33)
 
         second_message = chat.message_list[1]
         self.assertEqual(second_message.character_name, "祥子")
@@ -111,7 +114,6 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(second_message.translation, "……唉。")
         self.assertEqual(second_message.emotion, EmotionEnum.DISGUST)
         self.assertTrue(second_message.audio_path.endswith("output61.wav"))
-        self.assertEqual(second_message.live2d_motion_number, 18)
 
     def test_chat_save_load(self):
         """
@@ -128,7 +130,6 @@ class ChatTestCase(unittest.TestCase):
             self.assertEqual(original_msg.translation, restored_msg.translation)
             self.assertEqual(original_msg.emotion, restored_msg.emotion)
             self.assertEqual(original_msg.audio_path, restored_msg.audio_path)
-            self.assertEqual(original_msg.live2d_motion_number, restored_msg.live2d_motion_number)
 
     def test_involved_characters(self):
         """
@@ -155,7 +156,7 @@ class ChatTestCase(unittest.TestCase):
         """
         测试多个智能体对话时，构建 LLM 查询的正确性
         """
-        chat = Chat.load_from_theater_record(self.theater_dialog_temp_file.name)
+        chat = ChatManager.load_from_theater_record(self.theater_dialog_temp_file.name).chat_list[0]
         chat.start_message = "在飞鸟山公园的谈话中，祥子向素世提到“不要再和我扯上关系”。然而，在之后的一天晚上，放学后的素世在路上偶然遇到了祥子，素世想从祥子口中得知她退出 Crychic 的真正原因，向她追了过去"
 
         self.assertTrue(chat.is_my_turn("素世"))
