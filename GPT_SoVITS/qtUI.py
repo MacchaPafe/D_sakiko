@@ -7,7 +7,7 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
-    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox
+    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor
 
@@ -472,7 +472,7 @@ class ChangeL2DModelWindow(QDialog):
         super().__init__()
         self.setWindowTitle('更改当前角色Live2D模型')
         screen=QDesktopWidget().screenGeometry()
-        self.resize(int(screen.width()*0.2),int(screen.height()*0.3))
+        self.resize(int(screen.width()*0.25),int(screen.height()*0.4))
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.current_char_folder_name=current_char_folder_name
         self.change_l2d_model_func=change_l2d_model_func
@@ -507,8 +507,15 @@ class ChangeL2DModelWindow(QDialog):
         title_layout.addWidget(title_label)
         title_layout.addWidget(refresh_btn)
         layout.addLayout(title_layout)
+
         display_group = QGroupBox(f"共有 {len(self.current_char_l2d_models)} 套服装")
-        display_layout = QVBoxLayout()
+        group_layout = QVBoxLayout()
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)  # 【关键！】必须设为True，让内部画布能自适应宽度
+        scroll_area.setFrameShape(QFrame.NoFrame)  # 去除边框，让UI看起来更干净融合
+        scroll_widget = QWidget()   #创建一个新的画布，所有的模型选项都放在这个画布上，滚动条滚动的就是这个画布
+        display_layout = QVBoxLayout(scroll_widget)  #设置这个画布的布局为垂直布局，而这个layout将在下面填充每个模型的选项
+
         def delete_model_folder(path):
             import shutil
             try:
@@ -539,7 +546,9 @@ class ChangeL2DModelWindow(QDialog):
         else:
             label = QLabel("祥子暂时不能更换L2D模型。可手动修改sakiko文件夹内的模型文件。")
             display_layout.addWidget(label)
-        display_group.setLayout(display_layout)
+        scroll_area.setWidget(scroll_widget)    #把填充了模型选项的画布放进滚动区域，scroll_area只能这样设置子widget
+        group_layout.addWidget(scroll_area)     #把滚动区域放进groupbox的布局，groupbox显示的就是这个滚动区域，滚动区域里是那个画布，画布上有每个模型的选项
+        display_group.setLayout(group_layout)   #最后把groupbox放到主布局上
         layout.addWidget(display_group)
         open_downloader_btn = QPushButton("打开Live2D服装下载器")
         open_downloader_btn.clicked.connect(lambda _:MoreFunctionWindow.exec_bat("运行Live2D模型下载器.bat"))  # noqa
@@ -1209,6 +1218,9 @@ class ChatGUI(QWidget):
             self.setWindowTitle("数字小祥")
 
     def closeEvent(self, event):
+        if not hasattr(self,"stream"):
+            event.accept()
+            return
         if self.stream:
             try:
                 self.stream.stop()

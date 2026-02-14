@@ -26,7 +26,7 @@ class DSLocalAndVoiceGen:
 		self.if_generate_audio=True
 		self.current_char_index=0
 		self.if_sakiko=False
-		self.idle_texts=["等待话题中...","新的对话内容是...?","就绪","倾听中..."]
+		self.idle_texts=["...","...","就绪","..."]
 		self.initial()
 
 	def initial(self):

@@ -111,6 +111,12 @@ class GetCharacterAttributes:
         print('\n')
 
     def load_data(self):
+        if os.path.exists("../dsakiko_config.json"):
+            with open("../dsakiko_config.json",'r',encoding='utf-8') as f:
+                config_data=json.load(f)
+            l2d_json_paths_dict=config_data.get("l2d_json_paths",None)
+        else:
+            l2d_json_paths_dict=None
         for char in os.listdir("../live2d_related"):
             full_path = os.path.join("../live2d_related", char)
             if  os.path.isdir(full_path):    #只遍历文件夹
@@ -135,8 +141,14 @@ class GetCharacterAttributes:
 
                 live2d_json=glob.glob(os.path.join(full_path,'live2D_model',f"*.model.json"))
                 if not live2d_json:
-                    print(f"[Error]没有找到角色：'{character.character_name}'的Live2D模型json文件(.model.json)")
+                    print(f"[Error]没有找到角色：'{character.character_name}'的默认Live2D模型json文件(.model.json)")
                     is_ready=False
+                if (l2d_json_paths_dict is not None) and (character.character_name in l2d_json_paths_dict):
+                    if os.path.exists(l2d_json_paths_dict[character.character_name]):
+                        live2d_json=l2d_json_paths_dict[character.character_name]
+                    else:
+                        live2d_json = max(live2d_json, key=os.path.getmtime)
+                    character.live2d_json=live2d_json
                 else:
                     live2d_json=max(live2d_json, key=os.path.getmtime)
                     if is_old_l2d_json(live2d_json):
@@ -170,7 +182,7 @@ class GetCharacterAttributes:
                 SoVITS_model_file = glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.pth"))
                 if not SoVITS_model_file:
                     print(
-                        f"[Error]没有找到角色：'{character.character_name}'的SoVITS模型文件(.ckpt)，请前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。")
+                        f"[Error]没有找到角色：'{character.character_name}'的SoVITS模型文件(.pth)，请前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。")
                     is_ready=False
                 else:
                     SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)

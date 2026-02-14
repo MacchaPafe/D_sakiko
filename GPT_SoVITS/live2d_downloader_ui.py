@@ -37,7 +37,7 @@ class PageModeSelect(QWidget):
 
     def go_to_next_page(self,val:bool):
         current_config.download_for_existing_char=val
-        current_config()
+        #current_config()
         self.controller.go_to_character_select()
 
 
@@ -167,7 +167,7 @@ class PageCharSelect(QWidget):
         """当上面的按钮被选中时触发"""
         current_config.selected_existing_character = self.character_list[btn_id].character_folder_name
         current_config.selected_existing_character_name = self.character_list[btn_id].character_name
-        current_config()
+        #current_config()
         # 解锁下半部分的所有按钮
         for btn in self.all_bottom_btns:
             btn.setEnabled(True)
@@ -178,7 +178,7 @@ class PageCharSelect(QWidget):
         """当下面的按钮被选中时触发"""
         current_config.bestdori_chara_index = ui_constants.char_info_json[btn.text()]["bestdori_index"]
         current_config.bestdori_char_name = btn.text()
-        current_config()
+        #current_config()
 
         # 检查是否可以启用下一步
         self.check_next_button_state()
