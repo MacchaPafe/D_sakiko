@@ -93,6 +93,7 @@ required-environments = [
 dev = [
     "Cython~=3.2.1",
     "pyinstaller>=6.17.0",
+    "pyqt5-stubs>=5.15.6.0",
 ]
 
 [[tool.uv.index]]
