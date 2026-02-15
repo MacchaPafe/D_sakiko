@@ -154,9 +154,12 @@ class AudioGenerate:
         if not self.if_sakiko:
             self.ref_audio_file=self.character_list[self.current_character_index].gptsovits_ref_audio
 
+        if (self.GPT_model_file is None) or (self.SoVITS_model_file is None) or (self.ref_audio_file is None):
+            self.is_change_complete=True
+            return
 
         self.neccerary_matirials=[0,self.GPT_model_file,self.SoVITS_model_file]
-        self.to_gptsovits_com_queue.put(self.neccerary_matirials)
+        self.to_gptsovits_com_queue.put(self.neccerary_matirials)   #todo
         self.gptsovits_process.start()
 
         self.is_change_complete = False
@@ -188,6 +191,11 @@ class AudioGenerate:
         self.ref_audio_language = self.character_list[self.current_character_index].gptsovits_ref_audio_lan
         if not self.if_sakiko:
             self.ref_audio_file=self.character_list[self.current_character_index].gptsovits_ref_audio
+
+        if (self.GPT_model_file is None) or (self.SoVITS_model_file is None) or (self.ref_audio_file is None):
+            self.is_change_complete=True
+            return
+
         self.neccerary_matirials=[0,self.GPT_model_file,self.SoVITS_model_file]
         self.to_gptsovits_com_queue.put(self.neccerary_matirials)   #修改模型
 

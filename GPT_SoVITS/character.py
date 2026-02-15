@@ -173,8 +173,8 @@ class GetCharacterAttributes:
 
                 gpt_model_path=glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.ckpt"))
                 if not gpt_model_path:
-                    print(f"[Error]没有找到角色：'{character.character_name}'的GPT模型文件(.ckpt)，前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。")
-                    is_ready=False
+                    print(f"[Warning]没有找到角色：'{character.character_name}'的GPT模型文件(.ckpt)，前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。本次运行无法进行语音生成。")
+                    character.GPT_model_path=None
                 else:
                     gpt_model_path=max(gpt_model_path,key=os.path.getmtime)
                     character.GPT_model_path=gpt_model_path
@@ -182,8 +182,8 @@ class GetCharacterAttributes:
                 SoVITS_model_file = glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.pth"))
                 if not SoVITS_model_file:
                     print(
-                        f"[Error]没有找到角色：'{character.character_name}'的SoVITS模型文件(.pth)，请前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。")
-                    is_ready=False
+                        f"[Warning]没有找到角色：'{character.character_name}'的SoVITS模型文件(.pth)，请前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。本次运行无法进行语音生成。")
+                    character.sovits_model_path=None
                 else:
                     SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)
                     character.sovits_model_path=SoVITS_model_file
@@ -201,8 +201,9 @@ class GetCharacterAttributes:
                         ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio", char, f"*.mp3"))
                         if not ref_audio_file_wav + ref_audio_file_mp3:
                             print(
-                                f"[Error]没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)")
-                            is_ready=False
+                                f"[Warning]没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)，本次运行无法进行语音生成。")
+
+                            character.gptsovits_ref_audio=None
                         else:
                             ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
                             character.gptsovits_ref_audio=ref_audio

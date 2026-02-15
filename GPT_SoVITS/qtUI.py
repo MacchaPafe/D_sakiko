@@ -878,6 +878,9 @@ class ChatGUI(QWidget):
             self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
         self.translation=''
         self.dp_chat=dp_chat    #仅为了保存聊天记录用
+        if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[self.current_char_index].gptsovits_ref_audio is None or self.character_list[self.current_char_index].sovits_model_path is None:
+            self.dp_chat.if_generate_audio=False
+
 
         self.is_ch = False
         self.saved_talk_speed_and_pause_second = [{'talk_speed': 0, 'pause_second': 0.5} for _ in self.character_list]
@@ -1292,6 +1295,12 @@ class ChatGUI(QWidget):
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))  # noqa
         self.talk_speed_reset()  #切换角色后重置默认语速
         self.pause_second_reset()  #切换角色后重置默认句间停顿时间
+
+        if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[self.current_char_index].gptsovits_ref_audio is None or self.character_list[self.current_char_index].sovits_model_path is None:
+            #self.last_if_generate_audio=self.dp_chat.if_generate_audio
+            self.dp_chat.if_generate_audio=False
+        else:
+            self.dp_chat.if_generate_audio=True
 
     def handle_response(self,response_text):
         if response_text=='changechange':

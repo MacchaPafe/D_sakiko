@@ -186,6 +186,14 @@ class DSLocalAndVoiceGen:
 				time.sleep(2)
 				continue
 			elif user_input =='v':
+				if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[
+					self.current_char_index].gptsovits_ref_audio is None or self.character_list[
+					self.current_char_index].sovits_model_path is None:
+					message_queue.put("当前角色无法进行语音合成")
+					print(f"[Error]当前角色 {self.character_list[self.current_char_index].character_name} 无法进行语音合成，缺少GPT-SoVITS模型或参考音频文件。")
+					time.sleep(2)
+					continue
+
 				self.if_generate_audio=not self.if_generate_audio
 				message_queue.put("已"+("开启" if self.if_generate_audio else "关闭")+"语音合成")
 				time.sleep(2)
