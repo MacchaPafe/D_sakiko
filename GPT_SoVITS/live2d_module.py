@@ -8,7 +8,7 @@ from OpenGL.GL import *
 import glob,re,os,json
 
 from multi_char_live2d_module import TextOverlay
-
+from character import  PrintInfo
 
 class BackgroundRen(object):
 
@@ -255,12 +255,12 @@ class Live2DModule:
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
                         except Exception as e:
-                            print("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：", e)
+                            PrintInfo.print_error(f"[Error]Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：{e}")
                             new_model=None
                         if new_model is not None:
                             del model
                             model=new_model
-                            print("Live2D模型切换成功！")
+                            PrintInfo.print_info("Live2D模型切换成功！")
                             #model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
                             self.character_list[self.current_character_num].live2d_json = new_model_path
                         else:

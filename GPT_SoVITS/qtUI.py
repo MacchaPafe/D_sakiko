@@ -17,6 +17,8 @@ import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json
+from character import PrintInfo
+
 class ThemeManager: #主题颜色设定
     @staticmethod
     def generate_stylesheet(base_hex_color):
@@ -192,15 +194,15 @@ class ThemeManager: #主题颜色设定
             if match:
                 color_value = match.group(1).strip()
                 if not color_value.startswith('#'):
-                    print(f"颜色值有误，使用祥子配色")
+                    PrintInfo.print_info(f"颜色值有误，使用祥子配色")
                     return '#7799CC'
                 return color_value
             else:
-                print("使用默认祥子配色")
+                PrintInfo.print_info("使用默认祥子配色")
                 return '#7799CC'
 
         except Exception as e:
-            print('QT_style.json文件格式有误，使用默认祥子配色：',e)
+            PrintInfo.print_info('QT_style.json文件格式有误，使用默认祥子配色：',e)
             return '#7799CC'
 
 class CommunicateThreadDP2QT(QThread):
@@ -312,7 +314,7 @@ class MoreFunctionWindow(QDialog):
         bat_path = os.path.join(parent_dir, bat_name)
         # 检查文件是否存在
         if not os.path.exists(bat_path):
-            print(f".bat 文件未找到:\n{bat_path}")
+            PrintInfo.print_warning(f"[Warning].bat 文件未找到:\n{bat_path}")
             return
         try:
             # 使用 subprocess 模块启动 .bat 文件
@@ -321,7 +323,7 @@ class MoreFunctionWindow(QDialog):
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([bat_path], shell=True)
         except Exception as e:
-            print("启动失败", f"启动程序时发生错误:\n{e}")
+            PrintInfo.print_error("[Error]启动失败", f"启动程序时发生错误:\n{e}")
 
     def on_click_open_motion_editor_button(self):
         self.exec_bat("运行动作组编辑程序.bat")
@@ -375,6 +377,9 @@ class SettingWindow(QDialog):
         self.change_theme_color_btn.clicked.connect(self.open_color_picker)
         self.change_reference_audio_btn=QPushButton("更改当前角色参考音频")
         self.change_reference_audio_btn.clicked.connect(self.open_change_ref_audio_window)
+        current_chara:character.CharacterAttributes=self.parent_window.character_list[self.parent_window.current_char_index]
+        if current_chara.GPT_model_path is None or current_chara.sovits_model_path is None or current_chara.gptsovits_ref_audio is None:
+            self.change_reference_audio_btn.setEnabled(False)
         self.switch_live2d_text_btn=QPushButton("开启/关闭Live2D界面文本显示")
         self.switch_live2d_text_btn.clicked.connect(self.parent_window.toggle_live2d_text_display)
         self.change_l2d_background_btn=QPushButton("切换Live2D背景")
@@ -458,9 +463,9 @@ class SettingWindow(QDialog):
                 convert_old_l2d_json(new_model_json)
             except Exception as e:
                 self.parent_window.QT_message_queue(f"切换模型失败，转换旧版Live2D配置文件时出错。")
-                print("错误：切换模型失败，转换旧版Live2D配置文件时出错。\n",e)
+                PrintInfo.print_error("[Error]切换模型失败，转换旧版Live2D配置文件时出错。\n",e)
                 return
-            print("成功转换旧版Live2D配置文件。\n")
+            PrintInfo.print_info("成功转换旧版Live2D配置文件。\n")
         self.parent_window.user_input.setText(f'change_l2d_model#{new_model_json}')
         self.parent_window.user_input.returnPressed.emit()  # noqa
         self.parent_window.user_input.clear()
@@ -525,7 +530,7 @@ class ChangeL2DModelWindow(QDialog):
                     shutil.rmtree(path)
                     self.refresh_ui()
             except Exception as e:
-                print(f"删除Live2D模型文件夹失败\n", e)
+                PrintInfo.print_error(f"[Error]删除Live2D模型文件夹失败\n", e)
         if self.current_char_folder_name != 'sakiko':
             for model in self.current_char_l2d_models:
                 model_layout = QHBoxLayout()
@@ -607,7 +612,7 @@ class ChangeReferenceAudioWindow(QDialog):
                 if file.endswith('.wav') or file.endswith('.mp3'):
                     all_ref_audio_files.append(file)
         except Exception as e:
-            print("参考音频文件夹读取错误:",e)
+            PrintInfo.print_error("[Error]参考音频文件夹读取错误:",e)
         select_new_ref_audio_group=QGroupBox("选择新的参考音频:")
         select_new_ref_audio_layout=QVBoxLayout()
         for ref_audio_file in all_ref_audio_files:
@@ -686,7 +691,7 @@ class ChangeReferenceAudioWindow(QDialog):
                 with open(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
                     f.write(new_ref_audio_file)
         except Exception as e:
-            print("更改参考音频出现错误，错误信息：",e)
+            PrintInfo.print_error("[Error]更改参考音频出现错误，错误信息：",e)
         self.current_ref_audio_label.setText(f"当前参考音频:{os.path.basename(new_ref_audio_file)}")
 
     def change_ref_text(self):
@@ -1048,7 +1053,7 @@ class ChatGUI(QWidget):
                                                                     color: {color};
                                                                     }}'''
             except Exception as e:
-                print(f"保存主题色失败，错误信息：{e}")
+                PrintInfo.print_error(f"[Error]保存主题色失败，错误信息：{e}")
         else:
             try:
                 with open(f"../reference_audio/{self.character_list[self.current_char_index].character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
@@ -1060,7 +1065,7 @@ class ChatGUI(QWidget):
                                                                     color: {color};
                                                                     }}'''
             except Exception as e:
-                print(f"保存主题色失败，错误信息：{e}")
+                PrintInfo.print_error(f"[Error]保存主题色失败，错误信息：{e}")
 
 
 
@@ -1136,9 +1141,7 @@ class ChatGUI(QWidget):
             self.voice_button.setEnabled(True)
 
         except Exception as e:
-            print(f"错误：无法启动麦克风串流。")
-            print(f"请检查麦克风是否连接或被其他程序占用。")
-            print(f"错误信息: {e}")
+            PrintInfo.print_warning(f"[Warning]无法启动麦克风串流，本次运行无法使用语音输入，请检查麦克风是否连接或被其他程序占用。错误信息: {e}")
             self.voice_button.setEnabled(False)  # 保持按鈕禁用
 
     def audio_callback(self, indata, frames, time, status):
@@ -1229,7 +1232,7 @@ class ChatGUI(QWidget):
                 self.stream.stop()
                 self.stream.close()
             except Exception as e:
-                print(f"關閉串流時出錯: {e}", file=sys.stderr)
+                PrintInfo.print_error(f"[Error]关闭麦克风串流时出错: {e}")
 
         event.accept()
 
@@ -1257,11 +1260,11 @@ class ChatGUI(QWidget):
                     #----------------------------
                     self.audio_file_path_queue.put(audio_path)
                     self.emotion_queue.put(emotion)
-                    print("音频文件路径：", audio_path)
+                    PrintInfo.print_info("音频文件路径："+audio_path)
                     #print("注意：若你已经设置了if_delete_audio_cache.txt中的数字不为0，并且觉得这句生成的还不错，请复制该音频文件到别处，因为设置数字不为0的情况下关闭程序会自动删除该文件，以释放空间。设置数字不为0的情况下如果希望下次打开程序还能听到，再把这个文件复制回这个路径即可。\n")
                 else:
                     self.setWindowTitle('所选文本对应的音频文件已经删除...')
-                    print("所选文本对应的音频文件已经删除...\n")
+                    PrintInfo.print_info("所选文本对应的音频文件已经删除...\n")
         else:
             self.setWindowTitle('请等待当前过程完成后重试...')
 

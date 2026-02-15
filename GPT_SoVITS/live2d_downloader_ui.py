@@ -11,6 +11,7 @@ import platformdirs
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 import ui_constants
+from character import PrintInfo
 
 current_config=ui_constants.CurrentConfig()
 
@@ -352,7 +353,7 @@ class CostumeItemWidget(QWidget):
 
     def on_download_btn_click(self):
         if self.download_status=="not_started":
-            print(f"开始下载服装: {self.costume_id}")
+            PrintInfo.print_info(f"开始下载服装: {self.costume_id}")
             self.download_status="in_progress"
             self.btn_download.setIcon(QIcon("./icons/cancel.svg"))
             self.progress_container.setVisible(True)
@@ -400,7 +401,7 @@ class CostumeItemWidget(QWidget):
 
             self.lbl_progress_status.setText("服装添加完成！")
         except Exception as e:
-            print("安装服装：",self.costume_id,"失败，错误信息:",e)
+            PrintInfo.print_error(f"[Error]安装服装：{self.costume_id}失败，错误信息: {e}")
             self.lbl_progress_status.setText("安装文件过程出现出错，重下一遍试试")
             self.btn_download.setIcon(QIcon("./icons/download.svg"))
             self.btn_download.setEnabled(True)
@@ -422,7 +423,7 @@ class CostumeItemWidget(QWidget):
                 if _cache_path.exists() and _cache_path.is_dir():
                     shutil.rmtree(_cache_path)
         except Exception as e:
-            print("删除缓存文件失败，错误信息:",e)
+            PrintInfo.print_error(f"[Error]删除缓存文件失败，错误信息:{e}")
 # ==========================================
 # 下载模块
 # ==========================================
@@ -433,7 +434,7 @@ class ProgressUpdater(ProgressCallback):
     def __call__(self, *, file: FileProgress = None, model: ModelProgress = None):
         if file is not None:
             print(
-                f"文件：{file.live2d_name}的{file.rel_path}，状态[{file.event}]，进度{file.bytes_done}/{file.bytes_total}")
+                f"下载文件：{file.live2d_name}的{file.rel_path}，状态[{file.event}]，进度{file.bytes_done}/{file.bytes_total}")
         if model is not None:
             self.signal.emit(model)
 
@@ -462,10 +463,10 @@ class DownloadCostumeTask(QThread):
             )
             self.completed_signal.emit()
         except CancelledError:
-            print(f"取消下载服装： {self.live2d_name} ")
+            PrintInfo.print_info(f"取消下载服装： {self.live2d_name} ")
             self.failed_signal.emit('下载已取消')
         except Exception as e:
-            print(f"下载服装 {self.live2d_name} 失败: {e}")
+            PrintInfo.print_error(f"[Error]下载服装 {self.live2d_name} 失败: {e}")
             self.failed_signal.emit(str(e))
 
 
@@ -507,7 +508,7 @@ class FetchMetaTask(QRunnable): #QRunnable 不同于 QThread，它不是一个�
             self.signals.data_ready.emit(self.costume_id, name if name else "Unknown", icon_bytes or b"")
 
         except Exception as e:
-            print(f"获取 {self.costume_id} 服装的名称与图标时出现错误: {e}")
+            PrintInfo.print_error(f"[Error]获取 {self.costume_id} 服装的名称与图标时出现错误: {e}")
             # 出错也可以发射一个空数据，防止界面一直转圈
             self.signals.data_ready.emit(self.costume_id, "获取失败", b"")
 
@@ -532,7 +533,7 @@ class FetchListThread(QThread):
             costumes = self.service.search_costumes(self.char_id)
             self.list_ready.emit(costumes)
         except Exception as e:
-            print(f"获取服装列表失败，错误信息: {e}")
+            PrintInfo.print_error(f"[Error]获取服装列表失败，错误信息: {e}")
             self.list_ready.emit([])
 
 

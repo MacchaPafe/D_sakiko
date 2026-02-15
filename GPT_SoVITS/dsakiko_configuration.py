@@ -25,7 +25,7 @@ def migrate_from_old_config():
             try:
                 os.remove(png_file)
             except Exception as e:
-                print(f"[Warning]无法删除旧的图标文件 {png_file} 。该错误不影响正常使用，可尝试手动删除该文件。错误信息：{e}")
+                character.PrintInfo.print_warning(f"[Warning]无法删除旧的图标文件 {png_file} 。该错误不影响正常使用，可尝试手动删除该文件。错误信息：{e}")
                 pass
 
     old_file_names=[
@@ -50,7 +50,7 @@ def migrate_from_old_config():
             except Exception:
                 pass
         return
-    print("检测到旧版配置文件，正在迁移到新版配置文件...")
+    character.PrintInfo.print_info("检测到旧版配置文件，正在迁移到新版配置文件...")
     new_config_template={"character_setting":{
                             "character_order": {
                                 "character_num": 3,
@@ -159,14 +159,14 @@ def migrate_from_old_config():
         with open("../dsakiko_config.json", "w", encoding="utf-8") as f:
             json.dump(new_config_template, f, indent=4, ensure_ascii=False)
     except Exception as e:
-        print(f"无法保存新的配置文件。请检查程序是否有写入权限。错误信息：{e}")
+        character.PrintInfo.print_error(f"[Error]无法保存新的配置文件。请检查程序是否有写入权限。错误信息：{e}")
         return
     # 删除旧文件
     for file in old_file_names:
         try:
             os.remove(file)
         except Exception as e:
-            print(f"[Warning]无法删除旧的配置文件 {file} 。请手动删除该文件。错误信息：{e}")
+            character.PrintInfo.print_warning(f"[Warning]无法删除旧的配置文件 {file} 。请手动删除该文件。错误信息：{e}")
 
 
 
@@ -615,7 +615,7 @@ class conf_ui(QWidget):
 
         except Exception as e:
             self.label_6_info.setText('字体应用失败')
-            print('错误信息：', e)
+            character.PrintInfo.print_error('字体更换错误信息：'+e)
 
 
 
