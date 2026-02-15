@@ -5,10 +5,10 @@ import live2d.v2 as live2d
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
-import glob,re,os
+import glob,re,os,json
 
 from multi_char_live2d_module import TextOverlay
-
+from character import  PrintInfo
 
 class BackgroundRen(object):
 
@@ -103,7 +103,11 @@ class Live2DModule:
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
         self.BACK_IMAGE=back_img_jpg+back_img_png
         self.back_img_index=0
-        #print("Live2D初始化...OK")
+        if os.path.exists("../dsakiko_config.json"):
+            with open("../dsakiko_config.json", "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+            if "background_image_path" in config_data and config_data["background_image_path"] in self.BACK_IMAGE:
+                self.back_img_index = self.BACK_IMAGE.index(config_data["background_image_path"])
 
 
     # 动作播放开始后调用
@@ -139,6 +143,18 @@ class Live2DModule:
         self.think_motion_is_over=True
 
 
+    def save_l2d_json_paths_and_bg(self):
+        if not os.path.exists("../dsakiko_config.json"):
+            return
+        with open("../dsakiko_config.json", "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+        config_data["l2d_json_paths"]={}
+        for char in self.character_list:
+            if char.character_name!="祥子":
+                config_data["l2d_json_paths"][char.character_name]=char.live2d_json
+        config_data["background_image_path"]=self.BACK_IMAGE[self.back_img_index]
+        with open("../dsakiko_config.json", "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=4, ensure_ascii=False)
 
     def play_live2d(self,
                     emotion_queue,
@@ -239,12 +255,12 @@ class Live2DModule:
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
                         except Exception as e:
-                            print("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：", e)
+                            PrintInfo.print_error(f"[Error]Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：{e}")
                             new_model=None
                         if new_model is not None:
                             del model
                             model=new_model
-                            print("Live2D模型切换成功！")
+                            PrintInfo.print_info("Live2D模型切换成功！")
                             #model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
                             self.character_list[self.current_character_num].live2d_json = new_model_path
                         else:
@@ -339,6 +355,7 @@ class Live2DModule:
                     pygame.display.flip()
                     if self.motion_is_over:
                         self.run=False
+                        self.save_l2d_json_paths_and_bg()
                     continue
 
                 this_turn_audio_file_path=audio_file_queue.get()

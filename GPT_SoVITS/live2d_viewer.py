@@ -19,7 +19,7 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
-    QApplication, QLabel
+    QApplication, QLabel,QDesktopWidget
 
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
@@ -127,6 +127,7 @@ class Live2DModule:
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
+        pygame.display.set_caption("数字小祥 动作组编辑")    #设置窗口标题
         model = live2d.LAppModel()
         model.LoadModelJson(self.PATH_JSON)
 

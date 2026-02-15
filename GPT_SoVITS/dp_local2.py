@@ -5,7 +5,7 @@ from copy import deepcopy
 from ollama import chat
 import requests,json
 from openai import OpenAI
-
+from character import PrintInfo
 
 class DSLocalAndVoiceGen:
 	def __init__(self,characters):
@@ -26,7 +26,7 @@ class DSLocalAndVoiceGen:
 		self.if_generate_audio=True
 		self.current_char_index=0
 		self.if_sakiko=False
-		self.idle_texts=["等待话题中...","新的对话内容是...?","就绪","倾听中..."]
+		self.idle_texts=["...","...","就绪","..."]
 		self.initial()
 
 	def initial(self):
@@ -186,6 +186,14 @@ class DSLocalAndVoiceGen:
 				time.sleep(2)
 				continue
 			elif user_input =='v':
+				if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[
+					self.current_char_index].gptsovits_ref_audio is None or self.character_list[
+					self.current_char_index].sovits_model_path is None:
+					message_queue.put("当前角色无法进行语音合成")
+					PrintInfo.print_error(f"[Error]当前角色无法开启语音合成，缺少GPT-SoVITS模型或参考音频文件。")
+					time.sleep(2)
+					continue
+
 				self.if_generate_audio=not self.if_generate_audio
 				message_queue.put("已"+("开启" if self.if_generate_audio else "关闭")+"语音合成")
 				time.sleep(2)
@@ -339,13 +347,13 @@ class DSLocalAndVoiceGen:
 					)
 					if response.choices[0].message.content is None:
 						message_queue.put("模型API返回内容为空，请检查网络，然后重试一下吧")
-						print("模型API返回内容为空!")
+						PrintInfo.print_error("[Error]大模型API返回内容为空!")
 						is_text_generating_queue.get()
 						time.sleep(2)
 						continue
 				except Exception as err:
 					message_queue.put("模型API调用出错...请检查网络，然后重试一下吧")
-					print("模型API调用出错：", err)
+					PrintInfo.print_error("[Error]大模型API调用出错："+err)
 					is_text_generating_queue.get()
 					self.all_character_msg[self.current_char_index].pop()
 					time.sleep(2)

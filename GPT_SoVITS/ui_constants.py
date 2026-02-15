@@ -103,227 +103,272 @@ char_info_json={
   "香澄": {
     "theme_color": "#FF5522",
     "bestdori_index": 1,
-    "romaji": "kasumi"
+    "romaji": "kasumi",
+    "full_name": "户山香澄（戸山香澄-Poppin'Party）"
   },
   "多惠": {
     "theme_color": "#0077DD",
     "bestdori_index": 2,
-    "romaji": "tae"
+    "romaji": "tae",
+    "full_name": "花园多惠（花園たえ-Poppin'Party）"
   },
   "里美": {
     "theme_color": "#FF55BB",
     "bestdori_index": 3,
-    "romaji": "rimi"
+    "romaji": "rimi",
+    "full_name": "牛込里美（牛込りみ-Poppin'Party）"
   },
   "沙绫": {
     "theme_color": "#FFA30F",
     "bestdori_index": 4,
-    "romaji": "saaya"
+    "romaji": "saaya",
+    "full_name": "山吹沙绫（山吹沙綾-Poppin'Party）"
   },
   "有咲": {
     "theme_color": "#AA66DD",
     "bestdori_index": 5,
-    "romaji": "arisa"
+    "romaji": "arisa",
+    "full_name": "市谷有咲（市ヶ谷有咲-Poppin'Party）"
   },
   "美竹兰": {
     "theme_color": "#EE0022",
     "bestdori_index": 6,
-    "romaji": "ran"
+    "romaji": "ran",
+    "full_name": "美竹兰（美竹蘭-Afterglow）"
   },
   "摩卡": {
     "theme_color": "#00CCAA",
     "bestdori_index": 7,
-    "romaji": "moca"
+    "romaji": "moca",
+    "full_name": "青叶摩卡（青葉モカ-Afterglow）"
   },
   "绯玛丽": {
     "theme_color": "#FF9999",
     "bestdori_index": 8,
-    "romaji": "himari"
+    "romaji": "himari",
+    "full_name": "上原绯玛丽（上原ひまり-Afterglow）"
   },
   "巴": {
     "theme_color": "#BB0033",
     "bestdori_index": 9,
-    "romaji": "tomoe"
+    "romaji": "tomoe",
+    "full_name": "宇田川巴（宇田川巴-Afterglow）"
   },
   "羽泽鸫": {
     "theme_color": "#FFEE88",
     "bestdori_index": 10,
-    "romaji": "tsugumi"
+    "romaji": "tsugumi",
+    "full_name": "羽泽鸫（羽沢つぐみ-Afterglow）"
   },
   "弦卷心": {
     "theme_color": "#FFEE22",
     "bestdori_index": 11,
-    "romaji": "kokoro"
+    "romaji": "kokoro",
+    "full_name": "弦卷心（弦巻こころ-Hello, Happy World!）"
   },
   "濑田薰": {
     "theme_color": "#AA33CC",
     "bestdori_index": 12,
-    "romaji": "kaoru"
+    "romaji": "kaoru",
+    "full_name": "濑田薰（瀬田薫-Hello, Happy World!）"
   },
   "育美": {
     "theme_color": "#FF9922",
     "bestdori_index": 13,
-    "romaji": "hagumi"
+    "romaji": "hagumi",
+    "full_name": "北泽育美（北沢はぐみ-Hello, Happy World!）"
   },
   "花音": {
     "theme_color": "#44DDFF",
     "bestdori_index": 14,
-    "romaji": "kanon"
+    "romaji": "kanon",
+    "full_name": "松原花音（松原花音-Hello, Happy World!）"
   },
   "美咲": {
     "theme_color": "#006699",
     "bestdori_index": 15,
-    "romaji": "misaki"
+    "romaji": "misaki",
+    "full_name": "奥泽美咲（奥沢美咲-Hello, Happy World!）"
   },
   "丸山彩": {
     "theme_color": "#FF88BB",
     "bestdori_index": 16,
-    "romaji": "aya"
+    "romaji": "aya",
+    "full_name": "丸山彩（丸山彩-Pastel*Palettes）"
   },
   "日菜": {
     "theme_color": "#55DDEE",
     "bestdori_index": 17,
-    "romaji": "hina"
+    "romaji": "hina",
+    "full_name": "冰川日菜（氷川日菜-Pastel*Palettes）"
   },
   "千圣": {
     "theme_color": "#FFEEAA",
     "bestdori_index": 18,
-    "romaji": "chisato"
+    "romaji": "chisato",
+    "full_name": "白鹭千圣（白鷺千聖-Pastel*Palettes）"
   },
   "麻弥": {
     "theme_color": "#99DD88",
     "bestdori_index": 19,
-    "romaji": "mami"
+    "romaji": "mami",
+    "full_name": "大和麻弥（大和麻弥-Pastel*Palettes）"
   },
   "伊芙": {
     "theme_color": "#DDBBFF",
     "bestdori_index": 20,
-    "romaji": "eve"
+    "romaji": "eve",
+    "full_name": "若宫伊芙（若宮イヴ-Pastel*Palettes）"
   },
   "友希那": {
     "theme_color": "#881188",
     "bestdori_index": 21,
-    "romaji": "yukina"
+    "romaji": "yukina",
+    "full_name": "凑友希那（湊友希那-Roselia）"
   },
   "纱夜": {
     "theme_color": "#00AABB",
     "bestdori_index": 22,
-    "romaji": "sayo"
+    "romaji": "sayo",
+    "full_name": "冰川纱夜（氷川紗夜-Roselia）"
   },
   "莉莎": {
     "theme_color": "#DD2200",
     "bestdori_index": 23,
-    "romaji": "lisa"
+    "romaji": "lisa",
+    "full_name": "今井莉莎（今井リサ-Roselia）"
   },
   "亚子": {
     "theme_color": "#DD0088",
     "bestdori_index": 24,
-    "romaji": "ako"
+    "romaji": "ako",
+    "full_name": "宇田川亚子（宇田川あこ-Roselia）"
   },
   "燐子": {
     "theme_color": "#BBBBBB",
     "bestdori_index": 25,
-    "romaji": "rinko"
+    "romaji": "rinko",
+    "full_name": "白金燐子（白金燐子-Roselia）"
   },
   "真白": {
     "theme_color": "#6677CC",
     "bestdori_index": 26,
-    "romaji": "mashiro"
+    "romaji": "mashiro",
+    "full_name": "仓田真白（倉田ましろ-Morfonica）"
   },
   "透子": {
     "theme_color": "#EE6666",
     "bestdori_index": 27,
-    "romaji": "toko"
+    "romaji": "toko",
+    "full_name": "桐谷透子（桐ヶ谷透子-Morfonica）"
   },
   "七深": {
     "theme_color": "#EE7744",
     "bestdori_index": 28,
-    "romaji": "nanami"
+    "romaji": "nanami",
+    "full_name": "广町七深（広町七深-Morfonica）"
   },
   "筑紫": {
     "theme_color": "#EE7788",
     "bestdori_index": 29,
-    "romaji": "tsukushi"
+    "romaji": "tsukushi",
+    "full_name": "二叶筑紫（二葉つくし-Morfonica）"
   },
   "瑠唯": {
     "theme_color": "#669988",
     "bestdori_index": 30,
-    "romaji": "rui"
+    "romaji": "rui",
+    "full_name": "八潮瑠唯（八潮瑠唯-Morfonica）"
   },
   "layer": {
     "theme_color": "#CC0000",
     "bestdori_index": 31,
-    "romaji": "layer"
+    "romaji": "layer",
+    "full_name": "和奏瑞依（layer-Raise A Suilen）"
   },
   "六花": {
     "theme_color": "#AAEE22",
     "bestdori_index": 32,
-    "romaji": "lock"
+    "romaji": "lock",
+    "full_name": "朝日六花（lock-Raise A Suilen）"
   },
   "msk": {
     "theme_color": "#EEBB44",
     "bestdori_index": 33,
-    "romaji": "masking"
+    "romaji": "masking",
+    "full_name": "佐藤益木（masking-Raise A Suilen）"
   },
   "pareo": {
     "theme_color": "#FF99BB",
     "bestdori_index": 34,
-    "romaji": "pareo"
+    "romaji": "pareo",
+    "full_name": "鳰原令王那（pareo-Raise A Suilen）"
   },
   "chu2": {
     "theme_color": "#00BBFF",
     "bestdori_index": 35,
-    "romaji": "chuchu"
+    "romaji": "chuchu",
+    "full_name": "珠手知由（chu²-Raise A Suilen）"
   },
   "灯": {
     "theme_color": "#77BBDD",
     "bestdori_index": 36,
-    "romaji": "tomori"
+    "romaji": "tomori",
+    "full_name": "高松灯（高松燈-MyGO!!!!!）"
   },
   "爱音": {
     "theme_color": "#FF8899",
     "bestdori_index": 37,
-    "romaji": "anon"
+    "romaji": "anon",
+    "full_name": "千早爱音（千早愛音-MyGO!!!!!）"
   },
   "乐奈": {
     "theme_color": "#77DD77",
     "bestdori_index": 38,
-    "romaji": "rana"
+    "romaji": "rana",
+    "full_name": "要乐奈（要楽奈-MyGO!!!!!）"
   },
   "素世": {
     "theme_color": "#FFDD88",
     "bestdori_index": 39,
-    "romaji": "soyo"
+    "romaji": "soyo",
+    "full_name": "长崎素世（長崎そよ-MyGO!!!!!）"
   },
   "立希": {
     "theme_color": "#7777AA",
     "bestdori_index": 40,
-    "romaji": "taki"
+    "romaji": "taki",
+    "full_name": "椎名立希（椎名立希-MyGO!!!!!）"
   },
   "初华": {
     "theme_color": "#BB9955",
     "bestdori_index": 337,
-    "romaji": "uika"
+    "romaji": "uika",
+    "full_name": "三角初华（三角初華-Ave Mujica）"
   },
   "若叶睦": {
     "theme_color": "#779977",
     "bestdori_index": 338,
-    "romaji": "mutsumi"
+    "romaji": "mutsumi",
+    "full_name": "若叶睦（若葉睦-Ave Mujica）"
   },
   "海铃": {
     "theme_color": "#335566",
     "bestdori_index": 339,
-    "romaji": "umiri"
+    "romaji": "umiri",
+    "full_name": "八幡海铃（八幡海鈴-Ave Mujica）"
   },
   "喵梦": {
     "theme_color": "#AA4477",
     "bestdori_index": 340,
-    "romaji": "nyamu"
+    "romaji": "nyamu",
+    "full_name": "祐天寺喵梦（祐天寺にゃむ-Ave Mujica）"
   },
   "祥子": {
     "theme_color": "#7799CC",
     "bestdori_index": 341,
-    "romaji": "sakiko"
+    "romaji": "sakiko",
+    "full_name": "丰川祥子（豊川祥子-Ave Mujica）"
   }
 }
 
@@ -404,7 +449,7 @@ class AddCostume:
         with open(f"../live2d_related/{character_folder_name}/name.txt",'w',encoding='utf-8') as f:
             f.write(character_ui_name)
         with open(f"../live2d_related/{character_folder_name}/character_description.txt",'w',encoding='utf-8') as f:
-            f.write("在这里完善角色："+character_ui_name+" 的介绍吧！")
+            f.write("你精通角色扮演，你要扮演BangDream角色: "+char_info_json[character_ui_name]["full_name"])
         save_model_folder_path=f"../live2d_related/{character_folder_name}/live2D_model"
         os.makedirs(save_model_folder_path)
         #从从下载缓存文件夹中复制下载到的文件
@@ -465,8 +510,10 @@ class AddCostume:
                 if not motions[group_name]:   #如果这一组一个动作都没有
                     motions[group_name].append({"name":f"{group_name}_{count}","file":os.path.basename(cache_motions[randint(0,len(cache_motions)-1)])})
         model_json_content["motions"]=motions
+        model_json_content["expressions"]=[{"name":"idle","file":"idle01.exp.json"}]    #修复没有表情字段导致切换角色崩溃
         with open(f"{save_model_folder_path}/3.model.json",'w',encoding='utf-8') as f:
             json.dump(model_json_content,f, indent=4, ensure_ascii=False)
+
 
         #创建reference_audio内的空文件夹
         os.makedirs(f"../reference_audio/{character_folder_name}",exist_ok=True)

@@ -114,7 +114,7 @@ def main_thread():
                     except Exception as e:
                         QT_message_queue.put(f"语音合成出错，重试中")
                         audio_generate_count+=1
-                        print(f"语音合成错误信息： {str(e)}")
+                        character.PrintInfo.print_error(f"[Error]语音合成错误信息： {str(e)}")
                         time.sleep(1)
                 if audio_generate_count!=1:
                     # if audio_generate_count != 99:
@@ -237,7 +237,6 @@ if __name__=='__main__':
             if os.path.abspath(f) != os.path.abspath(font_path):
                 try:
                     os.remove(f)
-                    print(f"清理旧版本: {f}")
                 except Exception:
                     pass  # 删不掉就跳过
 
