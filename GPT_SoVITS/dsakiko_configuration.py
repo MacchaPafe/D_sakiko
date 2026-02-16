@@ -615,7 +615,7 @@ class conf_ui(QWidget):
 
         except Exception as e:
             self.label_6_info.setText('字体应用失败')
-            character.PrintInfo.print_error('字体更换错误信息：'+e)
+            character.PrintInfo.print_error(f'字体更换错误信息：{e}')
 
 
 

@@ -202,7 +202,7 @@ class ThemeManager: #主题颜色设定
                 return '#7799CC'
 
         except Exception as e:
-            PrintInfo.print_info('QT_style.json文件格式有误，使用默认祥子配色：',e)
+            PrintInfo.print_info('QT_style.json文件格式有误，使用默认祥子配色：')
             return '#7799CC'
 
 class CommunicateThreadDP2QT(QThread):
@@ -283,7 +283,7 @@ class MoreFunctionWindow(QDialog):
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
         layout.addWidget(self.open_start_config_button)
 
-        self.open_small_theater_btn=QPushButton("小剧场模式（Beta）")
+        self.open_small_theater_btn=QPushButton("小剧场模式")
         self.open_small_theater_btn.clicked.connect(self.on_click_open_small_theater)  # noqa
         layout.addWidget(self.open_small_theater_btn)
 
@@ -323,7 +323,7 @@ class MoreFunctionWindow(QDialog):
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([bat_path], shell=True)
         except Exception as e:
-            PrintInfo.print_error("[Error]启动失败", f"启动程序时发生错误:\n{e}")
+            PrintInfo.print_error(f"[Error]启动失败, 启动程序时发生错误:\n{e}")
 
     def on_click_open_motion_editor_button(self):
         self.exec_bat("运行动作组编辑程序.bat")
@@ -463,7 +463,7 @@ class SettingWindow(QDialog):
                 convert_old_l2d_json(new_model_json)
             except Exception as e:
                 self.parent_window.QT_message_queue(f"切换模型失败，转换旧版Live2D配置文件时出错。")
-                PrintInfo.print_error("[Error]切换模型失败，转换旧版Live2D配置文件时出错。\n",e)
+                PrintInfo.print_error(f"[Error]切换模型失败，转换旧版Live2D配置文件时出错。{e}\n")
                 return
             PrintInfo.print_info("成功转换旧版Live2D配置文件。\n")
         self.parent_window.user_input.setText(f'change_l2d_model#{new_model_json}')
@@ -530,7 +530,7 @@ class ChangeL2DModelWindow(QDialog):
                     shutil.rmtree(path)
                     self.refresh_ui()
             except Exception as e:
-                PrintInfo.print_error(f"[Error]删除Live2D模型文件夹失败\n", e)
+                PrintInfo.print_error(f"[Error]删除Live2D模型文件夹失败。{e}\n")
         if self.current_char_folder_name != 'sakiko':
             for model in self.current_char_l2d_models:
                 model_layout = QHBoxLayout()
@@ -612,7 +612,7 @@ class ChangeReferenceAudioWindow(QDialog):
                 if file.endswith('.wav') or file.endswith('.mp3'):
                     all_ref_audio_files.append(file)
         except Exception as e:
-            PrintInfo.print_error("[Error]参考音频文件夹读取错误:",e)
+            PrintInfo.print_error(f"[Error]参考音频文件夹读取错误: {e}")
         select_new_ref_audio_group=QGroupBox("选择新的参考音频:")
         select_new_ref_audio_layout=QVBoxLayout()
         for ref_audio_file in all_ref_audio_files:
@@ -691,7 +691,7 @@ class ChangeReferenceAudioWindow(QDialog):
                 with open(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
                     f.write(new_ref_audio_file)
         except Exception as e:
-            PrintInfo.print_error("[Error]更改参考音频出现错误，错误信息：",e)
+            PrintInfo.print_error(f"[Error]更改参考音频出现错误，错误信息：{e}")
         self.current_ref_audio_label.setText(f"当前参考音频:{os.path.basename(new_ref_audio_file)}")
 
     def change_ref_text(self):

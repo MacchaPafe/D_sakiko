@@ -522,7 +522,7 @@ class AddCostume:
             f.write('')
         with open(f"../reference_audio/{character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
             f.write('''QWidget {
-                    color: #77DD77;
+                    color: #7799CC;
                     }''')
         with open(f"../reference_audio/{character_folder_name}/reference_audio_language.txt",'w',encoding='utf-8') as f:
             f.write('''#填写说明：只需把下面的数字3修改为其他数字即可，范围为1-11，分别对应你的参考音频语言为   1：中文  2：英文  3：日文  4：粤语  5：韩文  6：中英混合  7：日英混合  8：粤英混合  9：韩英混合  10：多语种混合  11：多语种混合（粤语） 

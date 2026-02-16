@@ -353,7 +353,7 @@ class DSLocalAndVoiceGen:
 						continue
 				except Exception as err:
 					message_queue.put("模型API调用出错...请检查网络，然后重试一下吧")
-					PrintInfo.print_error("[Error]大模型API调用出错："+err)
+					PrintInfo.print_error(f"[Error]大模型API调用出错：{err}")
 					is_text_generating_queue.get()
 					self.all_character_msg[self.current_char_index].pop()
 					time.sleep(2)
