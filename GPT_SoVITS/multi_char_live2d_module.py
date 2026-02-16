@@ -1,10 +1,73 @@
 import live2d.v2 as live2d
 from live2d.utils.lipsync import WavHandler
 import pygame
+from live2d.v2 import LAppModel
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob, os,time
 from random import randint
+import sys
+from collections import deque
+from typing import Dict, List, Any
+
+
+def _load_cjk_font(size: int, bold: bool = False) -> pygame.font.Font:
+    """尽量加载支持中日韩(CJK)字符的字体。
+
+    优先：项目内置 font/msyh.ttc
+    其次：在系统字体里按候选列表匹配（Windows/macOS/Linux）
+
+    说明：macOS 上原先写死的 "Microsoft YaHei" 往往不存在，
+    pygame 会回退到不含中文的默认字体，从而显示为“方块”。
+    """
+
+    if not pygame.font.get_init():
+        pygame.font.init()
+
+    # 1) 项目内置字体（相对仓库根目录）
+    # script_dir = os.path.dirname(os.path.abspath(__file__))
+    # project_root = os.path.abspath(os.path.join(script_dir, ".."))
+    # bundled_font_path = os.path.join(project_root, "font", "msyh.ttc")
+    # if os.path.exists(bundled_font_path):
+    #     font = pygame.font.Font(bundled_font_path, size)
+    #     font.set_bold(bold)
+    #     return font
+
+    # 2) 系统字体候选（尽量覆盖 Win/macOS/Linux）
+    candidates = [
+        # Windows
+        "Microsoft YaHei",
+        "Microsoft YaHei UI",
+        "SimHei",
+        "SimSun",
+        "MS Gothic",
+        # macOS
+        "PingFang SC",
+        "Hiragino Sans GB",
+        "Heiti SC",
+        "STHeiti",
+        # 常见跨平台/发行版字体
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "WenQuanYi Micro Hei",
+        "Arial Unicode MS",
+    ]
+
+    for name in candidates:
+        try:
+            matched_path = pygame.font.match_font(name)
+        except Exception:
+            matched_path = None
+        if matched_path:
+            font = pygame.font.Font(matched_path, size)
+            font.set_bold(bold)
+            return font
+
+    # 3) 最后兜底：默认字体（可能不含中文，但避免崩溃）
+    font = pygame.font.Font(None, size)
+    font.set_bold(bold)
+    return font
+
 
 class TextOverlay:
     def __init__(self, window_size:tuple,char_names:list):
@@ -23,8 +86,9 @@ class TextOverlay:
         self.font_size_main = max(12, int(self.surface_h * 0.14))
         self.font_size_name = max(10, int(self.surface_h * 0.15))
 
-        self.main_font = pygame.font.SysFont("Microsoft YaHei", self.font_size_main, bold=True)
-        self.name_font = pygame.font.SysFont("Microsoft YaHei", self.font_size_name, bold=True)
+        # macOS 下常见问题：找不到“微软雅黑”导致回退字体不含中文，显示成方块
+        self.main_font = _load_cjk_font(self.font_size_main, bold=True)
+        self.name_font = _load_cjk_font(self.font_size_name, bold=True)
 
         # === 3. 动态计算 UI 元素的尺寸参数 ===
         # 名字框高度：占画布高度的 22%
@@ -241,13 +305,13 @@ class TextOverlay:
         glBegin(GL_QUADS)
         # 纹理坐标 (0,0) 通常对应左下，(0,1) 对应左上
         # 如果 tostring(..., True) 翻转了，这里的映射应该是直观的
-        glTexCoord2f(0, 1);
+        glTexCoord2f(0, 1)
         glVertex3f(self.quad_vertices[0], self.quad_vertices[1], self.quad_vertices[2])  # 左上
-        glTexCoord2f(1, 1);
+        glTexCoord2f(1, 1)
         glVertex3f(self.quad_vertices[3], self.quad_vertices[4], self.quad_vertices[5])  # 右上
-        glTexCoord2f(1, 0);
+        glTexCoord2f(1, 0)
         glVertex3f(self.quad_vertices[6], self.quad_vertices[7], self.quad_vertices[8])  # 右下
-        glTexCoord2f(0, 0);
+        glTexCoord2f(0, 0)
         glVertex3f(self.quad_vertices[9], self.quad_vertices[10], self.quad_vertices[11])  # 左下
         glEnd()
 
@@ -300,15 +364,15 @@ class BackgroundRen(object):
         return id
 
     @staticmethod
-    def blit(*args: tuple[tuple[3], tuple[3], tuple[3], tuple[3]]) -> None:
+    def blit(*args: tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]) -> None:
         glBegin(GL_QUADS)
-        glTexCoord2f(0, 0);
+        glTexCoord2f(0, 0)
         glVertex3f(*args[3])
-        glTexCoord2f(1, 0);
+        glTexCoord2f(1, 0)
         glVertex3f(*args[1])
-        glTexCoord2f(1, 1);
+        glTexCoord2f(1, 1)
         glVertex3f(*args[2])
-        glTexCoord2f(0, 1);
+        glTexCoord2f(0, 1)
         glVertex3f(*args[0])
         glEnd()
 
@@ -318,9 +382,6 @@ idle_recover_timer = time.time()
 
 class Live2DModule:
     def __init__(self,characters):
-        self.DELAY_BETWEEN_TURNS = 0.2
-        self.PATH_JSON_0 = None
-        self.PATH_JSON_1 = None
         self.BACK_IMAGE = None
         self.BACKGROUND_POSITION = ((-1.0, 1.0, 0), (1.0, -1.0, 0), (1.0, 1.0, 0), (-1.0, -1.0, 0))
         self.run = True
@@ -328,28 +389,164 @@ class Live2DModule:
         # self.if_sakiko = False
         # self.if_mask = True
         self.character_list = []
-        self.current_character_num = [0,1]
+        # 当前渲染的两个对话角色
+        # 每个元素是一个 dict，包含 "slot"（0 或 1，对应左侧/右侧渲染的角色）、"character_name"（字符串）和 "model_json_path"（字符串）三个键
+        self.active_slots: List[Dict[str, Any]] = []
         self.live2D_initialize(characters)
         self.model_pos_offset=[(-0.4,0),(0.4,0)]  #两个模型的位置偏移设置
         self.wavHandler = WavHandler()
         self.lipSyncN: float = 1.4
         self.motion_is_over=True
 
+        # 所有需要播放的对话内容组成的列表
         self.playlist=[]
+        # 当前播放到播放列表的哪个位置
         self.playlist_pointer=0
 
+    def _start_emotion_motion(self, model, emotion, audio_path):
+        """根据情绪触发模型动作，并在动作开始时回调播放音频。
 
+        - emotion 会被映射到 Live2D 的动作组名。
+        - 若映射失败或动作组不存在，回退到 IDLE 组，避免出现异常。
+        """
+        callback_start = lambda *args: self.onStartCallback_emotion_version(audio_path)
+        emotion_to_group = {
+            "happiness": "happiness",
+            "sadness": "sadness",
+            "anger": "anger",
+            "disgust": "disgust",
+            "like": "like",
+            "surprise": "surprise",
+            "fear": "fear",
+        }
+        group_name = emotion_to_group.get(str(emotion).strip(), "IDLE")
+
+        try:
+            model.StartRandomMotion(group_name, 3, callback_start, self.onFinishCallback_motion)
+        except Exception:
+            model.StartRandomMotion("IDLE", 3, callback_start, self.onFinishCallback_motion)
+
+    def _build_default_active_slots(self) -> List[Dict[str, Any]]:
+        """从角色列表前两位构建默认槽位配置。
+
+        槽位约定：
+        - slot=0：左侧显示的模型
+        - slot=1：右侧显示的模型
+        """
+        return [
+            {
+                "slot": 0,
+                "character_name": self.character_list[0].character_name,
+                "model_json_path": self.character_list[0].live2d_json,
+            },
+            {
+                "slot": 1,
+                "character_name": self.character_list[1].character_name,
+                "model_json_path": self.character_list[1].live2d_json,
+            }
+        ]
+
+    def _normalize_slots_payload(self, slots_payload: Any) -> List[Dict[str, Any]]:
+        """校验并标准化 `set_active_slots` 的输入内容。
+
+        设计目的：
+        - 强制要求两个待更新模型信息（0/1）都存在，防止半更新状态。
+        - 校验 `character_name` 与 `model_json_path` 的合法性。
+        - 最终返回固定顺序（0,1）的槽位列表，便于后续直接索引。
+        """
+        if not isinstance(slots_payload, list) or len(slots_payload) != 2:
+            raise ValueError("set_active_slots 需要提供两个槽位")
+
+        normalized: List[Dict[str, Any]] = []
+        for expected_slot in (0, 1):
+            slot_data = None
+            for item in slots_payload:
+                # 允许前端传入任意顺序，这里按 slot 值找到对应项
+                if isinstance(item, dict) and item.get("slot") == expected_slot:
+                    slot_data = item
+                    break
+
+            if slot_data is None:
+                raise ValueError(f"缺少 slot={expected_slot} 的配置")
+
+            character_name = str(slot_data.get("character_name", "")).strip()
+            model_json_path = str(slot_data.get("model_json_path", "")).strip()
+
+            if not character_name:
+                raise ValueError(f"slot={expected_slot} 缺少 character_name")
+            if not model_json_path:
+                raise ValueError(f"slot={expected_slot} 缺少 model_json_path")
+            if not os.path.exists(model_json_path):
+                raise FileNotFoundError(f"slot={expected_slot} 模型文件不存在: {model_json_path}")
+
+            normalized.append({
+                "slot": expected_slot,
+                "character_name": character_name,
+                "model_json_path": model_json_path,
+            })
+
+        return normalized
+
+    def _apply_model_common_setup(self, model: LAppModel, win_w_and_h: int):
+        """应用模型加载后的通用初始化参数，包含缩放、自动眨眼、自动呼吸等。"""
+        model.Resize(int(win_w_and_h * 1.33), win_w_and_h)
+        model.SetAutoBlinkEnable(True)
+        model.SetAutoBreathEnable(True)
+
+    def _active_character_names(self) -> List[str]:
+        """返回当前两个正在渲染的角色名，供 Overlay 等 UI 展示使用。"""
+        if len(self.active_slots) < 2:
+            # 理论上不应该发生，除非 qt 那边传了错误数据导致初始化失败。这里做个兜底，避免崩溃。
+            return ["角色A", "角色B"]
+        return [self.active_slots[0]["character_name"], self.active_slots[1]["character_name"]]
+
+    def _handle_set_active_slots(self, payload: Dict[str, Any], model_0: LAppModel, model_1: LAppModel, win_w_and_h: int, overlay: TextOverlay):
+        """处理 `set_active_slots` 消息：原子更新双槽位与双模型。
+
+        注意：先做完整校验，再一次性替换 `active_slots`，避免出现一边更新成功一边失败的状态。
+        """
+        slots_payload = payload.get("slots")
+        normalized_slots = self._normalize_slots_payload(slots_payload)
+        self.active_slots = normalized_slots
+
+        model_0.LoadModelJson(self.active_slots[0]["model_json_path"], disable_precision=True)
+        self._apply_model_common_setup(model_0, win_w_and_h)
+        model_1.LoadModelJson(self.active_slots[1]["model_json_path"], disable_precision=True)
+        self._apply_model_common_setup(model_1, win_w_and_h)
+        overlay.set_text(f"{self.active_slots[0]['character_name']} & {self.active_slots[1]['character_name']}", "...")
+
+    def _handle_toggle_sakiko_model(self, model_0: LAppModel, model_1: LAppModel, win_w_and_h: int):
+        """在当前槽位中查找“祥子”，并切换黑/白祥模型。
+
+        切换后会同步更新 `active_slots` 里的 `model_json_path`，保证状态与实际渲染一致。
+        """
+        sakiko_slot = None
+        for slot_data in self.active_slots:
+            if slot_data.get("character_name") == "祥子":
+                sakiko_slot = int(slot_data.get("slot", -1))
+                break
+
+        if sakiko_slot not in (0, 1):
+            print("切换祥子模型失败：当前对话角色中没有‘祥子’")
+            return
+
+        this_sakiko_model = model_0 if sakiko_slot == 0 else model_1
+        if "live2D_model_costume" in this_sakiko_model.modelHomeDir:
+            new_model_path = '../live2d_related/sakiko/live2D_model/3.model.json'
+            this_sakiko_model.LoadModelJson(new_model_path, disable_precision=True)
+        else:
+            new_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
+            this_sakiko_model.LoadModelJson(new_model_path, disable_precision=True)
+            this_sakiko_model.StartRandomMotion('IDLE', 3)
+
+        self._apply_model_common_setup(this_sakiko_model, win_w_and_h)
+        self.active_slots[sakiko_slot]["model_json_path"] = new_model_path
 
     def live2D_initialize(self, characters):
         if len(characters)<2:
             raise ValueError("至少需要两个角色...")
         self.character_list = characters
-        self.PATH_JSON_0 = self.character_list[self.current_character_num[0]].live2d_json
-        self.PATH_JSON_1 = self.character_list[self.current_character_num[1]].live2d_json
-        # if self.character_list[self.current_character_num].character_name == '祥子':
-        #     self.if_sakiko = True
-        # else:
-        #     self.if_sakiko = False
+        self.active_slots = self._build_default_active_slots()
 
         back_img_png = glob.glob(os.path.join("../live2d_related", f"*.png"))
         back_img_jpg = glob.glob(os.path.join("../live2d_related", f"*.jpg"))
@@ -360,16 +557,18 @@ class Live2DModule:
 
     def onStartCallback_emotion_version(self,audio_file_path):
         self.motion_is_over=False
-        #print(f"touched and motion [] is started")
-        # 播放音频
+        # 播放音频。
+        # 这里只负责“尝试播放当前句音频”，不负责“何时播放下一句”。
+        # 下一句的调度时机统一由 play_live2d 主循环中的状态机控制。
 
-        audio_length=pygame.mixer.Sound(audio_file_path).get_length()
-        if audio_length<1.5:
-            self.DELAY_BETWEEN_TURNS=1.5
-        else:
-            self.DELAY_BETWEEN_TURNS=0.5
-        pygame.mixer.music.load(audio_file_path)
-        pygame.mixer.music.play()
+        if not audio_file_path or not os.path.exists(audio_file_path):
+            return
+
+        try:
+            pygame.mixer.music.load(audio_file_path)
+            pygame.mixer.music.play()
+        except Exception:
+            return
         # 处理口型同步
         if audio_file_path!='../reference_audio/silent_audio/silence.wav':  #该函数无法处理无声音频
             self.wavHandler.Start(audio_file_path)
@@ -377,33 +576,56 @@ class Live2DModule:
     def onFinishCallback_motion(self):
         self.motion_is_over=True
 
-
-
     def play_live2d(self,
                     change_char_queue,
                     to_live2d_module_queue,
                     tell_qt_this_turn_finish_queue):
+
         # print("正在开启Live2D模块")
-        import ctypes
+        # 只在 Windows 下处理高DPI问题，因为 MacOS 下 PyQt 根本就没有模糊问题
+        # 还有获得窗口位置的 api 是 Windows 特有的，MacOS 不能用
+        if sys.platform == "win32":
+            import ctypes
 
-        # 1. 【关键】开启高DPI感知，解决模糊问题
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            ctypes.windll.user32.SetProcessDPIAware()
+            # 1. 【关键】开启高DPI感知，解决模糊问题
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                ctypes.windll.user32.SetProcessDPIAware()
 
-        # 2. 直接用 ctypes 获取真实分辨率，不再需要 tkinter
-        user32 = ctypes.windll.user32
-        desktop_w = user32.GetSystemMetrics(0)
-        desktop_h = user32.GetSystemMetrics(1)
-        win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
-        pygame_win_pos_w, pygame_win_pos_h = int(0.55 * desktop_w - 1.33*win_w_and_h), int(
-            0.5 * desktop_h - 0.5 * win_w_and_h)
-        # 以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
-        caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
-                          + ctypes.windll.user32.GetSystemMetrics(33)
-                          + ctypes.windll.user32.GetSystemMetrics(92))  # 标题栏高度+厚度
-        os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h + caption_height}"  # 设置窗口位置，与qt窗口对齐
+            # 2. 直接用 ctypes 获取真实分辨率，不再需要 tkinter
+            user32 = ctypes.windll.user32
+            desktop_w = user32.GetSystemMetrics(0)
+            desktop_h = user32.GetSystemMetrics(1)
+            win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
+            pygame_win_pos_w, pygame_win_pos_h = int(0.55 * desktop_w - 1.33*win_w_and_h), int(
+                0.5 * desktop_h - 0.5 * win_w_and_h)
+            # 以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
+            caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
+                              + ctypes.windll.user32.GetSystemMetrics(33)
+                              + ctypes.windll.user32.GetSystemMetrics(92))  # 标题栏高度+厚度
+            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h + caption_height}"  # 设置窗口位置，与qt窗口对齐
+        else:
+            # MacOS / Linux 适配方案
+            # 提前初始化 display 模块以获取屏幕信息
+            if not pygame.display.get_init():
+                pygame.display.init()
+            
+            info = pygame.display.Info()
+            desktop_w = info.current_w
+            desktop_h = info.current_h
+            
+            # 保持与 Windows 相同的窗口大小比例 (屏幕高度的 70%)
+            win_w_and_h = int(0.7 * desktop_h)
+            
+            # 计算窗口位置 (保持相对位置逻辑一致)
+            pygame_win_pos_w = int(0.55 * desktop_w - 1.33 * win_w_and_h)
+            pygame_win_pos_h = int(0.5 * desktop_h - 0.5 * win_w_and_h)
+            
+            # 设置窗口位置环境变量
+            # MacOS/Linux 不需要像 Windows 那样复杂的标题栏高度补偿，或者难以精确获取，直接使用计算出的位置
+            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h}"
+
         pygame.init()
         live2d.init()
 
@@ -412,15 +634,11 @@ class Live2DModule:
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
         pygame.display.set_caption('数字小祥 小剧场')
         model_0 = live2d.LAppModel()
-        model_0.LoadModelJson(self.PATH_JSON_0)
+        model_0.LoadModelJson(self.active_slots[0]["model_json_path"], disable_precision=True)
         model_1 = live2d.LAppModel()
-        model_1.LoadModelJson(self.PATH_JSON_1)
-        model_0.Resize(int(win_w_and_h*1.33), win_w_and_h)
-        model_0.SetAutoBlinkEnable(True)
-        model_0.SetAutoBreathEnable(True)
-        model_1.Resize(int(win_w_and_h*1.33), win_w_and_h)
-        model_1.SetAutoBlinkEnable(True)
-        model_1.SetAutoBreathEnable(True)
+        model_1.LoadModelJson(self.active_slots[1]["model_json_path"], disable_precision=True)
+        self._apply_model_common_setup(model_0, win_w_and_h)
+        self._apply_model_common_setup(model_1, win_w_and_h)
 
         model_0.SetOffset(*self.model_pos_offset[0])
         model_1.SetOffset(*self.model_pos_offset[1])
@@ -428,7 +646,7 @@ class Live2DModule:
         model_1.SetScale(0.8)
         model_group = [model_0, model_1]
 
-        overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h),[self.character_list[self.current_character_num[0]].character_name,self.character_list[self.current_character_num[1]].character_name])
+        overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h), self._active_character_names())
         # if self.if_sakiko:
         #     model.SetExpression('serious')
         glEnable(GL_TEXTURE_2D)
@@ -441,10 +659,24 @@ class Live2DModule:
 
         print("当前Live2D界面渲染硬件", glGetString(GL_RENDERER).decode())
         this_turn_model = None
-        last_audio_finish_time = 0
+        # ===== 句间等待策略（固定规则） =====
+        # 1) 有音频：音频播放结束后，再等待 0.5 秒进入下一句
+        # 2) 无音频：当前句展示后，每个字等待 0.1 秒，等所有字展示完后，再等待 1.5 秒进入下一句
+        WAIT_SECONDS = 0.5
+        WAIT_AFTER_NO_AUDIO_RATIO = 0.1
 
-        # 设置缓冲时间 (秒)
-        self.DELAY_BETWEEN_TURNS = 0.5  # 建议设为 0.5秒，200ms其实有点太快了，听感上几乎没区别
+        # 下一句最早可开始的绝对时间戳（time.time()）
+        next_turn_earliest_start_at = 0.0
+        # 当前是否处于“句间冷却”阶段
+        waiting_between_turns = False
+        # 上一帧是否检测到 pygame 音频正在播放
+        previous_frame_audio_playing = False
+        # 当前句是否有有效音频文件（用于判断“音频结束后冷却”逻辑）
+        current_turn_has_audio = False
+
+        stop_on_next_sentence = False  # 是否在下一句开始时停止（用于外部发送 STOP 命令的响应）
+        queued_playlist: deque[dict] = deque()  # 用于存储外部发送的新播放列表，等当前播放完再切换
+        last_speaker_slot = 1
 
         while self.run:
             for event in pygame.event.get():  # 退出程序逻辑
@@ -464,139 +696,149 @@ class Live2DModule:
                     self.run = False
                     tell_qt_this_turn_finish_queue.put('EXIT')
                     continue
-                if x =='change_sakiko_model':
-                    sakiko_idx=0
-                    for i,index in enumerate(self.current_character_num):
-                        if self.character_list[index].character_name=='祥子':
-                            sakiko_idx=i
-                    this_sakiko_model=model_0 if sakiko_idx == 0 else model_1
-                    if "live2D_model_costume" in this_sakiko_model.modelHomeDir:
-                        this_sakiko_model.LoadModelJson('../live2d_related/sakiko/live2D_model/3.model.json')
-                    else:
-                        this_sakiko_model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
-                        this_sakiko_model.StartMotion('rana', 45, 3)
-                    this_sakiko_model.Resize(int(win_w_and_h*1.33), win_w_and_h)
-                    this_sakiko_model.SetAutoBlinkEnable(True)
-                    this_sakiko_model.SetAutoBreathEnable(True)
+
+                if not isinstance(x, dict):
+                    print(f"忽略不支持的 change_char_queue 消息: {x}")
                     continue
 
+                message_type = x.get("type")
 
-                is_change=True
-                if type(x[0])==str:
-                    current_name_list=[self.character_list[self.current_character_num[0]].character_name,self.character_list[self.current_character_num[1]].character_name]
-                    if (x[0] in current_name_list) and (x[1] in current_name_list):
-                        is_change=False
+                # preserve_playback=True 的语义是“切换模型但保留当前播放列表”，False 则是“切换模型并停止当前播放列表（如果有）”
+                # 目前在切换不同角色的模型时停止播放列表，在切换同角色的不同模型时保留播放列表
+                should_stop_current_playlist = not bool(x.get("preserve_playback", False))
+                if should_stop_current_playlist and self.playlist_pointer != len(self.playlist):
+                    stop_on_next_sentence = True
+
+                try:
+                    # 统一按 type 分发，避免旧字符串协议带来的解析歧义
+                    if message_type == "set_active_slots":
+                        self._handle_set_active_slots(x, model_0, model_1, win_w_and_h, overlay)
+                    elif message_type == "toggle_sakiko_model":
+                        self._handle_toggle_sakiko_model(model_0, model_1, win_w_and_h)
                     else:
-                        pointer=0
-                        for i,char in enumerate(self.character_list):
-                            if char.character_name in x:
-                                self.current_character_num[pointer]=i
-                                pointer+=1
-                            if pointer==2:
-                                break
-
-                else:
-                    if self.playlist_pointer == len(self.playlist):
-                        self.current_character_num=x
-                # if self.if_sakiko and self.sakiko_state:
-                #     model.LoadModelJson('../live2d_related\\sakiko\\live2D_model_costume\\3.model.json')
-                # else:
-                #     model.LoadModelJson(self.PATH_JSON)
-                if self.playlist_pointer != len(self.playlist):
-                    is_change=False
-                if is_change:
-                    model_0.LoadModelJson(self.character_list[self.current_character_num[0]].live2d_json)
-                    model_1.LoadModelJson(self.character_list[self.current_character_num[1]].live2d_json)
-                    model_0.Resize(int(win_w_and_h*1.33), win_w_and_h)
-                    model_0.SetAutoBlinkEnable(True)
-                    model_0.SetAutoBreathEnable(True)
-                    model_1.Resize(int(win_w_and_h*1.33), win_w_and_h)
-                    model_1.SetAutoBlinkEnable(True)
-                    model_1.SetAutoBreathEnable(True)
-                    overlay.set_text(f"{self.character_list[self.current_character_num[0]].character_name} & {self.character_list[self.current_character_num[1]].character_name}", "...")
-
-                    # if self.character_list[self.current_character_num].icon_path is not None:
-                #     pygame.display.set_icon(
-                #         pygame.image.load(self.character_list[self.current_character_num].icon_path))
+                        print(f"忽略未知消息类型: {message_type}")
+                except Exception as e:
+                    print(f"处理 change_char_queue 消息失败: {e}")
+                continue
 
             if not to_live2d_module_queue.empty():
-                if self.playlist_pointer==len(self.playlist):
-                    self.playlist=to_live2d_module_queue.get()
-                    self.playlist_pointer=0
+                data = to_live2d_module_queue.get()
+                if data == "STOP":
+                    stop_on_next_sentence = True
                 else:
-                    to_live2d_module_queue.get()
+                    if not isinstance(data, dict):
+                        print(f"忽略不支持的 to_live2d_module_queue 消息: {data}")
+                        continue
+                    preserve_playback = bool(data.get("preserve_playback", False))
+                    # 开启 preserve_playback 时，将传入内容添加到播放队列，等待当前播放完再切换
+                    # 否则，在本句话播放完成后立刻切换到新内容，清空播放队列
+                    if self.playlist_pointer==len(self.playlist):
+                        self.playlist = data.get("playlist", [])
+                        self.playlist_pointer = 0
+                        waiting_between_turns = False
+                        next_turn_earliest_start_at = 0.0
+                        previous_frame_audio_playing = False
+                        current_turn_has_audio = False
+                    else:
+                        if not preserve_playback:
+                            stop_on_next_sentence = True  # 否则等当前播放完再切换
+                            queued_playlist.clear()  # 清空队列，丢弃之前 preserve_playback=True 添加但未播放的内容
+                        queued_playlist.append(data.get("playlist", []))
 
-
-
-            is_audio_playing = pygame.mixer.music.get_busy()
-            # 2. 如果还有对话没播完
+            audio_is_playing = pygame.mixer.music.get_busy()
             if self.playlist_pointer < len(self.playlist):
-                # 情况 A: 音频正在播放
-                if is_audio_playing:
-                    # 重置时间戳，表示“现在还没结束”
-                    last_audio_finish_time = 0
-                    # 情况 B: 音频没在播放 (可能是刚开始，也可能是刚播完)
+                now = time.time()
+
+                # 检测“有音频的一句”从播放中 -> 已结束 的时刻。
+                # 一旦检测到结束，启动 0.5 秒冷却，防止句子衔接过快。
+                if previous_frame_audio_playing and (not audio_is_playing) and current_turn_has_audio:
+                    next_turn_earliest_start_at = now + WAIT_SECONDS
+                    waiting_between_turns = True
+
+                # 记录本帧状态，供下一帧做“边沿检测”。
+                previous_frame_audio_playing = audio_is_playing
+
+                # STOP 语义：不打断正在播放的音频；在“当前句结束且音频空闲”时切断。
+                if stop_on_next_sentence and not audio_is_playing:
+                    self.playlist_pointer = len(self.playlist)
+                    stop_on_next_sentence = False
+
+                    waiting_between_turns = False
+                    next_turn_earliest_start_at = 0.0
+                    previous_frame_audio_playing = False
+                    current_turn_has_audio = False
+
+                    if len(queued_playlist) > 0:
+                        self.playlist = queued_playlist.popleft()
+                        self.playlist_pointer = 0
+                    continue
+
+                # 统一的“是否可以开下一句”判定：
+                # - 音频仍在播放：不可开下一句
+                # - 正处于句间冷却且未到时刻：不可开下一句
+                # - 其余情况：可以开始下一句
+                if audio_is_playing:
+                    pass
+                elif waiting_between_turns and now < next_turn_earliest_start_at:
+                    pass
                 else:
-                    # 获取当前系统时间
-                    current_time = time.time()
-                    # 如果 last_audio_finish_time 是 0，说明音频是【刚刚】才停的
-                    # 或者这是第一句话（还没开始播）
-                    if last_audio_finish_time == 0:
-                        last_audio_finish_time = current_time
-                    # 计算已经等待了多久
-                    elapsed_time = current_time - last_audio_finish_time
-                    # 只有等待时间超过了设定值，才开始播放下一句
-                    # 注意：如果是第一句(pointer=0)，不需要等待，直接播
-                    if elapsed_time > self.DELAY_BETWEEN_TURNS or self.playlist_pointer == 0:
+                    waiting_between_turns = False
 
-                        this_turn_elements = self.playlist[self.playlist_pointer]
+                    this_turn_elements = self.playlist[self.playlist_pointer]
 
-                        if this_turn_elements['char_name'] == self.character_list[
-                            self.current_character_num[0]].character_name:
-                            this_turn_model = model_group[0]
-                        else:
-                            this_turn_model = model_group[1]
+                    speaker_name = this_turn_elements.get('character_name', '未知角色')
+                    emotion = this_turn_elements.get('emotion', 'normal')
+                    audio_path = this_turn_elements.get('audio_path', '')
+                    text = this_turn_elements.get('text', '')
+                    translation = this_turn_elements.get('translation', '')
 
-                        if this_turn_elements['live2d_motion_num']=='':
-                            num=0
-                            if this_turn_elements['emotion'] == 'happiness':
-                                num=randint(0, 5)
-                            elif this_turn_elements['emotion'] == 'sadness':
-                                num=randint(6, 11) if this_turn_elements['char_name']!='祥子' else randint(6, 9)
-                            elif this_turn_elements['emotion'] == 'anger':
-                                num=randint(12, 17) if this_turn_elements['char_name']!='祥子' else randint(10, 16)
-                            elif this_turn_elements['emotion'] == 'disgust':
-                                num=randint(18, 23) if this_turn_elements['char_name']!='祥子' else randint(17, 18)
-                            elif this_turn_elements['emotion'] == 'like':
-                                num=randint(24, 29) if this_turn_elements['char_name']!='祥子' else randint(19, 22)
-                            elif this_turn_elements['emotion'] == 'surprise':
-                                num=randint(30, 35) if this_turn_elements['char_name']!='祥子' else randint(23, 26)
-                            elif this_turn_elements['emotion'] == 'fear':
-                                num=randint(36, 41) if this_turn_elements['char_name']!='祥子' else randint(27, 28)
-                            else:  # 大模型返回有问题，做待机动作
-                                num=randint(43, 50) if this_turn_elements['char_name']!='祥子' else randint(29, 35)
-                            this_turn_model.StartMotion('rana', num, 3,lambda: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
-                            this_turn_elements['live2d_motion_num']=num
-                        else:
-                            this_turn_model.StartMotion('rana', int(this_turn_elements['live2d_motion_num']), 3,lambda: self.onStartCallback_emotion_version(this_turn_elements['audio_path']),self.onFinishCallback_motion)
+                    if 'character_name' not in this_turn_elements:
+                        this_turn_elements['character_name'] = speaker_name
 
-                        tell_qt_this_turn_finish_queue.put(this_turn_elements)
-                        overlay.set_text(this_turn_elements['char_name'],
-                                       this_turn_elements['text'] + '\n' + this_turn_elements['translation'])
-                        self.playlist_pointer += 1
-                        last_audio_finish_time = 0
+                    if speaker_name == self.active_slots[0]["character_name"]:
+                        this_turn_model = model_group[0]
+                        last_speaker_slot = 0
+                    elif speaker_name == self.active_slots[1]["character_name"]:
+                        this_turn_model = model_group[1]
+                        last_speaker_slot = 1
+                    else:
+                        # 当说话人名未命中任一槽位时，沿用上一次成功命中的槽位，避免动作落到错误对象或空对象
+                        this_turn_model = model_group[last_speaker_slot]
 
+                    has_audio_file = bool(audio_path) and os.path.exists(audio_path)
+                    current_turn_has_audio = has_audio_file
 
+                    self._start_emotion_motion(
+                        model=this_turn_model,
+                        emotion=emotion,
+                        audio_path=audio_path
+                    )
 
+                    tell_qt_this_turn_finish_queue.put(this_turn_elements)
+                    overlay.set_text(speaker_name, text + '\n' + translation)
+                    self.playlist_pointer += 1
+
+                    # 无音频句子：不依赖 pygame 的“播放结束事件”，直接进入 1.5 秒冷却。
+                    if not has_audio_file:
+                        next_turn_earliest_start_at = now + WAIT_AFTER_NO_AUDIO_RATIO * len(text) + WAIT_SECONDS
+                        waiting_between_turns = True
+                        previous_frame_audio_playing = False
 
             # 清除缓冲区
             # live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
 
-            model_0.Update(breath_weight_1=0.2,breath_weight_2=0.7)
-            model_1.Update(breath_weight_1=0.2,breath_weight_2=0.7)
+            model_0.Update()
+            model_1.Update()
             # 渲染背景图片
+            # 强制恢复OpenGL状态，确保背景和UI的渲染不受Live2D的影响
+            # 因为多模型下，不知道为什么，live2d-py 库渲染模型时会修改 OpenGL 上下文，抢走了纹理的绑定。
+            glUseProgram(0)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, texture)
+            glColor4f(1, 1, 1, 1)
+
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
             if self.wavHandler.Update():  # 控制说话时的嘴型
                 this_turn_model.SetParameterValue("PARAM_MOUTH_OPEN_Y", self.wavHandler.GetRms() * self.lipSyncN)
@@ -615,6 +857,23 @@ class Live2DModule:
         live2d.dispose()
         # 结束pygame
         pygame.quit()
+
+
+def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue):
+    """Live2D 子进程入口。
+
+    注意：该函数必须在模块顶层定义，才能在 Windows/macOS 的 spawn 模式下被 pickle。
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+
+    import character
+    from multi_char_live2d_module import Live2DModule
+
+    get_char_attr = character.GetCharacterAttributes()
+    live2d_player = Live2DModule(get_char_attr.character_class_list)
+    live2d_player.play_live2d(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue)
 
 
 if __name__ == "__main__":
