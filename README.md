@@ -46,10 +46,17 @@ MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件
 
 # 版本更新记录
 ## 2026.2.17 v2.6.5
-* **新增 Live2D 模型下载器（服装扩展功能）**![img.png](./docs/img_l2ddownloader1.png)
-引入全新界面，支持从 Bestdori 一键下载角色服装，并自动完成本地配置。
-现在可以非常方便地为已有角色扩充额外的服装模型。 
-![img.png](./docs/img_l2ddownloader2.png)
+* **新增 Live2D 模型下载器（服装扩展功能）**
+
+  引入全新界面，支持从 Bestdori 一键下载角色服装，并自动完成本地配置。 现在可以非常方便地为已有角色扩充额外的服装模型。 
+
+    <div align="center">
+    <img src="./docs/img_l2ddownloader1.png" width="48.2%" />
+    <img src="./docs/img_l2ddownloader2.png" width="45%" />
+    
+    <em>全新的 Live2D 模型下载与管理界面</em>
+    </div>
+
   1. **添加自定义角色变得非常方便**
   抛弃之前视频里繁杂的手动配置步骤，现在通过新界面只需点一点，即可自动完成新角色的添加。
   手动准备的文件精简到**只有 GSV 语音模型与角色描述文件**。 
