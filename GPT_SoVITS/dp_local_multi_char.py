@@ -7,6 +7,7 @@ from chat.chat import get_chat_manager
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from litellm import completion
 from llm_model_utils import ensure_openai_compatible_model
+from character import CharacterAttributes
 
 
 class DSLocalAndVoiceGen:

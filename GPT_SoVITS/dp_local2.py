@@ -8,7 +8,7 @@ from litellm import completion
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
-
+from character import PrintInfo
 
 class DSLocalAndVoiceGen:
     def __init__(self,characters):
@@ -24,7 +24,7 @@ class DSLocalAndVoiceGen:
         self.if_generate_audio=True
         self.current_char_index=0
         self.if_sakiko=False
-        self.idle_texts = ["等待话题中...", "新的对话内容是...?", "就绪", "倾听中..."]
+        self.idle_texts = ["...", "...", "就绪", "..."]
         self.initial()
 
     def initial(self):
@@ -48,7 +48,6 @@ class DSLocalAndVoiceGen:
             self.if_sakiko = True
         else:
             self.if_sakiko = False
-
         with open('./text/restr.rep', 'r', encoding='utf-8') as f:
             self.restr = f.read()
 
@@ -141,43 +140,50 @@ class DSLocalAndVoiceGen:
                 text_queue.put('bye')
                 break
 
-            elif user_input == 'mask':
+            elif user_input=='mask':
                 if self.if_sakiko:
                     char_is_converted_queue.put('maskoff')
                 else:
                     message_queue.put("祥子好像不在<w>")
                 time.sleep(2)
                 continue
-            elif user_input == 'conv':
+            elif user_input=='conv':
                 if self.if_sakiko:
                     self.sakiko_state=not self.sakiko_state
-                    message_queue.put("已切换为"+("黑祥"if self.sakiko_state else "白祥"))
+                    message_queue.put("已切换为" + ("黑祥" if self.sakiko_state else "白祥"))
                     char_is_converted_queue.put(self.sakiko_state)
                 else:
                     message_queue.put("祥子好像不在<w>")
                 time.sleep(2)
                 continue
             elif user_input == 'v':
-                self.if_generate_audio = not self.if_generate_audio
-                message_queue.put("已" + ("开启" if self.if_generate_audio else "关闭") + "语音合成")
+                if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[
+                    self.current_char_index].gptsovits_ref_audio is None or self.character_list[
+                    self.current_char_index].sovits_model_path is None:
+                    message_queue.put("当前角色无法进行语音合成")
+                    PrintInfo.print_error(f"[Error]当前角色无法开启语音合成，缺少GPT-SoVITS模型或参考音频文件。")
+                    time.sleep(2)
+                    continue
+
+                self.if_generate_audio=not self.if_generate_audio
+                message_queue.put("已"+("开启" if self.if_generate_audio else "关闭")+"语音合成")
                 time.sleep(2)
                 continue
-            elif user_input == 's':
+            elif user_input=='s':
                 self.change_character()
-                message_queue.put(
-                    f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在切换GPT-SoVITS模型...")
+                message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在加载GPT-SoVITS模型...")
                 change_char_queue.put('yes')
                 dp2qt_queue.put("changechange")
                 AudioGenerator.change_character()
                 time.sleep(2)
                 continue
-            elif user_input == 'clr':
-                self.all_character_msg[self.current_char_index] = [{"role": "system",
-                                                                    "content": f'{self.character_list[self.current_char_index].character_description}'}]
+            elif user_input=='clr':
+                self.all_character_msg[self.current_char_index]=[{"role": "user",
+                                                                 "content": f'{self.character_list[self.current_char_index].character_description}'}]
                 message_queue.put("已清空角色的聊天记录")
                 time.sleep(2)
                 continue
-            elif user_input in ['start_talking', 'stop_talking']:
+            elif user_input in ['start_talking','stop_talking']:
                 change_char_queue.put(user_input)
                 continue
             elif user_input == 'change_l2d_background':
@@ -320,31 +326,8 @@ class DSLocalAndVoiceGen:
 
                 continue
 
-                # if response.status_code == 200:
-                # 	pass
-                # else:
-                # 	time.sleep(2)
-                # 	if response.status_code==402:
-                # 		message_queue.put("账户余额不足。本次对话未能成功。")
-                # 	elif response.status_code==401:
-                # 		message_queue.put("API key认证出错，请检查正确性")
-                # 	elif response.status_code==429:
-                # 		message_queue.put("请求速度太快，被限制了（应该不会出现这个错误吧，")
-                # 	elif response.status_code==500 or response.status_code==503:
-                # 		message_queue.put("API服务器可能崩了，可等待一会后重试。")
-                # 	elif response.status_code==403:
-                # 		message_queue.put("出现地区错误，试试科学上网...")
-                # 	else:
-                # 		message_queue.put("出现了未知错误，可尝试重新对话一次。")
-                # 	is_text_generating_queue.get()
-                # 	self.all_character_msg[self.current_char_index].pop()
-                # 	time.sleep(2)
-                # 	continue
-
             model_this_turn_msg = {"role": "assistant", "content": response.choices[0].message.content.strip()}
-            #print("aaaaaaaaaaaaaaaa",cleaned_text_of_model_response,'bbbbbbbbbbbbbbbbbb')
             text_queue.put(response.choices[0].message.content.strip())
-
             self.all_character_msg[self.current_char_index].append(model_this_turn_msg)
 
             while is_audio_play_complete.get() is None:

@@ -1,12 +1,7 @@
 import os
 import re
-
 import time
 from multiprocessing import Process, Queue
-
-# script_dir = os.path.dirname(os.path.abspath(__file__))
-# sys.path.insert(0, script_dir)
-
 
 from inference_cli import synthesize
 
@@ -159,10 +154,14 @@ class AudioGenerate:
         if not self.if_sakiko:
             self.ref_audio_file=self.character_list[self.current_character_index].gptsovits_ref_audio
 
+        self.gptsovits_process.start()
+        if (self.GPT_model_file is None) or (self.SoVITS_model_file is None) or (self.ref_audio_file is None):
+            self.is_change_complete=True
+            return
 
         self.neccerary_matirials=[0,self.GPT_model_file,self.SoVITS_model_file]
-        self.to_gptsovits_com_queue.put(self.neccerary_matirials)
-        self.gptsovits_process.start()
+        self.to_gptsovits_com_queue.put(self.neccerary_matirials)   #todo
+
 
         self.is_change_complete = False
         while self.from_gptsovits_com_queue.empty():
@@ -173,41 +172,6 @@ class AudioGenerate:
             time.sleep(0.4)
         self.from_gptsovits_com_queue.get()
         self.is_change_complete = True
-
-
-
-        # self.GPT_model_file = glob.glob(os.path.join("../GPT_weights_v4", f"*.ckpt"))
-        # if not self.GPT_model_file:
-        #     raise FileNotFoundError(f"没有找到GPT模型文件(.ckpt)")
-        # self.GPT_model_file = max(self.GPT_model_file, key=os.path.getmtime)  # 找出最新的文件
-        # #print(f"GPT模型文件...OK")
-        #
-        # self.SoVITS_model_file = glob.glob(os.path.join("../SoVITS_weights_v4", f"*.pth"))
-        # if not self.SoVITS_model_file:
-        #     raise FileNotFoundError(f"没有找到SoVITS模型文件(.pth)")
-        # self.SoVITS_model_file = max(self.SoVITS_model_file, key=os.path.getmtime)
-        # #print(f"SoVITS模型文件...OK")
-        #
-        # ref_audio_file_wav = glob.glob(os.path.join("../reference_audio", f"*.wav"))
-        # ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio", f"*.mp3"))
-        # if not ref_audio_file_wav + ref_audio_file_mp3:
-        #     raise FileNotFoundError(f"没有找到推理参考音频文件(.wav/.mp3)")
-        # #self.ref_audio_file = max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)   #黑白祥特殊设计，这句就不要了
-        # #print(f"推理参考音频文件...OK")
-        #
-        # ref_audio_language_file = '../reference_audio/reference_audio_language.txt'
-        # with open(ref_audio_language_file, "r", encoding="utf-8") as f:
-        #     try:
-        #         for line in f:
-        #             line = line.strip()
-        #             if line and not line.startswith("#"):
-        #                 self.ref_audio_language = ref_audio_language_list[int(line) - 1]
-        #                 break
-        #     except Exception:
-        #         raise ValueError("参考音频的语言参数文件读取错误")
-        # #print(f"推理参考音频的语言为：{self.ref_audio_language}")
-
-        #initialize_models(self.GPT_model_file,self.SoVITS_model_file)
 
 
     def change_character(self):
@@ -228,6 +192,11 @@ class AudioGenerate:
         self.ref_audio_language = self.character_list[self.current_character_index].gptsovits_ref_audio_lan
         if not self.if_sakiko:
             self.ref_audio_file=self.character_list[self.current_character_index].gptsovits_ref_audio
+
+        if (self.GPT_model_file is None) or (self.SoVITS_model_file is None) or (self.ref_audio_file is None):
+            self.is_change_complete=True
+            return
+
         self.neccerary_matirials=[0,self.GPT_model_file,self.SoVITS_model_file]
         self.to_gptsovits_com_queue.put(self.neccerary_matirials)   #修改模型
 
@@ -308,10 +277,6 @@ class AudioGenerate:
             if not self.if_small_theater_mode:
                 self.sakiko_which_state=dp_chat.sakiko_state
             if self.audio_language_choice=='日英混合':
-                # if self.if_sakiko:
-                #     self.speed=0.9
-                # else:
-                #     self.speed=0.88
                 text = re.sub(r'CRYCHIC', 'クライシック',text,flags=re.IGNORECASE)
                 text = re.sub(r'\bave\s*mujica\b', 'アヴェムジカ', text, flags=re.IGNORECASE)
                 text = re.sub(r'立希',( 'りっき' if self.character_list[self.current_character_index].character_name=="爱音" else 'りっき'), text, flags=re.IGNORECASE)  #りっきだよ、りっき！
@@ -319,18 +284,8 @@ class AudioGenerate:
                     text = re.sub(re.escape(key), value, text,flags=re.IGNORECASE)
 
             else:
-                # if self.if_sakiko:
-                #     self.speed=0.83
-                # else:
-                #     self.speed = 0.9
                 for key, value in self.replacements_chi.items():
                     text = re.sub(re.escape(key), value, text, flags=re.IGNORECASE)
-
-            # if text=="不能送去合成":
-            #     text="嗯"
-            #     self.audio_file_path='../reference_audio/silent_audio/silence.wav'
-            #     self.is_completed = True
-            #     return
 
             pattern = r'^[^A-Za-z0-9\u3040-\u30FF\u4E00-\u9FFF]+'    #去除句首的所有标点
             text=re.sub(pattern, '', text)
@@ -364,7 +319,6 @@ class AudioGenerate:
                                       '不切',
                                       self.pause_second
                                       ]
-            #print("sssssssss",text,'wwwwwwwwwwwwwwww')
             self.to_gptsovits_com_queue.put(self.neccerary_matirials)
             while True:
                 if not self.from_gptsovits_com_queue2.empty():
@@ -378,17 +332,6 @@ class AudioGenerate:
                     break
 
                 time.sleep(0.2)
-            #print('comcocmocmcocmoc')
-            # self.audio_file_path = synthesize(
-            #                                   ref_audio_path=ref_audio_file,
-            #                                   ref_text_path=ref_text_file,
-            #                                   ref_language=self.ref_audio_language,
-            #                                   target_text=text,
-            #                                   target_language=self.audio_language_choice,
-            #                                   output_path=self.program_output_path,
-            #                                   speed=self.speed,
-            #                                   how_to_cut='不切',
-            #                                   message_queue=message_queue)
             self.is_completed=True
         # print("音频生成模块已退出完成")
 

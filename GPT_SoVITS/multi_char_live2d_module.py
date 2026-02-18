@@ -633,9 +633,9 @@ class Live2DModule:
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
         pygame.display.set_caption('数字小祥 小剧场')
-        model_0 = LAppModel()
+        model_0 = live2d.LAppModel()
         model_0.LoadModelJson(self.active_slots[0]["model_json_path"], disable_precision=True)
-        model_1 = LAppModel()
+        model_1 = live2d.LAppModel()
         model_1.LoadModelJson(self.active_slots[1]["model_json_path"], disable_precision=True)
         self._apply_model_common_setup(model_0, win_w_and_h)
         self._apply_model_common_setup(model_1, win_w_and_h)
@@ -720,7 +720,7 @@ class Live2DModule:
                 except Exception as e:
                     print(f"处理 change_char_queue 消息失败: {e}")
                 continue
-        
+
             if not to_live2d_module_queue.empty():
                 data = to_live2d_module_queue.get()
                 if data == "STOP":

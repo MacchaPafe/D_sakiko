@@ -440,7 +440,7 @@ class WaitUntilAudioGenModuleSynthesisComplete(QThread):
                     break
                 time.sleep(0.2)
         self.synthesis_complete_signal.emit(char_text_audio_path_list)
-    
+
 
 class DragDropListWidget(QListWidget):
     """
@@ -769,7 +769,7 @@ class NewTheaterChatDialog(QDialog):
         # 一个角色的下拉选择框，列出所有角色供选择
         self.char_0_combo = QComboBox()
         self.char_1_combo = QComboBox()
-        
+
         #修复 macOS 下原生弹窗样式问题（Windows 下不存在此问题，但该修复也不会有负面作用）
         # 设置 QListView 作为视图，强制使用 Qt 自绘而非 macOS 原生弹窗
         self.char_0_combo.setView(QListView())
@@ -963,17 +963,17 @@ class SettingsDialog(QDialog):
             self.btn_detail_info.clicked.connect(self.parent_gui.config_more_info)
             self.btn_sakiko_state.clicked.connect(self.parent_gui.convert_sakiko_state)
             self.btn_sakiko_model.clicked.connect(self.parent_gui.convert_sakiko_model)
-    
+
     def change_live2d_model(self, char_index):
         if len(self.character_names) <= char_index:
             return  # 安全检查，避免索引越界
-        
+
         folder_path = ""
         for one in self.all_characters:
             if one.character_name == self.character_names[char_index]:
                 folder_path = one.character_folder_name
                 break
-        
+
         if folder_path != "":
             dialog = ChangeL2DModelWindow(folder_path, lambda path: self.parent_gui._on_live2d_model_changed(char_index, self.character_names[char_index], path))
             dialog.exec()
@@ -1183,7 +1183,10 @@ class ViewerGUI(QWidget):
         self.chat_manager: ChatManager = get_chat_manager()
         self.current_chat: Chat | None = None
         self.sakiko_state=True  #黑祥
-
+        # 当前对话是否可以生成音频（即当前对话中，两个角色是否都有语音模型）
+        self.can_generate_audio_for_current_chat = True
+        self.pending_turn_uids: set[str] = set()
+        self._generation_serial = 0
         self.ensure_theater_chat_exists()
         self.refresh_chat_list()
 
@@ -1316,7 +1319,7 @@ class ViewerGUI(QWidget):
         if chat is None:
             return
         self.switch_chat(chat)
-    
+
     def on_chat_list_order_changed(self) -> None:
         """
         当用户拖拽对话列表改变顺序时，更新 ChatManager 中 chat_list 的顺序以保持一致。
@@ -1357,7 +1360,7 @@ class ViewerGUI(QWidget):
         chat = item.data(Qt.UserRole)
         if chat is None:
             return
-        
+
         dialog = QInputDialog(self)
         dialog.setWindowTitle("重命名对话")
         dialog.setLabelText("请输入新的对话名称：")
@@ -1489,11 +1492,96 @@ class ViewerGUI(QWidget):
             return self.character_list[char_index].character_name
         return "未知角色"
 
+    @staticmethod
+    def _is_valid_model_path(path: Any) -> bool:
+        """模型路径有效性校验：非空且文件存在。"""
+        return isinstance(path, str) and bool(path.strip()) and os.path.exists(path.strip())
+
+    def _find_character_by_name(self, character_name: str):
+        """按角色名获取角色对象。"""
+        for char in self.character_list:
+            if char.character_name == character_name:
+                return char
+        return None
+
+    def _can_generate_audio_for_chat_characters(self, character_names: List[str]) -> bool:
+        """判断当前对话角色是否具备完整可用的语音模型。"""
+        for name in character_names:
+            char = self._find_character_by_name(name)
+            if char is None:
+                return False
+            if not self._is_valid_model_path(getattr(char, "GPT_model_path", None)):
+                return False
+            if not self._is_valid_model_path(getattr(char, "sovits_model_path", None)):
+                return False
+            if not self._is_valid_model_path(getattr(char, "gptsovits_ref_audio", None)):
+                return False
+        return True
+
     def _default_model_path_from_index(self, char_index: int) -> str:
         """根据角色索引获取默认 Live2D 模型路径，越界时返回空字符串。"""
         if 0 <= char_index < len(self.character_list):
             return self.character_list[char_index].live2d_json
         return ""
+
+    def _next_turn_uid(self, turn_index: int) -> str:
+        """为本轮生成的每一句对话分配唯一序号，用于去重。"""
+        return f"{self._generation_serial}:{turn_index}"
+
+    @staticmethod
+    def _message_signature_from_dict(turn_data: Dict[str, Any]) -> Tuple[Any, ...]:
+        """用于回放场景去重的稳定签名。"""
+        return (
+            turn_data.get("character_name", ""),
+            turn_data.get("text", ""),
+            turn_data.get("translation", ""),
+            turn_data.get("emotion", ""),
+            turn_data.get("audio_path", ""),
+        )
+
+    def _safe_get_audio_path(self, audio_list: List[str], pointer: int) -> Optional[str]:
+        """安全读取语音路径，越界时返回 None。"""
+        if 0 <= pointer < len(audio_list):
+            return audio_list[pointer]
+        return None
+
+    def _build_playlist_queue(self) -> List[Dict[str, Any]]:
+        """将模型返回的原始对话与音频结果组装为播放列表。"""
+        char_0_text_pointer = 0
+        char_1_text_pointer = 0
+        playlist_queue: List[Dict[str, Any]] = []
+
+        for i, turn in enumerate(self.original_response):
+            emotion = turn.get("emotion", "normal")
+            translation = turn.get("translation", "")
+            turn_uid = self._next_turn_uid(i)
+
+            if self.char_talk_texts_match_original_response_indices[i] == 'char_0':
+                text = self.char_0_talk_texts[char_0_text_pointer]
+                audio_path = self._safe_get_audio_path(self.char_0_audio_path_list, char_0_text_pointer)
+                char_0_text_pointer += 1
+                char_name = self.character_list[self.current_char_index[0]].character_name
+            elif self.char_talk_texts_match_original_response_indices[i] == 'char_1':
+                text = self.char_1_talk_texts[char_1_text_pointer]
+                audio_path = self._safe_get_audio_path(self.char_1_audio_path_list, char_1_text_pointer)
+                char_1_text_pointer += 1
+                char_name = self.character_list[self.current_char_index[1]].character_name
+            else:
+                text = turn.get('text', '')
+                audio_path = None
+                char_name = turn.get('speaker', '未知角色')
+
+            one_turn = Message.from_dict({
+                "character_name": char_name,
+                "text": text,
+                "translation": translation,
+                "emotion": emotion,
+                "audio_path": audio_path,
+            }).as_dict()
+            one_turn["turn_uid"] = turn_uid
+            playlist_queue.append(one_turn)
+
+        return playlist_queue
 
     def _build_active_slots_payload(self, indices: Optional[List[int]] = None, override_paths: Optional[Dict[int, str]] = None, preserve_playback: bool = False) -> Dict[str, Any]:
         """构建发送给 Live2D 子进程的 `set_active_slots` payload。
@@ -1538,11 +1626,11 @@ class ViewerGUI(QWidget):
         """将双模型状态同步到 Live2D 子进程。"""
         payload = self._build_active_slots_payload(indices=indices, override_paths=override_paths, preserve_playback=preserve_playback)
         self.to_live2d_change_character_queue.put(payload)
-    
+
     def display_live2d_message(self, msg: list[dict], preserve_playback: bool = False) -> None:
         """
         将数条消息发送 Live2D 子进程播放。
-        
+
         :param msg: 每条消息包含角色名称、文本内容、表情等信息的字典列表。
         :param preserve_playback: 设置为 True 时，传入的内容会进入队列排队，在前面已有内容播放完后再播放；
         设置为 False 时，当前正在播放的内容播放完一整句后会被立刻打断，立即播放传入的内容。（此时队列缓存的待播放内容也会被清空）
@@ -1587,6 +1675,10 @@ class ViewerGUI(QWidget):
         self.current_char_index = self._character_indices_from_names(char_names)
         self.refresh_chat_display()
         self.refresh_chat_list()
+
+        self.can_generate_audio_for_current_chat = self._can_generate_audio_for_chat_characters(char_names)
+        if 'dp_module' in globals():
+            setattr(dp_module, "if_generate_audio", self.can_generate_audio_for_current_chat)
 
         if len(self.current_char_index) == 2:
             self.sync_live2d_active_slots(indices=self.current_char_index)
@@ -1774,7 +1866,17 @@ class ViewerGUI(QWidget):
                 self.char_talk_texts_match_original_response_indices.append('skipped')
                 print(f"警告: 无法识别说话人 '{speaker_name_from_llm}'，已跳过该句，内容：{text}")
                 return
+
+        self._generation_serial += 1
         self.audio_gen_module.audio_language_choice="日英混合"
+
+        if not self.can_generate_audio_for_current_chat:
+            self.char_0_audio_path_list = []
+            self.char_1_audio_path_list = []
+            self.messages_box.setText("缺少语音模型，跳过语音生成，直接展示文本")
+            self.final_handle_response([])
+            return
+
         self.messages_box.setText(f"切换 {self.character_list[idx_0].character_name} 的GSV模型，..")
         self.audio_gen_change_char_thread_0=WaitUntilAudioGenModuleChangeComplete(self.audio_gen_module,idx_0)
         self.audio_gen_change_char_thread_0.change_complete_signal.connect(self.handle_response_continue)
@@ -1802,44 +1904,20 @@ class ViewerGUI(QWidget):
             self.to_audio_gen_queue)
         self.audio_gen_generate_audio_thread_1.synthesis_complete_signal.connect(self.final_handle_response)
         self.audio_gen_generate_audio_thread_1.start()
-    def final_handle_response(self,char_1_audio_path_list):
-        self.char_1_audio_path_list = char_1_audio_path_list
+    def final_handle_response(self,char_1_audio_path_list=None):
+        self.char_1_audio_path_list = char_1_audio_path_list or []
         self.messages_box.setText(f"对话生成完毕")
         self.display_timer.setSingleShot(True)
         self.display_timer.start(1000)
         self.generate_btn.setEnabled(True)
 
-        char_0_text_pointer=0
-        char_1_text_pointer=0
-        self.playlist_queue = []
-
-        for i,turn in enumerate(self.original_response):
-            emotion = self.original_response[i]["emotion"]
-            translation=self.original_response[i]["translation"]
-            if self.char_talk_texts_match_original_response_indices[i]=='char_0':
-                text=self.char_0_talk_texts[char_0_text_pointer]
-                audio_path=self.char_0_audio_path_list[char_0_text_pointer]
-                char_0_text_pointer+=1
-                char_name=self.character_list[self.current_char_index[0]].character_name
-            elif self.char_talk_texts_match_original_response_indices[i]=='char_1':
-                text = self.char_1_talk_texts[char_1_text_pointer]
-                audio_path = self.char_1_audio_path_list[char_1_text_pointer]
-                char_1_text_pointer += 1
-                char_name = self.character_list[self.current_char_index[1]].character_name
-            else:
-                text=turn.get('text','')
-                audio_path=None
-                char_name=turn.get('speaker','未知角色')
-
-            self.playlist_queue.append({
-                "character_name": char_name,
-                "text": text,
-                "translation": translation,
-                "emotion": emotion,
-                "audio_path": audio_path,
-            })
-
-        self.playlist_queue = [Message.from_dict(turn).as_dict() for turn in self.playlist_queue]
+        self.playlist_queue = self._build_playlist_queue()
+        self.pending_turn_uids = {
+            turn_uid
+            for turn in self.playlist_queue
+            for turn_uid in [turn.get("turn_uid")]
+            if isinstance(turn_uid, str) and turn_uid
+        }
         self.display_live2d_message(self.playlist_queue, preserve_playback=False)
         self.display_text_thread=DisplayTalkText(self.tell_qt_this_turn_finish_queue)
         self.display_text_thread.talk_text_signal.connect(self.display_this_turn_text)
@@ -1850,13 +1928,23 @@ class ViewerGUI(QWidget):
         if self.current_chat is None:
             return
 
+        turn_uid = this_turn_elements.get("turn_uid")
+        if turn_uid:
+            if turn_uid not in self.pending_turn_uids:
+                return
+            self.pending_turn_uids.discard(turn_uid)
+
         message = self._message_from_turn_dict(this_turn_elements)
 
-        # 回放时 Live2D 会把旧消息再次推送回 Qt；按 audio_path 去重，避免重复追加。
-        if message.audio_path and any(
-            msg.audio_path == message.audio_path for msg in self.current_chat.message_list
-        ):
-            return
+        # 回放旧消息时（旧数据可能没有 turn_uid），按内容签名去重。
+        if not turn_uid:
+            incoming_signature = self._message_signature_from_dict(this_turn_elements)
+            existing_signatures = {
+                self._message_signature_from_dict(self._turn_dict_from_message(msg))
+                for msg in self.current_chat.message_list
+            }
+            if incoming_signature in existing_signatures:
+                return
 
         self.current_chat.add_message(message)
         self.refresh_chat_display()
@@ -1972,6 +2060,7 @@ class ViewerGUI(QWidget):
         self.chat_manager.save()
         self.message_queue.put("已保存最新记录")
 
+
     def close_program(self):
         self.save_history_data()
         self.to_live2d_change_character_queue.put('EXIT')
@@ -1980,6 +2069,8 @@ class ViewerGUI(QWidget):
         self.message_queue.put('EXIT')
         self.qt2dp_queue.put('EXIT')
         self.close()
+
+
 
     def match_speaker_index(self, llm_name, candidate_indices):
         """
@@ -2077,6 +2168,8 @@ class ViewerGUI(QWidget):
         return []  # 返回空列表作为兜底
 
 
+
+
 if __name__ == "__main__":
     import multiprocessing as mp
     from dp_local_multi_char import DSLocalAndVoiceGen
@@ -2087,7 +2180,6 @@ if __name__ == "__main__":
     mp.freeze_support()
     ctx = mp.get_context("spawn")
 
-    import os
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     get_char_attr = character.GetCharacterAttributes()
@@ -2135,7 +2227,6 @@ if __name__ == "__main__":
     if font_family:
         font = QFont(font_family[0], 12)
         app.setFont(font)
-
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     screen_w_mid = int(0.55 * QDesktopWidget().screenGeometry().width())

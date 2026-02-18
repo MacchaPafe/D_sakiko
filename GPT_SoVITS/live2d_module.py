@@ -12,7 +12,8 @@ import sys
 import queue
 
 from multi_char_live2d_module import TextOverlay
-
+from qconfig import d_sakiko_config
+from character import  PrintInfo
 
 class BackgroundRen(object):
 
@@ -105,9 +106,11 @@ class Live2DModule:
         back_img_jpg = glob.glob(os.path.join("../live2d_related", f"*.jpg"))
         if not (back_img_png+back_img_jpg):
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
-        self.BACK_IMAGE = back_img_jpg + back_img_png
-        self.back_img_index = 0
-        #print("Live2D初始化...OK")
+        self.BACK_IMAGE=back_img_jpg+back_img_png
+        self.back_img_index=0
+        config_data = d_sakiko_config.background_image_path.value
+        if config_data in self.BACK_IMAGE:
+            self.back_img_index = self.BACK_IMAGE.index(config_data)
 
 
     # 动作播放开始后调用
@@ -143,6 +146,13 @@ class Live2DModule:
         self.think_motion_is_over=True
 
 
+    def save_l2d_json_paths_and_bg(self):
+        d_sakiko_config.l2d_json_paths_dict.value = {}
+        for char in self.character_list:
+            if char.character_name!="祥子":
+                d_sakiko_config.l2d_json_paths_dict.value[char.character_name] = char.live2d_json
+        d_sakiko_config.background_image_path.value = self.BACK_IMAGE[self.back_img_index]
+        d_sakiko_config.save()
 
     def play_live2d(self,
                     emotion_queue,
@@ -282,12 +292,12 @@ class Live2DModule:
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
                         except Exception as e:
-                            print("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：", e)
+                            PrintInfo.print_error(f"[Error]Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：{e}")
                             new_model=None
                         if new_model is not None:
                             del model
                             model=new_model
-                            print("Live2D模型切换成功！")
+                            PrintInfo.print_info("Live2D模型切换成功！")
                             #model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
                             self.character_list[self.current_character_num].live2d_json = new_model_path
                         else:
@@ -384,6 +394,7 @@ class Live2DModule:
                     pygame.display.flip()
                     if self.motion_is_over:
                         self.run=False
+                        self.save_l2d_json_paths_and_bg()
                     continue
 
                 this_turn_audio_file_path=audio_file_queue.get()

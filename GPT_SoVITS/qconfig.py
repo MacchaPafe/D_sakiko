@@ -83,6 +83,11 @@ class DSakikoConfig(QConfig):
             "爱音",
             "祥子"
         ]})
+    
+    # 角色的默认 live2d json 选择
+    l2d_json_paths_dict = ConfigItem("character_setting", "l2d_json_paths_dict", {})
+    # 默认的 live2d 背景图片选择
+    background_image_path = ConfigItem("character_setting", "background_image_path", "")
 
     # 颜色主题默认信息
     theme_color = ConfigItem("theme_color_setting", "theme_color", [

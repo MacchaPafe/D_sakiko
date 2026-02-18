@@ -5,7 +5,7 @@ import os
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QApplication,
                              QVBoxLayout, QLabel,
-                             QStackedWidget, QMainWindow)
+                             QStackedWidget, QMainWindow, QWidget)
 from PyQt5.QtCore import Qt, QTimer
 
 from ui.components.custom_setting_area import CustomSettingArea
@@ -65,7 +65,7 @@ class DSakikoConfigArea(TransparentScrollArea):
 
         self.setMinimumSize(500, 600)
 
-    def add_sub_interface(self, widget: QLabel, object_name: str, text: str):
+    def add_sub_interface(self, widget: QWidget, object_name: str, text: str):
         """
         添加一个 Qt 组件为一个分栏项目。
 
