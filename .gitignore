@@ -25,6 +25,7 @@
 
 **/.DS_Store
 d_sakiko_config.json
+.python-version
 
 .idea/**
 .vscode/**
