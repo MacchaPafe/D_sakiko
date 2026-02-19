@@ -12,7 +12,7 @@ import sys
 import queue
 
 from multi_char_live2d_module import TextOverlay
-from qconfig import d_sakiko_config
+from qconfig import d_sakiko_config, qconfig
 from character import  PrintInfo
 
 class BackgroundRen(object):
@@ -147,6 +147,8 @@ class Live2DModule:
 
 
     def save_l2d_json_paths_and_bg(self):
+        # 必须重新读取一遍配置，否则之前的修改（如果有的话）会被覆盖掉
+        qconfig.load("../d_sakiko_config.json", d_sakiko_config)
         d_sakiko_config.l2d_json_paths_dict.value = {}
         for char in self.character_list:
             if char.character_name!="祥子":
