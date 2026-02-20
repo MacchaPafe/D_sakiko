@@ -249,6 +249,17 @@ else
     echo "⚠️  未找到需要签名的 .so 文件（GPT_SoVITS/*.so），跳过签名步骤。"
 fi
 
+# 为 hdiff/hpatch 工具移除 quarantine，并确保可执行权限
+for PATCH_TOOL in "tools/hdiffz" "tools/hpatchz"; do
+    if [[ -f "$PATCH_TOOL" ]]; then
+        xattr -d com.apple.quarantine "$PATCH_TOOL" 2>/dev/null || true
+        codesign -s - -f "$PATCH_TOOL" || true  # 即使签名失败也继续，保持工具可用
+        chmod +x "$PATCH_TOOL" 2>/dev/null || true
+    else
+        echo "⚠️  未找到补丁工具：$PATCH_TOOL"
+    fi
+done
+
 echo "✅ 组件验证完成"
 
 # 一个包的数据文件需要从 GitHub 下载
@@ -274,22 +285,6 @@ fi
 rm -rf "$PYOPENJTALK_DIR/open_jtalk_dic_utf_8-1.11"
 cp -R "install_patch/open_jtalk_dic_utf_8-1.11" "$PYOPENJTALK_DIR/"
 
-# 腮红发黑的修复
-LIVE2D_DIR=""
-if LIVE2D_DIR="$($VENV_PY -c 'import live2d, os; print(os.path.dirname(live2d.__file__))' 2>/dev/null)"; then
-    :
-else
-    die "无法定位 live2d 安装路径，请确认依赖已成功安装。"
-fi
-
-TARGET_DRAW_PY="$LIVE2D_DIR/v2/core/graphics/draw_param_opengl.py"
-if [[ ! -f "install_patch/draw_param_opengl.py" ]]; then
-    die "缺少补丁文件：install_patch/draw_param_opengl.py"
-fi
-if [[ ! -f "$TARGET_DRAW_PY" ]]; then
-    die "未找到目标文件（live2d 包结构可能变化）：$TARGET_DRAW_PY"
-fi
-cp "install_patch/draw_param_opengl.py" "$TARGET_DRAW_PY"
 echo "数据文件复制完成。"
 
 echo "========================================="
