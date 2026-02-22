@@ -13,7 +13,7 @@
 /GPT_SoVITS/pretrained_models/
 /GPT_SoVITS/text/
 /GPT_SoVITS/tools/
-/GPT_SoVITS/training_dir
+/GPT_SoVITS/training_dir/
 /GPT_SoVITS/TTS_infer_pack/
 /GPT_SoVITS/8.py
 /GPT_SoVITS/57.py
@@ -22,6 +22,19 @@
 /GPT_SoVITS/test_danmu.py
 /GPT_SoVITS/eres2net/**
 
-# Python rubbish
-__pycache__/**
+**/.DS_Store
+d_sakiko_config.json
+.python-version
+# 更新相关文件
+.update_backup/**
+update_logs/**
+**/*.hdiff
+
+.idea/**
+.vscode/**
+**/__pycache__/**
 *.pyc
+PyQt-Fluent-Widgets/**
+knowledge_base/**
+install_patch/**
+wheels/**
