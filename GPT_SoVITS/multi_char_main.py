@@ -1506,6 +1506,10 @@ class ViewerGUI(QWidget):
                 return False
             if not self._is_valid_model_path(getattr(char, "sovits_model_path", None)):
                 return False
+            if char.character_name == '祥子':
+                # 祥子不具有 gptsovits_ref_audio 属性，因为她的参考音频是动态设置的。
+                # 只要满足前两个要求，我们直接认为她具有完整的语音模型。
+                continue
             if not self._is_valid_model_path(getattr(char, "gptsovits_ref_audio", None)):
                 return False
         return True
