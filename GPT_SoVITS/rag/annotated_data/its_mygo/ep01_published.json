@@ -1,0 +1,1493 @@
+{
+  "metadata": {
+    "subtitle_path": "[Nekomoe kissaten] BanG Dream! It’s MyGO!!!!! [01][BDRip].JPSC.ass",
+    "anime_title": "It's MyGO!!!!!",
+    "series_id": "its_mygo",
+    "season_id": 3,
+    "canon_branch": "main",
+    "episode": 1,
+    "source_stage2_model": "deepseek/deepseek-reasoner",
+    "source_stage2_template_path": "/Users/liyanxiao/Documents/Python Files/D_sakiko/GPT_SoVITS/rag/pipeline/prompts/extraction_pass.jinja"
+  },
+  "story_events": [
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s001:event_01:4000",
+      "source_scene_id": "ep01_s001",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0001",
+        "ep01_u0002",
+        "ep01_u0003",
+        "ep01_u0004",
+        "ep01_u0005",
+        "ep01_u0006",
+        "ep01_u0007",
+        "ep01_u0008",
+        "ep01_u0009",
+        "ep01_u0010",
+        "ep01_u0011",
+        "ep01_u0012",
+        "ep01_u0013",
+        "ep01_u0014",
+        "ep01_u0015",
+        "ep01_u0016",
+        "ep01_u0017",
+        "ep01_u0018",
+        "ep01_u0019",
+        "ep01_u0020",
+        "ep01_u0021",
+        "ep01_u0022",
+        "ep01_u0023",
+        "ep01_u0024",
+        "ep01_u0025",
+        "ep01_u0026",
+        "ep01_u0027",
+        "ep01_u0028",
+        "ep01_u0029",
+        "ep01_u0030",
+        "ep01_u0031",
+        "ep01_u0032",
+        "ep01_u0033",
+        "ep01_u0034",
+        "ep01_u0035",
+        "ep01_u0036",
+        "ep01_u0037",
+        "ep01_u0038",
+        "ep01_u0039",
+        "ep01_u0040",
+        "ep01_u0041",
+        "ep01_u0042",
+        "ep01_u0043"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.96,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4000,
+        "visible_from": 4000,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "祥子宣布退出CRYCHIC引发冲突",
+        "summary": "祥子在下雨时与CRYCHIC成员见面，突然宣布退出乐队。素世表现出担忧并试图挽留和沟通，立希愤怒指责祥子不负责任，灯不安地确认决定。祥子冷淡回应，批评灯推卸责任和缺乏练习。最终，若叶睦表示从未觉得乐队开心过，加剧了紧张气氛。",
+        "participants": [
+          "tomori",
+          "sakiko",
+          "taki",
+          "mutsumi",
+          "soyo"
+        ],
+        "importance": 1,
+        "tags": [
+          "乐队冲突",
+          "退出",
+          "情绪爆发",
+          "CRYCHIC"
+        ],
+        "retrieval_text": "在雨中，祥子向CRYCHIC的旧成员宣布退出乐队，引发强烈反应。素世关心并挽留她，立希直接指责她不负责，灯则不安询问。祥子冷淡反驳，批评灯缺乏练习，最后若叶睦透露从未觉得玩乐队开心，导致气氛紧张。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s002:event_01:4001",
+      "source_scene_id": "ep01_s002",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0046",
+        "ep01_u0047",
+        "ep01_u0048",
+        "ep01_u0049",
+        "ep01_u0050",
+        "ep01_u0051",
+        "ep01_u0052",
+        "ep01_u0053",
+        "ep01_u0054",
+        "ep01_u0055",
+        "ep01_u0056"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4001,
+        "visible_from": 4001,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "爱音参加羽丘中学入学面试并表达决心",
+        "summary": "爱音在羽丘入学面试中被询问初中担任学生会长的经历，她肯定并表达在高中积极进取、度过充实生活的愿望；面试官认可后结束面试，之后爱音自我评估成绩良好，自信入学没问题，并决心在新学校从头来过。",
+        "participants": [
+          "anon"
+        ],
+        "importance": 2,
+        "tags": [
+          "面试",
+          "自我介绍",
+          "决心",
+          "入学",
+          "羽丘"
+        ],
+        "retrieval_text": "爱音参加羽丘中学入学面试，被问及初中时是学生会长，她积极肯定并表达在高中也会积极进取、争取充实生活；面试官认可并结束面试后，爱音自言自语感觉良好，认为档案成绩好、入学没问题，并决心在这里从头来过。标签：面试、决心、自我介绍。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s003:event_01:4002",
+      "source_scene_id": "ep01_s003",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0058",
+        "ep01_u0059",
+        "ep01_u0060",
+        "ep01_u0061",
+        "ep01_u0062",
+        "ep01_u0063",
+        "ep01_u0064",
+        "ep01_u0065",
+        "ep01_u0066",
+        "ep01_u0067",
+        "ep01_u0068",
+        "ep01_u0069",
+        "ep01_u0070",
+        "ep01_u0071",
+        "ep01_u0072",
+        "ep01_u0073",
+        "ep01_u0074",
+        "ep01_u0075",
+        "ep01_u0076",
+        "ep01_u0077",
+        "ep01_u0078",
+        "ep01_u0079",
+        "ep01_u0080",
+        "ep01_u0081",
+        "ep01_u0082",
+        "ep01_u0083",
+        "ep01_u0084",
+        "ep01_u0085",
+        "ep01_u0086",
+        "ep01_u0087",
+        "ep01_u0088",
+        "ep01_u0089",
+        "ep01_u0090",
+        "ep01_u0091",
+        "ep01_u0092",
+        "ep01_u0093",
+        "ep01_u0094",
+        "ep01_u0095",
+        "ep01_u0096",
+        "ep01_u0097",
+        "ep01_u0098",
+        "ep01_u0099",
+        "ep01_u0100",
+        "ep01_u0101",
+        "ep01_u0102",
+        "ep01_u0103",
+        "ep01_u0104",
+        "ep01_u0105",
+        "ep01_u0106",
+        "ep01_u0107",
+        "ep01_u0108",
+        "ep01_u0109",
+        "ep01_u0110",
+        "ep01_u0111",
+        "ep01_u0112",
+        "ep01_u0113",
+        "ep01_u0114",
+        "ep01_u0115",
+        "ep01_u0116",
+        "ep01_u0117"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4002,
+        "visible_from": 4002,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "爱音入学羽丘并尝试融入班级",
+        "summary": "爱音作为新同学在班级中自我介绍，得到老师和同学的欢迎。午休时她主动与同学一起吃饭，交流中讨论名字和过去学校，但话题最终转向灯，让爱音感到自己的话题被忽视。",
+        "participants": [
+          "anon",
+          "tomori"
+        ],
+        "importance": 1,
+        "tags": [
+          "入学",
+          "社交",
+          "自我介绍",
+          "班级互动"
+        ],
+        "retrieval_text": "爱音作为转学生进入班级，礼貌地自我介绍并尝试融入。午休时与同学交流，但讨论很快转向灯的行为，让爱音感到失落。标签：入学、社交、自我介绍、班级互动。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s004:event_01:4003",
+      "source_scene_id": "ep01_s004",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0120",
+        "ep01_u0126",
+        "ep01_u0127",
+        "ep01_u0128",
+        "ep01_u0129",
+        "ep01_u0132",
+        "ep01_u0140",
+        "ep01_u0142",
+        "ep01_u0143",
+        "ep01_u0144",
+        "ep01_u0147",
+        "ep01_u0148",
+        "ep01_u0149",
+        "ep01_u0153",
+        "ep01_u0154"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.95,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4003,
+        "visible_from": 4003,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "爱音被邀请加入乐队并考虑中",
+        "summary": "爱音在放学后与绘里等人讨论学校乐队文化，得知校内有多支知名乐队，并表达了自己想举办Live的愿望。随后绘里三人邀请她加入自己的乐队，翻唱Afterglow的歌曲，作为吉他手。爱音想要作为吉他主唱，对在乐队中的位置表示担忧，最终表示会考虑一下。回家后，她感叹社交疲惫但满意交到了朋友，认为第一天还不错。",
+        "participants": [
+          "tomori",
+          "anon"
+        ],
+        "importance": 1,
+        "tags": [
+          "乐队邀请",
+          "社交",
+          "犹豫",
+          "学校生活"
+        ],
+        "retrieval_text": "爱音在放学路上与同学灯和立希等人交谈，了解到学校里有Afterglow、PasPale、Roselia、RAS等多支乐队。她表达想举办Live的渴望，随后绘里三人邀请她加入自己的乐队，翻唱Afterglow的歌曲。爱音透露自己想做吉他主唱，担心作为吉他手在角落位置，最终表示考虑一下。回家后她感到疲惫但高兴交到了朋友。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s005:event_01:4004",
+      "source_scene_id": "ep01_s005",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0155",
+        "ep01_u0156",
+        "ep01_u0157",
+        "ep01_u0158",
+        "ep01_u0159",
+        "ep01_u0160",
+        "ep01_u0161",
+        "ep01_u0162",
+        "ep01_u0163",
+        "ep01_u0164",
+        "ep01_u0165",
+        "ep01_u0166",
+        "ep01_u0167",
+        "ep01_u0168",
+        "ep01_u0169"
+      ],
+      "evidence_s_ids": [
+        "ep01_s0002",
+        "ep01_s0003"
+      ],
+      "confidence": 0.9,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4004,
+        "visible_from": 4004,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "爱音面对乐队邀请的犹豫与组建计划",
+        "summary": "爱音庆幸自己有吉他，并认为大家都玩乐队所以自己也得参与。当绘里邀请她加入乐队时，她因不熟悉Afterglow而犹豫并道歉，但感谢邀请。之后她思考组建自己的乐队，偏好吉他主唱，并疑惑学校没有轻音部，考虑去吹奏乐部寻找成员。",
+        "participants": [
+          "anon"
+        ],
+        "importance": 2,
+        "tags": [
+          "乐队",
+          "邀请",
+          "犹豫",
+          "计划"
+        ],
+        "retrieval_text": "爱音在场景中表示庆幸自己有吉他，并认为大家都玩乐队所以自己也得参与。面对绘里的乐队邀请，她因不熟悉Afterglow而犹豫并道歉，但感谢邀请。随后她开始计划组建自己的乐队，偏好吉他主唱，并疑惑学校没有轻音部，考虑去吹奏乐部寻找成员。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s006:event_01:4005",
+      "source_scene_id": "ep01_s006",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0170",
+        "ep01_u0171",
+        "ep01_u0172",
+        "ep01_u0173",
+        "ep01_u0174",
+        "ep01_u0175",
+        "ep01_u0176",
+        "ep01_u0177",
+        "ep01_u0178",
+        "ep01_u0179",
+        "ep01_u0180",
+        "ep01_u0181",
+        "ep01_u0182",
+        "ep01_u0183",
+        "ep01_u0184",
+        "ep01_u0185",
+        "ep01_u0186"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.95,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4005,
+        "visible_from": 4005,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "爱音邀请祥子组乐队被婉拒",
+        "summary": "爱音偶然听到祥子弹琴，上前夸奖后直接邀请她一起组建乐队。祥子以吹奏乐部活动即将开始为由婉拒，并建议爱音离开，爱音对祥子使用的“大小姐语气”感到疑惑。",
+        "participants": [
+          "anon",
+          "sakiko"
+        ],
+        "importance": 1,
+        "tags": [
+          "邀请组队",
+          "拒绝",
+          "初次见面",
+          "乐队招募"
+        ],
+        "retrieval_text": "爱音在听到祥子弹琴后，主动上前夸奖并邀请她加入乐队。祥子拒绝邀请，并以吹奏乐部活动为借口建议爱音离开，爱音注意到祥子的语气非常像大小姐。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s007:event_01:4006",
+      "source_scene_id": "ep01_s007",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0264",
+        "ep01_u0269",
+        "ep01_u0270",
+        "ep01_u0271",
+        "ep01_u0274",
+        "ep01_u0277",
+        "ep01_u0278",
+        "ep01_u0280"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4006,
+        "visible_from": 4006,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "爱音邀请灯组乐队但遭拒绝",
+        "summary": "爱音在寻找乐队成员时找到灯，看到了灯写过春日影的笔记本，发现灯过去有乐队经历后，主动邀请她组乐队，但灯因害怕再次失败而消极拒绝；爱音随后提议去卡拉OK以缓和气氛。",
+        "participants": [
+          "anon",
+          "tomori"
+        ],
+        "importance": 1,
+        "tags": [
+          "乐队邀请",
+          "拒绝",
+          "互动",
+          "过去阴影"
+        ],
+        "retrieval_text": "爱音找到灯并邀请她组建新乐队，但灯因过去乐队失败的经历而拒绝，表示组乐队也会再次失败；爱音最后提议去卡拉OK玩。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s008:event_01:4007",
+      "source_scene_id": "ep01_s008",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0285",
+        "ep01_u0286",
+        "ep01_u0287",
+        "ep01_u0288",
+        "ep01_u0289",
+        "ep01_u0290",
+        "ep01_u0291",
+        "ep01_u0292",
+        "ep01_u0293",
+        "ep01_u0294",
+        "ep01_u0295",
+        "ep01_u0296",
+        "ep01_u0297",
+        "ep01_u0298",
+        "ep01_u0299",
+        "ep01_u0300",
+        "ep01_u0301",
+        "ep01_u0302",
+        "ep01_u0303"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.95,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4007,
+        "visible_from": 4007,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "素世向若叶睦倾诉对祥子的担忧并计划行动",
+        "summary": "素世在月之森放学后叫住若叶睦，询问祥子是否联系她，表达对祥子失踪的担忧和后悔当初没有多追问她退出乐队的原因，并计划社团活动后去找立希，试图重建联系。",
+        "participants": [
+          "soyo",
+          "mutsumi"
+        ],
+        "importance": 2,
+        "tags": [
+          "担忧",
+          "后悔",
+          "计划",
+          "倾诉"
+        ],
+        "retrieval_text": "素世在月之森女子学园与若叶睦对话，向她倾诉对祥子近况的担忧，后悔当初没有在祥子退出乐队时多追问，并计划社团活动后去找立希，希望恢复旧乐队的关系。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s009:event_01:4008",
+      "source_scene_id": "ep01_s009",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0304",
+        "ep01_u0305",
+        "ep01_u0306",
+        "ep01_u0307",
+        "ep01_u0308",
+        "ep01_u0309",
+        "ep01_u0310",
+        "ep01_u0311",
+        "ep01_u0312",
+        "ep01_u0313",
+        "ep01_u0314",
+        "ep01_u0315",
+        "ep01_u0316"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4008,
+        "visible_from": 4008,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "咖啡店工作互动",
+        "summary": "在咖啡店工作中，燐子夸奖立希做咖啡熟练并提议她尝试服务员工作，但立希以不擅长与人接触为由拒绝。",
+        "participants": [
+          "rinko",
+          "taki"
+        ],
+        "importance": 3,
+        "tags": [
+          "工作互动",
+          "日常对话",
+          "拒绝",
+          "情绪低落"
+        ],
+        "retrieval_text": "在咖啡店场景中，燐子与立希进行工作交流，燐子表扬立希的咖啡技能并建议她做服务员，但立希因社交不适而拒绝。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s010:event_01:4009",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "event_01",
+      "evidence_u_ids": [
+        "ep01_u0321",
+        "ep01_u0323",
+        "ep01_u0342",
+        "ep01_u0349",
+        "ep01_u0351",
+        "ep01_u0358",
+        "ep01_u0360",
+        "ep01_u0367",
+        "ep01_u0370"
+      ],
+      "evidence_s_ids": [
+        "ep01_s0012"
+      ],
+      "confidence": 0.95,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4009,
+        "visible_from": 4009,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "爱音鼓励灯并讨论乐队失败",
+        "summary": "爱音带灯到卡拉OK店，试图让她唱歌并讨论之前的乐队失败。灯自责可能是自己的问题，爱音鼓励她重拾信心。灯突然请求爱音一辈子组乐队，然后跑走。",
+        "participants": [
+          "anon",
+          "tomori"
+        ],
+        "importance": 1,
+        "tags": [
+          "卡拉OK",
+          "乐队邀请",
+          "鼓励",
+          "自责",
+          "逃跑",
+          "CRYCHIC"
+        ],
+        "retrieval_text": "在卡拉OK馆，爱音与灯对话，爱音邀请灯组乐队并鼓励她克服过去的失败。灯表达自责并请求一辈子组乐队，随后跑走。"
+      }
+    },
+    {
+      "point_id": "story_event:its_mygo:s3:ep01_s010:event_02:4010",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "event_02",
+      "evidence_u_ids": [
+        "ep01_u0376",
+        "ep01_u0377",
+        "ep01_u0378",
+        "ep01_u0379",
+        "ep01_u0380",
+        "ep01_u0381",
+        "ep01_u0385",
+        "ep01_u0388",
+        "ep01_u0392",
+        "ep01_u0395"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.94,
+      "document": {
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "episode": 1,
+        "time_order": 4010,
+        "visible_from": 4010,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "title": "立希与爱音就乐队邀请发生冲突",
+        "summary": "立希出现寻找灯，与爱音发生口角，质问爱音邀请灯组乐队的事，双方争执。",
+        "participants": [
+          "anon",
+          "taki",
+          "tomori"
+        ],
+        "importance": 2,
+        "tags": [
+          "冲突",
+          "质问",
+          "争执"
+        ],
+        "retrieval_text": "立希在卡拉OK馆外找到灯和爱音，质问爱音为什么邀请灯组乐队，双方发生口角，关系紧张。"
+      }
+    }
+  ],
+  "character_relations": [
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_01:soyo:sakiko",
+      "source_scene_id": "ep01_s001",
+      "source_local_id": "rel_01",
+      "evidence_u_ids": [
+        "ep01_u0001",
+        "ep01_u0002",
+        "ep01_u0003",
+        "ep01_u0004",
+        "ep01_u0007",
+        "ep01_u0008",
+        "ep01_u0009",
+        "ep01_u0010",
+        "ep01_u0011",
+        "ep01_u0012",
+        "ep01_u0014",
+        "ep01_u0015",
+        "ep01_u0016",
+        "ep01_u0019",
+        "ep01_u0020"
+      ],
+      "confidence": 0.95,
+      "document": {
+        "subject_character_id": "soyo",
+        "object_character_id": "sakiko",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4000,
+        "visible_to": 4006,
+        "canon_branch": "main",
+        "relation_label": "关心挽留",
+        "state_summary": "素世担心祥子的近况，并试图挽留她退出CRYCHIC，表达不解和怀念过去的快乐时光。",
+        "speech_hint": "语气关切、柔和，带着挽留和不解的意味",
+        "object_character_nickname": "小祥",
+        "tags": [
+          "关心",
+          "挽留",
+          "不解",
+          "旧友"
+        ],
+        "retrieval_text": "素世对祥子表现出关心和挽留态度，用昵称'小祥'称呼她，担忧她的状态，并试图沟通以阻止她退出乐队。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_02:taki:sakiko",
+      "source_scene_id": "ep01_s001",
+      "source_local_id": "rel_02",
+      "evidence_u_ids": [
+        "ep01_u0022",
+        "ep01_u0023",
+        "ep01_u0024",
+        "ep01_u0026",
+        "ep01_u0027",
+        "ep01_u0032"
+      ],
+      "confidence": 0.96,
+      "document": {
+        "subject_character_id": "taki",
+        "object_character_id": "sakiko",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4000,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "指责愤怒",
+        "state_summary": "立希对祥子的退出行为感到愤怒，认为她不负责，并直接指责她沉默和添堵。",
+        "speech_hint": "直接、质问、指责语气，压迫感强",
+        "object_character_nickname": "",
+        "tags": [
+          "指责",
+          "愤怒",
+          "冲突",
+          "不满"
+        ],
+        "retrieval_text": "立希对祥子表现出愤怒和指责，认为她退出乐队是不负责任的行为，质问她为什么不说话，并抱怨等待她浪费时间。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_03:tomori:sakiko",
+      "source_scene_id": "ep01_s001",
+      "source_local_id": "rel_03",
+      "evidence_u_ids": [
+        "ep01_u0021",
+        "ep01_u0033"
+      ],
+      "confidence": 0.92,
+      "document": {
+        "subject_character_id": "tomori",
+        "object_character_id": "sakiko",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4000,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "不安依赖",
+        "state_summary": "灯对祥子的退出感到不安，似乎依赖她的存在，并确认她的决定是否真实。",
+        "speech_hint": "确认、不安的语气，带着依赖感",
+        "object_character_nickname": "小祥",
+        "tags": [
+          "不安",
+          "依赖",
+          "确认",
+          "关切"
+        ],
+        "retrieval_text": "灯对祥子表现出不安和依赖，用昵称'小祥'称呼她，询问她是否真的要退出，并表达没有她的话会困难。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_04:sakiko:tomori",
+      "source_scene_id": "ep01_s001",
+      "source_local_id": "rel_04",
+      "evidence_u_ids": [
+        "ep01_u0034",
+        "ep01_u0035",
+        "ep01_u0036"
+      ],
+      "confidence": 0.94,
+      "document": {
+        "subject_character_id": "sakiko",
+        "object_character_id": "tomori",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4000,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "批评指责",
+        "state_summary": "祥子批评灯推卸责任，指出她需要练习但未努力，并质问她的作为。",
+        "speech_hint": "批评、质问语气，带着讽刺和不满",
+        "object_character_nickname": "",
+        "tags": [
+          "批评",
+          "指责",
+          "质问",
+          "冷淡"
+        ],
+        "retrieval_text": "祥子对灯表现出批评和指责，说她推卸责任，并质问她在乐队中做了什么练习，语气冷淡而尖锐。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s006:rel_01:anon:sakiko",
+      "source_scene_id": "ep01_s006",
+      "source_local_id": "rel_01",
+      "evidence_u_ids": [
+        "ep01_u0170",
+        "ep01_u0173",
+        "ep01_u0174",
+        "ep01_u0175",
+        "ep01_u0177",
+        "ep01_u0178",
+        "ep01_u0179",
+        "ep01_u0180",
+        "ep01_u0182"
+      ],
+      "confidence": 0.92,
+      "document": {
+        "subject_character_id": "anon",
+        "object_character_id": "sakiko",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4005,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "邀请合作",
+        "state_summary": "爱音对祥子的钢琴技艺表示赞赏，并主动邀请她组乐队，表现出友好和积极的招募意向。",
+        "speech_hint": "语气夸奖、邀请，并自我介绍希望被叫爱音，显得亲切而直接。",
+        "object_character_nickname": "",
+        "tags": [
+          "友好",
+          "邀请",
+          "夸奖",
+          "招募"
+        ],
+        "retrieval_text": "爱音对祥子：夸奖她弹琴好，邀请她一起组乐队，自我介绍并希望被称呼为爱音，表现出积极的合作意愿和友好态度。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s006:rel_02:sakiko:anon",
+      "source_scene_id": "ep01_s006",
+      "source_local_id": "rel_02",
+      "evidence_u_ids": [
+        "ep01_u0171",
+        "ep01_u0176",
+        "ep01_u0181",
+        "ep01_u0183",
+        "ep01_u0184",
+        "ep01_u0185"
+      ],
+      "confidence": 0.93,
+      "document": {
+        "subject_character_id": "sakiko",
+        "object_character_id": "anon",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4005,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "疏远拒绝",
+        "state_summary": "祥子对爱音的邀请直接拒绝，并以吹奏乐部活动为借口建议她离开，语气正式而疏远，保持距离。",
+        "speech_hint": "使用正式询问和“大小姐语气”，显得礼貌但冷淡，带有提醒和拒绝意味。",
+        "object_character_nickname": "",
+        "tags": [
+          "拒绝",
+          "疏远",
+          "正式",
+          "保持距离"
+        ],
+        "retrieval_text": "祥子对爱音：询问她是否是吹奏乐部成员，拒绝组队邀请，提醒活动时间并建议离开，说话方式正式像大小姐，表现出疏远和拒绝的态度。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s007:rel_01:anon:tomori",
+      "source_scene_id": "ep01_s007",
+      "source_local_id": "rel_01",
+      "evidence_u_ids": [
+        "ep01_u0269",
+        "ep01_u0270",
+        "ep01_u0271",
+        "ep01_u0280"
+      ],
+      "confidence": 0.9,
+      "document": {
+        "subject_character_id": "anon",
+        "object_character_id": "tomori",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4006,
+        "visible_to": 4008,
+        "canon_branch": "main",
+        "relation_label": "友好邀请",
+        "state_summary": "爱音对灯表现出友好和主动的态度，邀请她组乐队并提议去玩，试图拉近关系。",
+        "speech_hint": "语气亲切（小灯，ともりちゃん），带着鼓励和提议。",
+        "object_character_nickname": "小灯",
+        "tags": [
+          "友好",
+          "邀请",
+          "关心"
+        ],
+        "retrieval_text": "爱音对灯的关系：她称呼灯为‘小灯’，主动邀请她组乐队并提议去卡拉OK，表现出友好和关心的态度。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s007:rel_02:tomori:anon",
+      "source_scene_id": "ep01_s007",
+      "source_local_id": "rel_02",
+      "evidence_u_ids": [
+        "ep01_u0274",
+        "ep01_u0277",
+        "ep01_u0278"
+      ],
+      "confidence": 0.9,
+      "document": {
+        "subject_character_id": "tomori",
+        "object_character_id": "anon",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4006,
+        "visible_to": 4008,
+        "canon_branch": "main",
+        "relation_label": "谨慎消极",
+        "state_summary": "灯对爱音的邀请表现出消极和拒绝，因过去乐队失败而害怕再次尝试，语气犹豫。",
+        "speech_hint": "语气犹豫、消极，直接拒绝邀请并表达悲观看法。",
+        "object_character_nickname": "",
+        "tags": [
+          "消极",
+          "拒绝",
+          "谨慎"
+        ],
+        "retrieval_text": "灯对爱音的关系：她拒绝爱音的组乐队邀请，表示乐队会再次失败，语气消极且犹豫。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s008:rel_01:soyo:sakiko",
+      "source_scene_id": "ep01_s008",
+      "source_local_id": "rel_01",
+      "evidence_u_ids": [
+        "ep01_u0288",
+        "ep01_u0289",
+        "ep01_u0290",
+        "ep01_u0291",
+        "ep01_u0292",
+        "ep01_u0293",
+        "ep01_u0294",
+        "ep01_u0295"
+      ],
+      "confidence": 0.96,
+      "document": {
+        "subject_character_id": "soyo",
+        "object_character_id": "sakiko",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4007,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "担心并关心",
+        "state_summary": "素世对祥子的失踪和近况表示深切担忧，后悔当初没有多追问她退出乐队的原因，并希望她能回来或取得联系。",
+        "speech_hint": "提到祥子时语气担忧、关心，带有后悔和期待，经常使用昵称。",
+        "object_character_nickname": "小祥",
+        "tags": [
+          "担心",
+          "关心",
+          "后悔",
+          "期待"
+        ],
+        "retrieval_text": "素世对祥子的关系：她非常担心祥子的下落和状况，用昵称‘小祥’称呼她，语气中透露出关心、后悔当初没有多沟通，并希望重建联系。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s008:rel_02:soyo:mutsumi",
+      "source_scene_id": "ep01_s008",
+      "source_local_id": "rel_02",
+      "evidence_u_ids": [
+        "ep01_u0285",
+        "ep01_u0286",
+        "ep01_u0287",
+        "ep01_u0288",
+        "ep01_u0289",
+        "ep01_u0290",
+        "ep01_u0291",
+        "ep01_u0294",
+        "ep01_u0295",
+        "ep01_u0296",
+        "ep01_u0297",
+        "ep01_u0298",
+        "ep01_u0299",
+        "ep01_u0301",
+        "ep01_u0302",
+        "ep01_u0303"
+      ],
+      "confidence": 0.93,
+      "document": {
+        "subject_character_id": "soyo",
+        "object_character_id": "mutsumi",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4007,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "友好依赖",
+        "state_summary": "素世将若叶睦视为可以倾诉和依赖的同伴，对她使用昵称，语气友好并道歉，邀请她一起行动以解决乐队问题。",
+        "speech_hint": "面对若叶睦时语气柔和、友好，带有歉意和邀请意味，经常使用昵称称呼。",
+        "object_character_nickname": "小睦",
+        "tags": [
+          "友好",
+          "依赖",
+          "倾诉",
+          "邀请"
+        ],
+        "retrieval_text": "素世对若叶睦的关系：她称呼若叶睦为‘小睦’，语气友好，向她倾诉对祥子的担忧，并邀请她一起去找立希，表现出依赖和信任。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s009:rel_01:rinko:taki",
+      "source_scene_id": "ep01_s009",
+      "source_local_id": "rel_01",
+      "evidence_u_ids": [
+        "ep01_u0304",
+        "ep01_u0305",
+        "ep01_u0307",
+        "ep01_u0308",
+        "ep01_u0310",
+        "ep01_u0312"
+      ],
+      "confidence": 0.9,
+      "document": {
+        "subject_character_id": "rinko",
+        "object_character_id": "taki",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4008,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "友好关心与指导",
+        "state_summary": "燐子对立希的工作能力表示认可，并试图鼓励她尝试新任务，表现出关心和友好的态度。",
+        "speech_hint": "语气亲切，带有夸奖、感谢和调侃",
+        "object_character_nickname": "立希ちゃん",
+        "tags": [
+          "工作关系",
+          "关心",
+          "调侃"
+        ],
+        "retrieval_text": "燐子对立希的关系：在工作场合中，燐子对立希表现出友好和关心，称赞她做咖啡熟练，并提议她尝试服务员工作，用亲切的语气称呼她为'立希ちゃん'。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_01:anon:tomori",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "rel_01",
+      "evidence_u_ids": [
+        "ep01_u0321",
+        "ep01_u0323",
+        "ep01_u0342",
+        "ep01_u0360",
+        "ep01_u0369"
+      ],
+      "confidence": 0.96,
+      "document": {
+        "subject_character_id": "anon",
+        "object_character_id": "tomori",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4009,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "关心并鼓励",
+        "state_summary": "爱音关心灯的状态，鼓励她唱歌和组乐队，语气温和。",
+        "speech_hint": "使用昵称'小灯'，语气关心、鼓励。",
+        "object_character_nickname": "小灯",
+        "tags": [
+          "关心",
+          "鼓励",
+          "昵称"
+        ],
+        "retrieval_text": "爱音对灯表现出关心和鼓励，称呼她为'小灯'，试图让她放松并参与乐队。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_02:tomori:anon",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "rel_02",
+      "evidence_u_ids": [
+        "ep01_u0358",
+        "ep01_u0367",
+        "ep01_u0372",
+        "ep01_u0373"
+      ],
+      "confidence": 0.93,
+      "document": {
+        "subject_character_id": "tomori",
+        "object_character_id": "anon",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4009,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "信任并依赖",
+        "state_summary": "灯向爱音敞开心扉，分享过去的失败，并请求长期陪伴。",
+        "speech_hint": "语气犹豫、自责，但真诚。",
+        "object_character_nickname": "",
+        "tags": [
+          "信任",
+          "依赖",
+          "请求"
+        ],
+        "retrieval_text": "灯对爱音表现出信任和依赖，分享乐队失败的自责，并请求一辈子组乐队。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_03:anon:taki",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "rel_03",
+      "evidence_u_ids": [
+        "ep01_u0378",
+        "ep01_u0380",
+        "ep01_u0385",
+        "ep01_u0388"
+      ],
+      "confidence": 0.95,
+      "document": {
+        "subject_character_id": "anon",
+        "object_character_id": "taki",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4009,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "防御性挑衅",
+        "state_summary": "爱音对立希的介入感到不满，以挑衅态度回应。",
+        "speech_hint": "使用'你这人'，语气质问、挑衅。",
+        "object_character_nickname": "",
+        "tags": [
+          "防御",
+          "挑衅",
+          "冲突"
+        ],
+        "retrieval_text": "爱音对立希表现出防御性和挑衅，质疑她的身份并捍卫自己与灯的关系。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_04:taki:anon",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "rel_04",
+      "evidence_u_ids": [
+        "ep01_u0379",
+        "ep01_u0381",
+        "ep01_u0392",
+        "ep01_u0395"
+      ],
+      "confidence": 0.94,
+      "document": {
+        "subject_character_id": "taki",
+        "object_character_id": "anon",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4009,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "怀疑并指责",
+        "state_summary": "立希怀疑爱音的动机，指责她邀请灯组乐队。",
+        "speech_hint": "使用'お前'，语气质问、指责。",
+        "object_character_nickname": "",
+        "tags": [
+          "怀疑",
+          "指责",
+          "冲突"
+        ],
+        "retrieval_text": "立希对爱音表现出怀疑和指责，质问她邀请灯组乐队的行为。"
+      }
+    },
+    {
+      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_05:taki:tomori",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "rel_05",
+      "evidence_u_ids": [
+        "ep01_u0376",
+        "ep01_u0377",
+        "ep01_u0382"
+      ],
+      "confidence": 0.96,
+      "document": {
+        "subject_character_id": "taki",
+        "object_character_id": "tomori",
+        "season_id": 3,
+        "series_id": "its_mygo",
+        "visible_from": 4009,
+        "visible_to": 999999,
+        "canon_branch": "main",
+        "relation_label": "关心并保护",
+        "state_summary": "立希寻找灯，担心她的安全。",
+        "speech_hint": "直接呼唤'灯'，语气关心。",
+        "object_character_nickname": "灯",
+        "tags": [
+          "关心",
+          "保护",
+          "寻找"
+        ],
+        "retrieval_text": "立希对灯表现出关心和保护，寻找她并询问她的状况。"
+      }
+    }
+  ],
+  "lore_entries": [
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s001:lore_01:CRYCHIC",
+      "source_scene_id": "ep01_s001",
+      "source_local_id": "lore_01",
+      "evidence_u_ids": [
+        "ep01_u0006",
+        "ep01_u0019"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "CRYCHIC",
+        "content": "CRYCHIC是祥子宣布退出的乐队名称，是成员们（灯、祥子、立希、若叶睦、素世）共同参与的乐队，曾举办过Live，包含一首原创曲“春日影”，但祥子决定退出该乐队。",
+        "retrieval_text": "术语：CRYCHIC。它是祥子、素世、灯、立希、若叶睦等人组成的乐队，祥子在一个雨夜宣布退出，引发成员间的冲突和情绪反应。",
+        "tags": [
+          "乐队",
+          "音乐团体",
+          "旧乐队",
+          "冲突核心"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s003:lore_01:羽丘",
+      "source_scene_id": "ep01_s003",
+      "source_local_id": "lore_01",
+      "evidence_u_ids": [
+        "ep01_u0112"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.8,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "羽丘",
+        "content": "羽丘是东京的一所女子高中学校，爱音、高松灯和丰川祥子均在此学校就读。爱音和高松灯同在高一年级 A 组，而丰川祥子在高一年级 B 组。",
+        "retrieval_text": "设定：羽丘。羽丘是东京的一所女子高中学校，爱音、高松灯和丰川祥子均在此学校就读。类别：学校、地点。",
+        "tags": [
+          "学校",
+          "地点"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s003:lore_02:天文部",
+      "source_scene_id": "ep01_s003",
+      "source_local_id": "lore_02",
+      "evidence_u_ids": [
+        "ep01_u0082"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.85,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "天文部",
+        "content": "天文部是一个羽丘高级中学的一个社团，高松灯是天文部目前唯一的社员。只要一直写活动报告，这个社团就不会被废部。",
+        "retrieval_text": "设定：天文部。天文部是一个羽丘高级中学的一个社团，高松灯是天文部目前唯一的社员。类别：社团、学校活动。",
+        "tags": [
+          "社团",
+          "学校活动"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_01:Afterglow",
+      "source_scene_id": "ep01_s004",
+      "source_local_id": "lore_01",
+      "evidence_u_ids": [
+        "ep01_u0126",
+        "ep01_u0127"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "Afterglow",
+        "content": "Afterglow是羽丘中学高三的一个乐队，学生会长也是其成员之一。其成员包含美竹兰、青叶摩卡、上原绯玛丽、宇田川巴和羽泽鸫五人。",
+        "retrieval_text": "术语：Afterglow。Afterglow是羽丘中学高三的一个乐队，学生会长也是其成员之一。其成员包含美竹兰、青叶摩卡、上原绯玛丽、宇田川巴和羽泽鸫五人，被高一的同学们视为厉害的乐队。",
+        "tags": [
+          "乐队",
+          "学校乐队"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_02:PasPale",
+      "source_scene_id": "ep01_s004",
+      "source_local_id": "lore_02",
+      "evidence_u_ids": [
+        "ep01_u0128"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "Pastel*Palettes",
+        "content": "Pastel*Palettes是一个已经毕业的乐队，全部成员目前都是大学一年级。成员包含丸山彩、冰川日菜、白鹭千圣、大和麻弥以及若宫伊芙。",
+        "retrieval_text": "术语：Pastel*Palettes（PasPale）。它是是一个已经毕业的乐队，全部成员目前都是大学一年级。成员包含丸山彩、冰川日菜、白鹭千圣、大和麻弥以及若宫伊芙",
+        "tags": [
+          "乐队",
+          "毕业乐队"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_03:Roselia",
+      "source_scene_id": "ep01_s004",
+      "source_local_id": "lore_03",
+      "evidence_u_ids": [
+        "ep01_u0129"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "Roselia",
+        "content": "Roselia是羽丘高二学姐小亚子（宇田川亚子）所在的乐队。该乐队的其他四名成员凑友希那、冰川纱夜、今井莉莎和白金燐子都已经毕业，目前都是大学一年级。",
+        "retrieval_text": "术语：Roselia。它是是羽丘高二学姐小亚子（宇田川亚子）所在的乐队。该乐队的其他四名成员凑友希那、冰川纱夜、今井莉莎和白金燐子都已经毕业，目前都是大学一年级。",
+        "tags": [
+          "乐队",
+          "学校乐队"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_04:RAS",
+      "source_scene_id": "ep01_s004",
+      "source_local_id": "lore_04",
+      "evidence_u_ids": [
+        "ep01_u0129"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "RAISE A SUILEN",
+        "content": "RAISE A SUILEN（RAS）是羽丘高二学姐Lock所在的乐队，其他成员来自各个学校的各个年级。",
+        "retrieval_text": "术语：RAISE A SUILEN（RAS）。它是是羽丘高二学姐Lock所在的乐队，其他成员来自各个学校的各个年级。",
+        "tags": [
+          "乐队",
+          "学校乐队"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s007:lore_01:CiRCLE",
+      "source_scene_id": "ep01_s007",
+      "source_local_id": "lore_01",
+      "evidence_u_ids": [
+        "ep01_u0191"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "CiRCLE",
+        "content": "东京的一个Live House场地，可以供乐队排练和演出（Live)。",
+        "retrieval_text": "CiRCLE 是一个Live House场地，可以供乐队排练和演出（Live)。",
+        "tags": [
+          "Live House",
+          "地点"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s007:lore_02:RiNG",
+      "source_scene_id": "ep01_s007",
+      "source_local_id": "lore_02",
+      "evidence_u_ids": [
+        "ep01_u0192",
+        "ep01_u0193"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "RiNG",
+        "content": "CiRCLE在池袋的二号分店，也是一个Live House。立希和香澄经常在此打工，要乐奈也喜欢光临这里。",
+        "retrieval_text": "RiNG 是CiRCLE在池袋的二号分店，同样是一个Live House。立希和香澄经常在此打工，要乐奈也喜欢光临这里。类别：Live House、地点。",
+        "tags": [
+          "Live House",
+          "地点"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s007:lore_04:春日影",
+      "source_scene_id": "ep01_s007",
+      "source_local_id": "lore_04",
+      "evidence_u_ids": [
+        "ep01_u0266"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.8,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "春日影",
+        "content": "CRYCHIC 乐队唯一的歌曲，灯在笔记本中为这首歌做了词。",
+        "retrieval_text": "春日影是 CRYCHIC 乐队唯一的歌曲，灯在笔记本中为这首歌做了词。类别：歌曲。",
+        "tags": [
+          "歌曲",
+          "CRYCHIC"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s008:lore_01:月之森女子学园",
+      "source_scene_id": "ep01_s008",
+      "source_local_id": "lore_01",
+      "evidence_u_ids": [],
+      "evidence_s_ids": [
+        "ep01_s0011"
+      ],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "月之森",
+        "content": "月之森女子学园是东京初中/高中同名的一个教育集团，素世和若叶睦是月之森高一的学生，祥子在初中时曾经就读于月之森。",
+        "retrieval_text": "月之森女子学园是东京初中/高中同名的一个教育集团，素世和若叶睦是月之森高一的学生，祥子在初中时曾经就读于月之森。类别：学校，高中",
+        "tags": [
+          "学校",
+          "地点"
+        ]
+      }
+    },
+    {
+      "point_id": "lore_entry:its_mygo:s3:ep01_s010:lore_01:sumimi",
+      "source_scene_id": "ep01_s010",
+      "source_local_id": "lore_01",
+      "evidence_u_ids": [
+        "ep01_u0326",
+        "ep01_u0327",
+        "ep01_u0330"
+      ],
+      "evidence_s_ids": [],
+      "confidence": 0.9,
+      "document": {
+        "scope_type": "series",
+        "series_ids": [
+          "its_mygo"
+        ],
+        "season_ids": [
+          3
+        ],
+        "visible_from": null,
+        "visible_to": null,
+        "canon_branch": "main",
+        "title": "sumimi",
+        "content": "sumimi 是一个偶像组合，成员包括初华和真奈，她们在动漫中唯一发布的歌曲是 “Here, the world!“。",
+        "retrieval_text": "sumimi是一个偶像音乐组合，成员有初华和真奈，唯一的乐曲是“Here, the world!“。",
+        "tags": [
+          "组合",
+          "乐队"
+        ]
+      }
+    }
+  ],
+  "issues": []
+}

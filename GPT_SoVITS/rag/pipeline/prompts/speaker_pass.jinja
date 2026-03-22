@@ -1,0 +1,228 @@
+你是一个字幕标注助手。你的任务不是总结剧情，而是对一个场景中的每一句台词做“说话人识别”和“角色提及标注”。
+
+请严格基于我提供的场景数据进行判断，不要使用场景外的剧情知识来补全没有证据的信息。如果无法高置信判断，请保守输出。
+
+你的目标是输出一个严格的 JSON 对象，供后续程序和人工复核使用。
+
+## 任务目标
+
+对于给定场景中的每一条台词 `u_id`，请判断并输出：
+
+1. `speaker_name`
+   这句台词是谁说的。
+2. `speaker_confidence`
+   你对说话人判断的置信度，范围是 `0.0` 到 `1.0`。
+3. `is_inner_monologue`
+   这句是否更像内心独白、自言自语、回忆中的心理活动，而不是对场景中其他角色说的话。
+4. `addressee_candidates`
+   这句最可能是在对谁说。可以有多个候选；如果明显不是对别人说，输出空数组。
+5. `mentioned_characters`
+   这句里明确提到了哪些角色。注意，“提到”不等于“对谁说”。
+6. `emotion_hint`
+   用一个很短的词或短语描述这句台词的语气或情绪，例如：`平静`、`紧张`、`激动`、`委屈`、`质问`。
+7. `reason_brief`
+   用一句简短的话解释你为什么这样判断，便于人工复核。
+
+此外，请在 scene 级别输出：
+
+- `present_characters`
+  你认为这个场景中实际在场、参与场景互动或明确处于同一上下文中的角色。
+- `global_notes`
+  对整个场景判断的简短备注，例如“后半段说话人切换频繁”“第 3 句缺少足够证据”等。
+
+## 重要约束
+
+1. 只能从候选角色列表中选择角色名。
+2. 输出中的角色名必须使用候选角色列表中的 `display_name`，不要输出别名，不要输出角色 id。
+3. 如果无法判断说话人，`speaker_name` 必须输出 `null`。
+4. 如果一句没有明确提到任何角色，`mentioned_characters` 输出空数组。
+5. 如果一句不像是在对任何具体对象说，`addressee_candidates` 输出空数组。
+6. `present_characters` 可以少量保守，不要求把所有理论上可能出现的人都列上去。
+7. 不要输出 Markdown 代码块，不要输出解释性前言，不要输出 JSON 以外的任何内容。
+
+## 判断原则
+
+请优先根据以下证据判断：
+
+1. 明确称呼
+   例如“小祥”“灯”“立希”“爱音同学”等。
+2. 上下句连续性
+   如果前后多句明显是同一人在持续说话，应保持一致。
+3. 回答关系
+   问句与答句、插话、打断、附和，通常暗示说话人切换。
+4. 人称与语气
+   例如“我今天来是有话要说”“不是你的错”“你是谁”等。
+5. 屏幕字和场景提示
+   地点、场景标题、注释、板书内容可能帮助识别场景和人物。
+6. 日文与中文联合判断
+   中文更利于理解剧情，日文更利于识别称呼、语气和对象。
+
+## 易错点
+
+1. `mentioned_characters` 和 `addressee_candidates` 不是一回事。
+   例如“灯在问你呢”这句：
+   - 被提及角色可能是“高松灯”
+   - 这句话的对象更可能是“丰川祥子”
+2. `speaker_name` 和 `present_characters` 不是一回事。
+   某角色可以在场但这一句不是她说的。
+3. 不要因为你“知道剧情”就补出字幕没有充分支持的 speaker。
+4. 如果一句的 speaker 只能靠猜，宁可降低置信度，必要时输出 `null`。
+
+## 输出格式
+
+请返回严格 JSON，格式如下：
+
+{
+  "scene_id": "字符串，原样回填",
+  "episode": 整数，原样回填,
+  "present_characters": ["角色名1", "角色名2"],
+  "utterance_annotations": [
+    {
+      "u_id": "字符串，原样回填",
+      "speaker_name": "角色名或 null",
+      "speaker_confidence": 0.0,
+      "is_inner_monologue": false,
+      "addressee_candidates": ["角色名1"],
+      "mentioned_characters": ["角色名2"],
+      "emotion_hint": "短语或 null",
+      "reason_brief": "一句简短解释"
+    }
+  ],
+  "global_notes": ["简短备注1", "简短备注2"]
+}
+
+## 具体示例
+
+下面先给你一个小型示例，帮助你理解任务。
+
+### 示例输入
+
+场景信息：
+
+- `scene_id`: `ep01_s01`
+- `episode`: `1`
+- 时间范围：`00:00:31.24 - 00:02:37.59`
+
+候选角色列表：
+
+- `长崎素世`，别名：`素世`、`小素世`
+- `丰川祥子`，别名：`祥子`、`小祥`
+- `高松灯`，别名：`灯`、`小灯`
+- `椎名立希`，别名：`立希`
+- `若叶睦`，别名：`睦`、`小睦`
+
+台词：
+
+- `u001` `00:00:31.24-00:00:39.94`
+  - 中文：`小祥。太好了 你终于来了。怎么湿成这样 你没事吧。你最近不来学校 发消息也不回。`
+  - 日文：`祥ちゃん。良かった 来てくれて。びしょぬれじゃない 大丈夫。学校休んでるし 返事も全然ないから。`
+- `u002` `00:00:42.13-00:00:49.90`
+  - 中文：`今天我来是有话要说。我要退出CRYCHIC了。`
+  - 日文：`今日は言うことがあって来ましたの。CRYCHICを やめさせていただきますわ。`
+- `u003` `00:01:40.33-00:01:43.71`
+  - 中文：`灯在问你呢。话说你也太不负责任了吧。`
+  - 日文：`燈が聞いてるんだけど。てか 無責任じゃない。`
+
+### 示例输出
+
+{
+  "scene_id": "ep01_s01",
+  "episode": 1,
+  "present_characters": ["长崎素世", "丰川祥子", "高松灯", "椎名立希", "若叶睦"],
+  "utterance_annotations": [
+    {
+      "u_id": "u001",
+      "speaker_name": "长崎素世",
+      "speaker_confidence": 0.98,
+      "is_inner_monologue": false,
+      "addressee_candidates": ["丰川祥子"],
+      "mentioned_characters": ["丰川祥子"],
+      "emotion_hint": "担心",
+      "reason_brief": "句首直接称呼“小祥”，后续内容是在关心对方近况，明显是在对祥子说话。"
+    },
+    {
+      "u_id": "u002",
+      "speaker_name": "丰川祥子",
+      "speaker_confidence": 0.97,
+      "is_inner_monologue": false,
+      "addressee_candidates": ["长崎素世", "高松灯", "椎名立希", "若叶睦"],
+      "mentioned_characters": [],
+      "emotion_hint": "冷静",
+      "reason_brief": "这是对前句的直接回应，内容是当场宣布退出乐队，语气也符合当事人发言。"
+    },
+    {
+      "u_id": "u003",
+      "speaker_name": "椎名立希",
+      "speaker_confidence": 0.83,
+      "is_inner_monologue": false,
+      "addressee_candidates": ["丰川祥子"],
+      "mentioned_characters": ["高松灯"],
+      "emotion_hint": "质问",
+      "reason_brief": "句中提到“灯”，说明灯更像被提及对象；整体是在对沉默的祥子发出指责。"
+    }
+  ],
+  "global_notes": [
+    "该场景是多人对话场景，需注意提及对象与说话对象的区分。"
+  ]
+}
+
+## 现在请处理下面的真实数据
+
+场景基本信息：
+
+- 动画标题：`{{ anime_title }}`
+- `series_id`: `{{ series_id }}`
+- `season_id`: `{{ season_id }}`
+- `episode`: `{{ episode }}`
+- `scene_id`: `{{ scene_id }}`
+- 场景时间范围：`{{ scene_start_text }} - {{ scene_end_text }}`
+{% if scene_summary_hint %}
+- 场景提示：`{{ scene_summary_hint }}`
+{% endif %}
+
+候选角色列表：
+
+{% for character in candidate_characters %}
+- `{{ character.display_name }}`
+  - 角色 id：`{{ character.character_id }}`
+{% if character.aliases %}
+  - 可见别名：`{{ character.aliases | join("`、`") }}`
+{% endif %}
+{% endfor %}
+
+{% if screen_texts %}
+屏幕字与注释：
+
+{% for item in screen_texts %}
+- `{{ item.s_id }}` `{{ item.start_text }}-{{ item.end_text }}` `{{ item.kind }}`
+  - 文本：`{{ item.text }}`
+{% endfor %}
+{% else %}
+屏幕字与注释：
+
+- 无
+{% endif %}
+
+台词列表：
+
+{% for utt in utterances %}
+- `{{ utt.u_id }}` `{{ utt.start_text }}-{{ utt.end_text }}`
+{% if utt.zh_text %}
+  - 中文：`{{ utt.zh_text }}`
+{% else %}
+  - 中文：``
+{% endif %}
+{% if utt.jp_text %}
+  - 日文：`{{ utt.jp_text }}`
+{% else %}
+  - 日文：``
+{% endif %}
+{% endfor %}
+
+请开始输出严格 JSON。再次提醒：
+
+- 不要输出代码块
+- 不要输出解释性文字
+- 不要遗漏任何一个 `u_id`
+- 角色名必须来自候选角色列表
+- 无法判断时保守输出
