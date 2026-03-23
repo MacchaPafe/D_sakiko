@@ -33,9 +33,12 @@ from .stage2_document_extraction import (
 )
 from .stage3_rag_import import (
     backfill_existing_stage3_character_relations,
+    backfill_stage3_character_relations_across_artifacts,
     build_stage3_normalized_import_artifact,
     create_rag_service,
+    load_stage3_artifacts_from_directory,
     load_stage3_normalized_import_artifact,
+    save_stage3_artifacts_to_directory,
     save_stage3_normalized_import_artifact,
     upsert_stage3_normalized_import_artifact,
 )
@@ -114,8 +117,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "backfill-stage3-relations",
         help="对现有 stage3 artifact 中的 character_relations.visible_to 进行自动回填",
     )
-    backfill_stage3_parser.add_argument("--input", required=True, help="现有 stage3 artifact JSON 路径")
-    backfill_stage3_parser.add_argument("--output", required=True, help="输出更新后的 stage3 artifact JSON 路径")
+    backfill_stage3_parser.add_argument("--input", required=True, help="现有 stage3 artifact JSON 路径，或包含多个此类 JSON 的目录")
+    backfill_stage3_parser.add_argument("--output", required=True, help="输出更新后的 stage3 artifact JSON 路径，或目录")
 
     import_stage3_parser = subparsers.add_parser(
         "import-stage3-rag",
@@ -256,10 +259,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "backfill-stage3-relations":
-        artifact = load_stage3_normalized_import_artifact(args.input)
+        input_path = Path(args.input)
+        output_path = Path(args.output)
+        if input_path.is_dir():
+            artifacts = load_stage3_artifacts_from_directory(input_path)
+            updated_artifacts = backfill_stage3_character_relations_across_artifacts(artifacts)
+            save_stage3_artifacts_to_directory(updated_artifacts, output_path)
+            total_relations = sum(len(artifact.character_relations) for _, artifact in updated_artifacts)
+            total_issues = sum(len(artifact.issues) for _, artifact in updated_artifacts)
+            print(f"已写入更新后的 stage3 artifact 目录: {output_path.resolve()}")
+            print(f"处理文件数: {len(updated_artifacts)}")
+            print(f"character_relations 总条目数: {total_relations}")
+            print(f"issues 总条目数: {total_issues}")
+            return 0
+
+        artifact = load_stage3_normalized_import_artifact(input_path)
         updated_artifact = backfill_existing_stage3_character_relations(artifact)
-        save_stage3_normalized_import_artifact(updated_artifact, args.output)
-        print(f"已写入更新后的 stage3 artifact: {Path(args.output).resolve()}")
+        save_stage3_normalized_import_artifact(updated_artifact, output_path)
+        print(f"已写入更新后的 stage3 artifact: {output_path.resolve()}")
         print(f"character_relations 条目数: {len(updated_artifact.character_relations)}")
         print(f"issues 条目数: {len(updated_artifact.issues)}")
         return 0
