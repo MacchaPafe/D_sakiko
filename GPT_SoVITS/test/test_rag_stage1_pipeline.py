@@ -539,6 +539,68 @@ class RagStage1PipelineTest(unittest.TestCase):
             self.assertEqual(pair_windows[("soyo", "sakiko", "ep01_s001")], (4000, 4006))
             self.assertEqual(pair_windows[("soyo", "sakiko", "ep01_s008")], (4007, 999999))
 
+    def test_cli_backfill_stage3_relations_across_directory(self):
+        input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
+        annotation_artifact = load_stage2_annotation_artifact(SAMPLE_PASS2_RAW_PATH)
+        normalized = build_stage3_normalized_import_artifact(
+            input_artifact=input_artifact,
+            annotation_artifact=annotation_artifact,
+        )
+
+        first_file_artifact = normalized.model_copy(deep=True)
+        second_file_artifact = normalized.model_copy(deep=True)
+        first_file_artifact.story_events = []
+        first_file_artifact.lore_entries = []
+        first_file_artifact.issues = []
+        second_file_artifact.story_events = []
+        second_file_artifact.lore_entries = []
+        second_file_artifact.issues = []
+        first_file_artifact.character_relations = [
+            record
+            for record in first_file_artifact.character_relations
+            if (
+                record.document.subject_character_id.value,
+                record.document.object_character_id.value,
+                record.source_scene_id,
+            )
+            == ("soyo", "sakiko", "ep01_s001")
+        ]
+        second_file_artifact.character_relations = [
+            record
+            for record in second_file_artifact.character_relations
+            if (
+                record.document.subject_character_id.value,
+                record.document.object_character_id.value,
+                record.source_scene_id,
+            )
+            == ("soyo", "sakiko", "ep01_s008")
+        ]
+        first_file_artifact.character_relations[0].document.visible_to = 999999
+        second_file_artifact.character_relations[0].document.visible_to = 999999
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dir = Path(temp_dir) / "input"
+            output_dir = Path(temp_dir) / "output"
+            input_dir.mkdir()
+            save_stage3_normalized_import_artifact(first_file_artifact, input_dir / "ep01_part1.json")
+            save_stage3_normalized_import_artifact(second_file_artifact, input_dir / "ep01_part2.json")
+
+            exit_code = pipeline_cli_main(
+                [
+                    "backfill-stage3-relations",
+                    "--input",
+                    str(input_dir),
+                    "--output",
+                    str(output_dir),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            updated_first = load_stage3_normalized_import_artifact(output_dir / "ep01_part1.json")
+            updated_second = load_stage3_normalized_import_artifact(output_dir / "ep01_part2.json")
+            self.assertEqual(updated_first.character_relations[0].document.visible_to, 4006)
+            self.assertEqual(updated_second.character_relations[0].document.visible_to, 999999)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -535,6 +535,60 @@ def backfill_existing_stage3_character_relations(
     return artifact
 
 
+def load_stage3_artifacts_from_directory(input_dir: str | Path) -> list[tuple[Path, Stage3NormalizedImportArtifact]]:
+    """从目录中读取全部 stage3 artifact。"""
+
+    input_dir = Path(input_dir)
+    artifacts: list[tuple[Path, Stage3NormalizedImportArtifact]] = []
+    for path in sorted(input_dir.glob("*.json")):
+        artifacts.append((path, load_stage3_normalized_import_artifact(path)))
+    return artifacts
+
+
+def backfill_stage3_character_relations_across_artifacts(
+    artifacts: list[tuple[Path, Stage3NormalizedImportArtifact]],
+) -> list[tuple[Path, Stage3NormalizedImportArtifact]]:
+    """跨多个 stage3 artifact 回填角色关系时间窗口。"""
+
+    all_records: list[CharacterRelationImportRecord] = []
+    for _, artifact in artifacts:
+        all_records.extend(artifact.character_relations)
+
+    grouped_records: dict[tuple[CharacterId, CharacterId], list[CharacterRelationImportRecord]] = {}
+    for record in all_records:
+        key = (record.document.subject_character_id, record.document.object_character_id)
+        grouped_records.setdefault(key, []).append(record)
+
+    for group in grouped_records.values():
+        ordered_group = sorted(
+            group,
+            key=lambda item: (
+                item.document.visible_from,
+                item.document.season_id.value,
+                item.source_scene_id,
+                item.source_local_id,
+            ),
+        )
+        for current_record, next_record in zip(ordered_group, ordered_group[1:]):
+            if next_record.document.visible_from <= current_record.document.visible_from:
+                continue
+            current_record.document.visible_to = next_record.document.visible_from - 1
+
+    return artifacts
+
+
+def save_stage3_artifacts_to_directory(
+    artifacts: list[tuple[Path, Stage3NormalizedImportArtifact]],
+    output_dir: str | Path,
+) -> None:
+    """将一组 stage3 artifact 写入目录。"""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for source_path, artifact in artifacts:
+        save_stage3_normalized_import_artifact(artifact, output_dir / source_path.name)
+
+
 def upsert_stage3_normalized_import_artifact(
     artifact: Stage3NormalizedImportArtifact,
     service: Any,
