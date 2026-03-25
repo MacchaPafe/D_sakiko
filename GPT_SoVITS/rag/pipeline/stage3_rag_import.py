@@ -37,7 +37,14 @@ from .schemas import (
 )
 
 
-ITS_MYGO_EVENT_BASE = 4000
+EVENT_BASE_MAP: dict[SeriesId, int] = {
+    SeriesId.BANG_DREAM_1: 1000,
+    SeriesId.BANG_DREAM_2: 2000,
+    SeriesId.BANG_DREAM_3: 3000,
+    SeriesId.ITS_MYGO: 4000,
+    SeriesId.AVE_MUJICA: 5000
+}
+
 EPISODE_EVENT_SLOT_SIZE = 50
 RELATION_VISIBLE_TO_DEFAULT = 999999
 STORY_EVENT_VISIBLE_TO_DEFAULT = 999999
@@ -98,9 +105,12 @@ def _normalize_lore_title(title: str) -> str:
 
 
 def _story_event_episode_base(episode: int, series_id: SeriesId) -> int:
-    if series_id == SeriesId.ITS_MYGO:
-        return ITS_MYGO_EVENT_BASE + (episode - 1) * EPISODE_EVENT_SLOT_SIZE
-    return (episode - 1) * EPISODE_EVENT_SLOT_SIZE
+    try:
+        event_base = EVENT_BASE_MAP[series_id]
+    except KeyError:
+        raise ValueError(f"未找到 {series_id} 对应的事件开始值。这不应当发生。请检查你传入的是否是 SeriesId 枚举类的对象。当前对象的类型为：{type(series_id)}")
+  
+    return event_base + (episode - 1) * EPISODE_EVENT_SLOT_SIZE
 
 
 def _build_scene_anchor_map(
