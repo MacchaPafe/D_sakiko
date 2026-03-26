@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import json
 from pathlib import Path
+import sys
 from typing import Any, Callable
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -32,6 +35,18 @@ from .subtitle_loader import (
 
 DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "speaker_pass.jinja"
 DEFAULT_SCENE_GAP_MS = 12_000
+
+
+_DATACLASS_KWARGS = {"slots": True} if sys.version_info >= (3, 10) else {}
+
+
+@dataclass(**_DATACLASS_KWARGS)
+class _Stage1SceneRequest:
+    scene: SceneChunk
+    scene_index: int
+    total_scenes: int
+    prompt: str
+    prompt_path: str | None
 
 
 def prepare_stage1_scenes(
@@ -194,7 +209,6 @@ def annotate_prepared_stage1_artifact(
 ) -> Stage1AnnotationArtifact:
     """对预处理后的场景批量执行第一阶段标注。"""
 
-    client = LiteLLMJsonClient(llm_config)
     template_path = Path(template_path)
     prompts_dir_path = Path(prompts_dir) if prompts_dir is not None else None
     if prompts_dir_path is not None:
@@ -206,8 +220,8 @@ def annotate_prepared_stage1_artifact(
     if max_scenes is not None:
         selected_scenes = selected_scenes[:max_scenes]
 
-    results: list[Stage1SceneAnnotationResult] = []
     total_scenes = len(selected_scenes)
+    scene_requests: list[_Stage1SceneRequest] = []
     for scene_index, scene in enumerate(selected_scenes, start=1):
         _emit_status(
             status_callback,
@@ -234,66 +248,54 @@ def annotate_prepared_stage1_artifact(
                 ),
             )
 
-        try:
-            _emit_status(
-                status_callback,
-                "[{}/{}] {}: 开始请求 LLM".format(scene_index, total_scenes, scene.scene_id),
+        scene_requests.append(
+            _Stage1SceneRequest(
+                scene=scene,
+                scene_index=scene_index,
+                total_scenes=total_scenes,
+                prompt=prompt,
+                prompt_path=prompt_path,
             )
-            if stream:
-                _emit_status(
-                    status_callback,
-                    "[{}/{}] {}: 以下开始流式输出".format(scene_index, total_scenes, scene.scene_id),
-                )
-            response = client.complete_json(
-                prompt,
+        )
+
+    if stream and len(scene_requests) > 1:
+        _emit_status(
+            status_callback,
+            "检测到开启了流式输出；为避免多个场景的增量文本互相交错，当前保持串行请求。",
+        )
+
+    results_by_index: dict[int, Stage1SceneAnnotationResult] = {}
+    if stream or len(scene_requests) <= 1:
+        for request in scene_requests:
+            results_by_index[request.scene_index] = _annotate_stage1_scene_request(
+                request=request,
+                llm_config=llm_config,
                 stream=stream,
-                status_callback=(
-                    None
-                    if status_callback is None
-                    else lambda message, scene_id=scene.scene_id, scene_index=scene_index, total_scenes=total_scenes: _emit_status(
-                        status_callback,
-                        "[{}/{}] {}: {}".format(scene_index, total_scenes, scene_id, message),
-                    )
-                ),
+                status_callback=status_callback,
                 stream_callback=stream_callback,
             )
-            if stream:
-                _emit_status(status_callback, "")
-                _emit_status(
-                    status_callback,
-                    "[{}/{}] {}: 流式输出结束".format(scene_index, total_scenes, scene.scene_id),
-                )
-            _emit_status(
-                status_callback,
-                "[{}/{}] {}: 正在校验返回结果".format(scene_index, total_scenes, scene.scene_id),
-            )
-            annotation = SceneAnnotationPass1.model_validate(response.parsed_payload)
-            results.append(
-                Stage1SceneAnnotationResult(
-                    scene_id=scene.scene_id,
-                    prompt_path=prompt_path,
-                    raw_response_text=response.raw_content,
-                    annotation=annotation,
-                )
-            )
-            _emit_status(
-                status_callback,
-                "[{}/{}] {}: 标注成功".format(scene_index, total_scenes, scene.scene_id),
-            )
-        except Exception as exc:  # pragma: no cover - 真实 API 调用路径
-            results.append(
-                Stage1SceneAnnotationResult(
-                    scene_id=scene.scene_id,
-                    prompt_path=prompt_path,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-            )
-            _emit_status(
-                status_callback,
-                "[{}/{}] {}: 标注失败：{}: {}".format(
-                    scene_index, total_scenes, scene.scene_id, type(exc).__name__, exc
-                ),
-            )
+    else:
+        _emit_status(
+            status_callback,
+            "已完成 {} 个场景的 prompt 准备，开始并行请求 LLM。".format(total_scenes),
+        )
+        with ThreadPoolExecutor(max_workers=total_scenes) as executor:
+            future_to_request = {
+                executor.submit(
+                    _annotate_stage1_scene_request,
+                    request=request,
+                    llm_config=llm_config,
+                    stream=False,
+                    status_callback=status_callback,
+                    stream_callback=stream_callback,
+                ): request
+                for request in scene_requests
+            }
+            for future in as_completed(future_to_request):
+                request = future_to_request[future]
+                results_by_index[request.scene_index] = future.result()
+
+    results = [results_by_index[index] for index in range(1, total_scenes + 1)]
 
     return Stage1AnnotationArtifact(
         metadata=artifact.metadata,
@@ -331,6 +333,76 @@ def default_stream_printer(chunk_text: str) -> None:
     """默认流式文本输出。"""
 
     print(chunk_text, end="", flush=True)
+
+
+def _annotate_stage1_scene_request(
+    request: _Stage1SceneRequest,
+    llm_config: LiteLLMConfig,
+    stream: bool,
+    status_callback: Callable[[str], None] | None,
+    stream_callback: Callable[[str], None] | None,
+) -> Stage1SceneAnnotationResult:
+    scene = request.scene
+    scene_index = request.scene_index
+    total_scenes = request.total_scenes
+    client = LiteLLMJsonClient(llm_config)
+
+    try:
+        _emit_status(
+            status_callback,
+            "[{}/{}] {}: 开始请求 LLM".format(scene_index, total_scenes, scene.scene_id),
+        )
+        if stream:
+            _emit_status(
+                status_callback,
+                "[{}/{}] {}: 以下开始流式输出".format(scene_index, total_scenes, scene.scene_id),
+            )
+        response = client.complete_json(
+            request.prompt,
+            stream=stream,
+            status_callback=(
+                None
+                if status_callback is None
+                else lambda message, scene_id=scene.scene_id, scene_index=scene_index, total_scenes=total_scenes: _emit_status(
+                    status_callback,
+                    "[{}/{}] {}: {}".format(scene_index, total_scenes, scene_id, message),
+                )
+            ),
+            stream_callback=stream_callback,
+        )
+        if stream:
+            _emit_status(status_callback, "")
+            _emit_status(
+                status_callback,
+                "[{}/{}] {}: 流式输出结束".format(scene_index, total_scenes, scene.scene_id),
+            )
+        _emit_status(
+            status_callback,
+            "[{}/{}] {}: 正在校验返回结果".format(scene_index, total_scenes, scene.scene_id),
+        )
+        annotation = SceneAnnotationPass1.model_validate(response.parsed_payload)
+        _emit_status(
+            status_callback,
+            "[{}/{}] {}: 标注成功".format(scene_index, total_scenes, scene.scene_id),
+        )
+        return Stage1SceneAnnotationResult(
+            scene_id=scene.scene_id,
+            prompt_path=request.prompt_path,
+            raw_response_text=response.raw_content,
+            annotation=annotation,
+        )
+    except Exception as exc:  # pragma: no cover - 真实 API 调用路径
+        _emit_status(
+            status_callback,
+            "[{}/{}] {}: 标注失败：{}: {}".format(
+                scene_index, total_scenes, scene.scene_id, type(exc).__name__, exc
+            ),
+        )
+        return Stage1SceneAnnotationResult(
+            scene_id=scene.scene_id,
+            prompt_path=request.prompt_path,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def _emit_status(status_callback: Callable[[str], None] | None, message: str) -> None:
