@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
-@dataclass(slots=True)
+_DATACLASS_KWARGS = {"slots": True} if sys.version_info >= (3, 10) else {}
+
+
+@dataclass(**_DATACLASS_KWARGS)
 class LiteLLMConfig:
     """调用 litellm 所需的最小配置。"""
 
@@ -18,7 +22,7 @@ class LiteLLMConfig:
     extra_completion_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass(**_DATACLASS_KWARGS)
 class LiteLLMJsonResponse:
     """表示一次 litellm JSON 调用结果。"""
 

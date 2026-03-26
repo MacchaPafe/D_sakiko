@@ -37,7 +37,11 @@ def dedupe_texts(values: list[str] | tuple[str, ...] | None) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for raw in values:
+        if raw is None:
+            continue
         text = str(raw).strip()
+        if text.lower() in {"none", "null"}:
+            continue
         if not text or text in seen:
             continue
         seen.add(text)
@@ -77,7 +81,7 @@ class Stage2DatasetEditor:
         self.dirty = False
         self.last_saved_at: str | None = None
         self._syncing_form = False
-        self.last_split_snapshot: dict[str, Any] | None = None
+        self.last_structure_snapshot: dict[str, Any] | None = None
 
         self.scene_column: ui.column | None = None
         self.utterance_column: ui.column | None = None
@@ -98,7 +102,9 @@ class Stage2DatasetEditor:
         self.emotion_select: ui.select | None = None
         self.split_before_button: ui.button | None = None
         self.split_after_button: ui.button | None = None
-        self.undo_split_button: ui.button | None = None
+        self.merge_prev_button: ui.button | None = None
+        self.merge_next_button: ui.button | None = None
+        self.undo_structure_button: ui.button | None = None
 
         self.utterance_meta_label: ui.label | None = None
         self.zh_label: ui.label | None = None
@@ -139,7 +145,7 @@ class Stage2DatasetEditor:
         self.current_utterance_index = 0
         self.dirty = False
         self.last_saved_at = None
-        self.last_split_snapshot = None
+        self.last_structure_snapshot = None
         self.character_pool = self._build_character_pool()
         self.emotion_pool = self._build_emotion_pool()
 
@@ -339,8 +345,8 @@ class Stage2DatasetEditor:
         for index, scene in enumerate(self.scenes, start=1):
             scene["scene_id"] = f"{prefix}{index:0{width}d}"
 
-    def _capture_split_snapshot(self) -> None:
-        self.last_split_snapshot = {
+    def _capture_structure_snapshot(self) -> None:
+        self.last_structure_snapshot = {
             "data": copy.deepcopy(self.data),
             "scene_index": self.current_scene_index,
             "utterance_index": self.current_utterance_index,
@@ -348,12 +354,12 @@ class Stage2DatasetEditor:
             "last_saved_at": self.last_saved_at,
         }
 
-    def undo_last_split(self) -> None:
-        if self.last_split_snapshot is None:
-            ui.notify("当前没有可撤销的切分。", color="warning", position="top")
+    def undo_last_structure_change(self) -> None:
+        if self.last_structure_snapshot is None:
+            ui.notify("当前没有可撤销的结构操作。", color="warning", position="top")
             return
 
-        snapshot = self.last_split_snapshot
+        snapshot = self.last_structure_snapshot
         self.data = copy.deepcopy(snapshot["data"])
         self.scenes = self.data["scenes"]
         self.rebuild_flat_index_map()
@@ -364,11 +370,11 @@ class Stage2DatasetEditor:
         )
         self.dirty = snapshot["dirty"]
         self.last_saved_at = snapshot["last_saved_at"]
-        self.last_split_snapshot = None
+        self.last_structure_snapshot = None
         self.character_pool = self._build_character_pool()
         self.emotion_pool = self._build_emotion_pool()
         self.refresh_ui()
-        ui.notify("已撤销上一次切分。", color="positive", position="top")
+        ui.notify("已撤销上一次结构操作。", color="positive", position="top")
 
     def _build_split_preview(self, split_index: int) -> tuple[dict[str, Any], dict[str, Any]]:
         scene = self.current_scene()
@@ -406,7 +412,7 @@ class Stage2DatasetEditor:
             return
 
         left_scene, right_scene = self._build_split_preview(split_index)
-        self._capture_split_snapshot()
+        self._capture_structure_snapshot()
         scene_insert_index = self.current_scene_index
         self.scenes[scene_insert_index:scene_insert_index + 1] = [left_scene, right_scene]
         self._renumber_scene_ids()
@@ -418,6 +424,133 @@ class Stage2DatasetEditor:
         self.mark_dirty()
         self.refresh_ui()
         ui.notify("场景已切分，记得保存 JSON。", color="positive", position="top")
+
+    def _merge_target_index(self, with_previous: bool) -> int | None:
+        if with_previous:
+            return self.current_scene_index - 1 if self.current_scene_index > 0 else None
+        return self.current_scene_index + 1 if self.current_scene_index < len(self.scenes) - 1 else None
+
+    @staticmethod
+    def _sort_utterances(utterances: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(utterances, key=lambda item: (item["start_ms"], item["end_ms"], item["u_id"]))
+
+    @staticmethod
+    def _sort_screen_texts(screen_texts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(screen_texts, key=lambda item: (item["start_ms"], item["end_ms"], item["s_id"]))
+
+    @staticmethod
+    def _merged_summary(left_scene: dict[str, Any], right_scene: dict[str, Any]) -> str | None:
+        left_summary = str(left_scene.get("scene_summary_hint") or "").strip()
+        right_summary = str(right_scene.get("scene_summary_hint") or "").strip()
+        merged_summaries = dedupe_texts([left_summary, right_summary])
+        return "；".join(merged_summaries) if merged_summaries else None
+
+    def _validate_merge_pair(self, left_scene: dict[str, Any], right_scene: dict[str, Any]) -> None:
+        for field_name in ("anime_title", "series_id", "season_id", "episode"):
+            if left_scene.get(field_name) != right_scene.get(field_name):
+                raise ValueError(f"相邻场景的 {field_name} 不一致，无法自动合并。")
+
+    def _build_merged_scene(self, left_scene: dict[str, Any], right_scene: dict[str, Any]) -> dict[str, Any]:
+        self._validate_merge_pair(left_scene, right_scene)
+
+        merged_scene = copy.deepcopy(left_scene)
+        merged_scene["utterances"] = self._sort_utterances(
+            copy.deepcopy(left_scene.get("utterances", [])) + copy.deepcopy(right_scene.get("utterances", []))
+        )
+        merged_scene["screen_texts"] = self._sort_screen_texts(
+            copy.deepcopy(left_scene.get("screen_texts", [])) + copy.deepcopy(right_scene.get("screen_texts", []))
+        )
+        merged_scene["scene_summary_hint"] = self._merged_summary(left_scene, right_scene)
+        merged_scene["global_notes"] = dedupe_texts(
+            list(left_scene.get("global_notes", [])) + list(right_scene.get("global_notes", []))
+        )
+        self._recompute_scene_fields(merged_scene)
+        merged_scene["scene_summary_hint"] = self._merged_summary(left_scene, right_scene)
+        return merged_scene
+
+    def _apply_merge(self, with_previous: bool) -> None:
+        target_index = self._merge_target_index(with_previous)
+        if target_index is None:
+            ui.notify("当前没有可合并的相邻场景。", color="warning", position="top")
+            return
+
+        if with_previous:
+            left_index, right_index = target_index, self.current_scene_index
+            new_utterance_index = len(self.scenes[left_index]["utterances"]) + self.current_utterance_index
+        else:
+            left_index, right_index = self.current_scene_index, target_index
+            new_utterance_index = self.current_utterance_index
+
+        try:
+            merged_scene = self._build_merged_scene(self.scenes[left_index], self.scenes[right_index])
+        except ValueError as exc:
+            ui.notify(str(exc), color="negative", position="top")
+            return
+
+        self._capture_structure_snapshot()
+        self.scenes[left_index:right_index + 1] = [merged_scene]
+        self._renumber_scene_ids()
+        self.rebuild_flat_index_map()
+        self.current_scene_index = left_index
+        self.current_utterance_index = min(new_utterance_index, len(self.current_scene()["utterances"]) - 1)
+        self.character_pool = self._build_character_pool()
+        self.emotion_pool = self._build_emotion_pool()
+        self.mark_dirty()
+        self.refresh_ui()
+        ui.notify("场景已合并，记得保存 JSON。", color="positive", position="top")
+
+    def open_merge_dialog(self, with_previous: bool) -> None:
+        target_index = self._merge_target_index(with_previous)
+        if target_index is None:
+            ui.notify("当前没有可合并的相邻场景。", color="warning", position="top")
+            return
+
+        left_scene = self.scenes[target_index] if with_previous else self.current_scene()
+        right_scene = self.current_scene() if with_previous else self.scenes[target_index]
+
+        try:
+            merged_scene = self._build_merged_scene(left_scene, right_scene)
+        except ValueError as exc:
+            ui.notify(str(exc), color="negative", position="top")
+            return
+
+        direction_label = "与前一场景合并" if with_previous else "与后一场景合并"
+        with ui.dialog() as dialog, ui.card().classes("w-[820px] max-w-full gap-4 p-5"):
+            ui.label("确认合并场景").classes("text-xl font-bold text-slate-800")
+            ui.label(
+                f"{direction_label} · {left_scene['scene_id']} + {right_scene['scene_id']}"
+            ).classes("text-sm text-slate-500")
+
+            with ui.row().classes("w-full gap-4").style("flex-wrap: wrap;"):
+                for title, scene in (("左侧场景", left_scene), ("右侧场景", right_scene), ("合并结果", merged_scene)):
+                    with ui.column().classes("readonly-block gap-2").style("flex: 1 1 240px;"):
+                        ui.label(title).classes("text-base font-semibold text-slate-800")
+                        ui.label(
+                            f"{len(scene.get('utterances', []))} 句台词 · {len(scene.get('screen_texts', []))} 条屏幕字"
+                        ).classes("text-sm text-slate-500")
+                        ui.label(self._scene_span(scene)).classes("text-sm text-slate-700")
+                        ui.label(
+                            f"在场角色：{self._describe_character_set(scene)}"
+                        ).classes("text-sm text-slate-700 whitespace-pre-wrap")
+                        ui.label(
+                            f"summary：{scene.get('scene_summary_hint') or '无'}"
+                        ).classes("text-sm text-slate-600 whitespace-pre-wrap")
+                        ui.label(
+                            f"global_notes：{len(scene.get('global_notes', []))} 条"
+                        ).classes("text-sm text-slate-500")
+
+            ui.label(
+                "合并后会自动重算时间范围、在场角色和 scene_id，并保留去重后的 global_notes。"
+            ).classes("text-sm text-amber-700")
+
+            with ui.row().classes("w-full justify-end gap-2 pt-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button(
+                    "确认合并",
+                    on_click=lambda: (dialog.close(), self._apply_merge(with_previous)),
+                ).props("unelevated color=primary")
+
+        dialog.open()
 
     def open_split_dialog(self, before_current: bool) -> None:
         split_index = self._split_index(before_current)
@@ -451,7 +584,7 @@ class Stage2DatasetEditor:
                         ).classes("text-sm text-slate-500")
 
             ui.label(
-                "撤销说明：支持撤销上一次切分，但会一起回退切分之后尚未保存的结构状态。"
+                "撤销说明：支持撤销上一次结构操作，但会一起回退该操作之后尚未保存的结构状态。"
             ).classes("text-sm text-amber-700")
 
             with ui.row().classes("w-full justify-end gap-2 pt-2"):
@@ -498,6 +631,8 @@ class Stage2DatasetEditor:
     def refresh_split_controls(self) -> None:
         before_enabled = self._split_index(before_current=True) is not None
         after_enabled = self._split_index(before_current=False) is not None
+        merge_prev_enabled = self._merge_target_index(with_previous=True) is not None
+        merge_next_enabled = self._merge_target_index(with_previous=False) is not None
 
         if self.split_before_button is not None:
             if before_enabled:
@@ -509,11 +644,21 @@ class Stage2DatasetEditor:
                 self.split_after_button.enable()
             else:
                 self.split_after_button.disable()
-        if self.undo_split_button is not None:
-            if self.last_split_snapshot is not None:
-                self.undo_split_button.enable()
+        if self.merge_prev_button is not None:
+            if merge_prev_enabled:
+                self.merge_prev_button.enable()
             else:
-                self.undo_split_button.disable()
+                self.merge_prev_button.disable()
+        if self.merge_next_button is not None:
+            if merge_next_enabled:
+                self.merge_next_button.enable()
+            else:
+                self.merge_next_button.disable()
+        if self.undo_structure_button is not None:
+            if self.last_structure_snapshot is not None:
+                self.undo_structure_button.enable()
+            else:
+                self.undo_structure_button.disable()
 
     def save(self) -> None:
         Stage2InputArtifact.model_validate(self.data)
@@ -930,9 +1075,17 @@ class Stage2DatasetEditor:
                             "在本句后切分",
                             on_click=lambda: self.open_split_dialog(before_current=False),
                         ).props("outline")
-                        self.undo_split_button = ui.button(
-                            "撤销上一次切分",
-                            on_click=self.undo_last_split,
+                        self.merge_prev_button = ui.button(
+                            "与前一场景合并",
+                            on_click=lambda: self.open_merge_dialog(with_previous=True),
+                        ).props("outline")
+                        self.merge_next_button = ui.button(
+                            "与后一场景合并",
+                            on_click=lambda: self.open_merge_dialog(with_previous=False),
+                        ).props("outline")
+                        self.undo_structure_button = ui.button(
+                            "撤销上一次结构操作",
+                            on_click=self.undo_last_structure_change,
                         ).props("flat color=warning")
 
                     with ui.row().classes("w-full gap-4").style("flex-wrap: wrap;"):
@@ -1000,7 +1153,7 @@ class Stage2DatasetEditor:
 
         with ui.footer().classes("app-shell glass-card items-center justify-between px-5 py-3 mb-4"):
             self.footer_hint = ui.label().classes("text-sm text-slate-600")
-            ui.label("提示：支持方向键切换、场景切分，Cmd/Ctrl + S 快速保存").classes("text-sm text-slate-500")
+            ui.label("提示：支持方向键切换、场景切分与合并，Cmd/Ctrl + S 快速保存").classes("text-sm text-slate-500")
 
         self.refresh_ui()
         self._sync_file_selector()
