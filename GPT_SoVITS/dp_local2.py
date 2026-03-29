@@ -25,7 +25,39 @@ class DSLocalAndVoiceGen:
         self.current_char_index=0
         self.if_sakiko=False
         self.idle_texts = ["...", "...", "就绪", "..."]
+
+        # 新增：初始化 RAG 集成组件
+        self.rag_integration = None
+        if d_sakiko_config.enable_rag.value:
+            try:
+                self._init_rag_integration()
+            except Exception as e:
+                PrintInfo.print_warning(f"[Warning] RAG 系统初始化失败，将在无 RAG 模式下运行: {e}")
+
         self.initial()
+
+    def _init_rag_integration(self):
+        """初始化 RAG 集成组件。"""
+        from rag.services import QdrantRagService, RagServiceConfig
+        from rag.llm_integration import LLMRagIntegration
+        from rag.context_builder import RagContextBuilder
+        from rag.prompt_formatter import RagPromptFormatter
+
+        config = RagServiceConfig(
+            qdrant_location=d_sakiko_config.rag_database_path.value,
+            embedding_model_path=d_sakiko_config.rag_embedding_model.value,
+        )
+        rag_service = QdrantRagService(config)
+
+        self.rag_integration = LLMRagIntegration(
+            rag_service=rag_service,
+            context_builder=RagContextBuilder(
+                query_window_size=d_sakiko_config.rag_query_window_size.value,
+            ),
+            formatter=RagPromptFormatter(),
+            cache_enabled=d_sakiko_config.rag_cache_enabled.value,
+            cache_ttl_minutes=d_sakiko_config.rag_cache_ttl_minutes.value,
+        )
 
     def initial(self):
         for character in self.character_list:
@@ -178,7 +210,7 @@ class DSLocalAndVoiceGen:
                 time.sleep(2)
                 continue
             elif user_input=='clr':
-                self.all_character_msg[self.current_char_index]=[{"role": "user",
+                self.all_character_msg[self.current_char_index]=[{"role": "system",
                                                                  "content": f'{self.character_list[self.current_char_index].character_description}'}]
                 message_queue.put("已清空角色的聊天记录")
                 time.sleep(2)
@@ -199,6 +231,9 @@ class DSLocalAndVoiceGen:
                 time.sleep(2)
                 continue
 
+            # 保存原始用户输入（不含语言指令等后缀），用于 RAG 检索
+            raw_user_input = user_input
+
             if self.audio_language_choice=='日英混合':
                 user_input=user_input+'（本句话你的回答请务必用日语，并且请将额外的中文翻译内容放到“[翻译]”这一标记格式之后，并以“[翻译结束]”作为翻译的结束标志，每三句话翻译一次！请务必严格遵守这一格式回答！！）'
             else:
@@ -218,6 +253,38 @@ class DSLocalAndVoiceGen:
             to_llm_msg[0]['content']+=self.restr
             message_queue.put(f"{self.character_list[self.current_char_index].character_name}思考中...")
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
+
+            # RAG 增强：注入检索结果到消息副本中（临时性，不保存到历史记录）
+            messages_for_llm = self.all_character_msg[self.current_char_index]
+            if self.rag_integration is not None:
+                char = self.character_list[self.current_char_index]
+                if char.rag_enabled:
+                    try:
+                        recent = [msg["content"] for msg in messages_for_llm[-6:-1]
+                                  if msg["role"] in ("user", "assistant")]
+                        rag_prompt = self.rag_integration.retrieve_and_format(
+                            current_message=raw_user_input,
+                            recent_messages=recent,
+                            character_name=char.character_name,
+                            current_time=char.rag_current_plot_time,
+                            series_id=char.rag_series_id,
+                            season_id=char.rag_season_id,
+                            canon_branch=char.rag_canon_branch,
+                            top_k_events=d_sakiko_config.rag_top_k_events.value,
+                            top_k_relations=d_sakiko_config.rag_top_k_relations.value,
+                            top_k_lore=d_sakiko_config.rag_top_k_lore.value,
+                        )
+                        if rag_prompt:
+                            messages_for_llm = self.rag_integration.inject_rag_into_messages(
+                                messages_for_llm, rag_prompt,
+                                injection_mode=d_sakiko_config.rag_injection_mode.value
+                            )
+                            print("检索信息：\n", rag_prompt)
+
+                    except Exception as e:
+                        PrintInfo.print_warning(f"[Warning] RAG 检索失败: {e}")
+            llm_messages = self.trim_list_to_340kb(messages_for_llm)
+
             # --------------------------
             # 优先处理使用 Up API 的情况
 
@@ -226,7 +293,7 @@ class DSLocalAndVoiceGen:
                     print("使用 UP 的 DeepSeek API 进行对话生成")
                     response = completion(
                         model="deepseek/deepseek-chat",
-                        messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
+                        messages=llm_messages,
                         api_key=self.model
                     )
                 # 第二优先级是检查自定义 API Url
@@ -238,7 +305,7 @@ class DSLocalAndVoiceGen:
                     response = completion(
                         # 自定义 API 与 OpenAI 兼容，litellm 需要通过 openai/ 前缀路由
                         model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
-                        messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
+                        messages=llm_messages,
                         api_key=d_sakiko_config.custom_llm_api_key.value,
                         # 自定义 API 地址
                         base_url=d_sakiko_config.custom_llm_api_url.value
@@ -259,7 +326,7 @@ class DSLocalAndVoiceGen:
 
                     response = completion(
                         model=self.normalize_model_for_provider(provider, model),
-                        messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
+                        messages=llm_messages,
                         api_key=api_key,
                         **completion_kwargs,
                     )

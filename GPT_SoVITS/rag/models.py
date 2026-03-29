@@ -104,6 +104,64 @@ class CharacterId(str, Enum):
     NYAMU = "nyamu"  # 喵梦 / 祐天寺喵梦
     SAKIKO = "sakiko"  # 祥子 / 丰川祥子
 
+    @property
+    def common_name(self) -> str:
+        """
+        获得当前角色常见的简称。大部分角色的简称是中文的，但有部分角色的简称是英文。
+        如果找不到当前角色的简称（这通常不可能发生），返回其罗马音拼写。
+        """
+        return _ROMAJI_TO_COMMON_NAME.get(self, self.value)
+
+
+# 角色枚举到简称的字典映射
+_ROMAJI_TO_COMMON_NAME: Dict[CharacterId, str] = {
+    CharacterId.KASUMI: "香澄",
+    CharacterId.TAE: "多惠",
+    CharacterId.RIMI: "里美",
+    CharacterId.SAAYA: "沙绫",
+    CharacterId.ARISA: "有咲",
+    CharacterId.RAN: "美竹兰",
+    CharacterId.MOCA: "摩卡",
+    CharacterId.HIMARI: "绯玛丽",
+    CharacterId.TOMOE: "巴",
+    CharacterId.TSUGUMI: "羽泽鸫",
+    CharacterId.KOKORO: "弦卷心",
+    CharacterId.KAORU: "濑田薰",
+    CharacterId.HAGUMI: "育美",
+    CharacterId.KANON: "花音",
+    CharacterId.MISAKI: "美咲",
+    CharacterId.AYA: "丸山彩",
+    CharacterId.HINA: "日菜",
+    CharacterId.CHISATO: "千圣",
+    CharacterId.MAMI: "麻弥",
+    CharacterId.EVE: "伊芙",
+    CharacterId.YUKINA: "友希那",
+    CharacterId.SAYO: "纱夜",
+    CharacterId.LISA: "莉莎",
+    CharacterId.AKO: "亚子",
+    CharacterId.RINKO: "燐子",
+    CharacterId.MASHIRO: "真白",
+    CharacterId.TOKO: "透子",
+    CharacterId.NANAMI: "七深",
+    CharacterId.TSUKUSHI: "筑紫",
+    CharacterId.RUI: "瑠唯",
+    CharacterId.LAYER: "layer",
+    CharacterId.LOCK: "六花",
+    CharacterId.MASKING: "msk",
+    CharacterId.PAREO: "pareo",
+    CharacterId.CHUCHU: "chu2",
+    CharacterId.TOMORI: "灯",
+    CharacterId.ANON: "爱音",
+    CharacterId.RANA: "乐奈",
+    CharacterId.SOYO: "素世",
+    CharacterId.TAKI: "立希",
+    CharacterId.UIKA: "初华",
+    CharacterId.MUTSUMI: "若叶睦",
+    CharacterId.UMIRI: "海铃",
+    CharacterId.NYAMU: "喵梦",
+    CharacterId.SAKIKO: "祥子",
+}
+
 
 def _coerce_enum_value(enum_type: Type[EnumT], field_name: str, value: Any) -> EnumT:
     """将传入值转换为指定枚举成员，并在失败时给出明确异常。"""

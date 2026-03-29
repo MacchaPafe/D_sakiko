@@ -27,6 +27,12 @@ class CharacterAttributes:
         self.gptsovits_ref_audio_text = ''
         self.gptsovits_ref_audio_lan=''
         self.qt_css=None
+        # RAG 相关属性（从 rag_config.json 加载）
+        self.rag_enabled = True
+        self.rag_current_plot_time = 4150
+        self.rag_series_id = None
+        self.rag_season_id = None
+        self.rag_canon_branch = 'main'
 
     def print_attributes(self):
         for key, value in self.__dict__.items():
@@ -262,6 +268,20 @@ class GetCharacterAttributes:
                     with open(os.path.join("../reference_audio",char, 'QT_style.json'),'r',encoding="utf-8") as f:
                         character.qt_css=f.read()
                         f.close()
+
+                # 尝试加载 RAG 配置
+                rag_config_path = os.path.join(full_path, 'rag_config.json')
+                if os.path.exists(rag_config_path):
+                    try:
+                        with open(rag_config_path, 'r', encoding='utf-8') as f:
+                            rag_cfg = json.load(f)
+                        character.rag_enabled = rag_cfg.get('rag_enabled', True)
+                        character.rag_current_plot_time = rag_cfg.get('current_plot_time', 4150)
+                        character.rag_series_id = rag_cfg.get('series_id', None)
+                        character.rag_season_id = rag_cfg.get('season_id', None)
+                        character.rag_canon_branch = rag_cfg.get('canon_branch', 'main')
+                    except Exception as e:
+                        PrintInfo.print_warning(f"[Warning]加载角色 '{character.character_name}' 的 RAG 配置失败: {e}")
 
                 if is_ready:
                     self.character_class_list.append(character)

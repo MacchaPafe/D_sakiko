@@ -134,6 +134,26 @@ class DSakikoConfig(QConfig):
     ],
      validator=ThemeColorValidator())
 
+    # ==================== RAG 相关配置 ====================
+    # RAG 功能总开关
+    enable_rag = OptionsConfigItem("RAG", "enable_rag", True, validator=BoolValidator())
+    # RAG 数据库路径
+    rag_database_path = ConfigItem("RAG", "database_path", "../knowledge_base/default_world_info")
+    # Embedding 模型路径
+    rag_embedding_model = ConfigItem("RAG", "embedding_model", "pretrained_models/multilingual-e5-small")
+    # 各 collection 的 top-k 配置
+    rag_top_k_events = ConfigItem("RAG", "top_k_events", 3)
+    rag_top_k_relations = ConfigItem("RAG", "top_k_relations", 2)
+    rag_top_k_lore = ConfigItem("RAG", "top_k_lore", 2)
+    # 检索消息滑动窗口大小
+    rag_query_window_size = ConfigItem("RAG", "query_window_size", 3)
+    # RAG 注入方式："system_before_user" 或 "inline_user"
+    rag_injection_mode = ConfigItem("RAG", "injection_mode", "system_before_user")
+    # RAG 缓存开关
+    rag_cache_enabled = OptionsConfigItem("RAG", "cache_enabled", True, validator=BoolValidator())
+    # RAG 缓存有效期（分钟）
+    rag_cache_ttl_minutes = ConfigItem("RAG", "cache_ttl_minutes", 5)
+
 
 # 这个字典存储了所有可能的“LLM 供应商显示名称”->“实际请求时需要的前缀名称”的映射关系
 # 例如 "OpenAI" -> "openai"，"Google Gemini" -> "gemini"，"DeepSeek" -> "deepseek"
