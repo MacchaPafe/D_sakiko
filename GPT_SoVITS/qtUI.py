@@ -18,6 +18,8 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json
 from character import PrintInfo
+from chat.chat import ChatManager, Chat, Message, get_chat_manager
+from emotion_enum import EmotionEnum
 
 class ThemeManager: #主题颜色设定
     @staticmethod
@@ -857,19 +859,19 @@ class ChatGUI(QWidget):
 
         self.character_list:list = characters
         self.current_char_index = 0
-        self.character_chat_history=[]
-        for _ in self.character_list:
-            self.character_chat_history.append('')
-        if os.path.getsize('../reference_audio/history_messages_qt.json')!=0:
-            with open('../reference_audio/history_messages_qt.json','r',encoding='utf-8') as f:
-                json_data = json.load(f)
-            for index,character in enumerate(self.character_list):
-                for data in json_data:
-                    if data['character']==character.character_name:
-                        underline_removed=data['history'].replace("underline", "none")
-                        self.character_chat_history[index]=underline_removed  # noqa
+        self.dp_chat=dp_chat    # dp_local2 模块引用
+        # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
+        self.chat_manager: ChatManager = self.dp_chat.chat_manager
+        # 为每个角色获取对应的 Chat 对象列表（与 dp_chat.character_chats 是相同的对象引用）
+        self.character_chats: list[Chat] = self.dp_chat.character_chats
 
-            self.chat_display.setHtml(self.character_chat_history[self.current_char_index])  # noqa
+        # 获取当前主题色
+        self._current_theme_color = self._get_theme_color()
+
+        # 使用 Chat.to_display_html() 渲染初始聊天记录
+        initial_html = self.current_chat.to_display_html(self._current_theme_color)
+        if initial_html:
+            self.chat_display.setHtml(initial_html)
 
         if self.character_list[self.current_char_index].icon_path is not None:  # noqa
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))  # noqa
@@ -882,7 +884,6 @@ class ChatGUI(QWidget):
         else:
             self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
         self.translation=''
-        self.dp_chat=dp_chat    #仅为了保存聊天记录用
         if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[self.current_char_index].gptsovits_ref_audio is None or self.character_list[self.current_char_index].sovits_model_path is None:
             self.dp_chat.if_generate_audio=False
 
@@ -979,6 +980,33 @@ class ChatGUI(QWidget):
     def toggle_live2d_text_display(self):
         self.live2d_mod.is_display_text=not self.live2d_mod.is_display_text
 
+    @property
+    def current_chat(self) -> Chat:
+        """获取当前角色对应的 Chat 对象"""
+        return self.character_chats[self.current_char_index]
+
+    def _get_theme_color(self) -> str:
+        """获取当前角色的主题色"""
+        if self.character_list[self.current_char_index].qt_css is not None:
+            return ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
+        return '#7799CC'
+
+    def _refresh_chat_display(self):
+        """从 Chat 数据重新生成 HTML 并刷新显示，保留滚动条位置"""
+        scroll_bar = self.chat_display.verticalScrollBar()
+        saved_position = scroll_bar.value()
+        was_at_bottom = (saved_position == scroll_bar.maximum())
+
+        new_html = self.current_chat.to_display_html(self._current_theme_color)
+        # with open(f'{self.character_list[self.current_char_index].character_folder_name}_chat.html','w',encoding='utf-8') as f:
+        #     f.write(new_html)
+        self.chat_display.setHtml(new_html)
+
+        if was_at_bottom:
+            scroll_bar.setValue(scroll_bar.maximum())
+        else:
+            scroll_bar.setValue(saved_position)
+
     def set_btn_color(self,color):
         #更改按钮图标颜色-----------------------
         icon_map = {
@@ -1001,71 +1029,21 @@ class ChatGUI(QWidget):
                 btn.setIcon(QIcon(pixmap))
             except:
                 pass
-        #将文本框中的html文字的颜色全部换成新的主题色-----------------
-        current_html=self.chat_display.toHtml()
-        def update_html_colors(html_content, new_color, exclude_color="#b3d1f2"):
-            """
-            更新 HTML 中的颜色，但跳过指定的 exclude_color。
-            """
-            # 定义正则模式
-            # color:     匹配字面量
-            # \s* 匹配冒号后可能存在的空格
-            # ([^;]+)    捕获组：匹配除了分号以外的任意字符（即颜色值）
-            # ;          匹配结束的分号
-            pattern = r"color:\s*([^;]+);"
-            def replace_callback(match):
-                full_match = match.group(0)  # 获取完整的 "color: #xxxxxx;"
-                current_color = match.group(1).strip()  # 获取中间的颜色值 "#xxxxxx"
-
-                # 判断：如果当前颜色等于排除色（忽略大小写），则不替换，原样返回
-                if current_color.lower() == exclude_color.lower():
-                    return full_match
-
-                # 否则，替换成新颜色
-                return f"color: {new_color};"
-
-            # 执行替换
-            new_html = re.sub(pattern, replace_callback, html_content)
-            return new_html
-        updated_html=update_html_colors(current_html,color)
-        # 保留滚动条位置--------------------------------------------------------
-        scroll_bar = self.chat_display.verticalScrollBar()
-        saved_position = scroll_bar.value()
-        # 获取滚动条最大值，判断用户是否本来就在最底下
-        # 如果用户本来就在最底下，刷新后让他继续保持在最底下，体验更好
-        was_at_bottom = (saved_position == scroll_bar.maximum())
-        self.chat_display.setHtml(updated_html)
-        if was_at_bottom:
-            # 如果原来就在最底下，就让它保持在新的最底下（因为内容长度可能变了）
-            scroll_bar.setValue(scroll_bar.maximum())
-        else:
-            # 否则，恢复到之前保存的像素位置
-            scroll_bar.setValue(saved_position)
-        #保存新颜色到本地以及修改内存中的颜色----------------------------------------------------------------
-        if self.character_list[self.current_char_index].qt_css is not None:
-            try:
-                with open(f"../reference_audio/{self.character_list[self.current_char_index].character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
-                    f.write(f'''QWidget {{
-                    color: {color};
-                    }}''')
-                self.character_list[self.current_char_index].qt_css=f'''
-                                                            QWidget {{
-                                                                    color: {color};
-                                                                    }}'''
-            except Exception as e:
-                PrintInfo.print_error(f"[Error]保存主题色失败，错误信息：{e}")
-        else:
-            try:
-                with open(f"../reference_audio/{self.character_list[self.current_char_index].character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
-                    f.write(f'''QWidget {{
-                    color: {color};
-                    }}''')
-                self.character_list[self.current_char_index].qt_css=f'''
-                                                            QWidget {{
-                                                                    color: {color};
-                                                                    }}'''
-            except Exception as e:
-                PrintInfo.print_error(f"[Error]保存主题色失败，错误信息：{e}")
+        # 更新主题色并从 Chat 数据重新生成 HTML（不再使用正则替换旧 HTML 中的颜色）
+        self._current_theme_color = color
+        self._refresh_chat_display()
+        # 保存新颜色到本地以及修改内存中的颜色
+        try:
+            with open(f"../reference_audio/{self.character_list[self.current_char_index].character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
+                f.write(f'''QWidget {{
+                color: {color};
+                }}''')
+            self.character_list[self.current_char_index].qt_css=f'''
+                                                        QWidget {{
+                                                                color: {color};
+                                                                }}'''
+        except Exception as e:
+            PrintInfo.print_error(f"[Error]保存主题色失败，错误信息：{e}")
 
 
 
@@ -1237,11 +1215,12 @@ class ChatGUI(QWidget):
         event.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
-        local_pos = self.chat_display.viewport().mapFromGlobal(QCursor.pos())
-        # 2. 根据坐标获取对应的文本光标 (QTextCursor)    想不到别的方法获取回放文本
-        cursor = self.chat_display.cursorForPosition(local_pos)
-        # 3. 获取光标所在的文本
-        full_text = cursor.block().text()
+        # local_pos = self.chat_display.viewport().mapFromGlobal(QCursor.pos())
+        # # 2. 根据坐标获取对应的文本光标 (QTextCursor)    想不到别的方法获取回放文本
+        # cursor = self.chat_display.cursorForPosition(local_pos)
+        # # 3. 获取光标所在的文本
+        # full_text = cursor.block().text()
+
         if self.live2d_mod.live2d_this_turn_motion_complete:
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
@@ -1250,13 +1229,15 @@ class ChatGUI(QWidget):
                 audio_path = match.group(1)  # 路径
                 emotion = match.group(2)  #emotion标签
 
-
                 if os.path.exists(audio_path):
                     #----------------------------设置live2d文本框内容逻辑
-                    pattern = r"^★[^：:]+[：:](.*)"
-                    match = re.search(pattern, full_text)
-                    content = match.group(1).strip() if match else full_text
-                    self.live2d_mod.new_text=re.sub(r"（.*?）",'',content).strip()
+                    text_content=""
+                    filename=os.path.basename(audio_path)
+                    for msg in self.current_chat.message_list:
+                        if os.path.basename(msg.audio_path) == filename:
+                            text_content = msg.text
+                            break
+                    self.live2d_mod.new_text=re.sub(r"（.*?）",'',text_content).replace("\n","").strip()
                     #----------------------------
                     self.audio_file_path_queue.put(audio_path)
                     self.emotion_queue.put(emotion)
@@ -1271,8 +1252,7 @@ class ChatGUI(QWidget):
 
 
     def change_char(self):
-        record = self.chat_display.toHtml()
-        self.character_chat_history[self.current_char_index] = record  # noqa
+        # 不再需要保存 HTML 到 character_chat_history，数据已在 Chat.message_list 中
         self.chat_display.clear()
         if len(self.character_list) == 1:
             self.current_char_index = 0
@@ -1281,6 +1261,10 @@ class ChatGUI(QWidget):
                 self.current_char_index += 1
             else:
                 self.current_char_index = 0
+
+        # 更新主题色
+        self._current_theme_color = self._get_theme_color()
+
         if self.character_list[self.current_char_index].qt_css is not None:  # noqa
             self.setStyleSheet(ThemeManager.generate_stylesheet(
                 ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
@@ -1292,8 +1276,8 @@ class ChatGUI(QWidget):
             self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
             self.set_btn_color('#7799CC')
 
-        chat_history_html_content = re.sub(r'font-family:\s*[^;"]+;', '', self.character_chat_history[self.current_char_index].replace('underline','none'))  # noqa
-        self.chat_display.setHtml(chat_history_html_content)
+        # 从 Chat 数据重新渲染 HTML
+        self._refresh_chat_display()
         if self.character_list[self.current_char_index].icon_path is not None:  # noqa
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))  # noqa
         self.talk_speed_reset()  #切换角色后重置默认语速
@@ -1322,18 +1306,34 @@ class ChatGUI(QWidget):
             self.translation=response_tuple_list[0][1]  # noqa
         self.current_index = 0
 
-        text_color = self.chat_display.palette().color(QPalette.Text).name()
+        text_color = self._current_theme_color
+        character_name = self.character_list[self.current_char_index].character_name
+        
+        # 找到下一条未处理的 AI 消息（可能有多段）
+        # 从尾部向前搜索尚未设置 audio_path 的 AI 消息中最早的那条
+        target_msg = None
+        for msg in self.current_chat.message_list:
+            if msg.character_name == character_name and msg.audio_path == "" and msg.audio_path!="NO_AUDIO":
+                target_msg = msg
+                break  # 找到第一条未处理的
         if self.dp_chat.if_generate_audio and response_text!='（再见）':
+            emotion = 'LABEL_0'
+            if target_msg is not None:
+                emotion = target_msg.emotion.as_label()
 
-            if not response_tuple_list:
-                emotion=self.emotion_model(response_text)[0]['label']
-            else:
-                emotion = self.emotion_model(response_tuple_list[0][1])[0]['label']
             abs_path = os.path.abspath(self.audio_gen.audio_file_path).replace('\\', '/')
-            self.chat_display.append(f'<a href="{abs_path}[{emotion}]" style="text-decoration: none; color: {text_color};">★{self.character_list[self.current_char_index].character_name}：</a>')     #将emotion藏进路径中，回来解包一下即可  # noqa
+            self.chat_display.append(f'<a href="{abs_path}[{emotion}]" style="text-decoration: none; color: {text_color};">★{character_name}：</a>')     #将emotion藏进路径中，回来解包一下即可  # noqa
             self.live2d_mod.new_text=self.full_response+self.translation    #更新live2d文本框的内容显示
+
+            # 更新该条 AI 消息的 audio_path 和 translation
+            if target_msg is not None:
+                target_msg.audio_path = abs_path
+                target_msg.translation = self.translation
         else:
-            self.chat_display.append(f'<a style="text-decoration: none; color: {text_color};">{self.character_list[self.current_char_index].character_name}：</a>')  # noqa
+            self.chat_display.append(f'<a style="text-decoration: none; color: {text_color};">{character_name}：</a>')  # noqa
+            if target_msg is not None:
+                target_msg.audio_path = "NO_AUDIO"
+                target_msg.translation = self.translation
 
         self.timer.start(30)
 
@@ -1373,6 +1373,7 @@ class ChatGUI(QWidget):
 
     def handle_user_input(self):
         def clr_history():
+            self.current_chat.clear_message_list()
             self.chat_display.clear()
             self.qt2dp_queue.put('clr')
 
@@ -1401,7 +1402,7 @@ class ChatGUI(QWidget):
             if flag:
                 self.full_response = user_this_turn_input + "\n"
                 self.current_index = 0
-                text_color = self.chat_display.palette().color(QPalette.Text).name()
+                text_color = self._current_theme_color
                 self.chat_display.append(f'<a style="text-decoration: none; color: {text_color};">你：')
                 self.timer.start(8)
         if user_this_turn_input=='clr':
@@ -1421,23 +1422,13 @@ class ChatGUI(QWidget):
             self.pause_second_reset()
 
     def save_data(self):
-        dp_messages=self.dp_chat.all_character_msg
-        final_data_dp=[]
-        for index,char_msg in enumerate(dp_messages):
-            final_data_dp.append({'character':self.character_list[index].character_name,'history':char_msg})  # noqa
-        with open('../reference_audio/history_messages_dp.json', 'w', encoding='utf-8') as f:
-            json.dump(final_data_dp, f, ensure_ascii=False, indent=4)  # noqa
-            f.close()
-
-        record = self.chat_display.toHtml()
-        self.character_chat_history[self.current_char_index] = record  # noqa
-        final_data_qt=[]
-        for index,char_msg in enumerate(self.character_chat_history):
-            final_data_qt.append({'character':self.character_list[index].character_name,'history':char_msg})  # noqa
-        with open('../reference_audio/history_messages_qt.json', 'w', encoding='utf-8') as f:
-            json.dump(final_data_qt, f, ensure_ascii=False, indent=4)  # noqa
-            f.close()
-        self.setWindowTitle("已保存最新的聊天记录！")
+        # 使用 ChatManager 统一保存到 all_conversation.json
+        try:
+            self.chat_manager.save()
+            self.setWindowTitle("已保存最新的聊天记录！")
+        except Exception as e:
+            PrintInfo.print_error(f"[Error]保存聊天记录失败：{e}")
+            self.setWindowTitle("保存聊天记录失败！")
 
     def handle_messages(self,message):
         if message=='bye':
@@ -1484,7 +1475,19 @@ if __name__=='__main__':
             self.pause_second=0.3
             self.audio_file_path="../reference_audio/audio_cache/temp_output.wav"
     audio_gen_mock = AudioGenMock()
-    win = ChatGUI(dp2qt_queue, qt2dp_queue, QT_message_queue, characters, None, audio_gen_mock,None,None,None,None)
+
+    # 创建 dp_chat mock，包含 ChatManager 以满足 ChatGUI 初始化需求
+    chat_mgr = get_chat_manager()
+    class DpChatMock:
+        def __init__(self):
+            self.chat_manager = chat_mgr
+            self.character_chats = [chat_mgr.get_or_create_chat_for_character(c) for c in characters]
+            self.if_generate_audio = False
+            self.current_char_index = 0
+            self.audio_language_choice = "日英混合"
+    dp_chat_mock = DpChatMock()
+
+    win = ChatGUI(dp2qt_queue, qt2dp_queue, QT_message_queue, characters, dp_chat_mock, audio_gen_mock,None,None,None,None)
 
     font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")
     font_family = QFontDatabase.applicationFontFamilies(font_id)[0]  # noqa
