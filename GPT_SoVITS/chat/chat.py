@@ -59,27 +59,31 @@ class Message:
             "audio_path": self.audio_path
         }
 
-    def to_display_html(self, theme_color: str = "#7799CC", user_name: str = "User") -> str:
+    def to_display_html(self, theme_color: str = "#7799CC", user_name: str = "User", msg_index: Optional[int] = None) -> str:
         """
         将此消息转换为 QTextBrowser 可显示的 HTML 片段
 
         :param theme_color: 主题颜色（十六进制）
         :param user_name: 用户角色名称，用于判断是否为用户消息
+        :param msg_index: 消息索引，用于生成可定位的锚点
         :returns: HTML 字符串
         """
         import html as html_module
         safe_text = html_module.escape(self.text)
+        
+        # 将 msg_index 编码进 href 以方便 UI 获取点击位置的消息索引
+        msg_param = f"?msg={msg_index}" if msg_index is not None else ""
 
         if self.character_name == user_name or self.character_name == "User":
-            return f'<a style="text-decoration: none; color: {theme_color};">你：{safe_text}</a>'
+            return f'<a href="user:{msg_param}" style="text-decoration: none; color: {theme_color};">你：{safe_text}</a>'
         else:
-            if self.audio_path!="NO_AUDIO":
+            if self.audio_path != "NO_AUDIO":
                 abs_path = os.path.abspath(self.audio_path).replace('\\', '/')
-                header = (f'<a href="{abs_path}[{self.emotion.as_label()}]" '
+                header = (f'<a href="{abs_path}[{self.emotion.as_label()}]{msg_param}" '
                           f'style="text-decoration: none; color: {theme_color};">'
                           f'★{self.character_name}：{safe_text}</a>')
             else:
-                header = (f'<a style="text-decoration: none; color: {theme_color};">'
+                header = (f'<a href="no_audio:{msg_param}" style="text-decoration: none; color: {theme_color};">'
                           f'{self.character_name}：{safe_text}</a>')
             if self.translation:
                 safe_translation = html_module.escape(self.translation)
@@ -401,12 +405,19 @@ class Chat:
         :returns: 完整的 HTML 字符串
         """
         html_parts = []
-        for msg in self.message_list:
-            html_parts.append(msg.to_display_html(theme_color, user_name))
+        for i, msg in enumerate(self.message_list):
+            html_parts.append(msg.to_display_html(theme_color, user_name, msg_index=i))
         return "<br><br>".join(html_parts)
     
     def __repr__(self) -> str:
         return f"Chat(name={self.name}, messages={self.message_list})"
+
+    def remove_message(self, index: int):
+        """
+        根据索引删除记录中的一条消息
+        """
+        if 0 <= index < len(self.message_list):
+            self.message_list.pop(index)
 
     def __str__(self) -> str:
         return f"{self.name}: {self.message_list}"

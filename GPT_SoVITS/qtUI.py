@@ -7,7 +7,7 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
-    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame
+    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor
 
@@ -341,7 +341,7 @@ class MoreFunctionWindow(QDialog):
         self.close()
 
 class WarningWindow(QDialog):
-    def __init__(self,warning_text,css,parent_window_fun):
+    def __init__(self,warning_text,css=None,parent_window_fun=None):
         super().__init__()
         self.setWindowTitle("确认操作")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
@@ -356,7 +356,8 @@ class WarningWindow(QDialog):
         layout.addLayout(self.btn_layout)
         self.setLayout(layout)
         self.setStyleSheet(dialogWindowDefaultCss)
-        self.confirm_btn.clicked.connect(parent_window_fun)  # noqa
+        if parent_window_fun is not None:
+            self.confirm_btn.clicked.connect(parent_window_fun)  # noqa
         self.confirm_btn.clicked.connect(self.close)  # noqa
         self.cancel_btn.clicked.connect(self.close)  # noqa
 
@@ -782,6 +783,55 @@ class ColorPicker(QDialog):
         self.lbl_display.setStyleSheet(f"color: {self.current_color}")
         self.parent_window_set_theme_color(self.current_color)
 
+class AudioRegenThread(QThread):
+    finished_signal = pyqtSignal(str, int)  # (新音频路径, msg_index)
+
+    def __init__(self, audio_gen, text, dp_chat, msg_index):
+        super().__init__()
+        self.audio_gen = audio_gen
+        self.text = text
+        self.dp_chat = dp_chat
+        self.msg_index = msg_index
+
+    def run(self):
+        new_audio_path = self.audio_gen.generate_audio_sync(self.text, self.dp_chat.sakiko_state,self.dp_chat.audio_language_choice)
+        self.finished_signal.emit(new_audio_path, self.msg_index)
+
+class ChatTextBrowser(QTextBrowser):
+    def __init__(self, chat_gui_parent, parent=None):
+        super().__init__(parent)
+        self.chat_gui_parent = chat_gui_parent
+
+    def contextMenuEvent(self, event):
+        url = self.anchorAt(event.pos())
+        msg_index = None
+        
+        # 尝试从 url 解析出 msg_index
+        if url:
+            match = re.search(r'\?msg=(\d+)', url)
+            if match:
+                msg_index = int(match.group(1))
+
+        # 先获取自带的标准右键菜单（包含复制、全选等）
+        menu = self.createStandardContextMenu(event.pos())
+        
+        if msg_index is not None:
+            # 判断是否是用户的消息
+            msg = self.chat_gui_parent.current_chat.message_list[msg_index]
+            is_user_msg = (msg.character_name == "User")
+            
+            menu.addSeparator()  # 增加一条分割线与原生菜单隔开
+            delete_action = QAction("删除此消息", self)
+            delete_action.triggered.connect(lambda: self.chat_gui_parent.delete_message(msg_index))
+            menu.addAction(delete_action)
+
+            if not is_user_msg:
+                regen_action = QAction("重新生成音频", self)
+                regen_action.triggered.connect(lambda: self.chat_gui_parent.regenerate_audio(msg_index))
+                menu.addAction(regen_action)
+
+        menu.exec_(event.globalPos())
+
 class ChatGUI(QWidget):
     def __init__(self,
                  dp2qt_queue,
@@ -796,7 +846,7 @@ class ChatGUI(QWidget):
         self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
         self.screen = QDesktopWidget().screenGeometry()
         self.resize(int(0.37 * self.screen.width()), int(0.7 * self.screen.height()))
-        self.chat_display = QTextBrowser()
+        self.chat_display = ChatTextBrowser(self)
         self.chat_display.setPlaceholderText("这里显示聊天记录...")
         self.chat_display.setOpenExternalLinks(False)
         self.chat_display.anchorClicked.connect(self.play_history_audio)  # noqa
@@ -1003,9 +1053,9 @@ class ChatGUI(QWidget):
         self.chat_display.setHtml(new_html)
 
         if was_at_bottom:
-            scroll_bar.setValue(scroll_bar.maximum())
+            QTimer.singleShot(10, lambda: scroll_bar.setValue(scroll_bar.maximum()))
         else:
-            scroll_bar.setValue(saved_position)
+            QTimer.singleShot(10, lambda: scroll_bar.setValue(saved_position))
 
     def set_btn_color(self,color):
         #更改按钮图标颜色-----------------------
@@ -1224,6 +1274,14 @@ class ChatGUI(QWidget):
         if self.live2d_mod.live2d_this_turn_motion_complete:
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
+            print(audio_path_and_emotion)
+            # 去除新增的 ?msg= 锚点参数
+            if '?msg=' in audio_path_and_emotion:
+                audio_path_and_emotion = audio_path_and_emotion.split('?msg=')[0]
+            if audio_path_and_emotion in ("user:", "no_audio:"):
+                PrintInfo.print_info("点击到用户消息或无音频的消息，无法播放")
+                return
+                
             match=re.match(r"(.+?)\[(.+?)\]$", audio_path_and_emotion)
             if match:
                 audio_path = match.group(1)  # 路径
@@ -1249,6 +1307,51 @@ class ChatGUI(QWidget):
         else:
             self.setWindowTitle('请等待当前过程完成后重试...')
 
+
+    def delete_message(self, msg_index):
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
+            return
+
+        def confirm_del():
+            self.current_chat.remove_message(msg_index)
+            self._refresh_chat_display()
+        WarningWindow("确定要删除这条信息吗",None,confirm_del).exec_()
+
+    def regenerate_audio(self, msg_index):
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
+            return
+        current_character= self.character_list[self.current_char_index]
+        if not (current_character.GPT_model_path or current_character.gptsovits_ref_audio or current_character.sovits_model_path):
+            WarningWindow("当前角色未配置完整的音频生成条件，无法重新生成音频！").exec_()
+            return
+        # 防止重新生成时重复操作
+        # if not self.audio_gen.is_completed or not self.live2d_mod.live2d_this_turn_motion_complete:
+        #     QMessageBox.warning(self, "稍后再试", "当前正在播放音频或合成新音频中，稍后再试！")
+        #     return
+            
+        msg = self.current_chat.message_list[msg_index]
+        
+        # UI反聩
+        self.setWindowTitle("正在重新生成音频...")
+        self.chat_display.setEnabled(False) # 暂时禁用右键等交互
+        
+        # 启动后台合成线程
+        self.regen_thread = AudioRegenThread(self.audio_gen, msg.text, self.dp_chat, msg_index)
+        self.regen_thread.finished_signal.connect(self.handle_regenerate_audio_finished)
+        self.regen_thread.start()
+
+    def handle_regenerate_audio_finished(self, new_audio_path, msg_index):
+        self.setWindowTitle("数字小祥")
+        self.chat_display.setEnabled(True)
+        
+        if 0 <= msg_index < len(self.current_chat.message_list):
+            msg = self.current_chat.message_list[msg_index]
+            msg.audio_path = os.path.abspath(new_audio_path).replace('\\', '/')
+            self._refresh_chat_display()
+            PrintInfo.print_info(f"重新生成音频成功，新路径为：{msg.audio_path}")
+            self.play_history_audio(QUrl(f"{msg.audio_path}[{msg.emotion.as_label()}]?msg={msg_index}"))
+            
+        self.QT_message_queue.put('...') # 强制恢复 messages_box 状态，允许继续对话
 
 
     def change_char(self):
@@ -1312,17 +1415,22 @@ class ChatGUI(QWidget):
         # 找到下一条未处理的 AI 消息（可能有多段）
         # 从尾部向前搜索尚未设置 audio_path 的 AI 消息中最早的那条
         target_msg = None
-        for msg in self.current_chat.message_list:
-            if msg.character_name == character_name and msg.audio_path == "" and msg.audio_path!="NO_AUDIO":
+        msg_index = None
+        for i, msg in enumerate(self.current_chat.message_list):
+            if msg.character_name == character_name and msg.audio_path == "" and msg.audio_path != "NO_AUDIO":
                 target_msg = msg
+                msg_index = i
                 break  # 找到第一条未处理的
+                
+        msg_param = f"?msg={msg_index}" if msg_index is not None else ""
+
         if self.dp_chat.if_generate_audio and response_text!='（再见）':
             emotion = 'LABEL_0'
             if target_msg is not None:
                 emotion = target_msg.emotion.as_label()
 
             abs_path = os.path.abspath(self.audio_gen.audio_file_path).replace('\\', '/')
-            self.chat_display.append(f'<a href="{abs_path}[{emotion}]" style="text-decoration: none; color: {text_color};">★{character_name}：</a>')     #将emotion藏进路径中，回来解包一下即可  # noqa
+            self.chat_display.append(f'<a href="{abs_path}[{emotion}]{msg_param}" style="text-decoration: none; color: {text_color};">★{character_name}：</a>')     #将emotion藏进路径中，回来解包一下即可  # noqa
             self.live2d_mod.new_text=self.full_response+self.translation    #更新live2d文本框的内容显示
 
             # 更新该条 AI 消息的 audio_path 和 translation
@@ -1330,7 +1438,7 @@ class ChatGUI(QWidget):
                 target_msg.audio_path = abs_path
                 target_msg.translation = self.translation
         else:
-            self.chat_display.append(f'<a style="text-decoration: none; color: {text_color};">{character_name}：</a>')  # noqa
+            self.chat_display.append(f'<a href="no_audio:{msg_param}" style="text-decoration: none; color: {text_color};">{character_name}：</a>')  # noqa
             if target_msg is not None:
                 target_msg.audio_path = "NO_AUDIO"
                 target_msg.translation = self.translation
@@ -1403,7 +1511,13 @@ class ChatGUI(QWidget):
                 self.full_response = user_this_turn_input + "\n"
                 self.current_index = 0
                 text_color = self._current_theme_color
-                self.chat_display.append(f'<a style="text-decoration: none; color: {text_color};">你：')
+                
+                # 简单预测用户的 msg_index，使其能支持右键删除功能
+                predicted_msg_index = len(self.current_chat.message_list)
+                if len(self.current_chat.message_list) > 0 and self.current_chat.message_list[-1].text == user_this_turn_input:
+                    predicted_msg_index -= 1 # 已经被其他线程优先加入
+                    
+                self.chat_display.append(f'<a href="user:?msg={predicted_msg_index}" style="text-decoration: none; color: {text_color};">你：</a>')
                 self.timer.start(8)
         if user_this_turn_input=='clr':
             css = ThemeManager.generate_stylesheet(

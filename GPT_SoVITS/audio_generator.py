@@ -109,8 +109,6 @@ class AudioGenerate:
             'Morfonica':'モルフォニカ',
             'SPACE': 'スペース',
             '六花': 'ろっか',
-
-
         }
         self.replacements_chi ={
             'CRYCHIC':'C团',
@@ -330,6 +328,80 @@ class AudioGenerate:
 
                 time.sleep(0.2)
             self.is_completed=True
+
+
+    def clean_text_for_audio(self,text):
+        """清洗文本使其适合送入语音合成模块：移除括号内容、中括号、书名号等"""
+        cleaned = re.sub(r"（.*?）", "", text)
+        cleaned = re.sub(r"\(.*?\)", "", cleaned)
+        cleaned = re.sub(r"\[.*?]", "", cleaned)
+        cleaned = cleaned.replace('「', '')
+        cleaned = cleaned.replace('」', '')
+        cleaned = cleaned.strip()
+        pattern = r'^[^A-Za-z0-9\u3040-\u30FF\u4E00-\u9FFF]+'
+        cleaned = re.sub(pattern, '', cleaned)
+        cleaned = cleaned.replace(' ', '')
+        cleaned = cleaned.replace('...', '，')
+        if not cleaned or bool(re.fullmatch(r'[\W_]+', cleaned)):
+            cleaned = '不能送去合成'
+        for key, value in self.replacements_jap.items():
+            cleaned = re.sub(re.escape(key), value, cleaned, flags=re.IGNORECASE)
+        return cleaned
+
+    def generate_audio_sync(self, text,sakiko_state,audio_lan_choice):
+        """同步生成音频，用于右键菜单的重新生成音频功能"""
+        # 保存原有的 completed 状态
+        old_completed = self.is_completed
+        self.is_completed = False
+
+        if audio_lan_choice=='日英混合':
+            text = re.sub(r'CRYCHIC', 'クライシック',text,flags=re.IGNORECASE)
+            text = re.sub(r'\bave\s*mujica\b', 'アヴェムジカ', text, flags=re.IGNORECASE)
+            text = re.sub(r'立希',( 'りっき' if self.character_list[self.current_character_index].character_name=="爱音" else 'りっき'), text, flags=re.IGNORECASE)
+        text=self.clean_text_for_audio(text)
+
+        if text=='' or text=='不能送去合成':
+            return '../reference_audio/silent_audio/silence.wav'
+            
+        if self.if_sakiko:
+            if sakiko_state:     #黑白祥
+                ref_audio_file=self.ref_audio_file_black_sakiko
+                ref_text_file=self.ref_text_file_black_sakiko
+            else:
+                ref_audio_file=self.ref_audio_file_white_sakiko
+                ref_text_file=self.ref_text_file_white_sakiko
+        else:
+            ref_audio_file=self.ref_audio_file
+            ref_text_file=self.ref_text_file
+        print(text)
+        self.neccerary_matirials=[1,
+                                  ref_audio_file,
+                                  ref_text_file,
+                                  self.ref_audio_language,
+                                  text,
+                                  audio_lan_choice,
+                                  self.program_output_path,
+                                  self.speed,
+                                  '不切',
+                                  self.pause_second
+                                  ]
+        self.to_gptsovits_com_queue.put(self.neccerary_matirials)
+        
+        new_audio_path = '../reference_audio/silent_audio/silence.wav'
+        while True:
+            if not self.from_gptsovits_com_queue2.empty():
+                if self.message_queue is not None:
+                    self.message_queue.put(self.from_gptsovits_com_queue2.get())
+                else:
+                    self.from_gptsovits_com_queue2.get()
+
+            if not self.from_gptsovits_com_queue.empty():
+                new_audio_path = self.from_gptsovits_com_queue.get()
+                break
+            time.sleep(0.1)
+            
+        self.is_completed = old_completed
+        return new_audio_path
 
 
 if __name__=="__main__":

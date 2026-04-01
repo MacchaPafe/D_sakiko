@@ -82,7 +82,7 @@ class ChatTestCase(unittest.TestCase):
         # 测试读取内容是否正确
         user_message = chat.message_list[0]
         self.assertEqual(user_message.character_name, "User")
-        self.assertEqual(user_message.text, "你好呀，今天过的怎么样？（本句话你的回答请务必用日语，并且请将额外的中文翻译内容放到“[翻译]”这一标记格式之后，并以“[翻译结束]”作为翻译的结束标志，每三句话翻译一次！请务必严格遵守这一格式回答！！）")
+        self.assertEqual(user_message.text, "你好呀，今天过的怎么样？")
         self.assertEqual(user_message.translation, "")
         self.assertEqual(user_message.emotion, EmotionEnum.HAPPINESS)
         self.assertEqual(user_message.audio_path, "")
