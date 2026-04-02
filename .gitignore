@@ -31,10 +31,10 @@ d_sakiko_config.json
 update_logs/**
 **/*.hdiff
 
-
 .idea/**
 .vscode/**
 **/__pycache__/**
+*.pyc
 PyQt-Fluent-Widgets/**
 knowledge_base/**
 install_patch/**

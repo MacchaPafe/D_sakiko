@@ -6,6 +6,7 @@ from queue import Queue
 import threading
 import multiprocessing
 import time
+import json
 import re
 
 from PyQt5.QtWidgets import QApplication
@@ -17,6 +18,9 @@ import audio_generator
 import inference_emotion_detect
 import live2d_module
 import qtUI
+from chat.chat import get_chat_manager
+
+from emotion_enum import EmotionEnum
 
 import faulthandler
 
@@ -44,6 +48,79 @@ def merge_short_sentences(sentences, min_length=25):
 
     return merged
 
+
+def clean_text_for_audio(text):
+    """清洗文本使其适合送入语音合成模块：移除括号内容、中括号、书名号等"""
+    cleaned = re.sub(r"（.*?）", "", text)
+    cleaned = re.sub(r"\(.*?\)", "", cleaned)
+    cleaned = re.sub(r"\[.*?]", "", cleaned)
+    cleaned = cleaned.replace('「', '')
+    cleaned = cleaned.replace('」', '')
+    cleaned = cleaned.strip()
+    if not cleaned or bool(re.fullmatch(r'[\W_]+', cleaned)):
+        cleaned = '不能送去合成'
+    return cleaned
+
+
+def parse_llm_response(response_text):
+    """
+    解析 LLM 回复。优先尝试 JSON 格式（数组或单对象），失败则回退到旧版正则。
+    返回: list of (text, translation, emotion_label)
+      - text: 原始文本
+      - translation: 翻译（可能为空）
+      - emotion_label: 情感标签（如 'LABEL_0'），若无法确定则返回 None
+    """
+    # 尝试解析 JSON 格式
+    try:
+        json_text = response_text.strip()
+        if json_text.startswith('```'):
+            json_text = re.sub(r'^```(?:json)?\s*', '', json_text)
+            json_text = re.sub(r'\s*```$', '', json_text)
+
+        data = json.loads(json_text)
+
+        # JSON 数组格式（多段回复）
+        if isinstance(data, list):
+            segments = []
+            for item in data:
+                text = item.get('text', '')
+                translation = item.get('translation', '')
+                emotion_str = item.get('emotion', 'happiness')
+                emotion_label = EmotionEnum.from_string(emotion_str).as_label()
+                if text:
+                    segments.append((text, translation, emotion_label))
+            if segments:
+                return segments
+
+        # JSON 单对象格式（单段回复）
+        if isinstance(data, dict):
+            text = data.get('text', '')
+            translation = data.get('translation', '')
+            emotion_str = data.get('emotion', 'happiness')
+            emotion_label = EmotionEnum.from_string(emotion_str).as_label()
+            if text:
+                return [(text, translation, emotion_label)]
+
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        pass
+
+    # 回退到旧版 [翻译]...[翻译结束] 格式
+    pattern = r'(.*?)(?:\[翻译\]|\[翻訳\])(.+?)(?:\[翻译结束\]|\[翻訳終了\])'
+    match_result = re.findall(pattern, response_text, flags=re.DOTALL)
+    if match_result:
+        return [(orig.strip(), trans.strip(), None) for orig, trans in match_result if trans.strip()]
+
+    # 纯文本回复（中文模式），按句号分割
+    text = response_text.strip() + '。'
+    text = text.replace("。。", "。")
+    sentences = re.findall(r'.+?[。！!]', text, flags=re.DOTALL)
+    sentences = merge_short_sentences(sentences)
+    if sentences:
+        return [(s, '', None) for s in sentences]
+
+    return [(response_text.strip(), '', None)]
+
+
 def main_thread():
 
     while True:
@@ -52,126 +129,88 @@ def main_thread():
 
             this_turn_response=text_queue.get()
             if this_turn_response=='bye':
-                # print("主线程收到退出信号，正在退出...")
-                emotion_queue.put('bye')    #退出live2D进程
-                # 这里不要管动画有没有放完；后面有 join 阻塞 live2d 进程，在 live2d 放完前，主进程不会退出
+                emotion_queue.put('bye')    #退出live2D线程
                 dp2qt_queue.put("（再见）")
                 QT_message_queue.put('bye')
                 to_audio_generator_text_queue.put('bye')
                 break
-            this_turn_response=this_turn_response+'。'   #有可能这句话就没有句号，导致下面的过程无法发生，出现严重bug...
-            #print('ccccccccccccccc',this_turn_response,'dddddddddddddddd')
-            this_turn_response=this_turn_response.replace("。。","。")
-            this_turn_response = this_turn_response.replace("!!!!!", "")
-            pattern = r'(.*?)(?:\[翻译\]|\[翻訳\])(.+?)(?:\[翻译结束\]|\[翻訳終了\])'
-            is_ja=False
-            if dp_chat.audio_language_choice=='日英混合':
-                this_turn_response=re.findall(pattern, this_turn_response, flags=re.DOTALL)
-                this_turn_response = [(orig.strip(), trans.strip()) for orig, trans in this_turn_response if trans.strip()]
-                this_turn_response=this_turn_response
-                is_ja=True
-            else:
-                this_turn_response = re.findall(r'.+?[。！!]', this_turn_response,flags=re.DOTALL)
-                #print('aaaaaaaaaa', this_turn_response, 'sssssssssswwdfwdfw')
-                this_turn_response=merge_short_sentences(this_turn_response)
-            #print('ssssssssssss', this_turn_response, 'ttttttttttttttt')
-            audio_gen.audio_language_choice=dp_chat.audio_language_choice
+
+            audio_gen.audio_language_choice = dp_chat.audio_language_choice
             QT_message_queue.put("整理语言...")
 
-            iter_step=1 if is_ja else 1
-            for i in range(0,len(this_turn_response),iter_step):    #一次合成三句话（三个句号）
-                if not is_ja:
-                    group=this_turn_response[i:i+1]
-                    output_for_audio="".join(group)
-                else:
-                    output_for_audio=this_turn_response[i][0]
-                #print('oooooooooooooooooooo',output_for_audio,'pppppppppppppppppp')
-                cleaned_text=re.sub(r"（.*?）", "", output_for_audio)
-                #print('eeeeeeeeeeeeeeee', cleaned_text, 'fffffffffffffff')
-                cleaned_text = re.sub(r"\(.*?\)", "", cleaned_text)     #删除括号内的内容，模型回答的表示动作或状态的语句，不进行语音合成（deepseek模型喜欢加入这些）
-                cleaned_text = re.sub(r"\[.*?]", "", cleaned_text)
-                cleaned_text=cleaned_text.replace('「','')
-                cleaned_text=cleaned_text.replace('」', '')
-                #print('gggggggggggggg', cleaned_text, 'hhhhhhhhhhhhhh')
-                if bool(re.fullmatch(r'[\W_]+', cleaned_text.strip())):     #若只包括符号，无法生成语音，导致严重bug
-                    cleaned_text='。'
-                if cleaned_text=='。':
-                    cleaned_text='不能送去合成'     #若模型给出的答案只有括号，就会导致上一步全删了，如果不处理也会有bug
-                #print('iiiiiiiiiiiiiiiiii',cleaned_text,'jjjjjjjjjjjjjjjj')
-                audio_generate_count=1
-                if not dp_chat.if_generate_audio:   #不合成语音
-                    audio_generate_count=99
+            # --- 解析 LLM 回复为多个段落 ---
+            segments = parse_llm_response(this_turn_response)
 
-                while audio_generate_count<=2:  #语音合成异常处理
+            # 对于没有 emotion 的段落，用 bert 模型推断
+            for i, (text, translation, emotion_label) in enumerate(segments):
+                if emotion_label is None:
+                    emotion_for_detect = translation if translation else text
+                    emotion_label = emotion_model(re.sub(r"（.*?）", "", emotion_for_detect))[0]['label']
+                    segments[i] = (text, translation, emotion_label)
+
+            # --- 逐段处理：流水线式语音合成 + 播放 ---
+            for i, (text, translation, emotion_label) in enumerate(segments):
+                cleaned_text = clean_text_for_audio(text)
+
+                # 语音合成
+                audio_generate_count = 1
+                if not dp_chat.if_generate_audio:
+                    audio_generate_count = 99
+
+                while audio_generate_count <= 2:
                     try:
                         to_audio_generator_text_queue.put(cleaned_text)
-                        audio_gen.is_completed=False
+                        audio_gen.is_completed = False
                         while True:
-
                             if audio_gen.is_completed:
                                 break
                             time.sleep(0.4)
                         break
-
-
                     except Exception as e:
-                        QT_message_queue.put(f"语音合成出错，重试中")
-                        audio_generate_count+=1
+                        QT_message_queue.put("语音合成出错，重试中")
+                        audio_generate_count += 1
                         character.PrintInfo.print_error(f"[Error]语音合成错误信息： {str(e)}")
                         time.sleep(1)
-                if audio_generate_count!=1:
-                    # if audio_generate_count != 99:
-                    #     QT_message_queue.put("语音合成失败")
-                    #     is_audio_play_complete.put('yes')
-                    audio_file_path_queue.put('../reference_audio/silent_audio/silence.wav')
-                    emotion_this_three_sentences = emotion_model(cleaned_text)[0]['label']
-                    is_text_generating_queue.get()  #让模型停止思考动作
 
-                    if not is_ja:
-                        dp2qt_queue.put(''.join(this_turn_response[:]))
-                        # 通过队列发送新文本到 Live2D 进程
-                        live2d_text_queue.put(''.join(this_turn_response[:]))
+                if audio_generate_count != 1:
+                    # 语音合成失败或未启用
+                    audio_file_path_queue.put('../reference_audio/silent_audio/silence.wav')
+                    if i == 0:
+                        is_text_generating_queue.get()  # 让模型停止思考动作
+
+                    # 将全部剩余文本和翻译一次性传给 qtUI 显示
+                    remaining_texts = [s[0] for s in segments[i:]]
+                    remaining_trans = [s[1] for s in segments[i:] if s[1]]
+                    if remaining_trans:
+                        dp2qt_queue.put(''.join(remaining_texts) + '\n[翻译]' + ''.join(remaining_trans) + '[翻译结束]')
                     else:
-                        orig_text=''
-                        trans_text=''
-                        for (orig,trans) in this_turn_response:
-                            orig_text=orig_text+orig+'。'
-                            trans_text=trans_text+trans+'。'
-                        dp2qt_queue.put(orig_text + '\n[翻译]' + trans_text + '[翻译结束]')
-                        # 通过队列发送新文本到 Live2D 进程
-                        live2d_text_queue.put(orig_text)
-                    emotion_queue.put(emotion_this_three_sentences)
+                        dp2qt_queue.put(''.join(remaining_texts))
+                    live2d_player.new_text = ''.join(remaining_texts)
+                    emotion_queue.put(emotion_label)
                     break
 
+                # 语音合成成功 —— 等待上一段播放完毕（避免打断）
                 while not motion_complete_value.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
                     time.sleep(0.2)
-                audio_file_path_queue.put(audio_gen.audio_file_path)    #音频文件队列
-                if cleaned_text!="不能送去合成":
 
-                    if not is_ja:
-                        emotion_this_three_sentences = emotion_model(cleaned_text)[0]['label']
-                    else:
-                        a=re.sub(r"（.*?）", "",re.sub(r"\(.*?\)", "", this_turn_response[i][1]))
-                        #print(a)
-                        emotion_this_three_sentences=emotion_model(a)[0]['label']
-                    #print(emotion_this_three_sentences)
-                else:
-                    emotion_this_three_sentences ='LABEL_0'
-                if i==0:
-                    is_text_generating_queue.get() #让模型停止思考动作
-                while not motion_complete_value.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                audio_file_path_queue.put(audio_gen.audio_file_path)
+
+                if i == 0:
+                    is_text_generating_queue.get()  # 第一段合成完后让模型停止思考动作
+
+                # 等待当前播放完毕后再送文本到 qtUI（保持顺序）
+                while not live2d_player.live2d_this_turn_motion_complete:
                     time.sleep(0.5)
 
-                if not is_ja:
-                    dp2qt_queue.put(output_for_audio)
-                    # 通过队列发送新文本到 Live2D 进程
-                    live2d_text_queue.put(output_for_audio)
+                # 将本段文本和翻译传给 qtUI 显示
+                if translation:
+                    dp2qt_queue.put(text + '\n[翻译]' + translation + '[翻译结束]')
                 else:
-                    dp2qt_queue.put(output_for_audio+'\n[翻译]'+this_turn_response[i][1]+'[翻译结束]')
-                    # 通过队列发送新文本到 Live2D 进程
-                    live2d_text_queue.put(re.sub(r"（.*?）",'',output_for_audio).strip())
-                emotion_queue.put(emotion_this_three_sentences)  # 情感标签队列
-            is_audio_play_complete.put('yes')   #不让LLM模块提前进入下一个循环
+                    dp2qt_queue.put(text)
+                live2d_player.new_text = re.sub(r"（.*?）", '', text).strip()
+                emotion_queue.put(emotion_label)
+
+            is_audio_play_complete.put('yes')  # 本轮全部段落处理完毕
 
 
 def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w, desktop_h):
@@ -210,6 +249,8 @@ if __name__=='__main__':
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
 
+    # 初始化全局 ChatManager（自动处理旧版聊天记录迁移）
+    chat_manager = get_chat_manager()
 
     #模块间传参队列
     text_queue=Queue()
@@ -228,7 +269,7 @@ if __name__=='__main__':
     is_display_text_value=multiprocessing.Value('b', True)  # 是否显示文本
     motion_complete_value=multiprocessing.Value('b', True)  # 动作是否完成
 
-    dp_chat=dp_local2.DSLocalAndVoiceGen(characters)
+    dp_chat=dp_local2.DSLocalAndVoiceGen(characters, chat_manager)
 
     audio_gen=audio_generator.AudioGenerate()
 

@@ -1181,7 +1181,7 @@ class ViewerGUI(QWidget):
         self.char_1_talk_texts = []
         self.char_1_audio_path_list = []
         self.chat_manager: ChatManager = get_chat_manager()
-        self.current_chat: Chat | None = None
+        self.current_chat: Optional[Chat] = None
         self.sakiko_state=True  #黑祥
         # 当前对话是否可以生成音频（即当前对话中，两个角色是否都有语音模型）
         self.can_generate_audio_for_current_chat = True

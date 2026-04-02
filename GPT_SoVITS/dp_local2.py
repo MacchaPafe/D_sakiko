@@ -1,4 +1,5 @@
 import random
+import re
 import time,os
 from copy import deepcopy
 
@@ -10,11 +11,20 @@ from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
 from character import PrintInfo
 
-class DSLocalAndVoiceGen:
-    def __init__(self,characters):
-        self.character_list=characters
+from chat.chat import Chat, Message, ChatManager
+from emotion_enum import EmotionEnum
 
-        self.all_character_msg=[]
+class DSLocalAndVoiceGen:
+    def __init__(self,characters, chat_manager: ChatManager):
+        self.character_list=characters
+        self.chat_manager = chat_manager
+        # 为每个角色获取或创建对应的 Chat 对象
+        self.character_chats: list[Chat] = []
+        for character in self.character_list:
+            chat_obj = self.chat_manager.get_or_create_chat_for_character(character)
+            self.character_chats.append(chat_obj)
+
+        self.LLM_list=["deepseek-r1:14b","deepseek-r1:32b","deepseek-V3 非本地API","deepseek-R1 非本地API（暂时不能用）"]
 
         self.audio_language = ["中英混合", "日英混合"]
         self.audio_language_choice = self.audio_language[1]
@@ -28,22 +38,7 @@ class DSLocalAndVoiceGen:
         self.initial()
 
     def initial(self):
-        for character in self.character_list:
-            self.all_character_msg.append([{"role": "system",
-                                            "content": f'{character.character_description}'}])
-
-        if os.path.getsize('../reference_audio/history_messages_dp.json')!=0:
-            with open('../reference_audio/history_messages_dp.json','r',encoding='utf-8') as f:
-                json_data=json.load(f)
-            for index, character in enumerate(self.character_list):
-                for data in json_data:
-                    if data['character'] == character.character_name:
-                        self.all_character_msg[index] = data['history']
-                        # 之前可能错误的将第一条消息的类型写为了 user；如果是这样的话，改为 system。
-                        if self.all_character_msg[index][0]['role'] == 'user':
-                            self.all_character_msg[index][0]['role']='system'
-
-
+        # 聊天记录已经由 ChatManager 在初始化时加载完成，无需再从旧版 JSON 文件读取
         if self.character_list[self.current_char_index].character_name == '祥子':
             self.if_sakiko = True
         else:
@@ -51,6 +46,10 @@ class DSLocalAndVoiceGen:
         with open('./text/restr.rep', 'r', encoding='utf-8') as f:
             self.restr = f.read()
 
+    @property
+    def current_chat(self) -> Chat:
+        """获取当前角色对应的 Chat 对象"""
+        return self.character_chats[self.current_char_index]
 
     def change_character(self):
         if len(self.character_list) == 1:
@@ -66,9 +65,9 @@ class DSLocalAndVoiceGen:
             self.if_sakiko = False
 
     def trim_list_to_340kb(self, data_list):
-        working_list=deepcopy(data_list)
-        MAX_SIZE = 340 * 1024  #主流大模型的上下文现在基本都超过了100万token，差不多500KB，这里设置340KB以防万一
-        while len(json.dumps(data_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
+        working_list = deepcopy(data_list)
+        MAX_SIZE = 340 * 1024  # 主流大模型的上下文现在基本都是128Ktoken，差不多500KB，这里设置340KB以防万一
+        while len(json.dumps(working_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
             del working_list[1]
         return working_list
 
@@ -105,7 +104,7 @@ class DSLocalAndVoiceGen:
         message_queue.put(message)
         is_text_generating_queue.get()
         # 删除未能成功发送的信息
-        self.all_character_msg[self.current_char_index].pop()
+        self.current_chat.message_list.pop()
         # 源代码如此，我也不知道为啥要休息一会
         time.sleep(2)
 
@@ -178,8 +177,7 @@ class DSLocalAndVoiceGen:
                 time.sleep(2)
                 continue
             elif user_input=='clr':
-                self.all_character_msg[self.current_char_index]=[{"role": "user",
-                                                                 "content": f'{self.character_list[self.current_char_index].character_description}'}]
+                self.current_chat.clear_message_list()
                 message_queue.put("已清空角色的聊天记录")
                 time.sleep(2)
                 continue
@@ -199,10 +197,54 @@ class DSLocalAndVoiceGen:
                 time.sleep(2)
                 continue
 
+            # 保存原始用户输入（不含指令后缀），用于存储到 Chat 中
+            raw_user_input = user_input
+
             if self.audio_language_choice=='日英混合':
-                user_input=user_input+'（本句话你的回答请务必用日语，并且请将额外的中文翻译内容放到“[翻译]”这一标记格式之后，并以“[翻译结束]”作为翻译的结束标志，每三句话翻译一次！请务必严格遵守这一格式回答！！）'
+                format_prompt_json="""
+                [
+                {
+                    "text": "第一段日文原文...",
+                    "translation": "第一段日文对应的中文翻译...",
+                    "emotion": "happiness"
+                },
+                {
+                    "text": "第二段日文原文...",
+                    "translation": "第二段日文对应的中文翻译...",
+                    "emotion": "sadness"
+                }
+                ]
+                """
             else:
-                user_input = user_input + '（本句话你的回答请务必全部用中文，一定不要有日语假名！）'
+                format_prompt_json="""
+                [
+                {
+                    "text": "第一段中文原文，请务必全部用中文，一定不要有日语假名！",
+                    "emotion": "happiness"
+                },
+                {
+                    "text": "第二段中文原文，请务必全部用中文，一定不要有日语假名！",
+                    "emotion": "sadness"
+                }
+                ]
+                """
+
+            format_prompt = f"""
+            请严格以 JSON 数组（Array）的格式输出你的回复。
+
+            【分段规则】
+            为了配合语音合成的断句与呼吸节奏，请不要将所有文本挤在一起。如果你的回复较长，请根据语意停顿将其自然拆分为多个片段（建议每段包含 1 到 3 句话）。
+
+            【输出格式】
+            必须严格遵守以下 JSON 结构，不要输出任何非 JSON 的解释性文字：
+            {format_prompt_json}
+
+            【情感选项限制】
+            emotion 字段必须严格是以下单词之一（根据该段落的情感基调选择）：
+            "happiness", "sadness", "anger", "surprise", "fear", "disgust", "like", "neutral"
+            """
+
+            user_input=user_input+format_prompt
 
             if self.if_sakiko:
                 if self.sakiko_state:
@@ -211,12 +253,32 @@ class DSLocalAndVoiceGen:
                     user_input = user_input + '（本句话用白祥语气回答!）'
 
             # -----------------------------
-            user_this_turn_msg = {"role": "user",
-                                  "content": user_input}
-            self.all_character_msg[self.current_char_index].append(user_this_turn_msg)
-            to_llm_msg=deepcopy(self.all_character_msg[self.current_char_index])
-            to_llm_msg[0]['content']+=self.restr
-            message_queue.put(f"{self.character_list[self.current_char_index].character_name}思考中...")
+            # 将原始用户输入（不含指令后缀）存入 Chat
+            user_msg = Message(
+                character_name="User",
+                text=raw_user_input,
+                translation="",
+                emotion=EmotionEnum.HAPPINESS,
+                audio_path=""
+            )
+            self.current_chat.add_message(user_msg)
+
+            # 构建 LLM 请求：使用 Chat.build_llm_query 生成基础历史，然后修改最后一条用户消息为带指令后缀的版本
+            character_name = self.character_list[self.current_char_index].character_name
+            to_llm_msg = self.current_chat.build_llm_query(perspective=character_name)
+
+            # 将最后一条 user 消息的 content 替换为带指令后缀的版本
+            for i in range(len(to_llm_msg) - 1, -1, -1):
+                if to_llm_msg[i]["role"] == "user":
+                    # 找到最后一条 user 消息，替换其中当前用户输入部分
+                    to_llm_msg[i]["content"] = to_llm_msg[i]["content"].replace(raw_user_input, user_input)
+                    break
+
+            # 添加限制信息到 system prompt
+            if to_llm_msg and to_llm_msg[0]['role'] == 'system':
+                to_llm_msg[0]['content'] += self.restr
+
+            message_queue.put(f"{character_name}思考中...")
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
             # --------------------------
             # 优先处理使用 Up API 的情况
@@ -226,7 +288,7 @@ class DSLocalAndVoiceGen:
                     print("使用 UP 的 DeepSeek API 进行对话生成")
                     response = completion(
                         model="deepseek/deepseek-chat",
-                        messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
+                        messages=self.trim_list_to_340kb(to_llm_msg),
                         api_key=self.model
                     )
                 # 第二优先级是检查自定义 API Url
@@ -238,7 +300,7 @@ class DSLocalAndVoiceGen:
                     response = completion(
                         # 自定义 API 与 OpenAI 兼容，litellm 需要通过 openai/ 前缀路由
                         model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
-                        messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
+                        messages=self.trim_list_to_340kb(to_llm_msg),
                         api_key=d_sakiko_config.custom_llm_api_key.value,
                         # 自定义 API 地址
                         base_url=d_sakiko_config.custom_llm_api_url.value
@@ -247,7 +309,8 @@ class DSLocalAndVoiceGen:
                 else:
                     print("使用预定义大模型 API 进行对话生成")
                     print("Provider: ", d_sakiko_config.llm_api_provider.value)
-                    print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
+                    print("Model: ",
+                          d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
                     provider = d_sakiko_config.llm_api_provider.value
                     model = d_sakiko_config.llm_api_model.value.get(provider, "")
                     api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
@@ -259,7 +322,7 @@ class DSLocalAndVoiceGen:
 
                     response = completion(
                         model=self.normalize_model_for_provider(provider, model),
-                        messages=self.trim_list_to_340kb(self.all_character_msg[self.current_char_index]),
+                        messages=self.trim_list_to_340kb(to_llm_msg),
                         api_key=api_key,
                         **completion_kwargs,
                     )
@@ -322,13 +385,59 @@ class DSLocalAndVoiceGen:
                     "出现了未知错误，请再试一次。"
                 )
                 import traceback
+
                 traceback.print_exc()
 
                 continue
 
-            model_this_turn_msg = {"role": "assistant", "content": response.choices[0].message.content.strip()}
-            text_queue.put(response.choices[0].message.content.strip())
-            self.all_character_msg[self.current_char_index].append(model_this_turn_msg)
+            cleaned_text_of_model_response = response.choices[0].message.content.strip()
+            # 解析 LLM 回复的 JSON 格式，提取实际文本、翻译和情感
+            # 现在 LLM 可能返回 JSON 数组（多段回复），每段创建一个 Message
+            try:
+                json_str = cleaned_text_of_model_response.strip()
+                if json_str.startswith('```'):
+                    json_str = re.sub(r'^```(?:json)?\s*', '', json_str)
+                    json_str = re.sub(r'\s*```$', '', json_str)
+                parsed_data = json.loads(json_str)
+
+                if isinstance(parsed_data, list):
+                    # JSON 数组：每个元素 → 一个 Message
+                    for item in parsed_data:
+                        text = item.get('text', '')
+                        if not text:
+                            continue
+                        msg = Message(
+                            character_name=character_name,
+                            text=text,
+                            translation=item.get('translation', ''),
+                            emotion=EmotionEnum.from_string(item.get('emotion', 'happiness')),
+                            audio_path="" if self.if_generate_audio else "NO_AUDIO"  # 会在 qtUI 中覆盖
+                        )
+                        self.current_chat.add_message(msg)
+                elif isinstance(parsed_data, dict):
+                    # JSON 单对象
+                    msg = Message(
+                        character_name=character_name,
+                        text=parsed_data.get('text', cleaned_text_of_model_response),
+                        translation=parsed_data.get('translation', ''),
+                        emotion=EmotionEnum.from_string(parsed_data.get('emotion', 'happiness')),
+                        audio_path="" if self.if_generate_audio else "NO_AUDIO"
+                    )
+                    self.current_chat.add_message(msg)
+                else:
+                    raise ValueError("Unexpected JSON type")
+            except (json.JSONDecodeError, KeyError, AttributeError, ValueError):
+                # 非 JSON 格式，存储原始文本
+                assistant_msg = Message(
+                    character_name=character_name,
+                    text=cleaned_text_of_model_response,
+                    translation="",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path="" if self.if_generate_audio else "NO_AUDIO"
+                )
+                self.current_chat.add_message(assistant_msg)
+
+            text_queue.put(cleaned_text_of_model_response)
 
             while is_audio_play_complete.get() is None:
                 time.sleep(0.5)		#不加就无法正常运行

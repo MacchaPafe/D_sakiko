@@ -5,6 +5,7 @@ import copy
 import re
 import warnings
 import os
+import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Optional, List, Union, Any
@@ -57,6 +58,38 @@ class Message:
             "emotion": self.emotion.as_string(),
             "audio_path": self.audio_path
         }
+
+    def to_display_html(self, theme_color: str = "#7799CC", user_name: str = "User", msg_index: Optional[int] = None) -> str:
+        """
+        将此消息转换为 QTextBrowser 可显示的 HTML 片段
+
+        :param theme_color: 主题颜色（十六进制）
+        :param user_name: 用户角色名称，用于判断是否为用户消息
+        :param msg_index: 消息索引，用于生成可定位的锚点
+        :returns: HTML 字符串
+        """
+        import html as html_module
+        safe_text = html_module.escape(self.text)
+        
+        # 将 msg_index 编码进 href 以方便 UI 获取点击位置的消息索引
+        msg_param = f"?msg={msg_index}" if msg_index is not None else ""
+
+        if self.character_name == user_name or self.character_name == "User":
+            return f'<a href="user:{msg_param}" style="text-decoration: none; color: {theme_color};">你：{safe_text}</a>'
+        else:
+            if self.audio_path != "NO_AUDIO":
+                abs_path = os.path.abspath(self.audio_path).replace('\\', '/')
+                header = (f'<a href="{abs_path}[{self.emotion.as_label()}]{msg_param}" '
+                          f'style="text-decoration: none; color: {theme_color};">'
+                          f'★{self.character_name}：{safe_text}</a>')
+            else:
+                header = (f'<a href="no_audio:{msg_param}" style="text-decoration: none; color: {theme_color};">'
+                          f'{self.character_name}：{safe_text}</a>')
+            if self.translation:
+                safe_translation = html_module.escape(self.translation)
+                header += (f'<br><span style="color: #B3D1F2; font-style: italic;">'
+                           f'{safe_translation}</span>')
+            return header
 
     @property
     def character(self) -> CharacterAttributes:
@@ -187,8 +220,8 @@ class SingleCharacterPromptGenerator(SystemPromptGenerator):
          - perspective 参数在单角色对话中没有实际作用，因为整个对话只有一个 AI 角色，但为了保持接口一致性，仍然保留该参数。
         """
         # 延迟导入以避免循环依赖
-        from character import CharacterManager
-        char_manager = CharacterManager()
+        from character import GetCharacterAttributes
+        char_manager = GetCharacterAttributes()
         
         # 获取角色描述
         character_description = ""
@@ -204,19 +237,20 @@ class SingleCharacterPromptGenerator(SystemPromptGenerator):
         
         # 获取用户描述
         user_character_description = ""
-        if self.user_character_name != "User":
+        '''if self.user_character_name != "User":
             for char in char_manager.user_characters:
                 if char.character_name == self.user_character_name:
                     user_character_description = char.character_description
                     break
+        '''
         
         return self.template.render(
             character_name=self.character_name,
             character_description=character_description,
             user_character_name=self.user_character_name,
             user_character_description=user_character_description,
-            anime_name="", 
-            ensure_age=True 
+            anime_name="BangDream", # 感觉几乎没人导入其他ip的角色，先写死了，之后再改成动态的吧
+            ensure_age=False    #暂时取消这个吧
         )
 
     def to_dict(self) -> Dict:
@@ -342,9 +376,48 @@ class Chat:
         
         chat = cls(name=name, prompt_generator=generator, start_message="", message_list=[])
         return chat
+
+    def get_character_name(self) -> Optional[str]:
+        """
+        获取当前对话对应的 AI 角色名称。
+        优先从 prompt_generator 中获取，若不可用则从消息列表中推断。
+
+        :returns: 角色名称，若无法确定则返回 None
+        """
+        if isinstance(self.prompt_generator, SingleCharacterPromptGenerator):
+            return self.prompt_generator.character_name
+        elif isinstance(self.prompt_generator, (SmallTheaterPromptGenerator, MultiCharacterPromptGenerator)):
+            if hasattr(self.prompt_generator, 'character_names') and self.prompt_generator.character_names:
+                return self.prompt_generator.character_names[0]
+        # 从消息列表中推断（找第一条非 User 消息）
+        for msg in self.message_list:
+            if msg.character_name != "User":
+                return msg.character_name
+        # 作为最后的手段，从 name 字段推断
+        return self.name if self.name != "新对话" else None
+
+    def to_display_html(self, theme_color: str = "#7799CC", user_name: str = "User") -> str:
+        """
+        将整个对话渲染为 QTextBrowser 可显示的完整 HTML
+
+        :param theme_color: 主题颜色（十六进制）
+        :param user_name: 用户角色名称
+        :returns: 完整的 HTML 字符串
+        """
+        html_parts = []
+        for i, msg in enumerate(self.message_list):
+            html_parts.append(msg.to_display_html(theme_color, user_name, msg_index=i))
+        return "<br><br>".join(html_parts)
     
     def __repr__(self) -> str:
         return f"Chat(name={self.name}, messages={self.message_list})"
+
+    def remove_message(self, index: int):
+        """
+        根据索引删除记录中的一条消息
+        """
+        if 0 <= index < len(self.message_list):
+            self.message_list.pop(index)
 
     def __str__(self) -> str:
         return f"{self.name}: {self.message_list}"
@@ -511,34 +584,38 @@ class Chat:
         """
         character_name = llm_data["character"]
         history = llm_data["history"]
-        # 尝试读取 history_messages_qt.json 以获取音频和情感信息
-        qt_audio_info = []
+
+        # ======================================================
+        # 从 HTML 中解析出每个 AI 显示块及其音频信息
+        # HTML 中每个 <p> 块代表一行显示内容：
+        #   - 有音频: <a href="xxx.wav[LABEL_X]"><span>★角色名：文本</span></a>
+        #   - 无音频: <span>角色名：文本</span>  (注意没有 ★ 前缀和 <a> 标签)
+        # 我们从 HTML 中提取每个 AI 显示块的文本片段，以及其对应的音频路径和情感标签
+        # ======================================================
+        qt_display_blocks = []  # [(text_snippet, audio_path, emotion_label), ...]
         try:
             if qt_data is not None and qt_data.get("character") == character_name:
                 char_html = qt_data.get("history", "")
-
-                # 从 HTML 中提取音频路径和情感标签
-                # 格式通常为: <a href=".../output.wav[LABEL_X]">
                 if char_html:
-                    # 使用正则提取 href 中的内容
-                    # Group 1: 音频路径 (以 .wav 结尾)
-                    # Group 2: 情感标签 (位于 [] 内)
-                    links = re.findall(r'href="([^"]*?\.wav)\[([^"]*?)\]"', char_html)
-                    qt_audio_info = list(links) # [(path, label), ...]
+                    # 提取带有音频的 AI 消息块: <a href="path.wav[LABEL_X]"><span ...>★角色名：text</span></a>
+                    # 正则：匹配 href 中的 path 和 label，以及 span 中 ★角色名：后面的文本
+                    audio_blocks = re.findall(
+                        r'href="([^"]*?\.wav)\[([^"]*?)\]"[^>]*><span[^>]*>★' + re.escape(character_name) + r'：(.*?)</span></a>',
+                        char_html, flags=re.DOTALL
+                    )
+                    for path, label, text_snippet in audio_blocks:
+                        # 清洗文本以便后续匹配
+                        clean = text_snippet.strip()
+                        qt_display_blocks.append((clean, path, label))
         except Exception as e:
             print(f"未能从 QT 对话记录中提取音频信息: {e}")
-            qt_audio_info = []
 
-        audio_info_index = 0
         message_list = []
-
         system_prompt = None
 
         for index, item in enumerate(history):
             if index == 0 and item["role"] in ["system", "user"]:
                 # 跳过第一个 system 或 user 消息（通常是角色设定）
-                # 用 user 消息给模型设定指示是本程序之前的一个错误做法；因此，这里同样跳过 user 的消息，因为其大概率是给模型背景信息
-                # 背景信息（system 指令）应当根据角色的数据动态生成，而不应当直接存储。
                 system_prompt = item["content"]
                 continue
 
@@ -548,49 +625,61 @@ class Chat:
                 if not content:
                     continue
 
-                # 预处理逻辑，参考 main2.py
-                # 补全句号，防止切分失败
+                # 预处理逻辑
                 content = content + '。'
                 content = content.replace("。。", "。")
                 content = content.replace("!!!!!", "")
 
                 # 检查是否包含翻译（日英混合模式）
-                # 匹配模式：原文[翻译]译文[翻译结束]
                 pattern = r'(.*?)(?:\[翻译\]|\[翻訳\])(.+?)(?:\[翻译结束\]|\[翻訳終了\])'
                 matches = re.findall(pattern, content, flags=re.DOTALL)
 
                 if matches:
                     is_ja = True
-                    # 提取原文和译文，去除空白字符
                     segments = [(orig.strip(), trans.strip()) for orig, trans in matches if trans.strip()]
                 else:
                     is_ja = False
-                    # 按标点符号切分句子
                     segments = re.findall(r'.+?[。！!]', content, flags=re.DOTALL)
-                    # 合并过短的句子
                     segments = cls.merge_short_sentences(segments)
 
                 for segment in segments:
                     if is_ja:
-                        # 日英混合模式下，segment 是 (原文, 译文) 元组
                         text = segment[0]
                         translation = segment[1]
                     else:
-                        # 普通模式下，segment 是文本字符串
                         text = segment
                         translation = ""
 
-                    # 尝试匹配音频和情感
-                    emotion = "normal"
-                    audio_path = ""
-                    
-                    if audio_info_index < len(qt_audio_info):
-                        path, label = qt_audio_info[audio_info_index]
-                        audio_path = path
-                        emotion = label
-                        audio_info_index += 1
+                    # 在 HTML 显示块中查找包含该文本片段的条目
+                    # 使用子串匹配，因为 HTML 中的文本可能包含额外的格式字符
+                    audio_path = "NO_AUDIO"
+                    emotion = "happiness"
 
-                    # 创建 Message 对象
+                    # 尝试用文本内容匹配 HTML 中的音频块
+                    # dp_data 中的文本可能有换行符，HTML 中可能有多个空格或没有空格
+                    # 因此完全移除所有空白字符后再比较（避免空格/换行差异导致失配）
+                    text_for_match = re.sub(r"（.*?）", "", text).strip()
+                    text_for_match = re.sub(r"\(.*?\)", "", text_for_match).strip()
+                    text_for_match = re.sub(r'\s+', '', text_for_match)  # 移除全部空白
+                    best_match_idx = -1
+                    best_match_len = 0
+
+                    for block_idx, (block_text, block_path, block_label) in enumerate(qt_display_blocks):
+                        block_text_clean = re.sub(r"（.*?）", "", block_text).strip()
+                        block_text_clean = re.sub(r"\(.*?\)", "", block_text_clean).strip()
+                        block_text_clean = re.sub(r'\s+', '', block_text_clean)  # 移除全部空白
+                        # 检查关键文本是否匹配（取前30个字符进行匹配以避免末尾差异）
+                        key_len = min(30, len(text_for_match), len(block_text_clean))
+                        if key_len > 5 and text_for_match[:key_len] == block_text_clean[:key_len]:
+                            if key_len > best_match_len:
+                                best_match_len = key_len
+                                best_match_idx = block_idx
+
+                    if best_match_idx >= 0:
+                        _, audio_path, emotion = qt_display_blocks[best_match_idx]
+                        # 移除已匹配的块，避免重复匹配
+                        qt_display_blocks.pop(best_match_idx)
+
                     msg = Message(
                         character_name=character_name,
                         text=text,
@@ -600,21 +689,21 @@ class Chat:
                     )
                     message_list.append(msg)
             else:
-                # 用户消息，没有 emotion, audio_path, translation 等字段，设置默认值
+                # 用户消息
+                # 去除用户消息末尾自动追加的语言控制提示词，使用非贪婪匹配以兼容中日两种情况
+                # 同时使用 \n* 将前置的可能换行符也一并删掉
+                cleaned_content=re.sub(r"\n*（本句话你的回答请务必.*?）", "", item["content"])
                 msg = Message(
-                    # "User" 是程序预定义的用户角色名称
-                    # 之后在 UI 里要确保不能让用户轻易删掉这个角色……
                     character_name="User",
-                    text=item["content"],
+                    text=cleaned_content,
                     translation="",
-                    emotion=EmotionEnum.from_string("LABEL_0"), # 默认使用 "happiness"
+                    emotion=EmotionEnum.from_string("LABEL_0"),
                     audio_path=""
                 )
                 message_list.append(msg)
 
         return cls(name=str(character_name), message_list=message_list, type_=ChatType.SINGLE_CHARACTER,
-                   prompt_generator=StaticPromptGenerator(system_prompt) if system_prompt is not None else
-                   SingleCharacterPromptGenerator(character_name))
+                   prompt_generator=SingleCharacterPromptGenerator(character_name))
 
     @classmethod
     def load_from_theater_record(cls, data: list[dict[str, Union[str, int]]]) -> "Chat":
@@ -784,13 +873,15 @@ class ChatManager:
                 qt_data = None
 
         chat_list = []
-        current_qt_data = None
-        for one_qt_data in qt_data or []:
-            if one_qt_data.get("character") == llm_data[0].get("character"):
-                current_qt_data = one_qt_data
-                break
-
         for one_chat_data in llm_data:
+            # 为每个角色查找对应的 qt_data
+            current_qt_data = None
+            char_name = one_chat_data.get("character")
+            for one_qt_data in qt_data or []:
+                if one_qt_data.get("character") == char_name:
+                    current_qt_data = one_qt_data
+                    break
+
             chat = Chat.load_from_main_record(one_chat_data, current_qt_data)
             chat_list.append(chat)
 
@@ -858,6 +949,28 @@ class ChatManager:
             chat_list=[Chat.from_dict(chat_data) for chat_data in data["chat_list"]]
         )
 
+    def get_or_create_chat_for_character(self, character: "CharacterAttributes") -> Chat:
+        """
+        获取指定角色的单角色对话，若不存在则创建新的。
+
+        :param character: 角色属性对象
+        :returns: 对应的 Chat 实例
+        """
+        for chat_obj in self.chat_list:
+            if chat_obj.type != ChatType.SINGLE_CHARACTER:
+                continue
+            if isinstance(chat_obj.prompt_generator, SingleCharacterPromptGenerator):
+                if chat_obj.prompt_generator.character_name == character.character_name:
+                    return chat_obj
+            # 兼容旧格式迁移后的 StaticPromptGenerator（已经设定为加载SingleCharacterPromptGenerator，这个判断不再需要）
+            # elif isinstance(chat_obj.prompt_generator, StaticPromptGenerator):
+            #     if chat_obj.name == character.character_name:
+            #         return chat_obj
+        # 没有找到，创建新的
+        new_chat = Chat.new_single_chat(character, name=character.character_name)
+        self.chat_list.append(new_chat)
+        return new_chat
+
     def save(self, file: Union[Path, str] = "../reference_audio/all_conversation.json") -> None:
         """
         将当前的对话列表保存到指定文件中。
@@ -885,25 +998,77 @@ class ChatManager:
 _global_chat_manager = None
 
 
+def _move_legacy_files_to_backup():
+    """
+    将旧版聊天记录文件移动到 old_history_messages 文件夹中，
+    避免每次启动时重复触发迁移操作。
+    """
+    legacy_files = [
+        "../reference_audio/history_messages_dp.json",
+        "../reference_audio/history_messages_qt.json",
+    ]
+    backup_dir = "../reference_audio/old_history_messages"
+    any_exists = any(os.path.exists(f) for f in legacy_files)
+    if not any_exists:
+        return
+
+    os.makedirs(backup_dir, exist_ok=True)
+    for f in legacy_files:
+        if os.path.exists(f):
+            dest = os.path.join(backup_dir, os.path.basename(f))
+            try:
+                shutil.move(f, dest)
+                print(f"已将旧版记录文件 {f} 移动到 {dest}")
+            except Exception as e:
+                print(f"移动旧版记录文件 {f} 失败: {e}")
+
+
 def get_chat_manager() -> ChatManager:
     """
     获取全局的 ChatManager 实例。如果尚未创建，则创建一个新的实例。
     创建新的实例时，尝试从默认存储文件加载对话记录；如果加载失败，则尝试从主程序的对话记录中转换数据。
+    成功从旧格式迁移后，会将旧文件移动到 old_history_messages 文件夹中。
 
     :returns: 全局的 ChatManager 实例
     """
+    from character import PrintInfo
     global _global_chat_manager
     if _global_chat_manager is None:
         try:
-            _global_chat_manager = ChatManager.load()
-        except Exception:
-            try:
-                _global_chat_manager = ChatManager.load_from_main_record(llm_file="../reference_audio/history_messages_dp.json",
+            if os.path.exists("../reference_audio/history_messages_dp.json"):
+                try:
+                    _global_chat_manager = ChatManager.load_from_main_record(llm_file="../reference_audio/history_messages_dp.json",
                                                                          qt_file="../reference_audio/history_messages_qt.json")
-                _global_chat_manager.add_theater_mode_history(file="../reference_audio/small_theater_history.json")
-            except Exception:
-                print("未能加载旧格式的对话记录，将忽略这些记录。")
+                    _global_chat_manager.save()
+                    _move_legacy_files_to_backup()
+                    PrintInfo.print_info("已成功将旧版聊天记录迁移到新格式。旧记录文件备份位置：../reference_audio/old_history_messages")
+                    # 迁移成功，保存新格式并将旧文件移到备份目录
+                except Exception:
+                    PrintInfo.print_error("未能成功加载旧格式的对话记录，将新建空白存档！建议关闭本窗口后重启一遍程序！")
+                    input("按回车确认继续运行，但可能导致本次对话所产生的聊天记录内容丢失！")
+                    _global_chat_manager = ChatManager()
+
+            elif os.path.exists("../reference_audio/all_conversation.json"):
+                _global_chat_manager = ChatManager.load()
+            else:
+                PrintInfo.print_warning("未找到任何存在的对话记录文件，将新建。")
                 _global_chat_manager = ChatManager()
+        except Exception:
+            #try:
+            #    _global_chat_manager = ChatManager.load_from_main_record(llm_file="../reference_audio/history_messages_dp.json",
+            #                                                             qt_file="../reference_audio/history_messages_qt.json")
+            #    try:
+            #        _global_chat_manager.add_theater_mode_history(file="../reference_audio/small_theater_history.json")
+            #    except Exception:
+            #        pass  # 小剧场记录不存在也没关系
+            #    # 迁移成功，保存新格式并将旧文件移到备份目录
+            #    _global_chat_manager.save()
+            #    _move_legacy_files_to_backup()
+            #    print("已成功将旧版聊天记录迁移到新格式。")
+            #except Exception:
+            PrintInfo.print_error("加载对话记录时出错，将新建空白存档。如果确定已有对话文件（../reference_audio/all_conversation.json或../reference_audio/history_messages_dp.json），请务必先备份文件！！")
+            input("按回车确认继续运行，但可能导致本次对话所产生的聊天记录内容丢失！")
+            _global_chat_manager = ChatManager()
 
     return _global_chat_manager
 
