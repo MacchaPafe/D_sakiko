@@ -1319,9 +1319,14 @@ class ChatGUI(QWidget):
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
             print(audio_path_and_emotion)
+            msg_index = None
             # 去除新增的 ?msg= 锚点参数
             if '?msg=' in audio_path_and_emotion:
-                audio_path_and_emotion = audio_path_and_emotion.split('?msg=')[0]
+                audio_path_and_emotion, msg_index_text = audio_path_and_emotion.split('?msg=', 1)
+                try:
+                    msg_index = int(msg_index_text)
+                except ValueError:
+                    msg_index = None
             if audio_path_and_emotion in ("user:", "no_audio:"):
                 PrintInfo.print_info("点击到用户消息或无音频的消息，无法播放")
                 return
@@ -1333,13 +1338,22 @@ class ChatGUI(QWidget):
 
                 if os.path.exists(audio_path):
                     #----------------------------设置live2d文本框内容逻辑
-                    text_content=""
-                    filename=os.path.basename(audio_path)
-                    for msg in self.current_chat.message_list:
-                        if os.path.basename(msg.audio_path) == filename:
-                            text_content = msg.text
-                            break
-                    self.live2d_text_queue.put(re.sub(r"（.*?）", '', text_content).strip())
+                    target_msg = None
+                    # 按照 msg_index 属性寻找对应的消息条目
+                    if msg_index is not None and 0 <= msg_index < len(self.current_chat.message_list):
+                        target_msg = self.current_chat.message_list[msg_index]
+                    else:
+                        filename=os.path.basename(audio_path)
+                        for msg in self.current_chat.message_list:
+                            if os.path.basename(msg.audio_path) == filename:
+                                target_msg = msg
+                                break
+                    # 如果能找到对应的消息，那么添加翻译后一同发送给 live2d 模块，从而显示翻译。
+                    if target_msg is not None:
+                        text_content = re.sub(r"（.*?）", '', target_msg.text).strip()
+                        if target_msg.translation:
+                            text_content = f"{text_content}\n{target_msg.translation.strip()}"
+                        self.live2d_text_queue.put(text_content)
 
                     # ----------------------------
                     self.audio_file_path_queue.put(audio_path)
