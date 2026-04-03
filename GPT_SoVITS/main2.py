@@ -1,5 +1,6 @@
 import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 
 from queue import Queue
@@ -129,10 +130,15 @@ def main_thread():
 
             this_turn_response=text_queue.get()
             if this_turn_response=='bye':
-                emotion_queue.put('bye')    #退出live2D线程
+                emotion_queue.put('bye')    #退出live2D进程
                 dp2qt_queue.put("（再见）")
-                QT_message_queue.put('bye')
                 to_audio_generator_text_queue.put('bye')
+
+                # tr1 是 live2d 进程变量，我们等待 live2d 进程结束，再向 Qt 窗口发送退出信息。
+                global tr1
+                tr1.join()
+
+                QT_message_queue.put('bye')
                 break
 
             audio_gen.audio_language_choice = dp_chat.audio_language_choice
@@ -235,9 +241,8 @@ def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_
 
 
 if __name__=='__main__':
-    # 在 Windows 上必须设置 spawn 方法
-    if os.name == 'nt':
-        multiprocessing.set_start_method('spawn', force=True)
+    # 强制设置多进程实现为 spawn
+    multiprocessing.set_start_method('spawn', force=True)
 
     # 添加本文件的目录到导入 Path
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -305,9 +310,10 @@ if __name__=='__main__':
     font_path = ''
     import glob
 
-    font_files = glob.glob(os.path.join('../font/', 'custom_font_*.*'))
+    font_dir = os.path.join(project_root, 'font')
+    font_files = glob.glob(os.path.join(font_dir, 'custom_font_*.*'))
     if not font_files:
-        font_path = '../font/msyh.ttc'  # 默认字体路径
+        font_path = os.path.join(font_dir, 'msyh.ttc')  # 默认字体路径
     else:
         # 比文件名里的数字大小，而不是比文件系统的元数据
         font_path = max(font_files, key=get_timestamp_from_filename)
@@ -330,9 +336,10 @@ if __name__=='__main__':
                         dp_chat=dp_chat,
                         audio_gen=audio_gen,live2d_text_queue=live2d_text_queue,is_display_text_value=is_display_text_value,motion_complete_value=motion_complete_value,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model                        )
 
-    font_id = QFontDatabase.addApplicationFont(font_path)    #设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)
-    if font_family:
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))    #设置字体
+    # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
         font = QFont(font_family[0], 12)
         qt_app.setFont(font)
 
@@ -344,7 +351,11 @@ if __name__=='__main__':
     qt_win.move(screen_w_mid,int(screen_h_mid-0.35*desktop_h))   #因为窗口高度设置的是0.7倍桌面宽
 
     # 不传递 characters 给子进程，在子进程中重新创建，避免 Windows 下 pickle 序列化截断问题
+    # live2d 模块（该模块为不同进程）
+    # 在 MacOS 下，所有的 NSWindow（Qt 窗口）只能在独立进程中创建，不可以在子线程中创建窗口。
+    # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
     tr1=multiprocessing.Process(target=run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h))
+    # LLM 生成模块（该模块为不同线程）
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
                                                              is_audio_play_complete,
                                                              is_text_generating_queue,
@@ -354,7 +365,9 @@ if __name__=='__main__':
                                                              char_is_converted_queue,
                                                              change_char_queue,
                                                              audio_gen))
+    # GPT_SoVITS 语音生成模块（不同线程）
     tr3=threading.Thread(target=audio_gen.audio_generator,args=(dp_chat,to_audio_generator_text_queue))
+    # 主要的循环线程
     tr4=threading.Thread(target=main_thread)
     tr1.start()
     tr2.start()
@@ -364,7 +377,6 @@ if __name__=='__main__':
     qt_win.show()
     qt_app.exec_()
 
-    # print("PyQt 窗口关闭，程序正在清理...")
     # 尝试退出所有子程序。
     # 由于有些程序可能已经退出，所以使用 try-except 来捕获异常，防止程序崩溃。
     try:
@@ -392,14 +404,11 @@ if __name__=='__main__':
     except Exception:
         pass
 
+    # 理论上讲 main_thread 函数中已经调用过 tr1.join，等待过 live2d 进程结束；这里再调用一次不是必要的，但也没有副作用。
     tr1.join()
-    # print("Live2D 线程已确认退出")
     tr2.join()
-    # print("DP 线程已确认退出")
     tr3.join()
-    # print("音频生成线程已确认退出")
     tr4.join()
-    # print("主线程已确认退出")
 
     if_delete = d_sakiko_config.delete_audio_cache_on_exit.value
 

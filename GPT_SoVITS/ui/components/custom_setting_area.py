@@ -20,6 +20,9 @@ with contextlib.redirect_stdout(None):
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 from ..custom_widgets.custom_color_setting_card import CustomColorSettingCard
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+FONT_DIR = os.path.join(PROJECT_ROOT, "font")
+
 
 class CustomSettingArea(TransparentScrollArea):
     # 发送通知信息的信号
@@ -99,11 +102,11 @@ class CustomSettingArea(TransparentScrollArea):
             timestamp = int(time.time())
             file_ext = os.path.splitext(file_path)[1].lower()
             new_filename = f"custom_font_{timestamp}{file_ext}"
-            dest_path = os.path.join('../font/', new_filename)
+            dest_path = os.path.join(FONT_DIR, new_filename)
 
             # 2. 先尝试清理旧文件（尽力而为，删不掉也不报错）
             # 查找所有名字是 custom_font_ 开头的文件
-            old_files = glob.glob(os.path.join('../font/', 'custom_font_*'))
+            old_files = glob.glob(os.path.join(FONT_DIR, 'custom_font_*'))
             for old_file in old_files:
                 try:
                     os.remove(old_file)

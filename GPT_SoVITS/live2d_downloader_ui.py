@@ -9,6 +9,7 @@ import os,sys,shutil,re
 import platformdirs
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 import ui_constants
 from character import PrintInfo
@@ -683,16 +684,16 @@ if __name__ == '__main__':
     get_all = character.GetCharacterAttributes()
     app = QApplication(sys.argv)
 
-    font_path = '../font/msyh.ttc'
-    font_id = QFontDatabase.addApplicationFont(font_path)  # 设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)
-    if font_family:
+    font_path = os.path.join(project_root, 'font', 'msyh.ttc')
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
         font = QFont(font_family[0], 12)
         app.setFont(font)
+
     window = DownloadWizardWindow(get_all.character_class_list)
     window.show()
     app.exec_()
 
     if os.path.exists("./.model_download_cache"):
         shutil.rmtree("./.model_download_cache")
-

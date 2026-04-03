@@ -565,7 +565,7 @@ requires-dist = [
     { name = "ko-pron", specifier = ">=1.3" },
     { name = "librosa", specifier = "==0.10.2" },
     { name = "litellm", specifier = ">=1.80.11" },
-    { name = "live2d-py", specifier = ">=0.5.4" },
+    { name = "live2d-py", specifier = ">=0.6.0" },
     { name = "modelscope", specifier = ">=1.32.0" },
     { name = "numba", specifier = ">=0.62.1" },
     { name = "numpy", specifier = "<2.0" },
@@ -1512,19 +1512,18 @@ wheels = [
 
 [[package]]
 name = "live2d-py"
-version = "0.6.0.1"
+version = "0.6.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
     { name = "pyopengl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/e4/a3ea26518463a6793d5915e18c9b42f49fc78125b57968449ab6a1b7cf2b/live2d_py-0.6.0.1.tar.gz", hash = "sha256:9d676df407c20db6c34fe2ea90996ca627d4eff92359f715e574d8e51b305600", size = 455317, upload-time = "2025-12-05T16:24:56.756Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/7b/c7e3c8fb085b5ab629789a2ad653b5931c28c8d5f0223e7aa5b2502047f1/live2d_py-0.6.1.1.tar.gz", hash = "sha256:3f1935fbff1c8786cdafaa812b48662cd1edacd50d7ec67c7b7af474863f1e1b", size = 456753, upload-time = "2026-01-16T13:17:54.907Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/29/c305d685230c6b52b5dd41f23ace1c02223cde0fe0160d23188e2ae16b50/live2d_py-0.6.0.1-cp311-cp311-macosx_13_0_universal2.whl", hash = "sha256:dd9cfaf80f4be422353fcae8246fb669013537f973df0ef4f1a0d4f995dbfeea", size = 374725, upload-time = "2025-12-05T16:25:53.832Z" },
-    { url = "https://files.pythonhosted.org/packages/18/9e/1b9334a81dce0ed8ed531ca42f5e4d833e18218b6be0a1fc90f59b1896a4/live2d_py-0.6.0.1-cp311-cp311-macosx_15_0_universal2.whl", hash = "sha256:20b0dc4c49680cde5cce67b949fdd3fe719fc5668fe459773e6d412a6cb52eae", size = 349272, upload-time = "2025-12-05T16:24:35.416Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/87/7f7dac941b0957acaae0d54e140c55c56338cef668a55f7a97a7b6e4e9e9/live2d_py-0.6.0.1-cp311-cp311-win32.whl", hash = "sha256:d6cf1d4f0a60832839626e150817e38aeab03d2c3d5821d5d28d3de3c4740193", size = 266166, upload-time = "2025-12-05T16:28:03.355Z" },
-    { url = "https://files.pythonhosted.org/packages/55/ed/cd10a001a5cbef785a27023aeb8c46fc0af38704c9a336b5e5898a3c5ac2/live2d_py-0.6.0.1-cp311-cp311-win_amd64.whl", hash = "sha256:4b5c262a1646262b4eb1ddc309a9c4ef22948bbbaab4163a8f326518f50684a5", size = 293441, upload-time = "2025-12-05T16:27:44.904Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/b1/5dd4620d0ec1bfc3055f990b481e7475d5d7a896da71a405f048493a641c/live2d_py-0.6.1.1-cp311-cp311-macosx_15_0_universal2.whl", hash = "sha256:1c5a1468a4068f105b160dc2abc00a2eca09dadf3daaeb5bed169ef676386434", size = 352599, upload-time = "2026-01-16T13:18:05.916Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/f4/4cbca20008807e61ed862ef94e7a4bb6220957768c826547c96ca8dfd992/live2d_py-0.6.1.1-cp311-cp311-win32.whl", hash = "sha256:30f23c1ae2f9e3ecfa10c38a663becc11cc5111d39bf1834188672e708bce838", size = 268650, upload-time = "2026-01-16T13:20:42.56Z" },
+    { url = "https://files.pythonhosted.org/packages/91/2d/0de1ff62561b2f858022ca98e74b7c0be804b90ea5a35676cf808093cb10/live2d_py-0.6.1.1-cp311-cp311-win_amd64.whl", hash = "sha256:5855311b6c0ac5a6e49bd2abcc6756ff4b8b6695cd5792e300b47c35c81fd0e2", size = 295802, upload-time = "2026-01-16T13:20:51.226Z" },
 ]
 
 [[package]]

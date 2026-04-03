@@ -178,16 +178,6 @@ class Live2DModule:
         pygame_win_pos_w,pygame_win_pos_h=int(0.5*desktop_w-win_w_and_h),int(0.5*desktop_h-0.5*win_w_and_h)
         #以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
 
-        # macOS 适配性检查
-        # 在 macOS 下，live2d-py 库必须是最新的 0.5.4 版本，否则会导致 “disable_precision” 参数无效
-        if sys.platform == "darwin":
-            # 由于 live2d-py 库没有一个 __version__ 属性判断版本，我们不得不采用一个比较难看的判断方式
-            function = live2d.LAppModel.LoadModelJson
-            # 在 0.5.4 版本之前，这个函数只有一个参数，而在 0.5.4 版本及之后，新增了一个 disable_precision 参数
-            # 如果 disable_precision 参数不存在，说明不是 0.5.4 版本及之后的库
-            if "disable_precision" not in function.__code__.co_varnames:
-                raise RuntimeError("当前 live2d-py 库版本低于 0.5.4。\nmacOS 用户请确保 live2d-py 库版本为 0.5.4 及以上，否则程序将因为 OpenGL 错误崩溃。请运行 pip install --upgrade live2d-py 来升级该库。对于打包版用户，请向分发者寻求帮助。")
-
         caption_height = 0
         # 只在 Windows 上使用这些 ctype 方法
         # macOS 窗口标题栏很小，本身就不需要

@@ -15,6 +15,7 @@ import sounddevice as sd
 from opencc import OpenCC
 import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json
 from character import PrintInfo
@@ -1670,9 +1671,10 @@ if __name__=='__main__':
     )
 
     # 如果出现字体加载问题，则暂时不加载字体
-    font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")
-    font_family = QFontDatabase.applicationFontFamilies(font_id)
-    if font_family:
+    font_path = os.path.join(project_root, "font", "ft.ttf")
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
         font = QFont(font_family[0], 12)
         app.setFont(font)
 

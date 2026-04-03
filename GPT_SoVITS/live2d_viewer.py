@@ -7,6 +7,7 @@ from typing import Optional
 from PyQt5.QtCore import Qt
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 
 import time
@@ -860,9 +861,10 @@ if __name__ == "__main__":
 
     window = ViewerGUI(get_char_attr.character_class_list,motion_queue,change_char_queue)
     # 如果出现加载字体问题，则忽略设置字体
-    font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")  # 设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)
-    if font_family:
+    font_path = os.path.join(project_root, "font", "ft.ttf")
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
         font = QFont(font_family[0], 12)
         app.setFont(font)
 
@@ -879,4 +881,3 @@ if __name__ == "__main__":
     live2d_thread.start()
     window.show()
     sys.exit(app.exec_())
-

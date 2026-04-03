@@ -5,6 +5,7 @@ from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 
 import time,copy
@@ -2225,12 +2226,14 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     window = ViewerGUI(get_char_attr.character_class_list, qt2dp_queue, message_queue, dp2qt_queue,to_audio_gen_queue, audio_gen,to_live2d_module_queue,change_char_queue,tell_qt_this_turn_finish_queue)
-    font_id = QFontDatabase.addApplicationFont("../font/msyh.ttc")  # 设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)
+    font_path = os.path.join(project_root, "font", "msyh.ttc")
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # 在成功加载后才使用该字体
-    if font_family:
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
         font = QFont(font_family[0], 12)
         app.setFont(font)
+
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     screen_w_mid = int(0.55 * QDesktopWidget().screenGeometry().width())
