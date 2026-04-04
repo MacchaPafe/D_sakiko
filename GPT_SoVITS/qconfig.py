@@ -1,12 +1,12 @@
 # 数字小祥项目的统一配置类
-
+import contextlib
 import json
 import os
 import warnings
-import contextlib
 
 from PyQt5.QtGui import QColor
 
+# 去广告
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig, ConfigValidator
 
@@ -155,6 +155,8 @@ PROVIDER_DISPLAY_NAME_MAP = {
     "Doubao": "volcengine",
     "doubao": "volcengine",
     "豆包": "volcengine",
+    "火山引擎（豆包）": "volcengine",
+
 
     "Moonshot": "moonshot",
     "moonshot": "moonshot",
@@ -271,6 +273,28 @@ THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS = [
 
 THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP = {e["id"]: e for e in THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS}
 THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS = set(THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.keys())
+
+
+def _normalize_legacy_provider_name(provider_name):
+    """
+    将旧版 dsakiko_config.json 中的供应商名称映射到现行配置系统使用的 provider id。
+    """
+    if provider_name == "ModelScope":
+        return "modelscope"
+    return PROVIDER_DISPLAY_NAME_MAP.get(provider_name)
+
+
+def _is_placeholder_api_key(api_key):
+    """
+    查看旧配置中的 API Key 是否为占位符 Key。占位符 Key 不应迁移到新配置中。
+
+    占位符 Key 只存在如下四种：
+    1. 空的 API Key
+    2. sk-xxx...xxx
+    3. sk-24xxx
+    4. ....
+    """
+    return not api_key or api_key in {"sk-xxx...xxx", "sk-24xxx", "...."}
 
 
 def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
@@ -430,6 +454,147 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
     os.chdir(old_cwd)
 
 
+def migrate_from_legacy_d_sakiko_config(cfg: DSakikoConfig, enable_warning: bool = False):
+    """
+    将另一套旧版统一配置文件 ../dsakiko_config.json 迁移到当前使用的 ../d_sakiko_config.json。
+
+    此函数只负责迁移新旧统一配置文件之间的格式差异；迁移成功后会保存 cfg 并删除旧的 dsakiko_config.json。
+    如果旧配置文件不存在，则不会进行任何操作。
+    """
+    old_cwd = os.getcwd()
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+    legacy_config_path = "../dsakiko_config.json"
+    if not os.path.exists(legacy_config_path):
+        os.chdir(old_cwd)
+        return
+
+    try:
+        with open(legacy_config_path, "r", encoding="utf-8") as f:
+            legacy_cfg = json.load(f)
+    except Exception:
+        os.chdir(old_cwd)
+        return
+
+    if not isinstance(legacy_cfg, dict):
+        warnings.warn(
+            "[Warning]旧版 dsakiko_config.json 的顶层结构不是 JSON 对象，跳过本次迁移。"
+        )
+        os.chdir(old_cwd)
+        return
+
+    try:
+        legacy_character_setting = legacy_cfg.get("character_setting", {})
+        if isinstance(legacy_character_setting, dict):
+            character_order = legacy_character_setting.get("character_order")
+            if (
+                    isinstance(character_order, dict)
+                    and isinstance(character_order.get("character_names"), list)
+            ):
+                character_names = [str(name) for name in character_order["character_names"]]
+                cfg.character_order.value = {
+                    "character_num": len(character_names),
+                    "character_names": character_names,
+                }
+
+        legacy_llm_setting = legacy_cfg.get("llm_setting", {})
+        if isinstance(legacy_llm_setting, dict):
+            cfg.enable_custom_llm_api_provider.value = False
+            llm_api_key_dict = dict(cfg.llm_api_key.value)
+            llm_api_model_dict = dict(cfg.llm_api_model.value)
+            llm_api_base_url_dict = dict(cfg.llm_api_base_url.value)
+
+            is_deepseek = bool(legacy_llm_setting.get("is_deepseek", True))
+            if is_deepseek:
+                cfg.llm_api_provider.value = "deepseek"
+                llm_api_model_dict["deepseek"] = "deepseek-chat"
+                deepseek_key = legacy_llm_setting.get("deepseek_key", "use_api_of_up")
+                if _is_placeholder_api_key(deepseek_key) or deepseek_key == "use_api_of_up":
+                    cfg.use_default_deepseek_api.value = True
+                else:
+                    cfg.use_default_deepseek_api.value = False
+                    llm_api_key_dict["deepseek"] = deepseek_key
+            else:
+                cfg.use_default_deepseek_api.value = False
+                selected_provider_id = None
+                other_providers = legacy_llm_setting.get("other_provider", [])
+                if not isinstance(other_providers, list):
+                    other_providers = []
+
+                for provider_info in other_providers:
+                    if not isinstance(provider_info, dict):
+                        continue
+
+                    provider_name = provider_info.get("name", "")
+                    provider_id = _normalize_legacy_provider_name(provider_name)
+                    if provider_id is None:
+                        continue
+
+                    model_name = provider_info.get("model", "")
+                    api_key = provider_info.get("api_key", "")
+                    base_url = provider_info.get("base_url", "")
+
+                    if model_name:
+                        llm_api_model_dict[provider_id] = model_name
+                    if not _is_placeholder_api_key(api_key):
+                        llm_api_key_dict[provider_id] = api_key
+                    if base_url:
+                        # openai 和 gemini 这两个预置的 API 就不保存了…反正是可以直接用的
+                        if provider_id not in ["openai", "gemini"]:
+                            llm_api_base_url_dict[provider_id] = base_url
+
+                    if provider_info.get("if_choose", False):
+                        if selected_provider_id is not None and selected_provider_id != provider_id:
+                            warnings.warn(
+                                "[Warning]旧版 dsakiko_config.json 中发现多个被选中的大模型供应商，"
+                                f"将采用靠后的供应商 {provider_name}。"
+                            )
+                        selected_provider_id = provider_id
+
+                # 如果没有找到被选中的模型，默认采用 deepseek-chat 模型
+                if selected_provider_id is None:
+                    cfg.use_default_deepseek_api.value = True
+                    cfg.llm_api_provider.value = "deepseek"
+                    llm_api_model_dict["deepseek"] = "deepseek-chat"
+                else:
+                    cfg.llm_api_provider.value = selected_provider_id
+
+            cfg.llm_api_key.value = llm_api_key_dict
+            cfg.llm_api_model.value = llm_api_model_dict
+            cfg.llm_api_base_url.value = llm_api_base_url_dict
+
+        legacy_audio_setting = legacy_cfg.get("audio_setting", {})
+        if isinstance(legacy_audio_setting, dict):
+            if "if_delete_audio_cache" in legacy_audio_setting:
+                cfg.delete_audio_cache_on_exit.value = bool(legacy_audio_setting["if_delete_audio_cache"])
+
+            if "enable_fp16_inference" in legacy_audio_setting:
+                cfg.enable_fp32_inference.value = not bool(legacy_audio_setting["enable_fp16_inference"])
+
+            steps = legacy_audio_setting.get("sovits_inference_sampling_steps")
+            if steps in cfg.sovits_inference_sampling_steps.options:
+                cfg.sovits_inference_sampling_steps.value = steps
+            elif steps is not None:
+                cfg.sovits_inference_sampling_steps.value = 16
+                warnings.warn(
+                    "[Warning]旧版 dsakiko_config.json 中的 sovits_inference_sampling_steps 非法，"
+                    "已回退为 16。"
+                )
+
+        cfg.save()
+
+        try:
+            os.remove(legacy_config_path)
+        except OSError:
+            if enable_warning:
+                warnings.warn(
+                    "[Warning]无法删除旧的 dsakiko_config.json 配置文件。"
+                    "这可能导致新配置被旧配置反向覆盖，建议手动删除该文件。"
+                )
+    finally:
+        os.chdir(old_cwd)
+
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # 全局唯一配置实例
@@ -439,3 +604,5 @@ d_sakiko_config.themeColor.value = "#7799CC"
 qconfig.load("../d_sakiko_config.json", d_sakiko_config)
 # 尝试从旧配置文件迁移配置
 migrate_from_old_config(d_sakiko_config)
+# 尝试从另一套旧版统一配置文件迁移配置
+migrate_from_legacy_d_sakiko_config(d_sakiko_config, enable_warning=True)

@@ -2,21 +2,20 @@ import sys
 import contextlib
 import os
 
-from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QApplication,
                              QVBoxLayout, QLabel,
                              QStackedWidget, QMainWindow, QWidget)
 from PyQt5.QtCore import Qt, QTimer
 
-from ui.components.custom_setting_area import CustomSettingArea
-from ui.components.gpt_sovits_area import GPTSoVITSArea
-from ui.components.llm_api_area import LLMAPIArea
-from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
-
 # 去广告
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import Pivot, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon, FluentWindow, \
     FluentIcon
+
+from ui.components.custom_setting_area import CustomSettingArea
+from ui.components.gpt_sovits_area import GPTSoVITSArea
+from ui.components.llm_api_area import LLMAPIArea
+from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 # 将当前文件夹加入 sys.path，强制搜索当前目录的模块（即使 os.getcwd() 不是当前目录）
 script_dir = os.path.dirname(os.path.abspath(__file__))
