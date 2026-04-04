@@ -15,6 +15,7 @@ import sounddevice as sd
 from opencc import OpenCC
 import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json
 from character import PrintInfo
@@ -328,16 +329,55 @@ class MoreFunctionWindow(QDialog):
             PrintInfo.print_error(f"[Error]启动失败, 启动程序时发生错误:\n{e}")
 
     def on_click_open_motion_editor_button(self):
-        self.exec_bat("运行动作组编辑程序.bat")
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            import sys
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([sys.executable, "live2d_viewer.py"])
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
+
     def on_click_open_start_config_button(self):
-        self.exec_bat("启动参数配置.bat")
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            import sys
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([sys.executable, "dsakiko_configuration.py"])
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
+
     def on_click_open_small_theater(self):
-        self.exec_bat("运行小剧场模式.bat")
+        import sys
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([sys.executable, "multi_char_main.py"])
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
         self.close()
+
+    @staticmethod
+    def open_live2d_downloader():
+        import sys
+        try:
+            # 使用 subprocess 模块启动 .bat 文件
+            import subprocess
+            # 使用 shell=True 让系统直接执行批处理文件
+            # Windows 会使用 cmd.exe 来执行 .bat 文件
+            subprocess.Popen([sys.executable, "live2d_downloader_ui.py"])
+        except Exception as e:
+            print("启动失败", f"启动程序时发生错误:\n{e}")
+
     def on_click_open_live2d_downloader(self):
-        self.exec_bat("运行Live2D模型下载器.bat")
+        self.open_live2d_downloader()
         self.close()
 
 class WarningWindow(QDialog):
@@ -559,7 +599,7 @@ class ChangeL2DModelWindow(QDialog):
         display_group.setLayout(group_layout)   #最后把groupbox放到主布局上
         layout.addWidget(display_group)
         open_downloader_btn = QPushButton("打开Live2D服装下载器")
-        open_downloader_btn.clicked.connect(lambda _:MoreFunctionWindow.exec_bat("运行Live2D模型下载器.bat"))  # noqa
+        open_downloader_btn.clicked.connect(lambda _:MoreFunctionWindow.open_live2d_downloader())  # noqa
         layout.addWidget(open_downloader_btn)
         self.setLayout(layout)
 
@@ -805,7 +845,7 @@ class ChatTextBrowser(QTextBrowser):
     def contextMenuEvent(self, event):
         url = self.anchorAt(event.pos())
         msg_index = None
-        
+
         # 尝试从 url 解析出 msg_index
         if url:
             match = re.search(r'\?msg=(\d+)', url)
@@ -814,12 +854,12 @@ class ChatTextBrowser(QTextBrowser):
 
         # 先获取自带的标准右键菜单（包含复制、全选等）
         menu = self.createStandardContextMenu(event.pos())
-        
+
         if msg_index is not None:
             # 判断是否是用户的消息
             msg = self.chat_gui_parent.current_chat.message_list[msg_index]
             is_user_msg = (msg.character_name == "User")
-            
+
             menu.addSeparator()  # 增加一条分割线与原生菜单隔开
             delete_action = QAction("删除此消息", self)
             delete_action.triggered.connect(lambda: self.chat_gui_parent.delete_message(msg_index))
@@ -839,8 +879,10 @@ class ChatGUI(QWidget):
                  QT_message_queue,
                  characters,
                  dp_chat,
-                 audio_gen,live2d_mod,emotion_queue,audio_file_path_queue,emotion_model):
+                 audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,emotion_model,
+                 is_motion_complete=None):
         super().__init__()
+        self.is_motion_complete = is_motion_complete
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
         self.setWindowTitle("数字小祥")
         self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
@@ -1013,7 +1055,10 @@ class ChatGUI(QWidget):
 
         self.setLayout(layout)  #因为需要character_list等参数，所以放在最后初始化
 
-        self.live2d_mod=live2d_mod
+        # 保存 Live2D 跨进程通信的共享变量和队列
+        self.live2d_text_queue=live2d_text_queue
+        self.is_display_text_value=is_display_text_value
+        self.motion_complete_value=motion_complete_value
         self.emotion_queue=emotion_queue
         self.emotion_model=emotion_model
         self.audio_file_path_queue=audio_file_path_queue    #为了播放历史记录
@@ -1028,7 +1073,8 @@ class ChatGUI(QWidget):
         self.load_whisper_model()
 
     def toggle_live2d_text_display(self):
-        self.live2d_mod.is_display_text=not self.live2d_mod.is_display_text
+        # 切换共享变量的值
+        self.is_display_text_value.value = not self.is_display_text_value.value
 
     @property
     def current_chat(self) -> Chat:
@@ -1125,13 +1171,13 @@ class ChatGUI(QWidget):
 
     def talk_speed_reset(self):
         saved_speed=self.saved_talk_speed_and_pause_second[self.current_char_index]['talk_speed']  # noqa
-        self.talk_speed_slider.setValue(saved_speed*100)
+        self.talk_speed_slider.setValue(int(saved_speed*100))
         self.audio_gen.speed=saved_speed
         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed:.2f}")
 
     def pause_second_reset(self):
         saved_value=self.saved_talk_speed_and_pause_second[self.current_char_index]['pause_second']  # noqa
-        self.pause_second_slider.setValue(saved_value*100)
+        self.pause_second_slider.setValue(int(saved_value*100))
         self.audio_gen.pause_second = saved_value
         self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen.pause_second:.2f}")
 
@@ -1154,7 +1200,7 @@ class ChatGUI(QWidget):
     def on_model_loaded(self,model):
         self.whisper_model=model
         self.setWindowTitle("数字小祥")
-        self.start_input_stream()
+        self.voice_button.setEnabled(True)
 
     def start_input_stream(self):
         try:
@@ -1166,11 +1212,19 @@ class ChatGUI(QWidget):
             )
             # 啟動串流，它將在背景執行緒中持續呼叫 audio_callback
             self.stream.start()
-            self.voice_button.setEnabled(True)
 
         except Exception as e:
             PrintInfo.print_warning(f"[Warning]无法启动麦克风串流，本次运行无法使用语音输入，请检查麦克风是否连接或被其他程序占用。错误信息: {e}")
             self.voice_button.setEnabled(False)  # 保持按鈕禁用
+
+    def stop_input_stream(self):
+        if hasattr(self, "stream") and self.stream:
+            try:
+                self.stream.stop()
+                self.stream.close()
+                self.stream = None
+            except Exception as e:
+                print(f"关闭串流时出错: {e}", file=sys.stderr)
 
     def audio_callback(self, indata, frames, time, status):
         if self.is_recording:
@@ -1181,15 +1235,18 @@ class ChatGUI(QWidget):
         self.voice_is_valid=True
 
     def voice_dectect(self):
+        self.setWindowTitle("正在准备录音...")
+        self.start_input_stream()
+        if not hasattr(self, 'stream') or self.stream is None:
+            return
 
         self.voice_is_valid=False
         self.is_recording=True
         self.record_data=[]
         self.record_timer.start(300)
         self.user_input.setText('start_talking')
-        self.user_input.returnPressed.emit()  # noqa
-        self.setWindowTitle("正在录音...松开结束")
-
+        self.user_input.returnPressed.emit()
+        QTimer.singleShot(1000, lambda: self.setWindowTitle("正在录音...松开结束"))
 
     def voice_decect_end(self):
         if not self.is_recording:
@@ -1200,6 +1257,8 @@ class ChatGUI(QWidget):
         self.record_timer.stop()
         self.user_input.setText('stop_talking')
         self.user_input.returnPressed.emit()  # noqa
+
+        self.stop_input_stream()
 
         if not self.voice_is_valid:
             self.setWindowTitle("录音时间过短，请重试...")
@@ -1252,36 +1311,26 @@ class ChatGUI(QWidget):
             self.setWindowTitle("数字小祥")
 
     def closeEvent(self, event):
-        if not hasattr(self,"stream"):
-            event.accept()
-            return
-        if self.stream:
-            try:
-                self.stream.stop()
-                self.stream.close()
-            except Exception as e:
-                PrintInfo.print_error(f"[Error]关闭麦克风串流时出错: {e}")
-
+        self.stop_input_stream()
         event.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
-        # local_pos = self.chat_display.viewport().mapFromGlobal(QCursor.pos())
-        # # 2. 根据坐标获取对应的文本光标 (QTextCursor)    想不到别的方法获取回放文本
-        # cursor = self.chat_display.cursorForPosition(local_pos)
-        # # 3. 获取光标所在的文本
-        # full_text = cursor.block().text()
-
-        if self.live2d_mod.live2d_this_turn_motion_complete:
+        if self.motion_complete_value.value:
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
             print(audio_path_and_emotion)
+            msg_index = None
             # 去除新增的 ?msg= 锚点参数
             if '?msg=' in audio_path_and_emotion:
-                audio_path_and_emotion = audio_path_and_emotion.split('?msg=')[0]
+                audio_path_and_emotion, msg_index_text = audio_path_and_emotion.split('?msg=', 1)
+                try:
+                    msg_index = int(msg_index_text)
+                except ValueError:
+                    msg_index = None
             if audio_path_and_emotion in ("user:", "no_audio:"):
                 PrintInfo.print_info("点击到用户消息或无音频的消息，无法播放")
                 return
-                
+
             match=re.match(r"(.+?)\[(.+?)\]$", audio_path_and_emotion)
             if match:
                 audio_path = match.group(1)  # 路径
@@ -1289,14 +1338,24 @@ class ChatGUI(QWidget):
 
                 if os.path.exists(audio_path):
                     #----------------------------设置live2d文本框内容逻辑
-                    text_content=""
-                    filename=os.path.basename(audio_path)
-                    for msg in self.current_chat.message_list:
-                        if os.path.basename(msg.audio_path) == filename:
-                            text_content = msg.text
-                            break
-                    self.live2d_mod.new_text=re.sub(r"（.*?）",'',text_content).replace("\n","").strip()
-                    #----------------------------
+                    target_msg = None
+                    # 按照 msg_index 属性寻找对应的消息条目
+                    if msg_index is not None and 0 <= msg_index < len(self.current_chat.message_list):
+                        target_msg = self.current_chat.message_list[msg_index]
+                    else:
+                        filename=os.path.basename(audio_path)
+                        for msg in self.current_chat.message_list:
+                            if os.path.basename(msg.audio_path) == filename:
+                                target_msg = msg
+                                break
+                    # 如果能找到对应的消息，那么添加翻译后一同发送给 live2d 模块，从而显示翻译。
+                    if target_msg is not None:
+                        text_content = re.sub(r"（.*?）", '', target_msg.text).strip()
+                        if target_msg.translation:
+                            text_content = f"{text_content}\n{target_msg.translation.strip()}"
+                        self.live2d_text_queue.put(text_content)
+
+                    # ----------------------------
                     self.audio_file_path_queue.put(audio_path)
                     self.emotion_queue.put(emotion)
                     PrintInfo.print_info("音频文件路径："+audio_path)
@@ -1328,13 +1387,13 @@ class ChatGUI(QWidget):
         # if not self.audio_gen.is_completed or not self.live2d_mod.live2d_this_turn_motion_complete:
         #     QMessageBox.warning(self, "稍后再试", "当前正在播放音频或合成新音频中，稍后再试！")
         #     return
-            
+
         msg = self.current_chat.message_list[msg_index]
-        
+
         # UI反聩
         self.setWindowTitle("正在重新生成音频...")
         self.chat_display.setEnabled(False) # 暂时禁用右键等交互
-        
+
         # 启动后台合成线程
         self.regen_thread = AudioRegenThread(self.audio_gen, msg.text, self.dp_chat, msg_index)
         self.regen_thread.finished_signal.connect(self.handle_regenerate_audio_finished)
@@ -1343,14 +1402,14 @@ class ChatGUI(QWidget):
     def handle_regenerate_audio_finished(self, new_audio_path, msg_index):
         self.setWindowTitle("数字小祥")
         self.chat_display.setEnabled(True)
-        
+
         if 0 <= msg_index < len(self.current_chat.message_list):
             msg = self.current_chat.message_list[msg_index]
             msg.audio_path = os.path.abspath(new_audio_path).replace('\\', '/')
             self._refresh_chat_display()
             PrintInfo.print_info(f"重新生成音频成功，新路径为：{msg.audio_path}")
             self.play_history_audio(QUrl(f"{msg.audio_path}[{msg.emotion.as_label()}]?msg={msg_index}"))
-            
+
         self.QT_message_queue.put('...') # 强制恢复 messages_box 状态，允许继续对话
 
 
@@ -1411,7 +1470,7 @@ class ChatGUI(QWidget):
 
         text_color = self._current_theme_color
         character_name = self.character_list[self.current_char_index].character_name
-        
+
         # 找到下一条未处理的 AI 消息（可能有多段）
         # 从尾部向前搜索尚未设置 audio_path 的 AI 消息中最早的那条
         target_msg = None
@@ -1421,7 +1480,7 @@ class ChatGUI(QWidget):
                 target_msg = msg
                 msg_index = i
                 break  # 找到第一条未处理的
-                
+
         msg_param = f"?msg={msg_index}" if msg_index is not None else ""
 
         if self.dp_chat.if_generate_audio and response_text!='（再见）':
@@ -1431,7 +1490,7 @@ class ChatGUI(QWidget):
 
             abs_path = os.path.abspath(self.audio_gen.audio_file_path).replace('\\', '/')
             self.chat_display.append(f'<a href="{abs_path}[{emotion}]{msg_param}" style="text-decoration: none; color: {text_color};">★{character_name}：</a>')     #将emotion藏进路径中，回来解包一下即可  # noqa
-            self.live2d_mod.new_text=self.full_response+self.translation    #更新live2d文本框的内容显示
+            self.live2d_text_queue.put(self.full_response+self.translation)    #更新live2d文本框的内容显示
 
             # 更新该条 AI 消息的 audio_path 和 translation
             if target_msg is not None:
@@ -1511,12 +1570,12 @@ class ChatGUI(QWidget):
                 self.full_response = user_this_turn_input + "\n"
                 self.current_index = 0
                 text_color = self._current_theme_color
-                
+
                 # 简单预测用户的 msg_index，使其能支持右键删除功能
                 predicted_msg_index = len(self.current_chat.message_list)
                 if len(self.current_chat.message_list) > 0 and self.current_chat.message_list[-1].text == user_this_turn_input:
                     predicted_msg_index -= 1 # 已经被其他线程优先加入
-                    
+
                 self.chat_display.append(f'<a href="user:?msg={predicted_msg_index}" style="text-decoration: none; color: {text_color};">你：</a>')
                 self.timer.start(8)
         if user_this_turn_input=='clr':
@@ -1601,12 +1660,37 @@ if __name__=='__main__':
             self.audio_language_choice = "日英混合"
     dp_chat_mock = DpChatMock()
 
+    class _SharedBool:
+        def __init__(self, value: bool):
+            self.value = value
+
     win = ChatGUI(dp2qt_queue, qt2dp_queue, QT_message_queue, characters, dp_chat_mock, audio_gen_mock,None,None,None,None)
 
-    font_id = QFontDatabase.addApplicationFont("../font/ft.ttf")
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]  # noqa
-    font = QFont(font_family, 12)
-    app.setFont(font)
+    live2d_text_queue = Queue()
+    is_display_text_value = _SharedBool(True)
+    motion_complete_value = _SharedBool(True)
+    win = ChatGUI(
+        dp2qt_queue,
+        qt2dp_queue,
+        QT_message_queue,
+        characters,
+        None,
+        audio_gen_mock,
+        live2d_text_queue,
+        is_display_text_value,
+        motion_complete_value,
+        None,
+        None,
+        None,
+    )
+
+    # 如果出现字体加载问题，则暂时不加载字体
+    font_path = os.path.join(project_root, "font", "ft.ttf")
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
+        font = QFont(font_family[0], 12)
+        app.setFont(font)
 
     t1 = threading.Thread(target=dp_thread, args=(dp2qt_queue, qt2dp_queue, QT_message_queue))
     t1.start()

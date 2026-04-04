@@ -5,6 +5,7 @@ from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 
 import time,copy
@@ -17,11 +18,13 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPush
 
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
+import faulthandler
 import character
 from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGenerator, get_chat_manager
 from qtUI import ChangeL2DModelWindow
 
 
+faulthandler.enable(open("faulthandler_log.txt", "w"), all_threads=True)
 
 
 # 将你的主题色定义为变量，方便微调
@@ -366,7 +369,11 @@ class CommunicateThreadMessages(QThread):
 
     def run(self):
         while True:
-            self.message=self.message_queue.get()
+            try:
+                self.message=self.message_queue.get()
+            except (ValueError, EOFError):
+                # Queue closed
+                break
             if self.message=='EXIT':
                 break
             self.message_signal.emit(self.message)
@@ -381,7 +388,10 @@ class CommunicateThreadDP2QT(QThread):
 
     def run(self):
         while True:
-            data = self.dp2qt_queue.get()
+            try:
+                data = self.dp2qt_queue.get()
+            except EOFError:
+                break
             if data=='EXIT':
                 break
             self.response_signal.emit(data)
@@ -431,7 +441,7 @@ class WaitUntilAudioGenModuleSynthesisComplete(QThread):
                     break
                 time.sleep(0.2)
         self.synthesis_complete_signal.emit(char_text_audio_path_list)
-    
+
 
 class DragDropListWidget(QListWidget):
     """
@@ -760,7 +770,7 @@ class NewTheaterChatDialog(QDialog):
         # 一个角色的下拉选择框，列出所有角色供选择
         self.char_0_combo = QComboBox()
         self.char_1_combo = QComboBox()
-        
+
         #修复 macOS 下原生弹窗样式问题（Windows 下不存在此问题，但该修复也不会有负面作用）
         # 设置 QListView 作为视图，强制使用 Qt 自绘而非 macOS 原生弹窗
         self.char_0_combo.setView(QListView())
@@ -954,17 +964,17 @@ class SettingsDialog(QDialog):
             self.btn_detail_info.clicked.connect(self.parent_gui.config_more_info)
             self.btn_sakiko_state.clicked.connect(self.parent_gui.convert_sakiko_state)
             self.btn_sakiko_model.clicked.connect(self.parent_gui.convert_sakiko_model)
-    
+
     def change_live2d_model(self, char_index):
         if len(self.character_names) <= char_index:
             return  # 安全检查，避免索引越界
-        
+
         folder_path = ""
         for one in self.all_characters:
             if one.character_name == self.character_names[char_index]:
                 folder_path = one.character_folder_name
                 break
-        
+
         if folder_path != "":
             dialog = ChangeL2DModelWindow(folder_path, lambda path: self.parent_gui._on_live2d_model_changed(char_index, self.character_names[char_index], path))
             dialog.exec()
@@ -1178,7 +1188,6 @@ class ViewerGUI(QWidget):
         self.can_generate_audio_for_current_chat = True
         self.pending_turn_uids: set[str] = set()
         self._generation_serial = 0
-
         self.ensure_theater_chat_exists()
         self.refresh_chat_list()
 
@@ -1311,7 +1320,7 @@ class ViewerGUI(QWidget):
         if chat is None:
             return
         self.switch_chat(chat)
-    
+
     def on_chat_list_order_changed(self) -> None:
         """
         当用户拖拽对话列表改变顺序时，更新 ChatManager 中 chat_list 的顺序以保持一致。
@@ -1352,7 +1361,7 @@ class ViewerGUI(QWidget):
         chat = item.data(Qt.UserRole)
         if chat is None:
             return
-        
+
         dialog = QInputDialog(self)
         dialog.setWindowTitle("重命名对话")
         dialog.setLabelText("请输入新的对话名称：")
@@ -1622,11 +1631,11 @@ class ViewerGUI(QWidget):
         """将双模型状态同步到 Live2D 子进程。"""
         payload = self._build_active_slots_payload(indices=indices, override_paths=override_paths, preserve_playback=preserve_playback)
         self.to_live2d_change_character_queue.put(payload)
-    
+
     def display_live2d_message(self, msg: list[dict], preserve_playback: bool = False) -> None:
         """
         将数条消息发送 Live2D 子进程播放。
-        
+
         :param msg: 每条消息包含角色名称、文本内容、表情等信息的字典列表。
         :param preserve_playback: 设置为 True 时，传入的内容会进入队列排队，在前面已有内容播放完后再播放；
         设置为 False 时，当前正在播放的内容播放完一整句后会被立刻打断，立即播放传入的内容。（此时队列缓存的待播放内容也会被清空）
@@ -1674,7 +1683,7 @@ class ViewerGUI(QWidget):
 
         self.can_generate_audio_for_current_chat = self._can_generate_audio_for_chat_characters(char_names)
         if 'dp_module' in globals():
-            dp_module.if_generate_audio = self.can_generate_audio_for_current_chat
+            setattr(dp_module, "if_generate_audio", self.can_generate_audio_for_current_chat)
 
         if len(self.current_char_index) == 2:
             self.sync_live2d_active_slots(indices=self.current_char_index)
@@ -2056,6 +2065,7 @@ class ViewerGUI(QWidget):
         self.chat_manager.save()
         self.message_queue.put("已保存最新记录")
 
+
     def close_program(self):
         self.save_history_data()
         self.to_live2d_change_character_queue.put('EXIT')
@@ -2064,6 +2074,8 @@ class ViewerGUI(QWidget):
         self.message_queue.put('EXIT')
         self.qt2dp_queue.put('EXIT')
         self.close()
+
+
 
     def match_speaker_index(self, llm_name, candidate_indices):
         """
@@ -2161,39 +2173,67 @@ class ViewerGUI(QWidget):
         return []  # 返回空列表作为兜底
 
 
+
+
 if __name__ == "__main__":
+    import multiprocessing as mp
     from dp_local_multi_char import DSLocalAndVoiceGen
     from audio_generator import AudioGenerate
-    from multi_char_live2d_module import Live2DModule
+    from multi_char_live2d_module import run_live2d_process
+
+    # Windows/macOS 下默认是 spawn；显式声明有助于一致性
+    mp.freeze_support()
+    ctx = mp.get_context("spawn")
+
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
     get_char_attr = character.GetCharacterAttributes()
 
-    live2d_player = Live2DModule(get_char_attr.character_class_list)
     dp_module = DSLocalAndVoiceGen(get_char_attr.character_class_list)
-    audio_gen=AudioGenerate()
+    audio_gen = AudioGenerate()
 
-    change_char_queue = Queue()
-    qt2dp_queue = Queue()
-    message_queue = Queue()
-    dp2qt_queue = Queue()
-    to_audio_gen_queue= Queue()
-    to_live2d_module_queue=Queue()
-    tell_qt_this_turn_finish_queue=Queue()
+    # === 进程/线程通信：统一用 multiprocessing 的 Queue（spawn 语义下可用）===
+    # 重要：不要在启动 Live2D 子进程时传入 get_char_attr.character_class_list 这种大对象，
+    # 以避免 Windows 进程启动参数大小限制（约 8-16KB）导致的失败。
+    change_char_queue = ctx.Queue()
+    qt2dp_queue = ctx.Queue()
+    message_queue = ctx.Queue()
+    dp2qt_queue = ctx.Queue()
+    to_audio_gen_queue = ctx.Queue()
+    to_live2d_module_queue = ctx.Queue()
+    tell_qt_this_turn_finish_queue = ctx.Queue()
 
-    audio_gen.initialize(get_char_attr.character_class_list,message_queue)
+    audio_gen.initialize(get_char_attr.character_class_list, message_queue)
 
-    live2d_thread = threading.Thread(target=live2d_player.play_live2d, args=(change_char_queue,to_live2d_module_queue,tell_qt_this_turn_finish_queue))
-    dp_thread = threading.Thread(target=dp_module.text_generator,
-                                 args=(dp2qt_queue,qt2dp_queue, message_queue))
-    audio_generate_thread = threading.Thread(target=audio_gen.audio_generator,
-                                           args=(dp_module, to_audio_gen_queue))
+    # Live2D：必须在子进程的主线程里创建窗口（macOS NSWindow 限制）
+    live2d_process = ctx.Process(
+        target=run_live2d_process,
+        args=(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue),
+        name="Live2DProcess",
+    )
+
+    dp_thread = threading.Thread(
+        target=dp_module.text_generator,
+        args=(dp2qt_queue, qt2dp_queue, message_queue),
+        daemon=True,
+    )
+    audio_generate_thread = threading.Thread(
+        target=audio_gen.audio_generator,
+        args=(dp_module, to_audio_gen_queue),
+        daemon=True,
+    )
 
     app = QApplication(sys.argv)
 
     window = ViewerGUI(get_char_attr.character_class_list, qt2dp_queue, message_queue, dp2qt_queue,to_audio_gen_queue, audio_gen,to_live2d_module_queue,change_char_queue,tell_qt_this_turn_finish_queue)
-    font_id = QFontDatabase.addApplicationFont("../font/msyh.ttc")  # 设置字体
-    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    font = QFont(font_family, 12)
-    app.setFont(font)
+    font_path = os.path.join(project_root, "font", "msyh.ttc")
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
+    # 在成功加载后才使用该字体
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
+        font = QFont(font_family[0], 12)
+        app.setFont(font)
+
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     screen_w_mid = int(0.55 * QDesktopWidget().screenGeometry().width())
@@ -2201,11 +2241,43 @@ if __name__ == "__main__":
     window.move(screen_w_mid,
                 int(screen_h_mid - 0.35 * QDesktopWidget().screenGeometry().height()))  # 因为窗口高度设置的是0.7倍桌面宽
 
-    live2d_thread.start()
+    live2d_process.start()
     dp_thread.start()
     audio_generate_thread.start()
     window.show()
-    sys.exit(app.exec_())
+    app.exec_()
+
+    # 开始清理
+    try:
+        change_char_queue.put("EXIT", block=False)
+    except Exception:
+        pass
+    try:
+        tell_qt_this_turn_finish_queue.put("EXIT", block=False)
+    except Exception:
+        pass
+    try:
+        to_audio_gen_queue.put("bye", block=False)
+    except Exception:
+        pass
+    try:
+        qt2dp_queue.put("EXIT", block=False)
+    except Exception:
+        pass
+
+    dp_thread.join()
+    audio_generate_thread.join()
+    # 给子进程一点时间自我退出；否则强制 terminate 避免僵尸进程
+    try:
+        live2d_process.join(timeout=3)
+    except Exception:
+        pass
+    if live2d_process.is_alive():
+        try:
+            live2d_process.terminate()
+            live2d_process.join(timeout=3)
+        except Exception:
+            pass
 
 '''
 按钮改为图标式

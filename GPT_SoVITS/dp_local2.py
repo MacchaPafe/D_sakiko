@@ -1,484 +1,472 @@
+import random
 import re
-import time,os,random
+import time,os
 from copy import deepcopy
 
-from ollama import chat
-import requests,json
-from openai import OpenAI
+import json
+import litellm
+from litellm import completion
+from litellm.types.utils import ModelResponse
+
+from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
+from llm_model_utils import ensure_openai_compatible_model
 from character import PrintInfo
 
-from chat.chat import get_chat_manager, Chat, Message, ChatManager
+from chat.chat import Chat, Message, ChatManager
 from emotion_enum import EmotionEnum
 
+
 class DSLocalAndVoiceGen:
-	def __init__(self,characters, chat_manager: ChatManager):
-		self.character_list=characters
-		self.chat_manager = chat_manager
-		# 为每个角色获取或创建对应的 Chat 对象
-		self.character_chats: list[Chat] = []
-		for character in self.character_list:
-			chat_obj = self.chat_manager.get_or_create_chat_for_character(character)
-			self.character_chats.append(chat_obj)
+    def __init__(self,characters, chat_manager: ChatManager):
+        self.character_list = characters
+        self.chat_manager = chat_manager
 
-		self.LLM_list=["deepseek-r1:14b","deepseek-r1:32b","deepseek-V3 非本地API","deepseek-R1 非本地API（暂时不能用）"]
-		# if self.is_deepseek:
-		# 	self.model_choice=self.LLM_list[2]
-		self.choose_llm_api()
+        # 为每个角色获取或创建对应的 Chat 对象
+        self.character_chats: list[Chat] = []
+        for character in self.character_list:
+            chat_obj = self.chat_manager.get_or_create_chat_for_character(character)
+            self.character_chats.append(chat_obj)
 
-		self.audio_language = ["中英混合", "日英混合"]
-		self.audio_language_choice = self.audio_language[1]
-		self.is_think_content_output_complete=False
-		self.is_use_ds_api=True
-		self.model=__import__('live2d_1').get_live2d()
-		self.headers = {"Content-Type": "application/json","Authorization": f"Bearer {self.model}"}
-		self.sakiko_state=True
-		self.if_generate_audio=True
-		self.current_char_index=0
-		self.if_sakiko=False
-		self.idle_texts=["...","...","就绪","..."]
-		self.initial()
+        # 语音输出的语言
+        self.audio_language = ["中英混合", "日英混合"]
+        self.audio_language_choice = self.audio_language[1]
 
-	def initial(self):
-		# 聊天记录已经由 ChatManager 在初始化时加载完成，无需再从旧版 JSON 文件读取
-		if self.character_list[self.current_char_index].character_name == '祥子':
-			self.if_sakiko = True
-		else:
-			self.if_sakiko = False
-		with open('./text/restr.rep', 'r', encoding='utf-8') as f:
-			self.restr = f.read()
+        self.model = __import__('live2d_1').get_live2d()
+        # 是否为角色通过 GPT-SoVITS 模型生成音频
+        self.if_generate_audio = True
+        # 当前对话的角色是角色列表中的第几个
+        self.current_char_index = 0
 
-	@property
-	def current_chat(self) -> Chat:
-		"""获取当前角色对应的 Chat 对象"""
-		return self.character_chats[self.current_char_index]
+        # 当前角色是否是祥子
+        self.if_sakiko = False
+        # 祥子的状态是黑祥还是白祥，True：黑祥，False：白祥
+        self.sakiko_state = True
+        # 角色在空闲时，页面上方状态会显示的话。从列表中随机选择。
+        self.idle_texts = ["...", "...", "就绪", "..."]
+        self.initial()
 
-	def choose_llm_api(self):
-		if not os.path.exists('../dsakiko_config.json'):
-			with open("../API_Choice.json", "r", encoding="utf-8") as f:
-				config = json.load(f)
-			self.is_deepseek=True
-			for provider in config["llm_choose"]:
-				if provider["if_choose"]:
-					active_provider = provider
-					self.is_deepseek=False
-					break
-			if not self.is_deepseek:
-				if active_provider['name']=="OpenAI":
-					self.other_client=OpenAI(
-						api_key=active_provider['api_key']
-					)
-					print("已使用个人OpenAI API")
-				elif active_provider['name']=="Google":
-					self.other_client=OpenAI(
-						api_key=active_provider['api_key'],
-						base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-					)
-					print("已使用个人Google API")
-				self.model_choice=active_provider['model']
-		else:
-			with (open('../dsakiko_config.json','r',encoding='utf-8') as f):
-				config=json.load(f)
-				llm_config=config["llm_setting"]
-			self.is_deepseek=llm_config["is_deepseek"]
-			if not self.is_deepseek:
-				for provider in llm_config["other_provider"]:
-					if provider["if_choose"]:
-						active_provider = provider
-						break
-				try:
-					self.other_client=OpenAI(
-						api_key=active_provider['api_key'],
-						base_url=active_provider["base_url"]
-					)
-					print(f"已使用个人{active_provider['name']} API")
-					self.model_choice=active_provider['model']
-				except Exception as err:
-					raise Warning(f"dsakiko_config.json配置文件有误，重新运行一遍启动配置程序应该可以解决问题。错误信息：",err)
-		if self.is_deepseek:
-			self.model_choice=self.LLM_list[2]
-		if not os.path.exists('../dsakiko_config.json'):
-			if self.is_deepseek:
-				if os.path.getsize('../API Key.txt')!=0:
-					print("已使用个人DeepSeek API")
-					with open('../API Key.txt','r',encoding='utf-8') as f:
-						self.headers={"Content-Type": "application/json","Authorization": f"Bearer {f.read()}"}
-				else:
-					#print("正在使用Up的DeepSeek API")
-					pass
-		else:
-			if self.is_deepseek:
-				with open('../dsakiko_config.json','r',encoding='utf-8') as f:
-					config=json.load(f)
-				if config["llm_setting"]["deepseek_key"] in ['','use_api_of_up']:
-					pass
-				else:
-					print("已使用个人DeepSeek API")
-					self.headers={"Content-Type": "application/json","Authorization": f"Bearer {config['llm_setting']['deepseek_key']}"}
+    def initial(self):
+        # 聊天记录已经由 ChatManager 在初始化时加载完成，无需再从旧版 JSON 文件读取
+        if self.character_list[self.current_char_index].character_name == '祥子':
+            self.if_sakiko = True
+        else:
+            self.if_sakiko = False
+        with open('./text/restr.rep', 'r', encoding='utf-8') as f:
+            self.restr = f.read()
 
+    @property
+    def current_chat(self) -> Chat:
+        """获取当前角色对应的 Chat 对象"""
+        return self.character_chats[self.current_char_index]
 
+    def change_character(self):
+        if len(self.character_list) == 1:
+            self.current_char_index = 0
+        else:
+            if self.current_char_index < len(self.character_list) - 1:
+                self.current_char_index += 1
+            else:
+                self.current_char_index = 0
+        if self.character_list[self.current_char_index].character_name == '祥子':
+            self.if_sakiko = True
+        else:
+            self.if_sakiko = False
 
+    def trim_list_to_340kb(self, data_list):
+        working_list = deepcopy(data_list)
+        MAX_SIZE = 340 * 1024  # 主流大模型的上下文现在基本都是128Ktoken，差不多500KB，这里设置340KB以防万一
+        while len(json.dumps(working_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
+            del working_list[1]
+        return working_list
 
-	def change_character(self):
-		if len(self.character_list) == 1:
-			self.current_char_index = 0
-		else:
-			if self.current_char_index < len(self.character_list) - 1:
-				self.current_char_index += 1
-			else:
-				self.current_char_index = 0
-		if self.character_list[self.current_char_index].character_name == '祥子':
-			self.if_sakiko = True
-		else:
-			self.if_sakiko = False
+    @staticmethod
+    def concat_provider_and_model(provider: str, model: str) -> str:
+        """
+        智能的将模型提供商和模型名称连接在一起。
+        如果 model 不包含 / 符号，那么就将 provider 和 model 用 / 连接起来。
+        如果 model 已经包含 / 符号，我们认为此时包含了提供商信息，那么就直接返回 model。
 
-	def trim_list_to_340kb(self, data_list):
-		working_list=deepcopy(data_list)
-		MAX_SIZE = 340 * 1024  #主流大模型的上下文现在基本都是128Ktoken，差不多500KB，这里设置340KB以防万一
-		while len(json.dumps(working_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
-			del working_list[1]
-		return working_list
+        :param provider: 模型提供商，如 openai、deepseek
+        :param model: 模型名称，如 gpt-4、deepseek-chat。也可以输入 deepseek/deepseek-chat 这种带提供商前缀的完整名称。此时，输入的 provider 会被忽略。
+        """
+        if '/' in model:
+            return model
+        else:
+            return f"{provider}/{model}"
 
-	def text_generator(self,
-					   text_queue,
-					   is_audio_play_complete,
-					   is_text_generating_queue,
-					   dp2qt_queue,
-					   qt2dp_queue,
-					   message_queue,
-					   char_is_converted_queue,
-					   change_char_queue,
-					   AudioGenerator):
+    @staticmethod
+    def normalize_model_for_provider(provider: str, model: str) -> str:
+        """根据 provider 类型决定是否尝试自动补全前缀。
 
-		while True:
-			#user_input = input(">>>输入bye退出聊天，输入"lan"更改语音语言，输入"model"更改LLM\n"
-						   #+ f">>>当前模型：{self.model_choice}  语音语言：{self.audio_language_choice}\n>>>")
-			while not AudioGenerator.is_change_complete:
-				time.sleep(0.4)
+        - 第三方 OpenAI 兼容端点：强制走 openai/ 路由（若未带 openai/ 则自动补齐）。
+        - litellm 内置 provider：若用户未输入前缀，则尝试补全为 provider/model。
+        """
+        if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            return ensure_openai_compatible_model(model)
+        return DSLocalAndVoiceGen.concat_provider_and_model(provider, model)
 
-			#message_queue.put(f"输入bye：退出程序\tl：切换语言\tm：更改LLM\n"+("conv：切换祥子状态\t"if self.if_sakiko else '')+"clr：清空聊天记录\tv：关闭/开启语音\n当前语言："+(\"中文\" if self.audio_language_choice==\"中英混合\" else \"日文\")+ "\t\t语音："+(\"开启\" if self.if_generate_audio else \"关闭\")+('\tmask...'if self.sakiko_state and self.if_sakiko else ''))
-			message_queue.put(self.idle_texts[random.randint(0,len(self.idle_texts)-1)])
-			#message_queue.put("语音："+(\"开启\" if self.if_generate_audio else \"关闭\")+"语言："+(\"中文\" if self.audio_language_choice==\"中英混合\" else \"日文\"))
-			while True:
-				if not qt2dp_queue.empty():
-					user_input=qt2dp_queue.get()
-					break
-				time.sleep(1)
-			# --------------------前面的一些判断逻辑
+    def report_message_to_main_ui(self, message_queue, is_text_generating_queue, message: str):
+        """
+        向主界面的消息栏汇报一条错误信息，并且删除最新正在发给模型的对话记录。
+        """
+        message_queue.put(message)
+        is_text_generating_queue.get()
+        # 删除未能成功发送的信息
+        if self.current_chat.message_list:
+            self.current_chat.message_list.pop()
+        # 源代码如此，我也不知道为啥要休息一会
+        time.sleep(2)
 
-			if user_input == 'bye':
-				text_queue.put('bye')
-				break
+    def text_generator(self,
+                       text_queue,
+                       is_audio_play_complete,
+                       is_text_generating_queue,
+                       dp2qt_queue,
+                       qt2dp_queue,
+                       message_queue,
+                       char_is_converted_queue,
+                       change_char_queue,
+                       AudioGenerator):
 
-			elif user_input=='mask':
-				if self.if_sakiko:
-					char_is_converted_queue.put('maskoff')
-				else:
-					message_queue.put("祥子好像不在<w>")
-				time.sleep(2)
-				continue
-			elif user_input=='conv':
-				if self.if_sakiko:
-					self.sakiko_state=not self.sakiko_state
-					message_queue.put("已切换为"+("黑祥"if self.sakiko_state else "白祥"))
-					char_is_converted_queue.put(self.sakiko_state)
-				else:
-					message_queue.put("祥子好像不在<w>")
-				time.sleep(2)
-				continue
-			elif user_input =='v':
-				if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[
-					self.current_char_index].gptsovits_ref_audio is None or self.character_list[
-					self.current_char_index].sovits_model_path is None:
-					message_queue.put("当前角色无法进行语音合成")
-					PrintInfo.print_error(f"[Error]当前角色无法开启语音合成，缺少GPT-SoVITS模型或参考音频文件。")
-					time.sleep(2)
-					continue
+        while True:
+            #user_input = input(">>>输入bye退出聊天，输入“lan”更改语音语言，输入“model”更改LLM\n"
+                               #+ f">>>当前模型：{self.model_choice}  语音语言：{self.audio_language_choice}\n>>>")
+            while not AudioGenerator.is_change_complete:
+                time.sleep(0.4)
 
-				self.if_generate_audio=not self.if_generate_audio
-				message_queue.put("已"+("开启" if self.if_generate_audio else "关闭")+"语音合成")
-				time.sleep(2)
-				continue
-			elif user_input=='s':
-				self.change_character()
-				message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在加载GPT-SoVITS模型...")
-				change_char_queue.put('yes')
-				dp2qt_queue.put("changechange")
-				AudioGenerator.change_character()
-				time.sleep(2)
-				continue
-			elif user_input=='clr':
-				self.current_chat.clear_message_list()
-				message_queue.put("已清空角色的聊天记录")
-				time.sleep(2)
-				continue
-			elif user_input in ['start_talking','stop_talking']:
-				change_char_queue.put(user_input)
-				continue
-			elif user_input == 'change_l2d_background':
-				change_char_queue.put('change_l2d_background')
-				continue
-			elif user_input.startswith('change_l2d_model'):
-				change_char_queue.put(user_input)
-				continue
+            #message_queue.put(f"输入bye：退出程序	l：切换语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
+            message_queue.put(self.idle_texts[random.randint(0,len(self.idle_texts)-1)])
+            #message_queue.put("语音："+("开启" if self.if_generate_audio else "关闭")+"语言："+("中文" if self.audio_language_choice=="中英混合" else "日文"))
+            while True:
+                if not qt2dp_queue.empty():
+                    user_input=qt2dp_queue.get()
+                    break
+                time.sleep(1)
+            # --------------------前面的一些判断逻辑
 
+            if user_input == 'bye':
+                text_queue.put('bye')
+                break
 
-			while True:
-				if user_input == 'm':
-					if self.is_deepseek:
-						message_queue.put("0：deepseek-r1:14b（需安装Ollama与对应本地大模型，选项1相同）  1：deepseek-r1:32b  \n2：调用deepseek-V3官方API（无需安装Ollama，只需联网)")
-					else:
-						message_queue.put("已使用非Deepseek大模型，暂不支持切换其他模型")
-						time.sleep(2)
-						break
-					while True:
-						if not qt2dp_queue.empty():
-							user_wants_model = qt2dp_queue.get()
-							break
-						time.sleep(0.5)
-				else:
-					break
-				if user_wants_model.isdigit() and 0 <= int(user_wants_model) <= 1:
-					self.is_use_ds_api=False
-					self.model_choice = self.LLM_list[int(user_wants_model)]
-					break
-				elif user_wants_model.isdigit() and 2<=int(user_wants_model)<=3:
-					self.is_use_ds_api=True
-					self.model_choice = self.LLM_list[2]
-					break
-				else:
-					message_queue.put("输入内容不合法，重新输入")
-					time.sleep(2)
-					continue
+            elif user_input=='mask':
+                if self.if_sakiko:
+                    char_is_converted_queue.put('maskoff')
+                else:
+                    message_queue.put("祥子好像不在<w>")
+                time.sleep(2)
+                continue
+            elif user_input=='conv':
+                if self.if_sakiko:
+                    self.sakiko_state=not self.sakiko_state
+                    message_queue.put("已切换为" + ("黑祥" if self.sakiko_state else "白祥"))
+                    char_is_converted_queue.put(self.sakiko_state)
+                else:
+                    message_queue.put("祥子好像不在<w>")
+                time.sleep(2)
+                continue
+            elif user_input == 'v':
+                if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[
+                    self.current_char_index].gptsovits_ref_audio is None or self.character_list[
+                    self.current_char_index].sovits_model_path is None:
+                    message_queue.put("当前角色无法进行语音合成")
+                    PrintInfo.print_error(f"[Error]当前角色无法开启语音合成，缺少GPT-SoVITS模型或参考音频文件。")
+                    time.sleep(2)
+                    continue
 
-			if user_input == 'l':
-				self.audio_language_choice = "中英混合" if self.audio_language_choice == '日英混合' else '日英混合'
-				message_queue.put("已切换语言为："+("中文" if self.audio_language_choice=='中英混合' else "日文"))
-				time.sleep(2)
-				continue
-			if user_input == 'm':
-				if self.is_deepseek:
-					message_queue.put(f"已修改LLM为：{self.model_choice}")
-					time.sleep(2)
-					continue
-				else:
-					continue
+                self.if_generate_audio=not self.if_generate_audio
+                message_queue.put("已"+("开启" if self.if_generate_audio else "关闭")+"语音合成")
+                time.sleep(2)
+                continue
+            elif user_input=='s':
+                self.change_character()
+                message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在加载GPT-SoVITS模型...")
+                change_char_queue.put('yes')
+                dp2qt_queue.put("changechange")
+                AudioGenerator.change_character()
+                time.sleep(2)
+                continue
+            elif user_input=='clr':
+                self.current_chat.clear_message_list()
+                message_queue.put("已清空角色的聊天记录")
+                time.sleep(2)
+                continue
+            elif user_input in ['start_talking','stop_talking']:
+                change_char_queue.put(user_input)
+                continue
+            elif user_input == 'change_l2d_background':
+                change_char_queue.put('change_l2d_background')
+                continue
+            elif user_input.startswith('change_l2d_model'):
+                change_char_queue.put(user_input)
+                continue
 
-			# 保存原始用户输入（不含指令后缀），用于存储到 Chat 中
-			raw_user_input = user_input
-			
-			if self.audio_language_choice=='日英混合':
-				format_prompt_json="""
-				[
-				{
-					"text": "第一段日文原文...",
-					"translation": "第一段日文对应的中文翻译...",
-					"emotion": "happiness"
-				},
-				{
-					"text": "第二段日文原文...",
-					"translation": "第二段日文对应的中文翻译...",
-					"emotion": "sadness"
-				}
-				]
-				"""
-			else:
-				format_prompt_json="""
-				[
-				{
-					"text": "第一段中文原文，请务必全部用中文，一定不要有日语假名！",
-					"emotion": "happiness"
-				},
-				{
-					"text": "第二段中文原文，请务必全部用中文，一定不要有日语假名！",
-					"emotion": "sadness"
-				}
-				]
-				"""
-				
-			format_prompt = f"""
-			请严格以 JSON 数组（Array）的格式输出你的回复。
+            if user_input == 'l':
+                self.audio_language_choice = "中英混合" if self.audio_language_choice == '日英混合' else '日英混合'
+                message_queue.put("已切换语言为："+("中文" if self.audio_language_choice=='中英混合' else "日文"))
+                time.sleep(2)
+                continue
 
-			【分段规则】
-			为了配合语音合成的断句与呼吸节奏，请不要将所有文本挤在一起。如果你的回复较长，请根据语意停顿将其自然拆分为多个片段（建议每段包含 1 到 3 句话）。
+            # 保存原始用户输入（不含指令后缀），用于存储到 Chat 中
+            raw_user_input = user_input
 
-			【输出格式】
-			必须严格遵守以下 JSON 结构，不要输出任何非 JSON 的解释性文字：
-			{format_prompt_json}
+            if self.audio_language_choice=='日英混合':
+                format_prompt_json="""
+                [
+                {
+                    "text": "第一段日文原文...",
+                    "translation": "第一段日文对应的中文翻译...",
+                    "emotion": "happiness"
+                },
+                {
+                    "text": "第二段日文原文...",
+                    "translation": "第二段日文对应的中文翻译...",
+                    "emotion": "sadness"
+                }
+                ]
+                """
+            else:
+                format_prompt_json="""
+                [
+                {
+                    "text": "第一段中文原文，请务必全部用中文，一定不要有日语假名！",
+                    "emotion": "happiness"
+                },
+                {
+                    "text": "第二段中文原文，请务必全部用中文，一定不要有日语假名！",
+                    "emotion": "sadness"
+                }
+                ]
+                """
 
-			【情感选项限制】
-			emotion 字段必须严格是以下单词之一（根据该段落的情感基调选择）：
-			"happiness", "sadness", "anger", "surprise", "fear", "disgust", "like", "neutral"
-			"""
+            format_prompt = f"""
+            请严格以 JSON 数组（Array）的格式输出你的回复。
 
-			user_input=user_input+format_prompt
+            【分段规则】
+            为了配合语音合成的断句与呼吸节奏，请不要将所有文本挤在一起。如果你的回复较长，请根据语意停顿将其自然拆分为多个片段（建议每段包含 1 到 3 句话）。
 
-			if self.if_sakiko:
-				if self.sakiko_state:
-					user_input = user_input +'（本句话用黑祥的语气回答!）'
-				else:
-					user_input = user_input + '（本句话用白祥的语气回答!）'
+            【输出格式】
+            必须严格遵守以下 JSON 结构，不要输出任何非 JSON 的解释性文字：
+            {format_prompt_json}
 
-			# -----------------------------
-			# 将原始用户输入（不含指令后缀）存入 Chat
-			user_msg = Message(
-				character_name="User",
-				text=raw_user_input,
-				translation="",
-				emotion=EmotionEnum.HAPPINESS,
-				audio_path=""
-			)
-			self.current_chat.add_message(user_msg)
+            【情感选项限制】
+            emotion 字段必须严格是以下单词之一（根据该段落的情感基调选择）：
+            "happiness", "sadness", "anger", "surprise", "fear", "disgust", "like", "neutral"
+            """
 
-			# 构建 LLM 请求：使用 Chat.build_llm_query 生成基础历史，然后修改最后一条用户消息为带指令后缀的版本
-			character_name = self.character_list[self.current_char_index].character_name
-			to_llm_msg = self.current_chat.build_llm_query(perspective=character_name)
+            user_input=user_input+format_prompt
 
-			# 将最后一条 user 消息的 content 替换为带指令后缀的版本
-			for i in range(len(to_llm_msg) - 1, -1, -1):
-				if to_llm_msg[i]["role"] == "user":
-					# 找到最后一条 user 消息，替换其中当前用户输入部分
-					to_llm_msg[i]["content"] = to_llm_msg[i]["content"].replace(raw_user_input, user_input)
-					break
+            if self.if_sakiko:
+                if self.sakiko_state:
+                    user_input = user_input +'（本句话用黑祥语气回答!）'
+                else:
+                    user_input = user_input + '（本句话用白祥语气回答!）'
 
-			# 添加限制信息到 system prompt
-			if to_llm_msg and to_llm_msg[0]['role'] == 'system':
-				to_llm_msg[0]['content'] += self.restr
+            # -----------------------------
+            # 将原始用户输入（不含指令后缀）存入 Chat
+            user_msg = Message(
+                character_name="User",
+                text=raw_user_input,
+                translation="",
+                emotion=EmotionEnum.HAPPINESS,
+                audio_path=""
+            )
+            self.current_chat.add_message(user_msg)
 
-			message_queue.put(f"{character_name}思考中...")
-			is_text_generating_queue.put('no_complete')		#正在生成文字的标志
-			# --------------------------
-			self.choose_llm_api()
-			if not self.is_use_ds_api and self.is_deepseek:		#使用本地Ollama模型
-				try:
-					response = chat(
-						model=self.model_choice,
-						messages=self.trim_list_to_340kb(to_llm_msg),
-						stream=False
-					)
-				except Exception:
-					message_queue.put("本地Ollama API调用出错！输入bye退出并重新启动程序，或使用联网deepseek模式。")
-					is_text_generating_queue.get()	#不加这行，出错后模型会一直保持思考状态
-					self.current_chat.message_list.pop()  # 移除刚追加的用户消息
-					time.sleep(2)
-					continue
-			elif self.is_use_ds_api and self.is_deepseek:
-				online_model=''
-				if self.model_choice==self.LLM_list[2]:
-					online_model='deepseek-chat'
-				elif self.model_choice==self.LLM_list[3]:
-					online_model='deepseek-reasoner'
-				data = {
-					"model": online_model,
-					"messages": self.trim_list_to_340kb(to_llm_msg),
-					"stream": False
-				}
-				print(data)
-				try:
-					response = requests.post("https://api.deepseek.com/chat/completions", headers=self.headers, json=data)
-				except Exception:
-					message_queue.put("与DeepSeek建立连接失败，请检查网络。")
-					is_text_generating_queue.get()  # 不加这行，出错后模型会一直保持思考状态
-					self.current_chat.message_list.pop()  # 移除刚追加的用户消息
-					time.sleep(2)
-					continue
-				if response.status_code == 200:
+            # 构建 LLM 请求：使用 Chat.build_llm_query 生成基础历史，然后修改最后一条用户消息为带指令后缀的版本
+            character_name = self.character_list[self.current_char_index].character_name
+            to_llm_msg = self.current_chat.build_llm_query(perspective=character_name)
 
-					response=response.json()
-					response=response['choices'][0]
-				else:
-					time.sleep(2)
-					if response.status_code==402:
-						message_queue.put("账户余额不足，如果正在用up的api，请联系UP充值")
-					elif response.status_code==401:
-						message_queue.put("deepseek API key认证出错，请检查正确性")
-					elif response.status_code==429:
-						message_queue.put("请求速度太快，被限制了（应该不会出现这个错误吧，")
-					elif response.status_code==500 or response.status_code==503:
-						message_queue.put("deepseek服务器可能崩了，可等待一会后重试。")
-					else:
-						message_queue.put("出现了未知错误，可尝试重新对话一次。")
-					is_text_generating_queue.get()
-					self.current_chat.message_list.pop()  # 移除刚追加的用户消息
-					time.sleep(2)
-					continue
-			elif not self.is_deepseek:		#使用非Deepseek的模型
-				try:
-					response = self.other_client.chat.completions.create(
-						model=self.model_choice,
-						messages=to_llm_msg,
-						stream=False,
-						timeout=30
-					)
-					if response.choices[0].message.content is None:
-						message_queue.put("模型API返回内容为空，请检查网络，然后重试一下吧")
-						PrintInfo.print_error("[Error]大模型API返回内容为空!")
-						is_text_generating_queue.get()
-						time.sleep(2)
-						continue
-				except Exception as err:
-					message_queue.put("模型API调用出错...请检查网络，然后重试一下吧")
-					PrintInfo.print_error(f"[Error]大模型API调用出错：{err}")
-					is_text_generating_queue.get()
-					self.current_chat.message_list.pop()  # 移除刚追加的用户消息
-					time.sleep(2)
-					continue
+            # 将最后一条 user 消息的 content 替换为带指令后缀的版本
+            for i in range(len(to_llm_msg) - 1, -1, -1):
+                if to_llm_msg[i]["role"] == "user":
+                    # 找到最后一条 user 消息，替换其中当前用户输入部分
+                    to_llm_msg[i]["content"] = to_llm_msg[i]["content"].replace(raw_user_input, user_input)
+                    break
 
-			# 去掉多余的字符，使用正则表达式
-			if self.is_deepseek:
-				cleaned_text_of_model_response = re.sub(r'<think>.*?</think>', '', response["message"]["content"],flags=re.DOTALL).strip()
-				raw_content = response["message"]["content"]
-				print(raw_content)
-			else:
-				cleaned_text_of_model_response = re.sub(r'<think>.*?</think>', '', response.choices[0].message.content.strip(), flags=re.DOTALL).strip()
-				raw_content = response.choices[0].message.content.strip()
+            # 添加限制信息到 system prompt
+            if to_llm_msg and to_llm_msg[0]['role'] == 'system':
+                to_llm_msg[0]['content'] += self.restr
 
-			# 解析 LLM 回复的 JSON 格式，提取实际文本、翻译和情感
-			# 现在 LLM 可能返回 JSON 数组（多段回复），每段创建一个 Message
-			try:
-				json_str = cleaned_text_of_model_response.strip()
-				if json_str.startswith('```'):
-					json_str = re.sub(r'^```(?:json)?\s*', '', json_str)
-					json_str = re.sub(r'\s*```$', '', json_str)
-				parsed_data = json.loads(json_str)
+            message_queue.put(f"{character_name}思考中...")
+            is_text_generating_queue.put('no_complete')		#正在生成文字的标志
+            # --------------------------
+            # 优先处理使用 Up API 的情况
 
-				if isinstance(parsed_data, list):
-					# JSON 数组：每个元素 → 一个 Message
-					for item in parsed_data:
-						text = item.get('text', '')
-						if not text:
-							continue
-						msg = Message(
-							character_name=character_name,
-							text=text,
-							translation=item.get('translation', ''),
-							emotion=EmotionEnum.from_string(item.get('emotion', 'happiness')),
-							audio_path="" if self.if_generate_audio else "NO_AUDIO"  # 会在 qtUI 中覆盖
-						)
-						self.current_chat.add_message(msg)
-				elif isinstance(parsed_data, dict):
-					# JSON 单对象
-					msg = Message(
-						character_name=character_name,
-						text=parsed_data.get('text', cleaned_text_of_model_response),
-						translation=parsed_data.get('translation', ''),
-						emotion=EmotionEnum.from_string(parsed_data.get('emotion', 'happiness')),
-						audio_path="" if self.if_generate_audio else "NO_AUDIO"
-					)
-					self.current_chat.add_message(msg)
-				else:
-					raise ValueError("Unexpected JSON type")
-			except (json.JSONDecodeError, KeyError, AttributeError, ValueError):
-				# 非 JSON 格式，存储原始文本
-				assistant_msg = Message(
-					character_name=character_name,
-					text=cleaned_text_of_model_response,
-					translation="",
-					emotion=EmotionEnum.HAPPINESS,
-					audio_path="" if self.if_generate_audio else "NO_AUDIO"
-				)
-				self.current_chat.add_message(assistant_msg)
+            try:
+                if d_sakiko_config.use_default_deepseek_api.value:
+                    print("使用 UP 的 DeepSeek API 进行对话生成")
+                    response = completion(
+                        model="deepseek/deepseek-chat",
+                        messages=self.trim_list_to_340kb(to_llm_msg),
+                        api_key=self.model,
+                        stream=False,
+                        timeout=30
+                    )
+                # 第二优先级是检查自定义 API Url
+                # 只要存在自定义 API，就使用自定义 API
+                elif d_sakiko_config.enable_custom_llm_api_provider.value:
+                    print("使用自定义大模型 API 进行对话生成")
+                    print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
+                    print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
+                    response = completion(
+                        # 自定义 API 与 OpenAI 兼容，litellm 需要通过 openai/ 前缀路由
+                        model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
+                        messages=self.trim_list_to_340kb(to_llm_msg),
+                        api_key=d_sakiko_config.custom_llm_api_key.value,
+                        # 自定义 API 地址
+                        base_url=d_sakiko_config.custom_llm_api_url.value,
+                        stream=False,
+                        timeout=30
+                    )
+                # 最后：使用选择的预定义 API 提供商
+                else:
+                    print("使用预定义大模型 API 进行对话生成")
+                    print("Provider: ", d_sakiko_config.llm_api_provider.value)
+                    print("Model: ",
+                          d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
+                    provider = d_sakiko_config.llm_api_provider.value
+                    model = d_sakiko_config.llm_api_model.value.get(provider, "")
+                    api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
+                    base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
 
-			text_queue.put(cleaned_text_of_model_response)
+                    if base_url:
+                        response = completion(
+                            model=self.normalize_model_for_provider(provider, model),
+                            messages=self.trim_list_to_340kb(to_llm_msg),
+                            api_key=api_key,
+                            stream=False,
+                            timeout=30,
+                            base_url=base_url,
+                        )
+                    else:
+                        response = completion(
+                            model=self.normalize_model_for_provider(provider, model),
+                            messages=self.trim_list_to_340kb(to_llm_msg),
+                            api_key=api_key,
+                            stream=False,
+                            timeout=30
+                        )
 
-			while is_audio_play_complete.get() is None:
-				time.sleep(0.5)		#不加就无法正常运行
+            except litellm.exceptions.Timeout:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    "请求超时，请检查网络连接或稍后再试。"
+                )
+                continue
+            except litellm.exceptions.AuthenticationError:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    "API Key 认证失败，请检查 Key 是否正确。"
+                )
+                continue
+            except litellm.exceptions.RateLimitError:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    "请求过于频繁，请稍后再试。"
+                )
+                continue
+            except litellm.exceptions.APIConnectionError:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    "与大模型网站建立连接失败，请检查网络。"
+                )
+                continue
+            # 特殊捕获一个 API Key 余额不足的错误
+            except litellm.exceptions.BadRequestError as e:
+                # 悲伤的是，litellm 把异常封装的过头了，根本获得不了原始的状态码
+                # 特殊处理 DeepSeek 无余额时返回的内容；其他 API 接口我也不清楚是否能捕获
+                if "Insufficient Balance" in e.message:
+                    self.report_message_to_main_ui(
+                        message_queue,
+                        is_text_generating_queue,
+                        "账户余额不足，如果正在用up的api，请联系UP充值"
+                    )
+                else:
+                    self.report_message_to_main_ui(
+                        message_queue,
+                        is_text_generating_queue,
+                        f"未知的请求错误，状态码：{e.status_code}。"
+                    )
+                continue
+            except litellm.exceptions.PermissionDeniedError:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    f"无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够"
+                )
+                continue
+            except Exception:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    "出现了未知错误，请再试一次。"
+                )
+                import traceback
+
+                traceback.print_exc()
+
+                continue
+
+            if not isinstance(response, ModelResponse) or response.choices[0].message.content is None:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    "模型API返回内容为空，请检查网络，然后重试一下吧"
+                )
+                continue
+
+            cleaned_text_of_model_response = response.choices[0].message.content.strip()
+            # 解析 LLM 回复的 JSON 格式，提取实际文本、翻译和情感
+            # 现在 LLM 可能返回 JSON 数组（多段回复），每段创建一个 Message
+            try:
+                json_str = cleaned_text_of_model_response.strip()
+                if json_str.startswith('```'):
+                    json_str = re.sub(r'^```(?:json)?\s*', '', json_str)
+                    json_str = re.sub(r'\s*```$', '', json_str)
+                parsed_data = json.loads(json_str)
+
+                if isinstance(parsed_data, list):
+                    # JSON 数组：每个元素 → 一个 Message
+                    for item in parsed_data:
+                        text = item.get('text', '')
+                        if not text:
+                            continue
+                        msg = Message(
+                            character_name=character_name,
+                            text=text,
+                            translation=item.get('translation', ''),
+                            emotion=EmotionEnum.from_string(item.get('emotion', 'happiness')),
+                            audio_path="" if self.if_generate_audio else "NO_AUDIO"  # 会在 qtUI 中覆盖
+                        )
+                        self.current_chat.add_message(msg)
+                elif isinstance(parsed_data, dict):
+                    # JSON 单对象
+                    msg = Message(
+                        character_name=character_name,
+                        text=parsed_data.get('text', cleaned_text_of_model_response),
+                        translation=parsed_data.get('translation', ''),
+                        emotion=EmotionEnum.from_string(parsed_data.get('emotion', 'happiness')),
+                        audio_path="" if self.if_generate_audio else "NO_AUDIO"
+                    )
+                    self.current_chat.add_message(msg)
+                else:
+                    raise ValueError("Unexpected JSON type")
+            except (json.JSONDecodeError, KeyError, AttributeError, ValueError):
+                # 非 JSON 格式，存储原始文本
+                assistant_msg = Message(
+                    character_name=character_name,
+                    text=cleaned_text_of_model_response,
+                    translation="",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path="" if self.if_generate_audio else "NO_AUDIO"
+                )
+                self.current_chat.add_message(assistant_msg)
+
+            text_queue.put(cleaned_text_of_model_response)
+
+            while is_audio_play_complete.get() is None:
+                time.sleep(0.5)		#不加就无法正常运行

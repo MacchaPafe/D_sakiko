@@ -265,7 +265,10 @@ class AudioGenerate:
 
                 time.sleep(1)
             if text=='bye':
+                # print("音频生成模块收到退出信号，正在退出...")
                 self.to_gptsovits_com_queue.put('bye')
+                self.gptsovits_process.join()
+                # print("音频生成模块退出GPT-SoVITS子进程完成")
                 break
 
             self.is_completed = False
@@ -328,6 +331,7 @@ class AudioGenerate:
 
                 time.sleep(0.2)
             self.is_completed=True
+        # print("音频生成模块已退出完成")
 
 
     def clean_text_for_audio(self,text):

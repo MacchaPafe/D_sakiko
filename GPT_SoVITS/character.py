@@ -1,6 +1,7 @@
 import os,glob,json,copy
 from rich import print
 
+from qconfig import d_sakiko_config
 
 class PrintInfo:
     @staticmethod
@@ -136,13 +137,8 @@ class GetCharacterAttributes:
         print('\n')
 
     def load_data(self):
-        if os.path.exists("../dsakiko_config.json"):
-            with open("../dsakiko_config.json",'r',encoding='utf-8') as f:
-                config_data=json.load(f)
-            l2d_json_paths_dict=config_data.get("l2d_json_paths",None)
-        else:
-            l2d_json_paths_dict=None
-
+        # 角色的默认 live2d 信息
+        l2d_json_paths_dict = d_sakiko_config.l2d_json_paths_dict.value
         # 有多少角色没有完整的信息（is_ready = False）
         partial_character_count = 0
 
@@ -172,7 +168,7 @@ class GetCharacterAttributes:
                 if not live2d_json:
                     PrintInfo.print_error(f"[Error]没有找到角色：'{character.character_name}'的默认Live2D模型json文件(.model.json)")
                     is_ready=False
-                if (l2d_json_paths_dict is not None) and (character.character_name in l2d_json_paths_dict):
+                if character.character_name in l2d_json_paths_dict:
                     if os.path.exists(l2d_json_paths_dict[character.character_name]):
                         live2d_json=l2d_json_paths_dict[character.character_name]
                     else:
@@ -274,50 +270,42 @@ class GetCharacterAttributes:
                     PrintInfo.print_info(f"加载角色：'{char}' 时出现以上错误，跳过该角色的加载。\n")
                     partial_character_count += 1
 
-        #新增调整角色顺序的功能
-        if os.path.exists("../reference_audio/character_order.json"):
-            with open("../reference_audio/character_order.json",'r',encoding='utf-8') as f:
-                char_order_list=json.load(f)
-                f.close()
-        elif os.path.exists("../dsakiko_config.json"):
-            with open("../dsakiko_config.json",'r',encoding='utf-8') as f:
-                config=json.load(f)
-                char_order_list=config["character_setting"]["character_order"]
-                f.close()
-        else:
-            PrintInfo.print_warning("[Warning]没有找到启动配置文件！")
-            return
-        if len(self.character_class_list)>int(char_order_list['character_num']):
-            is_convert_1=False
+        # 新增调整角色顺序的功能
+        char_order_list = d_sakiko_config.character_order.value
+        if len(self.character_class_list) > int(char_order_list['character_num']):
+            is_convert_1 = False
             PrintInfo.print_info("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
-        elif len(self.character_class_list)<int(char_order_list['character_num']):
+        elif len(self.character_class_list) < int(char_order_list['character_num']):
             # 经过测试，事实上，如果一个角色是在加载时被判定为不完整而被跳过的，那么它不会影响角色顺序的应用
             # 只有目前角色数量 + 不完整角色数量 != 之前设置的角色数量时，才会出现角色被删除的情况，才需要重置角色顺序
             if len(self.character_class_list) + partial_character_count != int(char_order_list['character_num']):
-                is_convert_1=False
+                is_convert_1 = False
                 PrintInfo.print_info("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
             else:
                 is_convert_1 = True
         else:
             is_convert_1 = True
         this_character_names = [char.character_name for char in self.character_class_list]
+
         is_convert_2=True
         if is_convert_1:
             for name in this_character_names:
                 if name not in char_order_list['character_names']:
                     PrintInfo.print_info("似乎有角色的名字被修改了，之前设置的角色顺序不适用，重新设置一下吧")
-                    is_convert_2=False
+                    is_convert_2 = False
                     break
         if is_convert_1 and is_convert_2:
             new_character_class_list=[]
             char_name2char={char.character_name:char for char in self.character_class_list}
-            for name in char_order_list['character_names']:
+            for name in d_sakiko_config.character_order.value['character_names']:
                 new_character_class_list.append(char_name2char[name])
 
             self.character_class_list=new_character_class_list
 
-
-
+        # 将最终的结果同步到配置中
+        d_sakiko_config.character_order.value['character_names']=[char.character_name for char in self.character_class_list]
+        d_sakiko_config.character_order.value['character_num']=self.character_num
+        d_sakiko_config.save()
 
 
 if __name__=="__main__":
