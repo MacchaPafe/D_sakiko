@@ -7,6 +7,7 @@ import warnings
 import os
 import shutil
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, List, Union, Any, Iterable
 import json
@@ -1044,6 +1045,32 @@ def _move_legacy_files_to_backup(legacy_files: Optional[Iterable[Union[str, Path
                 print(f"移动旧版记录文件 {f} 失败: {e}")
 
 
+def _generate_filename_with_timestamp(
+    filename: Union[str, Path],
+) -> str:
+    """
+    根据一个文件的文件名，生成一个带时间戳版本的文件名。
+
+    >>> _generate_filename_with_timestamp("../reference_audio/history_messages_qt.json")
+    'history_messages_qt_20240610-153045.json'
+    """
+    path = Path(filename)
+    return f"{path.stem}_{datetime.now().strftime('%Y%m%d-%H%M%S-%f')[:-3]}{path.suffix}"
+
+
+def backup_file(files: Iterable[Union[str, Path]], destination_folder = "../reference_audio/backup") -> None:
+    """
+    备份指定的一系列文件，将其复制到指定的文件夹中并且按照当前时间进行重命名。
+
+    :param files: 需要备份的一系列文件
+    :param destination_folder: 备份应当复制到的目标文件夹。如果该文件夹尚不存在，则会被创建。
+    :raises OSError: 如果给定的文件不存在，给定的目标文件夹无法写入……
+    """
+    os.makedirs(destination_folder, exist_ok=True)
+    for file in files:
+        shutil.copyfile(file, os.path.join(destination_folder, _generate_filename_with_timestamp(file)))
+
+
 def get_chat_manager() -> ChatManager:
     """
     获取全局的 ChatManager 实例。如果尚未创建，则创建一个新的实例。
@@ -1084,7 +1111,18 @@ def get_chat_manager() -> ChatManager:
 
             # 优先级 1->2->3：只要有 all_conversation.json，就一定要加载并读取数据，避免情况 1/2 下的数据丢失。
             if has_new_record:
-                _global_chat_manager = ChatManager.load(all_conversation_file)
+                try:
+                    _global_chat_manager = ChatManager.load(all_conversation_file)
+                # 如果这个文件因为自身格式错误无法加载，尝试备份一份。
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    PrintInfo.print_error("all_conversation.json 已损坏，未能加载其中的对话记录。")
+                    try:
+                        backup_file(files=[all_conversation_file])
+                        PrintInfo.print_info(f"已将损坏的 all_conversation.json 备份到 ../reference_audio/backup 文件夹中。")
+                    except OSError as e:
+                        PrintInfo.print_error(f"备份损坏的 all_conversation.json 失败: {e}")
+
+                    _global_chat_manager = ChatManager()
             else:
                 _global_chat_manager = ChatManager()
 
