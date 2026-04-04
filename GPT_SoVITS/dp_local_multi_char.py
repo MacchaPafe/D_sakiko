@@ -2,10 +2,9 @@ import time,os
 
 import litellm
 
-from character import CharacterAttributes
-from chat.chat import get_chat_manager
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from litellm import completion
+from litellm.types.utils import ModelResponse
 from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
 
@@ -146,7 +145,9 @@ class DSLocalAndVoiceGen:
 					response = completion(
 						model="deepseek/deepseek-chat",
 						messages=user_this_turn_msg,
-						api_key=self.model
+						api_key=self.model,
+						stream=False,
+						timeout=100
 					)
 				# 第二优先级是检查自定义 API Url
 				# 只要存在自定义 API，就使用自定义 API
@@ -157,7 +158,9 @@ class DSLocalAndVoiceGen:
 						messages=user_this_turn_msg,
 						api_key=d_sakiko_config.custom_llm_api_key.value,
 						# 自定义 API 地址
-						base_url=d_sakiko_config.custom_llm_api_url.value
+						base_url=d_sakiko_config.custom_llm_api_url.value,
+						stream=False,
+						timeout=100
 					)
 				# 最后：使用选择的预定义 API 提供商
 				else:
@@ -166,16 +169,23 @@ class DSLocalAndVoiceGen:
 					api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
 					base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
 
-					completion_kwargs = {}
 					if base_url:
-						completion_kwargs["base_url"] = base_url
-
-					response = completion(
-						model=self.normalize_model_for_provider(provider, model),
-						messages=user_this_turn_msg,
-						api_key=api_key,
-						**completion_kwargs,
-					)
+						response = completion(
+							model=self.normalize_model_for_provider(provider, model),
+							messages=user_this_turn_msg,
+							api_key=api_key,
+							stream=False,
+							timeout=100,
+							base_url=base_url,
+						)
+					else:
+						response = completion(
+							model=self.normalize_model_for_provider(provider, model),
+							messages=user_this_turn_msg,
+							api_key=api_key,
+							stream=False,
+							timeout=100,
+						)
 			except litellm.exceptions.Timeout:
 				self.report_message_to_main_ui(
 					message_queue,
@@ -237,6 +247,14 @@ class DSLocalAndVoiceGen:
 				import traceback
 				traceback.print_exc()
 
+				continue
+
+			if not isinstance(response, ModelResponse) or response.choices[0].message.content is None:
+				self.report_message_to_main_ui(
+					message_queue,
+					text_queue,
+					"模型API返回内容为空，请检查网络，然后重试一下吧"
+				)
 				continue
 
 			# 去掉多余的字符，使用正则表达式

@@ -6,6 +6,7 @@ from copy import deepcopy
 import json
 import litellm
 from litellm import completion
+from litellm.types.utils import ModelResponse
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
@@ -14,26 +15,33 @@ from character import PrintInfo
 from chat.chat import Chat, Message, ChatManager
 from emotion_enum import EmotionEnum
 
+
 class DSLocalAndVoiceGen:
     def __init__(self,characters, chat_manager: ChatManager):
-        self.character_list=characters
+        self.character_list = characters
         self.chat_manager = chat_manager
+
         # 为每个角色获取或创建对应的 Chat 对象
         self.character_chats: list[Chat] = []
         for character in self.character_list:
             chat_obj = self.chat_manager.get_or_create_chat_for_character(character)
             self.character_chats.append(chat_obj)
 
-        self.LLM_list=["deepseek-r1:14b","deepseek-r1:32b","deepseek-V3 非本地API","deepseek-R1 非本地API（暂时不能用）"]
-
+        # 语音输出的语言
         self.audio_language = ["中英混合", "日英混合"]
         self.audio_language_choice = self.audio_language[1]
-        self.is_think_content_output_complete=False
-        self.model=__import__('live2d_1').get_live2d()
-        self.sakiko_state=True
-        self.if_generate_audio=True
-        self.current_char_index=0
-        self.if_sakiko=False
+
+        self.model = __import__('live2d_1').get_live2d()
+        # 是否为角色通过 GPT-SoVITS 模型生成音频
+        self.if_generate_audio = True
+        # 当前对话的角色是角色列表中的第几个
+        self.current_char_index = 0
+
+        # 当前角色是否是祥子
+        self.if_sakiko = False
+        # 祥子的状态是黑祥还是白祥，True：黑祥，False：白祥
+        self.sakiko_state = True
+        # 角色在空闲时，页面上方状态会显示的话。从列表中随机选择。
         self.idle_texts = ["...", "...", "就绪", "..."]
         self.initial()
 
@@ -104,7 +112,8 @@ class DSLocalAndVoiceGen:
         message_queue.put(message)
         is_text_generating_queue.get()
         # 删除未能成功发送的信息
-        self.current_chat.message_list.pop()
+        if self.current_chat.message_list:
+            self.current_chat.message_list.pop()
         # 源代码如此，我也不知道为啥要休息一会
         time.sleep(2)
 
@@ -289,7 +298,9 @@ class DSLocalAndVoiceGen:
                     response = completion(
                         model="deepseek/deepseek-chat",
                         messages=self.trim_list_to_340kb(to_llm_msg),
-                        api_key=self.model
+                        api_key=self.model,
+                        stream=False,
+                        timeout=30
                     )
                 # 第二优先级是检查自定义 API Url
                 # 只要存在自定义 API，就使用自定义 API
@@ -303,7 +314,9 @@ class DSLocalAndVoiceGen:
                         messages=self.trim_list_to_340kb(to_llm_msg),
                         api_key=d_sakiko_config.custom_llm_api_key.value,
                         # 自定义 API 地址
-                        base_url=d_sakiko_config.custom_llm_api_url.value
+                        base_url=d_sakiko_config.custom_llm_api_url.value,
+                        stream=False,
+                        timeout=30
                     )
                 # 最后：使用选择的预定义 API 提供商
                 else:
@@ -316,16 +329,24 @@ class DSLocalAndVoiceGen:
                     api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
                     base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
 
-                    completion_kwargs = {}
                     if base_url:
-                        completion_kwargs["base_url"] = base_url
+                        response = completion(
+                            model=self.normalize_model_for_provider(provider, model),
+                            messages=self.trim_list_to_340kb(to_llm_msg),
+                            api_key=api_key,
+                            stream=False,
+                            timeout=30,
+                            base_url=base_url,
+                        )
+                    else:
+                        response = completion(
+                            model=self.normalize_model_for_provider(provider, model),
+                            messages=self.trim_list_to_340kb(to_llm_msg),
+                            api_key=api_key,
+                            stream=False,
+                            timeout=30
+                        )
 
-                    response = completion(
-                        model=self.normalize_model_for_provider(provider, model),
-                        messages=self.trim_list_to_340kb(to_llm_msg),
-                        api_key=api_key,
-                        **completion_kwargs,
-                    )
             except litellm.exceptions.Timeout:
                 self.report_message_to_main_ui(
                     message_queue,
@@ -388,6 +409,14 @@ class DSLocalAndVoiceGen:
 
                 traceback.print_exc()
 
+                continue
+
+            if not isinstance(response, ModelResponse) or response.choices[0].message.content is None:
+                self.report_message_to_main_ui(
+                    message_queue,
+                    is_text_generating_queue,
+                    "模型API返回内容为空，请检查网络，然后重试一下吧"
+                )
                 continue
 
             cleaned_text_of_model_response = response.choices[0].message.content.strip()
