@@ -26,7 +26,6 @@ DEFAULT_IGNORE_PATTERNS = [
     ".git/*",
     ".python-version",
     ".vscode/*",
-    "*.bat",
     "d_sakiko_config.json",
     "dsakiko_config.json",
     ".github/*",
@@ -37,9 +36,29 @@ DEFAULT_IGNORE_PATTERNS = [
 ]
 
 
-DEFAULT_INCLUDE_PATTERNS = [
-    "GPT_SoVITS/live2d_1.cpython-311-darwin.so"
-]
+PLATFORM_IGNORE_PATTERNS = {
+    "macos": [
+        "*.bat",
+        "双击run.bat即可运行程序，注意不要有中文路径！",
+    ],
+    "windows": [
+        "*.command",
+        "install_brew.sh",
+    ],
+}
+
+
+DEFAULT_INCLUDE_PATTERNS: list[str] = []
+
+
+PLATFORM_INCLUDE_PATTERNS = {
+    "macos": [
+        "GPT_SoVITS/live2d_1.cpython-311-darwin.so",
+    ],
+    "windows": [
+        "GPT_SoVITS/live2d_1.pyd",
+    ],
+}
 
 
 @dataclass
@@ -63,6 +82,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, help="补丁输出目录路径。")
     parser.add_argument("--base-version", required=True, help="补丁生成针对哪个旧版本。")
     parser.add_argument("--target-version", required=True, help="补丁应用后的新版本号。")
+    parser.add_argument(
+        "--platform",
+        choices=sorted(PLATFORM_IGNORE_PATTERNS),
+        default="windows",
+        help="目标发布平台。根据平台自动排除另一系统的启动/安装脚本。",
+    )
     parser.add_argument(
         "--ignore",
         action="append",
@@ -342,6 +367,7 @@ def write_manifest(
     old_root: Path,
     base_version: str,
     target_version: str,
+    platform: str,
     ignore_patterns: list[str],
     include_patterns: list[str],
     records: list[FileRecord],
@@ -358,6 +384,7 @@ def write_manifest(
         "mode": "hdiff",
         "base_version": base_version,
         "target_version": target_version,
+        "platform": platform,
         "patch_file": patch_file_name,
         "current": str(current_root),
         "old": str(old_root),
@@ -422,11 +449,15 @@ def main() -> int:
 
     # 列出需要忽略的文件模式
     ignore_patterns = list(DEFAULT_IGNORE_PATTERNS)
+    # 增加平台特有的忽略规则
+    ignore_patterns.extend(PLATFORM_IGNORE_PATTERNS[args.platform])
     if args.read_gitignore:
         ignore_patterns.extend(read_gitignore_patterns(current_root))
     ignore_patterns.extend(args.ignore)
     # 列出需要强制包含的文件模式
     include_patterns = list(DEFAULT_INCLUDE_PATTERNS)
+    # 增加平台特有的包含规则
+    include_patterns.extend(PLATFORM_INCLUDE_PATTERNS[args.platform])
     include_patterns.extend(args.include)
 
     # 准备输出目录：如果已存在且 --clean-output，则先清空再创建；否则直接创建（已存在则覆盖）。
@@ -479,6 +510,7 @@ def main() -> int:
         old_root=old_root,
         base_version=args.base_version,
         target_version=args.target_version,
+        platform=args.platform,
         ignore_patterns=ignore_patterns,
         include_patterns=include_patterns,
         records=records,
