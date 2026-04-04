@@ -581,7 +581,7 @@ requires-dist = [
     { name = "pygame", specifier = ">=2.6.1" },
     { name = "pyopenjtalk", specifier = ">=0.4.1" },
     { name = "pypinyin", specifier = ">=0.55.0" },
-    { name = "pyqt-fluent-widgets", specifier = ">=1.10.4" },
+    { name = "pyqt-fluent-widgets", specifier = ">=1.11" },
     { name = "pyqt5", marker = "sys_platform != 'win32'", specifier = ">=5.15.11" },
     { name = "pyqt5", marker = "sys_platform == 'win32'", specifier = ">=5.15.11" },
     { name = "pyqt5-qt5", marker = "sys_platform == 'win32'", specifier = ">=5.15,<=5.15.2" },
@@ -4733,16 +4733,16 @@ wheels = [
 
 [[package]]
 name = "pyqt-fluent-widgets"
-version = "1.10.4"
+version = "1.11.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "darkdetect" },
     { name = "pyqt5" },
     { name = "pyqt5-frameless-window" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/8d/b5a2af09f2a8283df919583b209def6fbfcf0c2358eb5070222fa870c3ec/pyqt_fluent_widgets-1.10.4.tar.gz", hash = "sha256:637469b75fabda3b74bf0ab394930b9f5919ac63f6e1ca9c68fbc2d279c38cb7", size = 1594562, upload-time = "2025-12-14T14:27:13.302Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/14/aa/e1509ac5425b1e66f5d0a3e13164400917056892df7531754486716efe3f/pyqt_fluent_widgets-1.11.2.tar.gz", hash = "sha256:b0636199fe252cebbc9c82e7bf78ed562277088a4e0f458c32d035514f41745f", size = 1600039, upload-time = "2026-04-04T02:33:06.593Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/54/ea654e50b9559c445141a04b3910afef740e97f0214dc1ef1cf6210ea438/pyqt_fluent_widgets-1.10.4-py3-none-any.whl", hash = "sha256:8f48b51ba496ae2f427f6b2bdce1cee6fc671a860bf223435cfab36ac391152d", size = 1751651, upload-time = "2025-12-14T14:27:11.064Z" },
+    { url = "https://files.pythonhosted.org/packages/60/da/f761494a713a922387cfe1a214421256f762636643600351e8bd876d5e64/pyqt_fluent_widgets-1.11.2-py3-none-any.whl", hash = "sha256:b4a5ec96cf1a2bb0d42e2956a20880941c3ac88b5adc0d2ec7e7ae48ca1dfb0c", size = 1756226, upload-time = "2026-04-04T02:33:04.755Z" },
 ]
 
 [[package]]
@@ -4765,7 +4765,7 @@ wheels = [
 
 [[package]]
 name = "pyqt5-frameless-window"
-version = "0.7.4"
+version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pycocoa", marker = "sys_platform == 'darwin'" },
@@ -4773,9 +4773,9 @@ dependencies = [
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "xcffib", marker = "sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/47/94fb55a6cdde3dce8746e503a8f573d19bdefad6ca3e260587ba6a2b5c61/pyqt5_frameless_window-0.7.4.tar.gz", hash = "sha256:ec4d4172e83c3cd0ecd0a90156127e297b24ff582b7c7cced2b5b1dda1cf0213", size = 33371, upload-time = "2025-10-10T13:14:59.736Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/8d/e01888a2b02807c9e046c169d8543d608038a5c38c4b994703cbe142345a/pyqt5_frameless_window-0.8.1.tar.gz", hash = "sha256:412ef20bcd84c614affdae46a11b36075af3491d7b82df6e1bfe8e8a708c24ac", size = 33740, upload-time = "2026-03-21T02:04:32.259Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/31/18/ec30b7bbfaa62a340916658ce5d20d5b59af5c7c69a8fc0d1c7397325b37/pyqt5_frameless_window-0.7.4-py3-none-any.whl", hash = "sha256:4f6292dec51eca8c72b4b5d283b8320d4a31a1625bacfc07cb736a6562701a23", size = 40782, upload-time = "2025-10-10T13:14:57.722Z" },
+    { url = "https://files.pythonhosted.org/packages/75/60/0c6f7acf55639e3d941a443259334a7f2de3da23a3562c441d0b862f9d76/pyqt5_frameless_window-0.8.1-py3-none-any.whl", hash = "sha256:8ebaa9b4beaf042937eacc001e0824c80d7be880f9e022196220f4648ec90b27", size = 41182, upload-time = "2026-03-21T02:04:31.264Z" },
 ]
 
 [[package]]

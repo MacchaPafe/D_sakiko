@@ -72,7 +72,7 @@ dependencies = [
     # macOS 加载声音支持
     "soundfile>=0.13.1",
     "litellm>=1.80.11",
-    "pyqt-fluent-widgets>=1.10.4",
+    "pyqt-fluent-widgets>=1.11",
     "requests>=2.32.5",
     "platformdirs>=4.5.1",
     "rapidfuzz>=3.14.3",
