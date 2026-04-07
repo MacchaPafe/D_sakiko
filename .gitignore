@@ -39,3 +39,15 @@ PyQt-Fluent-Widgets/**
 knowledge_base/**
 install_patch/**
 wheels/**
+
+dsakiko_config.json
+run.bat
+启动参数配置.bat
+执行更新.bat
+运行Live2D模型下载器.bat
+运行动作组编辑程序.bat
+运行小剧场模式.bat
+双击run.bat即可运行程序，注意不要有中文路径！
+
+*.command
+install_brew.sh
