@@ -219,21 +219,45 @@ def main_thread():
             is_audio_play_complete.put('yes')  # 本轮全部段落处理完毕
 
 
-def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w, desktop_h):
+def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue,
+                       change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w,
+                       desktop_h):
     """
     Live2D 子进程入口函数
     不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
     """
+    import sys, os
+    if os.name == 'nt':
+        try:
+            import ctypes
+            # 设置子进程的高DPI感知(与Qt主进程保持一致)，防止Win的高分辨率缩放导致的窗口巨大
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
     try:
-        # 在子进程中重新导入和创建 characters
-        import character
-        get_all = character.GetCharacterAttributes()
-        characters = get_all.character_class_list
+
+        # 临时静默标准输出，防止子进程二次加载 characters 时在命令行狂刷重复信息
+        old_stdout = sys.stdout
+        sys.stdout = open(os.devnull, 'w')
+        try:
+            # 在子进程中重新导入和创建 characters
+            import character
+            get_all = character.GetCharacterAttributes()
+            characters = get_all.character_class_list
+        finally:
+            sys.stdout.close()
+            sys.stdout = old_stdout
 
         import live2d_module
         live2d_player = live2d_module.Live2DModule()
         live2d_player.live2D_initialize(characters)
-        live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w, desktop_h)
+        live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue,
+                                  char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value,
+                                  motion_complete_value, desktop_w, desktop_h)
     except Exception as e:
         print(f"[Live2D进程错误] {type(e).__name__}: {str(e)}")
         import traceback
