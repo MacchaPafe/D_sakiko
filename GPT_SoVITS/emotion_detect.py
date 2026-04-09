@@ -2,8 +2,9 @@ from transformers import AutoTokenizer,AutoModelForSequenceClassification,Traine
 from datasets import load_dataset
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-plt.switch_backend('agg')
 from sklearn.metrics import f1_score
 
 

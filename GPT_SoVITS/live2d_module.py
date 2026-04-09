@@ -1,3 +1,5 @@
+import math
+import re
 import time
 from random import random
 from live2d.utils.lipsync import WavHandler
@@ -5,9 +7,12 @@ import live2d.v2 as live2d
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
-import glob,re,os,json
+import glob,os
+import sys
+import queue
 
 from multi_char_live2d_module import TextOverlay
+from qconfig import d_sakiko_config, qconfig
 from character import  PrintInfo
 
 class BackgroundRen(object):
@@ -103,11 +108,9 @@ class Live2DModule:
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
         self.BACK_IMAGE=back_img_jpg+back_img_png
         self.back_img_index=0
-        if os.path.exists("../dsakiko_config.json"):
-            with open("../dsakiko_config.json", "r", encoding="utf-8") as f:
-                config_data = json.load(f)
-            if "background_image_path" in config_data and config_data["background_image_path"] in self.BACK_IMAGE:
-                self.back_img_index = self.BACK_IMAGE.index(config_data["background_image_path"])
+        config_data = d_sakiko_config.background_image_path.value
+        if config_data in self.BACK_IMAGE:
+            self.back_img_index = self.BACK_IMAGE.index(config_data)
 
 
     # 动作播放开始后调用
@@ -144,36 +147,50 @@ class Live2DModule:
 
 
     def save_l2d_json_paths_and_bg(self):
-        if not os.path.exists("../dsakiko_config.json"):
-            return
-        with open("../dsakiko_config.json", "r", encoding="utf-8") as f:
-            config_data = json.load(f)
-        config_data["l2d_json_paths"]={}
+        # 必须重新读取一遍配置，否则之前的修改（如果有的话）会被覆盖掉
+        qconfig.load("../d_sakiko_config.json", d_sakiko_config)
+        d_sakiko_config.l2d_json_paths_dict.value = {}
         for char in self.character_list:
             if char.character_name!="祥子":
-                config_data["l2d_json_paths"][char.character_name]=char.live2d_json
-        config_data["background_image_path"]=self.BACK_IMAGE[self.back_img_index]
-        with open("../dsakiko_config.json", "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=4, ensure_ascii=False)
+                d_sakiko_config.l2d_json_paths_dict.value[char.character_name] = char.live2d_json
+        d_sakiko_config.background_image_path.value = self.BACK_IMAGE[self.back_img_index]
+        d_sakiko_config.save()
 
     def play_live2d(self,
                     emotion_queue,
                     audio_file_queue,
                     is_text_generating_queue,
                     char_is_converted_queue,
-                    change_char_queue):
-        #print("正在开启Live2D模块")
-        import tkinter as tk    # 获取屏幕分辨率
-        root = tk.Tk()
-        desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
-        root.destroy()
+                    change_char_queue,
+                    live2d_text_queue,
+                    is_display_text_value,
+                    motion_complete_value,
+                    desktop_w,
+                    desktop_h):
+        if self.wavHandler is None:
+            self.wavHandler = WavHandler()
+        # print("正在开启Live2D模块")
+        # import tkinter as tk    # 获取屏幕分辨率
+        # root = tk.Tk()
+        # desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
+        # root.destroy()
         win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
         pygame_win_pos_w,pygame_win_pos_h=int(0.5*desktop_w-win_w_and_h),int(0.5*desktop_h-0.5*win_w_and_h)
         #以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
-        import ctypes
-        caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
-                          +ctypes.windll.user32.GetSystemMetrics(33)
-                          +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
+
+        caption_height = 0
+        # 只在 Windows 上使用这些 ctype 方法
+        # macOS 窗口标题栏很小，本身就不需要
+        # print("正在执行 ctypes 方法以获取标题栏高度...")
+        if os.name == 'nt':
+            try:
+                import ctypes
+                caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
+                                +ctypes.windll.user32.GetSystemMetrics(33)
+                                +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
+            except Exception:
+                pass
+
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
         pygame.init()
         live2d.init()
@@ -182,7 +199,7 @@ class Live2DModule:
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
         model = live2d.LAppModel()
-        model.LoadModelJson(self.PATH_JSON)
+        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
 
         model.Resize(win_w_and_h, win_w_and_h)
         model.SetAutoBlinkEnable(True)
@@ -227,6 +244,18 @@ class Live2DModule:
                 else:
                     pass
 
+            # 从队列中获取要显示的新文本（只取最新，避免积压导致延迟）
+            latest_text = None
+            while True:
+                try:
+                    latest_text = live2d_text_queue.get_nowait()
+                except queue.Empty:
+                    break
+                except Exception:
+                    break
+            if latest_text is not None:
+                self.new_text = latest_text
+
             if not change_char_queue.empty():
                 x=change_char_queue.get()
                 if x =='start_talking':   #录音时
@@ -250,7 +279,7 @@ class Live2DModule:
                         #print("正在切换Live2D模型，路径为：", new_model_path)
                         try:
                             new_model=live2d.LAppModel()
-                            new_model.LoadModelJson(new_model_path)
+                            new_model.LoadModelJson(new_model_path, disable_precision=True)
                             new_model.Resize(win_w_and_h, win_w_and_h)
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
@@ -269,9 +298,9 @@ class Live2DModule:
                     self.change_character()
                     overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
                     if self.if_sakiko and self.sakiko_state:
-                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
                     else:
-                        model.LoadModelJson(self.PATH_JSON)
+                        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
                     model.Resize(win_w_and_h, win_w_and_h)
                     model.SetAutoBlinkEnable(True)
                     model.SetAutoBreathEnable(True)
@@ -313,20 +342,22 @@ class Live2DModule:
                 self.think_motion_is_over=True
 
             self.live2d_this_turn_motion_complete=not pygame.mixer.music.get_busy()
+            # 更新到共享变量
+            motion_complete_value.value = self.live2d_this_turn_motion_complete
 
             if not char_is_converted_queue.empty():
                 if self.if_sakiko:
                     conv_index=char_is_converted_queue.get()
                     if conv_index!='maskoff':
                         if not conv_index:      #切换为白祥
-                            model.LoadModelJson(self.PATH_JSON)
+                            model.LoadModelJson(self.PATH_JSON, disable_precision=True)
                             model.Resize(win_w_and_h, win_w_and_h)
                             model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback)
                             model.SetExpression("idle")
                             self.sakiko_state=False
 
                         else:       #切换为黑祥
-                            model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                            model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
                             model.Resize(win_w_and_h, win_w_and_h)
 
                             self.if_mask=random()<0.5
@@ -368,7 +399,7 @@ class Live2DModule:
             #live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
-            model.Update(breath_weight_1=0.25)
+            model.Update()
             # 渲染背景图片
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
             # 渲染live2d到屏幕
@@ -379,7 +410,8 @@ class Live2DModule:
 
             model.Draw()
             overlay.update()
-            if self.is_display_text:
+            # 从共享变量读取是否显示文本
+            if is_display_text_value.value:
                 overlay.draw()
             glUseProgram(0)
             # 4、pygame刷新
@@ -396,6 +428,8 @@ if __name__=='__main__':        #单独测试live2d
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
+    os.chdir(script_dir)
+
     import character
 
     get_all = character.GetCharacterAttributes()
