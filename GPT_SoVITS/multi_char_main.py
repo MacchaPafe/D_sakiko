@@ -10,7 +10,6 @@ sys.path.insert(0, script_dir)
 
 import time,copy
 import threading
-from queue import Queue
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QGridLayout, QApplication, QLabel, QGroupBox, QDialog, QMessageBox, QMenu, QFormLayout, QDialogButtonBox, \
@@ -396,17 +395,6 @@ class CommunicateThreadDP2QT(QThread):
                 break
             self.response_signal.emit(data)
 
-class WaitUntilAudioGenModuleChangeComplete(QThread):
-    change_complete_signal = pyqtSignal()
-    def __init__(self,audio_gen_module,char_index):
-        super().__init__()
-        self.audio_gen_module=audio_gen_module
-        self.char_index=char_index
-
-    def run(self):
-        self.audio_gen_module.change_character_multi_char_ver(self.char_index)
-        self.change_complete_signal.emit()
-
 class DisplayTalkText(QThread):
     talk_text_signal=pyqtSignal(dict)
     def __init__(self,tell_qt_this_turn_finish_queue):
@@ -423,23 +411,25 @@ class DisplayTalkText(QThread):
 
 class WaitUntilAudioGenModuleSynthesisComplete(QThread):
     synthesis_complete_signal = pyqtSignal(list)
-    def __init__(self,audio_gen_module,char_texts_list,text_queue):
+    def __init__(self, audio_gen_module, char_texts_list, character, sakiko_state, audio_language_choice):
         super().__init__()
-        self.audio_gen_module=audio_gen_module
-        self.char_texts_list=char_texts_list
-        self.text_queue=text_queue
+        self.audio_gen_module = audio_gen_module
+        self.char_texts_list = char_texts_list
+        self.character = character
+        self.sakiko_state = sakiko_state
+        self.audio_language_choice = audio_language_choice
 
     def run(self):
-        char_text_audio_path_list=[]
-        for i,text in enumerate(self.char_texts_list):
-            self.text_queue.put(text)
-            while True:
-
-                if self.audio_gen_module.is_completed:
-                    self.audio_gen_module.is_completed=False
-                    char_text_audio_path_list.append(self.audio_gen_module.audio_file_path)
-                    break
-                time.sleep(0.2)
+        char_text_audio_path_list = []
+        for text in self.char_texts_list:
+            char_text_audio_path_list.append(
+                self.audio_gen_module.generate_audio_for_character_sync(
+                    text,
+                    self.character,
+                    self.sakiko_state,
+                    self.audio_language_choice,
+                )
+            )
         self.synthesis_complete_signal.emit(char_text_audio_path_list)
 
 
@@ -1002,7 +992,6 @@ class ViewerGUI(QWidget):
                  qt2dp_queue,
                  message_queue,
                  dp2qt_queue,
-                 to_audio_gen_queue,
                  audio_gen_module,
                  to_live2d_module_queue,
                  to_live2d_change_character_queue,
@@ -1158,7 +1147,6 @@ class ViewerGUI(QWidget):
         self.qt2dp_queue = qt2dp_queue
         self.message_queue = message_queue
         self.dp2qt_queue = dp2qt_queue
-        self.to_audio_gen_queue = to_audio_gen_queue
         self.audio_gen_module = audio_gen_module    #这个没办法，只能把整个实例传进来
         self.audio_gen_module.speed=0.94
         self.audio_gen_module.pause_second=0.6
@@ -1882,31 +1870,33 @@ class ViewerGUI(QWidget):
             self.final_handle_response([])
             return
 
-        self.messages_box.setText(f"切换 {self.character_list[idx_0].character_name} 的GSV模型，..")
-        self.audio_gen_change_char_thread_0=WaitUntilAudioGenModuleChangeComplete(self.audio_gen_module,idx_0)
-        self.audio_gen_change_char_thread_0.change_complete_signal.connect(self.handle_response_continue)
-        self.audio_gen_change_char_thread_0.start()
+        self.handle_response_continue()
 
     def handle_response_continue(self):
         self.messages_box.setText(f"生成 {self.character_list[self.current_char_index[0]].character_name} 的语音..")
-        self.audio_gen_generate_audio_thread_0=WaitUntilAudioGenModuleSynthesisComplete(
-                                                                                        self.audio_gen_module,
-                                                                                        self.char_0_talk_texts,
-                                                                                        self.to_audio_gen_queue)
+        self.audio_gen_generate_audio_thread_0 = WaitUntilAudioGenModuleSynthesisComplete(
+            self.audio_gen_module,
+            self.char_0_talk_texts,
+            self.character_list[self.current_char_index[0]],
+            self.sakiko_state,
+            self.audio_gen_module.audio_language_choice,
+        )
         self.audio_gen_generate_audio_thread_0.synthesis_complete_signal.connect(self.handle_response_continue_1)
         self.audio_gen_generate_audio_thread_0.start()
+
     def handle_response_continue_1(self,char_0_audio_path_list):
         self.char_0_audio_path_list=char_0_audio_path_list
-        self.messages_box.setText(f"切换 {self.character_list[self.current_char_index[1]].character_name} 的GSV模型，..")
-        self.audio_gen_change_char_thread_0 = WaitUntilAudioGenModuleChangeComplete(self.audio_gen_module, self.current_char_index[1])
-        self.audio_gen_change_char_thread_0.change_complete_signal.connect(self.handle_response_continue_2)
-        self.audio_gen_change_char_thread_0.start()
+        self.handle_response_continue_2()
+
     def handle_response_continue_2(self):
         self.messages_box.setText(f"生成 {self.character_list[self.current_char_index[1]].character_name} 的语音..")
         self.audio_gen_generate_audio_thread_1 = WaitUntilAudioGenModuleSynthesisComplete(
             self.audio_gen_module,
             self.char_1_talk_texts,
-            self.to_audio_gen_queue)
+            self.character_list[self.current_char_index[1]],
+            self.sakiko_state,
+            self.audio_gen_module.audio_language_choice,
+        )
         self.audio_gen_generate_audio_thread_1.synthesis_complete_signal.connect(self.final_handle_response)
         self.audio_gen_generate_audio_thread_1.start()
     def final_handle_response(self,char_1_audio_path_list=None):
@@ -2034,16 +2024,17 @@ class ViewerGUI(QWidget):
             if this_char_name==char.character_name:
                 char_index=i
                 break
-        if this_char_name!=self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_name:
-            self.messages_box.setText(f"正在切换 {this_char_name} 的GSV模型，..")
-            self.change_audio_module_character_thread=WaitUntilAudioGenModuleChangeComplete(self.audio_gen_module,char_index)
-            self.change_audio_module_character_thread.change_complete_signal.connect(self.regenerate_audio_continue)
-            self.change_audio_module_character_thread.start()
-        else:
-            self.regenerate_audio_continue()
+        self.regenerate_character = self.character_list[char_index]
+        self.regenerate_audio_continue()
 
     def regenerate_audio_continue(self):
-        self.generate_thread = WaitUntilAudioGenModuleSynthesisComplete(self.audio_gen_module, [self.regenerate_text],self.to_audio_gen_queue)
+        self.generate_thread = WaitUntilAudioGenModuleSynthesisComplete(
+            self.audio_gen_module,
+            [self.regenerate_text],
+            self.regenerate_character,
+            self.sakiko_state,
+            self.audio_gen_module.audio_language_choice,
+        )
         self.generate_thread.synthesis_complete_signal.connect(self.replace_audio_path)
         self.generate_thread.start()
 
@@ -2069,7 +2060,7 @@ class ViewerGUI(QWidget):
     def close_program(self):
         self.save_history_data()
         self.to_live2d_change_character_queue.put('EXIT')
-        self.to_audio_gen_queue.put('bye')
+        self.audio_gen_module.shutdown_worker()
         self.dp2qt_queue.put('EXIT')
         self.message_queue.put('EXIT')
         self.qt2dp_queue.put('EXIT')
@@ -2199,7 +2190,6 @@ if __name__ == "__main__":
     qt2dp_queue = ctx.Queue()
     message_queue = ctx.Queue()
     dp2qt_queue = ctx.Queue()
-    to_audio_gen_queue = ctx.Queue()
     to_live2d_module_queue = ctx.Queue()
     tell_qt_this_turn_finish_queue = ctx.Queue()
 
@@ -2217,15 +2207,18 @@ if __name__ == "__main__":
         args=(dp2qt_queue, qt2dp_queue, message_queue),
         daemon=True,
     )
-    audio_generate_thread = threading.Thread(
-        target=audio_gen.audio_generator,
-        args=(dp_module, to_audio_gen_queue),
-        daemon=True,
-    )
-
     app = QApplication(sys.argv)
 
-    window = ViewerGUI(get_char_attr.character_class_list, qt2dp_queue, message_queue, dp2qt_queue,to_audio_gen_queue, audio_gen,to_live2d_module_queue,change_char_queue,tell_qt_this_turn_finish_queue)
+    window = ViewerGUI(
+        get_char_attr.character_class_list,
+        qt2dp_queue,
+        message_queue,
+        dp2qt_queue,
+        audio_gen,
+        to_live2d_module_queue,
+        change_char_queue,
+        tell_qt_this_turn_finish_queue,
+    )
     font_path = os.path.join(project_root, "font", "msyh.ttc")
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # 在成功加载后才使用该字体
@@ -2243,7 +2236,6 @@ if __name__ == "__main__":
 
     live2d_process.start()
     dp_thread.start()
-    audio_generate_thread.start()
     window.show()
     app.exec_()
 
@@ -2257,16 +2249,15 @@ if __name__ == "__main__":
     except Exception:
         pass
     try:
-        to_audio_gen_queue.put("bye", block=False)
-    except Exception:
-        pass
-    try:
         qt2dp_queue.put("EXIT", block=False)
     except Exception:
         pass
 
     dp_thread.join()
-    audio_generate_thread.join()
+    try:
+        audio_gen.shutdown_worker()
+    except Exception:
+        pass
     # 给子进程一点时间自我退出；否则强制 terminate 避免僵尸进程
     try:
         live2d_process.join(timeout=3)

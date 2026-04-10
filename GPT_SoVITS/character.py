@@ -1,4 +1,9 @@
-import os,glob,json,copy
+from __future__ import annotations
+
+import copy
+import glob
+import json
+import os
 from rich import print
 
 from qconfig import d_sakiko_config
@@ -14,21 +19,54 @@ class PrintInfo:
     def print_info(text):
         print(f"[cyan]{text}[/cyan]")
 
+
 class CharacterAttributes:
     def __init__(self):
-        self.character_folder_name =''
-        self.character_name=''
-        self.icon_path=None
-        self.live2d_json=''
-        self.GPT_model_path=''
-        self.sovits_model_path=''
-        self.character_description=''
-        self.gptsovits_ref_audio=''
-        self.gptsovits_ref_audio_text = ''
-        self.gptsovits_ref_audio_lan=''
-        self.qt_css=None
+        # 角色文件夹单层目录的名称，比如“sakiko“
+        self.character_folder_name: str = ''
+        # 角色文件夹内，name.txt 记录的角色名称，比如“祥子“
+        self.character_name: str = ''
+        # 角色图标（文件夹内一个 .png 文件）的相对路径。如果该图标存在，切换到该角色时，应用程序会切换为此图标。
+        self.icon_path: str | None = None
+        # 角色的 live2d 模型的 model.json 所在的相对路径。这里只会指向角色的默认模型，不会指向自定义模型
+        self.live2d_json: str = ''
+        # 角色的 GPT (t2s）模型相对路径
+        self.GPT_model_path: str | None = ''
+        # 角色的 sovits 模型相对路径
+        self.sovits_model_path: str | None = ''
+        # 角色的描述，即角色文件夹内 character_description.txt 记录的内容
+        self.character_description: str = ''
+        # 角色语音模型参考音频的相对路径。祥子的该属性为 None。
+        self.gptsovits_ref_audio: str | None = ''
+        # 角色语音模型参考音频文本的相对路径。祥子的该属性为 None。
+        self.gptsovits_ref_audio_text: str | None = ''
+        # 角色语音模型参考音频的语言（例如‘日文’）
+        self.gptsovits_ref_audio_lan: str | None = ''
+        # 角色的 qt css 样式表
+        self.qt_css: str | None = None
 
-    def print_attributes(self):
+    @staticmethod
+    def _path_exists(path: str | None) -> bool:
+        """判断给定路径是否存在。"""
+        return path is not None and os.path.exists(path)
+
+    def has_valid_voice_model(self) -> bool:
+        """判断当前角色是否具备可用的语音生成配置。"""
+        # 所有角色都必须具有 gpt 模型/sovits 模型
+        has_models = self._path_exists(self.GPT_model_path) and self._path_exists(self.sovits_model_path)
+        if not has_models:
+            return False
+        # 祥子可以不具有参考音频和参考音频文本，可以跳过这部分检查；其他人必须有
+        if self.character_name == '祥子':
+            return True
+        return (
+            self._path_exists(self.gptsovits_ref_audio)
+            and self._path_exists(self.gptsovits_ref_audio_text)
+            and bool(self.gptsovits_ref_audio_lan)
+        )
+
+    def print_attributes(self) -> None:
+        """打印当前角色对象的全部属性。"""
         for key, value in self.__dict__.items():
             print(f"{key} = {value}")
 
@@ -61,7 +99,7 @@ def is_old_l2d_json(old_l2d_json_path) -> bool:
         return True
     return False
 
-def convert_old_l2d_json(old_l2d_json_path):
+def convert_old_l2d_json(old_l2d_json_path: str) -> None:
     """
         读取老版 Live2D model.json，转换为新版格式并返回字典。
     """
@@ -314,4 +352,3 @@ if __name__=="__main__":
     print(a.character_num)
     a.character_class_list[0].print_attributes()
     a.character_class_list[1].print_attributes()
-

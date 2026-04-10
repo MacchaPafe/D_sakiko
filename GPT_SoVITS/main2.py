@@ -132,7 +132,7 @@ def main_thread():
             if this_turn_response=='bye':
                 emotion_queue.put('bye')    #退出live2D进程
                 dp2qt_queue.put("（再见）")
-                to_audio_generator_text_queue.put('bye')
+                audio_gen.shutdown_worker()
 
                 # tr1 是 live2d 进程变量，我们等待 live2d 进程结束，再向 Qt 窗口发送退出信息。
                 global tr1
@@ -165,12 +165,7 @@ def main_thread():
 
                 while audio_generate_count <= 2:
                     try:
-                        to_audio_generator_text_queue.put(cleaned_text)
-                        audio_gen.is_completed = False
-                        while True:
-                            if audio_gen.is_completed:
-                                break
-                            time.sleep(0.4)
+                        audio_gen.audio_file_path = audio_gen.generate_current_character_audio_sync(cleaned_text, dp_chat)
                         break
                     except Exception as e:
                         QT_message_queue.put("语音合成出错，重试中")
@@ -292,7 +287,6 @@ if __name__=='__main__':
     QT_message_queue=Queue()
     char_is_converted_queue=multiprocessing.Queue()
     change_char_queue=multiprocessing.Queue()
-    to_audio_generator_text_queue=Queue()
     # Live2D 跨进程通信
     live2d_text_queue=multiprocessing.Queue()  # 用于传递要显示的文本
     is_display_text_value=multiprocessing.Value('b', True)  # 是否显示文本
@@ -351,28 +345,13 @@ if __name__=='__main__':
                 except Exception:
                     pass  # 删不掉就跳过
 
+    qt_app = QApplication(sys.argv)
+    from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
-    qt_app=QApplication(sys.argv)
-    qt_win=qtUI.ChatGUI(dp2qt_queue=dp2qt_queue,
-                        qt2dp_queue=qt2dp_queue,
-                        QT_message_queue=QT_message_queue
-                        ,characters=characters,
-                        dp_chat=dp_chat,
-                        audio_gen=audio_gen,live2d_text_queue=live2d_text_queue,is_display_text_value=is_display_text_value,motion_complete_value=motion_complete_value,emotion_queue=emotion_queue,audio_file_path_queue=audio_file_path_queue,emotion_model=emotion_model                        )
-
-    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))    #设置字体
-    # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
-    if font_id != -1:
-        font_family = QFontDatabase.applicationFontFamilies(font_id)
-        font = QFont(font_family[0], 12)
-        qt_app.setFont(font)
-
-    from PyQt5.QtWidgets import QDesktopWidget          #设置qt窗口位置，与live2d对齐
     desktop_w = QDesktopWidget().screenGeometry().width()
     desktop_h = QDesktopWidget().screenGeometry().height()
-    screen_w_mid=int(0.5*desktop_w)
-    screen_h_mid=int(0.5*desktop_h)
-    qt_win.move(screen_w_mid,int(screen_h_mid-0.35*desktop_h))   #因为窗口高度设置的是0.7倍桌面宽
+    screen_w_mid = int(0.5 * desktop_w)
+    screen_h_mid = int(0.5 * desktop_h)
 
     # 不传递 characters 给子进程，在子进程中重新创建，避免 Windows 下 pickle 序列化截断问题
     # live2d 模块（该模块为不同进程）
@@ -389,14 +368,30 @@ if __name__=='__main__':
                                                              char_is_converted_queue,
                                                              change_char_queue,
                                                              audio_gen))
-    # GPT_SoVITS 语音生成模块（不同线程）
-    tr3=threading.Thread(target=audio_gen.audio_generator,args=(dp_chat,to_audio_generator_text_queue))
     # 主要的循环线程
-    tr4=threading.Thread(target=main_thread)
+    tr3=threading.Thread(target=main_thread)
     tr1.start()
     tr2.start()
     tr3.start()
-    tr4.start()
+
+    qt_win = qtUI.ChatGUI(dp2qt_queue=dp2qt_queue,
+                          qt2dp_queue=qt2dp_queue,
+                          QT_message_queue=QT_message_queue
+                          , characters=characters,
+                          dp_chat=dp_chat,
+                          audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
+                          is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
+                          emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
+                          emotion_model=emotion_model)
+
+    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
+    # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
+    if font_id != -1:
+        font_family = QFontDatabase.applicationFontFamilies(font_id)
+        font = QFont(font_family[0], 12)
+        qt_app.setFont(font)
+
+    qt_win.move(screen_w_mid, int(screen_h_mid - 0.35 * desktop_h))  # 因为窗口高度设置的是0.7倍桌面宽
 
     qt_win.show()
     qt_app.exec_()
@@ -423,8 +418,8 @@ if __name__=='__main__':
     except Exception:
         pass
     try:
-        # 语音生成线程
-        to_audio_generator_text_queue.put('bye')
+        # 语音生成 worker
+        audio_gen.shutdown_worker()
     except Exception:
         pass
 
@@ -432,7 +427,6 @@ if __name__=='__main__':
     tr1.join()
     tr2.join()
     tr3.join()
-    tr4.join()
 
     if_delete = d_sakiko_config.delete_audio_cache_on_exit.value
 
@@ -443,22 +437,20 @@ if __name__=='__main__':
             file_path = os.path.join(folder_path, filename)
             if os.path.isfile(file_path):
                 os.remove(file_path)
-'''
-修改库的源码：ffmpeg/_run.py 196
-        jieba_fast/__init__.py 117/136/150/168/170
-        AR/models/t2s_model.py 560/736/875
-        text/chinese2.py 27
-        runtime\Lib\site-packages\pygame\__init__.py 336
-        AR\models\\t2s_model.py 845
-        runtime\Lib\site-packages\live2d\\utils\lipsync.py   55 防止出现nan，使程序崩溃
-        runtime\Lib\site-packages/live2d/v2/core/graphics/draw_param_opengl.py  45  330 解决腮红变黑问题
-        runtime/Lib/site-packages/live2d/v2/lapp_model.py  173
-        runtime\Lib\site-packages\\faster_whisper\\transcribe.py
-        inference_webui.py 大改
-        inference_cli.py 大改
-'''
-"""
-更改角色皮肤
-可更改参考音频
-可重新生成音频
-"""
+# 修改库的源码：
+# ffmpeg/_run.py 196
+# jieba_fast/__init__.py 117/136/150/168/170
+# AR/models/t2s_model.py 560/736/875
+# text/chinese2.py 27
+# runtime\Lib\site-packages\pygame\__init__.py 336
+# AR\models\\t2s_model.py 845
+# runtime\Lib\site-packages\live2d\\utils\lipsync.py 55 防止出现 nan，使程序崩溃
+# runtime\Lib\site-packages/live2d/v2/core/graphics/draw_param_opengl.py 45 330 解决腮红变黑问题
+# runtime/Lib/site-packages/live2d/v2/lapp_model.py 173
+# runtime\Lib\site-packages\\faster_whisper\\transcribe.py
+# inference_webui.py 大改
+# inference_cli.py 大改
+#
+# 更改角色皮肤
+# 可更改参考音频
+# 可重新生成音频
