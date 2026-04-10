@@ -21,7 +21,13 @@ if TYPE_CHECKING:
 
 gsv_sam_rate = d_sakiko_config.sovits_inference_sampling_steps.value
 SILENCE_WAV_PATH = '../reference_audio/silent_audio/silence.wav'
-DEFAULT_DEVICE_POLICY = 'cpu'
+
+if d_sakiko_config.cuda_enabled.value:
+    DEFAULT_DEVICE_POLICY = "cuda"
+elif d_sakiko_config.mps_enabled.value:
+    DEFAULT_DEVICE_POLICY = "mps"
+else:
+    DEFAULT_DEVICE_POLICY = 'cpu'
 
 PayloadDict = dict[str, object]
 CommandDict = dict[str, object]
@@ -115,7 +121,7 @@ class CharacterVoiceRuntime:
 class TTSPool:
     """统一管理 worker 侧已加载的 TTS 实例。"""
 
-    def __init__(self, max_loaded_models: int = 1) -> None:
+    def __init__(self, max_loaded_models: int = d_sakiko_config.max_loaded_voice_models.value) -> None:
         self.max_loaded_models: int = max_loaded_models
         self.loaded_tts_by_character_name: OrderedDict[str, TTS] = OrderedDict()
 

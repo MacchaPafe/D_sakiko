@@ -8,7 +8,7 @@ from PyQt5.QtGui import QColor
 
 # 去广告
 with contextlib.redirect_stdout(None):
-    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig, ConfigValidator
+    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig, ConfigValidator, RangeConfigItem, RangeValidator
 
 
 class ThemeColorValidator(ConfigValidator):
@@ -75,6 +75,18 @@ class DSakikoConfig(QConfig):
     sovits_inference_sampling_steps = OptionsConfigItem("audio_setting", "sovits_inference_sampling_steps", 16,
                                                                validator=OptionsValidator([4, 8, 16, 32]),
                                                                restart=True)
+    # 最多加载的语音模型数量
+    max_loaded_voice_models = RangeConfigItem("audio_setting", "max_loaded_voice_models", 1,
+                                                validator=RangeValidator(1, 5),
+                                                restart=True)
+    # 是否启用 cuda
+    # None：根据系统情况决定；True：强制启用；False：强制禁用
+    # 在 ui 中会有特定的设计，让 torch.cuda.is_available = False 的时候无法将此选项选择到 True
+    cuda_enabled = OptionsConfigItem("audio_setting", "cuda_enabled", None, 
+                                     validator=OptionsValidator([True, False, None]), restart=True)
+    # 是否启用 mps（M 系列 MacOS 限定）
+    mps_enabled = OptionsConfigItem("audio_setting", "mps_enabled", None, 
+                                     validator=OptionsValidator([True, False, None]), restart=True)
     # 角色顺序与信息
     # 内容是默认顺序与信息
     character_order = ConfigItem("character_setting", "character_order", {
@@ -133,6 +145,21 @@ class DSakikoConfig(QConfig):
         },
     ],
      validator=ThemeColorValidator())
+    
+    def infer_gpu_setting(self):
+        """
+        填充 cuda_enabled 和 mps_enabled 选项的值。如果这两个值为 None，那么根据机器上是否存在 cuda/mps，将其填充为 True/False。
+        如果这两个值是 True/False，那么什么都不会发生。
+        """
+        if self.cuda_enabled.value is None or self.mps_enabled.value is None: 
+            import torch
+
+            if self.cuda_enabled.value is None:
+                self.cuda_enabled.value = torch.cuda.is_available()
+            # Apple M4 芯片上，MPS 的效果和 CPU 推理几乎相同，但占用时间更长
+            # 暂时默认不启用 MPS，即使在 MPS 可用的机器上也是如此。如果用户想启用，可以手动打开开关。
+            if self.mps_enabled.value is None:
+                self.mps_enabled.value = False
 
 
 # 这个字典存储了所有可能的“LLM 供应商显示名称”->“实际请求时需要的前缀名称”的映射关系
@@ -602,7 +629,10 @@ d_sakiko_config = DSakikoConfig()
 # 手动设置一个默认值（可以被其他的覆盖）
 d_sakiko_config.themeColor.value = "#7799CC"
 qconfig.load("../d_sakiko_config.json", d_sakiko_config)
+d_sakiko_config.infer_gpu_setting()
+
 # 尝试从旧配置文件迁移配置
 migrate_from_old_config(d_sakiko_config)
 # 尝试从另一套旧版统一配置文件迁移配置
 migrate_from_legacy_d_sakiko_config(d_sakiko_config, enable_warning=True)
+d_sakiko_config.save()
