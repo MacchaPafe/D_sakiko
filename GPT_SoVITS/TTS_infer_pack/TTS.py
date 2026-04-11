@@ -401,6 +401,21 @@ class TTS_Config:
         self.version = version
         self.languages = self.v1_languages if self.version == "v1" else self.v2_languages
 
+    def build_share_key_fragment(self) -> tuple[object, ...]:
+        """构造用于共享判定的配置摘要。"""
+        return (
+            self.version,
+            str(self.device),
+            self.is_half,
+            self.bert_base_path,
+            self.cnhuhbert_base_path,
+            self.use_vocoder,
+            self.sampling_rate,
+            self.hop_length,
+            self.filter_length,
+            self.n_speakers,
+        )
+
     def __str__(self):
         self.configs = self.update_configs()
         string = "TTS Config".center(100, "-") + "\n"
@@ -420,7 +435,7 @@ class TTS_Config:
 
 
 class TTS:
-    def __init__(self, configs: Union[dict, str, TTS_Config]):
+    def __init__(self, configs: Union[dict, str, TTS_Config], init_mode: str = "full"):
         if isinstance(configs, TTS_Config):
             self.configs = configs
         else:
@@ -444,13 +459,18 @@ class TTS:
             "overlapped_len": None,
         }
 
-        self._init_models()
+        self.text_preprocessor: TextPreprocessor | None = None
+        self.prompt_cache: dict[str, object] = self.build_empty_prompt_cache()
 
-        self.text_preprocessor: TextPreprocessor = TextPreprocessor(
-            self.bert_model, self.bert_tokenizer, self.configs.device
-        )
+        self._init_models(init_mode=init_mode)
 
-        self.prompt_cache: dict = {
+        self.stop_flag: bool = False
+        self.precision: torch.dtype = torch.float16 if self.configs.is_half else torch.float32
+
+    @staticmethod
+    def build_empty_prompt_cache() -> dict[str, object]:
+        """构造一份空的 prompt 缓存。"""
+        return {
             "ref_audio_path": None,
             "prompt_semantic": None,
             "refer_spec": [],
@@ -460,19 +480,69 @@ class TTS:
             "bert_features": None,
             "norm_text": None,
             "aux_ref_audio_paths": [],
+            "raw_audio": None,
+            "raw_sr": None,
         }
 
-        self.stop_flag: bool = False
-        self.precision: torch.dtype = torch.float16 if self.configs.is_half else torch.float32
+    def export_prompt_cache(self) -> dict[str, object]:
+        """导出当前角色的 prompt 缓存快照。"""
+        return self.prompt_cache
+
+    def import_prompt_cache(self, snapshot: dict[str, object] | None) -> None:
+        """导入某个角色的 prompt 缓存快照。"""
+        prompt_cache = self.build_empty_prompt_cache()
+        if snapshot is not None:
+            prompt_cache.update(snapshot)
+        self.prompt_cache = prompt_cache
+
+    def reset_prompt_cache(self) -> None:
+        """重置当前实例上的 prompt 缓存。"""
+        self.prompt_cache = self.build_empty_prompt_cache()
+
+    def _init_frontend_models(self) -> None:
+        """初始化与角色无关的前端模型。"""
+        self.init_bert_weights(self.configs.bert_base_path)
+        self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
+        self.text_preprocessor = TextPreprocessor(
+            self.bert_model, self.bert_tokenizer, self.configs.device
+        )
+
+    def _init_acoustic_models(self) -> None:
+        """初始化当前角色的声学模型。"""
+        self.init_t2s_weights(self.configs.t2s_weights_path)
+        self.init_vits_weights(self.configs.vits_weights_path)
+
+    def _init_shared_support_models(self) -> None:
+        """初始化与版本相关但可跨角色复用的支持模型。"""
+        if self.configs.version == "v4":
+            self.init_vocoder(self.configs.version)
+        if self.configs.version in {"v2Pro", "v2ProPlus"}:
+            self.init_sv_model()
 
     def _init_models(
         self,
-    ):
-        self.init_t2s_weights(self.configs.t2s_weights_path)
-        self.init_vits_weights(self.configs.vits_weights_path)
-        self.init_bert_weights(self.configs.bert_base_path)
-        self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
+        init_mode: str = "full",
+    ) -> None:
+        """根据初始化模式装配模型。"""
+        self._init_frontend_models()
+        self._init_shared_support_models()
+        if init_mode == "full":
+            self._init_acoustic_models()
+        elif init_mode != "shared_shell":
+            raise ValueError(f"Unsupported init_mode: {init_mode}")
         # self.enable_half_precision(self.configs.is_half)
+
+    def _dispose_model_attr(self, attr_name: str) -> None:
+        """释放指定模型属性并清理引用。"""
+        model = getattr(self, attr_name, None)
+        if model is not None:
+            try:
+                model.cpu()
+            except Exception:
+                pass
+            del model
+        setattr(self, attr_name, None)
+        self.empty_cache()
 
     def init_cnhuhbert_weights(self, base_path: str):
         print(f"Loading CNHuBERT weights from {base_path}")
@@ -491,7 +561,12 @@ class TTS:
         if self.configs.is_half and str(self.configs.device) != "cpu":
             self.bert_model = self.bert_model.half()
 
-    def init_vits_weights(self, weights_path: str, save: bool = True):
+    def init_vits_weights(
+        self,
+        weights_path: str,
+        save: bool = True,
+        checkpoint: dict[str, object] | None = None,
+    ):
         """初始化 SoVITS 权重，可选是否同步保存配置。"""
         self.configs.vits_weights_path = weights_path
         version, model_version, if_lora_v3 = get_sovits_version_from_path_fast(weights_path)
@@ -503,8 +578,8 @@ class TTS:
             info = path_sovits + i18n("SoVITS %s 底模缺失，无法加载相应 LoRA 权重" % model_version)
             raise FileExistsError(info)
 
-        # dict_s2 = torch.load(weights_path, map_location=self.configs.device,weights_only=False)
-        dict_s2 = load_sovits_new(weights_path)
+        self._dispose_model_attr("vits_model")
+        dict_s2 = deepcopy(checkpoint) if checkpoint is not None else load_sovits_new(weights_path)
         hps = dict_s2["config"]
         hps["model"]["semantic_frame_rate"] = "25hz"
         if "enc_p.text_embedding.weight" not in dict_s2["weight"]:
@@ -594,14 +669,22 @@ class TTS:
 
 
 
-    def init_t2s_weights(self, weights_path: str, save: bool = True):
+    def init_t2s_weights(
+        self,
+        weights_path: str,
+        save: bool = True,
+        checkpoint: dict[str, object] | None = None,
+    ):
         """初始化 Text2Semantic 权重，可选是否同步保存配置。"""
         print(f"Loading Text2Semantic weights from {weights_path}")
         self.configs.t2s_weights_path = weights_path
         if save:
             self.configs.save_configs()
         self.configs.hz = 50
-        dict_s1 = torch.load(weights_path, map_location=self.configs.device, weights_only=False)
+        self._dispose_model_attr("t2s_model")
+        dict_s1 = checkpoint if checkpoint is not None else torch.load(
+            weights_path, map_location=self.configs.device, weights_only=False
+        )
         config = dict_s1["config"]
         self.configs.max_sec = config["data"]["max_sec"]
         t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
@@ -746,36 +829,30 @@ class TTS:
             self.text_preprocessor.bert_model = self.bert_model
             self.text_preprocessor.tokenizer = self.bert_tokenizer
 
+    def unload_acoustic_models(self) -> None:
+        """卸载与当前角色直接相关的声学模型。"""
+        self._dispose_model_attr("t2s_model")
+        self._dispose_model_attr("vits_model")
+
+    def unload_frontend_models(self) -> None:
+        """卸载文本前端相关模型。"""
+        self._dispose_model_attr("bert_model")
+        self._dispose_model_attr("cnhuhbert_model")
+        self.bert_tokenizer = None
+        self.text_preprocessor = None
+
+    def unload_support_models(self) -> None:
+        """卸载可选支持模型。"""
+        self._dispose_model_attr("vocoder")
+        self._dispose_model_attr("sr_model")
+        self._dispose_model_attr("sv_model")
+
     def unload(self) -> None:
         """卸载当前 TTS 实例中的模型与缓存。"""
-        for attr_name in [
-            "t2s_model",
-            "vits_model",
-            "bert_model",
-            "cnhuhbert_model",
-            "vocoder",
-            "sr_model",
-            "sv_model",
-        ]:
-            model = getattr(self, attr_name, None)
-            if model is not None:
-                try:
-                    model.cpu()
-                except Exception:
-                    pass
-                del model
-            setattr(self, attr_name, None)
-        self.prompt_cache = {
-            "ref_audio_path": None,
-            "prompt_semantic": None,
-            "refer_spec": [],
-            "prompt_text": None,
-            "prompt_lang": None,
-            "phones": None,
-            "bert_features": None,
-            "norm_text": None,
-            "aux_ref_audio_paths": [],
-        }
+        self.unload_acoustic_models()
+        self.unload_frontend_models()
+        self.unload_support_models()
+        self.reset_prompt_cache()
         self.empty_cache()
 
     def set_ref_audio(self, ref_audio_path: str):
