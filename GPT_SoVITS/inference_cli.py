@@ -19,7 +19,7 @@ from qconfig import d_sakiko_config
 
 if TYPE_CHECKING:
     import numpy as np
-    from TTS_infer_pack.TTS import TTS, TTS_Config
+    from TTS_infer_pack.TTS import SharedFrontendModels, TTS, TTS_Config
 
 gsv_sam_rate = d_sakiko_config.sovits_inference_sampling_steps.value
 SILENCE_WAV_PATH = '../reference_audio/silent_audio/silence.wav'
@@ -90,10 +90,21 @@ class SharedTTSBundle:
 
     signature: ModelArchitectureSignature
     tts: "TTS"
+    frontend_key: "FrontendModelKey | None" = None
     current_t2s_weights_path: str | None = None
     current_vits_weights_path: str | None = None
     current_character_name: str | None = None
     last_used_at: float | None = None
+
+
+@dataclass(frozen=True)
+class FrontendModelKey:
+    """描述一组前端模型能否跨 TTS bundle 共享的键。"""
+
+    bert_base_path: str
+    cnhuhbert_base_path: str
+    device: str
+    is_half: bool
 
 
 class ModelWeightsCache:
@@ -183,6 +194,49 @@ class ModelWeightsCache:
         return "unknown"
 
 
+class SharedFrontendModelCache:
+    """统一管理可跨多个 TTS bundle 复用的前端模型。"""
+
+    def __init__(self) -> None:
+        self.entries_by_key: OrderedDict[FrontendModelKey, "SharedFrontendModels"] = OrderedDict()
+
+    def acquire(self, key: FrontendModelKey) -> "SharedFrontendModels":
+        """获取一组共享前端模型并增加引用计数。"""
+        frontend_models = self.entries_by_key.get(key)
+        if frontend_models is None:
+            from TTS_infer_pack.TTS import TTS
+
+            frontend_models = TTS.create_frontend_models(
+                key.bert_base_path,
+                key.cnhuhbert_base_path,
+                torch.device(key.device),
+                key.is_half,
+            )
+            self.entries_by_key[key] = frontend_models
+        else:
+            self.entries_by_key.move_to_end(key)
+        frontend_models.ref_count += 1
+        frontend_models.last_used_at = time.time()
+        return frontend_models
+
+    def release(self, key: FrontendModelKey) -> None:
+        """释放一组共享前端模型的一次引用。"""
+        frontend_models = self.entries_by_key.get(key)
+        if frontend_models is None:
+            return
+        frontend_models.ref_count = max(0, frontend_models.ref_count - 1)
+        frontend_models.last_used_at = time.time()
+        if frontend_models.ref_count <= 0:
+            self.entries_by_key.pop(key, None)
+            frontend_models.unload()
+
+    def unload_all(self) -> None:
+        """释放全部共享前端模型。"""
+        for _, frontend_models in list(self.entries_by_key.items()):
+            frontend_models.unload()
+        self.entries_by_key.clear()
+
+
 class SharedTTSManager:
     """统一管理角色会话、共享 bundle 与权重缓存。"""
 
@@ -193,6 +247,7 @@ class SharedTTSManager:
     ) -> None:
         self.max_active_bundles: int = max_active_bundles
         self.weight_cache: ModelWeightsCache = ModelWeightsCache(max_entries=max_cached_weight_entries)
+        self.frontend_cache: SharedFrontendModelCache = SharedFrontendModelCache()
         self.bundles_by_signature: OrderedDict[ModelArchitectureSignature, SharedTTSBundle] = OrderedDict()
         self.runtime_index: dict[str, CharacterVoiceRuntime] = {}
 
@@ -243,6 +298,7 @@ class SharedTTSManager:
             self._dispose_bundle(bundle)
         self.bundles_by_signature.clear()
         self.weight_cache.unload_all()
+        self.frontend_cache.unload_all()
         for runtime in self.runtime_index.values():
             runtime.last_bound_signature = None
             runtime.last_bound_bundle_key = None
@@ -335,6 +391,8 @@ class SharedTTSManager:
         """创建一套新的共享推理壳。"""
         from TTS_infer_pack.TTS import TTS, TTS_Config
 
+        frontend_key = self._build_frontend_key(signature)
+        frontend_models = self.frontend_cache.acquire(frontend_key)
         config = TTS_Config(
             {
                 "custom": {
@@ -353,8 +411,23 @@ class SharedTTSManager:
         config.update_version(signature.model_version)
         config.bert_base_path = signature.bert_base_path
         config.cnhuhbert_base_path = signature.cnhuhbert_base_path
-        tts = TTS(config, init_mode="shared_shell")
-        return SharedTTSBundle(signature=signature, tts=tts, last_used_at=time.time())
+        try:
+            with open(os.devnull, "w") as null:
+                with contextlib.redirect_stdout(null):
+                    tts = TTS(
+                        config,
+                        init_mode="shared_shell",
+                        frontend_models=frontend_models,
+                    )
+        except Exception:
+            self.frontend_cache.release(frontend_key)
+            raise
+        return SharedTTSBundle(
+            signature=signature,
+            tts=tts,
+            frontend_key=frontend_key,
+            last_used_at=time.time(),
+        )
 
     def _ensure_role_weights_bound(
         self,
@@ -401,12 +474,25 @@ class SharedTTSManager:
     def _dispose_bundle(self, bundle: SharedTTSBundle) -> None:
         """释放一个共享 bundle。"""
         bundle.tts.unload()
+        if bundle.frontend_key is not None:
+            self.frontend_cache.release(bundle.frontend_key)
+            bundle.frontend_key = None
 
     def _evict_bundle_if_needed(self) -> None:
         """当 bundle 超过上限时按 LRU 淘汰。"""
         while len(self.bundles_by_signature) > self.max_active_bundles:
             _, oldest_bundle = self.bundles_by_signature.popitem(last=False)
             self._dispose_bundle(oldest_bundle)
+
+    @staticmethod
+    def _build_frontend_key(signature: ModelArchitectureSignature) -> FrontendModelKey:
+        """从结构签名中提取前端模型共享键。"""
+        return FrontendModelKey(
+            bert_base_path=signature.bert_base_path,
+            cnhuhbert_base_path=signature.cnhuhbert_base_path,
+            device=signature.device,
+            is_half=signature.is_half,
+        )
 
     @staticmethod
     def _build_shape_key_from_checkpoint(checkpoint: dict[str, object]) -> tuple[object, ...]:
@@ -764,7 +850,6 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2) 
 
         try:
             runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
-            send_progress(from_gptsovits_queue2, f"正在为 {character_name} 合成语音...", request_id)
             last_sampling_rate, last_audio_data = runtime.synthesize(payload, tts_manager, dict_language_v2, i18n_translator)
             output_dir = cast(str, payload.get("output_dir", "../reference_audio/generated_audios_temp"))
             output_wav_path = allocate_output_wav_path(output_dir)

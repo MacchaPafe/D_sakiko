@@ -8,6 +8,7 @@ import sys
 import time
 import traceback
 from copy import deepcopy
+from dataclasses import dataclass
 
 import torchaudio
 from tqdm import tqdm
@@ -145,6 +146,54 @@ class DictToAttrRecursive(dict):
 
 class NO_PROMPT_ERROR(Exception):
     pass
+
+
+@dataclass
+class SharedFrontendModels:
+    """保存可被多个 TTS 实例复用的前端模型。"""
+
+    bert_tokenizer: AutoTokenizer | None
+    bert_model: AutoModelForMaskedLM | None
+    cnhuhbert_model: CNHubert | None
+    text_preprocessor: TextPreprocessor | None
+    device: torch.device
+    is_half: bool
+    ref_count: int = 0
+    last_used_at: float = 0.0
+
+    def require_loaded(self) -> tuple[AutoTokenizer, AutoModelForMaskedLM, CNHubert, TextPreprocessor]:
+        """返回已加载的前端模型，若已释放则抛出异常。"""
+        if (
+            self.bert_tokenizer is None
+            or self.bert_model is None
+            or self.cnhuhbert_model is None
+            or self.text_preprocessor is None
+        ):
+            raise RuntimeError("共享前端模型已经被释放，无法继续绑定到 TTS 实例。")
+        return (
+            self.bert_tokenizer,
+            self.bert_model,
+            self.cnhuhbert_model,
+            self.text_preprocessor,
+        )
+
+    def unload(self) -> None:
+        """释放共享前端模型持有的底层资源。"""
+        for model in [self.bert_model, self.cnhuhbert_model]:
+            if model is not None:
+                try:
+                    model.cpu()
+                except Exception:
+                    pass
+        self.bert_tokenizer = None
+        self.bert_model = None
+        self.cnhuhbert_model = None
+        self.text_preprocessor = None
+        gc.collect()
+        if "cuda" in str(self.device):
+            torch.cuda.empty_cache()
+        elif str(self.device) == "mps":
+            torch.mps.empty_cache()
 
 
 # configs/tts_infer.yaml
@@ -435,7 +484,12 @@ class TTS_Config:
 
 
 class TTS:
-    def __init__(self, configs: Union[dict, str, TTS_Config], init_mode: str = "full"):
+    def __init__(
+        self,
+        configs: Union[dict, str, TTS_Config],
+        init_mode: str = "full",
+        frontend_models: SharedFrontendModels | None = None,
+    ):
         if isinstance(configs, TTS_Config):
             self.configs = configs
         else:
@@ -461,6 +515,8 @@ class TTS:
 
         self.text_preprocessor: TextPreprocessor | None = None
         self.prompt_cache: dict[str, object] = self.build_empty_prompt_cache()
+        self._shared_frontend_models: SharedFrontendModels | None = frontend_models
+        self._owns_frontend_models: bool = frontend_models is None
 
         self._init_models(init_mode=init_mode)
 
@@ -499,13 +555,72 @@ class TTS:
         """重置当前实例上的 prompt 缓存。"""
         self.prompt_cache = self.build_empty_prompt_cache()
 
+    @staticmethod
+    def create_frontend_models(
+        bert_base_path: str,
+        cnhuhbert_base_path: str,
+        device: torch.device | str,
+        is_half: bool,
+    ) -> SharedFrontendModels:
+        """创建一组可被 TTS 实例持有或共享的前端模型。"""
+        target_device = torch.device(device)
+        bert_tokenizer = AutoTokenizer.from_pretrained(bert_base_path)
+        bert_model = AutoModelForMaskedLM.from_pretrained(bert_base_path)
+        bert_model = bert_model.eval()
+        bert_model = bert_model.to(target_device)
+        if is_half and str(target_device) != "cpu":
+            bert_model = bert_model.half()
+
+        cnhuhbert_model = CNHubert(cnhuhbert_base_path)
+        cnhuhbert_model = cnhuhbert_model.eval()
+        cnhuhbert_model = cnhuhbert_model.to(target_device)
+        if is_half and str(target_device) != "cpu":
+            cnhuhbert_model = cnhuhbert_model.half()
+
+        text_preprocessor = TextPreprocessor(
+            bert_model,
+            bert_tokenizer,
+            target_device,
+        )
+        return SharedFrontendModels(
+            bert_tokenizer=bert_tokenizer,
+            bert_model=bert_model,
+            cnhuhbert_model=cnhuhbert_model,
+            text_preprocessor=text_preprocessor,
+            device=target_device,
+            is_half=is_half,
+            last_used_at=time.time(),
+        )
+
+    def attach_frontend_models(self, frontend_models: SharedFrontendModels) -> None:
+        """将共享前端模型绑定到当前 TTS 实例。"""
+        (
+            bert_tokenizer,
+            bert_model,
+            cnhuhbert_model,
+            text_preprocessor,
+        ) = frontend_models.require_loaded()
+        self.bert_tokenizer = bert_tokenizer
+        self.bert_model = bert_model
+        self.cnhuhbert_model = cnhuhbert_model
+        self.text_preprocessor = text_preprocessor
+        self._shared_frontend_models = frontend_models
+        self._owns_frontend_models = False
+
     def _init_frontend_models(self) -> None:
         """初始化与角色无关的前端模型。"""
-        self.init_bert_weights(self.configs.bert_base_path)
-        self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
-        self.text_preprocessor = TextPreprocessor(
-            self.bert_model, self.bert_tokenizer, self.configs.device
+        if self._shared_frontend_models is not None:
+            self.attach_frontend_models(self._shared_frontend_models)
+            return
+        frontend_models = self.create_frontend_models(
+            self.configs.bert_base_path,
+            self.configs.cnhuhbert_base_path,
+            self.configs.device,
+            self.configs.is_half,
         )
+        self.attach_frontend_models(frontend_models)
+        self._shared_frontend_models = None
+        self._owns_frontend_models = True
 
     def _init_acoustic_models(self) -> None:
         """初始化当前角色的声学模型。"""
@@ -545,7 +660,6 @@ class TTS:
         self.empty_cache()
 
     def init_cnhuhbert_weights(self, base_path: str):
-        print(f"Loading CNHuBERT weights from {base_path}")
         self.cnhuhbert_model = CNHubert(base_path)
         self.cnhuhbert_model = self.cnhuhbert_model.eval()
         self.cnhuhbert_model = self.cnhuhbert_model.to(self.configs.device)
@@ -553,7 +667,6 @@ class TTS:
             self.cnhuhbert_model = self.cnhuhbert_model.half()
 
     def init_bert_weights(self, base_path: str):
-        print(f"Loading BERT weights from {base_path}")
         self.bert_tokenizer = AutoTokenizer.from_pretrained(base_path)
         self.bert_model = AutoModelForMaskedLM.from_pretrained(base_path)
         self.bert_model = self.bert_model.eval()
@@ -636,13 +749,9 @@ class TTS:
         self.is_v2pro = model_version in {"v2Pro", "v2ProPlus"}
 
         if if_lora_v3 == False:
-            print(
-                f"Loading VITS weights from {weights_path}. {vits_model.load_state_dict(dict_s2['weight'], strict=False)}"
-            )
+            vits_model.load_state_dict(dict_s2["weight"], strict=False)
         else:
-            print(
-                f"Loading VITS pretrained weights from {weights_path}. {vits_model.load_state_dict(load_sovits_new(path_sovits)['weight'], strict=False)}"
-            )
+            vits_model.load_state_dict(load_sovits_new(path_sovits)["weight"], strict=False)
             lora_rank = dict_s2["lora_rank"]
             lora_config = LoraConfig(
                 target_modules=["to_k", "to_q", "to_v", "to_out.0"],
@@ -651,9 +760,7 @@ class TTS:
                 init_lora_weights=True,
             )
             vits_model.cfm = get_peft_model(vits_model.cfm, lora_config)
-            print(
-                f"Loading LoRA weights from {weights_path}. {vits_model.load_state_dict(dict_s2['weight'], strict=False)}"
-            )
+            vits_model.load_state_dict(dict_s2["weight"], strict=False)
 
             vits_model.cfm = vits_model.cfm.merge_and_unload()
 
@@ -676,7 +783,6 @@ class TTS:
         checkpoint: dict[str, object] | None = None,
     ):
         """初始化 Text2Semantic 权重，可选是否同步保存配置。"""
-        print(f"Loading Text2Semantic weights from {weights_path}")
         self.configs.t2s_weights_path = weights_path
         if save:
             self.configs.save_configs()
@@ -776,6 +882,9 @@ class TTS:
             print("Half precision is not supported on CPU.")
             return
 
+        if self._shared_frontend_models is not None and self._shared_frontend_models.is_half != enable:
+            raise ValueError("当前 TTS 借用了共享前端模型，不能单独修改前端精度。")
+
         self.configs.is_half = enable
         self.precision = torch.float16 if enable else torch.float32
         if save:
@@ -785,9 +894,9 @@ class TTS:
                 self.t2s_model = self.t2s_model.half()
             if self.vits_model is not None:
                 self.vits_model = self.vits_model.half()
-            if self.bert_model is not None:
+            if self._owns_frontend_models and self.bert_model is not None:
                 self.bert_model = self.bert_model.half()
-            if self.cnhuhbert_model is not None:
+            if self._owns_frontend_models and self.cnhuhbert_model is not None:
                 self.cnhuhbert_model = self.cnhuhbert_model.half()
             if self.vocoder is not None:
                 self.vocoder = self.vocoder.half()
@@ -796,9 +905,9 @@ class TTS:
                 self.t2s_model = self.t2s_model.float()
             if self.vits_model is not None:
                 self.vits_model = self.vits_model.float()
-            if self.bert_model is not None:
+            if self._owns_frontend_models and self.bert_model is not None:
                 self.bert_model = self.bert_model.float()
-            if self.cnhuhbert_model is not None:
+            if self._owns_frontend_models and self.cnhuhbert_model is not None:
                 self.cnhuhbert_model = self.cnhuhbert_model.float()
             if self.vocoder is not None:
                 self.vocoder = self.vocoder.float()
@@ -809,6 +918,9 @@ class TTS:
         Args:
             device: torch.device, the device to use for all models.
         """
+        if self._shared_frontend_models is not None and str(self._shared_frontend_models.device) != str(device):
+            raise ValueError("当前 TTS 借用了共享前端模型，不能单独移动前端设备。")
+
         self.configs.device = device
         if save:
             self.configs.save_configs()
@@ -816,9 +928,9 @@ class TTS:
             self.t2s_model = self.t2s_model.to(device)
         if self.vits_model is not None:
             self.vits_model = self.vits_model.to(device)
-        if self.bert_model is not None:
+        if self._owns_frontend_models and self.bert_model is not None:
             self.bert_model = self.bert_model.to(device)
-        if self.cnhuhbert_model is not None:
+        if self._owns_frontend_models and self.cnhuhbert_model is not None:
             self.cnhuhbert_model = self.cnhuhbert_model.to(device)
         if self.vocoder is not None:
             self.vocoder = self.vocoder.to(device)
@@ -836,10 +948,16 @@ class TTS:
 
     def unload_frontend_models(self) -> None:
         """卸载文本前端相关模型。"""
-        self._dispose_model_attr("bert_model")
-        self._dispose_model_attr("cnhuhbert_model")
+        if self._owns_frontend_models:
+            self._dispose_model_attr("bert_model")
+            self._dispose_model_attr("cnhuhbert_model")
+        else:
+            self.bert_model = None
+            self.cnhuhbert_model = None
         self.bert_tokenizer = None
         self.text_preprocessor = None
+        self._shared_frontend_models = None
+        self._owns_frontend_models = True
 
     def unload_support_models(self) -> None:
         """卸载可选支持模型。"""

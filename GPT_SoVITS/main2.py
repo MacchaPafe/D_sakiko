@@ -156,6 +156,7 @@ def main_thread():
 
             # --- 逐段处理：流水线式语音合成 + 播放 ---
             for i, (text, translation, emotion_label) in enumerate(segments):
+                QT_message_queue.put(f"正在合成语音...{i+1}/{len(segments)}")
                 cleaned_text = clean_text_for_audio(text)
 
                 # 语音合成

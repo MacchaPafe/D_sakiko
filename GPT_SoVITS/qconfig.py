@@ -76,7 +76,7 @@ class DSakikoConfig(QConfig):
                                                                validator=OptionsValidator([4, 8, 16, 32]),
                                                                restart=True)
     # 最多加载的语音模型数量
-    max_loaded_voice_models = RangeConfigItem("audio_setting", "max_loaded_voice_models", 1,
+    max_loaded_voice_models = RangeConfigItem("audio_setting", "max_loaded_voice_models", 2,
                                                 validator=RangeValidator(1, 5),
                                                 restart=True)
     # 是否启用 cuda
