@@ -826,15 +826,22 @@ class ColorPicker(QDialog):
 class AudioRegenThread(QThread):
     finished_signal = pyqtSignal(str, int)  # (新音频路径, msg_index)
 
-    def __init__(self, audio_gen, text, dp_chat, msg_index):
+    def __init__(self, audio_gen, text, character, sakiko_state, audio_language_choice, msg_index):
         super().__init__()
         self.audio_gen = audio_gen
         self.text = text
-        self.dp_chat = dp_chat
+        self.character = character
+        self.sakiko_state = sakiko_state
+        self.audio_language_choice = audio_language_choice
         self.msg_index = msg_index
 
     def run(self):
-        new_audio_path = self.audio_gen.generate_audio_sync(self.text, self.dp_chat.sakiko_state,self.dp_chat.audio_language_choice)
+        new_audio_path = self.audio_gen.generate_audio_sync(
+            self.text,
+            self.character,
+            self.sakiko_state,
+            self.audio_language_choice,
+        )
         self.finished_signal.emit(new_audio_path, self.msg_index)
 
 class ChatTextBrowser(QTextBrowser):
@@ -1395,7 +1402,14 @@ class ChatGUI(QWidget):
         self.chat_display.setEnabled(False) # 暂时禁用右键等交互
 
         # 启动后台合成线程
-        self.regen_thread = AudioRegenThread(self.audio_gen, msg.text, self.dp_chat, msg_index)
+        self.regen_thread = AudioRegenThread(
+            self.audio_gen,
+            msg.text,
+            current_character,
+            self.dp_chat.sakiko_state,
+            self.dp_chat.audio_language_choice,
+            msg_index,
+        )
         self.regen_thread.finished_signal.connect(self.handle_regenerate_audio_finished)
         self.regen_thread.start()
 

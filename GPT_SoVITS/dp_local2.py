@@ -4,20 +4,22 @@ import time,os
 from copy import deepcopy
 
 import json
+from typing import Sequence
+
 import litellm
 from litellm import completion
 from litellm.types.utils import ModelResponse
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
-from character import PrintInfo
+from character import PrintInfo, CharacterAttributes
 
 from chat.chat import Chat, Message, ChatManager
 from emotion_enum import EmotionEnum
 
 
 class DSLocalAndVoiceGen:
-    def __init__(self,characters, chat_manager: ChatManager):
+    def __init__(self,characters: Sequence[CharacterAttributes], chat_manager: ChatManager):
         self.character_list = characters
         self.chat_manager = chat_manager
 
@@ -165,9 +167,7 @@ class DSLocalAndVoiceGen:
                 time.sleep(2)
                 continue
             elif user_input == 'v':
-                if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[
-                    self.current_char_index].gptsovits_ref_audio is None or self.character_list[
-                    self.current_char_index].sovits_model_path is None:
+                if not self.character_list[self.current_char_index].has_valid_voice_model():
                     message_queue.put("当前角色无法进行语音合成")
                     PrintInfo.print_error(f"[Error]当前角色无法开启语音合成，缺少GPT-SoVITS模型或参考音频文件。")
                     time.sleep(2)
@@ -183,7 +183,7 @@ class DSLocalAndVoiceGen:
                 change_char_queue.put('yes')
                 dp2qt_queue.put("changechange")
                 AudioGenerator.change_character()
-                time.sleep(2)
+                time.sleep(0.1)
                 continue
             elif user_input=='clr':
                 self.current_chat.clear_message_list()
