@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from multiprocessing import Process, Queue
 from queue import Empty
-from typing import Protocol, cast, TYPE_CHECKING
+from typing import Protocol, cast, TYPE_CHECKING, Optional
 
 from character import CharacterAttributes
 from inference_cli import synthesize
@@ -378,7 +378,7 @@ class AudioGenerate:
         self._ensure_worker_dispatch_thread()
         queued_command = dict(command)
 
-        request_id = cast(str | None, command.get("request_id"))
+        request_id = cast(Optional[str], command.get("request_id"))
         # 如果 request_id 不知道为啥为空，就新分配一个
         if request_id is None or not isinstance(request_id, str) or request_id == '':
             request_id = self._create_request_id()

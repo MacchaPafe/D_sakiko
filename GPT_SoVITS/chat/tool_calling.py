@@ -29,6 +29,7 @@ class RegisteredTool:
     handler: ToolHandler
 
     def as_openai_schema(self) -> Dict[str, Any]:
+        """将注册的工具转换为 OpenAI 要求的 functions/tools JSON schema 格式。"""
         return {
             "type": "function",
             "function": {
@@ -66,6 +67,7 @@ class ToolRegistry:
         parameters: Dict[str, Any],
         handler: ToolHandler,
     ) -> None:
+        """注册一个新的工具到工具注册表中。"""
         self._tools[name] = RegisteredTool(
             name=name,
             description=description,
@@ -74,12 +76,15 @@ class ToolRegistry:
         )
 
     def has_tool(self, name: str) -> bool:
+        """检查是否已注册指定名称的工具。"""
         return name in self._tools
 
     def build_tools_schema(self) -> List[Dict[str, Any]]:
+        """构建所有已注册工具的 OpenAPI schema 列表，供 LLM API 调用时传入。"""
         return [tool.as_openai_schema() for tool in self._tools.values()]
 
     def execute(self, request: ToolCallRequest) -> Tuple[bool, str]:
+        """执行指定的工具调用请求，返回执行是否成功以及执行结果的字符串或JSON内容。"""
         tool = self._tools.get(request.name)
         if tool is None:
             return False, json.dumps(
@@ -126,17 +131,20 @@ class ToolCallingAgentRuntime:
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def _log(self, message: str) -> None:
+        """内部日志打印方法，仅在调试模式开启时输出。"""
         if self.debug:
             print(f"[ToolCallingRuntime] {message}")
 
     @staticmethod
     def _safe_json_dumps(data: Any) -> str:
+        """安全地将数据序列化为 JSON 字符串，如果失败则返回其字符串表示。"""
         try:
             return json.dumps(data, ensure_ascii=False, indent=2)
         except TypeError:
             return str(data)
 
     def _serialize_response(self, response: Any) -> str:
+        """统一序列化 LLM 的各种响应对象（如 LiteLLM ModelResponse 或字典）为 JSON 字符串。"""
         # 统一把 LiteLLM 响应转成字符串落盘，避免调试时看不到完整返回内容。
         if isinstance(response, dict):
             return self._safe_json_dumps(response)
@@ -164,6 +172,13 @@ class ToolCallingAgentRuntime:
         llm_kwargs: Optional[Dict[str, Any]] = None,
         on_interim_message: Optional[InterimMessageCallback] = None,
     ) -> AgentRunResult:
+        """
+        执行 Agent 工具调用主循环（简化版的 ReAct 模式）。
+        
+        不断向大模型请求回复，若返回需要调用工具，则本地执行工具逻辑，
+        并将结果拼接入历史上下文中进行下一轮请求；
+        直到大模型直接回复最终文本结果或是达到最大调用次数为止。
+        """
         # history 会在工具循环中不断追加 assistant/tool 消息，形成完整闭环上下文。
         # 这是一个 Agent 工具调用主循环（ReAct 模式的简化），不断询问 LLM，直到 LLM 不再输出 tool_calls 为止，或达到最大循环次数。
         history: List[Dict[str, Any]] = list(messages)
@@ -183,10 +198,8 @@ class ToolCallingAgentRuntime:
                 messages=history,
                 llm_kwargs=llm_kwargs or {},
             )
-            print("---------------------------------",response,"---------------------------------")
-            #self._log("LLM响应 raw json:\n" + self._serialize_response(response))
+            #print("LLM原始响应内容：\n" + self._serialize_response(response) + "\n--- 以上是完整响应内容 ---")
             parsed = self._parse_llm_response(response)
-
             # 如果之前的“过渡台词（期间文本）”语音仍在播放，而下一轮模型响应已经到达，
             # 则在这里阻塞等待，避免打断当前的 TTS 语音播放。
             # 这是为了让角色在调用工具等待时间可以先说一句话（比如“稍等，我查一下”）。
@@ -306,6 +319,7 @@ class ToolCallingAgentRuntime:
         )
 
     def _call_llm(self, model: str, messages: List[Dict[str, Any]], llm_kwargs: Dict[str, Any]) -> Any:
+        """封装底层大模型（如 LiteLLM）的接口请求，带上注册好的可用工具 Schema 以及当前聊天历史发送请求。"""
         kwargs = {
             "model": model,
             "messages": messages,
@@ -329,6 +343,8 @@ class ToolCallingAgentRuntime:
 
     @staticmethod
     def _format_tool_output_for_display(tool_name: str, tool_output: str) -> str:
+        """格式化工具结果的输出文本，展示在UI窗口框中，具体可见qtUI.ToolCallInfoDialog。
+        避免在 UI 或日志呈现时显示长串丑陋混乱（或带大段无用字段）的 JSON 字符串。"""
         def _truncate(text: str, limit: int = 1800) -> str:
             text = text.strip()
             if len(text) <= limit:
@@ -404,6 +420,10 @@ class ToolCallingAgentRuntime:
 
     @staticmethod
     def _parse_llm_response(response: Any) -> Dict[str, Any]:
+        """
+        统一解析支持多后端返回内容格式差异（字典/对象），
+        提取助理回复内容（assistant_content）、期间文本（interim_message）及工具调用请求（tool_calls）供架构处理。
+        """
         # 兼容 dict / LiteLLM ModelResponse 两种返回结构。
         message: Any = None
         finish_reason: Optional[str] = None
@@ -459,6 +479,7 @@ class ToolCallingAgentRuntime:
 
     @staticmethod
     def _parse_content_json(content: str) -> Dict[str, Any]:
+        """将模型文本回复内容进行解析，提取潜在包裹在 JSON 结构（如 [{text, translation, emotion...}]）的数据或是中间过渡文本等信息。"""
         content = (content or "").strip()
         if not content:
             return {
@@ -526,10 +547,12 @@ class ToolCallingAgentRuntime:
 
     @staticmethod
     def _looks_like_single_segment_payload(payload: Dict[str, Any]) -> bool:
+        """检查当前 JSON 字典是不是包含单独的对话切片所需的结构字典（有 text，伴随 translation 或 emotion）。"""
         return "text" in payload and ("emotion" in payload or "translation" in payload)
 
     @staticmethod
     def _normalize_structured_text_payload(items: List[Any]) -> str:
+        """把解析切片出的对话回复信息再次转化成严格标准的基于数组格式的 JSON 字符串供主链路使用。"""
         normalized: List[Dict[str, Any]] = []
         for item in items:
             if not isinstance(item, dict):
@@ -550,6 +573,7 @@ class ToolCallingAgentRuntime:
 
     @staticmethod
     def _normalize_tool_calls(raw_tool_calls: List[Any]) -> List[ToolCallRequest]:
+        """将不同 LLM 返回的结构不一的 tool_calls 原生列表标准化重构成预定义的 ToolCallRequest。"""
         normalized: List[ToolCallRequest] = []
 
         for item in raw_tool_calls:
@@ -571,6 +595,7 @@ class ToolCallingAgentRuntime:
 
     @staticmethod
     def _normalize_tool_calls_from_payload(payload: Dict[str, Any]) -> List[ToolCallRequest]:
+        """专门从包含特定 `tool_call` 或者 `tool_calls` 字典结构的字段内重配为内部一致对象的转化函数（应对各种错误返回格式）。"""
         calls: List[Any] = []
         if "tool_call" in payload and isinstance(payload["tool_call"], dict):
             calls.append(payload["tool_call"])
@@ -588,6 +613,7 @@ class ToolCallingAgentRuntime:
 
     @staticmethod
     def _parse_arguments(arguments_raw: Any) -> Dict[str, Any]:
+        """将大模型传来的工具调用参数列表（可能会由于格式问题变为普通字符串或 JSON 字符串）反序列化为字典字典。"""
         if isinstance(arguments_raw, dict):
             return arguments_raw
         if isinstance(arguments_raw, str):
@@ -604,6 +630,11 @@ class ToolCallingAgentRuntime:
 
 
 def build_default_tool_registry() -> ToolRegistry:
+    """
+    新建并返回带默认工具配置功能的工具注册表类（含网络天气、本地时间和系统配置等工具）。
+    这些自带的基础工具保证了基础的系统检测体验扩展等特性。
+    新增工具只需要在这个函数内注册即可。
+    """
     registry = ToolRegistry()
 
     registry.register_tool(
@@ -682,6 +713,7 @@ def build_default_tool_registry() -> ToolRegistry:
 
 
 def _tool_get_current_datetime(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """具体的获取本地时间工具，包含返回默认 ISO 格式或者是指定的 strftime 格式的结果。"""
     now = datetime.datetime.now().astimezone()
     fmt = arguments.get("format")
     formatted = now.strftime(fmt) if isinstance(fmt, str) and fmt else now.isoformat()
@@ -695,6 +727,14 @@ def _tool_get_current_datetime(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _tool_get_system_hardware_status(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """具体的系统状态分析工具。获取主机设备的 CPU 占用情况、温度、显卡的详情和可运行内存记录等资源状态。"""
+    if not os.name == "nt":
+        return {
+            "ok": False,
+            "error": "unsupported_platform",
+            "message": "",
+        }   #TODO: MacOS实现
+
     include_gpu = bool(arguments.get("include_gpu", True))
 
     cpu_percent = psutil.cpu_percent(interval=0.2)
@@ -751,6 +791,7 @@ def _tool_get_system_hardware_status(arguments: Dict[str, Any]) -> Dict[str, Any
 
 
 def _query_nvidia_gpu_status() -> Dict[str, Any]:
+    """通过操作系统的 nvidia-smi 命令行获取当前各 NVIDIA 块级显卡的实际各项环境性能指标并转出结果。"""
     command = [
         "nvidia-smi",
         "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total",
@@ -797,11 +838,13 @@ def _query_nvidia_gpu_status() -> Dict[str, Any]:
 
 
 def _tool_web_search(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """具体的在线网页接口分发中心（工具端）。由它中转各大平台的 Web 搜索操作，按 provider 实现相应接口的 HTTP 调用。"""
     query = str(arguments.get("query") or "").strip()
     if not query:
         raise ValueError("query is required")
 
-    provider = str(arguments.get("provider") or "bocha").strip().lower()
+    #provider = str(arguments.get("provider") or "bocha").strip().lower()
+    provider="bocha"    #TODO: 先写死用bocha，后续再开放参数
     top_k = int(arguments.get("top_k") or 5)
 
     dispatcher = {
@@ -827,6 +870,7 @@ def _tool_web_search(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _search_bocha(query: str, top_k: int) -> List[Dict[str, Any]]:
+    """内部网络搜索实现（博查API）：调用提供商提供的相关在线接口检索信息并统一返回格式。"""
     api_key = os.getenv("BOCHA_API_KEY", DEFAULT_BOCHA_API_KEY)
     url = "https://api.bocha.cn/v1/web-search"
     headers = {
@@ -844,6 +888,7 @@ def _search_bocha(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _search_bing(query: str, top_k: int) -> List[Dict[str, Any]]:
+    """内部网络搜索实现（Bing Search API）：用 Bing 进行调用。"""
     api_key = os.getenv("BING_SEARCH_API_KEY", "")
     if not api_key:
         raise ValueError("BING_SEARCH_API_KEY is not configured")
@@ -864,6 +909,7 @@ def _search_bing(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _search_tavily(query: str, top_k: int) -> List[Dict[str, Any]]:
+    """内部网络搜索实现（Tavily）：直接将需要解决的问题抛出给 Tavily API 来提供汇总信息网页。"""
     api_key = os.getenv("TAVILY_API_KEY", "")
     if not api_key:
         raise ValueError("TAVILY_API_KEY is not configured")
@@ -883,6 +929,7 @@ def _search_tavily(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _search_brave(query: str, top_k: int) -> List[Dict[str, Any]]:
+    """内部网络搜索实现（Brave API）。"""
     api_key = os.getenv("BRAVE_SEARCH_API_KEY", "")
     if not api_key:
         raise ValueError("BRAVE_SEARCH_API_KEY is not configured")
@@ -906,6 +953,7 @@ def _search_brave(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _search_google(query: str, top_k: int) -> List[Dict[str, Any]]:
+    """内部网络搜索实现（Google API）。配置必须具备 CSE_ID 以及 API Key 环境。"""
     api_key = os.getenv("GOOGLE_SEARCH_API_KEY", "")
     cse_id = os.getenv("GOOGLE_CSE_ID", "")
     if not api_key or not cse_id:
@@ -927,6 +975,7 @@ def _search_google(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _normalize_search_items(raw_items: Any, top_k: int) -> List[Dict[str, Any]]:
+    """将市面上不同的网络搜索引擎返回各异的 JSON 树状字典层层提取后统一重整为固定有 title/url/snippet 的查询格式列表响应。"""
     # 兼容不同 provider 的多种结构，统一归一到列表后再做切片。
     items: List[Any]
     if isinstance(raw_items, list):
@@ -962,6 +1011,7 @@ def _normalize_search_items(raw_items: Any, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _tool_get_weather(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """主入口气候天气 API（工具端）。用于检索一个位置的天气并在不提供城市参数的前提下自动调用 IP 地址辅助查询天气。"""
     city = str(arguments.get("city") or "").strip()
     if not city:
         city = _detect_city_from_ip()
@@ -984,6 +1034,7 @@ def _tool_get_weather(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _detect_city_from_ip() -> str:
+    """侦测辅助：请求外部公共接口进行 IP 本地溯源推导出地理区划名（即你当下所在城市）兜底处理工具参数空缺。"""
     urls = [
         "http://ip-api.com/json/?lang=zh-CN",
         "https://ipwho.is/",
@@ -1002,6 +1053,7 @@ def _detect_city_from_ip() -> str:
 
 
 def _geocode_city(city: str) -> Tuple[float, float, str]:
+    """通过公用地理查询转码，反算给出的地理名称返回确切的该地点经度纬度。"""
     url = "https://geocoding-api.open-meteo.com/v1/search"
     params = {
         "name": city,
@@ -1027,6 +1079,7 @@ def _geocode_city(city: str) -> Tuple[float, float, str]:
 
 
 def _fetch_open_meteo_current_weather(lat: float, lon: float) -> Dict[str, Any]:
+    """通过拿到的最终经纬度从 Open-Meteo 拉取天气的实时气温状态情况并封返回。"""
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
@@ -1053,6 +1106,7 @@ def _fetch_open_meteo_current_weather(lat: float, lon: float) -> Dict[str, Any]:
 
 
 def _weather_code_to_text(code: Optional[int]) -> str:
+    """将 WMO 发布的气象数字内码转换回能让人类阅读的环境英文描述（可用于交给大模型解读）。"""
     mapping = {
         0: "Clear sky",
         1: "Mainly clear",
@@ -1080,7 +1134,82 @@ def _weather_code_to_text(code: Optional[int]) -> str:
 
 
 def _safe_int(value: Any) -> Optional[int]:
+    """兜底强制解析字典数据内容至安全的整数结构，预防转换失败返回假值报错等异常。"""
     try:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def register_live2d_tools(
+    registry: ToolRegistry,
+    get_char_folder_func: Callable[[], str],
+    change_model_func: Callable[[str], None]
+) -> None:
+    """
+    注册获取和切换前台角色 Live2D 模型的专用大模型工具。
+    采用依赖注入方式传入获取角色名以及切换模型的执行回调。
+    """
+    def _fetch_all_live2d_models_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """具体的获取可用 Live2D 模型列表的处理闭包函数。"""
+        char_folder = get_char_folder_func()
+        if char_folder == 'sakiko':
+            return {
+                "ok": False,
+                "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
+            }
+        
+        import glob
+        import os
+        base_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '../../live2d_related', char_folder))
+        default_live2d_json_list = glob.glob(os.path.join(base_path, 'live2D_model', '*.model.json'))
+        default_live2d_json = default_live2d_json_list[0].replace("\\", "/") if default_live2d_json_list else None
+        
+        models = []
+        if default_live2d_json:
+            models.append({'model_name': '默认', 'model_json_path': default_live2d_json})
+            
+        extra_path = os.path.join(base_path, 'extra_model')
+        if os.path.exists(extra_path):
+            for model_dir in os.listdir(extra_path):
+                dp = os.path.join(extra_path, model_dir)
+                if os.path.isdir(dp):
+                    jsons = glob.glob(os.path.join(dp, '*.model.json'))
+                    if jsons:
+                        models.append({'model_name': model_dir, 'model_json_path': jsons[0].replace("\\", "/")})
+                        
+        return {'ok': True, 'character_folder': char_folder, 'models': models}
+
+    def _change_character_live2d_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """具体的执行前台 Live2D 模型切换效果的闭包回调执行器。"""
+        target_path = arguments.get('model_json_path', '').strip()
+        if not target_path: 
+            return {'ok': False, 'error': 'model_json_path 参数不能为空'}
+        
+        char_folder = get_char_folder_func()
+        if char_folder == 'sakiko':
+            return {
+                "ok": False,
+                "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
+            }
+
+        change_model_func(target_path)
+        return {'ok': True, 'message': f'成功发送异步切换服装指令：{target_path}'}
+
+    registry.register_tool(
+        name='fetch_all_live2d_models',
+        description='获取当前对话角色拥有的所有可用Live2D模型（即角色的各种自定义服装打扮）的名称及模型配置文件路径。',
+        parameters={'type': 'object', 'properties': {}, 'required': []},
+        handler=_fetch_all_live2d_models_handler
+    )
+    
+    registry.register_tool(
+        name='change_character_live2d',
+        description='将当前界面上角色的Live2D服装/模型更换切换到指定的路径。通过先调用 fetch_all_live2d_models 获取路径后传入。',
+        parameters={
+            'type': 'object',
+            'properties': {'model_json_path': {'type': 'string', 'description': '需要切换到的 Live2D 模型对应的 json 文件绝对或相对路径（必填）'}},
+            'required': ['model_json_path']
+        },
+        handler=_change_character_live2d_handler
+    )

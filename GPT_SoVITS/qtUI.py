@@ -658,6 +658,18 @@ class ChangeL2DModelWindow(QDialog):
                     full_path = full_path.replace("\\", "/")
                     self.current_char_l2d_models.append({"model_name":model_dir_name,"model_json_path":full_path})
                     break  # 找到一个就跳出当前文件夹的循环
+    @staticmethod
+    def find_all_models() -> list[str]:
+        all_models = []
+        for char_folder in os.listdir("../live2d_related"):
+            char_folder_path = os.path.join("../live2d_related", char_folder)
+            if os.path.isdir(char_folder_path):
+                for file in os.listdir(char_folder_path):
+                    if file.endswith(".model.json"):
+                        full_path = os.path.join(char_folder_path, file)
+                        full_path = full_path.replace("\\", "/")
+                        all_models.append(full_path)
+        return all_models
 
 
 class ChangeReferenceAudioWindow(QDialog):
@@ -898,8 +910,10 @@ class ChatTextBrowser(QTextBrowser):
 
         if msg_index is not None:
             # 判断是否是用户的消息
-            msg = self.chat_gui_parent.current_chat.message_list[msg_index]
-            is_user_msg = (msg.character_name == "User")
+            is_user_msg = True
+            if 0 <= msg_index < len(self.chat_gui_parent.current_chat.message_list):
+                msg = self.chat_gui_parent.current_chat.message_list[msg_index]
+                is_user_msg = (msg.character_name == "User")
 
             menu.addSeparator()  # 增加一条分割线与原生菜单隔开
             delete_action = QAction("删除此消息", self)
@@ -1484,6 +1498,8 @@ class ChatGUI(QWidget):
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
             print(audio_path_and_emotion)
+            if "silence.wav" in audio_path_and_emotion:
+                return
             msg_index = None
             # 去除新增的 ?msg= 锚点参数
             if '?msg=' in audio_path_and_emotion:
@@ -1534,6 +1550,7 @@ class ChatGUI(QWidget):
 
     def delete_message(self, msg_index):
         if not (0 <= msg_index < len(self.current_chat.message_list)):
+            self._refresh_chat_display()    #如果索引无效，强制刷新显示以纠正可能的错误状态
             return
 
         def confirm_del():
@@ -1543,6 +1560,7 @@ class ChatGUI(QWidget):
 
     def regenerate_audio(self, msg_index):
         if not (0 <= msg_index < len(self.current_chat.message_list)):
+            self._refresh_chat_display()    #如果索引无效，强制刷新显示以纠正可能的错误状态
             return
         current_character= self.character_list[self.current_char_index]
         if not (current_character.GPT_model_path or current_character.gptsovits_ref_audio or current_character.sovits_model_path):
@@ -1554,7 +1572,9 @@ class ChatGUI(QWidget):
         #     return
 
         msg = self.current_chat.message_list[msg_index]
-
+        if msg.text in ("...","我要调用工具"):
+            WarningWindow("无法重新生成音频").exec_()
+            return
         # UI反聩
         self.setWindowTitle("正在重新生成音频...")
         self.chat_display.setEnabled(False) # 暂时禁用右键等交互
@@ -1764,10 +1784,10 @@ class ChatGUI(QWidget):
                 text_color = self._current_theme_color
 
                 # 简单预测用户的 msg_index，使其能支持右键删除功能
-                predicted_msg_index = len(self.current_chat.message_list)
-                if len(self.current_chat.message_list) > 0 and self.current_chat.message_list[-1].text == user_this_turn_input:
-                    predicted_msg_index -= 1 # 已经被其他线程优先加入
-
+                if not self.current_chat.message_list[-1].text == user_this_turn_input:
+                    predicted_msg_index = len(self.current_chat.message_list)
+                else:
+                    predicted_msg_index = len(self.current_chat.message_list)-1
                 self.chat_display.append(f'<a href="user:?msg={predicted_msg_index}" style="text-decoration: none; color: {text_color};">你：</a>')
                 self.timer.start(8)
         if user_this_turn_input=='clr':
@@ -1775,8 +1795,7 @@ class ChatGUI(QWidget):
                 ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
             ) if self.character_list[self.current_char_index].qt_css is not None else ThemeManager.generate_stylesheet(
                 '#7799CC')
-            pop_up_clr_warning_win=WarningWindow("确定要清空当前角色的聊天记录吗？角色记忆也将同步被删除",css,clr_history)
-            pop_up_clr_warning_win.exec_()
+            WarningWindow("确定要清空当前角色的聊天记录吗？角色记忆也将同步被删除",css,clr_history).exec_()
 
         if user_this_turn_input=='save':
             self.save_data()

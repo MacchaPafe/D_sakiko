@@ -17,7 +17,6 @@ from chat.chat import Chat, Message, ChatManager
 from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
 
-
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
@@ -131,7 +130,7 @@ class DSLocalAndVoiceGen:
         if self.current_chat.message_list:
             self.current_chat.message_list.pop()
         # 源代码如此，我也不知道为啥要休息一会
-        time.sleep(2)
+        #time.sleep(2) 不休息也已经可以了
 
     def _build_runtime_system_instruction(self) -> str:
         # 将“工具调用 + 输出格式 + 语言要求”统一放到 system 提示词，避免污染 user 消息。
@@ -194,7 +193,7 @@ class DSLocalAndVoiceGen:
         # runtime 发起 LLM 请求的底层入口。
         stream = kwargs.get("stream", False)
         timeout = kwargs.get("timeout", 30)
-        print(messages)
+        # print(messages[-5:])
         if d_sakiko_config.use_default_deepseek_api.value:
             print("正在使用 UP 的 DeepSeek API")
             return completion(
@@ -315,6 +314,7 @@ class DSLocalAndVoiceGen:
 
     def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue):
         def _callback(interim_text: str, tool_calls=None, is_placeholder: bool = False):
+            #print("------------\n\n\n","收到 interim callback，文本内容：", interim_text)
             cleaned = (interim_text or "").strip()
             raw_tool_calls = tool_calls if isinstance(tool_calls, list) else []
             has_tool_calls = len(raw_tool_calls) > 0
@@ -402,6 +402,21 @@ class DSLocalAndVoiceGen:
                        char_is_converted_queue,
                        change_char_queue,
                        AudioGenerator):
+        
+        # --- 注册依赖前端环境的动态工具（为Live2D换装工具用） ---
+        def _get_char_folder() -> str:
+            return self.character_list[self.current_char_index].character_folder_name
+
+        def _change_live2d_model(new_model_json: str) -> None:
+            change_char_queue.put(f'change_l2d_model#{new_model_json}')
+
+        from chat.tool_calling import register_live2d_tools
+        register_live2d_tools(
+            self.tool_runtime.tool_registry,
+            get_char_folder_func=_get_char_folder,
+            change_model_func=_change_live2d_model
+        )
+        # ---------------------------------
 
         while True:
             #user_input = input(">>>输入bye退出聊天，输入“lan”更改语音语言，输入“model”更改LLM\n"
