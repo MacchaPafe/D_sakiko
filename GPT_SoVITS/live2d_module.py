@@ -255,6 +255,7 @@ class Live2DModule:
                     break
             if latest_text is not None:
                 self.new_text = latest_text
+                overlay.set_text(self.character_list[self.current_character_num].character_name, self.new_text)
 
             if not change_char_queue.empty():
                 x=change_char_queue.get()

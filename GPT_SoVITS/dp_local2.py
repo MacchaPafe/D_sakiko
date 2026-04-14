@@ -8,14 +8,19 @@ from typing import Sequence
 
 import litellm
 from litellm import completion
-from litellm.types.utils import ModelResponse
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
 from character import PrintInfo, CharacterAttributes
 
 from chat.chat import Chat, Message, ChatManager
+from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
+
+
+TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
+TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
+NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 
 
 class DSLocalAndVoiceGen:
@@ -45,6 +50,15 @@ class DSLocalAndVoiceGen:
         self.sakiko_state = True
         # 角色在空闲时，页面上方状态会显示的话。从列表中随机选择。
         self.idle_texts = ["...", "...", "就绪", "..."]
+        
+        # 实例化工具调用运行时。传入的大模型补全请求会被委托给 self._completion_with_current_config。
+        # 这样成功将 LLM 内部具体请求格式和 Agent 工具调用逻辑解耦。
+        self.tool_runtime = ToolCallingAgentRuntime(
+            llm_completion=self._completion_with_current_config,
+            debug=True,
+        )
+        # 仅在本次程序运行期间使用的工具调用记录缓存；退出时会一并写入 Chat.meta。
+        self._session_tool_call_records: list[dict] = []
         self.initial()
 
     def initial(self):
@@ -118,6 +132,265 @@ class DSLocalAndVoiceGen:
             self.current_chat.message_list.pop()
         # 源代码如此，我也不知道为啥要休息一会
         time.sleep(2)
+
+    def _build_runtime_system_instruction(self) -> str:
+        # 将“工具调用 + 输出格式 + 语言要求”统一放到 system 提示词，避免污染 user 消息。
+        common_rules = (
+            "[全局唯一输出协议]\n"
+            "1. 你每一次的回复内容都必须且只能是 JSON 数组（Array）！\n"
+            "2. 严禁输出数组之外的任何解释文字、提示语、Markdown 代码块、前后缀。\n"
+            "3. 每个段落对象至少包含 text 与 emotion 字段，在日文输出时还有 translation（中文翻译）字段，但绝对不可再有别的字段\n"
+        )
+        return common_rules
+
+    def _build_every_round_instruction(self) -> str:
+        if self.audio_language_choice == '日英混合':
+            return (
+                "[本轮语言模式：日文]\n"
+                + "1. text 必须是日文。\n"
+                + "2. 每个段落都必须包含 translation（中文翻译）。\n"
+                + "3. 每个段落必须包含emotion字段，且只能取：happiness, sadness, anger, surprise, fear, disgust, like, neutral。\n"
+                + "4. 分段规则：回复的text较长时请按语义停顿拆成多个段落，每段建议 1-3 句。\n"
+                + "5. 输出示例，必须严格遵守该格式："
+                + """[
+                        {
+                            "text":"第一段日文",
+                            "translation":"第一段中文翻译",
+                            "emotion":"neutral"
+                        },
+                        {
+                            "text":"第二段日文",
+                            "translation":"第二段中文翻译",
+                            "emotion":"neutral"
+                        }
+                    ]
+                """
+                + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
+                + "7. 如果你决定调用工具：你应该同时输出一段“过渡台词”，但这段台词也必须放在 JSON 数组里，格式和上面的输出示例一致。\n"
+            )
+        return (
+                "[本轮语言模式：中文]\n"
+                + "1. text 必须是中文，不要出现日语假名。\n"
+                + "2. 严禁有translation 字段！\n"
+                + "3. 每个段落必须包含emotion字段，且只能取：happiness, sadness, anger, surprise, fear, disgust, like, neutral。\n"
+                + "4. 分段规则：回复的text较长时请按语义停顿拆成多个段落，每段建议 1-3 句。\n"
+                + "5. 输出示例，必须严格遵守该格式："
+                + """[
+                        {
+                            "text":"第一段中文",
+                            "emotion":"neutral"
+                        },
+                        {
+                            "text":"第二段中文",
+                            "emotion":"neutral"
+                        }
+                    ]
+                """
+                + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
+                + "7. 如果你决定调用工具：你应该同时输出一段“过渡台词”，但这段台词也必须放在 JSON 数组里，格式和上面的输出示例一致。\n"
+        )
+
+    def _completion_with_current_config(self, model, messages, tools=None, tool_choice="auto", **kwargs):
+        # runtime 发起 LLM 请求的底层入口。
+        stream = kwargs.get("stream", False)
+        timeout = kwargs.get("timeout", 30)
+        print(messages)
+        if d_sakiko_config.use_default_deepseek_api.value:
+            print("正在使用 UP 的 DeepSeek API")
+            return completion(
+                model="deepseek/deepseek-chat",
+                messages=messages,
+                api_key=self.model,
+                stream=stream,
+                timeout=timeout,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+
+        if d_sakiko_config.enable_custom_llm_api_provider.value:
+            print("正在使用自定义大模型 API ")
+            print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
+            print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
+            return completion(
+                model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
+                messages=messages,
+                api_key=d_sakiko_config.custom_llm_api_key.value,
+                base_url=d_sakiko_config.custom_llm_api_url.value,
+                stream=stream,
+                timeout=timeout,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+
+        print("正在使用预定义大模型 API ")
+        print("Provider: ", d_sakiko_config.llm_api_provider.value)
+        print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
+        provider = d_sakiko_config.llm_api_provider.value
+        model_name = d_sakiko_config.llm_api_model.value.get(provider, "")
+        api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
+        base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
+
+        common_kwargs = {
+            "model": self.normalize_model_for_provider(provider, model_name),
+            "messages": messages,
+            "api_key": api_key,
+            "stream": stream,
+            "timeout": timeout,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        }
+        if base_url:
+            common_kwargs["base_url"] = base_url
+
+        return completion(**common_kwargs)
+
+    @staticmethod
+    def _wait_audio_turn_complete(is_audio_play_complete):
+        while is_audio_play_complete.get() is None:
+            time.sleep(0.3)
+
+    def _get_tool_call_records_meta(self) -> list[dict]:
+        records = self.current_chat.meta.get("tool_call_records")
+        if not isinstance(records, list):
+            records = []
+            self.current_chat.meta["tool_call_records"] = records
+        return records
+
+    @staticmethod
+    def _emit_tool_ui_event(dp2qt_queue, prefix: str, payload: dict):
+        dp2qt_queue.put(prefix + json.dumps(payload, ensure_ascii=False))
+
+    def _record_tool_call_started(
+        self,
+        dp2qt_queue,
+        tool_call_id: str,
+        tool_name: str,
+        message_index: int,
+    ) -> None:
+        now_ts = int(time.time())
+        one = {
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "message_index": message_index,
+            "status": "running",
+            "result_content": "工具运行中...",
+            "duration_sec": None,
+            "started_at": now_ts,
+            "updated_at": now_ts,
+        }
+        records = self._get_tool_call_records_meta()
+        records.append(one)
+        self.current_chat.meta["tool_call_records"] = records[-300:]
+
+        self._session_tool_call_records.append(dict(one))
+        self._session_tool_call_records = self._session_tool_call_records[-300:]
+
+        self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_START_EVENT_PREFIX, one)
+
+    def _record_tool_call_completed(self, dp2qt_queue, tool_exec: dict) -> None:
+        target_id = str(tool_exec.get("tool_call_id") or "")
+        if not target_id:
+            return
+
+        records = self._get_tool_call_records_meta()
+        for i in range(len(records) - 1, -1, -1):
+            one = records[i]
+            if str(one.get("tool_call_id")) == target_id:
+                one["status"] = "completed"
+                one["duration_sec"] = float(tool_exec.get("duration_sec") or 0.0)
+                one["result_content"] = str(tool_exec.get("result_content") or "")
+                one["ok"] = bool(tool_exec.get("ok", True))
+                one["updated_at"] = int(time.time())
+                records[i] = one
+                self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_UPDATE_EVENT_PREFIX, one)
+
+                for j in range(len(self._session_tool_call_records) - 1, -1, -1):
+                    session_one = self._session_tool_call_records[j]
+                    if str(session_one.get("tool_call_id")) == target_id:
+                        self._session_tool_call_records[j] = dict(one)
+                        break
+                break
+
+        self.current_chat.meta["tool_call_records"] = records[-300:]
+
+    def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue):
+        def _callback(interim_text: str, tool_calls=None, is_placeholder: bool = False):
+            cleaned = (interim_text or "").strip()
+            raw_tool_calls = tool_calls if isinstance(tool_calls, list) else []
+            has_tool_calls = len(raw_tool_calls) > 0
+            if has_tool_calls and not cleaned:
+                cleaned = "..."
+            if not cleaned:
+                return
+
+            fallback_no_audio = has_tool_calls and bool(is_placeholder)
+            character_name = self.character_list[self.current_char_index].character_name
+            added_msg_indices: list[int] = []
+            try:
+                json_str = cleaned
+                if json_str.startswith('```'):
+                    json_str = re.sub(r'^```(?:json)?\s*', '', json_str)
+                    json_str = re.sub(r'\s*```$', '', json_str)
+                parsed_data = json.loads(json_str)
+                if isinstance(parsed_data, list):
+                    for item in parsed_data:
+                        text = item.get('text', '')
+                        if not text:
+                            continue
+                        msg = Message(
+                            character_name=character_name,
+                            text=text,
+                            translation=item.get('translation', ''),
+                            emotion=EmotionEnum.from_string(item.get('emotion', 'happiness')),
+                            audio_path="NO_AUDIO" if fallback_no_audio else ("" if self.if_generate_audio else "NO_AUDIO")
+                        )
+                        self.current_chat.add_message(msg)
+                        added_msg_indices.append(len(self.current_chat.message_list) - 1)
+                elif isinstance(parsed_data, dict):
+                    msg = Message(
+                        character_name=character_name,
+                        text=parsed_data.get('text', cleaned),
+                        translation=parsed_data.get('translation', ''),
+                        emotion=EmotionEnum.from_string(parsed_data.get('emotion', 'happiness')),
+                        audio_path="NO_AUDIO" if fallback_no_audio else ("" if self.if_generate_audio else "NO_AUDIO")
+                    )
+                    self.current_chat.add_message(msg)
+                    added_msg_indices.append(len(self.current_chat.message_list) - 1)
+                else:
+                    raise ValueError("Unexpected JSON type")
+            except (json.JSONDecodeError, KeyError, AttributeError, ValueError):
+                assistant_msg = Message(
+                    character_name=character_name,
+                    text=cleaned,
+                    translation="",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path="NO_AUDIO" if fallback_no_audio else ("" if self.if_generate_audio else "NO_AUDIO")
+                )
+                self.current_chat.add_message(assistant_msg)
+                added_msg_indices.append(len(self.current_chat.message_list) - 1)
+
+            if has_tool_calls and added_msg_indices:
+                bind_msg_index = added_msg_indices[0]
+                for one_call in raw_tool_calls:
+                    tool_call_id = str(getattr(one_call, "tool_call_id", "") or "")
+                    tool_name = str(getattr(one_call, "name", "") or "unknown")
+                    if tool_call_id:
+                        self._record_tool_call_started(
+                            dp2qt_queue=dp2qt_queue,
+                            tool_call_id=tool_call_id,
+                            tool_name=tool_name,
+                            message_index=bind_msg_index,
+                        )
+
+            # main2.main_thread 中 text_queue 与 is_text_generating_queue 是配对消费关系。
+            is_text_generating_queue.put('no_complete')
+            if fallback_no_audio:
+                text_queue.put(NO_AUDIO_TEXT_EVENT_PREFIX + cleaned)
+            else:
+                text_queue.put(cleaned)
+            self._wait_audio_turn_complete(is_audio_play_complete)
+
+        return _callback
 
     def text_generator(self,
                        text_queue,
@@ -209,59 +482,13 @@ class DSLocalAndVoiceGen:
             # 保存原始用户输入（不含指令后缀），用于存储到 Chat 中
             raw_user_input = user_input
 
-            if self.audio_language_choice=='日英混合':
-                format_prompt_json="""
-                [
-                {
-                    "text": "第一段日文原文...",
-                    "translation": "第一段日文对应的中文翻译...",
-                    "emotion": "happiness"
-                },
-                {
-                    "text": "第二段日文原文...",
-                    "translation": "第二段日文对应的中文翻译...",
-                    "emotion": "sadness"
-                }
-                ]
-                """
-            else:
-                format_prompt_json="""
-                [
-                {
-                    "text": "第一段中文原文，请务必全部用中文，一定不要有日语假名！",
-                    "emotion": "happiness"
-                },
-                {
-                    "text": "第二段中文原文，请务必全部用中文，一定不要有日语假名！",
-                    "emotion": "sadness"
-                }
-                ]
-                """
-
-            format_prompt = f"""
-            请严格以 JSON 数组（Array）的格式输出你的回复。
-
-            【分段规则】
-            为了配合语音合成的断句与呼吸节奏，请不要将所有文本挤在一起。如果你的回复较长，请根据语意停顿将其自然拆分为多个片段（建议每段包含 1 到 3 句话）。
-
-            【输出格式】
-            必须严格遵守以下 JSON 结构，不要输出任何非 JSON 的解释性文字：
-            {format_prompt_json}
-
-            【情感选项限制】
-            emotion 字段必须严格是以下单词之一（根据该段落的情感基调选择）：
-            "happiness", "sadness", "anger", "surprise", "fear", "disgust", "like", "neutral"
-            """
-
-            user_input=user_input+format_prompt
-
             if self.if_sakiko:
                 if self.sakiko_state:
                     user_input = user_input +'（本句话用黑祥语气回答!）'
                 else:
                     user_input = user_input + '（本句话用白祥语气回答!）'
 
-            # -----------------------------
+            user_input = user_input + "\n" + self.restr +"\n" + self._build_every_round_instruction()  # 在用户输入后追加格式要求信息，减少上下文稀释的影响
             # 将原始用户输入（不含指令后缀）存入 Chat
             user_msg = Message(
                 character_name="User",
@@ -274,7 +501,7 @@ class DSLocalAndVoiceGen:
 
             # 构建 LLM 请求：使用 Chat.build_llm_query 生成基础历史，然后修改最后一条用户消息为带指令后缀的版本
             character_name = self.character_list[self.current_char_index].character_name
-            to_llm_msg = self.current_chat.build_llm_query(perspective=character_name)
+            to_llm_msg = self.current_chat.build_llm_query(perspective=character_name, is_simplify=True)  # 生成简化版本的消息列表，减少不必要的字段
 
             # 将最后一条 user 消息的 content 替换为带指令后缀的版本
             for i in range(len(to_llm_msg) - 1, -1, -1):
@@ -284,68 +511,57 @@ class DSLocalAndVoiceGen:
                     break
 
             # 添加限制信息到 system prompt
-            if to_llm_msg and to_llm_msg[0]['role'] == 'system':
-                to_llm_msg[0]['content'] += self.restr
+            runtime_system_instruction =self._build_runtime_system_instruction()
+            system_idx = -1
+            for idx, one in enumerate(to_llm_msg):
+                if one.get("role") == "system":
+                    system_idx = idx
+                    break
+            if system_idx >= 0:
+                to_llm_msg[system_idx]['content'] += "\n" + runtime_system_instruction
+            else:
+                to_llm_msg.insert(0, {"role": "system", "content": runtime_system_instruction})
 
             message_queue.put(f"{character_name}思考中...")
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
             # --------------------------
-            # 优先处理使用 Up API 的情况
-
             try:
-                if d_sakiko_config.use_default_deepseek_api.value:
-                    print("使用 UP 的 DeepSeek API 进行对话生成")
-                    response = completion(
-                        model="deepseek/deepseek-chat",
-                        messages=self.trim_list_to_340kb(to_llm_msg),
-                        api_key=self.model,
-                        stream=False,
-                        timeout=30
-                    )
-                # 第二优先级是检查自定义 API Url
-                # 只要存在自定义 API，就使用自定义 API
-                elif d_sakiko_config.enable_custom_llm_api_provider.value:
-                    print("使用自定义大模型 API 进行对话生成")
-                    print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
-                    print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
-                    response = completion(
-                        # 自定义 API 与 OpenAI 兼容，litellm 需要通过 openai/ 前缀路由
-                        model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
-                        messages=self.trim_list_to_340kb(to_llm_msg),
-                        api_key=d_sakiko_config.custom_llm_api_key.value,
-                        # 自定义 API 地址
-                        base_url=d_sakiko_config.custom_llm_api_url.value,
-                        stream=False,
-                        timeout=30
-                    )
-                # 最后：使用选择的预定义 API 提供商
-                else:
-                    print("使用预定义大模型 API 进行对话生成")
-                    print("Provider: ", d_sakiko_config.llm_api_provider.value)
-                    print("Model: ",
-                          d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
-                    provider = d_sakiko_config.llm_api_provider.value
-                    model = d_sakiko_config.llm_api_model.value.get(provider, "")
-                    api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
-                    base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
+                # 构造 interim_callback（期间文本回调），用于接收大模型在决定调用工具前输出的“过渡台词”（如：“请稍等，我查一下天气”）
+                # 该回调收到文本后会迅速将其推入 text_queue，触发前端的文字显示和后端的 GPT-SoVITS 语音合成。
+                interim_callback = self._build_interim_message_callback(
+                    text_queue=text_queue,
+                    is_audio_play_complete=is_audio_play_complete,
+                    is_text_generating_queue=is_text_generating_queue,
+                    dp2qt_queue=dp2qt_queue,
+                )
+                
+                # 启动带有工具调用能力的 Agent 运行循环
+                # run() 内部会处理多轮 LLM 对话（如果触发了工具），直到提取出最终回答或达到循环上限才会返回 result。
+                runtime_result = self.tool_runtime.run(
+                    model="tool-runtime",
+                    messages=self.trim_list_to_340kb(to_llm_msg),
+                    llm_kwargs={"stream": False, "timeout": 30},
+                    on_interim_message=interim_callback,
+                )
 
-                    if base_url:
-                        response = completion(
-                            model=self.normalize_model_for_provider(provider, model),
-                            messages=self.trim_list_to_340kb(to_llm_msg),
-                            api_key=api_key,
-                            stream=False,
-                            timeout=30,
-                            base_url=base_url,
-                        )
-                    else:
-                        response = completion(
-                            model=self.normalize_model_for_provider(provider, model),
-                            messages=self.trim_list_to_340kb(to_llm_msg),
-                            api_key=api_key,
-                            stream=False,
-                            timeout=30
-                        )
+                for one_tool_exec in runtime_result.tool_execution_records:
+                    self._record_tool_call_completed(dp2qt_queue, one_tool_exec)
+
+                cleaned_text_of_model_response = runtime_result.final_content.strip()
+
+                # 为后续上下文压缩和调试保留最小工具轨迹。
+                tool_trace = self.current_chat.meta.get("tool_call_history", [])
+                if not isinstance(tool_trace, list):
+                    tool_trace = []
+                tool_trace.append(
+                    {
+                        "time": int(time.time()),
+                        "role": character_name,
+                        "tool_rounds": runtime_result.tool_rounds,
+                        "tool_errors": runtime_result.tool_errors,
+                    }
+                )
+                self.current_chat.meta["tool_call_history"] = tool_trace[-100:]
 
             except litellm.exceptions.Timeout:
                 self.report_message_to_main_ui(
@@ -411,15 +627,13 @@ class DSLocalAndVoiceGen:
 
                 continue
 
-            if not isinstance(response, ModelResponse) or response.choices[0].message.content is None:
+            if not cleaned_text_of_model_response:
                 self.report_message_to_main_ui(
                     message_queue,
                     is_text_generating_queue,
                     "模型API返回内容为空，请检查网络，然后重试一下吧"
                 )
                 continue
-
-            cleaned_text_of_model_response = response.choices[0].message.content.strip()
             # 解析 LLM 回复的 JSON 格式，提取实际文本、翻译和情感
             # 现在 LLM 可能返回 JSON 数组（多段回复），每段创建一个 Message
             try:

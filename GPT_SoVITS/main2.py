@@ -27,6 +27,8 @@ import faulthandler
 
 faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 
+NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
+
 def merge_short_sentences(sentences, min_length=25):
     merged = []
     i = 0
@@ -141,6 +143,13 @@ def main_thread():
                 QT_message_queue.put('bye')
                 break
 
+            if isinstance(this_turn_response, str) and this_turn_response.startswith(NO_AUDIO_TEXT_EVENT_PREFIX):
+                no_audio_text = this_turn_response[len(NO_AUDIO_TEXT_EVENT_PREFIX):]
+                dp2qt_queue.put(no_audio_text)
+                is_audio_play_complete.put('yes')
+                is_text_generating_queue.get()  # 让模型停止思考动作
+                continue
+
             audio_gen.audio_language_choice = dp_chat.audio_language_choice
             QT_message_queue.put("整理语言...")
 
@@ -175,20 +184,19 @@ def main_thread():
                         time.sleep(1)
 
                 if audio_generate_count != 1:
-                    # 语音合成失败或未启用
-                    audio_file_path_queue.put('../reference_audio/silent_audio/silence.wav')
+                    # 语音合成失败或未启用，让模型停止思考动作
                     if i == 0:
-                        is_text_generating_queue.get()  # 让模型停止思考动作
+                        is_text_generating_queue.get()  
 
-                    # 将全部剩余文本和翻译一次性传给 qtUI 显示
-                    remaining_texts = [s[0] for s in segments[i:]]
-                    remaining_trans = [s[1] for s in segments[i:] if s[1]]
-                    if remaining_trans:
-                        dp2qt_queue.put(''.join(remaining_texts) + '\n[翻译]' + ''.join(remaining_trans) + '[翻译结束]')
-                    else:
-                        dp2qt_queue.put(''.join(remaining_texts))
-                    live2d_player.new_text = ''.join(remaining_texts)
-                    emotion_queue.put(emotion_label)
+                    # 将全部剩余文本和翻译逐段传给 qtUI 展示，必须逐段传以保证和 message_list 数量一一对应消耗
+                    for rem_text, rem_trans, rem_emotion in segments[i:]:
+                        audio_file_path_queue.put('../reference_audio/silent_audio/silence.wav')
+                        if rem_trans:
+                            dp2qt_queue.put(rem_text + '\n[翻译]' + rem_trans + '[翻译结束]')
+                        else:
+                            dp2qt_queue.put(rem_text)
+                        emotion_queue.put(rem_emotion)
+                        time.sleep(0.05)  # 稍微让出排队时间
                     break
 
                 # 语音合成成功 —— 等待上一段播放完毕（避免打断）
@@ -201,7 +209,7 @@ def main_thread():
                     is_text_generating_queue.get()  # 第一段合成完后让模型停止思考动作
 
                 # 等待当前播放完毕后再送文本到 qtUI（保持顺序）
-                while not live2d_player.live2d_this_turn_motion_complete:
+                while not motion_complete_value.value:
                     time.sleep(0.5)
 
                 # 将本段文本和翻译传给 qtUI 显示
@@ -209,7 +217,6 @@ def main_thread():
                     dp2qt_queue.put(text + '\n[翻译]' + translation + '[翻译结束]')
                 else:
                     dp2qt_queue.put(text)
-                live2d_player.new_text = re.sub(r"（.*?）", '', text).strip()
                 emotion_queue.put(emotion_label)
 
             is_audio_play_complete.put('yes')  # 本轮全部段落处理完毕
@@ -358,6 +365,7 @@ if __name__=='__main__':
     # live2d 模块（该模块为不同进程）
     # 在 MacOS 下，所有的 NSWindow（Qt 窗口）只能在独立进程中创建，不可以在子线程中创建窗口。
     # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
+    print("\n加载Live2D界面中...",flush=True)
     tr1=multiprocessing.Process(target=run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h))
     # LLM 生成模块（该模块为不同线程）
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,

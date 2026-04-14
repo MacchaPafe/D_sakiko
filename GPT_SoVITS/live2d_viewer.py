@@ -126,6 +126,7 @@ class Live2DModule:
         if os.name == 'nt':
             try:
                 import ctypes
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
                 caption_height = (ctypes.windll.user32.GetSystemMetrics(4)
                                 +ctypes.windll.user32.GetSystemMetrics(33)
                                 +ctypes.windll.user32.GetSystemMetrics(92))    # 标题栏高度+厚度
@@ -870,7 +871,6 @@ if __name__ == "__main__":
 
     desktop_w = QDesktopWidget().screenGeometry().width()
     desktop_h = QDesktopWidget().screenGeometry().height()
-
     live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h))
 
     screen_w_mid = int(0.5 * desktop_w)

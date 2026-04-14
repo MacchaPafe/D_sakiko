@@ -22,6 +22,10 @@ from character import PrintInfo
 from chat.chat import ChatManager, Chat, Message, get_chat_manager
 from emotion_enum import EmotionEnum
 
+
+TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
+TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
+
 class ThemeManager: #主题颜色设定
     @staticmethod
     def generate_stylesheet(base_hex_color):
@@ -400,6 +404,36 @@ class WarningWindow(QDialog):
             self.confirm_btn.clicked.connect(parent_window_fun)  # noqa
         self.confirm_btn.clicked.connect(self.close)  # noqa
         self.cancel_btn.clicked.connect(self.close)  # noqa
+
+
+class ToolCallInfoDialog(QDialog):
+    def __init__(self, parent, record: dict):
+        super().__init__(parent)
+        self.setWindowTitle("工具调用详情")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.resize(520, 380)
+
+        tool_name = str(record.get("tool_name") or "unknown")
+        status = str(record.get("status") or "running")
+        duration = record.get("duration_sec")
+        result_content = str(record.get("result_content") or "工具运行中...")
+
+        status_text = "工具运行中..." if status != "completed" else f"运行完成 {float(duration or 0.0):.2f} 秒"
+
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel(f"工具名称: {tool_name}"))
+        layout.addWidget(QLabel(f"状态: {status_text}"))
+
+        result_box = QTextBrowser()
+        result_box.setPlainText(result_content)
+        layout.addWidget(result_box)
+
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.close)  # noqa
+        layout.addWidget(close_btn)
+
+        self.setLayout(layout)
+        self.setStyleSheet(dialogWindowDefaultCss)
 
 
 class SettingWindow(QDialog):
@@ -898,7 +932,7 @@ class ChatGUI(QWidget):
         self.chat_display = ChatTextBrowser(self)
         self.chat_display.setPlaceholderText("这里显示聊天记录...")
         self.chat_display.setOpenExternalLinks(False)
-        self.chat_display.anchorClicked.connect(self.play_history_audio)  # noqa
+        self.chat_display.anchorClicked.connect(self.on_chat_anchor_clicked)  # noqa
         self.chat_display.setOpenLinks(False)
 
         self.messages_box = QTextBrowser()
@@ -963,14 +997,16 @@ class ChatGUI(QWidget):
         self.chat_manager: ChatManager = self.dp_chat.chat_manager
         # 为每个角色获取对应的 Chat 对象列表（与 dp_chat.character_chats 是相同的对象引用）
         self.character_chats: list[Chat] = self.dp_chat.character_chats
+        self.tool_call_records_cache: dict[str, dict] = {}
 
         # 获取当前主题色
         self._current_theme_color = self._get_theme_color()
 
-        # 使用 Chat.to_display_html() 渲染初始聊天记录
-        initial_html = self.current_chat.to_display_html(self._current_theme_color)
+        # 使用统一渲染器渲染初始聊天记录（含工具调用状态行）
+        initial_html = self._build_chat_html_with_tool_records()
         if initial_html:
             self.chat_display.setHtml(initial_html)
+        self._load_tool_call_records_cache()
 
         if self.character_list[self.current_char_index].icon_path is not None:  # noqa
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))  # noqa
@@ -1088,11 +1124,133 @@ class ChatGUI(QWidget):
         """获取当前角色对应的 Chat 对象"""
         return self.character_chats[self.current_char_index]
 
+    def _load_tool_call_records_cache(self):
+        self.tool_call_records_cache = {}
+        records = self.current_chat.meta.get("tool_call_records", [])
+        if not isinstance(records, list):
+            return
+        for one in records:
+            if not isinstance(one, dict):
+                continue
+            tool_call_id = str(one.get("tool_call_id") or "")
+            if tool_call_id:
+                self.tool_call_records_cache[tool_call_id] = one
+
+    def _append_tool_status_line(self, tool_call_id: str, text: str, status: str = "running"):
+        # 统一的小字号与颜色
+        unified_color = "#B3D1F2"
+        
+        safe_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
+        # if status == "completed":
+        #     bg_color = "#f6ffed"  # 淡绿
+        #     border_color = "#b3e19d"
+        # else:
+        #     bg_color = "#e6f1fc"  # 淡蓝
+        #     border_color = "#a0cfff"
+            
+        style = f"color: {unified_color}; font-size: normal; font-style: normal;"
+        
+        self.chat_display.append(
+            f'<div style="margin-top: 0px; margin-bottom: 0px;">'
+            f'<a href="toolcall:{tool_call_id}" style="text-decoration: none;">'
+            f'<span style="{style}">{safe_text}</span>'
+            f'</a>'
+            f'</div>'
+        )
+
+    def _handle_tool_call_start_event(self, payload: dict):
+        tool_call_id = str(payload.get("tool_call_id") or "")
+        if not tool_call_id:
+            return
+        self.tool_call_records_cache[tool_call_id] = payload
+        tool_name = str(payload.get("tool_name") or "unknown")
+        self._append_tool_status_line(tool_call_id, f"<正在调用工具...>", status="running")
+
+    def _handle_tool_call_update_event(self, payload: dict):
+        tool_call_id = str(payload.get("tool_call_id") or "")
+        if not tool_call_id:
+            return
+        self.tool_call_records_cache[tool_call_id] = payload
+        tool_name = str(payload.get("tool_name") or "unknown")
+        duration_sec = float(payload.get("duration_sec") or 0.0)
+        self._append_tool_status_line(tool_call_id, f"<工具调用完成 {duration_sec:.2f}秒>", status="completed")
+
+    def _open_tool_call_dialog(self, tool_call_id: str):
+        record = self.tool_call_records_cache.get(tool_call_id)
+        if record is None:
+            record = {
+                "tool_call_id": tool_call_id,
+                "tool_name": "unknown",
+                "status": "running",
+                "result_content": "未找到该工具调用记录。",
+            }
+        dialog = ToolCallInfoDialog(self, record)
+        dialog.exec_()
+
+    def on_chat_anchor_clicked(self, anchor_url: QUrl):
+        url_text = anchor_url.toString()
+        if url_text.startswith("toolcall:"):
+            tool_call_id = url_text[len("toolcall:"):]
+            self._open_tool_call_dialog(tool_call_id)
+            return
+        self.play_history_audio(anchor_url)
+
     def _get_theme_color(self) -> str:
         """获取当前角色的主题色"""
         if self.character_list[self.current_char_index].qt_css is not None:
             return ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
         return '#7799CC'
+
+    def _tool_record_to_html(self, record: dict) -> str:
+        tool_call_id = str(record.get("tool_call_id") or "")
+        tool_name = str(record.get("tool_name") or "unknown")
+        status = str(record.get("status") or "running")
+        duration_sec = float(record.get("duration_sec") or 0.0)
+        
+        unified_color = "#B3D1F2"
+        
+        if status == "completed":
+            text = f"<工具调用完成 {duration_sec:.2f}秒>"
+            # bg_color = "#f6ffed"
+            # border_color = "#b3e19d"
+        else:
+            text = f"<正在调用工具...>"
+            # bg_color = "#e6f1fc"
+            # border_color = "#a0cfff"
+            
+        safe_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        style = f"color: {unified_color}; font-size: normal; font-style: normal;"
+        
+        return (
+            f'<div style="margin-top: 0px; margin-bottom: 0px;">'
+            f'<a href="toolcall:{tool_call_id}" style="text-decoration: none;">'
+            f'<span style="{style}">{safe_text}</span>'
+            f'</a>'
+            f'</div>'
+        )
+
+    def _build_chat_html_with_tool_records(self) -> str:
+        records = self.current_chat.meta.get("tool_call_records", [])
+        records_by_index: dict[int, list[dict]] = {}
+        if isinstance(records, list):
+            for one in records:
+                if not isinstance(one, dict):
+                    continue
+                msg_index = one.get("message_index")
+                if not isinstance(msg_index, int):
+                    continue
+                records_by_index.setdefault(msg_index, []).append(one)
+
+        html_parts = []
+        for i, msg in enumerate(self.current_chat.message_list):
+            # 将该条对话涉及到的所有内容封装在一个块里，使用 <br> 或直接拼接
+            msg_block = []
+            for one in records_by_index.get(i, []):
+                msg_block.append(self._tool_record_to_html(one))
+            msg_block.append(msg.to_display_html(self._current_theme_color, msg_index=i))
+            html_parts.append("".join(msg_block))
+        return "<br><br>".join(html_parts)
 
     def _refresh_chat_display(self):
         """从 Chat 数据重新生成 HTML 并刷新显示，保留滚动条位置"""
@@ -1100,7 +1258,7 @@ class ChatGUI(QWidget):
         saved_position = scroll_bar.value()
         was_at_bottom = (saved_position == scroll_bar.maximum())
 
-        new_html = self.current_chat.to_display_html(self._current_theme_color)
+        new_html = self._build_chat_html_with_tool_records()
         # with open(f'{self.character_list[self.current_char_index].character_folder_name}_chat.html','w',encoding='utf-8') as f:
         #     f.write(new_html)
         self.chat_display.setHtml(new_html)
@@ -1454,6 +1612,7 @@ class ChatGUI(QWidget):
 
         # 从 Chat 数据重新渲染 HTML
         self._refresh_chat_display()
+        self._load_tool_call_records_cache()
         if self.character_list[self.current_char_index].icon_path is not None:  # noqa
             self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))  # noqa
         self.talk_speed_reset()  #切换角色后重置默认语速
@@ -1466,6 +1625,24 @@ class ChatGUI(QWidget):
             self.dp_chat.if_generate_audio=True
 
     def handle_response(self,response_text):
+        if response_text.startswith(TOOL_CALL_START_EVENT_PREFIX):
+            payload_str = response_text[len(TOOL_CALL_START_EVENT_PREFIX):]
+            try:
+                payload = json.loads(payload_str)
+            except json.JSONDecodeError:
+                payload = {}
+            self._handle_tool_call_start_event(payload)
+            return
+
+        if response_text.startswith(TOOL_CALL_UPDATE_EVENT_PREFIX):
+            payload_str = response_text[len(TOOL_CALL_UPDATE_EVENT_PREFIX):]
+            try:
+                payload = json.loads(payload_str)
+            except json.JSONDecodeError:
+                payload = {}
+            self._handle_tool_call_update_event(payload)
+            return
+
         if response_text=='changechange':
             self.change_char()
             return
@@ -1496,15 +1673,16 @@ class ChatGUI(QWidget):
                 break  # 找到第一条未处理的
 
         msg_param = f"?msg={msg_index}" if msg_index is not None else ""
+        force_no_audio = (target_msg is not None and target_msg.audio_path == "NO_AUDIO")
 
-        if self.dp_chat.if_generate_audio and response_text!='（再见）':
+        if self.dp_chat.if_generate_audio and response_text!='（再见）' and not force_no_audio:
             emotion = 'LABEL_0'
             if target_msg is not None:
                 emotion = target_msg.emotion.as_label()
 
             abs_path = os.path.abspath(self.audio_gen.audio_file_path).replace('\\', '/')
             self.chat_display.append(f'<a href="{abs_path}[{emotion}]{msg_param}" style="text-decoration: none; color: {text_color};">★{character_name}：</a>')     #将emotion藏进路径中，回来解包一下即可  # noqa
-            self.live2d_text_queue.put(self.full_response+self.translation)    #更新live2d文本框的内容显示
+            self.live2d_text_queue.put(self.full_response)    #更新live2d文本框的内容显示
 
             # 更新该条 AI 消息的 audio_path 和 translation
             if target_msg is not None:

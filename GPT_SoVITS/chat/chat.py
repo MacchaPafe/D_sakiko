@@ -749,11 +749,12 @@ class Chat:
             characters.add(msg.character_name)
         return list(characters)
 
-    def build_llm_query(self, perspective: str) -> List[Dict]:
+    def build_llm_query(self, perspective: str, is_simplify: bool=False) -> List[Dict]:
         """
         根据当前对话内容，构建用于发送给 LLM 的对话历史列表
 
         :param perspective: 当前该说话的角色，可以从当前对话中涉及的角色选择，或者使用 "User" 选中用户视角（通常情况下，不应当选择 "User"，因为你不会希望 LLM 代替你说话的）
+        :param is_simplify: 是否为主程序简化消息json
         :returns: 用于 LLM 的对话历史列表
         """
         llm_history = []
@@ -786,10 +787,10 @@ class Chat:
         if not has_start_message and llm_history and llm_history[0]["role"] == "assistant":
             warnings.warn("当前对话没有设置起始消息，如果该对话为小剧场对话，可能会导致 LLM 生成质量下降和 API 请求错误。")
 
-        return self.merge_llm_query(llm_history)
+        return self.merge_llm_query(llm_history, is_simplify)
 
     @staticmethod
-    def merge_llm_query(message_list: List[Dict]) -> List[Dict]:
+    def merge_llm_query(message_list: List[Dict], is_simplify: bool = False) -> List[Dict]:
         """
         直接修改 message_list 的内容，将所有相邻的 role 相同的消息合并为一条消息，以遵循 LLM 的对话格式要求
         请注意：列表会被原地修改，返回值和输入参数是同一个对象
@@ -809,6 +810,34 @@ class Chat:
         # 清空原列表并添加合并后的内容
         message_list.clear()
         message_list.extend(merged_list)
+        return message_list if not is_simplify else Chat._simplify_llm_query(message_list)
+
+    @staticmethod
+    def _simplify_llm_query(message_list: List[Dict]) -> List[Dict]:
+        """
+        将 message_list 中所有 assistant 消息的 content 从多行 JSON 格式简化为单行 JSON 格式，
+        并且仅保留 text 和 translation 两个字段，以适配主程序的对话记录格式要求
+        """
+        for msg in message_list:
+            if msg["role"] == "assistant":
+                # 将通过 \n 拼起来的多行 JSON (JSONL格式) 解析出来
+                lines = msg["content"].strip().split('\n')
+                simplified_content = {"text":"", "translation":"","emotion":""}
+                succeed=True
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                        # 仅提取所需的两个字段
+                        simplified_content["text"] += data.get("text", "")
+                        simplified_content["translation"] += data.get("translation", "")
+                        simplified_content["emotion"] += data.get("emotion", "")
+                    except json.JSONDecodeError:
+                        succeed=False
+                        pass
+                if succeed:
+                    msg["content"] = json.dumps(simplified_content, ensure_ascii=False)
         return message_list
 
     def add_message(self, message: Message) -> None:
