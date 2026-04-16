@@ -2,6 +2,7 @@ import os.path
 import re
 import time
 import json
+import random
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -25,6 +26,7 @@ from emotion_enum import EmotionEnum
 
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
+LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 
 class ThemeManager: #主题颜色设定
     @staticmethod
@@ -407,11 +409,11 @@ class WarningWindow(QDialog):
 
 
 class ToolCallInfoDialog(QDialog):
-    def __init__(self, parent, record: dict):
+    def __init__(self, parent, record: dict, win_size: tuple[int, int]):
         super().__init__(parent)
         self.setWindowTitle("工具调用详情")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.resize(520, 380)
+        self.resize(*win_size)
 
         tool_name = str(record.get("tool_name") or "unknown")
         status = str(record.get("status") or "running")
@@ -434,6 +436,131 @@ class ToolCallInfoDialog(QDialog):
 
         self.setLayout(layout)
         self.setStyleSheet(dialogWindowDefaultCss)
+
+
+class LotteryDialog(QDialog):
+    def __init__(self, title: str, options: list[str], on_result, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title or "随机抽签")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.screen = QDesktopWidget().screenGeometry()
+        self.resize(int(self.screen.width() * 0.2), int(self.screen.height() * 0.35))
+        
+        self.options = [str(one).strip() for one in options if str(one).strip()]
+        self.on_result = on_result
+        self.current_highlight_index = -1
+        self.winner_index = -1
+        self.animation_step = 0
+        self.total_animation_steps = 0
+        self.animation_running = False
+
+        font_size = max(12, int(self.screen.height() * 0.014))
+        
+        layout = QVBoxLayout()
+        tip = QLabel("点击“开始抽签”进行随机抽奖吧！")
+        tip.setStyleSheet(f"font-size: {font_size}px; font-weight: bold;")
+        tip.setAlignment(Qt.AlignCenter)
+        layout.addWidget(tip)
+
+        self.options_box = QTextBrowser()
+        self.options_box.setOpenLinks(False)
+        self.options_box.setStyleSheet(f"font-size: {font_size - 2}px; border: none; background: transparent;")
+        layout.addWidget(self.options_box)
+        self._render_options(-1)
+
+        self.result_label = QLabel("")
+        self.result_label.setAlignment(Qt.AlignCenter)
+        self.result_label.setStyleSheet(f"font-size: {font_size}px; font-weight: bold; color: #ff5c5c;")
+        layout.addWidget(self.result_label)
+
+        btn_layout = QHBoxLayout()
+        self.draw_btn = QPushButton("开始抽签")
+        self.draw_btn.setMinimumHeight(int(self.screen.height() * 0.03))
+        self.draw_btn.setStyleSheet(f"font-size: {font_size}px;")
+        self.draw_btn.clicked.connect(self.draw_once)  # noqa
+        
+        close_btn = QPushButton("关闭")
+        close_btn.setMinimumHeight(int(self.screen.height() * 0.03))
+        close_btn.setStyleSheet(f"font-size: {font_size}px;")
+        close_btn.clicked.connect(self.close)  # noqa
+        
+        btn_layout.addWidget(self.draw_btn)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self._on_animation_tick)  # noqa
+
+        self.setLayout(layout)
+        
+        # 继承父窗口(ChatGUI)的主题色设定
+        if parent and hasattr(parent, '_current_theme_color'):
+            self.setStyleSheet(ThemeManager.generate_stylesheet(parent._current_theme_color))
+        else:
+            self.setStyleSheet(dialogWindowDefaultCss)
+
+    def _render_options(self, highlight_index: int):
+        lines: list[str] = []
+        pad_y = int(self.screen.height() * 0.006)
+        pad_x = int(self.screen.width() * 0.005)
+        for idx, one in enumerate(self.options):
+            safe_text = one.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            if idx == highlight_index:
+                lines.append(
+                    f"<div style='padding: {pad_y-1}px {pad_x-1}px; margin: 4px 0; background-color: #ffd666; color: #000; border-radius: 8px; font-weight:bold; text-align: center; border: 2px solid #ffa940;'>"
+                    + f"—>{safe_text}"
+                    + "</div>"
+                )
+            else:
+                lines.append(
+                    f"<div style='padding: {pad_y}px {pad_x}px; margin: 4px 0; background-color: rgba(0, 0, 0, 0.05); color: inherit; border-radius: 8px; text-align: center;'>"
+                    + f"{safe_text}"
+                    + "</div>"
+                )
+        self.options_box.setHtml("".join(lines))
+
+    def _on_animation_tick(self):
+        if not self.options:
+            self.animation_timer.stop()
+            self.animation_running = False
+            return
+
+        if self.animation_step < self.total_animation_steps:
+            self.current_highlight_index = (self.current_highlight_index + 1) % len(self.options)
+            self._render_options(self.current_highlight_index)
+            self.animation_step += 1
+            
+            # ease-out - gradually slow down the animation timer
+            if self.total_animation_steps - self.animation_step < 10:
+                slow_down = 100 + (10 - (self.total_animation_steps - self.animation_step)) * 20
+                self.animation_timer.setInterval(slow_down)
+            
+            return
+
+        self.animation_timer.stop()
+        self.animation_running = False
+        self.current_highlight_index = self.winner_index
+        self._render_options(self.current_highlight_index)
+        winner = self.options[self.winner_index]
+        self.result_label.setText(f"抽签结果：{winner}")
+        if callable(self.on_result):
+            self.on_result(winner)
+
+    def draw_once(self):
+        if not self.options:
+            self.result_label.setText("没有可抽取的候选项")
+            return
+
+        if self.animation_running:
+            return
+
+        self.winner_index = random.randint(0, len(self.options) - 1)
+        self.animation_step = 0
+        self.total_animation_steps = max(len(self.options) * 4 + random.randint(0, len(self.options)), 25)
+        self.animation_running = True
+        self.result_label.setText("抽签中...")
+        self.draw_btn.setEnabled(False)
+        self.animation_timer.start(50)
 
 
 class SettingWindow(QDialog):
@@ -1012,7 +1139,11 @@ class ChatGUI(QWidget):
         # 为每个角色获取对应的 Chat 对象列表（与 dp_chat.character_chats 是相同的对象引用）
         self.character_chats: list[Chat] = self.dp_chat.character_chats
         self.tool_call_records_cache: dict[str, dict] = {}
-
+        #---------------------消息命令处理机制 从引入抽奖工具开始构建---------------------
+        self._message_command_handlers: dict[str, callable] = {}
+        self._lottery_dialog_ref = None
+        self._register_message_command_handler(LOTTERY_UI_EVENT_PREFIX, self._handle_lottery_ui_command)
+        #----------------------------------------------------------
         # 获取当前主题色
         self._current_theme_color = self._get_theme_color()
 
@@ -1199,7 +1330,7 @@ class ChatGUI(QWidget):
                 "status": "running",
                 "result_content": "未找到该工具调用记录。",
             }
-        dialog = ToolCallInfoDialog(self, record)
+        dialog = ToolCallInfoDialog(self, record,win_size=(int(self.screen.width()*0.2), int(self.screen.height()*0.3)))
         dialog.exec_()
 
     def on_chat_anchor_clicked(self, anchor_url: QUrl):
@@ -1814,10 +1945,65 @@ class ChatGUI(QWidget):
             PrintInfo.print_error(f"[Error]保存聊天记录失败：{e}")
             self.setWindowTitle("保存聊天记录失败！")
 
+    def _register_message_command_handler(self, command_prefix: str, handler):
+        """注册来自消息队列的特殊命令处理器。"""
+        if command_prefix and callable(handler):
+            self._message_command_handlers[command_prefix] = handler
+
+    def _dispatch_message_command(self, message: str) -> bool:
+        """尝试把消息作为特殊命令分发处理；命中则返回 True。"""
+        for prefix, handler in self._message_command_handlers.items():
+            if message.startswith(prefix):
+                payload = message[len(prefix):]
+                handler(payload)
+                return True
+        return False
+
+    def _handle_lottery_ui_command(self, payload_text: str):
+        """处理抽签窗口打开命令，命令负载为 JSON。"""
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            self.messages_box.clear()
+            self.messages_box.append("抽签命令解析失败：JSON 格式错误")
+            return
+
+        title = str(payload.get("title") or "随机抽签")
+        options_raw = payload.get("options") or []
+        if not isinstance(options_raw, list):
+            self.messages_box.clear()
+            self.messages_box.append("抽签命令解析失败：options 不是数组")
+            return
+
+        options = [str(one).strip() for one in options_raw if str(one).strip()]
+        if len(options) < 2:
+            self.messages_box.clear()
+            self.messages_box.append("抽签命令解析失败：候选项少于 2 个")
+            return
+
+        def _on_lottery_result(winner: str):
+            internal_event = (
+                f"【系统内部事件触发：抽签结束】抽签主题：{title}。"
+                f"用户已点击抽签，结果是：{winner}。"
+                "请你自然地继续对话并结合这个结果给出建议。"
+            )
+            self.qt2dp_queue.put(internal_event)
+            self.messages_box.clear()
+            self.messages_box.append(f"抽签结果：{winner}")
+
+        dialog = LotteryDialog(title=title, options=options, on_result=_on_lottery_result, parent=self)
+        self._lottery_dialog_ref = dialog
+        dialog.show()
+
     def handle_messages(self,message):
         if message=='bye':
             self.save_data()
             self.close()
+            return
+
+        if self._dispatch_message_command(message):
+            return
+
         self.messages_box.clear()
         self.messages_box.append(message)
 

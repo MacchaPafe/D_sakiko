@@ -20,6 +20,7 @@ from emotion_enum import EmotionEnum
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
+LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 
 
 class DSLocalAndVoiceGen:
@@ -403,18 +404,40 @@ class DSLocalAndVoiceGen:
                        change_char_queue,
                        AudioGenerator):
         
-        # --- 注册依赖前端环境的动态工具（为Live2D换装工具用） ---
+        # --- 定时提醒功能支持 ---
+        from chat.reminder_manager import ReminderManager
+        # 使用闭包回调直接将消息推入当前函数内的 qt2dp_queue，让下一次循环被读写
+        reminder_mgr = ReminderManager(trigger_callback=lambda msg: qt2dp_queue.put(msg))
+        
+        # --- 注册依赖前端环境的动态工具 ---
         def _get_char_folder() -> str:
             return self.character_list[self.current_char_index].character_folder_name
 
         def _change_live2d_model(new_model_json: str) -> None:
             change_char_queue.put(f'change_l2d_model#{new_model_json}')
 
-        from chat.tool_calling import register_live2d_tools
+        from chat.tool_calling import register_live2d_tools, register_reminder_tool, register_lottery_tool
+
+        def _show_lottery_ui(title: str, options: list[str]) -> bool:
+            payload = {
+                "title": title,
+                "options": options,
+            }
+            message_queue.put(LOTTERY_UI_EVENT_PREFIX + json.dumps(payload, ensure_ascii=False))
+            return True
+
         register_live2d_tools(
             self.tool_runtime.tool_registry,
             get_char_folder_func=_get_char_folder,
             change_model_func=_change_live2d_model
+        )
+        register_reminder_tool(
+            self.tool_runtime.tool_registry,
+            add_reminder_func=reminder_mgr.add_reminder
+        )
+        register_lottery_tool(
+            self.tool_runtime.tool_registry,
+            show_lottery_ui_func=_show_lottery_ui
         )
         # ---------------------------------
 

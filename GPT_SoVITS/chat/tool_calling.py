@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import subprocess
+import sys
 import time
 import traceback
 import uuid
@@ -258,6 +259,11 @@ class ToolCallingAgentRuntime:
 
             # 遍历并执行所有工具调用，将结果转化为 tool 消息压入历史中供下一轮循环读取
             for call in tool_calls:
+                # 抽签窗口属于强交互型 UI，优先等待过渡文本播报完成后再弹出，避免体验割裂。
+                if call.name == "start_lottery" and pending_interim_future is not None:
+                    pending_interim_future.result()
+                    pending_interim_future = None
+
                 started_at = time.time()
                 started_perf = time.perf_counter()
                 ok, tool_output = self.tool_registry.execute(call)
@@ -655,7 +661,7 @@ def build_default_tool_registry() -> ToolRegistry:
 
     registry.register_tool(
         name="get_system_hardware_status",
-        description="Get Windows hardware status like CPU load and available GPU temperature when possible.",
+        description="Get hardware status (Windows/macOS): CPU load, memory usage, and GPU info when available.",
         parameters={
             "type": "object",
             "properties": {
@@ -712,6 +718,119 @@ def build_default_tool_registry() -> ToolRegistry:
     return registry
 
 
+def register_reminder_tool(
+    registry: ToolRegistry,
+    add_reminder_func: Callable[[str, float], bool]
+) -> None:
+    """注册全局的定时提醒工具（带持久化）。"""
+    def _set_reminder_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        target_datetime_str = arguments.get('target_datetime', '')
+        content = arguments.get('content', '')
+        if not target_datetime_str or not content:
+            return {'ok': False, 'error': 'target_datetime 和 content 不能为空'}
+        
+        try:
+            dt = datetime.datetime.strptime(target_datetime_str, "%Y-%m-%d %H:%M:%S")
+            # 转为 Unix 时间戳落盘，方便后台管理线程换算或做跨时区迁移
+            target_ts = dt.timestamp()
+        except Exception as e:
+            return {'ok': False, 'error': f'时间格式解析失败，请确保格式为 YYYY-MM-DD HH:MM:SS。详细错误: {e}'}
+            
+        import time
+        if target_ts <= time.time():
+            return {'ok': False, 'error': '设定的目标唤醒时间不能早于当前系统时间'}
+            
+        success = add_reminder_func(content, target_ts)
+        if success:
+            return {'ok': True, 'message': f'成功将事件：[{content}] 设定在 {target_datetime_str} 触发。'}
+            print(f"已添加定时提醒事件：[{content}] 将在 {target_datetime_str} 触发。")
+        else:
+            return {'ok': False, 'error': '因系统原因添加失败。'}
+
+    registry.register_tool(
+        name='set_reminder',
+        description='设定一个定时提醒（闹钟），在到达指定时间后程序将通过系统内部事件隐式告诉你，你届时可自行去告知用户。当用户提出需要你等待/倒计时/特定时间点提醒他或你自己的需求时可用。必须先调用获取当前时间的工具核实现在的真实时间，加上倒计时差值或目标时刻后再准确填写参数！',
+        parameters={
+            'type': 'object',
+            'properties': {
+                'target_datetime': {
+                    'type': 'string', 
+                    'description': '具体的倒计时终点时刻，即目标响应事件的时间。格式必须严格为 YYYY-MM-DD HH:MM:SS。务必使用当前时间计算！'
+                },
+                'content': {
+                    'type': 'string',
+                    'description': '提醒的具体名目内容（事件），如"提醒用户该吃药了"'
+                }
+            },
+            'required': ['target_datetime', 'content']
+        },
+        handler=_set_reminder_handler
+    )
+
+
+def register_lottery_tool(
+    registry: ToolRegistry,
+    show_lottery_ui_func: Callable[[str, List[str]], bool]
+) -> None:
+    """注册随机抽签工具，工具执行时通过依赖注入触发前台抽签窗口。"""
+    def _start_lottery_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        title = str(arguments.get("title") or "随机抽签").strip()
+        options_raw = arguments.get("options") or []
+        if not isinstance(options_raw, list):
+            return {
+                "ok": False,
+                "error": "options 必须是字符串数组",
+            }
+
+        options: List[str] = []
+        for one in options_raw:
+            text = str(one).strip()
+            if text:
+                options.append(text)
+
+        # 去重后至少保留两项，避免“抽签”退化为单选。
+        options = list(dict.fromkeys(options))
+        if len(options) < 2:
+            return {
+                "ok": False,
+                "error": "抽签选项至少需要 2 个",
+            }
+
+        shown = show_lottery_ui_func(title, options)
+        if not shown:
+            return {
+                "ok": False,
+                "error": "前台抽签窗口创建失败",
+            }
+
+        return {
+            "ok": True,
+            "message": f"已向前台发送抽签窗口：{title}",
+            "title": title,
+            "options_count": len(options),
+        }
+
+    registry.register_tool(
+        name="start_lottery",
+        description="创建一个前台随机抽签窗口，用户点击抽签后会从给定选项里随机抽出结果。适合点餐、出行、娱乐等二选一或多选一场景。除了用户明确提出要抽签，当用户在犹豫不决时，你也可以给出几个选项然后调用这个工具。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "抽签窗口标题，如：今天中午吃什么",
+                },
+                "options": {
+                    "type": "array",
+                    "description": "抽签候选项字符串列表，建议 2-12 项",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["title", "options"],
+        },
+        handler=_start_lottery_handler,
+    )
+
 def _tool_get_current_datetime(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """具体的获取本地时间工具，包含返回默认 ISO 格式或者是指定的 strftime 格式的结果。"""
     now = datetime.datetime.now().astimezone()
@@ -728,18 +847,83 @@ def _tool_get_current_datetime(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 def _tool_get_system_hardware_status(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """具体的系统状态分析工具。获取主机设备的 CPU 占用情况、温度、显卡的详情和可运行内存记录等资源状态。"""
-    if not os.name == "nt":
-        return {
-            "ok": False,
-            "error": "unsupported_platform",
-            "message": "",
-        }   #TODO: MacOS实现
-
     include_gpu = bool(arguments.get("include_gpu", True))
-
     cpu_percent = psutil.cpu_percent(interval=0.2)
     memory = psutil.virtual_memory()
 
+    # Windows 平台：优先 NVIDIA 查询，并尝试读取 CPU 温度。
+    if os.name == "nt":
+        cpu_temp_payload = _query_cpu_temperature_psutil()
+        gpu_payload = {
+            "available": False,
+            "message": "gpu_query_disabled",
+        }
+        if include_gpu:
+            gpu_payload = _query_nvidia_gpu_status()
+
+        return {
+            "ok": True,
+            "platform": "windows",
+            "cpu": {
+                "usage_percent": cpu_percent,
+                "temperature": cpu_temp_payload,
+                "physical_cores": psutil.cpu_count(logical=False),
+                "logical_cores": psutil.cpu_count(logical=True),
+            },
+            "memory": {
+                "total": memory.total,
+                "used": memory.used,
+                "usage_percent": memory.percent,
+            },
+            "gpu": gpu_payload,
+        }
+
+    # macOS 平台：通过 system_profiler 获取硬件与图形信息。
+    if sys.platform == "darwin":
+        hardware_payload = _query_macos_hardware_overview()
+        cpu_temp_payload = _query_cpu_temperature_psutil()
+        gpu_payload = {
+            "available": False,
+            "message": "gpu_query_disabled",
+        }
+        if include_gpu:
+            gpu_payload = _query_macos_gpu_status()
+
+        return {
+            "ok": True,
+            "platform": "macos",
+            "cpu": {
+                "usage_percent": cpu_percent,
+                "temperature": cpu_temp_payload,
+                "physical_cores": psutil.cpu_count(logical=False),
+                "logical_cores": psutil.cpu_count(logical=True),
+                "chip": hardware_payload.get("chip"),
+                "cpu_model": hardware_payload.get("cpu_model"),
+            },
+            "memory": {
+                "total": memory.total,
+                "used": memory.used,
+                "usage_percent": memory.percent,
+                "physical_memory_text": hardware_payload.get("physical_memory_text"),
+            },
+            "gpu": gpu_payload,
+            "hardware": {
+                "model_name": hardware_payload.get("model_name"),
+                "model_identifier": hardware_payload.get("model_identifier"),
+                "serial_number": hardware_payload.get("serial_number"),
+            },
+        }
+
+    # 其他平台暂不支持。
+    return {
+        "ok": False,
+        "error": "unsupported_platform",
+        "message": f"platform={sys.platform}",
+    }
+
+
+def _query_cpu_temperature_psutil() -> Dict[str, Any]:
+    """尝试通过 psutil 读取 CPU 温度；macOS 上通常不可用，返回 unavailable。"""
     cpu_temp_payload: Dict[str, Any] = {
         "available": False,
         "value_celsius": None,
@@ -768,25 +952,96 @@ def _tool_get_system_hardware_status(arguments: Dict[str, Any]) -> Dict[str, Any
             "source": "psutil",
         }
 
-    gpu_payload = {
-        "available": False,
-        "message": "gpu_query_disabled",
-    }
-    if include_gpu:
-        gpu_payload = _query_nvidia_gpu_status()
+    return cpu_temp_payload
+
+
+def _query_macos_hardware_overview() -> Dict[str, Any]:
+    """通过 system_profiler 获取 macOS 硬件概览。"""
+    command = ["system_profiler", "SPHardwareDataType", "-json"]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        return {
+            "available": False,
+            "message": f"system_profiler_unavailable: {exc}",
+        }
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        return {
+            "available": False,
+            "message": f"system_profiler_failed: {stderr}" if stderr else "system_profiler_failed",
+        }
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {
+            "available": False,
+            "message": "system_profiler_json_decode_failed",
+        }
+
+    entries = payload.get("SPHardwareDataType") or []
+    first = entries[0] if isinstance(entries, list) and entries else {}
+    if not isinstance(first, dict):
+        first = {}
 
     return {
-        "ok": True,
-        "cpu": {
-            "usage_percent": cpu_percent,
-            "temperature": cpu_temp_payload,
-        },
-        "memory": {
-            "total": memory.total,
-            "used": memory.used,
-            "usage_percent": memory.percent,
-        },
-        "gpu": gpu_payload,
+        "available": True,
+        "chip": first.get("chip_type") or first.get("machine_name"),
+        "cpu_model": first.get("cpu_type"),
+        "physical_memory_text": first.get("physical_memory"),
+        "model_name": first.get("machine_name"),
+        "model_identifier": first.get("machine_model"),
+        "serial_number": first.get("serial_number"),
+    }
+
+
+def _query_macos_gpu_status() -> Dict[str, Any]:
+    """通过 system_profiler 查询 macOS 图形设备信息。"""
+    command = ["system_profiler", "SPDisplaysDataType", "-json"]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        return {
+            "available": False,
+            "message": f"system_profiler_unavailable: {exc}",
+        }
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        return {
+            "available": False,
+            "message": f"system_profiler_failed: {stderr}" if stderr else "system_profiler_failed",
+        }
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {
+            "available": False,
+            "message": "system_profiler_json_decode_failed",
+        }
+
+    entries = payload.get("SPDisplaysDataType") or []
+    cards: List[Dict[str, Any]] = []
+
+    if isinstance(entries, list):
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            cards.append(
+                {
+                    "name": item.get("sppci_model") or item.get("spdisplays_model") or item.get("_name"),
+                    "vendor": item.get("spdisplays_vendor") or item.get("spdisplays_vendor-id"),
+                    "vram": item.get("spdisplays_vram") or item.get("spdisplays_vram_shared"),
+                    "metal": item.get("spdisplays_metal"),
+                }
+            )
+
+    return {
+        "available": bool(cards),
+        "cards": cards,
     }
 
 
