@@ -1375,6 +1375,32 @@ class ChatGUI(QWidget):
             f'</div>'
         )
 
+    @staticmethod
+    def _format_internal_event_user_text_for_display(raw_text: str) -> str:
+        """仅用于展示层：将系统内部事件注入消息转换为更友好的可读文案。"""
+        text = str(raw_text or "").strip()
+        if not text.startswith("【系统内部事件触发"):
+            return text
+
+        event_name_match = re.search(r"^【系统内部事件触发：([^】]+)】", text)
+        event_name = event_name_match.group(1).strip() if event_name_match else "系统事件"
+
+        # 定时提醒：提取“事件内容：【...】”中的正文
+        reminder_match = re.search(r"事件内容：【([^】]+)】", text)
+        if reminder_match:
+            return f"（自动触发定时器事件：{reminder_match.group(1).strip()}）"
+
+        # 抽签结束：提取主题和结果，便于下次启动时前台简洁显示
+        lottery_theme_match = re.search(r"抽签主题：(.+?)。", text)
+        lottery_result_match = re.search(r"结果是：(.+?)。", text)
+        if lottery_theme_match and lottery_result_match:
+            theme = lottery_theme_match.group(1).strip()
+            winner = lottery_result_match.group(1).strip()
+            return f"（自动触发抽签结果事件：{theme} -> {winner}）"
+
+        # 兜底：保留事件类型，不显示整段内部提示词
+        return f"（自动触发事件：{event_name}）"
+
     def _build_chat_html_with_tool_records(self) -> str:
         records = self.current_chat.meta.get("tool_call_records", [])
         records_by_index: dict[int, list[dict]] = {}
@@ -1393,7 +1419,20 @@ class ChatGUI(QWidget):
             msg_block = []
             for one in records_by_index.get(i, []):
                 msg_block.append(self._tool_record_to_html(one))
-            msg_block.append(msg.to_display_html(self._current_theme_color, msg_index=i))
+
+            display_msg = msg
+            if msg.character_name == "User":
+                display_text = self._format_internal_event_user_text_for_display(msg.text)
+                if display_text != msg.text:
+                    display_msg = Message(
+                        character_name=msg.character_name,
+                        text=display_text,
+                        translation=msg.translation,
+                        emotion=msg.emotion,
+                        audio_path=msg.audio_path,
+                    )
+
+            msg_block.append(display_msg.to_display_html(self._current_theme_color, msg_index=i))
             html_parts.append("".join(msg_block))
         return "<br><br>".join(html_parts)
 

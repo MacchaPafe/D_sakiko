@@ -1,15 +1,25 @@
-# 数字小祥
-## 简介
-**集成多种大模型（云端或本地）、GPT-SoVITS语音合成模块，以及通过微调的 BERT 情感分析模型驱动，实现与Live2D形象角色进行多模态交互对话，项目基于：**
-* live2D-py库	https://github.com/Arkueid/live2d-py
-* GPT-SoVITS项目	https://github.com/RVC-Boss/GPT-SoVITS
-* Bert-base-Chinese NLP中文预训练模型及OCEMOTION中文七种情感分类数据集，将bert微调为七分类文本情感识别模型 
-* bert-base-Chinese：https://huggingface.co/google-bert/bert-base-chinese
-* OCEMOTION训练集：https://aistudio.baidu.com/datasetdetail/100731
-* Windows版目前已支持Deepseek V3、OpenAI Chatgpt、Google Gemini以及魔搭社区modelscope API。而MacOS版本支持现有几乎所有平台API。
-* PyQT5前端界面实现
+# 数字小祥 (D_Sakiko)
+**基于多模态与ReAct框架的桌面数字生命Agent**
 
-**程序免费开源，默认使用up自己的大模型API。**
+## 简介
+**数字小祥** 是一款桌面级多模态 AI Agent 客户端。项目底层从零构建 ReAct 引擎，集成基于混合检索的RAG知识库、具备反思机制的长短期记忆系统以及多个周边功能模块。
+
+### 🌟 核心技术架构
+* **【全链路多模态】** ASR(语音识别) → LLM(理解思考) → ToolCalling&RAG(工具调用与检索增强) → TTS(异步生成) → Live2D(动作渲染) 的完整多模态数据流。
+* **【世界书构建】** 项目知识库以 BangDream 时间线为基准，将故事中所有主要事件以及角色在不同时期的心理状态整理为切片文本并向量化入库，在需要时调用并插入Prompt，有效解决了角色OOC的问题。
+* **【RAG检索方案】**  Qdrant 向量检索+ BM25 稀疏检索的双路召回，再利用 RRF 算法融合排序，最后接入 Reranker 模型进行二次精排。
+* **【轻量 ReAct 引擎与自纠错机制】** 摒弃沉重的开源框架，从零构建强解耦的 Agent 执行流与 ToolRegistry 抽象层；构建工具执行沙盒，自动捕获 Traceback 异常并转化为 Prompt 反馈，实现大模型的自主反思与纠错。
+* **【长短期记忆系统】** 短期采用动态滑动窗口保持多轮会话连贯性；长期引入异步反思机制 (Reflection) 抽取关键事件并向 Qdrant 向量化落盘。通过检索阈值动态触发记忆召回，在大幅降低 Token 消耗的同时，也实现长周期人设不崩塌的目标。
+
+### 🛠 项目主要依赖
+
+本项目深度集成了以下开源项目或模型：
+* [live2D-py库](https://github.com/Arkueid/live2d-py) / PyQt5界面实现
+* [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS)
+* 基于 [Bert-base-Chinese](https://huggingface.co/google-bert/bert-base-chinese) 预训练模型微调（结合 [OCEMOTION情感数据集](https://aistudio.baidu.com/datasetdetail/100731) 训练的七分类文本情感识别模型）
+* LLM 接入支持：借助LiteLLM路由，Windows 与 MacOS 端已支持市面几乎所有LLM provider。
+
+**程序完全免费开源，极低门槛开箱即用。默认使用up主自带的大模型API。**
 希望能得到大家的支持！
 我的爱发电 https://afdian.com/a/MacchaPafe
 
@@ -17,12 +27,12 @@
 
 **数字小祥项目介绍视频：https://www.bilibili.com/video/BV1XzSYBBEyf/**
 
-*主程序界面截图*
+<!-- *主程序界面截图*
 ![img.png](./docs/img_sakiko.png)
 
 ![img.png](./docs/img_kasumi.png)
 *小剧场模式界面截图*
-![img.png](./docs/img_theater.png)
+![img.png](./docs/img_theater.png) -->
 # 软件包下载：
 ## Windows：
 开箱即用，双击run.bat即可运行程序，无需安装任何依赖。
@@ -162,10 +172,7 @@ MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件
 4. 由于GPT-SoVITS默认为半精度浮点(fp16)量化推理，但经过实验在compute capability<=7.5，也就是包括16系之前的显卡有可能出bug，推理出无声音频，导致程序崩溃。具体原因应该非常底层，估计是NV驱动的问题，所以个人无法解决。因此我修改了inference_webui.py中的is_half变量，使用单精度浮点(fp32)量化模型来推理音频，这一操作的好处是所有显卡都能跑，程序应该不会崩，并且实测推理出的音频质量也会更好一点，而副作用是推理时间更长，显存占用更大。因此综上，我设置了is_fp32.txt文件，默认里面是一个数字1，表示使用fp32来推理音频，兼容性最好、质量较高，但推理速度变慢；若改为0，则使用GPT-SoVITS的默认策略fp16量化模型，推理时间会缩短一点，角色的回答会快一些，但注意：如果显卡型号小于等于1660ti，很有可能听不到祥子语音，最好确保大于等于RTX 2060！
 
 
-其实就是一个搭积木的项目...
 
-
-Live2D界面的帧率不太高。经测试非常依赖CPU单核性能。该问题在的live2D-py库中也有提到，由于祥子的Live2D模型是旧版本（.moc，实际上邦邦所有角色都是旧模型），而live2D-py库没有针对旧版本模型进行优化，纯python运行，只对新版本（.moc3）有调用c语言源码库。也许换成新版本模型性能就会大幅提升，但目前暂未测试。
 
 
 作者：抹茶星冰奈   b站：https://space.bilibili.com/443409863?spm_id_from=333.1007.0.0

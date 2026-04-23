@@ -325,7 +325,7 @@ class ToolCallingAgentRuntime:
         )
 
     def _call_llm(self, model: str, messages: List[Dict[str, Any]], llm_kwargs: Dict[str, Any]) -> Any:
-        """封装底层大模型（如 LiteLLM）的接口请求，带上注册好的可用工具 Schema 以及当前聊天历史发送请求。"""
+        """封装底层LiteLLM的接口请求，带上注册好的可用工具 Schema 以及当前聊天历史发送请求。"""
         kwargs = {
             "model": model,
             "messages": messages,
