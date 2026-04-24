@@ -255,6 +255,16 @@ class ToolCallingAgentRuntime:
                     for call in tool_calls
                 ],
             }
+
+            # DeepSeek V4 在启用思考模式进行工具调用时要求必须返回 reasoning_content
+            reasoning_content = parsed.get("reasoning_content")
+            if (
+                reasoning_content
+                and self._should_return_reasoning_content(parsed.get("model"))
+            ):
+                # 按照 DeepSeek V4 文档的要求，在 assistant 消息中附加 reasoning_content 字段。
+                assistant_message["reasoning_content"] = reasoning_content
+
             history.append(assistant_message)
 
             # 遍历并执行所有工具调用，将结果转化为 tool 消息压入历史中供下一轮循环读取
@@ -425,6 +435,15 @@ class ToolCallingAgentRuntime:
         return _truncate(json.dumps(payload, ensure_ascii=False, indent=2))
 
     @staticmethod
+    def _should_return_reasoning_content(model: Any) -> bool:
+        """
+        DeepSeek V4 在启用思考模式进行工具调用时要求必须返回 reasoning_content.
+        此函数检查当前请求的模型是否为 deepseek 系列。
+        """
+        model_text = str(model or "").lower()
+        return "deepseek" in model_text
+
+    @staticmethod
     def _parse_llm_response(response: Any) -> Dict[str, Any]:
         """
         统一解析支持多后端返回内容格式差异（字典/对象），
@@ -433,8 +452,10 @@ class ToolCallingAgentRuntime:
         # 兼容 dict / LiteLLM ModelResponse 两种返回结构。
         message: Any = None
         finish_reason: Optional[str] = None
+        model: Optional[str] = None
 
         if isinstance(response, dict):
+            model = response.get("model")
             choices = response.get("choices") or []
             if choices:
                 first_choice = choices[0]
@@ -442,6 +463,7 @@ class ToolCallingAgentRuntime:
                     message = first_choice.get("message")
                     finish_reason = first_choice.get("finish_reason")
         else:
+            model = getattr(response, "model", None)
             choices = getattr(response, "choices", None)
             if choices:
                 first_choice = choices[0]
@@ -449,13 +471,16 @@ class ToolCallingAgentRuntime:
                 finish_reason = getattr(first_choice, "finish_reason", None)
 
         content = ""
+        reasoning_content = ""
         raw_tool_calls: List[Any] = []
 
         if isinstance(message, dict):
             content = message.get("content") or ""
+            reasoning_content = message.get("reasoning_content") or ""
             raw_tool_calls = message.get("tool_calls") or []
         elif message is not None:
             content = getattr(message, "content", "") or ""
+            reasoning_content = getattr(message, "reasoning_content", "") or ""
             raw_tool_calls = getattr(message, "tool_calls", None) or []
 
         parsed_from_content = ToolCallingAgentRuntime._parse_content_json(content)
@@ -477,10 +502,12 @@ class ToolCallingAgentRuntime:
 
         return {
             "assistant_content": parsed_from_content.get("assistant_content", content),
+            "reasoning_content": reasoning_content,
             "interim_message": interim_message,
             "tool_calls": tool_calls if (tool_calls or is_tool_finish) else [],
             "final_content": parsed_from_content.get("final_content", content),
             "finish_reason": finish_reason,
+            "model": model,
         }
 
     @staticmethod
