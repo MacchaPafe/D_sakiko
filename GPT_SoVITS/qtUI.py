@@ -1954,10 +1954,10 @@ class ChatGUI(QWidget):
                 text_color = self._current_theme_color
 
                 # 简单预测用户的 msg_index，使其能支持右键删除功能
-                if not self.current_chat.message_list[-1].text == user_this_turn_input:
-                    predicted_msg_index = len(self.current_chat.message_list)
-                else:
+                if self.current_chat.message_list and self.current_chat.message_list[-1].text == user_this_turn_input:
                     predicted_msg_index = len(self.current_chat.message_list)-1
+                else:
+                    predicted_msg_index = len(self.current_chat.message_list)
                 self.chat_display.append(f'<a href="user:?msg={predicted_msg_index}" style="text-decoration: none; color: {text_color};">你：</a>')
                 self.timer.start(8)
         if user_this_turn_input=='clr':
