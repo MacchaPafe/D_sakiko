@@ -20,6 +20,7 @@ from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 import faulthandler
 import character
 from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGenerator, get_chat_manager
+from chat.chat_meta import TheaterMeta
 from qtUI import ChangeL2DModelWindow
 
 
@@ -1461,19 +1462,15 @@ class ViewerGUI(QWidget):
         names = [name for name in chat.involved_characters if name != "User"]
         return names[:2]
 
-    def _ensure_current_chat_theater_meta(self) -> Dict[str, Any]:
+    def _ensure_current_chat_theater_meta(self) -> TheaterMeta:
         """确保当前对话包含可用的小剧场配置结构。"""
         if self.current_chat is None:
-            return {
-                "character_0": {"talk_style": "", "interaction_details": ""},
-                "character_1": {"talk_style": "", "interaction_details": ""},
-                "situation": "",
-            }
+            return TheaterMeta()
         return self.current_chat.get_theater_meta()
 
     def _build_dp_user_input(self) -> Dict[str, Any]:
         """从当前 Chat 的 theater meta 组装给 dp 模块的输入数据。"""
-        return copy.deepcopy(self._ensure_current_chat_theater_meta())
+        return copy.deepcopy(self._ensure_current_chat_theater_meta().to_dict())
 
     def _character_name_from_index(self, char_index: int) -> str:
         """根据角色索引获取角色名，越界时返回兜底值。"""
@@ -1713,7 +1710,7 @@ class ViewerGUI(QWidget):
 
 
     def config_more_info(self):
-        current_meta = self._ensure_current_chat_theater_meta()
+        current_meta = self._ensure_current_chat_theater_meta().to_dict()
         self.conf_win = MoreInfoDialog(
             self.character_list[self.current_char_index[0]].character_name,
             self.character_list[self.current_char_index[1]].character_name,

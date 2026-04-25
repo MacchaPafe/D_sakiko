@@ -1271,12 +1271,8 @@ class ChatGUI(QWidget):
 
     def _load_tool_call_records_cache(self):
         self.tool_call_records_cache = {}
-        records = self.current_chat.meta.get("tool_call_records", [])
-        if not isinstance(records, list):
-            return
+        records = self.current_chat.get_tool_call_record_dicts()
         for one in records:
-            if not isinstance(one, dict):
-                continue
             tool_call_id = str(one.get("tool_call_id") or "")
             if tool_call_id:
                 self.tool_call_records_cache[tool_call_id] = one
@@ -1402,16 +1398,13 @@ class ChatGUI(QWidget):
         return f"（自动触发事件：{event_name}）"
 
     def _build_chat_html_with_tool_records(self) -> str:
-        records = self.current_chat.meta.get("tool_call_records", [])
+        records = self.current_chat.get_tool_call_record_dicts()
         records_by_index: dict[int, list[dict]] = {}
-        if isinstance(records, list):
-            for one in records:
-                if not isinstance(one, dict):
-                    continue
-                msg_index = one.get("message_index")
-                if not isinstance(msg_index, int):
-                    continue
-                records_by_index.setdefault(msg_index, []).append(one)
+        for one in records:
+            msg_index = one.get("message_index")
+            if not isinstance(msg_index, int):
+                continue
+            records_by_index.setdefault(msg_index, []).append(one)
 
         html_parts = []
         for i, msg in enumerate(self.current_chat.message_list):

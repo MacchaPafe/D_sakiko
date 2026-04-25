@@ -18,6 +18,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from character import CharacterAttributes
 from emotion_enum import EmotionEnum
+from chat.chat_meta import ChatMeta, TheaterMeta, ToolCallHistoryRecordMeta, ToolCallRecordMeta
 
 
 @dataclasses.dataclass
@@ -35,6 +36,7 @@ class Message:
     emotion: EmotionEnum
     # 消息对应的 GPT-SoVITS 生成的音频文件路径
     audio_path: str
+
     @classmethod
     def from_dict(cls, data: dict):
         """
@@ -332,7 +334,7 @@ class Chat:
                  prompt_generator: Optional[SystemPromptGenerator] = None,
                  type_: ChatType = ChatType.SINGLE_CHARACTER,
                  start_message: str = "", message_list: Optional[List[Message]] = None,
-                 meta: Optional[Dict[str, Any]] = None):
+                 meta: Optional[Union[ChatMeta, dict[str, object]]] = None):
         """
         创建一个新的对话
 
@@ -352,7 +354,10 @@ class Chat:
             self.prompt_generator = prompt_generator
 
         self.start_message = start_message
-        self.meta: Dict[str, Any] = copy.deepcopy(meta) if meta is not None else {}
+        if isinstance(meta, ChatMeta):
+            self.meta = copy.deepcopy(meta)
+        else:
+            self.meta = ChatMeta.from_dict(meta)
 
         # 存储对话中所有的消息
         self.message_list: List[Message]
@@ -423,8 +428,10 @@ class Chat:
     def __str__(self) -> str:
         return f"{self.name}: {self.message_list}"
 
-    def __eq__(self, other: "Chat") -> bool:
-        return self.to_dict() == other.to_dict()
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Chat):
+            return self.to_dict() == other.to_dict()
+        return False
 
     def to_dict(self) -> Dict:
         """
@@ -436,7 +443,7 @@ class Chat:
             "type": self.type.value,
             "message_list": [msg.as_dict() for msg in self.message_list],
             "start_message": self.start_message,
-            "meta": self.meta
+            "meta": self.meta.to_dict()
         }
 
     @classmethod
@@ -467,67 +474,47 @@ class Chat:
             meta=data.get("meta", {})
         )
 
-    def get_theater_meta(self) -> Dict[str, Any]:
+    def get_theater_meta(self) -> TheaterMeta:
         """
         获取并确保小剧场对话元数据的基础结构存在。
 
-        返回值结构为：
-        {
-            "character_0": {"talk_style": "", "interaction_details": ""},
-            "character_1": {"talk_style": "", "interaction_details": ""},
-            "situation": ""
-        }
+        返回值为 `TheaterMeta`，需要传递给旧 UI 字典边界时请显式调用 `to_dict()`。
         """
-        raw_theater_meta = self.meta.get("theater")
-        theater_meta: Dict[str, Any] = raw_theater_meta if isinstance(raw_theater_meta, dict) else {}
+        if not self.meta.theater.situation and self.start_message:
+            self.meta.theater.situation = self.start_message
+        if self.meta.theater.situation:
+            self.start_message = self.meta.theater.situation
 
-        raw_character_0 = theater_meta.get("character_0")
-        raw_character_1 = theater_meta.get("character_1")
-        character_0: Dict[str, Any] = raw_character_0 if isinstance(raw_character_0, dict) else {}
-        character_1: Dict[str, Any] = raw_character_1 if isinstance(raw_character_1, dict) else {}
-
-        theater_meta = {
-            "character_0": {
-                "talk_style": character_0.get("talk_style", ""),
-                "interaction_details": character_0.get("interaction_details", "")
-            },
-            "character_1": {
-                "talk_style": character_1.get("talk_style", ""),
-                "interaction_details": character_1.get("interaction_details", "")
-            },
-            "situation": theater_meta.get("situation", self.start_message if self.start_message else "")
-        }
-
-        self.meta["theater"] = theater_meta
-        if theater_meta["situation"]:
-            self.start_message = theater_meta["situation"]
-
-        return theater_meta
+        return self.meta.theater
 
     def update_theater_meta(self, data: Dict[str, Any]) -> None:
         """更新小剧场元数据，并自动同步 `start_message`。"""
         theater_meta = self.get_theater_meta()
 
-        for key in ["character_0", "character_1"]:
+        for key, character_meta in (
+            ("character_0", theater_meta.character_0),
+            ("character_1", theater_meta.character_1),
+        ):
             incoming = data.get(key)
             if isinstance(incoming, dict):
-                theater_meta[key]["talk_style"] = incoming.get("talk_style", theater_meta[key]["talk_style"])
-                theater_meta[key]["interaction_details"] = incoming.get(
-                    "interaction_details", theater_meta[key]["interaction_details"]
-                )
+                talk_style = incoming.get("talk_style")
+                interaction_details = incoming.get("interaction_details")
+                if isinstance(talk_style, str):
+                    character_meta.talk_style = talk_style
+                if isinstance(interaction_details, str):
+                    character_meta.interaction_details = interaction_details
 
         if "situation" in data:
-            theater_meta["situation"] = data.get("situation", "")
+            situation = data.get("situation")
+            theater_meta.situation = situation if isinstance(situation, str) else ""
 
-        self.meta["theater"] = theater_meta
-        self.start_message = theater_meta.get("situation", "")
+        self.start_message = theater_meta.situation
     
     def get_custom_live2d_model_meta(self, character_name: str) -> Optional[str]:
         """
         获取指定角色的自定义 Live2D 模型路径（如果有的话）。如果没有设置自定义模型或者自定义模型路径不存在，则从角色信息中读取默认模型路径。
         """
-        live2d_meta = self.meta.get("live2d_models", {})
-        model_path = live2d_meta.get(character_name)
+        model_path = self.meta.live2d_models.get(character_name)
         if isinstance(model_path, str) and os.path.exists(model_path):
             return model_path.strip()
         else:
@@ -546,10 +533,39 @@ class Chat:
         if not os.path.exists(model_path):
             raise ValueError(f"提供的模型路径不存在: {model_path}")
 
-        if "live2d_models" not in self.meta or not isinstance(self.meta["live2d_models"], dict):
-            self.meta["live2d_models"] = {}
+        self.meta.live2d_models[character_name] = model_path.strip()
 
-        self.meta["live2d_models"][character_name] = model_path.strip()
+    def get_tool_call_records(self) -> List[ToolCallRecordMeta]:
+        """获取当前对话的工具调用展示记录。"""
+        return self.meta.tool_call_records
+
+    def get_tool_call_record_dicts(self) -> List[dict[str, object]]:
+        """获取工具调用展示记录的字典副本，供 UI 边界使用。"""
+        return [record.to_dict() for record in self.meta.tool_call_records]
+
+    def append_tool_call_record(self, record: ToolCallRecordMeta, limit: int = 300) -> None:
+        """追加一条工具调用展示记录，并按上限裁剪。"""
+        self.meta.tool_call_records.append(record)
+        self.meta.tool_call_records = self.meta.tool_call_records[-limit:]
+
+    def update_tool_call_record(self, record: ToolCallRecordMeta, limit: int = 300) -> None:
+        """按 `tool_call_id` 更新工具调用展示记录，未找到时保持不变。"""
+        for index in range(len(self.meta.tool_call_records) - 1, -1, -1):
+            current = self.meta.tool_call_records[index]
+            if current.tool_call_id == record.tool_call_id:
+                self.meta.tool_call_records[index] = record
+                break
+        self.meta.tool_call_records = self.meta.tool_call_records[-limit:]
+
+    def append_tool_call_history(self, record: ToolCallHistoryRecordMeta, limit: int = 100) -> None:
+        """追加一条工具调用摘要轨迹，并按上限裁剪。"""
+        self.meta.tool_call_history.append(record)
+        self.meta.tool_call_history = self.meta.tool_call_history[-limit:]
+
+    def clear_tool_call_meta(self) -> None:
+        """清空与消息索引绑定的工具调用元数据。"""
+        self.meta.tool_call_records.clear()
+        self.meta.tool_call_history.clear()
         
     @staticmethod
     def merge_short_sentences(sentences: List[str], min_length: int = 25):
@@ -855,8 +871,7 @@ class Chat:
         self.message_list.clear()
         # 必须同时清除该对话的工具调用记录
         # 这些元数据绑定到 message_index；清空消息后若保留，重启渲染时会挂到新消息上。
-        for key in ("tool_call_records", "tool_call_history"):
-            self.meta.pop(key, None)
+        self.clear_tool_call_meta()
 
     def is_my_turn(self, perspective: str) -> bool:
         """

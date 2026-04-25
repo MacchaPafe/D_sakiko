@@ -1,19 +1,20 @@
 import random
 import re
 import time,os
+import traceback
 from copy import deepcopy
 
 import json
 from typing import Sequence
 
 import litellm
-from litellm import completion
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
 from character import PrintInfo, CharacterAttributes
 
 from chat.chat import Chat, Message, ChatManager
+from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
 
@@ -21,6 +22,27 @@ TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
+
+
+def completion(**kwargs):
+    """
+    调用 litellm 的 completion 接口。
+    如果模型属于 DeepSeek 模型，进行一次特殊的参数修改：
+    将推理强度从 reasoning_effort 参数转换为 extra_body，因为 reasoning_effort 参数在 litellm 的 DeepSeek 实现中会被忽略。
+    将 thinking 参数转换为 extra_body 中的 thinking 字段，格式为 {"type": "enabled"} 或 {"type": "disabled"}，因为 litellm 会忽略 thinking="disabled" 参数。
+    """
+    if "model" in kwargs and isinstance(kwargs["model"], str):
+        if "deepseek" in kwargs["model"].lower():
+            if "reasoning_effort" in kwargs:
+                kwargs["extra_body"] = {"reasoning_effort": kwargs.pop("reasoning_effort")}
+                kwargs.pop("reasoning_effort", None)
+            if "thinking" in kwargs:
+                thinking_value = kwargs.pop("thinking", None)
+                if thinking_value is not None:
+                    kwargs["extra_body"] = kwargs.get("extra_body", {})
+                    kwargs["extra_body"]["thinking"] = {"type": "enabled" if thinking_value.get("type") == "enabled" else "disabled"}
+
+    return litellm.completion(**kwargs)
 
 
 class DSLocalAndVoiceGen:
@@ -133,6 +155,89 @@ class DSLocalAndVoiceGen:
         # 源代码如此，我也不知道为啥要休息一会
         #time.sleep(2) 不休息也已经可以了
 
+    @staticmethod
+    def _truncate_error_detail(text: str, limit: int = 1800) -> str:
+        text = str(text or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "\n...(错误信息过长，已截断；终端中保留完整 traceback)"
+
+    @staticmethod
+    def _redact_sensitive_error_text(text: str) -> str:
+        text = str(text or "")
+        text = re.sub(
+            r"(?i)(api[_ -]?key|authorization|x-api-key)([\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+",
+            r"\1\2***",
+            text,
+        )
+        text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", text)
+        text = re.sub(r"\bsk-[A-Za-z0-9_-]{12,}", "sk-***", text)
+        return text
+
+    @staticmethod
+    def _format_exception_value(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float, bool)):
+            return DSLocalAndVoiceGen._redact_sensitive_error_text(str(value))
+        try:
+            return DSLocalAndVoiceGen._redact_sensitive_error_text(
+                json.dumps(value, ensure_ascii=False, default=str)
+            )
+        except Exception:
+            return DSLocalAndVoiceGen._redact_sensitive_error_text(repr(value))
+
+    @classmethod
+    def _format_exception_details(cls, exc: BaseException) -> str:
+        exc_summary = cls._redact_sensitive_error_text(str(exc))
+        lines = [f"{type(exc).__module__}.{type(exc).__name__}: {exc_summary}"]
+        for attr in (
+            "status_code",
+            "message",
+            "llm_provider",
+            "model",
+            "code",
+            "param",
+            "type",
+            "body",
+            "request_id",
+            "litellm_debug_info",
+        ):
+            if not hasattr(exc, attr):
+                continue
+            value = getattr(exc, attr, None)
+            formatted = cls._format_exception_value(value)
+            if formatted:
+                lines.append(f"{attr}: {formatted}")
+
+        response = getattr(exc, "response", None)
+        if response is not None:
+            status_code = getattr(response, "status_code", None)
+            if status_code is not None:
+                lines.append(f"response.status_code: {status_code}")
+            response_text = getattr(response, "text", None)
+            if response_text:
+                lines.append(f"response.text: {cls._redact_sensitive_error_text(response_text)}")
+
+        cause = exc.__cause__ or exc.__context__
+        if cause is not None and cause is not exc:
+            cause_summary = cls._redact_sensitive_error_text(str(cause))
+            lines.append(f"caused_by: {type(cause).__module__}.{type(cause).__name__}: {cause_summary}")
+        return "\n".join(lines)
+
+    def _report_model_exception(
+        self,
+        message_queue,
+        is_text_generating_queue,
+        user_message: str,
+        exc: BaseException,
+    ) -> None:
+        details = self._format_exception_details(exc)
+        PrintInfo.print_error(f"[Error]大模型请求失败：{user_message}\n{details}")
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        ui_message = f"{user_message}\n\n详细错误信息：\n{self._truncate_error_detail(details)}"
+        self.report_message_to_main_ui(message_queue, is_text_generating_queue, ui_message)
+
     def _build_runtime_system_instruction(self) -> str:
         # 将“工具调用 + 输出格式 + 语言要求”统一放到 system 提示词，避免污染 user 消息。
         common_rules = (
@@ -191,10 +296,32 @@ class DSLocalAndVoiceGen:
         )
 
     def _completion_with_current_config(self, model, messages, tools=None, tool_choice="auto", **kwargs):
-        # runtime 发起 LLM 请求的底层入口。
+        """
+        runtime 发起 LLM 请求的底层入口。
+
+        在进行请求时，此函数会根据当前 chat 的设置，传入是否启用推理以及推理强度设定。如果 kwargs 中已经包含了相关设定，则以 kwargs 中的为准。
+        """
         stream = kwargs.get("stream", False)
         timeout = kwargs.get("timeout", 30)
-        # print(messages[-5:])
+
+        # 补充是否启用推理和推理强度的设定
+        if "thinking" not in kwargs and "reasoning_effort" not in kwargs:
+            reasoning_meta = self.current_chat.meta.llm_reasoning
+            
+            if reasoning_meta.enabled == "on":
+                kwargs["thinking"] = {"type": "enabled"}
+            elif reasoning_meta.enabled == "off":
+                kwargs["thinking"] = {"type": "disabled"}
+            else:
+                # reasoning_meta.enabled == "auto" 时，不传入任何关于 thinking 的数据，让模型自己决定是否启用推理
+                pass
+
+            # 确保 effort 是 litellm 能接受的东西
+            if reasoning_meta.effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "default"):
+                kwargs["reasoning_effort"] = "default"
+            else:
+                kwargs["reasoning_effort"] = reasoning_meta.effort
+
         if d_sakiko_config.use_default_deepseek_api.value:
             print("正在使用 UP 的 DeepSeek API")
             return completion(
@@ -205,6 +332,7 @@ class DSLocalAndVoiceGen:
                 timeout=timeout,
                 tools=tools,
                 tool_choice=tool_choice,
+                **kwargs
             )
 
         if d_sakiko_config.enable_custom_llm_api_provider.value:
@@ -249,13 +377,6 @@ class DSLocalAndVoiceGen:
         while is_audio_play_complete.get() is None:
             time.sleep(0.3)
 
-    def _get_tool_call_records_meta(self) -> list[dict]:
-        records = self.current_chat.meta.get("tool_call_records")
-        if not isinstance(records, list):
-            records = []
-            self.current_chat.meta["tool_call_records"] = records
-        return records
-
     @staticmethod
     def _emit_tool_ui_event(dp2qt_queue, prefix: str, payload: dict):
         dp2qt_queue.put(prefix + json.dumps(payload, ensure_ascii=False))
@@ -268,19 +389,18 @@ class DSLocalAndVoiceGen:
         message_index: int,
     ) -> None:
         now_ts = int(time.time())
-        one = {
-            "tool_call_id": tool_call_id,
-            "tool_name": tool_name,
-            "message_index": message_index,
-            "status": "running",
-            "result_content": "工具运行中...",
-            "duration_sec": None,
-            "started_at": now_ts,
-            "updated_at": now_ts,
-        }
-        records = self._get_tool_call_records_meta()
-        records.append(one)
-        self.current_chat.meta["tool_call_records"] = records[-300:]
+        record = ToolCallRecordMeta(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            message_index=message_index,
+            status="running",
+            result_content="工具运行中...",
+            duration_sec=None,
+            started_at=now_ts,
+            updated_at=now_ts,
+        )
+        self.current_chat.append_tool_call_record(record)
+        one = record.to_dict()
 
         self._session_tool_call_records.append(dict(one))
         self._session_tool_call_records = self._session_tool_call_records[-300:]
@@ -292,26 +412,24 @@ class DSLocalAndVoiceGen:
         if not target_id:
             return
 
-        records = self._get_tool_call_records_meta()
-        for i in range(len(records) - 1, -1, -1):
-            one = records[i]
-            if str(one.get("tool_call_id")) == target_id:
-                one["status"] = "completed"
-                one["duration_sec"] = float(tool_exec.get("duration_sec") or 0.0)
-                one["result_content"] = str(tool_exec.get("result_content") or "")
-                one["ok"] = bool(tool_exec.get("ok", True))
-                one["updated_at"] = int(time.time())
-                records[i] = one
-                self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_UPDATE_EVENT_PREFIX, one)
+        records = self.current_chat.get_tool_call_records()
+        for one in reversed(records):
+            if one.tool_call_id == target_id:
+                one.status = "completed"
+                one.duration_sec = float(tool_exec.get("duration_sec") or 0.0)
+                one.result_content = str(tool_exec.get("result_content") or "")
+                one.ok = bool(tool_exec.get("ok", True))
+                one.updated_at = int(time.time())
+                self.current_chat.update_tool_call_record(one)
+                payload = one.to_dict()
+                self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_UPDATE_EVENT_PREFIX, payload)
 
                 for j in range(len(self._session_tool_call_records) - 1, -1, -1):
                     session_one = self._session_tool_call_records[j]
                     if str(session_one.get("tool_call_id")) == target_id:
-                        self._session_tool_call_records[j] = dict(one)
+                        self._session_tool_call_records[j] = dict(payload)
                         break
                 break
-
-        self.current_chat.meta["tool_call_records"] = records[-300:]
 
     def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue):
         def _callback(interim_text: str, tool_calls=None, is_placeholder: bool = False):
@@ -589,81 +707,81 @@ class DSLocalAndVoiceGen:
                 cleaned_text_of_model_response = runtime_result.final_content.strip()
 
                 # 为后续上下文压缩和调试保留最小工具轨迹。
-                tool_trace = self.current_chat.meta.get("tool_call_history", [])
-                if not isinstance(tool_trace, list):
-                    tool_trace = []
-                tool_trace.append(
-                    {
-                        "time": int(time.time()),
-                        "role": character_name,
-                        "tool_rounds": runtime_result.tool_rounds,
-                        "tool_errors": runtime_result.tool_errors,
-                    }
+                self.current_chat.append_tool_call_history(
+                    ToolCallHistoryRecordMeta(
+                        time=int(time.time()),
+                        role=character_name,
+                        tool_rounds=runtime_result.tool_rounds,
+                        tool_errors=runtime_result.tool_errors,
+                    )
                 )
-                self.current_chat.meta["tool_call_history"] = tool_trace[-100:]
 
-            except litellm.exceptions.Timeout:
-                self.report_message_to_main_ui(
+            except litellm.exceptions.Timeout as e:
+                self._report_model_exception(
                     message_queue,
                     is_text_generating_queue,
-                    "请求超时，请检查网络连接或稍后再试。"
+                    "请求超时，请检查网络连接或稍后再试。",
+                    e,
                 )
                 continue
-            except litellm.exceptions.AuthenticationError:
-                self.report_message_to_main_ui(
+            except litellm.exceptions.AuthenticationError as e:
+                self._report_model_exception(
                     message_queue,
                     is_text_generating_queue,
-                    "API Key 认证失败，请检查 Key 是否正确。"
+                    "API Key 认证失败，请检查 Key 是否正确。",
+                    e,
                 )
                 continue
-            except litellm.exceptions.RateLimitError:
-                self.report_message_to_main_ui(
+            except litellm.exceptions.RateLimitError as e:
+                self._report_model_exception(
                     message_queue,
                     is_text_generating_queue,
-                    "请求过于频繁，请稍后再试。"
+                    "请求过于频繁，请稍后再试。",
+                    e,
                 )
                 continue
-            except litellm.exceptions.APIConnectionError:
-                self.report_message_to_main_ui(
+            except litellm.exceptions.APIConnectionError as e:
+                self._report_model_exception(
                     message_queue,
                     is_text_generating_queue,
-                    "与大模型网站建立连接失败，请检查网络。"
+                    "与大模型网站建立连接失败，请检查网络。",
+                    e,
                 )
                 continue
             # 特殊捕获一个 API Key 余额不足的错误
             except litellm.exceptions.BadRequestError as e:
                 # 悲伤的是，litellm 把异常封装的过头了，根本获得不了原始的状态码
                 # 特殊处理 DeepSeek 无余额时返回的内容；其他 API 接口我也不清楚是否能捕获
-                if "Insufficient Balance" in e.message:
-                    self.report_message_to_main_ui(
+                if "Insufficient Balance" in getattr(e, "message", str(e)):
+                    self._report_model_exception(
                         message_queue,
                         is_text_generating_queue,
-                        "账户余额不足，如果正在用up的api，请联系UP充值"
+                        "账户余额不足，如果正在用up的api，请联系UP充值",
+                        e,
                     )
                 else:
-                    self.report_message_to_main_ui(
+                    self._report_model_exception(
                         message_queue,
                         is_text_generating_queue,
-                        f"未知的请求错误，状态码：{e.status_code}。"
+                        f"未知的请求错误，状态码：{getattr(e, 'status_code', '未知')}。",
+                        e,
                     )
                 continue
-            except litellm.exceptions.PermissionDeniedError:
-                self.report_message_to_main_ui(
+            except litellm.exceptions.PermissionDeniedError as e:
+                self._report_model_exception(
                     message_queue,
                     is_text_generating_queue,
-                    f"无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够"
+                    "无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够",
+                    e,
                 )
                 continue
-            except Exception:
-                self.report_message_to_main_ui(
+            except Exception as e:
+                self._report_model_exception(
                     message_queue,
                     is_text_generating_queue,
-                    "出现了未知错误，请再试一次。"
+                    "出现了未知错误，请再试一次。",
+                    e,
                 )
-                import traceback
-
-                traceback.print_exc()
-
                 continue
 
             if not cleaned_text_of_model_response:

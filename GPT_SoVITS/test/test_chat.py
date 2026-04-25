@@ -156,10 +156,10 @@ class ChatTestCase(unittest.TestCase):
         chat.clear_message_list()
 
         self.assertEqual(chat.message_list, [])
-        self.assertNotIn("tool_call_records", chat.meta)
-        self.assertNotIn("tool_call_history", chat.meta)
-        self.assertEqual(chat.meta["theater"]["situation"], "保留的小剧场设定")
-        self.assertEqual(chat.meta["live2d_models"]["爱音"], "/tmp/anon.model3.json")
+        self.assertEqual(chat.meta.tool_call_records, [])
+        self.assertEqual(chat.meta.tool_call_history, [])
+        self.assertEqual(chat.meta.theater.situation, "保留的小剧场设定")
+        self.assertEqual(chat.meta.live2d_models["爱音"], "/tmp/anon.model3.json")
 
     def test_involved_characters(self):
         """
