@@ -6,7 +6,7 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from chat.chat import Chat, ChatManager
+from chat.chat import Chat, ChatManager, Message
 from emotion_enum import EmotionEnum
 
 
@@ -130,6 +130,36 @@ class ChatTestCase(unittest.TestCase):
             self.assertEqual(original_msg.translation, restored_msg.translation)
             self.assertEqual(original_msg.emotion, restored_msg.emotion)
             self.assertEqual(original_msg.audio_path, restored_msg.audio_path)
+
+    def test_clear_message_list_removes_tool_call_records(self):
+        """
+        清空聊天记录时，工具调用记录也应一并清空，避免按旧 message_index 重新渲染到新消息上。
+        """
+        chat = Chat(
+            message_list=[
+                Message(
+                    character_name="User",
+                    text="今天天气怎么样？",
+                    translation="",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path="",
+                )
+            ],
+            meta={
+                "tool_call_records": [{"tool_call_id": "call_1", "message_index": 0}],
+                "tool_call_history": [{"tool_rounds": 1}],
+                "theater": {"situation": "保留的小剧场设定"},
+                "live2d_models": {"爱音": "/tmp/anon.model3.json"},
+            },
+        )
+
+        chat.clear_message_list()
+
+        self.assertEqual(chat.message_list, [])
+        self.assertNotIn("tool_call_records", chat.meta)
+        self.assertNotIn("tool_call_history", chat.meta)
+        self.assertEqual(chat.meta["theater"]["situation"], "保留的小剧场设定")
+        self.assertEqual(chat.meta["live2d_models"]["爱音"], "/tmp/anon.model3.json")
 
     def test_involved_characters(self):
         """

@@ -1923,6 +1923,7 @@ class ChatGUI(QWidget):
     def handle_user_input(self):
         def clr_history():
             self.current_chat.clear_message_list()
+            self.tool_call_records_cache.clear()
             self.chat_display.clear()
             self.qt2dp_queue.put('clr')
 

@@ -853,6 +853,10 @@ class Chat:
         清空当前对话中的所有消息
         """
         self.message_list.clear()
+        # 必须同时清除该对话的工具调用记录
+        # 这些元数据绑定到 message_index；清空消息后若保留，重启渲染时会挂到新消息上。
+        for key in ("tool_call_records", "tool_call_history"):
+            self.meta.pop(key, None)
 
     def is_my_turn(self, perspective: str) -> bool:
         """

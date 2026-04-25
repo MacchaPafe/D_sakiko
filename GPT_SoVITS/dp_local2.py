@@ -498,6 +498,7 @@ class DSLocalAndVoiceGen:
                 continue
             elif user_input=='clr':
                 self.current_chat.clear_message_list()
+                self._session_tool_call_records.clear()
                 message_queue.put("已清空角色的聊天记录")
                 time.sleep(2)
                 continue
