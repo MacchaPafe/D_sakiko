@@ -33,14 +33,27 @@ def completion(**kwargs):
     """
     if "model" in kwargs and isinstance(kwargs["model"], str):
         if "deepseek" in kwargs["model"].lower():
+            extra_body = kwargs.get("extra_body")
+            if not isinstance(extra_body, dict):
+                extra_body = {}
+            else:
+                extra_body = dict(extra_body)
+
             if "reasoning_effort" in kwargs:
-                kwargs["extra_body"] = {"reasoning_effort": kwargs.pop("reasoning_effort")}
-                kwargs.pop("reasoning_effort", None)
+                reasoning_effort = kwargs.pop("reasoning_effort")
+                if reasoning_effort == "xhigh":
+                    # DeepSeek 官方文档推荐用 max 代替 xhigh 强度
+                    reasoning_effort = "max"
+                extra_body["reasoning_effort"] = reasoning_effort
             if "thinking" in kwargs:
                 thinking_value = kwargs.pop("thinking", None)
-                if thinking_value is not None:
-                    kwargs["extra_body"] = kwargs.get("extra_body", {})
-                    kwargs["extra_body"]["thinking"] = {"type": "enabled" if thinking_value.get("type") == "enabled" else "disabled"}
+                if isinstance(thinking_value, dict):
+                    extra_body["thinking"] = {
+                        "type": "enabled" if thinking_value.get("type") == "enabled" else "disabled"
+                    }
+
+            if extra_body:
+                kwargs["extra_body"] = extra_body
 
     return litellm.completion(**kwargs)
 
@@ -295,82 +308,112 @@ class DSLocalAndVoiceGen:
                 + "7. 如果你决定调用工具：你应该同时输出一段“过渡台词”，但这段台词也必须放在 JSON 数组里，格式和上面的输出示例一致。\n"
         )
 
+    def _build_current_reasoning_kwargs_snapshot(self) -> dict[str, object]:
+        """
+        为当前用户输入创建一份推理配置快照。
+
+        工具调用运行时可能在同一轮用户输入内多次请求模型。这里将推理设置转换为显式
+        kwargs，保证本轮所有工具调用请求使用同一套 thinking/reasoning_effort 配置。
+        """
+        reasoning_meta = self.current_chat.meta.llm_reasoning
+        reasoning_kwargs: dict[str, object] = {"_reasoning_snapshot_locked": True}
+
+        if reasoning_meta.enabled == "on":
+            reasoning_kwargs["thinking"] = {"type": "enabled"}
+        elif reasoning_meta.enabled == "off":
+            reasoning_kwargs["thinking"] = {"type": "disabled"}
+
+        if reasoning_meta.effort != "default":
+            reasoning_kwargs["reasoning_effort"] = reasoning_meta.effort
+
+        return reasoning_kwargs
+
     def _completion_with_current_config(self, model, messages, tools=None, tool_choice="auto", **kwargs):
         """
         runtime 发起 LLM 请求的底层入口。
 
         在进行请求时，此函数会根据当前 chat 的设置，传入是否启用推理以及推理强度设定。如果 kwargs 中已经包含了相关设定，则以 kwargs 中的为准。
         """
-        stream = kwargs.get("stream", False)
-        timeout = kwargs.get("timeout", 30)
+        # 提取运行时参数，避免后续和显式传参重复。
+        runtime_kwargs = dict(kwargs)
+        stream = runtime_kwargs.pop("stream", False)
+        timeout = runtime_kwargs.pop("timeout", 30)
+        reasoning_snapshot_locked = bool(runtime_kwargs.pop("_reasoning_snapshot_locked", False))
+        for protected_key in ("model", "messages", "api_key", "base_url", "tools", "tool_choice"):
+            runtime_kwargs.pop(protected_key, None)
 
-        # 补充是否启用推理和推理强度的设定
-        if "thinking" not in kwargs and "reasoning_effort" not in kwargs:
-            reasoning_meta = self.current_chat.meta.llm_reasoning
-            
-            if reasoning_meta.enabled == "on":
-                kwargs["thinking"] = {"type": "enabled"}
-            elif reasoning_meta.enabled == "off":
-                kwargs["thinking"] = {"type": "disabled"}
-            else:
-                # reasoning_meta.enabled == "auto" 时，不传入任何关于 thinking 的数据，让模型自己决定是否启用推理
-                pass
-
-            # 确保 effort 是 litellm 能接受的东西
-            if reasoning_meta.effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "default"):
-                kwargs["reasoning_effort"] = "default"
-            else:
-                kwargs["reasoning_effort"] = reasoning_meta.effort
-
+        # 根据当前 API 配置选择模型、鉴权信息和可选 base_url。
         if d_sakiko_config.use_default_deepseek_api.value:
             print("正在使用 UP 的 DeepSeek API")
-            return completion(
-                model="deepseek/deepseek-chat",
-                messages=messages,
-                api_key=self.model,
-                stream=stream,
-                timeout=timeout,
-                tools=tools,
-                tool_choice=tool_choice,
-                **kwargs
-            )
-
-        if d_sakiko_config.enable_custom_llm_api_provider.value:
+            completion_kwargs = {
+                "model": "deepseek/deepseek-chat",
+                "messages": messages,
+                "api_key": self.model,
+                "stream": stream,
+                "timeout": timeout,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            }
+        elif d_sakiko_config.enable_custom_llm_api_provider.value:
             print("正在使用自定义大模型 API ")
             print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
             print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
-            return completion(
-                model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
-                messages=messages,
-                api_key=d_sakiko_config.custom_llm_api_key.value,
-                base_url=d_sakiko_config.custom_llm_api_url.value,
-                stream=stream,
-                timeout=timeout,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
+            completion_kwargs = {
+                "model": ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
+                "messages": messages,
+                "api_key": d_sakiko_config.custom_llm_api_key.value,
+                "base_url": d_sakiko_config.custom_llm_api_url.value,
+                "stream": stream,
+                "timeout": timeout,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            }
+        else:
+            print("正在使用预定义大模型 API ")
+            print("Provider: ", d_sakiko_config.llm_api_provider.value)
+            print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
+            provider = d_sakiko_config.llm_api_provider.value
+            model_name = d_sakiko_config.llm_api_model.value.get(provider, "")
+            api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
+            base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
 
-        print("正在使用预定义大模型 API ")
-        print("Provider: ", d_sakiko_config.llm_api_provider.value)
-        print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
-        provider = d_sakiko_config.llm_api_provider.value
-        model_name = d_sakiko_config.llm_api_model.value.get(provider, "")
-        api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
-        base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
+            completion_kwargs = {
+                "model": self.normalize_model_for_provider(provider, model_name),
+                "messages": messages,
+                "api_key": api_key,
+                "stream": stream,
+                "timeout": timeout,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            }
+            if base_url:
+                completion_kwargs["base_url"] = base_url
 
-        common_kwargs = {
-            "model": self.normalize_model_for_provider(provider, model_name),
-            "messages": messages,
-            "api_key": api_key,
-            "stream": stream,
-            "timeout": timeout,
-            "tools": tools,
-            "tool_choice": tool_choice,
-        }
-        if base_url:
-            common_kwargs["base_url"] = base_url
+        # 如果调用方没有显式传入推理相关参数，则根据当前 Chat 的配置补充。
+        extra_body = runtime_kwargs.get("extra_body")
+        extra_body_has_reasoning = (
+            isinstance(extra_body, dict)
+            and ("thinking" in extra_body or "reasoning_effort" in extra_body)
+        )
+        has_explicit_reasoning = (
+            reasoning_snapshot_locked
+            or "thinking" in runtime_kwargs
+            or "reasoning_effort" in runtime_kwargs
+            or extra_body_has_reasoning
+        )
+        if not has_explicit_reasoning:
+            reasoning_meta = self.current_chat.meta.llm_reasoning
+            if reasoning_meta.enabled == "on":
+                runtime_kwargs["thinking"] = {"type": "enabled"}
+            elif reasoning_meta.enabled == "off":
+                runtime_kwargs["thinking"] = {"type": "disabled"}
 
-        return completion(**common_kwargs)
+            if reasoning_meta.effort != "default":
+                runtime_kwargs["reasoning_effort"] = reasoning_meta.effort
+
+        # 合并运行时参数并发起请求。runtime_kwargs 不允许覆盖上面确定的核心请求字段。
+        completion_kwargs.update(runtime_kwargs)
+        return completion(**completion_kwargs)
 
     @staticmethod
     def _wait_audio_turn_complete(is_audio_play_complete):
@@ -681,6 +724,8 @@ class DSLocalAndVoiceGen:
 
             message_queue.put(f"{character_name}思考中...")
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
+            # 为本轮用户输入锁定推理配置；如果用户在工具调用过程中修改 UI 设置，只会影响下一轮输入。
+            reasoning_kwargs_snapshot = self._build_current_reasoning_kwargs_snapshot()
             # --------------------------
             try:
                 # 构造 interim_callback（期间文本回调），用于接收大模型在决定调用工具前输出的“过渡台词”（如：“请稍等，我查一下天气”）
@@ -697,7 +742,11 @@ class DSLocalAndVoiceGen:
                 runtime_result = self.tool_runtime.run(
                     model="tool-runtime",
                     messages=self.trim_list_to_340kb(to_llm_msg),
-                    llm_kwargs={"stream": False, "timeout": 30},
+                    llm_kwargs={
+                        "stream": False,
+                        "timeout": 30,
+                        **reasoning_kwargs_snapshot,
+                    },
                     on_interim_message=interim_callback,
                 )
 

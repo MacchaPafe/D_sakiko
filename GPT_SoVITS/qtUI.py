@@ -1066,9 +1066,31 @@ class ChatGUI(QWidget):
         super().__init__()
         self.is_motion_complete = is_motion_complete
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
+        self.character_list:list = characters
+        self.current_char_index = 0
+        self.dp_chat=dp_chat    # dp_local2 模块引用
+        # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
+        self.chat_manager: ChatManager = self.dp_chat.chat_manager
+        # 为每个角色获取对应的 Chat 对象列表（与 dp_chat.character_chats 是相同的对象引用）
+        self.character_chats: list[Chat] = self.dp_chat.character_chats
+        self.tool_call_records_cache: dict[str, dict] = {}
+        self.reasoning_enabled_labels: dict[str, str] = {
+            "auto": "自动",
+            "on": "思考",
+            "off": "快速",
+        }
+        self.reasoning_effort_labels: dict[str, str] = {
+            "default": "默认",
+            "minimal": "极低",
+            "low": "低",
+            "medium": "中",
+            "high": "高",
+            "xhigh": "极高",
+        }
         self.setWindowTitle("数字小祥")
         self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
         self.screen = QDesktopWidget().screenGeometry()
+        self.input_tool_button_height = int(self.screen.height()*0.027)
         self.resize(int(0.37 * self.screen.width()), int(0.7 * self.screen.height()))
         self.chat_display = ChatTextBrowser(self)
         self.chat_display.setPlaceholderText("这里显示聊天记录...")
@@ -1089,14 +1111,24 @@ class ChatGUI(QWidget):
         self.messages_box.setPlaceholderText("这里是各种消息提示框...")
         self.messages_box.setMaximumHeight(int(0.05*self.screen.height()))
         self.user_input = QLineEdit()
+        self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
 
         self.voice_button = QPushButton()
+        self.voice_button.setObjectName("voiceInputButton")
         mic_icon=QIcon("./icons/microphone.png")
         self.voice_button.setIcon(mic_icon)
+        self.voice_button.setFixedSize(int(self.screen.height()*0.035), self.input_tool_button_height)
+        self.voice_button.setIconSize(QSize(int(self.input_tool_button_height*0.58), int(self.input_tool_button_height*0.58)))
         self.voice_button.pressed.connect(self.voice_dectect)  # noqa
         self.voice_button.released.connect(self.voice_decect_end)  # noqa
 
+        self.send_button = QToolButton()
+        self.send_button.setObjectName("sendMessageButton")
+        self.send_button.setText("↑")
+        self.send_button.setToolTip("发送")
+        self.send_button.setFixedSize(self.input_tool_button_height, self.input_tool_button_height)
+        self.send_button.clicked.connect(self.handle_user_input)  # noqa
 
         self.save_dialog_btn=QToolButton()
         self.save_dialog_btn.setIcon(QIcon("./icons/save.svg"))
@@ -1106,9 +1138,7 @@ class ChatGUI(QWidget):
 
         layout = QVBoxLayout()
 
-        input_layout=QHBoxLayout()
-        input_layout.addWidget(self.user_input)
-        input_layout.addWidget(self.voice_button)
+        input_panel = self._create_input_panel()
 
         #处理流式输出
         self.full_response = ""
@@ -1131,14 +1161,6 @@ class ChatGUI(QWidget):
         self.get_message_thread.message_signal.connect(self.handle_messages)  # noqa
         self.get_message_thread.start()
 
-        self.character_list:list = characters
-        self.current_char_index = 0
-        self.dp_chat=dp_chat    # dp_local2 模块引用
-        # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
-        self.chat_manager: ChatManager = self.dp_chat.chat_manager
-        # 为每个角色获取对应的 Chat 对象列表（与 dp_chat.character_chats 是相同的对象引用）
-        self.character_chats: list[Chat] = self.dp_chat.character_chats
-        self.tool_call_records_cache: dict[str, dict] = {}
         #---------------------消息命令处理机制 从引入抽奖工具开始构建---------------------
         self._message_command_handlers: dict[str, callable] = {}
         self._lottery_dialog_ref = None
@@ -1233,7 +1255,7 @@ class ChatGUI(QWidget):
         layout.addLayout(top_layout)
         layout.addWidget(self.chat_display)
         layout.addLayout(slider_layout)
-        layout.addLayout(input_layout)
+        layout.addWidget(input_panel)
         if self.character_list[self.current_char_index].qt_css is not None:
             self.set_btn_color(ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css))
         else:
@@ -1268,6 +1290,219 @@ class ChatGUI(QWidget):
     def current_chat(self) -> Chat:
         """获取当前角色对应的 Chat 对象"""
         return self.character_chats[self.current_char_index]
+
+    def _create_input_panel(self) -> QFrame:
+        """创建带底部工具行的 Codex 风格输入面板。"""
+        self.input_panel = QFrame()
+        self.input_panel.setObjectName("messageInputPanel")
+        self.input_panel.setMinimumHeight(int(self.screen.height()*0.087))
+
+        panel_layout = QVBoxLayout()
+        panel_layout.setContentsMargins(10, 7, 10, 8)
+        panel_layout.setSpacing(4)
+
+        self.user_input.setMinimumHeight(int(self.screen.height()*0.036))
+        panel_layout.addWidget(self.user_input)
+
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(6)
+        bottom_layout.addStretch(1)
+
+        self.reasoning_menu_button = QToolButton()
+        self.reasoning_menu_button.setObjectName("reasoningMenuButton")
+        self.reasoning_menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.reasoning_menu_button.setToolTip("设置当前对话的推理与推理强度")
+        self.reasoning_menu_button.setMenu(self._build_reasoning_menu())
+        self.reasoning_menu_button.setFixedHeight(self.input_tool_button_height)
+        self._refresh_reasoning_button()
+
+        bottom_layout.addWidget(self.reasoning_menu_button, 0)
+        bottom_layout.addWidget(self.voice_button, 0)
+        bottom_layout.addWidget(self.send_button, 0)
+        panel_layout.addLayout(bottom_layout)
+
+        self.input_panel.setLayout(panel_layout)
+        self._apply_input_panel_style("#7799CC")
+        return self.input_panel
+
+    def _build_reasoning_menu(self) -> QMenu:
+        """创建推理设置菜单。"""
+        menu = QMenu(self)
+
+        enabled_menu = menu.addMenu("开启推理")
+        for enabled_value, label in self.reasoning_enabled_labels.items():
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setData(f"enabled:{enabled_value}")
+            action.triggered.connect(
+                lambda checked=False, value=enabled_value: self._set_reasoning_enabled(value)
+            )  # noqa
+            enabled_menu.addAction(action)
+
+        effort_menu = menu.addMenu("推理强度")
+        for effort_value, label in self.reasoning_effort_labels.items():
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setData(f"effort:{effort_value}")
+            action.triggered.connect(
+                lambda checked=False, value=effort_value: self._set_reasoning_effort(value)
+            )  # noqa
+            effort_menu.addAction(action)
+
+        return menu
+
+    def _set_reasoning_enabled(self, enabled: str) -> None:
+        """修改当前对话的推理开关配置。"""
+        if enabled not in self.reasoning_enabled_labels:
+            enabled = "auto"
+        self.current_chat.meta.llm_reasoning.enabled = enabled
+        self._refresh_reasoning_button()
+        self._save_reasoning_config()
+
+    def _set_reasoning_effort(self, effort: str) -> None:
+        """修改当前对话的推理强度配置。"""
+        if effort not in self.reasoning_effort_labels:
+            effort = "default"
+        self.current_chat.meta.llm_reasoning.effort = effort
+        self._refresh_reasoning_button()
+        self._save_reasoning_config()
+
+    def _refresh_reasoning_button(self) -> None:
+        """根据当前对话配置刷新推理按钮文本和菜单选中状态。"""
+        reasoning_meta = self.current_chat.meta.llm_reasoning
+        if reasoning_meta.enabled not in self.reasoning_enabled_labels:
+            reasoning_meta.enabled = "auto"
+        if reasoning_meta.effort not in self.reasoning_effort_labels:
+            reasoning_meta.effort = "default"
+
+        enabled_label = self.reasoning_enabled_labels[reasoning_meta.enabled]
+        effort_label = self.reasoning_effort_labels[reasoning_meta.effort]
+        self.reasoning_menu_button.setText(f"{enabled_label} {effort_label}")
+
+        menu = self.reasoning_menu_button.menu()
+        if menu is None:
+            return
+        for action in menu.actions():
+            sub_menu = action.menu()
+            if sub_menu is None:
+                continue
+            for sub_action in sub_menu.actions():
+                data = sub_action.data()
+                sub_action.setChecked(
+                    data == f"enabled:{reasoning_meta.enabled}"
+                    or data == f"effort:{reasoning_meta.effort}"
+                )
+
+    def _save_reasoning_config(self) -> None:
+        """保存当前对话的推理配置。"""
+        try:
+            self.chat_manager.save()
+            self.setWindowTitle("已更新推理设置")
+        except Exception as e:
+            PrintInfo.print_error(f"[Error]保存推理设置失败：{e}")
+            self.setWindowTitle("推理设置保存失败！")
+
+    def _apply_input_panel_style(self, color: str) -> None:
+        """根据主题色刷新输入面板局部样式。"""
+        self._set_voice_button_icon_color(color)
+        send_color = QColor(color)
+        if not send_color.isValid():
+            send_color = QColor("#7799CC")
+        send_hover_color = send_color.lighter(112).name()
+        send_pressed_color = send_color.darker(108).name()
+        self.input_panel.setStyleSheet(f"""
+            QFrame#messageInputPanel {{
+                background-color: #FFFFFF;
+                border: 2px solid {color};
+                border-radius: 13px;
+            }}
+        """)
+        self.user_input.setStyleSheet(f"""
+            QLineEdit#messageTextInput {{
+                background-color: transparent;
+                border: none;
+                padding: 4px 2px;
+                color: {color};
+            }}
+        """)
+        self.reasoning_menu_button.setStyleSheet(f"""
+            QToolButton#reasoningMenuButton {{
+                color: {color};
+                background-color: rgba(0, 0, 0, 0.035);
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 9px;
+                padding: 0px 9px;
+            }}
+            QToolButton#reasoningMenuButton:hover {{
+                background-color: rgba(0, 0, 0, 0.07);
+            }}
+            QToolButton#reasoningMenuButton::menu-indicator {{
+                image: none;
+                width: 0px;
+            }}
+        """)
+        self.voice_button.setStyleSheet(f"""
+            QPushButton#voiceInputButton {{
+                color: {color};
+                background-color: rgba(0, 0, 0, 0.035);
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 9px;
+                padding: 0px;
+            }}
+            QPushButton#voiceInputButton:hover {{
+                background-color: rgba(0, 0, 0, 0.07);
+            }}
+            QPushButton#voiceInputButton:pressed {{
+                background-color: rgba(0, 0, 0, 0.11);
+            }}
+            QPushButton#voiceInputButton:disabled {{
+                background-color: rgba(0, 0, 0, 0.025);
+                border: 1px solid rgba(0, 0, 0, 0.055);
+            }}
+        """)
+        self.send_button.setStyleSheet(f"""
+            QToolButton#sendMessageButton {{
+                color: #FFFFFF;
+                background-color: {send_color.name()};
+                border: none;
+                border-radius: {int(self.input_tool_button_height*0.5)}px;
+                padding: 0px;
+                font-size: {int(self.input_tool_button_height*0.68)}px;
+                font-weight: bold;
+            }}
+            QToolButton#sendMessageButton:hover {{
+                background-color: {send_hover_color};
+            }}
+            QToolButton#sendMessageButton:pressed {{
+                background-color: {send_pressed_color};
+            }}
+        """)
+
+    def _set_voice_button_icon_color(self, color: str) -> None:
+        """将语音输入图标重绘为当前主题色。"""
+        image = QImage("./icons/microphone.png")
+        if image.isNull():
+            return
+
+        themed_image = image.convertToFormat(QImage.Format_ARGB32)
+        theme_color = QColor(color)
+        for y in range(themed_image.height()):
+            for x in range(themed_image.width()):
+                pixel_color = themed_image.pixelColor(x, y)
+                alpha = pixel_color.alpha()
+                if alpha > 0:
+                    pixel_color.setRed(theme_color.red())
+                    pixel_color.setGreen(theme_color.green())
+                    pixel_color.setBlue(theme_color.blue())
+                    pixel_color.setAlpha(alpha)
+                    themed_image.setPixelColor(x, y, pixel_color)
+
+        pixmap = QPixmap.fromImage(themed_image)
+        icon = QIcon()
+        icon.addPixmap(pixmap, QIcon.Normal, QIcon.Off)
+        icon.addPixmap(pixmap, QIcon.Disabled, QIcon.Off)
+        self.voice_button.setIcon(icon)
 
     def _load_tool_call_records_cache(self):
         self.tool_call_records_cache = {}
@@ -1469,6 +1704,8 @@ class ChatGUI(QWidget):
                 pass
         # 更新主题色并从 Chat 数据重新生成 HTML（不再使用正则替换旧 HTML 中的颜色）
         self._current_theme_color = color
+        self._apply_input_panel_style(color)
+        self._refresh_reasoning_button()
         self._refresh_chat_display()
         # 保存新颜色到本地以及修改内存中的颜色
         try:

@@ -7,7 +7,7 @@ from typing import Mapping
 
 
 VALID_REASONING_ENABLED = {"auto", "on", "off"}
-VALID_REASONING_EFFORT = {"default", "minimal", "low", "medium", "high", "max"}
+VALID_REASONING_EFFORT = {"default", "minimal", "low", "medium", "high", "xhigh"}
 
 
 def _as_mapping(data: object) -> Mapping[str, object]:
@@ -189,7 +189,7 @@ class ReasoningMeta:
 
     # 是否启用推理功能；auto 会不传入任何数据，让模型自己决定是否启用；on 会强制启用；off 会强制关闭
     enabled: str = "auto"
-    # 推理模式的努力程度，默认 default；其他可选值包括 minimal、low、medium、high、max，努力程度越高，模型越倾向于进行复杂的推理
+    # 推理模式的努力程度，默认 default；其他可选值包括 minimal、low、medium、high、xhigh，努力程度越高，模型越倾向于进行复杂的推理
     effort: str = "default"
 
     @classmethod
