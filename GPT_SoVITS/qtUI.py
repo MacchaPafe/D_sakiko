@@ -3,6 +3,7 @@ import re
 import time
 import json
 import random
+from typing import Callable
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -22,6 +23,12 @@ from ui_constants import dialogWindowDefaultCss,char_info_json
 from character import PrintInfo
 from chat.chat import ChatManager, Chat, Message, get_chat_manager
 from emotion_enum import EmotionEnum
+from input_commands import (
+    CommandSpec,
+    InputCommandMatcher,
+    InputCommandPalette,
+    build_default_input_command_specs,
+)
 
 
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
@@ -623,25 +630,15 @@ class SettingWindow(QDialog):
         self.setStyleSheet(dialogWindowDefaultCss)
 
     def change_lan(self):
-        self.parent_window.user_input.setText('l')
-        self.parent_window.user_input.returnPressed.emit()  # noqa
-        self.parent_window.user_input.clear()
+        self.parent_window.run_input_command_text('l', 'setting_button')
     def clear_history_msg(self):
-        self.parent_window.user_input.setText('clr')
-        self.parent_window.user_input.returnPressed.emit()  # noqa
-        self.parent_window.user_input.clear()
+        self.parent_window.run_input_command_text('clr', 'setting_button')
     def convert_sakiko_state(self):
-        self.parent_window.user_input.setText('conv')
-        self.parent_window.user_input.returnPressed.emit()  # noqa
-        self.parent_window.user_input.clear()
+        self.parent_window.run_input_command_text('conv', 'setting_button')
     def sakiko_mask(self):
-        self.parent_window.user_input.setText('mask')
-        self.parent_window.user_input.returnPressed.emit()  # noqa
-        self.parent_window.user_input.clear()
+        self.parent_window.run_input_command_text('mask', 'setting_button')
     def switch_voice(self):
-        self.parent_window.user_input.setText('v')
-        self.parent_window.user_input.returnPressed.emit()  # noqa
-        self.parent_window.user_input.clear()
+        self.parent_window.run_input_command_text('v', 'setting_button')
     def open_color_picker(self):
         color_picker = ColorPicker(self.parent_window_set_theme_color,self.current_color)
         color_picker.exec_()
@@ -652,27 +649,14 @@ class SettingWindow(QDialog):
         change_ref_audio_window=ChangeReferenceAudioWindow(self.audio_gen_module,QDesktopWidget().screenGeometry())
         change_ref_audio_window.exec_()
     def change_l2d_background(self):
-        self.parent_window.user_input.setText('change_l2d_background')
-        self.parent_window.user_input.returnPressed.emit()  # noqa
-        self.parent_window.user_input.clear()
+        self.parent_window.run_input_command_text('change_l2d_background', 'setting_button')
 
     def change_live2d_model_1(self):
         current_char_folder_name=self.parent_window.character_list[self.audio_gen_module.current_character_index].character_folder_name
         change_l2d_model_window=ChangeL2DModelWindow(current_char_folder_name,self.change_live2d_model_2)
         change_l2d_model_window.exec_()
     def change_live2d_model_2(self,new_model_json):
-        from character import is_old_l2d_json,convert_old_l2d_json
-        if is_old_l2d_json(new_model_json):
-            try:
-                convert_old_l2d_json(new_model_json)
-            except Exception as e:
-                self.parent_window.QT_message_queue(f"切换模型失败，转换旧版Live2D配置文件时出错。")
-                PrintInfo.print_error(f"[Error]切换模型失败，转换旧版Live2D配置文件时出错。{e}\n")
-                return
-            PrintInfo.print_info("成功转换旧版Live2D配置文件。\n")
-        self.parent_window.user_input.setText(f'change_l2d_model#{new_model_json}')
-        self.parent_window.user_input.returnPressed.emit()  # noqa
-        self.parent_window.user_input.clear()
+        self.parent_window._send_l2d_model_payload(new_model_json)
 
 
 
@@ -1139,6 +1123,7 @@ class ChatGUI(QWidget):
         layout = QVBoxLayout()
 
         input_panel = self._create_input_panel()
+        self._setup_input_commands(input_panel)
 
         #处理流式输出
         self.full_response = ""
@@ -1291,6 +1276,15 @@ class ChatGUI(QWidget):
         """获取当前角色对应的 Chat 对象"""
         return self.character_chats[self.current_char_index]
 
+    def _setup_input_commands(self, input_panel: QFrame) -> None:
+        """初始化输入框命令注册表、匹配器与命令栏控件。"""
+        self.input_command_specs: tuple[CommandSpec, ...] = build_default_input_command_specs()
+        self.input_command_matcher = InputCommandMatcher(self.input_command_specs)
+        self.input_command_palette = InputCommandPalette(self.input_command_matcher, self)
+        self.input_command_palette.attach_to_input(self.user_input, input_panel)
+        self.input_command_palette.commandSelected.connect(self._on_input_command_selected)  # noqa
+        self.input_command_palette.set_theme_color(self._current_theme_color if hasattr(self, "_current_theme_color") else "#7799CC")
+
     def _create_input_panel(self) -> QFrame:
         """创建带底部工具行的 Codex 风格输入面板。"""
         self.input_panel = QFrame()
@@ -1406,6 +1400,8 @@ class ChatGUI(QWidget):
     def _apply_input_panel_style(self, color: str) -> None:
         """根据主题色刷新输入面板局部样式。"""
         self._set_voice_button_icon_color(color)
+        if hasattr(self, "input_command_palette"):
+            self.input_command_palette.set_theme_color(color)
         send_color = QColor(color)
         if not send_color.isValid():
             send_color = QColor("#7799CC")
@@ -1740,13 +1736,10 @@ class ChatGUI(QWidget):
         more_function_win.exec_()
 
     def close_program(self):
-        self.user_input.setText('bye')
-        self.user_input.returnPressed.emit()  # noqa
+        self.run_input_command_text('bye', 'more_function_button')
 
     def change_character_button_function(self):
-        self.user_input.setText('s')
-        self.user_input.returnPressed.emit()  # noqa
-        self.user_input.clear()
+        self.run_input_command_text('s', 'change_character_button')
 
     def talk_speed_reset(self):
         saved_speed=self.saved_talk_speed_and_pause_second[self.current_char_index]['talk_speed']  # noqa
@@ -1823,8 +1816,7 @@ class ChatGUI(QWidget):
         self.is_recording=True
         self.record_data=[]
         self.record_timer.start(300)
-        self.user_input.setText('start_talking')
-        self.user_input.returnPressed.emit()
+        self.run_input_command_text('start_talking', 'voice_button')
         QTimer.singleShot(1000, lambda: self.setWindowTitle("正在录音...松开结束"))
 
     def voice_decect_end(self):
@@ -1834,8 +1826,7 @@ class ChatGUI(QWidget):
         self.setWindowTitle("数字小祥")
         self.is_recording=False
         self.record_timer.stop()
-        self.user_input.setText('stop_talking')
-        self.user_input.returnPressed.emit()  # noqa
+        self.run_input_command_text('stop_talking', 'voice_button')
 
         self.stop_input_stream()
 
@@ -1875,13 +1866,9 @@ class ChatGUI(QWidget):
         cc = OpenCC('tw2s.json')
         text=cc.convert(text)
         if text=='切换角色':
-            self.user_input.setText('s')
-            self.user_input.returnPressed.emit()  # noqa
-            self.user_input.clear()
+            self.run_input_command_text('s', 'speech_recognition')
         elif text=='切换语言':
-            self.user_input.setText('l')
-            self.user_input.returnPressed.emit()  # noqa
-            self.user_input.clear()
+            self.run_input_command_text('l', 'speech_recognition')
         else:
             self.user_input.setText(text)
 
@@ -2138,34 +2125,125 @@ class ChatGUI(QWidget):
         text4=re.findall('思考中',text,flags=re.DOTALL)
         return not (text1 or text2 or text3 or text4)
 
-    @staticmethod
-    def is_display2(text):
-        flag=True
-        user_input_no_display_list=['s','l','m','clr','conv','v',
-                                    'clr','mask','save','start_talking','stop_talking','change_l2d_background']
-        for x in user_input_no_display_list:
-            if text == x:
-                flag = False
-        if text.startswith('change_l2d_model'):
-            flag = False
-        return flag
+    def is_display2(self, text: str) -> bool:
+        """判断一段用户输入是否应该显示在聊天框中。"""
+        command_match = self.input_command_matcher.find_by_text(text)
+        if command_match is not None:
+            return False
+        return True
 
-    def handle_user_input(self):
-        def clr_history():
+    def _on_input_command_selected(self, spec: CommandSpec) -> None:
+        """处理命令栏中被用户选中的命令。"""
+        self._execute_input_command(spec, "slash_menu")
+
+    def _handle_command_before_send(self, text: str) -> bool:
+        """在普通发送流程前识别并处理 slash 命令或裸命令。"""
+        if not self.run_input_command_text(text, "send_button"):
+            if text.strip().startswith("/"):
+                self.messages_box.clear()
+                self.messages_box.append(f"未知命令：{text.strip()}")
+                return True
+            return False
+        return True
+
+    def run_input_command_text(self, text: str, source: str) -> bool:
+        """按文本查找并执行输入框命令，命中时返回 True。"""
+        command_match = self.input_command_matcher.find_by_text(text)
+        if command_match is None:
+            return False
+        self._execute_input_command(command_match.spec, source, command_match.payload)
+        return True
+
+    def _execute_input_command(self, spec: CommandSpec, source: str, payload: str | None = None) -> None:
+        """统一执行输入框命令。"""
+        command_payload = payload if payload is not None else spec.command
+
+        if spec.execution_policy == "confirm" and not self._should_skip_command_confirm(spec, source):
+            self._confirm_dangerous_command(
+                spec,
+                lambda: self._execute_confirmed_input_command(spec, source, command_payload),
+            )
+            return
+
+        self._execute_confirmed_input_command(spec, source, command_payload)
+
+    def _should_skip_command_confirm(self, spec: CommandSpec, source: str) -> bool:
+        """判断某个来源触发的命令是否可以跳过二次确认。"""
+        return spec.command == "bye" and source == "more_function_button"
+
+    def _execute_confirmed_input_command(self, spec: CommandSpec, source: str, payload: str) -> None:
+        """执行已经通过确认的输入框命令。"""
+        self.setWindowTitle("数字小祥")
+
+        if spec.command == "save":
+            self.save_data()
+            self.user_input.clear()
+            return
+
+        if spec.command == "clr":
             self.current_chat.clear_message_list()
             self.tool_call_records_cache.clear()
             self.chat_display.clear()
-            self.qt2dp_queue.put('clr')
+            self._send_internal_command_payload("clr", force=True)
+            self.user_input.clear()
+            return
 
+        if spec.command == "change_l2d_model":
+            self._open_l2d_model_command_window()
+            self.user_input.clear()
+            return
+
+        self._send_internal_command_payload(payload, force=spec.visibility == "hidden")
+        self.user_input.clear()
+
+        if spec.command == "l":
+            self.is_ch = not self.is_ch
+            self.talk_speed_reset()
+            self.pause_second_reset()
+
+    def _send_internal_command_payload(self, payload: str, force: bool = False) -> None:
+        """向后端队列发送内部命令 payload。"""
+        if force or (self.is_display(self.messages_box.toPlainText()) and self.qt2dp_queue.empty()):
+            self.qt2dp_queue.put(payload)
+
+    def _confirm_dangerous_command(self, spec: CommandSpec, callback: Callable[[], None]) -> None:
+        """对危险命令弹出二次确认窗口。"""
+        css = ThemeManager.generate_stylesheet(
+            ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
+        ) if self.character_list[self.current_char_index].qt_css is not None else ThemeManager.generate_stylesheet(
+            '#7799CC')
+        danger_text = spec.danger_text or f"确定要执行 {spec.display_command} 吗？"
+        WarningWindow(danger_text, css, callback).exec_()
+
+    def _open_l2d_model_command_window(self) -> None:
+        """打开 Live2D 模型选择窗口。"""
+        current_char_folder_name = self.character_list[self.audio_gen.current_character_index].character_folder_name
+        change_l2d_model_window = ChangeL2DModelWindow(current_char_folder_name, self._send_l2d_model_payload)
+        change_l2d_model_window.exec_()
+
+    def _send_l2d_model_payload(self, new_model_json: str) -> None:
+        """校验并发送 Live2D 模型切换 payload。"""
+        from character import is_old_l2d_json,convert_old_l2d_json
+        if is_old_l2d_json(new_model_json):
+            try:
+                convert_old_l2d_json(new_model_json)
+            except Exception as e:
+                self.QT_message_queue.put(f"切换模型失败，转换旧版Live2D配置文件时出错。")
+                PrintInfo.print_error(f"[Error]切换模型失败，转换旧版Live2D配置文件时出错。{e}\n")
+                return
+            PrintInfo.print_info("成功转换旧版Live2D配置文件。\n")
+        self._send_internal_command_payload(f'change_l2d_model#{new_model_json}', force=True)
+
+    def handle_user_input(self):
         self.setWindowTitle("数字小祥")
         user_this_turn_input=self.user_input.text()
         user_this_turn_input=user_this_turn_input.strip(' ')
+        if self._handle_command_before_send(user_this_turn_input):
+            return
         if user_this_turn_input=='':
             user_this_turn_input="（什么也没说）"
         current_text = self.messages_box.toPlainText()
-        if (user_this_turn_input!='clr'
-            and user_this_turn_input!='save'
-            and self.is_display(current_text)
+        if (self.is_display(current_text)
             and self.qt2dp_queue.empty()):
             self.qt2dp_queue.put(user_this_turn_input)
         self.user_input.clear()
@@ -2191,21 +2269,6 @@ class ChatGUI(QWidget):
                     predicted_msg_index = len(self.current_chat.message_list)
                 self.chat_display.append(f'<a href="user:?msg={predicted_msg_index}" style="text-decoration: none; color: {text_color};">你：</a>')
                 self.timer.start(8)
-        if user_this_turn_input=='clr':
-            css = ThemeManager.generate_stylesheet(
-                ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
-            ) if self.character_list[self.current_char_index].qt_css is not None else ThemeManager.generate_stylesheet(
-                '#7799CC')
-            WarningWindow("确定要清空当前角色的聊天记录吗？角色记忆也将同步被删除",css,clr_history).exec_()
-
-        if user_this_turn_input=='save':
-            self.save_data()
-
-        if user_this_turn_input=='l':   #切换语言时也会变更语速
-            self.is_ch=not self.is_ch
-            self.talk_speed_reset()
-            self.pause_second_reset()
-
     def save_data(self):
         # 使用 ChatManager 统一保存到 all_conversation.json
         try:
