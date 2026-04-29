@@ -1153,8 +1153,11 @@ def get_chat_manager() -> ChatManager:
             legacy_theater_file = "../reference_audio/small_theater_history.json"
 
             has_new_record = os.path.exists(all_conversation_file)
-            has_legacy_main_record = os.path.exists(legacy_llm_file)
-            has_legacy_theater_record = os.path.exists(legacy_theater_file)
+            # 旧的主对话记录和小剧场记录默认都是空白文件，
+            # 空白文件会在 json.load 时被判定为加载失败；但我们不希望将其按照加载失败处理（打印错误消息），因为本来就没东西
+            # 因此，只在这两个文件不为空时认为它可能存在。
+            has_legacy_main_record = os.path.exists(legacy_llm_file) and not os.path.getsize(legacy_llm_file) == 0
+            has_legacy_theater_record = os.path.exists(legacy_theater_file) and not os.path.getsize(legacy_theater_file) == 0
             migrated_legacy_files: List[str] = []
 
             # 优先级 1->2->3：只要有 all_conversation.json，就一定要加载并读取数据，避免情况 1/2 下的数据丢失。
