@@ -5,7 +5,17 @@ from typing import Literal, Sequence
 
 from PyQt5.QtCore import QEvent, QObject, QPoint, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QKeyEvent
-from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 # 命令是否可见于命令栏
@@ -313,6 +323,8 @@ class InputCommandRow(QFrame):
 
         self.description_label = QLabel(spec.description)
         self.description_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.description_label.setMinimumWidth(0)
+        self.description_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
         layout.addWidget(self.icon_label, 0)
         layout.addWidget(self.command_label, 0)
@@ -572,7 +584,20 @@ class InputCommandPalette(QFrame):
         if not self._rows:
             return
         selected_row = self._rows[self._selected_index]
-        self._scroll_area.ensureWidgetVisible(selected_row, 0, 6)
+        margin = 6
+        vertical_bar = self._scroll_area.verticalScrollBar()
+        viewport_height = self._scroll_area.viewport().height()
+        row_top = selected_row.y()
+        row_bottom = row_top + selected_row.height()
+        visible_top = vertical_bar.value()
+        visible_bottom = visible_top + viewport_height
+
+        if row_top < visible_top + margin:
+            vertical_bar.setValue(max(0, row_top - margin))
+        elif row_bottom > visible_bottom - margin:
+            vertical_bar.setValue(row_bottom - viewport_height + margin)
+
+        self._scroll_area.horizontalScrollBar().setValue(0)
 
     def _confirm_selection(self) -> None:
         """确认当前选中命令并发出信号。"""
