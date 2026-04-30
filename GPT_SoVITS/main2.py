@@ -22,10 +22,14 @@ import qtUI
 from chat.chat import get_chat_manager
 
 from emotion_enum import EmotionEnum
+from log import setup_logging, get_logger, get_log_queue, setup_worker_logging, shutdown_logging
 
 import faulthandler
 
 faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
+
+# 日志记录
+main_logger = get_logger(__name__)
 
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 
@@ -180,7 +184,7 @@ def main_thread():
                     except Exception as e:
                         QT_message_queue.put("语音合成出错，重试中")
                         audio_generate_count += 1
-                        character.PrintInfo.print_error(f"[Error]语音合成错误信息： {str(e)}")
+                        main_logger.exception("语音合成错误")
                         time.sleep(1)
 
                 if audio_generate_count != 1:
@@ -222,54 +226,10 @@ def main_thread():
             is_audio_play_complete.put('yes')  # 本轮全部段落处理完毕
 
 
-def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue,
-                       change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w,
-                       desktop_h):
-    """
-    Live2D 子进程入口函数
-    不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
-    """
-    import sys, os
-    if os.name == 'nt':
-        try:
-            import ctypes
-            # 设置子进程的高DPI感知(与Qt主进程保持一致)，防止Win的高分辨率缩放导致的窗口巨大
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            try:
-                ctypes.windll.user32.SetProcessDPIAware()
-            except Exception:
-                pass
-
-    try:
-
-        # 临时静默标准输出，防止子进程二次加载 characters 时在命令行狂刷重复信息
-        old_stdout = sys.stdout
-        sys.stdout = open(os.devnull, 'w')
-        try:
-            # 在子进程中重新导入和创建 characters
-            import character
-            get_all = character.GetCharacterAttributes()
-            characters = get_all.character_class_list
-        finally:
-            sys.stdout.close()
-            sys.stdout = old_stdout
-
-        import live2d_module
-        live2d_player = live2d_module.Live2DModule()
-        live2d_player.live2D_initialize(characters)
-        live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue,
-                                  char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value,
-                                  motion_complete_value, desktop_w, desktop_h)
-    except Exception as e:
-        print(f"[Live2D进程错误] {type(e).__name__}: {str(e)}")
-        import traceback
-        traceback.print_exc()
-
-
 if __name__=='__main__':
     # 强制设置多进程实现为 spawn
     multiprocessing.set_start_method('spawn', force=True)
+    setup_logging()
 
     # 添加本文件的目录到导入 Path
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -277,7 +237,7 @@ if __name__=='__main__':
 
     from qconfig import d_sakiko_config
 
-    print("数字小祥程序...")
+    main_logger.info("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
 
@@ -306,9 +266,6 @@ if __name__=='__main__':
 
 
     audio_gen.initialize(characters,QT_message_queue)
-
-    live2d_player=live2d_module.Live2DModule()
-    live2d_player.live2D_initialize(characters)
 
     emotion_detector=inference_emotion_detect.EmotionDetect()
     emotion_model = emotion_detector.launch_emotion_detect()
@@ -365,8 +322,8 @@ if __name__=='__main__':
     # live2d 模块（该模块为不同进程）
     # 在 MacOS 下，所有的 NSWindow（Qt 窗口）只能在独立进程中创建，不可以在子线程中创建窗口。
     # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
-    print("\n加载Live2D界面中...",flush=True)
-    tr1=multiprocessing.Process(target=run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h))
+    main_logger.info("加载Live2D界面中...")
+    tr1=multiprocessing.Process(target=live2d_module.run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h, get_log_queue()))
     # LLM 生成模块（该模块为不同线程）
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
                                                              is_audio_play_complete,
@@ -436,6 +393,8 @@ if __name__=='__main__':
     tr1.join()
     tr2.join()
     tr3.join()
+
+    shutdown_logging()
 
     if_delete = d_sakiko_config.delete_audio_cache_on_exit.value
 

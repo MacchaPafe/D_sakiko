@@ -1,4 +1,7 @@
 from random import randint
+from log import get_logger
+
+logger = get_logger(__name__)
 
 dialogWindowDefaultCss = f'''
         QWidget {{
@@ -380,9 +383,13 @@ class CurrentConfig:
     download_for_existing_char:bool=True
 
     def __call__(self):
-        print("选择的包内角色:",self.selected_existing_character,' ',self.selected_existing_character_name)
-        print("Bestdori 角色编号:",self.bestdori_chara_index,' ',self.bestdori_char_name)
-        print("为已存在角色下载:",self.download_for_existing_char)
+        logger.debug(
+            "选择的包内角色：%s %s",
+            self.selected_existing_character,
+            self.selected_existing_character_name,
+        )
+        logger.debug("Bestdori 角色编号：%s %s", self.bestdori_chara_index, self.bestdori_char_name)
+        logger.debug("为已存在角色下载：%s", self.download_for_existing_char)
 
 import os,shutil,glob,json
 class AddCostume:
@@ -530,7 +537,6 @@ class AddCostume:
 3''')
         with open(f"../reference_audio/{character_folder_name}/reference_text.txt",'w',encoding='utf-8') as f:
             f.write('')
-
 
 
 

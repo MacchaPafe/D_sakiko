@@ -4,6 +4,9 @@ import numpy as np
 from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QTextEdit
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject
 
+from log import get_logger
+
+logger = get_logger(__name__)
 
 # -----------------------------------------------------------------
 # (Worker 和 Thread 相關類別與之前相同，保持不變)
@@ -136,7 +139,7 @@ class RecorderApp(QWidget):
         我們只在 self.is_recording 為 True 時才收集資料。
         """
         if status:
-            print(f"錄音狀態回報: {status}", file=sys.stderr)
+            logger.warning("錄音狀態回報：%s", status)
 
         # 核心邏輯：只在「錄音開關」開啟時才儲存
         if self.is_recording:
@@ -228,8 +231,8 @@ class RecorderApp(QWidget):
                 self.stream.stop()
                 self.stream.close()
                 self.text_output.append("音訊串流已關閉。")
-            except Exception as e:
-                print(f"關閉串流時出錯: {e}", file=sys.stderr)
+            except Exception:
+                logger.exception("關閉串流時出錯")
 
         # 允許視窗關閉
         event.accept()

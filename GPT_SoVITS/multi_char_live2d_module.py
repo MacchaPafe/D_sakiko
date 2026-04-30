@@ -10,6 +10,10 @@ import sys
 from collections import deque
 from typing import Dict, List, Any
 
+from log import get_logger
+
+logger = get_logger(__name__)
+
 
 def _load_cjk_font(size: int, bold: bool = False) -> pygame.font.Font:
     """尽量加载支持中日韩(CJK)字符的字体。
@@ -137,8 +141,8 @@ class TextOverlay:
             # 动态缩放：让星星的大小等于主字体的大小 (或者稍微大一点，比如 1.2倍)
             star_size = int(self.font_size_main * 1.0)
             self.star_img = pygame.transform.smoothscale(raw_star, (star_size, star_size))
-        except Exception as e:
-            print(f"星星图标加载失败: {e}")
+        except Exception:
+            logger.exception("星星图标加载失败")
             self.star_img = None  # 标记为 None，防止后面报错
         if len(char_names)==1:
             self.set_text(char_names[0], "...")
@@ -527,7 +531,7 @@ class Live2DModule:
                 break
 
         if sakiko_slot not in (0, 1):
-            print("切换祥子模型失败：当前对话角色中没有‘祥子’")
+            logger.warning("切换祥子模型失败：当前对话角色中没有‘祥子’")
             return
 
         this_sakiko_model = model_0 if sakiko_slot == 0 else model_1
@@ -657,7 +661,7 @@ class Live2DModule:
 
         global idle_recover_timer
 
-        print("当前Live2D界面渲染硬件", glGetString(GL_RENDERER).decode())
+        logger.info("当前 Live2D 界面渲染硬件：%s", glGetString(GL_RENDERER).decode())
         this_turn_model = None
         # ===== 句间等待策略（固定规则） =====
         # 1) 有音频：音频播放结束后，再等待 0.5 秒进入下一句
@@ -698,7 +702,7 @@ class Live2DModule:
                     continue
 
                 if not isinstance(x, dict):
-                    print(f"忽略不支持的 change_char_queue 消息: {x}")
+                    logger.warning("忽略不支持的 change_char_queue 消息：%s", x)
                     continue
 
                 message_type = x.get("type")
@@ -716,9 +720,9 @@ class Live2DModule:
                     elif message_type == "toggle_sakiko_model":
                         self._handle_toggle_sakiko_model(model_0, model_1, win_w_and_h)
                     else:
-                        print(f"忽略未知消息类型: {message_type}")
-                except Exception as e:
-                    print(f"处理 change_char_queue 消息失败: {e}")
+                        logger.warning("忽略未知消息类型：%s", message_type)
+                except Exception:
+                    logger.exception("处理 change_char_queue 消息失败")
                 continue
 
             if not to_live2d_module_queue.empty():
@@ -727,7 +731,7 @@ class Live2DModule:
                     stop_on_next_sentence = True
                 else:
                     if not isinstance(data, dict):
-                        print(f"忽略不支持的 to_live2d_module_queue 消息: {data}")
+                        logger.warning("忽略不支持的 to_live2d_module_queue 消息：%s", data)
                         continue
                     preserve_playback = bool(data.get("preserve_playback", False))
                     # 开启 preserve_playback 时，将传入内容添加到播放队列，等待当前播放完再切换

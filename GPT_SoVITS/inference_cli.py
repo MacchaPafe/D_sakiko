@@ -14,8 +14,11 @@ import torch
 os.chdir(os.path.dirname(__file__))
 
 from character import CharacterAttributes
+from log import get_logger
 from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
 from qconfig import d_sakiko_config
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -792,7 +795,7 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2) 
                 break
 
         if queue_shut_down:
-            print("主程序似乎崩溃了…正在退出语音合成模块")
+            logger.warning("主程序似乎崩溃了，正在退出语音合成模块。")
             tts_manager.unload_all()
             break
         if command is None:
@@ -816,7 +819,7 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2) 
                 runtime.load_now(tts_manager)
                 put_ack(from_gptsovits_queue, "load_model", character_name, True, request_id)
             except Exception as exc:
-                print('语音模型加载错误信息：', exc)
+                logger.exception("语音模型加载错误")
                 put_error(from_gptsovits_queue, "load_model", character_name, str(exc), request_id)
             continue
 
@@ -836,7 +839,7 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2) 
                 runtime.set_device_policy(device, tts_manager=tts_manager, apply_now=True)
                 put_ack(from_gptsovits_queue, "set_device", character_name, True, request_id)
             except Exception as exc:
-                print('语音设备切换错误信息：', exc)
+                logger.exception("语音设备切换错误")
                 put_error(from_gptsovits_queue, "set_device", character_name, str(exc), request_id)
             continue
 
@@ -863,11 +866,10 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2) 
                 }
             )
         except StopIteration:
-            print('语音合成没有输出音频')
+            logger.error("语音合成没有输出音频")
             put_error(from_gptsovits_queue, "synthesize", character_name, "语音合成没有输出音频", request_id)
         except Exception as exc:
-            import traceback
-            traceback.print_exc()
+            logger.exception("语音合成失败")
             
             runtime = runtime_registry.get(character_name)
             if runtime is not None:

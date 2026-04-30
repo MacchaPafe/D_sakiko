@@ -5,11 +5,11 @@ import logging
 import os
 import subprocess
 import sys
-import traceback
 
 import librosa
 import numpy as np
 import torch
+from log import get_logger as get_project_logger
 
 logging.getLogger("numba").setLevel(logging.ERROR)
 logging.getLogger("matplotlib").setLevel(logging.ERROR)
@@ -17,7 +17,7 @@ logging.getLogger("httpx").setLevel(logging.ERROR)
 MATPLOTLIB_FLAG = False
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging
+logger = get_project_logger(__name__)
 
 
 def load_checkpoint(checkpoint_path, model, optimizer=None, skip_optimizer=False):
@@ -42,15 +42,14 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, skip_optimizer=False
                 saved_state_dict[k].shape,
                 v.shape,
             )
-        except:
-            traceback.print_exc()
-            print("error, %s is not in the checkpoint" % k)  # shape不对也会，比如text_embedding当cleaner修改时
+        except Exception:
+            logger.exception("error, %s is not in the checkpoint", k)  # shape不对也会，比如text_embedding当cleaner修改时
             new_state_dict[k] = v
     if hasattr(model, "module"):
         model.module.load_state_dict(new_state_dict)
     else:
         model.load_state_dict(new_state_dict)
-    print("load ")
+    logger.debug("load")
     logger.info(
         "Loaded checkpoint '{}' (iteration {})".format(
             checkpoint_path,
@@ -113,7 +112,7 @@ def latest_checkpoint_path(dir_path, regex="G_*.pth"):
     f_list = glob.glob(os.path.join(dir_path, regex))
     f_list.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
     x = f_list[-1]
-    print(x)
+    logger.debug("latest checkpoint path: %s", x)
     return x
 
 

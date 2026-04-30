@@ -16,12 +16,15 @@ from qconfig import (
     THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP,
     THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS,
 )
+from log import get_logger
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
     ListWidget, ToolTipFilter
 
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
+
+logger = get_logger(__name__)
 
 
 class MoreProvidersDialog(MessageBoxBase):
@@ -306,8 +309,8 @@ class LLMAPIArea(TransparentScrollArea):
                 if model != current_model:  # Avoid duplicate
                     self.standard_model_combo.addItem(model)
 
-        except Exception as e:
-            print(f"Error fetching models for {provider}: {e}")
+        except Exception:
+            logger.exception("获取 %s 的模型列表失败", provider)
 
         self.standard_model_combo.blockSignals(False)
 

@@ -21,9 +21,11 @@ import faulthandler
 import character
 from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGenerator, get_chat_manager
 from chat.chat_meta import TheaterMeta
+from log import get_logger
 from qtUI import ChangeL2DModelWindow
 
 
+logger = get_logger(__name__)
 faulthandler.enable(open("faulthandler_log.txt", "w"), all_threads=True)
 
 
@@ -1854,7 +1856,7 @@ class ViewerGUI(QWidget):
             else:
                 # 两个都没匹配上（比如大模型突然输出了“旁白”或者幻觉出了第三个人）
                 self.char_talk_texts_match_original_response_indices.append('skipped')
-                print(f"警告: 无法识别说话人 '{speaker_name_from_llm}'，已跳过该句，内容：{text}")
+                logger.warning("无法识别说话人 '%s'，已跳过该句，内容：%s", speaker_name_from_llm, text)
                 return
 
         self._generation_serial += 1
@@ -2131,7 +2133,7 @@ class ViewerGUI(QWidget):
             json_str = match.group(1)
         else:
             # 如果连括号都找不到，那真的没救了
-            print("未在输出中找到 JSON 结构，重新生成一遍吧")
+            logger.warning("未在输出中找到 JSON 结构，重新生成一遍。")
             return []
 
         # === 策略 C：再次尝试标准解析 (针对提取后的字符串) ===
@@ -2157,7 +2159,7 @@ class ViewerGUI(QWidget):
         except:
             pass
 
-        print(f"解析彻底失败，原始内容:\n{llm_output}")
+        logger.debug("解析彻底失败，原始内容：\n%s", llm_output)
         return []  # 返回空列表作为兜底
 
 

@@ -1,5 +1,9 @@
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from log import get_logger
+
+logger = get_logger(__name__)
+
 
 class CUDADetectThread(QThread):
     """
@@ -14,8 +18,8 @@ class CUDADetectThread(QThread):
 
             cuda_available = torch.cuda.is_available()
             self.cuda_exist_signal.emit(cuda_available)
-        except Exception as e:
-            print(f"检测 cuda 可用性时发生错误: {e}")
+        except Exception:
+            logger.exception("检测 cuda 可用性时发生错误")
             self.cuda_exist_signal.emit(False)
 
 
@@ -32,6 +36,6 @@ class MPSDetectThread(QThread):
 
             mps_available = torch.mps.is_available()
             self.mps_exist_signal.emit(mps_available)
-        except Exception as e:
-            print(f"检测 mps 可用性时发生错误: {e}")
+        except Exception:
+            logger.exception("检测 mps 可用性时发生错误")
             self.mps_exist_signal.emit(False)

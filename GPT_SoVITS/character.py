@@ -4,20 +4,12 @@ import copy
 import glob
 import json
 import os
-from rich import print
 
 from qconfig import d_sakiko_config
+from log import get_logger
 
-class PrintInfo:
-    @staticmethod
-    def print_error(text):
-        print(f"[bold red]{text}[/bold red]")
-    @staticmethod
-    def print_warning(text):
-        print(f"[bold yellow]{text}[/bold yellow]")
-    @staticmethod
-    def print_info(text):
-        print(f"[cyan]{text}[/cyan]")
+
+logger = get_logger(__name__)
 
 
 class CharacterAttributes:
@@ -68,7 +60,7 @@ class CharacterAttributes:
     def print_attributes(self) -> None:
         """打印当前角色对象的全部属性。"""
         for key, value in self.__dict__.items():
-            print(f"{key} = {value}")
+            logger.debug("%s = %s", key, value)
 
 ref_audio_language_list = [
     "中文",
@@ -91,8 +83,8 @@ def is_old_l2d_json(old_l2d_json_path) -> bool:
     try:
         with open(old_l2d_json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-    except Exception as e:
-        PrintInfo.print_error(f"[Error]，读取 Live2D JSON 文件失败: {e}")
+    except Exception:
+        logger.exception("读取 Live2D JSON 文件失败")
         return False
 
     if 'motions' in data and 'rana' in data['motions']:
@@ -169,11 +161,9 @@ class GetCharacterAttributes:
         self.character_num = 0
         self.character_class_list: list[CharacterAttributes] = []
         self.load_data()
-        print('所有角色：')
-        for char in self.character_class_list:
-            print(char.character_name, end=' ')
-        print('\n')
-
+        logger.info('所有角色：')
+        logger.info(' '.join([char.character_name for char in self.character_class_list]))
+    
     def load_data(self):
         # 角色的默认 live2d 信息
         l2d_json_paths_dict = d_sakiko_config.l2d_json_paths_dict.value
@@ -189,7 +179,7 @@ class GetCharacterAttributes:
 
                 is_ready = True  # 为了显示全报错信息
                 if not os.path.exists(os.path.join(full_path,'name.txt')):
-                    PrintInfo.print_error(f"[Error]没有找到角色：'{char}'的name.txt文件！")
+                    logger.error("没有找到角色：'%s' 的 name.txt 文件！", char)
                     is_ready=False
                     character.character_name=char   #只是为了下面不报错
                 else:
@@ -204,7 +194,7 @@ class GetCharacterAttributes:
 
                 live2d_json=glob.glob(os.path.join(full_path,'live2D_model',f"*.model.json"))
                 if not live2d_json:
-                    PrintInfo.print_error(f"[Error]没有找到角色：'{character.character_name}'的默认Live2D模型json文件(.model.json)")
+                    logger.error("没有找到角色：'%s' 的默认 Live2D 模型 json 文件(.model.json)", character.character_name)
                     is_ready=False
                 if character.character_name in l2d_json_paths_dict:
                     if os.path.exists(l2d_json_paths_dict[character.character_name]):
@@ -218,16 +208,16 @@ class GetCharacterAttributes:
                         try:
                             convert_old_l2d_json(live2d_json)
                         except Exception as e:
-                            PrintInfo.print_error(f"[Error]角色：'{character.character_name}'的旧版Live2D模型json文件(.model.json)转换失败！错误信息：{e}")
+                            logger.exception("角色：'%s' 的旧版 Live2D 模型 json 文件(.model.json)转换失败", character.character_name)
                             del character
                             continue
-                        PrintInfo.print_info(f"已将角色：{character.character_name} 的旧版Live2D模型json文件(.model.json)转换为新版格式并覆盖保存。")
+                        logger.info("已将角色：%s 的旧版 Live2D 模型 json 文件(.model.json)转换为新版格式并覆盖保存。", character.character_name)
                         character.live2d_json=live2d_json
                     else:
                         character.live2d_json=live2d_json
 
                 if not os.path.exists(os.path.join(full_path, 'character_description.txt')):
-                    PrintInfo.print_error(f"[Error]没有找到角色：'{character.character_name}'的角色描述文件！")
+                    logger.error("没有找到角色：'%s' 的角色描述文件！", character.character_name)
                     is_ready=False
                 else:
                     with open(os.path.join(full_path,'character_description.txt'),'r',encoding='utf-8') as f:
@@ -236,7 +226,7 @@ class GetCharacterAttributes:
 
                 gpt_model_path=glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.ckpt"))
                 if not gpt_model_path:
-                    PrintInfo.print_warning(f"[Warning]没有找到角色：'{character.character_name}'的GPT模型文件(.ckpt)，前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。本次运行无法进行语音生成。")
+                    logger.warning("没有找到角色：'%s' 的 GPT 模型文件(.ckpt)，前往 reference_audio/%s/GPT-SoVITS_models/ 文件夹放入对应模型文件。本次运行无法进行语音生成。", character.character_name, char)
                     character.GPT_model_path=None
                 else:
                     gpt_model_path=max(gpt_model_path,key=os.path.getmtime)
@@ -244,8 +234,11 @@ class GetCharacterAttributes:
 
                 SoVITS_model_file = glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.pth"))
                 if not SoVITS_model_file:
-                    PrintInfo.print_warning(
-                        f"[Warning]没有找到角色：'{character.character_name}'的SoVITS模型文件(.pth)，请前往reference_audio/{char}/GPT-SoVITS_models/ 文件夹放入对应模型文件。本次运行无法进行语音生成。")
+                    logger.warning(
+                        "没有找到角色：'%s' 的 SoVITS 模型文件(.pth)，请前往 reference_audio/%s/GPT-SoVITS_models/ 文件夹放入对应模型文件。本次运行无法进行语音生成。",
+                        character.character_name,
+                        char,
+                    )
                     character.sovits_model_path=None
                 else:
                     SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)
@@ -263,8 +256,10 @@ class GetCharacterAttributes:
                         ref_audio_file_wav = glob.glob(os.path.join("../reference_audio", char, f"*.wav"))
                         ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio", char, f"*.mp3"))
                         if not ref_audio_file_wav + ref_audio_file_mp3:
-                            PrintInfo.print_warning(
-                                f"[Warning]没有找到角色：'{character.character_name}'的推理参考音频文件(.wav/.mp3)，本次运行无法进行语音生成。")
+                            logger.warning(
+                                "没有找到角色：'%s' 的推理参考音频文件(.wav/.mp3)，本次运行无法进行语音生成。",
+                                character.character_name,
+                            )
 
                             character.gptsovits_ref_audio=None
                         else:
@@ -273,13 +268,13 @@ class GetCharacterAttributes:
 
                 if char!='sakiko':
                     if not os.path.exists(os.path.join("../reference_audio",char, 'reference_text.txt')):
-                        PrintInfo.print_error(f"[Error]没有找到角色：'{character.character_name}'的推理参考音频的文本文件！(reference_text.txt)")
+                        logger.error("没有找到角色：'%s' 的推理参考音频的文本文件！(reference_text.txt)", character.character_name)
                         is_ready=False
                     else:
                         character.gptsovits_ref_audio_text=os.path.join("../reference_audio",char, 'reference_text.txt')
 
                 if not os.path.exists(os.path.join('../reference_audio',char,'reference_audio_language.txt')):
-                    PrintInfo.print_error(f"[Error]没有找到角色：'{character.character_name}'的参考音频语言文件！")
+                    logger.error("没有找到角色：'%s' 的参考音频语言文件！", character.character_name)
                     is_ready=False
                 else:
                     ref_audio_language_file =os.path.join('../reference_audio',char,'reference_audio_language.txt')
@@ -293,7 +288,7 @@ class GetCharacterAttributes:
                             character.gptsovits_ref_audio_lan = ref_audio_language
                             f.close()
                         except Exception:
-                            PrintInfo.print_warning(f"[Warning]角色：'{character.character_name}'的参考音频的语言参数文件读取错误，使用默认语言日文。")
+                            logger.warning("角色：'%s' 的参考音频的语言参数文件读取错误，使用默认语言日文。", character.character_name)
                             character.gptsovits_ref_audio_lan = "日文"
 
                 if os.path.exists(os.path.join("../reference_audio",char, 'QT_style.json')):
@@ -303,22 +298,22 @@ class GetCharacterAttributes:
 
                 if is_ready:
                     self.character_class_list.append(character)
-                    PrintInfo.print_info(f"成功加载角色：'{character.character_name}'\n")
+                    logger.info("成功加载角色：'%s'", character.character_name)
                 else:
-                    PrintInfo.print_info(f"加载角色：'{char}' 时出现以上错误，跳过该角色的加载。\n")
+                    logger.info("加载角色：'%s' 时出现以上错误，跳过该角色的加载。", char)
                     partial_character_count += 1
 
         # 新增调整角色顺序的功能
         char_order_list = d_sakiko_config.character_order.value
         if len(self.character_class_list) > int(char_order_list['character_num']):
             is_convert_1 = False
-            PrintInfo.print_info("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
+            logger.info("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
         elif len(self.character_class_list) < int(char_order_list['character_num']):
             # 经过测试，事实上，如果一个角色是在加载时被判定为不完整而被跳过的，那么它不会影响角色顺序的应用
             # 只有目前角色数量 + 不完整角色数量 != 之前设置的角色数量时，才会出现角色被删除的情况，才需要重置角色顺序
             if len(self.character_class_list) + partial_character_count != int(char_order_list['character_num']):
                 is_convert_1 = False
-                PrintInfo.print_info("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
+                logger.info("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
             else:
                 is_convert_1 = True
         else:
@@ -329,7 +324,7 @@ class GetCharacterAttributes:
         if is_convert_1:
             for name in this_character_names:
                 if name not in char_order_list['character_names']:
-                    PrintInfo.print_info("似乎有角色的名字被修改了，之前设置的角色顺序不适用，重新设置一下吧")
+                    logger.info("似乎有角色的名字被修改了，之前设置的角色顺序不适用，重新设置一下吧")
                     is_convert_2 = False
                     break
         if is_convert_1 and is_convert_2:
@@ -349,6 +344,6 @@ class GetCharacterAttributes:
 if __name__=="__main__":
 
     a=GetCharacterAttributes()
-    print(a.character_num)
+    logger.debug("character_num = %s", a.character_num)
     a.character_class_list[0].print_attributes()
     a.character_class_list[1].print_attributes()

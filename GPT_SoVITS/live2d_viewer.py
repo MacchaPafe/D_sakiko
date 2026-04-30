@@ -24,6 +24,9 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHB
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
 import character
+from log import get_logger
+
+logger = get_logger(__name__)
 
 class BackgroundRen(object):
 
@@ -156,7 +159,7 @@ class Live2DModule:
 
         global idle_recover_timer
 
-        print("当前Live2D界面渲染硬件", glGetString(GL_RENDERER).decode())
+        logger.info("当前 Live2D 界面渲染硬件：%s", glGetString(GL_RENDERER).decode())
         while self.run:
 
             for event in pygame.event.get():    #退出程序逻辑
@@ -494,7 +497,7 @@ class ViewerGUI(QWidget):
         由于这个参数是从 ChangeL2DModelWindow 窗口传回来的，不能修改原代码的实现，这个 new_model_path 参数直接指向了 3.model.json
         我们需要解析上一层文件夹的路径，来确定这是个默认模型还是自定义模型；如果是自定义模型，它的文件夹名称（模型名称）是什么。
         """
-        print(f"用户选择了新的服装模型路径：{new_model_path}")
+        logger.info("用户选择了新的服装模型路径：%s", new_model_path)
         parent_path = pathlib.Path(new_model_path).parent
         extra_model_folder = pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "extra_model"
         if parent_path == pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "live2D_model":

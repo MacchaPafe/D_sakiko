@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import psutil
 import requests
 
+from log import get_logger
+
 
 ToolHandler = Callable[[Dict[str, Any]], Any]
 LLMCompletionFn = Callable[..., Any]
@@ -20,6 +22,7 @@ InterimMessageCallback = Callable[..., Any]
 
 
 DEFAULT_BOCHA_API_KEY = "sk-28078debe6d74828a57e63164fe0f23e"
+logger = get_logger(__name__)
 
 
 @dataclasses.dataclass
@@ -134,7 +137,7 @@ class ToolCallingAgentRuntime:
     def _log(self, message: str) -> None:
         """内部日志打印方法，仅在调试模式开启时输出。"""
         if self.debug:
-            print(f"[ToolCallingRuntime] {message}")
+            logger.debug("[ToolCallingRuntime] %s", message)
 
     @staticmethod
     def _safe_json_dumps(data: Any) -> str:
@@ -770,7 +773,6 @@ def register_reminder_tool(
         success = add_reminder_func(content, target_ts)
         if success:
             return {'ok': True, 'message': f'成功将事件：[{content}] 设定在 {target_datetime_str} 触发。'}
-            print(f"已添加定时提醒事件：[{content}] 将在 {target_datetime_str} 触发。")
         else:
             return {'ok': False, 'error': '因系统原因添加失败。'}
 

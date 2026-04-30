@@ -9,6 +9,7 @@ from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QVBoxLayout, QFileDialog
 
 import character
+from log import get_logger
 from qconfig import d_sakiko_config
 
 from ..custom_widgets.character_setting_card import CharacterSettingCard
@@ -22,6 +23,7 @@ from ..custom_widgets.custom_color_setting_card import CustomColorSettingCard
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 FONT_DIR = os.path.join(PROJECT_ROOT, "font")
+logger = get_logger(__name__)
 
 
 class CustomSettingArea(TransparentScrollArea):
@@ -110,15 +112,15 @@ class CustomSettingArea(TransparentScrollArea):
             for old_file in old_files:
                 try:
                     os.remove(old_file)
-                    print(f"已清理旧文件: {old_file}")
+                    logger.info("已清理旧文件：%s", old_file)
                 except OSError:
                     # 关键点：如果旧文件被锁，直接跳过，不要抛出异常打断流程
-                    print(f"旧文件被占用，本次跳过删除: {old_file}")
+                    logger.warning("旧文件被占用，本次跳过删除：%s", old_file)
 
             # 3. 复制新文件 (因为名字是唯一的，绝对不会冲突)
             shutil.copy(file_path, dest_path)
             self.status_signal.emit(InfoBarIcon.SUCCESS, self.tr("成功应用字体"))
 
-        except Exception as e:
+        except Exception:
             self.status_signal.emit(InfoBarIcon.ERROR, "字体应用失败")
-            print('错误信息：', e)
+            logger.exception("字体应用失败")

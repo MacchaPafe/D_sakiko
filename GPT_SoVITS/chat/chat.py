@@ -18,7 +18,11 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from character import CharacterAttributes
 from emotion_enum import EmotionEnum
+from log import get_logger
 from chat.chat_meta import ChatMeta, TheaterMeta, ToolCallHistoryRecordMeta, ToolCallRecordMeta
+
+
+logger = get_logger(__name__)
 
 
 @dataclasses.dataclass
@@ -627,8 +631,8 @@ class Chat:
                         # 清洗文本以便后续匹配
                         clean = text_snippet.strip()
                         qt_display_blocks.append((clean, path, label))
-        except Exception as e:
-            print(f"未能从 QT 对话记录中提取音频信息: {e}")
+        except Exception:
+            logger.exception("未能从 QT 对话记录中提取音频信息")
 
         message_list = []
         system_prompt = None
@@ -934,8 +938,8 @@ class ChatManager:
             try:
                 with open(qt_file, "r", encoding="utf-8") as f:
                     qt_data = json.load(f)
-            except Exception as e:
-                print(f"未能加载 QT 对话记录文件 '{qt_file}': {e}")
+            except Exception:
+                logger.exception("未能加载 QT 对话记录文件 '%s'", qt_file)
                 qt_data = None
 
         chat_list = []
@@ -1088,9 +1092,9 @@ def _move_legacy_files_to_backup(legacy_files: Optional[Iterable[Union[str, Path
             dest = os.path.join(backup_dir, os.path.basename(f))
             try:
                 shutil.move(f, dest)
-                print(f"已将旧版记录文件 {f} 移动到 {dest}")
-            except Exception as e:
-                print(f"移动旧版记录文件 {f} 失败: {e}")
+                logger.info("已将旧版记录文件 %s 移动到 %s", f, dest)
+            except Exception:
+                logger.exception("移动旧版记录文件 %s 失败", f)
 
 
 def _generate_filename_with_timestamp(
@@ -1127,7 +1131,6 @@ def get_chat_manager() -> ChatManager:
 
     :returns: 全局的 ChatManager 实例
     """
-    from character import PrintInfo
     global _global_chat_manager
 
     # 我们可能遇到如下几种情况（取决于用户多久没更新程序）
@@ -1166,12 +1169,12 @@ def get_chat_manager() -> ChatManager:
                     _global_chat_manager = ChatManager.load(all_conversation_file)
                 # 如果这个文件因为自身格式错误无法加载，尝试备份一份。
                 except (json.JSONDecodeError, KeyError, ValueError):
-                    PrintInfo.print_error("all_conversation.json 已损坏，未能加载其中的对话记录。")
+                    logger.exception("all_conversation.json 已损坏，未能加载其中的对话记录。")
                     try:
                         backup_file(files=[all_conversation_file])
-                        PrintInfo.print_info(f"已将损坏的 all_conversation.json 备份到 ../reference_audio/backup 文件夹中。")
-                    except OSError as e:
-                        PrintInfo.print_error(f"备份损坏的 all_conversation.json 失败: {e}")
+                        logger.info("已将损坏的 all_conversation.json 备份到 ../reference_audio/backup 文件夹中。")
+                    except OSError:
+                        logger.exception("备份损坏的 all_conversation.json 失败")
 
                     _global_chat_manager = ChatManager()
             else:
@@ -1189,7 +1192,7 @@ def get_chat_manager() -> ChatManager:
                     if os.path.exists(legacy_qt_file):
                         migrated_legacy_files.append(legacy_qt_file)
                 except Exception:
-                    PrintInfo.print_error("未能成功加载旧格式的普通对话记录。若确认旧记录仍需保留，请备份 ../reference_audio/history_messages_dp.json 后再重启程序排查。")
+                    logger.exception("未能成功加载旧格式的普通对话记录。若确认旧记录仍需保留，请备份 ../reference_audio/history_messages_dp.json 后再重启程序排查。")
 
             # 如果有旧的小剧场对话（且不存在 all_conversation.json），那么加载旧版本小剧场对话。
             if not has_new_record and has_legacy_theater_record:
@@ -1197,19 +1200,19 @@ def get_chat_manager() -> ChatManager:
                     _global_chat_manager.add_theater_mode_history(file=legacy_theater_file)
                     migrated_legacy_files.append(legacy_theater_file)
                 except Exception:
-                    PrintInfo.print_error("未能成功加载旧格式的小剧场对话记录。若确认旧记录仍需保留，请备份 ../reference_audio/small_theater_history.json 后再重启程序排查。")
+                    logger.exception("未能成功加载旧格式的小剧场对话记录。若确认旧记录仍需保留，请备份 ../reference_audio/small_theater_history.json 后再重启程序排查。")
 
             # 如果什么都不存在，那么新建存档。
             if not has_new_record and not has_legacy_main_record and not has_legacy_theater_record:
-                PrintInfo.print_warning("未找到任何存在的对话记录文件，将新建。")
+                logger.warning("未找到任何存在的对话记录文件，将新建。")
 
             # 迁移那些已经不需要的文件到另一个文件夹，避免每次启动都触发迁移流程。
             if migrated_legacy_files:
                 _global_chat_manager.save(all_conversation_file)
                 _move_legacy_files_to_backup(migrated_legacy_files)
-                PrintInfo.print_info("已成功将旧版聊天记录迁移到新格式。旧记录文件备份位置：../reference_audio/old_history_messages")
+                logger.info("已成功将旧版聊天记录迁移到新格式。旧记录文件备份位置：../reference_audio/old_history_messages")
         except Exception:
-            PrintInfo.print_error("加载对话记录时出错，将新建空白存档。如果确定已有对话文件（../reference_audio/all_conversation.json，请务必先备份文件！！")
+            logger.exception("加载对话记录时出错，将新建空白存档。如果确定已有对话文件（../reference_audio/all_conversation.json），请务必先备份文件！")
             input("按回车确认继续运行，但可能导致本次对话所产生的聊天记录内容丢失！")
             _global_chat_manager = ChatManager()
 

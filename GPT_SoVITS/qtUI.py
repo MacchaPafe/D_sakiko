@@ -20,7 +20,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json
-from character import PrintInfo
+from log import get_logger
 from chat.chat import ChatManager, Chat, Message, get_chat_manager
 from emotion_enum import EmotionEnum
 from input_commands import (
@@ -34,6 +34,7 @@ from input_commands import (
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
+logger = get_logger(__name__)
 
 class ThemeManager: #主题颜色设定
     @staticmethod
@@ -210,15 +211,15 @@ class ThemeManager: #主题颜色设定
             if match:
                 color_value = match.group(1).strip()
                 if not color_value.startswith('#'):
-                    PrintInfo.print_info(f"颜色值有误，使用祥子配色")
+                    logger.info("颜色值有误，使用祥子配色")
                     return '#7799CC'
                 return color_value
             else:
-                PrintInfo.print_info("使用默认祥子配色")
+                logger.info("使用默认祥子配色")
                 return '#7799CC'
 
-        except Exception as e:
-            PrintInfo.print_info('QT_style.json文件格式有误，使用默认祥子配色：')
+        except Exception:
+            logger.exception("QT_style.json 文件格式有误，使用默认祥子配色。")
             return '#7799CC'
 
 class CommunicateThreadDP2QT(QThread):
@@ -330,7 +331,7 @@ class MoreFunctionWindow(QDialog):
         bat_path = os.path.join(parent_dir, bat_name)
         # 检查文件是否存在
         if not os.path.exists(bat_path):
-            PrintInfo.print_warning(f"[Warning].bat 文件未找到:\n{bat_path}")
+            logger.warning(".bat 文件未找到：%s", bat_path)
             return
         try:
             # 使用 subprocess 模块启动 .bat 文件
@@ -338,8 +339,8 @@ class MoreFunctionWindow(QDialog):
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([bat_path], shell=True)
-        except Exception as e:
-            PrintInfo.print_error(f"[Error]启动失败, 启动程序时发生错误:\n{e}")
+        except Exception:
+            logger.exception("启动失败，启动程序时发生错误")
 
     def on_click_open_motion_editor_button(self):
         try:
@@ -349,8 +350,8 @@ class MoreFunctionWindow(QDialog):
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([sys.executable, "live2d_viewer.py"])
-        except Exception as e:
-            print("启动失败", f"启动程序时发生错误:\n{e}")
+        except Exception:
+            logger.exception("启动 Live2D 动作编辑器失败")
         self.close()
 
     def on_click_open_start_config_button(self):
@@ -361,8 +362,8 @@ class MoreFunctionWindow(QDialog):
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([sys.executable, "dsakiko_configuration.py"])
-        except Exception as e:
-            print("启动失败", f"启动程序时发生错误:\n{e}")
+        except Exception:
+            logger.exception("启动配置窗口失败")
         self.close()
 
     def on_click_open_small_theater(self):
@@ -373,8 +374,8 @@ class MoreFunctionWindow(QDialog):
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([sys.executable, "multi_char_main.py"])
-        except Exception as e:
-            print("启动失败", f"启动程序时发生错误:\n{e}")
+        except Exception:
+            logger.exception("启动小剧场失败")
         self.close()
 
     @staticmethod
@@ -386,8 +387,8 @@ class MoreFunctionWindow(QDialog):
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
             subprocess.Popen([sys.executable, "live2d_downloader_ui.py"])
-        except Exception as e:
-            print("启动失败", f"启动程序时发生错误:\n{e}")
+        except Exception:
+            logger.exception("启动 Live2D 服装下载器失败")
 
     def on_click_open_live2d_downloader(self):
         self.open_live2d_downloader()
@@ -718,7 +719,7 @@ class ChangeL2DModelWindow(QDialog):
                     shutil.rmtree(path)
                     self.refresh_ui()
             except Exception as e:
-                PrintInfo.print_error(f"[Error]删除Live2D模型文件夹失败。{e}\n")
+                logger.exception("删除 Live2D 模型文件夹失败")
         if self.current_char_folder_name != 'sakiko':
             for model in self.current_char_l2d_models:
                 model_layout = QHBoxLayout()
@@ -811,8 +812,8 @@ class ChangeReferenceAudioWindow(QDialog):
             for file in os.listdir(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}'):
                 if file.endswith('.wav') or file.endswith('.mp3'):
                     all_ref_audio_files.append(file)
-        except Exception as e:
-            PrintInfo.print_error(f"[Error]参考音频文件夹读取错误: {e}")
+        except Exception:
+            logger.exception("参考音频文件夹读取错误")
         select_new_ref_audio_group=QGroupBox("选择新的参考音频:")
         select_new_ref_audio_layout=QVBoxLayout()
         for ref_audio_file in all_ref_audio_files:
@@ -890,8 +891,8 @@ class ChangeReferenceAudioWindow(QDialog):
                 self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].gptsovits_ref_audio=new_ref_audio_file
                 with open(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
                     f.write(new_ref_audio_file)
-        except Exception as e:
-            PrintInfo.print_error(f"[Error]更改参考音频出现错误，错误信息：{e}")
+        except Exception:
+            logger.exception("更改参考音频出现错误")
         self.current_ref_audio_label.setText(f"当前参考音频:{os.path.basename(new_ref_audio_file)}")
 
     def change_ref_text(self):
@@ -1393,8 +1394,8 @@ class ChatGUI(QWidget):
         try:
             self.chat_manager.save()
             self.setWindowTitle("已更新推理设置")
-        except Exception as e:
-            PrintInfo.print_error(f"[Error]保存推理设置失败：{e}")
+        except Exception:
+            logger.exception("保存推理设置失败")
             self.setWindowTitle("推理设置保存失败！")
 
     def _apply_input_panel_style(self, color: str) -> None:
@@ -1713,8 +1714,8 @@ class ChatGUI(QWidget):
                                                         QWidget {{
                                                                 color: {color};
                                                                 }}'''
-        except Exception as e:
-            PrintInfo.print_error(f"[Error]保存主题色失败，错误信息：{e}")
+        except Exception:
+            logger.exception("保存主题色失败")
 
 
 
@@ -1785,8 +1786,8 @@ class ChatGUI(QWidget):
             # 啟動串流，它將在背景執行緒中持續呼叫 audio_callback
             self.stream.start()
 
-        except Exception as e:
-            PrintInfo.print_warning(f"[Warning]无法启动麦克风串流，本次运行无法使用语音输入，请检查麦克风是否连接或被其他程序占用。错误信息: {e}")
+        except Exception:
+            logger.warning("无法启动麦克风串流，本次运行无法使用语音输入，请检查麦克风是否连接或被其他程序占用。", exc_info=True)
             self.voice_button.setEnabled(False)  # 保持按鈕禁用
 
     def stop_input_stream(self):
@@ -1795,8 +1796,8 @@ class ChatGUI(QWidget):
                 self.stream.stop()
                 self.stream.close()
                 self.stream = None
-            except Exception as e:
-                print(f"关闭串流时出错: {e}", file=sys.stderr)
+            except Exception:
+                logger.exception("关闭串流时出错")
 
     def audio_callback(self, indata, frames, time, status):
         if self.is_recording:
@@ -1884,7 +1885,6 @@ class ChatGUI(QWidget):
         if self.motion_complete_value.value:
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
-            print(audio_path_and_emotion)
             if "silence.wav" in audio_path_and_emotion:
                 return
             msg_index = None
@@ -1896,7 +1896,7 @@ class ChatGUI(QWidget):
                 except ValueError:
                     msg_index = None
             if audio_path_and_emotion in ("user:", "no_audio:"):
-                PrintInfo.print_info("点击到用户消息或无音频的消息，无法播放")
+                logger.info("点击到用户消息或无音频的消息，无法播放")
                 return
 
             match=re.match(r"(.+?)\[(.+?)\]$", audio_path_and_emotion)
@@ -1926,11 +1926,11 @@ class ChatGUI(QWidget):
                     # ----------------------------
                     self.audio_file_path_queue.put(audio_path)
                     self.emotion_queue.put(emotion)
-                    PrintInfo.print_info("音频文件路径："+audio_path)
+                    logger.info("音频文件路径：%s", audio_path)
                     #print("注意：若你已经设置了if_delete_audio_cache.txt中的数字不为0，并且觉得这句生成的还不错，请复制该音频文件到别处，因为设置数字不为0的情况下关闭程序会自动删除该文件，以释放空间。设置数字不为0的情况下如果希望下次打开程序还能听到，再把这个文件复制回这个路径即可。\n")
                 else:
                     self.setWindowTitle('所选文本对应的音频文件已经删除...')
-                    PrintInfo.print_info("所选文本对应的音频文件已经删除...\n")
+                    logger.info("所选文本对应的音频文件已经删除。")
         else:
             self.setWindowTitle('请等待当前过程完成后重试...')
 
@@ -1986,7 +1986,7 @@ class ChatGUI(QWidget):
             msg = self.current_chat.message_list[msg_index]
             msg.audio_path = os.path.abspath(new_audio_path).replace('\\', '/')
             self._refresh_chat_display()
-            PrintInfo.print_info(f"重新生成音频成功，新路径为：{msg.audio_path}")
+            logger.info("重新生成音频成功，新路径为：%s", msg.audio_path)
             self.play_history_audio(QUrl(f"{msg.audio_path}[{msg.emotion.as_label()}]?msg={msg_index}"))
 
         self.QT_message_queue.put('...') # 强制恢复 messages_box 状态，允许继续对话
@@ -2227,11 +2227,11 @@ class ChatGUI(QWidget):
         if is_old_l2d_json(new_model_json):
             try:
                 convert_old_l2d_json(new_model_json)
-            except Exception as e:
+            except Exception:
                 self.QT_message_queue.put(f"切换模型失败，转换旧版Live2D配置文件时出错。")
-                PrintInfo.print_error(f"[Error]切换模型失败，转换旧版Live2D配置文件时出错。{e}\n")
+                logger.exception("切换模型失败，转换旧版 Live2D 配置文件时出错。")
                 return
-            PrintInfo.print_info("成功转换旧版Live2D配置文件。\n")
+            logger.info("成功转换旧版 Live2D 配置文件。")
         self._send_internal_command_payload(f'change_l2d_model#{new_model_json}', force=True)
 
     def handle_user_input(self):
@@ -2274,8 +2274,8 @@ class ChatGUI(QWidget):
         try:
             self.chat_manager.save()
             self.setWindowTitle("已保存最新的聊天记录！")
-        except Exception as e:
-            PrintInfo.print_error(f"[Error]保存聊天记录失败：{e}")
+        except Exception:
+            logger.exception("保存聊天记录失败")
             self.setWindowTitle("保存聊天记录失败！")
 
     def _register_message_command_handler(self, command_prefix: str, handler):

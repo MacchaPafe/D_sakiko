@@ -1,7 +1,6 @@
 import random
 import re
 import time,os
-import traceback
 from copy import deepcopy
 
 import json
@@ -11,7 +10,8 @@ import litellm
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
-from character import PrintInfo, CharacterAttributes
+from character import CharacterAttributes
+from log import get_logger
 
 from chat.chat import Chat, Message, ChatManager
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
@@ -22,6 +22,7 @@ TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
+logger = get_logger(__name__)
 
 
 def completion(**kwargs):
@@ -173,7 +174,7 @@ class DSLocalAndVoiceGen:
         text = str(text or "").strip()
         if len(text) <= limit:
             return text
-        return text[:limit] + "\n...(错误信息过长，已截断；终端中保留完整 traceback)"
+        return text[:limit] + "\n...(错误信息过长，已截断；日志中保留完整 traceback)"
 
     @staticmethod
     def _redact_sensitive_error_text(text: str) -> str:
@@ -246,8 +247,12 @@ class DSLocalAndVoiceGen:
         exc: BaseException,
     ) -> None:
         details = self._format_exception_details(exc)
-        PrintInfo.print_error(f"[Error]大模型请求失败：{user_message}\n{details}")
-        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        logger.error(
+            "大模型请求失败：%s\n%s",
+            user_message,
+            details,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         ui_message = f"{user_message}\n\n详细错误信息：\n{self._truncate_error_detail(details)}"
         self.report_message_to_main_ui(message_queue, is_text_generating_queue, ui_message)
 
@@ -344,7 +349,7 @@ class DSLocalAndVoiceGen:
 
         # 根据当前 API 配置选择模型、鉴权信息和可选 base_url。
         if d_sakiko_config.use_default_deepseek_api.value:
-            print("正在使用 UP 的 DeepSeek API")
+            logger.debug("正在使用 UP 的 DeepSeek API")
             completion_kwargs = {
                 "model": "deepseek/deepseek-chat",
                 "messages": messages,
@@ -355,9 +360,9 @@ class DSLocalAndVoiceGen:
                 "tool_choice": tool_choice,
             }
         elif d_sakiko_config.enable_custom_llm_api_provider.value:
-            print("正在使用自定义大模型 API ")
-            print("API Base: ", d_sakiko_config.custom_llm_api_url.value)
-            print("API Model: ", d_sakiko_config.custom_llm_api_model.value)
+            logger.debug("正在使用自定义大模型 API")
+            logger.debug("API Base: %s", d_sakiko_config.custom_llm_api_url.value)
+            logger.debug("API Model: %s", d_sakiko_config.custom_llm_api_model.value)
             completion_kwargs = {
                 "model": ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
                 "messages": messages,
@@ -369,9 +374,9 @@ class DSLocalAndVoiceGen:
                 "tool_choice": tool_choice,
             }
         else:
-            print("正在使用预定义大模型 API ")
-            print("Provider: ", d_sakiko_config.llm_api_provider.value)
-            print("Model: ", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
+            logger.debug("正在使用预定义大模型 API")
+            logger.debug("Provider: %s", d_sakiko_config.llm_api_provider.value)
+            logger.debug("Model: %s", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
             provider = d_sakiko_config.llm_api_provider.value
             model_name = d_sakiko_config.llm_api_model.value.get(provider, "")
             api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
@@ -641,7 +646,7 @@ class DSLocalAndVoiceGen:
             elif user_input == 'v':
                 if not self.character_list[self.current_char_index].has_valid_voice_model():
                     message_queue.put("当前角色无法进行语音合成")
-                    PrintInfo.print_error(f"[Error]当前角色无法开启语音合成，缺少GPT-SoVITS模型或参考音频文件。")
+                    logger.error("当前角色无法开启语音合成，缺少 GPT-SoVITS 模型或参考音频文件。")
                     time.sleep(2)
                     continue
 

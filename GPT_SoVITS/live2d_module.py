@@ -1,3 +1,4 @@
+import contextlib
 import math
 import re
 import time
@@ -13,7 +14,7 @@ import queue
 
 from multi_char_live2d_module import TextOverlay
 from qconfig import d_sakiko_config, qconfig
-from character import  PrintInfo
+from log import setup_worker_logging, get_logger
 
 class BackgroundRen(object):
 
@@ -166,7 +167,11 @@ class Live2DModule:
                     is_display_text_value,
                     motion_complete_value,
                     desktop_w,
-                    desktop_h):
+                    desktop_h,
+                    log_queue):
+        setup_worker_logging(log_queue)
+        logger = get_logger(__name__)
+
         if self.wavHandler is None:
             self.wavHandler = WavHandler()
         # print("正在开启Live2D模块")
@@ -231,7 +236,7 @@ class Live2DModule:
         interval_think=1
         if_bye = False
         last_emotion = None
-        print("当前Live2D界面渲染硬件", glGetString(GL_RENDERER).decode())
+        logger.info("当前Live2D界面渲染硬件 %s", glGetString(GL_RENDERER).decode())
 
         while self.run:
             for event in pygame.event.get():    #退出程序逻辑
@@ -284,13 +289,13 @@ class Live2DModule:
                             new_model.Resize(win_w_and_h, win_w_and_h)
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
-                        except Exception as e:
-                            PrintInfo.print_error(f"[Error]Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。错误信息：{e}")
+                        except Exception:
+                            logger.exception("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。")
                             new_model=None
                         if new_model is not None:
                             del model
                             model=new_model
-                            PrintInfo.print_info("Live2D模型切换成功！")
+                            logger.info("Live2D模型切换成功！")
                             #model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
                             self.character_list[self.current_character_num].live2d_json = new_model_path
                         else:
@@ -422,6 +427,43 @@ class Live2DModule:
         live2d.dispose()
         #结束pygame
         pygame.quit()
+
+
+def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue,
+                       change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w,
+                       desktop_h, log_queue):
+    """
+    Live2D 子进程入口函数
+    不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
+    """
+    setup_worker_logging(log_queue)
+
+    import sys, os
+    if os.name == 'nt':
+        try:
+            import ctypes
+            # 设置子进程的高DPI感知(与Qt主进程保持一致)，防止Win的高分辨率缩放导致的窗口巨大
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+    # 临时静默标准输出，防止子进程二次加载 characters 时在命令行狂刷重复信息
+    with open(os.devnull, 'w') as devnull:
+        with contextlib.redirect_stdout(devnull):
+            # 在子进程中重新导入和创建 characters
+            import character
+            get_all = character.GetCharacterAttributes()
+            characters = get_all.character_class_list
+
+    live2d_player = Live2DModule()
+    live2d_player.live2D_initialize(characters)
+    live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue,
+                                char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value,
+                                motion_complete_value, desktop_w, desktop_h, log_queue)
+
 
 
 if __name__=='__main__':        #单独测试live2d
