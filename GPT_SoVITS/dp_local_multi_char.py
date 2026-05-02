@@ -170,7 +170,7 @@ class DSLocalAndVoiceGen:
 				角色{self.character_list[self.current_character_num[1]].character_name}:{user_input['character_1']['interaction_details']}
 				
 				### 【要求】
-				- 对话轮数：25~30轮左右。
+				- 对话轮数：15轮左右。
 				- 语言：日语，携带同步中文翻译，放到JSON指定的字段中。
 				- 请打破‘一人一句’的轮流发言限制，允许同一角色连续多次发言。为了体现真实感，如果角色在一段话中出现了明显的情绪转折、语气停顿或话题递进，请务必将其拆分为两个或多个连续的 JSON 块（例如：A -> A -> B -> A -> A）。不要把所有内容硬塞进一条消息里。
 				- 格式：务必严格按照指定的JSON格式输出，不要有多余的文字说明！！
