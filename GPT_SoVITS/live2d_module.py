@@ -5,10 +5,16 @@ import time
 from random import random
 from live2d.utils.lipsync import WavHandler
 import live2d.v2 as live2d
-import pygame
-from pygame.locals import DOUBLEBUF, OPENGL
-from OpenGL.GL import *
 import glob,os
+
+# 屏蔽 pygame 相关的警告和介绍信息
+with open(os.devnull, 'w') as devnull:
+    with contextlib.redirect_stdout(devnull):
+        with contextlib.redirect_stderr(devnull):
+            import pygame
+            from pygame.locals import DOUBLEBUF, OPENGL
+
+from OpenGL.GL import *
 import sys
 import queue
 
