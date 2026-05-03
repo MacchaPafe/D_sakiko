@@ -1,14 +1,20 @@
+import contextlib
 import live2d.v2 as live2d
 from live2d.utils.lipsync import WavHandler
-import pygame
 from live2d.v2 import LAppModel
-from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob, os,time
 from random import randint
 import sys
 from collections import deque
 from typing import Dict, List, Any
+
+with open(os.devnull, 'w') as devnull:
+    with contextlib.redirect_stdout(devnull):
+        with contextlib.redirect_stderr(devnull):
+            import pygame
+            from pygame.locals import DOUBLEBUF, OPENGL
+
 
 from log import get_logger
 
@@ -863,11 +869,14 @@ class Live2DModule:
         pygame.quit()
 
 
-def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue):
+def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue, logging_queue):
     """Live2D 子进程入口。
 
     注意：该函数必须在模块顶层定义，才能在 Windows/macOS 的 spawn 模式下被 pickle。
     """
+    from log import setup_worker_logging
+
+    setup_worker_logging(logging_queue)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)

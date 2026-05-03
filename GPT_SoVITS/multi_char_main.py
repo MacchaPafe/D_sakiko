@@ -21,7 +21,7 @@ import faulthandler
 import character
 from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGenerator, get_chat_manager
 from chat.chat_meta import TheaterMeta
-from log import get_logger
+from log import get_logger, setup_logging, get_log_queue, shutdown_logging
 from qtUI import ChangeL2DModelWindow
 
 
@@ -2175,6 +2175,8 @@ if __name__ == "__main__":
     mp.freeze_support()
     ctx = mp.get_context("spawn")
 
+    setup_logging()
+
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     get_char_attr = character.GetCharacterAttributes()
@@ -2197,7 +2199,8 @@ if __name__ == "__main__":
     # Live2D：必须在子进程的主线程里创建窗口（macOS NSWindow 限制）
     live2d_process = ctx.Process(
         target=run_live2d_process,
-        args=(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue),
+        args=(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue, 
+              get_log_queue()),
         name="Live2DProcess",
     )
 
@@ -2268,6 +2271,8 @@ if __name__ == "__main__":
             live2d_process.join(timeout=3)
         except Exception:
             pass
+    
+    shutdown_logging()
 
 '''
 按钮改为图标式
