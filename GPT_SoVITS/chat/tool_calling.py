@@ -1,8 +1,10 @@
 import concurrent.futures
 import dataclasses
 import datetime
+import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -117,13 +119,13 @@ class ToolRegistry:
             }
             return False, json.dumps(error_payload, ensure_ascii=False)
 
-
+#-------------------------------  工具调用主循环的实现--------------------------------
 class ToolCallingAgentRuntime:
     def __init__(
         self,
         llm_completion: LLMCompletionFn,
         tool_registry: Optional[ToolRegistry] = None,
-        max_tool_rounds: int = 8,
+        max_tool_rounds: int = 15,
         max_tool_errors: int = 3,
         debug: bool = True,
     ) -> None:
@@ -435,6 +437,62 @@ class ToolCallingAgentRuntime:
                 if lines:
                     return "\n".join(lines)
 
+            if tool_name == "list_directory":
+                dir_path = payload.get("dir_path") or ""
+                entries = payload.get("entries") or []
+                if isinstance(entries, list):
+                    lines: List[str] = [f"{dir_path}  ({len(entries)} 项)"]
+                    for entry in entries[:30]:
+                        if not isinstance(entry, dict):
+                            continue
+                        name = entry.get("name", "")
+                        size = entry.get("size_display", "")
+                        line = f"{name}"
+                        if size:
+                            line += f"  ({size})"
+                        lines.append(line)
+                    if len(entries) > 30:
+                        lines.append(f"... 还有 {len(entries) - 30} 项")
+                    return _truncate("\n".join(lines))
+
+            if tool_name == "read_file_content":
+                file_path = payload.get("file_path") or ""
+                total = payload.get("total_lines", "?")
+                s = payload.get("start_line", "?")
+                e = payload.get("end_line", "?")
+                content = payload.get("content") or ""
+                header = f"{os.path.basename(file_path)}  (行 {s}-{e} / 共 {total} 行)"
+                hint = payload.get("hint") or ""
+                text = f"{header}\n{'─' * 40}\n{content}"
+                if hint:
+                    text += f"\n{'─' * 40}\n{hint}"
+                return _truncate(text, limit=2000)
+
+            if tool_name == "grep_search_in_file":
+                file_path = payload.get("file_path") or ""
+                keyword = payload.get("keyword") or ""
+                match_count = payload.get("match_count", 0)
+                matches_list = payload.get("matches") or []
+                lines: List[str] = [f"在 {os.path.basename(file_path)} 中搜索「{keyword}」— 共 {match_count} 处匹配"]
+                for m in matches_list[:10]:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("truncated"):
+                        lines.append(f"\n{m.get('message', '结果已截断')}")
+                        break
+                    ml = m.get("match_line", "?")
+                    cs = m.get("context_start", "?")
+                    ce = m.get("context_end", "?")
+                    snippet = m.get("snippet", "")
+                    lines.append(f"\n--- 第 {ml} 行 (上下文 {cs}-{ce}) ---")
+                    lines.append(snippet.rstrip())
+                return _truncate("\n".join(lines), limit=2000)
+
+            if tool_name == "export_document":
+                file_path = payload.get("file_path") or ""
+                message = payload.get("message") or ""
+                return f"成功导出文档\n  文件路径: {file_path}\n  {message}"
+
         return _truncate(json.dumps(payload, ensure_ascii=False, indent=2))
 
     @staticmethod
@@ -664,7 +722,7 @@ class ToolCallingAgentRuntime:
                 return {}
         return {}
 
-
+#-------------------------------- 注册所有工具函数--------------------------------
 def build_default_tool_registry() -> ToolRegistry:
     """
     新建并返回带默认工具配置功能的工具注册表类（含网络天气、本地时间和系统配置等工具）。
@@ -675,7 +733,7 @@ def build_default_tool_registry() -> ToolRegistry:
 
     registry.register_tool(
         name="get_current_datetime",
-        description="Get local current date and time on the user's machine.",
+        description="获取当前本地时间。当你想根据早中晚不同时段主动向用户发起不同话题，或者在设置提醒(set_reminder)前核对接下来的时间计划时，主动调用它来“看一眼表”。",
         parameters={
             "type": "object",
             "properties": {
@@ -686,12 +744,12 @@ def build_default_tool_registry() -> ToolRegistry:
             },
             "required": [],
         },
-        handler=_tool_get_current_datetime,
+        handler=DateTimeTool.execute,
     )
 
     registry.register_tool(
         name="get_system_hardware_status",
-        description="Get hardware status (Windows/macOS): CPU load, memory usage, and GPU info when available.",
+        description="获取用户电脑的硬件占用（CPU、内存、GPU）。例如当用户提到电脑卡、玩游戏掉帧等话题时，可直接调用。",
         parameters={
             "type": "object",
             "properties": {
@@ -702,12 +760,12 @@ def build_default_tool_registry() -> ToolRegistry:
             },
             "required": [],
         },
-        handler=_tool_get_system_hardware_status,
+        handler=SystemHardwareTool.execute,
     )
 
     registry.register_tool(
         name="web_search",
-        description="使用Web搜索引擎查询信息。当你不清楚答案或者需要最新信息时，可以调用这个工具。参数query是必需的，provider和top_k是可选的，默认为bocha和5。",
+        description="【主动求知】使用Web搜索引擎查询信息。当你遇到不懂的网络热词、冷门动漫知识，或者用户提到你不知道的新闻时，**绝对不要说自己不知道，也不要盲猜**，你要立即主动调用搜索！甚至你可以只是为了找点有趣的新闻当话题，主动搜完分享给用户。",
         parameters={
             "type": "object",
             "properties": {
@@ -726,12 +784,12 @@ def build_default_tool_registry() -> ToolRegistry:
             },
             "required": ["query"],
         },
-        handler=_tool_web_search,
+        handler=WebSearchTool.execute,
     )
 
     registry.register_tool(
         name="get_weather",
-        description="Get current weather for user location or specified city.",
+        description="获取用户所在地当前天气。当用户提到要出门、买东西、身体不舒服等时，可主动调用此工具，通过结果来组织你的回复。",
         parameters={
             "type": "object",
             "properties": {
@@ -742,8 +800,11 @@ def build_default_tool_registry() -> ToolRegistry:
             },
             "required": [],
         },
-        handler=_tool_get_weather,
+        handler=WeatherTool.execute,
     )
+
+    # 文件阅读工具集（目录浏览 / 分页读取 / 关键字搜索）
+    register_file_reading_tools(registry)
 
     return registry
 
@@ -778,7 +839,7 @@ def register_reminder_tool(
 
     registry.register_tool(
         name='set_reminder',
-        description='设定一个定时提醒（闹钟），在到达指定时间后程序将通过系统内部事件隐式告诉你，你届时可自行去告知用户。当用户提出需要你等待/倒计时/特定时间点提醒他或你自己的需求时可用。必须先调用获取当前时间的工具核实现在的真实时间，加上倒计时差值或目标时刻后再准确填写参数！',
+        description='设定定时器，到期后系统会通知你。**不要只做定闹钟的工具人。**当用户说“我突然有点事，一小时后再聊”或者“我半小时后要出门”，你完全可以定个闹钟到时主动去找用户！再例如聊到午睡，你也可以主动说“那我帮你定个40分钟后的闹钟叫你吧”并调用此工具。必须先调取当前时间计算目标时间！',
         parameters={
             'type': 'object',
             'properties': {
@@ -841,7 +902,7 @@ def register_lottery_tool(
 
     registry.register_tool(
         name="start_lottery",
-        description="创建一个前台随机抽签窗口，用户点击抽签后会从给定选项里随机抽出结果。适合点餐、出行、娱乐等二选一或多选一场景。除了用户明确提出要抽签，当用户在犹豫不决时，你也可以给出几个选项然后调用这个工具。",
+        description="【互动利器】创建一个前台随机抽签窗口。**不要只等用户提到抽签才用！**当你想和用户找点乐子玩个游戏、决定某件小事（甚至只是“今天你夸我还是我夸你”）、当对话陷入平淡，或者你纯粹想给用户制造一个意想不到的惊喜与互动时，随时大胆地主动为你和用户抛出这个抽奖面板！",
         parameters={
             "type": "object",
             "properties": {
@@ -859,570 +920,6 @@ def register_lottery_tool(
         },
         handler=_start_lottery_handler,
     )
-
-def _tool_get_current_datetime(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """具体的获取本地时间工具，包含返回默认 ISO 格式或者是指定的 strftime 格式的结果。"""
-    now = datetime.datetime.now().astimezone()
-    fmt = arguments.get("format")
-    formatted = now.strftime(fmt) if isinstance(fmt, str) and fmt else now.isoformat()
-    return {
-        "ok": True,
-        "timestamp": now.timestamp(),
-        "iso": now.isoformat(),
-        "formatted": formatted,
-        "timezone": str(now.tzinfo),
-    }
-
-
-def _tool_get_system_hardware_status(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """具体的系统状态分析工具。获取主机设备的 CPU 占用情况、温度、显卡的详情和可运行内存记录等资源状态。"""
-    include_gpu = bool(arguments.get("include_gpu", True))
-    cpu_percent = psutil.cpu_percent(interval=0.2)
-    memory = psutil.virtual_memory()
-
-    # Windows 平台：优先 NVIDIA 查询，并尝试读取 CPU 温度。
-    if os.name == "nt":
-        cpu_temp_payload = _query_cpu_temperature_psutil()
-        gpu_payload = {
-            "available": False,
-            "message": "gpu_query_disabled",
-        }
-        if include_gpu:
-            gpu_payload = _query_nvidia_gpu_status()
-
-        return {
-            "ok": True,
-            "platform": "windows",
-            "cpu": {
-                "usage_percent": cpu_percent,
-                "temperature": cpu_temp_payload,
-                "physical_cores": psutil.cpu_count(logical=False),
-                "logical_cores": psutil.cpu_count(logical=True),
-            },
-            "memory": {
-                "total": memory.total,
-                "used": memory.used,
-                "usage_percent": memory.percent,
-            },
-            "gpu": gpu_payload,
-        }
-
-    # macOS 平台：通过 system_profiler 获取硬件与图形信息。
-    if sys.platform == "darwin":
-        hardware_payload = _query_macos_hardware_overview()
-        cpu_temp_payload = _query_cpu_temperature_psutil()
-        gpu_payload = {
-            "available": False,
-            "message": "gpu_query_disabled",
-        }
-        if include_gpu:
-            gpu_payload = _query_macos_gpu_status()
-
-        return {
-            "ok": True,
-            "platform": "macos",
-            "cpu": {
-                "usage_percent": cpu_percent,
-                "temperature": cpu_temp_payload,
-                "physical_cores": psutil.cpu_count(logical=False),
-                "logical_cores": psutil.cpu_count(logical=True),
-                "chip": hardware_payload.get("chip"),
-                "cpu_model": hardware_payload.get("cpu_model"),
-            },
-            "memory": {
-                "total": memory.total,
-                "used": memory.used,
-                "usage_percent": memory.percent,
-                "physical_memory_text": hardware_payload.get("physical_memory_text"),
-            },
-            "gpu": gpu_payload,
-            "hardware": {
-                "model_name": hardware_payload.get("model_name"),
-                "model_identifier": hardware_payload.get("model_identifier"),
-                "serial_number": hardware_payload.get("serial_number"),
-            },
-        }
-
-    # 其他平台暂不支持。
-    return {
-        "ok": False,
-        "error": "unsupported_platform",
-        "message": f"platform={sys.platform}",
-    }
-
-
-def _query_cpu_temperature_psutil() -> Dict[str, Any]:
-    """尝试通过 psutil 读取 CPU 温度；macOS 上通常不可用，返回 unavailable。"""
-    cpu_temp_payload: Dict[str, Any] = {
-        "available": False,
-        "value_celsius": None,
-        "source": "psutil",
-    }
-
-    try:
-        sensors_fn = getattr(psutil, "sensors_temperatures", None)
-        sensors = sensors_fn() if callable(sensors_fn) else {}
-        if isinstance(sensors, dict) and sensors:
-            first = None
-            for entries in sensors.values():
-                if entries:
-                    first = entries[0]
-                    break
-            if first is not None:
-                cpu_temp_payload = {
-                    "available": True,
-                    "value_celsius": getattr(first, "current", None),
-                    "source": "psutil",
-                }
-    except Exception:
-        cpu_temp_payload = {
-            "available": False,
-            "value_celsius": None,
-            "source": "psutil",
-        }
-
-    return cpu_temp_payload
-
-
-def _query_macos_hardware_overview() -> Dict[str, Any]:
-    """通过 system_profiler 获取 macOS 硬件概览。"""
-    command = ["system_profiler", "SPHardwareDataType", "-json"]
-    try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
-    except Exception as exc:
-        return {
-            "available": False,
-            "message": f"system_profiler_unavailable: {exc}",
-        }
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        return {
-            "available": False,
-            "message": f"system_profiler_failed: {stderr}" if stderr else "system_profiler_failed",
-        }
-
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return {
-            "available": False,
-            "message": "system_profiler_json_decode_failed",
-        }
-
-    entries = payload.get("SPHardwareDataType") or []
-    first = entries[0] if isinstance(entries, list) and entries else {}
-    if not isinstance(first, dict):
-        first = {}
-
-    return {
-        "available": True,
-        "chip": first.get("chip_type") or first.get("machine_name"),
-        "cpu_model": first.get("cpu_type"),
-        "physical_memory_text": first.get("physical_memory"),
-        "model_name": first.get("machine_name"),
-        "model_identifier": first.get("machine_model"),
-        "serial_number": first.get("serial_number"),
-    }
-
-
-def _query_macos_gpu_status() -> Dict[str, Any]:
-    """通过 system_profiler 查询 macOS 图形设备信息。"""
-    command = ["system_profiler", "SPDisplaysDataType", "-json"]
-    try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
-    except Exception as exc:
-        return {
-            "available": False,
-            "message": f"system_profiler_unavailable: {exc}",
-        }
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        return {
-            "available": False,
-            "message": f"system_profiler_failed: {stderr}" if stderr else "system_profiler_failed",
-        }
-
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return {
-            "available": False,
-            "message": "system_profiler_json_decode_failed",
-        }
-
-    entries = payload.get("SPDisplaysDataType") or []
-    cards: List[Dict[str, Any]] = []
-
-    if isinstance(entries, list):
-        for item in entries:
-            if not isinstance(item, dict):
-                continue
-            cards.append(
-                {
-                    "name": item.get("sppci_model") or item.get("spdisplays_model") or item.get("_name"),
-                    "vendor": item.get("spdisplays_vendor") or item.get("spdisplays_vendor-id"),
-                    "vram": item.get("spdisplays_vram") or item.get("spdisplays_vram_shared"),
-                    "metal": item.get("spdisplays_metal"),
-                }
-            )
-
-    return {
-        "available": bool(cards),
-        "cards": cards,
-    }
-
-
-def _query_nvidia_gpu_status() -> Dict[str, Any]:
-    """通过操作系统的 nvidia-smi 命令行获取当前各 NVIDIA 块级显卡的实际各项环境性能指标并转出结果。"""
-    command = [
-        "nvidia-smi",
-        "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total",
-        "--format=csv,noheader,nounits",
-    ]
-
-    try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=2)
-    except Exception as exc:
-        return {
-            "available": False,
-            "message": f"nvidia_smi_unavailable: {exc}",
-        }
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        return {
-            "available": False,
-            "message": f"nvidia_smi_failed: {stderr}" if stderr else "nvidia_smi_failed",
-        }
-
-    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-    cards: List[Dict[str, Any]] = []
-
-    for line in lines:
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 5:
-            continue
-        name, temp, util, used_mem, total_mem = parts
-        cards.append(
-            {
-                "name": name,
-                "temperature_celsius": _safe_int(temp),
-                "utilization_percent": _safe_int(util),
-                "memory_used_mb": _safe_int(used_mem),
-                "memory_total_mb": _safe_int(total_mem),
-            }
-        )
-
-    return {
-        "available": bool(cards),
-        "cards": cards,
-    }
-
-
-def _tool_web_search(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """具体的在线网页接口分发中心（工具端）。由它中转各大平台的 Web 搜索操作，按 provider 实现相应接口的 HTTP 调用。"""
-    query = str(arguments.get("query") or "").strip()
-    if not query:
-        raise ValueError("query is required")
-
-    #provider = str(arguments.get("provider") or "bocha").strip().lower()
-    provider="bocha"    #TODO: 先写死用bocha，后续再开放参数
-    top_k = int(arguments.get("top_k") or 5)
-
-    dispatcher = {
-        "bocha": _search_bocha,
-        "bing": _search_bing,
-        "tavily": _search_tavily,
-        "brave": _search_brave,
-        "google": _search_google,
-    }
-    if provider not in dispatcher:
-        raise ValueError(f"unsupported provider: {provider}")
-
-    started_at = time.time()
-    results = dispatcher[provider](query=query, top_k=top_k)
-    return {
-        "ok": True,
-        "provider": provider,
-        "query": query,
-        "result_count": len(results),
-        "latency_ms": int((time.time() - started_at) * 1000),
-        "results": results,
-    }
-
-
-def _search_bocha(query: str, top_k: int) -> List[Dict[str, Any]]:
-    """内部网络搜索实现（博查API）：调用提供商提供的相关在线接口检索信息并统一返回格式。"""
-    api_key = os.getenv("BOCHA_API_KEY", DEFAULT_BOCHA_API_KEY)
-    url = "https://api.bocha.cn/v1/web-search"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {"query": query}
-
-    response = requests.post(url, headers=headers, json=payload, timeout=12)
-    response.raise_for_status()
-    data = response.json()
-
-    raw_items = data.get("data") or data.get("results") or data
-    return _normalize_search_items(raw_items, top_k=top_k)
-
-
-def _search_bing(query: str, top_k: int) -> List[Dict[str, Any]]:
-    """内部网络搜索实现（Bing Search API）：用 Bing 进行调用。"""
-    api_key = os.getenv("BING_SEARCH_API_KEY", "")
-    if not api_key:
-        raise ValueError("BING_SEARCH_API_KEY is not configured")
-
-    endpoint = os.getenv("BING_SEARCH_ENDPOINT", "https://api.bing.microsoft.com/v7.0/search")
-    headers = {"Ocp-Apim-Subscription-Key": api_key}
-    params = {
-        "q": query,
-        "count": max(1, min(50, top_k)),
-        "mkt": "zh-CN",
-    }
-
-    response = requests.get(endpoint, headers=headers, params=params, timeout=12)
-    response.raise_for_status()
-    data = response.json()
-    raw_items = ((data.get("webPages") or {}).get("value")) or []
-    return _normalize_search_items(raw_items, top_k=top_k)
-
-
-def _search_tavily(query: str, top_k: int) -> List[Dict[str, Any]]:
-    """内部网络搜索实现（Tavily）：直接将需要解决的问题抛出给 Tavily API 来提供汇总信息网页。"""
-    api_key = os.getenv("TAVILY_API_KEY", "")
-    if not api_key:
-        raise ValueError("TAVILY_API_KEY is not configured")
-
-    url = "https://api.tavily.com/search"
-    payload = {
-        "api_key": api_key,
-        "query": query,
-        "max_results": max(1, min(20, top_k)),
-    }
-
-    response = requests.post(url, json=payload, timeout=12)
-    response.raise_for_status()
-    data = response.json()
-    raw_items = data.get("results") or []
-    return _normalize_search_items(raw_items, top_k=top_k)
-
-
-def _search_brave(query: str, top_k: int) -> List[Dict[str, Any]]:
-    """内部网络搜索实现（Brave API）。"""
-    api_key = os.getenv("BRAVE_SEARCH_API_KEY", "")
-    if not api_key:
-        raise ValueError("BRAVE_SEARCH_API_KEY is not configured")
-
-    url = "https://api.search.brave.com/res/v1/web/search"
-    headers = {
-        "X-Subscription-Token": api_key,
-        "Accept": "application/json",
-    }
-    params = {
-        "q": query,
-        "count": max(1, min(20, top_k)),
-        "country": "cn",
-    }
-
-    response = requests.get(url, headers=headers, params=params, timeout=12)
-    response.raise_for_status()
-    data = response.json()
-    raw_items = ((data.get("web") or {}).get("results")) or []
-    return _normalize_search_items(raw_items, top_k=top_k)
-
-
-def _search_google(query: str, top_k: int) -> List[Dict[str, Any]]:
-    """内部网络搜索实现（Google API）。配置必须具备 CSE_ID 以及 API Key 环境。"""
-    api_key = os.getenv("GOOGLE_SEARCH_API_KEY", "")
-    cse_id = os.getenv("GOOGLE_CSE_ID", "")
-    if not api_key or not cse_id:
-        raise ValueError("GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID are required")
-
-    url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": api_key,
-        "cx": cse_id,
-        "q": query,
-        "num": max(1, min(10, top_k)),
-    }
-
-    response = requests.get(url, params=params, timeout=12)
-    response.raise_for_status()
-    data = response.json()
-    raw_items = data.get("items") or []
-    return _normalize_search_items(raw_items, top_k=top_k)
-
-
-def _normalize_search_items(raw_items: Any, top_k: int) -> List[Dict[str, Any]]:
-    """将市面上不同的网络搜索引擎返回各异的 JSON 树状字典层层提取后统一重整为固定有 title/url/snippet 的查询格式列表响应。"""
-    # 兼容不同 provider 的多种结构，统一归一到列表后再做切片。
-    items: List[Any]
-    if isinstance(raw_items, list):
-        items = raw_items
-    elif isinstance(raw_items, dict):
-        if isinstance(raw_items.get("value"), list):
-            items = raw_items.get("value") or []
-        elif isinstance((raw_items.get("webPages") or {}).get("value"), list):
-            items = (raw_items.get("webPages") or {}).get("value") or []
-        elif isinstance(raw_items.get("results"), list):
-            items = raw_items.get("results") or []
-        elif isinstance(raw_items.get("data"), list):
-            items = raw_items.get("data") or []
-        elif isinstance(raw_items.get("items"), list):
-            items = raw_items.get("items") or []
-        else:
-            items = []
-    else:
-        items = []
-
-    normalized: List[Dict[str, Any]] = []
-    for item in items[: max(1, top_k)]:
-        if not isinstance(item, dict):
-            continue
-        normalized.append(
-            {
-                "title": item.get("title") or item.get("name") or "",
-                "url": item.get("url") or item.get("link") or "",
-                "snippet": item.get("snippet") or item.get("description") or item.get("body") or "",
-            }
-        )
-    return normalized
-
-
-def _tool_get_weather(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """主入口气候天气 API（工具端）。用于检索一个位置的天气并在不提供城市参数的前提下自动调用 IP 地址辅助查询天气。"""
-    city = str(arguments.get("city") or "").strip()
-    if not city:
-        city = _detect_city_from_ip()
-
-    if not city:
-        raise ValueError("Unable to determine city")
-
-    lat, lon, resolved_name = _geocode_city(city)
-    weather = _fetch_open_meteo_current_weather(lat=lat, lon=lon)
-
-    return {
-        "ok": True,
-        "city": resolved_name,
-        "location": {
-            "latitude": lat,
-            "longitude": lon,
-        },
-        "weather": weather,
-    }
-
-
-def _detect_city_from_ip() -> str:
-    """侦测辅助：请求外部公共接口进行 IP 本地溯源推导出地理区划名（即你当下所在城市）兜底处理工具参数空缺。"""
-    urls = [
-        "http://ip-api.com/json/?lang=zh-CN",
-        "https://ipwho.is/",
-    ]
-    for url in urls:
-        try:
-            response = requests.get(url, timeout=6)
-            response.raise_for_status()
-            payload = response.json()
-            city = str(payload.get("city") or "").strip()
-            if city:
-                return city
-        except Exception:
-            continue
-    return ""
-
-
-def _geocode_city(city: str) -> Tuple[float, float, str]:
-    """通过公用地理查询转码，反算给出的地理名称返回确切的该地点经度纬度。"""
-    url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {
-        "name": city,
-        "count": 1,
-        "language": "zh",
-    }
-
-    response = requests.get(url, params=params, timeout=10)
-    response.raise_for_status()
-    payload = response.json()
-
-    results = payload.get("results") or []
-    if not results:
-        raise ValueError(f"city not found: {city}")
-
-    first = results[0]
-    latitude = float(first.get("latitude"))
-    longitude = float(first.get("longitude"))
-    name = str(first.get("name") or city)
-    country = str(first.get("country") or "")
-    resolved_name = f"{name}, {country}" if country else name
-    return latitude, longitude, resolved_name
-
-
-def _fetch_open_meteo_current_weather(lat: float, lon: float) -> Dict[str, Any]:
-    """通过拿到的最终经纬度从 Open-Meteo 拉取天气的实时气温状态情况并封返回。"""
-    url = "https://api.open-meteo.com/v1/forecast"
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
-        "timezone": "auto",
-    }
-
-    response = requests.get(url, params=params, timeout=10)
-    response.raise_for_status()
-    payload = response.json()
-    current = payload.get("current") or {}
-
-    weather_code = _safe_int(current.get("weather_code"))
-    return {
-        "temperature_celsius": current.get("temperature_2m"),
-        "apparent_temperature_celsius": current.get("apparent_temperature"),
-        "humidity_percent": current.get("relative_humidity_2m"),
-        "wind_speed_kmh": current.get("wind_speed_10m"),
-        "weather_code": weather_code,
-        "weather_description": _weather_code_to_text(weather_code),
-        "observed_at": current.get("time"),
-    }
-
-
-def _weather_code_to_text(code: Optional[int]) -> str:
-    """将 WMO 发布的气象数字内码转换回能让人类阅读的环境英文描述（可用于交给大模型解读）。"""
-    mapping = {
-        0: "Clear sky",
-        1: "Mainly clear",
-        2: "Partly cloudy",
-        3: "Overcast",
-        45: "Fog",
-        48: "Depositing rime fog",
-        51: "Light drizzle",
-        53: "Moderate drizzle",
-        55: "Dense drizzle",
-        61: "Slight rain",
-        63: "Moderate rain",
-        65: "Heavy rain",
-        71: "Slight snow",
-        73: "Moderate snow",
-        75: "Heavy snow",
-        80: "Rain showers",
-        81: "Rain showers",
-        82: "Violent rain showers",
-        95: "Thunderstorm",
-    }
-    if code is None:
-        return "Unknown"
-    return mapping.get(code, "Unknown")
-
-
-def _safe_int(value: Any) -> Optional[int]:
-    """兜底强制解析字典数据内容至安全的整数结构，预防转换失败返回假值报错等异常。"""
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
 
 
 def register_live2d_tools(
@@ -1482,14 +979,14 @@ def register_live2d_tools(
 
     registry.register_tool(
         name='fetch_all_live2d_models',
-        description='获取当前对话角色拥有的所有可用Live2D模型（即角色的各种自定义服装打扮）的名称及模型配置文件路径。',
+        description='获取角色拥有的所有衣服/Live2D模型列表。**重点：不要等用户明确要求，你要视情况主动换装！**当你想给用户一个视觉惊喜，或者配合当前聊天气氛（如聊到睡觉、生病、出门等场景）时，请私下调用此工具翻看衣柜，准备换装。',
         parameters={'type': 'object', 'properties': {}, 'required': []},
         handler=_fetch_all_live2d_models_handler
     )
     
     registry.register_tool(
         name='change_character_live2d',
-        description='将当前界面上角色的Live2D服装/模型更换切换到指定的路径。通过先调用 fetch_all_live2d_models 获取路径后传入。',
+        description='【主动视觉表现】将角色的服装换为指定路径。**核心扮演动作：用换装制造惊喜，绝不被动等待！**不需要用户允许或要求，比如当用户夸你时主动换上特制装扮，聊到晚安主动换上睡衣。用突然发生的外观变化给用户惊喜感！(必须先调用 fetch_all_live2d_models 挑选合适的衣服)',
         parameters={
             'type': 'object',
             'properties': {'model_json_path': {'type': 'string', 'description': '需要切换到的 Live2D 模型对应的 json 文件绝对或相对路径（必填）'}},
@@ -1497,3 +994,1003 @@ def register_live2d_tools(
         },
         handler=_change_character_live2d_handler
     )
+
+def register_file_reading_tools(registry: ToolRegistry) -> None:
+    """将文件阅读工具集（目录浏览 / 分页读取 / 关键字搜索）注册到工具注册表。"""
+    registry.register_tool(
+        name="list_directory",
+        description=(
+            "列出指定目录下的所有文件和子文件夹。"
+            "当用户让你看某个文件夹里有什么、或者你需要先了解项目结构再阅读代码时，调用此工具。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "dir_path": {
+                    "type": "string",
+                    "description": "要浏览的目录路径（绝对路径或相对路径）",
+                },
+            },
+            "required": ["dir_path"],
+        },
+        handler=FileReadingTools.list_directory,
+    )
+
+    registry.register_tool(
+        name="read_file_content",
+        description=(
+            "读取指定纯文本/代码文件的内容。支持按行号分页读取，每次最多返回 200 行。"
+            "若文件未读完，返回结果会包含提示信息和下一页的 start_line 值，你可以多次调用来逐页阅读大文件。"
+            "当用户让你阅读、查看、分析某个文件内容时使用。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "要读取的文件路径（绝对路径或相对路径）",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "起始行号（从1开始，默认1）",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "结束行号（默认为 start_line + 199，即一次读200行）",
+                },
+            },
+            "required": ["file_path"],
+        },
+        handler=FileReadingTools.read_file_content,
+    )
+
+    registry.register_tool(
+        name="grep_search_in_file",
+        description=(
+            "在指定文件中搜索关键字，返回所有匹配行以及每处匹配前后各5行的上下文。"
+            "适用于大文件中快速定位函数名、变量名、错误信息等，比逐页翻阅更高效。"
+            "当用户让你在文件中找某个内容、或你需要快速定位代码位置时使用。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "要搜索的文件路径（绝对路径或相对路径）",
+                },
+                "keyword": {
+                    "type": "string",
+                    "description": "要搜索的关键字（大小写不敏感）",
+                },
+            },
+            "required": ["file_path", "keyword"],
+        },
+        handler=FileReadingTools.grep_search_in_file,
+    )
+
+    registry.register_tool(
+        name="export_document",
+        description=(
+            "【语音对话防刷屏-生成本地文档工具】"   
+            "当你需要向用户提供以下大段文字信息时，**必须**调用此工具将其保存为文档："
+            "1. 小说概括、剧情总结、文章长篇大论的分析；"
+            "2. 具体的代码修改意见、重构后的完整代码、长段报错日志；"
+            "3. 任何包含 Markdown 复杂排版（表格、长列表）的内容。"
+            "工具会将你整理好的内容直接生成文件放到软件的 tool_data 文件夹中，并会自动在用户电脑上弹窗打开该文件。"
+            "调用此工具后，你在当轮聊天的回复可以是：'我把内容整理成文档发给你了，你可以打开看看哦'（或者符合人设的简洁回复），千万不要把详细内容复述一遍，因为在对话中直接发送长文本内容会造成刷屏且体验极差。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "要保存的文件名（如 '剧情总结.txt'、'修改建议.md'）。如果不提供绝对路径，将默认保存到软件的 tool_data 文件夹中。",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "需要写入文档的具体内容正文，支持完整的 Markdown 格式排版。",
+                },
+            },
+            "required": ["filename", "content"],
+        },
+        handler=FileReadingTools.export_document,
+    )
+
+#-------------------------------- 以下为各工具的具体实现--------------------------------
+class DateTimeTool:
+    @staticmethod
+    def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """具体的获取本地时间工具，包含返回默认 ISO 格式或者是指定的 strftime 格式的结果。"""
+        now = datetime.datetime.now().astimezone()
+        fmt = arguments.get("format")
+        formatted = now.strftime(fmt) if isinstance(fmt, str) and fmt else now.isoformat()
+        return {
+            "ok": True,
+            "timestamp": now.timestamp(),
+            "iso": now.isoformat(),
+            "formatted": formatted,
+            "timezone": str(now.tzinfo),
+        }
+
+
+class SystemHardwareTool:
+    @staticmethod
+    def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """具体的系统状态分析工具。获取主机设备的 CPU 占用情况、温度、显卡的详情和可运行内存记录等资源状态。"""
+        include_gpu = bool(arguments.get("include_gpu", True))
+        cpu_percent = psutil.cpu_percent(interval=0.2)
+        memory = psutil.virtual_memory()
+
+        # Windows 平台：优先 NVIDIA 查询，并尝试读取 CPU 温度。
+        if os.name == "nt":
+            cpu_temp_payload = SystemHardwareTool._query_cpu_temperature_psutil()
+            gpu_payload = {
+                "available": False,
+                "message": "gpu_query_disabled",
+            }
+            if include_gpu:
+                gpu_payload = SystemHardwareTool._query_nvidia_gpu_status()
+
+            return {
+                "ok": True,
+                "platform": "windows",
+                "cpu": {
+                    "usage_percent": cpu_percent,
+                    "temperature": cpu_temp_payload,
+                    "physical_cores": psutil.cpu_count(logical=False),
+                    "logical_cores": psutil.cpu_count(logical=True),
+                },
+                "memory": {
+                    "total": memory.total,
+                    "used": memory.used,
+                    "usage_percent": memory.percent,
+                },
+                "gpu": gpu_payload,
+            }
+
+        # macOS 平台：通过 system_profiler 获取硬件与图形信息。
+        if sys.platform == "darwin":
+            hardware_payload = SystemHardwareTool._query_macos_hardware_overview()
+            cpu_temp_payload = SystemHardwareTool._query_cpu_temperature_psutil()
+            gpu_payload = {
+                "available": False,
+                "message": "gpu_query_disabled",
+            }
+            if include_gpu:
+                gpu_payload = SystemHardwareTool._query_macos_gpu_status()
+
+            return {
+                "ok": True,
+                "platform": "macos",
+                "cpu": {
+                    "usage_percent": cpu_percent,
+                    "temperature": cpu_temp_payload,
+                    "physical_cores": psutil.cpu_count(logical=False),
+                    "logical_cores": psutil.cpu_count(logical=True),
+                    "chip": hardware_payload.get("chip"),
+                    "cpu_model": hardware_payload.get("cpu_model"),
+                },
+                "memory": {
+                    "total": memory.total,
+                    "used": memory.used,
+                    "usage_percent": memory.percent,
+                    "physical_memory_text": hardware_payload.get("physical_memory_text"),
+                },
+                "gpu": gpu_payload,
+                "hardware": {
+                    "model_name": hardware_payload.get("model_name"),
+                    "model_identifier": hardware_payload.get("model_identifier"),
+                    "serial_number": hardware_payload.get("serial_number"),
+                },
+            }
+
+        # 其他平台暂不支持。
+        return {
+            "ok": False,
+            "error": "unsupported_platform",
+            "message": f"platform={sys.platform}",
+        }
+
+    @staticmethod
+    def _query_cpu_temperature_psutil() -> Dict[str, Any]:
+        cpu_temp_payload: Dict[str, Any] = {
+            "available": False,
+            "value_celsius": None,
+            "source": "psutil",
+        }
+
+        try:
+            sensors_fn = getattr(psutil, "sensors_temperatures", None)
+            sensors = sensors_fn() if callable(sensors_fn) else {}
+            if isinstance(sensors, dict) and sensors:
+                first = None
+                for entries in sensors.values():
+                    if entries:
+                        first = entries[0]
+                        break
+                if first is not None:
+                    cpu_temp_payload = {
+                        "available": True,
+                        "value_celsius": getattr(first, "current", None),
+                        "source": "psutil",
+                    }
+        except Exception:
+            cpu_temp_payload = {
+                "available": False,
+                "value_celsius": None,
+                "source": "psutil",
+            }
+
+        return cpu_temp_payload
+
+    @staticmethod
+    def _query_macos_hardware_overview() -> Dict[str, Any]:
+        command = ["system_profiler", "SPHardwareDataType", "-json"]
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
+        except Exception as exc:
+            return {
+                "available": False,
+                "message": f"system_profiler_unavailable: {exc}",
+            }
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            return {
+                "available": False,
+                "message": f"system_profiler_failed: {stderr}" if stderr else "system_profiler_failed",
+            }
+
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return {
+                "available": False,
+                "message": "system_profiler_json_decode_failed",
+            }
+
+        entries = payload.get("SPHardwareDataType") or []
+        first = entries[0] if isinstance(entries, list) and entries else {}
+        if not isinstance(first, dict):
+            first = {}
+
+        return {
+            "available": True,
+            "chip": first.get("chip_type") or first.get("machine_name"),
+            "cpu_model": first.get("cpu_type"),
+            "physical_memory_text": first.get("physical_memory"),
+            "model_name": first.get("machine_name"),
+            "model_identifier": first.get("machine_model"),
+            "serial_number": first.get("serial_number"),
+        }
+
+    @staticmethod
+    def _query_macos_gpu_status() -> Dict[str, Any]:
+        command = ["system_profiler", "SPDisplaysDataType", "-json"]
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=5)
+        except Exception as exc:
+            return {
+                "available": False,
+                "message": f"system_profiler_unavailable: {exc}",
+            }
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            return {
+                "available": False,
+                "message": f"system_profiler_failed: {stderr}" if stderr else "system_profiler_failed",
+            }
+
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return {
+                "available": False,
+                "message": "system_profiler_json_decode_failed",
+            }
+
+        entries = payload.get("SPDisplaysDataType") or []
+        cards: List[Dict[str, Any]] = []
+
+        if isinstance(entries, list):
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                cards.append(
+                    {
+                        "name": item.get("sppci_model") or item.get("spdisplays_model") or item.get("_name"),
+                        "vendor": item.get("spdisplays_vendor") or item.get("spdisplays_vendor-id"),
+                        "vram": item.get("spdisplays_vram") or item.get("spdisplays_vram_shared"),
+                        "metal": item.get("spdisplays_metal"),
+                    }
+                )
+
+        return {
+            "available": bool(cards),
+            "cards": cards,
+        }
+
+    @staticmethod
+    def _query_nvidia_gpu_status() -> Dict[str, Any]:
+        command = [
+            "nvidia-smi",
+            "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=2)
+        except Exception as exc:
+            return {
+                "available": False,
+                "message": f"nvidia_smi_unavailable: {exc}",
+            }
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            return {
+                "available": False,
+                "message": f"nvidia_smi_failed: {stderr}" if stderr else "nvidia_smi_failed",
+            }
+
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        cards: List[Dict[str, Any]] = []
+
+        for line in lines:
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) != 5:
+                continue
+            name, temp, util, used_mem, total_mem = parts
+            cards.append(
+                {
+                    "name": name,
+                    "temperature_celsius": WeatherTool._safe_int(temp),
+                    "utilization_percent": WeatherTool._safe_int(util),
+                    "memory_used_mb": WeatherTool._safe_int(used_mem),
+                    "memory_total_mb": WeatherTool._safe_int(total_mem),
+                }
+            )
+
+        return {
+            "available": bool(cards),
+            "cards": cards,
+        }
+
+
+class WebSearchTool:
+    @staticmethod
+    def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """具体的在线网页接口分发中心（工具端）。由它中转各大平台的 Web 搜索操作，按 provider 实现相应接口的 HTTP 调用。"""
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+
+        provider = "bocha"    #TODO: 先写死用bocha，后续再开放参数
+        top_k = int(arguments.get("top_k") or 5)
+
+        dispatcher = {
+            "bocha": WebSearchTool._search_bocha,
+            "bing": WebSearchTool._search_bing,
+            "tavily": WebSearchTool._search_tavily,
+            "brave": WebSearchTool._search_brave,
+            "google": WebSearchTool._search_google,
+        }
+        if provider not in dispatcher:
+            raise ValueError(f"unsupported provider: {provider}")
+
+        started_at = time.time()
+        results = dispatcher[provider](query=query, top_k=top_k)
+        return {
+            "ok": True,
+            "provider": provider,
+            "query": query,
+            "result_count": len(results),
+            "latency_ms": int((time.time() - started_at) * 1000),
+            "results": results,
+        }
+
+    @staticmethod
+    def _search_bocha(query: str, top_k: int) -> List[Dict[str, Any]]:
+        api_key = os.getenv("BOCHA_API_KEY", DEFAULT_BOCHA_API_KEY)
+        url = "https://api.bocha.cn/v1/web-search"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {"query": query}
+
+        response = requests.post(url, headers=headers, json=payload, timeout=12)
+        response.raise_for_status()
+        data = response.json()
+
+        raw_items = data.get("data") or data.get("results") or data
+        return WebSearchTool._normalize_search_items(raw_items, top_k=top_k)
+
+    @staticmethod
+    def _search_bing(query: str, top_k: int) -> List[Dict[str, Any]]:
+        api_key = os.getenv("BING_SEARCH_API_KEY", "")
+        if not api_key:
+            raise ValueError("BING_SEARCH_API_KEY is not configured")
+
+        endpoint = os.getenv("BING_SEARCH_ENDPOINT", "https://api.bing.microsoft.com/v7.0/search")
+        headers = {"Ocp-Apim-Subscription-Key": api_key}
+        params = {
+            "q": query,
+            "count": max(1, min(50, top_k)),
+            "mkt": "zh-CN",
+        }
+
+        response = requests.get(endpoint, headers=headers, params=params, timeout=12)
+        response.raise_for_status()
+        data = response.json()
+        raw_items = ((data.get("webPages") or {}).get("value")) or []
+        return WebSearchTool._normalize_search_items(raw_items, top_k=top_k)
+
+    @staticmethod
+    def _search_tavily(query: str, top_k: int) -> List[Dict[str, Any]]:
+        api_key = os.getenv("TAVILY_API_KEY", "")
+        if not api_key:
+            raise ValueError("TAVILY_API_KEY is not configured")
+
+        url = "https://api.tavily.com/search"
+        payload = {
+            "api_key": api_key,
+            "query": query,
+            "max_results": max(1, min(20, top_k)),
+        }
+
+        response = requests.post(url, json=payload, timeout=12)
+        response.raise_for_status()
+        data = response.json()
+        raw_items = data.get("results") or []
+        return WebSearchTool._normalize_search_items(raw_items, top_k=top_k)
+
+    @staticmethod
+    def _search_brave(query: str, top_k: int) -> List[Dict[str, Any]]:
+        api_key = os.getenv("BRAVE_SEARCH_API_KEY", "")
+        if not api_key:
+            raise ValueError("BRAVE_SEARCH_API_KEY is not configured")
+
+        url = "https://api.search.brave.com/res/v1/web/search"
+        headers = {
+            "X-Subscription-Token": api_key,
+            "Accept": "application/json",
+        }
+        params = {
+            "q": query,
+            "count": max(1, min(20, top_k)),
+            "country": "cn",
+        }
+
+        response = requests.get(url, headers=headers, params=params, timeout=12)
+        response.raise_for_status()
+        data = response.json()
+        raw_items = ((data.get("web") or {}).get("results")) or []
+        return WebSearchTool._normalize_search_items(raw_items, top_k=top_k)
+
+    @staticmethod
+    def _search_google(query: str, top_k: int) -> List[Dict[str, Any]]:
+        api_key = os.getenv("GOOGLE_SEARCH_API_KEY", "")
+        cse_id = os.getenv("GOOGLE_CSE_ID", "")
+        if not api_key or not cse_id:
+            raise ValueError("GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID are required")
+
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            "key": api_key,
+            "cx": cse_id,
+            "q": query,
+            "num": max(1, min(10, top_k)),
+        }
+
+        response = requests.get(url, params=params, timeout=12)
+        response.raise_for_status()
+        data = response.json()
+        raw_items = data.get("items") or []
+        return WebSearchTool._normalize_search_items(raw_items, top_k=top_k)
+
+    @staticmethod
+    def _normalize_search_items(raw_items: Any, top_k: int) -> List[Dict[str, Any]]:
+        items: List[Any]
+        if isinstance(raw_items, list):
+            items = raw_items
+        elif isinstance(raw_items, dict):
+            if isinstance(raw_items.get("value"), list):
+                items = raw_items.get("value") or []
+            elif isinstance((raw_items.get("webPages") or {}).get("value"), list):
+                items = (raw_items.get("webPages") or {}).get("value") or []
+            elif isinstance(raw_items.get("results"), list):
+                items = raw_items.get("results") or []
+            elif isinstance(raw_items.get("data"), list):
+                items = raw_items.get("data") or []
+            elif isinstance(raw_items.get("items"), list):
+                items = raw_items.get("items") or []
+            else:
+                items = []
+        else:
+            items = []
+
+        normalized: List[Dict[str, Any]] = []
+        for item in items[: max(1, top_k)]:
+            if not isinstance(item, dict):
+                continue
+            normalized.append(
+                {
+                    "title": item.get("title") or item.get("name") or "",
+                    "url": item.get("url") or item.get("link") or "",
+                    "snippet": item.get("snippet") or item.get("description") or item.get("body") or "",
+                }
+            )
+        return normalized
+
+
+class WeatherTool:
+    @staticmethod
+    def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """主入口气候天气 API（工具端）。用于检索一个位置的天气并在不提供城市参数的前提下自动调用 IP 地址辅助查询天气。"""
+        city = str(arguments.get("city") or "").strip()
+        if not city:
+            city = WeatherTool._detect_city_from_ip()
+
+        if not city:
+            raise ValueError("Unable to determine city")
+
+        lat, lon, resolved_name = WeatherTool._geocode_city(city)
+        weather = WeatherTool._fetch_open_meteo_current_weather(lat=lat, lon=lon)
+
+        return {
+            "ok": True,
+            "city": resolved_name,
+            "location": {
+                "latitude": lat,
+                "longitude": lon,
+            },
+            "weather": weather,
+        }
+
+    @staticmethod
+    def _detect_city_from_ip() -> str:
+        urls = [
+            "http://ip-api.com/json/?lang=zh-CN",
+            "https://ipwho.is/",
+        ]
+        for url in urls:
+            try:
+                response = requests.get(url, timeout=6)
+                response.raise_for_status()
+                payload = response.json()
+                city = str(payload.get("city") or "").strip()
+                if city:
+                    return city
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    def _geocode_city(city: str) -> Tuple[float, float, str]:
+        url = "https://geocoding-api.open-meteo.com/v1/search"
+        params = {
+            "name": city,
+            "count": 1,
+            "language": "zh",
+        }
+
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+
+        results = payload.get("results") or []
+        if not results:
+            raise ValueError(f"city not found: {city}")
+
+        first = results[0]
+        latitude = float(first.get("latitude"))
+        longitude = float(first.get("longitude"))
+        name = str(first.get("name") or city)
+        country = str(first.get("country") or "")
+        resolved_name = f"{name}, {country}" if country else name
+        return latitude, longitude, resolved_name
+
+    @staticmethod
+    def _fetch_open_meteo_current_weather(lat: float, lon: float) -> Dict[str, Any]:
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
+            "timezone": "auto",
+        }
+
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        current = payload.get("current") or {}
+
+        weather_code = WeatherTool._safe_int(current.get("weather_code"))
+        return {
+            "temperature_celsius": current.get("temperature_2m"),
+            "apparent_temperature_celsius": current.get("apparent_temperature"),
+            "humidity_percent": current.get("relative_humidity_2m"),
+            "wind_speed_kmh": current.get("wind_speed_10m"),
+            "weather_code": weather_code,
+            "weather_description": WeatherTool._weather_code_to_text(weather_code),
+            "observed_at": current.get("time"),
+        }
+
+    @staticmethod
+    def _weather_code_to_text(code: Optional[int]) -> str:
+        mapping = {
+            0: "Clear sky",
+            1: "Mainly clear",
+            2: "Partly cloudy",
+            3: "Overcast",
+            45: "Fog",
+            48: "Depositing rime fog",
+            51: "Light drizzle",
+            53: "Moderate drizzle",
+            55: "Dense drizzle",
+            61: "Slight rain",
+            63: "Moderate rain",
+            65: "Heavy rain",
+            71: "Slight snow",
+            73: "Moderate snow",
+            75: "Heavy snow",
+            80: "Rain showers",
+            81: "Rain showers",
+            82: "Violent rain showers",
+            95: "Thunderstorm",
+        }
+        if code is None:
+            return "Unknown"
+        return mapping.get(code, "Unknown")
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+class FileReadingTools:
+    """纯文字文件阅读工具集合（目录浏览 / 分页读取 / 关键字搜索）。"""
+
+    # ---------- 可调常量 ----------
+    MAX_LINES_PER_PAGE = 200          # 每次最多返回行数
+    MAX_CHARS_PER_PAGE = 8000         # 每次最多返回字符数（二次保护）
+    GREP_CONTEXT_LINES = 5            # 搜索结果前后各显示行数
+    ALLOWED_EXTENSIONS: set = {
+        # 纯文本 / 文档
+        ".txt", ".md", ".rst", ".log", ".csv", ".tsv", ".json", ".jsonl",
+        ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
+        # 代码
+        ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
+        ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt",
+        ".scala", ".lua", ".r", ".m", ".sql", ".sh", ".bash", ".zsh",
+        ".bat", ".ps1", ".psm1", ".psd1",
+        # Web
+        ".html", ".htm", ".css", ".scss", ".less", ".vue", ".svelte",
+        # 数据 / 配置
+        ".gitignore", ".dockerignore", ".editorconfig", ".properties",
+        ".gradle", ".cmake", ".makefile",
+    }
+
+    # ------------------------------------------------------------------ #
+    #  1. list_directory — 目录/文件浏览
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def list_directory(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """列出指定目录下的文件和子目录，供大模型"看到"有哪些文件可读。"""
+        dir_path = str(arguments.get("dir_path") or "").strip()
+        if not dir_path:
+            return {"ok": False, "error": "dir_path 参数不能为空"}
+
+        dir_path = os.path.expanduser(dir_path)
+        dir_path = os.path.abspath(dir_path)
+
+        if not os.path.exists(dir_path):
+            return {"ok": False, "error": f"路径不存在: {dir_path}"}
+        if not os.path.isdir(dir_path):
+            return {"ok": False, "error": f"路径不是目录: {dir_path}"}
+
+        try:
+            entries = sorted(os.listdir(dir_path))
+        except PermissionError:
+            return {"ok": False, "error": f"无权限访问目录: {dir_path}"}
+
+        items: List[Dict[str, Any]] = []
+        for name in entries:
+            full = os.path.join(dir_path, name)
+            is_dir = os.path.isdir(full)
+            item: Dict[str, Any] = {
+                "name": name,
+                "type": "directory" if is_dir else "file",
+            }
+            if not is_dir:
+                try:
+                    size = os.path.getsize(full)
+                    item["size_bytes"] = size
+                    # 方便大模型理解文件大小
+                    if size < 1024:
+                        item["size_display"] = f"{size} B"
+                    elif size < 1024 * 1024:
+                        item["size_display"] = f"{size / 1024:.1f} KB"
+                    else:
+                        item["size_display"] = f"{size / (1024 * 1024):.1f} MB"
+                except OSError:
+                    pass
+            items.append(item)
+
+        return {
+            "ok": True,
+            "dir_path": dir_path,
+            "total_entries": len(items),
+            "entries": items,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  2. read_file_content — 分页精确读取（核心）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def read_file_content(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        读取指定文件的内容片段（按行分页）。
+        每次最多返回 MAX_LINES_PER_PAGE 行 或 MAX_CHARS_PER_PAGE 字符，
+        若文件未读完会在返回结果末尾附加下一页提示。
+        """
+        file_path = str(arguments.get("file_path") or "").strip()
+        if not file_path:
+            return {"ok": False, "error": "file_path 参数不能为空"}
+
+        file_path = os.path.expanduser(file_path)
+        file_path = os.path.abspath(file_path)
+
+        if not os.path.exists(file_path):
+            return {"ok": False, "error": f"文件不存在: {file_path}"}
+        if not os.path.isfile(file_path):
+            return {"ok": False, "error": f"路径不是文件: {file_path}"}
+
+        # 扩展名安全检查（无后缀的文件允许尝试读取）
+        _, ext = os.path.splitext(file_path)
+        ext_lower = ext.lower()
+        basename_lower = os.path.basename(file_path).lower()
+        # 允许无扩展名文件（如 Makefile, Dockerfile）和白名单扩展名
+        if ext_lower and ext_lower not in FileReadingTools.ALLOWED_EXTENSIONS:
+            # 额外兜底：检查特殊文件名
+            special_names = {
+                "makefile", "dockerfile", "vagrantfile", "rakefile",
+                "gemfile", "procfile", "cmakelists.txt",
+            }
+            if basename_lower not in special_names:
+                return {
+                    "ok": False,
+                    "error": f"不支持读取该文件类型: {ext}（仅支持纯文本或代码文件）",
+                }
+
+        start_line = max(1, int(arguments.get("start_line") or 1))
+        end_line_requested = int(arguments.get("end_line") or start_line + FileReadingTools.MAX_LINES_PER_PAGE - 1)
+
+        # 强制分页限制
+        if end_line_requested - start_line + 1 > FileReadingTools.MAX_LINES_PER_PAGE:
+            end_line_requested = start_line + FileReadingTools.MAX_LINES_PER_PAGE - 1
+
+        # 尝试自动检测编码
+        encoding = FileReadingTools._detect_encoding(file_path)
+
+        try:
+            with open(file_path, "r", encoding=encoding, errors="replace") as f:
+                all_lines = f.readlines()
+        except Exception as exc:
+            return {"ok": False, "error": f"读取文件失败: {exc}"}
+
+        total_lines = len(all_lines)
+        if total_lines == 0:
+            return {
+                "ok": True,
+                "file_path": file_path,
+                "total_lines": 0,
+                "start_line": 1,
+                "end_line": 0,
+                "content": "(空文件)",
+                "has_more": False,
+            }
+
+        # 修正越界
+        if start_line > total_lines:
+            return {
+                "ok": False,
+                "error": f"start_line={start_line} 超出文件总行数 {total_lines}",
+            }
+        actual_end = min(end_line_requested, total_lines)
+
+        # 按行提取，再做字符数二次截断
+        selected = all_lines[start_line - 1 : actual_end]
+        content = "".join(selected)
+
+        char_truncated = False
+        if len(content) > FileReadingTools.MAX_CHARS_PER_PAGE:
+            content = content[: FileReadingTools.MAX_CHARS_PER_PAGE]
+            char_truncated = True
+
+        has_more = actual_end < total_lines or char_truncated
+
+        result: Dict[str, Any] = {
+            "ok": True,
+            "file_path": file_path,
+            "total_lines": total_lines,
+            "start_line": start_line,
+            "end_line": actual_end,
+            "content": content,
+            "has_more": has_more,
+        }
+
+        if has_more:
+            next_start = actual_end + 1
+            result["hint"] = (
+                f"[文件未读完，当前是 {start_line}-{actual_end} 行，"
+                f"总共有 {total_lines} 行，"
+                f"若需继续阅读请再次调用本工具传入 start_line={next_start}]"
+            )
+
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  3. grep_search_in_file — 文件内关键字搜索
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def grep_search_in_file(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        在指定文件中搜索关键字，返回匹配行及其前后各 GREP_CONTEXT_LINES 行的上下文。
+        适用于大文件中快速定位代码段或关键信息。
+        """
+        file_path = str(arguments.get("file_path") or "").strip()
+        keyword = str(arguments.get("keyword") or "").strip()
+
+        if not file_path:
+            return {"ok": False, "error": "file_path 参数不能为空"}
+        if not keyword:
+            return {"ok": False, "error": "keyword 参数不能为空"}
+
+        file_path = os.path.expanduser(file_path)
+        file_path = os.path.abspath(file_path)
+
+        if not os.path.exists(file_path):
+            return {"ok": False, "error": f"文件不存在: {file_path}"}
+        if not os.path.isfile(file_path):
+            return {"ok": False, "error": f"路径不是文件: {file_path}"}
+
+        encoding = FileReadingTools._detect_encoding(file_path)
+
+        try:
+            with open(file_path, "r", encoding=encoding, errors="replace") as f:
+                all_lines = f.readlines()
+        except Exception as exc:
+            return {"ok": False, "error": f"读取文件失败: {exc}"}
+
+        total_lines = len(all_lines)
+        keyword_lower = keyword.lower()
+        ctx = FileReadingTools.GREP_CONTEXT_LINES
+
+        # 收集所有匹配行号（1-indexed）
+        match_line_numbers: List[int] = []
+        for idx, line in enumerate(all_lines):
+            if keyword_lower in line.lower():
+                match_line_numbers.append(idx + 1)
+
+        if not match_line_numbers:
+            return {
+                "ok": True,
+                "file_path": file_path,
+                "total_lines": total_lines,
+                "keyword": keyword,
+                "match_count": 0,
+                "matches": [],
+                "message": f"未在文件中找到关键字「{keyword}」",
+            }
+
+        # 组装上下文片段，合并相邻区域
+        matches: List[Dict[str, Any]] = []
+        total_chars = 0
+        max_result_chars = FileReadingTools.MAX_CHARS_PER_PAGE
+
+        for line_no in match_line_numbers:
+            context_start = max(1, line_no - ctx)
+            context_end = min(total_lines, line_no + ctx)
+            snippet_lines = all_lines[context_start - 1 : context_end]
+            snippet = "".join(snippet_lines)
+
+            total_chars += len(snippet)
+            matches.append({
+                "match_line": line_no,
+                "context_start": context_start,
+                "context_end": context_end,
+                "snippet": snippet,
+            })
+
+            # 避免返回内容过大
+            if total_chars > max_result_chars:
+                remaining = len(match_line_numbers) - len(matches)
+                if remaining > 0:
+                    matches.append({
+                        "truncated": True,
+                        "message": f"结果过多，已截断。还有 {remaining} 处匹配未展示，"
+                                   f"请缩小搜索范围或使用 read_file_content 工具定位阅读。",
+                    })
+                break
+
+        return {
+            "ok": True,
+            "file_path": file_path,
+            "total_lines": total_lines,
+            "keyword": keyword,
+            "match_count": len(match_line_numbers),
+            "matches": matches,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  4. export_document — 导出内容到文件（防语音刷屏利器）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def export_document(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        将大段文本或代码输出到本地文件。
+        如果未指定绝对路径，默认将文件保存到软件目录下的 tool_data 文件夹。
+        """
+        filename = str(arguments.get("filename") or "").strip()
+        content = str(arguments.get("content") or "")
+        
+        if not filename:
+            return {"ok": False, "error": "filename 参数不能为空"}
+        if not content:
+            return {"ok": False, "error": "content 不能为空"}
+            
+        # 净化文件名，防止非法字符
+        safe_filename = re.sub(r'[\\/*?:"<>|]', "", os.path.basename(filename))
+        if not safe_filename:
+            safe_filename = "agent_output.md"
+            
+        # 如果大模型给出的是绝对路径则直接使用，否则默认放到 tool_data
+        file_path = os.path.expanduser(filename)
+        if not os.path.isabs(file_path):
+            tool_data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tool_data"))
+            file_path = os.path.join(tool_data_path, safe_filename)
+            
+        try:
+            # 确保父目录存在
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+                
+            # 使用系统默认程序自动打开该文件
+            if sys.platform == "win32":
+                os.startfile(file_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", file_path])
+            else:
+                subprocess.Popen(["xdg-open", file_path])
+                
+        except Exception as exc:
+            return {"ok": False, "error": f"写入或打开文件失败: {exc}"}
+            
+        return {
+            "ok": True,
+            "file_path": file_path,
+            "message": f"成功将 {len(content)} 字符写入文件：{file_path}",
+        }
+
+    # ------------------------------------------------------------------ #
+    #  辅助方法
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _detect_encoding(file_path: str) -> str:
+        """简易编码探测：先尝试 UTF-8，失败则回退到 GBK（覆盖中文 Windows 常见场景）。"""
+        for enc in ("utf-8", "gbk", "latin-1"):
+            try:
+                with open(file_path, "r", encoding=enc) as f:
+                    f.read(4096)
+                return enc
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        return "utf-8"
+

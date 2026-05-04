@@ -40,19 +40,21 @@ def completion(**kwargs):
             else:
                 extra_body = dict(extra_body)
 
-            if "reasoning_effort" in kwargs:
-                reasoning_effort = kwargs.pop("reasoning_effort")
-                if reasoning_effort == "xhigh":
-                    # DeepSeek 官方文档推荐用 max 代替 xhigh 强度
-                    reasoning_effort = "max"
-                extra_body["reasoning_effort"] = reasoning_effort
+
             if "thinking" in kwargs:
                 thinking_value = kwargs.pop("thinking", None)
                 if isinstance(thinking_value, dict):
                     extra_body["thinking"] = {
                         "type": "enabled" if thinking_value.get("type") == "enabled" else "disabled"
                     }
-
+            
+            if "reasoning_effort" in kwargs:
+                reasoning_effort = kwargs.pop("reasoning_effort")
+                if "thinking" in kwargs:
+                    if reasoning_effort == "xhigh":
+                        # DeepSeek 官方文档推荐用 max 代替 xhigh 强度
+                        reasoning_effort = "max"
+                    extra_body["reasoning_effort"] = reasoning_effort 
             if extra_body:
                 kwargs["extra_body"] = extra_body
 
@@ -289,7 +291,7 @@ class DSLocalAndVoiceGen:
                     ]
                 """
                 + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
-                + "7. 如果你决定调用工具：你应该同时输出一段“过渡台词”，但这段台词也必须放在 JSON 数组里，格式和上面的输出示例一致。\n"
+                + "7. 如果你决定调用工具：**你应该同时输出一段“过渡台词”**，但这段台词也必须放在 JSON 数组里，**格式和上面的输出示例一致!**。\n"
             )
         return (
                 "[本轮语言模式：中文]\n"
@@ -310,7 +312,7 @@ class DSLocalAndVoiceGen:
                     ]
                 """
                 + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
-                + "7. 如果你决定调用工具：你应该同时输出一段“过渡台词”，但这段台词也必须放在 JSON 数组里，格式和上面的输出示例一致。\n"
+                + "7. 如果你决定调用工具：**你应该同时输出一段“过渡台词”**，但这段台词也必须放在 JSON 数组里，**格式和上面的输出示例一致!**。\n"
         )
 
     def _build_current_reasoning_kwargs_snapshot(self) -> dict[str, object]:
@@ -693,7 +695,7 @@ class DSLocalAndVoiceGen:
                 else:
                     user_input = user_input + '（本句话用白祥语气回答!）'
 
-            user_input = user_input + "\n" + self.restr +"\n" + self._build_every_round_instruction()  # 在用户输入后追加格式要求信息，减少上下文稀释的影响
+            user_input = user_input + "\n"  +"\n" + self._build_every_round_instruction()  # 在用户输入后追加格式要求信息，减少上下文稀释的影响
             # 将原始用户输入（不含指令后缀）存入 Chat
             user_msg = Message(
                 character_name="User",
@@ -715,7 +717,7 @@ class DSLocalAndVoiceGen:
                     to_llm_msg[i]["content"] = to_llm_msg[i]["content"].replace(raw_user_input, user_input)
                     break
 
-            # 添加限制信息到 system prompt
+            # 添加系统提示词到 system prompt
             runtime_system_instruction =self._build_runtime_system_instruction()
             system_idx = -1
             for idx, one in enumerate(to_llm_msg):
