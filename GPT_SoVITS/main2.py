@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
@@ -32,6 +34,106 @@ faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 main_logger = get_logger(__name__)
 
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
+
+
+def get_character_by_name(character_name: str) -> character.CharacterAttributes | None:
+    """按角色名查找角色对象。"""
+    for one_character in characters:
+        if one_character.character_name == character_name:
+            return one_character
+    return None
+
+
+def build_assistant_segment_event(
+    payload: dict[str, object],
+    segment: dict[str, object],
+    audio_path: str,
+) -> dict[str, object]:
+    """构造发给 qtUI 的 assistant 片段事件。"""
+    raw_message_index = segment.get("message_index")
+    message_index = raw_message_index if isinstance(raw_message_index, int) else -1
+    return {
+        "type": "assistant_segment_ready",
+        "chat_id": str(payload.get("chat_id") or ""),
+        "turn_id": str(payload.get("turn_id") or ""),
+        "message_index": message_index,
+        "character_name": str(payload.get("character_name") or ""),
+        "text": str(segment.get("text") or ""),
+        "translation": str(segment.get("translation") or ""),
+        "emotion": str(segment.get("emotion") or "LABEL_0"),
+        "audio_path": audio_path,
+    }
+
+
+def handle_model_response_payload(payload: dict[str, object]) -> None:
+    """处理结构化模型回复事件，逐段合成语音并通知 UI。"""
+    character_name = str(payload.get("character_name") or "")
+    current_character = get_character_by_name(character_name)
+    segments_raw = payload.get("segments")
+    if current_character is None or not isinstance(segments_raw, list):
+        main_logger.warning("收到无效模型回复 payload：%s", payload)
+        is_audio_play_complete.put("yes")
+        return
+
+    audio_language_choice = str(payload.get("audio_language_choice") or dp_chat.audio_language_choice)
+    sakiko_state = bool(payload.get("sakiko_state", dp_chat.sakiko_state))
+    if_generate_audio = bool(payload.get("if_generate_audio", dp_chat.if_generate_audio))
+
+    for index, segment_raw in enumerate(segments_raw):
+        if not isinstance(segment_raw, dict):
+            continue
+        text = str(segment_raw.get("text") or "")
+        translation = str(segment_raw.get("translation") or "")
+        emotion_label = str(segment_raw.get("emotion") or "LABEL_0")
+        force_no_audio = bool(segment_raw.get("force_no_audio", False)) or not if_generate_audio
+
+        if force_no_audio:
+            if index == 0:
+                is_text_generating_queue.get()
+            audio_file_path_queue.put("../reference_audio/silent_audio/silence.wav")
+            dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, "NO_AUDIO"))
+            emotion_queue.put(emotion_label)
+            continue
+
+        QT_message_queue.put(f"正在合成语音...{index + 1}/{len(segments_raw)}")
+        cleaned_text = clean_text_for_audio(text)
+        audio_generate_count = 1
+        generated_audio_path = "../reference_audio/silent_audio/silence.wav"
+
+        while audio_generate_count <= 2:
+            try:
+                generated_audio_path = audio_gen.generate_audio_for_character_sync(
+                    cleaned_text,
+                    current_character,
+                    sakiko_state,
+                    audio_language_choice,
+                )
+                break
+            except Exception:
+                QT_message_queue.put("语音合成出错，重试中")
+                audio_generate_count += 1
+                main_logger.exception("语音合成错误")
+                time.sleep(1)
+
+        if index == 0:
+            is_text_generating_queue.get()
+
+        if audio_generate_count > 2:
+            generated_audio_path = "../reference_audio/silent_audio/silence.wav"
+
+        while not motion_complete_value.value:
+            time.sleep(0.2)
+
+        audio_gen.audio_file_path = generated_audio_path
+        audio_file_path_queue.put(generated_audio_path)
+
+        while not motion_complete_value.value:
+            time.sleep(0.5)
+
+        dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, generated_audio_path))
+        emotion_queue.put(emotion_label)
+
+    is_audio_play_complete.put("yes")
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []
@@ -135,6 +237,14 @@ def main_thread():
         if not text_queue.empty():
 
             this_turn_response=text_queue.get()
+            if isinstance(this_turn_response, dict):
+                response_type = str(this_turn_response.get("type") or "")
+                if response_type == "model_response":
+                    handle_model_response_payload(this_turn_response)
+                    continue
+                if response_type == "exit":
+                    this_turn_response = "bye"
+
             if this_turn_response=='bye':
                 emotion_queue.put('bye')    #退出live2D进程
                 dp2qt_queue.put("（再见）")
@@ -179,7 +289,13 @@ def main_thread():
 
                 while audio_generate_count <= 2:
                     try:
-                        audio_gen.audio_file_path = audio_gen.generate_current_character_audio_sync(cleaned_text, dp_chat)
+                        current_character = dp_chat.get_current_character()
+                        audio_gen.audio_file_path = audio_gen.generate_audio_for_character_sync(
+                            cleaned_text,
+                            current_character,
+                            dp_chat.sakiko_state,
+                            dp_chat.audio_language_choice,
+                        )
                         break
                     except Exception as e:
                         QT_message_queue.put("语音合成出错，重试中")
@@ -243,6 +359,7 @@ if __name__=='__main__':
 
     # 初始化全局 ChatManager（自动处理旧版聊天记录迁移）
     chat_manager = get_chat_manager()
+    chat_manager.ensure_default_single_character_chat(characters)
 
     #模块间传参队列
     text_queue=Queue()
@@ -348,7 +465,8 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          emotion_model=emotion_model)
+                          emotion_model=emotion_model,
+                          change_char_queue=change_char_queue)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。

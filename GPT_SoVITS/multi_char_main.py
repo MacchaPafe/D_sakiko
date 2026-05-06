@@ -1316,17 +1316,15 @@ class ViewerGUI(QWidget):
         """
         当用户拖拽对话列表改变顺序时，更新 ChatManager 中 chat_list 的顺序以保持一致。
         """
-        new_order = []
+        ordered_chat_ids = []
         for i in range(self.chat_list.count()):
             item = self.chat_list.item(i)
             if isinstance(item, QListWidgetItem):
                 chat = item.data(Qt.UserRole)
                 if chat is not None:
-                    new_order.append(chat)
+                    ordered_chat_ids.append(chat.chat_id)
 
-        # 更新 ChatManager 中的 chat_list 顺序
-        other_chats = [chat for chat in self.chat_manager.chat_list if chat.type != ChatType.SMALL_THEATER]
-        self.chat_manager.chat_list = other_chats + new_order
+        self.chat_manager.reorder_chats_by_type(ChatType.SMALL_THEATER, ordered_chat_ids)
         self.chat_manager.save()  # 立即保存新的顺序
 
     def show_chat_list_menu(self, pos) -> None:

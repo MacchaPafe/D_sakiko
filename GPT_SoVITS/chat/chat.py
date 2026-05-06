@@ -1,4 +1,6 @@
 # 此文件定义了程序中每个对话存储的信息
+from __future__ import annotations
+
 import dataclasses
 import enum
 import copy
@@ -6,10 +8,11 @@ import re
 import warnings
 import os
 import shutil
+import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, List, Union, Any, Iterable
+from typing import Dict, Optional, List, Union, Any, Iterable, Sequence
 import json
 
 import jinja2
@@ -338,7 +341,8 @@ class Chat:
                  prompt_generator: Optional[SystemPromptGenerator] = None,
                  type_: ChatType = ChatType.SINGLE_CHARACTER,
                  start_message: str = "", message_list: Optional[List[Message]] = None,
-                 meta: Optional[Union[ChatMeta, dict[str, object]]] = None):
+                 meta: Optional[Union[ChatMeta, dict[str, object]]] = None,
+                 chat_id: Optional[str] = None):
         """
         创建一个新的对话
 
@@ -348,7 +352,9 @@ class Chat:
         :param start_message: 对话的起始消息（理论可省略，但多角色对话模式下强烈建议不要省略，否则可能导致 AI 生成质量下降）
         :param message_list: 对话中的消息列表（可省略，默认为空列表）
         :param meta: 其他需要存储的元信息（可省略，默认为空字典）。对于单角色对话模式，目前没有使用该字段；对于小剧场模式，该字段用于存储剧本的相关信息，如角色的说话风格、互动细节、剧本设定等。
+        :param chat_id: 对话的稳定标识。旧存档缺失时会自动生成。
         """
+        self.chat_id = chat_id or uuid.uuid4().hex
         self.name = name
         self.type = type_
 
@@ -442,6 +448,7 @@ class Chat:
         将此 Chat 实例转换为存储字典
         """
         return {
+            "chat_id": self.chat_id,
             "name": self.name,
             "prompt_config": self.prompt_generator.to_dict(),
             "type": self.type.value,
@@ -475,7 +482,8 @@ class Chat:
             type_ =ChatType(data["type"]),
             message_list=[Message.from_dict(msg_data) for msg_data in data["message_list"]],
             start_message=data.get("start_message", ""),
-            meta=data.get("meta", {})
+            meta=data.get("meta", {}),
+            chat_id=data.get("chat_id")
         )
 
     def get_theater_meta(self) -> TheaterMeta:
@@ -918,6 +926,182 @@ class ChatManager:
         """
         for chat in chats:
             self.add_chat(chat)
+
+    def single_character_chats(self) -> list[Chat]:
+        """
+        获取所有普通单角色对话。
+        """
+        return [chat for chat in self.chat_list if chat.type == ChatType.SINGLE_CHARACTER]
+
+    def theater_chats(self) -> list[Chat]:
+        """
+        获得所有小剧场模式的对话。
+        """
+        return [chat for chat in self.chat_list if chat.type == ChatType.SMALL_THEATER]
+    
+    def chats_by_type(self, chat_type: ChatType) -> list[Chat]:
+        """
+        获取指定类型的所有对话。
+        """
+        return [chat for chat in self.chat_list if chat.type == chat_type]
+
+    def get_chat_by_id(self, chat_id: str) -> Optional[Chat]:
+        """
+        根据稳定标识查找对话。
+        """
+        for chat in self.chat_list:
+            if chat.chat_id == chat_id:
+                return chat
+        return None
+
+    def create_single_character_chat(self, character: CharacterAttributes, name: Optional[str] = None) -> Chat:
+        """
+        创建一条新的普通单角色对话；同一角色允许存在多条对话。
+        """
+        chat_name = name.strip() if isinstance(name, str) and name.strip() else self._default_single_chat_name(character)
+        chat = Chat.new_single_chat(character, name=chat_name)
+        self.chat_list.append(chat)
+        return chat
+
+    def delete_chat(self, chat_id: str) -> Optional[Chat]:
+        """
+        删除指定对话，并返回被删除的对话；若不存在则返回 None。
+        """
+        for index, chat in enumerate(self.chat_list):
+            if chat.chat_id == chat_id:
+                return self.chat_list.pop(index)
+        return None
+
+    def reorder_chats_by_type(self, chat_type: ChatType, ordered_chat_ids: Sequence[str]) -> None:
+        """
+        在指定对话类型内部重排顺序，不改变其他类型对话的相对顺序。
+
+        :param chat_type: 需要重排的对话类型
+        :param ordered_chat_ids: 按照新顺序排列的对话 ID 列表。列表中 ID 的顺序将被应用于对应的对话，但列表中不需要包含所有对话 ID，缺失的对话将被放在末尾；如果列表中包含不存在的 ID，则会被忽略。
+        """
+        chats_of_type = self.chats_by_type(chat_type)
+        chat_by_id = {chat.chat_id: chat for chat in chats_of_type}
+        ordered_chats: list[Chat] = []
+        used_chat_ids: set[str] = set()
+
+        # 重排所有在 ordered_chat_ids 中出现的对话
+        for chat_id in ordered_chat_ids:
+            chat = chat_by_id.get(chat_id)
+            if chat is not None and chat_id not in used_chat_ids:
+                ordered_chats.append(chat)
+                used_chat_ids.add(chat_id)
+
+        # 将所有未在 ordered_chat_ids 中出现的对话追加到末尾，保持它们的相对顺序不变
+        for chat in chats_of_type:
+            if chat.chat_id not in used_chat_ids:
+                ordered_chats.append(chat)
+
+        # 将重排后的对话列表与其他类型的对话合并，形成新的 chat_list
+        ordered_iter = iter(ordered_chats)
+        new_chat_list: list[Chat] = []
+        for chat in self.chat_list:
+            if chat.type == chat_type:
+                new_chat_list.append(next(ordered_iter))
+            else:
+                new_chat_list.append(chat)
+        self.chat_list = new_chat_list
+
+    def ensure_default_single_character_chat(self, characters: Sequence[CharacterAttributes]) -> Chat:
+        """
+        确保至少存在一条普通单角色对话，并返回默认选中的普通对话。
+        """
+        existing_chats = self.single_character_chats()
+        if existing_chats:
+            return existing_chats[0]
+        if not characters:
+            raise ValueError("无法创建默认普通对话：角色列表为空。")
+        return self.create_single_character_chat(characters[0], name=characters[0].character_name)
+
+    def collect_audio_paths_for_chat(self, chat_id: str) -> list[str]:
+        """
+        收集指定对话中引用的真实本地音频路径。
+        """
+        chat = self.get_chat_by_id(chat_id)
+        if chat is None:
+            return []
+        return self._collect_audio_paths(chat)
+
+    def delete_unreferenced_audio_files_for_chat(self, chat_id: str) -> list[str]:
+        """
+        删除指定对话独占引用的历史音频文件，并返回已删除文件列表。
+        """
+        target_chat = self.get_chat_by_id(chat_id)
+        if target_chat is None:
+            return []
+
+        candidate_paths = self._collect_audio_paths(target_chat)
+        referenced_elsewhere = self._collect_audio_paths_from_other_chats(chat_id)
+        deleted_paths: list[str] = []
+        for audio_path in candidate_paths:
+            if audio_path in referenced_elsewhere:
+                continue
+            try:
+                os.remove(audio_path)
+                deleted_paths.append(audio_path)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logger.exception("删除对话音频文件失败：%s", audio_path)
+        return deleted_paths
+
+    def _default_single_chat_name(self, character: CharacterAttributes) -> str:
+        """
+        为普通单角色对话生成默认名称。
+        """
+        base_name = f"{character.character_name}的对话"
+        existing_names = {chat.name for chat in self.single_character_chats()}
+        if base_name not in existing_names:
+            return base_name
+        counter = 2
+        while f"{base_name} {counter}" in existing_names:
+            counter += 1
+        return f"{base_name} {counter}"
+
+    def _collect_audio_paths(self, chat: Chat) -> list[str]:
+        """
+        从单个对话中收集可安全处理的本地音频文件路径。
+        """
+        audio_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for message in chat.message_list:
+            normalized_path = self._normalize_audio_path(message.audio_path)
+            if normalized_path is None or normalized_path in seen_paths:
+                continue
+            audio_paths.append(normalized_path)
+            seen_paths.add(normalized_path)
+        return audio_paths
+
+    def _collect_audio_paths_from_other_chats(self, excluded_chat_id: str) -> set[str]:
+        """
+        收集除指定对话以外其他对话引用的音频文件路径。
+        """
+        audio_paths: set[str] = set()
+        for chat in self.chat_list:
+            if chat.chat_id == excluded_chat_id:
+                continue
+            audio_paths.update(self._collect_audio_paths(chat))
+        return audio_paths
+
+    @staticmethod
+    def _normalize_audio_path(audio_path: str) -> Optional[str]:
+        """
+        标准化消息中的音频路径，并排除占位音频。
+        """
+        # 排除三种占位音频：空、NO_AUDIO 和 silence.wav
+        if not audio_path or audio_path == "NO_AUDIO":
+            return None
+        if "silence.wav" in audio_path:
+            return None
+        clean_path = audio_path.split("[", 1)[0]
+        path = Path(clean_path)
+        if not path.exists() or not path.is_file():
+            return None
+        return str(path.resolve())
 
     @classmethod
     def load_from_main_record(cls, llm_file: Union[str, Path] = "../reference_audio/history_messages_dp.json",

@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from multiprocessing import Process, Queue
 from queue import Empty
-from typing import Protocol, cast, TYPE_CHECKING, Optional
+from typing import cast, TYPE_CHECKING, Optional
 
 from character import CharacterAttributes
 from inference_cli import synthesize
@@ -34,12 +34,6 @@ ref_audio_language_list = [
     "多语种混合",
     "多语种混合(粤语)"
 ]
-
-
-class SupportsSakikoState(Protocol):
-    """定义可提供祥子黑白状态的对象协议。"""
-
-    sakiko_state: bool
 
 
 WorkerCommand = dict[str, object]
@@ -167,8 +161,6 @@ class AudioGenerate:
         }
         # 软件中所有角色的列表
         self.character_list: list[CharacterAttributes] = []
-        # 当前角色是所有角色的第几个
-        self.current_character_index: int = 0
 
         # 和子进程通信的几条管道
         self.to_gptsovits_com_queue: Queue = Queue()
@@ -223,58 +215,18 @@ class AudioGenerate:
         """初始化语音生成模块并启动 worker 进程。"""
         self.character_list = character_list
         self.message_queue = message_queue
-        self._refresh_current_character_state()
         if not self.gptsovits_process.is_alive():
             self.gptsovits_process.start()
         self._ensure_worker_dispatch_thread()
         self.is_change_complete = True
 
-    def _refresh_current_character_state(self) -> None:
-        """
-        根据当前角色信息，刷新角色特有的字段（比如设置祥子的黑白状态，if_sakiko 属性）
-        """
-        self.if_sakiko = self.current_character.character_name == '祥子'
-        self.GPT_model_file = self.current_character.GPT_model_path
-        self.SoVITS_model_file = self.current_character.sovits_model_path
-        self.ref_audio_language = self.current_character.gptsovits_ref_audio_lan or SAKIKO_DEFAULT_LANGUAGE
-        # 祥子不需要参考音频路径，因为她的参考音频是固定的黑白两条，根据状态切换；其他角色则直接使用角色属性里设置的路径
-        if self.if_sakiko:
-            self.ref_audio_file = None
-            self.ref_text_file = None
-        else:
-            self.ref_audio_file = self.current_character.gptsovits_ref_audio
-            self.ref_text_file = self.current_character.gptsovits_ref_audio_text
-
-    @property
-    def current_character(self) -> CharacterAttributes:
-        """返回当前用于语音生成的角色对象。"""
-        return self.character_list[self.current_character_index]
-
-    def change_character(self) -> None:
-        """修改语音生成的角色并刷新当前角色状态。"""
-        if len(self.character_list) > 0:
-            self.current_character_index = (self.current_character_index + 1) % len(self.character_list)
-            self._refresh_current_character_state()
-        else:
-            self.current_character_index = 0
-
-        self.is_change_complete = True
-
-    def change_character_multi_char_ver(self, character_index: int) -> None:
-        """直接切换到指定索引的角色。"""
-        self.current_character_index = character_index
-        self._refresh_current_character_state()
-        self.is_change_complete = True
-
-    def _resolve_reference_materials(self, character: CharacterAttributes | None = None,
+    def _resolve_reference_materials(self, character: CharacterAttributes,
                                      sakiko_state: bool | None = None) -> tuple[str | None, str | None, str | None]:
         """
-        根据当前角色和祥子状态解析参考音频材料。
+        根据显式角色对象和祥子状态解析参考音频材料。
 
         :returns: 三元组：参考音频文件路径、存放参考音频文本的文件路径、参考音频的语言
         """
-        if character is None:
-            character: CharacterAttributes = self.current_character
         if sakiko_state is None:
             sakiko_state: bool = self.sakiko_which_state
 
@@ -308,13 +260,10 @@ class AudioGenerate:
         self,
         text: str,
         audio_lang_choice: str,
-        character: CharacterAttributes | None = None,
+        character: CharacterAttributes,
         sakiko_state: bool | None = None,
     ) -> dict[str, object]:
-        """构造当前角色的一次语音生成 payload。"""
-        if character is None:
-            character: CharacterAttributes = self.current_character
-
+        """构造角色的一次语音生成 payload。"""
         ref_audio_path, ref_text_path, ref_language = self._resolve_reference_materials(
             character=character, sakiko_state=sakiko_state
         )
@@ -334,12 +283,9 @@ class AudioGenerate:
         }
 
     def _build_synthesize_command(self, text: str, audio_lang_choice: str,
-                                  character: CharacterAttributes | None = None,
+                                  character: CharacterAttributes,
                                   sakiko_state: bool | None = None) -> WorkerCommand:
         """构造发送给 worker 的语音生成命令。"""
-        if character is None:
-            character: CharacterAttributes = self.current_character
-
         return {
             "type": "synthesize",
             "character_name": character.character_name,
@@ -556,53 +502,6 @@ class AudioGenerate:
         """等待某条已提交命令完成，并返回结果字典。"""
         return self._wait_for_handle_result(handle)
 
-    def load_current_character_model(self) -> bool:
-        """显式加载当前角色的语音模型。"""
-        if not self.current_character.has_valid_voice_model():
-            return False
-        handle = self.submit_voice_task(
-            {
-                "type": "load_model",
-                "character_name": self.current_character.character_name,
-                "character": self.current_character,
-                "payload": self._build_model_payload(self.current_character),
-            }
-        )
-        return self._wait_for_ack(handle, "load_model")
-
-    def unload_current_character_model(self) -> bool:
-        """显式卸载当前角色的语音模型。"""
-        handle = self.submit_voice_task(
-            {
-                "type": "unload_model",
-                "character_name": self.current_character.character_name,
-            }
-        )
-        return self._wait_for_ack(handle, "unload_model")
-
-    def set_current_character_device(self, device: str) -> bool:
-        """设置当前角色的目标推理设备。"""
-        handle = self.submit_voice_task(
-            {
-                "type": "set_device",
-                "character_name": self.current_character.character_name,
-                "character": self.current_character,
-                "device": device,
-            }
-        )
-        return self._wait_for_ack(handle, "set_device")
-
-    def query_current_character_runtime_status(self) -> WorkerResult:
-        """查询当前角色在 worker 侧的运行时状态。"""
-        handle = self.submit_voice_task(
-            {
-                "type": "get_status",
-                "character_name": self.current_character.character_name,
-                "character": self.current_character,
-            }
-        )
-        return self._wait_for_status(handle)
-
     def _normalize_text_for_generation(
         self,
         text: str,
@@ -683,21 +582,6 @@ class AudioGenerate:
         )
         self.audio_file_path = self._wait_for_synthesize_result(handle)
         return self.audio_file_path
-
-    def generate_current_character_audio_sync(self, text: str, dp_chat: SupportsSakikoState) -> str:
-        """基于当前角色状态快照同步生成语音。"""
-        current_character = self.current_character
-        current_audio_language_choice = self.audio_language_choice
-        current_sakiko_state = self.sakiko_which_state
-        if not self.if_small_theater_mode:
-            current_sakiko_state = dp_chat.sakiko_state
-            self.sakiko_which_state = current_sakiko_state
-        return self.generate_audio_for_character_sync(
-            text,
-            current_character,
-            current_sakiko_state,
-            current_audio_language_choice,
-        )
 
     def clean_text_for_audio(self, text: str) -> str:
         """清洗文本使其适合送入语音合成模块。"""

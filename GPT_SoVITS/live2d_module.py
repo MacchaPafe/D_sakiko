@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import math
 import re
@@ -73,29 +75,46 @@ class Live2DModule:
         self.if_sakiko=False
         self.if_mask=True
         self.character_list=[]
-        self.current_character_num=0
+        self.character_by_name = {}
+        self.current_character_name = ""
+        self.current_model_json = ""
         self.is_display_text=True
         self.new_text=''
 
-    def change_character(self):
-        if len(self.character_list)==1:
-            self.current_character_num = 0
-        else:
-            if self.current_character_num<len(self.character_list)-1:
-                self.current_character_num+=1
-            else:
-                self.current_character_num=0
-        if os.path.exists(self.character_list[self.current_character_num].live2d_json): #防止切换到一个已删除的模型导致崩溃
-            self.PATH_JSON=self.character_list[self.current_character_num].live2d_json
-        else:
-            default_path=f"../live2d_related/{self.character_list[self.current_character_num].character_folder_name}/live2D_model"
-            self.character_list[self.current_character_num].live2d_json=glob.glob(os.path.join(default_path, f"*.model.json"))[0]
-            self.PATH_JSON=self.character_list[self.current_character_num].live2d_json
+    @property
+    def current_character(self):
+        """获取当前 Live2D 显示角色对象。"""
+        character = self.character_by_name.get(self.current_character_name)
+        if character is not None:
+            return character
+        if self.character_list:
+            return self.character_list[0]
+        raise ValueError("Live2D 角色列表为空。")
 
-        if self.character_list[self.current_character_num].character_name=='祥子':
-            self.if_sakiko=True
-        else:
-            self.if_sakiko=False
+    def _default_model_json_for_character(self, character):
+        """获取角色默认模型路径，缺失时尝试从角色目录中恢复。"""
+        if os.path.exists(character.live2d_json):
+            return character.live2d_json
+        default_path = f"../live2d_related/{character.character_folder_name}/live2D_model"
+        candidates = glob.glob(os.path.join(default_path, "*.model.json"))
+        if not candidates:
+            raise FileNotFoundError(f"找不到角色 {character.character_name} 的 Live2D 模型。")
+        character.live2d_json = candidates[0]
+        return character.live2d_json
+
+    def switch_live2d_target(self, character_name: str, model_json: str | None = None) -> str:
+        """切换当前 Live2D 目标角色和模型路径。"""
+        character = self.character_by_name.get(character_name)
+        if character is None:
+            raise ValueError(f"找不到 Live2D 角色：{character_name}")
+        target_model_json = model_json if model_json and os.path.exists(model_json) else None
+        if target_model_json is None:
+            target_model_json = self._default_model_json_for_character(character)
+        self.current_character_name = character.character_name
+        self.current_model_json = target_model_json
+        self.PATH_JSON = target_model_json
+        self.if_sakiko = character.character_name == "祥子"
+        return target_model_json
 
     def live2D_initialize(self,characters):
         # self.PATH_JSON=glob.glob(os.path.join("../live2d_related/anon/live2D_model", f"*.model.json"))
@@ -103,11 +122,9 @@ class Live2DModule:
         #     raise FileNotFoundError("没有找到Live2D模型json文件(.model.json)")
         # self.PATH_JSON=max(self.PATH_JSON,key=os.path.getmtime)
         self.character_list=characters
-        self.PATH_JSON=self.character_list[self.current_character_num].live2d_json
-        if self.character_list[self.current_character_num].character_name=='祥子':
-            self.if_sakiko=True
-        else:
-            self.if_sakiko=False
+        self.character_by_name = {character.character_name: character for character in self.character_list}
+        if self.character_list:
+            self.switch_live2d_target(self.character_list[0].character_name)
 
         back_img_png=glob.glob(os.path.join("../live2d_related",f"*.png"))
         back_img_jpg = glob.glob(os.path.join("../live2d_related", f"*.jpg"))
@@ -130,7 +147,7 @@ class Live2DModule:
         if self.if_sakiko:
             pygame.display.set_caption("小祥思考中")
         else:
-            pygame.display.set_caption(f"{self.character_list[self.current_character_num].character_name}思考中")
+            pygame.display.set_caption(f"{self.current_character.character_name}思考中")
 
     def onStartCallback_emotion_version(self,audio_file_path,*args):
         self.motion_is_over=False
@@ -218,12 +235,19 @@ class Live2DModule:
         if self.if_sakiko:
             model.SetExpression('serious')
 
-        overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.character_list[self.current_character_num].character_name])
+        overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.current_character.character_name])
         glEnable(GL_TEXTURE_2D)
 
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:/D_Sakiko2.0/live2d_related/costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
         texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
-        glBindTexture(GL_TEXTURE_2D, texture)
+
+        def render_background(texture_id: object) -> None:
+            """显式绑定背景纹理并绘制背景图。"""
+            glUseProgram(0)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, texture_id)
+            BackgroundRen.blit(*self.BACKGROUND_POSITION)
+
         mtn_group_mapping={
             "LABEL_0":"happiness",
             "LABEL_1":"sadness",
@@ -266,15 +290,26 @@ class Live2DModule:
                     break
             if latest_text is not None:
                 self.new_text = latest_text
-                overlay.set_text(self.character_list[self.current_character_num].character_name, self.new_text)
+                overlay.set_text(self.current_character.character_name, self.new_text)
 
             if not change_char_queue.empty():
                 x=change_char_queue.get()
-                if x =='start_talking':   #录音时
+                if isinstance(x, str):
+                    if x.lower() == "exit":
+                        self.run = False
+                        break
+                    logger.warning("忽略旧 Live2D 字符串命令：%s", x)
+                    continue
+                if not isinstance(x, dict):
+                    logger.warning("忽略无法识别的 Live2D 命令：%s", x)
+                    continue
+
+                command_type = str(x.get("type") or "")
+                if command_type =='start_talking':   #录音时
                     model.StartRandomMotion("talking_motion", 4, self.onStartCallback)
-                elif x=='stop_talking':   #录音结束
+                elif command_type=='stop_talking':   #录音结束
                     self.onFinishCallback()
-                elif x=='change_l2d_background':
+                elif command_type=='change_l2d_background':
                     glActiveTexture(GL_TEXTURE0)  # 必加，否则白屏
                     glDeleteTextures([texture])
                     self.back_img_index += 1
@@ -282,48 +317,52 @@ class Live2DModule:
                         self.back_img_index = 0
                     texture = BackgroundRen.render(
                         pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
-                    glBindTexture(GL_TEXTURE_2D, texture)
-                    BackgroundRen.blit(*self.BACKGROUND_POSITION)
-                elif x.startswith('change_l2d_model'):
-                    match=re.search(r"change_l2d_model#(.*)", x)
-                    if match:
-                        new_model_path = match.group(1)
-                        #print("正在切换Live2D模型，路径为：", new_model_path)
-                        try:
-                            new_model=live2d.LAppModel()
+                    render_background(texture)
+                elif command_type == "switch_live2d":
+                    character_name = str(x.get("character_name") or "")
+                    model_json = x.get("model_json")
+                    try:
+                        new_model_path = self.switch_live2d_target(
+                            character_name,
+                            str(model_json) if isinstance(model_json, str) and model_json else None,
+                        )
+                        new_model=live2d.LAppModel()
+                        if self.if_sakiko and self.sakiko_state:
+                            new_model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
+                        else:
                             new_model.LoadModelJson(new_model_path, disable_precision=True)
+                        new_model.Resize(win_w_and_h, win_w_and_h)
+                        new_model.SetAutoBlinkEnable(True)
+                        new_model.SetAutoBreathEnable(True)
+                    except Exception:
+                        logger.exception("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。")
+                        try:
+                            fallback_model_path = self.switch_live2d_target(character_name)
+                            new_model=live2d.LAppModel()
+                            new_model.LoadModelJson(fallback_model_path, disable_precision=True)
                             new_model.Resize(win_w_and_h, win_w_and_h)
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
                         except Exception:
-                            logger.exception("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。")
-                            new_model=None
-                        if new_model is not None:
-                            del model
-                            model=new_model
-                            logger.info("Live2D模型切换成功！")
-                            #model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)    #todo:考虑新开一个动作组，换服装时触发
-                            self.character_list[self.current_character_num].live2d_json = new_model_path
+                            logger.exception("Live2D 默认模型回退也失败。")
+                            new_model = None
+                    if new_model is not None:
+                        del model
+                        model=new_model
+                        overlay.set_text(self.current_character.character_name,'...')
+                        if self.if_sakiko and self.sakiko_state:
+                            model.SetExpression('serious')
                         else:
-                            del new_model
+                            model.SetExpression('idle')
+                        model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)
+                        if self.current_character.icon_path is not None:
+                            pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
+                        logger.debug("Live2D模型切换成功：%s", self.PATH_JSON)
+                elif command_type == "exit":
+                    self.run = False
+                    break
                 else:
-                    self.change_character()
-                    overlay.set_text(self.character_list[self.current_character_num].character_name,'...')
-                    if self.if_sakiko and self.sakiko_state:
-                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
-                    else:
-                        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
-                    model.Resize(win_w_and_h, win_w_and_h)
-                    model.SetAutoBlinkEnable(True)
-                    model.SetAutoBreathEnable(True)
-                    if self.if_sakiko and self.sakiko_state:
-                        model.SetExpression('serious')
-                    else:
-                        model.SetExpression('idle')
-
-                    model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)
-                    if self.character_list[self.current_character_num].icon_path is not None:
-                        pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
+                    logger.warning("忽略未知 Live2D 命令：%s", x)
 
             if not is_text_generating_queue.empty() and self.think_motion_is_over:  # 思考时
                 if time.time()-last_saved_time_think>interval_think:
@@ -336,7 +375,7 @@ class Live2DModule:
                 if self.if_sakiko:
                     pygame.display.set_caption("祥子") if not self.sakiko_state else pygame.display.set_caption("Oblivionis")
                 else:
-                    pygame.display.set_caption(f"{self.character_list[self.current_character_num].character_name}")
+                    pygame.display.set_caption(f"{self.current_character.character_name}")
 
             if self.motion_is_over and not pygame.mixer.music.get_busy():  #恢复idle动作
                 if is_text_generating_queue.empty() and time.time()-idle_recover_timer>2.5:
@@ -392,7 +431,7 @@ class Live2DModule:
                     emotion_queue.put("bye")    #为了动作结束前一直进入该if分支
                     glClear(GL_COLOR_BUFFER_BIT)
                     model.Update()
-                    BackgroundRen.blit(*self.BACKGROUND_POSITION)
+                    render_background(texture)
                     model.Draw()
                     glUseProgram(0)
                     pygame.display.flip()
@@ -404,7 +443,7 @@ class Live2DModule:
                 this_turn_audio_file_path=audio_file_queue.get()
                 model.StartRandomMotion(mtn_group_mapping[emotion],3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
                 self.think_motion_is_over=True  #放在这里就对了。。
-                overlay.set_text(self.character_list[self.current_character_num].character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
+                overlay.set_text(self.current_character.character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 
 
             # 清除缓冲区
@@ -413,7 +452,7 @@ class Live2DModule:
             # 更新live2d到缓冲区
             model.Update()
             # 渲染背景图片
-            BackgroundRen.blit(*self.BACKGROUND_POSITION)
+            render_background(texture)
             # 渲染live2d到屏幕
             if self.wavHandler.Update():  # 控制说话时的嘴型
                 model.SetParameterValue("PARAM_MOUTH_OPEN_Y", self.wavHandler.GetRms() * self.lipSyncN)
@@ -495,4 +534,3 @@ if __name__=='__main__':        #单独测试live2d
     char_is_converted_queue=Queue()
     change_char_queue=Queue()
     a.play_live2d(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue)
-
