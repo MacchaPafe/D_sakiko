@@ -39,7 +39,7 @@ def _as_optional_float(value: object) -> float | None:
         return None
     if isinstance(value, bool):
         return None
-    if isinstance(value, int | float):
+    if isinstance(value, (int, float)):
         return float(value)
     return None
 

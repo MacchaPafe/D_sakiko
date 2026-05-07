@@ -36,6 +36,9 @@ def completion(**kwargs):
     将 thinking 参数转换为 extra_body 中的 thinking 字段，格式为 {"type": "enabled"} 或 {"type": "disabled"}，因为 litellm 会忽略 thinking="disabled" 参数。
     """
     if "model" in kwargs and isinstance(kwargs["model"], str):
+        # 只查找 deepseek 系列模型
+        # 这里没有检验 base url，但愿第三方 API 提供 deepseek 的时候遵循和官网一样的 extra_body 协议……
+        # 理论上讲，第三方 API 的行为应该和官方一样才对
         if "deepseek" in kwargs["model"].lower():
             extra_body = kwargs.get("extra_body")
             if not isinstance(extra_body, dict):
@@ -43,19 +46,28 @@ def completion(**kwargs):
             else:
                 extra_body = dict(extra_body)
 
-            if "reasoning_effort" in kwargs:
-                reasoning_effort = kwargs.pop("reasoning_effort")
-                if reasoning_effort == "xhigh":
-                    # DeepSeek 官方文档推荐用 max 代替 xhigh 强度
-                    reasoning_effort = "max"
-                extra_body["reasoning_effort"] = reasoning_effort
+            # 记录是否禁用了推理
+            thinking_disabled = False
             if "thinking" in kwargs:
                 thinking_value = kwargs.pop("thinking", None)
                 if isinstance(thinking_value, dict):
+                    thinking_type = thinking_value.get("type")
+                    thinking_disabled = thinking_type != "enabled"
                     extra_body["thinking"] = {
-                        "type": "enabled" if thinking_value.get("type") == "enabled" else "disabled"
+                        "type": "enabled" if thinking_type == "enabled" else "disabled"
                     }
 
+            if "reasoning_effort" in kwargs:
+                reasoning_effort = kwargs.pop("reasoning_effort")
+                # 如果没有启用推理，不能加入 reasoning_effort 参数
+                if not thinking_disabled:
+                    if reasoning_effort == "xhigh":
+                        # DeepSeek 官方文档推荐用 max 代替 xhigh 强度
+                        reasoning_effort = "max"
+                    extra_body["reasoning_effort"] = reasoning_effort
+            # 保证不启用推理时一定没传入 reasoning_effort 参数
+            if thinking_disabled:
+                extra_body.pop("reasoning_effort", None)
             if extra_body:
                 kwargs["extra_body"] = extra_body
 
@@ -309,7 +321,7 @@ class DSLocalAndVoiceGen:
                     ]
                 """
                 + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
-                + "7. 如果你决定调用工具：你应该同时输出一段“过渡台词”，但这段台词也必须放在 JSON 数组里，格式和上面的输出示例一致。\n"
+                + "7. 如果你决定调用工具：**你应该同时输出一段“过渡台词”**，但这段台词也必须放在 JSON 数组里，**格式和上面的输出示例一致!**。\n"
             )
         return (
                 "[本轮语言模式：中文]\n"
@@ -330,7 +342,7 @@ class DSLocalAndVoiceGen:
                     ]
                 """
                 + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
-                + "7. 如果你决定调用工具：你应该同时输出一段“过渡台词”，但这段台词也必须放在 JSON 数组里，格式和上面的输出示例一致。\n"
+                + "7. 如果你决定调用工具：**你应该同时输出一段“过渡台词”**，但这段台词也必须放在 JSON 数组里，**格式和上面的输出示例一致!**。\n"
         )
 
     def _build_current_reasoning_kwargs_snapshot(self) -> dict[str, object]:
@@ -913,7 +925,7 @@ class DSLocalAndVoiceGen:
                             logger.warning("未能在 LLM 查询中定位本轮用户输入：%s", raw_user_input)
                     break
 
-            # 添加限制信息到 system prompt
+            # 添加系统提示词到 system prompt
             runtime_system_instruction =self._build_runtime_system_instruction()
             system_idx = -1
             for idx, one in enumerate(to_llm_msg):

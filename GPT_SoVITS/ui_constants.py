@@ -3,6 +3,20 @@ from log import get_logger
 
 logger = get_logger(__name__)
 
+tool_name_chi_mapping={
+    "list_directory":"列出目录",
+    "read_file_content":"读取文件",
+    "grep_search_in_file":"搜索文件中的关键词",
+    "export_document":"导出文档",
+    "change_character_live2d":"更换立绘",
+    "web_search":"网页搜索",
+    "get_weather":"查询天气",
+    "get_current_datetime":"获取当前日期和时间",
+    "get_system_hardware_status":"获取系统硬件状态",
+    "start_lottery":"抽签",
+    "fetch_all_live2d_models":"获取角色所有模型",
+}
+
 dialogWindowDefaultCss = f'''
         QWidget {{
             background-color: "#F0F4F9";

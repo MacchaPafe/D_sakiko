@@ -5,7 +5,7 @@ import re
 import time
 import json
 import random
-from typing import Callable
+from typing import Callable, Optional
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -13,7 +13,7 @@ import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
     QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor
 
 import sounddevice as sd
@@ -22,7 +22,7 @@ import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
-from ui_constants import dialogWindowDefaultCss,char_info_json
+from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping
 from log import get_logger
 from qconfig import d_sakiko_config
 from character import CharacterAttributes
@@ -112,6 +112,29 @@ QListView#singleChatCharacterComboView::item:selected {
     border: none;
 }
 """
+
+class FileInputFilter(QObject):
+    """拦截拖拽事件，使得文本框能直接提取被拖入文件的绝对路径"""
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.DragEnter:
+            if event.mimeData().hasUrls():
+                event.accept()
+                return True
+        elif event.type() == QEvent.Drop:
+            if event.mimeData().hasUrls():
+                urls = event.mimeData().urls()
+                paths = [os.path.normpath(url.toLocalFile()) for url in urls if url.isLocalFile()]
+                if paths:
+                    paths_str = " ".join(f'"{p}"' for p in paths)
+                    current_text = obj.text()
+                    if current_text:
+                        obj.setText(current_text + " " + paths_str)
+                    else:
+                        obj.setText(paths_str)
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
+
 
 class ThemeManager: #主题颜色设定
     @staticmethod
@@ -500,7 +523,7 @@ class ToolCallInfoDialog(QDialog):
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.resize(*win_size)
 
-        tool_name = str(record.get("tool_name") or "unknown")
+        tool_name = str(tool_name_chi_mapping.get(record.get("tool_name"),record.get("tool_name")) or "unknown")
         status = str(record.get("status") or "running")
         duration = record.get("duration_sec")
         result_content = str(record.get("result_content") or "工具运行中...")
@@ -583,6 +606,7 @@ class LotteryDialog(QDialog):
             self.setStyleSheet(ThemeManager.generate_stylesheet(parent._current_theme_color))
         else:
             self.setStyleSheet(dialogWindowDefaultCss)
+        self.parent=parent
 
     def _render_options(self, highlight_index: int):
         lines: list[str] = []
@@ -592,13 +616,13 @@ class LotteryDialog(QDialog):
             safe_text = one.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             if idx == highlight_index:
                 lines.append(
-                    f"<div style='padding: {pad_y-1}px {pad_x-1}px; margin: 4px 0; background-color: #ffd666; color: #000; border-radius: 8px; font-weight:bold; text-align: center; border: 2px solid #ffa940;'>"
+                    f"<div style='padding: {pad_y-1}px {pad_x-1}px; margin: 8px 0; background-color: {self.parent._current_theme_color}; color: #FFF; border-radius: 8px; font-weight:bold; text-align: center; border: 2px solid #ffa940;'>"
                     + f"—>{safe_text}"
                     + "</div>"
                 )
             else:
                 lines.append(
-                    f"<div style='padding: {pad_y}px {pad_x}px; margin: 4px 0; background-color: rgba(0, 0, 0, 0.05); color: inherit; border-radius: 8px; text-align: center;'>"
+                    f"<div style='padding: {pad_y}px {pad_x}px; margin: 8px 0; background-color: rgba(0, 0, 0, 0.05); color: inherit; border-radius: 8px; text-align: center;'>"
                     + f"{safe_text}"
                     + "</div>"
                 )
@@ -1253,6 +1277,11 @@ class ChatGUI(QWidget):
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
 
+        # 添加拖拽文件支持（通过事件过滤器实现，无需继承重写）
+        self.user_input.setAcceptDrops(True)
+        self.file_input_filter = FileInputFilter(self.user_input)
+        self.user_input.installEventFilter(self.file_input_filter)
+
         self.voice_button = QPushButton()
         self.voice_button.setObjectName("voiceInputButton")
         mic_icon=QIcon("./icons/microphone.png")
@@ -1850,12 +1879,20 @@ class ChatGUI(QWidget):
 
         enabled_label = self.reasoning_enabled_labels[reasoning_meta.enabled]
         effort_label = self.reasoning_effort_labels[reasoning_meta.effort]
-        self.reasoning_menu_button.setText(f"{enabled_label} {effort_label}")
+
+        if reasoning_meta.enabled == "off":
+            self.reasoning_menu_button.setText(f"{enabled_label}")
+        else:
+            self.reasoning_menu_button.setText(f"{enabled_label} {effort_label}")
 
         menu = self.reasoning_menu_button.menu()
         if menu is None:
             return
+
         for action in menu.actions():
+            if action.text() == "推理强度":
+                action.setEnabled(reasoning_meta.enabled != "off")  #当推理关闭时，强度设置不可用
+
             sub_menu = action.menu()
             if sub_menu is None:
                 continue
@@ -2420,8 +2457,13 @@ class ChatGUI(QWidget):
         WarningWindow("确定要删除这条信息吗",None,confirm_del).exec_()
 
     def regenerate_audio(self, msg_index):
+        if hasattr(self, 'regen_thread') and self.regen_thread is not None and self.regen_thread.isRunning():
+            WarningWindow("当前正在重新生成音频中，请稍后再试").exec_()
+            return
         if not (0 <= msg_index < len(self.current_chat.message_list)):
+            scroll_position = self.chat_display.verticalScrollBar().value()
             self._refresh_chat_display()    #如果索引无效，强制刷新显示以纠正可能的错误状态
+            self.chat_display.verticalScrollBar().setValue(scroll_position)
             return
         current_character= self.current_character
         if not (current_character.GPT_model_path or current_character.gptsovits_ref_audio or current_character.sovits_model_path):
@@ -2438,7 +2480,7 @@ class ChatGUI(QWidget):
             return
         # UI反聩
         self.setWindowTitle("正在重新生成音频...")
-        self.chat_display.setEnabled(False) # 暂时禁用右键等交互
+        #self.chat_display.setEnabled(False) # 暂时禁用右键等交互
 
         # 启动后台合成线程
         self.regen_thread = AudioRegenThread(
@@ -2454,12 +2496,16 @@ class ChatGUI(QWidget):
 
     def handle_regenerate_audio_finished(self, new_audio_path, msg_index):
         self.setWindowTitle("数字小祥")
-        self.chat_display.setEnabled(True)
+        #self.chat_display.setEnabled(True)
+        self.regen_thread=None
 
         if 0 <= msg_index < len(self.current_chat.message_list):
             msg = self.current_chat.message_list[msg_index]
             msg.audio_path = os.path.abspath(new_audio_path).replace('\\', '/')
+            #重新生成后保留滚动条位置
+            scroll_position = self.chat_display.verticalScrollBar().value()
             self._refresh_chat_display()
+            self.chat_display.verticalScrollBar().setValue(scroll_position)
             logger.info("重新生成音频成功，新路径为：%s", msg.audio_path)
             self.play_history_audio(QUrl(f"{msg.audio_path}[{msg.emotion.as_label()}]?msg={msg_index}"))
 
@@ -2650,7 +2696,7 @@ class ChatGUI(QWidget):
         self._execute_input_command(command_match.spec, source, command_match.payload)
         return True
 
-    def _execute_input_command(self, spec: CommandSpec, source: str, payload: str | None = None) -> None:
+    def _execute_input_command(self, spec: CommandSpec, source: str, payload: Optional[str] = None) -> None:
         """统一执行输入框命令。"""
         command_payload = payload if payload is not None else spec.command
 
