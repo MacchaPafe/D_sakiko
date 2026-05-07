@@ -101,6 +101,12 @@ class DSakikoConfig(QConfig):
     # 默认的 live2d 背景图片选择
     background_image_path = ConfigItem("character_setting", "background_image_path", "")
 
+    # 普通聊天侧栏的展示模式：flat 为平铺模式，folded 为按角色折叠模式
+    chat_sidebar_mode = OptionsConfigItem("ui_state", "chat_sidebar_mode", "flat",
+                                          validator=OptionsValidator(["flat", "folded"]))
+    # 普通聊天侧栏中处于展开状态的角色名称列表
+    chat_sidebar_expanded_characters = ConfigItem("ui_state", "chat_sidebar_expanded_characters", [])
+
     # 颜色主题默认信息
     theme_color = ConfigItem("theme_color_setting", "theme_color", [
         {

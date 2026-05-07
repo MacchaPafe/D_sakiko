@@ -12,8 +12,8 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
-    QListWidget, QListWidgetItem, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl
+    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor
 
 import sounddevice as sd
@@ -24,9 +24,11 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json
 from log import get_logger
+from qconfig import d_sakiko_config
 from character import CharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
 from emotion_enum import EmotionEnum
+from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
 from input_commands import (
     CommandSpec,
     InputCommandMatcher,
@@ -1465,55 +1467,37 @@ class ChatGUI(QWidget):
         action_layout = QHBoxLayout()
         self.btn_new_chat = QPushButton("新建")
         self.btn_delete_chat = QPushButton("删除")
+        self.btn_chat_sidebar_mode = QPushButton()
+        self.btn_chat_sidebar_mode.clicked.connect(self.toggle_chat_sidebar_mode)  # noqa
         self.btn_new_chat.clicked.connect(self.create_new_chat)
         self.btn_delete_chat.clicked.connect(self.delete_current_chat)
         action_layout.addWidget(self.btn_new_chat)
         action_layout.addWidget(self.btn_delete_chat)
+        action_layout.addWidget(self.btn_chat_sidebar_mode)
 
-        self.chat_list_widget = DragDropListWidget()
-        self.chat_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.chat_list_widget.customContextMenuRequested.connect(self.show_chat_list_menu)
-        self.chat_list_widget.itemClicked.connect(self.on_chat_item_clicked)
-        self.chat_list_widget.order_changed.connect(self.on_chat_list_order_changed)
+        self.chat_sidebar = ChatSidebarView()
+        self.chat_sidebar.set_mode(self._chat_sidebar_mode())
+        self.chat_sidebar.set_expanded_character_names(self._chat_sidebar_expanded_characters())
+        self.chat_sidebar.set_character_theme_colors(self._chat_sidebar_character_theme_colors())
+        self.chat_sidebar.chat_selected.connect(self.on_chat_item_clicked)  # noqa
+        self.chat_sidebar.chat_menu_requested.connect(self.show_chat_list_menu)  # noqa
+        self.chat_sidebar.chat_order_changed.connect(self.on_chat_list_order_changed)  # noqa
+        self.chat_sidebar.expanded_characters_changed.connect(self.on_chat_sidebar_expanded_changed)  # noqa
+        self._refresh_chat_sidebar_mode_button()
 
         layout.addLayout(action_layout)
-        layout.addWidget(self.chat_list_widget, 1)
+        layout.addWidget(self.chat_sidebar, 1)
         return panel
-
-    def _preview_text(self, chat: Chat) -> str:
-        """
-        获取侧栏中显示的最后消息预览。
-        """
-        character_name = chat.get_character_name() or "未知角色"
-        if not chat.message_list:
-            return f"{character_name} · 暂无消息"
-        last_message = chat.message_list[-1]
-        text = (last_message.translation or last_message.text).strip().replace("\n", " ")
-        if len(text) > 22:
-            text = text[:22] + "..."
-        return f"{character_name} · {text}"
 
     def refresh_chat_list(self) -> None:
         """
         刷新右侧普通对话列表并保持当前对话高亮。
         """
-        if not hasattr(self, "chat_list_widget"):
+        if not hasattr(self, "chat_sidebar"):
             return
         chats = self.single_character_chats()
-        self.chat_list_widget.blockSignals(True)
-        self.chat_list_widget.clear()
-        active_row = 0
-        for row, chat in enumerate(chats):
-            title = chat.name.strip() or "未命名对话"
-            item = QListWidgetItem(f"{title}\n{self._preview_text(chat)}")
-            item.setData(Qt.UserRole, chat.chat_id)
-            item.setSizeHint(QSize(220, 54))
-            self.chat_list_widget.addItem(item)
-            if chat.chat_id == self.current_chat_id:
-                active_row = row
-        if chats:
-            self.chat_list_widget.setCurrentRow(active_row)
-        self.chat_list_widget.blockSignals(False)
+        self.chat_sidebar.set_character_theme_colors(self._chat_sidebar_character_theme_colors())
+        self.chat_sidebar.set_chats(chats, self.current_chat_id)
 
     def toggle_chat_panel(self) -> None:
         """
@@ -1521,52 +1505,45 @@ class ChatGUI(QWidget):
         """
         self.chat_manage_panel.setVisible(not self.chat_manage_panel.isVisible())
 
-    def on_chat_item_clicked(self, item: QListWidgetItem) -> None:
+    def toggle_chat_sidebar_mode(self) -> None:
+        """
+        在平铺和折叠两种模式间切换聊天侧栏。
+        """
+        current_mode = self._chat_sidebar_mode()
+        new_mode = "folded" if current_mode == "flat" else "flat"
+        self.set_chat_sidebar_mode(new_mode)
+
+    def on_chat_item_clicked(self, chat_id: str) -> None:
         """
         点击侧栏对话时切换当前对话。
         """
-        chat_id = item.data(Qt.UserRole)
-        if isinstance(chat_id, str):
-            self.switch_chat_by_id(chat_id)
+        self.switch_chat_by_id(chat_id)
 
-    def on_chat_list_order_changed(self) -> None:
+    def on_chat_list_order_changed(self, ordered_chat_ids: list[str]) -> None:
         """
         拖拽侧栏后保存普通对话类型内顺序。
         """
-        ordered_chat_ids: list[str] = []
-        for index in range(self.chat_list_widget.count()):
-            item = self.chat_list_widget.item(index)
-            chat_id = item.data(Qt.UserRole)
-            if isinstance(chat_id, str):
-                ordered_chat_ids.append(chat_id)
         self.chat_manager.reorder_chats_by_type(ChatType.SINGLE_CHARACTER, ordered_chat_ids)
         self.chat_manager.save()
 
-    def show_chat_list_menu(self, pos) -> None:
+    def show_chat_list_menu(self, chat_id: str, global_pos: QPoint) -> None:
         """
         显示对话项右键菜单。
         """
-        item = self.chat_list_widget.itemAt(pos)
-        if item is None:
-            return
         menu = QMenu(self)
         rename_action = menu.addAction("重命名")
         delete_action = menu.addAction("删除")
-        selected_action = menu.exec_(self.chat_list_widget.mapToGlobal(pos))
+        selected_action = menu.exec_(global_pos)
         if selected_action == rename_action:
-            self.rename_chat(item)
+            self.rename_chat(chat_id)
         elif selected_action == delete_action:
-            self.chat_list_widget.setCurrentItem(item)
-            chat_id = item.data(Qt.UserRole)
-            if isinstance(chat_id, str):
-                self.delete_chat_by_id(chat_id)
+            self.delete_chat_by_id(chat_id)
 
-    def rename_chat(self, item: QListWidgetItem) -> None:
+    def rename_chat(self, chat_id: str) -> None:
         """
         重命名侧栏中的普通对话。
         """
-        chat_id = item.data(Qt.UserRole)
-        chat = self.chat_manager.get_chat_by_id(chat_id) if isinstance(chat_id, str) else None
+        chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
             return
         dialog = QInputDialog(self)
@@ -1584,6 +1561,65 @@ class ChatGUI(QWidget):
         chat.name = new_name
         self.chat_manager.save()
         self.refresh_chat_list()
+
+    def _chat_sidebar_mode(self) -> ChatSidebarMode:
+        """
+        从配置中读取聊天侧栏展示模式。
+        """
+        mode = str(d_sakiko_config.chat_sidebar_mode.value)
+        if mode == "folded":
+            return "folded"
+        return "flat"
+
+    def _chat_sidebar_expanded_characters(self) -> list[str]:
+        """
+        从配置中读取聊天侧栏展开角色列表。
+        """
+        configured_value = d_sakiko_config.chat_sidebar_expanded_characters.value
+        if not isinstance(configured_value, list):
+            return []
+        return [one for one in configured_value if isinstance(one, str)]
+
+    def _chat_sidebar_character_theme_colors(self) -> dict[str, str]:
+        """
+        获取侧栏中每个角色的主题色映射。
+        """
+        character_theme_colors: dict[str, str] = {}
+        for one_character in self.character_list:
+            if one_character.qt_css is None:
+                continue
+            character_theme_colors[one_character.character_name] = ThemeManager.get_QT_style_theme_color(one_character.qt_css)
+        return character_theme_colors
+
+    def set_chat_sidebar_mode(self, mode: ChatSidebarMode) -> None:
+        """
+        设置并保存聊天侧栏展示模式。
+        """
+        if not hasattr(self, "chat_sidebar"):
+            return
+        self.chat_sidebar.set_mode(mode)
+        d_sakiko_config.chat_sidebar_mode.value = mode
+        d_sakiko_config.save()
+        self._refresh_chat_sidebar_mode_button()
+        self.refresh_chat_list()
+
+    def _refresh_chat_sidebar_mode_button(self) -> None:
+        """
+        根据当前模式刷新聊天侧栏模式按钮。
+        """
+        if not hasattr(self, "btn_chat_sidebar_mode"):
+            return
+        mode = self._chat_sidebar_mode()
+        # 这边我感觉显示“点击后侧边栏切换到什么状态”比“目前侧边栏是什么状态“更好一些
+        # 所以这里的显示文字是反过来的
+        self.btn_chat_sidebar_mode.setText("折叠" if mode == "flat" else "展开")
+
+    def on_chat_sidebar_expanded_changed(self, character_names: list[str]) -> None:
+        """
+        保存聊天侧栏折叠模式下展开的角色。
+        """
+        d_sakiko_config.chat_sidebar_expanded_characters.value = character_names
+        d_sakiko_config.save()
 
     def create_new_chat(self) -> None:
         """
@@ -1622,7 +1658,7 @@ class ChatGUI(QWidget):
             -1,
         )
         box = QMessageBox(QMessageBox.Question, "删除确认", f"确定删除对话“{chat.name}”吗？", QMessageBox.No | QMessageBox.Yes, self)
-        delete_audio_checkbox = QCheckBox("同时删除此对话引用的历史音频文件")
+        delete_audio_checkbox = QCheckBox("同时删除此对话中生成的角色语音")
         delete_audio_checkbox.setChecked(True)
         box.setCheckBox(delete_audio_checkbox)
         box.setEscapeButton(QMessageBox.No)
