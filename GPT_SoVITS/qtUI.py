@@ -5,6 +5,7 @@ import re
 import time
 import json
 import random
+import uuid
 from typing import Callable, Optional
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
@@ -1236,6 +1237,12 @@ class ChatGUI(QWidget):
         # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
         self.chat_manager: ChatManager = self.dp_chat.chat_manager
         self.current_chat_id = self.dp_chat.current_chat_id
+        # 当前显示的对话的 id（保存于对话中）
+        self.active_chat_id: str | None = None
+        # 当前轮次对话的 id（在用户发送一条消息时生成，作为内部状态，不保存）
+        self.active_turn_id: str | None = None
+        # 一轮对话的几个阶段，包含 'llm', 'tts', 'rendering' 三个阶段
+        # 即 AI 生成对话，角色语音合成、界面慢速渲染三个部分。
         self.tool_call_records_cache: dict[str, dict] = {}
         self.reasoning_enabled_labels: dict[str, str] = {
             "auto": "自动",
@@ -1654,7 +1661,7 @@ class ChatGUI(QWidget):
         """
         创建一条新的普通单角色对话并立即切换过去。
         """
-        if not self.is_display(self.messages_box.toPlainText()):
+        if self.is_chat_busy():
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再新建对话。")
             return
         dialog = NewSingleChatDialog(self.character_list, self)
@@ -1675,7 +1682,7 @@ class ChatGUI(QWidget):
         """
         删除指定普通对话。
         """
-        if not self.is_display(self.messages_box.toPlainText()):
+        if self.is_chat_busy():
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再删除对话。")
             return
         chat = self.chat_manager.get_chat_by_id(chat_id)
@@ -1728,7 +1735,7 @@ class ChatGUI(QWidget):
         """
         if chat_id == self.current_chat_id:
             return
-        if not self.is_display(self.messages_box.toPlainText()):
+        if self.is_chat_busy():
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再切换对话。")
             self.refresh_chat_list()
             return
@@ -2602,12 +2609,27 @@ class ChatGUI(QWidget):
             else:
                 self._handle_tool_call_update_event(payload)
             return
+        # 事件：切换对话
         if event_type == "chat_switched":
+            return
+        # 事件：设置当前的处理阶段
+        if event_type == "assistant_turn_phase":
+            if self._is_active_turn_payload(payload):
+                self.active_turn_phase = str(payload.get("phase") or self.active_turn_phase or "")
+            return
+        # 事件：完成一轮对话的生成
+        if event_type == "assistant_turn_complete":
+            if self._is_active_turn_payload(payload):
+                self._clear_active_turn()
+                self.refresh_chat_list()
             return
         if event_type != "assistant_segment_ready":
             return
 
         chat_id = str(payload.get("chat_id") or "")
+        # 仅处理当前正在进行对话的事件，且必须是当前界面的对话
+        if self.active_turn_id is not None and not self._is_active_turn_payload(payload):
+            return
         chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
             return
@@ -2621,6 +2643,7 @@ class ChatGUI(QWidget):
             self.refresh_chat_list()
             return
 
+        self.active_turn_phase = "rendering"
         self.full_response = str(payload.get("text") or "") + "\n"
         self.translation = str(payload.get("translation") or "")
         self.current_index = 0
@@ -2638,6 +2661,34 @@ class ChatGUI(QWidget):
             self.chat_display.append(f'<a href="no_audio:{msg_param}" style="text-decoration: none; color: {text_color};">{character_name}：</a>')
         self.timer.start(30)
         self.refresh_chat_list()
+
+    def _start_active_turn(self, chat_id: str, turn_id: str, phase: str = "llm") -> None:
+        """
+        记录当前正在处理的一轮普通对话。
+        """
+        self.active_chat_id = chat_id
+        self.active_turn_id = turn_id
+        self.active_turn_phase = phase
+
+    def _clear_active_turn(self) -> None:
+        """
+        清除当前正在处理的对话轮次。
+        """
+        self.active_chat_id = None
+        self.active_turn_id = None
+        self.active_turn_phase = None
+
+    def _is_active_turn_payload(self, payload: dict[str, object]) -> bool:
+        """
+        判断结构化事件是否属于当前正在处理的一轮对话。
+        判断标准为：当前存在正在进行的对话和轮次，且事件的对话 id、轮次 id 和当前均相同。
+        """
+        return (
+            self.active_chat_id is not None
+            and self.active_turn_id is not None
+            and str(payload.get("chat_id") or "") == self.active_chat_id
+            and str(payload.get("turn_id") or "") == self.active_turn_id
+        )
 
     def stream_print(self):     #模拟流式打印
         cursor = self.chat_display.textCursor()
@@ -2661,11 +2712,23 @@ class ChatGUI(QWidget):
         text4=re.findall('思考中',text,flags=re.DOTALL)
         return not (text1 or text2 or text3 or text4)
 
+    def is_response_active(self) -> bool:
+        """
+        是否存在一轮仍在 LLM、语音合成或 UI 渲染阶段的对话。
+        """
+        return self.active_turn_id is not None
+
+    def is_chat_busy(self) -> bool:
+        """
+        当前界面是否仍有对话轮次或流式渲染未结束。
+        """
+        return self.is_response_active() or self.timer.isActive()
+
     def is_chat_idle(self) -> bool:
         """
         当前界面是否允许修改当前对话对象。
         """
-        return self.is_display(self.messages_box.toPlainText()) and not self.timer.isActive()
+        return not self.is_chat_busy()
 
     def is_display2(self, text: str) -> bool:
         """判断一段用户输入是否应该显示在聊天框中。"""
@@ -2753,7 +2816,7 @@ class ChatGUI(QWidget):
 
     def _send_internal_command_payload(self, payload: str | dict[str, object], force: bool = False) -> None:
         """向后端队列发送内部命令 payload。"""
-        if force or (self.is_display(self.messages_box.toPlainText()) and self.qt2dp_queue.empty()):
+        if force or (not self.is_chat_busy() and self.qt2dp_queue.empty()):
             if isinstance(payload, str):
                 command_map = {
                     "l": {"type": "toggle_language", "chat_id": self.current_chat_id},
@@ -2810,14 +2873,21 @@ class ChatGUI(QWidget):
         user_this_turn_input=user_this_turn_input.strip(' ')
         if self._handle_command_before_send(user_this_turn_input):
             return
+        # 不可以在 AI 回复时补充内容
+        if self.is_chat_busy():
+            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再发送消息。")
+            return
         if user_this_turn_input=='':
             user_this_turn_input="（什么也没说）"
         current_text = self.messages_box.toPlainText()
-        if not self.is_display(current_text):
-            return
+        # 生成一条新的 turn_id，交给 dp_local2 标记当前对话
+        turn_id = uuid.uuid4().hex
+        # 开始一轮对话。开始后，不能切换、删除对话或清空对话内容。
+        self._start_active_turn(self.current_chat_id, turn_id, "llm")
         self.qt2dp_queue.put({
             "type": "send_message",
             "chat_id": self.current_chat_id,
+            "turn_id": turn_id,
             "text": user_this_turn_input,
         })
         self.user_input.clear()

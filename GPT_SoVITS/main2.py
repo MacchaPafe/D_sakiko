@@ -65,75 +65,109 @@ def build_assistant_segment_event(
     }
 
 
+def build_assistant_turn_phase_event(payload: dict[str, object], phase: str) -> dict[str, object]:
+    """构造发给 qtUI 的对话轮次阶段事件。"""
+    return {
+        "type": "assistant_turn_phase",
+        "chat_id": str(payload.get("chat_id") or ""),
+        "turn_id": str(payload.get("turn_id") or ""),
+        "phase": phase,
+    }
+
+
+def build_assistant_turn_complete_event(payload: dict[str, object], status: str = "ok") -> dict[str, object]:
+    """构造发给 qtUI 的对话轮次完成事件。"""
+    return {
+        "type": "assistant_turn_complete",
+        "chat_id": str(payload.get("chat_id") or ""),
+        "turn_id": str(payload.get("turn_id") or ""),
+        "status": status,
+    }
+
+
 def handle_model_response_payload(payload: dict[str, object]) -> None:
     """处理结构化模型回复事件，逐段合成语音并通知 UI。"""
     character_name = str(payload.get("character_name") or "")
     current_character = get_character_by_name(character_name)
     segments_raw = payload.get("segments")
+    # 当前的模型回复是否是最终回复（完成整段对话）
+    turn_complete = bool(payload.get("turn_complete", True))
     if current_character is None or not isinstance(segments_raw, list):
         main_logger.warning("收到无效模型回复 payload：%s", payload)
         is_audio_play_complete.put("yes")
+        if turn_complete:
+            dp2qt_queue.put(build_assistant_turn_complete_event(payload, "error"))
         return
 
     audio_language_choice = str(payload.get("audio_language_choice") or dp_chat.audio_language_choice)
     sakiko_state = bool(payload.get("sakiko_state", dp_chat.sakiko_state))
     if_generate_audio = bool(payload.get("if_generate_audio", dp_chat.if_generate_audio))
+    turn_status = "ok"
 
-    for index, segment_raw in enumerate(segments_raw):
-        if not isinstance(segment_raw, dict):
-            continue
-        text = str(segment_raw.get("text") or "")
-        translation = str(segment_raw.get("translation") or "")
-        emotion_label = str(segment_raw.get("emotion") or "LABEL_0")
-        force_no_audio = bool(segment_raw.get("force_no_audio", False)) or not if_generate_audio
+    try:
+        # 转阶段：要求 qtUI 更新当前阶段为语音生成
+        dp2qt_queue.put(build_assistant_turn_phase_event(payload, "tts"))
+        for index, segment_raw in enumerate(segments_raw):
+            if not isinstance(segment_raw, dict):
+                continue
+            text = str(segment_raw.get("text") or "")
+            translation = str(segment_raw.get("translation") or "")
+            emotion_label = str(segment_raw.get("emotion") or "LABEL_0")
+            force_no_audio = bool(segment_raw.get("force_no_audio", False)) or not if_generate_audio
 
-        if force_no_audio:
-            if index == 0:
-                is_text_generating_queue.get()
-            audio_file_path_queue.put("../reference_audio/silent_audio/silence.wav")
-            dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, "NO_AUDIO"))
-            emotion_queue.put(emotion_label)
-            continue
+            if force_no_audio:
+                if index == 0:
+                    is_text_generating_queue.get()
+                audio_file_path_queue.put("../reference_audio/silent_audio/silence.wav")
+                dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, "NO_AUDIO"))
+                emotion_queue.put(emotion_label)
+                continue
 
-        QT_message_queue.put(f"正在合成语音...{index + 1}/{len(segments_raw)}")
-        cleaned_text = clean_text_for_audio(text)
-        audio_generate_count = 1
-        generated_audio_path = "../reference_audio/silent_audio/silence.wav"
-
-        while audio_generate_count <= 2:
-            try:
-                generated_audio_path = audio_gen.generate_audio_for_character_sync(
-                    cleaned_text,
-                    current_character,
-                    sakiko_state,
-                    audio_language_choice,
-                )
-                break
-            except Exception:
-                QT_message_queue.put("语音合成出错，重试中")
-                audio_generate_count += 1
-                main_logger.exception("语音合成错误")
-                time.sleep(1)
-
-        if index == 0:
-            is_text_generating_queue.get()
-
-        if audio_generate_count > 2:
+            QT_message_queue.put(f"正在合成语音...{index + 1}/{len(segments_raw)}")
+            cleaned_text = clean_text_for_audio(text)
+            audio_generate_count = 1
             generated_audio_path = "../reference_audio/silent_audio/silence.wav"
 
-        while not motion_complete_value.value:
-            time.sleep(0.2)
+            while audio_generate_count <= 2:
+                try:
+                    generated_audio_path = audio_gen.generate_audio_for_character_sync(
+                        cleaned_text,
+                        current_character,
+                        sakiko_state,
+                        audio_language_choice,
+                    )
+                    break
+                except Exception:
+                    QT_message_queue.put("语音合成出错，重试中")
+                    audio_generate_count += 1
+                    main_logger.exception("语音合成错误")
+                    time.sleep(1)
 
-        audio_gen.audio_file_path = generated_audio_path
-        audio_file_path_queue.put(generated_audio_path)
+            if index == 0:
+                is_text_generating_queue.get()
 
-        while not motion_complete_value.value:
-            time.sleep(0.5)
+            if audio_generate_count > 2:
+                generated_audio_path = "../reference_audio/silent_audio/silence.wav"
 
-        dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, generated_audio_path))
-        emotion_queue.put(emotion_label)
+            while not motion_complete_value.value:
+                time.sleep(0.2)
 
-    is_audio_play_complete.put("yes")
+            audio_gen.audio_file_path = generated_audio_path
+            audio_file_path_queue.put(generated_audio_path)
+
+            while not motion_complete_value.value:
+                time.sleep(0.5)
+
+            dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, generated_audio_path))
+            emotion_queue.put(emotion_label)
+    except Exception:
+        turn_status = "error"
+        QT_message_queue.put("语音合成流程出错。")
+        main_logger.exception("处理模型回复 payload 时出错")
+    finally:
+        is_audio_play_complete.put("yes")
+        if turn_complete:
+            dp2qt_queue.put(build_assistant_turn_complete_event(payload, turn_status))
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []

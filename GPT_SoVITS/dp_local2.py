@@ -469,9 +469,15 @@ class DSLocalAndVoiceGen:
         turn_id: str,
         character_name: str,
         segments: list[dict[str, object]],
+        turn_complete: bool = True,
     ) -> dict[str, object]:
         """
         构造发送给主线程语音合成链路的模型回复事件。
+
+        :param turn_id: 当前轮次对话的 id（用户每在输入框输入一次文字并发送，算作一轮对话）
+        :param character_name: 当前角色的名称
+        :param segments: 本次模型回复的文本段落列表，每个段落包含 text、translation、emotion 等字段
+        :param turn_complete: 这轮消息是否结束了。对于模型在工具调用时发送的过渡消息，该值为 False；对于正常的完整回复，该值为 True
         """
         return {
             "type": "model_response",
@@ -481,8 +487,21 @@ class DSLocalAndVoiceGen:
             "sakiko_state": self.sakiko_state,
             "audio_language_choice": self.audio_language_choice,
             "if_generate_audio": self.if_generate_audio,
+            "turn_complete": turn_complete,
             "segments": segments,
         }
+
+    @staticmethod
+    def _emit_turn_complete(dp2qt_queue, chat_id: str, turn_id: str, status: str = "ok") -> None:
+        """
+        通知 UI 某一轮对话已经结束。
+        """
+        dp2qt_queue.put({
+            "type": "assistant_turn_complete",
+            "chat_id": chat_id,
+            "turn_id": turn_id,
+            "status": status,
+        })
 
     @staticmethod
     def _segment_from_message(message_index: int, message: Message, force_no_audio: bool) -> dict[str, object]:
@@ -549,7 +568,7 @@ class DSLocalAndVoiceGen:
                         break
                 break
 
-    def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue):
+    def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue, turn_id: str):
         def _callback(interim_text: str, tool_calls=None, is_placeholder: bool = False):
             #print("------------\n\n\n","收到 interim callback，文本内容：", interim_text)
             cleaned = (interim_text or "").strip()
@@ -562,7 +581,6 @@ class DSLocalAndVoiceGen:
 
             fallback_no_audio = has_tool_calls and bool(is_placeholder)
             character_name = self.get_current_character().character_name
-            turn_id = uuid.uuid4().hex
             added_msg_indices: list[int] = []
             try:
                 json_str = cleaned
@@ -626,7 +644,9 @@ class DSLocalAndVoiceGen:
                 self._segment_from_message(index, self.current_chat.message_list[index], fallback_no_audio)
                 for index in added_msg_indices
             ]
-            text_queue.put(self._build_model_response_payload(turn_id, character_name, segments))
+            # 这条消息是 AI 生成的工具调用过渡消息，不是对话结束
+            # 手动设置 turn_complete=False
+            text_queue.put(self._build_model_response_payload(turn_id, character_name, segments, turn_complete=False))
             self._wait_audio_turn_complete(is_audio_play_complete)
 
         return _callback
@@ -875,6 +895,11 @@ class DSLocalAndVoiceGen:
             raw_user_input = str(command_text if command_text is not None else "")
             if not raw_user_input:
                 raw_user_input = "（什么也没说）"
+            # 获得 qtUI 给我们的 turn id
+            # 如果 qtUI 没有提供 turn_id，我们就自己生成一个，保证每轮对话都有唯一 id 供后续追踪和关联工具调用使用。
+            raw_turn_id = command.get("turn_id")
+            turn_id = raw_turn_id if isinstance(raw_turn_id, str) and raw_turn_id else uuid.uuid4().hex
+            active_chat_id = chat.chat_id
 
             llm_user_input = raw_user_input
             if self.if_sakiko:
@@ -896,7 +921,6 @@ class DSLocalAndVoiceGen:
 
             # 构建 LLM 请求：使用 Chat.build_llm_query 生成基础历史，然后修改最后一条用户消息为带指令后缀的版本
             character_name = self.get_current_character().character_name
-            turn_id = uuid.uuid4().hex
             to_llm_msg = self.current_chat.build_llm_query(perspective=character_name, is_simplify=True)  # 生成简化版本的消息列表，减少不必要的字段
 
             # 将最后一条 user 消息的 content 替换为带指令后缀的版本
@@ -950,6 +974,7 @@ class DSLocalAndVoiceGen:
                     is_audio_play_complete=is_audio_play_complete,
                     is_text_generating_queue=is_text_generating_queue,
                     dp2qt_queue=dp2qt_queue,
+                    turn_id=turn_id,
                 )
                 
                 # 启动带有工具调用能力的 Agent 运行循环
@@ -987,6 +1012,7 @@ class DSLocalAndVoiceGen:
                     "请求超时，请检查网络连接或稍后再试。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.AuthenticationError as e:
                 self._report_model_exception(
@@ -995,6 +1021,7 @@ class DSLocalAndVoiceGen:
                     "API Key 认证失败，请检查 Key 是否正确。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.RateLimitError as e:
                 self._report_model_exception(
@@ -1003,6 +1030,7 @@ class DSLocalAndVoiceGen:
                     "请求过于频繁，请稍后再试。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.APIConnectionError as e:
                 self._report_model_exception(
@@ -1011,6 +1039,7 @@ class DSLocalAndVoiceGen:
                     "与大模型网站建立连接失败，请检查网络。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             # 特殊捕获一个 API Key 余额不足的错误
             except litellm.exceptions.BadRequestError as e:
@@ -1030,6 +1059,7 @@ class DSLocalAndVoiceGen:
                         f"未知的请求错误，状态码：{getattr(e, 'status_code', '未知')}。",
                         e,
                     )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.PermissionDeniedError as e:
                 self._report_model_exception(
@@ -1038,6 +1068,7 @@ class DSLocalAndVoiceGen:
                     "无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except Exception as e:
                 self._report_model_exception(
@@ -1046,6 +1077,7 @@ class DSLocalAndVoiceGen:
                     "出现了未知错误，请再试一次。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
 
             if not cleaned_text_of_model_response:
@@ -1054,6 +1086,7 @@ class DSLocalAndVoiceGen:
                     is_text_generating_queue,
                     "模型API返回内容为空，请检查网络，然后重试一下吧"
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             # 解析 LLM 回复的 JSON 格式，提取实际文本、翻译和情感
             # 现在 LLM 可能返回 JSON 数组（多段回复），每段创建一个 Message
