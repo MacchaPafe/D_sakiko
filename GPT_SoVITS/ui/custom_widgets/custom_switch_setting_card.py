@@ -59,6 +59,18 @@ class SwitchSettingCard(SettingCard):
         self.switchButton.setChecked(isChecked)
         self.switchButton.setText(
             self.tr('开') if isChecked else self.tr('关'))
+    
+    def switchIsEnabled(self):
+        """
+        获得自身的开关按钮是否启用
+        """
+        return self.switchButton.isEnabled()
+    
+    def setSwitchEnabled(self, enabled: bool):
+        """
+        设置自身开关按钮的启用/禁用状态。禁用整个卡片会影响 eventFilter，导致无法弹出 tooltip。因此，有时可能需要只禁用开关按钮。
+        """
+        self.switchButton.setEnabled(enabled)
 
     def setChecked(self, isChecked: bool):
         self.setValue(isChecked)

@@ -16,7 +16,7 @@ class CUDADetectThread(QThread):
         try:
             import torch
 
-            cuda_available = torch.cuda.is_available()
+            cuda_available = hasattr(torch.cuda, "is_available") and torch.cuda.is_available()
             self.cuda_exist_signal.emit(cuda_available)
         except Exception:
             logger.exception("检测 cuda 可用性时发生错误")
@@ -34,7 +34,8 @@ class MPSDetectThread(QThread):
         try:
             import torch
 
-            mps_available = torch.mps.is_available()
+            # 解决低版本 torch 不存在 is_available 属性时的报错（虽然这不太可能发生）
+            mps_available = hasattr(torch.mps, "is_available" ) and torch.mps.is_available()
             self.mps_exist_signal.emit(mps_available)
         except Exception:
             logger.exception("检测 mps 可用性时发生错误")

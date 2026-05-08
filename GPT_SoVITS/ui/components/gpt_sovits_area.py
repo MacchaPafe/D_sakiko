@@ -10,7 +10,7 @@ with contextlib.redirect_stdout(None):
         SettingCardGroup,
         ComboBoxSettingCard,
         FluentIcon, MessageBox, RangeSettingCard,
-        TeachingTip, TeachingTipTailPosition
+        TeachingTip, TeachingTipTailPosition, ToolTipFilter
 )
 
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
@@ -32,8 +32,8 @@ class GPTSoVITSArea(TransparentScrollArea):
 
         self.delete_audio_card = SwitchSettingCard(
             FluentIcon.DELETE,
-            self.tr("退出时删除缓存音频"),
-            self.tr("删除可节省空间，但未备份的历史消息将无法回放对应音频"),
+            self.tr("退出时删除历史音频"),
+            self.tr("删除可节省空间，但将无法回放对应对话音频"),
             d_sakiko_config.delete_audio_cache_on_exit,
             parent=self.audio_setting_group,
         )
@@ -64,9 +64,10 @@ class GPTSoVITSArea(TransparentScrollArea):
             d_sakiko_config.cuda_enabled,
             parent=self.audio_setting_group,
         )
+        self.cuda_setting_card.installEventFilter(ToolTipFilter(self.cuda_setting_card))
         self.cuda_setting_card.checkedChanged.connect(self._on_cuda_setting_changed)
         self.cuda_setting_card.setVisible(False)  # 默认隐藏
-        self.cuda_setting_card.setEnabled(False)  # 默认不可用，等待检测线程结果
+        self.cuda_setting_card.setSwitchEnabled(False)  # 默认不可用，等待检测线程结果
         self.mps_setting_card = SwitchSettingCard(
             FluentIcon.IOT,
             self.tr("启用 MPS（Apple GPU）"),
@@ -74,9 +75,10 @@ class GPTSoVITSArea(TransparentScrollArea):
             d_sakiko_config.mps_enabled,
             parent=self.audio_setting_group,
         )
+        self.mps_setting_card.installEventFilter(ToolTipFilter(self.mps_setting_card))
         self.mps_setting_card.checkedChanged.connect(self._on_mps_setting_changed)
         self.mps_setting_card.setVisible(False)  # 默认隐藏
-        self.mps_setting_card.setEnabled(False)  # 默认不可用，等待检测线程结果
+        self.mps_setting_card.setSwitchEnabled(False)  # 默认不可用，等待检测线程结果
 
         system = platform.system()
         if platform.system() == "Windows" or system == "Linux":
@@ -137,23 +139,23 @@ class GPTSoVITSArea(TransparentScrollArea):
 
     @pyqtSlot(bool)
     def _on_cuda_availability_checked(self, available: bool):
-        self.cuda_setting_card.setEnabled(available)
+        self.cuda_setting_card.setSwitchEnabled(available)
         if available:
             self.cuda_setting_card.setVisible(True)
-            self.cuda_setting_card.setEnabled(True)
+            self.cuda_setting_card.setToolTip("")
         else:
-            self.cuda_setting_card.setEnabled(False)
             self.cuda_setting_card.setChecked(False)
+            self.cuda_setting_card.setToolTip(self.tr("CUDA 不可用，因为你的计算机没有英伟达显卡或无法使用该显卡。"))
     
     @pyqtSlot(bool)
     def _on_mps_availability_checked(self, available: bool):
-        self.mps_setting_card.setEnabled(available)
+        self.mps_setting_card.setSwitchEnabled(available)
         if available:
             self.mps_setting_card.setVisible(True)
-            self.mps_setting_card.setEnabled(True)
+            self.mps_setting_card.setToolTip("")
         else:
-            self.mps_setting_card.setEnabled(False)
             self.mps_setting_card.setChecked(False)
+            self.mps_setting_card.setToolTip(self.tr("MPS 不可用，因为你的 Mac 没有 Apple GPU 或无法使用该 GPU。"))
         
     @pyqtSlot(object)
     def _on_memory_size_checked(self, memory_size_gb):

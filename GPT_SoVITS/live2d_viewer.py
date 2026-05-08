@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHB
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
 import character
-from log import get_logger
+from log import get_logger, setup_logging, shutdown_logging
 
 logger = get_logger(__name__)
 
@@ -852,6 +852,8 @@ if __name__ == "__main__":
     # 设置当前工作目录为脚本所在目录，避免相对路径问题
     os.chdir(os.path.abspath(os.path.dirname(__file__)))
 
+    setup_logging()
+
     live2d_player = Live2DModule()
     get_char_attr = character.GetCharacterAttributes()
     motion_queue = multiprocessing.Queue()
@@ -883,4 +885,7 @@ if __name__ == "__main__":
 
     live2d_thread.start()
     window.show()
-    sys.exit(app.exec_())
+    try:
+        sys.exit(app.exec_())
+    finally:
+        shutdown_logging()

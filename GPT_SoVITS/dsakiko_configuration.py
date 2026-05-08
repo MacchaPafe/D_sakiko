@@ -12,6 +12,7 @@ with contextlib.redirect_stdout(None):
     from qfluentwidgets import Pivot, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon, FluentWindow, \
     FluentIcon
 
+from log import setup_logging, shutdown_logging
 from ui.components.custom_setting_area import CustomSettingArea
 from ui.components.gpt_sovits_area import GPTSoVITSArea
 from ui.components.llm_api_area import LLMAPIArea
@@ -156,6 +157,8 @@ if __name__ == '__main__':
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
 
+    setup_logging()
+
     app = QApplication(sys.argv)
     area = DSakikoConfigArea()
     w = FluentWindow()
@@ -166,4 +169,7 @@ if __name__ == '__main__':
     area.closeEvent = lambda e: app.quit()
 
     w.show()
-    sys.exit(app.exec_())
+    try:
+        sys.exit(app.exec_())
+    finally:
+        shutdown_logging()

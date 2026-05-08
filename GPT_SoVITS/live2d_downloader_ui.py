@@ -12,7 +12,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 import ui_constants
-from log import get_logger
+from log import get_logger, setup_logging, shutdown_logging
 
 current_config=ui_constants.CurrentConfig()
 logger = get_logger(__name__)
@@ -687,6 +687,9 @@ if __name__ == '__main__':
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
+
+    setup_logging()
+
     import character
     get_all = character.GetCharacterAttributes()
     app = QApplication(sys.argv)
@@ -704,3 +707,5 @@ if __name__ == '__main__':
 
     if os.path.exists("./.model_download_cache"):
         shutil.rmtree("./.model_download_cache")
+    
+    shutdown_logging()
