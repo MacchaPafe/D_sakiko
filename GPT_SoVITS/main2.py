@@ -5,7 +5,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 
-from queue import Queue
+from queue import Queue, Empty
 import threading
 import multiprocessing
 import time
@@ -67,11 +67,18 @@ def build_assistant_segment_event(
 
 def build_assistant_turn_phase_event(payload: dict[str, object], phase: str) -> dict[str, object]:
     """构造发给 qtUI 的对话轮次阶段事件。"""
+    segments = payload.get("segments")
+    message_indices = []
+    if isinstance(segments, list):
+        for segment in segments:
+            if isinstance(segment, dict) and isinstance(segment.get("message_index"), int):
+                message_indices.append(segment["message_index"])
     return {
         "type": "assistant_turn_phase",
         "chat_id": str(payload.get("chat_id") or ""),
         "turn_id": str(payload.get("turn_id") or ""),
         "phase": phase,
+        "message_indices": message_indices,
     }
 
 
@@ -83,6 +90,58 @@ def build_assistant_turn_complete_event(payload: dict[str, object], status: str 
         "turn_id": str(payload.get("turn_id") or ""),
         "status": status,
     }
+
+
+def is_payload_turn_cancelled(payload: dict[str, object]) -> bool:
+    """判断当前 payload 对应轮次是否已被前端取消。"""
+    chat_id = str(payload.get("chat_id") or "")
+    turn_id = str(payload.get("turn_id") or "")
+    if not chat_id or not turn_id or not hasattr(dp_chat, "is_turn_cancelled"):
+        return False
+    return bool(dp_chat.is_turn_cancelled(chat_id, turn_id))
+
+
+def mark_segments_no_audio(payload: dict[str, object], segments_raw: list[object], start_index: int = 0) -> None:
+    """将尚未生成语音的段落标记为无语音。"""
+    chat_id = str(payload.get("chat_id") or "")
+    chat = dp_chat.chat_manager.get_chat_by_id(chat_id)
+    if chat is None:
+        return
+    for segment_raw in segments_raw[start_index:]:
+        if not isinstance(segment_raw, dict):
+            continue
+        raw_message_index = segment_raw.get("message_index")
+        if not isinstance(raw_message_index, int):
+            continue
+        if 0 <= raw_message_index < len(chat.message_list):
+            msg = chat.message_list[raw_message_index]
+            if not msg.audio_path:
+                msg.audio_path = "NO_AUDIO"
+
+
+def update_segment_audio_path(payload: dict[str, object], segment_raw: dict[str, object], audio_path: str) -> None:
+    """直接回填某个段落的音频路径，便于取消后保留已生成语音。"""
+    chat_id = str(payload.get("chat_id") or "")
+    chat = dp_chat.chat_manager.get_chat_by_id(chat_id)
+    if chat is None:
+        return
+    raw_message_index = segment_raw.get("message_index")
+    if not isinstance(raw_message_index, int):
+        return
+    if 0 <= raw_message_index < len(chat.message_list):
+        msg = chat.message_list[raw_message_index]
+        msg.audio_path = audio_path
+        msg.translation = str(segment_raw.get("translation") or msg.translation)
+
+
+def clear_text_generating_flag_if_needed() -> None:
+    """取消或异常收尾时，确保 Live2D 不会一直停留在思考状态。"""
+    try:
+        is_text_generating_queue.get_nowait()
+    except Empty:
+        return
+    except Exception:
+        return
 
 
 def handle_model_response_payload(payload: dict[str, object]) -> None:
@@ -110,6 +169,11 @@ def handle_model_response_payload(payload: dict[str, object]) -> None:
         for index, segment_raw in enumerate(segments_raw):
             if not isinstance(segment_raw, dict):
                 continue
+            # 如果用户要求取消，则终止这个语音生成流程
+            if is_payload_turn_cancelled(payload):
+                turn_status = "cancelled"
+                mark_segments_no_audio(payload, segments_raw, index)
+                break
             text = str(segment_raw.get("text") or "")
             translation = str(segment_raw.get("translation") or "")
             emotion_label = str(segment_raw.get("emotion") or "LABEL_0")
@@ -146,17 +210,36 @@ def handle_model_response_payload(payload: dict[str, object]) -> None:
             if index == 0:
                 is_text_generating_queue.get()
 
+            if is_payload_turn_cancelled(payload):
+                turn_status = "cancelled"
+                mark_segments_no_audio(payload, segments_raw, index)
+                break
+
             if audio_generate_count > 2:
                 generated_audio_path = "../reference_audio/silent_audio/silence.wav"
 
+            # 在播放期间如果用户要求取消，则标记剩余段落无语音并终止流程
             while not motion_complete_value.value:
+                if is_payload_turn_cancelled(payload):
+                    turn_status = "cancelled"
+                    mark_segments_no_audio(payload, segments_raw, index)
+                    break
                 time.sleep(0.2)
+            if turn_status == "cancelled":
+                break
 
             audio_gen.audio_file_path = generated_audio_path
+            update_segment_audio_path(payload, segment_raw, generated_audio_path)
             audio_file_path_queue.put(generated_audio_path)
 
             while not motion_complete_value.value:
+                if is_payload_turn_cancelled(payload):
+                    turn_status = "cancelled"
+                    mark_segments_no_audio(payload, segments_raw, index + 1)
+                    break
                 time.sleep(0.5)
+            if turn_status == "cancelled":
+                break
 
             dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, generated_audio_path))
             emotion_queue.put(emotion_label)
@@ -165,9 +248,13 @@ def handle_model_response_payload(payload: dict[str, object]) -> None:
         QT_message_queue.put("语音合成流程出错。")
         main_logger.exception("处理模型回复 payload 时出错")
     finally:
+        if turn_status in {"cancelled", "error"}:
+            clear_text_generating_flag_if_needed()
         is_audio_play_complete.put("yes")
         if turn_complete:
             dp2qt_queue.put(build_assistant_turn_complete_event(payload, turn_status))
+        if turn_status == "cancelled" and hasattr(dp_chat, "clear_cancelled_turn"):
+            dp_chat.clear_cancelled_turn(str(payload.get("chat_id") or ""), str(payload.get("turn_id") or ""))
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []

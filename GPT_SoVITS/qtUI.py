@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPush
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
     QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor, QPainter
 
 import sounddevice as sd
 from opencc import OpenCC
@@ -1243,6 +1243,10 @@ class ChatGUI(QWidget):
         self.active_turn_id: str | None = None
         # 一轮对话的几个阶段，包含 'llm', 'tts', 'rendering' 三个阶段
         # 即 AI 生成对话，角色语音合成、界面慢速渲染三个部分。
+        self.active_turn_phase: str | None = None
+        self.active_turn_message_indices: set[int] = set()
+        # 用户取消的对话轮次的 id
+        self.cancelled_turn_ids: set[str] = set()
         self.tool_call_records_cache: dict[str, dict] = {}
         self.reasoning_enabled_labels: dict[str, str] = {
             "auto": "自动",
@@ -1303,7 +1307,9 @@ class ChatGUI(QWidget):
         self.send_button.setText("↑")
         self.send_button.setToolTip("发送")
         self.send_button.setFixedSize(self.input_tool_button_height, self.input_tool_button_height)
-        self.send_button.clicked.connect(self.handle_user_input)  # noqa
+        self.send_button.setIconSize(QSize(int(self.input_tool_button_height*0.42), int(self.input_tool_button_height*0.42)))
+        self._send_stop_icon = self._create_stop_button_icon()
+        self.send_button.clicked.connect(self.handle_send_button_clicked)  # noqa
 
         self.save_dialog_btn=QToolButton()
         self.save_dialog_btn.setIcon(QIcon("./icons/save.svg"))
@@ -2422,7 +2428,11 @@ class ChatGUI(QWidget):
                 audio_path = match.group(1)  # 路径
                 emotion = match.group(2)  #emotion标签
 
-                if os.path.exists(audio_path):
+                if not audio_path or audio_path == "NO_AUDIO" or os.path.isdir(audio_path):
+                    logger.info("点击到无效音频路径，无法播放：%s", audio_path)
+                    return
+
+                if os.path.isfile(audio_path):
                     #----------------------------设置live2d文本框内容逻辑
                     target_msg = None
                     # 按照 msg_index 属性寻找对应的消息条目
@@ -2600,6 +2610,10 @@ class ChatGUI(QWidget):
         处理来自 main2/dp_local2 的结构化 UI 事件。
         """
         event_type = str(payload.get("type") or "")
+        if self._is_cancelled_turn_payload(payload):
+            if event_type == "assistant_turn_complete":
+                self.cancelled_turn_ids.discard(str(payload.get("turn_id") or ""))
+            return
         if event_type in {"tool_call_started", "tool_call_updated"}:
             chat_id = str(payload.get("chat_id") or self.current_chat_id)
             if chat_id != self.current_chat_id:
@@ -2616,6 +2630,12 @@ class ChatGUI(QWidget):
         if event_type == "assistant_turn_phase":
             if self._is_active_turn_payload(payload):
                 self.active_turn_phase = str(payload.get("phase") or self.active_turn_phase or "")
+                raw_message_indices = payload.get("message_indices")
+                if isinstance(raw_message_indices, list):
+                    self.active_turn_message_indices = {
+                        one for one in raw_message_indices if isinstance(one, int)
+                    }
+                self._refresh_send_button_state()
             return
         # 事件：完成一轮对话的生成
         if event_type == "assistant_turn_complete":
@@ -2669,6 +2689,9 @@ class ChatGUI(QWidget):
         self.active_chat_id = chat_id
         self.active_turn_id = turn_id
         self.active_turn_phase = phase
+        # 一轮对话中可能涉及多条消息，active_turn_message_indices 用于记录这些消息的索引，以便在需要时进行统一处理（如标记无语音等）
+        self.active_turn_message_indices = set()
+        self._refresh_send_button_state()
 
     def _clear_active_turn(self) -> None:
         """
@@ -2677,6 +2700,8 @@ class ChatGUI(QWidget):
         self.active_chat_id = None
         self.active_turn_id = None
         self.active_turn_phase = None
+        self.active_turn_message_indices = set()
+        self._refresh_send_button_state()
 
     def _is_active_turn_payload(self, payload: dict[str, object]) -> bool:
         """
@@ -2689,6 +2714,134 @@ class ChatGUI(QWidget):
             and str(payload.get("chat_id") or "") == self.active_chat_id
             and str(payload.get("turn_id") or "") == self.active_turn_id
         )
+
+    def _is_cancelled_turn_payload(self, payload: dict[str, object]) -> bool:
+        """
+        判断结构化事件是否属于已经被前端取消的一轮对话。
+        """
+        turn_id = str(payload.get("turn_id") or "")
+        return bool(turn_id and turn_id in self.cancelled_turn_ids)
+
+    def _create_stop_button_icon(self) -> QIcon:
+        """
+        生成停止按钮图标，避免使用文本方块时受字体基线影响而视觉偏低。
+        """
+        icon_size = int(self.input_tool_button_height * 0.42)
+        pixmap = QPixmap(icon_size, icon_size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#FFFFFF"))
+        square_size = int(icon_size * 0.78)
+        offset = int((icon_size - square_size) * 0.5)
+        painter.drawRoundedRect(offset, offset, square_size, square_size, 1.5, 1.5)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _refresh_send_button_state(self) -> None:
+        """
+        根据当前是否有 active turn 切换发送/终止按钮状态。
+        """
+        if not hasattr(self, "send_button"):
+            return
+        if self.is_response_active():
+            self.send_button.setText("")
+            self.send_button.setIcon(self._send_stop_icon)
+            self.send_button.setToolTip("终止对话")
+        else:
+            self.send_button.setIcon(QIcon())
+            self.send_button.setText("↑")
+            self.send_button.setToolTip("发送")
+
+    def _finish_current_stream_immediately(self) -> None:
+        """
+        停止逐字渲染，并把当前缓冲区中尚未显示的文字立即补到聊天框。
+        """
+        if not self.timer.isActive():
+            return
+        self.timer.stop()
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(cursor.End)
+        if self.current_index < len(self.full_response):
+            cursor.insertText(self.full_response[self.current_index:])
+            self.current_index = len(self.full_response)
+        if self.translation:
+            cursor.insertHtml(f'<span style="color: #B3D1F2; font-style: italic;">{self.translation}</span><br>')
+            self.translation = ""
+        self.chat_display.setTextCursor(cursor)
+        self.chat_display.moveCursor(QTextCursor.End)
+
+    def _mark_active_turn_pending_messages_no_audio(self) -> None:
+        """
+        将当前轮次中尚未完成语音回填的 assistant 消息标记为无语音。
+        """
+        if not self.active_turn_message_indices:
+            return
+        chat = self.chat_manager.get_chat_by_id(self.active_chat_id or "")
+        if chat is None:
+            return
+        for message_index in self.active_turn_message_indices:
+            if 0 <= message_index < len(chat.message_list):
+                msg = chat.message_list[message_index]
+                if msg.character_name != "User" and not msg.audio_path:
+                    msg.audio_path = "NO_AUDIO"
+
+    def handle_send_button_clicked(self) -> None:
+        """
+        发送按钮的统一入口：空闲时发送，回复中时终止。
+        """
+        if self.is_response_active():
+            self.cancel_active_turn()
+        else:
+            self.handle_user_input()
+
+    def cancel_active_turn(self) -> None:
+        """
+        终止当前正在进行的一轮回复。后端可能无法立即停止阻塞调用，但后续事件会被 turn_id 丢弃。
+        """
+        if self.active_chat_id is None or self.active_turn_id is None:
+            return
+        chat_id = self.active_chat_id
+        turn_id = self.active_turn_id
+        phase = self.active_turn_phase or ""
+        self.cancelled_turn_ids.add(turn_id)
+
+        if hasattr(self.dp_chat, "request_cancel_turn"):
+            # 要求 dp_local2 终止对话生成
+            try:
+                self.dp_chat.request_cancel_turn(chat_id, turn_id)
+            except Exception:
+                logger.exception("登记对话终止请求失败。")
+
+        if self.change_char_queue is not None:
+            # 要求 live2d 终止对话播放
+            self.change_char_queue.put({
+                "type": "cancel_turn",
+                "chat_id": chat_id,
+                "turn_id": turn_id,
+            })
+
+        if phase == "tts":
+            # 设置尚未生成的语音为无语音
+            self._mark_active_turn_pending_messages_no_audio()
+            if chat_id == self.current_chat_id:
+                self._refresh_chat_display()
+        elif phase == "rendering":
+            self.timer.stop()
+            self.translation = ""
+            self.current_index = len(self.full_response)
+            if chat_id == self.current_chat_id:
+                self._refresh_chat_display()
+            else:
+                self._finish_current_stream_immediately()
+        else:
+            self._finish_current_stream_immediately()
+
+        self._clear_active_turn()
+        self.messages_box.clear()
+        self.messages_box.append("已终止当前回复")
+        self.refresh_chat_list()
 
     def stream_print(self):     #模拟流式打印
         cursor = self.chat_display.textCursor()

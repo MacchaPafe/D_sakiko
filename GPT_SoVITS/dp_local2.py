@@ -4,9 +4,11 @@ import random
 import re
 import time,os
 import uuid
+import threading
 from copy import deepcopy
 
 import json
+from queue import Empty
 from typing import Optional, Sequence
 
 import litellm
@@ -106,6 +108,9 @@ class DSLocalAndVoiceGen:
         )
         # 仅在本次程序运行期间使用的工具调用记录缓存；退出时会一并写入 Chat.meta。
         self._session_tool_call_records: list[dict] = []
+        # 标记为取消的对话轮次。涉及这些轮次的对话不会被处理。
+        self._cancelled_turns: set[tuple[str, str]] = set()
+        self._cancelled_turns_lock = threading.Lock()
         self.initial()
 
     def initial(self):
@@ -155,6 +160,33 @@ class DSLocalAndVoiceGen:
             self.if_sakiko = self.get_current_character().character_name == "祥子"
         except ValueError:
             self.if_sakiko = False
+
+    def request_cancel_turn(self, chat_id: str, turn_id: str) -> None:
+        """
+        线程安全地登记一轮对话取消请求。
+        """
+        if not chat_id or not turn_id:
+            return
+        with self._cancelled_turns_lock:
+            self._cancelled_turns.add((chat_id, turn_id))
+
+    def is_turn_cancelled(self, chat_id: str, turn_id: str) -> bool:
+        """
+        判断一轮对话是否已被前端请求取消。
+        """
+        if not chat_id or not turn_id:
+            return False
+        with self._cancelled_turns_lock:
+            return (chat_id, turn_id) in self._cancelled_turns
+
+    def clear_cancelled_turn(self, chat_id: str, turn_id: str) -> None:
+        """
+        清理已经完成收尾的取消请求，将其从“已取消列表”中移除。
+        """
+        if not chat_id or not turn_id:
+            return
+        with self._cancelled_turns_lock:
+            self._cancelled_turns.discard((chat_id, turn_id))
 
     def trim_list_to_340kb(self, data_list):
         working_list = deepcopy(data_list)
@@ -458,6 +490,18 @@ class DSLocalAndVoiceGen:
             time.sleep(0.3)
 
     @staticmethod
+    def _clear_text_generating_flag_if_needed(is_text_generating_queue) -> None:
+        """
+        取消收尾时，确保 Live2D 不会一直停留在思考状态。
+        """
+        try:
+            is_text_generating_queue.get_nowait()
+        except Empty:
+            return
+        except Exception:
+            return
+
+    @staticmethod
     def _emit_tool_ui_event(dp2qt_queue, prefix: str, payload: dict):
         event_type = "tool_call_started" if prefix == TOOL_CALL_START_EVENT_PREFIX else "tool_call_updated"
         event_payload = dict(payload)
@@ -491,8 +535,7 @@ class DSLocalAndVoiceGen:
             "segments": segments,
         }
 
-    @staticmethod
-    def _emit_turn_complete(dp2qt_queue, chat_id: str, turn_id: str, status: str = "ok") -> None:
+    def _emit_turn_complete(self, dp2qt_queue, chat_id: str, turn_id: str, status: str = "ok") -> None:
         """
         通知 UI 某一轮对话已经结束。
         """
@@ -502,6 +545,10 @@ class DSLocalAndVoiceGen:
             "turn_id": turn_id,
             "status": status,
         })
+        # 如果某轮对话被标记为取消且调用了本函数，那么说明整轮对话处理流程完成了
+        # 直接从取消列表中删掉这轮对话。
+        if status in {"cancelled", "error"}:
+            self.clear_cancelled_turn(chat_id, turn_id)
 
     @staticmethod
     def _segment_from_message(message_index: int, message: Message, force_no_audio: bool) -> dict[str, object]:
@@ -568,9 +615,12 @@ class DSLocalAndVoiceGen:
                         break
                 break
 
-    def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue, turn_id: str):
+    def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue, chat_id: str, turn_id: str):
         def _callback(interim_text: str, tool_calls=None, is_placeholder: bool = False):
             #print("------------\n\n\n","收到 interim callback，文本内容：", interim_text)
+            # 如果收到取消信息，则不再让 LLM 生成，直接返回。
+            if self.is_turn_cancelled(chat_id, turn_id):
+                return
             cleaned = (interim_text or "").strip()
             raw_tool_calls = tool_calls if isinstance(tool_calls, list) else []
             has_tool_calls = len(raw_tool_calls) > 0
@@ -900,6 +950,11 @@ class DSLocalAndVoiceGen:
             raw_turn_id = command.get("turn_id")
             turn_id = raw_turn_id if isinstance(raw_turn_id, str) and raw_turn_id else uuid.uuid4().hex
             active_chat_id = chat.chat_id
+            # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
+            # 不过一般人手速没这么快吧（
+            if self.is_turn_cancelled(active_chat_id, turn_id):
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
+                continue
 
             llm_user_input = raw_user_input
             if self.if_sakiko:
@@ -974,6 +1029,7 @@ class DSLocalAndVoiceGen:
                     is_audio_play_complete=is_audio_play_complete,
                     is_text_generating_queue=is_text_generating_queue,
                     dp2qt_queue=dp2qt_queue,
+                    chat_id=active_chat_id,
                     turn_id=turn_id,
                 )
                 
@@ -989,6 +1045,12 @@ class DSLocalAndVoiceGen:
                     },
                     on_interim_message=interim_callback,
                 )
+
+                # 在 AI 生成结束后，如果我们发现这轮对话在过程中被标记为取消了（可能用户在等待过程中点了取消按钮），就不处理结果了，直接进入下一轮循环等待新输入。
+                if self.is_turn_cancelled(active_chat_id, turn_id):
+                    self._clear_text_generating_flag_if_needed(is_text_generating_queue)
+                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
+                    continue
 
                 for one_tool_exec in runtime_result.tool_execution_records:
                     self._record_tool_call_completed(dp2qt_queue, one_tool_exec)

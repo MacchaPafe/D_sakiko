@@ -152,12 +152,23 @@ class Live2DModule:
     def onStartCallback_emotion_version(self,audio_file_path,*args):
         self.motion_is_over=False
         #print(f"touched and motion [] is started")
-        # 播放音频
-        pygame.mixer.music.load(audio_file_path)
-        pygame.mixer.music.play()
+        logger = get_logger(__name__)
+        if not audio_file_path or not os.path.isfile(audio_file_path):
+            logger.warning("跳过无效音频路径：%s", audio_file_path)
+            return
+        try:
+            # 播放音频
+            pygame.mixer.music.load(audio_file_path)
+            pygame.mixer.music.play()
+        except pygame.error as exc:
+            logger.warning("播放音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
+            return
         # 处理口型同步
         if audio_file_path!='../reference_audio/silent_audio/silence.wav':  #该函数无法处理无声音频
-            self.wavHandler.Start(audio_file_path)
+            try:
+                self.wavHandler.Start(audio_file_path)
+            except Exception as exc:
+                logger.warning("口型同步读取音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
 
     # 动作播放结束后调用
     def onFinishCallback(self):
@@ -309,6 +320,29 @@ class Live2DModule:
                     model.StartRandomMotion("talking_motion", 4, self.onStartCallback)
                 elif command_type=='stop_talking':   #录音结束
                     self.onFinishCallback()
+                elif command_type == "cancel_turn":
+                    pygame.mixer.music.stop()
+                    self.wavHandler = WavHandler()
+                    self.motion_is_over = True
+                    self.think_motion_is_over = True
+                    self.live2d_this_turn_motion_complete = True
+                    motion_complete_value.value = True
+                    overlay.set_text(self.current_character.character_name, '...')
+                    saw_bye = False
+                    while not emotion_queue.empty():
+                        try:
+                            queued_emotion = emotion_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if queued_emotion == "bye":
+                            saw_bye = True
+                    while not audio_file_queue.empty():
+                        try:
+                            audio_file_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    if saw_bye:
+                        emotion_queue.put("bye")
                 elif command_type=='change_l2d_background':
                     glActiveTexture(GL_TEXTURE0)  # 必加，否则白屏
                     glDeleteTextures([texture])

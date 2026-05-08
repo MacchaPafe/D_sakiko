@@ -87,7 +87,7 @@ class Message:
         if self.character_name == user_name or self.character_name == "User":
             return f'<a href="user:{msg_param}" style="text-decoration: none; color: {theme_color};">你：{safe_text}</a>'
         else:
-            if self.audio_path != "NO_AUDIO":
+            if self.audio_path and self.audio_path != "NO_AUDIO":
                 abs_path = os.path.abspath(self.audio_path).replace('\\', '/')
                 header = (f'<a href="{abs_path}[{self.emotion.as_label()}]{msg_param}" '
                           f'style="text-decoration: none; color: {theme_color};">'
