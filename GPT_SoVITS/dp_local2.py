@@ -340,12 +340,19 @@ class DSLocalAndVoiceGen:
         runtime 发起 LLM 请求的底层入口。
 
         在进行请求时，此函数会根据当前 chat 的设置，传入是否启用推理以及推理强度设定。如果 kwargs 中已经包含了相关设定，则以 kwargs 中的为准。
+        :param model: 当前请求使用的模型名称
+        :param messages: 请求发送的所有信息
+        :param tools: 请求提供的 tool
+        :param tool_choice: 工具选择策略，默认为 "auto"，表示由模型决定使用哪个工具；也可以指定为特定工具的名称，强制使用该工具（前提是 tools 中有这个工具）。
+        :param kwargs: 其他传递给 litellm.completion 的参数。请注意如下参数在 kwargs 中传入时不会生效：
+        model, messages, api_key, base_url, tools, tool_choice
         """
         # 提取运行时参数，避免后续和显式传参重复。
         runtime_kwargs = dict(kwargs)
         stream = runtime_kwargs.pop("stream", False)
         timeout = runtime_kwargs.pop("timeout", 30)
         reasoning_snapshot_locked = bool(runtime_kwargs.pop("_reasoning_snapshot_locked", False))
+        # 不允许通过 kwargs 手动指定这些参数；这些参数只能在本函数内构建
         for protected_key in ("model", "messages", "api_key", "base_url", "tools", "tool_choice"):
             runtime_kwargs.pop(protected_key, None)
 
@@ -353,7 +360,7 @@ class DSLocalAndVoiceGen:
         if d_sakiko_config.use_default_deepseek_api.value:
             logger.debug("正在使用 UP 的 DeepSeek API")
             completion_kwargs = {
-                "model": "deepseek/deepseek-chat",
+                "model": "deepseek/deepseek-v4-flash",
                 "messages": messages,
                 "api_key": self.model,
                 "stream": stream,

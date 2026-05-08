@@ -124,7 +124,7 @@ class LLMAPIArea(TransparentScrollArea):
         self.page_up_api.setObjectName("page_up_api")
         # 当前分栏的 layout
         layout_up = QVBoxLayout()
-        up_hint_label = BodyLabel(self.tr("使用 Up 主提供的 DeepSeek API，无需额外配置。"), self.page_up_api)
+        up_hint_label = BodyLabel(self.tr("使用 Up 主提供的 DeepSeek API (DeepSeek V4 Flash)，无需额外配置。"), self.page_up_api)
         up_hint_label.setMinimumHeight(30)
         layout_up.addWidget(up_hint_label)
         self.page_up_api.setLayout(layout_up)

@@ -143,7 +143,7 @@ class DSLocalAndVoiceGen:
 			try:
 				if d_sakiko_config.use_default_deepseek_api.value:
 					response = completion(
-						model="deepseek/deepseek-chat",
+						model="deepseek/deepseek-v4-flash",
 						messages=user_this_turn_msg,
 						api_key=self.model,
 						stream=False,
