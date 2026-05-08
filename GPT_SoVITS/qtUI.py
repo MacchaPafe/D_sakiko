@@ -1955,10 +1955,9 @@ class ChatGUI(QWidget):
                                 break
                     # 如果能找到对应的消息，那么添加翻译后一同发送给 live2d 模块，从而显示翻译。
                     if target_msg is not None:
-                        text_content = re.sub(r"（.*?）", '', target_msg.text).strip()
-                        if target_msg.translation:
-                            text_content = f"{text_content}\n{target_msg.translation.strip()}"
-                        self.live2d_text_queue.put(text_content)
+                        self.live2d_text_queue.put(
+                            self._format_live2d_display_text(target_msg.text, target_msg.translation)
+                        )
 
                     # ----------------------------
                     self.audio_file_path_queue.put(audio_path)
@@ -2135,7 +2134,9 @@ class ChatGUI(QWidget):
 
             abs_path = os.path.abspath(self.audio_gen.audio_file_path).replace('\\', '/')
             self.chat_display.append(f'<a href="{abs_path}[{emotion}]{msg_param}" style="text-decoration: none; color: {text_color};">★{character_name}：</a>')     #将emotion藏进路径中，回来解包一下即可  # noqa
-            self.live2d_text_queue.put(self.full_response)    #更新live2d文本框的内容显示
+            self.live2d_text_queue.put(
+                self._format_live2d_display_text(self.full_response, self.translation)
+            )    #更新live2d文本框的内容显示
 
             # 更新该条 AI 消息的 audio_path 和 translation
             if target_msg is not None:
@@ -2163,6 +2164,15 @@ class ChatGUI(QWidget):
                 cursor.insertHtml(f'<span style="color: #B3D1F2; font-style: italic;">{self.translation}</span><br>')
                 self.translation=''
                 self.chat_display.moveCursor(QTextCursor.End)
+
+    @staticmethod
+    def _format_live2d_display_text(text: str, translation: str = "") -> str:
+        text_content = re.sub(r"（.*?）", '', text or '').strip()
+        translation_content = (translation or '').strip()
+        if translation_content:
+            return f"{text_content}\n{translation_content}" if text_content else translation_content
+        return text_content
+
     @staticmethod
     def is_display(text):
         text1=re.findall('切换GPT-SoVITS',text,flags=re.DOTALL)
