@@ -1549,8 +1549,7 @@ class ChatGUI(QWidget):
             return
         dialog = UpdateDialog(plan, self)
         self.update_dialog = dialog
-        dialog.downloadRequested.connect(self.start_update_download)  # noqa
-        dialog.installRequested.connect(self.install_prepared_update)  # noqa
+        dialog.downloadAndInstallRequested.connect(self.start_update_download_and_install)  # noqa
         dialog.cancelRequested.connect(self.cancel_update_download)  # noqa
         self._start_release_notes_loading(plan)
         dialog.exec_()
@@ -1572,17 +1571,24 @@ class ChatGUI(QWidget):
         if self.update_dialog is not None:
             self.update_dialog.set_release_notes(markdown, source_name)
 
-    def start_update_download(self) -> None:
-        """开始下载当前更新计划中的补丁链。"""
+    def start_update_download_and_install(self) -> None:
+        """确认后下载当前更新计划中的补丁链，并在下载完成后自动安装。"""
 
         if self.pending_update_plan is None:
             return
         if self.update_download_thread is not None and self.update_download_thread.isRunning():
             return
+        reply = QMessageBox.question(
+            self,
+            "下载并安装更新",
+            "下载完成后将关闭当前程序并应用更新，完成后会自动重启。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
         self.downloaded_update_patches = []
         if self.update_dialog is not None:
-            self.update_dialog.download_button.setEnabled(False)
-            self.update_dialog.set_status("正在准备下载...")
+            self.update_dialog.set_downloading()
         self.update_download_thread = UpdateDownloadThread(self.pending_update_plan, self)
         self.update_download_thread.progressChanged.connect(self._on_update_download_progress)  # noqa
         self.update_download_thread.statusChanged.connect(self._on_update_download_status)  # noqa
@@ -1618,7 +1624,8 @@ class ChatGUI(QWidget):
 
         self.downloaded_update_patches = downloaded_patches
         if self.update_dialog is not None:
-            self.update_dialog.set_ready_to_install()
+            self.update_dialog.set_installing()
+        self.install_prepared_update()
 
     def _on_update_download_failed(self, message: str) -> None:
         """处理补丁链下载失败。"""
@@ -1632,14 +1639,6 @@ class ChatGUI(QWidget):
 
         if not self.downloaded_update_patches:
             QMessageBox.warning(self, "更新", "补丁尚未下载完成。")
-            return
-        reply = QMessageBox.question(
-            self,
-            "准备更新",
-            "更新将关闭当前程序，完成后自动重启。是否立即更新？",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
             return
         self.save_data()
         app_root = get_app_root()

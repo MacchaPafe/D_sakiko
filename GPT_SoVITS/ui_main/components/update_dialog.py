@@ -37,8 +37,7 @@ def format_speed(speed: float) -> str:
 class UpdateDialog(QDialog):
     """展示更新公告、下载进度和安装入口。"""
 
-    installRequested = pyqtSignal()
-    downloadRequested = pyqtSignal()
+    downloadAndInstallRequested = pyqtSignal()
     cancelRequested = pyqtSignal()
 
     def __init__(self, update_plan: UpdatePlan, parent: object | None = None) -> None:
@@ -78,18 +77,15 @@ class UpdateDialog(QDialog):
         layout.addWidget(self.progress_bar)
 
         button_layout = QHBoxLayout()
-        self.download_button = QPushButton("下载")
-        self.install_button = QPushButton("立即更新")
+        self.primary_button = QPushButton("下载并安装")
         self.later_button = QPushButton("稍后")
         self.cancel_button = QPushButton("取消")
-        self.install_button.setEnabled(False)
-        self.download_button.clicked.connect(self.downloadRequested.emit)  # noqa
-        self.install_button.clicked.connect(self.installRequested.emit)  # noqa
+        self.cancel_button.setVisible(False)
+        self.primary_button.clicked.connect(self.downloadAndInstallRequested.emit)  # noqa
         self.later_button.clicked.connect(self.reject)  # noqa
         self.cancel_button.clicked.connect(self.cancelRequested.emit)  # noqa
         button_layout.addStretch(1)
-        button_layout.addWidget(self.download_button)
-        button_layout.addWidget(self.install_button)
+        button_layout.addWidget(self.primary_button)
         button_layout.addWidget(self.later_button)
         button_layout.addWidget(self.cancel_button)
         layout.addLayout(button_layout)
@@ -124,6 +120,17 @@ class UpdateDialog(QDialog):
         suffix = f"，{speed_text}" if speed_text else ""
         self.status_label.setText(f"已下载 {format_size(downloaded)} / {format_size(total)}{suffix}")
 
+    def set_downloading(self) -> None:
+        """切换到下载中状态。"""
+
+        self.primary_button.setEnabled(False)
+        self.primary_button.setText("正在下载...")
+        self.later_button.setEnabled(False)
+        self.later_button.setVisible(False)
+        self.cancel_button.setVisible(True)
+        self.cancel_button.setEnabled(True)
+        self.status_label.setText("正在准备下载，下载完成后将自动关闭并安装更新。")
+
     def set_status(self, text: str) -> None:
         """更新状态文本。"""
 
@@ -133,13 +140,16 @@ class UpdateDialog(QDialog):
         """展示错误状态并恢复下载按钮。"""
 
         self.status_label.setText(message)
-        self.download_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
+        self.primary_button.setText("重试下载并安装")
+        self.primary_button.setEnabled(True)
+        self.later_button.setVisible(True)
+        self.later_button.setEnabled(True)
+        self.cancel_button.setVisible(False)
 
-    def set_ready_to_install(self) -> None:
-        """切换到可安装状态。"""
+    def set_installing(self) -> None:
+        """切换到即将安装状态。"""
 
-        self.download_button.setEnabled(False)
+        self.primary_button.setEnabled(False)
+        self.primary_button.setText("正在安装...")
         self.cancel_button.setEnabled(False)
-        self.install_button.setEnabled(True)
-        self.status_label.setText("补丁已准备完成，可以开始更新。")
+        self.status_label.setText("补丁已准备完成，正在关闭主程序并应用更新。")
