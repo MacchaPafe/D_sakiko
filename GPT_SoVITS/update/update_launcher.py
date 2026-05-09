@@ -60,7 +60,27 @@ def launch_update_process(
 
     log_file = _make_log_file(downloaded_patches, app_root)
     command = build_apply_command(app_root, main_pid, restart_command, log_file)
-    subprocess.Popen(command, cwd=str(app_root), close_fds=os.name != "nt")
+    if os.name == "nt":
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        subprocess.Popen(
+            command,
+            cwd=str(app_root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creation_flags,
+        )
+        return
+    subprocess.Popen(
+        command,
+        cwd=str(app_root),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
 
 
 def build_restart_command(app_root: Path) -> list[str]:
@@ -75,4 +95,3 @@ def build_restart_command(app_root: Path) -> list[str]:
         if launcher.exists():
             return ["cmd", "/c", str(launcher)]
     return [sys.executable, str(app_root / "GPT_SoVITS" / "main2.py")]
-
