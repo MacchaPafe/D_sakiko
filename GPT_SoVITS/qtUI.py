@@ -393,7 +393,7 @@ class TranscriptionWorker(QObject):
 
 
 class MoreFunctionWindow(QDialog):
-    def __init__(self,parent_window_close_fun):
+    def __init__(self,parent_window_close_fun,check_update_fun=None):
         super().__init__()
         self.setWindowTitle("更多功能...")
         self.screen = QDesktopWidget().screenGeometry()
@@ -414,6 +414,12 @@ class MoreFunctionWindow(QDialog):
         open_live2d_downloader_btn=QPushButton("Live2D模型下载器")
         open_live2d_downloader_btn.clicked.connect(self.on_click_open_live2d_downloader)  # noqa
         layout.addWidget(open_live2d_downloader_btn)
+
+        if check_update_fun is not None:
+            self.check_update_btn = QPushButton("检查更新")
+            self.check_update_btn.clicked.connect(check_update_fun)  # noqa
+            self.check_update_btn.clicked.connect(self.close)  # noqa
+            layout.addWidget(self.check_update_btn)
 
         self.text_label = QLabel("更多小功能还在开发中...")
         self.text_label.setAlignment(Qt.AlignCenter)
@@ -1412,11 +1418,6 @@ class ChatGUI(QWidget):
         self.more_function_button.setIconSize(QSize(int(self.screen.height()*0.04*0.6),int(self.screen.height()*0.04*0.6)))
         self.more_function_button.setToolTip('更多功能')
         self.more_function_button.clicked.connect(self.open_more_function_window)  # noqa
-        self.update_button = QToolButton()
-        self.update_button.setText("更新")
-        self.update_button.setFixedSize(int(self.screen.height()*0.04), int(self.screen.height()*0.04))
-        self.update_button.setToolTip("检查更新")
-        self.update_button.clicked.connect(self.check_update_manual)  # noqa
         self.change_character_button = QToolButton()
         self.change_character_button.setIcon(QIcon('./icons/chat_list.svg'))
         self.change_character_button.setFixedSize(int(self.screen.height()*0.04),int(self.screen.height()*0.04))
@@ -1443,7 +1444,6 @@ class ChatGUI(QWidget):
         top_layout.addWidget(self.save_dialog_btn,0)
         top_layout.addWidget(self.change_character_button,0)
         top_layout.addWidget(self.setting_btn,0)
-        top_layout.addWidget(self.update_button,0)
         top_layout.addWidget(self.more_function_button,0)
 
         layout.addLayout(top_layout)
@@ -2452,7 +2452,7 @@ class ChatGUI(QWidget):
         setting_window.exec_()
 
     def open_more_function_window(self):
-        more_function_win=MoreFunctionWindow(self.close_program)
+        more_function_win=MoreFunctionWindow(self.close_program,self.check_update_manual)
         more_function_win.exec_()
 
     def close_program(self):

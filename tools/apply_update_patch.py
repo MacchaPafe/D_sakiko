@@ -517,6 +517,8 @@ def main() -> int:
 
     args = parse_args()
     log_handle: TextIO | None = None
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
     try:
         app_root = Path(args.app_root).expanduser().resolve()
         if not app_root.exists() or not app_root.is_dir():
@@ -555,6 +557,8 @@ def main() -> int:
         return exit_code
     finally:
         if log_handle is not None:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
             log_handle.flush()
             log_handle.close()
 

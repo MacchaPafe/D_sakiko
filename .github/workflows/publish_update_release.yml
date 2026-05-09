@@ -75,14 +75,14 @@ jobs:
               --input "$patch" \
               --output "$patch.sig"
             python - <<'PY' "$patch"
-import hashlib
-import pathlib
-import sys
+          import hashlib
+          import pathlib
+          import sys
 
-path = pathlib.Path(sys.argv[1])
-digest = hashlib.sha256(path.read_bytes()).hexdigest()
-path.with_name(path.name + ".sha256").write_text(digest + "\n", encoding="utf-8")
-PY
+          path = pathlib.Path(sys.argv[1])
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          path.with_name(path.name + ".sha256").write_text(digest + "\n", encoding="utf-8")
+          PY
             gh release upload "$TAG" "$patch.sha256" "$patch.sig" --clobber
           done
 
@@ -100,28 +100,28 @@ PY
         working-directory: dist/assets
         run: |
           python - <<'PY'
-import json
-import os
-from pathlib import Path
-from urllib.parse import quote
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
 
-tag = os.environ["TAG"]
-repo = os.environ["GITHUB_REPOSITORY"]
-gitee_owner = os.environ.get("GITEE_OWNER", "")
-gitee_repo = os.environ.get("GITEE_REPO", "")
-notes = [
-    {
-        "name": "GitHub",
-        "url": f"https://github.com/{repo}/releases/download/{tag}/release_notes.md",
-    }
-]
-if gitee_owner and gitee_repo:
-    notes.append({
-        "name": "Gitee",
-        "url": f"https://gitee.com/{gitee_owner}/{gitee_repo}/releases/download/{tag}/{quote('release_notes.md')}",
-    })
-Path("notes_urls.json").write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
-PY
+          tag = os.environ["TAG"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          gitee_owner = os.environ.get("GITEE_OWNER", "")
+          gitee_repo = os.environ.get("GITEE_REPO", "")
+          notes = [
+              {
+                  "name": "GitHub",
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/release_notes.md",
+              }
+          ]
+          if gitee_owner and gitee_repo:
+              notes.append({
+                  "name": "Gitee",
+                  "url": f"https://gitee.com/{gitee_owner}/{gitee_repo}/releases/download/{tag}/{quote('release_notes.md')}",
+              })
+          Path("notes_urls.json").write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPO="${GITHUB_REPOSITORY#*/}"
           python ../../tools/release/generate_update_index.py \
