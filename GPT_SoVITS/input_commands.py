@@ -27,7 +27,7 @@ CommandVisibility = Literal["public", "hidden"]
 CommandExecutionPolicy = Literal["immediate", "confirm", "send"]
 # 命令的 payload 类型
 # static：命令没有参数，payload 就是命令本身（比如 /v 的 payload 就是 "v"）
-# parameterized：命令包含参数，payload 是用户输入的完整文本（比如 /change_l2d_model#model_json 的 payload 就是 "change_l2d_model#model_json"）
+# parameterized：命令包含参数，payload 是用户输入的完整文本
 # frontend_only：命令包含参数，但参数只在前端使用，发送到后端的 payload 是命令本身，不包含参数
 CommandPayloadKind = Literal["static", "parameterized", "frontend_only"]
 
@@ -50,7 +50,7 @@ class CommandSpec:
     visibility: CommandVisibility
     # 回车键选择该命令后，命令的执行方式
     execution_policy: CommandExecutionPolicy
-    # 命令是否包含参数。例如，/change_l2d_model#model_json 就是一个带参数的命令，其 payload_kind 就是 "parameterized"，payload_prefix 就是 "change_l2d_model#"
+    # 命令是否包含参数。
     payload_kind: CommandPayloadKind = "static"
     # 如果 execution_policy 是 "confirm"，则 danger_text 会用于提示用户确认的输入框中
     danger_text: str = ""
@@ -75,9 +75,9 @@ def build_default_input_command_specs() -> tuple[CommandSpec, ...]:
         CommandSpec(
             command="s",
             display_command="/s",
-            title="切换角色",
+            title="切换对话",
             aliases=("switch",),
-            description="切换到下一个角色",
+            description="切换到下一条对话",
             visibility="public",
             execution_policy="send",
         ),
@@ -104,10 +104,10 @@ def build_default_input_command_specs() -> tuple[CommandSpec, ...]:
             display_command="/clr",
             title="清空对话",
             aliases=("clear",),
-            description="清空当前角色聊天记录",
+            description="清空当前对话聊天记录",
             visibility="public",
             execution_policy="confirm",
-            danger_text="确定要清空当前角色的聊天记录吗？角色记忆也将同步被删除",
+            danger_text="确定要清空当前对话的聊天记录吗？对话记忆也将同步被删除",
         ),
         CommandSpec(
             command="conv",
@@ -183,17 +183,6 @@ def build_default_input_command_specs() -> tuple[CommandSpec, ...]:
             description="内部录音结束事件",
             visibility="hidden",
             execution_policy="send",
-        ),
-        CommandSpec(
-            command="change_l2d_model_payload",
-            display_command="change_l2d_model#<model_json>",
-            title="应用 Live2D 模型",
-            aliases=(),
-            description="内部 Live2D 模型切换事件",
-            visibility="hidden",
-            execution_policy="send",
-            payload_kind="parameterized",
-            payload_prefix="change_l2d_model#",
         ),
     )
 

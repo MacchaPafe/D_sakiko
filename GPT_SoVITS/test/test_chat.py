@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import unittest
@@ -6,7 +8,8 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from chat.chat import Chat, ChatManager, Message
+from character import CharacterAttributes
+from chat.chat import Chat, ChatManager, ChatType, Message
 from emotion_enum import EmotionEnum
 
 
@@ -203,6 +206,100 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(query_2[1]["role"], "assistant")
         self.assertIn("祥子", query_2[0]["content"])
         self.assertIn("素世", query_2[1]["content"])
+
+    def test_chat_id_serialization_and_legacy_loading(self):
+        """
+        Chat 应持久化 chat_id，旧存档缺失 chat_id 时应自动补齐。
+        """
+        chat = Chat.load_from_main_record(self.llm_dialog_history, self.qt_dialog_history)
+        data = chat.to_dict()
+        self.assertIn("chat_id", data)
+
+        legacy_data = dict(data)
+        legacy_data.pop("chat_id")
+        restored = Chat.from_dict(legacy_data)
+
+        self.assertIsInstance(restored.chat_id, str)
+        self.assertTrue(restored.chat_id)
+        self.assertNotEqual(restored.chat_id, chat.chat_id)
+
+    def test_create_multiple_single_chats_for_same_character(self):
+        """
+        同一个角色可以创建多条普通对话。
+        """
+        character = self._character("素世")
+        manager = ChatManager()
+
+        first = manager.create_single_character_chat(character)
+        second = manager.create_single_character_chat(character)
+
+        self.assertEqual(len(manager.single_character_chats()), 2)
+        self.assertNotEqual(first.chat_id, second.chat_id)
+        self.assertEqual(first.get_character_name(), "素世")
+        self.assertEqual(second.get_character_name(), "素世")
+
+    def test_reorder_chats_by_type_keeps_other_type_order(self):
+        """
+        类型内重排不应改变其他类型对话的相对顺序。
+        """
+        character = self._character("素世")
+        single_a = Chat.new_single_chat(character, name="single a")
+        theater_a = Chat.load_from_theater_record(self.theater_dialog_history[0])
+        single_b = Chat.new_single_chat(character, name="single b")
+        theater_b = Chat.load_from_theater_record(self.theater_dialog_history[0])
+        manager = ChatManager([single_a, theater_a, single_b, theater_b])
+
+        manager.reorder_chats_by_type(ChatType.SINGLE_CHARACTER, [single_b.chat_id, single_a.chat_id])
+
+        self.assertEqual(manager.chat_list, [single_b, theater_a, single_a, theater_b])
+
+    def test_audio_path_collection_and_safe_deletion(self):
+        """
+        删除对话音频时，只删除没有被其他对话引用的真实音频文件。
+        """
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as shared_audio:
+            shared_path = shared_audio.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as unique_audio:
+            unique_path = unique_audio.name
+
+        try:
+            chat_a = Chat(
+                message_list=[
+                    Message("素世", "a", "", EmotionEnum.HAPPINESS, shared_path),
+                    Message("素世", "b", "", EmotionEnum.HAPPINESS, unique_path),
+                    Message("素世", "c", "", EmotionEnum.HAPPINESS, "NO_AUDIO"),
+                    Message("素世", "d", "", EmotionEnum.HAPPINESS, "../reference_audio/silent_audio/silence.wav"),
+                ]
+            )
+            chat_b = Chat(
+                message_list=[
+                    Message("素世", "shared", "", EmotionEnum.HAPPINESS, shared_path)
+                ]
+            )
+            manager = ChatManager([chat_a, chat_b])
+
+            collected = manager.collect_audio_paths_for_chat(chat_a.chat_id)
+            deleted = manager.delete_unreferenced_audio_files_for_chat(chat_a.chat_id)
+
+            self.assertEqual(set(collected), {os.path.realpath(shared_path), os.path.realpath(unique_path)})
+            self.assertEqual(deleted, [os.path.realpath(unique_path)])
+            self.assertTrue(os.path.exists(shared_path))
+            self.assertFalse(os.path.exists(unique_path))
+        finally:
+            if os.path.exists(shared_path):
+                os.unlink(shared_path)
+            if os.path.exists(unique_path):
+                os.unlink(unique_path)
+
+    @staticmethod
+    def _character(name: str) -> CharacterAttributes:
+        """
+        构造测试用角色对象。
+        """
+        character = CharacterAttributes()
+        character.character_name = name
+        character.character_folder_name = name
+        return character
 
 
 if __name__ == '__main__':

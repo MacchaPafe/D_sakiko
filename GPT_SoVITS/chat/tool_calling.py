@@ -180,7 +180,7 @@ class ToolCallingAgentRuntime:
     ) -> AgentRunResult:
         """
         执行 Agent 工具调用主循环（简化版的 ReAct 模式）。
-        
+
         不断向大模型请求回复，若返回需要调用工具，则本地执行工具逻辑，
         并将结果拼接入历史上下文中进行下一轮请求；
         直到大模型直接回复最终文本结果或是达到最大调用次数为止。
@@ -819,18 +819,18 @@ def register_reminder_tool(
         content = arguments.get('content', '')
         if not target_datetime_str or not content:
             return {'ok': False, 'error': 'target_datetime 和 content 不能为空'}
-        
+
         try:
             dt = datetime.datetime.strptime(target_datetime_str, "%Y-%m-%d %H:%M:%S")
             # 转为 Unix 时间戳落盘，方便后台管理线程换算或做跨时区迁移
             target_ts = dt.timestamp()
         except Exception as e:
             return {'ok': False, 'error': f'时间格式解析失败，请确保格式为 YYYY-MM-DD HH:MM:SS。详细错误: {e}'}
-            
+
         import time
         if target_ts <= time.time():
             return {'ok': False, 'error': '设定的目标唤醒时间不能早于当前系统时间'}
-            
+
         success = add_reminder_func(content, target_ts)
         if success:
             return {'ok': True, 'message': f'成功将事件：[{content}] 设定在 {target_datetime_str} 触发。'}
@@ -844,7 +844,7 @@ def register_reminder_tool(
             'type': 'object',
             'properties': {
                 'target_datetime': {
-                    'type': 'string', 
+                    'type': 'string',
                     'description': '具体的倒计时终点时刻，即目标响应事件的时间。格式必须严格为 YYYY-MM-DD HH:MM:SS。务必使用当前时间计算！'
                 },
                 'content': {
@@ -939,17 +939,17 @@ def register_live2d_tools(
                 "ok": False,
                 "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
             }
-        
+
         import glob
         import os
         base_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '../../live2d_related', char_folder))
         default_live2d_json_list = glob.glob(os.path.join(base_path, 'live2D_model', '*.model.json'))
         default_live2d_json = default_live2d_json_list[0].replace("\\", "/") if default_live2d_json_list else None
-        
+
         models = []
         if default_live2d_json:
             models.append({'model_name': '默认', 'model_json_path': default_live2d_json})
-            
+
         extra_path = os.path.join(base_path, 'extra_model')
         if os.path.exists(extra_path):
             for model_dir in os.listdir(extra_path):
@@ -958,15 +958,15 @@ def register_live2d_tools(
                     jsons = glob.glob(os.path.join(dp, '*.model.json'))
                     if jsons:
                         models.append({'model_name': model_dir, 'model_json_path': jsons[0].replace("\\", "/")})
-                        
+
         return {'ok': True, 'character_folder': char_folder, 'models': models}
 
     def _change_character_live2d_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
         """具体的执行前台 Live2D 模型切换效果的闭包回调执行器。"""
         target_path = arguments.get('model_json_path', '').strip()
-        if not target_path: 
+        if not target_path:
             return {'ok': False, 'error': 'model_json_path 参数不能为空'}
-        
+
         char_folder = get_char_folder_func()
         if char_folder == 'sakiko':
             return {
@@ -983,7 +983,7 @@ def register_live2d_tools(
         parameters={'type': 'object', 'properties': {}, 'required': []},
         handler=_fetch_all_live2d_models_handler
     )
-    
+
     registry.register_tool(
         name='change_character_live2d',
         description='【主动视觉表现】将角色的服装换为指定路径。**核心扮演动作：用换装制造惊喜，绝不被动等待！**不需要用户允许或要求，比如当用户夸你时主动换上特制装扮，聊到晚安主动换上睡衣。用突然发生的外观变化给用户惊喜感！(必须先调用 fetch_all_live2d_models 挑选合适的衣服)',
@@ -1071,7 +1071,7 @@ def register_file_reading_tools(registry: ToolRegistry) -> None:
     registry.register_tool(
         name="export_document",
         description=(
-            "【语音对话防刷屏-生成本地文档工具】"   
+            "【语音对话防刷屏-生成本地文档工具】"
             "当你需要向用户提供以下大段文字信息时，**必须**调用此工具将其保存为文档："
             "1. 小说概括、剧情总结、文章长篇大论的分析；"
             "2. 具体的代码修改意见、重构后的完整代码、长段报错日志；"
@@ -1939,29 +1939,29 @@ class FileReadingTools:
         """
         filename = str(arguments.get("filename") or "").strip()
         content = str(arguments.get("content") or "")
-        
+
         if not filename:
             return {"ok": False, "error": "filename 参数不能为空"}
         if not content:
             return {"ok": False, "error": "content 不能为空"}
-            
+
         # 净化文件名，防止非法字符
         safe_filename = re.sub(r'[\\/*?:"<>|]', "", os.path.basename(filename))
         if not safe_filename:
             safe_filename = "agent_output.md"
-            
+
         # 如果大模型给出的是绝对路径则直接使用，否则默认放到 tool_data
         file_path = os.path.expanduser(filename)
         if not os.path.isabs(file_path):
             tool_data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tool_data"))
             file_path = os.path.join(tool_data_path, safe_filename)
-            
+
         try:
             # 确保父目录存在
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
-                
+
             # 使用系统默认程序自动打开该文件
             if sys.platform == "win32":
                 os.startfile(file_path)
@@ -1969,10 +1969,10 @@ class FileReadingTools:
                 subprocess.Popen(["open", file_path])
             else:
                 subprocess.Popen(["xdg-open", file_path])
-                
+
         except Exception as exc:
             return {"ok": False, "error": f"写入或打开文件失败: {exc}"}
-            
+
         return {
             "ok": True,
             "file_path": file_path,
@@ -1993,4 +1993,3 @@ class FileReadingTools:
             except (UnicodeDecodeError, UnicodeError):
                 continue
         return "utf-8"
-

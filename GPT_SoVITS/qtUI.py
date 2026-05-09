@@ -1,17 +1,21 @@
+from __future__ import annotations
+
 import os.path
 import re
 import time
 import json
 import random
+import uuid
 from typing import Callable, Optional
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
-    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QEvent
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor
+    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
+    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor, QPainter
 
 import sounddevice as sd
 from opencc import OpenCC
@@ -21,8 +25,11 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping
 from log import get_logger
-from chat.chat import ChatManager, Chat, Message, get_chat_manager
+from qconfig import d_sakiko_config
+from character import CharacterAttributes
+from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
 from emotion_enum import EmotionEnum
+from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
 from input_commands import (
     CommandSpec,
     InputCommandMatcher,
@@ -35,6 +42,77 @@ TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
+
+SINGLE_CHAT_DIALOG_CSS = dialogWindowDefaultCss + """
+QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-bottom: 2px solid #D1D1D1;
+    border-radius: 4px;
+    color: #5F6368;
+    padding: 6px 28px 6px 10px;
+    min-height: 24px;
+}
+
+QComboBox:hover {
+    background-color: #FDFDFD;
+    border-bottom: 2px solid #7799CC;
+}
+
+QComboBox:focus {
+    background-color: #FFFFFF;
+    border: 2px solid #7799CC;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 26px;
+    border: none;
+    background: transparent;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #6D7B8D;
+    margin-right: 8px;
+}
+
+QComboBox QAbstractItemView,
+QListView#singleChatCharacterComboView {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-radius: 4px;
+    padding: 4px;
+    outline: none;
+    margin-top: 4px;
+    selection-background-color: #E9F1FB;
+    selection-color: #2E4A6B;
+}
+
+QComboBox QAbstractItemView::item,
+QListView#singleChatCharacterComboView::item {
+    height: 32px;
+    border-radius: 4px;
+    padding-left: 8px;
+    color: #5F6368;
+    background-color: transparent;
+    border: none;
+}
+
+QComboBox QAbstractItemView::item:hover,
+QComboBox QAbstractItemView::item:selected,
+QListView#singleChatCharacterComboView::item:hover,
+QListView#singleChatCharacterComboView::item:selected {
+    background-color: #E9F1FB;
+    color: #2E4A6B;
+    border: none;
+}
+"""
 
 class FileInputFilter(QObject):
     """拦截拖拽事件，使得文本框能直接提取被拖入文件的绝对路径"""
@@ -246,7 +324,7 @@ class ThemeManager: #主题颜色设定
             return '#7799CC'
 
 class CommunicateThreadDP2QT(QThread):
-    response_signal=pyqtSignal(str)
+    response_signal=pyqtSignal(object)
     def __init__(self,dp2qt_queue,main_timer):
         super().__init__()
         self.this_turn_response=''
@@ -613,7 +691,7 @@ class SettingWindow(QDialog):
         self.change_theme_color_btn.clicked.connect(self.open_color_picker)
         self.change_reference_audio_btn=QPushButton("更改当前角色参考音频")
         self.change_reference_audio_btn.clicked.connect(self.open_change_ref_audio_window)
-        current_chara:character.CharacterAttributes=self.parent_window.character_list[self.parent_window.current_char_index]
+        current_chara:CharacterAttributes=self.parent_window.current_character
         if current_chara.GPT_model_path is None or current_chara.sovits_model_path is None or current_chara.gptsovits_ref_audio is None:
             self.change_reference_audio_btn.setEnabled(False)
         self.switch_live2d_text_btn=QPushButton("开启/关闭Live2D界面文本显示")
@@ -671,13 +749,13 @@ class SettingWindow(QDialog):
         self.parent_window.setStyleSheet(ThemeManager.generate_stylesheet(color))
         self.parent_window.set_btn_color(color)
     def open_change_ref_audio_window(self):
-        change_ref_audio_window=ChangeReferenceAudioWindow(self.audio_gen_module,QDesktopWidget().screenGeometry())
+        change_ref_audio_window=ChangeReferenceAudioWindow(self.parent_window,self.audio_gen_module,QDesktopWidget().screenGeometry())
         change_ref_audio_window.exec_()
     def change_l2d_background(self):
         self.parent_window.run_input_command_text('change_l2d_background', 'setting_button')
 
     def change_live2d_model_1(self):
-        current_char_folder_name=self.parent_window.character_list[self.audio_gen_module.current_character_index].character_folder_name
+        current_char_folder_name=self.parent_window.current_character.character_folder_name
         change_l2d_model_window=ChangeL2DModelWindow(current_char_folder_name,self.change_live2d_model_2)
         change_l2d_model_window.exec_()
     def change_live2d_model_2(self,new_model_json):
@@ -809,9 +887,11 @@ class ChangeL2DModelWindow(QDialog):
 
 
 class ChangeReferenceAudioWindow(QDialog):
-    def __init__(self,audio_gen_module,desktop_size):
+    def __init__(self,parent_window,audio_gen_module,desktop_size):
         super().__init__()
+        self.parent_window: ChatGUI = parent_window
         self.audio_gen_module=audio_gen_module
+        self.current_character: CharacterAttributes = self.parent_window.current_character
         self.setWindowTitle('更改当前角色参考音频')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.resize(int(desktop_size.width()*0.3),int(desktop_size.height()*0.4))
@@ -820,10 +900,10 @@ class ChangeReferenceAudioWindow(QDialog):
         self.audio_playlist = QMediaPlaylist()
 
         current_ref_audio_layout=QHBoxLayout()
-        current_ref_audio_name=self.audio_gen_module.ref_audio_file
-        if self.audio_gen_module.if_sakiko:
-            current_ref_audio_name=self.audio_gen_module.ref_audio_file_black_sakiko if self.audio_gen_module.sakiko_which_state else self.audio_gen_module.ref_audio_file_white_sakiko
-        self.current_ref_audio_label=QLabel(f"当前参考音频:{os.path.basename(current_ref_audio_name)}")
+        current_ref_audio_name=self.current_character.gptsovits_ref_audio
+        if self.current_character.character_name == "祥子":
+            current_ref_audio_name=self.audio_gen_module.ref_audio_file_black_sakiko if self.parent_window.dp_chat.sakiko_state else self.audio_gen_module.ref_audio_file_white_sakiko
+        self.current_ref_audio_label=QLabel(f"当前参考音频:{os.path.basename(current_ref_audio_name or '')}")
         self.play_current_ref_audio_btn=QToolButton()
         self.play_current_ref_audio_btn.setIcon(QIcon("./icons/play.svg"))
         self.play_current_ref_audio_btn.clicked.connect(self.play_current_ref_audio)
@@ -833,7 +913,7 @@ class ChangeReferenceAudioWindow(QDialog):
 
         all_ref_audio_files=[]
         try:
-            for file in os.listdir(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}'):
+            for file in os.listdir(f'../reference_audio/{self.current_character.character_folder_name}'):
                 if file.endswith('.wav') or file.endswith('.mp3'):
                     all_ref_audio_files.append(file)
         except Exception:
@@ -845,10 +925,10 @@ class ChangeReferenceAudioWindow(QDialog):
             name_label=QLabel(os.path.basename(ref_audio_file))
             play_btn=QToolButton()
             play_btn.setIcon(QIcon("./icons/play.svg"))
-            play_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}',ref_audio_file): self.play_ref_audio(path))
+            play_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.current_character.character_folder_name}',ref_audio_file): self.play_ref_audio(path))
             select_btn=QToolButton()
             select_btn.setText("选择")
-            select_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}',ref_audio_file): self.replace_ref_audio(path))
+            select_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.current_character.character_folder_name}',ref_audio_file): self.replace_ref_audio(path))
             single_ref_audio_layout.addWidget(name_label)
             single_ref_audio_layout.addWidget(play_btn)
             single_ref_audio_layout.addWidget(select_btn)
@@ -860,15 +940,15 @@ class ChangeReferenceAudioWindow(QDialog):
         new_ref_text_input_layout=QHBoxLayout()
         self.new_ref_text_input=QLineEdit()
         self.new_ref_text_input.setPlaceholderText("在此输入新参考音频对应的文本")
-        if self.audio_gen_module.if_sakiko:
-            if self.audio_gen_module.sakiko_which_state:
+        if self.current_character.character_name == "祥子":
+            if self.parent_window.dp_chat.sakiko_state:
                 with open(self.audio_gen_module.ref_text_file_black_sakiko,'r',encoding='utf-8') as f:
                     current_ref_text=f.read().strip()
             else:
                 with open(self.audio_gen_module.ref_text_file_white_sakiko,'r',encoding='utf-8') as f:
                     current_ref_text=f.read().strip()
         else:
-            with open(self.audio_gen_module.ref_text_file,'r',encoding='utf-8') as f:
+            with open(self.current_character.gptsovits_ref_audio_text,'r',encoding='utf-8') as f:
                 current_ref_text=f.read().strip()
         self.new_ref_text_input.setText(current_ref_text)
         self.new_ref_text_input.returnPressed.connect(self.change_ref_text)
@@ -885,10 +965,11 @@ class ChangeReferenceAudioWindow(QDialog):
         self.setStyleSheet(dialogWindowDefaultCss)
 
     def play_current_ref_audio(self):
-        current_ref_audio_path=self.audio_gen_module.ref_audio_file
-        if self.audio_gen_module.if_sakiko:
-            current_ref_audio_path=self.audio_gen_module.ref_audio_file_black_sakiko if self.audio_gen_module.sakiko_which_state else self.audio_gen_module.ref_audio_file_white_sakiko
-        self.play_ref_audio(current_ref_audio_path)
+        current_ref_audio_path=self.current_character.gptsovits_ref_audio
+        if self.current_character.character_name == "祥子":
+            current_ref_audio_path=self.audio_gen_module.ref_audio_file_black_sakiko if self.parent_window.dp_chat.sakiko_state else self.audio_gen_module.ref_audio_file_white_sakiko
+        if current_ref_audio_path:
+            self.play_ref_audio(current_ref_audio_path)
 
     def play_ref_audio(self,ref_audio_path):
         audio_path=os.path.abspath(ref_audio_path)
@@ -901,8 +982,8 @@ class ChangeReferenceAudioWindow(QDialog):
 
     def replace_ref_audio(self,new_ref_audio_file):
         try:
-            if self.audio_gen_module.if_sakiko:
-                if self.audio_gen_module.sakiko_which_state:
+            if self.current_character.character_name == "祥子":
+                if self.parent_window.dp_chat.sakiko_state:
                     self.audio_gen_module.ref_audio_file_black_sakiko=new_ref_audio_file
                     with open('../reference_audio/sakiko/default_ref_audio_black.txt','w',encoding='utf-8') as f:
                         f.write(new_ref_audio_file)
@@ -911,9 +992,8 @@ class ChangeReferenceAudioWindow(QDialog):
                     with open('../reference_audio/sakiko/default_ref_audio_white.txt','w',encoding='utf-8') as f:
                         f.write(new_ref_audio_file)
             else:
-                self.audio_gen_module.ref_audio_file=new_ref_audio_file
-                self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].gptsovits_ref_audio=new_ref_audio_file
-                with open(f'../reference_audio/{self.audio_gen_module.character_list[self.audio_gen_module.current_character_index].character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
+                self.current_character.gptsovits_ref_audio=new_ref_audio_file
+                with open(f'../reference_audio/{self.current_character.character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
                     f.write(new_ref_audio_file)
         except Exception:
             logger.exception("更改参考音频出现错误")
@@ -922,15 +1002,15 @@ class ChangeReferenceAudioWindow(QDialog):
     def change_ref_text(self):
         new_ref_text=self.new_ref_text_input.text().strip()
         if new_ref_text:
-            if self.audio_gen_module.if_sakiko:
-                if self.audio_gen_module.sakiko_which_state:
+            if self.current_character.character_name == "祥子":
+                if self.parent_window.dp_chat.sakiko_state:
                     with open(self.audio_gen_module.ref_text_file_black_sakiko,'w',encoding='utf-8') as f:
                         f.write(new_ref_text)
                 else:
                     with open(self.audio_gen_module.ref_text_file_white_sakiko,'w',encoding='utf-8') as f:
                         f.write(new_ref_text)
             else:
-                with open(self.audio_gen_module.ref_text_file,'w',encoding='utf-8') as f:
+                with open(self.current_character.gptsovits_ref_audio_text,'w',encoding='utf-8') as f:
                     f.write(new_ref_text)
                 #无需更改内存中的参考音频文本，因为每次生成前都是从文件中读取
             self.change_ref_text_success_label.setText("修改成功!")
@@ -1063,6 +1143,78 @@ class ChatTextBrowser(QTextBrowser):
 
         menu.exec_(event.globalPos())
 
+
+class DragDropListWidget(QListWidget):
+    """
+    支持拖拽排序并在顺序变化后发出信号的对话列表。
+    """
+    order_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragDropMode(QListView.DragDropMode.InternalMove)
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.order_changed.emit()
+
+
+class NewSingleChatDialog(QDialog):
+    """
+    创建普通单角色对话的弹窗。
+    """
+    def __init__(self, character_list: list[CharacterAttributes], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("新建对话")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.character_list = character_list
+        screen = QDesktopWidget().screenGeometry()
+        self.resize(int(screen.width() * 0.24), int(screen.height() * 0.18))
+
+        layout = QVBoxLayout(self)
+        form_layout = QGridLayout()
+        self.chat_name_edit = QLineEdit()
+        self.chat_name_edit.setPlaceholderText("可选，例如：练习后的闲聊")
+        self.character_combo = QComboBox()
+        combo_view = QListView()
+        combo_view.setObjectName("singleChatCharacterComboView")
+        combo_view.setFrameShape(QFrame.NoFrame)
+        self.character_combo.setView(combo_view)
+        self.character_combo.setItemDelegate(QStyledItemDelegate())
+        for one_character in self.character_list:
+            self.character_combo.addItem(one_character.character_name)
+
+        form_layout.addWidget(QLabel("对话名称"), 0, 0)
+        form_layout.addWidget(self.chat_name_edit, 0, 1)
+        form_layout.addWidget(QLabel("角色"), 1, 0)
+        form_layout.addWidget(self.character_combo, 1, 1)
+        layout.addLayout(form_layout)
+
+        button_layout = QHBoxLayout()
+        cancel_btn = QPushButton("取消")
+        ok_btn = QPushButton("创建")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn.clicked.connect(self.accept)
+        button_layout.addStretch(1)
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(ok_btn)
+        layout.addLayout(button_layout)
+        self.setStyleSheet(SINGLE_CHAT_DIALOG_CSS)
+        self.character_combo.view().setStyleSheet(SINGLE_CHAT_DIALOG_CSS)
+
+    def selected_character(self) -> CharacterAttributes:
+        """
+        获取用户选择的角色对象。
+        """
+        return self.character_list[self.character_combo.currentIndex()]
+
+    def chat_name(self) -> str:
+        """
+        获取用户填写的对话名称。
+        """
+        return self.chat_name_edit.text().strip()
+
+
 class ChatGUI(QWidget):
     def __init__(self,
                  dp2qt_queue,
@@ -1071,17 +1223,30 @@ class ChatGUI(QWidget):
                  characters,
                  dp_chat,
                  audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,emotion_model,
+                 change_char_queue=None,
                  is_motion_complete=None):
         super().__init__()
         self.is_motion_complete = is_motion_complete
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
-        self.character_list:list = characters
-        self.current_char_index = 0
+        self.character_list:list[CharacterAttributes] = characters
+        self.character_by_name: dict[str, CharacterAttributes] = {
+            one_character.character_name: one_character for one_character in self.character_list
+        }
         self.dp_chat=dp_chat    # dp_local2 模块引用
+        self.change_char_queue = change_char_queue
         # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
         self.chat_manager: ChatManager = self.dp_chat.chat_manager
-        # 为每个角色获取对应的 Chat 对象列表（与 dp_chat.character_chats 是相同的对象引用）
-        self.character_chats: list[Chat] = self.dp_chat.character_chats
+        self.current_chat_id = self.dp_chat.current_chat_id
+        # 当前显示的对话的 id（保存于对话中）
+        self.active_chat_id: str | None = None
+        # 当前轮次对话的 id（在用户发送一条消息时生成，作为内部状态，不保存）
+        self.active_turn_id: str | None = None
+        # 一轮对话的几个阶段，包含 'llm', 'tts', 'rendering' 三个阶段
+        # 即 AI 生成对话，角色语音合成、界面慢速渲染三个部分。
+        self.active_turn_phase: str | None = None
+        self.active_turn_message_indices: set[int] = set()
+        # 用户取消的对话轮次的 id
+        self.cancelled_turn_ids: set[str] = set()
         self.tool_call_records_cache: dict[str, dict] = {}
         self.reasoning_enabled_labels: dict[str, str] = {
             "auto": "自动",
@@ -1122,7 +1287,7 @@ class ChatGUI(QWidget):
         self.user_input = QLineEdit()
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
-        
+
         # 添加拖拽文件支持（通过事件过滤器实现，无需继承重写）
         self.user_input.setAcceptDrops(True)
         self.file_input_filter = FileInputFilter(self.user_input)
@@ -1142,7 +1307,9 @@ class ChatGUI(QWidget):
         self.send_button.setText("↑")
         self.send_button.setToolTip("发送")
         self.send_button.setFixedSize(self.input_tool_button_height, self.input_tool_button_height)
-        self.send_button.clicked.connect(self.handle_user_input)  # noqa
+        self.send_button.setIconSize(QSize(int(self.input_tool_button_height*0.42), int(self.input_tool_button_height*0.42)))
+        self._send_stop_icon = self._create_stop_button_icon()
+        self.send_button.clicked.connect(self.handle_send_button_clicked)  # noqa
 
         self.save_dialog_btn=QToolButton()
         self.save_dialog_btn.setIcon(QIcon("./icons/save.svg"))
@@ -1190,34 +1357,28 @@ class ChatGUI(QWidget):
             self.chat_display.setHtml(initial_html)
         self._load_tool_call_records_cache()
 
-        if self.character_list[self.current_char_index].icon_path is not None:  # noqa
-            self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))  # noqa
+        if self.current_character.icon_path is not None:  # noqa
+            self.setWindowIcon(QIcon(self.current_character.icon_path))  # noqa
 
-        if self.character_list[self.current_char_index].qt_css is not None:  # noqa
+        if self.current_character.qt_css is not None:  # noqa
             self.setStyleSheet(ThemeManager.generate_stylesheet(
-                ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
+                ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
                 )
             )  # noqa
         else:
             self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
         self.translation=''
-        if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[self.current_char_index].gptsovits_ref_audio is None or self.character_list[self.current_char_index].sovits_model_path is None:
+        if self.current_character.GPT_model_path is None or self.current_character.gptsovits_ref_audio is None or self.current_character.sovits_model_path is None:
             self.dp_chat.if_generate_audio=False
 
 
         self.is_ch = False
-        self.saved_talk_speed_and_pause_second = [{'talk_speed': 0, 'pause_second': 0.5} for _ in self.character_list]
-        for i, character in enumerate(self.character_list):
-            if not self.is_ch:
-                if self.character_list[self.current_char_index].character_name == '祥子':  # noqa
-                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.9  # noqa
-                else:
-                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.88  # noqa
-            else:
-                if self.character_list[self.current_char_index].character_name == '祥子':  # noqa
-                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.83  # noqa
-                else:
-                    self.saved_talk_speed_and_pause_second[i]['talk_speed'] = 0.9  # noqa
+        self.saved_talk_speed_and_pause_second: dict[str, dict[str, float]] = {}
+        for one_character in self.character_list:
+            self.saved_talk_speed_and_pause_second[one_character.character_name] = {
+                "talk_speed": 0.9 if one_character.character_name == "祥子" else 0.88,
+                "pause_second": 0.5,
+            }
 
         self.talk_speed_label = QLabel(f"语速调节：{self.audio_gen.speed}")  # 此时的数值不是真实的，audio_gen还没有初始化完成
         self.talk_speed_label.setToolTip("调整生成语音的语速，数值越大语速越快。如果觉得生成质量不佳，适当调整一下。")
@@ -1240,11 +1401,11 @@ class ChatGUI(QWidget):
         self.more_function_button.setToolTip('更多功能')
         self.more_function_button.clicked.connect(self.open_more_function_window)  # noqa
         self.change_character_button = QToolButton()
-        self.change_character_button.setIcon(QIcon('./icons/change_char.svg'))
+        self.change_character_button.setIcon(QIcon('./icons/chat_list.svg'))
         self.change_character_button.setFixedSize(int(self.screen.height()*0.04),int(self.screen.height()*0.04))
         self.change_character_button.setIconSize(QSize(int(self.screen.height()*0.04*0.6),int(self.screen.height()*0.04*0.6)))
-        self.change_character_button.setToolTip("切换角色")
-        self.change_character_button.clicked.connect(self.change_character_button_function)  # noqa
+        self.change_character_button.setToolTip("展开/收起对话列表")
+        self.change_character_button.clicked.connect(self.toggle_chat_panel)  # noqa
 
         self.pause_second_label=QLabel(f"句间停顿时间(s)：{self.audio_gen.pause_second}")
         self.pause_second_label.setToolTip("调整句子之间的停顿时间，数值越大停顿越久。如果觉得生成质量不佳，适当调整一下。")
@@ -1271,14 +1432,20 @@ class ChatGUI(QWidget):
         layout.addWidget(self.chat_display)
         layout.addLayout(slider_layout)
         layout.addWidget(input_panel)
-        if self.character_list[self.current_char_index].qt_css is not None:
-            self.set_btn_color(ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css))
+        if self.current_character.qt_css is not None:
+            self.set_btn_color(ThemeManager.get_QT_style_theme_color(self.current_character.qt_css))
         else:
             self.set_btn_color('#7799CC')
 
         self.talk_speed_reset()
 
-        self.setLayout(layout)  #因为需要character_list等参数，所以放在最后初始化
+        self.chat_manage_panel = self._create_chat_manage_panel()
+        root_layout = QHBoxLayout()
+        root_layout.addLayout(layout, 1)
+        root_layout.addWidget(self.chat_manage_panel, 0)
+        self.setLayout(root_layout)  #因为需要character_list等参数，所以放在最后初始化
+        self.refresh_chat_list()
+        self.sync_current_chat_to_backends()
 
         # 保存 Live2D 跨进程通信的共享变量和队列
         self.live2d_text_queue=live2d_text_queue
@@ -1303,8 +1470,331 @@ class ChatGUI(QWidget):
 
     @property
     def current_chat(self) -> Chat:
-        """获取当前角色对应的 Chat 对象"""
-        return self.character_chats[self.current_char_index]
+        """获取当前对话对象。"""
+        chat = self.chat_manager.get_chat_by_id(self.current_chat_id)
+        if chat is None:
+            chat = self.chat_manager.ensure_default_single_character_chat(self.character_list)
+            self.current_chat_id = chat.chat_id
+        return chat
+
+    @property
+    def current_character(self) -> CharacterAttributes:
+        """
+        获取当前对话绑定的角色对象。
+        """
+        character_name = self.current_chat.get_character_name()
+        if character_name is None:
+            raise ValueError("当前对话无法确定角色。")
+        character = self.character_by_name.get(character_name)
+        if character is None:
+            raise ValueError(f"找不到当前对话绑定的角色：{character_name}")
+        return character
+
+    def single_character_chats(self) -> list[Chat]:
+        """
+        获取普通对话列表。
+        """
+        return self.chat_manager.single_character_chats()
+
+    def _create_chat_manage_panel(self) -> QWidget:
+        """
+        创建右侧普通对话管理侧栏。
+        """
+        panel = QWidget()
+        panel.setFixedWidth(max(210, int(self.screen.width() * 0.13)))
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 0, 0, 0)
+        layout.setSpacing(6)
+
+        action_layout = QHBoxLayout()
+        self.btn_new_chat = QPushButton("新建")
+        self.btn_delete_chat = QPushButton("删除")
+        self.btn_chat_sidebar_mode = QPushButton()
+        self.btn_chat_sidebar_mode.clicked.connect(self.toggle_chat_sidebar_mode)  # noqa
+        self.btn_new_chat.clicked.connect(self.create_new_chat)
+        self.btn_delete_chat.clicked.connect(self.delete_current_chat)
+        action_layout.addWidget(self.btn_new_chat)
+        action_layout.addWidget(self.btn_delete_chat)
+        action_layout.addWidget(self.btn_chat_sidebar_mode)
+
+        self.chat_sidebar = ChatSidebarView()
+        self.chat_sidebar.set_mode(self._chat_sidebar_mode())
+        self.chat_sidebar.set_expanded_character_names(self._chat_sidebar_expanded_characters())
+        self.chat_sidebar.set_character_theme_colors(self._chat_sidebar_character_theme_colors())
+        self.chat_sidebar.chat_selected.connect(self.on_chat_item_clicked)  # noqa
+        self.chat_sidebar.chat_menu_requested.connect(self.show_chat_list_menu)  # noqa
+        self.chat_sidebar.chat_order_changed.connect(self.on_chat_list_order_changed)  # noqa
+        self.chat_sidebar.expanded_characters_changed.connect(self.on_chat_sidebar_expanded_changed)  # noqa
+        self._refresh_chat_sidebar_mode_button()
+
+        layout.addLayout(action_layout)
+        layout.addWidget(self.chat_sidebar, 1)
+        return panel
+
+    def refresh_chat_list(self) -> None:
+        """
+        刷新右侧普通对话列表并保持当前对话高亮。
+        """
+        if not hasattr(self, "chat_sidebar"):
+            return
+        chats = self.single_character_chats()
+        self.chat_sidebar.set_character_theme_colors(self._chat_sidebar_character_theme_colors())
+        self.chat_sidebar.set_chats(chats, self.current_chat_id)
+
+    def toggle_chat_panel(self) -> None:
+        """
+        展开或收起右侧普通对话列表。
+        """
+        self.chat_manage_panel.setVisible(not self.chat_manage_panel.isVisible())
+
+    def toggle_chat_sidebar_mode(self) -> None:
+        """
+        在平铺和折叠两种模式间切换聊天侧栏。
+        """
+        current_mode = self._chat_sidebar_mode()
+        new_mode = "folded" if current_mode == "flat" else "flat"
+        self.set_chat_sidebar_mode(new_mode)
+
+    def on_chat_item_clicked(self, chat_id: str) -> None:
+        """
+        点击侧栏对话时切换当前对话。
+        """
+        self.switch_chat_by_id(chat_id)
+
+    def on_chat_list_order_changed(self, ordered_chat_ids: list[str]) -> None:
+        """
+        拖拽侧栏后保存普通对话类型内顺序。
+        """
+        self.chat_manager.reorder_chats_by_type(ChatType.SINGLE_CHARACTER, ordered_chat_ids)
+        self.chat_manager.save()
+
+    def show_chat_list_menu(self, chat_id: str, global_pos: QPoint) -> None:
+        """
+        显示对话项右键菜单。
+        """
+        menu = QMenu(self)
+        rename_action = menu.addAction("重命名")
+        delete_action = menu.addAction("删除")
+        selected_action = menu.exec_(global_pos)
+        if selected_action == rename_action:
+            self.rename_chat(chat_id)
+        elif selected_action == delete_action:
+            self.delete_chat_by_id(chat_id)
+
+    def rename_chat(self, chat_id: str) -> None:
+        """
+        重命名侧栏中的普通对话。
+        """
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            return
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("重命名对话")
+        dialog.setLabelText("请输入新的对话名称：")
+        dialog.setTextValue(chat.name)
+        dialog.setOkButtonText("确定")
+        dialog.setCancelButtonText("取消")
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        new_name = dialog.textValue().strip()
+        if not new_name:
+            QMessageBox.warning(self, "提示", "对话名称不能为空")
+            return
+        chat.name = new_name
+        self.chat_manager.save()
+        self.refresh_chat_list()
+
+    def _chat_sidebar_mode(self) -> ChatSidebarMode:
+        """
+        从配置中读取聊天侧栏展示模式。
+        """
+        mode = str(d_sakiko_config.chat_sidebar_mode.value)
+        if mode == "folded":
+            return "folded"
+        return "flat"
+
+    def _chat_sidebar_expanded_characters(self) -> list[str]:
+        """
+        从配置中读取聊天侧栏展开角色列表。
+        """
+        configured_value = d_sakiko_config.chat_sidebar_expanded_characters.value
+        if not isinstance(configured_value, list):
+            return []
+        return [one for one in configured_value if isinstance(one, str)]
+
+    def _chat_sidebar_character_theme_colors(self) -> dict[str, str]:
+        """
+        获取侧栏中每个角色的主题色映射。
+        """
+        character_theme_colors: dict[str, str] = {}
+        for one_character in self.character_list:
+            if one_character.qt_css is None:
+                continue
+            character_theme_colors[one_character.character_name] = ThemeManager.get_QT_style_theme_color(one_character.qt_css)
+        return character_theme_colors
+
+    def set_chat_sidebar_mode(self, mode: ChatSidebarMode) -> None:
+        """
+        设置并保存聊天侧栏展示模式。
+        """
+        if not hasattr(self, "chat_sidebar"):
+            return
+        self.chat_sidebar.set_mode(mode)
+        d_sakiko_config.chat_sidebar_mode.value = mode
+        d_sakiko_config.save()
+        self._refresh_chat_sidebar_mode_button()
+        self.refresh_chat_list()
+
+    def _refresh_chat_sidebar_mode_button(self) -> None:
+        """
+        根据当前模式刷新聊天侧栏模式按钮。
+        """
+        if not hasattr(self, "btn_chat_sidebar_mode"):
+            return
+        mode = self._chat_sidebar_mode()
+        # 这边我感觉显示“点击后侧边栏切换到什么状态”比“目前侧边栏是什么状态“更好一些
+        # 所以这里的显示文字是反过来的
+        self.btn_chat_sidebar_mode.setText("折叠" if mode == "flat" else "展开")
+
+    def on_chat_sidebar_expanded_changed(self, character_names: list[str]) -> None:
+        """
+        保存聊天侧栏折叠模式下展开的角色。
+        """
+        d_sakiko_config.chat_sidebar_expanded_characters.value = character_names
+        d_sakiko_config.save()
+
+    def create_new_chat(self) -> None:
+        """
+        创建一条新的普通单角色对话并立即切换过去。
+        """
+        if self.is_chat_busy():
+            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再新建对话。")
+            return
+        dialog = NewSingleChatDialog(self.character_list, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        new_chat = self.chat_manager.create_single_character_chat(dialog.selected_character(), dialog.chat_name())
+        self.chat_manager.save()
+        self.refresh_chat_list()
+        self.switch_chat_by_id(new_chat.chat_id)
+
+    def delete_current_chat(self) -> None:
+        """
+        删除当前普通对话。
+        """
+        self.delete_chat_by_id(self.current_chat_id)
+
+    def delete_chat_by_id(self, chat_id: str) -> None:
+        """
+        删除指定普通对话。
+        """
+        if self.is_chat_busy():
+            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再删除对话。")
+            return
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            return
+        single_chats_before_delete = self.single_character_chats()
+        deleted_chat_index = next(
+            (index for index, one_chat in enumerate(single_chats_before_delete) if one_chat.chat_id == chat_id),
+            -1,
+        )
+        box = QMessageBox(QMessageBox.Question, "删除确认", f"确定删除对话“{chat.name}”吗？", QMessageBox.No | QMessageBox.Yes, self)
+        delete_audio_checkbox = QCheckBox("同时删除此对话中生成的角色语音")
+        delete_audio_checkbox.setChecked(True)
+        box.setCheckBox(delete_audio_checkbox)
+        box.setEscapeButton(QMessageBox.No)
+        box.button(QMessageBox.Yes).setText("确定")
+        box.button(QMessageBox.No).setText("取消")
+        if box.exec_() != QMessageBox.Yes:
+            return
+        if delete_audio_checkbox.isChecked():
+            self.chat_manager.delete_unreferenced_audio_files_for_chat(chat_id)
+        self.chat_manager.delete_chat(chat_id)
+        if chat_id == self.current_chat_id:
+            remaining_chats = self.single_character_chats()
+            if remaining_chats:
+                next_index = min(max(deleted_chat_index, 0), len(remaining_chats) - 1)
+                new_current = remaining_chats[next_index]
+            else:
+                new_current = self.chat_manager.ensure_default_single_character_chat(self.character_list)
+            self.current_chat_id = new_current.chat_id
+            self.sync_current_chat_to_backends()
+            self.apply_current_chat_ui_state()
+        self.chat_manager.save()
+        self.refresh_chat_list()
+
+    def switch_to_next_chat(self) -> None:
+        """
+        切换到侧栏中的下一条普通对话。
+        """
+        chats = self.single_character_chats()
+        if not chats:
+            return
+        current_index = next((index for index, chat in enumerate(chats) if chat.chat_id == self.current_chat_id), 0)
+        next_chat = chats[(current_index + 1) % len(chats)]
+        self.switch_chat_by_id(next_chat.chat_id)
+
+    def switch_chat_by_id(self, chat_id: str) -> None:
+        """
+        切换当前普通对话。
+        """
+        if chat_id == self.current_chat_id:
+            return
+        if self.is_chat_busy():
+            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再切换对话。")
+            self.refresh_chat_list()
+            return
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            return
+        self.current_chat_id = chat.chat_id
+        self.sync_current_chat_to_backends()
+        self.apply_current_chat_ui_state()
+        self.refresh_chat_list()
+
+    def sync_current_chat_to_backends(self) -> None:
+        """
+        将当前对话同步给后端与 Live2D 进程。
+        """
+        self.qt2dp_queue.put({"type": "switch_chat", "chat_id": self.current_chat_id})
+        character_name = self.current_character.character_name
+        model_json = self.current_chat.get_custom_live2d_model_meta(character_name)
+        self._send_live2d_switch(character_name, model_json)
+
+    def _send_live2d_switch(self, character_name: str, model_json: str | None) -> None:
+        """
+        发送结构化 Live2D 切换命令。
+        """
+        if self.change_char_queue is None:
+            return
+        self.change_char_queue.put({
+            "type": "switch_live2d",
+            "character_name": character_name,
+            "model_json": model_json or "",
+        })
+
+    def apply_current_chat_ui_state(self) -> None:
+        """
+        根据当前对话角色刷新主题、图标、聊天显示与语音设置。
+        """
+        self.chat_display.clear()
+        self._current_theme_color = self._get_theme_color()
+        if self.current_character.qt_css is not None:
+            color = ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
+            self.setStyleSheet(ThemeManager.generate_stylesheet(color))
+            self.set_btn_color(color)
+        else:
+            self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
+            self.set_btn_color("#7799CC")
+        self._refresh_chat_display()
+        self._load_tool_call_records_cache()
+        self._refresh_reasoning_button()
+        if self.current_character.icon_path is not None:
+            self.setWindowIcon(QIcon(self.current_character.icon_path))
+        self.talk_speed_reset()
+        self.pause_second_reset()
+        self.dp_chat.if_generate_audio = self.current_character.has_valid_voice_model()
 
     def _setup_input_commands(self, input_panel: QFrame) -> None:
         """初始化输入框命令注册表、匹配器与命令栏控件。"""
@@ -1402,7 +1892,7 @@ class ChatGUI(QWidget):
 
         enabled_label = self.reasoning_enabled_labels[reasoning_meta.enabled]
         effort_label = self.reasoning_effort_labels[reasoning_meta.effort]
-        
+
         if reasoning_meta.enabled == "off":
             self.reasoning_menu_button.setText(f"{enabled_label}")
         else:
@@ -1411,11 +1901,11 @@ class ChatGUI(QWidget):
         menu = self.reasoning_menu_button.menu()
         if menu is None:
             return
-            
+
         for action in menu.actions():
             if action.text() == "推理强度":
                 action.setEnabled(reasoning_meta.enabled != "off")  #当推理关闭时，强度设置不可用
-                
+
             sub_menu = action.menu()
             if sub_menu is None:
                 continue
@@ -1608,8 +2098,8 @@ class ChatGUI(QWidget):
 
     def _get_theme_color(self) -> str:
         """获取当前角色的主题色"""
-        if self.character_list[self.current_char_index].qt_css is not None:
-            return ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
+        if self.current_character.qt_css is not None:
+            return ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
         return '#7799CC'
 
     def _tool_record_to_html(self, record: dict) -> str:
@@ -1705,7 +2195,7 @@ class ChatGUI(QWidget):
         was_at_bottom = (saved_position == scroll_bar.maximum())
 
         new_html = self._build_chat_html_with_tool_records()
-        # with open(f'{self.character_list[self.current_char_index].character_folder_name}_chat.html','w',encoding='utf-8') as f:
+        # with open(f'{self.current_character.character_folder_name}_chat.html','w',encoding='utf-8') as f:
         #     f.write(new_html)
         self.chat_display.setHtml(new_html)
 
@@ -1718,7 +2208,7 @@ class ChatGUI(QWidget):
         #更改按钮图标颜色-----------------------
         icon_map = {
             self.setting_btn: './icons/setting.svg',
-            self.change_character_button: './icons/change_char.svg',
+            self.change_character_button: './icons/chat_list.svg',
             self.save_dialog_btn: './icons/save.svg',
             self.more_function_button: './icons/more.svg'
         }
@@ -1726,7 +2216,7 @@ class ChatGUI(QWidget):
             try:
                 with open(file,'r',encoding='utf-8') as f:
                     orig_data=f.read()
-                pattern = r'fill="[^"]*"'
+                pattern = r'fill=(["\'])(.*?)\1'
                 replacement = f'fill="{color}"'
                 new_data = re.sub(pattern, replacement, orig_data)
                 svg_bytes = new_data.encode('utf-8')
@@ -1743,11 +2233,11 @@ class ChatGUI(QWidget):
         self._refresh_chat_display()
         # 保存新颜色到本地以及修改内存中的颜色
         try:
-            with open(f"../reference_audio/{self.character_list[self.current_char_index].character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
+            with open(f"../reference_audio/{self.current_character.character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
                 f.write(f'''QWidget {{
                 color: {color};
                 }}''')
-            self.character_list[self.current_char_index].qt_css=f'''
+            self.current_character.qt_css=f'''
                                                         QWidget {{
                                                                 color: {color};
                                                                 }}'''
@@ -1760,11 +2250,11 @@ class ChatGUI(QWidget):
         pause_second_value=self.pause_second_slider.value()
         self.audio_gen.pause_second=pause_second_value/100
         self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen.pause_second:.2f}")
-        self.saved_talk_speed_and_pause_second[self.current_char_index]['pause_second']=self.audio_gen.pause_second  # noqa
+        self.saved_talk_speed_and_pause_second[self.current_character.character_name]['pause_second']=self.audio_gen.pause_second  # noqa
 
 
     def open_setting_window(self):
-        color =ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css) if self.character_list[self.current_char_index].qt_css is not None else "#7799CC"
+        color =ThemeManager.get_QT_style_theme_color(self.current_character.qt_css) if self.current_character.qt_css is not None else "#7799CC"
 
         setting_window=SettingWindow(self,self.screen,color,self.audio_gen)
         setting_window.exec_()
@@ -1776,17 +2266,14 @@ class ChatGUI(QWidget):
     def close_program(self):
         self.run_input_command_text('bye', 'more_function_button')
 
-    def change_character_button_function(self):
-        self.run_input_command_text('s', 'change_character_button')
-
     def talk_speed_reset(self):
-        saved_speed=self.saved_talk_speed_and_pause_second[self.current_char_index]['talk_speed']  # noqa
+        saved_speed=self.saved_talk_speed_and_pause_second[self.current_character.character_name]['talk_speed']  # noqa
         self.talk_speed_slider.setValue(int(saved_speed*100))
         self.audio_gen.speed=saved_speed
         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed:.2f}")
 
     def pause_second_reset(self):
-        saved_value=self.saved_talk_speed_and_pause_second[self.current_char_index]['pause_second']  # noqa
+        saved_value=self.saved_talk_speed_and_pause_second[self.current_character.character_name]['pause_second']  # noqa
         self.pause_second_slider.setValue(int(saved_value*100))
         self.audio_gen.pause_second = saved_value
         self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen.pause_second:.2f}")
@@ -1796,7 +2283,7 @@ class ChatGUI(QWidget):
         speed_value=self.talk_speed_slider.value()
         self.audio_gen.speed=speed_value/100
         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed:.2f}")
-        self.saved_talk_speed_and_pause_second[self.current_char_index]['talk_speed']=self.audio_gen.speed  # noqa
+        self.saved_talk_speed_and_pause_second[self.current_character.character_name]['talk_speed']=self.audio_gen.speed  # noqa
 
     def load_whisper_model(self):
         self.model_loader= ModelLoaderThread("./pretrained_models/faster_whisper_small", device="cpu", compute_type="int8")
@@ -1941,7 +2428,11 @@ class ChatGUI(QWidget):
                 audio_path = match.group(1)  # 路径
                 emotion = match.group(2)  #emotion标签
 
-                if os.path.exists(audio_path):
+                if not audio_path or audio_path == "NO_AUDIO" or os.path.isdir(audio_path):
+                    logger.info("点击到无效音频路径，无法播放：%s", audio_path)
+                    return
+
+                if os.path.isfile(audio_path):
                     #----------------------------设置live2d文本框内容逻辑
                     target_msg = None
                     # 按照 msg_index 属性寻找对应的消息条目
@@ -1990,7 +2481,7 @@ class ChatGUI(QWidget):
             self._refresh_chat_display()    #如果索引无效，强制刷新显示以纠正可能的错误状态
             self.chat_display.verticalScrollBar().setValue(scroll_position)
             return
-        current_character= self.character_list[self.current_char_index]
+        current_character= self.current_character
         if not (current_character.GPT_model_path or current_character.gptsovits_ref_audio or current_character.sovits_model_path):
             WarningWindow("当前角色未配置完整的音频生成条件，无法重新生成音频！").exec_()
             return
@@ -2037,46 +2528,11 @@ class ChatGUI(QWidget):
         self.QT_message_queue.put('...') # 强制恢复 messages_box 状态，允许继续对话
 
 
-    def change_char(self):
-        # 不再需要保存 HTML 到 character_chat_history，数据已在 Chat.message_list 中
-        self.chat_display.clear()
-        if len(self.character_list) == 1:
-            self.current_char_index = 0
-        else:
-            if self.current_char_index < len(self.character_list) - 1:
-                self.current_char_index += 1
-            else:
-                self.current_char_index = 0
-
-        # 更新主题色
-        self._current_theme_color = self._get_theme_color()
-
-        if self.character_list[self.current_char_index].qt_css is not None:  # noqa
-            self.setStyleSheet(ThemeManager.generate_stylesheet(
-                ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
-                )
-            )
-            self.set_btn_color(
-                ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css))
-        else:
-            self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
-            self.set_btn_color('#7799CC')
-
-        # 从 Chat 数据重新渲染 HTML
-        self._refresh_chat_display()
-        self._load_tool_call_records_cache()
-        if self.character_list[self.current_char_index].icon_path is not None:  # noqa
-            self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))  # noqa
-        self.talk_speed_reset()  #切换角色后重置默认语速
-        self.pause_second_reset()  #切换角色后重置默认句间停顿时间
-
-        if self.character_list[self.current_char_index].GPT_model_path is None or self.character_list[self.current_char_index].gptsovits_ref_audio is None or self.character_list[self.current_char_index].sovits_model_path is None:
-            #self.last_if_generate_audio=self.dp_chat.if_generate_audio
-            self.dp_chat.if_generate_audio=False
-        else:
-            self.dp_chat.if_generate_audio=True
-
     def handle_response(self,response_text):
+        if isinstance(response_text, dict):
+            self._handle_structured_response(response_text)
+            return
+
         if response_text.startswith(TOOL_CALL_START_EVENT_PREFIX):
             payload_str = response_text[len(TOOL_CALL_START_EVENT_PREFIX):]
             try:
@@ -2096,7 +2552,7 @@ class ChatGUI(QWidget):
             return
 
         if response_text=='changechange':
-            self.change_char()
+            self.apply_current_chat_ui_state()
             return
         response_text=response_text.replace("\n\n",'')
         response_text=response_text.replace("\n", '')
@@ -2112,7 +2568,7 @@ class ChatGUI(QWidget):
         self.current_index = 0
 
         text_color = self._current_theme_color
-        character_name = self.character_list[self.current_char_index].character_name
+        character_name = self.current_character.character_name
 
         # 找到下一条未处理的 AI 消息（可能有多段）
         # 从尾部向前搜索尚未设置 audio_path 的 AI 消息中最早的那条
@@ -2150,6 +2606,244 @@ class ChatGUI(QWidget):
 
         self.timer.start(30)
 
+    def _handle_structured_response(self, payload: dict[str, object]) -> None:
+        """
+        处理来自 main2/dp_local2 的结构化 UI 事件。
+        """
+        event_type = str(payload.get("type") or "")
+        if self._is_cancelled_turn_payload(payload):
+            if event_type == "assistant_turn_complete":
+                self.cancelled_turn_ids.discard(str(payload.get("turn_id") or ""))
+            return
+        if event_type in {"tool_call_started", "tool_call_updated"}:
+            chat_id = str(payload.get("chat_id") or self.current_chat_id)
+            if chat_id != self.current_chat_id:
+                return
+            if event_type == "tool_call_started":
+                self._handle_tool_call_start_event(payload)
+            else:
+                self._handle_tool_call_update_event(payload)
+            return
+        # 事件：切换对话
+        if event_type == "chat_switched":
+            return
+        # 事件：设置当前的处理阶段
+        if event_type == "assistant_turn_phase":
+            if self._is_active_turn_payload(payload):
+                self.active_turn_phase = str(payload.get("phase") or self.active_turn_phase or "")
+                raw_message_indices = payload.get("message_indices")
+                if isinstance(raw_message_indices, list):
+                    self.active_turn_message_indices = {
+                        one for one in raw_message_indices if isinstance(one, int)
+                    }
+                self._refresh_send_button_state()
+            return
+        # 事件：完成一轮对话的生成
+        if event_type == "assistant_turn_complete":
+            if self._is_active_turn_payload(payload):
+                self._clear_active_turn()
+                self.refresh_chat_list()
+            return
+        if event_type != "assistant_segment_ready":
+            return
+
+        chat_id = str(payload.get("chat_id") or "")
+        # 仅处理当前正在进行对话的事件，且必须是当前界面的对话
+        if self.active_turn_id is not None and not self._is_active_turn_payload(payload):
+            return
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            return
+        raw_message_index = payload.get("message_index")
+        message_index = raw_message_index if isinstance(raw_message_index, int) else -1
+        if 0 <= message_index < len(chat.message_list):
+            msg = chat.message_list[message_index]
+            msg.audio_path = str(payload.get("audio_path") or "NO_AUDIO")
+            msg.translation = str(payload.get("translation") or msg.translation)
+        if chat_id != self.current_chat_id:
+            self.refresh_chat_list()
+            return
+
+        self.active_turn_phase = "rendering"
+        self.full_response = str(payload.get("text") or "") + "\n"
+        self.translation = str(payload.get("translation") or "")
+        self.current_index = 0
+        text_color = self._current_theme_color
+        character_name = str(payload.get("character_name") or self.current_character.character_name)
+        emotion = str(payload.get("emotion") or "LABEL_0")
+        audio_path = str(payload.get("audio_path") or "NO_AUDIO")
+        msg_param = f"?msg={message_index}" if message_index >= 0 else ""
+
+        if audio_path != "NO_AUDIO":
+            abs_path = os.path.abspath(audio_path).replace('\\', '/')
+            self.chat_display.append(f'<a href="{abs_path}[{emotion}]{msg_param}" style="text-decoration: none; color: {text_color};">★{character_name}：</a>')
+            self.live2d_text_queue.put(self.full_response)
+        else:
+            self.chat_display.append(f'<a href="no_audio:{msg_param}" style="text-decoration: none; color: {text_color};">{character_name}：</a>')
+        self.timer.start(30)
+        self.refresh_chat_list()
+
+    def _start_active_turn(self, chat_id: str, turn_id: str, phase: str = "llm") -> None:
+        """
+        记录当前正在处理的一轮普通对话。
+        """
+        self.active_chat_id = chat_id
+        self.active_turn_id = turn_id
+        self.active_turn_phase = phase
+        # 一轮对话中可能涉及多条消息，active_turn_message_indices 用于记录这些消息的索引，以便在需要时进行统一处理（如标记无语音等）
+        self.active_turn_message_indices = set()
+        self._refresh_send_button_state()
+
+    def _clear_active_turn(self) -> None:
+        """
+        清除当前正在处理的对话轮次。
+        """
+        self.active_chat_id = None
+        self.active_turn_id = None
+        self.active_turn_phase = None
+        self.active_turn_message_indices = set()
+        self._refresh_send_button_state()
+
+    def _is_active_turn_payload(self, payload: dict[str, object]) -> bool:
+        """
+        判断结构化事件是否属于当前正在处理的一轮对话。
+        判断标准为：当前存在正在进行的对话和轮次，且事件的对话 id、轮次 id 和当前均相同。
+        """
+        return (
+            self.active_chat_id is not None
+            and self.active_turn_id is not None
+            and str(payload.get("chat_id") or "") == self.active_chat_id
+            and str(payload.get("turn_id") or "") == self.active_turn_id
+        )
+
+    def _is_cancelled_turn_payload(self, payload: dict[str, object]) -> bool:
+        """
+        判断结构化事件是否属于已经被前端取消的一轮对话。
+        """
+        turn_id = str(payload.get("turn_id") or "")
+        return bool(turn_id and turn_id in self.cancelled_turn_ids)
+
+    def _create_stop_button_icon(self) -> QIcon:
+        """
+        生成停止按钮图标，避免使用文本方块时受字体基线影响而视觉偏低。
+        """
+        icon_size = int(self.input_tool_button_height * 0.42)
+        pixmap = QPixmap(icon_size, icon_size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#FFFFFF"))
+        square_size = int(icon_size * 0.78)
+        offset = int((icon_size - square_size) * 0.5)
+        painter.drawRoundedRect(offset, offset, square_size, square_size, 1.5, 1.5)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _refresh_send_button_state(self) -> None:
+        """
+        根据当前是否有 active turn 切换发送/终止按钮状态。
+        """
+        if not hasattr(self, "send_button"):
+            return
+        if self.is_response_active():
+            self.send_button.setText("")
+            self.send_button.setIcon(self._send_stop_icon)
+            self.send_button.setToolTip("终止对话")
+        else:
+            self.send_button.setIcon(QIcon())
+            self.send_button.setText("↑")
+            self.send_button.setToolTip("发送")
+
+    def _finish_current_stream_immediately(self) -> None:
+        """
+        停止逐字渲染，并把当前缓冲区中尚未显示的文字立即补到聊天框。
+        """
+        if not self.timer.isActive():
+            return
+        self.timer.stop()
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(cursor.End)
+        if self.current_index < len(self.full_response):
+            cursor.insertText(self.full_response[self.current_index:])
+            self.current_index = len(self.full_response)
+        if self.translation:
+            cursor.insertHtml(f'<span style="color: #B3D1F2; font-style: italic;">{self.translation}</span><br>')
+            self.translation = ""
+        self.chat_display.setTextCursor(cursor)
+        self.chat_display.moveCursor(QTextCursor.End)
+
+    def _mark_active_turn_pending_messages_no_audio(self) -> None:
+        """
+        将当前轮次中尚未完成语音回填的 assistant 消息标记为无语音。
+        """
+        if not self.active_turn_message_indices:
+            return
+        chat = self.chat_manager.get_chat_by_id(self.active_chat_id or "")
+        if chat is None:
+            return
+        for message_index in self.active_turn_message_indices:
+            if 0 <= message_index < len(chat.message_list):
+                msg = chat.message_list[message_index]
+                if msg.character_name != "User" and not msg.audio_path:
+                    msg.audio_path = "NO_AUDIO"
+
+    def handle_send_button_clicked(self) -> None:
+        """
+        发送按钮的统一入口：空闲时发送，回复中时终止。
+        """
+        if self.is_response_active():
+            self.cancel_active_turn()
+        else:
+            self.handle_user_input()
+
+    def cancel_active_turn(self) -> None:
+        """
+        终止当前正在进行的一轮回复。后端可能无法立即停止阻塞调用，但后续事件会被 turn_id 丢弃。
+        """
+        if self.active_chat_id is None or self.active_turn_id is None:
+            return
+        chat_id = self.active_chat_id
+        turn_id = self.active_turn_id
+        phase = self.active_turn_phase or ""
+        self.cancelled_turn_ids.add(turn_id)
+
+        if hasattr(self.dp_chat, "request_cancel_turn"):
+            # 要求 dp_local2 终止对话生成
+            try:
+                self.dp_chat.request_cancel_turn(chat_id, turn_id)
+            except Exception:
+                logger.exception("登记对话终止请求失败。")
+
+        if self.change_char_queue is not None:
+            # 要求 live2d 终止对话播放
+            self.change_char_queue.put({
+                "type": "cancel_turn",
+                "chat_id": chat_id,
+                "turn_id": turn_id,
+            })
+
+        if phase == "tts":
+            # 设置尚未生成的语音为无语音
+            self._mark_active_turn_pending_messages_no_audio()
+            if chat_id == self.current_chat_id:
+                self._refresh_chat_display()
+        elif phase == "rendering":
+            self.timer.stop()
+            self.translation = ""
+            self.current_index = len(self.full_response)
+            if chat_id == self.current_chat_id:
+                self._refresh_chat_display()
+            else:
+                self._finish_current_stream_immediately()
+        else:
+            self._finish_current_stream_immediately()
+
+        self._clear_active_turn()
+        self.messages_box.clear()
+        self.messages_box.append("已终止当前回复")
+        self.refresh_chat_list()
+
     def stream_print(self):     #模拟流式打印
         cursor = self.chat_display.textCursor()
         if self.current_index < len(self.full_response):
@@ -2180,6 +2874,24 @@ class ChatGUI(QWidget):
         text3=re.findall('整理语言',text,flags=re.DOTALL)
         text4=re.findall('思考中',text,flags=re.DOTALL)
         return not (text1 or text2 or text3 or text4)
+
+    def is_response_active(self) -> bool:
+        """
+        是否存在一轮仍在 LLM、语音合成或 UI 渲染阶段的对话。
+        """
+        return self.active_turn_id is not None
+
+    def is_chat_busy(self) -> bool:
+        """
+        当前界面是否仍有对话轮次或流式渲染未结束。
+        """
+        return self.is_response_active() or self.timer.isActive()
+
+    def is_chat_idle(self) -> bool:
+        """
+        当前界面是否允许修改当前对话对象。
+        """
+        return not self.is_chat_busy()
 
     def is_display2(self, text: str) -> bool:
         """判断一段用户输入是否应该显示在聊天框中。"""
@@ -2237,10 +2949,18 @@ class ChatGUI(QWidget):
             return
 
         if spec.command == "clr":
+            if not self.is_chat_idle():
+                QMessageBox.information(self, "请稍等", "请等待当前回复完成后再清空对话。")
+                return
             self.current_chat.clear_message_list()
             self.tool_call_records_cache.clear()
             self.chat_display.clear()
-            self._send_internal_command_payload("clr", force=True)
+            self._send_internal_command_payload({"type": "clear_chat", "chat_id": self.current_chat_id}, force=True)
+            self.user_input.clear()
+            return
+
+        if spec.command == "s":
+            self.switch_to_next_chat()
             self.user_input.clear()
             return
 
@@ -2257,23 +2977,35 @@ class ChatGUI(QWidget):
             self.talk_speed_reset()
             self.pause_second_reset()
 
-    def _send_internal_command_payload(self, payload: str, force: bool = False) -> None:
+    def _send_internal_command_payload(self, payload: str | dict[str, object], force: bool = False) -> None:
         """向后端队列发送内部命令 payload。"""
-        if force or (self.is_display(self.messages_box.toPlainText()) and self.qt2dp_queue.empty()):
+        if force or (not self.is_chat_busy() and self.qt2dp_queue.empty()):
+            if isinstance(payload, str):
+                command_map = {
+                    "l": {"type": "toggle_language", "chat_id": self.current_chat_id},
+                    "v": {"type": "toggle_voice", "chat_id": self.current_chat_id},
+                    "conv": {"type": "legacy_command", "command": "conv", "chat_id": self.current_chat_id},
+                    "mask": {"type": "legacy_command", "command": "mask", "chat_id": self.current_chat_id},
+                    "start_talking": {"type": "legacy_command", "command": "start_talking", "chat_id": self.current_chat_id},
+                    "stop_talking": {"type": "legacy_command", "command": "stop_talking", "chat_id": self.current_chat_id},
+                    "change_l2d_background": {"type": "legacy_command", "command": "change_l2d_background", "chat_id": self.current_chat_id},
+                    "bye": {"type": "exit"},
+                }
+                payload = command_map.get(payload, {"type": "legacy_command", "command": payload, "chat_id": self.current_chat_id})
             self.qt2dp_queue.put(payload)
 
     def _confirm_dangerous_command(self, spec: CommandSpec, callback: Callable[[], None]) -> None:
         """对危险命令弹出二次确认窗口。"""
         css = ThemeManager.generate_stylesheet(
-            ThemeManager.get_QT_style_theme_color(self.character_list[self.current_char_index].qt_css)
-        ) if self.character_list[self.current_char_index].qt_css is not None else ThemeManager.generate_stylesheet(
+            ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
+        ) if self.current_character.qt_css is not None else ThemeManager.generate_stylesheet(
             '#7799CC')
         danger_text = spec.danger_text or f"确定要执行 {spec.display_command} 吗？"
         WarningWindow(danger_text, css, callback).exec_()
 
     def _open_l2d_model_command_window(self) -> None:
         """打开 Live2D 模型选择窗口。"""
-        current_char_folder_name = self.character_list[self.audio_gen.current_character_index].character_folder_name
+        current_char_folder_name = self.current_character.character_folder_name
         change_l2d_model_window = ChangeL2DModelWindow(current_char_folder_name, self._send_l2d_model_payload)
         change_l2d_model_window.exec_()
 
@@ -2288,7 +3020,15 @@ class ChatGUI(QWidget):
                 logger.exception("切换模型失败，转换旧版 Live2D 配置文件时出错。")
                 return
             logger.info("成功转换旧版 Live2D 配置文件。")
-        self._send_internal_command_payload(f'change_l2d_model#{new_model_json}', force=True)
+        character_name = self.current_character.character_name
+        try:
+            self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
+            self.chat_manager.save()
+        except Exception:
+            self.QT_message_queue.put("切换模型失败，保存对话模型配置时出错。")
+            logger.exception("保存对话级 Live2D 模型配置失败。")
+            return
+        self._send_live2d_switch(character_name, new_model_json)
 
     def handle_user_input(self):
         self.setWindowTitle("数字小祥")
@@ -2296,16 +3036,27 @@ class ChatGUI(QWidget):
         user_this_turn_input=user_this_turn_input.strip(' ')
         if self._handle_command_before_send(user_this_turn_input):
             return
+        # 不可以在 AI 回复时补充内容
+        if self.is_chat_busy():
+            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再发送消息。")
+            return
         if user_this_turn_input=='':
             user_this_turn_input="（什么也没说）"
         current_text = self.messages_box.toPlainText()
-        if (self.is_display(current_text)
-            and self.qt2dp_queue.empty()):
-            self.qt2dp_queue.put(user_this_turn_input)
+        # 生成一条新的 turn_id，交给 dp_local2 标记当前对话
+        turn_id = uuid.uuid4().hex
+        # 开始一轮对话。开始后，不能切换、删除对话或清空对话内容。
+        self._start_active_turn(self.current_chat_id, turn_id, "llm")
+        self.qt2dp_queue.put({
+            "type": "send_message",
+            "chat_id": self.current_chat_id,
+            "turn_id": turn_id,
+            "text": user_this_turn_input,
+        })
         self.user_input.clear()
         user_input_no_display_list=[
                                     "0：deepseek-r1:14b（需安装Ollama与对应本地大模型，选项1相同）  1：deepseek-r1:32b  \n2：调用deepseek-V3官方API（无需安装Ollama，只需联网)",
-                                    f"{self.character_list[self.current_char_index].character_name}思考中...",'小祥思考中...']  # noqa
+                                    f"{self.current_character.character_name}思考中...",'小祥思考中...']  # noqa
         if self.is_display2(user_this_turn_input):     #判断是否显示的逻辑，比较笨的方法
             flag=True
             for x in user_input_no_display_list:
@@ -2440,17 +3191,15 @@ if __name__=='__main__':
     class DpChatMock:
         def __init__(self):
             self.chat_manager = chat_mgr
-            self.character_chats = [chat_mgr.get_or_create_chat_for_character(c) for c in characters]
+            self.current_chat_id = chat_mgr.ensure_default_single_character_chat(characters).chat_id
             self.if_generate_audio = False
-            self.current_char_index = 0
             self.audio_language_choice = "日英混合"
+            self.sakiko_state = True
     dp_chat_mock = DpChatMock()
 
     class _SharedBool:
         def __init__(self, value: bool):
             self.value = value
-
-    win = ChatGUI(dp2qt_queue, qt2dp_queue, QT_message_queue, characters, dp_chat_mock, audio_gen_mock,None,None,None,None)
 
     live2d_text_queue = Queue()
     is_display_text_value = _SharedBool(True)
@@ -2460,7 +3209,7 @@ if __name__=='__main__':
         qt2dp_queue,
         QT_message_queue,
         characters,
-        None,
+        dp_chat_mock,
         audio_gen_mock,
         live2d_text_queue,
         is_display_text_value,

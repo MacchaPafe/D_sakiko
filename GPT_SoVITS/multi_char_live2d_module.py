@@ -35,13 +35,13 @@ def _load_cjk_font(size: int, bold: bool = False) -> pygame.font.Font:
         pygame.font.init()
 
     # 1) 项目内置字体（相对仓库根目录）
-    # script_dir = os.path.dirname(os.path.abspath(__file__))
-    # project_root = os.path.abspath(os.path.join(script_dir, ".."))
-    # bundled_font_path = os.path.join(project_root, "font", "msyh.ttc")
-    # if os.path.exists(bundled_font_path):
-    #     font = pygame.font.Font(bundled_font_path, size)
-    #     font.set_bold(bold)
-    #     return font
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, ".."))
+    bundled_font_path = os.path.join(project_root, "font", "msyh.ttc")
+    if os.path.exists(bundled_font_path):
+        font = pygame.font.Font(bundled_font_path, size)
+        font.set_bold(bold)
+        return font
 
     # 2) 系统字体候选（尽量覆盖 Win/macOS/Linux）
     candidates = [

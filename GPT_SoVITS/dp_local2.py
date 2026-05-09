@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import random
 import re
 import time,os
+import uuid
+import threading
 from copy import deepcopy
 
 import json
-from typing import Sequence
+from queue import Empty
+from typing import Optional, Sequence
 
 import litellm
 
@@ -33,6 +38,9 @@ def completion(**kwargs):
     将 thinking 参数转换为 extra_body 中的 thinking 字段，格式为 {"type": "enabled"} 或 {"type": "disabled"}，因为 litellm 会忽略 thinking="disabled" 参数。
     """
     if "model" in kwargs and isinstance(kwargs["model"], str):
+        # 只查找 deepseek 系列模型
+        # 这里没有检验 base url，但愿第三方 API 提供 deepseek 的时候遵循和官网一样的 extra_body 协议……
+        # 理论上讲，第三方 API 的行为应该和官方一样才对
         if "deepseek" in kwargs["model"].lower():
             extra_body = kwargs.get("extra_body")
             if not isinstance(extra_body, dict):
@@ -40,21 +48,28 @@ def completion(**kwargs):
             else:
                 extra_body = dict(extra_body)
 
-
+            # 记录是否禁用了推理
+            thinking_disabled = False
             if "thinking" in kwargs:
                 thinking_value = kwargs.pop("thinking", None)
                 if isinstance(thinking_value, dict):
+                    thinking_type = thinking_value.get("type")
+                    thinking_disabled = thinking_type != "enabled"
                     extra_body["thinking"] = {
-                        "type": "enabled" if thinking_value.get("type") == "enabled" else "disabled"
+                        "type": "enabled" if thinking_type == "enabled" else "disabled"
                     }
-            
+
             if "reasoning_effort" in kwargs:
                 reasoning_effort = kwargs.pop("reasoning_effort")
-                if "thinking" in kwargs:
+                # 如果没有启用推理，不能加入 reasoning_effort 参数
+                if not thinking_disabled:
                     if reasoning_effort == "xhigh":
                         # DeepSeek 官方文档推荐用 max 代替 xhigh 强度
                         reasoning_effort = "max"
-                    extra_body["reasoning_effort"] = reasoning_effort 
+                    extra_body["reasoning_effort"] = reasoning_effort
+            # 保证不启用推理时一定没传入 reasoning_effort 参数
+            if thinking_disabled:
+                extra_body.pop("reasoning_effort", None)
             if extra_body:
                 kwargs["extra_body"] = extra_body
 
@@ -65,12 +80,10 @@ class DSLocalAndVoiceGen:
     def __init__(self,characters: Sequence[CharacterAttributes], chat_manager: ChatManager):
         self.character_list = characters
         self.chat_manager = chat_manager
-
-        # 为每个角色获取或创建对应的 Chat 对象
-        self.character_chats: list[Chat] = []
-        for character in self.character_list:
-            chat_obj = self.chat_manager.get_or_create_chat_for_character(character)
-            self.character_chats.append(chat_obj)
+        self.character_by_name: dict[str, CharacterAttributes] = {
+            character.character_name: character for character in self.character_list
+        }
+        self.current_chat_id = self.chat_manager.ensure_default_single_character_chat(self.character_list).chat_id
 
         # 语音输出的语言
         self.audio_language = ["中英混合", "日英混合"]
@@ -79,8 +92,6 @@ class DSLocalAndVoiceGen:
         self.model = __import__('live2d_1').get_live2d()
         # 是否为角色通过 GPT-SoVITS 模型生成音频
         self.if_generate_audio = True
-        # 当前对话的角色是角色列表中的第几个
-        self.current_char_index = 0
 
         # 当前角色是否是祥子
         self.if_sakiko = False
@@ -97,34 +108,85 @@ class DSLocalAndVoiceGen:
         )
         # 仅在本次程序运行期间使用的工具调用记录缓存；退出时会一并写入 Chat.meta。
         self._session_tool_call_records: list[dict] = []
+        # 标记为取消的对话轮次。涉及这些轮次的对话不会被处理。
+        self._cancelled_turns: set[tuple[str, str]] = set()
+        self._cancelled_turns_lock = threading.Lock()
         self.initial()
 
     def initial(self):
         # 聊天记录已经由 ChatManager 在初始化时加载完成，无需再从旧版 JSON 文件读取
-        if self.character_list[self.current_char_index].character_name == '祥子':
-            self.if_sakiko = True
-        else:
-            self.if_sakiko = False
+        self._refresh_current_character_flags()
         with open('./text/restr.rep', 'r', encoding='utf-8') as f:
             self.restr = f.read()
 
     @property
     def current_chat(self) -> Chat:
-        """获取当前角色对应的 Chat 对象"""
-        return self.character_chats[self.current_char_index]
+        """获取当前对话对象。"""
+        chat = self.chat_manager.get_chat_by_id(self.current_chat_id)
+        if chat is None:
+            chat = self.chat_manager.ensure_default_single_character_chat(self.character_list)
+            self.current_chat_id = chat.chat_id
+        return chat
 
-    def change_character(self):
-        if len(self.character_list) == 1:
-            self.current_char_index = 0
-        else:
-            if self.current_char_index < len(self.character_list) - 1:
-                self.current_char_index += 1
-            else:
-                self.current_char_index = 0
-        if self.character_list[self.current_char_index].character_name == '祥子':
-            self.if_sakiko = True
-        else:
+    def get_current_character(self) -> CharacterAttributes:
+        """
+        获取当前对话绑定的角色对象。
+        """
+        character_name = self.current_chat.get_character_name()
+        if character_name is None:
+            raise ValueError("当前对话无法确定角色。")
+        character = self.character_by_name.get(character_name)
+        if character is None:
+            raise ValueError(f"找不到当前对话绑定的角色：{character_name}")
+        return character
+
+    def switch_chat(self, chat_id: str) -> bool:
+        """
+        切换当前普通对话。
+        """
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            return False
+        self.current_chat_id = chat.chat_id
+        self._session_tool_call_records = [record.to_dict() for record in chat.get_tool_call_records()]
+        self._refresh_current_character_flags()
+        return True
+
+    def _refresh_current_character_flags(self) -> None:
+        """
+        根据当前对话角色刷新运行时角色标记。
+        """
+        try:
+            self.if_sakiko = self.get_current_character().character_name == "祥子"
+        except ValueError:
             self.if_sakiko = False
+
+    def request_cancel_turn(self, chat_id: str, turn_id: str) -> None:
+        """
+        线程安全地登记一轮对话取消请求。
+        """
+        if not chat_id or not turn_id:
+            return
+        with self._cancelled_turns_lock:
+            self._cancelled_turns.add((chat_id, turn_id))
+
+    def is_turn_cancelled(self, chat_id: str, turn_id: str) -> bool:
+        """
+        判断一轮对话是否已被前端请求取消。
+        """
+        if not chat_id or not turn_id:
+            return False
+        with self._cancelled_turns_lock:
+            return (chat_id, turn_id) in self._cancelled_turns
+
+    def clear_cancelled_turn(self, chat_id: str, turn_id: str) -> None:
+        """
+        清理已经完成收尾的取消请求，将其从“已取消列表”中移除。
+        """
+        if not chat_id or not turn_id:
+            return
+        with self._cancelled_turns_lock:
+            self._cancelled_turns.discard((chat_id, turn_id))
 
     def trim_list_to_340kb(self, data_list):
         working_list = deepcopy(data_list)
@@ -435,8 +497,78 @@ class DSLocalAndVoiceGen:
             time.sleep(0.3)
 
     @staticmethod
+    def _clear_text_generating_flag_if_needed(is_text_generating_queue) -> None:
+        """
+        取消收尾时，确保 Live2D 不会一直停留在思考状态。
+        """
+        try:
+            is_text_generating_queue.get_nowait()
+        except Empty:
+            return
+        except Exception:
+            return
+
+    @staticmethod
     def _emit_tool_ui_event(dp2qt_queue, prefix: str, payload: dict):
-        dp2qt_queue.put(prefix + json.dumps(payload, ensure_ascii=False))
+        event_type = "tool_call_started" if prefix == TOOL_CALL_START_EVENT_PREFIX else "tool_call_updated"
+        event_payload = dict(payload)
+        event_payload["type"] = event_type
+        dp2qt_queue.put(event_payload)
+
+    def _build_model_response_payload(
+        self,
+        turn_id: str,
+        character_name: str,
+        segments: list[dict[str, object]],
+        turn_complete: bool = True,
+    ) -> dict[str, object]:
+        """
+        构造发送给主线程语音合成链路的模型回复事件。
+
+        :param turn_id: 当前轮次对话的 id（用户每在输入框输入一次文字并发送，算作一轮对话）
+        :param character_name: 当前角色的名称
+        :param segments: 本次模型回复的文本段落列表，每个段落包含 text、translation、emotion 等字段
+        :param turn_complete: 这轮消息是否结束了。对于模型在工具调用时发送的过渡消息，该值为 False；对于正常的完整回复，该值为 True
+        """
+        return {
+            "type": "model_response",
+            "chat_id": self.current_chat.chat_id,
+            "turn_id": turn_id,
+            "character_name": character_name,
+            "sakiko_state": self.sakiko_state,
+            "audio_language_choice": self.audio_language_choice,
+            "if_generate_audio": self.if_generate_audio,
+            "turn_complete": turn_complete,
+            "segments": segments,
+        }
+
+    def _emit_turn_complete(self, dp2qt_queue, chat_id: str, turn_id: str, status: str = "ok") -> None:
+        """
+        通知 UI 某一轮对话已经结束。
+        """
+        dp2qt_queue.put({
+            "type": "assistant_turn_complete",
+            "chat_id": chat_id,
+            "turn_id": turn_id,
+            "status": status,
+        })
+        # 如果某轮对话被标记为取消且调用了本函数，那么说明整轮对话处理流程完成了
+        # 直接从取消列表中删掉这轮对话。
+        if status in {"cancelled", "error"}:
+            self.clear_cancelled_turn(chat_id, turn_id)
+
+    @staticmethod
+    def _segment_from_message(message_index: int, message: Message, force_no_audio: bool) -> dict[str, object]:
+        """
+        从一条 assistant 消息构造跨线程片段数据。
+        """
+        return {
+            "message_index": message_index,
+            "text": message.text,
+            "translation": message.translation,
+            "emotion": message.emotion.as_label(),
+            "force_no_audio": force_no_audio,
+        }
 
     def _record_tool_call_started(
         self,
@@ -458,6 +590,7 @@ class DSLocalAndVoiceGen:
         )
         self.current_chat.append_tool_call_record(record)
         one = record.to_dict()
+        one["chat_id"] = self.current_chat.chat_id
 
         self._session_tool_call_records.append(dict(one))
         self._session_tool_call_records = self._session_tool_call_records[-300:]
@@ -479,6 +612,7 @@ class DSLocalAndVoiceGen:
                 one.updated_at = int(time.time())
                 self.current_chat.update_tool_call_record(one)
                 payload = one.to_dict()
+                payload["chat_id"] = self.current_chat.chat_id
                 self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_UPDATE_EVENT_PREFIX, payload)
 
                 for j in range(len(self._session_tool_call_records) - 1, -1, -1):
@@ -488,9 +622,12 @@ class DSLocalAndVoiceGen:
                         break
                 break
 
-    def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue):
+    def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue, chat_id: str, turn_id: str):
         def _callback(interim_text: str, tool_calls=None, is_placeholder: bool = False):
             #print("------------\n\n\n","收到 interim callback，文本内容：", interim_text)
+            # 如果收到取消信息，则不再让 LLM 生成，直接返回。
+            if self.is_turn_cancelled(chat_id, turn_id):
+                return
             cleaned = (interim_text or "").strip()
             raw_tool_calls = tool_calls if isinstance(tool_calls, list) else []
             has_tool_calls = len(raw_tool_calls) > 0
@@ -500,7 +637,7 @@ class DSLocalAndVoiceGen:
                 return
 
             fallback_no_audio = has_tool_calls and bool(is_placeholder)
-            character_name = self.character_list[self.current_char_index].character_name
+            character_name = self.get_current_character().character_name
             added_msg_indices: list[int] = []
             try:
                 json_str = cleaned
@@ -560,13 +697,160 @@ class DSLocalAndVoiceGen:
 
             # main2.main_thread 中 text_queue 与 is_text_generating_queue 是配对消费关系。
             is_text_generating_queue.put('no_complete')
-            if fallback_no_audio:
-                text_queue.put(NO_AUDIO_TEXT_EVENT_PREFIX + cleaned)
-            else:
-                text_queue.put(cleaned)
+            segments = [
+                self._segment_from_message(index, self.current_chat.message_list[index], fallback_no_audio)
+                for index in added_msg_indices
+            ]
+            # 这条消息是 AI 生成的工具调用过渡消息，不是对话结束
+            # 手动设置 turn_complete=False
+            text_queue.put(self._build_model_response_payload(turn_id, character_name, segments, turn_complete=False))
             self._wait_audio_turn_complete(is_audio_play_complete)
 
         return _callback
+
+    def _normalize_input_command(self, raw_input: object) -> Optional[dict[str, object]]:
+        """
+        将旧字符串输入和新结构化输入统一成命令字典。
+        """
+        if isinstance(raw_input, dict):
+            return raw_input
+        if not isinstance(raw_input, str):
+            return None
+
+        text = raw_input.strip()
+        if text == "bye":
+            return {"type": "exit"}
+        if text in {"mask", "conv", "v", "s", "clr", "l", "start_talking", "stop_talking", "change_l2d_background"}:
+            return {"type": "legacy_command", "command": text, "chat_id": self.current_chat.chat_id}
+        if text.startswith("change_l2d_model"):
+            return {"type": "legacy_command", "command": text, "chat_id": self.current_chat.chat_id}
+        return {"type": "send_message", "chat_id": self.current_chat.chat_id, "text": raw_input}
+
+    def _require_current_chat(self, command: dict[str, object], message_queue) -> Optional[Chat]:
+        """
+        校验命令的 chat_id 是否存在且等于当前对话；不一致时拒绝执行。
+        """
+        chat_id = command.get("chat_id")
+        if not isinstance(chat_id, str) or not chat_id:
+            message_queue.put("命令缺少对话编号，已拒绝执行。")
+            logger.warning("拒绝缺少 chat_id 的命令：%s", command)
+            return None
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            message_queue.put("找不到目标对话，已拒绝执行。")
+            logger.warning("拒绝指向不存在 chat_id 的命令：%s", command)
+            return None
+        if chat_id != self.current_chat_id:
+            message_queue.put("当前对话与命令目标不一致，已拒绝执行。")
+            logger.warning("拒绝跨当前对话执行的命令：%s，current_chat_id=%s", command, self.current_chat_id)
+            return None
+        return chat
+
+    def _handle_non_message_command(
+        self,
+        command: dict[str, object],
+        text_queue,
+        message_queue,
+        char_is_converted_queue,
+        change_char_queue,
+        dp2qt_queue,
+    ) -> bool:
+        """
+        处理不需要调用大模型的命令；返回 True 表示本轮已经处理完毕。
+        """
+        command_type = str(command.get("type") or "")
+        if command_type == "exit":
+            text_queue.put("bye")
+            return True
+
+        if command_type == "switch_chat":
+            chat_id = command.get("chat_id")
+            if isinstance(chat_id, str) and self.switch_chat(chat_id):
+                character = self.get_current_character()
+                message_queue.put(f"已切换为对话：{self.current_chat.name}")
+                dp2qt_queue.put({"type": "chat_switched", "chat_id": chat_id, "character_name": character.character_name})
+            else:
+                message_queue.put("切换对话失败：找不到目标对话。")
+            return True
+
+        if command_type == "send_message":
+            return False
+
+        chat = self._require_current_chat(command, message_queue)
+        if chat is None:
+            return True
+
+        if command_type in {"clear_chat", "toggle_voice", "toggle_language"}:
+            legacy_command_by_type = {
+                "clear_chat": "clr",
+                "toggle_voice": "v",
+                "toggle_language": "l",
+            }
+            command = {
+                "type": "legacy_command",
+                "command": legacy_command_by_type[command_type],
+                "chat_id": chat.chat_id,
+            }
+            command_type = "legacy_command"
+
+        if command_type != "legacy_command":
+            message_queue.put("未知命令，已拒绝执行。")
+            logger.warning("未知 qt2dp 命令：%s", command)
+            return True
+
+        legacy_command = str(command.get("command") or "")
+        if legacy_command == "mask":
+            if self.if_sakiko:
+                char_is_converted_queue.put("maskoff")
+            else:
+                message_queue.put("祥子好像不在<w>")
+            time.sleep(2)
+            return True
+        if legacy_command == "conv":
+            if self.if_sakiko:
+                self.sakiko_state = not self.sakiko_state
+                message_queue.put("已切换为" + ("黑祥" if self.sakiko_state else "白祥"))
+                char_is_converted_queue.put(self.sakiko_state)
+            else:
+                message_queue.put("祥子好像不在<w>")
+            time.sleep(2)
+            return True
+        if legacy_command == "v":
+            if not self.get_current_character().has_valid_voice_model():
+                message_queue.put("当前角色无法进行语音合成")
+                logger.error("当前角色无法开启语音合成，缺少 GPT-SoVITS 模型或参考音频文件。")
+                time.sleep(2)
+                return True
+            self.if_generate_audio = not self.if_generate_audio
+            message_queue.put("已" + ("开启" if self.if_generate_audio else "关闭") + "语音合成")
+            time.sleep(2)
+            return True
+        if legacy_command == "s":
+            message_queue.put("请在右侧对话列表中切换对话。")
+            time.sleep(1)
+            return True
+        if legacy_command == "clr":
+            self.current_chat.clear_message_list()
+            self._session_tool_call_records.clear()
+            message_queue.put("已清空当前对话的聊天记录")
+            time.sleep(2)
+            return True
+        if legacy_command in {"start_talking", "stop_talking", "change_l2d_background"}:
+            change_char_queue.put({"type": legacy_command})
+            return True
+        if legacy_command.startswith("change_l2d_model"):
+            message_queue.put("参数化 Live2D 模型命令已停用，请使用模型选择界面。")
+            logger.warning("拒绝旧 Live2D 模型命令：%s", legacy_command)
+            return True
+        if legacy_command == "l":
+            self.audio_language_choice = "中英混合" if self.audio_language_choice == "日英混合" else "日英混合"
+            message_queue.put("已切换语言为：" + ("中文" if self.audio_language_choice == "中英混合" else "日文"))
+            time.sleep(2)
+            return True
+
+        message_queue.put("未知命令，已拒绝执行。")
+        logger.warning("未知 legacy 命令：%s", legacy_command)
+        return True
 
     def text_generator(self,
                        text_queue,
@@ -586,10 +870,21 @@ class DSLocalAndVoiceGen:
         
         # --- 注册依赖前端环境的动态工具 ---
         def _get_char_folder() -> str:
-            return self.character_list[self.current_char_index].character_folder_name
+            return self.get_current_character().character_folder_name
 
         def _change_live2d_model(new_model_json: str) -> None:
-            change_char_queue.put(f'change_l2d_model#{new_model_json}')
+            character_name = self.get_current_character().character_name
+            try:
+                self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
+                self.chat_manager.save()
+            except Exception:
+                logger.exception("工具调用切换 Live2D 模型失败")
+                return
+            change_char_queue.put({
+                "type": "switch_live2d",
+                "character_name": character_name,
+                "model_json": new_model_json,
+            })
 
         from chat.tool_calling import register_live2d_tools, register_reminder_tool, register_lottery_tool
 
@@ -632,77 +927,50 @@ class DSLocalAndVoiceGen:
                 time.sleep(1)
             # --------------------前面的一些判断逻辑
 
-            if user_input == 'bye':
-                text_queue.put('bye')
-                break
-
-            elif user_input=='mask':
-                if self.if_sakiko:
-                    char_is_converted_queue.put('maskoff')
-                else:
-                    message_queue.put("祥子好像不在<w>")
-                time.sleep(2)
+            command = self._normalize_input_command(user_input)
+            if command is None:
+                message_queue.put("无法识别输入命令，已忽略。")
                 continue
-            elif user_input=='conv':
-                if self.if_sakiko:
-                    self.sakiko_state=not self.sakiko_state
-                    message_queue.put("已切换为" + ("黑祥" if self.sakiko_state else "白祥"))
-                    char_is_converted_queue.put(self.sakiko_state)
-                else:
-                    message_queue.put("祥子好像不在<w>")
-                time.sleep(2)
-                continue
-            elif user_input == 'v':
-                if not self.character_list[self.current_char_index].has_valid_voice_model():
-                    message_queue.put("当前角色无法进行语音合成")
-                    logger.error("当前角色无法开启语音合成，缺少 GPT-SoVITS 模型或参考音频文件。")
-                    time.sleep(2)
-                    continue
-
-                self.if_generate_audio=not self.if_generate_audio
-                message_queue.put("已"+("开启" if self.if_generate_audio else "关闭")+"语音合成")
-                time.sleep(2)
-                continue
-            elif user_input=='s':
-                self.change_character()
-                message_queue.put(f"已切换为：{self.character_list[self.current_char_index].character_name}\n正在加载GPT-SoVITS模型...")
-                change_char_queue.put('yes')
-                dp2qt_queue.put("changechange")
-                AudioGenerator.change_character()
-                time.sleep(0.1)
-                continue
-            elif user_input=='clr':
-                self.current_chat.clear_message_list()
-                self._session_tool_call_records.clear()
-                message_queue.put("已清空角色的聊天记录")
-                time.sleep(2)
-                continue
-            elif user_input in ['start_talking','stop_talking']:
-                change_char_queue.put(user_input)
-                continue
-            elif user_input == 'change_l2d_background':
-                change_char_queue.put('change_l2d_background')
-                continue
-            elif user_input.startswith('change_l2d_model'):
-                change_char_queue.put(user_input)
+            if self._handle_non_message_command(
+                command=command,
+                text_queue=text_queue,
+                message_queue=message_queue,
+                char_is_converted_queue=char_is_converted_queue,
+                change_char_queue=change_char_queue,
+                dp2qt_queue=dp2qt_queue,
+            ):
+                if command.get("type") == "exit":
+                    break
                 continue
 
-            if user_input == 'l':
-                self.audio_language_choice = "中英混合" if self.audio_language_choice == '日英混合' else '日英混合'
-                message_queue.put("已切换语言为："+("中文" if self.audio_language_choice=='中英混合' else "日文"))
-                time.sleep(2)
+            chat = self._require_current_chat(command, message_queue)
+            if chat is None:
                 continue
 
             # 保存原始用户输入（不含指令后缀），用于存储到 Chat 中
-            raw_user_input = user_input
+            command_text = command.get("text")
+            raw_user_input = str(command_text if command_text is not None else "")
+            if not raw_user_input:
+                raw_user_input = "（什么也没说）"
+            # 获得 qtUI 给我们的 turn id
+            # 如果 qtUI 没有提供 turn_id，我们就自己生成一个，保证每轮对话都有唯一 id 供后续追踪和关联工具调用使用。
+            raw_turn_id = command.get("turn_id")
+            turn_id = raw_turn_id if isinstance(raw_turn_id, str) and raw_turn_id else uuid.uuid4().hex
+            active_chat_id = chat.chat_id
+            # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
+            # 不过一般人手速没这么快吧（
+            if self.is_turn_cancelled(active_chat_id, turn_id):
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
+                continue
 
+            llm_user_input = raw_user_input
             if self.if_sakiko:
                 if self.sakiko_state:
-                    user_input = user_input +'（本句话用黑祥语气回答!）'
+                    llm_user_input = llm_user_input + '（本句话用黑祥语气回答!）'
                 else:
-                    user_input = user_input + '（本句话用白祥语气回答!）'
+                    llm_user_input = llm_user_input + '（本句话用白祥语气回答!）'
 
-            user_input = user_input + "\n"  +"\n" + self._build_every_round_instruction()  # 在用户输入后追加格式要求信息，减少上下文稀释的影响
+            llm_user_input = llm_user_input + "\n" + self.restr + "\n" + self._build_every_round_instruction()  # 在用户输入后追加格式要求信息，减少上下文稀释的影响
             # 将原始用户输入（不含指令后缀）存入 Chat
             user_msg = Message(
                 character_name="User",
@@ -714,14 +982,33 @@ class DSLocalAndVoiceGen:
             self.current_chat.add_message(user_msg)
 
             # 构建 LLM 请求：使用 Chat.build_llm_query 生成基础历史，然后修改最后一条用户消息为带指令后缀的版本
-            character_name = self.character_list[self.current_char_index].character_name
+            character_name = self.get_current_character().character_name
             to_llm_msg = self.current_chat.build_llm_query(perspective=character_name, is_simplify=True)  # 生成简化版本的消息列表，减少不必要的字段
 
             # 将最后一条 user 消息的 content 替换为带指令后缀的版本
             for i in range(len(to_llm_msg) - 1, -1, -1):
                 if to_llm_msg[i]["role"] == "user":
-                    # 找到最后一条 user 消息，替换其中当前用户输入部分
-                    to_llm_msg[i]["content"] = to_llm_msg[i]["content"].replace(raw_user_input, user_input)
+                    # 找到最后一条 user 消息，只替换本轮新追加的用户输入部分。
+                    content = to_llm_msg[i]["content"]
+                    raw_marker = f"[User]: {raw_user_input}"
+                    llm_marker = f"[User]: {llm_user_input}"
+                    marker_idx = content.rfind(raw_marker)
+                    if marker_idx >= 0:
+                        to_llm_msg[i]["content"] = (
+                            content[:marker_idx]
+                            + llm_marker
+                            + content[marker_idx + len(raw_marker):]
+                        )
+                    else:
+                        fallback_idx = content.rfind(raw_user_input)
+                        if fallback_idx >= 0:
+                            to_llm_msg[i]["content"] = (
+                                content[:fallback_idx]
+                                + llm_user_input
+                                + content[fallback_idx + len(raw_user_input):]
+                            )
+                        else:
+                            logger.warning("未能在 LLM 查询中定位本轮用户输入：%s", raw_user_input)
                     break
 
             # 添加系统提示词到 system prompt
@@ -749,6 +1036,8 @@ class DSLocalAndVoiceGen:
                     is_audio_play_complete=is_audio_play_complete,
                     is_text_generating_queue=is_text_generating_queue,
                     dp2qt_queue=dp2qt_queue,
+                    chat_id=active_chat_id,
+                    turn_id=turn_id,
                 )
                 
                 # 启动带有工具调用能力的 Agent 运行循环
@@ -763,6 +1052,12 @@ class DSLocalAndVoiceGen:
                     },
                     on_interim_message=interim_callback,
                 )
+
+                # 在 AI 生成结束后，如果我们发现这轮对话在过程中被标记为取消了（可能用户在等待过程中点了取消按钮），就不处理结果了，直接进入下一轮循环等待新输入。
+                if self.is_turn_cancelled(active_chat_id, turn_id):
+                    self._clear_text_generating_flag_if_needed(is_text_generating_queue)
+                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
+                    continue
 
                 for one_tool_exec in runtime_result.tool_execution_records:
                     self._record_tool_call_completed(dp2qt_queue, one_tool_exec)
@@ -786,6 +1081,7 @@ class DSLocalAndVoiceGen:
                     "请求超时，请检查网络连接或稍后再试。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.AuthenticationError as e:
                 self._report_model_exception(
@@ -794,6 +1090,7 @@ class DSLocalAndVoiceGen:
                     "API Key 认证失败，请检查 Key 是否正确。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.RateLimitError as e:
                 self._report_model_exception(
@@ -802,6 +1099,7 @@ class DSLocalAndVoiceGen:
                     "请求过于频繁，请稍后再试。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.APIConnectionError as e:
                 self._report_model_exception(
@@ -810,6 +1108,7 @@ class DSLocalAndVoiceGen:
                     "与大模型网站建立连接失败，请检查网络。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             # 特殊捕获一个 API Key 余额不足的错误
             except litellm.exceptions.BadRequestError as e:
@@ -829,6 +1128,7 @@ class DSLocalAndVoiceGen:
                         f"未知的请求错误，状态码：{getattr(e, 'status_code', '未知')}。",
                         e,
                     )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except litellm.exceptions.PermissionDeniedError as e:
                 self._report_model_exception(
@@ -837,6 +1137,7 @@ class DSLocalAndVoiceGen:
                     "无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             except Exception as e:
                 self._report_model_exception(
@@ -845,6 +1146,7 @@ class DSLocalAndVoiceGen:
                     "出现了未知错误，请再试一次。",
                     e,
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
 
             if not cleaned_text_of_model_response:
@@ -853,6 +1155,7 @@ class DSLocalAndVoiceGen:
                     is_text_generating_queue,
                     "模型API返回内容为空，请检查网络，然后重试一下吧"
                 )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
             # 解析 LLM 回复的 JSON 格式，提取实际文本、翻译和情感
             # 现在 LLM 可能返回 JSON 数组（多段回复），每段创建一个 Message
@@ -862,6 +1165,7 @@ class DSLocalAndVoiceGen:
                     json_str = re.sub(r'^```(?:json)?\s*', '', json_str)
                     json_str = re.sub(r'\s*```$', '', json_str)
                 parsed_data = json.loads(json_str)
+                added_msg_indices: list[int] = []
 
                 if isinstance(parsed_data, list):
                     # JSON 数组：每个元素 → 一个 Message
@@ -877,6 +1181,7 @@ class DSLocalAndVoiceGen:
                             audio_path="" if self.if_generate_audio else "NO_AUDIO"  # 会在 qtUI 中覆盖
                         )
                         self.current_chat.add_message(msg)
+                        added_msg_indices.append(len(self.current_chat.message_list) - 1)
                 elif isinstance(parsed_data, dict):
                     # JSON 单对象
                     msg = Message(
@@ -887,6 +1192,7 @@ class DSLocalAndVoiceGen:
                         audio_path="" if self.if_generate_audio else "NO_AUDIO"
                     )
                     self.current_chat.add_message(msg)
+                    added_msg_indices.append(len(self.current_chat.message_list) - 1)
                 else:
                     raise ValueError("Unexpected JSON type")
             except (json.JSONDecodeError, KeyError, AttributeError, ValueError):
@@ -899,8 +1205,13 @@ class DSLocalAndVoiceGen:
                     audio_path="" if self.if_generate_audio else "NO_AUDIO"
                 )
                 self.current_chat.add_message(assistant_msg)
+                added_msg_indices = [len(self.current_chat.message_list) - 1]
 
-            text_queue.put(cleaned_text_of_model_response)
+            segments = [
+                self._segment_from_message(index, self.current_chat.message_list[index], not self.if_generate_audio)
+                for index in added_msg_indices
+            ]
+            text_queue.put(self._build_model_response_payload(turn_id, character_name, segments))
 
             while is_audio_play_complete.get() is None:
                 time.sleep(0.5)		#不加就无法正常运行

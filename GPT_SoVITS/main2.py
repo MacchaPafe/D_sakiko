@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 
-from queue import Queue
+from queue import Queue, Empty
 import threading
 import multiprocessing
 import time
@@ -32,6 +34,227 @@ faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 main_logger = get_logger(__name__)
 
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
+
+
+def get_character_by_name(character_name: str) -> character.CharacterAttributes | None:
+    """按角色名查找角色对象。"""
+    for one_character in characters:
+        if one_character.character_name == character_name:
+            return one_character
+    return None
+
+
+def build_assistant_segment_event(
+    payload: dict[str, object],
+    segment: dict[str, object],
+    audio_path: str,
+) -> dict[str, object]:
+    """构造发给 qtUI 的 assistant 片段事件。"""
+    raw_message_index = segment.get("message_index")
+    message_index = raw_message_index if isinstance(raw_message_index, int) else -1
+    return {
+        "type": "assistant_segment_ready",
+        "chat_id": str(payload.get("chat_id") or ""),
+        "turn_id": str(payload.get("turn_id") or ""),
+        "message_index": message_index,
+        "character_name": str(payload.get("character_name") or ""),
+        "text": str(segment.get("text") or ""),
+        "translation": str(segment.get("translation") or ""),
+        "emotion": str(segment.get("emotion") or "LABEL_0"),
+        "audio_path": audio_path,
+    }
+
+
+def build_assistant_turn_phase_event(payload: dict[str, object], phase: str) -> dict[str, object]:
+    """构造发给 qtUI 的对话轮次阶段事件。"""
+    segments = payload.get("segments")
+    message_indices = []
+    if isinstance(segments, list):
+        for segment in segments:
+            if isinstance(segment, dict) and isinstance(segment.get("message_index"), int):
+                message_indices.append(segment["message_index"])
+    return {
+        "type": "assistant_turn_phase",
+        "chat_id": str(payload.get("chat_id") or ""),
+        "turn_id": str(payload.get("turn_id") or ""),
+        "phase": phase,
+        "message_indices": message_indices,
+    }
+
+
+def build_assistant_turn_complete_event(payload: dict[str, object], status: str = "ok") -> dict[str, object]:
+    """构造发给 qtUI 的对话轮次完成事件。"""
+    return {
+        "type": "assistant_turn_complete",
+        "chat_id": str(payload.get("chat_id") or ""),
+        "turn_id": str(payload.get("turn_id") or ""),
+        "status": status,
+    }
+
+
+def is_payload_turn_cancelled(payload: dict[str, object]) -> bool:
+    """判断当前 payload 对应轮次是否已被前端取消。"""
+    chat_id = str(payload.get("chat_id") or "")
+    turn_id = str(payload.get("turn_id") or "")
+    if not chat_id or not turn_id or not hasattr(dp_chat, "is_turn_cancelled"):
+        return False
+    return bool(dp_chat.is_turn_cancelled(chat_id, turn_id))
+
+
+def mark_segments_no_audio(payload: dict[str, object], segments_raw: list[object], start_index: int = 0) -> None:
+    """将尚未生成语音的段落标记为无语音。"""
+    chat_id = str(payload.get("chat_id") or "")
+    chat = dp_chat.chat_manager.get_chat_by_id(chat_id)
+    if chat is None:
+        return
+    for segment_raw in segments_raw[start_index:]:
+        if not isinstance(segment_raw, dict):
+            continue
+        raw_message_index = segment_raw.get("message_index")
+        if not isinstance(raw_message_index, int):
+            continue
+        if 0 <= raw_message_index < len(chat.message_list):
+            msg = chat.message_list[raw_message_index]
+            if not msg.audio_path:
+                msg.audio_path = "NO_AUDIO"
+
+
+def update_segment_audio_path(payload: dict[str, object], segment_raw: dict[str, object], audio_path: str) -> None:
+    """直接回填某个段落的音频路径，便于取消后保留已生成语音。"""
+    chat_id = str(payload.get("chat_id") or "")
+    chat = dp_chat.chat_manager.get_chat_by_id(chat_id)
+    if chat is None:
+        return
+    raw_message_index = segment_raw.get("message_index")
+    if not isinstance(raw_message_index, int):
+        return
+    if 0 <= raw_message_index < len(chat.message_list):
+        msg = chat.message_list[raw_message_index]
+        msg.audio_path = audio_path
+        msg.translation = str(segment_raw.get("translation") or msg.translation)
+
+
+def clear_text_generating_flag_if_needed() -> None:
+    """取消或异常收尾时，确保 Live2D 不会一直停留在思考状态。"""
+    try:
+        is_text_generating_queue.get_nowait()
+    except Empty:
+        return
+    except Exception:
+        return
+
+
+def handle_model_response_payload(payload: dict[str, object]) -> None:
+    """处理结构化模型回复事件，逐段合成语音并通知 UI。"""
+    character_name = str(payload.get("character_name") or "")
+    current_character = get_character_by_name(character_name)
+    segments_raw = payload.get("segments")
+    # 当前的模型回复是否是最终回复（完成整段对话）
+    turn_complete = bool(payload.get("turn_complete", True))
+    if current_character is None or not isinstance(segments_raw, list):
+        main_logger.warning("收到无效模型回复 payload：%s", payload)
+        is_audio_play_complete.put("yes")
+        if turn_complete:
+            dp2qt_queue.put(build_assistant_turn_complete_event(payload, "error"))
+        return
+
+    audio_language_choice = str(payload.get("audio_language_choice") or dp_chat.audio_language_choice)
+    sakiko_state = bool(payload.get("sakiko_state", dp_chat.sakiko_state))
+    if_generate_audio = bool(payload.get("if_generate_audio", dp_chat.if_generate_audio))
+    turn_status = "ok"
+
+    try:
+        # 转阶段：要求 qtUI 更新当前阶段为语音生成
+        dp2qt_queue.put(build_assistant_turn_phase_event(payload, "tts"))
+        for index, segment_raw in enumerate(segments_raw):
+            if not isinstance(segment_raw, dict):
+                continue
+            # 如果用户要求取消，则终止这个语音生成流程
+            if is_payload_turn_cancelled(payload):
+                turn_status = "cancelled"
+                mark_segments_no_audio(payload, segments_raw, index)
+                break
+            text = str(segment_raw.get("text") or "")
+            translation = str(segment_raw.get("translation") or "")
+            emotion_label = str(segment_raw.get("emotion") or "LABEL_0")
+            force_no_audio = bool(segment_raw.get("force_no_audio", False)) or not if_generate_audio
+
+            if force_no_audio:
+                if index == 0:
+                    is_text_generating_queue.get()
+                audio_file_path_queue.put("../reference_audio/silent_audio/silence.wav")
+                dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, "NO_AUDIO"))
+                emotion_queue.put(emotion_label)
+                continue
+
+            QT_message_queue.put(f"正在合成语音...{index + 1}/{len(segments_raw)}")
+            cleaned_text = clean_text_for_audio(text)
+            audio_generate_count = 1
+            generated_audio_path = "../reference_audio/silent_audio/silence.wav"
+
+            while audio_generate_count <= 2:
+                try:
+                    generated_audio_path = audio_gen.generate_audio_for_character_sync(
+                        cleaned_text,
+                        current_character,
+                        sakiko_state,
+                        audio_language_choice,
+                    )
+                    break
+                except Exception:
+                    QT_message_queue.put("语音合成出错，重试中")
+                    audio_generate_count += 1
+                    main_logger.exception("语音合成错误")
+                    time.sleep(1)
+
+            if index == 0:
+                is_text_generating_queue.get()
+
+            if is_payload_turn_cancelled(payload):
+                turn_status = "cancelled"
+                mark_segments_no_audio(payload, segments_raw, index)
+                break
+
+            if audio_generate_count > 2:
+                generated_audio_path = "../reference_audio/silent_audio/silence.wav"
+
+            # 在播放期间如果用户要求取消，则标记剩余段落无语音并终止流程
+            while not motion_complete_value.value:
+                if is_payload_turn_cancelled(payload):
+                    turn_status = "cancelled"
+                    mark_segments_no_audio(payload, segments_raw, index)
+                    break
+                time.sleep(0.2)
+            if turn_status == "cancelled":
+                break
+
+            audio_gen.audio_file_path = generated_audio_path
+            update_segment_audio_path(payload, segment_raw, generated_audio_path)
+            audio_file_path_queue.put(generated_audio_path)
+
+            while not motion_complete_value.value:
+                if is_payload_turn_cancelled(payload):
+                    turn_status = "cancelled"
+                    mark_segments_no_audio(payload, segments_raw, index + 1)
+                    break
+                time.sleep(0.5)
+            if turn_status == "cancelled":
+                break
+
+            dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, generated_audio_path))
+            emotion_queue.put(emotion_label)
+    except Exception:
+        turn_status = "error"
+        QT_message_queue.put("语音合成流程出错。")
+        main_logger.exception("处理模型回复 payload 时出错")
+    finally:
+        if turn_status in {"cancelled", "error"}:
+            clear_text_generating_flag_if_needed()
+        is_audio_play_complete.put("yes")
+        if turn_complete:
+            dp2qt_queue.put(build_assistant_turn_complete_event(payload, turn_status))
+        if turn_status == "cancelled" and hasattr(dp_chat, "clear_cancelled_turn"):
+            dp_chat.clear_cancelled_turn(str(payload.get("chat_id") or ""), str(payload.get("turn_id") or ""))
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []
@@ -135,6 +358,14 @@ def main_thread():
         if not text_queue.empty():
 
             this_turn_response=text_queue.get()
+            if isinstance(this_turn_response, dict):
+                response_type = str(this_turn_response.get("type") or "")
+                if response_type == "model_response":
+                    handle_model_response_payload(this_turn_response)
+                    continue
+                if response_type == "exit":
+                    this_turn_response = "bye"
+
             if this_turn_response=='bye':
                 emotion_queue.put('bye')    #退出live2D进程
                 dp2qt_queue.put("（再见）")
@@ -179,7 +410,13 @@ def main_thread():
 
                 while audio_generate_count <= 2:
                     try:
-                        audio_gen.audio_file_path = audio_gen.generate_current_character_audio_sync(cleaned_text, dp_chat)
+                        current_character = dp_chat.get_current_character()
+                        audio_gen.audio_file_path = audio_gen.generate_audio_for_character_sync(
+                            cleaned_text,
+                            current_character,
+                            dp_chat.sakiko_state,
+                            dp_chat.audio_language_choice,
+                        )
                         break
                     except Exception as e:
                         QT_message_queue.put("语音合成出错，重试中")
@@ -243,6 +480,7 @@ if __name__=='__main__':
 
     # 初始化全局 ChatManager（自动处理旧版聊天记录迁移）
     chat_manager = get_chat_manager()
+    chat_manager.ensure_default_single_character_chat(characters)
 
     #模块间传参队列
     text_queue=Queue()
@@ -348,7 +586,8 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          emotion_model=emotion_model)
+                          emotion_model=emotion_model,
+                          change_char_queue=change_char_queue)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
