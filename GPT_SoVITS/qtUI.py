@@ -13,7 +13,7 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
-    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox
+    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QApplication
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette, QColor, QImage, QPixmap, QCursor, QPainter
 
@@ -30,6 +30,12 @@ from character import CharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
+from ui_main.components.update_dialog import UpdateDialog
+from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
+from update.update_checker import get_configured_index_urls
+from update.update_launcher import build_restart_command, launch_update_process
+from update.update_models import DownloadedPatch, UpdatePlan
+from update.update_paths import get_app_root
 from input_commands import (
     CommandSpec,
     InputCommandMatcher,
@@ -1347,6 +1353,12 @@ class ChatGUI(QWidget):
         self._message_command_handlers: dict[str, callable] = {}
         self._lottery_dialog_ref = None
         self._register_message_command_handler(LOTTERY_UI_EVENT_PREFIX, self._handle_lottery_ui_command)
+        self.update_check_thread: UpdateCheckThread | None = None
+        self.update_download_thread: UpdateDownloadThread | None = None
+        self.update_notes_thread: ReleaseNotesThread | None = None
+        self.update_dialog: UpdateDialog | None = None
+        self.pending_update_plan: UpdatePlan | None = None
+        self.downloaded_update_patches: list[DownloadedPatch] = []
         #----------------------------------------------------------
         # 获取当前主题色
         self._current_theme_color = self._get_theme_color()
@@ -1400,6 +1412,11 @@ class ChatGUI(QWidget):
         self.more_function_button.setIconSize(QSize(int(self.screen.height()*0.04*0.6),int(self.screen.height()*0.04*0.6)))
         self.more_function_button.setToolTip('更多功能')
         self.more_function_button.clicked.connect(self.open_more_function_window)  # noqa
+        self.update_button = QToolButton()
+        self.update_button.setText("更新")
+        self.update_button.setFixedSize(int(self.screen.height()*0.04), int(self.screen.height()*0.04))
+        self.update_button.setToolTip("检查更新")
+        self.update_button.clicked.connect(self.check_update_manual)  # noqa
         self.change_character_button = QToolButton()
         self.change_character_button.setIcon(QIcon('./icons/chat_list.svg'))
         self.change_character_button.setFixedSize(int(self.screen.height()*0.04),int(self.screen.height()*0.04))
@@ -1426,6 +1443,7 @@ class ChatGUI(QWidget):
         top_layout.addWidget(self.save_dialog_btn,0)
         top_layout.addWidget(self.change_character_button,0)
         top_layout.addWidget(self.setting_btn,0)
+        top_layout.addWidget(self.update_button,0)
         top_layout.addWidget(self.more_function_button,0)
 
         layout.addLayout(top_layout)
@@ -1463,6 +1481,180 @@ class ChatGUI(QWidget):
         self.record_data=[]
         self.voice_is_valid=False
         self.load_whisper_model()
+        QTimer.singleShot(30000, self.start_auto_update_check)
+
+    def start_auto_update_check(self) -> None:
+        """启动一次静默自动更新检查。"""
+
+        self._start_update_check(silent=True)
+
+    def check_update_manual(self) -> None:
+        """响应用户手动检查更新。"""
+
+        if self.pending_update_plan is not None:
+            self.open_update_dialog(self.pending_update_plan)
+            return
+        self._start_update_check(silent=False)
+
+    def _start_update_check(self, silent: bool) -> None:
+        """创建后台线程检查更新。"""
+
+        if self.update_check_thread is not None and self.update_check_thread.isRunning():
+            if not silent:
+                QMessageBox.information(self, "检查更新", "正在检查更新，请稍候。")
+            return
+        index_urls = get_configured_index_urls()
+        if not index_urls and not silent:
+            QMessageBox.information(self, "检查更新", "尚未配置更新索引 URL。")
+            return
+        self.update_check_thread = UpdateCheckThread(index_urls, self)
+        self.update_check_thread.updateAvailable.connect(lambda plan: self._on_update_available(plan, silent))  # noqa
+        self.update_check_thread.noUpdate.connect(lambda: self._on_no_update(silent))  # noqa
+        self.update_check_thread.checkFailed.connect(lambda message: self._on_update_check_failed(message, silent))  # noqa
+        self.update_check_thread.start()
+        if not silent:
+            self.setWindowTitle("正在检查更新...")
+
+    def _on_update_available(self, update_plan: UpdatePlan, silent: bool) -> None:
+        """处理发现新版本的结果。"""
+
+        self.pending_update_plan = update_plan
+        if silent and not update_plan.critical:
+            self.messages_box.clear()
+            self.messages_box.append(f"发现新版本 {update_plan.target_version}，点击顶部“更新”查看。")
+            return
+        self.open_update_dialog(update_plan)
+
+    def _on_no_update(self, silent: bool) -> None:
+        """处理没有新版本的结果。"""
+
+        if not silent:
+            self.setWindowTitle("数字小祥")
+            QMessageBox.information(self, "检查更新", "当前已是最新版本。")
+
+    def _on_update_check_failed(self, message: str, silent: bool) -> None:
+        """处理更新检查失败。"""
+
+        logger.warning("检查更新失败：%s", message)
+        if not silent:
+            self.setWindowTitle("数字小祥")
+            QMessageBox.warning(self, "检查更新失败", message)
+
+    def open_update_dialog(self, update_plan: UpdatePlan | None = None) -> None:
+        """打开更新弹窗并启动更新公告加载。"""
+
+        plan = update_plan or self.pending_update_plan
+        if plan is None:
+            self.check_update_manual()
+            return
+        dialog = UpdateDialog(plan, self)
+        self.update_dialog = dialog
+        dialog.downloadRequested.connect(self.start_update_download)  # noqa
+        dialog.installRequested.connect(self.install_prepared_update)  # noqa
+        dialog.cancelRequested.connect(self.cancel_update_download)  # noqa
+        self._start_release_notes_loading(plan)
+        dialog.exec_()
+
+    def _start_release_notes_loading(self, update_plan: UpdatePlan) -> None:
+        """后台拉取完整更新公告。"""
+
+        notes_urls = tuple(url for release in update_plan.releases for url in release.notes_urls)
+        if not notes_urls:
+            return
+        self.update_notes_thread = ReleaseNotesThread(notes_urls, self)
+        self.update_notes_thread.notesLoaded.connect(self._on_release_notes_loaded)  # noqa
+        self.update_notes_thread.notesFailed.connect(lambda message: logger.warning("更新公告拉取失败：%s", message))  # noqa
+        self.update_notes_thread.start()
+
+    def _on_release_notes_loaded(self, markdown: str, source_name: str) -> None:
+        """把完整更新公告写入弹窗。"""
+
+        if self.update_dialog is not None:
+            self.update_dialog.set_release_notes(markdown, source_name)
+
+    def start_update_download(self) -> None:
+        """开始下载当前更新计划中的补丁链。"""
+
+        if self.pending_update_plan is None:
+            return
+        if self.update_download_thread is not None and self.update_download_thread.isRunning():
+            return
+        self.downloaded_update_patches = []
+        if self.update_dialog is not None:
+            self.update_dialog.download_button.setEnabled(False)
+            self.update_dialog.set_status("正在准备下载...")
+        self.update_download_thread = UpdateDownloadThread(self.pending_update_plan, self)
+        self.update_download_thread.progressChanged.connect(self._on_update_download_progress)  # noqa
+        self.update_download_thread.statusChanged.connect(self._on_update_download_status)  # noqa
+        self.update_download_thread.downloadFinished.connect(self._on_update_download_finished)  # noqa
+        self.update_download_thread.downloadFailed.connect(self._on_update_download_failed)  # noqa
+        self.update_download_thread.start()
+
+    def cancel_update_download(self) -> None:
+        """取消正在进行的更新下载。"""
+
+        if self.update_download_thread is not None and self.update_download_thread.isRunning():
+            self.update_download_thread.cancel()
+            if self.update_dialog is not None:
+                self.update_dialog.set_status("正在取消下载...")
+            return
+        if self.update_dialog is not None:
+            self.update_dialog.reject()
+
+    def _on_update_download_progress(self, downloaded: int, total: int, speed: float) -> None:
+        """刷新更新下载进度。"""
+
+        if self.update_dialog is not None:
+            self.update_dialog.set_download_progress(downloaded, total, speed)
+
+    def _on_update_download_status(self, text: str) -> None:
+        """刷新更新下载状态。"""
+
+        if self.update_dialog is not None:
+            self.update_dialog.set_status(text)
+
+    def _on_update_download_finished(self, downloaded_patches: list[DownloadedPatch]) -> None:
+        """处理补丁链下载完成。"""
+
+        self.downloaded_update_patches = downloaded_patches
+        if self.update_dialog is not None:
+            self.update_dialog.set_ready_to_install()
+
+    def _on_update_download_failed(self, message: str) -> None:
+        """处理补丁链下载失败。"""
+
+        logger.warning("下载更新失败：%s", message)
+        if self.update_dialog is not None:
+            self.update_dialog.set_error(message)
+
+    def install_prepared_update(self) -> None:
+        """启动独立更新器并退出当前主程序。"""
+
+        if not self.downloaded_update_patches:
+            QMessageBox.warning(self, "更新", "补丁尚未下载完成。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "准备更新",
+            "更新将关闭当前程序，完成后自动重启。是否立即更新？",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.save_data()
+        app_root = get_app_root()
+        launch_update_process(
+            downloaded_patches=self.downloaded_update_patches,
+            app_root=app_root,
+            main_pid=os.getpid(),
+            restart_command=build_restart_command(app_root),
+        )
+        if self.update_dialog is not None:
+            self.update_dialog.accept()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        self.close()
 
     def toggle_live2d_text_display(self):
         # 切换共享变量的值

@@ -29,7 +29,10 @@ d_sakiko_config.json
 .python-version
 # 更新相关文件
 .update_backup/**
+.updates/**
 update_logs/**
+tools/hdiffz
+tools/hpatchz
 **/*.hdiff
 
 .idea/**

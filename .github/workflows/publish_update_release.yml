@@ -1,0 +1,174 @@
+name: Publish Update Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "GitHub release tag, for example v2.7.1"
+        required: true
+      latest:
+        description: "Latest app version, for example 2.7.1"
+        required: true
+      min_supported:
+        description: "Minimum supported app version"
+        required: true
+      critical:
+        description: "Whether this is a critical update"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      release_title:
+        description: "Title shown in the updater"
+        required: true
+
+jobs:
+  publish-update-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag }}
+      LATEST: ${{ inputs.latest }}
+      MIN_SUPPORTED: ${{ inputs.min_supported }}
+      CRITICAL: ${{ inputs.critical }}
+      RELEASE_TITLE: ${{ inputs.release_title }}
+      GH_TOKEN: ${{ github.token }}
+      UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.UPDATE_ED25519_PRIVATE_KEY }}
+      UPDATE_ED25519_PUBLIC_KEY: ${{ secrets.UPDATE_ED25519_PUBLIC_KEY }}
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_OWNER: ${{ secrets.GITEE_OWNER }}
+      GITEE_REPO: ${{ secrets.GITEE_REPO }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install release dependencies
+        run: python -m pip install cryptography requests
+
+      - name: Download pre-release assets
+        run: |
+          mkdir -p dist/assets dist/previous
+          gh release download "$TAG" --dir dist/assets --clobber
+          gh release view "$TAG" --json assets --jq '.assets' > dist/assets/assets.json
+          gh release view "$TAG" --json body --jq '.body' > dist/release_body.md
+
+      - name: Download previous update index
+        continue-on-error: true
+        run: gh release download --pattern update_index.json --dir dist/previous --clobber
+
+      - name: Sign patch assets
+        working-directory: dist/assets
+        run: |
+          shopt -s nullglob
+          for patch in *.patch.zip; do
+            python ../../tools/release/sign_patch_asset.py \
+              --private-key-env UPDATE_ED25519_PRIVATE_KEY \
+              --input "$patch" \
+              --output "$patch.sig"
+            python - <<'PY' "$patch"
+import hashlib
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256(path.read_bytes()).hexdigest()
+path.with_name(path.name + ".sha256").write_text(digest + "\n", encoding="utf-8")
+PY
+            gh release upload "$TAG" "$patch.sha256" "$patch.sig" --clobber
+          done
+
+      - name: Generate release notes
+        run: |
+          python tools/release/generate_release_notes.py \
+            --release-body-file dist/release_body.md \
+            --version "$LATEST" \
+            --title "$RELEASE_TITLE" \
+            --output dist/assets/release_notes.md \
+            --summary-output dist/release_summary.txt
+          gh release upload "$TAG" dist/assets/release_notes.md --clobber
+
+      - name: Generate update index
+        working-directory: dist/assets
+        run: |
+          python - <<'PY'
+import json
+import os
+from pathlib import Path
+from urllib.parse import quote
+
+tag = os.environ["TAG"]
+repo = os.environ["GITHUB_REPOSITORY"]
+gitee_owner = os.environ.get("GITEE_OWNER", "")
+gitee_repo = os.environ.get("GITEE_REPO", "")
+notes = [
+    {
+        "name": "GitHub",
+        "url": f"https://github.com/{repo}/releases/download/{tag}/release_notes.md",
+    }
+]
+if gitee_owner and gitee_repo:
+    notes.append({
+        "name": "Gitee",
+        "url": f"https://gitee.com/{gitee_owner}/{gitee_repo}/releases/download/{tag}/{quote('release_notes.md')}",
+    })
+Path("notes_urls.json").write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          python ../../tools/release/generate_update_index.py \
+            --previous-index ../previous/update_index.json \
+            --assets-json assets.json \
+            --latest "$LATEST" \
+            --min-supported "$MIN_SUPPORTED" \
+            --release-title "$RELEASE_TITLE" \
+            --release-summary "$(cat ../release_summary.txt)" \
+            --notes-urls-json notes_urls.json \
+            --critical "$CRITICAL" \
+            --github-owner "$OWNER" \
+            --github-repo "$REPO" \
+            --gitee-owner "$GITEE_OWNER" \
+            --gitee-repo "$GITEE_REPO" \
+            --tag "$TAG" \
+            --output update_index.json
+          gh release upload "$TAG" update_index.json --clobber
+
+      - name: Verify update assets
+        working-directory: dist/assets
+        run: |
+          patches=()
+          for patch in *.patch.zip; do
+            patches+=(--patch "$patch")
+          done
+          python ../../tools/release/verify_update_assets.py \
+            --index update_index.json \
+            --public-key-b64 "$UPDATE_ED25519_PUBLIC_KEY" \
+            "${patches[@]}"
+
+      - name: Sync release to Gitee
+        working-directory: dist/assets
+        run: |
+          assets=()
+          for file in update_index.json release_notes.md *.patch.zip *.patch.zip.sha256 *.patch.zip.sig; do
+            [ -f "$file" ] && assets+=(--asset "$file")
+          done
+          python ../../tools/release/sync_gitee_release.py \
+            --owner "$GITEE_OWNER" \
+            --repo "$GITEE_REPO" \
+            --tag "$TAG" \
+            --name "$TAG" \
+            --body-file release_notes.md \
+            --target-commitish main \
+            "${assets[@]}" \
+            --token-env GITEE_TOKEN
+
+      - name: Mark GitHub release as official
+        run: gh release edit "$TAG" --prerelease=false --latest

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,13 +25,14 @@ DEFAULT_IGNORE_PATTERNS = [
     ".venv/*",
     ".idea/*",
     ".git/*",
+    ".update_backup/*",
+    ".updates/*",
     ".python-version",
     ".vscode/*",
     "d_sakiko_config.json",
     "dsakiko_config.json",
     ".github/*",
     ".gitignore",
-    "tools/*",
     "GPT_SoVITS/live2d_1_generate.py",
     "GPT_SoVITS/setup_live2d.py"
 ]
@@ -57,6 +59,9 @@ PLATFORM_INCLUDE_PATTERNS = {
     ],
     "windows": [
         "GPT_SoVITS/live2d_1.pyd",
+        "runtime/**",
+        "*.bat",
+        "双击run.bat即可运行程序，注意不要有中文路径！",
     ],
 }
 
@@ -82,6 +87,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, help="补丁输出目录路径。")
     parser.add_argument("--base-version", required=True, help="补丁生成针对哪个旧版本。")
     parser.add_argument("--target-version", required=True, help="补丁应用后的新版本号。")
+    parser.add_argument("--app-id", default="D_sakiko", help="应用 ID，写入 manifest。")
+    parser.add_argument("--channel", default="stable", help="更新通道，写入 manifest。")
+    parser.add_argument(
+        "--arch",
+        choices=["x64", "arm64", "universal"],
+        default="x64",
+        help="目标架构，写入 manifest。",
+    )
+    parser.add_argument("--min-updater-version", default="1.0.0", help="最低更新器版本，写入 manifest。")
+    parser.add_argument("--zip-output", default="", help="可选：将输出目录打包为 patch zip。")
     parser.add_argument(
         "--platform",
         choices=sorted(PLATFORM_IGNORE_PATTERNS),
@@ -363,11 +378,13 @@ def write_manifest(
     output_root: Path,
     manifest_name: str,
     patch_file_name: str,
-    current_root: Path,
-    old_root: Path,
     base_version: str,
     target_version: str,
+    app_id: str,
+    channel: str,
     platform: str,
+    arch: str,
+    min_updater_version: str,
     ignore_patterns: list[str],
     include_patterns: list[str],
     records: list[FileRecord],
@@ -382,12 +399,14 @@ def write_manifest(
         "format_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "hdiff",
+        "app_id": app_id,
+        "channel": channel,
         "base_version": base_version,
         "target_version": target_version,
         "platform": platform,
+        "arch": arch,
+        "min_updater_version": min_updater_version,
         "patch_file": patch_file_name,
-        "current": str(current_root),
-        "old": str(old_root),
         "ignore_patterns": ignore_patterns,
         "include_patterns": include_patterns,
         "files": [
@@ -409,6 +428,20 @@ def write_manifest(
     }
     manifest_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest_file
+
+
+def write_patch_zip(output_root: Path, zip_output: Path) -> Path:
+    """把输出目录打包为 patch zip，便于上传 release。"""
+
+    zip_output.parent.mkdir(parents=True, exist_ok=True)
+    if zip_output.exists():
+        zip_output.unlink()
+    with zipfile.ZipFile(zip_output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in sorted(output_root.rglob("*")):
+            if not file_path.is_file() or file_path == zip_output:
+                continue
+            archive.write(file_path, file_path.relative_to(output_root).as_posix())
+    return zip_output
 
 
 def main() -> int:
@@ -506,11 +539,13 @@ def main() -> int:
         output_root=output_root,
         manifest_name=args.manifest,
         patch_file_name=args.patch_file,
-        current_root=current_root,
-        old_root=old_root,
         base_version=args.base_version,
         target_version=args.target_version,
+        app_id=args.app_id,
+        channel=args.channel,
         platform=args.platform,
+        arch=args.arch,
+        min_updater_version=args.min_updater_version,
         ignore_patterns=ignore_patterns,
         include_patterns=include_patterns,
         records=records,
@@ -529,6 +564,9 @@ def main() -> int:
     print(f"[完成] hdiff 模式：已生成差分文件 {patch_path.name}。")
     print(f"[输出] 删除告警：{warning_file}")
     print(f"[输出] 更新清单：{manifest_file}")
+    if args.zip_output:
+        zip_file = write_patch_zip(output_root, Path(args.zip_output).expanduser().resolve())
+        print(f"[输出] patch zip：{zip_file}")
     return 0
 
 

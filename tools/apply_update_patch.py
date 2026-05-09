@@ -11,7 +11,9 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 
 @dataclass
@@ -20,6 +22,29 @@ class TouchRecord:
 
     path: str
     existed_before: bool
+
+
+class TeeWriter:
+    """将输出同时写入原始终端和日志文件。"""
+
+    def __init__(self, primary: TextIO, log_file: TextIO) -> None:
+        """保存终端输出流和日志输出流。"""
+
+        self.primary = primary
+        self.log_file = log_file
+
+    def write(self, text: str) -> int:
+        """写入一段文本到两个输出目标。"""
+
+        self.primary.write(text)
+        self.log_file.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        """刷新两个输出目标。"""
+
+        self.primary.flush()
+        self.log_file.flush()
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,7 +61,76 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version-file", default="version.json", help="程序版本文件名。")
     parser.add_argument("--backup-dir", default=".update_backup", help="回滚备份目录名。")
     parser.add_argument("--hpatch-bin", default="tools/hpatchz", help="hpatchz 可执行文件路径（可相对 app-root）。")
+    parser.add_argument("--wait-pid", type=int, default=0, help="等待指定 PID 退出后再应用更新。")
+    parser.add_argument("--restart-command", default="", help="更新成功后执行的重启命令，支持 JSON list 或普通字符串。")
+    parser.add_argument("--log-file", default="", help="更新日志文件路径。")
+    parser.add_argument("--no-remove-package", action="store_true", help="更新成功后保留补丁包目录。")
     return parser.parse_args()
+
+
+def wait_for_process_exit(pid: int, timeout: float = 60.0) -> None:
+    """等待主程序进程退出，超时后抛出 RuntimeError。"""
+
+    if pid <= 0:
+        return
+    try:
+        import psutil
+    except Exception:
+        psutil = None
+
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if psutil is not None:
+            if not psutil.pid_exists(pid):
+                return
+        else:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return
+        time.sleep(0.5)
+    raise RuntimeError(f"等待进程退出超时：PID={pid}")
+
+
+def setup_logging(log_file: Path | None) -> TextIO | None:
+    """将更新过程输出同时写入终端和日志文件。"""
+
+    if log_file is None:
+        return None
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    handle = log_file.open("a", encoding="utf-8")
+    sys.stdout = TeeWriter(sys.stdout, handle)
+    sys.stderr = TeeWriter(sys.stderr, handle)
+    print(f"[日志] 更新日志：{log_file}")
+    return handle
+
+
+def parse_restart_command(command_text: str) -> list[str]:
+    """解析重启命令，支持 JSON list 或普通字符串。"""
+
+    text = command_text.strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return [text]
+    if isinstance(data, list):
+        return [str(item) for item in data if str(item).strip()]
+    if isinstance(data, str) and data.strip():
+        return [data.strip()]
+    raise RuntimeError("--restart-command 必须是 JSON list 或非空字符串")
+
+
+def restart_app(command: list[str]) -> None:
+    """更新成功后重启主程序。"""
+
+    if not command:
+        return
+    subprocess.Popen(command, close_fds=os.name != "nt")
+    print(f"[重启] 已启动：{command}")
 
 
 def sha256_file(file_path: Path, block_size: int = 1024 * 1024) -> str:
@@ -52,13 +146,13 @@ def sha256_file(file_path: Path, block_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def load_json(file_path: Path) -> dict:
+def load_json(file_path: Path) -> dict[str, object]:
     """读取 JSON 文件并返回字典对象。"""
 
     return json.loads(file_path.read_text(encoding="utf-8"))
 
 
-def write_json(file_path: Path, content: dict) -> None:
+def write_json(file_path: Path, content: dict[str, object]) -> None:
     """将字典按 UTF-8 JSON 格式写回文件。"""
 
     file_path.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -87,7 +181,7 @@ def resolve_package_root(app_root: Path, package_arg: str) -> Path:
 
 
 def discover_package_roots(app_root: Path, manifest_name: str) -> list[Path]:
-    """自动发现更新包目录：主目录下同时含 manifest.json 和 patch.hdiff 的子目录。"""
+    """自动发现更新包目录：主目录和 .updates/packages 下的有效补丁目录。"""
 
     package_roots: list[Path] = []
     for child in sorted(app_root.iterdir(), key=lambda item: item.name):
@@ -95,6 +189,13 @@ def discover_package_roots(app_root: Path, manifest_name: str) -> list[Path]:
             continue
         if (child / manifest_name).exists() and (child / "patch.hdiff").exists():
             package_roots.append(child)
+    packages_root = app_root / ".updates" / "packages"
+    if packages_root.exists():
+        for child in sorted(packages_root.rglob("*"), key=lambda item: str(item)):
+            if not child.is_dir():
+                continue
+            if (child / manifest_name).exists() and (child / "patch.hdiff").exists():
+                package_roots.append(child)
     return package_roots
 
 
@@ -187,7 +288,7 @@ def should_clear_quarantine(relative_path: str) -> bool:
     return path.endswith(".command") or path.endswith(".so") or path in {"tools/hdiffz", "tools/hpatchz"}
 
 
-def verify_manifest_and_version(manifest: dict, app_version: str) -> tuple[str, str]:
+def verify_manifest_and_version(manifest: dict[str, object], app_version: str) -> tuple[str, str]:
     """校验 manifest 模式与版本匹配关系，返回 base/target 版本。"""
 
     mode = str(manifest.get("mode", "")).strip()
@@ -226,7 +327,7 @@ def remove_applied_package(package_root: Path) -> None:
 def apply_hdiff(
     app_root: Path,
     package_root: Path,
-    manifest: dict,
+    manifest: dict[str, object],
     backup_root: Path,
     touch_records: list[TouchRecord],
     hpatch_bin: Path,
@@ -251,6 +352,10 @@ def apply_hdiff(
         staged_new_root = Path(temp_dir) / "new_root"
         command = [str(hpatch_bin), "-f", str(app_root), str(patch_path), str(staged_new_root)]
         completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.stdout.strip():
+            print(f"[hpatchz stdout]\n{completed.stdout.strip()}")
+        if completed.stderr.strip():
+            print(f"[hpatchz stderr]\n{completed.stderr.strip()}")
         if completed.returncode != 0:
             stderr = completed.stderr.strip()
             stdout = completed.stdout.strip()
@@ -280,9 +385,11 @@ def apply_hdiff(
                 ensure_parent(target)
                 shutil.copy2(source, target)
                 processed_paths.append(relative_path)
+                print(f"[文件] {action}: {relative_path}")
             elif action == "remove":
                 remove_path(target)
                 processed_paths.append(relative_path)
+                print(f"[文件] remove: {relative_path}")
 
     return processed_paths
 
@@ -298,32 +405,16 @@ def apply_post_process(app_root: Path, relative_paths: list[str]) -> None:
             remove_quarantine(target)
 
 
-def main() -> int:
-    """脚本入口：校验版本、应用 hpatch、后处理并在失败时回滚。"""
+def apply_package_chain(
+    app_root: Path,
+    version_file: Path,
+    package_roots: list[Path],
+    hpatch_bin: Path,
+    args: argparse.Namespace,
+) -> int:
+    """按补丁链顺序应用多个 package。"""
 
-    args = parse_args()
-
-    app_root = Path(args.app_root).expanduser().resolve()
-    if not app_root.exists() or not app_root.is_dir():
-        print(f"错误：程序根目录不存在或不是文件夹：{app_root}", file=sys.stderr)
-        return 1
-
-    version_file = app_root / args.version_file
-    if not version_file.exists():
-        print(f"错误：未找到版本文件：{version_file}", file=sys.stderr)
-        return 1
-
-    if args.package:
-        package_roots = [resolve_package_root(app_root, args.package)]
-    else:
-        package_roots = discover_package_roots(app_root, args.manifest)
-
-    if not package_roots:
-        print("错误：未找到可用更新包目录（需要同时包含 manifest.json 和 patch.hdiff）。", file=sys.stderr)
-        return 1
-
-    hpatch_bin = resolve_hpatch_bin(app_root, args.hpatch_bin)
-    pending: list[tuple[Path, dict]] = []
+    pending: list[tuple[Path, dict[str, object]]] = []
     for package_root in package_roots:
         manifest_file = package_root / args.manifest
         if not manifest_file.exists():
@@ -348,7 +439,7 @@ def main() -> int:
             print(f"错误：读取当前版本失败：{exc}", file=sys.stderr)
             return 1
 
-        matched: list[tuple[Path, dict]] = []
+        matched: list[tuple[Path, dict[str, object]]] = []
         for package_root, manifest in pending:
             base_version = str(manifest.get("base_version", "")).strip()
             if base_version == app_version:
@@ -373,6 +464,7 @@ def main() -> int:
         try:
             base_version, target_version = verify_manifest_and_version(manifest, app_version)
             print(f"[信息] 版本校验通过：{base_version} -> {target_version}")
+            print(f"[信息] 更新包：{package_root}")
         except Exception as exc:
             print(f"错误：{exc}", file=sys.stderr)
             return 1
@@ -396,11 +488,12 @@ def main() -> int:
             version_data["version"] = target_version
             write_json(version_file, version_data)
 
-            try:
-                remove_applied_package(package_root)
-                print(f"[清理] 已删除更新包：{package_root}")
-            except Exception as cleanup_error:
-                print(f"[警告] 更新包删除失败，请手动删除：{package_root}，错误：{cleanup_error}")
+            if not args.no_remove_package:
+                try:
+                    remove_applied_package(package_root)
+                    print(f"[清理] 已删除更新包：{package_root}")
+                except Exception as cleanup_error:
+                    print(f"[警告] 更新包删除失败，请手动删除：{package_root}，错误：{cleanup_error}")
 
             print(f"[完成] 更新成功：{base_version} -> {target_version}")
             print(f"[输出] 备份目录：{backup_root}")
@@ -417,6 +510,53 @@ def main() -> int:
     else:
         print(f"[完成] 已应用 {applied_count} 个更新包。")
     return 0
+
+
+def main() -> int:
+    """脚本入口：校验版本、应用 hpatch、后处理并在失败时回滚。"""
+
+    args = parse_args()
+    log_handle: TextIO | None = None
+    try:
+        app_root = Path(args.app_root).expanduser().resolve()
+        if not app_root.exists() or not app_root.is_dir():
+            print(f"错误：程序根目录不存在或不是文件夹：{app_root}", file=sys.stderr)
+            return 1
+        if args.log_file:
+            log_file = Path(args.log_file).expanduser().resolve()
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_file = app_root / ".updates" / "logs" / f"update_manual_{timestamp}.log"
+        log_handle = setup_logging(log_file)
+
+        if args.wait_pid:
+            print(f"[等待] 等待主程序退出：PID={args.wait_pid}")
+            wait_for_process_exit(args.wait_pid)
+
+        version_file = app_root / args.version_file
+        if not version_file.exists():
+            print(f"错误：未找到版本文件：{version_file}", file=sys.stderr)
+            return 1
+
+        if args.package:
+            package_roots = [resolve_package_root(app_root, args.package)]
+        else:
+            package_roots = discover_package_roots(app_root, args.manifest)
+
+        if not package_roots:
+            print("错误：未找到可用更新包目录（需要同时包含 manifest.json 和 patch.hdiff）。", file=sys.stderr)
+            return 1
+
+        hpatch_bin = resolve_hpatch_bin(app_root, args.hpatch_bin)
+        exit_code = apply_package_chain(app_root, version_file, package_roots, hpatch_bin, args)
+        print(f"[退出码] {exit_code}")
+        if exit_code == 0:
+            restart_app(parse_restart_command(args.restart_command))
+        return exit_code
+    finally:
+        if log_handle is not None:
+            log_handle.flush()
+            log_handle.close()
 
 
 if __name__ == "__main__":

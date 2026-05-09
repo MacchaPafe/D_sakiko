@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "app_id": "D_sakiko",
+  "channel": "stable",
+  "latest": "2.7.1",
+  "min_supported": "2.6.5",
+  "generated_at": "2026-05-09T12:00:00+00:00",
+  "releases": {
+    "2.7.1": {
+      "date": "2026-05-09",
+      "title": "2.7.1 BUG 修复补丁",
+      "summary": "修复若干发布后发现的问题。",
+      "notes_urls": [
+        {
+          "name": "GitHub",
+          "url": "https://github.com/<owner>/<repo>/releases/download/v2.7.1/release_notes.md"
+        },
+        {
+          "name": "Gitee",
+          "url": "https://gitee.com/<owner>/<repo>/releases/download/v2.7.1/release_notes.md"
+        }
+      ],
+      "critical": false
+    }
+  },
+  "patches": [
+    {
+      "base_version": "2.6.5",
+      "target_version": "2.7.1",
+      "platform": "macos",
+      "arch": "universal",
+      "file": "D_sakiko_2.6.5_to_2.7.1_macos.patch.zip",
+      "size": 123456,
+      "sha256": "<hex-sha256>",
+      "signature": "<base64-ed25519-signature>",
+      "urls": [
+        {
+          "name": "GitHub",
+          "url": "https://github.com/<owner>/<repo>/releases/download/v2.7.1/D_sakiko_2.6.5_to_2.7.1_macos.patch.zip"
+        },
+        {
+          "name": "Gitee",
+          "url": "https://gitee.com/<owner>/<repo>/releases/download/v2.7.1/D_sakiko_2.6.5_to_2.7.1_macos.patch.zip"
+        }
+      ]
+    }
+  ]
+}
+
