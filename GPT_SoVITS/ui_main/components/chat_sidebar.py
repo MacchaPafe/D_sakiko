@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
-from PyQt5.QtCore import QAbstractListModel, QModelIndex, QPoint, QRect, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PyQt5.QtCore import QAbstractListModel, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QListView,
@@ -18,8 +20,29 @@ from chat.chat import Chat
 from ui_main.components.character_avatar import build_initial_avatar
 
 
+CHAR_HEADPROF_DIR = Path(__file__).resolve().parents[2] / "char_headprof"
+
 ChatSidebarMode = Literal["flat", "folded"]
 ChatSidebarRowType = Literal["character_header", "chat_flat", "chat_child"]
+
+
+@lru_cache(maxsize=256)
+def _load_character_head_profile(character_name: str) -> QPixmap | None:
+    """
+    按角色名加载 char_headprof 中的头像 PNG。
+    """
+    normalized_name = character_name.strip()
+    if not normalized_name:
+        return None
+
+    avatar_path = CHAR_HEADPROF_DIR / f"{normalized_name}.png"
+    if not avatar_path.is_file():
+        return None
+
+    pixmap = QPixmap(str(avatar_path))
+    if pixmap.isNull():
+        return None
+    return pixmap
 
 
 class ChatSidebarRole(IntEnum):
@@ -486,12 +509,45 @@ class ChatSidebarDelegate(QStyledItemDelegate):
 
     def _paint_avatar(self, painter: QPainter, rect: QRect, character_name: str, avatar_color: str) -> None:
         """
-        绘制角色首字符头像。
+        优先绘制角色头像 PNG，缺失时绘制角色首字符头像。
         """
+        head_profile = _load_character_head_profile(character_name)
+        if head_profile is not None:
+            self._paint_head_profile_avatar(painter, rect, head_profile)
+            return
+
         device = painter.device()
         device_pixel_ratio = float(device.devicePixelRatioF()) if hasattr(device, "devicePixelRatioF") else 1.0
         avatar = build_initial_avatar(character_name, rect.width(), device_pixel_ratio, avatar_color)
         painter.drawPixmap(rect, avatar)
+
+    def _paint_head_profile_avatar(self, painter: QPainter, rect: QRect, head_profile: QPixmap) -> None:
+        """
+        将角色 PNG 按头像框中心裁剪后绘制。
+        """
+        painter.save()
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        clip_path = QPainterPath()
+        radius = rect.width() * 0.24
+        clip_path.addRoundedRect(QRectF(rect), radius, radius)
+        painter.setClipPath(clip_path)
+
+        source_width = head_profile.width()
+        source_height = head_profile.height()
+        target_ratio = rect.width() / max(1, rect.height())
+        source_ratio = source_width / max(1, source_height)
+        if source_ratio > target_ratio:
+            crop_width = int(source_height * target_ratio)
+            crop_x = (source_width - crop_width) // 2
+            source_rect = QRect(crop_x, 0, crop_width, source_height)
+        else:
+            crop_height = int(source_width / target_ratio)
+            crop_y = (source_height - crop_height) // 2
+            source_rect = QRect(0, crop_y, source_width, crop_height)
+
+        painter.drawPixmap(rect, head_profile, source_rect)
+        painter.restore()
 
     def _paint_single_line_text(
         self,

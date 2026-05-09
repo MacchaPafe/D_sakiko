@@ -470,7 +470,7 @@ class AddCostume:
         with open(f"../live2d_related/{character_folder_name}/name.txt",'w',encoding='utf-8') as f:
             f.write(character_ui_name)
         with open(f"../live2d_related/{character_folder_name}/character_description.txt",'w',encoding='utf-8') as f:
-            f.write("你精通角色扮演，你要扮演BangDream角色: "+char_info_json[character_ui_name]["full_name"])
+            f.write("你精通角色扮演，你要扮演BangDream角色: "+char_info_json[character_ui_name]["full_name"]+"当用户提到一些和角色相关的信息，但你并不了解具体情况时（比如，角色的兴趣爱好、喜欢的食物等），请调用web_search工具去获取信息。")
         save_model_folder_path=f"../live2d_related/{character_folder_name}/live2D_model"
         os.makedirs(save_model_folder_path)
         #从从下载缓存文件夹中复制下载到的文件

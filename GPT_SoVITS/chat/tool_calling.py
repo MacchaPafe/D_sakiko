@@ -1935,7 +1935,7 @@ class FileReadingTools:
     def export_document(arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
         将大段文本或代码输出到本地文件。
-        如果未指定绝对路径，默认将文件保存到软件目录下的 tool_data 文件夹。
+        将文件保存到软件目录下的 tool_data 文件夹。
         """
         filename = str(arguments.get("filename") or "").strip()
         content = str(arguments.get("content") or "")
@@ -1950,11 +1950,10 @@ class FileReadingTools:
         if not safe_filename:
             safe_filename = "agent_output.md"
 
-        # 如果大模型给出的是绝对路径则直接使用，否则默认放到 tool_data
-        file_path = os.path.expanduser(filename)
-        if not os.path.isabs(file_path):
-            tool_data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tool_data"))
-            file_path = os.path.join(tool_data_path, safe_filename)
+        # 放到 tool_data
+        tool_data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tool_data"))
+        os.makedirs(tool_data_path, exist_ok=True)
+        file_path = os.path.join(tool_data_path, safe_filename)
 
         try:
             # 确保父目录存在
