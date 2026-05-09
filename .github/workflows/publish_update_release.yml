@@ -37,10 +37,10 @@ jobs:
       RELEASE_TITLE: ${{ inputs.release_title }}
       GH_TOKEN: ${{ github.token }}
       UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.UPDATE_ED25519_PRIVATE_KEY }}
-      UPDATE_ED25519_PUBLIC_KEY: ${{ secrets.UPDATE_ED25519_PUBLIC_KEY }}
+      UPDATE_ED25519_PUBLIC_KEY: ${{ vars.UPDATE_ED25519_PUBLIC_KEY || secrets.UPDATE_ED25519_PUBLIC_KEY }}
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-      GITEE_OWNER: ${{ secrets.GITEE_OWNER }}
-      GITEE_REPO: ${{ secrets.GITEE_REPO }}
+      GITEE_OWNER: ${{ vars.GITEE_OWNER || secrets.GITEE_OWNER }}
+      GITEE_REPO: ${{ vars.GITEE_REPO || secrets.GITEE_REPO }}
 
     steps:
       - name: Checkout
