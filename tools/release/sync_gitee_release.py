@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
+import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -52,6 +55,60 @@ def delete_release(owner: str, repo: str, release_id: int, token: str) -> None:
     )
     if response.status_code not in {200, 204, 404}:
         raise_for_gitee_error(response, "删除 Gitee release")
+
+
+def branch_exists(owner: str, repo: str, branch: str, token: str) -> bool:
+    """检查 Gitee 仓库中目标分支是否存在。"""
+
+    response = requests.get(
+        f"{API_ROOT}/repos/{owner}/{repo}/branches/{branch}",
+        params={"access_token": token},
+        timeout=30,
+    )
+    if response.status_code == 404:
+        return False
+    raise_for_gitee_error(response, f"查询 Gitee 分支 {branch}")
+    data = response.json()
+    return isinstance(data, dict)
+
+
+def _run_git(command: list[str], cwd: Path) -> None:
+    """运行 git 命令，失败时隐藏 token 并抛出错误。"""
+
+    completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        raise RuntimeError(f"git 命令失败：{' '.join(command[:2])}，输出：{stderr or stdout or '未知错误'}")
+
+
+def create_shell_branch(owner: str, repo: str, branch: str, token: str) -> None:
+    """创建只包含 README.md 的空壳提交并推送到 Gitee。"""
+
+    remote_url = f"https://{quote(owner, safe='')}:{quote(token, safe='')}@gitee.com/{owner}/{repo}.git"
+    with tempfile.TemporaryDirectory(prefix="d_sakiko_gitee_shell_") as temp_dir:
+        work_dir = Path(temp_dir)
+        _run_git(["git", "init", "-b", branch], work_dir)
+        _run_git(["git", "config", "user.name", "D_sakiko Release Bot"], work_dir)
+        _run_git(["git", "config", "user.email", "release-bot@example.invalid"], work_dir)
+        readme = work_dir / "README.md"
+        readme.write_text(
+            "# D_sakiko release mirror\n\n"
+            "This repository is used as a lightweight mirror for D_sakiko update release assets.\n",
+            encoding="utf-8",
+        )
+        _run_git(["git", "add", "README.md"], work_dir)
+        _run_git(["git", "commit", "-m", "Initialize release mirror"], work_dir)
+        _run_git(["git", "push", remote_url, f"HEAD:{branch}"], work_dir)
+
+
+def ensure_shell_commit(owner: str, repo: str, branch: str, token: str) -> None:
+    """确保 Gitee 仓库存在用于挂 release tag 的空壳提交。"""
+
+    if branch_exists(owner, repo, branch, token):
+        return
+    print(f"[Gitee] 分支 {branch} 不存在，创建空壳 README 提交。")
+    create_shell_branch(owner, repo, branch, token)
 
 
 def create_release(
@@ -110,6 +167,7 @@ def sync_release_assets(
     existing_release = get_release_by_tag(owner, repo, tag, token)
     if existing_release is not None and isinstance(existing_release.get("id"), int):
         delete_release(owner, repo, int(existing_release["id"]), token)
+    ensure_shell_commit(owner, repo, target_commitish, token)
     release_id = create_release(owner, repo, tag, release_name, release_body, target_commitish, token)
     for asset_path in asset_paths:
         upload_release_asset(owner, repo, release_id, asset_path, token)
