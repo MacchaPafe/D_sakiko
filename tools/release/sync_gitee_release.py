@@ -11,20 +11,34 @@ import requests
 API_ROOT = "https://gitee.com/api/v5"
 
 
+def raise_for_gitee_error(response: requests.Response, action: str) -> None:
+    """在 Gitee API 失败时抛出包含响应正文的错误。"""
+
+    if response.ok:
+        return
+    body = response.text[:1000]
+    raise RuntimeError(f"{action} 失败：HTTP {response.status_code}，响应：{body}")
+
+
 def get_release_by_tag(owner: str, repo: str, tag: str, token: str) -> dict[str, object] | None:
     """按 tag 查询 Gitee release。"""
 
+    params = {"access_token": token} if token else None
     response = requests.get(
         f"{API_ROOT}/repos/{owner}/{repo}/releases/tags/{tag}",
-        params={"access_token": token},
+        params=params,
         timeout=30,
     )
     if response.status_code == 404:
         return None
-    response.raise_for_status()
+    raise_for_gitee_error(response, "查询 Gitee release")
     data = response.json()
+    if data is None:
+        return None
+    if isinstance(data, list) and not data:
+        return None
     if not isinstance(data, dict):
-        raise RuntimeError("Gitee release 查询结果不是对象")
+        raise RuntimeError(f"Gitee release 查询结果不是对象：{data!r}")
     return dict(data)
 
 
@@ -37,7 +51,7 @@ def delete_release(owner: str, repo: str, release_id: int, token: str) -> None:
         timeout=30,
     )
     if response.status_code not in {200, 204, 404}:
-        response.raise_for_status()
+        raise_for_gitee_error(response, "删除 Gitee release")
 
 
 def create_release(
@@ -61,7 +75,7 @@ def create_release(
         "prerelease": prerelease,
     }
     response = requests.post(f"{API_ROOT}/repos/{owner}/{repo}/releases", json=payload, timeout=30)
-    response.raise_for_status()
+    raise_for_gitee_error(response, "创建 Gitee release")
     data = response.json()
     if not isinstance(data, dict) or not isinstance(data.get("id"), int):
         raise RuntimeError(f"Gitee release 创建失败，响应缺少 id：{data}")
@@ -78,7 +92,7 @@ def upload_release_asset(owner: str, repo: str, release_id: int, file_path: Path
             files={"file": (file_path.name, file)},
             timeout=1200,
         )
-    response.raise_for_status()
+    raise_for_gitee_error(response, f"上传 Gitee release 附件 {file_path.name}")
 
 
 def sync_release_assets(
@@ -142,4 +156,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

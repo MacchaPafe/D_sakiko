@@ -32,7 +32,13 @@ def verify_patch_triplet(zip_path: Path, sha256_path: Path, sig_path: Path, publ
     actual_sha256 = _sha256_file(zip_path)
     if actual_sha256 != expected_sha256:
         raise RuntimeError(f"SHA256 不匹配：{zip_path.name}")
-    public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key_b64))
+    public_key_text = public_key_b64.strip()
+    if not public_key_text:
+        raise RuntimeError("缺少 Ed25519 公钥，请设置 UPDATE_ED25519_PUBLIC_KEY repository variable 或 secret。")
+    public_key_bytes = base64.b64decode(public_key_text)
+    if len(public_key_bytes) != 32:
+        raise RuntimeError(f"Ed25519 公钥必须是 32 字节 raw public key 的 base64，当前解码后为 {len(public_key_bytes)} 字节。")
+    public_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
     signature = base64.b64decode(sig_path.read_text(encoding="utf-8").strip())
     try:
         public_key.verify(signature, zip_path.read_bytes())
@@ -113,4 +119,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
