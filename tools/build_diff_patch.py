@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import platform
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,16 +92,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--channel", default="stable", help="更新通道，写入 manifest。")
     parser.add_argument(
         "--arch",
-        choices=["x64", "arm64", "universal"],
-        default="x64",
+        choices=["x64", "arm64", "universal", "auto"],
+        default="auto",
         help="目标架构，写入 manifest。",
     )
     parser.add_argument("--min-updater-version", default="1.0.0", help="最低更新器版本，写入 manifest。")
     parser.add_argument("--zip-output", default="", help="可选：将输出目录打包为 patch zip。")
     parser.add_argument(
         "--platform",
-        choices=sorted(PLATFORM_IGNORE_PATTERNS),
-        default="windows",
+        choices=sorted(PLATFORM_IGNORE_PATTERNS) + ['auto'],
+        default="auto",
         help="目标发布平台。根据平台自动排除另一系统的启动/安装脚本。",
     )
     parser.add_argument(
@@ -395,6 +396,11 @@ def write_manifest(
     """生成更新清单 manifest.json，记录版本、文件动作和统计信息。"""
 
     manifest_file = output_root / manifest_name
+    dependency_files = {"pyproject.toml", "uv.lock"}
+    should_run_macos_uv_sync = platform == "macos" and any(
+        item.path.replace("\\", "/") in dependency_files
+        for item in records
+    )
     manifest = {
         "format_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -409,6 +415,9 @@ def write_manifest(
         "patch_file": patch_file_name,
         "ignore_patterns": ignore_patterns,
         "include_patterns": include_patterns,
+        "post_update": {
+            "macos_uv_sync": should_run_macos_uv_sync,
+        },
         "files": [
             {
                 "path": item.path,
@@ -448,6 +457,26 @@ def main() -> int:
     """脚本入口：筛选文件、生成 hdiff 补丁并输出 manifest。"""
 
     args = parse_args()
+
+    if args.platform == "auto":
+        current_system = platform.system().lower()
+        if current_system == "darwin":
+            args.platform = "macos"
+        elif current_system == "windows":
+            args.platform = "windows"
+        else:
+            print(f"警告：当前系统 {current_system} 不在预设平台列表中，默认使用 windows 规则。")
+            args.platform = "windows"
+
+    if args.arch == "auto":
+        current_machine = platform.machine().lower()
+        if current_machine in ("x86_64", "amd64"):
+            args.arch = "x64"
+        elif current_machine in ("arm64", "aarch64"):
+            args.arch = "arm64"
+        else:
+            print(f"警告：当前架构 {current_machine} 不在预设架构列表中，默认使用 x64 规则。")
+            args.arch = "x64"
 
     # 当前（新版本）目录路径
     current_root = Path(args.current).expanduser().resolve()

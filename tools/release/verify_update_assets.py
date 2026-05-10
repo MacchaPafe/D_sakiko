@@ -46,31 +46,100 @@ def verify_patch_triplet(zip_path: Path, sha256_path: Path, sig_path: Path, publ
         raise RuntimeError(f"签名不匹配：{zip_path.name}") from exc
 
 
-def verify_patch_chain(index: dict[str, object], min_supported: str, latest: str) -> None:
-    """确认 min_supported 到 latest 至少有一条完整路径。"""
+def _patch_arch_matches(patch_arch: str, requested_arch: str) -> bool:
+    """判断补丁架构是否适配待验证的客户端架构。"""
+
+    return patch_arch == requested_arch or patch_arch == "universal"
+
+
+def _iter_patch_dicts(index: dict[str, object]) -> list[dict[str, object]]:
+    """读取 index 中的补丁对象列表。"""
 
     raw_patches = index.get("patches")
     if not isinstance(raw_patches, list):
         raise RuntimeError("index.patches 必须是数组")
+    return [dict(patch) for patch in raw_patches if isinstance(patch, dict)]
+
+
+def _validation_targets(patches: list[dict[str, object]]) -> set[tuple[str, str]]:
+    """根据 index 中实际出现的平台/架构，决定需要验证哪些客户端组合。"""
+
+    concrete_arches_by_platform: dict[str, set[str]] = {}
+    has_universal_by_platform: set[str] = set()
+    for patch in patches:
+        platform = str(patch.get("platform") or "")
+        if platform not in {"windows", "macos"}:
+            continue
+        arch = str(patch.get("arch") or ("universal" if platform == "macos" else "x64"))
+        if arch == "universal":
+            has_universal_by_platform.add(platform)
+        elif arch in {"x64", "arm64"}:
+            concrete_arches_by_platform.setdefault(platform, set()).add(arch)
+
+    targets: set[tuple[str, str]] = set()
+    for platform, arches in concrete_arches_by_platform.items():
+        for arch in arches:
+            targets.add((platform, arch))
+
+    for platform in has_universal_by_platform:
+        if concrete_arches_by_platform.get(platform):
+            continue
+        if platform == "macos":
+            targets.add((platform, "x64"))
+            targets.add((platform, "arm64"))
+        else:
+            targets.add((platform, "x64"))
+
+    return targets
+
+
+def _has_patch_path(
+    patches: list[dict[str, object]],
+    min_supported: str,
+    latest: str,
+    platform: str,
+    arch: str,
+) -> bool:
+    """确认指定平台/架构从 min_supported 到 latest 存在完整路径。"""
+
     edges: dict[str, set[str]] = {}
-    for patch in raw_patches:
-        if not isinstance(patch, dict):
+    for patch in patches:
+        if str(patch.get("platform") or "") != platform:
+            continue
+        patch_arch = str(patch.get("arch") or ("universal" if platform == "macos" else "x64"))
+        if not _patch_arch_matches(patch_arch, arch):
             continue
         base = str(patch.get("base_version") or "")
         target = str(patch.get("target_version") or "")
         if base and target:
             edges.setdefault(base, set()).add(target)
+
     queue: deque[str] = deque([min_supported])
     visited = {min_supported}
     while queue:
         version = queue.popleft()
         if version == latest:
-            return
+            return True
         for target in edges.get(version, set()):
             if target not in visited:
                 visited.add(target)
                 queue.append(target)
-    raise RuntimeError(f"补丁链不完整：{min_supported} -> {latest}")
+    return False
+
+
+def verify_patch_chain(index: dict[str, object], min_supported: str, latest: str) -> None:
+    """确认 index 中实际出现的平台/架构补丁链完整。"""
+
+    if min_supported == latest:
+        return
+    patches = _iter_patch_dicts(index)
+    targets = _validation_targets(patches)
+    if not targets:
+        raise RuntimeError("index.patches 中没有可验证的平台/架构补丁")
+
+    for platform, arch in sorted(targets):
+        if not _has_patch_path(patches, min_supported, latest, platform, arch):
+            raise RuntimeError(f"补丁链不完整：{platform}/{arch} {min_supported} -> {latest}")
 
 
 def verify_index(index_path: Path) -> None:

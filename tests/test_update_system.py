@@ -13,8 +13,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 sys.path.insert(0, str(ROOT))
 
+from tools.apply_update_patch import (
+    default_hpatch_bin,
+    detect_arch,
+    detect_platform,
+    manifest_requires_macos_uv_sync,
+    normalize_manifest_path,
+    verify_manifest_and_version,
+)
+from tools.build_diff_patch import FileRecord, write_manifest
 from tools.release.generate_update_index import parse_patch_filename
+from tools.release.verify_update_assets import verify_patch_chain
 from update.update_checker import build_update_plan
+from update.update_launcher import build_apply_command
 from update.update_models import parse_update_index
 from update.update_security import verify_patch_asset
 
@@ -113,7 +124,136 @@ class UpdateSystemTest(unittest.TestCase):
         self.assertEqual(macos["arch"], "universal")
         self.assertEqual(windows["arch"], "x64")
 
+    def test_verify_patch_chain_only_checks_present_platforms(self) -> None:
+        """发布校验不应因为未发布的平台缺席而失败。"""
+
+        index = {
+            "patches": [
+                {
+                    "base_version": "2.6.5",
+                    "target_version": "2.7.0",
+                    "platform": "macos",
+                    "arch": "universal",
+                }
+            ]
+        }
+
+        verify_patch_chain(index, "2.6.5", "2.7.0")
+
+    def test_verify_patch_chain_rejects_incomplete_present_platform(self) -> None:
+        """已经出现在 index 中的平台如果链路断裂，发布校验应失败。"""
+
+        index = {
+            "patches": [
+                {
+                    "base_version": "2.6.5",
+                    "target_version": "2.7.0",
+                    "platform": "macos",
+                    "arch": "universal",
+                },
+                {
+                    "base_version": "2.6.9",
+                    "target_version": "2.7.0",
+                    "platform": "windows",
+                    "arch": "x64",
+                },
+            ]
+        }
+
+        with self.assertRaises(RuntimeError):
+            verify_patch_chain(index, "2.6.5", "2.7.0")
+
+    def test_manifest_path_rejects_directory_escape(self) -> None:
+        """更新包 manifest 中的文件路径不允许逃逸 app_root。"""
+
+        with self.assertRaises(RuntimeError):
+            normalize_manifest_path("../version.json", "files[].path")
+        with self.assertRaises(RuntimeError):
+            normalize_manifest_path("/tmp/version.json", "files[].path")
+        with self.assertRaises(RuntimeError):
+            normalize_manifest_path("C:\\temp\\version.json", "files[].path")
+
+    def test_default_hpatch_bin_uses_windows_exe(self) -> None:
+        """Windows 默认 hpatchz 路径应包含 .exe 扩展名。"""
+
+        self.assertEqual(default_hpatch_bin("win32"), "tools/hpatchz.exe")
+        self.assertEqual(default_hpatch_bin("darwin"), "tools/hpatchz")
+
+    def test_verify_manifest_checks_identity_and_platform(self) -> None:
+        """本地 updater 应在应用前再次校验补丁身份和平台架构。"""
+
+        manifest = {
+            "mode": "hdiff",
+            "app_id": "D_sakiko",
+            "channel": "stable",
+            "platform": detect_platform(),
+            "arch": detect_arch(),
+            "min_updater_version": "1.0.0",
+            "base_version": "2.6.5",
+            "target_version": "2.7.0",
+        }
+
+        self.assertEqual(verify_manifest_and_version(manifest, "2.6.5"), ("2.6.5", "2.7.0"))
+        bad_manifest = dict(manifest)
+        bad_manifest["app_id"] = "OtherApp"
+        with self.assertRaises(RuntimeError):
+            verify_manifest_and_version(bad_manifest, "2.6.5")
+
+    def test_build_apply_command_passes_explicit_packages(self) -> None:
+        """自动更新启动 updater 时应只传入本次下载的 package。"""
+
+        app_root = Path("/tmp/D_sakiko")
+        command = build_apply_command(
+            app_root=app_root,
+            package_dirs=[app_root / ".updates/packages/2.7.0/a", app_root / ".updates/packages/2.7.1/b"],
+            wait_pid=123,
+            restart_command=None,
+            log_file=None,
+        )
+
+        self.assertEqual(command.count("--package"), 2)
+        self.assertIn(str(app_root / ".updates/packages/2.7.0/a"), command)
+        self.assertIn(str(app_root / ".updates/packages/2.7.1/b"), command)
+
+    def test_write_manifest_marks_macos_uv_sync(self) -> None:
+        """macOS 补丁修改依赖声明时应写入 uv sync 后处理标记。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_file = write_manifest(
+                output_root=Path(temp_dir),
+                manifest_name="manifest.json",
+                patch_file_name="patch.hdiff",
+                base_version="2.6.5",
+                target_version="2.7.0",
+                app_id="D_sakiko",
+                channel="stable",
+                platform="macos",
+                arch="universal",
+                min_updater_version="1.0.0",
+                ignore_patterns=[],
+                include_patterns=[],
+                records=[FileRecord(path="uv.lock", action="modify", sha256="0" * 64, size=10)],
+                remove_files=[],
+                added_files=[],
+                changed_files=["uv.lock"],
+            )
+
+            manifest = __import__("json").loads(manifest_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["post_update"], {"macos_uv_sync": True})
+        self.assertTrue(manifest_requires_macos_uv_sync(manifest))
+
+    def test_manifest_uv_sync_fallback_detects_dependency_files(self) -> None:
+        """旧 manifest 缺少 post_update 时仍应根据文件列表识别依赖更新。"""
+
+        manifest = {
+            "files": [
+                {"path": "pyproject.toml", "action": "modify"},
+            ]
+        }
+
+        self.assertTrue(manifest_requires_macos_uv_sync(manifest))
+
 
 if __name__ == "__main__":
     unittest.main()
-
