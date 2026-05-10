@@ -395,6 +395,11 @@ def write_manifest(
     """生成更新清单 manifest.json，记录版本、文件动作和统计信息。"""
 
     manifest_file = output_root / manifest_name
+    dependency_files = {"pyproject.toml", "uv.lock"}
+    should_run_macos_uv_sync = platform == "macos" and any(
+        item.path.replace("\\", "/") in dependency_files
+        for item in records
+    )
     manifest = {
         "format_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -409,6 +414,9 @@ def write_manifest(
         "patch_file": patch_file_name,
         "ignore_patterns": ignore_patterns,
         "include_patterns": include_patterns,
+        "post_update": {
+            "macos_uv_sync": should_run_macos_uv_sync,
+        },
         "files": [
             {
                 "path": item.path,

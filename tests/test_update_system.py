@@ -17,9 +17,11 @@ from tools.apply_update_patch import (
     default_hpatch_bin,
     detect_arch,
     detect_platform,
+    manifest_requires_macos_uv_sync,
     normalize_manifest_path,
     verify_manifest_and_version,
 )
+from tools.build_diff_patch import FileRecord, write_manifest
 from tools.release.generate_update_index import parse_patch_filename
 from tools.release.verify_update_assets import verify_patch_chain
 from update.update_checker import build_update_plan
@@ -212,6 +214,45 @@ class UpdateSystemTest(unittest.TestCase):
         self.assertEqual(command.count("--package"), 2)
         self.assertIn(str(app_root / ".updates/packages/2.7.0/a"), command)
         self.assertIn(str(app_root / ".updates/packages/2.7.1/b"), command)
+
+    def test_write_manifest_marks_macos_uv_sync(self) -> None:
+        """macOS 补丁修改依赖声明时应写入 uv sync 后处理标记。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_file = write_manifest(
+                output_root=Path(temp_dir),
+                manifest_name="manifest.json",
+                patch_file_name="patch.hdiff",
+                base_version="2.6.5",
+                target_version="2.7.0",
+                app_id="D_sakiko",
+                channel="stable",
+                platform="macos",
+                arch="universal",
+                min_updater_version="1.0.0",
+                ignore_patterns=[],
+                include_patterns=[],
+                records=[FileRecord(path="uv.lock", action="modify", sha256="0" * 64, size=10)],
+                remove_files=[],
+                added_files=[],
+                changed_files=["uv.lock"],
+            )
+
+            manifest = __import__("json").loads(manifest_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["post_update"], {"macos_uv_sync": True})
+        self.assertTrue(manifest_requires_macos_uv_sync(manifest))
+
+    def test_manifest_uv_sync_fallback_detects_dependency_files(self) -> None:
+        """旧 manifest 缺少 post_update 时仍应根据文件列表识别依赖更新。"""
+
+        manifest = {
+            "files": [
+                {"path": "pyproject.toml", "action": "modify"},
+            ]
+        }
+
+        self.assertTrue(manifest_requires_macos_uv_sync(manifest))
 
 
 if __name__ == "__main__":

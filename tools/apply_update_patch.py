@@ -520,6 +520,58 @@ def apply_post_process(app_root: Path, relative_paths: list[str]) -> None:
             remove_quarantine(target)
 
 
+def manifest_requires_macos_uv_sync(manifest: dict[str, object]) -> bool:
+    """判断 manifest 是否要求在 macOS 上同步 uv 依赖。"""
+
+    post_update = manifest.get("post_update")
+    if isinstance(post_update, dict) and post_update.get("macos_uv_sync") is True:
+        return True
+    files = manifest.get("files", [])
+    if not isinstance(files, list):
+        return False
+    dependency_files = {"pyproject.toml", "uv.lock"}
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").replace("\\", "/")
+        action = str(item.get("action") or "")
+        if path in dependency_files and action in {"add", "modify", "remove"}:
+            return True
+    return False
+
+
+def find_uv_command(app_root: Path) -> list[str]:
+    """寻找可用于执行 uv sync 的命令。"""
+
+    local_uv = app_root / ".venv" / "bin" / "uv"
+    if local_uv.exists() and os.access(local_uv, os.X_OK):
+        return [str(local_uv)]
+    return ["uv"]
+
+
+def run_macos_uv_sync_if_needed(app_root: Path, manifest: dict[str, object]) -> None:
+    """如果补丁更新了依赖声明，则在 macOS 上执行 uv sync --frozen。"""
+
+    if detect_platform() != "macos":
+        return
+    if not manifest_requires_macos_uv_sync(manifest):
+        return
+    pyproject_file = app_root / "pyproject.toml"
+    lock_file = app_root / "uv.lock"
+    if not pyproject_file.exists() or not lock_file.exists():
+        raise RuntimeError("需要执行 uv sync，但 pyproject.toml 或 uv.lock 不存在")
+
+    command = [*find_uv_command(app_root), "sync", "--frozen"]
+    print(f"[依赖] 检测到 pyproject.toml/uv.lock 变化，执行：{' '.join(command)}")
+    completed = subprocess.run(command, cwd=app_root, capture_output=True, text=True)
+    if completed.stdout.strip():
+        print(f"[uv sync stdout]\n{completed.stdout.strip()}")
+    if completed.stderr.strip():
+        print(f"[uv sync stderr]\n{completed.stderr.strip()}")
+    if completed.returncode != 0:
+        raise RuntimeError(f"uv sync --frozen 执行失败，退出码：{completed.returncode}")
+
+
 def apply_package_chain(
     app_root: Path,
     version_file: Path,
@@ -598,6 +650,7 @@ def apply_package_chain(
                 hpatch_bin=hpatch_bin,
             )
             apply_post_process(app_root, processed_paths)
+            run_macos_uv_sync_if_needed(app_root, manifest)
 
             version_data = load_json(version_file)
             version_data["version"] = target_version
