@@ -10,6 +10,7 @@ from PyQt5.QtCore import QAbstractListModel, QModelIndex, QPoint, QRect, QRectF,
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QDesktopWidget,
     QListView,
     QStyle,
     QStyleOptionViewItem,
@@ -20,7 +21,6 @@ from chat.chat import Chat
 from ui_main.components.character_avatar import build_initial_avatar
 
 
-CHAR_HEADPROF_DIR = Path(__file__).resolve().parents[2] / "char_headprof"
 
 ChatSidebarMode = Literal["flat", "folded"]
 ChatSidebarRowType = Literal["character_header", "chat_flat", "chat_child"]
@@ -35,7 +35,7 @@ def _load_character_head_profile(character_name: str) -> QPixmap | None:
     if not normalized_name:
         return None
 
-    avatar_path = CHAR_HEADPROF_DIR / f"{normalized_name}.png"
+    avatar_path = Path(__file__).resolve().parents[2] / "char_headprof" / f"{normalized_name}.png"
     if not avatar_path.is_file():
         return None
 
@@ -390,6 +390,22 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         self._hover_color = QColor("#F7FAFC")
         self._active_color = QColor("#EEF6FC")
         self._active_mark_color = QColor("#7799CC")
+        self._ui_scale = self._screen_height_scale()
+
+    def scaled(self, value: int) -> int:
+        """
+        将 1080p 基准尺寸换算到当前屏幕尺寸。
+        """
+        return max(1, int(round(value * self._ui_scale)))
+
+    def _screen_height_scale(self) -> float:
+        """
+        以 1080p 为基准，根据当前屏幕高度缩放侧栏尺寸。
+        """
+        screen_height = QDesktopWidget().screenGeometry().height()
+        if screen_height <= 0:
+            return 1.0
+        return screen_height / 1152
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
         """
@@ -397,10 +413,10 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         """
         row_type = self._row_type(index)
         if row_type == "chat_child":
-            return QSize(option.rect.width(), 46)
+            return QSize(option.rect.width(), self.scaled(46))
         if row_type == "character_header":
-            return QSize(option.rect.width(), 62)
-        return QSize(option.rect.width(), 64)
+            return QSize(option.rect.width(), self.scaled(62))
+        return QSize(option.rect.width(), self.scaled(64))
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         """
@@ -429,14 +445,24 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         """
         绘制折叠模式中的角色标题行。
         """
-        rect = option.rect.adjusted(2, 4, -2, -4)
+        rect = option.rect.adjusted(self.scaled(2), self.scaled(4), -self.scaled(2), -self.scaled(4))
         self._paint_background(painter, rect, row.active, option)
-        avatar_size = min(44, rect.height() - 12)
-        avatar_rect = QRect(rect.left() + 10, rect.top() + (rect.height() - avatar_size) // 2, avatar_size, avatar_size)
+        avatar_size = min(self.scaled(44), rect.height() - self.scaled(12))
+        avatar_rect = QRect(
+            rect.left() + self.scaled(10),
+            rect.top() + (rect.height() - avatar_size) // 2,
+            avatar_size,
+            avatar_size,
+        )
         self._paint_avatar(painter, avatar_rect, row.character_name, row.avatar_color)
 
-        arrow_rect = QRect(rect.right() - 32, rect.top(), 26, rect.height())
-        text_rect = QRect(avatar_rect.right() + 10, rect.top(), arrow_rect.left() - avatar_rect.right() - 16, rect.height())
+        arrow_rect = QRect(rect.right() - self.scaled(32), rect.top(), self.scaled(26), rect.height())
+        text_rect = QRect(
+            avatar_rect.right() + self.scaled(10),
+            rect.top(),
+            arrow_rect.left() - avatar_rect.right() - self.scaled(16),
+            rect.height(),
+        )
         self._paint_single_line_text(painter, text_rect, row.character_name, 16, True, self._text_color, Qt.AlignVCenter)
         arrow = "⌃" if row.expanded else "⌄"
         self._paint_single_line_text(painter, arrow_rect, arrow, 18, True, self._secondary_text_color, Qt.AlignCenter)
@@ -450,16 +476,21 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         """
         绘制平铺模式中的对话行。
         """
-        rect = option.rect.adjusted(2, 4, -2, -4)
+        rect = option.rect.adjusted(self.scaled(2), self.scaled(4), -self.scaled(2), -self.scaled(4))
         self._paint_background(painter, rect, row.active, option)
-        avatar_size = min(42, rect.height() - 12)
-        avatar_rect = QRect(rect.left() + 10, rect.top() + (rect.height() - avatar_size) // 2, avatar_size, avatar_size)
+        avatar_size = min(self.scaled(42), rect.height() - self.scaled(12))
+        avatar_rect = QRect(
+            rect.left() + self.scaled(10),
+            rect.top() + (rect.height() - avatar_size) // 2,
+            avatar_size,
+            avatar_size,
+        )
         self._paint_avatar(painter, avatar_rect, row.character_name, row.avatar_color)
 
-        text_left = avatar_rect.right() + 12
-        text_width = max(10, rect.right() - text_left - 10)
-        title_rect = QRect(text_left, rect.top() + 9, text_width, 20)
-        preview_rect = QRect(text_left, title_rect.bottom() + 3, text_width, 20)
+        text_left = avatar_rect.right() + self.scaled(12)
+        text_width = max(self.scaled(10), rect.right() - text_left - self.scaled(10))
+        title_rect = QRect(text_left, rect.top() + self.scaled(9), text_width, self.scaled(20))
+        preview_rect = QRect(text_left, title_rect.bottom() + self.scaled(3), text_width, self.scaled(20))
         self._paint_single_line_text(painter, title_rect, row.chat_title, 14, True, self._text_color, Qt.AlignVCenter)
         self._paint_single_line_text(painter, preview_rect, row.preview_text, 13, False, self._secondary_text_color, Qt.AlignVCenter)
 
@@ -472,9 +503,9 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         """
         绘制折叠模式中的子对话行。
         """
-        rect = option.rect.adjusted(30, 4, -2, -4)
+        rect = option.rect.adjusted(self.scaled(30), self.scaled(4), -self.scaled(2), -self.scaled(4))
         self._paint_background(painter, rect, row.active, option, light=True)
-        text_rect = rect.adjusted(14, 0, -12, 0)
+        text_rect = rect.adjusted(self.scaled(14), 0, -self.scaled(12), 0)
         self._paint_single_line_text(painter, text_rect, row.preview_text, 13, False, self._secondary_text_color, Qt.AlignVCenter)
 
     def _paint_background(
@@ -500,12 +531,17 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         border_color = self._child_border_color if light else self._border_color
         painter.setPen(QPen(border_color, 1))
         painter.setBrush(background)
-        painter.drawRoundedRect(rect, 7, 7)
+        painter.drawRoundedRect(rect, self.scaled(7), self.scaled(7))
         if active:
-            mark_rect = QRect(rect.left(), rect.top() + 8, 3, rect.height() - 16)
+            mark_rect = QRect(
+                rect.left(),
+                rect.top() + self.scaled(8),
+                self.scaled(3),
+                rect.height() - self.scaled(16),
+            )
             painter.setPen(Qt.NoPen)
             painter.setBrush(self._active_mark_color)
-            painter.drawRoundedRect(mark_rect, 2, 2)
+            painter.drawRoundedRect(mark_rect, self.scaled(2), self.scaled(2))
 
     def _paint_avatar(self, painter: QPainter, rect: QRect, character_name: str, avatar_color: str) -> None:
         """
@@ -563,7 +599,7 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         绘制单行省略文本。
         """
         font = QFont(painter.font())
-        font.setPixelSize(pixel_size)
+        font.setPixelSize(self.scaled(pixel_size))
         font.setBold(bold)
         painter.setFont(font)
         painter.setPen(color)
@@ -606,9 +642,10 @@ class ChatSidebarView(QListView):
         super().__init__(parent)
         self._model = ChatSidebarModel(self)
         self.setModel(self._model)
-        self.setItemDelegate(ChatSidebarDelegate(self))
+        delegate = ChatSidebarDelegate(self)
+        self.setItemDelegate(delegate)
         self.setMouseTracking(True)
-        self.setSpacing(2)
+        self.setSpacing(delegate.scaled(2))
         self.setUniformItemSizes(False)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setSelectionMode(QAbstractItemView.SingleSelection)
