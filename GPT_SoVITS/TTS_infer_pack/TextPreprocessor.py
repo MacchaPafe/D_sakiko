@@ -25,6 +25,19 @@ i18n = I18nAuto(language=language)
 punctuation = set(["!", "?", "…", ",", ".", "-"])
 
 
+def safe_print(*values: object, sep: str = " ", end: str = "\n") -> None:
+    """
+    避免 Windows GBK stdout 无法编码部分 Unicode 字符时中断推理。
+    """
+    text = sep.join(str(value) for value in values) + end
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        escaped_text = text.encode(encoding, errors="backslashreplace").decode(encoding)
+        sys.stdout.write(escaped_text)
+
+
 def get_first(text: str) -> str:
     pattern = "[" + "".join(re.escape(sep) for sep in splits) + "]"
     text = re.split(pattern, text)[0].strip()
@@ -57,11 +70,11 @@ class TextPreprocessor:
         self.bert_lock = threading.RLock()
 
     def preprocess(self, text: str, lang: str, text_split_method: str, version: str = "v2") -> List[Dict]:
-        print(f"############ {i18n('切分文本')} ############")
+        safe_print(f"############ {i18n('切分文本')} ############")
         text = self.replace_consecutive_punctuation(text)
         texts = self.pre_seg_text(text, lang, text_split_method)
         result = []
-        print(f"############ {i18n('提取文本Bert特征')} ############")
+        safe_print(f"############ {i18n('提取文本Bert特征')} ############")
         for text in texts:
             phones, bert_features, norm_text = self.segment_and_extract_feature_for_text(text, lang, version)
             if phones is None or norm_text == "":
@@ -80,8 +93,8 @@ class TextPreprocessor:
             return []
         if text[0] not in splits and len(get_first(text)) < 4:
             text = "。" + text if lang != "en" else "." + text
-        print(i18n("实际输入的目标文本:"))
-        print(text)
+        safe_print(i18n("实际输入的目标文本:"))
+        safe_print(text)
 
         seg_method = get_seg_method(text_split_method)
         text = seg_method(text)
@@ -98,7 +111,7 @@ class TextPreprocessor:
             # 解决输入目标文本的空行导致报错的问题
             if len(text.strip()) == 0:
                 continue
-            if not re.sub("\W+", "", text):
+            if not re.sub(r"\W+", "", text):
                 # 检测一下，如果是纯符号，就跳过。
                 continue
             if text[-1] not in splits:
@@ -110,8 +123,8 @@ class TextPreprocessor:
             else:
                 texts.append(text)
 
-        print(i18n("实际输入的目标文本(切句后):"))
-        print(texts)
+        safe_print(i18n("实际输入的目标文本(切句后):"))
+        safe_print(texts)
         return texts
 
     def segment_and_extract_feature_for_text(

@@ -415,7 +415,7 @@ class SharedTTSManager:
         config.bert_base_path = signature.bert_base_path
         config.cnhuhbert_base_path = signature.cnhuhbert_base_path
         try:
-            with open(os.devnull, "w") as null:
+            with open(os.devnull, "w", encoding="utf-8") as null:
                 with contextlib.redirect_stdout(null):
                     tts = TTS(
                         config,
@@ -626,7 +626,7 @@ class CharacterVoiceRuntime:
             "sample_steps": gsv_sam_rate,
             "fragment_interval": cast(float, payload.get("fragment_interval", 0.5)),
         }
-        with open(os.devnull, "w") as null:
+        with open(os.devnull, "w", encoding="utf-8") as null:
             with contextlib.redirect_stdout(null):
                 generator = tts.run(input_diction)
                 try:
