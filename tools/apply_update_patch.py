@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
 import subprocess
@@ -12,8 +13,13 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TextIO
+
+
+APP_ID = "D_sakiko"
+CHANNEL = "stable"
+UPDATER_VERSION = "1.0.0"
 
 
 @dataclass
@@ -22,6 +28,15 @@ class TouchRecord:
 
     path: str
     existed_before: bool
+
+
+def default_hpatch_bin(platform_name: str | None = None) -> str:
+    """按平台返回默认 hpatchz 可执行文件路径。"""
+
+    current_platform = platform_name or sys.platform
+    if current_platform == "win32":
+        return "tools/hpatchz.exe"
+    return "tools/hpatchz"
 
 
 class TeeWriter:
@@ -54,13 +69,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--app-root", default=".", help="程序根目录（默认当前目录）。")
     parser.add_argument(
         "--package",
-        default="",
-        help="指定更新包目录；不传时自动扫描 app-root 下所有含 manifest.json+patch.hdiff 的子目录。",
+        action="append",
+        default=[],
+        help="指定更新包目录，可重复；不传时自动扫描 app-root 下所有含 manifest.json+patch.hdiff 的子目录。",
     )
     parser.add_argument("--manifest", default="manifest.json", help="更新包清单文件名。")
     parser.add_argument("--version-file", default="version.json", help="程序版本文件名。")
     parser.add_argument("--backup-dir", default=".update_backup", help="回滚备份目录名。")
-    parser.add_argument("--hpatch-bin", default="tools/hpatchz", help="hpatchz 可执行文件路径（可相对 app-root）。")
+    parser.add_argument("--hpatch-bin", default=default_hpatch_bin(), help="hpatchz 可执行文件路径（可相对 app-root）。")
     parser.add_argument("--wait-pid", type=int, default=0, help="等待指定 PID 退出后再应用更新。")
     parser.add_argument("--restart-command", default="", help="更新成功后执行的重启命令，支持 JSON list 或普通字符串。")
     parser.add_argument("--log-file", default="", help="更新日志文件路径。")
@@ -180,6 +196,77 @@ def resolve_package_root(app_root: Path, package_arg: str) -> Path:
     return (app_root / package_path).resolve()
 
 
+def normalize_manifest_path(value: object, field_name: str) -> str:
+    """规范化 manifest 中的相对路径，拒绝绝对路径和目录逃逸。"""
+
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        raise RuntimeError(f"{field_name} 不能为空")
+    posix_path = PurePosixPath(text)
+    windows_path = PureWindowsPath(str(value or "").strip())
+    if posix_path.is_absolute() or windows_path.is_absolute():
+        raise RuntimeError(f"{field_name} 必须是相对路径：{value!r}")
+    if any(part in {"", ".", ".."} for part in posix_path.parts):
+        raise RuntimeError(f"{field_name} 不能包含空路径、当前目录或上级目录：{value!r}")
+    return posix_path.as_posix()
+
+
+def resolve_under_root(root: Path, relative_path: str, field_name: str) -> Path:
+    """将相对路径解析到 root 下，并确保结果不会逃出 root。"""
+
+    normalized = normalize_manifest_path(relative_path, field_name)
+    root_resolved = root.resolve()
+    target = (root_resolved / normalized).resolve(strict=False)
+    if target != root_resolved and root_resolved not in target.parents:
+        raise RuntimeError(f"{field_name} 解析后超出允许目录：{relative_path!r}")
+    return target
+
+
+def detect_platform() -> str:
+    """返回当前更新器所在平台。"""
+
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    return sys.platform
+
+
+def detect_arch() -> str:
+    """返回当前更新器所在架构。"""
+
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    if machine in {"x86_64", "amd64", "x64"}:
+        return "x64"
+    return machine
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    """将版本号转换为可比较元组。"""
+
+    parts: list[int] = []
+    for item in version.strip().lstrip("v").split("."):
+        number = ""
+        for char in item:
+            if char.isdigit():
+                number += char
+            else:
+                break
+        parts.append(int(number or "0"))
+    return tuple(parts)
+
+
+def validate_version_text(version: str, field_name: str) -> None:
+    """确认版本文本可用于比较和目录命名。"""
+
+    if not version:
+        raise RuntimeError(f"manifest 缺少 {field_name}")
+    if "/" in version or "\\" in version or ".." in version:
+        raise RuntimeError(f"{field_name} 包含非法路径字符：{version!r}")
+
+
 def discover_package_roots(app_root: Path, manifest_name: str) -> list[Path]:
     """自动发现更新包目录：主目录和 .updates/packages 下的有效补丁目录。"""
 
@@ -208,7 +295,7 @@ def ensure_parent(path: Path) -> None:
 def backup_if_exists(app_root: Path, backup_root: Path, relative_path: str) -> bool:
     """若目标路径存在则备份到回滚目录，并返回是否成功备份。"""
 
-    src = app_root / relative_path
+    src = resolve_under_root(app_root, relative_path, "files[].path")
     if not src.exists():
         return False
     dst = backup_root / "files" / relative_path
@@ -225,7 +312,7 @@ def restore_backup(app_root: Path, backup_root: Path, touch_records: list[TouchR
 
     for item in reversed(touch_records):
         # 逆序恢复可避免父子路径相互覆盖导致的数据错位。
-        target = app_root / item.path
+        target = resolve_under_root(app_root, item.path, "files[].path")
         backup_path = backup_root / "files" / item.path
         if item.existed_before:
             if backup_path.exists():
@@ -291,14 +378,38 @@ def should_clear_quarantine(relative_path: str) -> bool:
 def verify_manifest_and_version(manifest: dict[str, object], app_version: str) -> tuple[str, str]:
     """校验 manifest 模式与版本匹配关系，返回 base/target 版本。"""
 
+    app_id = str(manifest.get("app_id", "")).strip()
+    if app_id != APP_ID:
+        raise RuntimeError(f"app_id 不匹配：当前更新器要求 {APP_ID}，补丁为 {app_id or '<缺失>'}")
+
+    channel = str(manifest.get("channel", "")).strip()
+    if channel != CHANNEL:
+        raise RuntimeError(f"channel 不匹配：当前更新器要求 {CHANNEL}，补丁为 {channel or '<缺失>'}")
+
+    patch_platform = str(manifest.get("platform", "")).strip()
+    current_platform = detect_platform()
+    if patch_platform != current_platform:
+        raise RuntimeError(f"平台不匹配：当前 {current_platform}，补丁为 {patch_platform or '<缺失>'}")
+
+    patch_arch = str(manifest.get("arch", "")).strip()
+    current_arch = detect_arch()
+    if patch_arch not in {current_arch, "universal"}:
+        raise RuntimeError(f"架构不匹配：当前 {current_arch}，补丁为 {patch_arch or '<缺失>'}")
+
+    min_updater_version = str(manifest.get("min_updater_version", "")).strip()
+    if not min_updater_version:
+        raise RuntimeError("manifest 缺少 min_updater_version")
+    if version_key(UPDATER_VERSION) < version_key(min_updater_version):
+        raise RuntimeError(f"更新器版本过低：当前 {UPDATER_VERSION}，补丁要求 {min_updater_version}")
+
     mode = str(manifest.get("mode", "")).strip()
     if mode != "hdiff":
         raise RuntimeError(f"仅支持 hdiff 更新包，当前 mode={mode!r}")
 
     base_version = str(manifest.get("base_version", "")).strip()
     target_version = str(manifest.get("target_version", "")).strip()
-    if not base_version or not target_version:
-        raise RuntimeError("manifest 缺少 base_version/target_version")
+    validate_version_text(base_version, "base_version")
+    validate_version_text(target_version, "target_version")
     if app_version != base_version:
         raise RuntimeError(f"版本不匹配：当前 {app_version}，补丁要求的基础版本为 {base_version}")
     return base_version, target_version
@@ -334,11 +445,8 @@ def apply_hdiff(
 ) -> list[str]:
     """调用 hpatchz 应用目录差分，并按清单落地文件与删除动作。"""
 
-    patch_file = manifest.get("patch_file")
-    if not patch_file:
-        raise RuntimeError("manifest 缺少 patch_file")
-
-    patch_path = package_root / str(patch_file)
+    patch_file = normalize_manifest_path(manifest.get("patch_file"), "patch_file")
+    patch_path = resolve_under_root(package_root, patch_file, "patch_file")
     if not patch_path.exists():
         raise RuntimeError(f"找不到差分文件：{patch_path}")
 
@@ -362,20 +470,27 @@ def apply_hdiff(
             raise RuntimeError(f"hpatchz 执行失败：{stderr or stdout or '未知错误'}")
 
         processed_paths: list[str] = []
-        for item in manifest.get("files", []):
+        files = manifest.get("files", [])
+        if not isinstance(files, list):
+            raise RuntimeError("manifest.files 必须是数组")
+        for item in files:
+            if not isinstance(item, dict):
+                raise RuntimeError("manifest.files[] 必须是对象")
             action = item.get("action")
-            relative_path = item.get("path")
-            if not relative_path:
-                continue
+            if action not in {"add", "modify", "remove"}:
+                raise RuntimeError(f"不支持的文件动作：{action!r}")
+            relative_path = normalize_manifest_path(item.get("path"), "files[].path")
 
-            target = app_root / relative_path
+            target = resolve_under_root(app_root, relative_path, "files[].path")
             existed_before = backup_if_exists(app_root, backup_root, relative_path)
             touch_records.append(TouchRecord(path=relative_path, existed_before=existed_before))
 
             if action in {"add", "modify"}:
-                source = staged_new_root / relative_path
+                source = resolve_under_root(staged_new_root, relative_path, "files[].path")
                 if not source.exists():
                     raise RuntimeError(f"hpatch 输出缺少文件：{relative_path}")
+                if source.is_symlink() or not source.is_file():
+                    raise RuntimeError(f"hpatch 输出不是普通文件：{relative_path}")
 
                 expected_sha = str(item.get("sha256") or "").strip()
                 # 只要清单提供了哈希，就强制校验，防止损坏补丁写入运行目录。
@@ -398,7 +513,7 @@ def apply_post_process(app_root: Path, relative_paths: list[str]) -> None:
     """执行补丁后处理：可执行权限修复与 quarantine 清理。"""
 
     for relative_path in sorted(set(relative_paths)):
-        target = app_root / relative_path
+        target = resolve_under_root(app_root, relative_path, "files[].path")
         if should_make_executable(relative_path):
             set_executable(target)
         if should_clear_quarantine(relative_path):
@@ -541,7 +656,7 @@ def main() -> int:
             return 1
 
         if args.package:
-            package_roots = [resolve_package_root(app_root, args.package)]
+            package_roots = [resolve_package_root(app_root, package_arg) for package_arg in args.package]
         else:
             package_roots = discover_package_roots(app_root, args.manifest)
 

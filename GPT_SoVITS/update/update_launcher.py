@@ -13,6 +13,7 @@ from .update_paths import get_update_log_dir
 
 def build_apply_command(
     app_root: Path,
+    package_dirs: list[Path] | tuple[Path, ...] | None,
     wait_pid: int | None,
     restart_command: list[str] | None,
     log_file: Path | None,
@@ -26,6 +27,8 @@ def build_apply_command(
         "--app-root",
         str(app_root),
     ]
+    for package_dir in package_dirs or ():
+        command.extend(["--package", str(package_dir)])
     if wait_pid is not None:
         command.extend(["--wait-pid", str(wait_pid)])
     if restart_command:
@@ -59,7 +62,8 @@ def launch_update_process(
     """启动 updater 子进程，然后由 UI 触发主程序退出。"""
 
     log_file = _make_log_file(downloaded_patches, app_root)
-    command = build_apply_command(app_root, main_pid, restart_command, log_file)
+    package_dirs = [downloaded.package_dir for downloaded in downloaded_patches]
+    command = build_apply_command(app_root, package_dirs, main_pid, restart_command, log_file)
     if os.name == "nt":
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         subprocess.Popen(
