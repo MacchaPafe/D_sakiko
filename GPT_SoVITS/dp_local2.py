@@ -30,6 +30,90 @@ LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
 
 
+def _object_to_mapping(value: object) -> Optional[dict[str, object]]:
+    """
+    将 dict 或带 model_dump/dict 方法的对象转换为普通字典。
+    """
+    if isinstance(value, dict):
+        return dict(value)
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump()
+            if isinstance(dumped, dict):
+                return dict(dumped)
+        except Exception:
+            return None
+
+    dict_method = getattr(value, "dict", None)
+    if callable(dict_method):
+        try:
+            dumped = dict_method()
+            if isinstance(dumped, dict):
+                return dict(dumped)
+        except Exception:
+            return None
+
+    return None
+
+
+def _extract_prompt_cache_usage(response: object) -> Optional[dict[str, object]]:
+    """
+    从 LiteLLM 响应中提取 DeepSeek prompt cache usage 字段。
+    """
+    response_mapping = _object_to_mapping(response)
+    usage_obj: object = None
+    if response_mapping is not None:
+        usage_obj = response_mapping.get("usage")
+    if usage_obj is None:
+        usage_obj = getattr(response, "usage", None)
+
+    usage_mapping = _object_to_mapping(usage_obj)
+    if usage_mapping is None:
+        return None
+
+    if "prompt_cache_hit_tokens" not in usage_mapping or "prompt_cache_miss_tokens" not in usage_mapping:
+        return None
+
+    result: dict[str, object] = {
+        "prompt_cache_hit_tokens": usage_mapping.get("prompt_cache_hit_tokens"),
+        "prompt_cache_miss_tokens": usage_mapping.get("prompt_cache_miss_tokens"),
+    }
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        if key in usage_mapping:
+            result[key] = usage_mapping[key]
+    return result
+
+
+def _log_prompt_cache_usage(response: object, request_kwargs: dict[str, object]) -> None:
+    """
+    记录 DeepSeek prompt cache 命中情况。
+    """
+    usage = _extract_prompt_cache_usage(response)
+    if usage is None:
+        return
+
+    hit_tokens = int(usage.get("prompt_cache_hit_tokens") or 0)
+    miss_tokens = int(usage.get("prompt_cache_miss_tokens") or 0)
+    total_cache_tokens = hit_tokens + miss_tokens
+    hit_rate = "0.00%"
+    if total_cache_tokens > 0:
+        hit_rate = f"{hit_tokens / total_cache_tokens * 100:.2f}%"
+
+    model = str(request_kwargs.get("model") or getattr(response, "model", "") or "")
+    logger.info(
+        "deepseek_prompt_cache model=%s hit=%s miss=%s hit_rate=%s prompt=%s completion=%s total=%s",
+        model,
+        hit_tokens,
+        miss_tokens,
+        hit_rate,
+        usage.get("prompt_tokens"),
+        usage.get("completion_tokens"),
+        usage.get("total_tokens"),
+    )
+
+
 def completion(**kwargs):
     """
     调用 litellm 的 completion 接口。
@@ -73,7 +157,9 @@ def completion(**kwargs):
             if extra_body:
                 kwargs["extra_body"] = extra_body
 
-    return litellm.completion(**kwargs)
+    response = litellm.completion(**kwargs)
+    _log_prompt_cache_usage(response, dict(kwargs))
+    return response
 
 
 class DSLocalAndVoiceGen:
@@ -321,61 +407,120 @@ class DSLocalAndVoiceGen:
         self.report_message_to_main_ui(message_queue, is_text_generating_queue, ui_message)
 
     def _build_runtime_system_instruction(self) -> str:
-        # 将“工具调用 + 输出格式 + 语言要求”统一放到 system 提示词，避免污染 user 消息。
-        common_rules = (
-            "[全局唯一输出协议]\n"
-            "1. 你每一次的回复内容都必须且只能是 JSON 数组（Array）！\n"
-            "2. 严禁输出数组之外的任何解释文字、提示语、Markdown 代码块、前后缀。\n"
-            "3. 每个段落对象至少包含 text 与 emotion 字段，在日文输出时还有 translation（中文翻译）字段，但绝对不可再有别的字段\n"
-        )
-        return common_rules
+        """
+        构造稳定的运行期系统提示词，描述渲染器需要的机器输出协议。
+        """
+        parts: list[str] = []
+        restriction = str(getattr(self, "restr", "") or "").strip()
+        if restriction:
+            parts.append(f"[角色边界]\n{restriction}")
 
-    def _build_every_round_instruction(self) -> str:
-        if self.audio_language_choice == '日英混合':
-            return (
-                "[本轮语言模式：日文]\n"
-                + "1. text 必须是日文。\n"
-                + "2. 每个段落都必须包含 translation（中文翻译）。\n"
-                + "3. 每个段落必须包含emotion字段，且只能取：happiness, sadness, anger, surprise, fear, disgust, like, neutral。\n"
-                + "4. 分段规则：回复的text较长时请按语义停顿拆成多个段落，每段建议 1-3 句。\n"
-                + "5. 输出示例，必须严格遵守该格式："
-                + """[
-                        {
-                            "text":"第一段日文",
-                            "translation":"第一段中文翻译",
-                            "emotion":"neutral"
-                        },
-                        {
-                            "text":"第二段日文",
-                            "translation":"第二段中文翻译",
-                            "emotion":"neutral"
-                        }
-                    ]
-                """
-                + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
-                + "7. 如果你决定调用工具：**你应该同时输出一段“过渡台词”**，但这段台词也必须放在 JSON 数组里，**格式和上面的输出示例一致!**。\n"
-            )
-        return (
-                "[本轮语言模式：中文]\n"
-                + "1. text 必须是中文，不要出现日语假名。\n"
-                + "2. 严禁有translation 字段！\n"
-                + "3. 每个段落必须包含emotion字段，且只能取：happiness, sadness, anger, surprise, fear, disgust, like, neutral。\n"
-                + "4. 分段规则：回复的text较长时请按语义停顿拆成多个段落，每段建议 1-3 句。\n"
-                + "5. 输出示例，必须严格遵守该格式："
-                + """[
-                        {
-                            "text":"第一段中文",
-                            "emotion":"neutral"
-                        },
-                        {
-                            "text":"第二段中文",
-                            "emotion":"neutral"
-                        }
-                    ]
-                """
-                + "6. 你被提供了一些工具（如 Web 搜索、获取时间日期等），可以在需要时调用它们获取你不清楚的信息。并不一定只有当用户明确要求时才调用这些工具：\n"
-                + "7. 如果你决定调用工具：**你应该同时输出一段“过渡台词”**，但这段台词也必须放在 JSON 数组里，**格式和上面的输出示例一致!**。\n"
+        parts.append(
+            """# Machine Output Contract
+你不是直接向用户输出自由文本。
+你正在为一个语音与聊天渲染器生成结构化数据。
+
+最终回复必须只返回一个 JSON array，不要输出 Markdown 代码块、解释文字、前缀或后缀。
+
+JSON array 的每个元素都是一个对话段落对象，结构为：
+[
+  {
+    "text": "角色实际说出口的台词",
+    "emotion": "happiness | sadness | anger | surprise | fear | disgust | like",
+    "translation": "中文翻译；仅当 runtime.reply_language 为 ja_with_zh_translation 时必须存在"
+  }
+]
+
+当角色需要说两句话，并且 runtime.reply_language 为 ja_with_zh_translation 时，输出示例为：
+[
+  {
+    "text": "今日は少し疲れましたが、あなたと話していると落ち着きます。",
+    "translation": "今天稍微有点累，不过和你说话会让我平静下来。",
+    "emotion": "happiness"
+  },
+  {
+    "text": "だから、もう少しだけここにいてもいいですか。",
+    "translation": "所以，我可以再在这里待一会儿吗？",
+    "emotion": "like"
+  }
+]
+
+当 runtime.reply_language 为 zh_only 时，输出示例为：
+[
+  {
+    "text": "今天稍微有点累，不过和你说话会让我平静下来。",
+    "emotion": "happiness"
+  },
+  {
+    "text": "所以，我可以再在这里待一会儿吗？",
+    "emotion": "like"
+  }
+]
+
+规则：
+1. 顶层 JSON array 必须是非空数组。
+2. 每个 segment 表示一次自然的语义停顿，通常为 1 到 3 句。
+3. text 必须符合角色人设和当前上下文。
+4. emotion 必须从指定枚举中选择。
+5. 当 runtime.reply_language 为 zh_only 时，严禁输出 translation 字段。
+6. 当 runtime.reply_language 为 ja_with_zh_translation 时，每个 segment 都必须有 translation 字段。
+7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
+8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"""
         )
+        return "\n\n".join(parts)
+
+    def _build_turn_runtime_controls(self) -> str:
+        """
+        构造仅描述本轮变量的短运行期控制消息。
+        """
+        reply_language = (
+            "ja_with_zh_translation"
+            if self.audio_language_choice == '日英混合'
+            else "zh_only"
+        )
+        sakiko_tone = "none"
+        if self.if_sakiko:
+            sakiko_tone = "dark" if self.sakiko_state else "light"
+
+        return (
+            "<runtime_controls>\n"
+            f"reply_language: {reply_language}\n"
+            f"sakiko_tone: {sakiko_tone}\n"
+            "</runtime_controls>"
+        )
+
+    @staticmethod
+    def _append_runtime_controls_message(messages: list[dict[str, object]], controls: str) -> None:
+        """
+        将本轮控制信息作为独立短消息追加到请求副本末尾。
+        """
+        messages.append({"role": "user", "content": controls})
+
+    def _build_llm_messages_for_chat_turn(self, character_name: str) -> list[dict[str, object]]:
+        """
+        基于当前对话构造发送给 LLM 的请求副本。
+        """
+        messages = [
+            dict(one)
+            for one in self.current_chat.build_llm_query(
+                perspective=character_name,
+                is_simplify=True,
+            )
+        ]
+        runtime_system_instruction = self._build_runtime_system_instruction()
+        system_idx = -1
+        for idx, one in enumerate(messages):
+            if one.get("role") == "system":
+                system_idx = idx
+                break
+        if system_idx >= 0:
+            content = str(messages[system_idx].get("content") or "")
+            messages[system_idx]["content"] = content + "\n" + runtime_system_instruction
+        else:
+            messages.insert(0, {"role": "system", "content": runtime_system_instruction})
+
+        self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
+        return messages
 
     def _build_current_reasoning_kwargs_snapshot(self) -> dict[str, object]:
         """
@@ -427,8 +572,6 @@ class DSLocalAndVoiceGen:
                 "api_key": self.model,
                 "stream": stream,
                 "timeout": timeout,
-                "tools": tools,
-                "tool_choice": tool_choice,
             }
         elif d_sakiko_config.enable_custom_llm_api_provider.value:
             logger.debug("正在使用自定义大模型 API")
@@ -441,8 +584,6 @@ class DSLocalAndVoiceGen:
                 "base_url": d_sakiko_config.custom_llm_api_url.value,
                 "stream": stream,
                 "timeout": timeout,
-                "tools": tools,
-                "tool_choice": tool_choice,
             }
         else:
             logger.debug("正在使用预定义大模型 API")
@@ -459,11 +600,13 @@ class DSLocalAndVoiceGen:
                 "api_key": api_key,
                 "stream": stream,
                 "timeout": timeout,
-                "tools": tools,
-                "tool_choice": tool_choice,
             }
             if base_url:
                 completion_kwargs["base_url"] = base_url
+
+        if tools is not None:
+            completion_kwargs["tools"] = tools
+            completion_kwargs["tool_choice"] = tool_choice
 
         # 如果调用方没有显式传入推理相关参数，则根据当前 Chat 的配置补充。
         extra_body = runtime_kwargs.get("extra_body")
@@ -569,6 +712,344 @@ class DSLocalAndVoiceGen:
             "emotion": message.emotion.as_label(),
             "force_no_audio": force_no_audio,
         }
+
+    @staticmethod
+    def _strip_json_markdown_fence(text: str) -> str:
+        """
+        去掉模型偶尔包裹在 JSON 外层的 Markdown 代码块标记。
+        """
+        json_str = text.strip()
+        if json_str.startswith('```'):
+            json_str = re.sub(r'^```(?:json)?\s*', '', json_str)
+            json_str = re.sub(r'\s*```$', '', json_str)
+        return json_str.strip()
+
+    @staticmethod
+    def _extract_response_content(response: object) -> str:
+        """
+        从 LiteLLM/OpenAI 风格响应中提取 assistant content。
+        """
+        message: object = None
+        if isinstance(response, dict):
+            choices = response.get("choices")
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    message = first_choice.get("message")
+        else:
+            choices = getattr(response, "choices", None)
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0]
+                message = getattr(first_choice, "message", None)
+
+        if isinstance(message, dict):
+            return str(message.get("content") or "")
+        if message is not None:
+            return str(getattr(message, "content", "") or "")
+        return ""
+
+    @staticmethod
+    def _emotion_from_model_value(emotion: str) -> EmotionEnum:
+        """
+        将模型输出的情绪字符串转换为程序内部枚举。
+        """
+        return EmotionEnum.from_string(emotion)
+
+    @staticmethod
+    def _allowed_model_emotions() -> set[str]:
+        """
+        返回机器输出协议允许的情绪值。
+        """
+        return {
+            "happiness",
+            "sadness",
+            "anger",
+            "surprise",
+            "fear",
+            "disgust",
+            "like",
+        }
+
+    def _parse_model_segments_payload(self, content: str) -> list[dict[str, str]]:
+        """
+        解析并校验模型输出的顶层 JSON array 对话段落。
+        """
+        json_str = self._strip_json_markdown_fence(content)
+        if not json_str:
+            raise ValueError("模型返回内容为空。")
+
+        parsed_data = json.loads(json_str)
+        if not isinstance(parsed_data, list):
+            raise ValueError("模型输出的 JSON 顶层必须是 array。")
+
+        if not parsed_data:
+            raise ValueError("模型输出的 JSON array 不能为空。")
+
+        allowed_keys = {"text", "emotion", "translation"}
+        allowed_emotions = self._allowed_model_emotions()
+        need_translation = self.audio_language_choice == '日英混合'
+        segments: list[dict[str, str]] = []
+        for index, item in enumerate(parsed_data):
+            if not isinstance(item, dict):
+                raise ValueError(f"第 {index + 1} 个段落不是 JSON object。")
+
+            extra_keys = set(str(key) for key in item.keys()) - allowed_keys
+            if extra_keys:
+                raise ValueError(f"第 {index + 1} 个段落包含多余字段：{sorted(extra_keys)}。")
+
+            text = str(item.get("text") or "").strip()
+            if not text:
+                raise ValueError(f"第 {index + 1} 个段落缺少 text。")
+
+            emotion = str(item.get("emotion") or "").strip().lower()
+            if emotion not in allowed_emotions:
+                raise ValueError(f"第 {index + 1} 个段落 emotion 不合法：{emotion or '空'}。")
+
+            segment = {"text": text, "emotion": emotion}
+            if need_translation:
+                translation = str(item.get("translation") or "").strip()
+                if not translation:
+                    raise ValueError(f"第 {index + 1} 个段落缺少 translation。")
+                segment["translation"] = translation
+            segments.append(segment)
+
+        return segments
+
+    def _segments_to_messages(
+        self,
+        character_name: str,
+        segments: list[dict[str, str]],
+        force_no_audio: bool = False,
+    ) -> list[int]:
+        """
+        将校验后的模型段落写入当前对话，并返回新增消息索引。
+        """
+        added_msg_indices: list[int] = []
+        for item in segments:
+            msg = Message(
+                character_name=character_name,
+                text=item["text"],
+                translation=item.get("translation", ""),
+                emotion=self._emotion_from_model_value(item["emotion"]),
+                audio_path="NO_AUDIO" if force_no_audio else ("" if self.if_generate_audio else "NO_AUDIO"),
+            )
+            self.current_chat.add_message(msg)
+            added_msg_indices.append(len(self.current_chat.message_list) - 1)
+        return added_msg_indices
+
+    def _run_json_completion_with_empty_retry(
+        self,
+        messages: list[dict[str, object]],
+        reasoning_kwargs: dict[str, object],
+        max_tokens: int = -1,
+    ) -> tuple[str, bool]:
+        """
+        发起最终结构化回复请求，并在空 content 时静默重试一次。
+
+        返回值中的 bool 表示本次成功返回内容时是否实际启用了 JSON Mode。
+        """
+        use_json_mode = self._supports_json_object_response_format_for_current_config()
+        for _ in range(2):
+            request_kwargs = {
+                "stream": False,
+                "timeout": 30,
+                **reasoning_kwargs,
+            }
+            if max_tokens > 0:
+                request_kwargs["max_tokens"] = max_tokens
+            if use_json_mode:
+                request_kwargs["response_format"] = {"type": "json_object"}
+            try:
+                response = self._completion_with_current_config(
+                    model="json-runtime",
+                    messages=messages,
+                    tools=None,
+                    tool_choice="none",
+                    **request_kwargs,
+                )
+            except litellm.exceptions.BadRequestError as exc:
+                if use_json_mode and self._is_response_format_unsupported(exc):
+                    logger.warning("当前模型或服务不支持 JSON Mode，降级为普通补全。")
+                    use_json_mode = False
+                    if max_tokens > 0:
+                        response = self._completion_with_current_config(
+                            model="json-runtime",
+                            messages=messages,
+                            tools=None,
+                            tool_choice="none",
+                            stream=False,
+                            timeout=30,
+                            max_tokens=max_tokens,
+                            **reasoning_kwargs,
+                        )
+                    else:
+                        response = self._completion_with_current_config(
+                            model="json-runtime",
+                            messages=messages,
+                            tools=None,
+                            tool_choice="none",
+                            stream=False,
+                            timeout=30,
+                            **reasoning_kwargs,
+                        )
+                else:
+                    raise
+
+            last_content = self._extract_response_content(response).strip()
+            if last_content:
+                return last_content, use_json_mode
+
+        raise ValueError("模型连续返回空内容。")
+
+    def _supports_json_object_response_format_for_current_config(self) -> bool:
+        """
+        使用 LiteLLM 的模型参数表判断当前配置是否应尝试 JSON Mode。
+        """
+        get_supported_params = getattr(litellm, "get_supported_openai_params", None)
+        if not callable(get_supported_params):
+            return False
+
+        model = self._current_litellm_model_name()
+        try:
+            params = get_supported_params(model=model)
+        except Exception as exc:
+            logger.warning("查询模型 JSON Mode 支持失败，降级为普通补全：%s", exc)
+            return False
+
+        return isinstance(params, list) and "response_format" in params
+
+    def _current_litellm_model_name(self) -> str:
+        """
+        根据当前配置解析 LiteLLM 实际收到的 model 字符串。
+        """
+        if d_sakiko_config.use_default_deepseek_api.value:
+            return "deepseek/deepseek-v4-flash"
+        if d_sakiko_config.enable_custom_llm_api_provider.value:
+            return ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value)
+
+        provider = d_sakiko_config.llm_api_provider.value
+        model_name = d_sakiko_config.llm_api_model.value.get(provider, "")
+        return self.normalize_model_for_provider(provider, model_name)
+
+    @staticmethod
+    def _is_response_format_unsupported(exc: litellm.exceptions.BadRequestError) -> bool:
+        """
+        判断 BadRequest 是否来自 response_format/JSON Mode 不兼容。
+        """
+        message = str(getattr(exc, "message", str(exc)) or "").lower()
+        return (
+            "response_format" in message
+            or "json_object" in message
+            or "json mode" in message
+        )
+
+    def _build_final_json_messages(
+        self,
+        base_messages: list[dict[str, object]],
+        candidate_content: str = "",
+    ) -> list[dict[str, object]]:
+        """
+        基于工具调用临时历史构造最终 JSON 回复请求。
+        """
+        messages = [dict(one) for one in base_messages]
+        candidate = str(candidate_content or "").strip()
+        if candidate:
+            messages.append({
+                "role": "assistant",
+                "content": candidate,
+            })
+        messages.append({
+            "role": "user",
+            "content": (
+                "请将上一条 assistant 候选回复转换为本轮最终回复。\n"
+                "上一条 assistant 仅是候选草稿，不代表格式正确；如果它已经是自然语言或格式不合格，"
+                "请转换为正确 JSON array，不要照抄错误格式。\n"
+                "只输出符合 Machine Output Contract 的 JSON array。"
+            ),
+        })
+        return messages
+
+    def _build_format_retry_messages(self, invalid_content: str, reason: str) -> list[dict[str, object]]:
+        """
+        构造 schema 格式纠正 retry 请求。
+        """
+        return [
+            {
+                "role": "system",
+                "content": self._build_runtime_system_instruction(),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "下面是模型输出，可能不是合法 JSON，或不符合业务 schema。\n"
+                    "请只纠正 JSON 结构、字段和缺失项，不要改写语义。\n"
+                    f"校验错误：{reason}\n"
+                    f"本轮控制信息：\n{self._build_turn_runtime_controls()}\n"
+                    "原始输出：\n"
+                    f"{invalid_content}"
+                ),
+            },
+        ]
+
+    def _retry_model_segments_format(
+        self,
+        invalid_content: str,
+        reason: str,
+        reasoning_kwargs: dict[str, object],
+    ) -> list[dict[str, str]]:
+        """
+        对 schema 不合格的非空输出做一次格式纠正 retry。
+        """
+        logger.warning("模型输出格式不合格，正在尝试纠正。错误原因：%s；原始输出：%s", reason, invalid_content)
+        retry_content, _used_json_mode = self._run_json_completion_with_empty_retry(
+            self._build_format_retry_messages(invalid_content, reason),
+            reasoning_kwargs,
+        )
+        return self._parse_model_segments_payload(retry_content)
+
+    def _run_final_json_completion(
+        self,
+        runtime_messages: list[dict[str, object]],
+        candidate_content: str,
+        reasoning_kwargs: dict[str, object],
+    ) -> list[dict[str, str]]:
+        """
+        在工具调用阶段结束后，固定发起最终 JSON Mode 请求并解析为合法段落。
+        """
+        generated, used_json_mode = self._run_json_completion_with_empty_retry(
+            self._build_final_json_messages(runtime_messages, candidate_content),
+            reasoning_kwargs,
+        )
+
+        try:
+            return self._parse_model_segments_payload(generated)
+        except json.JSONDecodeError as exc:
+            if not used_json_mode:
+                return self._retry_model_segments_format(
+                    invalid_content=generated,
+                    reason="输出不是合法 JSON。",
+                    reasoning_kwargs=reasoning_kwargs,
+                )
+            raise ValueError("JSON Mode 返回了非空但不合法的 JSON。") from exc
+        except ValueError as exc:
+            return self._retry_model_segments_format(
+                invalid_content=generated,
+                reason=str(exc),
+                reasoning_kwargs=reasoning_kwargs,
+            )
+
+    def _report_model_format_error(
+        self,
+        message_queue,
+        is_text_generating_queue,
+        message: str,
+    ) -> None:
+        """
+        向 UI 报告模型输出格式错误，但保留用户原始消息。
+        """
+        logger.warning("模型输出格式错误：%s", message)
+        message_queue.put(f"模型返回内容格式不符合要求，请重试。\n\n详细信息：\n{message}")
+        self._clear_text_generating_flag_if_needed(is_text_generating_queue)
 
     def _record_tool_call_started(
         self,
@@ -963,14 +1444,6 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                 continue
 
-            llm_user_input = raw_user_input
-            if self.if_sakiko:
-                if self.sakiko_state:
-                    llm_user_input = llm_user_input + '（本句话用黑祥语气回答!）'
-                else:
-                    llm_user_input = llm_user_input + '（本句话用白祥语气回答!）'
-
-            llm_user_input = llm_user_input + "\n" + self.restr + "\n" + self._build_every_round_instruction()  # 在用户输入后追加格式要求信息，减少上下文稀释的影响
             # 将原始用户输入（不含指令后缀）存入 Chat
             user_msg = Message(
                 character_name="User",
@@ -981,47 +1454,8 @@ class DSLocalAndVoiceGen:
             )
             self.current_chat.add_message(user_msg)
 
-            # 构建 LLM 请求：使用 Chat.build_llm_query 生成基础历史，然后修改最后一条用户消息为带指令后缀的版本
             character_name = self.get_current_character().character_name
-            to_llm_msg = self.current_chat.build_llm_query(perspective=character_name, is_simplify=True)  # 生成简化版本的消息列表，减少不必要的字段
-
-            # 将最后一条 user 消息的 content 替换为带指令后缀的版本
-            for i in range(len(to_llm_msg) - 1, -1, -1):
-                if to_llm_msg[i]["role"] == "user":
-                    # 找到最后一条 user 消息，只替换本轮新追加的用户输入部分。
-                    content = to_llm_msg[i]["content"]
-                    raw_marker = f"[User]: {raw_user_input}"
-                    llm_marker = f"[User]: {llm_user_input}"
-                    marker_idx = content.rfind(raw_marker)
-                    if marker_idx >= 0:
-                        to_llm_msg[i]["content"] = (
-                            content[:marker_idx]
-                            + llm_marker
-                            + content[marker_idx + len(raw_marker):]
-                        )
-                    else:
-                        fallback_idx = content.rfind(raw_user_input)
-                        if fallback_idx >= 0:
-                            to_llm_msg[i]["content"] = (
-                                content[:fallback_idx]
-                                + llm_user_input
-                                + content[fallback_idx + len(raw_user_input):]
-                            )
-                        else:
-                            logger.warning("未能在 LLM 查询中定位本轮用户输入：%s", raw_user_input)
-                    break
-
-            # 添加系统提示词到 system prompt
-            runtime_system_instruction =self._build_runtime_system_instruction()
-            system_idx = -1
-            for idx, one in enumerate(to_llm_msg):
-                if one.get("role") == "system":
-                    system_idx = idx
-                    break
-            if system_idx >= 0:
-                to_llm_msg[system_idx]['content'] += "\n" + runtime_system_instruction
-            else:
-                to_llm_msg.insert(0, {"role": "system", "content": runtime_system_instruction})
+            to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
 
             message_queue.put(f"{character_name}思考中...")
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
@@ -1149,63 +1583,30 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
 
-            if not cleaned_text_of_model_response:
-                self.report_message_to_main_ui(
+            try:
+                model_segments = self._run_final_json_completion(
+                    runtime_messages=runtime_result.messages,
+                    candidate_content=cleaned_text_of_model_response,
+                    reasoning_kwargs=reasoning_kwargs_snapshot,
+                )
+                added_msg_indices = self._segments_to_messages(character_name, model_segments)
+            except ValueError as e:
+                self._report_model_format_error(
                     message_queue,
                     is_text_generating_queue,
-                    "模型API返回内容为空，请检查网络，然后重试一下吧"
+                    str(e),
                 )
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
-            # 解析 LLM 回复的 JSON 格式，提取实际文本、翻译和情感
-            # 现在 LLM 可能返回 JSON 数组（多段回复），每段创建一个 Message
-            try:
-                json_str = cleaned_text_of_model_response.strip()
-                if json_str.startswith('```'):
-                    json_str = re.sub(r'^```(?:json)?\s*', '', json_str)
-                    json_str = re.sub(r'\s*```$', '', json_str)
-                parsed_data = json.loads(json_str)
-                added_msg_indices: list[int] = []
-
-                if isinstance(parsed_data, list):
-                    # JSON 数组：每个元素 → 一个 Message
-                    for item in parsed_data:
-                        text = item.get('text', '')
-                        if not text:
-                            continue
-                        msg = Message(
-                            character_name=character_name,
-                            text=text,
-                            translation=item.get('translation', ''),
-                            emotion=EmotionEnum.from_string(item.get('emotion', 'happiness')),
-                            audio_path="" if self.if_generate_audio else "NO_AUDIO"  # 会在 qtUI 中覆盖
-                        )
-                        self.current_chat.add_message(msg)
-                        added_msg_indices.append(len(self.current_chat.message_list) - 1)
-                elif isinstance(parsed_data, dict):
-                    # JSON 单对象
-                    msg = Message(
-                        character_name=character_name,
-                        text=parsed_data.get('text', cleaned_text_of_model_response),
-                        translation=parsed_data.get('translation', ''),
-                        emotion=EmotionEnum.from_string(parsed_data.get('emotion', 'happiness')),
-                        audio_path="" if self.if_generate_audio else "NO_AUDIO"
-                    )
-                    self.current_chat.add_message(msg)
-                    added_msg_indices.append(len(self.current_chat.message_list) - 1)
-                else:
-                    raise ValueError("Unexpected JSON type")
-            except (json.JSONDecodeError, KeyError, AttributeError, ValueError):
-                # 非 JSON 格式，存储原始文本
-                assistant_msg = Message(
-                    character_name=character_name,
-                    text=cleaned_text_of_model_response,
-                    translation="",
-                    emotion=EmotionEnum.HAPPINESS,
-                    audio_path="" if self.if_generate_audio else "NO_AUDIO"
+            except Exception as e:
+                self._report_model_exception(
+                    message_queue,
+                    is_text_generating_queue,
+                    "模型格式纠正请求失败，请稍后再试。",
+                    e,
                 )
-                self.current_chat.add_message(assistant_msg)
-                added_msg_indices = [len(self.current_chat.message_list) - 1]
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
 
             segments = [
                 self._segment_from_message(index, self.current_chat.message_list[index], not self.if_generate_audio)

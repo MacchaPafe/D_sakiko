@@ -786,6 +786,13 @@ class Chat:
         :returns: 用于 LLM 的对话历史列表
         """
         llm_history = []
+        system_prompt_content = self.prompt_generator.generate(perspective=perspective)
+        if system_prompt_content:
+            llm_history.append({
+                "role": "system",
+                "content": system_prompt_content
+            })
+
         has_start_message = False
         if self.start_message:
             llm_history.append(
@@ -797,13 +804,6 @@ class Chat:
                 "content": self.start_message
             })
             has_start_message = True
-
-        system_prompt_content = self.prompt_generator.generate(perspective=perspective)
-        if system_prompt_content:
-            llm_history.append({
-                "role": "system",
-                "content": system_prompt_content
-            })
 
         for msg in self.message_list:
             role = "assistant" if msg.character_name == perspective else "user"

@@ -9,7 +9,7 @@ import tempfile
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from character import CharacterAttributes
-from chat.chat import Chat, ChatManager, ChatType, Message
+from chat.chat import Chat, ChatManager, ChatType, Message, StaticPromptGenerator
 from emotion_enum import EmotionEnum
 
 
@@ -184,6 +184,31 @@ class ChatTestCase(unittest.TestCase):
         self.assertIn("素世", query[2]["content"])
 
         self.assertFalse(chat.is_my_turn("素世"))
+
+    def test_llm_query_places_system_before_start_message(self):
+        """
+        有起始场景和 system prompt 时，system prompt 应位于请求开头。
+        """
+        chat = Chat(
+            prompt_generator=StaticPromptGenerator("系统设定"),
+            start_message="场景说明",
+            message_list=[
+                Message(
+                    character_name="User",
+                    text="你好",
+                    translation="",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path="",
+                )
+            ],
+        )
+
+        query = chat.build_llm_query("角色")
+
+        self.assertEqual(query[0]["role"], "system")
+        self.assertEqual(query[0]["content"], "系统设定")
+        self.assertEqual(query[1]["role"], "user")
+        self.assertIn("场景说明", query[1]["content"])
 
     def test_llm_query_for_multiple_character(self):
         """
