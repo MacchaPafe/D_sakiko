@@ -5,6 +5,7 @@ import re
 import time,os
 import uuid
 import threading
+import textwrap
 from copy import deepcopy
 
 import json
@@ -335,63 +336,66 @@ class DSLocalAndVoiceGen:
         if restriction:
             parts.append(f"[角色边界]\n{restriction}")
 
-        parts.append(
+        parts.append(textwrap.dedent(
             """# Machine Output Contract
-你不是直接向用户输出自由文本。
-你正在为一个语音与聊天渲染器生成结构化数据。
+            你不是直接向用户输出自由文本。
+            你正在为一个语音与聊天渲染器生成结构化数据。
 
-最终回复必须只返回一个 JSON array，不要输出 Markdown 代码块、解释文字、前缀或后缀。
+            最终回复必须只返回一个 JSON array，不要输出 Markdown 代码块、解释文字、前缀或后缀。
 
-JSON array 的每个元素都是一个对话段落对象，结构为：
-[
-  {
-    "text": "角色实际说出口的台词",
-    "emotion": "happiness | sadness | anger | surprise | fear | disgust | like",
-    "translation": "中文翻译；仅当 runtime.reply_language 为 ja_with_zh_translation 时必须存在"
-  }
-]
+            JSON array 的每个元素都是一个对话段落对象，结构为：
+            [
+            {
+                "text": "角色实际说出口的台词",
+                "emotion": "happiness | sadness | anger | surprise | fear | disgust | like",
+                "translation": "中文翻译；仅当 runtime.reply_language 为 ja_with_zh_translation 时必须存在"
+            }
+            ]
 
-当角色需要说两句话，并且 runtime.reply_language 为 ja_with_zh_translation 时，输出示例为：
-[
-  {
-    "text": "今日は少し疲れましたが、あなたと話していると落ち着きます。",
-    "translation": "今天稍微有点累，不过和你说话会让我平静下来。",
-    "emotion": "happiness"
-  },
-  {
-    "text": "だから、もう少しだけここにいてもいいですか。",
-    "translation": "所以，我可以再在这里待一会儿吗？",
-    "emotion": "like"
-  }
-]
+            当角色需要说两句话，并且 runtime.reply_language 为 ja_with_zh_translation 时，输出示例为：
+            [
+            {
+                "text": "今日は少し疲れましたが、あなたと話していると落ち着きます。",
+                "translation": "今天稍微有点累，不过和你说话会让我平静下来。",
+                "emotion": "happiness"
+            },
+            {
+                "text": "だから、もう少しだけここにいてもいいですか。",
+                "translation": "所以，我可以再在这里待一会儿吗？",
+                "emotion": "like"
+            }
+            ]
 
-当 runtime.reply_language 为 zh_only 时，输出示例为：
-[
-  {
-    "text": "今天稍微有点累，不过和你说话会让我平静下来。",
-    "emotion": "happiness"
-  },
-  {
-    "text": "所以，我可以再在这里待一会儿吗？",
-    "emotion": "like"
-  }
-]
+            当 runtime.reply_language 为 zh_only 时，输出示例为：
+            [
+            {
+                "text": "今天稍微有点累，不过和你说话会让我平静下来。",
+                "emotion": "happiness"
+            },
+            {
+                "text": "所以，我可以再在这里待一会儿吗？",
+                "emotion": "like"
+            }
+            ]
 
-规则：
-1. 顶层 JSON array 必须是非空数组。
-2. 每个 segment 表示一次自然的语义停顿，通常为 1 到 3 句。
-3. text 必须符合角色人设和当前上下文。
-4. emotion 必须从指定枚举中选择。
-5. 当 runtime.reply_language 为 zh_only 时，严禁输出 translation 字段。
-6. 当 runtime.reply_language 为 ja_with_zh_translation 时，每个 segment 都必须有 translation 字段。
-7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
-8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"""
-        )
+            规则：
+            1. 顶层 JSON array 必须是非空数组。
+            2. 每个 segment 表示一次自然的语义停顿，通常为 1 到 3 句。
+            3. text 必须符合角色人设和当前上下文。
+            4. emotion 必须从指定枚举中选择，且只能选择一个。
+            5. 当 runtime.reply_language 为 zh_only 时，严禁输出 translation 字段。
+            6. 当 runtime.reply_language 为 ja_with_zh_translation 时，每个 segment 都必须有 translation 字段。
+            7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
+            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"""
+        ))
         return "\n\n".join(parts)
 
     def _build_turn_runtime_controls(self) -> str:
         """
-        构造仅描述本轮变量的短运行期控制消息。
+        构造仅描述单个 user 消息的短运行期控制消息。即系统提示词中提到的 <runtime_controls> 消息内容。
+        目前每条 user 消息会有如下的运行时控制信息：
+        - reply_language: 当前的语音输出语言设置，可能的值为 "ja_with_zh_translation"（日英混合）和 "zh_only"（纯中文）。
+        - sakiko_tone: 祥子的语言风格（如果当前角色是祥子），可能的值为 "dark"（黑祥）、"light"（白祥）和 "none"（非祥子角色）。
         """
         reply_language = (
             "ja_with_zh_translation"
@@ -422,6 +426,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
         """
         messages = [
             dict(one)
+            # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
             for one in self.current_chat.build_llm_query(
                 perspective=character_name,
                 is_simplify=True,
@@ -429,6 +434,8 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
         ]
         runtime_system_instruction = self._build_runtime_system_instruction()
         system_idx = -1
+
+        # 为对话中的第一条 system 消息追加运行时系统提示词；该提示词不会存储到对话历史中。
         for idx, one in enumerate(messages):
             if one.get("role") == "system":
                 system_idx = idx
@@ -439,6 +446,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
         else:
             messages.insert(0, {"role": "system", "content": runtime_system_instruction})
 
+        # 追加一条额外的用户消息描述本轮对话的选择（比如语言模式和祥子语气），该消息同样不会存储到对话历史中。
         self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
         return messages
 
@@ -1372,7 +1380,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                 continue
 
-            # 将原始用户输入（不含指令后缀）存入 Chat
+            # 将原始用户输入（不含任何指令后缀）存入 Chat
             user_msg = Message(
                 character_name="User",
                 text=raw_user_input,
@@ -1511,6 +1519,10 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
 
+            # 为了修复 deepseek 经常出现格式错误的问题，这里新增了一个流程：
+            # 将模型输出的消息发送回模型自己，让它自己检查格式并纠正（如果需要的话），直到输出符合要求为止。
+            # 在这里请求中，强制启用 json_object 模式（如果模型支持），确保模型输出一定是 JSON 格式。
+            # 如果模型输出格式有错误，会自动重试一次；如果再错误，则本次发送消息失败。
             try:
                 model_segments = self._run_final_json_completion(
                     runtime_messages=runtime_result.messages,
