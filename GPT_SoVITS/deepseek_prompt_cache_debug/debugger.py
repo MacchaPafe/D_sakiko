@@ -342,5 +342,4 @@ def log_prompt_cache_usage(response: object, request_kwargs: dict[str, object], 
         debug_payload["tools"] = request_kwargs.get("tools")
     boundary_parts = _split_prompt_cache_boundary(request_kwargs, hit_tokens, logger)
     debug_payload.update(_build_prompt_cache_boundary_preview(boundary_parts))
-    logger.info("deepseek_prompt_cache_request\n%s", _safe_json_for_debug(debug_payload))
     _emit_rich_prompt(phase, model, boundary_parts, logger)

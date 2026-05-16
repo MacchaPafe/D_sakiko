@@ -950,8 +950,18 @@ class DSLocalAndVoiceGen:
         reasoning_kwargs: dict[str, object],
     ) -> list[dict[str, str]]:
         """
-        在工具调用阶段结束后，固定发起最终 JSON Mode 请求并解析为合法段落。
+        在工具调用阶段结束后，先验收最终候选内容。
+
+        如果工具循环最后一次模型输出已经符合 Machine Output Contract，直接复用；
+        只有候选内容不合格时，才发起最终 JSON Mode 请求让模型收口格式。
         """
+        candidate = str(candidate_content or "").strip()
+        if candidate:
+            try:
+                return self._parse_model_segments_payload(candidate)
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.debug("工具循环最终候选格式不合格，改用最终 JSON 收口请求。原因：%s", exc)
+
         generated, used_json_mode = self._run_json_completion_with_empty_retry(
             self._build_final_json_messages(runtime_messages, candidate_content),
             reasoning_kwargs,
