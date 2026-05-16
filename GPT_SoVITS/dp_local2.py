@@ -22,96 +22,13 @@ from chat.chat import Chat, Message, ChatManager
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
+from deepseek_prompt_cache_debug import CACHE_DEBUG_PHASE_KEY, log_prompt_cache_usage
 
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
-
-
-def _object_to_mapping(value: object) -> Optional[dict[str, object]]:
-    """
-    将 dict 或带 model_dump/dict 方法的对象转换为普通字典。
-    """
-    if isinstance(value, dict):
-        return dict(value)
-
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            dumped = model_dump()
-            if isinstance(dumped, dict):
-                return dict(dumped)
-        except Exception:
-            return None
-
-    dict_method = getattr(value, "dict", None)
-    if callable(dict_method):
-        try:
-            dumped = dict_method()
-            if isinstance(dumped, dict):
-                return dict(dumped)
-        except Exception:
-            return None
-
-    return None
-
-
-def _extract_prompt_cache_usage(response: object) -> Optional[dict[str, object]]:
-    """
-    从 LiteLLM 响应中提取 DeepSeek prompt cache usage 字段。
-    """
-    response_mapping = _object_to_mapping(response)
-    usage_obj: object = None
-    if response_mapping is not None:
-        usage_obj = response_mapping.get("usage")
-    if usage_obj is None:
-        usage_obj = getattr(response, "usage", None)
-
-    usage_mapping = _object_to_mapping(usage_obj)
-    if usage_mapping is None:
-        return None
-
-    if "prompt_cache_hit_tokens" not in usage_mapping or "prompt_cache_miss_tokens" not in usage_mapping:
-        return None
-
-    result: dict[str, object] = {
-        "prompt_cache_hit_tokens": usage_mapping.get("prompt_cache_hit_tokens"),
-        "prompt_cache_miss_tokens": usage_mapping.get("prompt_cache_miss_tokens"),
-    }
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        if key in usage_mapping:
-            result[key] = usage_mapping[key]
-    return result
-
-
-def _log_prompt_cache_usage(response: object, request_kwargs: dict[str, object]) -> None:
-    """
-    记录 DeepSeek prompt cache 命中情况。
-    """
-    usage = _extract_prompt_cache_usage(response)
-    if usage is None:
-        return
-
-    hit_tokens = int(usage.get("prompt_cache_hit_tokens") or 0)
-    miss_tokens = int(usage.get("prompt_cache_miss_tokens") or 0)
-    total_cache_tokens = hit_tokens + miss_tokens
-    hit_rate = "0.00%"
-    if total_cache_tokens > 0:
-        hit_rate = f"{hit_tokens / total_cache_tokens * 100:.2f}%"
-
-    model = str(request_kwargs.get("model") or getattr(response, "model", "") or "")
-    logger.info(
-        "deepseek_prompt_cache model=%s hit=%s miss=%s hit_rate=%s prompt=%s completion=%s total=%s",
-        model,
-        hit_tokens,
-        miss_tokens,
-        hit_rate,
-        usage.get("prompt_tokens"),
-        usage.get("completion_tokens"),
-        usage.get("total_tokens"),
-    )
 
 
 def completion(**kwargs):
@@ -121,6 +38,7 @@ def completion(**kwargs):
     将推理强度从 reasoning_effort 参数转换为 extra_body，因为 reasoning_effort 参数在 litellm 的 DeepSeek 实现中会被忽略。
     将 thinking 参数转换为 extra_body 中的 thinking 字段，格式为 {"type": "enabled"} 或 {"type": "disabled"}，因为 litellm 会忽略 thinking="disabled" 参数。
     """
+    cache_debug_phase = str(kwargs.pop(CACHE_DEBUG_PHASE_KEY, "unknown") or "unknown")
     if "model" in kwargs and isinstance(kwargs["model"], str):
         # 只查找 deepseek 系列模型
         # 这里没有检验 base url，但愿第三方 API 提供 deepseek 的时候遵循和官网一样的 extra_body 协议……
@@ -157,8 +75,10 @@ def completion(**kwargs):
             if extra_body:
                 kwargs["extra_body"] = extra_body
 
+    request_kwargs_for_log = dict(kwargs)
+    request_kwargs_for_log[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
     response = litellm.completion(**kwargs)
-    _log_prompt_cache_usage(response, dict(kwargs))
+    log_prompt_cache_usage(response, request_kwargs_for_log, logger)
     return response
 
 
@@ -559,6 +479,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
         stream = runtime_kwargs.pop("stream", False)
         timeout = runtime_kwargs.pop("timeout", 30)
         reasoning_snapshot_locked = bool(runtime_kwargs.pop("_reasoning_snapshot_locked", False))
+        cache_debug_phase = str(runtime_kwargs.pop(CACHE_DEBUG_PHASE_KEY, model) or model)
         # 不允许通过 kwargs 手动指定这些参数；这些参数只能在本函数内构建
         for protected_key in ("model", "messages", "api_key", "base_url", "tools", "tool_choice"):
             runtime_kwargs.pop(protected_key, None)
@@ -632,6 +553,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
 
         # 合并运行时参数并发起请求。runtime_kwargs 不允许覆盖上面确定的核心请求字段。
         completion_kwargs.update(runtime_kwargs)
+        completion_kwargs[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
         return completion(**completion_kwargs)
 
     @staticmethod
@@ -842,6 +764,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
         messages: list[dict[str, object]],
         reasoning_kwargs: dict[str, object],
         max_tokens: int = -1,
+        phase: str = "final_json",
     ) -> tuple[str, bool]:
         """
         发起最终结构化回复请求，并在空 content 时静默重试一次。
@@ -859,6 +782,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
                 request_kwargs["max_tokens"] = max_tokens
             if use_json_mode:
                 request_kwargs["response_format"] = {"type": "json_object"}
+            request_kwargs[CACHE_DEBUG_PHASE_KEY] = phase
             try:
                 response = self._completion_with_current_config(
                     model="json-runtime",
@@ -871,16 +795,21 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
                 if use_json_mode and self._is_response_format_unsupported(exc):
                     logger.warning("当前模型或服务不支持 JSON Mode，降级为普通补全。")
                     use_json_mode = False
+                    fallback_kwargs = {
+                        "stream": False,
+                        "timeout": 30,
+                        CACHE_DEBUG_PHASE_KEY: f"{phase}_fallback",
+                        **reasoning_kwargs,
+                    }
+                    if max_tokens > 0:
+                        fallback_kwargs["max_tokens"] = max_tokens
                     if max_tokens > 0:
                         response = self._completion_with_current_config(
                             model="json-runtime",
                             messages=messages,
                             tools=None,
                             tool_choice="none",
-                            stream=False,
-                            timeout=30,
-                            max_tokens=max_tokens,
-                            **reasoning_kwargs,
+                            **fallback_kwargs,
                         )
                     else:
                         response = self._completion_with_current_config(
@@ -888,9 +817,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
                             messages=messages,
                             tools=None,
                             tool_choice="none",
-                            stream=False,
-                            timeout=30,
-                            **reasoning_kwargs,
+                            **fallback_kwargs,
                         )
                 else:
                     raise
@@ -1004,6 +931,7 @@ JSON array 的每个元素都是一个对话段落对象，结构为：
         retry_content, _used_json_mode = self._run_json_completion_with_empty_retry(
             self._build_format_retry_messages(invalid_content, reason),
             reasoning_kwargs,
+            phase="format_retry",
         )
         return self._parse_model_segments_payload(retry_content)
 
