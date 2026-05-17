@@ -153,7 +153,23 @@ jobs:
             --public-key-b64 "$UPDATE_ED25519_PUBLIC_KEY" \
             "${patches[@]}"
 
+      - name: Mark GitHub release as official
+        run: gh release edit "$TAG" --prerelease=false --latest
+
+      - name: Upload Gitee manual release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitee-release-assets
+          path: |
+            dist/assets/update_index.json
+            dist/assets/release_notes.md
+            dist/assets/*.patch.zip
+            dist/assets/*.patch.zip.sha256
+            dist/assets/*.patch.zip.sig
+          if-no-files-found: error
+
       - name: Sync release to Gitee
+        continue-on-error: true
         working-directory: dist/assets
         run: |
           assets=()
@@ -169,6 +185,3 @@ jobs:
             --target-commitish main \
             "${assets[@]}" \
             --token-env GITEE_TOKEN
-
-      - name: Mark GitHub release as official
-        run: gh release edit "$TAG" --prerelease=false --latest
