@@ -104,6 +104,10 @@ class DSLocalAndVoiceGen:
         self.if_sakiko = False
         # 祥子的状态是黑祥还是白祥，True：黑祥，False：白祥
         self.sakiko_state = True
+        # 当前角色是否是素世
+        self.if_soyo = False
+        # 素世的状态是夹子音还是本音，True：夹子音，False：本音
+        self.soyo_state = True
         # 角色在空闲时，页面上方状态会显示的话。从列表中随机选择。
         self.idle_texts = ["...", "...", "就绪", "..."]
         
@@ -165,8 +169,10 @@ class DSLocalAndVoiceGen:
         """
         try:
             self.if_sakiko = self.get_current_character().character_name == "祥子"
+            self.if_soyo = self.get_current_character().character_name in ["素世", "爽世"]
         except ValueError:
             self.if_sakiko = False
+            self.if_soyo = False
 
     def request_cancel_turn(self, chat_id: str, turn_id: str) -> None:
         """
@@ -396,6 +402,7 @@ class DSLocalAndVoiceGen:
         目前每条 user 消息会有如下的运行时控制信息：
         - reply_language: 当前的语音输出语言设置，可能的值为 "ja_with_zh_translation"（日英混合）和 "zh_only"（纯中文）。
         - sakiko_tone: 祥子的语言风格（如果当前角色是祥子），可能的值为 "dark"（黑祥）、"light"（白祥）和 "none"（非祥子角色）。
+        - soyo_tone: 素世的语言风格（如果当前角色是素世），可能的值为 "kako"（夹子音）、"hon"（本音）和 "none"（非素世角色）。
         """
         reply_language = (
             "ja_with_zh_translation"
@@ -405,11 +412,15 @@ class DSLocalAndVoiceGen:
         sakiko_tone = "none"
         if self.if_sakiko:
             sakiko_tone = "dark" if self.sakiko_state else "light"
+        soyo_tone = "none"
+        if self.if_soyo:
+            soyo_tone = "kako" if self.soyo_state else "hon"
 
         return (
             "<runtime_controls>\n"
             f"reply_language: {reply_language}\n"
             f"sakiko_tone: {sakiko_tone}\n"
+            f"soyo_tone: {soyo_tone}\n"
             "</runtime_controls>"
         )
 
@@ -609,6 +620,7 @@ class DSLocalAndVoiceGen:
             "turn_id": turn_id,
             "character_name": character_name,
             "sakiko_state": self.sakiko_state,
+            "soyo_state": self.soyo_state,
             "audio_language_choice": self.audio_language_choice,
             "if_generate_audio": self.if_generate_audio,
             "turn_complete": turn_complete,
@@ -1147,7 +1159,7 @@ class DSLocalAndVoiceGen:
         text = raw_input.strip()
         if text == "bye":
             return {"type": "exit"}
-        if text in {"mask", "conv", "v", "s", "clr", "l", "start_talking", "stop_talking", "change_l2d_background"}:
+        if text in {"mask", "conv", "v", "s", "clr", "l", "start_talking", "stop_talking", "change_l2d_background", 'conv_soyo'}:
             return {"type": "legacy_command", "command": text, "chat_id": self.current_chat.chat_id}
         if text.startswith("change_l2d_model"):
             return {"type": "legacy_command", "command": text, "chat_id": self.current_chat.chat_id}
@@ -1240,6 +1252,15 @@ class DSLocalAndVoiceGen:
                 char_is_converted_queue.put(self.sakiko_state)
             else:
                 message_queue.put("祥子好像不在<w>")
+            time.sleep(2)
+            return True
+        if legacy_command == 'conv_soyo':
+            if self.if_soyo:
+                self.soyo_state = not self.soyo_state
+                message_queue.put("已切换为" + ("本音" if self.soyo_state else "夹子音"))
+                char_is_converted_queue.put(self.soyo_state)
+            else:
+                message_queue.put("素世好像不在<w>")
             time.sleep(2)
             return True
         if legacy_command == "v":

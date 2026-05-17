@@ -28,9 +28,9 @@ class CharacterAttributes:
         self.sovits_model_path: str | None = ''
         # 角色的描述，即角色文件夹内 character_description.txt 记录的内容
         self.character_description: str = ''
-        # 角色语音模型参考音频的相对路径。祥子的该属性为 None。
+        # 角色语音模型参考音频的相对路径。祥子和素世的该属性为 None。
         self.gptsovits_ref_audio: str | None = ''
-        # 角色语音模型参考音频文本的相对路径。祥子的该属性为 None。
+        # 角色语音模型参考音频文本的相对路径。祥子和素世的该属性为 None。
         self.gptsovits_ref_audio_text: str | None = ''
         # 角色语音模型参考音频的语言（例如‘日文’）
         self.gptsovits_ref_audio_lan: str | None = ''
@@ -48,8 +48,8 @@ class CharacterAttributes:
         has_models = self._path_exists(self.GPT_model_path) and self._path_exists(self.sovits_model_path)
         if not has_models:
             return False
-        # 祥子可以不具有参考音频和参考音频文本，可以跳过这部分检查；其他人必须有
-        if self.character_name == '祥子':
+        # 祥子和素世可以不具有参考音频和参考音频文本，可以跳过这部分检查；其他人必须有
+        if self.character_name in ['祥子', '素世', '爽世']:
             return True
         return (
             self._path_exists(self.gptsovits_ref_audio)

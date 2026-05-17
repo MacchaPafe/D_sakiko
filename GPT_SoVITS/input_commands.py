@@ -119,6 +119,15 @@ def build_default_input_command_specs() -> tuple[CommandSpec, ...]:
             execution_policy="immediate",
         ),
         CommandSpec(
+            command="conv_soyo",
+            title="素世状态",
+            display_command="/conv_soyo",
+            aliases=("convert_soyo", "soyo"),
+            description="在素世的夹子音和本音状态之间切换",
+            visibility="public",
+            execution_policy="immediate",
+        )
+        CommandSpec(
             command="mask",
             display_command="/mask",
             title="面具",

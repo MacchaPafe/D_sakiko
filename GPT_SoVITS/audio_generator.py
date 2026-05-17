@@ -64,6 +64,10 @@ class AudioGenerate:
         self.ref_audio_file_white_sakiko: str = '../reference_audio/sakiko/white_sakiko.wav'
         # 黑祥的参考音频路径（固定的）
         self.ref_audio_file_black_sakiko: str = '../reference_audio/sakiko/black_sakiko.wav'
+        # 素世夹子音的参考音频路径（固定的）
+        self.ref_audio_file_soyo_kako: str = '../reference_audio/soyo/soyo_kako.wav'
+        # 素世本音的参考音频路径（固定的）
+        self.ref_audio_file_soyo_hon: str = '../reference_audio/soyo/soyo_hon.wav'
         # 参考音频的语言类型
         self.ref_audio_language: str | None = ''
         # 存放参考音频文本的文件
@@ -72,6 +76,10 @@ class AudioGenerate:
         self.ref_text_file_white_sakiko: str = '../reference_audio/sakiko/reference_text_white_sakiko.txt'
         # 存放黑祥参考音频文本的文件路径（固定的）
         self.ref_text_file_black_sakiko: str = '../reference_audio/sakiko/reference_text_black_sakiko.txt'
+        # 存放素世夹子音参考音频文本的文件路径（固定的）
+        self.ref_text_file_soyo_kako: str = '../reference_audio/soyo/reference_text_soyo_kako.txt'
+        # 存放素世本音参考音频文本的文件路径（固定的）
+        self.ref_text_file_soyo_hon: str = '../reference_audio/soyo/reference_text_soyo_hon.txt'
         # 生成的所有音频文件的相对目录
         self.program_output_path: str = "../reference_audio/generated_audios_temp"
         # 生成的语音的速度
@@ -180,6 +188,8 @@ class AudioGenerate:
         self.if_small_theater_mode: bool = False
         # 祥子状态。True：黑祥 False：白祥
         self.sakiko_which_state: bool = True
+        # 素世状态。True：夹子音 False：本音
+        self.soyo_which_state: bool = True
         # 转发子进程的语音合成进度到界面中
         self.message_queue: queue.Queue | None = None
         # 主线程侧待发送给 worker 的命令队列
@@ -192,6 +202,7 @@ class AudioGenerate:
         self.worker_dispatch_thread: threading.Thread | None = None
 
         self._load_sakiko_default_reference_paths()
+        self._load_soyo_default_reference_paths()
 
     def _load_sakiko_default_reference_paths(self) -> None:
         """
@@ -211,6 +222,24 @@ class AudioGenerate:
             if os.path.exists(default_ref_audio_white_path):
                 self.ref_audio_file_white_sakiko = default_ref_audio_white_path
 
+    def _load_soyo_default_reference_paths(self) -> None:
+        """
+        读取素世夹子音/本音状态的参考音频路径。
+        只有在手动设置过参考音频时，这两个文件才会存在
+        """
+        kako_path = os.path.join("../reference_audio", 'soyo', "default_ref_audio_kako.txt")
+        if os.path.exists(kako_path):
+            with open(kako_path, 'r', encoding='utf-8') as file:
+                default_ref_audio_kako_path = file.read().strip()
+            if os.path.exists(default_ref_audio_kako_path):
+                self.ref_audio_file_soyo_kako = default_ref_audio_kako_path
+        hon_path = os.path.join("../reference_audio", 'soyo', "default_ref_audio_hon.txt")
+        if os.path.exists(hon_path):
+            with open(hon_path, 'r', encoding='utf-8') as file:
+                default_ref_audio_hon_path = file.read().strip()
+            if os.path.exists(default_ref_audio_hon_path):
+                self.ref_audio_file_soyo_hon = default_ref_audio_hon_path
+
     def initialize(self, character_list: list[CharacterAttributes], message_queue: queue.Queue) -> None:
         """初始化语音生成模块并启动 worker 进程。"""
         self.character_list = character_list
@@ -221,14 +250,17 @@ class AudioGenerate:
         self.is_change_complete = True
 
     def _resolve_reference_materials(self, character: CharacterAttributes,
-                                     sakiko_state: bool | None = None) -> tuple[str | None, str | None, str | None]:
+                                     sakiko_state: bool | None = None,
+                                     soyo_state: bool | None = None) -> tuple[str | None, str | None, str | None]:
         """
-        根据显式角色对象和祥子状态解析参考音频材料。
+        根据显式角色对象和祥子/素世状态解析参考音频材料。
 
         :returns: 三元组：参考音频文件路径、存放参考音频文本的文件路径、参考音频的语言
         """
         if sakiko_state is None:
             sakiko_state: bool = self.sakiko_which_state
+        if soyo_state is None:
+            soyo_state: bool = self.soyo_which_state
 
         if character.character_name == '祥子':
             if sakiko_state:
@@ -240,6 +272,18 @@ class AudioGenerate:
             return (
                 self.ref_audio_file_white_sakiko,
                 self.ref_text_file_white_sakiko,
+                character.gptsovits_ref_audio_lan,
+            )
+        elif character.character_name in ['素世', '爽世']:
+            if soyo_state:
+                return (
+                    self.ref_audio_file_soyo_kako,
+                    self.ref_text_file_soyo_kako,
+                    character.gptsovits_ref_audio_lan,
+                )
+            return (
+                self.ref_audio_file_soyo_hon,
+                self.ref_text_file_soyo_hon,
                 character.gptsovits_ref_audio_lan,
             )
         return (
@@ -262,10 +306,11 @@ class AudioGenerate:
         audio_lang_choice: str,
         character: CharacterAttributes,
         sakiko_state: bool | None = None,
+        soyo_state: bool | None = None,
     ) -> dict[str, object]:
         """构造角色的一次语音生成 payload。"""
         ref_audio_path, ref_text_path, ref_language = self._resolve_reference_materials(
-            character=character, sakiko_state=sakiko_state
+            character=character, sakiko_state=sakiko_state, soyo_state=soyo_state
         )
         return {
             "character_name": character.character_name,
@@ -284,13 +329,14 @@ class AudioGenerate:
 
     def _build_synthesize_command(self, text: str, audio_lang_choice: str,
                                   character: CharacterAttributes,
-                                  sakiko_state: bool | None = None) -> WorkerCommand:
+                                  sakiko_state: bool | None = None,
+                                  soyo_state: bool | None = None) -> WorkerCommand:
         """构造发送给 worker 的语音生成命令。"""
         return {
             "type": "synthesize",
             "character_name": character.character_name,
             "character": character,
-            "payload": self.build_generation_payload(text, audio_lang_choice, character, sakiko_state),
+            "payload": self.build_generation_payload(text, audio_lang_choice, character, sakiko_state, soyo_state),
         }
 
     @staticmethod
@@ -535,6 +581,7 @@ class AudioGenerate:
         text: str,
         character: CharacterAttributes,
         sakiko_state: bool,
+        soyo_state: bool,
         audio_lan_choice: str,
     ) -> VoiceTaskHandle:
         """提交一条语音生成命令，并返回等待句柄。"""
@@ -543,6 +590,7 @@ class AudioGenerate:
             audio_lan_choice,
             character=character,
             sakiko_state=sakiko_state,
+            soyo_state=soyo_state,
         )
         return self.submit_voice_task(command)
 
@@ -558,6 +606,7 @@ class AudioGenerate:
         text: str,
         character: CharacterAttributes,
         sakiko_state: bool,
+        soyo_state: bool,
         audio_lan_choice: str,
     ) -> str:
         """按显式给定角色配置同步生成语音。"""
@@ -578,6 +627,7 @@ class AudioGenerate:
             normalized_text,
             character,
             sakiko_state,
+            soyo_state,
             audio_lan_choice,
         )
         self.audio_file_path = self._wait_for_synthesize_result(handle)
@@ -601,7 +651,7 @@ class AudioGenerate:
             cleaned = re.sub(re.escape(key), value, cleaned, flags=re.IGNORECASE)
         return cleaned
 
-    def generate_audio_sync(self, text: str, character: CharacterAttributes, sakiko_state: bool, audio_lan_choice: str) -> str:
+    def generate_audio_sync(self, text: str, character: CharacterAttributes, sakiko_state: bool, soyo_state: bool, audio_lan_choice: str) -> str:
         """同步生成音频，用于重新生成音频功能。"""
         if not character.has_valid_voice_model():
             return SILENCE_WAV_PATH
@@ -614,5 +664,5 @@ class AudioGenerate:
         if text == '' or text == '不能送去合成':
             return SILENCE_WAV_PATH
 
-        handle = self.generate_audio(text, character, sakiko_state, audio_lan_choice)
+        handle = self.generate_audio(text, character, sakiko_state, soyo_state, audio_lan_choice)
         return self._wait_for_synthesize_result(handle)

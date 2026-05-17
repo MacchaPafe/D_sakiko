@@ -716,6 +716,8 @@ class SettingWindow(QDialog):
         self.convert_sakiko_state_btn.clicked.connect(self.convert_sakiko_state)
         self.sakiko_mask_btn=QPushButton("面具")
         self.sakiko_mask_btn.clicked.connect(self.sakiko_mask)
+        self.convert_soyo_state_btn=QPushButton("素世声线")
+        self.convert_soyo_state_btn.clicked.connect(self.convert_soyo_state)
         setting_layout=QGridLayout()
         setting_layout.addWidget(self.change_lan_btn,0,0,1,2)
         setting_layout.addWidget(self.clear_history_btn,1,0,1,2)
@@ -732,10 +734,11 @@ class SettingWindow(QDialog):
         setting_group_2=QGroupBox("角色与外观")
         setting_group_2.setLayout(setting_layout_2)
         layout=QVBoxLayout()
-        sakiko_group=QGroupBox("祥子的状态")
+        sakiko_group=QGroupBox("角色状态")
         sakiko_layout=QHBoxLayout()
         sakiko_layout.addWidget(self.convert_sakiko_state_btn)
         sakiko_layout.addWidget(self.sakiko_mask_btn)
+        sakiko_layout.addWidget(self.convert_soyo_state_btn)
         sakiko_group.setLayout(sakiko_layout)
         layout.addWidget(setting_group)
         layout.addWidget(setting_group_2)
@@ -750,6 +753,8 @@ class SettingWindow(QDialog):
         self.parent_window.run_input_command_text('clr', 'setting_button')
     def convert_sakiko_state(self):
         self.parent_window.run_input_command_text('conv', 'setting_button')
+    def convert_soyo_state(self):
+        self.parent_window.run_input_command_text('conv_soyo', 'setting_button')
     def sakiko_mask(self):
         self.parent_window.run_input_command_text('mask', 'setting_button')
     def switch_voice(self):
