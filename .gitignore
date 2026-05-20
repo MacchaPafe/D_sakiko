@@ -1,4 +1,5 @@
 /font/
+/docs/
 /live2d_related/
 /pythonProject1/
 /reference_audio/
@@ -14,6 +15,7 @@
 /GPT_SoVITS/pretrained_models/
 /GPT_SoVITS/text/
 /GPT_SoVITS/tools/
+/GPT_SoVITS/tool_data/
 /GPT_SoVITS/training_dir/
 /GPT_SoVITS/8.py
 /GPT_SoVITS/57.py
@@ -46,6 +48,10 @@ wheels/**
 
 dsakiko_config.json
 run.bat
+LICENSE
+pyproject.toml
+tools/hdiffz.exe
+tools/hpatchz.exe
 启动参数配置.bat
 执行更新.bat
 运行Live2D模型下载器.bat

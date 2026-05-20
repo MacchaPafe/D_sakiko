@@ -117,6 +117,11 @@ def parse_args() -> argparse.Namespace:
         help="强制包含哪些文件（支持 glob），可多次传入。",
     )
     parser.add_argument(
+        "--no-platform-includes",
+        action="store_true",
+        help="不自动加入平台默认包含规则；适合只发布源码/脚本小补丁时跳过 runtime 等大目录。",
+    )
+    parser.add_argument(
         "--read-gitignore",
         action="store_true",
         help="附加读取 current 目录下 .gitignore 作为忽略规则（推荐）。",
@@ -216,17 +221,33 @@ def list_files(base_dir: Path, ignore_patterns: list[str], include_patterns: lis
     """列出目录内满足筛选规则的全部文件相对路径集合。"""
 
     result: set[str] = set()
-    for file in base_dir.rglob("*"):
-        if not file.is_file():
-            continue
-        rel = file.relative_to(base_dir).as_posix()
-        # 筛选规则为：
-        # 1. 命中白名单，强制保留（即使文件同时在黑名单）
-        # 2. 命中黑名单，忽略
-        # 3. 其他正常保留
-        if should_ignore(rel, ignore_patterns) and not should_force_include(rel, include_patterns):
-            continue
-        result.add(rel)
+    for root, dirs, files in os.walk(base_dir):
+        root_path = Path(root)
+
+        kept_dirs: list[str] = []
+        for dirname in dirs:
+            dir_path = root_path / dirname
+            rel_dir = dir_path.relative_to(base_dir).as_posix()
+            # 目录忽略规则通常形如 "runtime/**"。用一个虚拟子路径判断，
+            # 可以在遍历阶段直接剪枝，避免先递归进大目录再过滤文件。
+            probe = f"{rel_dir}/__dir__"
+            if should_ignore(probe, ignore_patterns) and not should_force_include(probe, include_patterns):
+                continue
+            kept_dirs.append(dirname)
+        dirs[:] = kept_dirs
+
+        for filename in files:
+            file = root_path / filename
+            if not file.is_file():
+                continue
+            rel = file.relative_to(base_dir).as_posix()
+            # 筛选规则为：
+            # 1. 命中白名单，强制保留（即使文件同时在黑名单）
+            # 2. 命中黑名单，忽略
+            # 3. 其他正常保留
+            if should_ignore(rel, ignore_patterns) and not should_force_include(rel, include_patterns):
+                continue
+            result.add(rel)
     return result
 
 
@@ -361,6 +382,19 @@ def run_hdiff(
         stderr = completed.stderr.strip()
         stdout = completed.stdout.strip()
         raise RuntimeError(f"hdiffz 执行失败：{stderr or stdout or '未知错误'}")
+
+
+def normalize_hdiff_options(options: list[str]) -> list[str]:
+    """补齐适合自动更新目录补丁的 hdiffz 参数。"""
+
+    normalized = list(options)
+    has_checksum_option = any(option.startswith("-C-") for option in normalized)
+    if not has_checksum_option:
+        # 自动更新包会在用户真实目录上应用。用户目录里通常有配置、缓存、下载包等额外文件，
+        # hdiffz 默认的目录 checksum 会让 hpatchz 因旧目录列表不完全一致而失败。
+        # patch zip 外层仍有 sha256 + Ed25519 签名，单个输出文件也会按 manifest sha256 校验。
+        normalized.append("-C-no")
+    return normalized
 
 
 def write_remove_warning_file(output_root: Path, warn_file_name: str, remove_files: list[str]) -> Path:
@@ -519,7 +553,8 @@ def main() -> int:
     # 列出需要强制包含的文件模式
     include_patterns = list(DEFAULT_INCLUDE_PATTERNS)
     # 增加平台特有的包含规则
-    include_patterns.extend(PLATFORM_INCLUDE_PATTERNS[args.platform])
+    if not args.no_platform_includes:
+        include_patterns.extend(PLATFORM_INCLUDE_PATTERNS[args.platform])
     include_patterns.extend(args.include)
 
     # 准备输出目录：如果已存在且 --clean-output，则先清空再创建；否则直接创建（已存在则覆盖）。
@@ -561,7 +596,9 @@ def main() -> int:
         stage_tree(old_root, old_files, old_stage)
         stage_tree(current_root, current_files, new_stage)
         # 调用 hdiffz 生成差分文件，输入为两个 staging 目录，输出为指定路径的差分文件
-        run_hdiff(hdiff_bin=hdiff_bin, old_stage=old_stage, new_stage=new_stage, out_diff_file=patch_path, options=args.hdiff_option)
+        hdiff_options = normalize_hdiff_options(args.hdiff_option)
+        print(f"[信息] hdiffz 参数：{' '.join(hdiff_options) if hdiff_options else '<默认>'}")
+        run_hdiff(hdiff_bin=hdiff_bin, old_stage=old_stage, new_stage=new_stage, out_diff_file=patch_path, options=hdiff_options)
 
     warning_file = write_remove_warning_file(output_root, args.warn_remove_file, remove_files)
     manifest_file = write_manifest(
