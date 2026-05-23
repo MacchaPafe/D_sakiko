@@ -6,7 +6,7 @@ export default defineConfig({
 
   // 如果访问地址是 https://用户名.github.io/仓库名/，这里填 '/仓库名/'
   // 如果以后绑定独立域名，比如 docs.xxx.com，就改成 '/'
-  base: '/D_Sakiko2.0/',
+  base: '/D_sakiko/',
 
   themeConfig: {
     search: {
