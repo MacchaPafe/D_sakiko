@@ -1,0 +1,30 @@
+{
+  "name": "d_sakiko2.0",
+  "version": "1.0.0",
+  "description": "**基于多模态与ReAct框架的桌面数字生命Agent**",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "docs:dev": "vitepress dev docs-site --host 127.0.0.1",
+    "docs:build": "vitepress build docs-site",
+    "docs:preview": "vitepress preview docs-site --host 127.0.0.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MacchaPafe/D_sakiko.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/MacchaPafe/D_sakiko/issues"
+  },
+  "homepage": "https://github.com/MacchaPafe/D_sakiko#readme",
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}
