@@ -712,6 +712,8 @@ class SettingWindow(QDialog):
         self.change_l2d_background_btn.clicked.connect(self.change_l2d_background)
         self.change_l2d_model_btn=QPushButton("更改当前角色Live2D模型")
         self.change_l2d_model_btn.clicked.connect(self.change_live2d_model_1)
+        self.change_l2d_fps_btn=QPushButton(f"Live2D渲染帧率：{self.parent_window.get_current_l2d_fps()}")
+        self.change_l2d_fps_btn.clicked.connect(self.change_l2d_fps)
         self.convert_sakiko_state_btn=QPushButton("黑/白祥")
         self.convert_sakiko_state_btn.clicked.connect(self.convert_sakiko_state)
         self.sakiko_mask_btn=QPushButton("面具")
@@ -723,6 +725,7 @@ class SettingWindow(QDialog):
         #setting_layout.addWidget(self.change_theme_color_btn,3,0,1,2)
         setting_layout.addWidget(self.switch_live2d_text_btn,4,0,1,2)
         setting_layout.addWidget(self.change_l2d_background_btn,5,0,1,2)
+        setting_layout.addWidget(self.change_l2d_fps_btn,6,0,1,2)
         setting_group=QGroupBox("常用设置")
         setting_group.setLayout(setting_layout)
         setting_layout_2=QGridLayout()
@@ -765,6 +768,10 @@ class SettingWindow(QDialog):
         change_ref_audio_window.exec_()
     def change_l2d_background(self):
         self.parent_window.run_input_command_text('change_l2d_background', 'setting_button')
+    def change_l2d_fps(self):
+        self.parent_window.run_input_command_text('switch_l2d_fps', 'setting_button')
+        self.change_l2d_fps_btn.setText(f"Live2D渲染帧率：{self.parent_window.get_current_l2d_fps()}")
+
 
     def change_live2d_model_1(self):
         current_char_folder_name=self.parent_window.current_character.character_folder_name
@@ -1953,17 +1960,7 @@ class ChatGUI(QWidget):
         model_json = self.current_chat.get_custom_live2d_model_meta(character_name)
         self._send_live2d_switch(character_name, model_json)
 
-    def _send_live2d_switch(self, character_name: str, model_json: str | None) -> None:
-        """
-        发送结构化 Live2D 切换命令。
-        """
-        if self.change_char_queue is None:
-            return
-        self.change_char_queue.put({
-            "type": "switch_live2d",
-            "character_name": character_name,
-            "model_json": model_json or "",
-        })
+
 
     def apply_current_chat_ui_state(self) -> None:
         """
@@ -3160,6 +3157,11 @@ class ChatGUI(QWidget):
             self.user_input.clear()
             return
 
+        if spec.command == "switch_l2d_fps":
+            self.switch_l2d_fps()
+            self.user_input.clear()
+            return
+
         self._send_internal_command_payload(payload, force=spec.visibility == "hidden")
         self.user_input.clear()
 
@@ -3199,6 +3201,22 @@ class ChatGUI(QWidget):
         current_char_folder_name = self.current_character.character_folder_name
         change_l2d_model_window = ChangeL2DModelWindow(current_char_folder_name, self._send_l2d_model_payload)
         change_l2d_model_window.exec_()
+    
+    def switch_l2d_fps(self):
+        if not hasattr(self, 'l2d_fps_dict'):
+            self.l2d_fps_dict = {"current_fps":1,
+                                 "all_fps":[30, 60, 120]}
+        self.l2d_fps_dict["current_fps"]=(self.l2d_fps_dict["current_fps"]+1) % len(self.l2d_fps_dict["all_fps"])
+        self.change_char_queue.put({
+            "type": "switch_l2d_fps",
+            "fps": self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
+        })
+    
+    def get_current_l2d_fps(self):
+        if hasattr(self, 'l2d_fps_dict'):
+            return self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
+        return 60
+
 
     def _send_l2d_model_payload(self, new_model_json: str) -> None:
         """校验并发送 Live2D 模型切换 payload。"""
@@ -3220,6 +3238,18 @@ class ChatGUI(QWidget):
             logger.exception("保存对话级 Live2D 模型配置失败。")
             return
         self._send_live2d_switch(character_name, new_model_json)
+    
+    def _send_live2d_switch(self, character_name: str, model_json: Optional[str]) -> None:
+        """
+        发送结构化 Live2D 切换命令。
+        """
+        if self.change_char_queue is None:
+            return
+        self.change_char_queue.put({
+            "type": "switch_live2d",
+            "character_name": character_name,
+            "model_json": model_json or "",
+        })
 
     def handle_user_input(self):
         self.setWindowTitle("数字小祥")

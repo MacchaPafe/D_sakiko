@@ -184,6 +184,15 @@ def build_default_input_command_specs() -> tuple[CommandSpec, ...]:
             visibility="hidden",
             execution_policy="send",
         ),
+        CommandSpec(
+            command="switch_l2d_fps",
+            display_command="/switch_l2d_fps",
+            title="切换 Live2D 帧率",
+            aliases=("fps",),
+            description="在 30、60、120fps 之间切换 Live2D 界面的渲染帧率",
+            visibility="public",
+            execution_policy="immediate",
+        )
     )
 
 

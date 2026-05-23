@@ -6,7 +6,7 @@ import re
 import time
 from random import random
 from live2d.utils.lipsync import WavHandler
-import live2d.v2 as live2d
+import live2d.v2cpp as live2d
 import glob,os
 
 # 屏蔽 pygame 相关的警告和介绍信息
@@ -171,13 +171,13 @@ class Live2DModule:
                 logger.warning("口型同步读取音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
 
     # 动作播放结束后调用
-    def onFinishCallback(self):
+    def onFinishCallback(self, *args):
         #print("motion finished")
         self.motion_is_over=True
         global idle_recover_timer
         idle_recover_timer = time.time()
 
-    def onFinishCallback_think_motion_version(self):
+    def onFinishCallback_think_motion_version(self, *args):
         self.think_motion_is_over=True
 
 
@@ -236,10 +236,15 @@ class Live2DModule:
 
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-        pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
-        model = live2d.LAppModel()
-        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
+        live2d.glInit()
 
+        frame_clock = pygame.time.Clock()
+        self.target_fps = 60
+
+        pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
+
+        model = live2d.LAppModel()
+        model.LoadModelJson(self.PATH_JSON)
         model.Resize(win_w_and_h, win_w_and_h)
         model.SetAutoBlinkEnable(True)
         model.SetAutoBreathEnable(True)
@@ -249,7 +254,6 @@ class Live2DModule:
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.current_character.character_name])
         glEnable(GL_TEXTURE_2D)
 
-        #texture_thinking=BackgroundRen.render(pygame.image.load('X:/D_Sakiko2.0/live2d_related/costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
         texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
 
         def render_background(texture_id: object) -> None:
@@ -362,9 +366,9 @@ class Live2DModule:
                         )
                         new_model=live2d.LAppModel()
                         if self.if_sakiko and self.sakiko_state:
-                            new_model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
+                            new_model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
                         else:
-                            new_model.LoadModelJson(new_model_path, disable_precision=True)
+                            new_model.LoadModelJson(new_model_path)
                         new_model.Resize(win_w_and_h, win_w_and_h)
                         new_model.SetAutoBlinkEnable(True)
                         new_model.SetAutoBreathEnable(True)
@@ -373,7 +377,7 @@ class Live2DModule:
                         try:
                             fallback_model_path = self.switch_live2d_target(character_name)
                             new_model=live2d.LAppModel()
-                            new_model.LoadModelJson(fallback_model_path, disable_precision=True)
+                            new_model.LoadModelJson(fallback_model_path)
                             new_model.Resize(win_w_and_h, win_w_and_h)
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
@@ -392,6 +396,11 @@ class Live2DModule:
                         if self.current_character.icon_path is not None:
                             pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
                         logger.debug("Live2D模型切换成功：%s", self.PATH_JSON)
+                elif command_type == "switch_l2d_fps":
+                    fps = int(x.get("fps"))
+                    self.target_fps = fps
+                    logger.info("已切换 Live2D 渲染帧率为 %d fps", self.target_fps)
+
                 elif command_type == "exit":
                     self.run = False
                     break
@@ -435,14 +444,14 @@ class Live2DModule:
                     conv_index=char_is_converted_queue.get()
                     if conv_index!='maskoff':
                         if not conv_index:      #切换为白祥
-                            model.LoadModelJson(self.PATH_JSON, disable_precision=True)
+                            model.LoadModelJson(self.PATH_JSON)
                             model.Resize(win_w_and_h, win_w_and_h)
                             model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback)
                             model.SetExpression("idle")
                             self.sakiko_state=False
 
                         else:       #切换为黑祥
-                            model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
+                            model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
                             model.Resize(win_w_and_h, win_w_and_h)
 
                             self.if_mask=random()<0.5
@@ -481,7 +490,6 @@ class Live2DModule:
 
 
             # 清除缓冲区
-            #live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
             model.Update()
@@ -501,10 +509,33 @@ class Live2DModule:
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()
+            frame_clock.tick(self.target_fps)
 
+
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        try:
+            del model
+        except Exception:
+            pass
+        try:
+            glDeleteTextures([texture])
+        except Exception:
+            pass
 
         live2d.dispose()
+        if hasattr(live2d, "glRelease"):
+            try:
+                live2d.glRelease()
+            except Exception:                
+                pass
         #结束pygame
+        try:
+            pygame.mixer.quit()
+        except Exception:
+            pass
         pygame.quit()
 
 

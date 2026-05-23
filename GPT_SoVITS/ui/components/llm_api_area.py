@@ -266,9 +266,22 @@ class LLMAPIArea(TransparentScrollArea):
         """
         self.standard_model_combo.blockSignals(True)
         self.standard_model_combo.clear()
-
+        DEEPSEEK_DEPRECATED_MODEL_ALIASES = {
+            "deepseek-chat": "deepseek-v4-flash",
+            "deepseek-reasoner": "deepseek-v4-flash",
+        }
         # Add current configured model first if it exists
         current_model = d_sakiko_config.llm_api_model.value.get(provider)
+        if provider == "deepseek":
+            current_model = DEEPSEEK_DEPRECATED_MODEL_ALIASES.get(current_model, current_model)
+            if current_model not in ["deepseek-v4-flash", "deepseek-v4-pro"]:
+                current_model = "deepseek-v4-flash"
+            for model in ["deepseek-v4-flash", "deepseek-v4-pro"]:
+                self.standard_model_combo.addItem(model)
+            self.standard_model_combo.setCurrentText(current_model)
+            self.standard_model_combo.blockSignals(False)
+            return
+
         if current_model:
             self.standard_model_combo.addItem(current_model)
 

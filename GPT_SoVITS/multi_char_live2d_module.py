@@ -1,13 +1,13 @@
 import contextlib
-import live2d.v2 as live2d
+import live2d.v2cpp as live2d
 from live2d.utils.lipsync import WavHandler
-from live2d.v2 import LAppModel
+from live2d.v2cpp import LAppModel
 from OpenGL.GL import *
 import glob, os,time
 from random import randint
 import sys
 from collections import deque
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 with open(os.devnull, 'w') as devnull:
     with contextlib.redirect_stdout(devnull):
@@ -404,9 +404,13 @@ class Live2DModule:
         self.active_slots: List[Dict[str, Any]] = []
         self.live2D_initialize(characters)
         self.model_pos_offset=[(-0.4,0),(0.4,0)]  #两个模型的位置偏移设置
+        self.model_scale = 0.8
         self.wavHandler = WavHandler()
         self.lipSyncN: float = 1.4
         self.motion_is_over=True
+        self.last_motion_model = None
+        self.force_eyes_open = False
+        self.motion_finished_at = 0.0
 
         # 所有需要播放的对话内容组成的列表
         self.playlist=[]
@@ -430,6 +434,8 @@ class Live2DModule:
             "fear": "fear",
         }
         group_name = emotion_to_group.get(str(emotion).strip(), "IDLE")
+        self.last_motion_model = model
+        self.force_eyes_open = False
 
         try:
             model.StartRandomMotion(group_name, 3, callback_start, self.onFinishCallback_motion)
@@ -497,11 +503,26 @@ class Live2DModule:
 
         return normalized
 
-    def _apply_model_common_setup(self, model: LAppModel, win_w_and_h: int):
+    def _apply_model_common_setup(self, model: LAppModel, win_w_and_h: int, slot: Optional[int] = None):
         """应用模型加载后的通用初始化参数，包含缩放、自动眨眼、自动呼吸等。"""
         model.Resize(int(win_w_and_h * 1.33), win_w_and_h)
         model.SetAutoBlinkEnable(True)
         model.SetAutoBreathEnable(True)
+        if slot in (0, 1):
+            model.SetOffset(*self.model_pos_offset[slot])
+            model.SetScale(self.model_scale)
+
+    def _force_model_eyes_open(self, model: LAppModel):
+        """只恢复眼睛开合参数，保留动作尾帧的身体和表情姿势。"""
+        try:
+            model.SetParameterValue("PARAM_EYE_L_OPEN", 1.0)
+            model.SetParameterValue("PARAM_EYE_R_OPEN", 1.0)
+        except Exception:
+            logger.debug("Live2D 模型不支持标准眼睛开合参数，跳过眼睛恢复", exc_info=True)
+
+    def _clear_eye_reopen_state(self):
+        self.last_motion_model = None
+        self.force_eyes_open = False
 
     def _active_character_names(self) -> List[str]:
         """返回当前两个正在渲染的角色名，供 Overlay 等 UI 展示使用。"""
@@ -520,9 +541,10 @@ class Live2DModule:
         self.active_slots = normalized_slots
 
         model_0.LoadModelJson(self.active_slots[0]["model_json_path"], disable_precision=True)
-        self._apply_model_common_setup(model_0, win_w_and_h)
+        self._apply_model_common_setup(model_0, win_w_and_h, 0)
         model_1.LoadModelJson(self.active_slots[1]["model_json_path"], disable_precision=True)
-        self._apply_model_common_setup(model_1, win_w_and_h)
+        self._apply_model_common_setup(model_1, win_w_and_h, 1)
+        self._clear_eye_reopen_state()
         overlay.set_text(f"{self.active_slots[0]['character_name']} & {self.active_slots[1]['character_name']}", "...")
 
     def _handle_toggle_sakiko_model(self, model_0: LAppModel, model_1: LAppModel, win_w_and_h: int):
@@ -549,7 +571,8 @@ class Live2DModule:
             this_sakiko_model.LoadModelJson(new_model_path, disable_precision=True)
             this_sakiko_model.StartRandomMotion('IDLE', 3)
 
-        self._apply_model_common_setup(this_sakiko_model, win_w_and_h)
+        self._apply_model_common_setup(this_sakiko_model, win_w_and_h, sakiko_slot)
+        self._clear_eye_reopen_state()
         self.active_slots[sakiko_slot]["model_json_path"] = new_model_path
 
     def live2D_initialize(self, characters):
@@ -583,8 +606,10 @@ class Live2DModule:
         if audio_file_path!='../reference_audio/silent_audio/silence.wav':  #该函数无法处理无声音频
             self.wavHandler.Start(audio_file_path)
 
-    def onFinishCallback_motion(self):
+    def onFinishCallback_motion(self, *args):
         self.motion_is_over=True
+        self.force_eyes_open = False
+        self.motion_finished_at = time.time()
 
     def play_live2d(self,
                     change_char_queue,
@@ -641,19 +666,17 @@ class Live2DModule:
 
         display = (int(win_w_and_h*1.33), win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+        live2d.glInit()
+        frame_clock = pygame.time.Clock()
+        target_fps = 60
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
         pygame.display.set_caption('数字小祥 小剧场')
         model_0 = live2d.LAppModel()
         model_0.LoadModelJson(self.active_slots[0]["model_json_path"], disable_precision=True)
         model_1 = live2d.LAppModel()
         model_1.LoadModelJson(self.active_slots[1]["model_json_path"], disable_precision=True)
-        self._apply_model_common_setup(model_0, win_w_and_h)
-        self._apply_model_common_setup(model_1, win_w_and_h)
-
-        model_0.SetOffset(*self.model_pos_offset[0])
-        model_1.SetOffset(*self.model_pos_offset[1])
-        model_0.SetScale(0.8)
-        model_1.SetScale(0.8)
+        self._apply_model_common_setup(model_0, win_w_and_h, 0)
+        self._apply_model_common_setup(model_1, win_w_and_h, 1)
         model_group = [model_0, model_1]
 
         overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h), self._active_character_names())
@@ -715,7 +738,10 @@ class Live2DModule:
 
                 # preserve_playback=True 的语义是“切换模型但保留当前播放列表”，False 则是“切换模型并停止当前播放列表（如果有）”
                 # 目前在切换不同角色的模型时停止播放列表，在切换同角色的不同模型时保留播放列表
-                should_stop_current_playlist = not bool(x.get("preserve_playback", False))
+                should_stop_current_playlist = (
+                    message_type in ("set_active_slots", "toggle_sakiko_model")
+                    and not bool(x.get("preserve_playback", False))
+                )
                 if should_stop_current_playlist and self.playlist_pointer != len(self.playlist):
                     stop_on_next_sentence = True
 
@@ -725,6 +751,13 @@ class Live2DModule:
                         self._handle_set_active_slots(x, model_0, model_1, win_w_and_h, overlay)
                     elif message_type == "toggle_sakiko_model":
                         self._handle_toggle_sakiko_model(model_0, model_1, win_w_and_h)
+                    elif message_type == "switch_l2d_fps":
+                        fps = int(x.get("fps"))
+                        if fps in (30, 60, 120):
+                            target_fps = fps
+                            logger.info("已切换小剧场 Live2D 渲染帧率为 %d fps", target_fps)
+                        else:
+                            logger.warning("忽略不支持的小剧场 Live2D 帧率：%s", fps)
                     else:
                         logger.warning("忽略未知消息类型：%s", message_type)
                 except Exception:
@@ -834,6 +867,14 @@ class Live2DModule:
                         waiting_between_turns = True
                         previous_frame_audio_playing = False
 
+            if (
+                self.motion_is_over
+                and self.last_motion_model is not None
+                and not self.force_eyes_open
+                and time.time() - self.motion_finished_at > 0.5
+            ):
+                self.force_eyes_open = True
+
             # 清除缓冲区
             # live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
@@ -841,6 +882,8 @@ class Live2DModule:
 
             model_0.Update()
             model_1.Update()
+            if self.force_eyes_open and self.last_motion_model is not None:
+                self._force_model_eyes_open(self.last_motion_model)
             # 渲染背景图片
             # 强制恢复OpenGL状态，确保背景和UI的渲染不受Live2D的影响
             # 因为多模型下，不知道为什么，live2d-py 库渲染模型时会修改 OpenGL 上下文，抢走了纹理的绑定。
@@ -863,9 +906,32 @@ class Live2DModule:
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()
+            frame_clock.tick(target_fps)
 
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        try:
+            del model_0
+            del model_1
+        except Exception:
+            pass
+        try:
+            glDeleteTextures([texture])
+        except Exception:
+            pass
         live2d.dispose()
+        if hasattr(live2d, "glRelease"):
+            try:
+                live2d.glRelease()
+            except Exception:
+                pass
         # 结束pygame
+        try:
+            pygame.mixer.quit()
+        except Exception:
+            pass
         pygame.quit()
 
 

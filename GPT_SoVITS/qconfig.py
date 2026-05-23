@@ -38,13 +38,13 @@ class DSakikoConfig(QConfig):
                                                     validator=BoolValidator())
 
     # 自定义 API Key 相关的配置（依赖库为 litellm）
-    # LLM 的模型名称一般为“模型供应商/模型名称”，比如 "openai/gpt-5", "deepseek/deepseek-chat"
+    # LLM 的模型名称一般为“模型供应商/模型名称”，比如 "openai/gpt-5", "deepseek/deepseek-v4-flash"
 
     # 这个选项只存储 LLM 提供商字段
     llm_api_provider = ConfigItem("llm_setting", "llm_api_provider", "deepseek")
-    # 具体模型名称（例如：gpt-5, gemini-2.5-pro, deepseek-chat）
+    # 具体模型名称（例如：gpt-5, gemini-2.5-pro, deepseek-v4-flash）
     # 采用字典形式存储。键为所有可能的 llm_api_provider，但不包含“custom_llm_api_model“，值为对应的模型名称
-    llm_api_model = ConfigItem("llm_setting", "llm_api_model", {"deepseek": "deepseek-chat"})
+    llm_api_model = ConfigItem("llm_setting", "llm_api_model", {"deepseek": "deepseek-v4-flash"})
     # API Key
     # 采用字典形式存储。键为所有可能的 llm_api_provider，再加上一个“custom_llm_api_key“，值为对应的 API Key
     llm_api_key = ConfigItem("llm_setting", "llm_api_key", {})
@@ -59,7 +59,7 @@ class DSakikoConfig(QConfig):
                                                                validator=BoolValidator())
     # 自定义 LLM API 的 URL
     custom_llm_api_url = ConfigItem("llm_setting", "custom_llm_api_url", "")
-    # 自定义 LLM API 的模型名称。需要完整的写，比如“deepseek/deepseek-chat” 或者 "openai/gpt-5"
+    # 自定义 LLM API 的模型名称。需要完整的写，比如“deepseek/deepseek-v4-flash” 或者 "openai/gpt-5"
     custom_llm_api_model = ConfigItem("llm_setting", "custom_llm_api_model", "")
     # 自定义 LLM API Key
     custom_llm_api_key = ConfigItem("llm_setting", "custom_llm_api_key", "")
@@ -380,9 +380,9 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
         # 检查 ../API Key.txt 文件，看看里面有没有 DeepSeek 的 API Key
         # 如果有，说明自定义了 API Key；如果没有，说明采用 up 的 API Key
         if use_deepseek_api:
-            # 直接把模型改为 deepseek/deepseek-chat
+            # 直接把模型改为 DeepSeek 当前推荐的 V4 Flash
             cfg.llm_api_provider.value = "deepseek"
-            llm_api_model_dict["deepseek"] = "deepseek-chat"
+            llm_api_model_dict["deepseek"] = "deepseek-v4-flash"
             with open("../API Key.txt", "r") as f:
                 api_key = f.read().strip()
                 if not api_key:
@@ -540,7 +540,7 @@ def migrate_from_legacy_d_sakiko_config(cfg: DSakikoConfig, enable_warning: bool
             is_deepseek = bool(legacy_llm_setting.get("is_deepseek", True))
             if is_deepseek:
                 cfg.llm_api_provider.value = "deepseek"
-                llm_api_model_dict["deepseek"] = "deepseek-chat"
+                llm_api_model_dict["deepseek"] = "deepseek-v4-flash"
                 deepseek_key = legacy_llm_setting.get("deepseek_key", "use_api_of_up")
                 if _is_placeholder_api_key(deepseek_key) or deepseek_key == "use_api_of_up":
                     cfg.use_default_deepseek_api.value = True
@@ -584,11 +584,11 @@ def migrate_from_legacy_d_sakiko_config(cfg: DSakikoConfig, enable_warning: bool
                             )
                         selected_provider_id = provider_id
 
-                # 如果没有找到被选中的模型，默认采用 deepseek-chat 模型
+                # 如果没有找到被选中的模型，默认采用 DeepSeek V4 Flash 模型
                 if selected_provider_id is None:
                     cfg.use_default_deepseek_api.value = True
                     cfg.llm_api_provider.value = "deepseek"
-                    llm_api_model_dict["deepseek"] = "deepseek-chat"
+                    llm_api_model_dict["deepseek"] = "deepseek-v4-flash"
                 else:
                     cfg.llm_api_provider.value = selected_provider_id
 
@@ -628,6 +628,24 @@ def migrate_from_legacy_d_sakiko_config(cfg: DSakikoConfig, enable_warning: bool
         os.chdir(old_cwd)
 
 
+def normalize_deepseek_model_config(cfg: DSakikoConfig):
+    """
+    将旧版 DeepSeek 模型别名迁移到当前官方 V4 模型名。
+    """
+    DEEPSEEK_DEPRECATED_MODEL_ALIASES = {
+        "deepseek-chat": "deepseek-v4-flash",
+        "deepseek-reasoner": "deepseek-v4-flash",
+    }
+    models = dict(cfg.llm_api_model.value)
+    current = models.get("deepseek")
+    if isinstance(current, str):
+        normalized = current.strip()
+        normalized = DEEPSEEK_DEPRECATED_MODEL_ALIASES.get(normalized, normalized)
+        if normalized != current:
+            models["deepseek"] = normalized
+            cfg.llm_api_model.value = models
+
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # 全局唯一配置实例
@@ -641,4 +659,5 @@ d_sakiko_config.infer_gpu_setting()
 migrate_from_old_config(d_sakiko_config)
 # 尝试从另一套旧版统一配置文件迁移配置
 migrate_from_legacy_d_sakiko_config(d_sakiko_config, enable_warning=True)
+normalize_deepseek_model_config(d_sakiko_config)
 d_sakiko_config.save()

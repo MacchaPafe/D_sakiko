@@ -12,7 +12,7 @@ sys.path.insert(0, script_dir)
 
 import time
 
-import live2d.v2 as live2d
+import live2d.v2cpp as live2d
 from qtUI import ChangeL2DModelWindow
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
@@ -140,11 +140,13 @@ class Live2DModule:
         pygame.init()
         live2d.init()
 
+
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+        live2d.glInit()
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
         model = live2d.LAppModel()
-        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
+        model.LoadModelJson(self.PATH_JSON)
 
         model.Resize(win_w_and_h, win_w_and_h)
         model.SetAutoBlinkEnable(True)

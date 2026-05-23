@@ -893,6 +893,15 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(live2d_group)
 
+        live2d_render_group = QGroupBox("Live2D 渲染设置")
+        live2d_render_layout = QHBoxLayout()
+        current_fps = self.parent_gui.get_current_l2d_fps() if self.parent_gui else 60
+        self.btn_live2d_fps = QPushButton(f"Live2D渲染帧率：{current_fps}")
+        self.btn_live2d_fps.setMinimumHeight(btn_h)
+        live2d_render_layout.addWidget(self.btn_live2d_fps)
+        live2d_render_group.setLayout(live2d_render_layout)
+        layout.addWidget(live2d_render_group)
+
         # 如果当前没有角色，隐藏 live2d 模型切换按钮
         if len(character_names) < 2:
             live2d_group.hide()
@@ -957,6 +966,7 @@ class SettingsDialog(QDialog):
             self.btn_detail_info.clicked.connect(self.parent_gui.config_more_info)
             self.btn_sakiko_state.clicked.connect(self.parent_gui.convert_sakiko_state)
             self.btn_sakiko_model.clicked.connect(self.parent_gui.convert_sakiko_model)
+            self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
 
     def change_live2d_model(self, char_index):
         if len(self.character_names) <= char_index:
@@ -987,6 +997,12 @@ class SettingsDialog(QDialog):
         self.parent_gui.bgm_player.setVolume(value)
         self.bgm_volume_label.setText(f"BGM音量调节：{value}")
 
+    def change_l2d_fps(self):
+        if not self.parent_gui:
+            return
+        self.parent_gui.switch_l2d_fps()
+        self.btn_live2d_fps.setText(f"Live2D渲染帧率：{self.parent_gui.get_current_l2d_fps()}")
+
 
 class ViewerGUI(QWidget):
     def __init__(self,
@@ -1008,6 +1024,10 @@ class ViewerGUI(QWidget):
         self.scr_w = self.screen.width()
         self.scr_h = self.screen.height()
         self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
+        self.l2d_fps_dict = {
+            "current_fps": 1,
+            "all_fps": [30, 60, 120],
+        }
 
         self.chat_display = InteractiveChatBrowser()
         self.chat_display.setPlaceholderText("这里显示对话记录...")
@@ -1776,6 +1796,18 @@ class ViewerGUI(QWidget):
             self.message_queue.put("祥子好像不在...")
             return
         self.to_live2d_change_character_queue.put({"type": "toggle_sakiko_model"})
+
+    def switch_l2d_fps(self):
+        self.l2d_fps_dict["current_fps"] = (
+            self.l2d_fps_dict["current_fps"] + 1
+        ) % len(self.l2d_fps_dict["all_fps"])
+        self.to_live2d_change_character_queue.put({
+            "type": "switch_l2d_fps",
+            "fps": self.get_current_l2d_fps(),
+        })
+
+    def get_current_l2d_fps(self):
+        return self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
 
 
     def start_generation(self) -> None:

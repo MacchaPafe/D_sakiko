@@ -614,6 +614,7 @@ if __name__=='__main__':
         pass
     try:
         # live2d 播放进程
+        change_char_queue.put('exit')
         emotion_queue.put('bye')
     except Exception:
         pass
@@ -629,7 +630,13 @@ if __name__=='__main__':
         pass
 
     # 理论上讲 main_thread 函数中已经调用过 tr1.join，等待过 live2d 进程结束；这里再调用一次不是必要的，但也没有副作用。
-    tr1.join()
+    tr1.join(timeout=3)
+    if tr1.is_alive():
+        try:
+            tr1.terminate()
+            tr1.join(timeout=3)
+        except Exception:
+            pass
     tr2.join()
     tr3.join()
 
