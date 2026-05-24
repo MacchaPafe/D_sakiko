@@ -81,6 +81,14 @@ class Live2DModule:
         self.is_display_text=True
         self.new_text=''
 
+        #解决睁眼太快的突兀问题，强制睁眼过渡
+        self.force_eyes_open = False
+        self.eye_open_pending = False
+        self.eye_open_transition_start = 0.0
+        self.eye_open_transition_duration = 0.1
+        self.eye_open_param_ids = ("PARAM_EYE_L_OPEN", "PARAM_EYE_R_OPEN")
+        self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
+
     @property
     def current_character(self):
         """获取当前 Live2D 显示角色对象。"""
@@ -140,10 +148,12 @@ class Live2DModule:
     # 动作播放开始后调用
     def onStartCallback(self,*args):
         self.motion_is_over=False
+        self._reset_eye_open_transition()
         #print(f"touched and motion [] is started")
 
     def onStartCallback_think_motion_version(self,*args):
         self.think_motion_is_over = False
+        self._reset_eye_open_transition()
         if self.if_sakiko:
             pygame.display.set_caption("小祥思考中")
         else:
@@ -151,6 +161,7 @@ class Live2DModule:
 
     def onStartCallback_emotion_version(self,audio_file_path,*args):
         self.motion_is_over=False
+        self._reset_eye_open_transition()
         #print(f"touched and motion [] is started")
         logger = get_logger(__name__)
         if not audio_file_path or not os.path.isfile(audio_file_path):
@@ -174,11 +185,69 @@ class Live2DModule:
     def onFinishCallback(self, *args):
         #print("motion finished")
         self.motion_is_over=True
+        self._queue_eye_open_transition()
         global idle_recover_timer
         idle_recover_timer = time.time()
 
     def onFinishCallback_think_motion_version(self, *args):
         self.think_motion_is_over=True
+        self._queue_eye_open_transition()
+
+    def _reset_eye_open_transition(self):
+        self.force_eyes_open = False
+        self.eye_open_pending = False
+        self.eye_open_transition_start = 0.0
+        self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
+
+    def _queue_eye_open_transition(self):
+        self.force_eyes_open = False
+        self.eye_open_pending = True
+        self.eye_open_transition_start = 0.0
+
+    def _get_model_parameter_value(self, model, param_id: str, default: float = 1.0) -> float:
+        try:
+            for index in range(model.GetParameterCount()):
+                param = model.GetParameter(index)
+                if getattr(param, "id", "") == param_id:
+                    return max(0.0, min(1.0, float(getattr(param, "value", default))))
+        except Exception:
+            pass
+        return default
+
+    def _set_model_eye_open_values(self, model, value_by_param_id):
+        try:
+            for param_id, value in value_by_param_id.items():
+                model.SetParameterValue(param_id, value)
+        except Exception:
+            pass
+
+    def _update_eye_open_transition(self, model):
+        if self.eye_open_pending:
+            self.eye_open_start_values = {
+                param_id: self._get_model_parameter_value(model, param_id)
+                for param_id in self.eye_open_param_ids
+            }
+            if self.eye_open_start_values.get("PARAM_EYE_L_OPEN", 1.0) > 0.5:
+                self._reset_eye_open_transition()
+                return
+            self.eye_open_transition_start = time.time()
+            self.eye_open_pending = False
+
+        if self.eye_open_transition_start <= 0:
+            if self.force_eyes_open:
+                self._set_model_eye_open_values(model, {param_id: 1.0 for param_id in self.eye_open_param_ids})
+            return
+
+        elapsed = time.time() - self.eye_open_transition_start
+        progress = max(0.0, min(1.0, elapsed / self.eye_open_transition_duration))
+        eye_values = {
+            param_id: start_value + (1.0 - start_value) * progress
+            for param_id, start_value in self.eye_open_start_values.items()
+        }
+        self._set_model_eye_open_values(model, eye_values)
+        if progress >= 1.0:
+            self.force_eyes_open = True
+            self.eye_open_transition_start = 0.0
 
 
     def save_l2d_json_paths_and_bg(self):
@@ -283,6 +352,8 @@ class Live2DModule:
         last_emotion = None
         logger.info("当前Live2D界面渲染硬件 %s", glGetString(GL_RENDERER).decode())
 
+        is_update_mouth_sync = 0
+        mouth_keep_open_value:float=0.0
         while self.run:
             for event in pygame.event.get():    #退出程序逻辑
                 if event.type == pygame.QUIT:
@@ -493,13 +564,15 @@ class Live2DModule:
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
             model.Update()
+            self._update_eye_open_transition(model)
             # 渲染背景图片
             render_background(texture)
             # 渲染live2d到屏幕
-            if self.wavHandler.Update():  # 控制说话时的嘴型
-                model.SetParameterValue("PARAM_MOUTH_OPEN_Y", self.wavHandler.GetRms() * self.lipSyncN)
-
+            if self.wavHandler.Update() and is_update_mouth_sync % 3==0:  # 控制说话时的嘴型
+                mouth_keep_open_value=self.wavHandler.GetRms() * self.lipSyncN
                 idle_recover_timer = time.time()
+            model.SetParameterValue("PARAM_MOUTH_OPEN_Y", mouth_keep_open_value)
+            is_update_mouth_sync += 1
 
             model.Draw()
             overlay.update()
