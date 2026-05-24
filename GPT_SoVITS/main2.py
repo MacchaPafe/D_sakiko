@@ -500,7 +500,7 @@ if __name__=='__main__':
 
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters, chat_manager)
 
-    audio_gen=audio_generator.AudioGenerate()
+    audio_gen=audio_generator.AudioGenerate(log_queue=get_log_queue())
 
 
     audio_gen.initialize(characters,QT_message_queue)

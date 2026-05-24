@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from multiprocessing import Process, Queue
 from queue import Empty
-from typing import cast, TYPE_CHECKING, Optional
+from typing import cast, TYPE_CHECKING, Optional, Any
 
 from character import CharacterAttributes
 from inference_cli import synthesize
@@ -53,7 +53,7 @@ class VoiceTaskHandle:
 class AudioGenerate:
     """管理主线程侧的语音生成流程与 worker 进程通信。"""
 
-    def __init__(self) -> None:
+    def __init__(self, log_queue: Any | None = None) -> None:
         # gpt（t2s）模型路径
         self.GPT_model_file: str | None = ''
         # sovits 模型路径
@@ -161,6 +161,8 @@ class AudioGenerate:
         }
         # 软件中所有角色的列表
         self.character_list: list[CharacterAttributes] = []
+        # 主进程日志队列。正式 GUI 入口会传入；测试或独立脚本可保持 None。
+        self.log_queue = log_queue
 
         # 和子进程通信的几条管道
         self.to_gptsovits_com_queue: Queue = Queue()
@@ -173,6 +175,7 @@ class AudioGenerate:
                 self.to_gptsovits_com_queue,
                 self.from_gptsovits_com_queue,
                 self.from_gptsovits_com_queue2,
+                self.log_queue,
             ),
             daemon=True
         )
@@ -486,12 +489,29 @@ class AudioGenerate:
             return result
         return dict()
 
+    @staticmethod
+    def _format_worker_error_result(result: WorkerResult) -> str:
+        """把 worker 返回的错误结果格式化为可定位的一行异常消息。"""
+        command = cast(str, result.get("command", ""))
+        character_name = cast(str, result.get("character_name", ""))
+        request_id = cast(str, result.get("request_id", ""))
+        message = cast(str, result.get("message", ""))
+        return (
+            "语音合成 worker 返回错误 "
+            f"command={command or '<unknown>'} "
+            f"character={character_name or '<unknown>'} "
+            f"request_id={request_id or '<unknown>'}: "
+            f"{message or '<empty message>'}"
+        )
+
     def _wait_for_synthesize_result(self, handle: VoiceTaskHandle) -> str:
         """等待 worker 返回一次语音生成结果。"""
         result = self._wait_for_handle_result(handle)
         result_type = cast(str, result.get("type", ""))
         if result_type == "synthesize_result":
             return cast(str, result.get("output_wav_path", SILENCE_WAV_PATH))
+        if result_type == "error":
+            raise RuntimeError(self._format_worker_error_result(result))
         return SILENCE_WAV_PATH
 
     def submit_voice_task(self, command: WorkerCommand) -> VoiceTaskHandle:

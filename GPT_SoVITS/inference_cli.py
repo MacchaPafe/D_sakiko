@@ -14,7 +14,7 @@ import torch
 os.chdir(os.path.dirname(__file__))
 
 from character import CharacterAttributes
-from log import get_logger
+from log import get_logger, setup_worker_logging
 from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
 from qconfig import d_sakiko_config
 
@@ -762,8 +762,11 @@ def send_progress(progress_queue, message: str, request_id: str = '') -> None:
     )
 
 
-def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2) -> None:
+def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, log_queue=None) -> None:
     """作为独立 worker 进程处理 GPT-SoVITS 语音生成命令。"""
+    if log_queue is not None:
+        setup_worker_logging(log_queue)
+
     from tools.i18n.i18n import I18nAuto
 
     i18n_translator = I18nAuto()
