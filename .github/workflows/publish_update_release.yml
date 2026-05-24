@@ -6,6 +6,9 @@ on:
       tag:
         description: "GitHub release tag, for example v2.7.1"
         required: true
+      previous_tag:
+        description: "Previous GitHub release tag that contains update_index.json, for example v2.7.0"
+        required: true
       latest:
         description: "Latest app version, for example 2.7.1"
         required: true
@@ -31,6 +34,7 @@ jobs:
       contents: write
     env:
       TAG: ${{ inputs.tag }}
+      PREVIOUS_TAG: ${{ inputs.previous_tag }}
       LATEST: ${{ inputs.latest }}
       MIN_SUPPORTED: ${{ inputs.min_supported }}
       CRITICAL: ${{ inputs.critical }}
@@ -63,7 +67,7 @@ jobs:
 
       - name: Download previous update index
         continue-on-error: true
-        run: gh release download --pattern update_index.json --dir dist/previous --clobber
+        run: gh release download "$PREVIOUS_TAG" --pattern update_index.json --dir dist/previous --clobber
 
       - name: Sign patch assets
         working-directory: dist/assets
