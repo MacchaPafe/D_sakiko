@@ -1,6 +1,6 @@
 [project]
 name = "d-sakiko"
-version = "2.6.5"
+version = "3.0.2"
 description = "Deepseek V3-GPT_SoVITS主框架实现语音聊天Live2D数字小祥"
 readme = "README.md"
 # macOS 下仅测试了 Python 3.11 可行
@@ -102,6 +102,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
+live2d-py = { path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" }
 torch = [
   { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
