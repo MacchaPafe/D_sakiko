@@ -3207,10 +3207,12 @@ class ChatGUI(QWidget):
             self.l2d_fps_dict = {"current_fps":1,
                                  "all_fps":[30, 60, 120]}
         self.l2d_fps_dict["current_fps"]=(self.l2d_fps_dict["current_fps"]+1) % len(self.l2d_fps_dict["all_fps"])
+        current_fps = self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
         self.change_char_queue.put({
             "type": "switch_l2d_fps",
-            "fps": self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
+            "fps": current_fps
         })
+        self.QT_message_queue.put(f"已切换 Live2D 渲染帧率为 {current_fps} fps")
     
     def get_current_l2d_fps(self):
         if hasattr(self, 'l2d_fps_dict'):
