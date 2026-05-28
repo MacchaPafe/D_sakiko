@@ -157,8 +157,41 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
         self.assertFalse(used_json_mode)
         self.assertEqual(content, '[{"text":"你好。","translation":"你好。","emotion":"happiness"}]')
 
-    def test_final_json_completion_always_uses_json_mode(self) -> None:
-        """即使候选回复非空且看似合法，最终回复也必须固定走 JSON Mode 收口。"""
+    def test_final_json_completion_reuses_valid_candidate(self) -> None:
+        """候选回复已经符合最终 schema 时，应跳过额外的 JSON 收口请求。"""
+        subject = self._build_subject()
+        calls: list[dict[str, object]] = []
+
+        def fake_completion(**kwargs: object) -> dict[str, object]:
+            """合法候选不应触发大模型请求。"""
+            calls.append(dict(kwargs))
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '[{"text":"こんにちは。","translation":"你好。","emotion":"happiness"}]'
+                        }
+                    }
+                ]
+            }
+
+        subject._completion_with_current_config = fake_completion
+        subject._supports_json_object_response_format_for_current_config = lambda: True
+
+        segments = subject._run_final_json_completion(
+            runtime_messages=[{"role": "user", "content": "go"}],
+            candidate_content='[{"text":"旧回复。","translation":"旧回复。","emotion":"happiness"}]',
+            reasoning_kwargs={"_reasoning_snapshot_locked": True},
+        )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(
+            segments,
+            [{"text": "旧回复。", "emotion": "happiness", "translation": "旧回复。"}],
+        )
+
+    def test_final_json_completion_uses_json_mode_for_invalid_candidate(self) -> None:
+        """候选回复不符合最终 schema 时，仍应发起 JSON Mode 收口请求。"""
         subject = self._build_subject()
         calls: list[dict[str, object]] = []
 
@@ -184,7 +217,7 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
 
         segments = subject._run_final_json_completion(
             runtime_messages=[{"role": "user", "content": "go"}],
-            candidate_content='[{"text":"旧回复。","translation":"旧回复。","emotion":"happiness"}]',
+            candidate_content="旧回复",
             reasoning_kwargs={"_reasoning_snapshot_locked": True},
         )
 

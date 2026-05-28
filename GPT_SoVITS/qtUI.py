@@ -6,7 +6,7 @@ import time
 import json
 import random
 import uuid
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -28,6 +28,11 @@ from log import get_logger
 from qconfig import d_sakiko_config
 from character import CharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
+from chat_flow.events import ApplicationQuitUiMessageEvent
+from chat_flow.events import ConversationUiEvent
+from chat_flow.events import ConversationUiEventType
+from chat_flow.events import LotteryUiCommandEvent
+from chat_flow.events import is_legacy_tool_call_payload
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
@@ -45,9 +50,9 @@ from input_commands import (
 )
 
 
-TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
-TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
-LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
+if TYPE_CHECKING:
+    from audio_generator import AudioGenerate
+
 logger = get_logger(__name__)
 
 SINGLE_CHAT_DIALOG_CSS = dialogWindowDefaultCss + """
@@ -346,7 +351,7 @@ class CommunicateThreadDP2QT(QThread):
             time.sleep(0.1)
 
 class CommunicateThreadMessages(QThread):
-    message_signal=pyqtSignal(str)
+    message_signal=pyqtSignal(object)
     def __init__(self,message_queue):
         super().__init__()
         self.message=''
@@ -1108,7 +1113,15 @@ class ColorPicker(QDialog):
 class AudioRegenThread(QThread):
     finished_signal = pyqtSignal(str, int)  # (新音频路径, msg_index)
 
-    def __init__(self, audio_gen, text, character, sakiko_state, audio_language_choice, msg_index):
+    def __init__(
+        self,
+        audio_gen: AudioGenerate,
+        text: str,
+        character: CharacterAttributes,
+        sakiko_state: bool,
+        audio_language_choice: str,
+        msg_index: int,
+    ) -> None:
         super().__init__()
         self.audio_gen = audio_gen
         self.text = text
@@ -1117,8 +1130,9 @@ class AudioRegenThread(QThread):
         self.audio_language_choice = audio_language_choice
         self.msg_index = msg_index
 
-    def run(self):
-        new_audio_path = self.audio_gen.generate_audio_sync(
+    def run(self) -> None:
+        """在后台为指定消息重新生成音频。"""
+        new_audio_path = self.audio_gen.generate_audio_for_character_sync(
             self.text,
             self.character,
             self.sakiko_state,
@@ -1226,7 +1240,6 @@ class ChatGUI(QWidget):
         # 一轮对话的几个阶段，包含 'llm', 'tts', 'rendering' 三个阶段
         # 即 AI 生成对话，角色语音合成、界面慢速渲染三个部分。
         self.active_turn_phase: str | None = None
-        self.active_turn_message_indices: set[int] = set()
         # 用户取消的对话轮次的 id
         self.cancelled_turn_ids: set[str] = set()
         self.tool_call_records_cache: dict[str, dict] = {}
@@ -1322,9 +1335,8 @@ class ChatGUI(QWidget):
         self.get_message_thread.start()
 
         #---------------------消息命令处理机制 从引入抽奖工具开始构建---------------------
-        self._message_command_handlers: dict[str, callable] = {}
+        self._message_command_handlers: dict[str, Callable[[str], None]] = {}
         self._lottery_dialog_ref = None
-        self._register_message_command_handler(LOTTERY_UI_EVENT_PREFIX, self._handle_lottery_ui_command)
         self.update_check_thread: UpdateCheckThread | None = None
         self.update_download_thread: UpdateDownloadThread | None = None
         self.update_notes_thread: ReleaseNotesThread | None = None
@@ -2545,22 +2557,12 @@ class ChatGUI(QWidget):
             self._handle_structured_response(response_text)
             return
 
-        if response_text.startswith(TOOL_CALL_START_EVENT_PREFIX):
-            payload_str = response_text[len(TOOL_CALL_START_EVENT_PREFIX):]
-            try:
-                payload = json.loads(payload_str)
-            except json.JSONDecodeError:
-                payload = {}
-            self._handle_tool_call_start_event(payload)
+        if is_legacy_tool_call_payload(response_text):
+            logger.warning("拒绝旧版字符串前缀工具调用事件。")
             return
 
-        if response_text.startswith(TOOL_CALL_UPDATE_EVENT_PREFIX):
-            payload_str = response_text[len(TOOL_CALL_UPDATE_EVENT_PREFIX):]
-            try:
-                payload = json.loads(payload_str)
-            except json.JSONDecodeError:
-                payload = {}
-            self._handle_tool_call_update_event(payload)
+        if not isinstance(response_text, str):
+            logger.warning("忽略未知类型的对话响应载荷：%s", type(response_text).__name__)
             return
 
         if response_text=='changechange':
@@ -2627,80 +2629,83 @@ class ChatGUI(QWidget):
         """
         处理来自 main2/dp_local2 的结构化 UI 事件。
         """
-        event_type = str(payload.get("type") or "")
-        if self._is_cancelled_turn_payload(payload):
-            if event_type == "assistant_turn_complete":
-                self.cancelled_turn_ids.discard(str(payload.get("turn_id") or ""))
+        try:
+            event = ConversationUiEvent.from_payload(payload)
+        except (TypeError, ValueError):
+            logger.warning("忽略无法解析的 chat_flow UI 事件：%s", payload)
             return
-        if event_type in {"tool_call_started", "tool_call_updated"}:
-            chat_id = str(payload.get("chat_id") or self.current_chat_id)
+
+        event_type = event.event_type
+        event_payload = event.to_dict()
+        if event_type == ConversationUiEventType.TRANSIENT_CONVERSATION_MESSAGE:
+            chat_id = str(event_payload.get("chat_id") or self.current_chat_id)
             if chat_id != self.current_chat_id:
                 return
-            if event_type == "tool_call_started":
-                self._handle_tool_call_start_event(payload)
-            else:
-                self._handle_tool_call_update_event(payload)
+            self.chat_display.append_transient_text(
+                str(event_payload.get("character_name") or self.current_character.character_name),
+                str(event_payload.get("text") or ""),
+                stream=bool(event_payload.get("stream", True)),
+                interval_ms=30,
+            )
             return
-        # 事件：切换对话
-        if event_type == "chat_switched":
+        if self._is_cancelled_turn_payload(event_payload):
+            if event_type == ConversationUiEventType.ASSISTANT_TURN_COMPLETE:
+                self.cancelled_turn_ids.discard(str(event_payload.get("turn_id") or ""))
+            return
+        if event_type in {ConversationUiEventType.TOOL_CALL_STARTED, ConversationUiEventType.TOOL_CALL_UPDATED}:
+            chat_id = str(event_payload.get("chat_id") or self.current_chat_id)
+            if chat_id != self.current_chat_id:
+                return
+            if event_type == ConversationUiEventType.TOOL_CALL_STARTED:
+                self._handle_tool_call_start_event(event_payload)
+            else:
+                self._handle_tool_call_update_event(event_payload)
             return
         # 事件：设置当前的处理阶段
-        if event_type == "assistant_turn_phase":
-            if self._is_active_turn_payload(payload):
-                self.active_turn_phase = str(payload.get("phase") or self.active_turn_phase or "")
-                raw_message_indices = payload.get("message_indices")
-                if isinstance(raw_message_indices, list):
-                    self.active_turn_message_indices = {
-                        one for one in raw_message_indices if isinstance(one, int)
-                    }
+        if event_type == ConversationUiEventType.ASSISTANT_TURN_PHASE:
+            if self._is_active_turn_payload(event_payload):
+                self.active_turn_phase = str(event_payload.get("phase") or self.active_turn_phase or "")
                 self._refresh_send_button_state()
             return
         # 事件：完成一轮对话的生成
-        if event_type == "assistant_turn_complete":
-            if self._is_active_turn_payload(payload):
+        if event_type == ConversationUiEventType.ASSISTANT_TURN_COMPLETE:
+            if self._is_active_turn_payload(event_payload):
                 self._clear_active_turn()
                 self.refresh_chat_list()
             return
-        if event_type != "assistant_segment_ready":
+        if event_type != ConversationUiEventType.ASSISTANT_SEGMENT_READY:
             return
 
-        chat_id = str(payload.get("chat_id") or "")
+        chat_id = str(event_payload.get("chat_id") or "")
         # 仅处理当前正在进行对话的事件，且必须是当前界面的对话
-        if self.active_turn_id is not None and not self._is_active_turn_payload(payload):
+        if self.active_turn_id is not None and not self._is_active_turn_payload(event_payload):
             return
-        chat = self.chat_manager.get_chat_by_id(chat_id)
-        if chat is None:
-            return
-        raw_message_index = payload.get("message_index")
+        raw_message_index = event_payload.get("message_index")
         message_index = raw_message_index if isinstance(raw_message_index, int) else -1
-        if 0 <= message_index < len(chat.message_list):
-            msg = chat.message_list[message_index]
-            msg.audio_path = str(payload.get("audio_path") or "NO_AUDIO")
-            msg.translation = str(payload.get("translation") or msg.translation)
         if chat_id != self.current_chat_id:
             self.refresh_chat_list()
             return
 
         self.active_turn_phase = "rendering"
-        display_text = str(payload.get("text") or "")
-        translation = str(payload.get("translation") or "")
-        character_name = str(payload.get("character_name") or self.current_character.character_name)
-        emotion = str(payload.get("emotion") or "LABEL_0")
-        audio_path = str(payload.get("audio_path") or "NO_AUDIO")
+        display_text = str(event_payload.get("text") or "")
+        translation = str(event_payload.get("translation") or "")
+        character_name = str(event_payload.get("character_name") or self.current_character.character_name)
+        emotion = str(event_payload.get("emotion") or "LABEL_0")
+        audio_path = str(event_payload.get("audio_path") or "NO_AUDIO")
 
         if audio_path != "NO_AUDIO":
             abs_path = os.path.abspath(audio_path).replace('\\', '/')
             self.live2d_text_queue.put(display_text)
         else:
             abs_path = "NO_AUDIO"
-        display_message = msg if 0 <= message_index < len(chat.message_list) else Message(
+        display_message = Message(
             character_name=character_name,
             text=display_text,
             translation=translation,
             emotion=EmotionEnum.from_string(emotion),
             audio_path=abs_path,
         )
-        display_msg_index = message_index if message_index >= 0 else len(chat.message_list)
+        display_msg_index = message_index if message_index >= 0 else len(self.current_chat.message_list)
         self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
         self.refresh_chat_list()
 
@@ -2711,8 +2716,6 @@ class ChatGUI(QWidget):
         self.active_chat_id = chat_id
         self.active_turn_id = turn_id
         self.active_turn_phase = phase
-        # 一轮对话中可能涉及多条消息，active_turn_message_indices 用于记录这些消息的索引，以便在需要时进行统一处理（如标记无语音等）
-        self.active_turn_message_indices = set()
         self._refresh_send_button_state()
 
     def _clear_active_turn(self) -> None:
@@ -2722,7 +2725,6 @@ class ChatGUI(QWidget):
         self.active_chat_id = None
         self.active_turn_id = None
         self.active_turn_phase = None
-        self.active_turn_message_indices = set()
         self._refresh_send_button_state()
 
     def _is_active_turn_payload(self, payload: dict[str, object]) -> bool:
@@ -2782,21 +2784,6 @@ class ChatGUI(QWidget):
         """
         self.chat_display.finish_stream_now()
 
-    def _mark_active_turn_pending_messages_no_audio(self) -> None:
-        """
-        将当前轮次中尚未完成语音回填的 assistant 消息标记为无语音。
-        """
-        if not self.active_turn_message_indices:
-            return
-        chat = self.chat_manager.get_chat_by_id(self.active_chat_id or "")
-        if chat is None:
-            return
-        for message_index in self.active_turn_message_indices:
-            if 0 <= message_index < len(chat.message_list):
-                msg = chat.message_list[message_index]
-                if msg.character_name != "User" and not msg.audio_path:
-                    msg.audio_path = "NO_AUDIO"
-
     def handle_send_button_clicked(self) -> None:
         """
         发送按钮的统一入口：空闲时发送，回复中时终止。
@@ -2832,12 +2819,7 @@ class ChatGUI(QWidget):
                 "turn_id": turn_id,
             })
 
-        if phase == "tts":
-            # 设置尚未生成的语音为无语音
-            self._mark_active_turn_pending_messages_no_audio()
-            if chat_id == self.current_chat_id:
-                self.refresh_current_chat_display()
-        elif phase == "rendering":
+        if phase == "rendering":
             self.chat_display.finish_stream_now()
             if chat_id == self.current_chat_id:
                 self.refresh_current_chat_display()
@@ -3084,7 +3066,7 @@ class ChatGUI(QWidget):
             logger.exception("保存聊天记录失败")
             self.setWindowTitle("保存聊天记录失败！")
 
-    def _register_message_command_handler(self, command_prefix: str, handler):
+    def _register_message_command_handler(self, command_prefix: str, handler: Callable[[str], None]) -> None:
         """注册来自消息队列的特殊命令处理器。"""
         if command_prefix and callable(handler):
             self._message_command_handlers[command_prefix] = handler
@@ -3098,23 +3080,10 @@ class ChatGUI(QWidget):
                 return True
         return False
 
-    def _handle_lottery_ui_command(self, payload_text: str):
-        """处理抽签窗口打开命令，命令负载为 JSON。"""
-        try:
-            payload = json.loads(payload_text)
-        except json.JSONDecodeError:
-            self.messages_box.clear()
-            self.messages_box.append("抽签命令解析失败：JSON 格式错误")
-            return
-
-        title = str(payload.get("title") or "随机抽签")
-        options_raw = payload.get("options") or []
-        if not isinstance(options_raw, list):
-            self.messages_box.clear()
-            self.messages_box.append("抽签命令解析失败：options 不是数组")
-            return
-
-        options = [str(one).strip() for one in options_raw if str(one).strip()]
+    def _handle_lottery_ui_command(self, event: LotteryUiCommandEvent) -> None:
+        """处理 typed 抽签窗口打开命令。"""
+        title = str(event.title or "随机抽签")
+        options = [str(one).strip() for one in event.options if str(one).strip()]
         if len(options) < 2:
             self.messages_box.clear()
             self.messages_box.append("抽签命令解析失败：候选项少于 2 个")
@@ -3134,10 +3103,17 @@ class ChatGUI(QWidget):
         self._lottery_dialog_ref = dialog
         dialog.show()
 
-    def handle_messages(self,message):
-        if message=='bye':
+    def handle_messages(self, message: object) -> None:
+        if isinstance(message, ApplicationQuitUiMessageEvent):
             self.save_data()
             self.close()
+            return
+        if isinstance(message, LotteryUiCommandEvent):
+            self._handle_lottery_ui_command(message)
+            return
+
+        if not isinstance(message, str):
+            logger.warning("忽略未知类型的 UI 消息载荷：%s", type(message).__name__)
             return
 
         if self._dispatch_message_command(message):

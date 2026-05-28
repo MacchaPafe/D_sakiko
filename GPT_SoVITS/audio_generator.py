@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from multiprocessing import Process, Queue
 from queue import Empty
-from typing import cast, TYPE_CHECKING, Optional, Any
+from typing import TYPE_CHECKING, cast
 
 from character import CharacterAttributes
 from inference_cli import synthesize
@@ -53,7 +53,7 @@ class VoiceTaskHandle:
 class AudioGenerate:
     """管理主线程侧的语音生成流程与 worker 进程通信。"""
 
-    def __init__(self, log_queue: Any | None = None) -> None:
+    def __init__(self, log_queue: object | None = None) -> None:
         # gpt（t2s）模型路径
         self.GPT_model_file: str | None = ''
         # sovits 模型路径
@@ -327,7 +327,7 @@ class AudioGenerate:
         self._ensure_worker_dispatch_thread()
         queued_command = dict(command)
 
-        request_id = cast(Optional[str], command.get("request_id"))
+        request_id = cast(str | None, command.get("request_id"))
         # 如果 request_id 不知道为啥为空，就新分配一个
         if request_id is None or not isinstance(request_id, str) or request_id == '':
             request_id = self._create_request_id()
@@ -529,6 +529,13 @@ class AudioGenerate:
         character: CharacterAttributes,
     ) -> tuple[str, bool]:
         """将待合成文本转换为适合送入语音模块的内容。"""
+        text = re.sub(r"（.*?）", "", text)
+        text = re.sub(r"\(.*?\)", "", text)
+        text = re.sub(r"\[.*?]", "", text)
+        for quote_mark in ('「', '」', '"', "'", '“', '”', '‘', '’'):
+            text = text.replace(quote_mark, '')
+        text = text.strip()
+
         if audio_language_choice == '日英混合':
             text = re.sub(r'CRYCHIC', 'クライシック', text, flags=re.IGNORECASE)
             text = re.sub(r'\bave\s*mujica\b', 'アヴェムジカ', text, flags=re.IGNORECASE)
@@ -602,37 +609,3 @@ class AudioGenerate:
         )
         self.audio_file_path = self._wait_for_synthesize_result(handle)
         return self.audio_file_path
-
-    def clean_text_for_audio(self, text: str) -> str:
-        """清洗文本使其适合送入语音合成模块。"""
-        cleaned = re.sub(r"（.*?）", "", text)
-        cleaned = re.sub(r"\(.*?\)", "", cleaned)
-        cleaned = re.sub(r"\[.*?]", "", cleaned)
-        cleaned = cleaned.replace('「', '')
-        cleaned = cleaned.replace('」', '')
-        cleaned = cleaned.strip()
-        pattern = r'^[^A-Za-z0-9\u3040-\u30FF\u4E00-\u9FFF]+'
-        cleaned = re.sub(pattern, '', cleaned)
-        cleaned = cleaned.replace(' ', '')
-        cleaned = cleaned.replace('...', '，')
-        if not cleaned or bool(re.fullmatch(r'[\W_]+', cleaned)):
-            cleaned = '不能送去合成'
-        for key, value in self.replacements_jap.items():
-            cleaned = re.sub(re.escape(key), value, cleaned, flags=re.IGNORECASE)
-        return cleaned
-
-    def generate_audio_sync(self, text: str, character: CharacterAttributes, sakiko_state: bool, audio_lan_choice: str) -> str:
-        """同步生成音频，用于重新生成音频功能。"""
-        if not character.has_valid_voice_model():
-            return SILENCE_WAV_PATH
-
-        if audio_lan_choice == '日英混合':
-            text = re.sub(r'CRYCHIC', 'クライシック', text, flags=re.IGNORECASE)
-            text = re.sub(r'\bave\s*mujica\b', 'アヴェムジカ', text, flags=re.IGNORECASE)
-            text = re.sub(r'立希', 'りっき', text, flags=re.IGNORECASE)
-        text = self.clean_text_for_audio(text)
-        if text == '' or text == '不能送去合成':
-            return SILENCE_WAV_PATH
-
-        handle = self.generate_audio(text, character, sakiko_state, audio_lan_choice)
-        return self._wait_for_synthesize_result(handle)

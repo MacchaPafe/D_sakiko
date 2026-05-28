@@ -10,7 +10,7 @@ from copy import deepcopy
 
 import json
 from queue import Empty
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import litellm
 
@@ -22,13 +22,15 @@ from log import get_logger
 from chat.chat import Chat, Message, ChatManager
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.tool_calling import ToolCallingAgentRuntime
+from chat_flow.events import ConversationUiEvent
+from chat_flow.events import ConversationUiEventType
+from chat_flow.events import DispatcherInputEvent
+from chat_flow.events import DispatcherInputEventType
+from chat_flow.events import JsonValue
+from chat_flow.events import LotteryUiCommandEvent
 from emotion_enum import EmotionEnum
 from deepseek_prompt_cache_debug import CACHE_DEBUG_PHASE_KEY, log_prompt_cache_usage
 
-TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
-TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
-NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
-LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
 
 
@@ -582,11 +584,21 @@ class DSLocalAndVoiceGen:
             return
 
     @staticmethod
-    def _emit_tool_ui_event(dp2qt_queue, prefix: str, payload: dict):
-        event_type = "tool_call_started" if prefix == TOOL_CALL_START_EVENT_PREFIX else "tool_call_updated"
-        event_payload = dict(payload)
-        event_payload["type"] = event_type
-        dp2qt_queue.put(event_payload)
+    def _emit_tool_ui_event(
+        dp2qt_queue: object,
+        event_type: ConversationUiEventType,
+        payload: Mapping[str, JsonValue],
+    ) -> None:
+        """
+        将工具调用事件序列化为 chat_flow UI 事件并放入 Qt 队列。
+        """
+        dp2qt_queue.put(ConversationUiEvent(event_type=event_type, data=dict(payload)).to_dict())
+
+    @staticmethod
+    def _emit_lottery_ui_event(message_queue: object, title: str, options: Sequence[str]) -> None:
+        """将抽签窗口命令作为 typed UI 消息事件放入 Qt 消息队列。"""
+        clean_options = tuple(str(one).strip() for one in options if str(one).strip())
+        message_queue.put(LotteryUiCommandEvent(title=str(title or "随机抽签"), options=clean_options))
 
     def _build_model_response_payload(
         self,
@@ -1022,7 +1034,7 @@ class DSLocalAndVoiceGen:
         self._session_tool_call_records.append(dict(one))
         self._session_tool_call_records = self._session_tool_call_records[-300:]
 
-        self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_START_EVENT_PREFIX, one)
+        self._emit_tool_ui_event(dp2qt_queue, ConversationUiEventType.TOOL_CALL_STARTED, one)
 
     def _record_tool_call_completed(self, dp2qt_queue, tool_exec: dict) -> None:
         target_id = str(tool_exec.get("tool_call_id") or "")
@@ -1040,7 +1052,7 @@ class DSLocalAndVoiceGen:
                 self.current_chat.update_tool_call_record(one)
                 payload = one.to_dict()
                 payload["chat_id"] = self.current_chat.chat_id
-                self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_UPDATE_EVENT_PREFIX, payload)
+                self._emit_tool_ui_event(dp2qt_queue, ConversationUiEventType.TOOL_CALL_UPDATED, payload)
 
                 for j in range(len(self._session_tool_call_records) - 1, -1, -1):
                     session_one = self._session_tool_call_records[j]
@@ -1187,15 +1199,16 @@ class DSLocalAndVoiceGen:
         """
         command_type = str(command.get("type") or "")
         if command_type == "exit":
-            text_queue.put("bye")
+            text_queue.put(DispatcherInputEvent(
+                DispatcherInputEventType.EXIT,
+                {"character_name": self.get_current_character().character_name},
+            ).to_dict())
             return True
 
         if command_type == "switch_chat":
             chat_id = command.get("chat_id")
             if isinstance(chat_id, str) and self.switch_chat(chat_id):
-                character = self.get_current_character()
                 message_queue.put(f"已切换为对话：{self.current_chat.name}")
-                dp2qt_queue.put({"type": "chat_switched", "chat_id": chat_id, "character_name": character.character_name})
             else:
                 message_queue.put("切换对话失败：找不到目标对话。")
             return True
@@ -1316,11 +1329,7 @@ class DSLocalAndVoiceGen:
         from chat.tool_calling import register_live2d_tools, register_reminder_tool, register_lottery_tool
 
         def _show_lottery_ui(title: str, options: list[str]) -> bool:
-            payload = {
-                "title": title,
-                "options": options,
-            }
-            message_queue.put(LOTTERY_UI_EVENT_PREFIX + json.dumps(payload, ensure_ascii=False))
+            self._emit_lottery_ui_event(message_queue, title, options)
             return True
 
         register_live2d_tools(

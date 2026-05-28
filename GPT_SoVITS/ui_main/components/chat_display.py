@@ -103,6 +103,25 @@ class ChatDisplay(QTextBrowser):
             return
         self.append(self._render_message_html(message, msg_index))
 
+    def append_transient_text(
+        self,
+        character_name: str,
+        text: str,
+        *,
+        stream: bool = False,
+        interval_ms: int = 30,
+    ) -> None:
+        """追加不绑定消息数据的临时对话文本，可选择逐字显示正文。"""
+        self.finish_stream_now()
+        if stream:
+            self.append(self._render_transient_header_html(character_name))
+            self._stream_text = f"{text}\n"
+            self._stream_translation = ""
+            self._stream_index = 0
+            self._stream_timer.start(max(1, interval_ms))
+            return
+        self.append(self._render_transient_text_html(character_name, text))
+
     def append_tool_status_line(
         self,
         tool_call_id: str,
@@ -247,6 +266,18 @@ class ChatDisplay(QTextBrowser):
             f'<a href="no_audio:{msg_param}" '
             f'style="text-decoration: none; color: {self._theme_color};">'
             f'{html.escape(message.character_name)}：</a>'
+        )
+
+    def _render_transient_text_html(self, character_name: str, text: str) -> str:
+        """将一条临时对话文本渲染成没有消息锚点的 HTML。"""
+        return self._render_transient_header_html(character_name) + html.escape(text)
+
+    def _render_transient_header_html(self, character_name: str) -> str:
+        """将临时对话文本的角色前缀渲染成不可点击 HTML。"""
+        safe_name = html.escape(str(character_name or ""))
+        return (
+            f'<span style="text-decoration: none; color: {self._theme_color};">'
+            f'{safe_name}：</span>'
         )
 
     def _render_tool_record_html(self, record: dict[str, object]) -> str:
