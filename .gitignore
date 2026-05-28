@@ -1,5 +1,9 @@
 /font/
 /docs/
+!/docs/
+/docs/*
+!/docs/agents/
+!/docs/agents/**
 /live2d_related/
 /pythonProject1/
 /reference_audio/
