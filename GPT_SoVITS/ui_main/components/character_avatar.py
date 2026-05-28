@@ -1,3 +1,5 @@
+# 该文件实现了角色单个字符头像的绘制（腾讯会议默认头像风格）
+
 from __future__ import annotations
 
 import hashlib
@@ -82,7 +84,13 @@ def build_initial_avatar(
     color_hex: str = "",
 ) -> QPixmap:
     """
-    使用角色名称首字符绘制聊天侧栏头像。
+    使用角色名称首字符绘制聊天侧栏头像。生成的头像会自动缓存，只要所有传入参数均一致就可以直接复用。
+
+    :param character_name: 角色名称。
+    :param size: 头像尺寸（单位：像素）。实际生成的图像
+        会根据设备像素比进行放大以保证在高分屏上的清晰度。
+    :param device_pixel_ratio: 设备像素比。默认为1.0，表示生成的图像尺寸与传入的size参数一致。对于高分屏设备，可以传入更大的值（如2.0）以生成更大尺寸的图像
+    :param color_hex: 角色主题色的十六进制字符串（如"#FF5733"）。如果提供，将基于此颜色生成低饱和度的头像背景色；否则将根据角色名称生成稳定的背景色。
     """
     safe_size = max(12, int(size))
     safe_ratio = max(1.0, float(device_pixel_ratio))
