@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import json
 import multiprocessing
+from multiprocessing.queues import Queue
 import sys,os
 import pathlib
 from typing import Optional
@@ -24,7 +27,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHB
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
 import character
-from log import get_logger, setup_logging, shutdown_logging
+from log import get_logger, setup_logging, shutdown_logging, setup_worker_logging, get_log_queue
 
 logger = get_logger(__name__)
 
@@ -112,15 +115,12 @@ class Live2DModule:
                     motion_queue,
                     change_char_queue,
                     desktop_w,
-                    desktop_h):
-        # 不使用 tkinter 获得屏幕分辨率，而改用 PyQt 获得的内容传入参数
-        # 因为在 macOS 上，同一线程同时注册 PyQt 和 tkinter 窗口会立刻崩溃
+                    desktop_h,
+                    log_queue: Queue | None = None):
 
-        #print("正在开启Live2D模块")
-        # import tkinter as tk    # 获取屏幕分辨率
-        # root = tk.Tk()
-        # desktop_w,desktop_h=root.winfo_screenwidth(),root.winfo_screenheight()
-        # root.destroy()
+        if log_queue is not None:
+            setup_worker_logging(log_queue)
+
         win_w_and_h = int(0.7 * desktop_h)  # 根据显示器分辨率定义窗口大小，保证每个人看到的效果相同
         pygame_win_pos_w,pygame_win_pos_h=int(0.5*desktop_w-win_w_and_h),int(0.5*desktop_h-0.5*win_w_and_h)
         #以上设置后，会差出一个恶心的标题栏高度，因此还要加上一个标题栏高度
@@ -181,9 +181,9 @@ class Live2DModule:
                 if x == "change_character":
                     self.change_character()
                     if self.if_sakiko and self.sakiko_state:
-                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json', disable_precision=True)
+                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
                     else:
-                        model.LoadModelJson(self.PATH_JSON, disable_precision=True)
+                        model.LoadModelJson(self.PATH_JSON)
                     model.Resize(win_w_and_h, win_w_and_h)
                     model.SetAutoBlinkEnable(True)
                     model.SetAutoBreathEnable(True)
@@ -192,16 +192,15 @@ class Live2DModule:
                         pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
                 # 传入一个路径，表示要求加载同角色一个新的 live2d 模型
                 elif os.path.exists(x):
-                    model.LoadModelJson(x, disable_precision=True)
+                    model.LoadModelJson(x)
                     model.Resize(win_w_and_h, win_w_and_h)
                     model.SetAutoBlinkEnable(True)
                     model.SetAutoBreathEnable(True)
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
-                mtn = model.loadMotion(None, motion_name)
-                model._LAppModel__setFadeInFadeOut(None,None,4,mtn)
-
+                no = model.LoadMotion(motion_name)
+                model.StartLoadedMotion(no)
 
             # 清除缓冲区
             #live2d.clearBuffer()
@@ -862,8 +861,6 @@ if __name__ == "__main__":
     change_char_queue=multiprocessing.Queue()
 
     live2d_player.live2D_initialize(get_char_attr.character_class_list)
-    # live2d_thread=threading.Thread(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue))
-
 
     app = QApplication(sys.argv)
 
@@ -878,7 +875,7 @@ if __name__ == "__main__":
 
     desktop_w = QDesktopWidget().screenGeometry().width()
     desktop_h = QDesktopWidget().screenGeometry().height()
-    live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h))
+    live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h, get_log_queue()))
 
     screen_w_mid = int(0.5 * desktop_w)
     screen_h_mid = int(0.5 * desktop_h)
