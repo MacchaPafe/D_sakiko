@@ -10,6 +10,7 @@ from PyQt5.QtGui import QContextMenuEvent, QTextCursor
 from PyQt5.QtWidgets import QAction, QTextBrowser, QWidget
 
 from chat.chat import Chat, Message
+from chat_flow.audio_scheduler import is_playable_audio_path
 
 
 @dataclass(frozen=True)
@@ -60,16 +61,20 @@ class ChatDisplay(QTextBrowser):
         was_at_bottom = saved_position == scroll_bar.maximum()
 
         self._message_meta_by_index.clear()
-        html_parts: list[str] = []
-        records_by_index = self._tool_records_by_message_index(chat)
+        with chat.runtime.lock:
+            html_parts: list[str] = []
+            records_by_index = self._tool_records_by_message_index(chat)
 
-        for index, message in enumerate(chat.message_list):
-            message_block: list[str] = []
-            for record in records_by_index.get(index, []):
-                message_block.append(self._render_tool_record_html(record))
-            message_block.append(self._render_message_html(message, index))
-            html_parts.append("".join(message_block))
-            self._remember_message_meta(index, message)
+            for index, message in enumerate(chat.message_list):
+                message_block: list[str] = []
+                for record in records_by_index.get(index, []):
+                    message_block.append(self._render_tool_record_html(record))
+                message_block.append(self._render_message_html(message, index))
+                html_parts.append("".join(message_block))
+                self._remember_message_meta(index, message)
+
+            for pending_turn in chat.runtime.pending_user_turns:
+                html_parts.append(self._render_pending_user_turn_html(pending_turn.text))
 
         self.setHtml("<br><br>".join(html_parts))
 
@@ -255,7 +260,7 @@ class ChatDisplay(QTextBrowser):
                 f'style="text-decoration: none; color: {self._theme_color};">你：</a>'
             )
 
-        if message.audio_path and message.audio_path != "NO_AUDIO":
+        if is_playable_audio_path(message.audio_path):
             abs_path = os.path.abspath(message.audio_path).replace("\\", "/")
             return (
                 f'<a href="{abs_path}[{message.emotion.as_label()}]{msg_param}" '
@@ -278,6 +283,14 @@ class ChatDisplay(QTextBrowser):
         return (
             f'<span style="text-decoration: none; color: {self._theme_color};">'
             f'{safe_name}：</span>'
+        )
+
+    def _render_pending_user_turn_html(self, text: str) -> str:
+        """将尚未写入历史的用户排队输入渲染成无锚点 HTML。"""
+        safe_text = html.escape(str(text or ""))
+        return (
+            f'<span style="text-decoration: none; color: {self._theme_color};">'
+            f'你：</span>{safe_text}'
         )
 
     def _render_tool_record_html(self, record: dict[str, object]) -> str:

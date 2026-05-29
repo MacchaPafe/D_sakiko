@@ -9,7 +9,7 @@ import tempfile
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from character import CharacterAttributes
-from chat.chat import Chat, ChatManager, ChatType, Message, StaticPromptGenerator
+from chat.chat import Chat, ChatManager, ChatType, Message, PendingUserTurn, StaticPromptGenerator
 from emotion_enum import EmotionEnum
 
 
@@ -133,6 +133,63 @@ class ChatTestCase(unittest.TestCase):
             self.assertEqual(original_msg.translation, restored_msg.translation)
             self.assertEqual(original_msg.emotion, restored_msg.emotion)
             self.assertEqual(original_msg.audio_path, restored_msg.audio_path)
+
+    def test_loading_chat_normalizes_stale_pending_audio(self):
+        """
+        读取存档时，应把上一轮运行残留的 PENDING_AUDIO 归一化为 NO_AUDIO。
+        """
+        chat = Chat(message_list=[
+            Message("祥子", "旧待生成语音", "", EmotionEnum.HAPPINESS, "PENDING_AUDIO")
+        ])
+        restored = Chat.from_dict(chat.to_dict())
+
+        self.assertEqual(restored.message_list[0].audio_path, "NO_AUDIO")
+
+    def test_runtime_state_is_not_persisted(self):
+        """
+        Chat 运行时状态不应进入存档数据，重新加载后也应得到新的运行时容器。
+        """
+        chat = Chat(message_list=[
+            Message("User", "你好", "", EmotionEnum.HAPPINESS, "")
+        ])
+        chat.runtime.pending_user_turns.append(PendingUserTurn(turn_id="turn-1", text="稍后发送"))
+        chat.runtime.running_turn_ids.add("turn-running")
+
+        data = chat.to_dict()
+        restored = Chat.from_dict(data)
+
+        self.assertNotIn("runtime", data)
+        self.assertNotIn("pending_user_turns", data)
+        self.assertEqual(restored.runtime.pending_user_turns, [])
+        self.assertEqual(restored.runtime.running_turn_ids, set())
+        self.assertIsNot(restored.runtime, chat.runtime)
+
+    def test_busy_chat_delete_is_blocked(self):
+        """
+        存在未完成运行时工作的对话不应被 ChatManager 删除。
+        """
+        chat = Chat()
+        chat.runtime.running_turn_ids.add("turn-running")
+        manager = ChatManager([chat])
+
+        deleted = manager.delete_chat(chat.chat_id)
+
+        self.assertIsNone(deleted)
+        self.assertEqual(manager.chat_list, [chat])
+
+    def test_busy_chat_clear_is_blocked(self):
+        """
+        存在未完成运行时工作的对话不应被清空消息。
+        """
+        chat = Chat(message_list=[
+            Message("User", "你好", "", EmotionEnum.HAPPINESS, "")
+        ])
+        chat.runtime.pending_user_turns.append(PendingUserTurn(turn_id="turn-1", text="下一句"))
+
+        cleared = chat.clear_message_list()
+
+        self.assertFalse(cleared)
+        self.assertEqual(len(chat.message_list), 1)
 
     def test_clear_message_list_removes_tool_call_records(self):
         """

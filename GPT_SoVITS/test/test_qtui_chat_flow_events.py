@@ -3,18 +3,18 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from typing import Callable
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import qtUI
 from chat.chat import Chat
 from chat.chat import Message
-from chat_flow.events import ConversationUiEvent
-from chat_flow.events import ConversationUiEventType
-from chat_flow.events import ApplicationQuitUiMessageEvent
-from chat_flow.events import LotteryUiCommandEvent
-from chat_flow.events import TransientConversationMessageEvent
+from chat_flow.audio_scheduler import AudioTask
+from chat_flow.audio_scheduler import AudioTaskCompleted
+from chat_flow.audio_scheduler import AudioTaskQueued
+from chat_flow.audio_scheduler import HistoricalAudioRegenerationResult
+from chat_flow.audio_synthesizer import ChatAudioSettings
+from chat_flow.controller import PendingTurnCancellationResult
 from emotion_enum import EmotionEnum
 
 
@@ -54,58 +54,6 @@ class FakeChatDisplay:
         self.messages.append((message, msg_index, stream, interval_ms))
 
 
-class FakeConversationWindow:
-    """提供 MainWindow 工具事件处理所需的最小对象。"""
-
-    def __init__(self) -> None:
-        """初始化当前对话和工具调用展示缓存。"""
-        self.current_chat_id = "chat-1"
-        self.tool_call_records_cache: dict[str, dict[str, object]] = {}
-        self.chat_display = FakeChatDisplay()
-        self.active_turn_id: str | None = None
-        self.active_turn_phase = ""
-        self.current_character = FakeCharacter("祥子")
-        self.chat_manager = FakeChatManager(
-            Chat(
-                message_list=[
-                    Message("祥子", "旧文本", "旧翻译", EmotionEnum.HAPPINESS, ""),
-                ],
-                chat_id="chat-1",
-            )
-        )
-        self.current_chat = self.chat_manager.chat
-        self.live2d_text_queue = FakeEventQueue()
-        self.refreshed_chat_list = False
-
-    def _is_cancelled_turn_payload(self, payload: dict[str, object]) -> bool:
-        """测试对象不模拟已取消轮次。"""
-        return False
-
-    def _is_active_turn_payload(self, payload: dict[str, object]) -> bool:
-        """测试对象不限制活跃轮次。"""
-        return True
-
-    def refresh_chat_list(self) -> None:
-        """记录聊天列表刷新动作。"""
-        self.refreshed_chat_list = True
-
-    def _handle_structured_response(self, payload: dict[str, object]) -> None:
-        """复用 MainWindow 的结构化响应处理。"""
-        qtUI.ChatGUI._handle_structured_response(self, payload)
-
-    def _append_tool_status_line(self, tool_call_id: str, text: str, status: str = "running") -> None:
-        """复用 MainWindow 的状态行追加逻辑。"""
-        qtUI.ChatGUI._append_tool_status_line(self, tool_call_id, text, status)
-
-    def _handle_tool_call_start_event(self, payload: dict[str, object]) -> None:
-        """复用 MainWindow 的工具调用开始处理。"""
-        qtUI.ChatGUI._handle_tool_call_start_event(self, payload)
-
-    def _handle_tool_call_update_event(self, payload: dict[str, object]) -> None:
-        """复用 MainWindow 的工具调用完成处理。"""
-        qtUI.ChatGUI._handle_tool_call_update_event(self, payload)
-
-
 class FakeStatusBox:
     """记录状态提示框收到的文本。"""
 
@@ -125,9 +73,17 @@ class FakeStatusBox:
 class FakeCharacter:
     """提供测试用当前角色对象。"""
 
-    def __init__(self, character_name: str) -> None:
+    def __init__(self, character_name: str, voice_valid: bool = True) -> None:
         """保存角色名。"""
         self.character_name = character_name
+        self.voice_valid = voice_valid
+        self.GPT_model_path = "/tmp/gpt.ckpt"
+        self.sovits_model_path = "/tmp/sovits.pth"
+        self.gptsovits_ref_audio = "/tmp/ref.wav"
+
+    def has_valid_voice_model(self) -> bool:
+        """返回测试角色是否具备语音模型。"""
+        return self.voice_valid
 
 
 class FakeChatManager:
@@ -144,210 +100,367 @@ class FakeChatManager:
         return None
 
 
-class FakeMessageWindow:
-    """提供 MainWindow 消息队列事件处理所需的最小对象。"""
+class FakeAudioSettingsState:
+    """提供历史音频再生成需要的语音设置。"""
 
     def __init__(self) -> None:
-        """初始化消息窗口的可观测状态。"""
-        self.saved = False
-        self.closed = False
-        self.messages_box = FakeStatusBox()
-        self.qt2dp_queue = FakeEventQueue()
-        self._lottery_dialog_ref: object | None = None
-        self._message_command_handlers: dict[str, Callable[[str], None]] = {}
-
-    def save_data(self) -> None:
-        """记录保存动作。"""
-        self.saved = True
-
-    def close(self) -> None:
-        """记录关闭动作。"""
-        self.closed = True
-
-    def _dispatch_message_command(self, message: str) -> bool:
-        """复用 MainWindow 的字符串命令分发逻辑。"""
-        return qtUI.ChatGUI._dispatch_message_command(self, message)
-
-    def _handle_lottery_ui_command(self, event: LotteryUiCommandEvent) -> None:
-        """复用 MainWindow 的 typed 抽签命令处理。"""
-        qtUI.ChatGUI._handle_lottery_ui_command(self, event)
+        """初始化默认语音设置。"""
+        self.sakiko_state = True
+        self.audio_language_choice = "日英混合"
 
 
-class FakeEventQueue:
-    """记录被发送到队列的事件载荷。"""
+class FakeHistoricalRegenerationController:
+    """记录历史音频再生成请求并模拟 controller 返回值。"""
+
+    def __init__(self, result: HistoricalAudioRegenerationResult | None = None) -> None:
+        """保存可选返回值并初始化调用记录。"""
+        self.result = result
+        self.calls: list[tuple[str, int, object, bool, str]] = []
+        self.audio_completed_calls: list[tuple[str, str, str, str]] = []
+
+    def queue_historical_audio_regeneration(
+        self,
+        *,
+        chat: Chat,
+        chat_id: str,
+        message_index: int,
+        character: object,
+        sakiko_state: bool,
+        audio_language_choice: str,
+    ) -> HistoricalAudioRegenerationResult:
+        """记录一次历史音频再生成请求。"""
+        self.calls.append((chat_id, message_index, character, sakiko_state, audio_language_choice))
+        if self.result is not None:
+            return self.result
+        return HistoricalAudioRegenerationResult(
+            queued=True,
+            event=AudioTaskQueued(task=AudioTask(
+                chat_id=chat_id,
+                turn_id="regen-test",
+                message_index=message_index,
+                text=chat.message_list[message_index].text,
+                character=character,
+                settings=ChatAudioSettings(True, sakiko_state, audio_language_choice),
+                priority=100,
+                task_kind="historical_regeneration",
+                emotion=chat.message_list[message_index].emotion.as_label(),
+            )),
+        )
+
+    def handle_audio_completed(
+        self,
+        *,
+        chat_id: str,
+        audio_path: str,
+        emotion: str,
+        display_text: str,
+        live2d_client: object,
+    ) -> None:
+        """记录并转发前台音频完成播放请求。"""
+        self.audio_completed_calls.append((chat_id, audio_path, emotion, display_text))
+        play_segment = getattr(live2d_client, "play_segment")
+        play_segment(audio_path=audio_path, emotion=emotion, display_text=display_text)
+
+
+class FakeHistoricalLive2DClient:
+    """记录历史音频再生成完成后的前台播放请求。"""
 
     def __init__(self) -> None:
-        """初始化空载荷列表。"""
-        self.items: list[object] = []
+        """初始化播放调用记录。"""
+        self.play_calls: list[tuple[str, str, str]] = []
 
-    def put(self, item: object) -> None:
-        """记录一次队列写入。"""
-        self.items.append(item)
+    def play_segment(self, *, audio_path: str, emotion: str, display_text: str = "") -> bool:
+        """记录一次播放请求。"""
+        self.play_calls.append((audio_path, emotion, display_text))
+        return True
 
 
-class FakeLotteryDialog:
-    """替代真实抽签窗口，捕获构造参数和显示动作。"""
-
-    last_instance: FakeLotteryDialog | None = None
+class FakeHistoricalRegenerationWindow:
+    """提供 ChatGUI 历史音频再生成路径所需的最小窗口对象。"""
 
     def __init__(
         self,
-        title: str,
-        options: list[str],
-        on_result: Callable[[str], None],
-        parent: object | None = None,
+        controller: FakeHistoricalRegenerationController | None = None,
+        *,
+        current_chat_id: str = "chat-1",
     ) -> None:
-        """保存抽签窗口参数，避免测试启动真实 Qt 窗口。"""
-        self.title = title
-        self.options = options
-        self.on_result = on_result
-        self.parent = parent
-        self.was_shown = False
-        FakeLotteryDialog.last_instance = self
+        """初始化当前聊天、角色表和可观测 UI 状态。"""
+        self.current_chat = Chat(
+            message_list=[
+                Message("祥子", "历史消息", "历史翻译", EmotionEnum.HAPPINESS, "NO_AUDIO"),
+            ],
+            chat_id="chat-1",
+        )
+        self.chat_manager = FakeChatManager(self.current_chat)
+        self.current_chat_id = current_chat_id
+        self.character_by_name = {"祥子": FakeCharacter("祥子")}
+        self.current_character = self.character_by_name["祥子"]
+        self.dp_chat = FakeAudioSettingsState()
+        self.flow_controller = controller or FakeHistoricalRegenerationController()
+        self.live2d_client = FakeHistoricalLive2DClient()
+        self.window_titles: list[str] = []
+        self.status_messages: list[str] = []
+        self.refresh_current_count = 0
+        self.refresh_chat_list_count = 0
 
-    def show(self) -> None:
-        """记录窗口已被展示。"""
-        self.was_shown = True
+    def setWindowTitle(self, title: str) -> None:
+        """记录窗口标题更新。"""
+        self.window_titles.append(title)
+
+    def refresh_current_chat_display(self) -> None:
+        """记录当前聊天被刷新。"""
+        self.refresh_current_count += 1
+
+    def refresh_chat_list(self) -> None:
+        """记录聊天列表被刷新。"""
+        self.refresh_chat_list_count += 1
+
+    def _notify_status(self, message: str) -> None:
+        """记录状态提示。"""
+        self.status_messages.append(message)
+
+
+class FakeUserInput:
+    """提供用户输入框所需的最小接口。"""
+
+    def __init__(self, text: str) -> None:
+        """保存输入框文本和清空状态。"""
+        self._text = text
+        self.was_cleared = False
+
+    def text(self) -> str:
+        """返回当前输入框文本。"""
+        return self._text
+
+    def clear(self) -> None:
+        """记录输入框已被清空。"""
+        self.was_cleared = True
+
+
+class FakeCancelController:
+    """提供取消路径需要的 controller 替身。"""
+
+    def __init__(self, result: PendingTurnCancellationResult) -> None:
+        """保存取消返回值并初始化调用记录。"""
+        self.result = result
+        self.cancelled_chat_ids: list[str] = []
+
+    def cancel_visible_chat(self, chat: Chat) -> PendingTurnCancellationResult:
+        """记录被取消的可见 chat。"""
+        self.cancelled_chat_ids.append(chat.chat_id)
+        return self.result
+
+
+class FakeCancelLive2DClient:
+    """记录取消播放请求的 Live2D 客户端替身。"""
+
+    def __init__(self) -> None:
+        """初始化取消调用记录。"""
+        self.cancelled_turns: list[tuple[str, str]] = []
+
+    def cancel_turn_playback(self, *, chat_id: str, turn_id: str) -> bool:
+        """记录一轮播放取消请求。"""
+        self.cancelled_turns.append((chat_id, turn_id))
+        return True
+
+
+class FakeCancelWindow:
+    """提供 ChatGUI.cancel_active_turn 需要的最小窗口对象。"""
+
+    def __init__(self, cancel_result: PendingTurnCancellationResult) -> None:
+        """初始化一轮活跃对话和取消依赖。"""
+        self.current_chat = Chat(chat_id="chat-1")
+        self.current_chat_id = self.current_chat.chat_id
+        self.active_chat_id = self.current_chat_id
+        self.active_turn_id = "turn-1"
+        self.active_turn_phase = "llm"
+        self.cancelled_turn_ids: set[str] = set()
+        self.flow_controller = FakeCancelController(cancel_result)
+        self.dp_chat = object()
+        self.live2d_client = FakeCancelLive2DClient()
+        self.messages_box = FakeStatusBox()
+        self.refreshed_chat_count = 0
+        self.refreshed_chat_list_count = 0
+        self.finished_stream_count = 0
+
+    def refresh_current_chat_display(self) -> None:
+        """记录当前 chat 被重渲染。"""
+        self.refreshed_chat_count += 1
+
+    def refresh_chat_list(self) -> None:
+        """记录聊天列表刷新。"""
+        self.refreshed_chat_list_count += 1
+
+    def _finish_current_stream_immediately(self) -> None:
+        """记录流式展示被立即补完。"""
+        self.finished_stream_count += 1
+
+    def _clear_active_turn(self) -> None:
+        """清空活跃轮次状态。"""
+        self.active_chat_id = None
+        self.active_turn_id = None
+        self.active_turn_phase = None
+
+
+class FakeControllerInputWindow:
+    """提供 controller 输入路径所需的最小窗口对象。"""
+
+    def __init__(self) -> None:
+        """初始化一条已有运行中轮次的对话。"""
+        self.current_chat = Chat(chat_id="chat-1")
+        self.current_chat.runtime.running_turn_ids.add("turn-running")
+        self.current_chat_id = self.current_chat.chat_id
+        self.current_character = FakeCharacter("祥子")
+        self.user_input = FakeUserInput("第二句")
+        self.chat_display = FakeChatDisplay()
+        self.flow_controller = object()
+        self.started_turns: list[tuple[str, str, str]] = []
+        self.submitted_turns: list[tuple[str, str]] = []
+        self.window_titles: list[str] = []
+
+    def setWindowTitle(self, title: str) -> None:
+        """记录窗口标题更新。"""
+        self.window_titles.append(title)
+
+    def _handle_command_before_send(self, text: str) -> bool:
+        """测试对象不拦截普通输入命令。"""
+        return False
+
+    def is_chat_busy(self) -> bool:
+        """测试对象模拟当前 chat 正忙。"""
+        return True
+
+    def _start_active_turn(self, chat_id: str, turn_id: str, phase: str) -> None:
+        """记录被标记为 active 的轮次。"""
+        self.started_turns.append((chat_id, turn_id, phase))
+
+    def _submit_text_via_controller(self, user_text: str, turn_id: str) -> None:
+        """记录提交给 controller 的文本。"""
+        self.submitted_turns.append((user_text, turn_id))
 
 
 class QtUiChatFlowEventsTestCase(unittest.TestCase):
     """验证 Qt 对话窗口消费 chat_flow UI 事件。"""
 
-    def test_typed_tool_call_events_append_existing_status_lines(self) -> None:
-        """typed 工具调用事件应追加与旧 UI 行为一致的状态文本。"""
-        window = FakeConversationWindow()
-        started = ConversationUiEvent(
-            event_type=ConversationUiEventType.TOOL_CALL_STARTED,
-            chat_id="chat-1",
-            data={"tool_call_id": "call-1", "tool_name": "search"},
+    def test_running_controller_chat_input_does_not_append_pending_as_message(self) -> None:
+        """controller 路径中运行中 chat 的新输入不应被乐观追加为普通消息。"""
+        window = FakeControllerInputWindow()
+
+        qtUI.ChatGUI.handle_user_input(window)
+
+        self.assertEqual(window.submitted_turns[0][0], "第二句")
+        self.assertEqual(window.chat_display.messages, [])
+        self.assertEqual(window.started_turns, [])
+        self.assertTrue(window.user_input.was_cleared)
+
+    def test_cancel_active_turn_refreshes_chat_after_audio_queue_cancellation(self) -> None:
+        """取消语音队列回填历史后，当前 chat 应重新渲染。"""
+        window = FakeCancelWindow(PendingTurnCancellationResult(cancelled_audio_tasks=1))
+
+        qtUI.ChatGUI.cancel_active_turn(window)
+
+        self.assertEqual(window.refreshed_chat_count, 1)
+        self.assertEqual(window.finished_stream_count, 1)
+        self.assertEqual(window.live2d_client.cancelled_turns, [("chat-1", "turn-1")])
+        self.assertIn("turn-1", window.cancelled_turn_ids)
+
+    def test_manual_historical_regeneration_uses_controller_scheduler_path(self) -> None:
+        """手动历史音频再生成应走 controller/scheduler，而不是启动旧线程。"""
+        controller = FakeHistoricalRegenerationController()
+        window = FakeHistoricalRegenerationWindow(controller)
+
+        qtUI.ChatGUI.regenerate_audio(window, 0)
+
+        self.assertEqual(len(controller.calls), 1)
+        chat_id, message_index, character, sakiko_state, audio_language_choice = controller.calls[0]
+        self.assertEqual(chat_id, "chat-1")
+        self.assertEqual(message_index, 0)
+        self.assertIs(character, window.character_by_name["祥子"])
+        self.assertTrue(sakiko_state)
+        self.assertEqual(audio_language_choice, "日英混合")
+        self.assertFalse(hasattr(window, "regen_thread"))
+        self.assertEqual(window.window_titles, ["正在重新生成音频..."])
+
+    def test_blocked_historical_regeneration_restores_status_without_thread(self) -> None:
+        """调度器拒绝历史音频再生成时，UI 应提示原因且不启动旧线程。"""
+        result = HistoricalAudioRegenerationResult(
+            queued=False,
+            status_message="请先终止生成或等待语音任务完成后再重新生成音频。",
         )
-        updated = ConversationUiEvent(
-            event_type=ConversationUiEventType.TOOL_CALL_UPDATED,
-            chat_id="chat-1",
-            data={"tool_call_id": "call-1", "tool_name": "search", "duration_sec": 1.5},
+        controller = FakeHistoricalRegenerationController(result)
+        window = FakeHistoricalRegenerationWindow(controller)
+
+        qtUI.ChatGUI.regenerate_audio(window, 0)
+
+        self.assertEqual(controller.calls[0][0], "chat-1")
+        self.assertEqual(window.status_messages, ["请先终止生成或等待语音任务完成后再重新生成音频。"])
+        self.assertFalse(hasattr(window, "regen_thread"))
+        self.assertEqual(window.window_titles, ["正在重新生成音频...", "数字小祥"])
+
+    def test_historical_audio_completion_refreshes_and_plays_visible_chat(self) -> None:
+        """历史音频完成时若目标 chat 仍可见，应刷新当前展示并走前台播放路径。"""
+        controller = FakeHistoricalRegenerationController()
+        window = FakeHistoricalRegenerationWindow(controller)
+        window.current_chat.message_list[0].audio_path = "/tmp/regen.wav"
+        event = AudioTaskCompleted(
+            task=AudioTask(
+                chat_id="chat-1",
+                turn_id="regen-test",
+                message_index=0,
+                text="历史消息",
+                character=window.character_by_name["祥子"],
+                settings=ChatAudioSettings(True, True, "日英混合"),
+                priority=100,
+                task_kind="historical_regeneration",
+                emotion=window.current_chat.message_list[0].emotion.as_label(),
+            ),
+            audio_path="/tmp/regen.wav",
+            playback_audio_path="/tmp/regen.wav",
+            real_audio_generated=True,
+            foreground_at_completion=True,
         )
 
-        window._handle_structured_response(started.to_dict())
-        window._handle_structured_response(updated.to_dict())
+        qtUI.ChatGUI._handle_audio_task_completed(window, event)
 
+        self.assertEqual(window.refresh_current_count, 1)
         self.assertEqual(
-            window.chat_display.lines,
-            [
-                ("call-1", "<正在调用工具...>", "running"),
-                ("call-1", "<工具调用完成 1.50秒>", "completed"),
-            ],
+            controller.audio_completed_calls,
+            [("chat-1", "/tmp/regen.wav", window.current_chat.message_list[0].emotion.as_label(), "历史消息\n历史翻译")],
         )
-
-    def test_legacy_string_prefixed_tool_call_payload_is_rejected(self) -> None:
-        """旧字符串前缀工具调用载荷不应再触发工具状态行追加。"""
-        window = FakeConversationWindow()
-
-        qtUI.ChatGUI.handle_response(
-            window,
-            '__TOOL_CALL_START__:{"tool_call_id":"legacy","tool_name":"search"}',
-        )
-
-        self.assertEqual(window.chat_display.lines, [])
-        self.assertEqual(window.tool_call_records_cache, {})
-
-    def test_typed_application_quit_message_event_closes_window(self) -> None:
-        """typed 退出消息事件应保存并关闭窗口，裸 bye 只作为普通状态文本显示。"""
-        window = FakeMessageWindow()
-
-        qtUI.ChatGUI.handle_messages(window, "bye")
-        self.assertFalse(window.saved)
-        self.assertFalse(window.closed)
-        self.assertEqual(window.messages_box.lines, ["bye"])
-
-        qtUI.ChatGUI.handle_messages(window, ApplicationQuitUiMessageEvent())
-
-        self.assertTrue(window.saved)
-        self.assertTrue(window.closed)
-
-    def test_typed_lottery_message_event_opens_dialog_and_reports_result(self) -> None:
-        """typed 抽签消息事件应打开抽签窗口，并把结果送回输入流。"""
-        window = FakeMessageWindow()
-        original_dialog = qtUI.LotteryDialog
-        try:
-            qtUI.LotteryDialog = FakeLotteryDialog
-            qtUI.ChatGUI.handle_messages(
-                window,
-                LotteryUiCommandEvent(title="晚饭", options=("寿司", "拉面")),
-            )
-        finally:
-            qtUI.LotteryDialog = original_dialog
-
-        dialog = FakeLotteryDialog.last_instance
-        self.assertIsNotNone(dialog)
-        assert dialog is not None
-        self.assertEqual(dialog.title, "晚饭")
-        self.assertEqual(dialog.options, ["寿司", "拉面"])
-        self.assertTrue(dialog.was_shown)
-
-        dialog.on_result("拉面")
-
-        self.assertEqual(len(window.qt2dp_queue.items), 1)
-        self.assertIn("抽签主题：晚饭", str(window.qt2dp_queue.items[0]))
-        self.assertIn("结果是：拉面", str(window.qt2dp_queue.items[0]))
-        self.assertEqual(window.messages_box.lines, ["抽签结果：拉面"])
-
-    def test_legacy_lottery_string_prefix_is_not_dispatched(self) -> None:
-        """旧抽签字符串前缀不应再触发抽签命令分发。"""
-        window = FakeMessageWindow()
-        FakeLotteryDialog.last_instance = None
-
-        qtUI.ChatGUI.handle_messages(window, '__LOTTERY_UI_CMD__:{"title":"晚饭","options":["寿司","拉面"]}')
-
-        self.assertEqual(window.qt2dp_queue.items, [])
-        self.assertIsNone(FakeLotteryDialog.last_instance)
         self.assertEqual(
-            window.messages_box.lines,
-            ['__LOTTERY_UI_CMD__:{"title":"晚饭","options":["寿司","拉面"]}'],
+            window.live2d_client.play_calls,
+            [("/tmp/regen.wav", window.current_chat.message_list[0].emotion.as_label(), "历史消息\n历史翻译")],
+        )
+        self.assertEqual(window.window_titles, ["数字小祥"])
+
+    def test_historical_audio_completion_after_switch_only_updates_chat_list(self) -> None:
+        """历史音频完成时若已切走，不应播放也不应刷新当前聊天框。"""
+        controller = FakeHistoricalRegenerationController()
+        window = FakeHistoricalRegenerationWindow(controller, current_chat_id="other-chat")
+        event = AudioTaskCompleted(
+            task=AudioTask(
+                chat_id="chat-1",
+                turn_id="regen-test",
+                message_index=0,
+                text="历史消息",
+                character=window.character_by_name["祥子"],
+                settings=ChatAudioSettings(True, True, "日英混合"),
+                priority=100,
+                task_kind="historical_regeneration",
+                emotion=window.current_chat.message_list[0].emotion.as_label(),
+            ),
+            audio_path="/tmp/regen.wav",
+            playback_audio_path="/tmp/regen.wav",
+            real_audio_generated=True,
+            foreground_at_completion=False,
         )
 
-    def test_transient_conversation_event_appends_current_chat_display_only(self) -> None:
-        """临时对话事件应只追加到当前聊天框展示路径。"""
-        window = FakeConversationWindow()
-        event = TransientConversationMessageEvent(
-            chat_id="chat-1",
-            character_name="祥子",
-            text="（再见）",
-            stream=False,
-        )
+        qtUI.ChatGUI._handle_audio_task_completed(window, event)
 
-        window._handle_structured_response(event.to_dict())
-
-        self.assertEqual(window.chat_display.transient_lines, [("祥子", "（再见）", False, 30)])
-        self.assertEqual(window.chat_display.lines, [])
-
-    def test_assistant_segment_ready_uses_event_snapshot_without_state_writeback(self) -> None:
-        """assistant 片段事件应使用事件快照展示，不再由 Qt 回填生成状态。"""
-        window = FakeConversationWindow()
-        event = ConversationUiEvent(
-            event_type=ConversationUiEventType.ASSISTANT_SEGMENT_READY,
-            chat_id="chat-1",
-            turn_id="turn-1",
-            data={
-                "message_index": 0,
-                "character_name": "祥子",
-                "text": "新文本",
-                "translation": "新翻译",
-                "emotion": "LABEL_0",
-                "audio_path": "/tmp/generated.wav",
-            },
-        )
-
-        window._handle_structured_response(event.to_dict())
-
-        persisted_message = window.current_chat.message_list[0]
-        self.assertEqual(persisted_message.audio_path, "")
-        self.assertEqual(persisted_message.translation, "旧翻译")
-        displayed_message, msg_index, stream, _interval_ms = window.chat_display.messages[0]
-        self.assertEqual(msg_index, 0)
-        self.assertTrue(stream)
-        self.assertEqual(displayed_message.text, "新文本")
-        self.assertEqual(displayed_message.translation, "新翻译")
-        self.assertEqual(displayed_message.audio_path, "/tmp/generated.wav")
+        self.assertEqual(window.refresh_current_count, 0)
+        self.assertEqual(window.refresh_chat_list_count, 1)
+        self.assertEqual(controller.audio_completed_calls, [])
+        self.assertEqual(window.live2d_client.play_calls, [])
 
 
 if __name__ == "__main__":

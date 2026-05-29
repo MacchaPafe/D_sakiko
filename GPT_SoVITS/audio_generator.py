@@ -6,10 +6,12 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from multiprocessing import Process, Queue
 from queue import Empty
 from typing import TYPE_CHECKING, cast
+from typing import TypeAlias
 
 from character import CharacterAttributes
 from inference_cli import synthesize
@@ -38,6 +40,7 @@ ref_audio_language_list = [
 
 WorkerCommand = dict[str, object]
 WorkerResult = dict[str, object]
+StatusCallback: TypeAlias = Callable[[str], None]
 
 
 @dataclass
@@ -184,7 +187,8 @@ class AudioGenerate:
         # 祥子状态。True：黑祥 False：白祥
         self.sakiko_which_state: bool = True
         # 转发子进程的语音合成进度到界面中
-        self.message_queue: queue.Queue | None = None
+        self.message_queue: queue.Queue[object] | None = None
+        self.status_callback: StatusCallback | None = None
         # 主线程侧待发送给 worker 的命令队列
         self.pending_worker_commands: threading_queue.Queue[tuple[WorkerCommand, VoiceTaskHandle]] = (
             threading_queue.Queue()
@@ -214,14 +218,29 @@ class AudioGenerate:
             if os.path.exists(default_ref_audio_white_path):
                 self.ref_audio_file_white_sakiko = default_ref_audio_white_path
 
-    def initialize(self, character_list: list[CharacterAttributes], message_queue: queue.Queue) -> None:
+    def initialize(
+        self,
+        character_list: list[CharacterAttributes],
+        message_queue: queue.Queue[object] | None = None,
+        *,
+        status_callback: StatusCallback | None = None,
+    ) -> None:
         """初始化语音生成模块并启动 worker 进程。"""
         self.character_list = character_list
         self.message_queue = message_queue
+        self.status_callback = status_callback
         if not self.gptsovits_process.is_alive():
             self.gptsovits_process.start()
         self._ensure_worker_dispatch_thread()
         self.is_change_complete = True
+
+    def _emit_status_message(self, message: str) -> None:
+        """把 worker 进度消息发送给状态回调或旧队列。"""
+        if self.status_callback is not None:
+            self.status_callback(message)
+            return
+        if self.message_queue is not None:
+            self.message_queue.put(message)
 
     def _resolve_reference_materials(self, character: CharacterAttributes,
                                      sakiko_state: bool | None = None) -> tuple[str | None, str | None, str | None]:
@@ -364,8 +383,8 @@ class AudioGenerate:
                 elif isinstance(progress_message, str):
                     message = progress_message
 
-                if message and self.message_queue is not None:
-                    self.message_queue.put(message)
+                if message:
+                    self._emit_status_message(message)
 
     def _try_get_worker_result(self) -> WorkerResult | None:
         """
@@ -429,7 +448,11 @@ class AudioGenerate:
                 continue
 
             if command_type == "shutdown":
-                self.gptsovits_process.join()
+                raw_timeout = command.get("timeout_seconds", 0.0)
+                timeout_seconds = float(raw_timeout) if isinstance(raw_timeout, (int, float)) else 0.0
+                self.gptsovits_process.join(timeout=max(0.0, timeout_seconds))
+                if self.gptsovits_process.is_alive():
+                    self._force_stop_worker_process()
                 self._set_handle_result(
                     handle,
                     {
@@ -452,10 +475,26 @@ class AudioGenerate:
                     self._set_handle_result(handle, result)
                     break
 
-    def _wait_for_handle_result(self, handle: VoiceTaskHandle) -> WorkerResult:
+    def _wait_for_handle_result(
+        self,
+        handle: VoiceTaskHandle,
+        timeout_seconds: float | None = None,
+    ) -> WorkerResult:
         """等待某条命令句柄完成，并返回 worker 结果。"""
+        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
         while True:
-            if handle.done_event.wait(0.1):
+            if deadline is not None and time.monotonic() >= deadline:
+                return {
+                    "type": "error",
+                    "command": handle.command_type,
+                    "request_id": handle.request_id,
+                    "character_name": "",
+                    "message": "等待 worker 返回超时",
+                }
+            wait_seconds = 0.1
+            if deadline is not None:
+                wait_seconds = max(0.0, min(wait_seconds, deadline - time.monotonic()))
+            if handle.done_event.wait(wait_seconds):
                 if handle.result is not None:
                     return handle.result
                 return {
@@ -474,9 +513,14 @@ class AudioGenerate:
                     "message": "worker 调度线程已退出",
                 }
 
-    def _wait_for_ack(self, handle: VoiceTaskHandle, command_name: str) -> bool:
+    def _wait_for_ack(
+        self,
+        handle: VoiceTaskHandle,
+        command_name: str,
+        timeout_seconds: float | None = None,
+    ) -> bool:
         """等待某个管理命令的确认结果。"""
-        result = self._wait_for_handle_result(handle)
+        result = self._wait_for_handle_result(handle, timeout_seconds=timeout_seconds)
         result_type = cast(str, result.get("type", ""))
         if result_type == "ack" and cast(str, result.get("command", "")) == command_name:
             return cast(bool, result.get("ok", False))
@@ -573,12 +617,59 @@ class AudioGenerate:
         )
         return self.submit_voice_task(command)
 
-    def shutdown_worker(self) -> None:
+    def shutdown_worker(self, timeout_seconds: float = 0.0) -> None:
         """通过调度线程关闭 GPT-SoVITS worker 进程。"""
         if not self.gptsovits_process.is_alive():
             return
-        handle = self.submit_voice_task({"type": "shutdown"})
-        self._wait_for_ack(handle, "shutdown")
+        handle = self.submit_voice_task({
+            "type": "shutdown",
+            "timeout_seconds": timeout_seconds,
+        })
+        if self._wait_for_ack(handle, "shutdown", timeout_seconds=timeout_seconds):
+            return
+        self._force_stop_worker_process()
+        if not handle.done_event.is_set():
+            self._set_handle_result(
+                handle,
+                {
+                    "type": "ack",
+                    "command": "shutdown",
+                    "request_id": handle.request_id,
+                    "character_name": "",
+                    "ok": True,
+                },
+            )
+
+    def _force_stop_worker_process(self) -> None:
+        """超时后强制终止 GPT-SoVITS worker 进程。"""
+        if not self.gptsovits_process.is_alive():
+            self._fail_all_command_handles("语音合成 worker 已退出")
+            return
+        self.gptsovits_process.terminate()
+        self.gptsovits_process.join(timeout=1.0)
+        if self.gptsovits_process.is_alive():
+            kill = getattr(self.gptsovits_process, "kill", None)
+            if callable(kill):
+                kill()
+                self.gptsovits_process.join(timeout=1.0)
+        self._fail_all_command_handles("语音合成 worker 已被强制关闭")
+
+    def _fail_all_command_handles(self, message: str) -> None:
+        """把所有等待中的 worker 命令标记为失败，避免调用方永久等待。"""
+        with self.command_handles_lock:
+            handles = list(self.command_handles.values())
+            self.command_handles.clear()
+        for handle in handles:
+            if handle.done_event.is_set():
+                continue
+            handle.result = {
+                "type": "error",
+                "command": handle.command_type,
+                "request_id": handle.request_id,
+                "character_name": "",
+                "message": message,
+            }
+            handle.done_event.set()
 
     def generate_audio_for_character_sync(
         self,

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import os,sys
+import uuid
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 
-from queue import Queue, Empty
-import threading
 import multiprocessing
-import time
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QFont, QFontDatabase
@@ -16,20 +13,22 @@ from PyQt5.QtGui import QFont, QFontDatabase
 import character
 import dp_local2
 import audio_generator
-import live2d_module
 import qtUI
 from chat.chat import get_chat_manager
+from chat.reminder_manager import ReminderManager
+from chat.tool_calling import ToolCallingAgentRuntime
+from chat.tool_calling import build_default_tool_registry
+from chat.tool_calling import register_contextual_live2d_tools
+from chat.tool_calling import register_contextual_lottery_tool
+from chat.tool_calling import register_reminder_tool
+from chat_flow.tool_context import ToolSideEffectPorts
 
+from chat_flow.audio_scheduler import AudioScheduler
 from chat_flow.audio_synthesizer import ChatAudioSynthesizer
-from chat_flow.dispatcher import DpChatCancellationProvider
-from chat_flow.dispatcher import MainResponseDispatcher
-from chat_flow.dispatcher import MotionValuePlaybackGate
-from chat_flow.dispatcher import QueueThinkingIndicator
-from chat_flow.events import ApplicationQuitUiMessageEvent
-from chat_flow.events import DispatcherInputEvent
-from chat_flow.events import DispatcherInputEventType
-from chat_flow.state_updater import ConversationStateUpdater
-from log import setup_logging, get_logger, get_log_queue, setup_worker_logging, shutdown_logging
+from chat_flow.controller import ChatFlowController
+from chat_flow.live2d_client import create_live2d_client_process
+from chat_flow.turn_runner import ChatGenerationSession
+from log import setup_logging, get_logger, get_log_queue, shutdown_logging
 
 import faulthandler
 
@@ -37,56 +36,6 @@ faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 
 # 日志记录
 main_logger = get_logger(__name__)
-
-main_response_dispatcher: MainResponseDispatcher | None = None
-
-
-def get_character_by_name(character_name: str) -> character.CharacterAttributes | None:
-    """按角色名查找角色对象。"""
-    for one_character in characters:
-        if one_character.character_name == character_name:
-            return one_character
-    return None
-
-
-def get_main_response_dispatcher() -> MainResponseDispatcher:
-    """创建或复用主回复 dispatcher。"""
-    global main_response_dispatcher
-    if main_response_dispatcher is None:
-        main_response_dispatcher = MainResponseDispatcher(
-            input_queue=text_queue,
-            conversation_ui_queue=dp2qt_queue,
-            status_queue=QT_message_queue,
-            playback_audio_queue=audio_file_path_queue,
-            emotion_queue=emotion_queue,
-            completion_queue=is_audio_play_complete,
-            ui_message_queue=QT_message_queue,
-            live2d_exit_queue=emotion_queue,
-            audio_worker_shutdown=audio_gen.shutdown_worker,
-            live2d_process_join=tr1.join,
-            synthesizer=ChatAudioSynthesizer(audio_gen),
-            state_updater=ConversationStateUpdater(dp_chat.chat_manager),
-            character_resolver=get_character_by_name,
-            playback_gate=MotionValuePlaybackGate(motion_complete_value),
-            cancellation_provider=DpChatCancellationProvider(dp_chat),
-            thinking_indicator=QueueThinkingIndicator(is_text_generating_queue),
-        )
-    return main_response_dispatcher
-
-
-def handle_model_response_payload(payload: dict[str, object]) -> None:
-    """处理结构化模型回复事件，逐段合成语音并通知 UI。"""
-    get_main_response_dispatcher().process_model_response(payload)
-
-
-def main_thread():
-
-    while True:
-        time.sleep(1)   #防GIL
-        dispatcher = get_main_response_dispatcher()
-        dispatcher.run_loop_once()
-        if dispatcher.should_stop:
-            break
 
 
 if __name__=='__main__':
@@ -96,40 +45,25 @@ if __name__=='__main__':
 
     # 添加本文件的目录到导入 Path
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    project_root = os.path.dirname(script_dir)
 
     from qconfig import d_sakiko_config
 
     main_logger.info("数字小祥程序...")
-    get_all=character.GetCharacterAttributes()
-    characters=get_all.character_class_list
+    get_all = character.GetCharacterAttributes()
+    characters = get_all.character_class_list
 
     # 初始化全局 ChatManager（自动处理旧版聊天记录迁移）
     chat_manager = get_chat_manager()
     chat_manager.ensure_default_single_character_chat(characters)
 
-    #模块间传参队列
-    text_queue=Queue()
-    emotion_queue=multiprocessing.Queue()
-    audio_file_path_queue=multiprocessing.Queue()
-    is_audio_play_complete=Queue()
-    is_text_generating_queue=multiprocessing.Queue()
-    dp2qt_queue=Queue()
-    qt2dp_queue=Queue()
-    QT_message_queue=Queue()
-    char_is_converted_queue=multiprocessing.Queue()
-    change_char_queue=multiprocessing.Queue()
-    # Live2D 跨进程通信
-    live2d_text_queue=multiprocessing.Queue()  # 用于传递要显示的文本
-    is_display_text_value=multiprocessing.Value('b', True)  # 是否显示文本
-    motion_complete_value=multiprocessing.Value('b', True)  # 动作是否完成
-
+    qt_app = QApplication(sys.argv)
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters, chat_manager)
 
     audio_gen=audio_generator.AudioGenerate(log_queue=get_log_queue())
+    flow_controller = ChatFlowController(qt_parent=qt_app)
 
-
-    audio_gen.initialize(characters,QT_message_queue)
+    audio_gen.initialize(characters,status_callback=flow_controller.status_callback)
 
     def get_timestamp_from_filename(filepath):
         """
@@ -169,7 +103,6 @@ if __name__=='__main__':
                 except Exception:
                     pass  # 删不掉就跳过
 
-    qt_app = QApplication(sys.argv)
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     desktop_w = QDesktopWidget().screenGeometry().width()
@@ -182,33 +115,50 @@ if __name__=='__main__':
     # 在 MacOS 下，所有的 NSWindow（Qt 窗口）只能在独立进程中创建，不可以在子线程中创建窗口。
     # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
     main_logger.info("加载Live2D界面中...")
-    tr1=multiprocessing.Process(target=live2d_module.run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h, get_log_queue()))
-    # LLM 生成模块（该模块为不同线程）
-    tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
-                                                             is_audio_play_complete,
-                                                             is_text_generating_queue,
-                                                             dp2qt_queue,
-                                                             qt2dp_queue,
-                                                             QT_message_queue,
-                                                             char_is_converted_queue,
-                                                             change_char_queue,
-                                                             audio_gen))
-    # 主要的循环线程
-    tr3=threading.Thread(target=main_thread)
-    tr1.start()
-    tr2.start()
-    tr3.start()
+    live2d_handle = create_live2d_client_process(
+        desktop_w=desktop_w,
+        desktop_h=desktop_h,
+        log_queue=get_log_queue(),
+    )
+    live2d_handle.process.start()
 
-    qt_win = qtUI.ChatGUI(dp2qt_queue=dp2qt_queue,
-                          qt2dp_queue=qt2dp_queue,
-                          QT_message_queue=QT_message_queue
-                          , characters=characters,
+    qt_win = qtUI.ChatGUI(characters=characters,
                           dp_chat=dp_chat,
-                          audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
-                          is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
-                          emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          emotion_model=None,
-                          change_char_queue=change_char_queue)
+                          audio_gen=audio_gen,
+                          live2d_client=live2d_handle.client,
+                          flow_controller=flow_controller)
+    tool_registry = build_default_tool_registry()
+    register_contextual_lottery_tool(tool_registry)
+    register_contextual_live2d_tools(tool_registry)
+    reminder_mgr = ReminderManager(
+        trigger_callback=lambda text: qt_win._submit_text_via_controller(text, uuid.uuid4().hex)
+    )
+    register_reminder_tool(tool_registry, add_reminder_func=reminder_mgr.add_reminder)
+    tool_runtime = ToolCallingAgentRuntime(
+        llm_completion=dp_chat._completion_with_current_config,
+        tool_registry=tool_registry,
+        debug=True,
+    )
+    generation_session = ChatGenerationSession(
+        completion=dp_chat._completion_with_current_config,
+        model_name=dp_chat._current_litellm_model_name(),
+        tool_runtime=tool_runtime,
+        foreground_resolver=flow_controller,
+        side_effect_ports=ToolSideEffectPorts(
+            lottery=qt_win,
+            live2d=qt_win,
+            export_document=qt_win,
+        ),
+    )
+    flow_controller.attach_generation_session(generation_session)
+    audio_synthesizer = ChatAudioSynthesizer(audio_gen)
+    audio_scheduler = AudioScheduler(
+        synthesizer=audio_synthesizer,
+        foreground_resolver=lambda chat_id: chat_id == flow_controller.visible_chat_id,
+        status_callback=flow_controller.status_callback,
+        completion_callback=qt_win.dispatch_audio_completed,
+    )
+    flow_controller.attach_audio_scheduler(audio_scheduler)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
@@ -225,48 +175,23 @@ if __name__=='__main__':
     # 尝试退出所有子程序。
     # 由于有些程序可能已经退出，所以使用 try-except 来捕获异常，防止程序崩溃。
     try:
-        try:
-            character_name = dp_chat.get_current_character().character_name
-        except Exception:
-            character_name = ""
-        text_queue.put(DispatcherInputEvent(
-            DispatcherInputEventType.EXIT,
-            {"character_name": character_name},
-        ).to_dict())
-    except Exception:
-        pass
-    try:
-        # DeepSeek 推理线程
-        qt2dp_queue.put('bye')
-    except Exception:
-        pass
-    try:
-        # live2d 播放进程
-        change_char_queue.put('exit')
-        emotion_queue.put('bye')
-    except Exception:
-        pass
-    try:
-        # 主窗口
-        QT_message_queue.put(ApplicationQuitUiMessageEvent())
-    except Exception:
-        pass
-    try:
-        # 语音生成 worker
-        audio_gen.shutdown_worker()
+        # controller 统一收束文本、语音、Live2D 和最终保存。
+        flow_controller.shutdown(
+            chat_manager=chat_manager,
+            live2d_client=live2d_handle.client,
+            audio_worker=audio_gen,
+            timeout_seconds=0.0,
+        )
     except Exception:
         pass
 
-    # 理论上讲 main_thread 函数中已经调用过 tr1.join，等待过 live2d 进程结束；这里再调用一次不是必要的，但也没有副作用。
-    tr1.join(timeout=3)
-    if tr1.is_alive():
+    live2d_handle.process.join(timeout=3)
+    if live2d_handle.process.is_alive():
         try:
-            tr1.terminate()
-            tr1.join(timeout=3)
+            live2d_handle.process.terminate()
+            live2d_handle.process.join(timeout=3)
         except Exception:
             pass
-    tr2.join()
-    tr3.join()
 
     shutdown_logging()
 

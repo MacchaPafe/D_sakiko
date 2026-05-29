@@ -4,7 +4,6 @@ import datetime
 import glob
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -16,9 +15,13 @@ import psutil
 import requests
 
 from log import get_logger
+from chat_flow.tool_context import ToolCallRecordSink
+from chat_flow.tool_context import ToolCallSnapshot
+from chat_flow.tool_context import ToolTurnContext
 
 
 ToolHandler = Callable[[Dict[str, Any]], Any]
+ContextualToolHandlerFactory = Callable[[ToolTurnContext], ToolHandler]
 LLMCompletionFn = Callable[..., Any]
 InterimMessageCallback = Callable[..., Any]
 
@@ -29,10 +32,20 @@ logger = get_logger(__name__)
 
 @dataclasses.dataclass
 class RegisteredTool:
+    # 工具的名称
     name: str
+    # 工具的描述：Agent 会看到这个描述信息
     description: str
+    # 工具参数
     parameters: Dict[str, Any]
+    # 实际处理该工具调用的函数
     handler: ToolHandler
+    # 执行范围：
+    execution_scope: str = "foreground_and_background"
+    # 一个回调函数：该函数会根据每轮对话的显式上下文（ToolTurnContext）返回一个真正的 handler 函数，用于支持工具在每轮执行前绑定上下文。
+    # 这样工具就可以了解一些当前对话系统的状态，比如当前这个对话在前台还是后台，从而决定是否要降级部分功能
+    # 例如，live2d 切换工具会弹出模型选择窗口，在后台运行该工具时，应该不执行工具并告知 LLM ”现在在后台，程序无法使用该工具“。
+    contextual_handler_factory: Optional[ContextualToolHandlerFactory] = None
 
     def as_openai_schema(self) -> Dict[str, Any]:
         """将注册的工具转换为 OpenAI 要求的 functions/tools JSON schema 格式。"""
@@ -44,6 +57,16 @@ class RegisteredTool:
                 "parameters": self.parameters,
             },
         }
+
+    def bind_context(self, context: ToolTurnContext) -> "RegisteredTool":
+        """将轮次上下文添加到工具中，创建当前工具对象的副本。"""
+        if self.contextual_handler_factory is None:
+            return self
+        return dataclasses.replace(
+            self,
+            handler=self.contextual_handler_factory(context),
+            contextual_handler_factory=None,
+        )
 
 
 @dataclasses.dataclass
@@ -72,6 +95,7 @@ class ToolRegistry:
         description: str,
         parameters: Dict[str, Any],
         handler: ToolHandler,
+        execution_scope: str = "foreground_and_background",
     ) -> None:
         """注册一个新的工具到工具注册表中。"""
         self._tools[name] = RegisteredTool(
@@ -79,7 +103,39 @@ class ToolRegistry:
             description=description,
             parameters=parameters,
             handler=handler,
+            execution_scope=execution_scope,
         )
+
+    def register_contextual_tool(
+        self,
+        name: str,
+        description: str,
+        parameters: Dict[str, Any],
+        execution_scope: str,
+        handler_factory: ContextualToolHandlerFactory,
+    ) -> None:
+        """注册一个会在每轮执行前绑定上下文信息的工具。"""
+        self._tools[name] = RegisteredTool(
+            name=name,
+            description=description,
+            parameters=parameters,
+            handler=_execute_unbound_contextual_tool,
+            execution_scope=execution_scope,
+            contextual_handler_factory=handler_factory,
+        )
+
+    def create_contextual_registry(self, context: ToolTurnContext) -> "ToolRegistry":
+        """基于显式轮次上下文创建本轮可执行工具注册表。"""
+        registry = ToolRegistry()
+        registry._tools = {
+            name: tool.bind_context(context)
+            for name, tool in self._tools.items()
+        }
+        return registry
+
+    def get_tool(self, name: str) -> RegisteredTool:
+        """返回指定名称的已注册工具。"""
+        return self._tools[name]
 
     def has_tool(self, name: str) -> bool:
         """检查是否已注册指定名称的工具。"""
@@ -118,6 +174,28 @@ class ToolRegistry:
                 "traceback": traceback.format_exc(limit=3),
             }
             return False, json.dumps(error_payload, ensure_ascii=False)
+
+    def execute_request(
+        self,
+        *,
+        name: str,
+        tool_call_id: str,
+        arguments: dict[str, object],
+    ) -> Tuple[bool, str]:
+        """用基础字段执行工具调用，方便调用方不直接构造请求对象。"""
+        return self.execute(ToolCallRequest(
+            tool_call_id=tool_call_id,
+            name=name,
+            arguments=arguments,
+        ))
+
+
+def _execute_unbound_contextual_tool(arguments: dict[str, object]) -> dict[str, object]:
+    """拒绝执行未绑定显式轮次上下文的 contextual 工具。"""
+    return {
+        "ok": False,
+        "error": "context_required",
+    }
 
 #-------------------------------  工具调用主循环的实现--------------------------------
 class ToolCallingAgentRuntime:
@@ -177,6 +255,8 @@ class ToolCallingAgentRuntime:
         messages: List[Dict[str, Any]],
         llm_kwargs: Optional[Dict[str, Any]] = None,
         on_interim_message: Optional[InterimMessageCallback] = None,
+        tool_call_record_sink: Optional[ToolCallRecordSink] = None,
+        tool_context: Optional[ToolTurnContext] = None,
     ) -> AgentRunResult:
         """
         执行 Agent 工具调用主循环（简化版的 ReAct 模式）。
@@ -192,6 +272,11 @@ class ToolCallingAgentRuntime:
         tool_errors = 0
         tool_execution_records: List[Dict[str, Any]] = []
         pending_interim_future: Optional[concurrent.futures.Future] = None
+        active_tool_registry = (
+            self.tool_registry.create_contextual_registry(tool_context)
+            if tool_context is not None
+            else self.tool_registry
+        )
 
         while True:
             if tool_rounds >= self.max_tool_rounds:
@@ -203,6 +288,7 @@ class ToolCallingAgentRuntime:
                 model=model,
                 messages=history,
                 llm_kwargs=llm_kwargs or {},
+                tool_registry=active_tool_registry,
             )
             #print("LLM原始响应内容：\n" + self._serialize_response(response) + "\n--- 以上是完整响应内容 ---")
             parsed = self._parse_llm_response(response)
@@ -219,6 +305,19 @@ class ToolCallingAgentRuntime:
             if tool_calls and not interim_text:
                 interim_text = "..."
                 interim_is_placeholder = True
+            if tool_calls and tool_call_record_sink is not None:
+                tool_call_record_sink.start_tool_calls(
+                    interim_text=str(interim_text or "..."),
+                    tool_calls=[
+                        ToolCallSnapshot(
+                            tool_call_id=call.tool_call_id,
+                            name=call.name,
+                            arguments=call.arguments,
+                        )
+                        for call in tool_calls
+                    ],
+                    is_placeholder=interim_is_placeholder,
+                )
             if interim_text and on_interim_message is not None:
                 # 异步执行回调（这通常会把文本塞进队列，触发 TTS 和前端更新），并保存句柄
                 def _invoke_callback():
@@ -281,7 +380,7 @@ class ToolCallingAgentRuntime:
 
                 started_at = time.time()
                 started_perf = time.perf_counter()
-                ok, tool_output = self.tool_registry.execute(call)
+                ok, tool_output = active_tool_registry.execute(call)
                 duration_sec = max(0.0, time.perf_counter() - started_perf)
                 if not ok:
                     tool_errors += 1
@@ -297,6 +396,8 @@ class ToolCallingAgentRuntime:
                         "result_content": self._format_tool_output_for_display(call.name, tool_output),
                     }
                 )
+                if tool_call_record_sink is not None:
+                    tool_call_record_sink.complete_tool_call(tool_execution_records[-1])
 
                 self._log(
                     "工具调用结果 raw json:\n"
@@ -339,12 +440,18 @@ class ToolCallingAgentRuntime:
             tool_execution_records=tool_execution_records,
         )
 
-    def _call_llm(self, model: str, messages: List[Dict[str, Any]], llm_kwargs: Dict[str, Any]) -> Any:
+    def _call_llm(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        llm_kwargs: Dict[str, Any],
+        tool_registry: ToolRegistry,
+    ) -> Any:
         """封装底层LiteLLM的接口请求，带上注册好的可用工具 Schema 以及当前聊天历史发送请求。"""
         kwargs = {
             "model": model,
             "messages": messages,
-            "tools": self.tool_registry.build_tools_schema(),
+            "tools": tool_registry.build_tools_schema(),
             "tool_choice": "auto",
         }
         kwargs.update(llm_kwargs)
@@ -489,7 +596,7 @@ class ToolCallingAgentRuntime:
                 return _truncate("\n".join(lines), limit=2000)
 
             if tool_name == "export_document":
-                file_path = payload.get("file_path") or ""
+                file_path = payload.get("file_path") or payload.get("path") or ""
                 message = payload.get("message") or ""
                 return f"成功导出文档\n  文件路径: {file_path}\n  {message}"
 
@@ -805,6 +912,7 @@ def build_default_tool_registry() -> ToolRegistry:
 
     # 文件阅读工具集（目录浏览 / 分页读取 / 关键字搜索）
     register_file_reading_tools(registry)
+    register_contextual_export_document_tool(registry)
 
     return registry
 
@@ -858,49 +966,64 @@ def register_reminder_tool(
     )
 
 
-def register_lottery_tool(
-    registry: ToolRegistry,
-    show_lottery_ui_func: Callable[[str, List[str]], bool]
-) -> None:
-    """注册随机抽签工具，工具执行时通过依赖注入触发前台抽签窗口。"""
-    def _start_lottery_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
-        title = str(arguments.get("title") or "随机抽签").strip()
-        options_raw = arguments.get("options") or []
-        if not isinstance(options_raw, list):
+def register_contextual_lottery_tool(registry: ToolRegistry) -> None:
+    """注册使用显式轮次上下文和受控端口的抽签工具。"""
+
+    def _create_handler(context: ToolTurnContext) -> ToolHandler:
+        """为单轮上下文创建抽签工具处理器。"""
+
+        def _start_lottery_handler(arguments: dict[str, object]) -> dict[str, object]:
+            """通过上下文注入的前台端口展示抽签窗口。"""
+            if not context.foreground_resolver.is_foreground_chat(context.chat_id):
+                return {
+                    "ok": False,
+                    "degraded": True,
+                    "error": "foreground_required",
+                    "message": "该工具只能在当前前台对话中打开窗口；后台对话已跳过 UI 操作。",
+                }
+            lottery_port = context.side_effect_ports.lottery
+            if lottery_port is None:
+                return {
+                    "ok": False,
+                    "error": "lottery_port_missing",
+                }
+
+            title = str(arguments.get("title") or "随机抽签").strip()
+            options_raw = arguments.get("options") or []
+            if not isinstance(options_raw, list):
+                return {
+                    "ok": False,
+                    "error": "options 必须是字符串数组",
+                }
+
+            options: List[str] = []
+            for one in options_raw:
+                text = str(one).strip()
+                if text:
+                    options.append(text)
+            options_tuple = tuple(dict.fromkeys(options))
+            if len(options_tuple) < 2:
+                return {
+                    "ok": False,
+                    "error": "抽签选项至少需要 2 个",
+                }
+
+            shown = lottery_port.show_lottery(context.chat_id, context.turn_id, title, options_tuple)
+            if not shown:
+                return {
+                    "ok": False,
+                    "error": "前台抽签窗口创建失败",
+                }
             return {
-                "ok": False,
-                "error": "options 必须是字符串数组",
+                "ok": True,
+                "message": f"已向前台发送抽签窗口：{title}",
+                "title": title,
+                "options_count": len(options_tuple),
             }
 
-        options: List[str] = []
-        for one in options_raw:
-            text = str(one).strip()
-            if text:
-                options.append(text)
+        return _start_lottery_handler
 
-        # 去重后至少保留两项，避免“抽签”退化为单选。
-        options = list(dict.fromkeys(options))
-        if len(options) < 2:
-            return {
-                "ok": False,
-                "error": "抽签选项至少需要 2 个",
-            }
-
-        shown = show_lottery_ui_func(title, options)
-        if not shown:
-            return {
-                "ok": False,
-                "error": "前台抽签窗口创建失败",
-            }
-
-        return {
-            "ok": True,
-            "message": f"已向前台发送抽签窗口：{title}",
-            "title": title,
-            "options_count": len(options),
-        }
-
-    registry.register_tool(
+    registry.register_contextual_tool(
         name="start_lottery",
         description="【互动利器】创建一个前台随机抽签窗口。**不要只等用户提到抽签才用！**当你想和用户找点乐子玩个游戏、决定某件小事（甚至只是“今天你夸我还是我夸你”）、当对话陷入平淡，或者你纯粹想给用户制造一个意想不到的惊喜与互动时，随时大胆地主动为你和用户抛出这个抽奖面板！",
         parameters={
@@ -918,82 +1041,158 @@ def register_lottery_tool(
             },
             "required": ["title", "options"],
         },
-        handler=_start_lottery_handler,
+        execution_scope="foreground",
+        handler_factory=_create_handler,
     )
 
 
-def register_live2d_tools(
-    registry: ToolRegistry,
-    get_char_folder_func: Callable[[], str],
-    change_model_func: Callable[[str], None]
-) -> None:
-    """
-    注册获取和切换前台角色 Live2D 模型的专用大模型工具。
-    采用依赖注入方式传入获取角色名以及切换模型的执行回调。
-    """
-    def _fetch_all_live2d_models_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """具体的获取可用 Live2D 模型列表的处理闭包函数。"""
-        char_folder = get_char_folder_func()
-        if char_folder == 'sakiko':
+def register_contextual_live2d_tools(registry: ToolRegistry) -> None:
+    """注册使用显式轮次上下文和受控端口的 Live2D 前台工具。"""
+
+    def _foreground_degraded_result() -> dict[str, object]:
+        """构造前台限定工具在后台执行时的标准降级结果。"""
+        return {
+            "ok": False,
+            "degraded": True,
+            "error": "foreground_required",
+            "message": "该 Live2D 工具只能作用于当前前台对话；后台对话已跳过视觉操作。",
+        }
+
+    def _create_list_handler(context: ToolTurnContext) -> ToolHandler:
+        """为单轮上下文创建 Live2D 模型列表处理器。"""
+
+        def _handler(arguments: dict[str, object]) -> dict[str, object]:
+            """通过受控端口列出当前角色 Live2D 模型。"""
+            if not context.foreground_resolver.is_foreground_chat(context.chat_id):
+                return _foreground_degraded_result()
+            live2d_port = context.side_effect_ports.live2d
+            if live2d_port is None:
+                return {"ok": False, "error": "live2d_port_missing"}
             return {
-                "ok": False,
-                "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
+                "ok": True,
+                "models": live2d_port.list_models(
+                    context.chat_id,
+                    context.turn_id,
+                    context.character_name,
+                ),
             }
 
-        import glob
-        import os
-        base_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '../../live2d_related', char_folder))
-        default_live2d_json_list = glob.glob(os.path.join(base_path, 'live2D_model', '*.model.json'))
-        default_live2d_json = default_live2d_json_list[0].replace("\\", "/") if default_live2d_json_list else None
+        return _handler
 
-        models = []
-        if default_live2d_json:
-            models.append({'model_name': '默认', 'model_json_path': default_live2d_json})
+    def _create_change_handler(context: ToolTurnContext) -> ToolHandler:
+        """为单轮上下文创建 Live2D 模型切换处理器。"""
 
-        extra_path = os.path.join(base_path, 'extra_model')
-        if os.path.exists(extra_path):
-            for model_dir in os.listdir(extra_path):
-                dp = os.path.join(extra_path, model_dir)
-                if os.path.isdir(dp):
-                    jsons = glob.glob(os.path.join(dp, '*.model.json'))
-                    if jsons:
-                        models.append({'model_name': model_dir, 'model_json_path': jsons[0].replace("\\", "/")})
-
-        return {'ok': True, 'character_folder': char_folder, 'models': models}
-
-    def _change_character_live2d_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """具体的执行前台 Live2D 模型切换效果的闭包回调执行器。"""
-        target_path = arguments.get('model_json_path', '').strip()
-        if not target_path:
-            return {'ok': False, 'error': 'model_json_path 参数不能为空'}
-
-        char_folder = get_char_folder_func()
-        if char_folder == 'sakiko':
+        def _handler(arguments: dict[str, object]) -> dict[str, object]:
+            """通过受控端口请求切换当前前台 Live2D 模型。"""
+            if not context.foreground_resolver.is_foreground_chat(context.chat_id):
+                return _foreground_degraded_result()
+            live2d_port = context.side_effect_ports.live2d
+            if live2d_port is None:
+                return {"ok": False, "error": "live2d_port_missing"}
+            model_name = str(arguments.get("model_name") or arguments.get("model_json_path") or "").strip()
+            if not model_name:
+                return {"ok": False, "error": "model_name 参数不能为空"}
+            changed = live2d_port.change_model(
+                context.chat_id,
+                context.turn_id,
+                context.character_name,
+                model_name,
+            )
+            if not changed:
+                return {"ok": False, "error": "live2d_change_failed"}
             return {
-                "ok": False,
-                "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
+                "ok": True,
+                "message": f"已向前台发送 Live2D 模型切换请求：{model_name}",
             }
 
-        change_model_func(target_path)
-        return {'ok': True, 'message': f'成功发送异步切换服装指令：{target_path}'}
+        return _handler
 
-    registry.register_tool(
-        name='fetch_all_live2d_models',
-        description='获取角色拥有的所有衣服/Live2D模型列表。**重点：不要等用户明确要求，你要视情况主动换装！**当你想给用户一个视觉惊喜，或者配合当前聊天气氛（如聊到睡觉、生病、出门等场景）时，请私下调用此工具翻看衣柜，准备换装。',
-        parameters={'type': 'object', 'properties': {}, 'required': []},
-        handler=_fetch_all_live2d_models_handler
+    registry.register_contextual_tool(
+        name="fetch_all_live2d_models",
+        description="获取角色拥有的所有衣服/Live2D模型列表。**重点：不要等用户明确要求，你要视情况主动换装！**当你想给用户一个视觉惊喜，或者配合当前聊天气氛（如聊到睡觉、生病、出门等场景）时，请私下调用此工具翻看衣柜，准备换装。",
+        parameters={"type": "object", "properties": {}, "required": []},
+        execution_scope="foreground",
+        handler_factory=_create_list_handler,
     )
-
-    registry.register_tool(
-        name='change_character_live2d',
-        description='【主动视觉表现】将角色的服装换为指定路径。**核心扮演动作：用换装制造惊喜，绝不被动等待！**不需要用户允许或要求，比如当用户夸你时主动换上特制装扮，聊到晚安主动换上睡衣。用突然发生的外观变化给用户惊喜感！(必须先调用 fetch_all_live2d_models 挑选合适的衣服)',
+    registry.register_contextual_tool(
+        name="change_character_live2d",
+        description="【主动视觉表现】将角色的服装换为指定路径。**核心扮演动作：用换装制造惊喜，绝不被动等待！**不需要用户允许或要求，比如当用户夸你时主动换上特制装扮，聊到晚安主动换上睡衣。用突然发生的外观变化给用户惊喜感！(必须先调用 fetch_all_live2d_models 挑选合适的衣服)",
         parameters={
-            'type': 'object',
-            'properties': {'model_json_path': {'type': 'string', 'description': '需要切换到的 Live2D 模型对应的 json 文件绝对或相对路径（必填）'}},
-            'required': ['model_json_path']
+            "type": "object",
+            "properties": {
+                "model_json_path": {
+                    "type": "string",
+                    "description": "需要切换到的 Live2D 模型对应的 json 文件绝对或相对路径（必填）",
+                }
+            },
+            "required": ["model_json_path"],
         },
-        handler=_change_character_live2d_handler
+        execution_scope="foreground",
+        handler_factory=_create_change_handler,
     )
+
+
+def register_contextual_export_document_tool(registry: ToolRegistry) -> None:
+    """注册使用受控端口的文档导出工具。"""
+
+    def _create_handler(context: ToolTurnContext) -> ToolHandler:
+        """为单轮上下文创建文档导出处理器。"""
+
+        def _handler(arguments: dict[str, object]) -> dict[str, object]:
+            """写出文档，并仅在前台请求打开文件。"""
+            export_port = context.side_effect_ports.export_document
+            if export_port is None:
+                return {"ok": False, "error": "export_document_port_missing"}
+            filename = str(arguments.get("filename") or "").strip()
+            content = str(arguments.get("content") or "")
+            if not filename:
+                return {"ok": False, "error": "filename 参数不能为空"}
+            if not content:
+                return {"ok": False, "error": "content 不能为空"}
+            file_path = export_port.write_document(context.chat_id, context.turn_id, filename, content)
+            opened = False
+            if context.foreground_resolver.is_foreground_chat(context.chat_id):
+                export_port.request_open_file(file_path)
+                opened = True
+            return {
+                "ok": True,
+                "file_path": file_path,
+                "opened": opened,
+                "message": f"成功将 {len(content)} 字符写入文件：{file_path}",
+            }
+
+        return _handler
+
+    registry.register_contextual_tool(
+        name="export_document",
+        description=(
+            "【语音对话防刷屏-生成本地文档工具】"
+            "当你需要向用户提供以下大段文字信息时，**必须**调用此工具将其保存为文档："
+            "1. 小说概括、剧情总结、文章长篇大论的分析；"
+            "2. 具体的代码修改意见、重构后的完整代码、长段报错日志；"
+            "3. 任何包含 Markdown 复杂排版（表格、长列表）的内容。"
+            "工具会将你整理好的内容生成文件放到软件的 tool_data 文件夹中。"
+            "前台对话会请求打开该文件；后台对话只写入文件并返回路径，不会弹窗或抢占焦点。"
+            "调用此工具后，你在当轮聊天的回复可以是：'我把内容整理成文档发给你了，你可以打开看看哦'（或者符合人设的简洁回复），千万不要把详细内容复述一遍，因为在对话中直接发送长文本内容会造成刷屏且体验极差。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "要保存的文件名（如 '剧情总结.txt'、'修改建议.md'）。如果不提供绝对路径，将默认保存到软件的 tool_data 文件夹中。",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "需要写入文档的具体内容正文，支持完整的 Markdown 格式排版。",
+                },
+            },
+            "required": ["filename", "content"],
+        },
+        execution_scope="app_side_effect",
+        handler_factory=_create_handler,
+    )
+
 
 def register_file_reading_tools(registry: ToolRegistry) -> None:
     """将文件阅读工具集（目录浏览 / 分页读取 / 关键字搜索）注册到工具注册表。"""
@@ -1066,34 +1265,6 @@ def register_file_reading_tools(registry: ToolRegistry) -> None:
             "required": ["file_path", "keyword"],
         },
         handler=FileReadingTools.grep_search_in_file,
-    )
-
-    registry.register_tool(
-        name="export_document",
-        description=(
-            "【语音对话防刷屏-生成本地文档工具】"
-            "当你需要向用户提供以下大段文字信息时，**必须**调用此工具将其保存为文档："
-            "1. 小说概括、剧情总结、文章长篇大论的分析；"
-            "2. 具体的代码修改意见、重构后的完整代码、长段报错日志；"
-            "3. 任何包含 Markdown 复杂排版（表格、长列表）的内容。"
-            "工具会将你整理好的内容直接生成文件放到软件的 tool_data 文件夹中，并会自动在用户电脑上弹窗打开该文件。"
-            "调用此工具后，你在当轮聊天的回复可以是：'我把内容整理成文档发给你了，你可以打开看看哦'（或者符合人设的简洁回复），千万不要把详细内容复述一遍，因为在对话中直接发送长文本内容会造成刷屏且体验极差。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "要保存的文件名（如 '剧情总结.txt'、'修改建议.md'）。如果不提供绝对路径，将默认保存到软件的 tool_data 文件夹中。",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "需要写入文档的具体内容正文，支持完整的 Markdown 格式排版。",
-                },
-            },
-            "required": ["filename", "content"],
-        },
-        handler=FileReadingTools.export_document,
     )
 
 #-------------------------------- 以下为各工具的具体实现--------------------------------
@@ -1926,56 +2097,6 @@ class FileReadingTools:
             "keyword": keyword,
             "match_count": len(match_line_numbers),
             "matches": matches,
-        }
-
-    # ------------------------------------------------------------------ #
-    #  4. export_document — 导出内容到文件（防语音刷屏利器）
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def export_document(arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        将大段文本或代码输出到本地文件。
-        将文件保存到软件目录下的 tool_data 文件夹。
-        """
-        filename = str(arguments.get("filename") or "").strip()
-        content = str(arguments.get("content") or "")
-
-        if not filename:
-            return {"ok": False, "error": "filename 参数不能为空"}
-        if not content:
-            return {"ok": False, "error": "content 不能为空"}
-
-        # 净化文件名，防止非法字符
-        safe_filename = re.sub(r'[\\/*?:"<>|]', "", os.path.basename(filename))
-        if not safe_filename:
-            safe_filename = "agent_output.md"
-
-        # 放到 tool_data
-        tool_data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tool_data"))
-        os.makedirs(tool_data_path, exist_ok=True)
-        file_path = os.path.join(tool_data_path, safe_filename)
-
-        try:
-            # 确保父目录存在
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
-
-            # 使用系统默认程序自动打开该文件
-            if sys.platform == "win32":
-                os.startfile(file_path)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", file_path])
-            else:
-                subprocess.Popen(["xdg-open", file_path])
-
-        except Exception as exc:
-            return {"ok": False, "error": f"写入或打开文件失败: {exc}"}
-
-        return {
-            "ok": True,
-            "file_path": file_path,
-            "message": f"成功将 {len(content)} 字符写入文件：{file_path}",
         }
 
     # ------------------------------------------------------------------ #

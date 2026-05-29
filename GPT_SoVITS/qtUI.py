@@ -5,8 +5,9 @@ import re
 import time
 import json
 import random
+import threading
 import uuid
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import Callable, Optional
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -15,7 +16,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPush
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
     QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QApplication
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QDesktopServices
 
 import sounddevice as sd
 from opencc import OpenCC
@@ -28,11 +29,16 @@ from log import get_logger
 from qconfig import d_sakiko_config
 from character import CharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
-from chat_flow.events import ApplicationQuitUiMessageEvent
-from chat_flow.events import ConversationUiEvent
-from chat_flow.events import ConversationUiEventType
+from chat_flow.audio_scheduler import AudioTaskCompleted
+from chat_flow.controller import ChatFlowController
 from chat_flow.events import LotteryUiCommandEvent
-from chat_flow.events import is_legacy_tool_call_payload
+from chat_flow.live2d_client import Live2DClient
+from chat_flow.turn_runner import ChatTurnCancelled
+from chat_flow.turn_runner import ChatTurnCompleted
+from chat_flow.turn_runner import ChatTurnEvent
+from chat_flow.turn_runner import ChatTurnFailed
+from chat_flow.turn_runner import ChatTurnPhaseChanged
+from chat_flow.turn_runner import ChatTurnSettings
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
@@ -49,9 +55,6 @@ from input_commands import (
     build_default_input_command_specs,
 )
 
-
-if TYPE_CHECKING:
-    from audio_generator import AudioGenerate
 
 logger = get_logger(__name__)
 
@@ -335,32 +338,14 @@ class ThemeManager: #主题颜色设定
             logger.exception("QT_style.json 文件格式有误，使用默认祥子配色。")
             return '#7799CC'
 
-class CommunicateThreadDP2QT(QThread):
-    response_signal=pyqtSignal(object)
-    def __init__(self,dp2qt_queue,chat_display):
-        super().__init__()
-        self.this_turn_response=''
-        self.dp2qt_queue=dp2qt_queue
-        self.chat_display=chat_display
+class ChatTurnEventBridge(QObject):
+    """把后台 turn events 投递回 Qt 主线程。"""
 
-    def run(self):
-        while True:
-            if not self.dp2qt_queue.empty() and not self.chat_display.is_streaming():     #解决了特定情况下显示不全回答的bug
-                self.this_turn_response=self.dp2qt_queue.get()
-                self.response_signal.emit(self.this_turn_response)  # noqa
-            time.sleep(0.1)
-
-class CommunicateThreadMessages(QThread):
-    message_signal=pyqtSignal(object)
-    def __init__(self,message_queue):
-        super().__init__()
-        self.message=''
-        self.message_queue=message_queue
-
-    def run(self):
-        while True:
-            self.message=self.message_queue.get()
-            self.message_signal.emit(self.message)  # noqa
+    events_signal = pyqtSignal(object)
+    audio_completed_signal = pyqtSignal(object)
+    lottery_signal = pyqtSignal(object)
+    live2d_switch_signal = pyqtSignal(str)
+    open_file_signal = pyqtSignal(str)
 
 
 class ModelLoaderThread(QThread):   #加载语音识别模型的线程
@@ -1110,36 +1095,6 @@ class ColorPicker(QDialog):
         self.lbl_display.setStyleSheet(f"color: {self.current_color}")
         self.parent_window_set_theme_color(self.current_color)
 
-class AudioRegenThread(QThread):
-    finished_signal = pyqtSignal(str, int)  # (新音频路径, msg_index)
-
-    def __init__(
-        self,
-        audio_gen: AudioGenerate,
-        text: str,
-        character: CharacterAttributes,
-        sakiko_state: bool,
-        audio_language_choice: str,
-        msg_index: int,
-    ) -> None:
-        super().__init__()
-        self.audio_gen = audio_gen
-        self.text = text
-        self.character = character
-        self.sakiko_state = sakiko_state
-        self.audio_language_choice = audio_language_choice
-        self.msg_index = msg_index
-
-    def run(self) -> None:
-        """在后台为指定消息重新生成音频。"""
-        new_audio_path = self.audio_gen.generate_audio_for_character_sync(
-            self.text,
-            self.character,
-            self.sakiko_state,
-            self.audio_language_choice,
-        )
-        self.finished_signal.emit(new_audio_path, self.msg_index)
-
 class DragDropListWidget(QListWidget):
     """
     支持拖拽排序并在顺序变化后发出信号的对话列表。
@@ -1213,23 +1168,20 @@ class NewSingleChatDialog(QDialog):
 
 class ChatGUI(QWidget):
     def __init__(self,
-                 dp2qt_queue,
-                 qt2dp_queue,
-                 QT_message_queue,
                  characters,
                  dp_chat,
-                 audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,emotion_model,
-                 change_char_queue=None,
-                 is_motion_complete=None):
+                 audio_gen,
+                 live2d_client: Live2DClient,
+                 flow_controller: ChatFlowController):
         super().__init__()
-        self.is_motion_complete = is_motion_complete
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
         self.character_list:list[CharacterAttributes] = characters
         self.character_by_name: dict[str, CharacterAttributes] = {
             one_character.character_name: one_character for one_character in self.character_list
         }
         self.dp_chat=dp_chat    # dp_local2 模块引用
-        self.change_char_queue = change_char_queue
+        self.flow_controller = flow_controller
+        self.live2d_client = live2d_client
         # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
         self.chat_manager: ChatManager = self.dp_chat.chat_manager
         self.current_chat_id = self.dp_chat.current_chat_id
@@ -1318,21 +1270,19 @@ class ChatGUI(QWidget):
         input_panel = self._create_input_panel()
         self._setup_input_commands(input_panel)
 
-        #处理模型的回答
-        self.dp2qt_queue=dp2qt_queue
-        self.get_response_thread=CommunicateThreadDP2QT(self.dp2qt_queue,self.chat_display)
-        self.get_response_thread.response_signal.connect(self.handle_response)  # noqa
-        self.get_response_thread.start()
-        #处理用户输入
-        self.qt2dp_queue=qt2dp_queue
+        self._turn_event_bridge: ChatTurnEventBridge | None = None
+        self.flow_controller.attach_window(self)
+        self.flow_controller.set_visible_chat(self.current_chat_id)
+        self._turn_event_bridge = ChatTurnEventBridge(self)
+        self._turn_event_bridge.events_signal.connect(self._handle_controller_turn_events)  # noqa
+        self._turn_event_bridge.audio_completed_signal.connect(self._handle_audio_task_completed)  # noqa
+        self._turn_event_bridge.lottery_signal.connect(self._handle_lottery_ui_command)  # noqa
+        self._turn_event_bridge.live2d_switch_signal.connect(self._send_l2d_model_payload)  # noqa
+        self._turn_event_bridge.open_file_signal.connect(self._handle_open_file_request)  # noqa
+
         self.save_dialog_btn.clicked.connect(self.save_data)  # noqa
 
         self.user_input.returnPressed.connect(self.handle_user_input)  # noqa
-        #处理各种消息
-        self.QT_message_queue=QT_message_queue
-        self.get_message_thread=CommunicateThreadMessages(self.QT_message_queue)
-        self.get_message_thread.message_signal.connect(self.handle_messages)  # noqa
-        self.get_message_thread.start()
 
         #---------------------消息命令处理机制 从引入抽奖工具开始构建---------------------
         self._message_command_handlers: dict[str, Callable[[str], None]] = {}
@@ -1435,16 +1385,9 @@ class ChatGUI(QWidget):
         root_layout.addLayout(layout, 1)
         root_layout.addWidget(self.chat_manage_panel, 0)
         self.setLayout(root_layout)  #因为需要character_list等参数，所以放在最后初始化
+
         self.refresh_chat_list()
         self.sync_current_chat_to_backends()
-
-        # 保存 Live2D 跨进程通信的共享变量和队列
-        self.live2d_text_queue=live2d_text_queue
-        self.is_display_text_value=is_display_text_value
-        self.motion_complete_value=motion_complete_value
-        self.emotion_queue=emotion_queue
-        self.emotion_model=emotion_model
-        self.audio_file_path_queue=audio_file_path_queue    #为了播放历史记录
         #-------------------------------------------------------------------------------以下为语音识别部分
         self.voice_button.setCheckable(True)
         self.voice_button.setEnabled(False)
@@ -1629,8 +1572,7 @@ class ChatGUI(QWidget):
         self.close()
 
     def toggle_live2d_text_display(self):
-        # 切换共享变量的值
-        self.is_display_text_value.value = not self.is_display_text_value.value
+        self.live2d_client.toggle_text_display()
 
     @property
     def current_chat(self) -> Chat:
@@ -1858,6 +1800,9 @@ class ChatGUI(QWidget):
         chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
             return
+        if chat.runtime.has_unfinished_work():
+            QMessageBox.information(self, "请先终止生成", "请先终止该对话的生成任务后再删除对话。")
+            return
         single_chats_before_delete = self.single_character_chats()
         deleted_chat_index = next(
             (index for index, one_chat in enumerate(single_chats_before_delete) if one_chat.chat_id == chat_id),
@@ -1905,15 +1850,18 @@ class ChatGUI(QWidget):
         """
         if chat_id == self.current_chat_id:
             return
-        if self.is_chat_busy():
-            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再切换对话。")
-            self.refresh_chat_list()
-            return
         chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
             return
+        previous_chat = self.current_chat
         self.current_chat_id = chat.chat_id
         self.sync_current_chat_to_backends()
+        self.flow_controller.switch_visible_chat(
+            current_chat=previous_chat,
+            next_chat=chat,
+            display=self.chat_display,
+            live2d_client=self.live2d_client,
+        )
         self.apply_current_chat_ui_state()
         self.refresh_chat_list()
 
@@ -1921,7 +1869,6 @@ class ChatGUI(QWidget):
         """
         将当前对话同步给后端与 Live2D 进程。
         """
-        self.qt2dp_queue.put({"type": "switch_chat", "chat_id": self.current_chat_id})
         character_name = self.current_character.character_name
         model_json = self.current_chat.get_custom_live2d_model_meta(character_name)
         self._send_live2d_switch(character_name, model_json)
@@ -2190,26 +2137,6 @@ class ChatGUI(QWidget):
             if tool_call_id:
                 self.tool_call_records_cache[tool_call_id] = one
 
-    def _append_tool_status_line(self, tool_call_id: str, text: str, status: str = "running"):
-        self.chat_display.append_tool_status_line(tool_call_id, text, status=status)
-
-    def _handle_tool_call_start_event(self, payload: dict):
-        tool_call_id = str(payload.get("tool_call_id") or "")
-        if not tool_call_id:
-            return
-        self.tool_call_records_cache[tool_call_id] = payload
-        tool_name = str(payload.get("tool_name") or "unknown")
-        self._append_tool_status_line(tool_call_id, f"<正在调用工具...>", status="running")
-
-    def _handle_tool_call_update_event(self, payload: dict):
-        tool_call_id = str(payload.get("tool_call_id") or "")
-        if not tool_call_id:
-            return
-        self.tool_call_records_cache[tool_call_id] = payload
-        tool_name = str(payload.get("tool_name") or "unknown")
-        duration_sec = float(payload.get("duration_sec") or 0.0)
-        self._append_tool_status_line(tool_call_id, f"<工具调用完成 {duration_sec:.2f}秒>", status="completed")
-
     def _open_tool_call_dialog(self, tool_call_id: str):
         record = self.tool_call_records_cache.get(tool_call_id)
         if record is None:
@@ -2435,7 +2362,7 @@ class ChatGUI(QWidget):
         event.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
-        if self.motion_complete_value.value:
+        if self.live2d_client.is_playback_complete():
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
             if "silence.wav" in audio_path_and_emotion:
@@ -2475,13 +2402,13 @@ class ChatGUI(QWidget):
                                 break
                     # 如果能找到对应的消息，那么添加翻译后一同发送给 live2d 模块，从而显示翻译。
                     if target_msg is not None:
-                        self.live2d_text_queue.put(
+                        ChatGUI._set_live2d_text(
+                            self,
                             self._format_live2d_display_text(target_msg.text, target_msg.translation)
                         )
 
                     # ----------------------------
-                    self.audio_file_path_queue.put(audio_path)
-                    self.emotion_queue.put(emotion)
+                    self.live2d_client.play_segment(audio_path=audio_path, emotion=emotion)
                     logger.info("音频文件路径：%s", audio_path)
                     #print("注意：若你已经设置了if_delete_audio_cache.txt中的数字不为0，并且觉得这句生成的还不错，请复制该音频文件到别处，因为设置数字不为0的情况下关闭程序会自动删除该文件，以释放空间。设置数字不为0的情况下如果希望下次打开程序还能听到，再把这个文件复制回这个路径即可。\n")
                 else:
@@ -2502,212 +2429,57 @@ class ChatGUI(QWidget):
         WarningWindow("确定要删除这条信息吗",None,confirm_del).exec_()
 
     def regenerate_audio(self, msg_index):
-        if hasattr(self, 'regen_thread') and self.regen_thread is not None and self.regen_thread.isRunning():
-            WarningWindow("当前正在重新生成音频中，请稍后再试").exec_()
-            return
-        if not (0 <= msg_index < len(self.current_chat.message_list)):
+        chat = self.current_chat
+        if not (0 <= msg_index < len(chat.message_list)):
             self.refresh_current_chat_display()    #如果索引无效，强制刷新显示以纠正可能的错误状态
             return
-        current_character= self.current_character
-        if not (current_character.GPT_model_path or current_character.gptsovits_ref_audio or current_character.sovits_model_path):
+        with chat.runtime.lock:
+            msg = chat.message_list[msg_index]
+            message_text = msg.text
+            character_name = msg.character_name
+        current_character = self.character_by_name.get(character_name)
+        if current_character is None:
+            WarningWindow("找不到这条消息对应的角色，无法重新生成音频！").exec_()
+            return
+        has_valid_voice_model = getattr(current_character, "has_valid_voice_model", None)
+        if callable(has_valid_voice_model) and not has_valid_voice_model():
             WarningWindow("当前角色未配置完整的音频生成条件，无法重新生成音频！").exec_()
             return
+        if not callable(has_valid_voice_model):
+            has_minimum_voice_config = (
+                getattr(current_character, "GPT_model_path", None)
+                and getattr(current_character, "gptsovits_ref_audio", None)
+                and getattr(current_character, "sovits_model_path", None)
+            )
+            if not has_minimum_voice_config:
+                WarningWindow("当前角色未配置完整的音频生成条件，无法重新生成音频！").exec_()
+                return
         # 防止重新生成时重复操作
         # if not self.audio_gen.is_completed or not self.live2d_mod.live2d_this_turn_motion_complete:
         #     QMessageBox.warning(self, "稍后再试", "当前正在播放音频或合成新音频中，稍后再试！")
         #     return
 
-        msg = self.current_chat.message_list[msg_index]
-        if msg.text in ("...","我要调用工具"):
+        if message_text in ("...","我要调用工具"):
             WarningWindow("无法重新生成音频").exec_()
             return
         # UI反聩
         self.setWindowTitle("正在重新生成音频...")
         #self.chat_display.setEnabled(False) # 暂时禁用右键等交互
-
-        # 启动后台合成线程
-        self.regen_thread = AudioRegenThread(
-            self.audio_gen,
-            msg.text,
-            current_character,
-            self.dp_chat.sakiko_state,
-            self.dp_chat.audio_language_choice,
-            msg_index,
+        result = self.flow_controller.queue_historical_audio_regeneration(
+            chat=chat,
+            chat_id=chat.chat_id,
+            message_index=msg_index,
+            character=current_character,
+            sakiko_state=bool(getattr(self.dp_chat, "sakiko_state", False)),
+            audio_language_choice=str(getattr(self.dp_chat, "audio_language_choice", "中文")),
         )
-        self.regen_thread.finished_signal.connect(self.handle_regenerate_audio_finished)
-        self.regen_thread.start()
-
-    def handle_regenerate_audio_finished(self, new_audio_path, msg_index):
-        self.setWindowTitle("数字小祥")
-        #self.chat_display.setEnabled(True)
-        self.regen_thread=None
-
-        if 0 <= msg_index < len(self.current_chat.message_list):
-            msg = self.current_chat.message_list[msg_index]
-            msg.audio_path = os.path.abspath(new_audio_path).replace('\\', '/')
+        if not result.queued:
+            self.setWindowTitle("数字小祥")
+            if result.status_message:
+                self._notify_status(result.status_message)
+            return
+        if chat.chat_id == self.current_chat_id:
             self.refresh_current_chat_display()
-            logger.info("重新生成音频成功，新路径为：%s", msg.audio_path)
-            self.play_history_audio(QUrl(f"{msg.audio_path}[{msg.emotion.as_label()}]?msg={msg_index}"))
-
-        self.QT_message_queue.put('...') # 强制恢复 messages_box 状态，允许继续对话
-
-
-    def handle_response(self,response_text):
-        if isinstance(response_text, dict):
-            self._handle_structured_response(response_text)
-            return
-
-        if is_legacy_tool_call_payload(response_text):
-            logger.warning("拒绝旧版字符串前缀工具调用事件。")
-            return
-
-        if not isinstance(response_text, str):
-            logger.warning("忽略未知类型的对话响应载荷：%s", type(response_text).__name__)
-            return
-
-        if response_text=='changechange':
-            self.apply_current_chat_ui_state()
-            return
-        response_text=response_text.replace("\n\n",'')
-        response_text=response_text.replace("\n", '')
-        response_text = response_text.replace("。。", '。')
-        pattern = r'(.*?)(?:\[翻译\](.+?)\[翻译结束\])'
-        response_tuple_list=re.findall(pattern,response_text,flags=re.DOTALL)
-        if not response_tuple_list: #中文
-            display_text = response_text
-            translation = ''
-        else:   #日文
-            display_text=response_tuple_list[0][0]  # noqa
-            translation=response_tuple_list[0][1]  # noqa
-
-        character_name = self.current_character.character_name
-
-        # 找到下一条未处理的 AI 消息（可能有多段）
-        # 从尾部向前搜索尚未设置 audio_path 的 AI 消息中最早的那条
-        target_msg = None
-        msg_index = None
-        for i, msg in enumerate(self.current_chat.message_list):
-            if msg.character_name == character_name and msg.audio_path == "" and msg.audio_path != "NO_AUDIO":
-                target_msg = msg
-                msg_index = i
-                break  # 找到第一条未处理的
-
-        force_no_audio = (target_msg is not None and target_msg.audio_path == "NO_AUDIO")
-
-        if self.dp_chat.if_generate_audio and response_text!='（再见）' and not force_no_audio:
-            emotion = 'LABEL_0'
-            if target_msg is not None:
-                emotion = target_msg.emotion.as_label()
-
-            abs_path = os.path.abspath(self.audio_gen.audio_file_path).replace('\\', '/')
-            self.live2d_text_queue.put(
-                self._format_live2d_display_text(display_text, translation)
-            )    #更新live2d文本框的内容显示
-
-            # 更新该条 AI 消息的 audio_path 和 translation
-            if target_msg is not None:
-                target_msg.audio_path = abs_path
-                target_msg.translation = translation
-        else:
-            abs_path = "NO_AUDIO"
-            emotion = target_msg.emotion.as_label() if target_msg is not None else "LABEL_0"
-            if target_msg is not None:
-                target_msg.audio_path = "NO_AUDIO"
-                target_msg.translation = translation
-
-        display_message = target_msg or Message(
-            character_name=character_name,
-            text=display_text,
-            translation=translation,
-            emotion=EmotionEnum.from_string(emotion),
-            audio_path=abs_path,
-        )
-        display_msg_index = msg_index if msg_index is not None else len(self.current_chat.message_list)
-        self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
-
-    def _handle_structured_response(self, payload: dict[str, object]) -> None:
-        """
-        处理来自 main2/dp_local2 的结构化 UI 事件。
-        """
-        try:
-            event = ConversationUiEvent.from_payload(payload)
-        except (TypeError, ValueError):
-            logger.warning("忽略无法解析的 chat_flow UI 事件：%s", payload)
-            return
-
-        event_type = event.event_type
-        event_payload = event.to_dict()
-        if event_type == ConversationUiEventType.TRANSIENT_CONVERSATION_MESSAGE:
-            chat_id = str(event_payload.get("chat_id") or self.current_chat_id)
-            if chat_id != self.current_chat_id:
-                return
-            self.chat_display.append_transient_text(
-                str(event_payload.get("character_name") or self.current_character.character_name),
-                str(event_payload.get("text") or ""),
-                stream=bool(event_payload.get("stream", True)),
-                interval_ms=30,
-            )
-            return
-        if self._is_cancelled_turn_payload(event_payload):
-            if event_type == ConversationUiEventType.ASSISTANT_TURN_COMPLETE:
-                self.cancelled_turn_ids.discard(str(event_payload.get("turn_id") or ""))
-            return
-        if event_type in {ConversationUiEventType.TOOL_CALL_STARTED, ConversationUiEventType.TOOL_CALL_UPDATED}:
-            chat_id = str(event_payload.get("chat_id") or self.current_chat_id)
-            if chat_id != self.current_chat_id:
-                return
-            if event_type == ConversationUiEventType.TOOL_CALL_STARTED:
-                self._handle_tool_call_start_event(event_payload)
-            else:
-                self._handle_tool_call_update_event(event_payload)
-            return
-        # 事件：设置当前的处理阶段
-        if event_type == ConversationUiEventType.ASSISTANT_TURN_PHASE:
-            if self._is_active_turn_payload(event_payload):
-                self.active_turn_phase = str(event_payload.get("phase") or self.active_turn_phase or "")
-                self._refresh_send_button_state()
-            return
-        # 事件：完成一轮对话的生成
-        if event_type == ConversationUiEventType.ASSISTANT_TURN_COMPLETE:
-            if self._is_active_turn_payload(event_payload):
-                self._clear_active_turn()
-                self.refresh_chat_list()
-            return
-        if event_type != ConversationUiEventType.ASSISTANT_SEGMENT_READY:
-            return
-
-        chat_id = str(event_payload.get("chat_id") or "")
-        # 仅处理当前正在进行对话的事件，且必须是当前界面的对话
-        if self.active_turn_id is not None and not self._is_active_turn_payload(event_payload):
-            return
-        raw_message_index = event_payload.get("message_index")
-        message_index = raw_message_index if isinstance(raw_message_index, int) else -1
-        if chat_id != self.current_chat_id:
-            self.refresh_chat_list()
-            return
-
-        self.active_turn_phase = "rendering"
-        display_text = str(event_payload.get("text") or "")
-        translation = str(event_payload.get("translation") or "")
-        character_name = str(event_payload.get("character_name") or self.current_character.character_name)
-        emotion = str(event_payload.get("emotion") or "LABEL_0")
-        audio_path = str(event_payload.get("audio_path") or "NO_AUDIO")
-
-        if audio_path != "NO_AUDIO":
-            abs_path = os.path.abspath(audio_path).replace('\\', '/')
-            self.live2d_text_queue.put(display_text)
-        else:
-            abs_path = "NO_AUDIO"
-        display_message = Message(
-            character_name=character_name,
-            text=display_text,
-            translation=translation,
-            emotion=EmotionEnum.from_string(emotion),
-            audio_path=abs_path,
-        )
-        display_msg_index = message_index if message_index >= 0 else len(self.current_chat.message_list)
-        self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
-        self.refresh_chat_list()
 
     def _start_active_turn(self, chat_id: str, turn_id: str, phase: str = "llm") -> None:
         """
@@ -2726,25 +2498,6 @@ class ChatGUI(QWidget):
         self.active_turn_id = None
         self.active_turn_phase = None
         self._refresh_send_button_state()
-
-    def _is_active_turn_payload(self, payload: dict[str, object]) -> bool:
-        """
-        判断结构化事件是否属于当前正在处理的一轮对话。
-        判断标准为：当前存在正在进行的对话和轮次，且事件的对话 id、轮次 id 和当前均相同。
-        """
-        return (
-            self.active_chat_id is not None
-            and self.active_turn_id is not None
-            and str(payload.get("chat_id") or "") == self.active_chat_id
-            and str(payload.get("turn_id") or "") == self.active_turn_id
-        )
-
-    def _is_cancelled_turn_payload(self, payload: dict[str, object]) -> bool:
-        """
-        判断结构化事件是否属于已经被前端取消的一轮对话。
-        """
-        turn_id = str(payload.get("turn_id") or "")
-        return bool(turn_id and turn_id in self.cancelled_turn_ids)
 
     def _create_stop_button_icon(self) -> QIcon:
         """
@@ -2804,20 +2557,16 @@ class ChatGUI(QWidget):
         phase = self.active_turn_phase or ""
         self.cancelled_turn_ids.add(turn_id)
 
-        if hasattr(self.dp_chat, "request_cancel_turn"):
-            # 要求 dp_local2 终止对话生成
-            try:
-                self.dp_chat.request_cancel_turn(chat_id, turn_id)
-            except Exception:
-                logger.exception("登记对话终止请求失败。")
+        cancel_result = self.flow_controller.cancel_visible_chat(self.current_chat)
+        if cancel_result.restored_text:
+            self.user_input.setText(cancel_result.restored_text)
+        if cancel_result.status_message:
+            self._notify_status(cancel_result.status_message)
+        if cancel_result.cancelled_audio_tasks and chat_id == self.current_chat_id:
+            self.refresh_current_chat_display()
 
-        if self.change_char_queue is not None:
-            # 要求 live2d 终止对话播放
-            self.change_char_queue.put({
-                "type": "cancel_turn",
-                "chat_id": chat_id,
-                "turn_id": turn_id,
-            })
+        # 要求 live2d 终止对话播放
+        self.live2d_client.cancel_turn_playback(chat_id=chat_id, turn_id=turn_id)
 
         if phase == "rendering":
             self.chat_display.finish_stream_now()
@@ -2838,6 +2587,12 @@ class ChatGUI(QWidget):
         if translation_content:
             return f"{text_content}\n{translation_content}" if text_content else translation_content
         return text_content
+
+    def _set_live2d_text(self, text: str) -> None:
+        """
+        通过 Live2D 客户端更新文本。
+        """
+        self.live2d_client.set_text(text)
 
     def is_response_active(self) -> bool:
         """
@@ -2909,10 +2664,12 @@ class ChatGUI(QWidget):
             if not self.is_chat_idle():
                 QMessageBox.information(self, "请稍等", "请等待当前回复完成后再清空对话。")
                 return
-            self.current_chat.clear_message_list()
+            if not self.current_chat.clear_message_list():
+                QMessageBox.information(self, "请先终止生成", "请先终止该对话的生成任务后再清空对话。")
+                return
             self.tool_call_records_cache.clear()
             self.chat_display.clear_chat()
-            self._send_internal_command_payload({"type": "clear_chat", "chat_id": self.current_chat_id}, force=True)
+            self._notify_status("已清空当前对话的聊天记录")
             self.user_input.clear()
             return
 
@@ -2940,21 +2697,53 @@ class ChatGUI(QWidget):
             self.pause_second_reset()
 
     def _send_internal_command_payload(self, payload: str | dict[str, object], force: bool = False) -> None:
-        """向后端队列发送内部命令 payload。"""
-        if force or (not self.is_chat_busy() and self.qt2dp_queue.empty()):
-            if isinstance(payload, str):
-                command_map = {
-                    "l": {"type": "toggle_language", "chat_id": self.current_chat_id},
-                    "v": {"type": "toggle_voice", "chat_id": self.current_chat_id},
-                    "conv": {"type": "legacy_command", "command": "conv", "chat_id": self.current_chat_id},
-                    "mask": {"type": "legacy_command", "command": "mask", "chat_id": self.current_chat_id},
-                    "start_talking": {"type": "legacy_command", "command": "start_talking", "chat_id": self.current_chat_id},
-                    "stop_talking": {"type": "legacy_command", "command": "stop_talking", "chat_id": self.current_chat_id},
-                    "change_l2d_background": {"type": "legacy_command", "command": "change_l2d_background", "chat_id": self.current_chat_id},
-                    "bye": {"type": "exit"},
-                }
-                payload = command_map.get(payload, {"type": "legacy_command", "command": payload, "chat_id": self.current_chat_id})
-            self.qt2dp_queue.put(payload)
+        """执行已经迁移到 controller/window 的内部命令。"""
+        if not (force or not self.is_chat_busy()):
+            return
+        command = payload
+        if isinstance(command, dict):
+            command = str(command.get("command") or command.get("type") or "")
+        if command == "l":
+            self.dp_chat.audio_language_choice = (
+                "中英混合" if self.dp_chat.audio_language_choice == "日英混合" else "日英混合"
+            )
+            self._notify_status("已切换语言为：" + ("中文" if self.dp_chat.audio_language_choice == "中英混合" else "日文"))
+            return
+        if command == "v":
+            if not self.current_character.has_valid_voice_model():
+                self._notify_status("当前角色无法进行语音合成")
+                logger.error("当前角色无法开启语音合成，缺少 GPT-SoVITS 模型或参考音频文件。")
+                return
+            self.dp_chat.if_generate_audio = not self.dp_chat.if_generate_audio
+            self._notify_status("已" + ("开启" if self.dp_chat.if_generate_audio else "关闭") + "语音合成")
+            return
+        if command == "conv":
+            if not self.dp_chat.if_sakiko:
+                self._notify_status("祥子好像不在<w>")
+                return
+            self.dp_chat.sakiko_state = not self.dp_chat.sakiko_state
+            self.live2d_client.switch_sakiko_state(self.dp_chat.sakiko_state)
+            self._notify_status("已切换为" + ("黑祥" if self.dp_chat.sakiko_state else "白祥"))
+            return
+        if command == "mask":
+            if not self.dp_chat.if_sakiko:
+                self._notify_status("祥子好像不在<w>")
+                return
+            self.live2d_client.toggle_sakiko_mask()
+            return
+        if command == "start_talking":
+            self.live2d_client.start_talking()
+            return
+        if command == "stop_talking":
+            self.live2d_client.stop_playback()
+            return
+        if command == "change_l2d_background":
+            self.live2d_client.change_background()
+            return
+        if command == "bye":
+            self.close()
+            return
+        self._notify_status("未知命令，已拒绝执行。")
 
     def _confirm_dangerous_command(self, spec: CommandSpec, callback: Callable[[], None]) -> None:
         """对危险命令弹出二次确认窗口。"""
@@ -2977,11 +2766,8 @@ class ChatGUI(QWidget):
                                  "all_fps":[30, 60, 120]}
         self.l2d_fps_dict["current_fps"]=(self.l2d_fps_dict["current_fps"]+1) % len(self.l2d_fps_dict["all_fps"])
         current_fps = self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
-        self.change_char_queue.put({
-            "type": "switch_l2d_fps",
-            "fps": current_fps
-        })
-        self.QT_message_queue.put(f"已切换 Live2D 渲染帧率为 {current_fps} fps")
+        self.live2d_client.switch_fps(current_fps)
+        self._notify_status(f"已切换 Live2D 渲染帧率为 {current_fps} fps")
     
     def get_current_l2d_fps(self):
         if hasattr(self, 'l2d_fps_dict'):
@@ -2996,7 +2782,7 @@ class ChatGUI(QWidget):
             try:
                 convert_old_l2d_json(new_model_json)
             except Exception:
-                self.QT_message_queue.put(f"切换模型失败，转换旧版Live2D配置文件时出错。")
+                self._notify_status("切换模型失败，转换旧版Live2D配置文件时出错。")
                 logger.exception("切换模型失败，转换旧版 Live2D 配置文件时出错。")
                 return
             logger.info("成功转换旧版 Live2D 配置文件。")
@@ -3005,7 +2791,7 @@ class ChatGUI(QWidget):
             self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
             self.chat_manager.save()
         except Exception:
-            self.QT_message_queue.put("切换模型失败，保存对话模型配置时出错。")
+            self._notify_status("切换模型失败，保存对话模型配置时出错。")
             logger.exception("保存对话级 Live2D 模型配置失败。")
             return
         self._send_live2d_switch(character_name, new_model_json)
@@ -3014,34 +2800,101 @@ class ChatGUI(QWidget):
         """
         发送结构化 Live2D 切换命令。
         """
-        if self.change_char_queue is None:
+        self.live2d_client.switch_model(character_name, model_json)
+
+    def show_lottery(self, chat_id: str, turn_id: str, title: str, options: tuple[str, ...]) -> bool:
+        """通过 Qt 主线程请求打开抽签窗口。"""
+        if chat_id != self.current_chat_id or self._turn_event_bridge is None:
+            return False
+        self._turn_event_bridge.lottery_signal.emit(LotteryUiCommandEvent(title=title, options=options))
+        return True
+
+    def write_document(self, chat_id: str, turn_id: str, filename: str, content: str) -> str:
+        """写出工具导出的文档并返回绝对文件路径。"""
+        safe_filename = re.sub(r'[\\/*?:"<>|]', "", os.path.basename(filename.strip()))
+        if not safe_filename:
+            safe_filename = "agent_output.md"
+        tool_data_path = os.path.abspath(os.path.join(script_dir, "tool_data"))
+        os.makedirs(tool_data_path, exist_ok=True)
+        file_path = os.path.join(tool_data_path, safe_filename)
+        with open(file_path, "w", encoding="utf-8") as file:
+            file.write(content)
+        return file_path
+
+    def request_open_file(self, path: str) -> None:
+        """请求 Qt 主线程打开已导出的文件。"""
+        if self._turn_event_bridge is None:
             return
-        self.change_char_queue.put({
-            "type": "switch_live2d",
-            "character_name": character_name,
-            "model_json": model_json or "",
-        })
+        self._turn_event_bridge.open_file_signal.emit(path)
+
+    def _handle_open_file_request(self, path: str) -> None:
+        """在 Qt 主线程使用系统默认程序打开文件。"""
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def list_models(self, chat_id: str, turn_id: str, character_name: str) -> list[object]:
+        """列出当前前台角色可切换的 Live2D 模型。"""
+        if chat_id != self.current_chat_id:
+            return []
+        character = self.character_by_name.get(character_name)
+        if character is None:
+            return []
+        char_folder = character.character_folder_name
+        if char_folder == "sakiko":
+            return []
+        base_path = os.path.normpath(os.path.join(project_root, "live2d_related", char_folder))
+        models: list[dict[str, str]] = []
+        import glob
+        default_live2d_json_list = glob.glob(os.path.join(base_path, "live2D_model", "*.model.json"))
+        if default_live2d_json_list:
+            models.append({
+                "model_name": "默认",
+                "model_json_path": default_live2d_json_list[0].replace("\\", "/"),
+            })
+        extra_path = os.path.join(base_path, "extra_model")
+        if os.path.exists(extra_path):
+            for model_dir in os.listdir(extra_path):
+                model_path = os.path.join(extra_path, model_dir)
+                if not os.path.isdir(model_path):
+                    continue
+                json_paths = glob.glob(os.path.join(model_path, "*.model.json"))
+                if json_paths:
+                    models.append({
+                        "model_name": model_dir,
+                        "model_json_path": json_paths[0].replace("\\", "/"),
+                    })
+        return models
+
+    def change_model(self, chat_id: str, turn_id: str, character_name: str, model_name: str) -> bool:
+        """通过 Qt 主线程请求切换 Live2D 模型。"""
+        if chat_id != self.current_chat_id or self._turn_event_bridge is None:
+            return False
+        model_path = str(model_name or "").strip()
+        if not model_path or not os.path.exists(model_path):
+            return False
+        self._turn_event_bridge.live2d_switch_signal.emit(model_path)
+        return True
 
     def handle_user_input(self):
         self.setWindowTitle("数字小祥")
         user_this_turn_input=self.user_input.text().strip() or "（什么也没说）"
         if self._handle_command_before_send(user_this_turn_input):
             return
-        # 不可以在 AI 回复时补充内容
-        if self.is_chat_busy():
-            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再发送消息。")
-            return
         # 生成一条新的 turn_id，交给 dp_local2 标记当前对话
         turn_id = uuid.uuid4().hex
-        # 开始一轮对话。开始后，不能切换、删除对话或清空对话内容。
-        self._start_active_turn(self.current_chat_id, turn_id, "llm")
-        self.qt2dp_queue.put({
-            "type": "send_message",
-            "chat_id": self.current_chat_id,
-            "turn_id": turn_id,
-            "text": user_this_turn_input,
-        })
+        with self.current_chat.runtime.lock:
+            chat_has_running_turn = bool(self.current_chat.runtime.running_turn_ids)
+        chat_has_active_turn = (
+            getattr(self, "active_chat_id", None) == self.current_chat_id
+            and getattr(self, "active_turn_id", None) is not None
+        )
+        will_queue_pending = chat_has_running_turn or chat_has_active_turn
+        if not will_queue_pending:
+            # 开始一轮对话。开始后，不能切换、删除对话或清空对话内容。
+            self._start_active_turn(self.current_chat_id, turn_id, "llm")
+        self._submit_text_via_controller(user_this_turn_input, turn_id)
         self.user_input.clear()
+        if will_queue_pending:
+            return
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能
         if self.current_chat.message_list and self.current_chat.message_list[-1].text == user_this_turn_input:
@@ -3057,6 +2910,130 @@ class ChatGUI(QWidget):
         )
         self.chat_display.append_message(user_message, predicted_msg_index, stream=True, interval_ms=8)
 
+    def _submit_text_via_controller(self, user_text: str, turn_id: str) -> None:
+        """在后台线程中通过 controller 提交一轮文本生成。"""
+        if self._turn_event_bridge is None:
+            return
+        chat = self.current_chat
+        chat_id = chat.chat_id
+        character_name = self.current_character.character_name
+        settings = ChatTurnSettings(
+            audio_enabled=bool(getattr(self.dp_chat, "if_generate_audio", False)),
+            audio_language_choice=str(getattr(self.dp_chat, "audio_language_choice", "中文")),
+            sakiko_state=bool(getattr(self.dp_chat, "sakiko_state", True)),
+            character=self.current_character,
+            reasoning_kwargs=self._build_reasoning_kwargs_snapshot(),
+        )
+
+        def _run_controller_turn() -> None:
+            """执行后台文本生成并把事件交回 Qt 主线程。"""
+            events: list[ChatTurnEvent]
+            try:
+                events = self.flow_controller.submit_foreground_text_turn(
+                    chat=chat,
+                    chat_id=chat_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    character_name=character_name,
+                    settings=settings,
+                )
+            except Exception as exc:
+                logger.exception("controller 文本生成失败。")
+                events = [ChatTurnFailed(chat_id=chat_id, turn_id=turn_id, message=str(exc))]
+            self._turn_event_bridge.events_signal.emit({
+                "chat_id": chat_id,
+                "turn_id": turn_id,
+                "events": events,
+            })
+
+        threading.Thread(target=_run_controller_turn, daemon=True).start()
+
+    def _build_reasoning_kwargs_snapshot(self) -> dict[str, object] | None:
+        """从后端对象读取当前轮次的推理配置快照。"""
+        build_snapshot = getattr(self.dp_chat, "_build_current_reasoning_kwargs_snapshot", None)
+        if not callable(build_snapshot):
+            return None
+        result = build_snapshot()
+        if isinstance(result, dict):
+            return dict(result)
+        return None
+
+    def _handle_controller_turn_events(self, payload: object) -> None:
+        """处理新 controller 路径产生的 turn events。"""
+        if not isinstance(payload, dict):
+            return
+        chat_id = str(payload.get("chat_id") or "")
+        raw_events = payload.get("events")
+        if not isinstance(raw_events, list):
+            return
+        events: list[ChatTurnEvent] = [
+            event for event in raw_events if self._is_chat_turn_event(event)
+        ]
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            return
+
+        self.flow_controller.handle_turn_events(
+            events,
+            chat=chat,
+            display=self.chat_display,
+            live2d_client=self.live2d_client,
+        )
+        for event in events:
+            if isinstance(event, ChatTurnPhaseChanged) and self._is_active_turn_event(event.chat_id, event.turn_id):
+                self.active_turn_phase = event.phase
+            elif isinstance(event, (ChatTurnCompleted, ChatTurnCancelled, ChatTurnFailed)) and self._is_active_turn_event(event.chat_id, event.turn_id):
+                self._clear_active_turn()
+        self.refresh_chat_list()
+
+    def dispatch_audio_completed(self, event: AudioTaskCompleted) -> None:
+        """把后台语音完成事件投递到 Qt 主线程处理。"""
+        bridge = getattr(self, "_turn_event_bridge", None)
+        if bridge is not None:
+            bridge.audio_completed_signal.emit(event)
+            return
+        self._handle_audio_task_completed(event)
+
+    def _handle_audio_task_completed(self, event: AudioTaskCompleted) -> None:
+        """处理统一语音调度器完成事件，刷新可见历史并按前台状态播放。"""
+        chat = self.chat_manager.get_chat_by_id(event.task.chat_id)
+        if chat is None:
+            return
+        if event.task.chat_id != self.current_chat_id:
+            self.refresh_chat_list()
+            return
+
+        self.refresh_current_chat_display()
+        if not event.foreground_at_completion:
+            return
+        with chat.runtime.lock:
+            if not 0 <= event.task.message_index < len(chat.message_list):
+                return
+            message = chat.message_list[event.task.message_index]
+
+        self.setWindowTitle("数字小祥")
+        if event.task.task_kind == "historical_regeneration" and not event.real_audio_generated:
+            self._notify_status("语音合成失败，未播放重新生成的音频。")
+            return
+        display_text = ChatGUI._format_live2d_display_text(message.text, message.translation)
+        emotion = event.task.emotion
+        self.flow_controller.handle_audio_completed(
+            chat_id=event.task.chat_id,
+            audio_path=event.playback_audio_path,
+            emotion=emotion,
+            display_text=display_text,
+            live2d_client=self.live2d_client,
+        )
+
+    @staticmethod
+    def _is_chat_turn_event(event: object) -> bool:
+        """判断对象是否是 controller turn event。"""
+        return hasattr(event, "chat_id") and hasattr(event, "turn_id")
+
+    def _is_active_turn_event(self, chat_id: str, turn_id: str) -> bool:
+        """判断事件是否属于当前前台 active turn。"""
+        return self.active_chat_id == chat_id and self.active_turn_id == turn_id
+
     def save_data(self):
         # 使用 ChatManager 统一保存到 all_conversation.json
         try:
@@ -3065,6 +3042,10 @@ class ChatGUI(QWidget):
         except Exception:
             logger.exception("保存聊天记录失败")
             self.setWindowTitle("保存聊天记录失败！")
+
+    def _notify_status(self, message: str) -> None:
+        """向当前可用的状态通道发送顶部提示。"""
+        self.flow_controller.notify_status(message)
 
     def _register_message_command_handler(self, command_prefix: str, handler: Callable[[str], None]) -> None:
         """注册来自消息队列的特殊命令处理器。"""
@@ -3095,7 +3076,7 @@ class ChatGUI(QWidget):
                 f"用户已点击抽签，结果是：{winner}。"
                 "请你自然地继续对话并结合这个结果给出建议。"
             )
-            self.qt2dp_queue.put(internal_event)
+            self._submit_text_via_controller(internal_event, uuid.uuid4().hex)
             self.messages_box.clear()
             self.messages_box.append(f"抽签结果：{winner}")
 
@@ -3104,10 +3085,6 @@ class ChatGUI(QWidget):
         dialog.show()
 
     def handle_messages(self, message: object) -> None:
-        if isinstance(message, ApplicationQuitUiMessageEvent):
-            self.save_data()
-            self.close()
-            return
         if isinstance(message, LotteryUiCommandEvent):
             self._handle_lottery_ui_command(message)
             return
@@ -3121,89 +3098,3 @@ class ChatGUI(QWidget):
 
         self.messages_box.clear()
         self.messages_box.append(message)
-
-if __name__=='__main__':
-    from PyQt5.QtWidgets import QApplication
-    import sys,threading
-    from queue import Queue
-    dp2qt_queue = Queue()
-    qt2dp_queue = Queue()
-    QT_message_queue = Queue()
-
-
-    def dp_thread(dp2qt_queue, qt2dp_queue, QT_message_queue):      #测试用
-        while True:
-            time.sleep(0.5)
-            if not qt2dp_queue.empty():
-                user_input = qt2dp_queue.get()
-                if user_input == 'bye':
-                    break
-                if user_input == '思考中' or user_input == '有错误发生':
-                    QT_message_queue.put(user_input)
-
-                response = user_input + "祥子选择入学有特待生制度的羽丘女子学园，在校期间几乎不和任何人交流，\n期间她多次和睦在羽泽咖啡店会面，要求她不要向前队友透露自己的动向，但素世还是从爱音口中得知了祥子就在羽丘的消息，多次堵校门，这让祥子很厌烦。于是祥子决定与长崎爽世正式谈话，并顺便观看其所在乐队的演出。"
-                time.sleep(2)
-                dp2qt_queue.put(response)
-        dp2qt_queue.put("结束了")
-
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, script_dir)  # noqa
-    import character
-    get_all = character.GetCharacterAttributes()
-    characters = get_all.character_class_list
-
-    app = QApplication(sys.argv)
-    class AudioGenMock:
-        def __init__(self):
-            self.speed=1.0
-            self.pause_second=0.3
-            self.audio_file_path="../reference_audio/audio_cache/temp_output.wav"
-    audio_gen_mock = AudioGenMock()
-
-    # 创建 dp_chat mock，包含 ChatManager 以满足 ChatGUI 初始化需求
-    chat_mgr = get_chat_manager()
-    class DpChatMock:
-        def __init__(self):
-            self.chat_manager = chat_mgr
-            self.current_chat_id = chat_mgr.ensure_default_single_character_chat(characters).chat_id
-            self.if_generate_audio = False
-            self.audio_language_choice = "日英混合"
-            self.sakiko_state = True
-    dp_chat_mock = DpChatMock()
-
-    class _SharedBool:
-        def __init__(self, value: bool):
-            self.value = value
-
-    live2d_text_queue = Queue()
-    is_display_text_value = _SharedBool(True)
-    motion_complete_value = _SharedBool(True)
-    win = ChatGUI(
-        dp2qt_queue,
-        qt2dp_queue,
-        QT_message_queue,
-        characters,
-        dp_chat_mock,
-        audio_gen_mock,
-        live2d_text_queue,
-        is_display_text_value,
-        motion_complete_value,
-        None,
-        None,
-        None,
-    )
-
-    # 如果出现字体加载问题，则暂时不加载字体
-    font_path = os.path.join(project_root, "font", "ft.ttf")
-    font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))
-    if font_id != -1:
-        font_family = QFontDatabase.applicationFontFamilies(font_id)
-        font = QFont(font_family[0], 12)
-        app.setFont(font)
-
-    t1 = threading.Thread(target=dp_thread, args=(dp2qt_queue, qt2dp_queue, QT_message_queue))
-    t1.start()
-
-    win.show()
-    sys.exit(app.exec_())

@@ -8,11 +8,13 @@ import re
 import warnings
 import os
 import shutil
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, List, Union, Any, Iterable, Sequence
+from types import TracebackType
+from typing import Dict, Optional, List, Union, Any, Iterable, Protocol, Sequence
 import json
 
 import jinja2
@@ -26,6 +28,57 @@ from chat.chat_meta import ChatMeta, TheaterMeta, ToolCallHistoryRecordMeta, Too
 
 
 logger = get_logger(__name__)
+
+
+class RuntimeLock(Protocol):
+    """描述 Chat 运行时读写共享使用的锁接口。"""
+
+    def __enter__(self) -> bool:
+        """进入锁上下文。"""
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """退出锁上下文。"""
+
+
+@dataclasses.dataclass
+class PendingUserTurn:
+    """保存尚未写入历史的用户排队输入。"""
+
+    turn_id: str
+    text: str
+
+
+@dataclasses.dataclass
+class ChatRuntimeState:
+    """
+    保存不会持久化的单个对话运行时状态。
+    这些状态在程序运行中会用到，但是不会保存到聊天记录中
+    """
+    # 每个聊天的并发锁：不允许在每个聊天中同时读取/写入信息，必须做排队
+    lock: RuntimeLock = dataclasses.field(default_factory=threading.RLock)
+    # 当前对话中，用户发送的正在排队的信息
+    # 这些信息会在前面的 turn（信息）处理完成后开始处理
+    pending_user_turns: list[PendingUserTurn] = dataclasses.field(default_factory=list)
+    # 正在生成的对话轮次的 id
+    running_turn_ids: set[str] = dataclasses.field(default_factory=set)
+    # 该对话中正在排队的语音生成任务的数量；每句话的语音生成都是一个任务。
+    queued_audio_tasks: int = 0
+    # 该对话中，正在执行的语音生成任务的数量
+    running_audio_tasks: int = 0
+
+    def has_unfinished_work(self) -> bool:
+        """判断当前对话是否还有未完成的运行时工作，例如是否有待处理的用户消息、待生成的语音等内容"""
+        return (
+            bool(self.pending_user_turns)
+            or bool(self.running_turn_ids)
+            or self.queued_audio_tasks > 0
+            or self.running_audio_tasks > 0
+        )
 
 
 @dataclasses.dataclass
@@ -49,12 +102,15 @@ class Message:
         """
         从存储字典中加载一个 Message 实例
         """
+        audio_path = data["audio_path"]
+        if audio_path == "PENDING_AUDIO":
+            audio_path = "NO_AUDIO"
         return cls(
             character_name=data["character_name"],
             text=data["text"],
             translation=data["translation"],
             emotion=EmotionEnum.from_string(data["emotion"]),
-            audio_path=data["audio_path"]
+            audio_path=audio_path
         )
 
     def as_dict(self) -> Dict:
@@ -343,6 +399,8 @@ class Chat:
             self.message_list = message_list
         else:
             self.message_list = []
+        # 每个对话的运行时状态
+        self.runtime = ChatRuntimeState()
 
     @classmethod
     def new_single_chat(cls, character: CharacterAttributes, user_character: Optional[CharacterAttributes] = None, name: str = "新对话") -> "Chat":
@@ -831,14 +889,19 @@ class Chat:
         """
         self.message_list.append(message)
 
-    def clear_message_list(self) -> None:
+    def clear_message_list(self) -> bool:
         """
         清空当前对话中的所有消息
+
+        :returns: 清空是否成功。如果当前对话有正在处理的内容，则无法清空对话数据，返回 False。
         """
+        if self.runtime.has_unfinished_work():
+            return False
         self.message_list.clear()
         # 必须同时清除该对话的工具调用记录
         # 这些元数据绑定到 message_index；清空消息后若保留，重启渲染时会挂到新消息上。
         self.clear_tool_call_meta()
+        return True
 
     def is_my_turn(self, perspective: str) -> bool:
         """
@@ -920,10 +983,12 @@ class ChatManager:
 
     def delete_chat(self, chat_id: str) -> Optional[Chat]:
         """
-        删除指定对话，并返回被删除的对话；若不存在则返回 None。
+        删除指定对话，并返回被删除的对话；若不存在或当前对话在进行中则无法删除，返回 None。
         """
         for index, chat in enumerate(self.chat_list):
             if chat.chat_id == chat_id:
+                if chat.runtime.has_unfinished_work():
+                    return None
                 return self.chat_list.pop(index)
         return None
 
