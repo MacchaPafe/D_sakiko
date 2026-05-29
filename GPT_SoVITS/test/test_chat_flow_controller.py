@@ -310,6 +310,31 @@ class FakeGenerationSession:
         return [ChatTurnCompleted(chat_id=chat_id, turn_id=turn_id)]
 
 
+class StatusObservingGenerationSession:
+    """记录进入生成会话时状态栏是否已收到思考中消息。"""
+
+    def __init__(self, bridge: ManualQueuedStatusBridge, window: FakeStatusWindow) -> None:
+        """保存状态桥与窗口引用。"""
+        self.bridge = bridge
+        self.window = window
+        self.messages_seen_during_generation: list[str] = []
+
+    def run_foreground_turn(
+        self,
+        *,
+        chat: Chat,
+        chat_id: str,
+        turn_id: str,
+        user_text: str,
+        character_name: str,
+        settings: ChatTurnSettings,
+    ) -> list[ChatTurnEvent]:
+        """在模拟模型调用开始时投递已排队状态并记录窗口内容。"""
+        self.bridge.drain()
+        self.messages_seen_during_generation = list(self.window.messages)
+        return [ChatTurnCompleted(chat_id=chat_id, turn_id=turn_id)]
+
+
 class FakeChatManagerForShutdown:
     """记录 controller shutdown 过程中的保存动作。"""
 
@@ -500,6 +525,30 @@ class ChatFlowControllerTestCase(unittest.TestCase):
         self.assertEqual(events, [ChatTurnCompleted(chat_id=chat.chat_id, turn_id="turn-1")])
         self.assertEqual(generation_session.calls[0]["chat"], chat)
         self.assertEqual(generation_session.calls[0]["user_text"], "你好")
+
+    def test_submit_foreground_text_turn_notifies_thinking_before_generation(self) -> None:
+        """前台文本提交应在模型调用开始前显示角色思考中。"""
+        bridge = ManualQueuedStatusBridge()
+        window = FakeStatusWindow()
+        generation_session = StatusObservingGenerationSession(bridge, window)
+        controller = ChatFlowController(
+            window=window,
+            signal_bridge=bridge,
+            generation_session=generation_session,
+        )
+        chat = Chat(name="祥子")
+        controller.set_visible_chat(chat.chat_id)
+
+        controller.submit_foreground_text_turn(
+            chat=chat,
+            chat_id=chat.chat_id,
+            turn_id="turn-1",
+            user_text="你好",
+            character_name="祥子",
+            settings=ChatTurnSettings(audio_enabled=False, audio_language_choice="日英混合"),
+        )
+
+        self.assertEqual(generation_session.messages_seen_during_generation, ["祥子思考中..."])
 
     def test_submit_to_running_chat_queues_pending_user_turn(self) -> None:
         """已有运行中轮次时，后续输入应进入非持久 pending state。"""

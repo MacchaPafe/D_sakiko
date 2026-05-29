@@ -382,6 +382,8 @@ class ChatFlowController:
             character_name=character_name,
             settings=effective_settings,
         )
+        if self.is_foreground_chat(chat_id):
+            self.notify_status(f"{character_name}思考中...")
 
         try:
             events = self._generation_session.run_foreground_turn(
