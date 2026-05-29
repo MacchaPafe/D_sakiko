@@ -544,6 +544,7 @@ class DSLocalAndVoiceGen:
         """
         解析并校验模型输出的顶层 JSON array 对话段落。
         """
+        logger.info(content)
         json_str = self._strip_json_markdown_fence(content)
         if not json_str:
             raise ValueError("模型返回内容为空。")

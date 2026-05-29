@@ -220,6 +220,28 @@ class FakeHistoricalRegenerationWindow:
         self.status_messages.append(message)
 
 
+class FakeAssistantAudioCompletionWindow(FakeHistoricalRegenerationWindow):
+    """提供普通 assistant 语音完成路径所需的最小窗口对象。"""
+
+    def __init__(
+        self,
+        controller: FakeHistoricalRegenerationController | None = None,
+        *,
+        current_chat_id: str = "chat-1",
+    ) -> None:
+        """初始化带用户消息和 assistant 消息的可观测窗口。"""
+        super().__init__(controller, current_chat_id=current_chat_id)
+        self.current_chat = Chat(
+            message_list=[
+                Message("User", "你好", "", EmotionEnum.HAPPINESS, ""),
+                Message("祥子", "语音完成消息", "翻译", EmotionEnum.HAPPINESS, "/tmp/voice.wav"),
+            ],
+            chat_id="chat-1",
+        )
+        self.chat_manager = FakeChatManager(self.current_chat)
+        self.chat_display = FakeChatDisplay()
+
+
 class FakeUserInput:
     """提供用户输入框所需的最小接口。"""
 
@@ -396,6 +418,66 @@ class QtUiChatFlowEventsTestCase(unittest.TestCase):
         self.assertEqual(window.status_messages, ["请先终止生成或等待语音任务完成后再重新生成音频。"])
         self.assertFalse(hasattr(window, "regen_thread"))
         self.assertEqual(window.window_titles, ["正在重新生成音频...", "数字小祥"])
+
+    def test_assistant_audio_completion_streams_visible_message_without_full_refresh(self) -> None:
+        """普通回复语音完成后，应逐字追加展示该消息而不是全量刷新。"""
+        controller = FakeHistoricalRegenerationController()
+        window = FakeAssistantAudioCompletionWindow(controller)
+        event = AudioTaskCompleted(
+            task=AudioTask(
+                chat_id="chat-1",
+                turn_id="turn-1",
+                message_index=1,
+                text="语音完成消息",
+                character=window.character_by_name["祥子"],
+                settings=ChatAudioSettings(True, True, "日英混合"),
+                emotion=window.current_chat.message_list[1].emotion.as_label(),
+            ),
+            audio_path="/tmp/voice.wav",
+            playback_audio_path="/tmp/voice.wav",
+            real_audio_generated=True,
+            foreground_at_completion=True,
+        )
+
+        qtUI.ChatGUI._handle_audio_task_completed(window, event)
+
+        self.assertEqual(window.refresh_current_count, 0)
+        self.assertEqual(
+            window.chat_display.messages,
+            [(window.current_chat.message_list[1], 1, True, 30)],
+        )
+        self.assertEqual(
+            controller.audio_completed_calls,
+            [("chat-1", "/tmp/voice.wav", window.current_chat.message_list[1].emotion.as_label(), "语音完成消息\n翻译")],
+        )
+        self.assertEqual(window.window_titles, ["数字小祥"])
+
+    def test_background_assistant_audio_completion_uses_full_refresh_without_playback(self) -> None:
+        """普通回复语音若不是前台完成，应只刷新历史，不追加流式展示或播放。"""
+        controller = FakeHistoricalRegenerationController()
+        window = FakeAssistantAudioCompletionWindow(controller)
+        event = AudioTaskCompleted(
+            task=AudioTask(
+                chat_id="chat-1",
+                turn_id="turn-1",
+                message_index=1,
+                text="语音完成消息",
+                character=window.character_by_name["祥子"],
+                settings=ChatAudioSettings(True, True, "日英混合"),
+                emotion=window.current_chat.message_list[1].emotion.as_label(),
+            ),
+            audio_path="/tmp/voice.wav",
+            playback_audio_path="/tmp/voice.wav",
+            real_audio_generated=True,
+            foreground_at_completion=False,
+        )
+
+        qtUI.ChatGUI._handle_audio_task_completed(window, event)
+
+        self.assertEqual(window.refresh_current_count, 1)
+        self.assertEqual(window.chat_display.messages, [])
+        self.assertEqual(controller.audio_completed_calls, [])
+        self.assertEqual(window.live2d_client.play_calls, [])
 
     def test_historical_audio_completion_refreshes_and_plays_visible_chat(self) -> None:
         """历史音频完成时若目标 chat 仍可见，应刷新当前展示并走前台播放路径。"""

@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace
+import random
 import uuid
 from typing import Protocol
 from typing import cast
 
 from PyQt5.QtCore import QObject
 from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import pyqtSignal
 
 from chat.chat import Chat
@@ -154,6 +156,10 @@ class AudioSchedulerPort(Protocol):
         """关闭调度器并归一化未完成语音任务。"""
 
 
+StatusRestoreScheduler = Callable[[int, Callable[[], None]], None]
+IDLE_STATUS_MESSAGES: tuple[str, ...] = ("...", "...", "就绪", "...")
+
+
 class AudioWorkerShutdownPort(Protocol):
     """描述 controller 关闭语音 worker 所需的端口。"""
 
@@ -259,6 +265,7 @@ class ChatFlowController:
         signal_bridge: StatusSignalBridge | None = None,
         generation_session: ForegroundGenerationSession | None = None,
         audio_scheduler: AudioSchedulerPort | None = None,
+        status_restore_scheduler: StatusRestoreScheduler | None = None,
         qt_parent: object | None = None,
     ) -> None:
         """创建 controller 并连接状态信号桥。"""
@@ -273,6 +280,8 @@ class ChatFlowController:
         self._turn_phases: dict[tuple[str, str], str] = {}
         self._visible_chat_id = ""
         self._accepting_turns = True
+        self._status_revision = 0
+        self._status_restore_scheduler = status_restore_scheduler or self._schedule_status_restore
         self._signal_bridge.connect(self._handle_status)
         if self._audio_scheduler is not None:
             self._audio_scheduler.start()
@@ -311,7 +320,22 @@ class ChatFlowController:
 
     def notify_status(self, text: str) -> None:
         """从任意线程提交一条状态文本。"""
+        self._status_revision += 1
         self._signal_bridge.emit(text)
+
+    def notify_idle_status(self) -> None:
+        """恢复顶部状态栏的空闲随机文案。"""
+        self.notify_status(random.choice(IDLE_STATUS_MESSAGES))
+
+    def notify_temporary_status(self, text: str, *, restore_ms: int = 3000) -> None:
+        """显示临时状态，并在延迟后恢复空闲文案。"""
+        self._status_revision += 1
+        restore_revision = self._status_revision
+        self._signal_bridge.emit(text)
+        self._status_restore_scheduler(
+            restore_ms,
+            lambda: self._restore_idle_status_if_current(restore_revision),
+        )
 
     def set_visible_chat(self, chat_id: str) -> None:
         """记录当前可见的 chat id。"""
@@ -500,6 +524,7 @@ class ChatFlowController:
             if event.chat_id != self._visible_chat_id:
                 continue
             if isinstance(event, ChatTurnPhaseChanged) and event.phase == "llm":
+                self.notify_status(f"{self._chat_status_character_name(chat)}思考中...")
                 if live2d_client is not None:
                     live2d_client.start_thinking()
             elif isinstance(event, ChatPendingUserTurnQueued | ChatUserMessageCommitted):
@@ -510,6 +535,8 @@ class ChatFlowController:
                 self._turn_phases.pop((event.chat_id, event.turn_id), None)
                 if live2d_client is not None:
                     live2d_client.stop_thinking()
+                if event.audio_path == PENDING_AUDIO:
+                    continue
                 with chat.runtime.lock:
                     if not 0 <= event.message_index < len(chat.message_list):
                         continue
@@ -519,16 +546,17 @@ class ChatFlowController:
                 self._turn_phases.pop((event.chat_id, event.turn_id), None)
                 if live2d_client is not None:
                     live2d_client.stop_thinking()
-                self.notify_status(event.message)
+                self.notify_temporary_status(event.message)
             elif isinstance(event, ChatTurnCancelled):
                 self._turn_phases.pop((event.chat_id, event.turn_id), None)
                 if live2d_client is not None:
                     live2d_client.stop_thinking()
-                self.notify_status("已终止当前回复")
+                self.notify_temporary_status("已终止当前回复")
             elif isinstance(event, ChatTurnCompleted):
                 self._turn_phases.pop((event.chat_id, event.turn_id), None)
                 if live2d_client is not None:
                     live2d_client.stop_thinking()
+                self.notify_idle_status()
 
     def handle_audio_completed(
         self,
@@ -631,3 +659,25 @@ class ChatFlowController:
         if self._window is None:
             return
         self._window.handle_messages(text)
+
+    @staticmethod
+    def _schedule_status_restore(delay_ms: int, callback: Callable[[], None]) -> None:
+        """使用 Qt 定时器延迟恢复顶部状态。"""
+        QTimer.singleShot(delay_ms, callback)
+
+    def _restore_idle_status_if_current(self, restore_revision: int) -> None:
+        """只在状态没有变化时恢复空闲文案，避免覆盖更新状态。"""
+        if restore_revision != self._status_revision:
+            return
+        self.notify_idle_status()
+
+    @staticmethod
+    def _chat_status_character_name(chat: Chat) -> str:
+        """获取状态栏显示思考中时使用的角色名。"""
+        character_name = chat.get_character_name()
+        if character_name:
+            return character_name
+        for message in reversed(chat.message_list):
+            if message.character_name != "User":
+                return message.character_name
+        return "角色"

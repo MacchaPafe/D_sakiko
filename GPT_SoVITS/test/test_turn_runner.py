@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
@@ -122,6 +123,12 @@ class TurnRunnerTestCase(unittest.TestCase):
         self.assertEqual(assistant_events[0].message_index, 2)
         self.assertIsInstance(events[-1], ChatTurnCompleted)
         self.assertEqual(completion.calls[0]["model"], "fake-model")
+        request_messages = completion.calls[0]["messages"]
+        self.assertIsInstance(request_messages, list)
+        self.assertIn("Machine Output Contract", str(request_messages[0]["content"]))
+        self.assertIn("不是 OpenAI messages", str(request_messages[0]["content"]))
+        self.assertIn("<runtime_controls>", str(request_messages[-1]["content"]))
+        self.assertIn("reply_language: ja_with_zh_translation", str(request_messages[-1]["content"]))
 
     def test_audio_enabled_assistant_segment_is_committed_with_pending_audio(self) -> None:
         """需要语音的 assistant 片段应先写入 PENDING_AUDIO 哨兵。"""
@@ -174,7 +181,38 @@ class TurnRunnerTestCase(unittest.TestCase):
         retry_messages = completion.calls[1]["messages"]
         self.assertIsInstance(retry_messages, list)
         self.assertIn("候选草稿", str(retry_messages[-1]))
+        self.assertIn("不是 OpenAI messages", str(retry_messages[-1]))
+        self.assertIn("role/content", str(retry_messages[-1]))
         self.assertIn("こんにちは，今天先这样说。", str(retry_messages[-2]))
+
+    def test_one_shot_foreground_turn_repairs_openai_message_array_retry(self) -> None:
+        """收口误产出 OpenAI messages 数组时，应再纠正为段落数组。"""
+        final_text = "（听到有人打招呼，轻轻抬起头）\n\n啊...你好。"
+        completion = SequencedCompletion([
+            final_text,
+            json.dumps([{"role": "assistant", "content": final_text}], ensure_ascii=False),
+            json.dumps([{"text": final_text, "emotion": "happiness"}], ensure_ascii=False),
+        ])
+        session = ChatGenerationSession(completion=completion, model_name="fake-model")
+        chat = Chat(prompt_generator=StaticPromptGenerator("系统设定"))
+
+        events = session.run_foreground_turn(
+            chat=chat,
+            chat_id=chat.chat_id,
+            turn_id="turn-1",
+            user_text="你好",
+            character_name="祥子",
+            settings=ChatTurnSettings(audio_enabled=False, audio_language_choice="中英混合"),
+        )
+
+        self.assertEqual(len(completion.calls), 3)
+        self.assertEqual(chat.message_list[-1].text, final_text)
+        self.assertEqual(chat.message_list[-1].emotion, EmotionEnum.HAPPINESS)
+        self.assertIsInstance(events[-1], ChatTurnCompleted)
+        repair_messages = completion.calls[2]["messages"]
+        self.assertIsInstance(repair_messages, list)
+        self.assertIn("校验错误", str(repair_messages[-1]))
+        self.assertIn("role/content", str(repair_messages[-1]))
 
     def test_cancel_after_user_commit_discards_uncommitted_assistant_output(self) -> None:
         """取消发生在 LLM 返回前后时，应保留用户消息但不写入未提交 assistant。"""

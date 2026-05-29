@@ -103,18 +103,20 @@ class ChatDisplayTransientTestCase(unittest.TestCase):
         self.assertIn("排队消息", display.toPlainText())
         self.assertNotIn("?msg=", html)
 
-    def test_pending_audio_message_renders_as_non_playable(self) -> None:
-        """PENDING_AUDIO 应作为非播放哨兵渲染，而不是音频链接。"""
+    def test_pending_audio_message_is_hidden_until_audio_finishes(self) -> None:
+        """PENDING_AUDIO 消息应等语音完成后再进入聊天框。"""
         display = ChatDisplay()
         chat = Chat(message_list=[
+            Message("User", "你好", "", EmotionEnum.HAPPINESS, ""),
             Message("祥子", "音频生成中", "", EmotionEnum.HAPPINESS, PENDING_AUDIO)
         ])
 
         display.render_chat(chat)
 
         html = display.toHtml()
-        self.assertIn("音频生成中", display.toPlainText())
-        self.assertIn("no_audio:?msg=0", html)
+        self.assertIn("你好", display.toPlainText())
+        self.assertNotIn("音频生成中", display.toPlainText())
+        self.assertNotIn("no_audio:?msg=1", html)
         self.assertNotIn("PENDING_AUDIO", html)
 
     def test_render_chat_shows_persisted_tool_records_bound_to_message_history(self) -> None:

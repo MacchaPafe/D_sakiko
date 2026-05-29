@@ -29,6 +29,7 @@ from log import get_logger
 from qconfig import d_sakiko_config
 from character import CharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
+from chat_flow.audio_scheduler import AUDIO_TASK_KIND_HISTORICAL_REGENERATION
 from chat_flow.audio_scheduler import AudioTaskCompleted
 from chat_flow.controller import ChatFlowController
 from chat_flow.events import LotteryUiCommandEvent
@@ -39,6 +40,7 @@ from chat_flow.turn_runner import ChatTurnEvent
 from chat_flow.turn_runner import ChatTurnFailed
 from chat_flow.turn_runner import ChatTurnPhaseChanged
 from chat_flow.turn_runner import ChatTurnSettings
+from chat_flow.turn_runner import ChatToolCallRecordsUpdated
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
@@ -1194,6 +1196,8 @@ class ChatGUI(QWidget):
         self.active_turn_phase: str | None = None
         # 用户取消的对话轮次的 id
         self.cancelled_turn_ids: set[str] = set()
+        self._graceful_exit_requested = False
+        self._graceful_exit_started_at = 0.0
         self.tool_call_records_cache: dict[str, dict] = {}
         self.reasoning_enabled_labels: dict[str, str] = {
             "auto": "自动",
@@ -1219,6 +1223,8 @@ class ChatGUI(QWidget):
         self.chat_display.deleteMessageRequested.connect(self.delete_message)  # noqa
         self.chat_display.regenerateAudioRequested.connect(self.regenerate_audio)  # noqa
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
+        self._graceful_exit_timer = QTimer(self)
+        self._graceful_exit_timer.timeout.connect(self._finish_graceful_exit_if_ready)  # noqa
 
         self.messages_box = QTextBrowser()
         self.messages_box.setStyleSheet("""
@@ -2129,7 +2135,7 @@ class ChatGUI(QWidget):
         icon.addPixmap(pixmap, QIcon.Disabled, QIcon.Off)
         self.voice_button.setIcon(icon)
 
-    def _load_tool_call_records_cache(self):
+    def _load_tool_call_records_cache(self) -> None:
         self.tool_call_records_cache = {}
         records = self.current_chat.get_tool_call_record_dicts()
         for one in records:
@@ -2137,8 +2143,11 @@ class ChatGUI(QWidget):
             if tool_call_id:
                 self.tool_call_records_cache[tool_call_id] = one
 
-    def _open_tool_call_dialog(self, tool_call_id: str):
+    def _open_tool_call_dialog(self, tool_call_id: str) -> None:
         record = self.tool_call_records_cache.get(tool_call_id)
+        if record is None:
+            self._load_tool_call_records_cache()
+            record = self.tool_call_records_cache.get(tool_call_id)
         if record is None:
             record = {
                 "tool_call_id": tool_call_id,
@@ -2360,6 +2369,39 @@ class ChatGUI(QWidget):
     def closeEvent(self, event):
         self.stop_input_stream()
         event.accept()
+
+    def request_graceful_exit(self) -> None:
+        """触发和旧版一致的再见展示、Live2D 退出动作与 Qt 延迟关闭。"""
+        if self._graceful_exit_requested:
+            return
+        self._graceful_exit_requested = True
+        self._graceful_exit_started_at = time.monotonic()
+        if self.is_response_active():
+            self.cancel_active_turn()
+        self.user_input.setEnabled(False)
+        self.stop_input_stream()
+        self.save_data()
+        self.chat_display.append_transient_text(
+            self.current_character.character_name,
+            "（再见）",
+            stream=True,
+            interval_ms=25,
+        )
+        self.live2d_client.shutdown()
+        self._notify_status("正在退出...")
+        self._graceful_exit_timer.start(100)
+
+    def _finish_graceful_exit_if_ready(self) -> None:
+        """在 Live2D 退出动作完成后关闭 Qt，超时则按兜底路径退出。"""
+        if not self._graceful_exit_requested:
+            self._graceful_exit_timer.stop()
+            return
+        elapsed_seconds = time.monotonic() - self._graceful_exit_started_at
+        text_display_complete = not self.chat_display.is_streaming()
+        live2d_shutdown_complete = self.live2d_client.is_shutdown_complete()
+        if (text_display_complete and live2d_shutdown_complete) or elapsed_seconds >= 10.0:
+            self._graceful_exit_timer.stop()
+            self.close()
 
     def play_history_audio(self,audio_path_and_emotion):
         if self.live2d_client.is_playback_complete():
@@ -2698,11 +2740,14 @@ class ChatGUI(QWidget):
 
     def _send_internal_command_payload(self, payload: str | dict[str, object], force: bool = False) -> None:
         """执行已经迁移到 controller/window 的内部命令。"""
-        if not (force or not self.is_chat_busy()):
-            return
         command = payload
         if isinstance(command, dict):
             command = str(command.get("command") or command.get("type") or "")
+        if command in ("bye", "exit"):
+            self.request_graceful_exit()
+            return
+        if not (force or not self.is_chat_busy()):
+            return
         if command == "l":
             self.dp_chat.audio_language_choice = (
                 "中英混合" if self.dp_chat.audio_language_choice == "日英混合" else "日英混合"
@@ -2739,9 +2784,6 @@ class ChatGUI(QWidget):
             return
         if command == "change_l2d_background":
             self.live2d_client.change_background()
-            return
-        if command == "bye":
-            self.close()
             return
         self._notify_status("未知命令，已拒绝执行。")
 
@@ -2979,6 +3021,8 @@ class ChatGUI(QWidget):
             display=self.chat_display,
             live2d_client=self.live2d_client,
         )
+        if chat_id == self.current_chat_id and any(isinstance(event, ChatToolCallRecordsUpdated) for event in events):
+            self._load_tool_call_records_cache()
         for event in events:
             if isinstance(event, ChatTurnPhaseChanged) and self._is_active_turn_event(event.chat_id, event.turn_id):
                 self.active_turn_phase = event.phase
@@ -3003,18 +3047,26 @@ class ChatGUI(QWidget):
             self.refresh_chat_list()
             return
 
-        self.refresh_current_chat_display()
-        if not event.foreground_at_completion:
-            return
         with chat.runtime.lock:
             if not 0 <= event.task.message_index < len(chat.message_list):
                 return
             message = chat.message_list[event.task.message_index]
 
-        self.setWindowTitle("数字小祥")
-        if event.task.task_kind == "historical_regeneration" and not event.real_audio_generated:
-            self._notify_status("语音合成失败，未播放重新生成的音频。")
+        if event.task.task_kind == AUDIO_TASK_KIND_HISTORICAL_REGENERATION:
+            self.refresh_current_chat_display()
+            if not event.foreground_at_completion:
+                return
+            self.setWindowTitle("数字小祥")
+            if not event.real_audio_generated:
+                self._notify_status("语音合成失败，未播放重新生成的音频。")
+                return
+        elif event.foreground_at_completion:
+            self.chat_display.append_message(message, event.task.message_index, stream=True, interval_ms=30)
+            self.setWindowTitle("数字小祥")
+        else:
+            self.refresh_current_chat_display()
             return
+
         display_text = ChatGUI._format_live2d_display_text(message.text, message.translation)
         emotion = event.task.emotion
         self.flow_controller.handle_audio_completed(

@@ -21,6 +21,7 @@ from chat_flow.audio_scheduler import HistoricalAudioRegenerationResult
 from chat_flow.audio_scheduler import PENDING_AUDIO
 from chat_flow.audio_synthesizer import ChatAudioSettings
 from chat_flow.controller import ChatFlowController
+from chat_flow.controller import IDLE_STATUS_MESSAGES
 from chat_flow.turn_runner import ChatAssistantSegmentCommitted
 from chat_flow.turn_runner import ChatPendingUserTurnQueued
 from chat_flow.turn_runner import ChatTurnCancelled
@@ -85,6 +86,23 @@ class ManualQueuedStatusBridge:
             return
         while self.pending_messages:
             self._handler(self.pending_messages.pop(0))
+
+
+class ManualStatusRestoreScheduler:
+    """测试用手动触发状态恢复调度器。"""
+
+    def __init__(self) -> None:
+        """初始化待执行恢复回调。"""
+        self.calls: list[tuple[int, Callable[[], None]]] = []
+
+    def __call__(self, delay_ms: int, callback: Callable[[], None]) -> None:
+        """记录一次延时恢复请求。"""
+        self.calls.append((delay_ms, callback))
+
+    def run_next(self) -> None:
+        """执行下一条恢复回调。"""
+        _delay_ms, callback = self.calls.pop(0)
+        callback()
 
 
 class FakeStatusWindow:
@@ -423,6 +441,45 @@ class ChatFlowControllerTestCase(unittest.TestCase):
         self.assertIsNone(audio_generator.message_queue)
         self.assertEqual(status_messages, ["整理语言...\n1/4..."])
 
+    def test_temporary_status_restores_idle_text_when_scheduler_fires(self) -> None:
+        """临时状态应在恢复调度触发后回到空闲文案。"""
+        bridge = ManualQueuedStatusBridge()
+        window = FakeStatusWindow()
+        restore_scheduler = ManualStatusRestoreScheduler()
+        controller = ChatFlowController(
+            window=window,
+            signal_bridge=bridge,
+            status_restore_scheduler=restore_scheduler,
+        )
+
+        controller.notify_temporary_status("失败", restore_ms=3000)
+        bridge.drain()
+        restore_scheduler.run_next()
+        bridge.drain()
+
+        self.assertEqual(window.messages[0], "失败")
+        self.assertIn(window.messages[1], IDLE_STATUS_MESSAGES)
+        self.assertEqual(restore_scheduler.calls, [])
+
+    def test_stale_temporary_status_restore_does_not_override_new_status(self) -> None:
+        """旧临时状态的恢复回调不应覆盖后续新状态。"""
+        bridge = ManualQueuedStatusBridge()
+        window = FakeStatusWindow()
+        restore_scheduler = ManualStatusRestoreScheduler()
+        controller = ChatFlowController(
+            window=window,
+            signal_bridge=bridge,
+            status_restore_scheduler=restore_scheduler,
+        )
+
+        controller.notify_temporary_status("失败", restore_ms=3000)
+        controller.notify_status("祥子思考中...")
+        bridge.drain()
+        restore_scheduler.run_next()
+        bridge.drain()
+
+        self.assertEqual(window.messages, ["失败", "祥子思考中..."])
+
     def test_submit_foreground_text_turn_delegates_to_generation_session(self) -> None:
         """前台文本提交应通过 controller 进入 generation session。"""
         bridge = ManualQueuedStatusBridge()
@@ -683,7 +740,7 @@ class ChatFlowControllerTestCase(unittest.TestCase):
         self.assertEqual(result.cancelled_audio_tasks, 2)
 
     def test_assistant_segment_with_pending_audio_is_queued_for_scheduler(self) -> None:
-        """已提交的 pending audio assistant 片段应进入 controller 语音调度器。"""
+        """已提交的 pending audio 片段应只进语音队列，暂不展示。"""
         audio_scheduler = FakeAudioCancellationScheduler()
         controller = ChatFlowController(
             signal_bridge=ManualQueuedStatusBridge(),
@@ -725,6 +782,7 @@ class ChatFlowControllerTestCase(unittest.TestCase):
         )
 
         self.assertTrue(audio_scheduler.started)
+        self.assertEqual(display.appended_indices, [])
         self.assertEqual(
             audio_scheduler.queued_messages,
             [(
@@ -825,7 +883,11 @@ class ChatFlowControllerTestCase(unittest.TestCase):
         """只有前台失败事件应更新可见状态。"""
         bridge = ManualQueuedStatusBridge()
         window = FakeStatusWindow()
-        controller = ChatFlowController(window=window, signal_bridge=bridge)
+        controller = ChatFlowController(
+            window=window,
+            signal_bridge=bridge,
+            status_restore_scheduler=ManualStatusRestoreScheduler(),
+        )
         visible_chat = Chat()
         background_chat = Chat()
         display = FakeChatDisplay()
@@ -846,6 +908,43 @@ class ChatFlowControllerTestCase(unittest.TestCase):
         )
         bridge.drain()
         self.assertEqual(window.messages, ["前台失败"])
+
+    def test_foreground_llm_phase_updates_status_with_character_name(self) -> None:
+        """前台 LLM 阶段应在状态栏显示角色思考中。"""
+        bridge = ManualQueuedStatusBridge()
+        window = FakeStatusWindow()
+        controller = ChatFlowController(window=window, signal_bridge=bridge)
+        chat = Chat(name="祥子")
+        display = FakeChatDisplay()
+        controller.set_visible_chat(chat.chat_id)
+
+        controller.handle_turn_events(
+            [ChatTurnPhaseChanged(chat_id=chat.chat_id, turn_id="turn-1", phase="llm")],
+            chat=chat,
+            display=display,
+        )
+        bridge.drain()
+
+        self.assertEqual(window.messages, ["祥子思考中..."])
+
+    def test_foreground_completion_restores_idle_status(self) -> None:
+        """前台对话完成后应恢复顶部空闲文案。"""
+        bridge = ManualQueuedStatusBridge()
+        window = FakeStatusWindow()
+        controller = ChatFlowController(window=window, signal_bridge=bridge)
+        chat = Chat()
+        display = FakeChatDisplay()
+        controller.set_visible_chat(chat.chat_id)
+
+        controller.handle_turn_events(
+            [ChatTurnCompleted(chat_id=chat.chat_id, turn_id="turn-1")],
+            chat=chat,
+            display=display,
+        )
+        bridge.drain()
+
+        self.assertEqual(len(window.messages), 1)
+        self.assertIn(window.messages[0], IDLE_STATUS_MESSAGES)
 
     def test_foreground_llm_phase_starts_and_segment_stops_live2d_thinking(self) -> None:
         """前台 LLM 阶段应开始 thinking，首个可见片段应停止 thinking。"""
@@ -912,7 +1011,11 @@ class ChatFlowControllerTestCase(unittest.TestCase):
         """前台 LLM 阶段失败时应停止 thinking 并通知状态。"""
         bridge = ManualQueuedStatusBridge()
         window = FakeStatusWindow()
-        controller = ChatFlowController(window=window, signal_bridge=bridge)
+        controller = ChatFlowController(
+            window=window,
+            signal_bridge=bridge,
+            status_restore_scheduler=ManualStatusRestoreScheduler(),
+        )
         chat = Chat()
         display = FakeChatDisplay()
         live2d = FakeLive2DOrchestrator()
@@ -934,7 +1037,7 @@ class ChatFlowControllerTestCase(unittest.TestCase):
 
         self.assertEqual(live2d.start_thinking_count, 1)
         self.assertEqual(live2d.stop_thinking_count, 1)
-        self.assertEqual(window.messages, ["失败"])
+        self.assertEqual(window.messages, ["角色思考中...", "失败"])
 
     def test_switching_to_chat_in_llm_phase_starts_thinking_and_switching_away_stops(self) -> None:
         """切到 LLM 阶段 chat 应开始 thinking，切走应停止。"""

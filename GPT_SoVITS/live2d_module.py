@@ -536,13 +536,23 @@ class Live2DModule:
                         else:
                             model.StartMotion("text_generating", 0, 3, self.onStartCallback, self.onFinishCallback)
 
+            if if_bye:
+                glClear(GL_COLOR_BUFFER_BIT)
+                model.Update()
+                render_background(texture)
+                model.Draw()
+                glUseProgram(0)
+                pygame.display.flip()
+                if self.motion_is_over:
+                    self.run=False
+                    self.save_l2d_json_paths_and_bg()
+                continue
+
             if not emotion_queue.empty():
                 emotion = emotion_queue.get()
                 if emotion=='bye':
-                    if not if_bye:
-                        model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
+                    model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
                     if_bye=True
-                    emotion_queue.put("bye")    #为了动作结束前一直进入该if分支
                     glClear(GL_COLOR_BUFFER_BIT)
                     model.Update()
                     render_background(texture)

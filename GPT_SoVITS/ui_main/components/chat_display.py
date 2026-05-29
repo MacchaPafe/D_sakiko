@@ -10,6 +10,7 @@ from PyQt5.QtGui import QContextMenuEvent, QTextCursor
 from PyQt5.QtWidgets import QAction, QTextBrowser, QWidget
 
 from chat.chat import Chat, Message
+from chat_flow.audio_scheduler import PENDING_AUDIO
 from chat_flow.audio_scheduler import is_playable_audio_path
 
 
@@ -66,6 +67,8 @@ class ChatDisplay(QTextBrowser):
             records_by_index = self._tool_records_by_message_index(chat)
 
             for index, message in enumerate(chat.message_list):
+                if not self._should_render_message(message):
+                    continue
                 message_block: list[str] = []
                 for record in records_by_index.get(index, []):
                     message_block.append(self._render_tool_record_html(record))
@@ -237,6 +240,13 @@ class ChatDisplay(QTextBrowser):
         self._message_meta_by_index[msg_index] = _MessageDisplayMeta(
             is_user_message=self._is_user_message(message),
         )
+
+    @staticmethod
+    def _should_render_message(message: Message) -> bool:
+        """判断消息是否已经可以进入聊天框展示。"""
+        if message.character_name == "User":
+            return True
+        return message.audio_path != PENDING_AUDIO
 
     def _render_message_html(self, message: Message, msg_index: int) -> str:
         """将一条消息渲染成完整 HTML 片段。"""

@@ -48,6 +48,7 @@ class Live2DClient:
     thinking_queue: QueueSignal | None = None
     text_display_value: SharedBoolValue | None = None
     char_is_converted_queue: QueueWriter | None = None
+    process: multiprocessing.Process | None = None
 
     def play_segment(self, *, audio_path: str, emotion: str, display_text: str = "") -> bool:
         """在 Live2D 空闲时播放一段音频并可同步更新显示文本。"""
@@ -146,10 +147,20 @@ class Live2DClient:
         return True
 
     def shutdown(self) -> None:
-        """发送 Live2D 关闭流程使用的现有退出信号。"""
-        if self.change_char_queue is not None:
-            self.change_char_queue.put("exit")
+        """发送 Live2D 关闭流程使用的再见动作信号。"""
         self.emotion_queue.put("bye")
+
+    def is_shutdown_complete(self) -> bool:
+        """返回 Live2D 进程是否已经完成退出。"""
+        if self.process is None:
+            return True
+        return not self.process.is_alive()
+
+    def join_shutdown(self, timeout_seconds: float = 0.0) -> None:
+        """等待 Live2D 进程完成退出。"""
+        if self.process is None:
+            return
+        self.process.join(timeout=timeout_seconds)
 
     def _send_change_command(self, payload: dict[str, object]) -> bool:
         """向 Live2D 控制队列写入结构化命令。"""
@@ -202,5 +213,6 @@ def create_live2d_client_process(
         thinking_queue=thinking_queue,
         text_display_value=is_display_text_value,
         char_is_converted_queue=char_is_converted_queue,
+        process=process,
     )
     return Live2DProcessHandle(client=client, process=process)

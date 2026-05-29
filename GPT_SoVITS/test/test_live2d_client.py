@@ -220,8 +220,8 @@ class Live2DClientTestCase(unittest.TestCase):
         self.assertTrue(client.stop_thinking())
         self.assertEqual(thinking_queue.items, [])
 
-    def test_shutdown_emits_existing_exit_and_bye_signals(self) -> None:
-        """关闭时应发送现有 Live2D 退出和再见信号。"""
+    def test_shutdown_emits_bye_without_short_circuit_exit_signal(self) -> None:
+        """关闭时应只发送再见动作，避免 exit 抢先跳过 Live2D 退出动作。"""
         change_queue = FakeQueue()
         emotion_queue = FakeQueue()
         client = Live2DClient(
@@ -234,7 +234,7 @@ class Live2DClientTestCase(unittest.TestCase):
 
         client.shutdown()
 
-        self.assertEqual(change_queue.items, ["exit"])
+        self.assertEqual(change_queue.items, [])
         self.assertEqual(emotion_queue.items, ["bye"])
 
     def test_is_playback_complete_reads_shared_motion_value(self) -> None:

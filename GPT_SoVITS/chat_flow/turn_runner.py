@@ -257,7 +257,11 @@ class TurnRunner:
             )
             chat.add_message(user_message)
             user_message_index = len(chat.message_list) - 1
-            llm_messages = chat.build_llm_query(character_name)
+            llm_messages = build_runtime_llm_messages(
+                chat=chat,
+                character_name=character_name,
+                settings=settings,
+            )
 
         events.append(ChatUserMessageCommitted(
             chat_id=chat_id,
@@ -382,6 +386,109 @@ def _is_cancelled(cancellation_token: CancellationToken | None) -> bool:
     return cancellation_token is not None and cancellation_token.is_cancelled()
 
 
+def build_runtime_llm_messages(
+    *,
+    chat: Chat,
+    character_name: str,
+    settings: ChatTurnSettings,
+) -> list[dict[str, object]]:
+    """构造本轮发送给模型的历史，并注入渲染器需要的输出协议。"""
+    messages = [
+        dict(message)
+        for message in chat.build_llm_query(character_name, is_simplify=True)
+    ]
+    append_machine_output_contract(
+        messages,
+        audio_language_choice=settings.audio_language_choice,
+    )
+    messages.append({
+        "role": "user",
+        "content": build_turn_runtime_controls(
+            character_name=character_name,
+            settings=settings,
+        ),
+    })
+    return messages
+
+
+def append_machine_output_contract(
+    messages: list[dict[str, object]],
+    *,
+    audio_language_choice: str,
+) -> None:
+    """把 Machine Output Contract 追加到 system prompt，缺失 system 时新建一条。"""
+    contract = build_machine_output_contract_instruction(audio_language_choice)
+    for message in messages:
+        if message.get("role") != "system":
+            continue
+        content = str(message.get("content") or "")
+        if "Machine Output Contract" in content:
+            return
+        message["content"] = content + "\n\n" + contract if content else contract
+        return
+    messages.insert(0, {"role": "system", "content": contract})
+
+
+def build_machine_output_contract_instruction(audio_language_choice: str) -> str:
+    """生成模型必须遵守的结构化段落输出协议。"""
+    reply_language = reply_language_code(audio_language_choice)
+    if reply_language == "ja_with_zh_translation":
+        translation_rule = "每个对象必须包含 translation 字段，内容是 text 的中文翻译。"
+        example = (
+            '[{"text":"今日は少し疲れました。",'
+            '"translation":"今天稍微有点累。",'
+            '"emotion":"happiness"}]'
+        )
+    else:
+        translation_rule = "每个对象严禁包含 translation 字段。"
+        example = '[{"text":"今天稍微有点累。","emotion":"happiness"}]'
+
+    return (
+        "# Machine Output Contract\n"
+        "你不是直接向用户输出自由文本。你正在为语音与聊天渲染器生成结构化数据。\n"
+        "最终回复必须只返回一个 JSON array，不要输出 Markdown 代码块、解释文字、前缀或后缀。\n"
+        "这个 JSON array 不是 OpenAI messages；不要输出 role、content、assistant、user 等字段。\n"
+        "JSON array 的每个元素都必须是一个对话段落 JSON object，只能包含 text、emotion、translation 这些字段。\n"
+        "text 是角色实际说出口的台词；emotion 必须是 happiness、sadness、anger、surprise、fear、disgust、like 之一。\n"
+        f"{translation_rule}\n"
+        f"当前 runtime.reply_language 为 {reply_language}。\n"
+        f"示例：{example}\n"
+        "请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"
+    )
+
+
+def build_turn_runtime_controls(
+    *,
+    character_name: str,
+    settings: ChatTurnSettings,
+) -> str:
+    """构造本轮语言和角色状态控制信息。"""
+    return (
+        "<runtime_controls>\n"
+        f"reply_language: {reply_language_code(settings.audio_language_choice)}\n"
+        f"sakiko_tone: {sakiko_tone_code(character_name, settings)}\n"
+        "</runtime_controls>"
+    )
+
+
+def reply_language_code(audio_language_choice: str) -> str:
+    """将界面语言选项转换为模型提示中的短代码。"""
+    if audio_language_choice == "日英混合":
+        return "ja_with_zh_translation"
+    return "zh_only"
+
+
+def sakiko_tone_code(character_name: str, settings: ChatTurnSettings) -> str:
+    """返回祥子专属语气控制代码，非祥子角色返回 none。"""
+    names = {character_name}
+    character = settings.character
+    if character is not None:
+        names.add(str(getattr(character, "character_name", "") or ""))
+    if "祥子" not in names:
+        return "none"
+    return "dark" if settings.sakiko_state else "light"
+
+
 def strip_json_markdown_fence(text: str) -> str:
     """去掉模型偶尔包裹在 JSON 外层的 Markdown 代码块标记。"""
     json_str = text.strip()
@@ -431,12 +538,33 @@ def parse_or_normalize_model_segments(
     except (json.JSONDecodeError, ValueError):
         response = completion(
             model=model_name,
-            messages=build_final_json_messages(base_messages, content),
+            messages=build_final_json_messages(
+                base_messages,
+                content,
+                audio_language_choice=audio_language_choice,
+            ),
             stream=False,
             **reasoning_kwargs,
         )
+        normalized_content = extract_response_content(response)
+        try:
+            return parse_model_segments_payload(
+                normalized_content,
+                audio_language_choice=audio_language_choice,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            repair_response = completion(
+                model=model_name,
+                messages=build_format_retry_messages(
+                    invalid_content=normalized_content,
+                    reason=str(exc),
+                    audio_language_choice=audio_language_choice,
+                ),
+                stream=False,
+                **reasoning_kwargs,
+            )
         return parse_model_segments_payload(
-            extract_response_content(response),
+            extract_response_content(repair_response),
             audio_language_choice=audio_language_choice,
         )
 
@@ -444,9 +572,15 @@ def parse_or_normalize_model_segments(
 def build_final_json_messages(
     base_messages: list[dict[str, object]],
     candidate_content: str,
+    *,
+    audio_language_choice: str,
 ) -> list[dict[str, object]]:
     """构造把候选回复转换成 Machine Output Contract JSON array 的请求。"""
     messages = [dict(message) for message in base_messages]
+    append_machine_output_contract(
+        messages,
+        audio_language_choice=audio_language_choice,
+    )
     candidate = candidate_content.strip()
     if candidate:
         messages.append({
@@ -459,10 +593,38 @@ def build_final_json_messages(
             "请将上一条 assistant 候选回复转换为本轮最终回复。\n"
             "上一条 assistant 仅是候选草稿，不代表格式正确；如果它已经是自然语言或格式不合格，"
             "请转换为正确 JSON array，不要照抄错误格式。\n"
-            "只输出符合 Machine Output Contract 的 JSON array。"
+            "只输出符合 Machine Output Contract 的 JSON array。\n"
+            "注意：这里要输出的是段落数组，不是 OpenAI messages；"
+            "不要输出 role/content，不要输出 [{\"role\":\"assistant\",\"content\":\"...\"}]。"
         ),
     })
     return messages
+
+
+def build_format_retry_messages(
+    *,
+    invalid_content: str,
+    reason: str,
+    audio_language_choice: str,
+) -> list[dict[str, object]]:
+    """构造一次针对错误 JSON/schema 输出的格式纠正请求。"""
+    return [
+        {
+            "role": "system",
+            "content": build_machine_output_contract_instruction(audio_language_choice),
+        },
+        {
+            "role": "user",
+            "content": (
+                "下面是模型输出，可能不是合法 JSON，或不符合 Machine Output Contract schema。\n"
+                "请只纠正 JSON 结构、字段和缺失项，不要改写语义。\n"
+                f"校验错误：{reason}\n"
+                "特别注意：不要输出 OpenAI messages，不要输出 role/content。\n"
+                "原始输出：\n"
+                f"{invalid_content}"
+            ),
+        },
+    ]
 
 
 def parse_model_segments_payload(content: str, *, audio_language_choice: str) -> list[ModelSegment]:
