@@ -22,15 +22,7 @@
 !/runtime/Lib/site-packages/live2d/v2cpp/*.so
 !/runtime/Lib/site-packages/live2d/v2cpp/*.dylib
 /GPT_SoVITS/__pycache__
-/GPT_SoVITS/AR/
-/GPT_SoVITS/BigVGAN/
-/GPT_SoVITS/configs/
-/GPT_SoVITS/f5_tts/
-/GPT_SoVITS/feature_extractor/
-/GPT_SoVITS/module/
 /GPT_SoVITS/pretrained_models/
-/GPT_SoVITS/text/
-/GPT_SoVITS/tools/
 /GPT_SoVITS/tool_data/
 /GPT_SoVITS/training_dir/
 /GPT_SoVITS/8.py
@@ -41,6 +33,8 @@
 /GPT_SoVITS/faulthandler_log.txt
 /GPT_SoVITS/eres2net/**
 /GPT_SoVITS/rag/pipeline/data/**
+
+docs-site/.vitepress/cache
 
 **/.DS_Store
 d_sakiko_config.json
