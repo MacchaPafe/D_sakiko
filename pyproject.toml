@@ -78,6 +78,10 @@ dependencies = [
     "rapidfuzz>=3.14.3",
 ]
 
+[project.optional-dependencies]
+cpu = ["torch>=2.7, <2.8", "torchaudio>=2.7, <2.8"]
+cu128 = ["torch>=2.7, <2.8", "torchaudio>=2.7, <2.8"]
+
 [tool.uv]
 # Supported platform
 required-environments = [
@@ -87,6 +91,12 @@ required-environments = [
     "sys.platform == 'darwin' and platform.machine == 'arm64'",
     # Linux distributions on AMD64
     "sys.platform == 'linux' and platform.machine == 'x86_64'",
+]
+conflicts = [
+    [
+        {extra = "cpu"},
+        {extra = "cu128"},
+    ]
 ]
 
 [dependency-groups]
@@ -101,14 +111,18 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
 live2d-py = { path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_14_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" }
 torch = [
-  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-torchvision = [
-  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torchaudio = [
-  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
+  { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
 ]
