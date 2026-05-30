@@ -232,7 +232,7 @@ class UpdateSystemTest(unittest.TestCase):
                 min_updater_version="1.0.0",
                 ignore_patterns=[],
                 include_patterns=[],
-                records=[FileRecord(path="uv.lock", action="modify", sha256="0" * 64, size=10)],
+                records=[FileRecord(path="uv.lock", action="modify", sha256="0" * 64, size=10, old_file_sha256="0" * 64)],
                 remove_files=[],
                 added_files=[],
                 changed_files=["uv.lock"],

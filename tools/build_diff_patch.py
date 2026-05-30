@@ -35,7 +35,9 @@ DEFAULT_IGNORE_PATTERNS = [
     ".github/*",
     ".gitignore",
     "GPT_SoVITS/live2d_1_generate.py",
-    "GPT_SoVITS/setup_live2d.py"
+    "GPT_SoVITS/setup_live2d.py",
+    "AGENTS.md",
+    "docs/agents/*",
 ]
 
 
@@ -75,6 +77,8 @@ class FileRecord:
     action: str
     sha256: str
     size: int
+    # 只有修改文件时，才需要提前校验旧文件的 sha256
+    old_file_sha256: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -337,6 +341,7 @@ def calculate_changes(
 
 def build_file_records(
     current_root: Path,
+    old_root: Path,
     remove_files: list[str],
     added_files: list[str],
     changed_files: list[str],
@@ -349,7 +354,9 @@ def build_file_records(
         records.append(FileRecord(path=rel, action="add", sha256=sha256_file(path), size=path.stat().st_size))
     for rel in changed_files:
         path = current_root / rel
-        records.append(FileRecord(path=rel, action="modify", sha256=sha256_file(path), size=path.stat().st_size))
+        old_path = old_root / rel
+        records.append(FileRecord(path=rel, action="modify", sha256=sha256_file(path), size=path.stat().st_size,
+                                  old_file_sha256=sha256_file(old_path)))
     for rel in remove_files:
         records.append(FileRecord(path=rel, action="remove", sha256="", size=0))
     return records
@@ -436,7 +443,7 @@ def write_manifest(
         for item in records
     )
     manifest = {
-        "format_version": 2,
+        "format_version": 3,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "hdiff",
         "app_id": app_id,
@@ -457,6 +464,7 @@ def write_manifest(
                 "path": item.path,
                 "action": item.action,
                 "sha256": item.sha256,
+                "old_file_sha256": item.old_file_sha256,
                 "size": item.size,
             }
             for item in records
@@ -580,6 +588,7 @@ def main() -> int:
     # 构建文件记录列表，供 manifest 和应用端使用
     records = build_file_records(
         current_root=current_root,
+        old_root=old_root,
         remove_files=remove_files,
         added_files=added_files,
         changed_files=changed_files,
