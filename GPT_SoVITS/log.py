@@ -336,7 +336,7 @@ def format_exception(exc: BaseException) -> str:
 def _build_console_handler(*, console_level: int) -> logging.Handler:
     """创建控制台 handler。"""
     handler = RichHandler(
-        console=Console(stderr=True),
+        console=Console(stderr=False),
         rich_tracebacks=True,
         show_time=True,
         show_level=True,
