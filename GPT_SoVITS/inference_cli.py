@@ -625,6 +625,9 @@ class CharacterVoiceRuntime:
             "speed_factor": cast(float, payload.get("speed_factor", 1.0)),
             "sample_steps": gsv_sam_rate,
             "fragment_interval": cast(float, payload.get("fragment_interval", 0.5)),
+            # 注释掉下面两行即可切换到旧的行为（无 cuda graph 支持）
+            "use_cuda_graph": True,
+            "parallel_infer": False,
         }
         with open(os.devnull, "w", encoding="utf-8") as null:
             with contextlib.redirect_stdout(null):

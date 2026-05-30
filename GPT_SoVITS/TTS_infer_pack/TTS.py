@@ -264,6 +264,33 @@ def set_seed(seed: int):
     return seed
 
 
+def check_cuda_graph_support(device: str = "cuda") -> bool:
+    """检查当前环境是否支持 CUDA Graph 加速。"""
+    if "cuda" not in device or not torch.cuda.is_available():
+        return False
+    try:
+        major, _ = torch.cuda.get_device_capability()
+        if major < 7:
+            return False
+        a = torch.randn(2, 2, device="cuda")
+        g = torch.cuda.CUDAGraph()
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            b = a * 2
+        torch.cuda.current_stream().wait_stream(s)
+        out = torch.empty_like(b)
+        with torch.cuda.graph(g):
+            out.copy_(a * 2)
+        g.replay()
+        torch.cuda.synchronize()
+        del a, b, out, g, s
+        torch.cuda.empty_cache()
+        return True
+    except Exception as e:
+        return False
+
+
 class TTS_Config:
     default_configs = {
         "v1": {
@@ -504,6 +531,7 @@ class TTS:
         self.sr_model: AP_BWE = None
         self.sv_model = None
         self.sr_model_not_exist: bool = False
+        self._cuda_graph_runner = None
 
         self.vocoder_configs: dict = {
             "sr": None,
@@ -788,6 +816,7 @@ class TTS:
             self.configs.save_configs()
         self.configs.hz = 50
         self._dispose_model_attr("t2s_model")
+        self._cuda_graph_runner = None
         dict_s1 = checkpoint if checkpoint is not None else torch.load(
             weights_path, map_location=self.configs.device, weights_only=False
         )
@@ -945,6 +974,7 @@ class TTS:
         """卸载与当前角色直接相关的声学模型。"""
         self._dispose_model_attr("t2s_model")
         self._dispose_model_attr("vits_model")
+        self._cuda_graph_runner = None
 
     def unload_frontend_models(self) -> None:
         """卸载文本前端相关模型。"""
@@ -1245,6 +1275,7 @@ class TTS:
                     "seed": -1,                   # int. random seed for reproducibility.
                     "parallel_infer": True,       # bool. whether to use parallel inference.
                     "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
+                    "use_cuda_graph": False,       # bool. whether to use CUDA Graph acceleration for T2S inference (non-parallel mode only).
                     "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
                     "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
                     "return_fragment": False,     # bool. step by step return the audio fragment. (Best Quality, Slowest response speed. old version of streaming mode)
@@ -1285,6 +1316,7 @@ class TTS:
         overlap_length = inputs.get("overlap_length", 2)
         min_chunk_length = inputs.get("min_chunk_length", 16)
         fixed_length_chunk = inputs.get("fixed_length_chunk", False)
+        use_cuda_graph = inputs.get("use_cuda_graph", False)
         chunk_split_thershold = 0.0 # 该值代表语义token与mute token的余弦相似度阈值，若大于该阈值，则视为可切分点。
 
         if parallel_infer and not streaming_mode:
@@ -1490,19 +1522,72 @@ class TTS:
 
                 if not streaming_mode:
                     print(f"############ {i18n('预测语义Token')} ############")
-                    pred_semantic_list, idx_list = self.t2s_model.model.infer_panel(
-                        all_phoneme_ids,
-                        all_phoneme_lens,
-                        prompt,
-                        all_bert_features,
-                        # prompt_phone_len=ph_offset,
-                        top_k=top_k,
-                        top_p=top_p,
-                        temperature=temperature,
-                        early_stop_num=self.configs.hz * self.configs.max_sec,
-                        max_len=max_len,
-                        repetition_penalty=repetition_penalty,
+                    # 上游指出 cuda graph 不能和并行推理一起开启
+                    _use_cg = (
+                        use_cuda_graph
+                        and "cuda" in str(self.configs.device)
+                        and not parallel_infer
                     )
+                    if use_cuda_graph and not _use_cg:
+                        if "cuda" not in str(self.configs.device):
+                            print("Warning: CUDA Graph requires CUDA device, falling back to normal inference")
+                        elif parallel_infer:
+                            print("Warning: CUDA Graph does not support parallel inference mode, falling back to normal inference")
+                    if _use_cg:
+                        if self._cuda_graph_runner is None:
+                            from AR.models.t2s_model_cudagraph import CUDAGraphRunner
+                            self._cuda_graph_runner = CUDAGraphRunner(
+                                CUDAGraphRunner.load_decoder(self.configs.t2s_weights_path),
+                                torch.device(self.configs.device),
+                                self.precision,
+                            )
+                        from AR.models.structs_cudagraph import T2SRequest
+                        pred_semantic_list = []
+                        idx_list = []
+                        for _cg_i in range(len(all_phoneme_ids)):
+                            _req_prompt = (
+                                prompt[_cg_i : _cg_i + 1]
+                                if prompt is not None
+                                else torch.zeros(
+                                    (1, 0), dtype=torch.long, device=self.configs.device
+                                )
+                            )
+                            t2s_request = T2SRequest(
+                                x=[all_phoneme_ids[_cg_i]],
+                                x_lens=all_phoneme_lens[_cg_i : _cg_i + 1],
+                                prompts=_req_prompt,
+                                bert_feature=[all_bert_features[_cg_i]],
+                                valid_length=1,
+                                top_k=top_k,
+                                top_p=top_p,
+                                temperature=temperature,
+                                early_stop_num=self.configs.hz * self.configs.max_sec,
+                                repetition_penalty=repetition_penalty,
+                                use_cuda_graph=True,
+                            )
+                            t2s_result = self._cuda_graph_runner.generate(t2s_request)
+                            if t2s_result.exception is not None:
+                                print(t2s_result.traceback)
+                                raise RuntimeError(
+                                    f"CUDA Graph T2S inference failed: {t2s_result.exception}"
+                                )
+                            _sem = t2s_result.result[0]
+                            pred_semantic_list.append(_sem)
+                            idx_list.append(_sem.shape[0])
+                    else:
+                        pred_semantic_list, idx_list = self.t2s_model.model.infer_panel(
+                            all_phoneme_ids,
+                            all_phoneme_lens,
+                            prompt,
+                            all_bert_features,
+                            # prompt_phone_len=ph_offset,
+                            top_k=top_k,
+                            top_p=top_p,
+                            temperature=temperature,
+                            early_stop_num=self.configs.hz * self.configs.max_sec,
+                            max_len=max_len,
+                            repetition_penalty=repetition_penalty,
+                        )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
 
@@ -1747,6 +1832,7 @@ class TTS:
             del self.vits_model
             self.t2s_model = None
             self.vits_model = None
+            self._cuda_graph_runner = None
             self.init_t2s_weights(self.configs.t2s_weights_path)
             self.init_vits_weights(self.configs.vits_weights_path)
             raise e
