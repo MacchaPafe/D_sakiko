@@ -1555,9 +1555,11 @@ class WeatherTool:
             "http://ip-api.com/json/?lang=zh-CN",
             "https://ipwho.is/",
         ]
+        session = requests.Session()
+        session.trust_env = False
         for url in urls:
             try:
-                response = requests.get(url, timeout=6)
+                response = session.get(url, timeout=6)
                 response.raise_for_status()
                 payload = response.json()
                 city = str(payload.get("city") or "").strip()
