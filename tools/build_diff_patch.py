@@ -38,6 +38,8 @@ DEFAULT_IGNORE_PATTERNS = [
     "GPT_SoVITS/setup_live2d.py",
     "AGENTS.md",
     "docs/agents/*",
+    "gpt_sovits_install.ps1",
+    "gpt_sovits_install.sh",
 ]
 
 
