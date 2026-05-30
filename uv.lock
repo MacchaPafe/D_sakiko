@@ -496,7 +496,7 @@ dependencies = [
     { name = "librosa" },
     { name = "litellm" },
     { name = "live2d-py", version = "0.6.1.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'arm64' or sys_platform != 'darwin'" },
-    { name = "live2d-py", version = "0.7.0.4", source = { path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "live2d-py", version = "0.7.0.4", source = { path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_14_0_arm64.whl" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "modelscope" },
     { name = "numba" },
     { name = "numpy" },
@@ -568,7 +568,7 @@ requires-dist = [
     { name = "librosa", specifier = "==0.10.2" },
     { name = "litellm", specifier = ">=1.83" },
     { name = "live2d-py", marker = "platform_machine != 'arm64' or sys_platform != 'darwin'", specifier = ">=0.6.0" },
-    { name = "live2d-py", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl" },
+    { name = "live2d-py", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_14_0_arm64.whl" },
     { name = "modelscope", specifier = ">=1.32.0" },
     { name = "numba", specifier = ">=0.62.1" },
     { name = "numpy", specifier = "<2.0" },
@@ -1537,7 +1537,7 @@ wheels = [
 [[package]]
 name = "live2d-py"
 version = "0.7.0.4"
-source = { path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl" }
+source = { path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_14_0_arm64.whl" }
 resolution-markers = [
     "platform_machine == 'arm64' and sys_platform == 'darwin'",
 ]
@@ -1547,7 +1547,7 @@ dependencies = [
     { name = "pyopengl", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
 ]
 wheels = [
-    { filename = "live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:8f07a999baff7da7820a6b28b21a1bd63a03e5a601a2ff4ce2d8e59a52b4902c" },
+    { filename = "live2d_py-0.7.0.4-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:0a58e2ea11f5cb3e55e1fc2db5d3a50257115ba1aa1b72aa6b566f4fe11a0991" },
 ]
 
 [package.metadata]
