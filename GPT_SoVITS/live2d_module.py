@@ -4,6 +4,7 @@ import contextlib
 import math
 import re
 import time
+import wave
 from random import random
 from live2d.utils.lipsync import WavHandler
 import live2d.v2cpp as live2d
@@ -88,6 +89,16 @@ class Live2DModule:
         self.eye_open_transition_duration = 0.1
         self.eye_open_param_ids = ("PARAM_EYE_L_OPEN", "PARAM_EYE_R_OPEN")
         self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
+        
+        # 长音频动作循环状态机
+        self.long_audio_motion_threshold_seconds = 6.0  #超过这个时长的音频才会触发
+        self.long_audio_motion_repeat_delay_seconds = 1.5   #每次动作结束后等待这么久才触发下一次，防止动作切换过快
+        self.long_audio_motion_max_repeats = 2  #最长音频动作循环的最大重复次数，防止某些极端长的音频导致动作一直循环，这也有点人机
+        self.long_audio_motion_repeat_count = 0
+        self.long_audio_motion_active = False
+        self.long_audio_motion_group = ""
+        self.long_audio_next_motion_at = 0.0
+        self.long_audio_duration_seconds = 0.0
 
     @property
     def current_character(self):
@@ -249,6 +260,71 @@ class Live2DModule:
             self.force_eyes_open = True
             self.eye_open_transition_start = 0.0
 
+    def _reset_long_audio_motion_loop(self):
+        self.long_audio_motion_active = False
+        self.long_audio_motion_group = ""
+        self.long_audio_next_motion_at = 0.0
+        self.long_audio_duration_seconds = 0.0
+        self.long_audio_motion_repeat_count = 0
+
+    def _get_audio_duration_seconds(self, audio_file_path: str) -> float:
+        if not audio_file_path or not os.path.isfile(audio_file_path):
+            return 0.0
+        try:
+            with wave.open(audio_file_path, "rb") as audio_file:
+                frame_rate = audio_file.getframerate()
+                if frame_rate <= 0:
+                    return 0.0
+                return audio_file.getnframes() / frame_rate
+        except Exception:
+            pass
+        try:
+            return float(pygame.mixer.Sound(audio_file_path).get_length())
+        except Exception:
+            return 0.0
+
+    def _prepare_long_audio_motion_loop(self, motion_group: str, audio_file_path: str):
+        duration = self._get_audio_duration_seconds(audio_file_path)
+        if duration < self.long_audio_motion_threshold_seconds:
+            self._reset_long_audio_motion_loop()
+            return
+        self.long_audio_motion_active = True
+        self.long_audio_motion_group = motion_group
+        self.long_audio_next_motion_at = 0.0
+        self.long_audio_duration_seconds = duration
+        self.long_audio_motion_repeat_count = 0
+
+    def _update_long_audio_motion_loop(self, model):
+        if not self.long_audio_motion_active:
+            return
+        if not pygame.mixer.music.get_busy():
+            self._reset_long_audio_motion_loop()
+            return
+        if not self.motion_is_over:
+            return
+        if not self.long_audio_motion_group:
+            self._reset_long_audio_motion_loop()
+            return
+        if self.long_audio_motion_repeat_count >= self.long_audio_motion_max_repeats:
+            return
+
+        now = time.time()
+        if self.long_audio_next_motion_at <= 0:
+            self.long_audio_next_motion_at = now + self.long_audio_motion_repeat_delay_seconds
+            return
+        if now < self.long_audio_next_motion_at:
+            return
+
+        self.motion_is_over = False
+        model.StartRandomMotion(
+            self.long_audio_motion_group,
+            3,
+            self.onStartCallback,
+            self.onFinishCallback,
+        )
+        self.long_audio_motion_repeat_count += 1
+        self.long_audio_next_motion_at = 0.0
+
 
     def save_l2d_json_paths_and_bg(self):
         # 必须重新读取一遍配置，否则之前的修改（如果有的话）会被覆盖掉
@@ -392,10 +468,13 @@ class Live2DModule:
 
                 command_type = str(x.get("type") or "")
                 if command_type =='start_talking':   #录音时
+                    self._reset_long_audio_motion_loop()
                     model.StartRandomMotion("talking_motion", 4, self.onStartCallback)
                 elif command_type=='stop_talking':   #录音结束
+                    self._reset_long_audio_motion_loop()
                     self.onFinishCallback()
                 elif command_type == "cancel_turn":
+                    self._reset_long_audio_motion_loop()
                     pygame.mixer.music.stop()
                     self.wavHandler = WavHandler()
                     self.motion_is_over = True
@@ -428,6 +507,7 @@ class Live2DModule:
                         pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
                     render_background(texture)
                 elif command_type == "switch_live2d":
+                    self._reset_long_audio_motion_loop()
                     character_name = str(x.get("character_name") or "")
                     model_json = x.get("model_json")
                     try:
@@ -511,6 +591,7 @@ class Live2DModule:
             motion_complete_value.value = self.live2d_this_turn_motion_complete
 
             if not char_is_converted_queue.empty():
+                self._reset_long_audio_motion_loop()
                 if self.if_sakiko:
                     conv_index=char_is_converted_queue.get()
                     if conv_index!='maskoff':
@@ -539,6 +620,7 @@ class Live2DModule:
             if not emotion_queue.empty():
                 emotion = emotion_queue.get()
                 if emotion=='bye':
+                    self._reset_long_audio_motion_loop()
                     if not if_bye:
                         model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
                     if_bye=True
@@ -555,12 +637,20 @@ class Live2DModule:
                     continue
 
                 this_turn_audio_file_path=audio_file_queue.get()
-                model.StartRandomMotion(mtn_group_mapping[emotion],3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
+                motion_group = mtn_group_mapping.get(emotion)
+                if motion_group is None:
+                    logger.warning("忽略未知情感标签：%s", emotion)
+                    continue
+                self._prepare_long_audio_motion_loop(motion_group, this_turn_audio_file_path)
+                self.motion_is_over = False
+                model.StartRandomMotion(motion_group,3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
                 self.think_motion_is_over=True  #放在这里就对了。。
                 overlay.set_text(self.current_character.character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 
 
             # 清除缓冲区
+            self._update_long_audio_motion_loop(model)
+
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
             model.Update()

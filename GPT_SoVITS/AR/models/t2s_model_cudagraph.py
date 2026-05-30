@@ -469,7 +469,7 @@ class CUDAGraphRunner:
             y = session.y
             bsz = y.size(0)
 
-            for idx in tqdm(range(1500)):
+            for idx in range(1500):
                 if idx == 0:
                     xy_dec = decoder.h.prefill(
                         session.xy_pos, session.attn_mask_nested, self.kv_cache
@@ -537,15 +537,15 @@ class CUDAGraphRunner:
                         session.y = torch.cat(
                             [session.y, torch.zeros_like(samples)], dim=1
                         )
-                        tqdm.write("Bad Zero Prediction")
+                        #tqdm.write("Bad Zero Prediction")
                     else:
-                        tqdm.write(
-                            f"T2S Decoding EOS {session.prefill_len.tolist().__str__().strip('[]')} -> \n"
-                            f"{[i.size(0) for i in session.y_results].__str__().strip('[]')}"
-                        )
-                        tqdm.write(
-                            f"Infer Speed: {(idx - 1) / (time.perf_counter() - t1):.2f} token/s"
-                        )
+                        # tqdm.write(
+                        #     f"T2S Decoding EOS {session.prefill_len.tolist().__str__().strip('[]')} -> \n"
+                        #     f"{[i.size(0) for i in session.y_results].__str__().strip('[]')}"
+                        # )
+                        # tqdm.write(
+                        #     f"Infer Speed: {(idx - 1) / (time.perf_counter() - t1):.2f} token/s"
+                        # )
                         infer_speed = (idx - 1) / (time.perf_counter() - t1)
                     break
 
