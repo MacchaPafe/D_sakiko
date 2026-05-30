@@ -1,6 +1,6 @@
 [project]
 name = "d-sakiko"
-version = "3.0.2"
+version = "3.0.3"
 description = "Deepseek V3-GPT_SoVITS主框架实现语音聊天Live2D数字小祥"
 readme = "README.md"
 # macOS 下仅测试了 Python 3.11 可行
@@ -24,7 +24,7 @@ dependencies = [
     "ko-pron>=1.3",
     "librosa==0.10.2",
     # Live2d animation for python
-    "live2d-py>=0.6.0",
+    "live2d-py==0.7.0.4+d_sakiko.1",
     "modelscope>=1.32.0",
     "numba>=0.62.1",
     "numpy<2.0",
@@ -92,6 +92,16 @@ required-environments = [
     # Linux distributions on AMD64
     "sys.platform == 'linux' and platform.machine == 'x86_64'",
 ]
+
+environments = [
+    # Windows on AMD64
+    "sys.platform == 'win32' and platform.machine == 'AMD64'",
+    # macOS on ARM64(Apple Silicon)
+    "sys.platform == 'darwin' and platform.machine == 'arm64'",
+    # Linux distributions on AMD64
+    "sys.platform == 'linux' and platform.machine == 'x86_64'",
+]
+
 conflicts = [
     [
         {extra = "cpu"},
@@ -116,8 +126,18 @@ name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
+# 不要取消这个 index 的注释，除非你是开发者并且在做 mac 的打包
+#[[tool.uv.index]]
+#name = "bundled-wheels"
+#url = "wheels"
+#format = "flat"
+
 [tool.uv.sources]
-live2d-py = { path = "wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_14_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" }
+live2d-py = [
+  { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_15_0_universal2.whl", marker = "sys_platform == 'darwin'" },
+  { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-win_amd64.whl", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+  { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+]
 torch = [
   { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
   { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
