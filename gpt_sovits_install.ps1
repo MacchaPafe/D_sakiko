@@ -46,17 +46,29 @@ function Write-Success($msg) {
 }
 
 
-function Invoke-Conda {
+function Install-CondaPackages {
     param (
         [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Args
+        [string[]]$Packages
     )
 
-    $output = & conda install -y -q -c conda-forge @Args 2>&1
-    $exitCode = $LASTEXITCODE
+    $condaExe = if ($Env:CONDA_EXE) {
+        $Env:CONDA_EXE
+    } else {
+        (Get-Command conda.exe -ErrorAction Stop).Source
+    }
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $condaExe install -y -c conda-forge @Packages 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     if ($exitCode -ne 0) {
-        Write-Host "Conda Install $Args Failed" -ForegroundColor Red
+        Write-Host "Conda Install $Packages Failed" -ForegroundColor Red
         $errorMessages = @()
         foreach ($item in $output) {
             if ($item -is [System.Management.Automation.ErrorRecord]) {
@@ -109,21 +121,52 @@ function Invoke-Download {
         [string]$OutFile
     )
 
-    try {
-        $params = @{
-            Uri = $Uri
+    $currentUri = $Uri
+    $maxRedirects = 10
+
+    for ($redirectCount = 0; $redirectCount -le $maxRedirects; $redirectCount++) {
+        try {
+            $params = @{
+                Uri = $currentUri
+                MaximumRedirection = $maxRedirects
+            }
+
+            if ($PSVersionTable.PSVersion.Major -lt 6) {
+                $params["UseBasicParsing"] = $true
+            }
+
+            if ($OutFile) {
+                $params["OutFile"] = $OutFile
+            }
+
+            $null = Invoke-WebRequest @params -ErrorAction Stop
+            return
+
+        } catch {
+            $response = $_.Exception.Response
+            $statusCode = if ($response) { [int]$response.StatusCode } else { $null }
+            $location = if ($response) { $response.Headers["Location"] } else { $null }
+
+            if (($statusCode -in 301, 302, 303, 307, 308) -and $location) {
+                if ($redirectCount -ge $maxRedirects) {
+                    Write-Host "Failed to download after $maxRedirects redirects:" -ForegroundColor Red
+                    Write-Host "  $Uri"
+                    throw
+                }
+
+                $baseUri = [System.Uri]$currentUri
+                $currentUri = (New-Object System.Uri($baseUri, $location)).AbsoluteUri
+                Write-Info "Following redirect to $currentUri"
+                continue
+            }
+
+            Write-Host "Failed to download:" -ForegroundColor Red
+            Write-Host "  $Uri"
+            if ($currentUri -ne $Uri) {
+                Write-Host "  Last URL: $currentUri"
+            }
+            throw
         }
-
-        if ($OutFile) {
-            $params["OutFile"] = $OutFile
-        }
-
-        $null = Invoke-WebRequest @params -ErrorAction Stop
-
-    } catch {
-        Write-Host "Failed to download:" -ForegroundColor Red
-        Write-Host "  $Uri"
-        throw
     }
 }
 
@@ -137,7 +180,7 @@ chcp 65001
 Set-Location $PSScriptRoot
 
 Write-Info "Installing FFmpeg & CMake..."
-Invoke-Conda  ffmpeg cmake
+Install-CondaPackages  ffmpeg cmake
 Write-Success "FFmpeg & CMake Installed"
 
 $PretrainedURL  = ""
