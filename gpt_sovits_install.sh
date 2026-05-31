@@ -56,9 +56,6 @@ if ! command -v brew &>/dev/null; then
     exit 1
 fi
 
-USE_CUDA=false
-USE_ROCM=false
-USE_CPU=false
 WORKFLOW=${WORKFLOW:-"false"}
 
 USE_HF=false
@@ -70,14 +67,13 @@ print_help() {
     echo "Usage: bash install.sh [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --device   CU126|CU128|ROCM|MPS|CPU    Specify the Device (REQUIRED)"
     echo "  --source   HF|HF-Mirror|ModelScope     Specify the model source (REQUIRED)"
     echo "  --download-uvr5                        Enable downloading the UVR5 model"
     echo "  -h, --help                             Show this help message and exit"
     echo ""
     echo "Examples:"
-    echo "  bash install.sh --device CU128 --source HF --download-uvr5"
-    echo "  bash install.sh --device MPS --source ModelScope"
+    echo "  bash install.sh --source HF --download-uvr5"
+    echo "  bash install.sh --source ModelScope"
 }
 
 # Show help if no arguments provided
@@ -108,33 +104,6 @@ while [[ $# -gt 0 ]]; do
         esac
         shift 2
         ;;
-    --device)
-        case "$2" in
-        CU126)
-            CUDA=126
-            USE_CUDA=true
-            ;;
-        CU128)
-            CUDA=128
-            USE_CUDA=true
-            ;;
-        ROCM)
-            USE_ROCM=true
-            ;;
-        MPS)
-            USE_CPU=true
-            ;;
-        CPU)
-            USE_CPU=true
-            ;;
-        *)
-            echo -e "${ERROR}Error: Invalid Device: $2"
-            echo -e "${ERROR}Choose From: [CU126, CU128, ROCM, MPS, CPU]"
-            exit 1
-            ;;
-        esac
-        shift 2
-        ;;
     --download-uvr5)
         DOWNLOAD_UVR5=true
         shift
@@ -151,13 +120,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     esac
 done
-
-if ! $USE_CUDA && ! $USE_ROCM && ! $USE_CPU; then
-    echo -e "${ERROR}Error: Device is REQUIRED"
-    echo ""
-    print_help
-    exit 1
-fi
 
 if ! $USE_HF && ! $USE_HF_MIRROR && ! $USE_MODELSCOPE; then
     echo -e "${ERROR}Error: Download Source is REQUIRED"

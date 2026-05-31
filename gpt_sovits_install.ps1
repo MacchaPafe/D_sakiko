@@ -1,5 +1,4 @@
 Param (
-    [Parameter(Mandatory=$true)][ValidateSet("CU126", "CU128", "CPU")][string]$Device,
     [Parameter(Mandatory=$true)][ValidateSet("HF", "HF-Mirror", "ModelScope")][string]$Source,
     [switch]$DownloadUVR5
 )
