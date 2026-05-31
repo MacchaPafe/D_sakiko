@@ -96,7 +96,12 @@ class DSLocalAndVoiceGen:
         self.audio_language = ["中英混合", "日英混合"]
         self.audio_language_choice = self.audio_language[1]
 
-        self.model = __import__('live2d_1').get_live2d()
+        try:
+            self.model = __import__('live2d_1').get_live2d()
+        except ImportError:
+            self.model = None
+            logger.warning("未获取到 UP 的 API Key, 请在启动参数配置中设置自己的 API Key")
+
         # 是否为角色通过 GPT-SoVITS 模型生成音频
         self.if_generate_audio = True
 

@@ -391,13 +391,6 @@ def main_thread():
             # --- 解析 LLM 回复为多个段落 ---
             segments = parse_llm_response(this_turn_response)
 
-            # 对于没有 emotion 的段落，用 bert 模型推断
-            for i, (text, translation, emotion_label) in enumerate(segments):
-                if emotion_label is None:
-                    emotion_for_detect = translation if translation else text
-                    emotion_label = emotion_model(re.sub(r"（.*?）", "", emotion_for_detect))[0]['label']
-                    segments[i] = (text, translation, emotion_label)
-
             # --- 逐段处理：流水线式语音合成 + 播放 ---
             for i, (text, translation, emotion_label) in enumerate(segments):
                 QT_message_queue.put(f"正在合成语音...{i+1}/{len(segments)}")
@@ -505,10 +498,6 @@ if __name__=='__main__':
 
     audio_gen.initialize(characters,QT_message_queue)
 
-    emotion_detector=inference_emotion_detect.EmotionDetect()
-    emotion_model = emotion_detector.launch_emotion_detect()
-
-
 
     def get_timestamp_from_filename(filepath):
         """
@@ -586,7 +575,6 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          emotion_model=emotion_model,
                           change_char_queue=change_char_queue)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体

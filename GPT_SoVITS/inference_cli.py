@@ -681,8 +681,11 @@ def build_language_mapping(i18n_translator) -> dict[str, str]:
 def allocate_output_wav_path(output_dir: str) -> str:
     """为本次生成分配一个新的输出音频路径。"""
     count_file = '../reference_audio/audio_generate_count.txt'
-    with open(count_file, 'r', encoding='utf-8') as file:
-        generate_count = int(file.read())
+    try:
+        with open(count_file, 'r', encoding='utf-8') as file:
+            generate_count = int(file.read())
+    except (FileNotFoundError, ValueError):
+        generate_count = 0
     output_wav_path = os.path.join(output_dir, f"output{generate_count}.wav")
     generate_count += 1
     with open(count_file, 'w', encoding='utf-8') as file:

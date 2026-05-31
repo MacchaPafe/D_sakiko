@@ -1204,7 +1204,7 @@ class ChatGUI(QWidget):
                  QT_message_queue,
                  characters,
                  dp_chat,
-                 audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,emotion_model,
+                 audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,
                  change_char_queue=None,
                  is_motion_complete=None):
         super().__init__()
@@ -1431,7 +1431,6 @@ class ChatGUI(QWidget):
         self.is_display_text_value=is_display_text_value
         self.motion_complete_value=motion_complete_value
         self.emotion_queue=emotion_queue
-        self.emotion_model=emotion_model
         self.audio_file_path_queue=audio_file_path_queue    #为了播放历史记录
         #-------------------------------------------------------------------------------以下为语音识别部分
         self.voice_button.setCheckable(True)
