@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
-  title: '数字小祥帮助文档',
+  title: '数字小祥文档',
   description: '数字小祥的功能说明、常见问题与反馈入口',
 
   // 如果访问地址是 https://用户名.github.io/仓库名/，这里填 '/仓库名/'
@@ -13,27 +13,36 @@ export default defineConfig({
       provider: 'local'
     },
     nav: [
-      { text: '快速开始', link: '/guide/start' },
-      { text: '常见问题', link: '/faq' },
-      { text: '反馈', link: '/feedback' }
+      { text: '使用指南', link: '/guide/start' },
+      { text: '开发文档', link: '/dev/setup' },
     ],
-    sidebar: [
-      {
-        text: '使用指南',
-        items: [
-          { text: '快速开始', link: '/guide/start' },
-          { text: '更新说明', link: '/guide/update' },
-          { text: '大模型配置', link: '/guide/llm' },
-          { text: 'Live2D', link: '/guide/live2d' }
-        ]
-      },
-      {
-        text: '支持',
-        items: [
-          { text: '常见问题', link: '/faq' },
-          { text: '问题反馈', link: '/feedback' }
-        ]
-      }
-    ]
+    sidebar: {
+      'guide': [
+        {
+          text: '使用指南',
+          items: [
+            { text: '快速开始', link: '/guide/start' },
+            { text: '更新说明', link: '/guide/update' },
+            { text: '大模型配置', link: '/guide/llm' },
+            { text: 'Live2D', link: '/guide/live2d' }
+          ]
+        },
+        {
+          text: '支持',
+          items: [
+            { text: '常见问题', link: '/guide/faq' },
+            { text: '问题反馈', link: '/guide/feedback' }
+          ]
+        }, 
+      ],
+      "dev": [
+        {
+          text: '开发文档',
+          items: [
+            { text: '开发环境设置', link: '/dev/setup' },
+          ]
+        }
+      ]
+    }
   }
 })
