@@ -864,6 +864,8 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
             runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
             last_sampling_rate, last_audio_data = runtime.synthesize(payload, tts_manager, dict_language_v2, i18n_translator)
             output_dir = cast(str, payload.get("output_dir", "../reference_audio/generated_audios_temp"))
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
             output_wav_path = allocate_output_wav_path(output_dir)
             sf.write(output_wav_path, last_audio_data, last_sampling_rate)
             from_gptsovits_queue.put(
