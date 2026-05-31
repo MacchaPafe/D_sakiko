@@ -254,6 +254,31 @@ class UpdateSystemTest(unittest.TestCase):
 
         self.assertTrue(manifest_requires_macos_uv_sync(manifest))
 
+    def test_list_files_with_ignored_parent_directory(self) -> None:
+        """即使父文件夹被忽略，若其中的具体文件命中 include，也应正确包含。"""
+        from tools.build_diff_patch import list_files
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            # 创建被忽略目录及内部文件
+            wheels_dir = temp_path / "wheels"
+            wheels_dir.mkdir()
+            
+            target_file = wheels_dir / "live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl"
+            target_file.write_text("dummy content")
+            
+            other_file = wheels_dir / "ignored_wheel.whl"
+            other_file.write_text("ignored dummy content")
+
+            # 忽略 wheels/** 规则下，若强制包含 target_file
+            ignore_patterns = ["wheels/**"]
+            include_patterns = ["wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl"]
+
+            files = list_files(temp_path, ignore_patterns, include_patterns)
+            
+            self.assertIn("wheels/live2d_py-0.7.0.4-cp311-cp311-macosx_15_0_arm64.whl", files)
+            self.assertNotIn("wheels/ignored_wheel.whl", files)
+
 
 if __name__ == "__main__":
     unittest.main()

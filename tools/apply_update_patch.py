@@ -417,7 +417,7 @@ def verify_manifest_and_version(manifest: dict[str, object], app_version: str) -
 
 def verify_modified_file(manifest: dict[str, object], app_root: Path):
     """
-    检查当前本地文件中，将被修改覆盖的文件的 sha256 是否与旧版本的一致。如果不一致，发起 RuntimeError。
+    检查当前本地文件中，将被修改覆盖的文件和将被删除文件的 sha256 是否与旧版本的一致。如果不一致，发起 RuntimeError。
     """
     files = manifest.get("files", [])
     if not isinstance(files, list):
@@ -428,7 +428,7 @@ def verify_modified_file(manifest: dict[str, object], app_root: Path):
         action = item.get("action")
         if action not in {"add", "modify", "remove"}:
             raise RuntimeError(f"不支持的文件动作：{action!r}")
-        if action == "modify":
+        if action == "modify" or action == "remove":
             relative_path = normalize_manifest_path(item.get("path"), "files[].path")
             expected_sha = str(item.get("old_file_sha256") or "").strip()
             if expected_sha:
@@ -436,9 +436,14 @@ def verify_modified_file(manifest: dict[str, object], app_root: Path):
                 if target.exists() and target.is_file():
                     actual_sha = sha256_file(target)
                     if actual_sha != expected_sha:
-                        raise RuntimeError(f"待修改文件 SHA256 校验失败：{relative_path}，期望 {expected_sha}，实际 {actual_sha}")
-                else:
+                        raise RuntimeError(
+                            f"待{'修改' if action == 'modify' else '删除'}文件 SHA256 校验失败：{relative_path}，"
+                            f"期望 {expected_sha}，实际 {actual_sha}"
+                        )
+                elif action == "modify":
+                    # modify 动作：文件必须存在
                     raise RuntimeError(f"待修改文件不存在或不是普通文件：{relative_path}")
+                # remove 动作：文件不存在是可接受的，不报错
             else:
                 print(f"[警告] {item.get('path')!r} 没有旧版本 sha256 记录，无法校验")
 

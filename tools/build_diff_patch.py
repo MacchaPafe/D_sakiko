@@ -223,6 +223,40 @@ def should_force_include(rel_path: str, include_patterns: Iterable[str]) -> bool
     return False
 
 
+def directory_might_contain_include(rel_dir: str, include_patterns: Iterable[str]) -> bool:
+    """判断目录 rel_dir 是否可能包含 include_patterns 中的任何强制包含文件。"""
+
+    rel_posix = rel_dir.replace("\\", "/").strip("/")
+    if not rel_posix:
+        return True
+
+    dir_parts = rel_posix.split("/")
+
+    for pattern in include_patterns:
+        pat_posix = pattern.replace("\\", "/").strip("/")
+        if not pat_posix:
+            continue
+
+        if "**" in pat_posix:
+            return True
+
+        pat_parts = pat_posix.split("/")
+
+        if len(dir_parts) < len(pat_parts):
+            match = True
+            for d_part, p_part in zip(dir_parts, pat_parts):
+                if not fnmatch.fnmatch(d_part, p_part):
+                    match = False
+                    break
+            if match:
+                return True
+        else:
+            if fnmatch.fnmatch(rel_posix, pat_posix):
+                return True
+
+    return False
+
+
 def list_files(base_dir: Path, ignore_patterns: list[str], include_patterns: list[str]) -> set[str]:
     """列出目录内满足筛选规则的全部文件相对路径集合。"""
 
@@ -237,8 +271,12 @@ def list_files(base_dir: Path, ignore_patterns: list[str], include_patterns: lis
             # 目录忽略规则通常形如 "runtime/**"。用一个虚拟子路径判断，
             # 可以在遍历阶段直接剪枝，避免先递归进大目录再过滤文件。
             probe = f"{rel_dir}/__dir__"
-            if should_ignore(probe, ignore_patterns) and not should_force_include(probe, include_patterns):
-                continue
+            # 同时满足三个条件的目录会被忽略：
+            # 1. 目录本身命中黑名单
+            # 2. 目录不命中白名单（白名单优先于黑名单）
+            # 3. 目录下不包含任何命中白名单的文件
+            if should_ignore(probe, ignore_patterns) and not should_force_include(probe, include_patterns) and not directory_might_contain_include(rel_dir, include_patterns):
+                    continue
             kept_dirs.append(dirname)
         dirs[:] = kept_dirs
 
@@ -360,7 +398,8 @@ def build_file_records(
         records.append(FileRecord(path=rel, action="modify", sha256=sha256_file(path), size=path.stat().st_size,
                                   old_file_sha256=sha256_file(old_path)))
     for rel in remove_files:
-        records.append(FileRecord(path=rel, action="remove", sha256="", size=0))
+        old_path = old_root / rel
+        records.append(FileRecord(path=rel, action="remove", sha256="", size=0, old_file_sha256=sha256_file(old_path)))
     return records
 
 
