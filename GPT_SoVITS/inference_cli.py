@@ -8,20 +8,17 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast, Optional
 
-import soundfile as sf
-import torch
-
 os.chdir(os.path.dirname(__file__))
 
 from character import CharacterAttributes
 from log import get_logger, setup_worker_logging
-from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
 from qconfig import d_sakiko_config
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     import numpy as np
+    import torch
     from TTS_infer_pack.TTS import SharedFrontendModels, TTS, TTS_Config
 
 gsv_sam_rate = d_sakiko_config.sovits_inference_sampling_steps.value
@@ -119,6 +116,8 @@ class ModelWeightsCache:
 
     def get_t2s_checkpoint(self, weights_path: str) -> WeightsCacheEntry:
         """获取一份 T2S 权重缓存。"""
+        import torch
+
         entry = self.entries_by_path.get(weights_path)
         if entry is None:
             checkpoint = cast(
@@ -141,6 +140,8 @@ class ModelWeightsCache:
 
     def get_vits_checkpoint(self, weights_path: str) -> WeightsCacheEntry:
         """获取一份 SoVITS 权重缓存。"""
+        from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
+
         entry = self.entries_by_path.get(weights_path)
         if entry is None:
             _, model_version, if_lora_v3 = get_sovits_version_from_path_fast(weights_path)
@@ -205,6 +206,8 @@ class SharedFrontendModelCache:
 
     def acquire(self, key: FrontendModelKey) -> "SharedFrontendModels":
         """获取一组共享前端模型并增加引用计数。"""
+        import torch
+
         frontend_models = self.entries_by_key.get(key)
         if frontend_models is None:
             from TTS_infer_pack.TTS import TTS
@@ -500,6 +503,8 @@ class SharedTTSManager:
     @staticmethod
     def _build_shape_key_from_checkpoint(checkpoint: dict[str, object]) -> tuple[object, ...]:
         """从 checkpoint 中提取一组稳定的形状摘要。"""
+        import torch
+
         weights_object = checkpoint.get("weight")
         if not isinstance(weights_object, dict):
             return tuple()
@@ -647,6 +652,8 @@ def resolve_device(device_policy: str) -> torch.device:
     2.解析内容为 CPU：只会使用 CPU
     3.解析内容为 auto：优先使用电脑上可用的 cuda/mps。如果这两种设备不存在，则改为使用 CPU
     """
+    import torch
+
     normalized_policy = device_policy.lower()
     if normalized_policy == 'cuda' and torch.cuda.is_available():
         return torch.device('cuda')
@@ -774,6 +781,7 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
         setup_worker_logging(log_queue)
 
     from tools.i18n.i18n import I18nAuto
+    import soundfile as sf
 
     i18n_translator = I18nAuto()
     dict_language_v2 = build_language_mapping(i18n_translator)

@@ -10,9 +10,10 @@ from copy import deepcopy
 
 import json
 from queue import Empty
-from typing import Optional, Sequence
+from typing import Optional, Sequence, TYPE_CHECKING
 
-import litellm
+if TYPE_CHECKING:
+    import litellm
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
@@ -39,6 +40,8 @@ def completion(**kwargs):
     将推理强度从 reasoning_effort 参数转换为 extra_body，因为 reasoning_effort 参数在 litellm 的 DeepSeek 实现中会被忽略。
     将 thinking 参数转换为 extra_body 中的 thinking 字段，格式为 {"type": "enabled"} 或 {"type": "disabled"}，因为 litellm 会忽略 thinking="disabled" 参数。
     """
+    import litellm
+
     cache_debug_phase = str(kwargs.pop(CACHE_DEBUG_PHASE_KEY, "unknown") or "unknown")
     if "model" in kwargs and isinstance(kwargs["model"], str):
         # 只查找 deepseek 系列模型
@@ -784,6 +787,8 @@ class DSLocalAndVoiceGen:
 
         返回值中的 bool 表示本次成功返回内容时是否实际启用了 JSON Mode。
         """
+        import litellm
+
         use_json_mode = self._supports_json_object_response_format_for_current_config()
         for _ in range(2):
             request_kwargs = {
@@ -845,6 +850,8 @@ class DSLocalAndVoiceGen:
         """
         使用 LiteLLM 的模型参数表判断当前配置是否应尝试 JSON Mode。
         """
+        import litellm
+
         get_supported_params = getattr(litellm, "get_supported_openai_params", None)
         if not callable(get_supported_params):
             return False
@@ -872,7 +879,7 @@ class DSLocalAndVoiceGen:
         return self.normalize_model_for_provider(provider, model_name)
 
     @staticmethod
-    def _is_response_format_unsupported(exc: litellm.exceptions.BadRequestError) -> bool:
+    def _is_response_format_unsupported(exc: "litellm.exceptions.BadRequestError") -> bool:
         """
         判断 BadRequest 是否来自 response_format/JSON Mode 不兼容。
         """
@@ -1294,7 +1301,7 @@ class DSLocalAndVoiceGen:
                        char_is_converted_queue,
                        change_char_queue,
                        AudioGenerator):
-        
+        import litellm
         # --- 定时提醒功能支持 ---
         from chat.reminder_manager import ReminderManager
         # 使用闭包回调直接将消息推入当前函数内的 qt2dp_queue，让下一次循环被读写
