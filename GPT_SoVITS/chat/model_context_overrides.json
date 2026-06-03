@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "aliases": [
+        "deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash",
+        "openai/deepseek-v4-flash",
+        "deepseek-ai/deepseek-v4-flash",
+        "openai/deepseek-ai/deepseek-v4-flash",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "openai/deepseek-ai/DeepSeek-V4-Flash"
+      ],
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "aliases": [
+        "deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro",
+        "openai/deepseek-v4-pro",
+        "deepseek-ai/deepseek-v4-pro",
+        "openai/deepseek-ai/deepseek-v4-pro",
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "openai/deepseek-ai/DeepSeek-V4-Pro"
+      ],
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash"
+    }
+  ]
+}

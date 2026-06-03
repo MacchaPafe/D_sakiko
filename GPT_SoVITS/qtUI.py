@@ -25,18 +25,21 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping
 from log import get_logger
-from qconfig import d_sakiko_config
+from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
+from chat.model_token_usage import count_message_tokens, get_model_input_token_limit
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
+from ui_main.components.context_usage_indicator import ContextUsageIndicator, ContextUsageSnapshot
 from ui_main.components.update_dialog import UpdateDialog
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
 from update.update_checker import get_configured_index_urls
 from update.update_launcher import build_restart_command, launch_update_process
 from update.update_models import DownloadedPatch, UpdatePlan
 from update.update_paths import get_app_root
+from llm_model_utils import ensure_openai_compatible_model
 from input_commands import (
     CommandSpec,
     InputCommandMatcher,
@@ -1300,6 +1303,11 @@ class ChatGUI(QWidget):
         self.save_dialog_btn.setIconSize(QSize(int(self.screen.height()*0.04*0.6),int(self.screen.height()*0.04*0.6)))
         self.save_dialog_btn.setToolTip("保存聊天记录")
 
+        self.context_usage_indicator = ContextUsageIndicator(self)
+        self._context_usage_refresh_timer = QTimer(self)
+        self._context_usage_refresh_timer.setSingleShot(True)
+        self._context_usage_refresh_timer.timeout.connect(self.refresh_context_usage_indicator)  # noqa
+
         layout = QVBoxLayout()
 
         input_panel = self._create_input_panel()
@@ -1425,6 +1433,7 @@ class ChatGUI(QWidget):
         self.setLayout(root_layout)  #因为需要character_list等参数，所以放在最后初始化
         self.refresh_chat_list()
         self.sync_current_chat_to_backends()
+        self.schedule_context_usage_refresh()
 
         # 保存 Live2D 跨进程通信的共享变量和队列
         self.live2d_text_queue=live2d_text_queue
@@ -1972,6 +1981,7 @@ class ChatGUI(QWidget):
         self.reasoning_menu_button.setFixedHeight(self.input_tool_button_height)
         self._refresh_reasoning_button()
 
+        bottom_layout.addWidget(self.context_usage_indicator, 0)
         bottom_layout.addWidget(self.reasoning_menu_button, 0)
         bottom_layout.addWidget(self.voice_button, 0)
         bottom_layout.addWidget(self.send_button, 0)
@@ -2074,6 +2084,8 @@ class ChatGUI(QWidget):
         send_color = QColor(color)
         if not send_color.isValid():
             send_color = QColor("#7799CC")
+        if hasattr(self, "context_usage_indicator"):
+            self.context_usage_indicator.set_theme_color(send_color.name())
         send_hover_color = send_color.lighter(112).name()
         send_pressed_color = send_color.darker(108).name()
         self.input_panel.setStyleSheet(f"""
@@ -2215,9 +2227,138 @@ class ChatGUI(QWidget):
             return ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
         return '#7799CC'
 
+    def schedule_context_usage_refresh(self, delay_ms: int = 100) -> None:
+        """合并并延迟刷新上下文 token 用量组件。"""
+        if not hasattr(self, "_context_usage_refresh_timer"):
+            return
+        self._context_usage_refresh_timer.start(max(0, delay_ms))
+
+    def refresh_context_usage_indicator(self) -> None:
+        """重新计算当前对话上下文 token 用量并刷新圆环组件。"""
+        if not hasattr(self, "context_usage_indicator"):
+            return
+        self.context_usage_indicator.set_snapshot(self._build_context_usage_snapshot())
+
+    def _build_context_usage_snapshot(self) -> ContextUsageSnapshot:
+        """构造当前普通聊天下一次请求会携带的上下文 token 快照。"""
+        model = self._current_litellm_model_name()
+        token_limit = get_model_input_token_limit(model)
+        try:
+            messages = self._build_context_usage_messages()
+            used_tokens = count_message_tokens(model=model, messages=messages)
+        except Exception as exc:
+            logger.warning("上下文 token 统计失败：%s", exc)
+            return ContextUsageSnapshot(
+                used_tokens=None,
+                token_limit=token_limit,
+                error_message=str(exc),
+            )
+
+        return ContextUsageSnapshot(
+            used_tokens=max(0, used_tokens),
+            token_limit=token_limit,
+        )
+
+    def _build_context_usage_messages(self) -> list[dict[str, object]]:
+        """生成用于 token 统计的消息列表，不包含输入框中尚未发送的文本。"""
+        character_name = self.current_character.character_name
+        messages = self._normalize_llm_messages(
+            self.current_chat.build_llm_query(
+                perspective=character_name,
+                is_simplify=True,
+            )
+        )
+        runtime_system_instruction = self._context_runtime_system_instruction()
+        if runtime_system_instruction:
+            self._append_context_runtime_system_instruction(messages, runtime_system_instruction)
+        messages.append({"role": "user", "content": self._context_runtime_controls()})
+        return messages
+
+    def _context_runtime_system_instruction(self) -> str:
+        """获取 token 统计用的运行期系统提示词。"""
+        builder = getattr(self.dp_chat, "_build_runtime_system_instruction", None)
+        if not callable(builder):
+            return ""
+        try:
+            return str(builder() or "")
+        except Exception:
+            logger.exception("生成 token 统计用运行期系统提示词失败。")
+            return ""
+
+    @staticmethod
+    def _append_context_runtime_system_instruction(messages: list[dict[str, object]], instruction: str) -> None:
+        """把运行期系统提示词追加到第一条 system 消息，或插入新的 system 消息。"""
+        for message in messages:
+            if message.get("role") == "system":
+                content = str(message.get("content") or "")
+                message["content"] = content + "\n" + instruction
+                return
+        messages.insert(0, {"role": "system", "content": instruction})
+
+    def _context_runtime_controls(self) -> str:
+        """根据 UI 当前对话状态构造 token 统计用运行时控制消息。"""
+        reply_language = (
+            "ja_with_zh_translation"
+            if getattr(self.dp_chat, "audio_language_choice", "") == "日英混合"
+            else "zh_only"
+        )
+        sakiko_tone = "none"
+        if self.current_character.character_name == "祥子":
+            sakiko_tone = "dark" if getattr(self.dp_chat, "sakiko_state", True) else "light"
+        return (
+            "<runtime_controls>\n"
+            f"reply_language: {reply_language}\n"
+            f"sakiko_tone: {sakiko_tone}\n"
+            "</runtime_controls>"
+        )
+
+    @staticmethod
+    def _normalize_llm_messages(raw_messages: object) -> list[dict[str, object]]:
+        """将未知来源的 messages 数据整理为 token_counter 可接收的字典列表。"""
+        if not isinstance(raw_messages, list):
+            return []
+        messages: list[dict[str, object]] = []
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, dict):
+                continue
+            message: dict[str, object] = {}
+            for key, value in raw_message.items():
+                if isinstance(key, str):
+                    message[key] = value
+            if "role" in message and "content" in message:
+                messages.append(message)
+        return messages
+
+    def _current_litellm_model_name(self) -> str:
+        """按照当前配置解析 LiteLLM 实际使用的模型名称。"""
+        if d_sakiko_config.use_default_deepseek_api.value:
+            return "deepseek/deepseek-v4-flash"
+        if d_sakiko_config.enable_custom_llm_api_provider.value:
+            custom_model = str(d_sakiko_config.custom_llm_api_model.value or "")
+            return ensure_openai_compatible_model(custom_model)
+
+        provider = str(d_sakiko_config.llm_api_provider.value or "")
+        configured_models = d_sakiko_config.llm_api_model.value
+        model_name = str(configured_models.get(provider, "") if isinstance(configured_models, dict) else "")
+        if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            return ensure_openai_compatible_model(model_name)
+        return self._concat_provider_and_model(provider, model_name)
+
+    @staticmethod
+    def _concat_provider_and_model(provider: str, model: str) -> str:
+        """将 provider 和 model 合并为 LiteLLM 常用的 provider/model 形式。"""
+        model = model.strip()
+        provider = provider.strip()
+        if not model:
+            return provider
+        if "/" in model or not provider:
+            return model
+        return f"{provider}/{model}"
+
     def refresh_current_chat_display(self):
         """从当前 Chat 数据重新渲染聊天显示。"""
         self.chat_display.render_chat(self.current_chat)
+        self.schedule_context_usage_refresh()
 
     def set_btn_color(self,color):
         #更改按钮图标颜色-----------------------
@@ -2274,6 +2415,7 @@ class ChatGUI(QWidget):
 
         setting_window=SettingWindow(self,self.screen,color,self.audio_gen)
         setting_window.exec_()
+        self.schedule_context_usage_refresh()
 
     def open_more_function_window(self):
         more_function_win=MoreFunctionWindow(self.close_program,self.check_update_manual)
@@ -2621,6 +2763,7 @@ class ChatGUI(QWidget):
         )
         display_msg_index = msg_index if msg_index is not None else len(self.current_chat.message_list)
         self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
+        self.schedule_context_usage_refresh()
 
     def _handle_structured_response(self, payload: dict[str, object]) -> None:
         """
@@ -2659,6 +2802,7 @@ class ChatGUI(QWidget):
             if self._is_active_turn_payload(payload):
                 self._clear_active_turn()
                 self.refresh_chat_list()
+                self.schedule_context_usage_refresh()
             return
         if event_type != "assistant_segment_ready":
             return
@@ -2702,6 +2846,7 @@ class ChatGUI(QWidget):
         display_msg_index = message_index if message_index >= 0 else len(chat.message_list)
         self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
         self.refresh_chat_list()
+        self.schedule_context_usage_refresh()
 
     def _start_active_turn(self, chat_id: str, turn_id: str, phase: str = "llm") -> None:
         """
@@ -2847,6 +2992,7 @@ class ChatGUI(QWidget):
         self.messages_box.clear()
         self.messages_box.append("已终止当前回复")
         self.refresh_chat_list()
+        self.schedule_context_usage_refresh()
 
     @staticmethod
     def _format_live2d_display_text(text: str, translation: str = "") -> str:
@@ -2930,6 +3076,7 @@ class ChatGUI(QWidget):
             self.tool_call_records_cache.clear()
             self.chat_display.clear_chat()
             self._send_internal_command_payload({"type": "clear_chat", "chat_id": self.current_chat_id}, force=True)
+            self.schedule_context_usage_refresh()
             self.user_input.clear()
             return
 
@@ -3059,6 +3206,7 @@ class ChatGUI(QWidget):
             "text": user_this_turn_input,
         })
         self.user_input.clear()
+        self.schedule_context_usage_refresh(delay_ms=1300)
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能
         if self.current_chat.message_list and self.current_chat.message_list[-1].text == user_this_turn_input:
