@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os,sys
+
+from ui_main.threads.update_config_thread import UpdateConfigThread
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
@@ -562,9 +565,12 @@ if __name__=='__main__':
                                                              audio_gen))
     # 主要的循环线程
     tr3=threading.Thread(target=main_thread)
+    # 更新配置的线程
+    tr4 = UpdateConfigThread("d_sakiko_config")
     tr1.start()
     tr2.start()
     tr3.start()
+    tr4.start()
 
     qt_win = qtUI.ChatGUI(dp2qt_queue=dp2qt_queue,
                           qt2dp_queue=qt2dp_queue,
@@ -626,6 +632,8 @@ if __name__=='__main__':
             pass
     tr2.join()
     tr3.join()
+    tr4.quit()
+    tr4.wait(3000)
 
     shutdown_logging()
 

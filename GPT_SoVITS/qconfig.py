@@ -200,9 +200,11 @@ class DSakikoConfig(QConfig):
         try:
             if not self.lock.lock():
                 raise RuntimeError("无法获得文件锁")
+            self._set_transaction_depth(1)
             self.load(self.file)
             self._set_without_lock(item, value, True, copy)
         finally:
+            self._set_transaction_depth(0)
             if self.lock.isLocked():
                 self.lock.unlock()
 
@@ -216,9 +218,10 @@ class DSakikoConfig(QConfig):
             raise RuntimeError("无法获得文件锁")
 
         try:
-            self.load(self.file)
             self._set_transaction_depth(1)
+            self.load(self.file)
         except Exception:
+            self._set_transaction_depth(0)
             self.lock.unlock()
             raise
 
@@ -235,13 +238,13 @@ class DSakikoConfig(QConfig):
             self._set_transaction_depth(depth - 1)
             return False
 
-        self._set_transaction_depth(0)
         try:
             if exc_type is None:
                 self.save()
             else:
                 self.load(self.file)
         finally:
+            self._set_transaction_depth(0)
             if self.lock.isLocked():
                 self.lock.unlock()
 
@@ -257,9 +260,11 @@ class DSakikoConfig(QConfig):
         try:
             if not self.lock.lock():
                 raise RuntimeError("无法获得文件锁")
+            self._set_transaction_depth(1)
             self.load(self.file)
             return DSakikoConfigSnapshot(self)
         finally:
+            self._set_transaction_depth(0)
             if self.lock.isLocked():
                 self.lock.unlock()
 
@@ -268,6 +273,24 @@ class DSakikoConfig(QConfig):
         避免复制 QObject/QLockFile，改为复制一份配置值快照。
         """
         return self.snapshot()
+
+    def reload_from_disk(self) -> None:
+        """
+        加锁后从磁盘重新加载配置。
+        """
+        if self._transaction_depth() > 0:
+            self.load(self.file)
+            return
+
+        try:
+            if not self.lock.lock():
+                raise RuntimeError("无法获得文件锁")
+            self._set_transaction_depth(1)
+            self.load(self.file)
+        finally:
+            self._set_transaction_depth(0)
+            if self.lock.isLocked():
+                self.lock.unlock()
 
 
 class ConfigValueSnapshot:

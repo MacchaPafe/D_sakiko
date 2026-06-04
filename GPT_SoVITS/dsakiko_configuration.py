@@ -20,6 +20,7 @@ from ui.components.custom_setting_area import CustomSettingArea
 from ui.components.gpt_sovits_area import GPTSoVITSArea
 from ui.components.llm_api_area import LLMAPIArea
 from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
+from ui_main.threads.update_config_thread import notify_config_reload
 
 
 class DSakikoConfigArea(TransparentScrollArea):
@@ -129,7 +130,11 @@ class DSakikoConfigArea(TransparentScrollArea):
         Save the current UI state to the config, and then save the config to disk.
         """
         if self.save_ui_to_config():
-            self.show_status(InfoBarIcon.SUCCESS, self.tr("保存成功！配置在下次启动时应用"))
+            if notify_config_reload():
+                message = self.tr("保存成功！已实时更新配置")
+            else:
+                message = self.tr("保存成功！配置在下次启动时应用")
+            self.show_status(InfoBarIcon.SUCCESS, message)
 
 
 class DSakikoConfigWindow(FluentWindow):
