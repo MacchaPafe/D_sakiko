@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import datetime as _datetime
 import logging
 import pathlib
@@ -28,6 +29,7 @@ _DATE_IN_LOG_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\.(\d{4}-\d{2}-\d{2}
 _console_handler: logging.Handler | None = None
 _queue_listener: QueueListener | None = None
 _log_queue: multiprocessing.Queue | None = None
+_shutdown_registered: bool = False
 
 
 def setup_main_logging(
@@ -63,7 +65,7 @@ def setup_main_logging(
         一个 ``logging.handlers.QueueListener`` 实例。通常不需要关心它，但在程序退出前记得调用 ``listener.stop()``。    
     """
 
-    global _console_handler, _queue_listener, _log_queue
+    global _console_handler, _queue_listener, _log_queue, _shutdown_registered
 
     log_path = pathlib.Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
@@ -85,12 +87,13 @@ def setup_main_logging(
 
     logging.captureWarnings(capture_warnings)
 
-    if install_except_hook:
-        install_excepthook()
-    
     listener = QueueListener(log_queue, console_handler, app_file_handler, error_file_handler, respect_handler_level=True)
     listener.start()
     _queue_listener = listener
+    # 在程序崩溃时尽力关闭日志管道
+    if not _shutdown_registered:
+        atexit.register(shutdown_logging)
+        _shutdown_registered = True
 
     _setup_queue_logging_for_current_process(
         log_queue=log_queue,
@@ -98,6 +101,9 @@ def setup_main_logging(
         capture_warnings=capture_warnings,
         reset_existing_handlers=reset_existing_handlers,
     )
+
+    if install_except_hook:
+        install_excepthook()
 
     return listener
 
@@ -308,13 +314,18 @@ def excepthook(exc_type: type[BaseException], exc: BaseException, tb: TracebackT
     """把未捕获异常写入日志文件。
 
     可以在程序入口中设置 ``sys.excepthook = excepthook``。这样主线程未捕获的异常
-    会进入日志文件，用户反馈 bug 时不会只剩控制台截图。
+    会进入日志文件，用户反馈 bug 时不会只剩控制台截图。日志写入后仍会调用 Python
+    默认的异常钩子，避免日志系统自身半初始化或来不及 flush 时吞掉真正 traceback。
     """
-
-    get_logger().critical(
-        "程序发生未捕获异常",
-        exc_info=(exc_type, exc, tb),
-    )
+    try:
+        get_logger().critical(
+            "程序发生未捕获异常",
+            exc_info=(exc_type, exc, tb),
+        )
+    except Exception:
+        pass
+    finally:
+        sys.__excepthook__(exc_type, exc, tb)
 
 
 def install_excepthook() -> None:
