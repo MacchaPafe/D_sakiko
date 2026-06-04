@@ -511,7 +511,7 @@ class LLMAPIArea(TransparentScrollArea):
 
         if provider_data == "deepseek_up":
             # 只更新这个“是否使用 Up 的 DeepSeek API”选项
-            d_sakiko_config.use_default_deepseek_api.value = True
+            d_sakiko_config.set(d_sakiko_config.use_default_deepseek_api, True)
 
             self.reset_error_indicators()
             return True
@@ -535,15 +535,16 @@ class LLMAPIArea(TransparentScrollArea):
                     self.custom_key_input.setFocus()
                 return False
 
-            d_sakiko_config.use_default_deepseek_api.value = False
-            # 启用自定义 OpenAI 兼容 API 提供商
-            # 这会覆盖其他已经启用的标准提供商
-            d_sakiko_config.enable_custom_llm_api_provider.value = True
-            d_sakiko_config.custom_llm_api_url.value = self.custom_url_input.text()
-            d_sakiko_config.custom_llm_api_model.value = self.custom_model_input.text()
+            with d_sakiko_config as cfg:
+                cfg.set(cfg.use_default_deepseek_api, False)
+                # 启用自定义 OpenAI 兼容 API 提供商
+                # 这会覆盖其他已经启用的标准提供商
+                cfg.set(cfg.enable_custom_llm_api_provider, True)
+                cfg.set(cfg.custom_llm_api_url, self.custom_url_input.text())
+                cfg.set(cfg.custom_llm_api_model, self.custom_model_input.text())
 
-            # Update key in the dictionary
-            d_sakiko_config.custom_llm_api_key.value = self.custom_key_input.text()
+                # Update key in the dictionary
+                cfg.set(cfg.custom_llm_api_key, self.custom_key_input.text())
 
             self.reset_error_indicators()
             return True
@@ -560,23 +561,26 @@ class LLMAPIArea(TransparentScrollArea):
                     self.llm_provider_combobox.setFocus()
                 return False
 
-            d_sakiko_config.use_default_deepseek_api.value = False
-            d_sakiko_config.enable_custom_llm_api_provider.value = False
+            with d_sakiko_config as cfg:
+                cfg.set(cfg.use_default_deepseek_api, False)
+                cfg.set(cfg.enable_custom_llm_api_provider, False)
 
-            # 存储选择的第三方端点 provider
-            d_sakiko_config.llm_api_provider.value = provider_data
-            d_sakiko_config.llm_api_model.value[provider_data] = self.third_party_model_input.text()
+                # 存储选择的第三方端点 provider
+                cfg.set(cfg.llm_api_provider, provider_data)
+                models = dict(cfg.llm_api_model.value)
+                models[provider_data] = self.third_party_model_input.text()
+                cfg.set(cfg.llm_api_model, models)
 
-            # Update key in the dictionary
-            keys = d_sakiko_config.llm_api_key.value
-            keys[provider_data] = self.third_party_key_input.text()
-            d_sakiko_config.llm_api_key.value = keys
+                # Update key in the dictionary
+                keys = dict(cfg.llm_api_key.value)
+                keys[provider_data] = self.third_party_key_input.text()
+                cfg.set(cfg.llm_api_key, keys)
 
-            # Update base_url in the dictionary (fixed)
-            base_urls = d_sakiko_config.llm_api_base_url.value
-            meta = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.get(provider_data, {})
-            base_urls[provider_data] = meta.get("base_url", "")
-            d_sakiko_config.llm_api_base_url.value = base_urls
+                # Update base_url in the dictionary (fixed)
+                base_urls = dict(cfg.llm_api_base_url.value)
+                meta = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.get(provider_data, {})
+                base_urls[provider_data] = meta.get("base_url", "")
+                cfg.set(cfg.llm_api_base_url, base_urls)
 
             self.reset_error_indicators()
             return True
@@ -590,16 +594,19 @@ class LLMAPIArea(TransparentScrollArea):
                     self.llm_provider_combobox.setFocus()
                 return False
 
-            d_sakiko_config.use_default_deepseek_api.value = False
-            d_sakiko_config.enable_custom_llm_api_provider.value = False
-            # 存储选择的标准提供商
-            d_sakiko_config.llm_api_provider.value = provider_data
-            d_sakiko_config.llm_api_model.value[provider_data] = self.standard_model_combo.currentText()
+            with d_sakiko_config as cfg:
+                cfg.set(cfg.use_default_deepseek_api, False)
+                cfg.set(cfg.enable_custom_llm_api_provider, False)
+                # 存储选择的标准提供商
+                cfg.set(cfg.llm_api_provider, provider_data)
+                models = dict(cfg.llm_api_model.value)
+                models[provider_data] = self.standard_model_combo.currentText()
+                cfg.set(cfg.llm_api_model, models)
 
-            # Update key in the dictionary
-            keys = d_sakiko_config.llm_api_key.value
-            keys[provider_data] = self.standard_key_input.text()
-            d_sakiko_config.llm_api_key.value = keys
+                # Update key in the dictionary
+                keys = dict(cfg.llm_api_key.value)
+                keys[provider_data] = self.standard_key_input.text()
+                cfg.set(cfg.llm_api_key, keys)
 
             self.reset_error_indicators()
             return True

@@ -207,7 +207,7 @@ class CustomColorSettingCard(SimpleExpandGroupSettingCard):
                 new_colors.append({"name": name, "color": new_color_str})
             else:
                 new_colors.append(c)
-        d_sakiko_config.theme_color.value = new_colors
+        d_sakiko_config.set(d_sakiko_config.theme_color, new_colors)
 
     def _updateName(self, old_name, new_name):
         colors = d_sakiko_config.theme_color.value
@@ -217,16 +217,16 @@ class CustomColorSettingCard(SimpleExpandGroupSettingCard):
                 new_colors.append({"name": new_name, "color": c["color"]})
             else:
                 new_colors.append(c)
-        d_sakiko_config.theme_color.value = new_colors
+        d_sakiko_config.set(d_sakiko_config.theme_color, new_colors)
 
     def _deleteItem(self, name):
         colors = d_sakiko_config.theme_color.value
         new_colors = [c for c in colors if c["name"] != name]
-        d_sakiko_config.theme_color.value = new_colors
+        d_sakiko_config.set(d_sakiko_config.theme_color, new_colors)
         self._loadItems()
 
     def _selectItem(self, name, color_str):
-        d_sakiko_config.themeColor.value = QColor(color_str)
+        d_sakiko_config.set(d_sakiko_config.themeColor, QColor(color_str))
 
     def _addNewItem(self):
         new_name = "新主题"
@@ -241,7 +241,7 @@ class CustomColorSettingCard(SimpleExpandGroupSettingCard):
         colors = d_sakiko_config.theme_color.value
         new_colors = list(colors)
         new_colors.append({"name": new_name, "color": new_color})
-        d_sakiko_config.theme_color.value = new_colors
+        d_sakiko_config.set(d_sakiko_config.theme_color, new_colors)
         self._loadItems()
 
     def _onThemeColorChanged(self, color):

@@ -22,9 +22,6 @@ from ui.components.llm_api_area import LLMAPIArea
 from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 
-from qconfig import d_sakiko_config
-
-
 class DSakikoConfigArea(TransparentScrollArea):
     def __init__(self):
         super().__init__()
@@ -132,8 +129,6 @@ class DSakikoConfigArea(TransparentScrollArea):
         Save the current UI state to the config, and then save the config to disk.
         """
         if self.save_ui_to_config():
-            d_sakiko_config.save()
-
             self.show_status(InfoBarIcon.SUCCESS, self.tr("保存成功！配置在下次启动时应用"))
 
 

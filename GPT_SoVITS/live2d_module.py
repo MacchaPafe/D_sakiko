@@ -327,14 +327,13 @@ class Live2DModule:
 
 
     def save_l2d_json_paths_and_bg(self):
-        # 必须重新读取一遍配置，否则之前的修改（如果有的话）会被覆盖掉
-        qconfig.load("../d_sakiko_config.json", d_sakiko_config)
-        d_sakiko_config.l2d_json_paths_dict.value = {}
+        l2d_json_paths_dict = {}
         for char in self.character_list:
             if char.character_name!="祥子":
-                d_sakiko_config.l2d_json_paths_dict.value[char.character_name] = char.live2d_json
-        d_sakiko_config.background_image_path.value = self.BACK_IMAGE[self.back_img_index]
-        d_sakiko_config.save()
+                l2d_json_paths_dict[char.character_name] = char.live2d_json
+        with d_sakiko_config as cfg:
+            cfg.set(cfg.l2d_json_paths_dict, l2d_json_paths_dict)
+            cfg.set(cfg.background_image_path, self.BACK_IMAGE[self.back_img_index])
 
     def play_live2d(self,
                     emotion_queue,

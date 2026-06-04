@@ -6,6 +6,8 @@ from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QIcon
 from qfluentwidgets import SettingCard, FluentIconBase, ConfigItem, SwitchButton, IndicatorPosition, qconfig
 
+from qconfig import d_sakiko_config
+
 
 class SwitchSettingCard(SettingCard):
     """ Setting card with switch button """
@@ -54,7 +56,7 @@ class SwitchSettingCard(SettingCard):
 
     def setValue(self, isChecked: bool):
         if self.configItem:
-            qconfig.set(self.configItem, isChecked)
+            d_sakiko_config.set(self.configItem, isChecked)
 
         self.switchButton.setChecked(isChecked)
         self.switchButton.setText(

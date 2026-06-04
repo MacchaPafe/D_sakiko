@@ -2,8 +2,11 @@
 import contextlib
 import json
 import os
+import threading
 import warnings
+from copy import deepcopy
 
+from PyQt5.QtCore import QLockFile
 from PyQt5.QtGui import QColor
 
 # 去广告
@@ -151,6 +154,25 @@ class DSakikoConfig(QConfig):
         },
     ],
      validator=ThemeColorValidator())
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.lock = QLockFile("../d_sakiko_config.lock")
+        self._set_without_lock = super().set
+        self._transaction_state = threading.local()
+
+    def _transaction_depth(self) -> int:
+        """
+        获取当前线程进入配置事务的层数。不同线程中，这个值是不一样的，从而保证不同线程内的代码正确。
+        """
+        return getattr(self._transaction_state, "depth", 0)
+
+    def _set_transaction_depth(self, depth: int) -> None:
+        """
+        设置当前线程进入配置事务的层数。
+        """
+        self._transaction_state.depth = depth
     
     def infer_gpu_setting(self):
         """
@@ -161,11 +183,118 @@ class DSakikoConfig(QConfig):
             import torch
 
             if self.cuda_enabled.value is None:
-                self.cuda_enabled.value = torch.cuda.is_available()
+                self.set(self.cuda_enabled, torch.cuda.is_available())
             # Apple M4 芯片上，MPS 的效果和 CPU 推理几乎相同，但占用时间更长
             # 暂时默认不启用 MPS，即使在 MPS 可用的机器上也是如此。如果用户想启用，可以手动打开开关。
             if self.mps_enabled.value is None:
-                self.mps_enabled.value = False
+                self.set(self.mps_enabled, False)
+
+    def set(self, item: ConfigItem, value: object, save: bool = True, copy: bool = True) -> None:
+        """
+        修改一个配置变量的值。为了保持多进程下的同步，每次修改强制写入磁盘。
+        """
+        if self._transaction_depth() > 0:
+            self._set_without_lock(item, value, False, copy)
+            return
+
+        try:
+            if not self.lock.lock():
+                raise RuntimeError("无法获得文件锁")
+            self.load(self.file)
+            self._set_without_lock(item, value, True, copy)
+        finally:
+            if self.lock.isLocked():
+                self.lock.unlock()
+
+    def __enter__(self) -> "DSakikoConfig":
+        depth = self._transaction_depth()
+        if depth > 0:
+            self._set_transaction_depth(depth + 1)
+            return self
+
+        if not self.lock.lock():
+            raise RuntimeError("无法获得文件锁")
+
+        try:
+            self.load(self.file)
+            self._set_transaction_depth(1)
+        except Exception:
+            self.lock.unlock()
+            raise
+
+        return self
+
+    def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: object,
+    ) -> bool:
+        depth = self._transaction_depth()
+        if depth > 1:
+            self._set_transaction_depth(depth - 1)
+            return False
+
+        self._set_transaction_depth(0)
+        try:
+            if exc_type is None:
+                self.save()
+            else:
+                self.load(self.file)
+        finally:
+            if self.lock.isLocked():
+                self.lock.unlock()
+
+        return False
+
+    def snapshot(self) -> "DSakikoConfigSnapshot":
+        """
+        从磁盘加载最新配置，并返回一份纯 Python 配置快照。
+        """
+        if self._transaction_depth() > 0:
+            return DSakikoConfigSnapshot(self)
+
+        try:
+            if not self.lock.lock():
+                raise RuntimeError("无法获得文件锁")
+            self.load(self.file)
+            return DSakikoConfigSnapshot(self)
+        finally:
+            if self.lock.isLocked():
+                self.lock.unlock()
+
+    def __deepcopy__(self, memo: dict[int, object]) -> "DSakikoConfigSnapshot":
+        """
+        避免复制 QObject/QLockFile，改为复制一份配置值快照。
+        """
+        return self.snapshot()
+
+
+class ConfigValueSnapshot:
+    """
+    保存单个配置项的值快照。
+    """
+
+    def __init__(self, value: object) -> None:
+        try:
+            self.value: object = deepcopy(value)
+        except Exception:
+            self.value = value
+
+
+class DSakikoConfigSnapshot:
+    """
+    保存一次对话轮次使用的配置快照。
+    """
+
+    def __init__(self, cfg: DSakikoConfig) -> None:
+        """
+        复制所有 DSakikoConfig 类中的 ConfigItem 作为快照
+        """
+        for name in dir(cfg.__class__):
+            item = getattr(cfg.__class__, name)
+            if isinstance(item, ConfigItem):
+                setattr(self, name, ConfigValueSnapshot(item.value))
 
 
 # 这个字典存储了所有可能的“LLM 供应商显示名称”->“实际请求时需要的前缀名称”的映射关系
@@ -336,7 +465,7 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
     此函数可以被安全的随时调用。如果旧配置文件不存在，则不会进行任何操作。
 
     :param cfg: 将会根据旧配置文件修改这个 cfg 实例的内容。
-    迁移后，配置会被自动保存一次。
+    迁移修改会通过 cfg.set 写入；如外层已有配置事务，则在事务退出时统一保存。
     :param enable_warning: 如果读取旧配置文件并迁移后无法删除旧文件，是否打印警告。
     这是因为，如果无法删除旧配置，下次执行程序时此函数还会再次尝试迁移，会导致已有的新配置参数被旧配置覆盖。
     """
@@ -373,7 +502,7 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
                 # 记录当前没用 deepseek API
                 use_deepseek_api = False
                 # 这里宁可崩溃不修改也不能写一个未知的供应商名称进去
-                cfg.llm_api_provider.value = PROVIDER_DISPLAY_NAME_MAP[one["name"]]
+                cfg.set(cfg.llm_api_provider, PROVIDER_DISPLAY_NAME_MAP[one["name"]])
 
         
         # 如果没有设置自定义 API，就代表我们在使用 DeepSeek API
@@ -381,19 +510,19 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
         # 如果有，说明自定义了 API Key；如果没有，说明采用 up 的 API Key
         if use_deepseek_api:
             # 直接把模型改为 DeepSeek 当前推荐的 V4 Flash
-            cfg.llm_api_provider.value = "deepseek"
+            cfg.set(cfg.llm_api_provider, "deepseek")
             llm_api_model_dict["deepseek"] = "deepseek-v4-flash"
             with open("../API Key.txt", "r") as f:
                 api_key = f.read().strip()
                 if not api_key:
-                    cfg.use_default_deepseek_api.value = True
+                    cfg.set(cfg.use_default_deepseek_api, True)
                 else:
                     # 记录自定义 DeepSeek API Key
                     llm_api_key_dict["deepseek"] = api_key
-                    cfg.use_default_deepseek_api.value = False
+                    cfg.set(cfg.use_default_deepseek_api, False)
         else:
             # 如果不是用 DeepSeek API，就一定不是用 up 的 DeepSeek API
-            cfg.use_default_deepseek_api.value = False
+            cfg.set(cfg.use_default_deepseek_api, False)
 
         # 删除旧文件
         try:
@@ -417,9 +546,9 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
             use_fp16_str = f.read().strip()
             # 这个默认为 True，即只在下列少数条件下为 False
             if use_fp16_str.lower() == "false" or (use_fp16_str.isdigit() and int(use_fp16_str) == 0):
-                cfg.enable_fp32_inference.value = False
+                cfg.set(cfg.enable_fp32_inference, False)
             else:
-                cfg.enable_fp32_inference.value = True
+                cfg.set(cfg.enable_fp32_inference, True)
         # 删除文件
         try:
             os.remove("../is_fp32.txt")
@@ -434,9 +563,9 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
             delete_cache_str = f.read().strip()
             # 如果写的内容为 "true"（不区分大小写）或者一个非零数字，就启用删除缓存
             if delete_cache_str.lower() == "true" or (delete_cache_str.isdigit() and int(delete_cache_str) != 0):
-                cfg.delete_audio_cache_on_exit.value = True
+                cfg.set(cfg.delete_audio_cache_on_exit, True)
             else:
-                cfg.delete_audio_cache_on_exit.value = False
+                cfg.set(cfg.delete_audio_cache_on_exit, False)
         
         # 删除文件
         try:
@@ -454,7 +583,7 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
                 steps = int(steps_str)
                 # 如果内容是正确的 4\8\16\32 之一，就设置
                 if steps in cfg.sovits_inference_sampling_steps.options:
-                    cfg.sovits_inference_sampling_steps.value = steps
+                    cfg.set(cfg.sovits_inference_sampling_steps, steps)
         
         # 删除文件
         try:
@@ -469,7 +598,7 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
     try:
         with open("../reference_audio/character_order.json", "r", encoding="utf-8") as f:
             character_order = json.load(f)
-            cfg.character_order.value = character_order
+            cfg.set(cfg.character_order, character_order)
         
         # 删除文件
         try:
@@ -481,8 +610,6 @@ def migrate_from_old_config(cfg: DSakikoConfig, enable_warning: bool = False):
     except Exception:
         pass
 
-    # 保存修改
-    cfg.save()
     # 把工作目录换回去（以防万一）
     os.chdir(old_cwd)
 
@@ -491,7 +618,7 @@ def migrate_from_legacy_d_sakiko_config(cfg: DSakikoConfig, enable_warning: bool
     """
     将另一套旧版统一配置文件 ../dsakiko_config.json 迁移到当前使用的 ../d_sakiko_config.json。
 
-    此函数只负责迁移新旧统一配置文件之间的格式差异；迁移成功后会保存 cfg 并删除旧的 dsakiko_config.json。
+    此函数只负责迁移新旧统一配置文件之间的格式差异；迁移成功后会更新 cfg 并删除旧的 dsakiko_config.json。
     如果旧配置文件不存在，则不会进行任何操作。
     """
     old_cwd = os.getcwd()
@@ -525,30 +652,33 @@ def migrate_from_legacy_d_sakiko_config(cfg: DSakikoConfig, enable_warning: bool
                     and isinstance(character_order.get("character_names"), list)
             ):
                 character_names = [str(name) for name in character_order["character_names"]]
-                cfg.character_order.value = {
-                    "character_num": len(character_names),
-                    "character_names": character_names,
-                }
+                cfg.set(
+                    cfg.character_order,
+                    {
+                        "character_num": len(character_names),
+                        "character_names": character_names,
+                    },
+                )
 
         legacy_llm_setting = legacy_cfg.get("llm_setting", {})
         if isinstance(legacy_llm_setting, dict):
-            cfg.enable_custom_llm_api_provider.value = False
+            cfg.set(cfg.enable_custom_llm_api_provider, False)
             llm_api_key_dict = dict(cfg.llm_api_key.value)
             llm_api_model_dict = dict(cfg.llm_api_model.value)
             llm_api_base_url_dict = dict(cfg.llm_api_base_url.value)
 
             is_deepseek = bool(legacy_llm_setting.get("is_deepseek", True))
             if is_deepseek:
-                cfg.llm_api_provider.value = "deepseek"
+                cfg.set(cfg.llm_api_provider, "deepseek")
                 llm_api_model_dict["deepseek"] = "deepseek-v4-flash"
                 deepseek_key = legacy_llm_setting.get("deepseek_key", "use_api_of_up")
                 if _is_placeholder_api_key(deepseek_key) or deepseek_key == "use_api_of_up":
-                    cfg.use_default_deepseek_api.value = True
+                    cfg.set(cfg.use_default_deepseek_api, True)
                 else:
-                    cfg.use_default_deepseek_api.value = False
+                    cfg.set(cfg.use_default_deepseek_api, False)
                     llm_api_key_dict["deepseek"] = deepseek_key
             else:
-                cfg.use_default_deepseek_api.value = False
+                cfg.set(cfg.use_default_deepseek_api, False)
                 selected_provider_id = None
                 other_providers = legacy_llm_setting.get("other_provider", [])
                 if not isinstance(other_providers, list):
@@ -586,35 +716,33 @@ def migrate_from_legacy_d_sakiko_config(cfg: DSakikoConfig, enable_warning: bool
 
                 # 如果没有找到被选中的模型，默认采用 DeepSeek V4 Flash 模型
                 if selected_provider_id is None:
-                    cfg.use_default_deepseek_api.value = True
-                    cfg.llm_api_provider.value = "deepseek"
+                    cfg.set(cfg.use_default_deepseek_api, True)
+                    cfg.set(cfg.llm_api_provider, "deepseek")
                     llm_api_model_dict["deepseek"] = "deepseek-v4-flash"
                 else:
-                    cfg.llm_api_provider.value = selected_provider_id
+                    cfg.set(cfg.llm_api_provider, selected_provider_id)
 
-            cfg.llm_api_key.value = llm_api_key_dict
-            cfg.llm_api_model.value = llm_api_model_dict
-            cfg.llm_api_base_url.value = llm_api_base_url_dict
+            cfg.set(cfg.llm_api_key, llm_api_key_dict)
+            cfg.set(cfg.llm_api_model, llm_api_model_dict)
+            cfg.set(cfg.llm_api_base_url, llm_api_base_url_dict)
 
         legacy_audio_setting = legacy_cfg.get("audio_setting", {})
         if isinstance(legacy_audio_setting, dict):
             if "if_delete_audio_cache" in legacy_audio_setting:
-                cfg.delete_audio_cache_on_exit.value = bool(legacy_audio_setting["if_delete_audio_cache"])
+                cfg.set(cfg.delete_audio_cache_on_exit, bool(legacy_audio_setting["if_delete_audio_cache"]))
 
             if "enable_fp16_inference" in legacy_audio_setting:
-                cfg.enable_fp32_inference.value = not bool(legacy_audio_setting["enable_fp16_inference"])
+                cfg.set(cfg.enable_fp32_inference, not bool(legacy_audio_setting["enable_fp16_inference"]))
 
             steps = legacy_audio_setting.get("sovits_inference_sampling_steps")
             if steps in cfg.sovits_inference_sampling_steps.options:
-                cfg.sovits_inference_sampling_steps.value = steps
+                cfg.set(cfg.sovits_inference_sampling_steps, steps)
             elif steps is not None:
-                cfg.sovits_inference_sampling_steps.value = 16
+                cfg.set(cfg.sovits_inference_sampling_steps, 16)
                 warnings.warn(
                     "[Warning]旧版 dsakiko_config.json 中的 sovits_inference_sampling_steps 非法，"
                     "已回退为 16。"
                 )
-
-        cfg.save()
 
         try:
             os.remove(legacy_config_path)
@@ -643,21 +771,31 @@ def normalize_deepseek_model_config(cfg: DSakikoConfig):
         normalized = DEEPSEEK_DEPRECATED_MODEL_ALIASES.get(normalized, normalized)
         if normalized != current:
             models["deepseek"] = normalized
-            cfg.llm_api_model.value = models
+            cfg.set(cfg.llm_api_model, models)
 
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # 全局唯一配置实例
 d_sakiko_config = DSakikoConfig()
+# qfluentwidgets 的部分控件会直接调用全局 qconfig.set，而不是当前配置实例的 set。
+# 只覆盖这个全局实例，避免修改 QConfig 类影响其他配置对象。
+qconfig.set = d_sakiko_config.set
 # 手动设置一个默认值（可以被其他的覆盖）
-d_sakiko_config.themeColor.value = "#7799CC"
+d_sakiko_config._set_without_lock(d_sakiko_config.themeColor, QColor("#7799CC"), save=False)
 qconfig.load("../d_sakiko_config.json", d_sakiko_config)
-d_sakiko_config.infer_gpu_setting()
+with d_sakiko_config:
+    d_sakiko_config.infer_gpu_setting()
 
-# 尝试从旧配置文件迁移配置
-migrate_from_old_config(d_sakiko_config)
-# 尝试从另一套旧版统一配置文件迁移配置
-migrate_from_legacy_d_sakiko_config(d_sakiko_config, enable_warning=True)
-normalize_deepseek_model_config(d_sakiko_config)
-d_sakiko_config.save()
+    # 尝试从旧配置文件迁移配置
+    migrate_from_old_config(d_sakiko_config)
+    # 尝试从另一套旧版统一配置文件迁移配置
+    migrate_from_legacy_d_sakiko_config(d_sakiko_config, enable_warning=True)
+    normalize_deepseek_model_config(d_sakiko_config)
+
+
+def create_d_sakiko_config_snapshot() -> DSakikoConfigSnapshot:
+    """
+    创建一份最新的 d_sakiko_config 纯数据快照。
+    """
+    return d_sakiko_config.snapshot()

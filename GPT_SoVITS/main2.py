@@ -18,7 +18,6 @@ from PyQt5.QtGui import QFont, QFontDatabase
 import character
 import dp_local2
 import audio_generator
-import inference_emotion_detect
 import live2d_module
 import qtUI
 from chat.chat import get_chat_manager

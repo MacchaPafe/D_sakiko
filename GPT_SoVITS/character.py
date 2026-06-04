@@ -336,9 +336,13 @@ class GetCharacterAttributes:
             self.character_class_list=new_character_class_list
 
         # 将最终的结果同步到配置中
-        d_sakiko_config.character_order.value['character_names']=[char.character_name for char in self.character_class_list]
-        d_sakiko_config.character_order.value['character_num']=self.character_num
-        d_sakiko_config.save()
+        d_sakiko_config.set(
+            d_sakiko_config.character_order,
+            {
+                "character_names": [char.character_name for char in self.character_class_list],
+                "character_num": self.character_num,
+            },
+        )
 
 
 if __name__=="__main__":

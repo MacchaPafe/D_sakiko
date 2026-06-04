@@ -1806,8 +1806,8 @@ class ChatGUI(QWidget):
         if not hasattr(self, "chat_sidebar"):
             return
         self.chat_sidebar.set_mode(mode)
-        d_sakiko_config.chat_sidebar_mode.value = mode
-        d_sakiko_config.save()
+        d_sakiko_config.set(d_sakiko_config.chat_sidebar_mode, mode)
+
         self._refresh_chat_sidebar_mode_button()
         self.refresh_chat_list()
 
@@ -1826,8 +1826,7 @@ class ChatGUI(QWidget):
         """
         保存聊天侧栏折叠模式下展开的角色。
         """
-        d_sakiko_config.chat_sidebar_expanded_characters.value = character_names
-        d_sakiko_config.save()
+        d_sakiko_config.set(d_sakiko_config.chat_sidebar_expanded_characters, character_names)
 
     def create_new_chat(self) -> None:
         """

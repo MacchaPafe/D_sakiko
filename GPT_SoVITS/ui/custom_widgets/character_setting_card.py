@@ -52,5 +52,5 @@ class CharacterSettingCard(ExpandGroupSettingCard):
             "character_num": len(ordered_names),
             "character_names": ordered_names,
         }
-        d_sakiko_config.character_order.value = order_data_to_save
+        d_sakiko_config.set(d_sakiko_config.character_order, order_data_to_save)
         return True

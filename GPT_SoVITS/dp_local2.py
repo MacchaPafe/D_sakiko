@@ -15,7 +15,7 @@ from typing import Optional, Sequence, TYPE_CHECKING
 if TYPE_CHECKING:
     import litellm
 
-from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
+from qconfig import create_d_sakiko_config_snapshot, d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
 from log import get_logger
@@ -98,6 +98,8 @@ class DSLocalAndVoiceGen:
         # 语音输出的语言
         self.audio_language = ["中英混合", "日英混合"]
         self.audio_language_choice = self.audio_language[1]
+        # 缓存的配置，只在每次开始请求时更新，避免中途配置被修改导致问题
+        self.d_sakiko_config = create_d_sakiko_config_snapshot()
 
         try:
             self.model = __import__('live2d_1').get_live2d()
@@ -501,7 +503,7 @@ class DSLocalAndVoiceGen:
             runtime_kwargs.pop(protected_key, None)
 
         # 根据当前 API 配置选择模型、鉴权信息和可选 base_url。
-        if d_sakiko_config.use_default_deepseek_api.value:
+        if self.d_sakiko_config.use_default_deepseek_api.value:
             logger.debug("正在使用 UP 的 DeepSeek API")
             completion_kwargs = {
                 "model": "deepseek/deepseek-v4-flash",
@@ -510,26 +512,26 @@ class DSLocalAndVoiceGen:
                 "stream": stream,
                 "timeout": timeout,
             }
-        elif d_sakiko_config.enable_custom_llm_api_provider.value:
+        elif self.d_sakiko_config.enable_custom_llm_api_provider.value:
             logger.debug("正在使用自定义大模型 API")
-            logger.debug("API Base: %s", d_sakiko_config.custom_llm_api_url.value)
-            logger.debug("API Model: %s", d_sakiko_config.custom_llm_api_model.value)
+            logger.debug("API Base: %s", self.d_sakiko_config.custom_llm_api_url.value)
+            logger.debug("API Model: %s", self.d_sakiko_config.custom_llm_api_model.value)
             completion_kwargs = {
-                "model": ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
+                "model": ensure_openai_compatible_model(self.d_sakiko_config.custom_llm_api_model.value),
                 "messages": messages,
-                "api_key": d_sakiko_config.custom_llm_api_key.value,
-                "base_url": d_sakiko_config.custom_llm_api_url.value,
+                "api_key": self.d_sakiko_config.custom_llm_api_key.value,
+                "base_url": self.d_sakiko_config.custom_llm_api_url.value,
                 "stream": stream,
                 "timeout": timeout,
             }
         else:
             logger.debug("正在使用预定义大模型 API")
-            logger.debug("Provider: %s", d_sakiko_config.llm_api_provider.value)
-            logger.debug("Model: %s", d_sakiko_config.llm_api_model.value[d_sakiko_config.llm_api_provider.value])
-            provider = d_sakiko_config.llm_api_provider.value
-            model_name = d_sakiko_config.llm_api_model.value.get(provider, "")
-            api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
-            base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
+            logger.debug("Provider: %s", self.d_sakiko_config.llm_api_provider.value)
+            logger.debug("Model: %s", self.d_sakiko_config.llm_api_model.value[self.d_sakiko_config.llm_api_provider.value])
+            provider = self.d_sakiko_config.llm_api_provider.value
+            model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
+            api_key = self.d_sakiko_config.llm_api_key.value.get(provider, "")
+            base_url = self.d_sakiko_config.llm_api_base_url.value.get(provider)
 
             completion_kwargs = {
                 "model": self.normalize_model_for_provider(provider, model_name),
@@ -869,13 +871,13 @@ class DSLocalAndVoiceGen:
         """
         根据当前配置解析 LiteLLM 实际收到的 model 字符串。
         """
-        if d_sakiko_config.use_default_deepseek_api.value:
+        if self.d_sakiko_config.use_default_deepseek_api.value:
             return "deepseek/deepseek-v4-flash"
-        if d_sakiko_config.enable_custom_llm_api_provider.value:
-            return ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value)
+        if self.d_sakiko_config.enable_custom_llm_api_provider.value:
+            return ensure_openai_compatible_model(self.d_sakiko_config.custom_llm_api_model.value)
 
-        provider = d_sakiko_config.llm_api_provider.value
-        model_name = d_sakiko_config.llm_api_model.value.get(provider, "")
+        provider = self.d_sakiko_config.llm_api_provider.value
+        model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
         return self.normalize_model_for_provider(provider, model_name)
 
     @staticmethod
@@ -1417,6 +1419,8 @@ class DSLocalAndVoiceGen:
 
             message_queue.put(f"{character_name}思考中...")
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
+            # 复制一份模型配置，防止一轮对话中间配置修改导致出错
+            self.d_sakiko_config = create_d_sakiko_config_snapshot()
             # 为本轮用户输入锁定推理配置；如果用户在工具调用过程中修改 UI 设置，只会影响下一轮输入。
             reasoning_kwargs_snapshot = self._build_current_reasoning_kwargs_snapshot()
             # --------------------------
