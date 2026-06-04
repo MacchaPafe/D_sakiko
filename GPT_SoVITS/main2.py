@@ -567,6 +567,7 @@ if __name__=='__main__':
     tr3=threading.Thread(target=main_thread)
     # 更新配置的线程
     tr4 = UpdateConfigThread("d_sakiko_config")
+    tr4.reload_requested.connect(d_sakiko_config.reload_from_disk)
     tr1.start()
     tr2.start()
     tr3.start()
