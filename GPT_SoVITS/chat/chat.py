@@ -732,12 +732,18 @@ class Chat:
             characters.add(msg.character_name)
         return list(characters)
 
-    def build_llm_query(self, perspective: str, is_simplify: bool=False) -> List[Dict]:
+    def build_llm_query(
+        self,
+        perspective: str,
+        is_simplify: bool = False,
+        include_translation: bool = True,
+    ) -> List[Dict]:
         """
         根据当前对话内容，构建用于发送给 LLM 的对话历史列表
 
         :param perspective: 当前该说话的角色，可以从当前对话中涉及的角色选择，或者使用 "User" 选中用户视角（通常情况下，不应当选择 "User"，因为你不会希望 LLM 代替你说话的）
         :param is_simplify: 是否为主程序简化消息json
+        :param include_translation: 简化 assistant 消息时是否保留 translation 字段
         :returns: 用于 LLM 的对话历史列表
         """
         llm_history = []
@@ -770,16 +776,22 @@ class Chat:
         if not has_start_message and llm_history and llm_history[0]["role"] == "assistant":
             warnings.warn("当前对话没有设置起始消息，如果该对话为小剧场对话，可能会导致 LLM 生成质量下降和 API 请求错误。")
 
-        return self.merge_llm_query(llm_history, is_simplify)
+        return self.merge_llm_query(llm_history, is_simplify, include_translation)
 
     @staticmethod
-    def merge_llm_query(message_list: List[Dict], is_simplify: bool = False) -> List[Dict]:
+    def merge_llm_query(
+        message_list: List[Dict],
+        is_simplify: bool = False,
+        include_translation: bool = True,
+    ) -> List[Dict]:
         """
         直接修改 message_list 的内容，将所有相邻的 role 相同的消息合并为一条消息，以遵循 LLM 的对话格式要求
         请注意：列表会被原地修改，返回值和输入参数是同一个对象
         """
         if not message_list:
             return message_list
+        if is_simplify:
+            return Chat._simplify_llm_query(message_list, include_translation)
 
         merged_list = [message_list[0]]
         for msg in message_list[1:]:
@@ -793,34 +805,102 @@ class Chat:
         # 清空原列表并添加合并后的内容
         message_list.clear()
         message_list.extend(merged_list)
-        return message_list if not is_simplify else Chat._simplify_llm_query(message_list)
+        return message_list
 
     @staticmethod
-    def _simplify_llm_query(message_list: List[Dict]) -> List[Dict]:
+    def _append_assistant_content_to_simplified_segment(
+        segment: dict[str, str],
+        content: str,
+        include_translation: bool,
+    ) -> bool:
         """
-        将 message_list 中所有 assistant 消息的 content 从多行 JSON 格式简化为单行 JSON 格式，
-        并且仅保留 text 和 translation 两个字段，以适配主程序的对话记录格式要求
+        将一条 assistant JSON 内容追加到压缩段落中。
         """
+        try:
+            parsed_data: object = json.loads(content)
+        except json.JSONDecodeError:
+            return False
+
+        if isinstance(parsed_data, dict):
+            source_items: list[object] = [parsed_data]
+        elif isinstance(parsed_data, list):
+            source_items = parsed_data
+        else:
+            return False
+
+        for item in source_items:
+            if not isinstance(item, dict):
+                return False
+            segment["text"] += str(item.get("text") or "")
+            if include_translation:
+                segment["translation"] += str(item.get("translation") or "")
+            if not segment["emotion"]:
+                segment["emotion"] = str(item.get("emotion") or "")
+
+        return True
+
+    @staticmethod
+    def _simplify_llm_query(message_list: List[Dict], include_translation: bool = True) -> List[Dict]:
+        """
+        合并相邻消息，并将 assistant 消息压缩为符合主程序输出协议的 JSON array。
+        """
+        merged_list: list[dict[str, str]] = []
+        active_role = ""
+        active_content = ""
+        active_assistant_segment: dict[str, str] | None = None
+
+        def flush_active_message() -> None:
+            """
+            将当前累计消息写入合并列表。
+            """
+            nonlocal active_role, active_content, active_assistant_segment
+            if not active_role:
+                return
+
+            if active_role == "assistant" and active_assistant_segment is not None:
+                segment = {
+                    "text": active_assistant_segment["text"],
+                    "emotion": active_assistant_segment["emotion"] or "happiness",
+                }
+                if include_translation:
+                    segment["translation"] = active_assistant_segment["translation"]
+                content = json.dumps([segment], ensure_ascii=False)
+            else:
+                content = active_content
+
+            merged_list.append({
+                "role": active_role,
+                "content": content,
+            })
+
         for msg in message_list:
-            if msg["role"] == "assistant":
-                # 将通过 \n 拼起来的多行 JSON (JSONL格式) 解析出来
-                lines = msg["content"].strip().split('\n')
-                simplified_content = {"text":"", "translation":"","emotion":""}
-                succeed=True
-                for line in lines:
-                    if not line.strip():
-                        continue
-                    try:
-                        data = json.loads(line)
-                        # 仅提取所需的两个字段
-                        simplified_content["text"] += data.get("text", "")
-                        simplified_content["translation"] += data.get("translation", "")
-                        simplified_content["emotion"] += data.get("emotion", "")
-                    except json.JSONDecodeError:
-                        succeed=False
-                        pass
-                if succeed:
-                    msg["content"] = json.dumps(simplified_content, ensure_ascii=False)
+            role = str(msg["role"])
+            content = str(msg["content"])
+            if role != active_role:
+                flush_active_message()
+                active_role = role
+                active_content = ""
+                active_assistant_segment = None
+
+            if role == "assistant":
+                if active_assistant_segment is None:
+                    active_assistant_segment = {"text": "", "translation": "", "emotion": ""}
+                if not Chat._append_assistant_content_to_simplified_segment(
+                    active_assistant_segment,
+                    content,
+                    include_translation,
+                ):
+                    active_assistant_segment["text"] += content
+                    if not active_assistant_segment["emotion"]:
+                        active_assistant_segment["emotion"] = "happiness"
+            elif active_content:
+                active_content += "\n" + content
+            else:
+                active_content = content
+
+        flush_active_message()
+        message_list.clear()
+        message_list.extend(merged_list)
         return message_list
 
     def add_message(self, message: Message) -> None:

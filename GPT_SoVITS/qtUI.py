@@ -2276,6 +2276,7 @@ class ChatGUI(QWidget):
             self.current_chat.build_llm_query(
                 perspective=character_name,
                 is_simplify=True,
+                include_translation=getattr(self.dp_chat, "audio_language_choice", "") == "日英混合",
             )
         )
         runtime_system_instruction = self._context_runtime_system_instruction()

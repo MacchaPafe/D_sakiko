@@ -14,7 +14,12 @@ class FakeChat:
 
     chat_id = "chat-1"
 
-    def build_llm_query(self, perspective: str, is_simplify: bool = False) -> list[dict[str, object]]:
+    def build_llm_query(
+        self,
+        perspective: str,
+        is_simplify: bool = False,
+        include_translation: bool = True,
+    ) -> list[dict[str, object]]:
         """返回一段包含 system 和 user 的固定请求历史。"""
         return [
             {"role": "system", "content": f"角色设定：{perspective}"},

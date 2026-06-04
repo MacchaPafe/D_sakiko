@@ -210,6 +210,68 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(query[1]["role"], "user")
         self.assertIn("场景说明", query[1]["content"])
 
+    def test_simplified_llm_query_keeps_assistant_content_as_array(self):
+        """
+        简化后的 assistant 历史应保持 JSON array 顶层，并合并连续消息字段。
+        """
+        chat = Chat(
+            start_message="场景说明",
+            message_list=[
+                Message(
+                    character_name="素世",
+                    text="こんにちは。",
+                    translation="你好。",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path="",
+                ),
+                Message(
+                    character_name="素世",
+                    text="少し疲れた。",
+                    translation="有点累。",
+                    emotion=EmotionEnum.SADNESS,
+                    audio_path="",
+                ),
+            ],
+        )
+
+        query = chat.build_llm_query("素世", is_simplify=True)
+        content = json.loads(query[1]["content"])
+
+        self.assertEqual(query[1]["role"], "assistant")
+        self.assertEqual(
+            content,
+            [
+                {
+                    "text": "こんにちは。少し疲れた。",
+                    "translation": "你好。有点累。",
+                    "emotion": "happiness",
+                }
+            ],
+        )
+        self.assertNotIn("speaker", content[0])
+
+    def test_simplified_llm_query_can_omit_translation(self):
+        """
+        简化历史可按运行期语言模式省略 translation 字段。
+        """
+        chat = Chat(
+            start_message="场景说明",
+            message_list=[
+                Message(
+                    character_name="素世",
+                    text="你好。",
+                    translation="hello.",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path="",
+                )
+            ],
+        )
+
+        query = chat.build_llm_query("素世", is_simplify=True, include_translation=False)
+        content = json.loads(query[1]["content"])
+
+        self.assertEqual(content, [{"text": "你好。", "emotion": "happiness"}])
+
     def test_llm_query_for_multiple_character(self):
         """
         测试多个智能体对话时，构建 LLM 查询的正确性

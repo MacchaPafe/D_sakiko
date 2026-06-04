@@ -440,6 +440,7 @@ class DSLocalAndVoiceGen:
             for one in self.current_chat.build_llm_query(
                 perspective=character_name,
                 is_simplify=True,
+                include_translation=self.audio_language_choice == '日英混合',
             )
         ]
         runtime_system_instruction = self._build_runtime_system_instruction()
