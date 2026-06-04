@@ -158,17 +158,17 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    app = QApplication(sys.argv)
-    area = DSakikoConfigArea()
-    w = FluentWindow()
-    w.setMinimumSize(650, 800)
-    w.addSubInterface(area, FluentIcon.HOME, w.tr("设置"))
-    # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
-    # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
-    area.closeEvent = lambda e: app.quit()
-
-    w.show()
     try:
+        app = QApplication(sys.argv)
+        area = DSakikoConfigArea()
+        w = FluentWindow()
+        w.setMinimumSize(650, 800)
+        w.addSubInterface(area, FluentIcon.HOME, w.tr("设置"))
+        # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
+        # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
+        area.closeEvent = lambda e: app.quit()
+
+        w.show()
         sys.exit(app.exec_())
     finally:
         shutdown_logging()

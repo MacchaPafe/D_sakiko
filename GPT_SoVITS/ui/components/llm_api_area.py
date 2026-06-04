@@ -2,6 +2,8 @@
 import contextlib
 import os
 
+from ..custom_widgets.custom_switch_setting_card import SwitchSettingCard
+
 # 设置这个变量来缩短 litellm 的加载时间，禁止其请求网络
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import litellm
@@ -20,7 +22,7 @@ from log import get_logger
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
-    ListWidget, ToolTipFilter
+    ListWidget, ToolTipFilter, FluentIcon
 
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 
@@ -256,6 +258,15 @@ class LLMAPIArea(TransparentScrollArea):
         # 加载模型选择框的内容
         self.populate_llm_combobox()
         self.llm_provider_combobox.currentIndexChanged.connect(self.on_llm_provider_changed)
+
+        self.display_unformatted_message_card = SwitchSettingCard(
+            FluentIcon.MESSAGE,
+            self.tr("显示无法解析的模型原文"),
+            self.tr("即使模型返回不合格式，仍然展示返回内容（可能导致语音合成异常）"),
+            d_sakiko_config.display_unformatted_llm_response,
+            parent=self,
+        )
+        self.v_box_layout.addWidget(self.display_unformatted_message_card)
 
         # 加载初始内容
         self.load_config_to_ui()

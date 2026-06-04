@@ -78,12 +78,13 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             subject._parse_model_segments_payload('[{"text":"こんにちは。","emotion":"happiness"}]')
 
-    def test_parse_rejects_top_level_object(self) -> None:
-        """模型输出必须是顶层 JSON array，不能接受单个 object。"""
+    def test_parse_accepts_top_level_object_as_single_segment(self) -> None:
+        """兼容旧格式：顶层单个 JSON object 会被视为单段回复。"""
         subject = self._build_subject("中英混合")
 
-        with self.assertRaises(ValueError):
-            subject._parse_model_segments_payload('{"text":"你好。","emotion":"happiness"}')
+        segments = subject._parse_model_segments_payload('{"text":"你好。","emotion":"happiness"}')
+
+        self.assertEqual(segments, [{"text": "你好。", "emotion": "happiness"}])
 
     def test_parse_rejects_neutral_emotion(self) -> None:
         """EmotionEnum 没有 neutral，机器协议也不应接受 neutral。"""
@@ -91,6 +92,30 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             subject._parse_model_segments_payload('[{"text":"你好。","emotion":"neutral"}]')
+
+    def test_parse_lenient_mode_recovers_minor_schema_errors(self) -> None:
+        """宽松模式应兜底可恢复字段，但仍返回标准段落结构。"""
+        subject = self._build_subject("日英混合")
+
+        segments = subject._parse_model_segments_payload(
+            '[{"text":"こんにちは。","emotion":"neutral","extra":"ignored"}]',
+            strict_mode=False,
+        )
+
+        self.assertEqual(
+            segments,
+            [{"text": "こんにちは。", "emotion": "happiness", "translation": ""}],
+        )
+
+    def test_parse_lenient_mode_still_requires_text(self) -> None:
+        """宽松模式仍必须保留可显示的 text。"""
+        subject = self._build_subject("中英混合")
+
+        with self.assertRaises(ValueError):
+            subject._parse_model_segments_payload(
+                '[{"translation":"你好。","emotion":"happiness"}]',
+                strict_mode=False,
+            )
 
     def test_parse_chinese_segments_ignores_translation(self) -> None:
         """中文模式下 translation 字段不会进入标准段落。"""
@@ -157,18 +182,14 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
         self.assertFalse(used_json_mode)
         self.assertEqual(content, '[{"text":"你好。","translation":"你好。","emotion":"happiness"}]')
 
-    def test_final_json_completion_always_uses_json_mode(self) -> None:
-        """即使候选回复非空且看似合法，最终回复也必须固定走 JSON Mode 收口。"""
+    def test_final_json_completion_reuses_valid_candidate(self) -> None:
+        """候选回复已经符合协议时，应直接复用而不再请求模型收口。"""
         subject = self._build_subject()
         calls: list[dict[str, object]] = []
 
         def fake_completion(**kwargs: object) -> dict[str, object]:
-            """记录最终 JSON 请求并返回合法段落。"""
+            """记录意外的最终 JSON 请求。"""
             calls.append(dict(kwargs))
-            messages = kwargs["messages"]
-            self.assertEqual(messages[-2]["role"], "assistant")
-            self.assertIn("旧回复", str(messages[-2]["content"]))
-            self.assertIn("候选草稿", str(messages[-1]["content"]))
             return {
                 "choices": [
                     {
@@ -188,11 +209,10 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
             reasoning_kwargs={"_reasoning_snapshot_locked": True},
         )
 
-        self.assertEqual(len(calls), 1)
-        self.assertIn("response_format", calls[0])
+        self.assertEqual(calls, [])
         self.assertEqual(
             segments,
-            [{"text": "こんにちは。", "emotion": "happiness", "translation": "你好。"}],
+            [{"text": "旧回复。", "emotion": "happiness", "translation": "旧回复。"}],
         )
 
     def test_schema_error_uses_format_retry(self) -> None:
@@ -204,11 +224,13 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
             invalid_content: str,
             reason: str,
             reasoning_kwargs: dict[str, object],
+            strict_mode: bool = True,
         ) -> list[dict[str, str]]:
             """记录 retry 输入并返回修正后的段落。"""
             retry_inputs.append(invalid_content)
             self.assertIn("translation", reason)
             self.assertEqual(reasoning_kwargs, {"_reasoning_snapshot_locked": True})
+            self.assertFalse(strict_mode)
             return [{"text": "こんにちは。", "emotion": "happiness", "translation": "你好。"}]
 
         subject._retry_model_segments_format = fake_retry

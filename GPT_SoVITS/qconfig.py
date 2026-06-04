@@ -66,6 +66,9 @@ class DSakikoConfig(QConfig):
     custom_llm_api_model = ConfigItem("llm_setting", "custom_llm_api_model", "")
     # 自定义 LLM API Key
     custom_llm_api_key = ConfigItem("llm_setting", "custom_llm_api_key", "")
+    # 是否仍然展示不符合格式要求的模型回复
+    display_unformatted_llm_response = OptionsConfigItem("llm_setting", "display_unformatted_llm_response", False,
+                                                         validator=BoolValidator())
 
     # 是否在退出时删除推理音频
     delete_audio_cache_on_exit = OptionsConfigItem("audio_setting", "delete_audio_cache_on_exit", False,
@@ -159,6 +162,7 @@ class DSakikoConfig(QConfig):
         super().__init__()
 
         self.lock = QLockFile("../d_sakiko_config.lock")
+        self.lock.setStaleLockTime(30_000) # 30s 后自动过期；怎么会有人写磁盘花 30s 呢？
         self._set_without_lock = super().set
         self._transaction_state = threading.local()
 

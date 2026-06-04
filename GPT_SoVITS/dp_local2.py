@@ -710,16 +710,21 @@ class DSLocalAndVoiceGen:
             "like",
         }
 
-    def _parse_model_segments_payload(self, content: str) -> list[dict[str, str]]:
+    def _parse_model_segments_payload(self, content: str, strict_mode: bool = True) -> list[dict[str, str]]:
         """
         解析并校验模型输出的顶层 JSON array 对话段落。
+
+        :param content: 模型返回的内容
+        :param strict_mode: 是否开启严格校验。关闭时会忽略多余字段，并对 emotion、translation 等可恢复字段做兜底。
         """
         json_str = self._strip_json_markdown_fence(content)
         if not json_str:
             raise ValueError("模型返回内容为空。")
 
         parsed_data = json.loads(json_str)
-        if not isinstance(parsed_data, list):
+        if isinstance(parsed_data, dict):
+            parsed_data = [parsed_data]
+        elif not isinstance(parsed_data, list):
             raise ValueError("模型输出的 JSON 顶层必须是 array。")
 
         if not parsed_data:
@@ -734,7 +739,7 @@ class DSLocalAndVoiceGen:
                 raise ValueError(f"第 {index + 1} 个段落不是 JSON object。")
 
             extra_keys = set(str(key) for key in item.keys()) - allowed_keys
-            if extra_keys:
+            if extra_keys and strict_mode:
                 raise ValueError(f"第 {index + 1} 个段落包含多余字段：{sorted(extra_keys)}。")
 
             text = str(item.get("text") or "").strip()
@@ -743,12 +748,16 @@ class DSLocalAndVoiceGen:
 
             emotion = str(item.get("emotion") or "").strip().lower()
             if emotion not in allowed_emotions:
-                raise ValueError(f"第 {index + 1} 个段落 emotion 不合法：{emotion or '空'}。")
+                if strict_mode:
+                    raise ValueError(f"第 {index + 1} 个段落 emotion 不合法：{emotion or '空'}。")
+                else:
+                    # 开心情绪做兜底
+                    emotion = "happiness"
 
             segment = {"text": text, "emotion": emotion}
             if need_translation:
                 translation = str(item.get("translation") or "").strip()
-                if not translation:
+                if not translation and strict_mode:
                     raise ValueError(f"第 {index + 1} 个段落缺少 translation。")
                 segment["translation"] = translation
             segments.append(segment)
@@ -945,6 +954,7 @@ class DSLocalAndVoiceGen:
         invalid_content: str,
         reason: str,
         reasoning_kwargs: dict[str, object],
+        strict_mode: bool = True,
     ) -> list[dict[str, str]]:
         """
         对 schema 不合格的非空输出做一次格式纠正 retry。
@@ -955,14 +965,14 @@ class DSLocalAndVoiceGen:
             reasoning_kwargs,
             phase="format_retry",
         )
-        return self._parse_model_segments_payload(retry_content)
+        return self._parse_model_segments_payload(retry_content, strict_mode)
 
     def _run_final_json_completion(
         self,
         runtime_messages: list[dict[str, object]],
         candidate_content: str,
         reasoning_kwargs: dict[str, object],
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, str]] | str:
         """
         在工具调用阶段结束后，先验收最终候选内容。
 
@@ -989,14 +999,20 @@ class DSLocalAndVoiceGen:
                     invalid_content=generated,
                     reason="输出不是合法 JSON。",
                     reasoning_kwargs=reasoning_kwargs,
+                    strict_mode=False, # 失败一次之后放松要求
                 )
             raise ValueError("JSON Mode 返回了非空但不合法的 JSON。") from exc
         except ValueError as exc:
-            return self._retry_model_segments_format(
-                invalid_content=generated,
-                reason=str(exc),
-                reasoning_kwargs=reasoning_kwargs,
-            )
+            # 最多两次纠正格式错误的请求
+            try:
+                return self._retry_model_segments_format(
+                    invalid_content=generated,
+                    reason=str(exc),
+                    reasoning_kwargs=reasoning_kwargs,
+                    strict_mode=False, # 放松要求
+                )
+            except ValueError:
+                return generated
 
     def _report_model_format_error(
         self,
@@ -1555,7 +1571,23 @@ class DSLocalAndVoiceGen:
                     candidate_content=cleaned_text_of_model_response,
                     reasoning_kwargs=reasoning_kwargs_snapshot,
                 )
-                added_msg_indices = self._segments_to_messages(character_name, model_segments)
+                # 返回内容符合格式要求
+                if isinstance(model_segments, list):
+                    added_msg_indices = self._segments_to_messages(character_name, model_segments)
+                elif isinstance(model_segments, str):
+                    # 返回内容不符合格式要求
+                    # 如果允许展示不合格式要求的内容才展示
+                    if self.d_sakiko_config.display_unformatted_llm_response.value:
+                        logger.debug("正在强制展示不符合格式要求的内容：%s", model_segments)
+                        added_msg_indices = self._segments_to_messages(character_name, [{
+                            "text": model_segments,
+                            "translation": "",
+                            "emotion": "happiness",
+                        }])
+                    else:
+                        raise ValueError("模型最终输出格式不符合要求")
+                else:
+                    raise ValueError("模型最终输出格式不符合要求，不是 list/dict 也不是 str")
             except ValueError as e:
                 self._report_model_format_error(
                     message_queue,
