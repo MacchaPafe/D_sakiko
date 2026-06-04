@@ -76,7 +76,7 @@ class ContextUsagePopup(QFrame):
         percent_text = "未知" if ratio is None else f"{ratio * 100:.1f}%"
 
         self.used_label.setText(f"已用 token：{used_text}")
-        self.limit_label.setText(f"总 token 上限：{limit_text}")
+        self.limit_label.setText(f"token 上限：{limit_text}")
         self.percent_label.setText(f"当前占比：{percent_text}")
 
     @staticmethod

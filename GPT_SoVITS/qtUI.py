@@ -14,12 +14,15 @@ import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
     QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QApplication
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent, pyqtSlot
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter
 
 import sounddevice as sd
 from opencc import OpenCC
 import os,sys
+
+from ui_main.threads.get_model_limit_thread import GetModelLimitThread
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
@@ -28,7 +31,7 @@ from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
-from chat.model_token_usage import count_message_tokens, get_model_input_token_limit
+from chat.model_token_usage import count_message_tokens
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
@@ -1686,6 +1689,9 @@ class ChatGUI(QWidget):
         self.chat_sidebar.chat_order_changed.connect(self.on_chat_list_order_changed)  # noqa
         self.chat_sidebar.expanded_characters_changed.connect(self.on_chat_sidebar_expanded_changed)  # noqa
         self._refresh_chat_sidebar_mode_button()
+        # 查询模型 input token 上限的线程；因为这个查询比较慢所以需要开新线程
+        self._model_limit_query_thread = GetModelLimitThread(model="", parent=self)
+        self._model_limit_query_thread.model_input_token_limit.connect(self._on_model_limit_queryed)
 
         layout.addLayout(action_layout)
         layout.addWidget(self.chat_sidebar, 1)
@@ -2237,12 +2243,17 @@ class ChatGUI(QWidget):
         """重新计算当前对话上下文 token 用量并刷新圆环组件。"""
         if not hasattr(self, "context_usage_indicator"):
             return
-        self.context_usage_indicator.set_snapshot(self._build_context_usage_snapshot())
+        model = self._current_litellm_model_name()
+        self._model_limit_query_thread.model = model
+        self._model_limit_query_thread.start()
 
-    def _build_context_usage_snapshot(self) -> ContextUsageSnapshot:
+    @pyqtSlot(object)
+    def _on_model_limit_queryed(self, token_limit: int | None) -> None:
+        self.context_usage_indicator.set_snapshot(self._build_context_usage_snapshot(token_limit))
+
+    def _build_context_usage_snapshot(self, token_limit: int | None) -> ContextUsageSnapshot:
         """构造当前普通聊天下一次请求会携带的上下文 token 快照。"""
         model = self._current_litellm_model_name()
-        token_limit = get_model_input_token_limit(model)
         try:
             messages = self._build_context_usage_messages()
             used_tokens = count_message_tokens(model=model, messages=messages)

@@ -40,7 +40,7 @@ def _get_litellm_model_input_token_limit(model: str) -> int | None:
 
         info = get_model_info(model=model)
     except Exception as exc:
-        logger.warning("查询 LiteLLM 模型上下文上限失败：%s", exc)
+        logger.debug("查询 LiteLLM 模型上下文上限失败：%s", exc)
         return None
 
     if not isinstance(info, Mapping):
