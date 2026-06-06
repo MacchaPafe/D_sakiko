@@ -1,0 +1,383 @@
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
+from PyQt5.QtGui import (
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QInputMethodEvent,
+    QKeyEvent,
+    QTextCursor,
+)
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication, QWidget
+
+from input_commands import InputCommandMatcher, InputCommandPalette, build_default_input_command_specs
+from ui_main.components.message_input import MessageInput, trim_surrounding_blank_lines
+
+
+class MessageInputTestCase(unittest.TestCase):
+    """验证多行消息输入框的编辑、发送与布局行为。"""
+
+    app: QApplication
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """创建测试用 Qt 应用实例。"""
+        existing_application = QApplication.instance()
+        cls.app = (
+            existing_application
+            if isinstance(existing_application, QApplication)
+            else QApplication([])
+        )
+
+    def setUp(self) -> None:
+        """创建并展示固定宽度的消息输入框。"""
+        self.input = MessageInput()
+        self.input.resize(240, self.input.height())
+        self.input.show()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        """销毁当前测试创建的输入框。"""
+        self.input.close()
+        self.input.deleteLater()
+        self.app.processEvents()
+
+    def test_trim_surrounding_blank_lines_preserves_body(self) -> None:
+        """首尾空白行应被移除，正文缩进和内部空行应原样保留。"""
+        text = "\n \t\n  first  \n\n\tsecond\t\n \n"
+
+        self.assertEqual(
+            trim_surrounding_blank_lines(text),
+            "  first  \n\n\tsecond\t",
+        )
+        self.assertEqual(trim_surrounding_blank_lines(" \n\t"), "")
+
+    def test_plain_enter_sends_without_inserting_newline(self) -> None:
+        """普通 Enter 应发送且不修改输入内容。"""
+        send_count = 0
+
+        def record_send() -> None:
+            """记录发送信号触发次数。"""
+            nonlocal send_count
+            send_count += 1
+
+        self.input.setPlainText("hello")
+        self.input.sendRequested.connect(record_send)
+
+        QTest.keyClick(self.input, Qt.Key_Return)
+
+        self.assertEqual(send_count, 1)
+        self.assertEqual(self.input.toPlainText(), "hello")
+
+    def test_modified_enter_inserts_newline(self) -> None:
+        """功能修饰键配合 Enter 时均应换行而不是发送。"""
+        send_count = 0
+
+        def record_send() -> None:
+            """记录发送信号触发次数。"""
+            nonlocal send_count
+            send_count += 1
+
+        self.input.sendRequested.connect(record_send)
+        modifier_cases = (
+            Qt.ShiftModifier,
+            Qt.ControlModifier,
+            Qt.AltModifier,
+            Qt.MetaModifier,
+        )
+
+        for modifier in modifier_cases:
+            self.input.setPlainText("hello")
+            self.input.moveCursor(QTextCursor.End)
+            QTest.keyClick(self.input, Qt.Key_Return, modifier)
+            self.assertEqual(self.input.toPlainText(), "hello\n")
+
+        self.assertEqual(send_count, 0)
+
+    def test_keypad_enter_sends(self) -> None:
+        """数字小键盘 Enter 应被视为发送键。"""
+        send_count = 0
+
+        def record_send() -> None:
+            """记录发送信号触发次数。"""
+            nonlocal send_count
+            send_count += 1
+
+        self.input.sendRequested.connect(record_send)
+
+        QTest.keyClick(self.input, Qt.Key_Enter, Qt.KeypadModifier)
+
+        self.assertEqual(send_count, 1)
+
+    def test_auto_repeat_enter_is_ignored(self) -> None:
+        """长按产生的自动重复 Enter 不应发送或插入换行。"""
+        send_count = 0
+
+        def record_send() -> None:
+            """记录发送信号触发次数。"""
+            nonlocal send_count
+            send_count += 1
+
+        self.input.setPlainText("hello")
+        self.input.sendRequested.connect(record_send)
+        event = QKeyEvent(
+            QEvent.KeyPress,
+            Qt.Key_Return,
+            Qt.NoModifier,
+            "",
+            True,
+            2,
+        )
+
+        QApplication.sendEvent(self.input, event)
+
+        self.assertEqual(send_count, 0)
+        self.assertEqual(self.input.toPlainText(), "hello")
+
+    def test_input_method_preedit_blocks_send(self) -> None:
+        """输入法存在预编辑文本时，Enter 不应触发发送。"""
+        send_count = 0
+
+        def record_send() -> None:
+            """记录发送信号触发次数。"""
+            nonlocal send_count
+            send_count += 1
+
+        self.input.sendRequested.connect(record_send)
+        QApplication.sendEvent(self.input, QInputMethodEvent("拼", []))
+
+        QTest.keyClick(self.input, Qt.Key_Return)
+
+        self.assertEqual(send_count, 0)
+
+        QApplication.sendEvent(self.input, QInputMethodEvent("", []))
+        QTest.keyClick(self.input, Qt.Key_Return)
+        self.assertEqual(send_count, 1)
+
+    def test_height_grows_and_stops_at_six_lines(self) -> None:
+        """输入框应按视觉行增高，并在六行后改用内部滚动。"""
+        minimum_height = self.input.height()
+
+        self.input.setPlainText("one\ntwo\nthree")
+        self.app.processEvents()
+        three_line_height = self.input.height()
+
+        self.input.setPlainText("\n".join(str(index) for index in range(7)))
+        self.app.processEvents()
+        seven_line_height = self.input.height()
+
+        self.input.setPlainText("\n".join(str(index) for index in range(20)))
+        self.app.processEvents()
+
+        self.assertGreater(three_line_height, minimum_height)
+        self.assertGreater(seven_line_height, three_line_height)
+        self.assertEqual(self.input.height(), seven_line_height)
+        self.assertGreater(self.input.verticalScrollBar().maximum(), 0)
+
+    def test_wrapped_text_contributes_to_height(self) -> None:
+        """没有手动换行的长文本也应按视觉折行增加高度。"""
+        minimum_height = self.input.height()
+
+        self.input.setPlainText("wrapped text " * 20)
+        self.app.processEvents()
+
+        self.assertGreater(self.input.height(), minimum_height)
+
+    def test_clear_after_send_resets_content_height_and_undo(self) -> None:
+        """成功发送后的清理应恢复最小高度并清除撤销历史。"""
+        minimum_height = self.input.height()
+        self.input.insertPlainText("one\ntwo\nthree")
+        self.app.processEvents()
+        self.assertTrue(self.input.document().isUndoAvailable())
+
+        self.input.clear_after_send()
+
+        self.assertEqual(self.input.toPlainText(), "")
+        self.assertEqual(self.input.height(), minimum_height)
+        self.assertFalse(self.input.document().isUndoAvailable())
+
+    def test_file_paths_replace_selection_at_cursor(self) -> None:
+        """文件路径应在当前选区插入，并与相邻文字保留间隔。"""
+        self.input.setPlainText("before TARGET after")
+        cursor = self.input.textCursor()
+        cursor.setPosition(len("before "))
+        cursor.setPosition(len("before TARGET"), QTextCursor.KeepAnchor)
+        self.input.setTextCursor(cursor)
+
+        self.input.insert_file_paths(("/tmp/first file.txt", "/tmp/second.txt"))
+
+        self.assertEqual(
+            self.input.toPlainText(),
+            'before "/tmp/first file.txt" "/tmp/second.txt" after',
+        )
+
+    def test_file_drop_does_not_leave_stale_visual_cursor(self) -> None:
+        """完成文件拖放后不应在投放位置残留静止的视觉光标。"""
+        self.input.resize(520, self.input.height())
+        self.input.setStyleSheet("QPlainTextEdit { background: white; color: black; }")
+        self.input.setPlainText("alpha beta gamma delta")
+        self.input.moveCursor(QTextCursor.End)
+        self.app.processEvents()
+
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile("/tmp/example.txt")])
+        drop_position = QPoint(90, 20)
+        drag_enter_event = QDragEnterEvent(
+            drop_position,
+            Qt.CopyAction,
+            mime_data,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        drag_move_event = QDragMoveEvent(
+            drop_position,
+            Qt.CopyAction,
+            mime_data,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        drop_event = QDropEvent(
+            QPointF(drop_position),
+            Qt.CopyAction,
+            mime_data,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+
+        QApplication.sendEvent(self.input.viewport(), drag_enter_event)
+        QApplication.sendEvent(self.input.viewport(), drag_move_event)
+        QApplication.sendEvent(self.input.viewport(), drop_event)
+        QTest.mouseClick(
+            self.input.viewport(),
+            Qt.LeftButton,
+            Qt.NoModifier,
+            QPoint(8, 16),
+        )
+        self.app.processEvents()
+
+        dropped_image = self.input.grab().toImage()
+        reference_input = MessageInput()
+        try:
+            reference_input.resize(520, reference_input.height())
+            reference_input.setStyleSheet(
+                "QPlainTextEdit { background: white; color: black; }"
+            )
+            reference_input.setPlainText(self.input.toPlainText())
+            reference_input.show()
+            reference_input.setFocus()
+            self.app.processEvents()
+            QTest.mouseClick(
+                reference_input.viewport(),
+                Qt.LeftButton,
+                Qt.NoModifier,
+                QPoint(8, 16),
+            )
+            self.app.processEvents()
+            reference_image = reference_input.grab().toImage()
+
+            differing_pixels = [
+                (x, y)
+                for x in range(drop_position.x() - 4, drop_position.x() + 5)
+                for y in range(2, 28)
+                if dropped_image.pixelColor(x, y) != reference_image.pixelColor(x, y)
+            ]
+
+            self.assertEqual(differing_pixels, [])
+            self.assertLess(self.input.cursorRect().x(), 30)
+        finally:
+            reference_input.close()
+            reference_input.deleteLater()
+
+
+class InputCommandPaletteMultilineTestCase(unittest.TestCase):
+    """验证命令候选栏与多行输入框的协同行为。"""
+
+    app: QApplication
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """复用或创建测试所需的 Qt 应用实例。"""
+        existing_application = QApplication.instance()
+        cls.app = (
+            existing_application
+            if isinstance(existing_application, QApplication)
+            else QApplication([])
+        )
+
+    def setUp(self) -> None:
+        """创建输入框、锚点和命令候选栏。"""
+        self.window = QWidget()
+        self.window.resize(360, 240)
+        self.input = MessageInput(self.window)
+        self.input.setGeometry(10, 180, 340, 52)
+        matcher = InputCommandMatcher(build_default_input_command_specs())
+        self.palette = InputCommandPalette(matcher, self.window)
+        self.palette.attach_to_input(self.input, self.input)
+        self.window.show()
+        self.input.setFocus()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        """销毁命令候选栏测试窗口。"""
+        self.window.close()
+        self.window.deleteLater()
+        self.app.processEvents()
+
+    def test_modified_enter_closes_palette_and_inserts_newline(self) -> None:
+        """命令栏显示时，修饰键 Enter 应关闭命令栏并输入换行。"""
+        self.input.setPlainText("/save")
+        self.input.moveCursor(QTextCursor.End)
+        self.app.processEvents()
+        self.assertTrue(self.palette.isVisible())
+
+        QTest.keyClick(self.input, Qt.Key_Return, Qt.ControlModifier)
+        self.app.processEvents()
+
+        self.assertFalse(self.palette.isVisible())
+        self.assertEqual(self.input.toPlainText(), "/save\n")
+
+    def test_multiline_text_never_shows_palette(self) -> None:
+        """原始输入包含换行时不应显示命令候选栏。"""
+        self.input.setPlainText("/save\n")
+        self.app.processEvents()
+
+        self.assertFalse(self.palette.isVisible())
+
+    def test_plain_enter_confirms_selected_command(self) -> None:
+        """命令栏显示时，普通 Enter 应确认命令而不是发送输入框。"""
+        selected_commands: list[str] = []
+        send_count = 0
+
+        def record_selection(spec: object) -> None:
+            """记录命令候选栏选中的命令。"""
+            command = getattr(spec, "command", None)
+            if isinstance(command, str):
+                selected_commands.append(command)
+
+        def record_send() -> None:
+            """记录输入框发送信号触发次数。"""
+            nonlocal send_count
+            send_count += 1
+
+        self.palette.commandSelected.connect(record_selection)
+        self.input.sendRequested.connect(record_send)
+        self.input.setPlainText("/save")
+        self.app.processEvents()
+
+        QTest.keyClick(self.input, Qt.Key_Return)
+
+        self.assertEqual(selected_commands, ["save"])
+        self.assertEqual(send_count, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -14,7 +14,7 @@ import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
     QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QSizePolicy
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent, pyqtSlot
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
 import sounddevice as sd
@@ -36,6 +36,7 @@ from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
 from ui_main.components.context_usage_indicator import ContextUsageIndicator, ContextUsageSnapshot
+from ui_main.components.message_input import MessageInput
 from ui_main.components.update_dialog import UpdateDialog
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
 from update.update_checker import get_configured_index_urls
@@ -134,29 +135,6 @@ SINGLE_CHAT_DIALOG_CSS = (
     + SINGLE_CHAT_COMBO_CSS
     + SINGLE_CHAT_COMBO_VIEW_CSS
 )
-
-class FileInputFilter(QObject):
-    """拦截拖拽事件，使得文本框能直接提取被拖入文件的绝对路径"""
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.DragEnter:
-            if event.mimeData().hasUrls():
-                event.accept()
-                return True
-        elif event.type() == QEvent.Drop:
-            if event.mimeData().hasUrls():
-                urls = event.mimeData().urls()
-                paths = [os.path.normpath(url.toLocalFile()) for url in urls if url.isLocalFile()]
-                if paths:
-                    paths_str = " ".join(f'"{p}"' for p in paths)
-                    current_text = obj.text()
-                    if current_text:
-                        obj.setText(current_text + " " + paths_str)
-                    else:
-                        obj.setText(paths_str)
-                event.accept()
-                return True
-        return super().eventFilter(obj, event)
-
 
 class ThemeManager: #主题颜色设定
     @staticmethod
@@ -1498,14 +1476,9 @@ class ChatGUI(QWidget):
                                 """)
         self.messages_box.setPlaceholderText("这里是各种消息提示框...")
         self.messages_box.setMaximumHeight(int(0.05*self.screen.height()))
-        self.user_input = QLineEdit()
+        self.user_input = MessageInput()
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
-
-        # 添加拖拽文件支持（通过事件过滤器实现，无需继承重写）
-        self.user_input.setAcceptDrops(True)
-        self.file_input_filter = FileInputFilter(self.user_input)
-        self.user_input.installEventFilter(self.file_input_filter)
 
         self.voice_button = QPushButton()
         self.voice_button.setObjectName("voiceInputButton")
@@ -1550,7 +1523,7 @@ class ChatGUI(QWidget):
         self.qt2dp_queue=qt2dp_queue
         self.save_dialog_btn.clicked.connect(self.save_data)  # noqa
 
-        self.user_input.returnPressed.connect(self.handle_user_input)  # noqa
+        self.user_input.sendRequested.connect(self.handle_user_input)  # noqa
         #处理各种消息
         self.QT_message_queue=QT_message_queue
         self.get_message_thread=CommunicateThreadMessages(self.QT_message_queue)
@@ -2203,7 +2176,6 @@ class ChatGUI(QWidget):
         panel_layout.setContentsMargins(10, 7, 10, 8)
         panel_layout.setSpacing(4)
 
-        self.user_input.setMinimumHeight(int(self.screen.height()*0.036))
         panel_layout.addWidget(self.user_input)
 
         bottom_layout = QHBoxLayout()
@@ -2334,13 +2306,14 @@ class ChatGUI(QWidget):
             }}
         """)
         self.user_input.setStyleSheet(f"""
-            QLineEdit#messageTextInput {{
+            QPlainTextEdit#messageTextInput {{
                 background-color: transparent;
                 border: none;
                 padding: 4px 2px;
                 color: {color};
             }}
         """)
+        self.user_input.refresh_height()
         self.reasoning_menu_button.setStyleSheet(f"""
             QToolButton#reasoningMenuButton {{
                 color: {color};
@@ -2789,7 +2762,8 @@ class ChatGUI(QWidget):
 
         self.transcription_thread.start()
 
-    def on_transcription_finished(self, text):
+    def on_transcription_finished(self, text: str) -> None:
+        """将语音识别结果转换为简体中文后插入当前光标位置。"""
         cc = OpenCC('tw2s.json')
         text=cc.convert(text)
         if text=='切换角色':
@@ -2797,7 +2771,7 @@ class ChatGUI(QWidget):
         elif text=='切换语言':
             self.run_input_command_text('l', 'speech_recognition')
         else:
-            self.user_input.setText(text)
+            self.user_input.insert_text_at_cursor(text)
 
         if self.whisper_model and not self.is_recording:
             self.voice_button.setEnabled(True)
@@ -3270,6 +3244,8 @@ class ChatGUI(QWidget):
 
     def _handle_command_before_send(self, text: str) -> bool:
         """在普通发送流程前识别并处理 slash 命令或裸命令。"""
+        if "\n" in text:
+            return False
         if not self.run_input_command_text(text, "send_button"):
             if text.strip().startswith("/"):
                 self.messages_box.clear()
@@ -3309,7 +3285,7 @@ class ChatGUI(QWidget):
 
         if spec.command == "save":
             self.save_data()
-            self.user_input.clear()
+            self.user_input.clear_after_send()
             return
 
         if spec.command == "clr":
@@ -3321,26 +3297,26 @@ class ChatGUI(QWidget):
             self.chat_display.clear_chat()
             self._send_internal_command_payload({"type": "clear_chat", "chat_id": self.current_chat_id}, force=True)
             self.schedule_context_usage_refresh()
-            self.user_input.clear()
+            self.user_input.clear_after_send()
             return
 
         if spec.command == "s":
             self.switch_to_next_chat()
-            self.user_input.clear()
+            self.user_input.clear_after_send()
             return
 
         if spec.command == "change_l2d_model":
             self._open_l2d_model_command_window()
-            self.user_input.clear()
+            self.user_input.clear_after_send()
             return
 
         if spec.command == "switch_l2d_fps":
             self.switch_l2d_fps()
-            self.user_input.clear()
+            self.user_input.clear_after_send()
             return
 
         self._send_internal_command_payload(payload, force=spec.visibility == "hidden")
-        self.user_input.clear()
+        self.user_input.clear_after_send()
 
         if spec.command == "l":
             self.is_ch = not self.is_ch
@@ -3430,14 +3406,19 @@ class ChatGUI(QWidget):
             "model_json": model_json or "",
         })
 
-    def handle_user_input(self):
+    def handle_user_input(self) -> None:
+        """校验并发送输入框中的消息，同时保留失败发送的草稿。"""
         self.setWindowTitle("数字小祥")
-        user_this_turn_input=self.user_input.text().strip() or "（什么也没说）"
-        if self._handle_command_before_send(user_this_turn_input):
+        raw_user_input = self.user_input.toPlainText()
+        user_this_turn_input = self.user_input.prepared_message()
+        if not user_this_turn_input.strip():
             return
         # 不可以在 AI 回复时补充内容
         if self.is_chat_busy():
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再发送消息。")
+            return
+        # 存在换行符时，不处理输入框中的命令
+        if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
             return
         # 生成一条新的 turn_id，交给 dp_local2 标记当前对话
         turn_id = uuid.uuid4().hex
@@ -3449,7 +3430,7 @@ class ChatGUI(QWidget):
             "turn_id": turn_id,
             "text": user_this_turn_input,
         })
-        self.user_input.clear()
+        self.user_input.clear_after_send()
         self.schedule_context_usage_refresh(delay_ms=1300)
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能

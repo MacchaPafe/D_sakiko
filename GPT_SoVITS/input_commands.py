@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -376,7 +377,7 @@ class InputCommandPalette(QFrame):
         """创建命令栏控件并初始化内部状态。"""
         super().__init__(parent)
         self._matcher = matcher
-        self._line_edit: QLineEdit | None = None
+        self._line_edit: QLineEdit | QPlainTextEdit | None = None
         self._anchor_widget: QWidget | None = None
         self._filtered_specs: tuple[CommandSpec, ...] = ()
         self._rows: list[InputCommandRow] = []
@@ -406,13 +407,20 @@ class InputCommandPalette(QFrame):
         self.setLayout(layout)
         self.set_theme_color(self._theme_color)
 
-    def attach_to_input(self, line_edit: QLineEdit, anchor_widget: QWidget) -> None:
+    def attach_to_input(
+        self,
+        line_edit: QLineEdit | QPlainTextEdit,
+        anchor_widget: QWidget,
+    ) -> None:
         """绑定输入框和定位锚点，并安装事件监听。"""
         self._line_edit = line_edit
         self._anchor_widget = anchor_widget
         line_edit.installEventFilter(self)
         anchor_widget.installEventFilter(self)
-        line_edit.textChanged.connect(self._on_input_text_changed)
+        if isinstance(line_edit, QLineEdit):
+            line_edit.textChanged.connect(self._on_input_text_changed)
+        else:
+            line_edit.textChanged.connect(self._on_plain_text_changed)
 
     def set_theme_color(self, color: str) -> None:
         """刷新命令栏主题色。"""
@@ -480,6 +488,23 @@ class InputCommandPalette(QFrame):
             self._move_selection(1)
             return True
         if key in (Qt.Key_Return, Qt.Key_Enter):
+            if event.isAutoRepeat():
+                return True
+            functional_modifiers = event.modifiers() & (
+                Qt.ShiftModifier
+                | Qt.ControlModifier
+                | Qt.AltModifier
+                | Qt.MetaModifier
+                | Qt.GroupSwitchModifier
+            )
+            if functional_modifiers:
+                self.hide_palette()
+                return False
+            if (
+                self._line_edit is not None
+                and self._line_edit.property("inputMethodComposing") is True
+            ):
+                return False
             self._confirm_selection()
             return True
         if key == Qt.Key_Escape:
@@ -510,6 +535,12 @@ class InputCommandPalette(QFrame):
         else:
             self.hide_palette()
 
+    def _on_plain_text_changed(self) -> None:
+        """读取多行输入框内容并刷新命令栏。"""
+        if not isinstance(self._line_edit, QPlainTextEdit):
+            return
+        self._on_input_text_changed(self._line_edit.toPlainText())
+
     def _hide_if_focus_outside(self) -> None:
         """当焦点离开输入框和命令栏时隐藏命令栏。"""
         focus_widget = QApplication.focusWidget()
@@ -522,6 +553,8 @@ class InputCommandPalette(QFrame):
 
     def _should_show_palette(self, text: str) -> bool:
         """判断当前输入是否应该触发命令栏。"""
+        if "\n" in text:
+            return False
         stripped_text = text.strip()
         return stripped_text.startswith("/")
 
