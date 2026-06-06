@@ -9,7 +9,7 @@ from PyQt5.QtCore import QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QContextMenuEvent, QTextCursor
 from PyQt5.QtWidgets import QAction, QTextBrowser, QWidget
 
-from chat.chat import Chat, Message
+from chat.chat import Chat, Message, SingleCharacterPromptGenerator
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class ChatDisplay(QTextBrowser):
         """初始化聊天显示控件及其内部流式渲染状态。"""
         super().__init__(parent)
         self._theme_color = "#7799CC"
+        self._user_persona_name: str | None = None
         # 每条消息的缓存信息：用于记录这条消息是否是用户消息
         # 消息索引 -> 消息显示元数据
         # 这个信息会用于决定右键菜单长什么样（是否有重新生成音频的选项）以及流式打印时是否先渲染消息头
@@ -54,6 +55,7 @@ class ChatDisplay(QTextBrowser):
     def render_chat(self, chat: Chat, preserve_scroll: bool = True) -> None:
         """根据完整 Chat 数据重新渲染聊天记录。"""
         self._stop_stream(clear_buffer=True)
+        self._user_persona_name = self._user_persona_name_from_chat(chat)
         # 记录当前滚动条状态，以便在刷新后尽可能保持不变
         scroll_bar = self.verticalScrollBar()
         saved_position = scroll_bar.value()
@@ -218,7 +220,7 @@ class ChatDisplay(QTextBrowser):
         """将一条消息渲染成完整 HTML 片段。"""
         display_message = self._message_for_display(message)
         safe_text = html.escape(display_message.text)
-        header = self._render_message_header_html(display_message, msg_index)
+        header = self._render_message_header_html(message, msg_index)
         if self._is_user_message(display_message):
             return header.replace("</a>", f"{safe_text}</a>", 1)
         body = f"{safe_text}</a>"
@@ -231,9 +233,13 @@ class ChatDisplay(QTextBrowser):
         """将一条消息的可点击标题渲染成 HTML。"""
         msg_param = f"?msg={msg_index}"
         if self._is_user_message(message):
+            display_name = "你"
+            if self._user_persona_name is not None:
+                display_name = f"你（{self._user_persona_name}）"
             return (
                 f'<a href="user:{msg_param}" '
-                f'style="text-decoration: none; color: {self._theme_color};">你：</a>'
+                f'style="text-decoration: none; color: {self._theme_color};">'
+                f'{html.escape(display_name)}：</a>'
             )
 
         if message.audio_path and message.audio_path != "NO_AUDIO":
@@ -288,6 +294,16 @@ class ChatDisplay(QTextBrowser):
             if isinstance(msg_index, int):
                 records_by_index.setdefault(msg_index, []).append(record)
         return records_by_index
+
+    @staticmethod
+    def _user_persona_name_from_chat(chat: Chat) -> str | None:
+        """读取单角色对话中冻结的用户人设名称。"""
+        prompt_generator = chat.prompt_generator
+        if not isinstance(prompt_generator, SingleCharacterPromptGenerator):
+            return None
+        if prompt_generator.user_persona is None:
+            return None
+        return prompt_generator.user_persona.name
 
     @staticmethod
     def _message_for_display(message: Message) -> Message:

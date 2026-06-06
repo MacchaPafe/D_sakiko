@@ -101,6 +101,9 @@ class DSakikoConfig(QConfig):
             "爱音",
             "祥子"
         ]})
+
+    # 用户自定义人设。内置的默认用户人设由程序创建，不写入配置。
+    user_characters = ConfigItem("character_setting", "user_characters", [])
     
     # 角色的默认 live2d json 选择
     l2d_json_paths_dict = ConfigItem("character_setting", "l2d_json_paths_dict", {})
@@ -112,6 +115,13 @@ class DSakikoConfig(QConfig):
                                           validator=OptionsValidator(["flat", "folded"]))
     # 普通聊天侧栏中处于展开状态的角色名称列表
     chat_sidebar_expanded_characters = ConfigItem("ui_state", "chat_sidebar_expanded_characters", [])
+    # 新建对话弹窗中的用户人设区域是否展开
+    user_persona_section_expanded = OptionsConfigItem(
+        "ui_state",
+        "user_persona_section_expanded",
+        True,
+        validator=BoolValidator(),
+    )
 
     # 颜色主题默认信息
     theme_color = ConfigItem("theme_color_setting", "theme_color", [

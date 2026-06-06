@@ -12,7 +12,7 @@ import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, List, Union, Any, Iterable, Sequence
+from typing import Dict, Optional, List, Union, Any, Iterable, Literal, Sequence
 import json
 
 import jinja2
@@ -99,11 +99,16 @@ class Message:
 
         return character
 
-    def to_llm_query(self, role: str) -> str:
+    def to_llm_query(
+            self,
+            role: str,
+            llm_character_name: str | None = None,
+    ) -> str:
         """
         将此消息转换为用于 LLM 的对话格式
 
         :param role: 角色视角，可以是 "user" 或 "assistant"
+        :param llm_character_name: 可选的发送者标签覆盖值，仅影响发送给 LLM 的文本。
         :raises ValueError: 如果 role 参数不是 "user" 或 "assistant"
 
         :returns: 用于 LLM 的对话内容字符串
@@ -114,7 +119,8 @@ class Message:
         # 因为我们不应当让 Agent 专注于其他 Agent 的翻译、情感等信息，这些都是无关紧要的杂音
         if role == "user":
             # 只返回 text 字段
-            return f"[{self.character_name}]: {self.text}"
+            character_name = llm_character_name or self.character_name
+            return f"[{character_name}]: {self.text}"
         elif role == "assistant":
             # 格式参考为小剧场模式下 AI 需要采用的格式
             # 我们需要要求 LLM 输出格式化的内容；因此，assistant 消息需要包含多项数据
@@ -176,10 +182,91 @@ class StaticPromptGenerator(SystemPromptGenerator):
         return cls(prompt_content=data.get("content", ""))
 
 
+@dataclasses.dataclass(frozen=True)
+class UserPersonaSnapshot:
+    """保存创建对话时实际生效的用户人设快照。"""
+
+    persona_id: str
+    name: str
+    description: str
+    kind: Literal["custom", "system_character"]
+    source_character_folder_name: str | None = None
+
+    @classmethod
+    def from_character(cls, character: CharacterAttributes) -> UserPersonaSnapshot:
+        """根据用户人设当前实际生效的信息创建不可变快照。"""
+        if character.is_default_user:
+            raise ValueError("默认用户人设不应创建快照")
+
+        persona_id = str(character.persona_id or "").strip()
+        name = character.effective_character_name.strip()
+        if not persona_id or not name:
+            raise ValueError("用户人设缺少有效的 persona_id 或名称")
+
+        linked_character = character.user_as_character
+        return cls(
+            persona_id=persona_id,
+            name=name,
+            description=character.effective_character_description,
+            kind="system_character" if linked_character is not None else "custom",
+            source_character_folder_name=(
+                linked_character.character_folder_name
+                if linked_character is not None
+                else None
+            ),
+        )
+
+    def to_dict(self) -> dict[str, str | None]:
+        """将用户人设快照转换为可写入 JSON 的字典。"""
+        return {
+            "persona_id": self.persona_id,
+            "name": self.name,
+            "description": self.description,
+            "kind": self.kind,
+            "source_character_folder_name": self.source_character_folder_name,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> UserPersonaSnapshot:
+        """从存档字典恢复用户人设快照，并拒绝不完整的数据。"""
+        persona_id = data.get("persona_id")
+        name = data.get("name")
+        description = data.get("description")
+        kind = data.get("kind")
+        source_folder = data.get("source_character_folder_name")
+
+        if not isinstance(persona_id, str) or not persona_id.strip():
+            raise ValueError("用户人设快照缺少 persona_id")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("用户人设快照缺少名称")
+        if not isinstance(description, str):
+            raise ValueError("用户人设快照描述格式错误")
+        if kind not in {"custom", "system_character"}:
+            raise ValueError("用户人设快照类型错误")
+        if source_folder is not None and not isinstance(source_folder, str):
+            raise ValueError("用户人设来源角色目录格式错误")
+
+        normalized_kind: Literal["custom", "system_character"] = (
+            "system_character" if kind == "system_character" else "custom"
+        )
+        return cls(
+            persona_id=persona_id.strip(),
+            name=name.strip(),
+            description=description,
+            kind=normalized_kind,
+            source_character_folder_name=source_folder,
+        )
+
+
 class SingleCharacterPromptGenerator(SystemPromptGenerator):
-    def __init__(self, character_name: str, user_character_name: str = "User"):
+    def __init__(
+            self,
+            character_name: str,
+            user_persona: UserPersonaSnapshot | None = None,
+    ) -> None:
+        """创建单角色对话提示词生成器。"""
         self.character_name = character_name
-        self.user_character_name = user_character_name
+        self.user_persona = user_persona
         
         # 加载模板
         # 模板位于 ../templates/single_character.jinja (相对于此文件)
@@ -191,9 +278,9 @@ class SingleCharacterPromptGenerator(SystemPromptGenerator):
 
     def generate(self, perspective: str) -> str:
         """
-        生成单角色对话的 system prompt。输出内容会根据 character_name 和 user_character_name 从角色信息中动态生成。
+        生成单角色对话的 system prompt。输出内容会根据角色信息与冻结的用户人设快照动态生成。
          - character_name 对应的角色描述会被包含在 system prompt 中，作为对该角色的背景介绍，帮助 LLM 更好地理解和扮演该角色。
-         - 如果 user_character_name 不为 "User"，则对应的用户角色描述也会被包含在 system prompt 中，作为对用户角色的背景介绍，帮助 LLM 理解用户在对话中的设定。
+         - 如果存在用户人设快照，则快照中的名称和描述会被包含在 system prompt 中，帮助 LLM 理解用户在对话中的设定。
          - 模板文件 single_character.jinja 定义了 system prompt 的格式和内容结构，确保输出的一致性和可读性。
          - perspective 参数在单角色对话中没有实际作用，因为整个对话只有一个 AI 角色，但为了保持接口一致性，仍然保留该参数。
         """
@@ -213,20 +300,10 @@ class SingleCharacterPromptGenerator(SystemPromptGenerator):
         if target_char:
             character_description = target_char.character_description
         
-        # 获取用户描述
-        user_character_description = ""
-        '''if self.user_character_name != "User":
-            for char in char_manager.user_characters:
-                if char.character_name == self.user_character_name:
-                    user_character_description = char.character_description
-                    break
-        '''
-        
         return self.template.render(
             character_name=self.character_name,
             character_description=character_description,
-            user_character_name=self.user_character_name,
-            user_character_description=user_character_description,
+            user_persona=self.user_persona,
             anime_name="BangDream", # 感觉几乎没人导入其他ip的角色，先写死了，之后再改成动态的吧
             ensure_age=False    #暂时取消这个吧
         )
@@ -235,14 +312,27 @@ class SingleCharacterPromptGenerator(SystemPromptGenerator):
         return {
             "type": "single_character",
             "character_name": self.character_name,
-            "user_character_name": self.user_character_name
+            "user_persona": (
+                self.user_persona.to_dict()
+                if self.user_persona is not None
+                else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, data: Dict) -> "SingleCharacterPromptGenerator":
+        """从存档配置恢复单角色对话提示词生成器。"""
+        user_persona = None
+        raw_user_persona = data.get("user_persona")
+        if isinstance(raw_user_persona, dict):
+            try:
+                user_persona = UserPersonaSnapshot.from_dict(raw_user_persona)
+            except ValueError:
+                logger.warning("用户人设快照损坏，已按无用户人设加载：%r", raw_user_persona)
+
         return cls(
             character_name=data["character_name"],
-            user_character_name=data.get("user_character_name", "User")
+            user_persona=user_persona,
         )
 
 
@@ -345,18 +435,24 @@ class Chat:
             self.message_list = []
 
     @classmethod
-    def new_single_chat(cls, character: CharacterAttributes, user_character: Optional[CharacterAttributes] = None, name: str = "新对话") -> "Chat":
+    def new_single_chat(
+            cls,
+            character: CharacterAttributes,
+            user_character: CharacterAttributes | None = None,
+            name: str = "新对话",
+    ) -> "Chat":
         """
         创建一个新的用户-单角色对话
 
         :param character: 对话中的角色。在创建时，会自动拼接从角色信息中 System Prompt
-        :param user_character: 可选的用户角色。如果提供了该参数，则会在起始消息中包含用户角色的设定描述。否则，用户角色将被视为普通用户，不包含任何设定描述。
-        这样做的目的是允许用户自定义其在对话中的人格设定
+        :param user_character: 可选的用户人设。创建时会冻结其当前实际生效的名称与描述。
         :param name: 对话名称（可省略）
         :returns: 新的 Chat 实例
         """
-        user_name = user_character.character_name if user_character else "User"
-        generator = SingleCharacterPromptGenerator(character.character_name, user_name)
+        user_persona = None
+        if user_character is not None and not user_character.is_default_user:
+            user_persona = UserPersonaSnapshot.from_character(user_character)
+        generator = SingleCharacterPromptGenerator(character.character_name, user_persona)
         
         chat = cls(name=name, prompt_generator=generator, start_message="", message_list=[])
         return chat
@@ -768,15 +864,28 @@ class Chat:
 
         for msg in self.message_list:
             role = "assistant" if msg.character_name == perspective else "user"
+            llm_character_name = self._llm_character_name_for_message(msg, role)
             llm_history.append({
                 "role": role,
-                "content": msg.to_llm_query(role),
+                "content": msg.to_llm_query(role, llm_character_name),
             })
 
         if not has_start_message and llm_history and llm_history[0]["role"] == "assistant":
             warnings.warn("当前对话没有设置起始消息，如果该对话为小剧场对话，可能会导致 LLM 生成质量下降和 API 请求错误。")
 
         return self.merge_llm_query(llm_history, is_simplify, include_translation)
+
+    def _llm_character_name_for_message(self, message: Message, role: str) -> str:
+        """返回消息发送给 LLM 时使用的角色标签。"""
+        if role != "user" or message.character_name != "User":
+            return message.character_name
+        if message.text.strip().startswith("【系统内部事件触发"):
+            return "User"
+        if not isinstance(self.prompt_generator, SingleCharacterPromptGenerator):
+            return "User"
+        if self.prompt_generator.user_persona is None:
+            return "User"
+        return self.prompt_generator.user_persona.name
 
     @staticmethod
     def merge_llm_query(
@@ -989,12 +1098,21 @@ class ChatManager:
                 return chat
         return None
 
-    def create_single_character_chat(self, character: CharacterAttributes, name: Optional[str] = None) -> Chat:
+    def create_single_character_chat(
+            self,
+            character: CharacterAttributes,
+            name: str | None = None,
+            user_character: CharacterAttributes | None = None,
+    ) -> Chat:
         """
         创建一条新的普通单角色对话；同一角色允许存在多条对话。
         """
         chat_name = name.strip() if isinstance(name, str) and name.strip() else self._default_single_chat_name(character)
-        chat = Chat.new_single_chat(character, name=chat_name)
+        chat = Chat.new_single_chat(
+            character,
+            user_character=user_character,
+            name=chat_name,
+        )
         self.chat_list.append(chat)
         return chat
 

@@ -5,11 +5,20 @@ import os
 import unittest
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from character import CharacterAttributes
-from chat.chat import Chat, ChatManager, ChatType, Message, StaticPromptGenerator
+from chat.chat import (
+    Chat,
+    ChatManager,
+    ChatType,
+    Message,
+    SingleCharacterPromptGenerator,
+    StaticPromptGenerator,
+    UserPersonaSnapshot,
+)
 from emotion_enum import EmotionEnum
 
 
@@ -324,6 +333,160 @@ class ChatTestCase(unittest.TestCase):
         self.assertNotEqual(first.chat_id, second.chat_id)
         self.assertEqual(first.get_character_name(), "素世")
         self.assertEqual(second.get_character_name(), "素世")
+
+    def test_user_persona_snapshot_is_frozen_and_serialized(self) -> None:
+        """用户人设应在创建对话时冻结，并随提示词配置完成序列化。"""
+        character = self._character("素世")
+        persona = CharacterAttributes.create_user(
+            name="小春",
+            description="喜欢音乐。",
+            persona_id="persona-1",
+        )
+
+        chat = Chat.new_single_chat(character, user_character=persona)
+        persona.character_name = "已修改"
+        persona.character_description = "已修改的描述"
+
+        self.assertIsInstance(chat.prompt_generator, SingleCharacterPromptGenerator)
+        snapshot = chat.prompt_generator.user_persona
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.name, "小春")
+        self.assertEqual(snapshot.description, "喜欢音乐。")
+        self.assertEqual(snapshot.kind, "custom")
+
+        data = chat.to_dict()
+        self.assertEqual(
+            data["prompt_config"]["user_persona"],
+            {
+                "persona_id": "persona-1",
+                "name": "小春",
+                "description": "喜欢音乐。",
+                "kind": "custom",
+                "source_character_folder_name": None,
+            },
+        )
+        restored = Chat.from_dict(data)
+        self.assertEqual(restored.prompt_generator.to_dict(), chat.prompt_generator.to_dict())
+
+    def test_system_character_persona_snapshot_uses_effective_fields(self) -> None:
+        """扮演已有角色时，快照应保存系统角色的生效信息与来源目录。"""
+        character = self._character("素世")
+        system_character = self._character("爱音")
+        system_character.character_folder_name = "anon"
+        system_character.character_description = "开朗活泼。"
+        persona = CharacterAttributes.create_user(
+            name="原始人设",
+            description="原始描述",
+            persona_id="persona-2",
+        )
+        persona.user_as_character = system_character
+
+        chat = Chat.new_single_chat(character, user_character=persona)
+        self.assertIsInstance(chat.prompt_generator, SingleCharacterPromptGenerator)
+        snapshot = chat.prompt_generator.user_persona
+        self.assertEqual(
+            snapshot,
+            UserPersonaSnapshot(
+                persona_id="persona-2",
+                name="爱音",
+                description="开朗活泼。",
+                kind="system_character",
+                source_character_folder_name="anon",
+            ),
+        )
+
+    def test_missing_or_broken_user_persona_loads_as_no_persona(self) -> None:
+        """旧存档缺少快照或快照损坏时，都应按无用户人设加载。"""
+        legacy_generator = SingleCharacterPromptGenerator.from_dict(
+            {
+                "type": "single_character",
+                "character_name": "素世",
+                "user_character_name": "旧字段",
+            }
+        )
+        broken_generator = SingleCharacterPromptGenerator.from_dict(
+            {
+                "type": "single_character",
+                "character_name": "素世",
+                "user_persona": {
+                    "persona_id": "",
+                    "name": "小春",
+                    "description": "",
+                    "kind": "custom",
+                },
+            }
+        )
+
+        self.assertIsNone(legacy_generator.user_persona)
+        self.assertIsNone(broken_generator.user_persona)
+        self.assertIsNone(legacy_generator.to_dict()["user_persona"])
+
+    def test_user_persona_changes_only_real_user_message_label(self) -> None:
+        """用户人设只应替换真实用户消息标签，内部事件仍使用 User。"""
+        generator = SingleCharacterPromptGenerator(
+            "素世",
+            UserPersonaSnapshot(
+                persona_id="persona-3",
+                name="小春",
+                description="",
+                kind="custom",
+            ),
+        )
+        chat = Chat(
+            prompt_generator=generator,
+            message_list=[
+                Message("User", "你好", "", EmotionEnum.HAPPINESS, ""),
+                Message(
+                    "User",
+                    "【系统内部事件触发：定时提醒】提醒喝水。",
+                    "",
+                    EmotionEnum.HAPPINESS,
+                    "",
+                ),
+            ],
+        )
+
+        with mock.patch.object(SingleCharacterPromptGenerator, "generate", return_value=""):
+            query = chat.build_llm_query("素世")
+
+        self.assertEqual(len(query), 1)
+        self.assertIn("[小春]: 你好", query[0]["content"])
+        self.assertIn("[User]: 【系统内部事件触发：定时提醒】", query[0]["content"])
+
+    def test_user_persona_prompt_distinguishes_persona_kind(self) -> None:
+        """提示词应区分自定义人设与扮演已有角色，并允许只有名称。"""
+        character = self._character("素世")
+        character.character_description = "温柔而敏锐。"
+        manager = mock.Mock(character_class_list=[character])
+        custom_generator = SingleCharacterPromptGenerator(
+            "素世",
+            UserPersonaSnapshot(
+                persona_id="custom",
+                name="小春",
+                description="",
+                kind="custom",
+            ),
+        )
+        system_generator = SingleCharacterPromptGenerator(
+            "素世",
+            UserPersonaSnapshot(
+                persona_id="system",
+                name="爱音",
+                description="开朗活泼。",
+                kind="system_character",
+                source_character_folder_name="anon",
+            ),
+        )
+
+        with mock.patch("character.GetCharacterAttributes", return_value=manager):
+            custom_prompt = custom_generator.generate("素世")
+            system_prompt = system_generator.generate("素世")
+
+        self.assertIn("名为小春的用户角色", custom_prompt)
+        self.assertNotIn("[正在与你对话的小春的人物设定]", custom_prompt)
+        self.assertIn("用户正在扮演动漫BangDream中的角色爱音", system_prompt)
+        self.assertIn("[正在与你对话的爱音的人物设定]", system_prompt)
 
     def test_reorder_chats_by_type_keeps_other_type_order(self):
         """

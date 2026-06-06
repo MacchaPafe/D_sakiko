@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 import contextlib
 import os
@@ -10,7 +12,7 @@ from PyQt5.QtCore import Qt, QTimer
 # 去广告
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import Pivot, PrimaryPushButton, PushButton, InfoBar, InfoBarPosition, InfoBarIcon, FluentWindow, \
-    FluentIcon
+    FluentIcon, NavigationItemPosition
 # 将当前文件夹加入 sys.path，强制搜索当前目录的模块（即使 os.getcwd() 不是当前目录）
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
@@ -20,6 +22,7 @@ from ui.components.custom_setting_area import CustomSettingArea
 from ui.components.gpt_sovits_area import GPTSoVITSArea
 from ui.components.llm_api_area import LLMAPIArea
 from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
+from ui.interfaces.character_area import CharacterArea
 from ui_main.threads.update_config_thread import notify_config_reload
 
 
@@ -28,6 +31,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         super().__init__()
 
         self.v_box_layout = QVBoxLayout(self.view)
+        self.setObjectName("DSakikoConfigArea")
 
         # 分栏组件
         self.pivot = Pivot(self)
@@ -138,18 +142,38 @@ class DSakikoConfigArea(TransparentScrollArea):
 
 
 class DSakikoConfigWindow(FluentWindow):
-    def __init__(self):
+    def __init__(self, initial_interface: str = ""):
+        """
+        创建一个配置窗口
+
+        :param initial_interface: 初始打开时显示的分栏界面，取值为界面的 object_name。如果不传、传空字符串或不存在的界面，则默认为配置界面。
+        目前所有可选的输入为：
+        - 'CharacterArea': 显示用户人设与角色查看页面
+        - 'DSakikoConfigArea': 显示配置页面（默认）
+        """
         super().__init__()
         self.setWindowTitle(self.tr("数字小祥配置"))
 
-        self.setMinimumSize(650, 800)
+        self.setMinimumSize(700, 800)
 
-        area = DSakikoConfigArea()
-        self.addSubInterface(area, FluentIcon.HOME, self.tr("设置"))
+        self.character_area = CharacterArea(self)
+        self.config_area = DSakikoConfigArea()
+        self.addSubInterface(self.character_area, FluentIcon.PEOPLE, self.tr("角色与用户人设"))
+        self.addSubInterface(self.config_area, FluentIcon.SETTING, self.tr("设置"),
+                             position=NavigationItemPosition.BOTTOM)
+
+        self.object_name_to_interface = {
+            self.character_area.objectName(): self.character_area,
+            self.config_area.objectName(): self.config_area,
+        }
+
+        initial_widget = self.object_name_to_interface.get(initial_interface, self.config_area)
+        self.switchTo(initial_widget)
 
 
 if __name__ == '__main__':
     import os
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     # Windows 下 PyQt5 高 DPI 适配
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
@@ -160,13 +184,10 @@ if __name__ == '__main__':
 
     try:
         app = QApplication(sys.argv)
-        area = DSakikoConfigArea()
-        w = FluentWindow()
-        w.setMinimumSize(650, 800)
-        w.addSubInterface(area, FluentIcon.HOME, w.tr("设置"))
+        w = DSakikoConfigWindow(sys.argv[1] if len(sys.argv) > 1 else "")
         # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
         # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
-        area.closeEvent = lambda e: app.quit()
+        w.closeEvent = lambda e: app.quit()
 
         w.show()
         sys.exit(app.exec_())

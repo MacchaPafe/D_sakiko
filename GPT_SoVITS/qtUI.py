@@ -13,9 +13,9 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
-    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QApplication
+    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QSizePolicy
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, QEvent, pyqtSlot
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
 import sounddevice as sd
 from opencc import OpenCC
@@ -29,7 +29,7 @@ sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
-from character import CharacterAttributes
+from character import CharacterAttributes, GetCharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
 from chat.model_token_usage import count_message_tokens
 from emotion_enum import EmotionEnum
@@ -56,7 +56,7 @@ TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
 
-SINGLE_CHAT_DIALOG_CSS = dialogWindowDefaultCss + """
+SINGLE_CHAT_COMBO_CSS = """
 QComboBox {
     background-color: #FFFFFF;
     border: 1px solid #E0E0E0;
@@ -94,8 +94,10 @@ QComboBox::down-arrow {
     border-top: 6px solid #6D7B8D;
     margin-right: 8px;
 }
+"""
 
-QComboBox QAbstractItemView,
+SINGLE_CHAT_COMBO_VIEW_CSS = """
+QAbstractItemView,
 QListView#singleChatCharacterComboView {
     background-color: #FFFFFF;
     border: 1px solid #E0E0E0;
@@ -107,7 +109,7 @@ QListView#singleChatCharacterComboView {
     selection-color: #2E4A6B;
 }
 
-QComboBox QAbstractItemView::item,
+QAbstractItemView::item,
 QListView#singleChatCharacterComboView::item {
     height: 32px;
     border-radius: 4px;
@@ -117,8 +119,8 @@ QListView#singleChatCharacterComboView::item {
     border: none;
 }
 
-QComboBox QAbstractItemView::item:hover,
-QComboBox QAbstractItemView::item:selected,
+QAbstractItemView::item:hover,
+QAbstractItemView::item:selected,
 QListView#singleChatCharacterComboView::item:hover,
 QListView#singleChatCharacterComboView::item:selected {
     background-color: #E9F1FB;
@@ -126,6 +128,12 @@ QListView#singleChatCharacterComboView::item:selected {
     border: none;
 }
 """
+
+SINGLE_CHAT_DIALOG_CSS = (
+    dialogWindowDefaultCss
+    + SINGLE_CHAT_COMBO_CSS
+    + SINGLE_CHAT_COMBO_VIEW_CSS
+)
 
 class FileInputFilter(QObject):
     """拦截拖拽事件，使得文本框能直接提取被拖入文件的绝对路径"""
@@ -1151,13 +1159,25 @@ class NewSingleChatDialog(QDialog):
     """
     创建普通单角色对话的弹窗。
     """
-    def __init__(self, character_list: list[CharacterAttributes], parent=None):
+
+    DEFAULT_PERSONA_NOTICE = "选择“无用户人设”时，AI 不会知道任何关于用户人设的信息。"
+
+    def __init__(
+            self,
+            character_list: list[CharacterAttributes],
+            parent: QWidget | None = None,
+    ) -> None:
+        """创建包含 AI 角色与用户人设选择的新对话弹窗。"""
         super().__init__(parent)
         self.setWindowTitle("新建对话")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.character_list = character_list
+        self.user_personas = self._reload_user_personas()
         screen = QDesktopWidget().screenGeometry()
-        self.resize(int(screen.width() * 0.24), int(screen.height() * 0.18))
+        self.setMinimumSize(
+            int(screen.width() * 0.28),
+            int(screen.height() * 0.18),
+        )
 
         layout = QVBoxLayout(self)
         form_layout = QGridLayout()
@@ -1178,23 +1198,200 @@ class NewSingleChatDialog(QDialog):
         form_layout.addWidget(self.character_combo, 1, 1)
         layout.addLayout(form_layout)
 
+        self.persona_toggle_button = QToolButton(self)
+        self.persona_toggle_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.persona_toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.persona_toggle_button.clicked.connect(self._toggle_persona_section)
+        layout.addWidget(self.persona_toggle_button)
+
+        self.persona_panel = QWidget(self)
+        persona_layout = QVBoxLayout(self.persona_panel)
+        persona_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.persona_combo = QComboBox(self.persona_panel)
+        persona_combo_view = QListView()
+        persona_combo_view.setObjectName("singleChatCharacterComboView")
+        persona_combo_view.setFrameShape(QFrame.NoFrame)
+        self.persona_combo.setView(persona_combo_view)
+        self.persona_combo.setItemDelegate(QStyledItemDelegate())
+        self._populate_persona_combo()
+        self.persona_combo.currentIndexChanged.connect(self._refresh_persona_preview)
+        self.character_combo.currentIndexChanged.connect(self._refresh_persona_preview)
+
+        self.persona_preview_label = QLabel("人设描述预览", self.persona_panel)
+        self.persona_preview = QTextBrowser(self.persona_panel)
+        self.persona_preview.setFixedHeight(100)
+        self.persona_preview.setOpenExternalLinks(False)
+        self.persona_preview.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
+
+        self.persona_notice = QLabel(self.persona_panel)
+        self.persona_notice.setWordWrap(True)
+        self.persona_notice.setStyleSheet("color: #8A6D3B;")
+
+        persona_layout.addWidget(self.persona_combo)
+        persona_layout.addWidget(self.persona_preview_label)
+        persona_layout.addWidget(self.persona_preview)
+        persona_layout.addWidget(self.persona_notice)
+        layout.addWidget(self.persona_panel)
+
         button_layout = QHBoxLayout()
         cancel_btn = QPushButton("取消")
         ok_btn = QPushButton("创建")
         cancel_btn.clicked.connect(self.reject)
-        ok_btn.clicked.connect(self.accept)
+        ok_btn.clicked.connect(self._accept_if_valid)
         button_layout.addStretch(1)
         button_layout.addWidget(cancel_btn)
         button_layout.addWidget(ok_btn)
         layout.addLayout(button_layout)
         self.setStyleSheet(SINGLE_CHAT_DIALOG_CSS)
-        self.character_combo.view().setStyleSheet(SINGLE_CHAT_DIALOG_CSS)
+        for combo in (self.character_combo, self.persona_combo):
+            combo.setStyleSheet(SINGLE_CHAT_COMBO_CSS)
+            combo.view().setStyleSheet(SINGLE_CHAT_COMBO_VIEW_CSS)
+
+        expanded = bool(d_sakiko_config.user_persona_section_expanded.value)
+        self.persona_section_expanded = True
+        self._set_persona_section_expanded(expanded, save=False)
+        self._refresh_persona_preview()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """显示弹窗时根据用户人设区域的当前状态更新布局尺寸。"""
+        super().showEvent(event)
+        if self.persona_section_expanded:
+            self._ensure_expanded_persona_layout()
+        else:
+            self.adjustSize()
+
+    @staticmethod
+    def _reload_user_personas() -> list[CharacterAttributes]:
+        """从磁盘读取最新配置，并刷新角色管理器中的用户人设。"""
+        d_sakiko_config.reload_from_disk()
+        character_manager = GetCharacterAttributes()
+        character_manager.reload_user_characters()
+        return list(character_manager.user_characters)
+
+    def _populate_persona_combo(self) -> None:
+        """填充用户人设下拉框，并仅在界面中区分重复名称。"""
+        name_counts: dict[str, int] = {}
+        for persona in self.user_personas:
+            if persona.is_default_user:
+                base_name = "无用户人设"
+            else:
+                effective_name = persona.effective_character_name.strip()
+                base_name = effective_name or "未命名人设"
+            name_counts[base_name] = name_counts.get(base_name, 0) + 1
+            occurrence = name_counts[base_name]
+            display_name = base_name if occurrence == 1 else f"{base_name} ({occurrence})"
+            self.persona_combo.addItem(display_name, persona)
+        self.persona_combo.setCurrentIndex(0)
+
+    def _toggle_persona_section(self) -> None:
+        """切换用户人设区域的展开状态并立即写入配置。"""
+        self._set_persona_section_expanded(
+            not self.persona_section_expanded,
+            save=True,
+        )
+
+    def _set_persona_section_expanded(self, expanded: bool, save: bool) -> None:
+        """设置用户人设区域状态；折叠时强制选择无用户人设。"""
+        if expanded:
+            self.persona_section_expanded = True
+            self.persona_panel.setVisible(True)
+            self._ensure_expanded_persona_layout()
+        else:
+            self.persona_section_expanded = False
+            if self.persona_combo.count() > 0:
+                self.persona_combo.setCurrentIndex(0)
+            self.persona_panel.setMinimumHeight(0)
+            self.persona_panel.setVisible(False)
+            self.layout().invalidate()
+            self.adjustSize()
+
+        self.persona_toggle_button.setText(
+            "▼ 用户人设" if expanded else "▶ 用户人设"
+        )
+        if save:
+            d_sakiko_config.set(
+                d_sakiko_config.user_persona_section_expanded,
+                expanded,
+            )
+
+    def _ensure_expanded_persona_layout(self) -> None:
+        """重新计算展开的人设面板高度，避免预览框与提示标签重叠。"""
+        if not self.persona_section_expanded:
+            return
+
+        self.persona_notice.updateGeometry()
+        persona_layout = self.persona_panel.layout()
+        persona_layout.invalidate()
+        persona_layout.activate()
+        self.persona_panel.setMinimumHeight(persona_layout.sizeHint().height())
+        self.persona_panel.updateGeometry()
+        self.layout().invalidate()
+        self.layout().activate()
+        self.adjustSize()
+
+    def _selected_persona_item(self) -> CharacterAttributes | None:
+        """返回下拉框当前对应的人设对象。"""
+        if not self.persona_section_expanded:
+            return None
+        persona = self.persona_combo.currentData()
+        if not isinstance(persona, CharacterAttributes):
+            return None
+        return persona
+
+    def _refresh_persona_preview(self) -> None:
+        """刷新人设描述预览与创建风险提示。"""
+        persona = self._selected_persona_item()
+        if persona is None or persona.is_default_user:
+            self.persona_preview.setPlainText(self.DEFAULT_PERSONA_NOTICE)
+            self.persona_notice.clear()
+            self._ensure_expanded_persona_layout()
+            return
+
+        name = persona.effective_character_name.strip()
+        description = persona.effective_character_description
+        self.persona_preview.setPlainText(
+            description if description.strip() else "（未填写人设描述）"
+        )
+
+        notices: list[str] = []
+        if not name:
+            notices.append("此人设没有名称，无法创建对话。")
+        elif not description.strip():
+            notices.append("该人设只有名称，AI 不会获得人设描述信息。")
+
+        selected_character = self.selected_character()
+        if name and name == selected_character.character_name.strip():
+            notices.append("用户人设与对话角色名称相同，AI 可能会混淆双方身份，导致对话体验下降。")
+        self.persona_notice.setText("\n".join(notices))
+        self._ensure_expanded_persona_layout()
+
+    def _accept_if_valid(self) -> None:
+        """校验所选用户人设后接受创建请求。"""
+        persona = self._selected_persona_item()
+        if (
+                persona is not None
+                and not persona.is_default_user
+                and not persona.effective_character_name.strip()
+        ):
+            QMessageBox.warning(self, "无法创建对话", "所选用户人设没有名称，请先在设置中填写名称。")
+            return
+        self.accept()
 
     def selected_character(self) -> CharacterAttributes:
         """
         获取用户选择的角色对象。
         """
         return self.character_list[self.character_combo.currentIndex()]
+
+    def selected_user_persona(self) -> CharacterAttributes | None:
+        """获取用户选择的人设；无用户人设或折叠状态返回 None。"""
+        persona = self._selected_persona_item()
+        if persona is None or persona.is_default_user:
+            return None
+        return persona
 
     def chat_name(self) -> str:
         """
@@ -1333,7 +1530,7 @@ class ChatGUI(QWidget):
         self.get_message_thread.start()
 
         #---------------------消息命令处理机制 从引入抽奖工具开始构建---------------------
-        self._message_command_handlers: dict[str, callable] = {}
+        self._message_command_handlers: dict[str, Callable] = {}
         self._lottery_dialog_ref = None
         self._register_message_command_handler(LOTTERY_UI_EVENT_PREFIX, self._handle_lottery_ui_command)
         self.update_check_thread: UpdateCheckThread | None = None
@@ -1838,7 +2035,11 @@ class ChatGUI(QWidget):
         dialog = NewSingleChatDialog(self.character_list, self)
         if dialog.exec_() != QDialog.Accepted:
             return
-        new_chat = self.chat_manager.create_single_character_chat(dialog.selected_character(), dialog.chat_name())
+        new_chat = self.chat_manager.create_single_character_chat(
+            dialog.selected_character(),
+            dialog.chat_name(),
+            user_character=dialog.selected_user_persona(),
+        )
         self.chat_manager.save()
         self.refresh_chat_list()
         self.switch_chat_by_id(new_chat.chat_id)
