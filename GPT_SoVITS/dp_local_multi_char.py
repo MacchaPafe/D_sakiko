@@ -1,10 +1,6 @@
 import time,os
 
-import litellm
-
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
-from litellm import completion
-from litellm.types.utils import ModelResponse
 from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
 
@@ -88,7 +84,8 @@ class DSLocalAndVoiceGen:
 					   qt2dp_queue,
 					   message_queue,
 					   ):
-
+		import litellm
+		from litellm import completion, ModelResponse
 		while True:
 			while True:
 				if not qt2dp_queue.empty():
