@@ -2114,6 +2114,10 @@ class ChatGUI(QWidget):
         chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
             return
+        if self.character_by_name.get(chat.get_character_name() or "") is None:
+            QMessageBox.information(self, "角色缺失", "对话对应的角色已经被删除，无法加载。")
+            return
+
         self.current_chat_id = chat.chat_id
         self.sync_current_chat_to_backends()
         self.apply_current_chat_ui_state()
