@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, pyqtSignal, QUrl
@@ -27,6 +29,98 @@ try:
     from character import GetCharacterAttributes, CharacterAttributes
 except ImportError:
     from GPT_SoVITS.character import GetCharacterAttributes, CharacterAttributes
+
+
+AVATAR_PATH = Path("../avatar")
+AVATAR_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp"})
+
+
+def _get_internal_avatar_path(persona_id: str | None, suffix: str) -> Path:
+    """根据用户人设 ID 和图片扩展名生成内部头像路径。"""
+    if (
+            not persona_id
+            or Path(persona_id).name != persona_id
+            or persona_id in {".", ".."}
+    ):
+        raise ValueError("用户人设 ID 无效")
+
+    normalized_suffix = suffix.lower()
+    if normalized_suffix not in AVATAR_SUFFIXES:
+        raise ValueError("头像文件扩展名无效")
+
+    return AVATAR_PATH / f"{persona_id}{normalized_suffix}"
+
+
+def _copy_avatar_to_internal_directory(
+        source_path: str,
+        persona_id: str | None,
+) -> Path:
+    """将头像原子复制到内部目录，复制失败时保留已有头像。"""
+    destination = _get_internal_avatar_path(
+        persona_id,
+        Path(source_path).suffix,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    source = Path(source_path)
+    if source.resolve() == destination.resolve():
+        return destination
+
+    file_descriptor, temporary_path_value = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    os.close(file_descriptor)
+    temporary_path = Path(temporary_path_value)
+    try:
+        shutil.copy2(source, temporary_path)
+        os.replace(temporary_path, destination)
+    finally:
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+
+    return destination
+
+
+def _remove_internal_avatar_files(
+        persona_id: str | None,
+        keep_path: Path | None = None,
+) -> None:
+    """删除指定用户人设的内部头像，可保留当前正在使用的文件。"""
+    try:
+        validated_persona_id = _get_internal_avatar_path(
+            persona_id,
+            ".png",
+        ).stem
+    except ValueError:
+        return
+
+    avatar_directory = AVATAR_PATH.resolve()
+    try:
+        candidates = list(avatar_directory.iterdir())
+    except OSError:
+        return
+
+    resolved_keep_path = keep_path.resolve() if keep_path is not None else None
+    for candidate in candidates:
+        if (
+                candidate.stem != validated_persona_id
+                or candidate.suffix.lower() not in AVATAR_SUFFIXES
+        ):
+            continue
+
+        try:
+            if (
+                    resolved_keep_path is not None
+                    and candidate.resolve() == resolved_keep_path
+            ):
+                continue
+            candidate.unlink()
+        except OSError:
+            pass
 
 
 class UserPersonaDetailView(QWidget):
@@ -227,10 +321,22 @@ class UserPersonaDetailView(QWidget):
             self, "选择头像", "", "Images (*.png *.jpg *.jpeg *.bmp)"
         )
         if file_path:
-            self.current_character.icon_path = file_path
-            self.avatar_widget.setImage(file_path)
-            self.save_data()
-            self.character_data_changed.emit(self.current_character)
+            try:
+                local_path = _copy_avatar_to_internal_directory(
+                    file_path,
+                    self.current_character.persona_id,
+                )
+                self.current_character.icon_path = str(local_path)
+            except (IndexError, OSError, AttributeError, ValueError):
+                InfoBar.warning("添加头像失败", "未能成功复制选择的头像到内部文件夹", parent=self)
+            else:
+                _remove_internal_avatar_files(
+                    self.current_character.persona_id,
+                    keep_path=local_path,
+                )
+                self.avatar_widget.setImage(str(local_path))
+                self.save_data()
+                self.character_data_changed.emit(self.current_character)
 
     def on_role_switch_changed(self, checked):
         if self.is_loading or not self.current_character or self.current_character.is_default_user:
@@ -630,7 +736,8 @@ class CharacterArea(QWidget):
 
         if char_to_delete in self.character_manager.user_characters:
             self.character_manager.user_characters.remove(char_to_delete)
-            
+
+        _remove_internal_avatar_files(char_to_delete.persona_id)
         self.character_list_widget.takeItem(row)
         self.character_manager.save_data()
         
