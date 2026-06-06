@@ -570,6 +570,11 @@ class DSLocalAndVoiceGen:
             if reasoning_meta.effort != "default":
                 runtime_kwargs["reasoning_effort"] = reasoning_meta.effort
 
+        if not runtime_kwargs.get("temperature"):
+            completion_kwargs["temperature"] = self.d_sakiko_config.llm_temperature.value
+        if not runtime_kwargs.get("top_p"):
+            completion_kwargs["top_p"] = self.d_sakiko_config.llm_top_p.value
+
         # 合并运行时参数并发起请求。runtime_kwargs 不允许覆盖上面确定的核心请求字段。
         completion_kwargs.update(runtime_kwargs)
         completion_kwargs[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
@@ -1321,6 +1326,9 @@ class DSLocalAndVoiceGen:
                        change_char_queue,
                        AudioGenerator):
         import litellm
+        # 允许静默丢弃部分参数（比如对 GPT-5 系列的推理模型，允许静默的丢弃温度设置）
+        litellm.drop_params = True
+
         # --- 定时提醒功能支持 ---
         from chat.reminder_manager import ReminderManager
         # 使用闭包回调直接将消息推入当前函数内的 qt2dp_queue，让下一次循环被读写

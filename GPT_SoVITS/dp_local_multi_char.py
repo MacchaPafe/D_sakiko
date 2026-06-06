@@ -139,6 +139,8 @@ class DSLocalAndVoiceGen:
 			user_this_turn_msg = [{"role":"system","content":self.base_prompt},
 								  {"role": "user","content": user_prompt}]
 			message_queue.put("调用大模型生成文本中...")
+			temperature = d_sakiko_config.llm_temperature.value
+			top_p = d_sakiko_config.llm_top_p.value
 			time.sleep(2)
 			try:
 				if d_sakiko_config.use_default_deepseek_api.value:
@@ -147,7 +149,10 @@ class DSLocalAndVoiceGen:
 						messages=user_this_turn_msg,
 						api_key=self.model,
 						stream=False,
-						timeout=100
+						timeout=100,
+						temperature=temperature,
+						top_p=top_p,
+						drop_params=True
 					)
 				# 第二优先级是检查自定义 API Url
 				# 只要存在自定义 API，就使用自定义 API
@@ -160,7 +165,10 @@ class DSLocalAndVoiceGen:
 						# 自定义 API 地址
 						base_url=d_sakiko_config.custom_llm_api_url.value,
 						stream=False,
-						timeout=100
+						timeout=100,
+						temperature=temperature,
+						top_p=top_p,
+						drop_params=True
 					)
 				# 最后：使用选择的预定义 API 提供商
 				else:
@@ -177,6 +185,9 @@ class DSLocalAndVoiceGen:
 							stream=False,
 							timeout=100,
 							base_url=base_url,
+							temperature=temperature,
+							top_p=top_p,
+							drop_params=True
 						)
 					else:
 						response = completion(
@@ -185,6 +196,9 @@ class DSLocalAndVoiceGen:
 							api_key=api_key,
 							stream=False,
 							timeout=100,
+							temperature = temperature,
+							top_p = top_p,
+							drop_params = True
 						)
 			except litellm.exceptions.Timeout:
 				self.report_message_to_main_ui(

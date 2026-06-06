@@ -66,6 +66,10 @@ class DSakikoConfig(QConfig):
     custom_llm_api_model = ConfigItem("llm_setting", "custom_llm_api_model", "")
     # 自定义 LLM API Key
     custom_llm_api_key = ConfigItem("llm_setting", "custom_llm_api_key", "")
+    # 模型温度
+    llm_temperature = RangeConfigItem("llm_setting", "llm_temperature", 1.0, validator=RangeValidator(0.0, 2.0))
+    # 模型的 top-p
+    llm_top_p = RangeConfigItem("llm_setting", "llm_top_p", 1.0, validator=RangeValidator(0.0, 1.0))
     # 是否仍然展示不符合格式要求的模型回复
     display_unformatted_llm_response = OptionsConfigItem("llm_setting", "display_unformatted_llm_response", False,
                                                          validator=BoolValidator())

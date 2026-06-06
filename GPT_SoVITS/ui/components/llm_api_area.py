@@ -24,6 +24,7 @@ with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
     ListWidget, ToolTipFilter, FluentIcon
 
+from ..custom_widgets.float_range_setting_card import FloatRangeSettingCard
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 logger = get_logger(__name__)
@@ -266,7 +267,29 @@ class LLMAPIArea(TransparentScrollArea):
             d_sakiko_config.display_unformatted_llm_response,
             parent=self,
         )
+        self.llm_temperature_card = FloatRangeSettingCard(
+            d_sakiko_config.llm_temperature,
+            FluentIcon.CALORIES,
+            self.tr("模型温度"),
+            self.tr("设置模型对话的温度（temperature）\n温度越高，模型编写的内容越发散"),
+            parent=self,
+            single_step=0.05,
+            decimals=2,
+        )
+        self.llm_top_p_card = FloatRangeSettingCard(
+            d_sakiko_config.llm_top_p,
+            FluentIcon.TILES,
+            self.tr("模型核采样"),
+            self.tr("设置模型对话的核采样（top-p）\n请不要同时修改温度与核采样"),
+            parent=self,
+            single_step=0.05,
+            decimals=2,
+        )
+        self.llm_temperature_card.slider.setFixedWidth(150)
+        self.llm_top_p_card.slider.setFixedWidth(150)
         self.v_box_layout.addWidget(self.display_unformatted_message_card)
+        self.v_box_layout.addWidget(self.llm_temperature_card)
+        self.v_box_layout.addWidget(self.llm_top_p_card)
 
         # 加载初始内容
         self.load_config_to_ui()
