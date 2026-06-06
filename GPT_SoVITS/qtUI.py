@@ -418,6 +418,10 @@ class MoreFunctionWindow(QDialog):
         self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)  # noqa
         layout.addWidget(self.open_motion_editor_button)
 
+        self.open_persona_editor_button = QPushButton("编辑用户人设和角色信息")
+        self.open_persona_editor_button.clicked.connect(self.on_click_open_persona_editor_button)
+        layout.addWidget(self.open_persona_editor_button)
+
         self.open_start_config_button=QPushButton("启动参数配置")
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
         layout.addWidget(self.open_start_config_button)
@@ -482,6 +486,15 @@ class MoreFunctionWindow(QDialog):
             logger.exception("启动 Live2D 动作编辑器失败")
         self.close()
 
+    def on_click_open_persona_editor_button(self):
+        try:
+            import subprocess
+            import sys
+            subprocess.Popen([sys.executable, "dsakiko_configuration.py", "CharacterArea"])
+        except Exception:
+            logger.exception("启动配置窗口失败")
+        self.close()
+
     def on_click_open_start_config_button(self):
         try:
             # 使用 subprocess 模块启动 .bat 文件
@@ -489,7 +502,7 @@ class MoreFunctionWindow(QDialog):
             import sys
             # 使用 shell=True 让系统直接执行批处理文件
             # Windows 会使用 cmd.exe 来执行 .bat 文件
-            subprocess.Popen([sys.executable, "dsakiko_configuration.py"])
+            subprocess.Popen([sys.executable, "dsakiko_configuration.py", "DSakikoConfigArea"])
         except Exception:
             logger.exception("启动配置窗口失败")
         self.close()
@@ -1218,6 +1231,13 @@ class NewSingleChatDialog(QDialog):
         self.persona_combo.currentIndexChanged.connect(self._refresh_persona_preview)
         self.character_combo.currentIndexChanged.connect(self._refresh_persona_preview)
 
+        self.persona_open_layout = QHBoxLayout()
+        self.persona_view_hint = QLabel("创建对话后无法再次更改用户人设", self.persona_panel)
+        self.persona_edit_button = QPushButton("编辑人设信息", self.persona_panel)
+        self.persona_edit_button.clicked.connect(self._open_persona_editor)
+        self.persona_open_layout.addWidget(self.persona_view_hint)
+        self.persona_open_layout.addWidget(self.persona_edit_button)
+
         self.persona_preview_label = QLabel("人设描述预览", self.persona_panel)
         self.persona_preview = QTextBrowser(self.persona_panel)
         self.persona_preview.setFixedHeight(100)
@@ -1231,6 +1251,7 @@ class NewSingleChatDialog(QDialog):
         self.persona_notice.setStyleSheet("color: #8A6D3B;")
 
         persona_layout.addWidget(self.persona_combo)
+        persona_layout.addLayout(self.persona_open_layout)
         persona_layout.addWidget(self.persona_preview_label)
         persona_layout.addWidget(self.persona_preview)
         persona_layout.addWidget(self.persona_notice)
@@ -1270,6 +1291,13 @@ class NewSingleChatDialog(QDialog):
         character_manager = GetCharacterAttributes()
         character_manager.reload_user_characters()
         return list(character_manager.user_characters)
+
+    @pyqtSlot()
+    def _open_persona_editor(self) -> None:
+        # 使用 subprocess 模块启动文件
+        import subprocess
+        import sys
+        subprocess.Popen([sys.executable, "dsakiko_configuration.py", "CharacterArea"])
 
     def _populate_persona_combo(self) -> None:
         """填充用户人设下拉框，并仅在界面中区分重复名称。"""
