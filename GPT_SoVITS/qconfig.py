@@ -5,13 +5,15 @@ import os
 import threading
 import warnings
 from copy import deepcopy
+from pathlib import Path
 
 from PyQt5.QtCore import QLockFile
 from PyQt5.QtGui import QColor
 
 # 去广告
-with contextlib.redirect_stdout(None):
-    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig, ConfigValidator, RangeConfigItem, RangeValidator
+with (contextlib.redirect_stdout(None)):
+    from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig, \
+    ConfigValidator, RangeConfigItem, RangeValidator
 
 
 class ThemeColorValidator(ConfigValidator):
@@ -28,6 +30,35 @@ class ThemeColorValidator(ConfigValidator):
             if not QColor(item["color"]).isValid():
                 return False
         return True
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MULTI_CHAR_BGM_PATH = str(
+    PROJECT_ROOT / "reference_audio" / "small_theater_bgm" / "Normal.mp3"
+)
+
+
+class FileValidator(ConfigValidator):
+    """校验配置值是否指向指定类型的现有文件。"""
+
+    def __init__(self, default: str, allowed_suffixes: tuple[str, ...] = ()) -> None:
+        self.default = default
+        self.allowed_suffixes = tuple(suffix.lower() for suffix in allowed_suffixes)
+
+    def validate(self, value: object) -> bool:
+        """检查配置值是否为存在且扩展名受支持的文件路径。"""
+        if not isinstance(value, str):
+            return False
+        path = Path(value)
+        if not path.is_file():
+            return False
+        return not self.allowed_suffixes or path.suffix.lower() in self.allowed_suffixes
+
+    def correct(self, value: object) -> str:
+        """无效路径回退到默认文件。"""
+        if not self.validate(value):
+            return self.default
+        return str(value)
 
 
 class DSakikoConfig(QConfig):
@@ -125,6 +156,13 @@ class DSakikoConfig(QConfig):
         "user_persona_section_expanded",
         True,
         validator=BoolValidator(),
+    )
+    # 小剧场模式下选择播放的背景音乐
+    multi_char_background_music_path = ConfigItem(
+        "ui_state",
+        "multi_char_background_music_path",
+        DEFAULT_MULTI_CHAR_BGM_PATH,
+        FileValidator(DEFAULT_MULTI_CHAR_BGM_PATH, (".mp3", ".wav")),
     )
 
     # 颜色主题默认信息

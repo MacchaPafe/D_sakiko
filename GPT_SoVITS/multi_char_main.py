@@ -4,6 +4,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
+from qconfig import d_sakiko_config
+from ui_main.components.custom_bgm_dialog import CustomBGMDialog
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
@@ -898,7 +901,10 @@ class SettingsDialog(QDialog):
         current_fps = self.parent_gui.get_current_l2d_fps() if self.parent_gui else 60
         self.btn_live2d_fps = QPushButton(f"Live2D渲染帧率：{current_fps}")
         self.btn_live2d_fps.setMinimumHeight(btn_h)
+        self.btn_set_bgm = QPushButton("设置背景音乐")
+        self.btn_set_bgm.setMinimumHeight(btn_h)
         live2d_render_layout.addWidget(self.btn_live2d_fps)
+        live2d_render_layout.addWidget(self.btn_set_bgm)
         live2d_render_group.setLayout(live2d_render_layout)
         layout.addWidget(live2d_render_group)
 
@@ -967,6 +973,7 @@ class SettingsDialog(QDialog):
             self.btn_sakiko_state.clicked.connect(self.parent_gui.convert_sakiko_state)
             self.btn_sakiko_model.clicked.connect(self.parent_gui.convert_sakiko_model)
             self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
+            self.btn_set_bgm.clicked.connect(self.parent_gui.set_bgm)
 
     def change_live2d_model(self, char_index):
         if len(self.character_names) <= char_index:
@@ -1211,23 +1218,11 @@ class ViewerGUI(QWidget):
         # === BGM 播放模块 ===
         self.bgm_player = QMediaPlayer()
         self.bgm_playlist = QMediaPlaylist()
-
-        # 1. 设置 BGM 文件路径 (建议用绝对路径，防止 QUrl 找不到文件)
-        # 假设你的 BGM 在项目根目录下的 assets 文件夹里
-        bgm_path = os.path.abspath("../reference_audio/small_theater_bgm/Normal.mp3")
-        url = QUrl.fromLocalFile(bgm_path)
-
-        # 2. 添加到播放列表
-        self.bgm_playlist.addMedia(QMediaContent(url))
-
-        # 3. 设置循环模式 (CurrentItemInLoop = 单曲循环)
         self.bgm_playlist.setPlaybackMode(QMediaPlaylist.CurrentItemInLoop)
-
-        # 4. 载入并播放
         self.bgm_player.setPlaylist(self.bgm_playlist)
         self.bgm_player.setVolume(30)  # 音量 0-100 (Pygame是0.0-1.0，注意区别)
-        self.bgm_player.play()
-        self.bgm_player.pause()
+        self.bgm_player.error.connect(self._handle_bgm_error)
+        self._load_bgm(d_sakiko_config.multi_char_background_music_path.value)
 
         self.update_chat_panel_toggle_button()
         self.update_replay_button_visibility()
@@ -1710,10 +1705,11 @@ class ViewerGUI(QWidget):
         settings_dialog = SettingsDialog(self, character_names, self.screen, self.audio_gen_module)
         settings_dialog.show()
 
-    def toggle_bgm(self):
+    def toggle_bgm(self) -> None:
+        """切换背景音乐的播放和暂停状态。"""
         if self.bgm_player.state()==QMediaPlayer.PlayingState:
             self.bgm_player.pause()
-        elif self.bgm_player.state()==QMediaPlayer.PausedState:
+        else:
             self.bgm_player.play()
 
 
@@ -1744,6 +1740,61 @@ class ViewerGUI(QWidget):
         if self.current_chat is None:
             return
         self.current_chat.update_theater_meta(data)
+
+    def _handle_bgm_error(self, error: QMediaPlayer.Error) -> None:
+        """记录 Qt 媒体后端报告的背景音乐播放错误。"""
+        logger.error(
+            "背景音乐播放失败：error=%s, message=%s",
+            error,
+            self.bgm_player.errorString(),
+        )
+
+    def _load_bgm(self, bgm_path: str) -> bool:
+        """将背景音乐载入现有播放列表，并显式选中新增条目。"""
+        absolute_path = os.path.abspath(bgm_path)
+        if not os.path.isfile(absolute_path):
+            logger.error("背景音乐文件不存在：%s", absolute_path)
+            return False
+
+        self.bgm_player.stop()
+        self.bgm_playlist.clear()
+        url = QUrl.fromLocalFile(absolute_path)
+        if not self.bgm_playlist.addMedia(QMediaContent(url)):
+            logger.error(
+                "背景音乐无法加入播放列表：path=%s, message=%s",
+                absolute_path,
+                self.bgm_playlist.errorString(),
+            )
+            return False
+
+        # clear() 会把 currentIndex 重置为 -1，addMedia() 不会自动恢复。
+        self.bgm_playlist.setCurrentIndex(0)
+        return True
+
+    def set_bgm(self) -> None:
+        """打开背景音乐选择窗口，并在关闭后应用新的音乐。"""
+        old_bgm = d_sakiko_config.multi_char_background_music_path.value
+        was_playing = self.bgm_player.state() == QMediaPlayer.PlayingState
+        if was_playing:
+            self.bgm_player.pause()
+
+        dialog = CustomBGMDialog(parent=self)
+        dialog.exec_()
+        new_bgm = d_sakiko_config.multi_char_background_music_path.value
+
+        if new_bgm != old_bgm:
+            loaded = self._load_bgm(new_bgm)
+            if not loaded:
+                logger.error("新背景音乐载入失败，恢复原背景音乐：%s", old_bgm)
+                d_sakiko_config.set(
+                    d_sakiko_config.multi_char_background_music_path,
+                    old_bgm,
+                )
+                loaded = self._load_bgm(old_bgm)
+            if loaded and was_playing:
+                self.bgm_player.play()
+        elif was_playing:
+            self.bgm_player.play()
 
     def _change_character(self):
         dialog = CharacterSelectDialog(self.character_list, self.current_char_index, self)
