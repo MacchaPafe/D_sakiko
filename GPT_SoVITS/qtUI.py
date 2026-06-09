@@ -13,7 +13,7 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
-    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QSizePolicy
+    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QSizePolicy, QPlainTextEdit
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
@@ -1146,6 +1146,79 @@ class DragDropListWidget(QListWidget):
         self.order_changed.emit()
 
 
+class MessageEditDialog(QDialog):
+    """编辑普通聊天单条消息正文和翻译的对话框。"""
+
+    def __init__(
+            self,
+            message: Message,
+            parent: QWidget | None = None,
+    ) -> None:
+        """根据消息类型创建对应的编辑字段。"""
+        super().__init__(parent)
+        self.message = message
+        self.is_user_message = message.character_name == "User"
+        self.setWindowTitle("编辑用户消息" if self.is_user_message else "编辑角色回复")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+
+        text_label = QLabel("正文", self)
+        self.text_edit = QPlainTextEdit(self)
+        self.text_edit.setPlainText(message.text)
+        self.text_edit.setMinimumHeight(120)
+        layout.addWidget(text_label)
+        layout.addWidget(self.text_edit)
+
+        self.translation_edit: QPlainTextEdit | None = None
+        if not self.is_user_message:
+            translation_label = QLabel("翻译", self)
+            self.translation_edit = QPlainTextEdit(self)
+            self.translation_edit.setPlainText(message.translation)
+            self.translation_edit.setMinimumHeight(90)
+            layout.addWidget(translation_label)
+            layout.addWidget(self.translation_edit)
+
+            if message.audio_path and message.audio_path != "NO_AUDIO":
+                audio_notice = QLabel("修改正文不会自动重新生成音频，原语音可能与新文本不一致。", self)
+                audio_notice.setWordWrap(True)
+                audio_notice.setStyleSheet("color: #8A6D3B;")
+                layout.addWidget(audio_notice)
+
+        self.validation_label = QLabel("", self)
+        self.validation_label.setWordWrap(True)
+        self.validation_label.setStyleSheet("color: #B00020;")
+        layout.addWidget(self.validation_label)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        cancel_button = QPushButton("取消", self)
+        save_button = QPushButton("保存", self)
+        cancel_button.clicked.connect(self.reject)
+        save_button.clicked.connect(self._accept_if_valid)
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(save_button)
+        layout.addLayout(button_layout)
+
+    def edited_text(self) -> str:
+        """返回编辑后的正文。"""
+        return self.text_edit.toPlainText().strip()
+
+    def edited_translation(self) -> str:
+        """返回编辑后的翻译。"""
+        if self.translation_edit is None:
+            return self.message.translation
+        return self.translation_edit.toPlainText().strip()
+
+    def _accept_if_valid(self) -> None:
+        """校验正文非空后接受对话框。"""
+        if not self.edited_text():
+            self.validation_label.setText("正文不能为空。")
+            return
+        self.accept()
+
+
 class NewSingleChatDialog(QDialog):
     """
     创建普通单角色对话的弹窗。
@@ -1462,6 +1535,7 @@ class ChatGUI(QWidget):
         self.chat_display.toolCallClicked.connect(self._open_tool_call_dialog)  # noqa
         self.chat_display.deleteMessageRequested.connect(self.delete_message)  # noqa
         self.chat_display.deleteTurnRequested.connect(self.delete_turn)  # noqa
+        self.chat_display.editMessageRequested.connect(self.edit_message)  # noqa
         self.chat_display.editAndResendRequested.connect(self.edit_and_resend_user_message)  # noqa
         self.chat_display.rollbackRequested.connect(self.rollback_to_message)  # noqa
         self.chat_display.regenerateTurnReplyRequested.connect(self.regenerate_turn_reply)  # noqa
@@ -2059,7 +2133,7 @@ class ChatGUI(QWidget):
         """
         删除指定普通对话。
         """
-        if not self._ensure_delete_operation_allowed():
+        if not self._ensure_delete_operation_allowed("删除"):
             return
         chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
@@ -2094,19 +2168,19 @@ class ChatGUI(QWidget):
         self.refresh_chat_list()
         self._show_delete_success_message("已删除对话", audio_failed)
 
-    def _ensure_delete_operation_allowed(self) -> bool:
-        """检查当前是否允许执行删除消息、轮次或对话操作。"""
+    def _ensure_delete_operation_allowed(self, action_text: str = "重试") -> bool:
+        """检查当前是否允许执行消息操作。"""
         if self.is_chat_busy():
             self.messages_box.clear()
-            self.messages_box.append("请等待当前回复完成后再删除。")
+            self.messages_box.append(f"请等待当前回复完成后再{action_text}。")
             return False
         if hasattr(self, "regen_thread") and self.regen_thread is not None and self.regen_thread.isRunning():
             self.messages_box.clear()
-            self.messages_box.append("请等待当前音频重新生成完成后再删除。")
+            self.messages_box.append(f"请等待当前音频重新生成完成后再{action_text}。")
             return False
         if hasattr(self, "motion_complete_value") and not self.motion_complete_value.value:
             self.messages_box.clear()
-            self.messages_box.append("请等待当前播放完成后再删除。")
+            self.messages_box.append(f"请等待当前播放完成后再{action_text}。")
             return False
         return True
 
@@ -2971,6 +3045,31 @@ class ChatGUI(QWidget):
             success_message="已删除这一轮对话",
         )
 
+    def edit_message(self, msg_index: int) -> None:
+        """编辑当前普通聊天中的单条消息。"""
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
+            self.refresh_current_chat_display()
+            return
+        if not self._ensure_delete_operation_allowed():
+            return
+
+        message = self.current_chat.message_list[msg_index]
+        if not Chat.can_edit_message(message):
+            self.messages_box.clear()
+            self.messages_box.append("这条消息不能编辑。")
+            return
+
+        dialog = MessageEditDialog(message, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        message.text = dialog.edited_text()
+        if message.character_name != "User":
+            message.translation = dialog.edited_translation()
+        self._save_after_message_content_edit()
+        self.messages_box.clear()
+        self.messages_box.append("已保存消息修改。")
+
     def edit_and_resend_user_message(self, msg_index: int) -> None:
         """将历史用户消息移回输入框，并删除该消息及后续消息。"""
         if not (0 <= msg_index < len(self.current_chat.message_list)):
@@ -3113,7 +3212,7 @@ class ChatGUI(QWidget):
         success_message: str,
     ) -> None:
         """删除当前对话中的消息范围，并统一处理音频清理和界面刷新。"""
-        if not self._ensure_delete_operation_allowed():
+        if not self._ensure_delete_operation_allowed("删除"):
             return
         if not (0 <= start <= end <= len(self.current_chat.message_list)):
             self.refresh_current_chat_display()
@@ -3153,6 +3252,14 @@ class ChatGUI(QWidget):
         self.refresh_chat_list()
         self.schedule_context_usage_refresh()
         return audio_failed
+
+    def _save_after_message_content_edit(self) -> None:
+        """保存消息内容编辑结果，并刷新相关界面状态。"""
+        self.chat_manager.save()
+        self._load_tool_call_records_cache()
+        self.refresh_current_chat_display()
+        self.refresh_chat_list()
+        self.schedule_context_usage_refresh()
 
     def regenerate_audio(self, msg_index):
         if hasattr(self, 'regen_thread') and self.regen_thread is not None and self.regen_thread.isRunning():

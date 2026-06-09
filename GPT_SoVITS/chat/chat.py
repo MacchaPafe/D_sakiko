@@ -535,6 +535,14 @@ class Chat:
         return Chat.is_real_user_message(message)
 
     @staticmethod
+    def can_edit_message(message: Message) -> bool:
+        """判断消息是否允许手动编辑。"""
+        return (
+            Chat.is_real_user_message(message)
+            or message.character_name != "User"
+        )
+
+    @staticmethod
     def can_rollback_to_message(message: Message) -> bool:
         """判断消息是否允许作为回溯锚点。"""
         return not Chat.is_internal_event_user_message(message)

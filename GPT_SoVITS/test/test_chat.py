@@ -284,6 +284,18 @@ class ChatTestCase(unittest.TestCase):
         )
         self.assertFalse(Chat.can_edit_and_resend_user_message(self._message("祥子", "角色消息")))
 
+    def test_can_edit_message_excludes_internal_event_user_message(self) -> None:
+        """
+        手动编辑消息应排除系统内部事件 User 消息。
+        """
+        self.assertTrue(Chat.can_edit_message(self._message("User", "普通消息")))
+        self.assertTrue(Chat.can_edit_message(self._message("祥子", "角色消息")))
+        self.assertFalse(
+            Chat.can_edit_message(
+                self._message("User", "【系统内部事件触发：提醒】\n该喝水了")
+            )
+        )
+
     def test_can_rollback_to_message_excludes_internal_event_user_message(self) -> None:
         """
         回溯锚点应排除系统内部事件 User 消息，但允许真实用户消息和角色消息。

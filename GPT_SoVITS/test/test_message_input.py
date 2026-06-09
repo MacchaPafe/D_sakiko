@@ -19,7 +19,10 @@ from PyQt5.QtGui import (
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QWidget
 
+from chat.chat import Message
+from emotion_enum import EmotionEnum
 from input_commands import InputCommandMatcher, InputCommandPalette, build_default_input_command_specs
+from qtUI import MessageEditDialog
 from ui_main.components.message_input import MessageInput, trim_surrounding_blank_lines
 
 
@@ -219,6 +222,47 @@ class MessageInputTestCase(unittest.TestCase):
         self.assertEqual(self.input.textCursor().position(), len("新的消息"))
         self.assertFalse(self.input.document().isUndoAvailable())
         self.assertTrue(self.input.hasFocus())
+
+    def test_message_edit_dialog_rejects_empty_text_without_closing(self) -> None:
+        """编辑消息时正文为空应展示提示，并保持对话框打开。"""
+        message = Message(
+            character_name="User",
+            text="原消息",
+            translation="",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path="",
+        )
+        dialog = MessageEditDialog(message)
+        dialog.show()
+        self.app.processEvents()
+
+        dialog.text_edit.setPlainText("  \n")
+        dialog._accept_if_valid()
+
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.validation_label.text(), "正文不能为空。")
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_message_edit_dialog_returns_role_text_and_translation(self) -> None:
+        """角色消息编辑框应返回正文和可为空的翻译。"""
+        message = Message(
+            character_name="祥子",
+            text="原回复",
+            translation="原翻译",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path="NO_AUDIO",
+        )
+        dialog = MessageEditDialog(message)
+
+        dialog.text_edit.setPlainText(" 新回复 ")
+        self.assertIsNotNone(dialog.translation_edit)
+        assert dialog.translation_edit is not None
+        dialog.translation_edit.setPlainText(" 新翻译 ")
+
+        self.assertEqual(dialog.edited_text(), "新回复")
+        self.assertEqual(dialog.edited_translation(), "新翻译")
+        dialog.deleteLater()
 
     def test_file_paths_replace_selection_at_cursor(self) -> None:
         """文件路径应在当前选区插入，并与相邻文字保留间隔。"""

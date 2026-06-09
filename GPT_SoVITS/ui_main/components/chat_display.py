@@ -17,6 +17,7 @@ class _MessageDisplayMeta:
     """记录一条已渲染消息在显示层需要使用的元数据。"""
 
     is_user_message: bool
+    can_edit_message: bool
     can_edit_and_resend: bool
     can_rollback: bool
     can_regenerate_turn_reply: bool
@@ -27,6 +28,7 @@ class ChatDisplay(QTextBrowser):
 
     deleteMessageRequested = pyqtSignal(int)
     deleteTurnRequested = pyqtSignal(int)
+    editMessageRequested = pyqtSignal(int)
     editAndResendRequested = pyqtSignal(int)
     rollbackRequested = pyqtSignal(int)
     regenerateTurnReplyRequested = pyqtSignal(int)
@@ -168,6 +170,7 @@ class ChatDisplay(QTextBrowser):
                 meta is not None
                 and (
                     meta.can_regenerate_turn_reply
+                    or meta.can_edit_message
                     or meta.can_edit_and_resend
                     or can_rollback_to_here
                 )
@@ -179,6 +182,10 @@ class ChatDisplay(QTextBrowser):
                         lambda: self.regenerateTurnReplyRequested.emit(msg_index)
                     )
                     menu.addAction(regenerate_turn_action)
+                if meta.can_edit_message:
+                    edit_message_action = QAction("编辑消息", self)
+                    edit_message_action.triggered.connect(lambda: self.editMessageRequested.emit(msg_index))
+                    menu.addAction(edit_message_action)
                 if meta.can_edit_and_resend:
                     edit_and_resend_action = QAction("编辑并重发", self)
                     edit_and_resend_action.triggered.connect(
@@ -264,6 +271,7 @@ class ChatDisplay(QTextBrowser):
         """记录消息索引对应的右键菜单元数据。"""
         self._message_meta_by_index[msg_index] = _MessageDisplayMeta(
             is_user_message=self._is_user_message(message),
+            can_edit_message=Chat.can_edit_message(message),
             can_edit_and_resend=Chat.can_edit_and_resend_user_message(message),
             can_rollback=Chat.can_rollback_to_message(message),
             can_regenerate_turn_reply=False,
@@ -279,6 +287,7 @@ class ChatDisplay(QTextBrowser):
         for index, meta in list(self._message_meta_by_index.items()):
             self._message_meta_by_index[index] = _MessageDisplayMeta(
                 is_user_message=meta.is_user_message,
+                can_edit_message=meta.can_edit_message,
                 can_edit_and_resend=meta.can_edit_and_resend,
                 can_rollback=meta.can_rollback,
                 can_regenerate_turn_reply=index == message_index,
