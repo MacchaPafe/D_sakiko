@@ -70,7 +70,7 @@ source .venv/bin/activate
 - 角色语音模型：[下载链接](https://gh-release.xjtutoolbox.com/?file=static/reference_audio.zip)
 - 程序自带字体：[下载链接](https://gh-release.xjtutoolbox.com/?file=static/font.zip)
 
-下载后，你应该会得到三个文件，live2d_related.zip，reference_audio.zip 和 font.zip。请将这三个文件的内容分别解压到项目根目录下的 live2d_models/、reference_audio/ 和 fonts/ 目录下。
+下载后，你应该会得到三个文件，live2d_related.zip，reference_audio.zip 和 font.zip。请将这三个文件的内容分别解压到项目根目录下的 live2d_related/、reference_audio/ 和 fonts/ 目录下。
 
 ### 第四部分：程序内配置
 
