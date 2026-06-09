@@ -440,6 +440,48 @@ class Live2DModule:
                 else:
                     pass
 
+            if if_bye:
+                # 退出动画期间不再处理残留的文本、音频和动作队列，避免对话框被普通渲染分支重新画出。
+                while True:
+                    try:
+                        live2d_text_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+                while True:
+                    try:
+                        emotion_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+                while True:
+                    try:
+                        audio_file_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+                while True:
+                    try:
+                        change_char_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+                glClear(GL_COLOR_BUFFER_BIT)
+                model.Update()
+                render_background(texture)
+                model.Draw()
+                glUseProgram(0)
+                pygame.display.flip()
+                frame_clock.tick(self.target_fps)
+                if self.motion_is_over:
+                    self.run=False
+                    self.save_l2d_json_paths_and_bg()
+                continue
+
             # 从队列中获取要显示的新文本（只取最新，避免积压导致延迟）
             latest_text = None
             while True:
@@ -623,13 +665,13 @@ class Live2DModule:
                     if not if_bye:
                         model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
                     if_bye=True
-                    emotion_queue.put("bye")    #为了动作结束前一直进入该if分支
                     glClear(GL_COLOR_BUFFER_BIT)
                     model.Update()
                     render_background(texture)
                     model.Draw()
                     glUseProgram(0)
                     pygame.display.flip()
+                    frame_clock.tick(self.target_fps)
                     if self.motion_is_over:
                         self.run=False
                         self.save_l2d_json_paths_and_bg()
