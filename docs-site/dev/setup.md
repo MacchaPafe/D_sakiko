@@ -37,6 +37,12 @@
 
     > 如果在激活虚拟环境时用 `python GPT_SoVITS/main2.py` 启动程序，则不需要重新执行该命令，因为这种情况下 uv 不会对依赖做版本检查。
 
+6. **如果你在 Intel Mac 上配置程序**，请继续执行下面的命令来强制修改 ctranslate2 版本：
+    ```bash
+    uv pip install --force-reinstall "ctranslate2<4" "numpy<2.0"
+    ```
+    之后，每当你运行 `uv sync` 或 `uv run`，你都必须再运行一次上述命令，因为 Intel Mac 上较新的 ctranslate2 版本可能存在兼容性问题。
+
 ### 第二部分：获取 GPT-SoVITS 基础语音模型
 
 如果你正在使用 Windows 系统，请确保你已经安装了 conda。如果没有，请参考 [miniconda 教程](https://www.anaconda.com/docs/getting-started/miniconda/main) 来安装 miniconda。安装后，请运行如下命令来下载基础语音模型：
@@ -70,7 +76,7 @@ source .venv/bin/activate
 - 角色语音模型：[下载链接](https://gh-release.xjtutoolbox.com/?file=static/reference_audio.zip)
 - 程序自带字体：[下载链接](https://gh-release.xjtutoolbox.com/?file=static/font.zip)
 
-下载后，你应该会得到三个文件，live2d_related.zip，reference_audio.zip 和 font.zip。请将这三个文件的内容分别解压到项目根目录下的 live2d_related/、reference_audio/ 和 fonts/ 目录下。
+下载后，你应该会得到三个文件，live2d_related.zip，reference_audio.zip 和 font.zip。请将这三个文件的内容分别解压到项目根目录下的 live2d_related/、reference_audio/ 和 font/ 目录下。
 
 ### 第四部分：程序内配置
 

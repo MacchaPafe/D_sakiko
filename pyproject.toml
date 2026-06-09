@@ -26,7 +26,7 @@ dependencies = [
     # Live2d animation for python
     "live2d-py==0.7.0.4+d_sakiko.1",
     "modelscope>=1.32.0",
-    "numba>=0.62.1",
+    "numba>=0.62.1,<0.63",
     "numpy<2.0",
     "onnxruntime==1.19 ; platform_machine == 'aarch64' or platform_machine == 'arm64'",
     # 只在如下环境下安装 onnxruntime-gpu：
@@ -49,8 +49,10 @@ dependencies = [
     "split-lang>=2.1.1",
     "tensorboard>=2.20.0",
     "tojyutping>=3.2.0",
-    "torch>=2.7, <2.8",
-    "torchaudio>=2.7, <2.8",
+    "torch>=2.2,<2.8 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torch>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchaudio>=2.2,<2.8 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchaudio>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torchmetrics<=1.5",
     "tqdm>=4.67.1",
     "transformers>=4.57,<5",
@@ -79,8 +81,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.7, <2.8", "torchaudio>=2.7, <2.8"]
-cu128 = ["torch>=2.7, <2.8", "torchaudio>=2.7, <2.8"]
+cpu = [
+    "torch>=2.2,<2.8 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torch>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchaudio>=2.2,<2.8 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchaudio>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+cu128 = [
+    "torch>=2.2,<2.8 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torch>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchaudio>=2.2,<2.8 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchaudio>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
 
 [tool.uv]
 # Supported platform
@@ -89,6 +101,8 @@ required-environments = [
     "sys.platform == 'win32' and platform.machine == 'AMD64'",
     # macOS on ARM64(Apple Silicon)
     "sys.platform == 'darwin' and platform.machine == 'arm64'",
+    # macOS on x86_64(Intel)
+    "sys.platform == 'darwin' and platform.machine == 'x86_64'",
     # Linux distributions on AMD64
     "sys.platform == 'linux' and platform.machine == 'x86_64'",
 ]
@@ -98,6 +112,8 @@ environments = [
     "sys.platform == 'win32' and platform.machine == 'AMD64'",
     # macOS on ARM64(Apple Silicon)
     "sys.platform == 'darwin' and platform.machine == 'arm64'",
+    # macOS on x86_64(Intel)
+    "sys.platform == 'darwin' and platform.machine == 'x86_64'",
     # Linux distributions on AMD64
     "sys.platform == 'linux' and platform.machine == 'x86_64'",
 ]
@@ -134,7 +150,8 @@ explicit = true
 
 [tool.uv.sources]
 live2d-py = [
-  { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_15_0_universal2.whl", marker = "sys_platform == 'darwin'" },
+  { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_15_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+  { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_14_0_x86_64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'x86_64'" },
   { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-win_amd64.whl", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
   { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
 ]
