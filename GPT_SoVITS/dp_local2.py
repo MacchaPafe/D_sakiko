@@ -1429,15 +1429,17 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                 continue
 
-            # 将原始用户输入（不含任何指令后缀）存入 Chat
-            user_msg = Message(
-                character_name="User",
-                text=raw_user_input,
-                translation="",
-                emotion=EmotionEnum.HAPPINESS,
-                audio_path=""
-            )
-            self.current_chat.add_message(user_msg)
+            should_append_user_message = command.get("append_user_message") is not False
+            if should_append_user_message:
+                # 将原始用户输入（不含任何指令后缀）存入 Chat
+                user_msg = Message(
+                    character_name="User",
+                    text=raw_user_input,
+                    translation="",
+                    emotion=EmotionEnum.HAPPINESS,
+                    audio_path=""
+                )
+                self.current_chat.add_message(user_msg)
 
             character_name = self.get_current_character().character_name
             to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)

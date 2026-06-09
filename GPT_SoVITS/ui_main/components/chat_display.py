@@ -19,6 +19,7 @@ class _MessageDisplayMeta:
     is_user_message: bool
     can_edit_and_resend: bool
     can_rollback: bool
+    can_regenerate_turn_reply: bool
 
 
 class ChatDisplay(QTextBrowser):
@@ -28,6 +29,7 @@ class ChatDisplay(QTextBrowser):
     deleteTurnRequested = pyqtSignal(int)
     editAndResendRequested = pyqtSignal(int)
     rollbackRequested = pyqtSignal(int)
+    regenerateTurnReplyRequested = pyqtSignal(int)
     regenerateAudioRequested = pyqtSignal(int)
     toolCallClicked = pyqtSignal(str)
     audioLinkClicked = pyqtSignal(QUrl)
@@ -77,6 +79,7 @@ class ChatDisplay(QTextBrowser):
             message_block.append(self._render_message_html(message, index))
             html_parts.append("".join(message_block))
             self._remember_message_meta(index, message)
+        self._mark_regenerable_turn_reply(chat)
 
         self.setHtml("<br><br>".join(html_parts))
 
@@ -105,6 +108,8 @@ class ChatDisplay(QTextBrowser):
         """追加显示一条消息，可选择使用逐字流式打印正文。"""
         self.finish_stream_now()
         self._remember_message_meta(msg_index, message)
+        if Chat.is_real_user_message(message):
+            self._set_regenerable_turn_reply_index(msg_index)
         if stream:
             self._append_message_streaming(message, msg_index, interval_ms)
             return
@@ -159,8 +164,21 @@ class ChatDisplay(QTextBrowser):
                 and meta.can_rollback
                 and msg_index < last_message_index
             )
-            if meta is not None and (meta.can_edit_and_resend or can_rollback_to_here):
+            if (
+                meta is not None
+                and (
+                    meta.can_regenerate_turn_reply
+                    or meta.can_edit_and_resend
+                    or can_rollback_to_here
+                )
+            ):
                 menu.addSeparator()
+                if meta.can_regenerate_turn_reply:
+                    regenerate_turn_action = QAction("重新生成本轮回复", self)
+                    regenerate_turn_action.triggered.connect(
+                        lambda: self.regenerateTurnReplyRequested.emit(msg_index)
+                    )
+                    menu.addAction(regenerate_turn_action)
                 if meta.can_edit_and_resend:
                     edit_and_resend_action = QAction("编辑并重发", self)
                     edit_and_resend_action.triggered.connect(
@@ -248,7 +266,25 @@ class ChatDisplay(QTextBrowser):
             is_user_message=self._is_user_message(message),
             can_edit_and_resend=Chat.can_edit_and_resend_user_message(message),
             can_rollback=Chat.can_rollback_to_message(message),
+            can_regenerate_turn_reply=False,
         )
+
+    def _mark_regenerable_turn_reply(self, chat: Chat) -> None:
+        """标记最后一条真实用户消息是否允许重新生成本轮回复。"""
+        message_index = chat.find_last_real_user_message_index()
+        self._set_regenerable_turn_reply_index(message_index)
+
+    def _set_regenerable_turn_reply_index(self, message_index: int | None) -> None:
+        """将可重新生成本轮回复的标记移动到指定消息。"""
+        for index, meta in list(self._message_meta_by_index.items()):
+            self._message_meta_by_index[index] = _MessageDisplayMeta(
+                is_user_message=meta.is_user_message,
+                can_edit_and_resend=meta.can_edit_and_resend,
+                can_rollback=meta.can_rollback,
+                can_regenerate_turn_reply=index == message_index,
+            )
+        if message_index is None:
+            return
 
     def _render_message_html(self, message: Message, msg_index: int) -> str:
         """将一条消息渲染成完整 HTML 片段。"""

@@ -270,6 +270,12 @@ class ChatTestCase(unittest.TestCase):
         """
         只有真实用户消息允许编辑并重发，内部事件和角色消息不允许。
         """
+        self.assertTrue(Chat.is_real_user_message(self._message("User", "普通消息")))
+        self.assertFalse(
+            Chat.is_real_user_message(
+                self._message("User", "【系统内部事件触发：提醒】\n该喝水了")
+            )
+        )
         self.assertTrue(Chat.can_edit_and_resend_user_message(self._message("User", "普通消息")))
         self.assertFalse(
             Chat.can_edit_and_resend_user_message(
@@ -289,6 +295,22 @@ class ChatTestCase(unittest.TestCase):
                 self._message("User", "【系统内部事件触发：提醒】\n该喝水了")
             )
         )
+
+    def test_find_last_real_user_message_index_skips_internal_events(self) -> None:
+        """
+        最后一条真实用户消息应跳过系统内部事件 User 消息。
+        """
+        chat = Chat(
+            message_list=[
+                self._message("User", "第一条真实消息"),
+                self._message("祥子", "回复"),
+                self._message("User", "最后真实消息"),
+                self._message("User", "【系统内部事件触发：提醒】\n该喝水了"),
+                self._message("祥子", "后续回复"),
+            ],
+        )
+
+        self.assertEqual(chat.find_last_real_user_message_index(), 2)
 
     def test_involved_characters(self):
         """

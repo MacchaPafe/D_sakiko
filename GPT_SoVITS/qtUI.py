@@ -1464,6 +1464,7 @@ class ChatGUI(QWidget):
         self.chat_display.deleteTurnRequested.connect(self.delete_turn)  # noqa
         self.chat_display.editAndResendRequested.connect(self.edit_and_resend_user_message)  # noqa
         self.chat_display.rollbackRequested.connect(self.rollback_to_message)  # noqa
+        self.chat_display.regenerateTurnReplyRequested.connect(self.regenerate_turn_reply)  # noqa
         self.chat_display.regenerateAudioRequested.connect(self.regenerate_audio)  # noqa
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
 
@@ -3059,6 +3060,51 @@ class ChatGUI(QWidget):
         )
         self._show_delete_success_message("已回溯到所选消息。", audio_failed)
 
+    def regenerate_turn_reply(self, msg_index: int) -> None:
+        """重新生成最后一条真实用户消息对应的本轮回复。"""
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
+            self.refresh_current_chat_display()
+            return
+        if not self._ensure_delete_operation_allowed():
+            return
+
+        last_user_index = self.current_chat.find_last_real_user_message_index()
+        if msg_index != last_user_index:
+            self.messages_box.clear()
+            self.messages_box.append("只能重新生成最后一条用户消息的回复。")
+            return
+
+        message = self.current_chat.message_list[msg_index]
+        user_text = message.text
+        start = msg_index + 1
+        end = len(self.current_chat.message_list)
+        preview = self._build_delete_preview_from_messages(
+            start,
+            end,
+            list(self.current_chat.message_list[start:end]),
+        )
+        accepted, should_delete_audio = self._confirm_delete_operation(
+            "确定重新生成本轮回复吗？\n这会保留这条用户消息，并重新生成角色回复。",
+            preview,
+            title="重新生成确认",
+            confirm_button_text="重新生成",
+        )
+        if not accepted:
+            return
+
+        self._apply_current_chat_message_range_delete(
+            start,
+            end,
+            should_delete_audio,
+        )
+        self._send_user_message_payload(
+            user_text,
+            append_user_message=False,
+            context_usage_delay_ms=1300,
+        )
+        self.messages_box.clear()
+        self.messages_box.append("正在重新生成本轮回复...")
+
     def _delete_current_chat_message_range(
         self,
         start: int,
@@ -3680,18 +3726,8 @@ class ChatGUI(QWidget):
         # 存在换行符时，不处理输入框中的命令
         if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
             return
-        # 生成一条新的 turn_id，交给 dp_local2 标记当前对话
-        turn_id = uuid.uuid4().hex
-        # 开始一轮对话。开始后，不能切换、删除对话或清空对话内容。
-        self._start_active_turn(self.current_chat_id, turn_id, "llm")
-        self.qt2dp_queue.put({
-            "type": "send_message",
-            "chat_id": self.current_chat_id,
-            "turn_id": turn_id,
-            "text": user_this_turn_input,
-        })
+        self._send_user_message_payload(user_this_turn_input)
         self.user_input.clear_after_send()
-        self.schedule_context_usage_refresh(delay_ms=1300)
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能
         if self.current_chat.message_list and self.current_chat.message_list[-1].text == user_this_turn_input:
@@ -3706,6 +3742,25 @@ class ChatGUI(QWidget):
             audio_path="",
         )
         self.chat_display.append_message(user_message, predicted_msg_index, stream=True, interval_ms=8)
+
+    def _send_user_message_payload(
+        self,
+        text: str,
+        *,
+        append_user_message: bool = True,
+        context_usage_delay_ms: int = 1300,
+    ) -> None:
+        """向后端发送用户消息请求，并启动当前 active turn。"""
+        turn_id = uuid.uuid4().hex
+        self._start_active_turn(self.current_chat_id, turn_id, "llm")
+        self.qt2dp_queue.put({
+            "type": "send_message",
+            "chat_id": self.current_chat_id,
+            "turn_id": turn_id,
+            "text": text,
+            "append_user_message": append_user_message,
+        })
+        self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
 
     def save_data(self):
         # 使用 ChatManager 统一保存到 all_conversation.json

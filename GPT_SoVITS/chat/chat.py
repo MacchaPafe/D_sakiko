@@ -522,17 +522,29 @@ class Chat:
         )
 
     @staticmethod
-    def can_edit_and_resend_user_message(message: Message) -> bool:
-        """判断消息是否允许作为编辑并重发的用户消息。"""
+    def is_real_user_message(message: Message) -> bool:
+        """判断消息是否为用户实际输入的消息。"""
         return (
             message.character_name == "User"
             and not Chat.is_internal_event_user_message(message)
         )
 
     @staticmethod
+    def can_edit_and_resend_user_message(message: Message) -> bool:
+        """判断消息是否允许作为编辑并重发的用户消息。"""
+        return Chat.is_real_user_message(message)
+
+    @staticmethod
     def can_rollback_to_message(message: Message) -> bool:
         """判断消息是否允许作为回溯锚点。"""
         return not Chat.is_internal_event_user_message(message)
+
+    def find_last_real_user_message_index(self) -> int | None:
+        """查找最后一条真实用户消息的索引。"""
+        for index in range(len(self.message_list) - 1, -1, -1):
+            if Chat.is_real_user_message(self.message_list[index]):
+                return index
+        return None
 
     def find_turn_range(self, message_index: int) -> MessageRange:
         """根据消息索引定位其所属的普通聊天轮次。"""
