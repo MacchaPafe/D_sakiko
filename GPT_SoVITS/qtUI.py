@@ -3357,7 +3357,9 @@ class ChatGUI(QWidget):
 
         if audio_path != "NO_AUDIO":
             abs_path = os.path.abspath(audio_path).replace('\\', '/')
-            self.live2d_text_queue.put(display_text)
+            self.live2d_text_queue.put(
+                self._format_live2d_display_text(display_text, translation)
+            )
         else:
             abs_path = "NO_AUDIO"
         display_message = msg if 0 <= message_index < len(chat.message_list) else Message(

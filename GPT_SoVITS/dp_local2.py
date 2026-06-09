@@ -999,15 +999,16 @@ class DSLocalAndVoiceGen:
 
         try:
             return self._parse_model_segments_payload(generated)
-        except json.JSONDecodeError as exc:
-            if not used_json_mode:
+        except json.JSONDecodeError:
+            try:
                 return self._retry_model_segments_format(
                     invalid_content=generated,
                     reason="输出不是合法 JSON。",
                     reasoning_kwargs=reasoning_kwargs,
                     strict_mode=False, # 失败一次之后放松要求
                 )
-            raise ValueError("JSON Mode 返回了非空但不合法的 JSON。") from exc
+            except ValueError:
+                return generated
         except ValueError as exc:
             # 最多两次纠正格式错误的请求
             try:
