@@ -33,10 +33,16 @@
 /GPT_SoVITS/test_danmu.py
 /GPT_SoVITS/faulthandler_log.txt
 /GPT_SoVITS/rag/pipeline/data/**
+/GPT_SoVITS/deepseek_prompt_cache_debug/
 
 docs-site/.vitepress/cache
 
+.env
 **/.DS_Store
+*.pstat
+D_sakiko_*_to_*_*.patch.zip
+MacOS 软件包安装指南.md
+MacOS 软件包安装指南.assets/
 d_sakiko_config.json
 .python-version
 # 更新相关文件
