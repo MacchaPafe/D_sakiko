@@ -205,6 +205,21 @@ class MessageInputTestCase(unittest.TestCase):
         self.assertEqual(self.input.height(), minimum_height)
         self.assertFalse(self.input.document().isUndoAvailable())
 
+    def test_replace_draft_replaces_content_and_moves_cursor_to_end(self) -> None:
+        """替换草稿时应清空旧内容、撤销历史，并把光标放到末尾。"""
+        self.input.setPlainText("旧草稿")
+        self.input.moveCursor(QTextCursor.End)
+        self.input.insertPlainText("x")
+        self.assertTrue(self.input.document().isUndoAvailable())
+
+        self.input.replace_draft("新的消息")
+        self.app.processEvents()
+
+        self.assertEqual(self.input.toPlainText(), "新的消息")
+        self.assertEqual(self.input.textCursor().position(), len("新的消息"))
+        self.assertFalse(self.input.document().isUndoAvailable())
+        self.assertTrue(self.input.hasFocus())
+
     def test_file_paths_replace_selection_at_cursor(self) -> None:
         """文件路径应在当前选区插入，并与相邻文字保留间隔。"""
         self.input.setPlainText("before TARGET after")

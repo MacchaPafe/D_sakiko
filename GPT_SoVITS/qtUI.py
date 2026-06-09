@@ -1462,6 +1462,8 @@ class ChatGUI(QWidget):
         self.chat_display.toolCallClicked.connect(self._open_tool_call_dialog)  # noqa
         self.chat_display.deleteMessageRequested.connect(self.delete_message)  # noqa
         self.chat_display.deleteTurnRequested.connect(self.delete_turn)  # noqa
+        self.chat_display.editAndResendRequested.connect(self.edit_and_resend_user_message)  # noqa
+        self.chat_display.rollbackRequested.connect(self.rollback_to_message)  # noqa
         self.chat_display.regenerateAudioRequested.connect(self.regenerate_audio)  # noqa
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
 
@@ -2127,17 +2129,23 @@ class ChatGUI(QWidget):
         self,
         prompt: str,
         preview: DeleteMessagesResult,
+        extra_detail_lines: list[str] | None = None,
+        title: str = "删除确认",
+        confirm_button_text: str = "删除",
     ) -> tuple[bool, bool]:
         """显示统一删除确认框，并返回是否确认及是否清理音频。"""
         deletable_audio_paths = self.chat_manager.collect_deletable_audio_paths_from_messages(
             preview.deleted_messages
         )
-        detail = (
-            f"{prompt}\n"
+        detail_lines = [prompt]
+        if extra_detail_lines:
+            detail_lines.extend(extra_detail_lines)
+        detail_lines.append(
             f"将删除：{preview.deleted_user_count} 条用户消息、"
             f"{preview.deleted_character_count} 条角色消息。"
         )
-        box = QMessageBox(QMessageBox.Question, "删除确认", detail, QMessageBox.No | QMessageBox.Yes, self)
+        detail = "\n".join(detail_lines)
+        box = QMessageBox(QMessageBox.Question, title, detail, QMessageBox.No | QMessageBox.Yes, self)
         delete_audio_checkbox = QCheckBox("同时删除不再被其他对话引用的语音文件")
         if deletable_audio_paths:
             delete_audio_checkbox.setChecked(True)
@@ -2148,7 +2156,7 @@ class ChatGUI(QWidget):
         box.setCheckBox(delete_audio_checkbox)
         box.setEscapeButton(QMessageBox.No)
         box.setDefaultButton(QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("删除")
+        box.button(QMessageBox.Yes).setText(confirm_button_text)
         box.button(QMessageBox.No).setText("取消")
         accepted = box.exec_() == QMessageBox.Yes
         should_delete_audio = accepted and delete_audio_checkbox.isEnabled() and delete_audio_checkbox.isChecked()
@@ -2962,6 +2970,95 @@ class ChatGUI(QWidget):
             success_message="已删除这一轮对话",
         )
 
+    def edit_and_resend_user_message(self, msg_index: int) -> None:
+        """将历史用户消息移回输入框，并删除该消息及后续消息。"""
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
+            self.refresh_current_chat_display()
+            return
+        if not self._ensure_delete_operation_allowed():
+            return
+
+        message = self.current_chat.message_list[msg_index]
+        if not Chat.can_edit_and_resend_user_message(message):
+            self.messages_box.clear()
+            self.messages_box.append("这条消息不能编辑并重发。")
+            return
+
+        original_text = message.text
+        end = len(self.current_chat.message_list)
+        has_following_messages = end - msg_index > 1
+        had_input_draft = bool(self.user_input.toPlainText())
+        should_delete_audio = False
+
+        if has_following_messages:
+            preview = self._build_delete_preview_from_messages(
+                msg_index,
+                end,
+                list(self.current_chat.message_list[msg_index:end]),
+            )
+            extra_detail_lines: list[str] = []
+            if had_input_draft:
+                extra_detail_lines.append("当前输入框内容将被替换。")
+            accepted, should_delete_audio = self._confirm_delete_operation(
+                "确定编辑并重发这条用户消息吗？\n选择编辑与重发会清除这条消息及其后续消息。",
+                preview,
+                extra_detail_lines=extra_detail_lines,
+            )
+            if not accepted:
+                return
+
+        audio_failed = self._apply_current_chat_message_range_delete(
+            msg_index,
+            end,
+            should_delete_audio,
+        )
+        self.user_input.replace_draft(original_text)
+
+        if had_input_draft:
+            success_message = "已将消息移回输入框，原输入框内容已被替换。"
+        elif has_following_messages:
+            success_message = "已清除后续消息，可编辑后重新发送。"
+        else:
+            success_message = "已将消息移回输入框，可编辑后重新发送。"
+        self._show_delete_success_message(success_message, audio_failed)
+
+    def rollback_to_message(self, msg_index: int) -> None:
+        """回溯到指定消息，删除该消息之后的所有后续消息。"""
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
+            self.refresh_current_chat_display()
+            return
+        if not self._ensure_delete_operation_allowed():
+            return
+
+        message = self.current_chat.message_list[msg_index]
+        if msg_index >= len(self.current_chat.message_list) - 1 or not Chat.can_rollback_to_message(message):
+            self.messages_box.clear()
+            self.messages_box.append("这条消息不能作为回溯位置。")
+            return
+
+        start = msg_index + 1
+        end = len(self.current_chat.message_list)
+        preview = self._build_delete_preview_from_messages(
+            start,
+            end,
+            list(self.current_chat.message_list[start:end]),
+        )
+        accepted, should_delete_audio = self._confirm_delete_operation(
+            "确定回溯到这条消息吗？\n这会删除此消息之后的所有后续消息。",
+            preview,
+            title="回溯确认",
+            confirm_button_text="回溯",
+        )
+        if not accepted:
+            return
+
+        audio_failed = self._apply_current_chat_message_range_delete(
+            start,
+            end,
+            should_delete_audio,
+        )
+        self._show_delete_success_message("已回溯到所选消息。", audio_failed)
+
     def _delete_current_chat_message_range(
         self,
         start: int,
@@ -2985,6 +3082,20 @@ class ChatGUI(QWidget):
         if not accepted:
             return
 
+        audio_failed = self._apply_current_chat_message_range_delete(
+            start,
+            end,
+            should_delete_audio,
+        )
+        self._show_delete_success_message(success_message, audio_failed)
+
+    def _apply_current_chat_message_range_delete(
+        self,
+        start: int,
+        end: int,
+        should_delete_audio: bool,
+    ) -> bool:
+        """执行当前对话的消息范围删除，并返回是否存在音频删除失败。"""
         result = self.current_chat.delete_message_range(start, end)
         audio_failed = self._delete_audio_for_messages_if_requested(
             result.deleted_messages,
@@ -2995,7 +3106,7 @@ class ChatGUI(QWidget):
         self.refresh_current_chat_display()
         self.refresh_chat_list()
         self.schedule_context_usage_refresh()
-        self._show_delete_success_message(success_message, audio_failed)
+        return audio_failed
 
     def regenerate_audio(self, msg_index):
         if hasattr(self, 'regen_thread') and self.regen_thread is not None and self.regen_thread.isRunning():

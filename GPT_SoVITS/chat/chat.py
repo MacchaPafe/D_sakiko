@@ -506,12 +506,33 @@ class Chat:
     def __repr__(self) -> str:
         return f"Chat(name={self.name}, messages={self.message_list})"
 
-    def remove_message(self, index: int):
+    def remove_message(self, index: int) -> None:
         """
         根据索引删除记录中的一条消息
         """
         if 0 <= index < len(self.message_list):
             self.delete_message_at(index)
+
+    @staticmethod
+    def is_internal_event_user_message(message: Message) -> bool:
+        """判断消息是否为系统内部事件注入的用户消息。"""
+        return (
+            message.character_name == "User"
+            and message.text.strip().startswith("【系统内部事件触发")
+        )
+
+    @staticmethod
+    def can_edit_and_resend_user_message(message: Message) -> bool:
+        """判断消息是否允许作为编辑并重发的用户消息。"""
+        return (
+            message.character_name == "User"
+            and not Chat.is_internal_event_user_message(message)
+        )
+
+    @staticmethod
+    def can_rollback_to_message(message: Message) -> bool:
+        """判断消息是否允许作为回溯锚点。"""
+        return not Chat.is_internal_event_user_message(message)
 
     def find_turn_range(self, message_index: int) -> MessageRange:
         """根据消息索引定位其所属的普通聊天轮次。"""

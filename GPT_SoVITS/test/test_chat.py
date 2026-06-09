@@ -266,6 +266,30 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(result.deleted_character_count, 1)
         self.assertEqual([message.text for message in chat.message_list], ["第二轮用户", "第二轮回复"])
 
+    def test_can_edit_and_resend_only_real_user_message(self) -> None:
+        """
+        只有真实用户消息允许编辑并重发，内部事件和角色消息不允许。
+        """
+        self.assertTrue(Chat.can_edit_and_resend_user_message(self._message("User", "普通消息")))
+        self.assertFalse(
+            Chat.can_edit_and_resend_user_message(
+                self._message("User", "【系统内部事件触发：提醒】\n该喝水了")
+            )
+        )
+        self.assertFalse(Chat.can_edit_and_resend_user_message(self._message("祥子", "角色消息")))
+
+    def test_can_rollback_to_message_excludes_internal_event_user_message(self) -> None:
+        """
+        回溯锚点应排除系统内部事件 User 消息，但允许真实用户消息和角色消息。
+        """
+        self.assertTrue(Chat.can_rollback_to_message(self._message("User", "普通消息")))
+        self.assertTrue(Chat.can_rollback_to_message(self._message("祥子", "角色消息")))
+        self.assertFalse(
+            Chat.can_rollback_to_message(
+                self._message("User", "【系统内部事件触发：提醒】\n该喝水了")
+            )
+        )
+
     def test_involved_characters(self):
         """
         测试 Chat 类能否正确识别对话中涉及的角色

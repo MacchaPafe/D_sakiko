@@ -17,6 +17,8 @@ class _MessageDisplayMeta:
     """记录一条已渲染消息在显示层需要使用的元数据。"""
 
     is_user_message: bool
+    can_edit_and_resend: bool
+    can_rollback: bool
 
 
 class ChatDisplay(QTextBrowser):
@@ -24,6 +26,8 @@ class ChatDisplay(QTextBrowser):
 
     deleteMessageRequested = pyqtSignal(int)
     deleteTurnRequested = pyqtSignal(int)
+    editAndResendRequested = pyqtSignal(int)
+    rollbackRequested = pyqtSignal(int)
     regenerateAudioRequested = pyqtSignal(int)
     toolCallClicked = pyqtSignal(str)
     audioLinkClicked = pyqtSignal(QUrl)
@@ -149,7 +153,28 @@ class ChatDisplay(QTextBrowser):
 
         if msg_index is not None:
             meta = self._message_meta_by_index.get(msg_index)
-            menu.addSeparator()
+            last_message_index = max(self._message_meta_by_index.keys(), default=-1)
+            can_rollback_to_here = (
+                meta is not None
+                and meta.can_rollback
+                and msg_index < last_message_index
+            )
+            if meta is not None and (meta.can_edit_and_resend or can_rollback_to_here):
+                menu.addSeparator()
+                if meta.can_edit_and_resend:
+                    edit_and_resend_action = QAction("编辑并重发", self)
+                    edit_and_resend_action.triggered.connect(
+                        lambda: self.editAndResendRequested.emit(msg_index)
+                    )
+                    menu.addAction(edit_and_resend_action)
+                if can_rollback_to_here:
+                    rollback_action = QAction("回溯到此处", self)
+                    rollback_action.triggered.connect(lambda: self.rollbackRequested.emit(msg_index))
+                    menu.addAction(rollback_action)
+                menu.addSeparator()
+            else:
+                menu.addSeparator()
+
             delete_action = QAction("删除此消息", self)
             delete_action.triggered.connect(lambda: self.deleteMessageRequested.emit(msg_index))
             menu.addAction(delete_action)
@@ -221,6 +246,8 @@ class ChatDisplay(QTextBrowser):
         """记录消息索引对应的右键菜单元数据。"""
         self._message_meta_by_index[msg_index] = _MessageDisplayMeta(
             is_user_message=self._is_user_message(message),
+            can_edit_and_resend=Chat.can_edit_and_resend_user_message(message),
+            can_rollback=Chat.can_rollback_to_message(message),
         )
 
     def _render_message_html(self, message: Message, msg_index: int) -> str:

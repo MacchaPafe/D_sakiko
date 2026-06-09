@@ -12,6 +12,7 @@ from PyQt5.QtGui import (
     QInputMethodEvent,
     QKeyEvent,
     QResizeEvent,
+    QTextCursor,
 )
 from PyQt5.QtWidgets import QPlainTextEdit, QSizePolicy, QWidget
 
@@ -147,6 +148,14 @@ class MessageInput(QPlainTextEdit):
         # 删除撤销历史，避免通过撤销把发送的内容再次显示回来
         self.document().clearUndoRedoStacks()
         self.refresh_height()
+
+    def replace_draft(self, text: str) -> None:
+        """替换当前草稿内容，并将光标移动到文本末尾。"""
+        self.setPlainText(text)
+        self.document().clearUndoRedoStacks()
+        self.moveCursor(QTextCursor.End)
+        self.refresh_height()
+        self.setFocus()
 
     def insert_text_at_cursor(self, text: str) -> None:
         """使用一次可撤销编辑替换当前选区或在光标处插入文本。"""
