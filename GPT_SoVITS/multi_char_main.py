@@ -1,11 +1,17 @@
 import sys, os,json,re,ast
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
-from qconfig import d_sakiko_config
-from ui_main.components.custom_bgm_dialog import CustomBGMDialog
+from qconfig import DEFAULT_MULTI_CHAR_BGM_PATH, d_sakiko_config
+from ui_main.components.custom_bgm_dialog import (
+    BGM_DIRECTORY,
+    SUPPORTED_BGM_SUFFIXES,
+    CustomBGMDialog,
+    validate_bgm_media_file,
+)
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
@@ -1222,7 +1228,12 @@ class ViewerGUI(QWidget):
         self.bgm_player.setPlaylist(self.bgm_playlist)
         self.bgm_player.setVolume(30)  # 音量 0-100 (Pygame是0.0-1.0，注意区别)
         self.bgm_player.error.connect(self._handle_bgm_error)
-        self._load_bgm(d_sakiko_config.multi_char_background_music_path.value)
+        self.bgm_player.mediaStatusChanged.connect(self._handle_bgm_media_status)
+        self._current_bgm_path: Optional[str] = None
+        self._recovering_bgm_error = False
+        initial_bgm = d_sakiko_config.multi_char_background_music_path.value
+        if not self._load_bgm(initial_bgm):
+            self._recover_bgm_after_failure(initial_bgm, "文件不存在或无法载入")
 
         self.update_chat_panel_toggle_button()
         self.update_replay_button_visibility()
@@ -1742,12 +1753,36 @@ class ViewerGUI(QWidget):
         self.current_chat.update_theater_meta(data)
 
     def _handle_bgm_error(self, error: QMediaPlayer.Error) -> None:
-        """记录 Qt 媒体后端报告的背景音乐播放错误。"""
+        """处理 Qt 媒体后端报告的背景音乐播放错误。"""
+        if error == QMediaPlayer.NoError:
+            return
+
+        message = self.bgm_player.errorString() or f"错误代码 {error}"
         logger.error(
             "背景音乐播放失败：error=%s, message=%s",
             error,
-            self.bgm_player.errorString(),
+            message,
         )
+        failed_path = (
+            self._current_bgm_path
+            or d_sakiko_config.multi_char_background_music_path.value
+        )
+        self._recover_bgm_after_failure(failed_path, message)
+
+    def _handle_bgm_media_status(
+        self, status: QMediaPlayer.MediaStatus
+    ) -> None:
+        """处理 Qt 异步报告的无效背景音乐状态。"""
+        if status != QMediaPlayer.InvalidMedia:
+            return
+
+        message = self.bgm_player.errorString() or "媒体无效或无法解码"
+        logger.error("背景音乐媒体无效：%s", message)
+        failed_path = (
+            self._current_bgm_path
+            or d_sakiko_config.multi_char_background_music_path.value
+        )
+        self._recover_bgm_after_failure(failed_path, message)
 
     def _load_bgm(self, bgm_path: str) -> bool:
         """将背景音乐载入现有播放列表，并显式选中新增条目。"""
@@ -1765,11 +1800,115 @@ class ViewerGUI(QWidget):
                 absolute_path,
                 self.bgm_playlist.errorString(),
             )
+            self._current_bgm_path = None
             return False
 
         # clear() 会把 currentIndex 重置为 -1，addMedia() 不会自动恢复。
         self.bgm_playlist.setCurrentIndex(0)
+        self._current_bgm_path = absolute_path
         return True
+
+    def _candidate_bgm_paths(
+        self,
+        failed_path: str,
+        preferred_path: Optional[str] = None,
+    ) -> List[str]:
+        """按优先级列出可用于回退的背景音乐候选路径。"""
+        failed_absolute_path = os.path.abspath(failed_path)
+        candidates: List[str] = []
+
+        for candidate in (preferred_path, DEFAULT_MULTI_CHAR_BGM_PATH):
+            if candidate is None:
+                continue
+            candidate_path = os.path.abspath(candidate)
+            if (
+                candidate_path != failed_absolute_path
+                and candidate_path not in candidates
+            ):
+                candidates.append(candidate_path)
+
+        try:
+            bgm_files = sorted(
+                (
+                    path.resolve()
+                    for path in BGM_DIRECTORY.iterdir()
+                    if path.is_file()
+                    and path.suffix.lower() in SUPPORTED_BGM_SUFFIXES
+                ),
+                key=lambda path: path.name.casefold(),
+            )
+        except OSError:
+            logger.exception("背景音乐文件夹读取失败：%s", BGM_DIRECTORY)
+            bgm_files = []
+
+        for bgm_file in bgm_files:
+            candidate_path = os.path.abspath(str(bgm_file))
+            if (
+                candidate_path != failed_absolute_path
+                and candidate_path not in candidates
+            ):
+                candidates.append(candidate_path)
+
+        return candidates
+
+    def _show_bgm_failure_message(self, message: str) -> None:
+        """在界面上提示背景音乐失败原因和处理结果。"""
+        QTimer.singleShot(
+            0,
+            lambda: QMessageBox.warning(self, "背景音乐播放失败", message),
+        )
+
+    def _recover_bgm_after_failure(
+        self,
+        failed_path: str,
+        reason: str,
+        preferred_fallback: Optional[str] = None,
+    ) -> bool:
+        """当前背景音乐失效时自动切换到可播放的备用音乐。"""
+        if self._recovering_bgm_error:
+            return False
+
+        self._recovering_bgm_error = True
+        was_playing = self.bgm_player.state() == QMediaPlayer.PlayingState
+        self.bgm_player.stop()
+
+        try:
+            for candidate_path in self._candidate_bgm_paths(
+                failed_path,
+                preferred_fallback,
+            ):
+                validation_error = validate_bgm_media_file(Path(candidate_path))
+                if validation_error is not None:
+                    logger.error(
+                        "备用背景音乐不可用：path=%s, reason=%s",
+                        candidate_path,
+                        validation_error,
+                    )
+                    continue
+
+                if not self._load_bgm(candidate_path):
+                    continue
+
+                d_sakiko_config.set(
+                    d_sakiko_config.multi_char_background_music_path,
+                    candidate_path,
+                )
+                if was_playing:
+                    self.bgm_player.play()
+                self._show_bgm_failure_message(
+                    "当前背景音乐播放失败："
+                    f"{reason}\n已自动切换到：{os.path.basename(candidate_path)}"
+                )
+                return True
+
+            self.bgm_playlist.clear()
+            self._current_bgm_path = None
+            self._show_bgm_failure_message(
+                f"当前背景音乐播放失败：{reason}\n没有找到可用的备用背景音乐。"
+            )
+            return False
+        finally:
+            self._recovering_bgm_error = False
 
     def set_bgm(self) -> None:
         """打开背景音乐选择窗口，并在关闭后应用新的音乐。"""
@@ -1784,14 +1923,16 @@ class ViewerGUI(QWidget):
 
         if new_bgm != old_bgm:
             loaded = self._load_bgm(new_bgm)
+            recovered_from_failure = False
             if not loaded:
-                logger.error("新背景音乐载入失败，恢复原背景音乐：%s", old_bgm)
-                d_sakiko_config.set(
-                    d_sakiko_config.multi_char_background_music_path,
+                logger.error("新背景音乐载入失败，尝试恢复原背景音乐：%s", old_bgm)
+                loaded = self._recover_bgm_after_failure(
+                    new_bgm,
+                    "文件不存在或无法载入",
                     old_bgm,
                 )
-                loaded = self._load_bgm(old_bgm)
-            if loaded and was_playing:
+                recovered_from_failure = loaded
+            if loaded and was_playing and not recovered_from_failure:
                 self.bgm_player.play()
         elif was_playing:
             self.bgm_player.play()

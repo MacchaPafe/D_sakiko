@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from av.error import FFmpegError
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QCloseEvent, QIcon
 from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer, QMediaPlaylist
@@ -35,6 +36,53 @@ BGM_DIRECTORY = (
 SUPPORTED_BGM_SUFFIXES = {".mp3", ".wav"}
 
 
+def _short_error_detail(error: BaseException, limit: int = 120) -> str:
+    """把底层媒体错误整理成适合界面显示的短文本。"""
+    detail = str(error).strip() or error.__class__.__name__
+    if len(detail) <= limit:
+        return detail
+    return f"{detail[:limit]}..."
+
+
+def validate_bgm_file_path(bgm_path: Path) -> str | None:
+    """检查背景音乐文件是否存在且扩展名受支持。"""
+    absolute_path = bgm_path.resolve()
+    if not absolute_path.is_file():
+        return f"文件不存在：{absolute_path.name}"
+    if absolute_path.suffix.lower() not in SUPPORTED_BGM_SUFFIXES:
+        return "格式不受支持，仅支持 mp3 或 wav"
+    return None
+
+
+def validate_bgm_media_file(bgm_path: Path) -> str | None:
+    """检查背景音乐文件是否包含可解码的音频内容。"""
+    path_error = validate_bgm_file_path(bgm_path)
+    if path_error is not None:
+        return path_error
+
+    absolute_path = bgm_path.resolve()
+    try:
+        import av
+
+        with av.open(str(absolute_path)) as container:
+            audio_streams = [
+                stream for stream in container.streams if stream.type == "audio"
+            ]
+            if not audio_streams:
+                return "文件不包含可播放的音频轨道"
+
+            for _frame in container.decode(audio_streams[0]):
+                return None
+    except FFmpegError as exc:
+        logger.error("背景音乐解码失败：path=%s, error=%s", absolute_path, exc)
+        return f"音频解码失败：{_short_error_detail(exc)}"
+    except OSError as exc:
+        logger.error("背景音乐文件读取失败：path=%s, error=%s", absolute_path, exc)
+        return f"文件读取失败：{_short_error_detail(exc)}"
+
+    return "音频文件没有可解码内容"
+
+
 class CustomBGMDialog(QDialog):
     """管理、试听并选择小剧场背景音乐。"""
 
@@ -48,6 +96,9 @@ class CustomBGMDialog(QDialog):
         self.audio_playlist = QMediaPlaylist(self)
         self.audio_player.setPlaylist(self.audio_playlist)
         self.audio_player.error.connect(self._handle_audio_error)
+        self.audio_player.mediaStatusChanged.connect(
+            self._handle_audio_media_status
+        )
 
         layout = QVBoxLayout()
         current_bgm_layout = QHBoxLayout()
@@ -162,6 +213,21 @@ class CustomBGMDialog(QDialog):
         message = self.audio_player.errorString() or f"错误代码 {error}"
         logger.error("背景音乐试听失败：%s", message)
         self.set_error_message(f"背景音乐试听失败：{message}")
+        self.audio_player.stop()
+        self.audio_playlist.clear()
+
+    def _handle_audio_media_status(
+        self, status: QMediaPlayer.MediaStatus
+    ) -> None:
+        """显示试听播放器异步报告的无效媒体状态。"""
+        if status != QMediaPlayer.InvalidMedia:
+            return
+
+        message = self.audio_player.errorString() or "媒体无效或无法解码"
+        logger.error("背景音乐试听失败，媒体无效：%s", message)
+        self.set_error_message(f"背景音乐试听失败：{message}")
+        self.audio_player.stop()
+        self.audio_playlist.clear()
 
     def toggle_current_bgm(self) -> None:
         """播放或停止当前选中的背景音乐。"""
@@ -185,8 +251,9 @@ class CustomBGMDialog(QDialog):
             if current_path == absolute_path:
                 return
 
-        if not absolute_path.is_file():
-            self.set_error_message(f"背景音乐文件不存在：{absolute_path.name}")
+        validation_error = validate_bgm_media_file(absolute_path)
+        if validation_error is not None:
+            self.set_error_message(f"背景音乐试听失败：{validation_error}")
             return
 
         self.set_error_message(None)
@@ -203,12 +270,14 @@ class CustomBGMDialog(QDialog):
     def replace_bgm(self, new_bgm_file: Path) -> None:
         """将指定文件设为当前小剧场背景音乐。"""
         absolute_path = new_bgm_file.resolve()
-        if (
-            not absolute_path.is_file()
-            or absolute_path.suffix.lower() not in SUPPORTED_BGM_SUFFIXES
-        ):
-            logger.error("更改背景音乐失败，无效文件：%s", absolute_path)
-            self.set_error_message("更改背景音乐失败：文件不存在或格式不受支持")
+        validation_error = validate_bgm_media_file(absolute_path)
+        if validation_error is not None:
+            logger.error(
+                "更改背景音乐失败，无效文件：path=%s, reason=%s",
+                absolute_path,
+                validation_error,
+            )
+            self.set_error_message(f"更改背景音乐失败：{validation_error}")
             return
 
         d_sakiko_config.set(
@@ -222,11 +291,9 @@ class CustomBGMDialog(QDialog):
     def add_bgm(self, new_bgm_file: str) -> None:
         """把外部背景音乐复制到音乐目录，但不自动选中。"""
         source_path = Path(new_bgm_file).resolve()
-        if (
-            not source_path.is_file()
-            or source_path.suffix.lower() not in SUPPORTED_BGM_SUFFIXES
-        ):
-            self.set_error_message("添加背景音乐失败：文件不存在或格式不受支持")
+        validation_error = validate_bgm_media_file(source_path)
+        if validation_error is not None:
+            self.set_error_message(f"添加背景音乐失败：{validation_error}")
             return
 
         try:
