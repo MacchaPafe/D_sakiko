@@ -136,6 +136,33 @@ class Message:
             raise ValueError(f"未知的角色视角: {role}")
 
 
+@dataclasses.dataclass(frozen=True)
+class MessageRange:
+    """表示消息列表中的左闭右开范围。"""
+
+    start: int
+    end: int
+
+
+@dataclasses.dataclass(frozen=True)
+class DeleteMessagesResult:
+    """记录一次消息范围删除的结果。"""
+
+    start: int
+    end: int
+    deleted_messages: list[Message]
+    deleted_user_count: int
+    deleted_character_count: int
+
+
+@dataclasses.dataclass(frozen=True)
+class AudioDeleteResult:
+    """记录一次音频文件清理的结果。"""
+
+    deleted_paths: list[str]
+    failed_paths: list[str]
+
+
 class SystemPromptGenerator(ABC):
     @abstractmethod
     def generate(self, perspective: str) -> str:
@@ -484,7 +511,80 @@ class Chat:
         根据索引删除记录中的一条消息
         """
         if 0 <= index < len(self.message_list):
-            self.message_list.pop(index)
+            self.delete_message_at(index)
+
+    def find_turn_range(self, message_index: int) -> MessageRange:
+        """根据消息索引定位其所属的普通聊天轮次。"""
+        if not (0 <= message_index < len(self.message_list)):
+            raise IndexError(f"消息索引越界：{message_index}")
+
+        start = message_index
+        if self.message_list[message_index].character_name != "User":
+            start = 0
+            for index in range(message_index, -1, -1):
+                if self.message_list[index].character_name == "User":
+                    start = index
+                    break
+
+        end = len(self.message_list)
+        for index in range(start + 1, len(self.message_list)):
+            if self.message_list[index].character_name == "User":
+                end = index
+                break
+
+        return MessageRange(start=start, end=end)
+
+    def delete_message_at(self, message_index: int) -> DeleteMessagesResult:
+        """删除指定索引处的单条消息。"""
+        return self.delete_message_range(message_index, message_index + 1)
+
+    def delete_turn_at(self, message_index: int) -> DeleteMessagesResult:
+        """删除指定消息所属的完整普通聊天轮次。"""
+        message_range = self.find_turn_range(message_index)
+        return self.delete_message_range(message_range.start, message_range.end)
+
+    def delete_message_range(self, start: int, end: int) -> DeleteMessagesResult:
+        """删除消息范围并同步维护绑定到消息索引的工具调用记录。"""
+        if not (0 <= start <= end <= len(self.message_list)):
+            raise IndexError(f"消息范围越界：start={start}, end={end}")
+        if start == end:
+            return DeleteMessagesResult(
+                start=start,
+                end=end,
+                deleted_messages=[],
+                deleted_user_count=0,
+                deleted_character_count=0,
+            )
+
+        deleted_messages = list(self.message_list[start:end])
+        deleted_user_count = sum(1 for message in deleted_messages if message.character_name == "User")
+        deleted_character_count = len(deleted_messages) - deleted_user_count
+        del self.message_list[start:end]
+        self._shift_tool_call_records_after_delete(start, end)
+
+        return DeleteMessagesResult(
+            start=start,
+            end=end,
+            deleted_messages=deleted_messages,
+            deleted_user_count=deleted_user_count,
+            deleted_character_count=deleted_character_count,
+        )
+
+    def _shift_tool_call_records_after_delete(self, start: int, end: int) -> None:
+        """删除消息范围后，移除或平移工具调用记录的消息索引。"""
+        removed_count = end - start
+        updated_records: list[ToolCallRecordMeta] = []
+
+        for record in self.meta.tool_call_records:
+            message_index = record.message_index
+            if start <= message_index < end:
+                continue
+            if message_index >= end:
+                record.message_index = message_index - removed_count
+            if 0 <= record.message_index < len(self.message_list):
+                updated_records.append(record)
+
+        self.meta.tool_call_records = updated_records
 
     def __str__(self) -> str:
         return f"{self.name}: {self.message_list}"
@@ -1177,7 +1277,7 @@ class ChatManager:
         chat = self.get_chat_by_id(chat_id)
         if chat is None:
             return []
-        return self._collect_audio_paths(chat)
+        return self.collect_audio_paths_from_messages(chat.message_list)
 
     def delete_unreferenced_audio_files_for_chat(self, chat_id: str) -> list[str]:
         """
@@ -1187,20 +1287,7 @@ class ChatManager:
         if target_chat is None:
             return []
 
-        candidate_paths = self._collect_audio_paths(target_chat)
-        referenced_elsewhere = self._collect_audio_paths_from_other_chats(chat_id)
-        deleted_paths: list[str] = []
-        for audio_path in candidate_paths:
-            if audio_path in referenced_elsewhere:
-                continue
-            try:
-                os.remove(audio_path)
-                deleted_paths.append(audio_path)
-            except FileNotFoundError:
-                continue
-            except OSError:
-                logger.exception("删除对话音频文件失败：%s", audio_path)
-        return deleted_paths
+        return self.delete_unreferenced_audio_files_for_messages(target_chat.message_list).deleted_paths
 
     def _default_single_chat_name(self, character: CharacterAttributes) -> str:
         """
@@ -1215,19 +1302,57 @@ class ChatManager:
             counter += 1
         return f"{base_name} {counter}"
 
-    def _collect_audio_paths(self, chat: Chat) -> list[str]:
-        """
-        从单个对话中收集可安全处理的本地音频文件路径。
-        """
+    def collect_audio_paths_from_messages(self, messages: Sequence[Message]) -> list[str]:
+        """从一组消息中收集可安全处理的本地音频文件路径。"""
         audio_paths: list[str] = []
         seen_paths: set[str] = set()
-        for message in chat.message_list:
+        for message in messages:
             normalized_path = self._normalize_audio_path(message.audio_path)
             if normalized_path is None or normalized_path in seen_paths:
                 continue
             audio_paths.append(normalized_path)
             seen_paths.add(normalized_path)
         return audio_paths
+
+    def collect_deletable_audio_paths_from_messages(self, messages: Sequence[Message]) -> list[str]:
+        """收集删除给定消息后不再被任何剩余消息引用的音频路径。"""
+        candidate_paths = self.collect_audio_paths_from_messages(messages)
+        if not candidate_paths:
+            return []
+
+        candidate_message_ids = {id(message) for message in messages}
+        candidate_path_set = set(candidate_paths)
+        referenced_paths: set[str] = set()
+
+        for chat in self.chat_list:
+            for message in chat.message_list:
+                if id(message) in candidate_message_ids:
+                    continue
+                normalized_path = self._normalize_audio_path(message.audio_path)
+                if normalized_path in candidate_path_set:
+                    referenced_paths.add(normalized_path)
+
+        return [audio_path for audio_path in candidate_paths if audio_path not in referenced_paths]
+
+    def delete_unreferenced_audio_files_for_messages(
+        self,
+        messages: Sequence[Message],
+    ) -> AudioDeleteResult:
+        """删除给定消息对应且不再被其他消息引用的音频文件。"""
+        deleted_paths: list[str] = []
+        failed_paths: list[str] = []
+
+        for audio_path in self.collect_deletable_audio_paths_from_messages(messages):
+            try:
+                os.remove(audio_path)
+                deleted_paths.append(audio_path)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logger.exception("删除音频文件失败：%s", audio_path)
+                failed_paths.append(audio_path)
+
+        return AudioDeleteResult(deleted_paths=deleted_paths, failed_paths=failed_paths)
 
     def _collect_audio_paths_from_other_chats(self, excluded_chat_id: str) -> set[str]:
         """
@@ -1237,7 +1362,7 @@ class ChatManager:
         for chat in self.chat_list:
             if chat.chat_id == excluded_chat_id:
                 continue
-            audio_paths.update(self._collect_audio_paths(chat))
+            audio_paths.update(self.collect_audio_paths_from_messages(chat.message_list))
         return audio_paths
 
     @staticmethod

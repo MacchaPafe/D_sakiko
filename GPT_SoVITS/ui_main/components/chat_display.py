@@ -23,6 +23,7 @@ class ChatDisplay(QTextBrowser):
     """集成的聊天记录渲染模块，封装聊天记录的渲染、流式打印和交互事件。"""
 
     deleteMessageRequested = pyqtSignal(int)
+    deleteTurnRequested = pyqtSignal(int)
     regenerateAudioRequested = pyqtSignal(int)
     toolCallClicked = pyqtSignal(str)
     audioLinkClicked = pyqtSignal(QUrl)
@@ -153,7 +154,13 @@ class ChatDisplay(QTextBrowser):
             delete_action.triggered.connect(lambda: self.deleteMessageRequested.emit(msg_index))
             menu.addAction(delete_action)
 
+            delete_turn_text = "删除此轮对话" if meta is not None and meta.is_user_message else "删除所属轮次"
+            delete_turn_action = QAction(delete_turn_text, self)
+            delete_turn_action.triggered.connect(lambda: self.deleteTurnRequested.emit(msg_index))
+            menu.addAction(delete_turn_action)
+
             if meta is not None and not meta.is_user_message:
+                menu.addSeparator()
                 regen_action = QAction("重新生成音频", self)
                 regen_action.triggered.connect(lambda: self.regenerateAudioRequested.emit(msg_index))
                 menu.addAction(regen_action)

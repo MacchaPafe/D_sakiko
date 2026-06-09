@@ -173,6 +173,99 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(chat.meta.theater.situation, "保留的小剧场设定")
         self.assertEqual(chat.meta.live2d_models["爱音"], "/tmp/anon.model3.json")
 
+    def test_find_turn_range_for_user_and_assistant_messages(self):
+        """
+        普通聊天轮次应从 User 消息开始，到下一条 User 消息之前结束。
+        """
+        chat = Chat(
+            message_list=[
+                self._message("User", "第一轮用户"),
+                self._message("祥子", "第一轮回复1"),
+                self._message("祥子", "第一轮回复2"),
+                self._message("User", "第二轮用户"),
+                self._message("祥子", "第二轮回复"),
+            ],
+        )
+
+        user_range = chat.find_turn_range(0)
+        assistant_range = chat.find_turn_range(2)
+        last_range = chat.find_turn_range(4)
+
+        self.assertEqual((user_range.start, user_range.end), (0, 3))
+        self.assertEqual((assistant_range.start, assistant_range.end), (0, 3))
+        self.assertEqual((last_range.start, last_range.end), (3, 5))
+
+    def test_find_turn_range_for_opening_assistant_messages(self):
+        """
+        对话开头没有 User 时，开头连续角色消息应被视为开场轮次。
+        """
+        chat = Chat(
+            message_list=[
+                self._message("祥子", "开场1"),
+                self._message("祥子", "开场2"),
+                self._message("User", "用户"),
+                self._message("祥子", "回复"),
+            ],
+        )
+
+        message_range = chat.find_turn_range(1)
+
+        self.assertEqual((message_range.start, message_range.end), (0, 2))
+
+    def test_delete_message_range_updates_tool_call_records(self):
+        """
+        删除消息范围时，应删除范围内工具记录并平移后续工具记录索引。
+        """
+        chat = Chat(
+            message_list=[
+                self._message("User", "第一轮用户"),
+                self._message("祥子", "第一轮回复1"),
+                self._message("祥子", "第一轮回复2"),
+                self._message("User", "第二轮用户"),
+                self._message("祥子", "第二轮回复"),
+            ],
+            meta={
+                "tool_call_records": [
+                    {"tool_call_id": "invalid", "message_index": -1},
+                    {"tool_call_id": "inside", "message_index": 1},
+                    {"tool_call_id": "after_user", "message_index": 3},
+                    {"tool_call_id": "after_assistant", "message_index": 4},
+                ],
+                "tool_call_history": [{"tool_rounds": 1}],
+            },
+        )
+
+        result = chat.delete_message_range(0, 3)
+
+        self.assertEqual(result.deleted_user_count, 1)
+        self.assertEqual(result.deleted_character_count, 2)
+        self.assertEqual([message.text for message in chat.message_list], ["第二轮用户", "第二轮回复"])
+        records = chat.get_tool_call_record_dicts()
+        self.assertEqual(
+            [(record["tool_call_id"], record["message_index"]) for record in records],
+            [("after_user", 0), ("after_assistant", 1)],
+        )
+        self.assertEqual(len(chat.meta.tool_call_history), 1)
+
+    def test_delete_turn_at_reuses_turn_range(self):
+        """
+        删除角色消息所属轮次时，应连带删除最近的上一条用户消息。
+        """
+        chat = Chat(
+            message_list=[
+                self._message("User", "第一轮用户"),
+                self._message("祥子", "第一轮回复"),
+                self._message("User", "第二轮用户"),
+                self._message("祥子", "第二轮回复"),
+            ],
+        )
+
+        result = chat.delete_turn_at(1)
+
+        self.assertEqual(result.deleted_user_count, 1)
+        self.assertEqual(result.deleted_character_count, 1)
+        self.assertEqual([message.text for message in chat.message_list], ["第二轮用户", "第二轮回复"])
+
     def test_involved_characters(self):
         """
         测试 Chat 类能否正确识别对话中涉及的角色
@@ -541,6 +634,48 @@ class ChatTestCase(unittest.TestCase):
             if os.path.exists(unique_path):
                 os.unlink(unique_path)
 
+    def test_audio_deletion_for_deleted_messages_checks_remaining_references(self):
+        """
+        删除消息音频时，应同时检查当前对话剩余消息和其他对话中的引用。
+        """
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as shared_audio:
+            shared_path = shared_audio.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as current_shared_audio:
+            current_shared_path = current_shared_audio.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as unique_audio:
+            unique_path = unique_audio.name
+
+        try:
+            deleted_shared = self._message("祥子", "其他对话也引用", shared_path)
+            deleted_current_shared = self._message("祥子", "当前对话仍引用", current_shared_path)
+            deleted_unique = self._message("祥子", "独占音频", unique_path)
+            remaining_current_shared = self._message("祥子", "保留引用", current_shared_path)
+            chat_a = Chat(
+                message_list=[
+                    deleted_shared,
+                    deleted_current_shared,
+                    deleted_unique,
+                    remaining_current_shared,
+                ],
+            )
+            chat_b = Chat(message_list=[self._message("祥子", "其他引用", shared_path)])
+            manager = ChatManager([chat_a, chat_b])
+
+            result = chat_a.delete_message_range(0, 3)
+            deletable_paths = manager.collect_deletable_audio_paths_from_messages(result.deleted_messages)
+            audio_result = manager.delete_unreferenced_audio_files_for_messages(result.deleted_messages)
+
+            self.assertEqual(deletable_paths, [os.path.realpath(unique_path)])
+            self.assertEqual(audio_result.deleted_paths, [os.path.realpath(unique_path)])
+            self.assertEqual(audio_result.failed_paths, [])
+            self.assertTrue(os.path.exists(shared_path))
+            self.assertTrue(os.path.exists(current_shared_path))
+            self.assertFalse(os.path.exists(unique_path))
+        finally:
+            for path in (shared_path, current_shared_path, unique_path):
+                if os.path.exists(path):
+                    os.unlink(path)
+
     @staticmethod
     def _character(name: str) -> CharacterAttributes:
         """
@@ -550,6 +685,19 @@ class ChatTestCase(unittest.TestCase):
         character.character_name = name
         character.character_folder_name = name
         return character
+
+    @staticmethod
+    def _message(character_name: str, text: str, audio_path: str = "") -> Message:
+        """
+        构造测试用消息对象。
+        """
+        return Message(
+            character_name=character_name,
+            text=text,
+            translation="",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path=audio_path,
+        )
 
 
 if __name__ == '__main__':

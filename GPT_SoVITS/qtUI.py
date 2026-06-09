@@ -30,7 +30,7 @@ from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_map
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes, GetCharacterAttributes
-from chat.chat import ChatManager, Chat, ChatType, Message, get_chat_manager
+from chat.chat import ChatManager, Chat, ChatType, DeleteMessagesResult, Message, get_chat_manager
 from chat.model_token_usage import count_message_tokens
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
@@ -1461,6 +1461,7 @@ class ChatGUI(QWidget):
         self.chat_display.audioLinkClicked.connect(self.play_history_audio)  # noqa
         self.chat_display.toolCallClicked.connect(self._open_tool_call_dialog)  # noqa
         self.chat_display.deleteMessageRequested.connect(self.delete_message)  # noqa
+        self.chat_display.deleteTurnRequested.connect(self.delete_turn)  # noqa
         self.chat_display.regenerateAudioRequested.connect(self.regenerate_audio)  # noqa
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
 
@@ -2055,8 +2056,7 @@ class ChatGUI(QWidget):
         """
         删除指定普通对话。
         """
-        if self.is_chat_busy():
-            QMessageBox.information(self, "请稍等", "请等待当前回复完成后再删除对话。")
+        if not self._ensure_delete_operation_allowed():
             return
         chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
@@ -2066,18 +2066,16 @@ class ChatGUI(QWidget):
             (index for index, one_chat in enumerate(single_chats_before_delete) if one_chat.chat_id == chat_id),
             -1,
         )
-        box = QMessageBox(QMessageBox.Question, "删除确认", f"确定删除对话“{chat.name}”吗？", QMessageBox.No | QMessageBox.Yes, self)
-        delete_audio_checkbox = QCheckBox("同时删除此对话中生成的角色语音")
-        delete_audio_checkbox.setChecked(True)
-        box.setCheckBox(delete_audio_checkbox)
-        box.setEscapeButton(QMessageBox.No)
-        box.button(QMessageBox.Yes).setText("确定")
-        box.button(QMessageBox.No).setText("取消")
-        if box.exec_() != QMessageBox.Yes:
+        deleted_messages = list(chat.message_list)
+        accepted, should_delete_audio = self._confirm_delete_operation(
+            f"确定删除对话“{chat.name}”吗？",
+            self._build_delete_preview_from_messages(0, len(deleted_messages), deleted_messages),
+        )
+        if not accepted:
             return
-        if delete_audio_checkbox.isChecked():
-            self.chat_manager.delete_unreferenced_audio_files_for_chat(chat_id)
-        self.chat_manager.delete_chat(chat_id)
+        deleted_chat = self.chat_manager.delete_chat(chat_id)
+        if deleted_chat is None:
+            return
         if chat_id == self.current_chat_id:
             remaining_chats = self.single_character_chats()
             if remaining_chats:
@@ -2088,8 +2086,92 @@ class ChatGUI(QWidget):
             self.current_chat_id = new_current.chat_id
             self.sync_current_chat_to_backends()
             self.apply_current_chat_ui_state()
+        audio_failed = self._delete_audio_for_messages_if_requested(deleted_chat.message_list, should_delete_audio)
         self.chat_manager.save()
         self.refresh_chat_list()
+        self._show_delete_success_message("已删除对话", audio_failed)
+
+    def _ensure_delete_operation_allowed(self) -> bool:
+        """检查当前是否允许执行删除消息、轮次或对话操作。"""
+        if self.is_chat_busy():
+            self.messages_box.clear()
+            self.messages_box.append("请等待当前回复完成后再删除。")
+            return False
+        if hasattr(self, "regen_thread") and self.regen_thread is not None and self.regen_thread.isRunning():
+            self.messages_box.clear()
+            self.messages_box.append("请等待当前音频重新生成完成后再删除。")
+            return False
+        if hasattr(self, "motion_complete_value") and not self.motion_complete_value.value:
+            self.messages_box.clear()
+            self.messages_box.append("请等待当前播放完成后再删除。")
+            return False
+        return True
+
+    @staticmethod
+    def _build_delete_preview_from_messages(
+        start: int,
+        end: int,
+        messages: list[Message],
+    ) -> DeleteMessagesResult:
+        """根据待删除消息构造不修改数据的删除预览。"""
+        deleted_user_count = sum(1 for message in messages if message.character_name == "User")
+        return DeleteMessagesResult(
+            start=start,
+            end=end,
+            deleted_messages=messages,
+            deleted_user_count=deleted_user_count,
+            deleted_character_count=len(messages) - deleted_user_count,
+        )
+
+    def _confirm_delete_operation(
+        self,
+        prompt: str,
+        preview: DeleteMessagesResult,
+    ) -> tuple[bool, bool]:
+        """显示统一删除确认框，并返回是否确认及是否清理音频。"""
+        deletable_audio_paths = self.chat_manager.collect_deletable_audio_paths_from_messages(
+            preview.deleted_messages
+        )
+        detail = (
+            f"{prompt}\n"
+            f"将删除：{preview.deleted_user_count} 条用户消息、"
+            f"{preview.deleted_character_count} 条角色消息。"
+        )
+        box = QMessageBox(QMessageBox.Question, "删除确认", detail, QMessageBox.No | QMessageBox.Yes, self)
+        delete_audio_checkbox = QCheckBox("同时删除不再被其他对话引用的语音文件")
+        if deletable_audio_paths:
+            delete_audio_checkbox.setChecked(True)
+        else:
+            delete_audio_checkbox.setChecked(False)
+            delete_audio_checkbox.setEnabled(False)
+            delete_audio_checkbox.setToolTip("没有需要删除的音频")
+        box.setCheckBox(delete_audio_checkbox)
+        box.setEscapeButton(QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        box.button(QMessageBox.Yes).setText("删除")
+        box.button(QMessageBox.No).setText("取消")
+        accepted = box.exec_() == QMessageBox.Yes
+        should_delete_audio = accepted and delete_audio_checkbox.isEnabled() and delete_audio_checkbox.isChecked()
+        return accepted, should_delete_audio
+
+    def _delete_audio_for_messages_if_requested(
+        self,
+        messages: list[Message],
+        should_delete_audio: bool,
+    ) -> bool:
+        """按需删除给定消息中不再被引用的音频，并返回是否存在删除失败。"""
+        if not should_delete_audio:
+            return False
+        result = self.chat_manager.delete_unreferenced_audio_files_for_messages(messages)
+        return bool(result.failed_paths)
+
+    def _show_delete_success_message(self, success_message: str, audio_failed: bool) -> None:
+        """在消息栏展示删除结果。"""
+        self.messages_box.clear()
+        if audio_failed:
+            self.messages_box.append("已删除对话内容，但部分音频文件删除失败。")
+        else:
+            self.messages_box.append(success_message)
 
     def switch_to_next_chat(self) -> None:
         """
@@ -2838,15 +2920,82 @@ class ChatGUI(QWidget):
             self.setWindowTitle('请等待当前过程完成后重试...')
 
 
-    def delete_message(self, msg_index):
+    def delete_message(self, msg_index: int) -> None:
+        """删除当前普通聊天中的单条消息。"""
         if not (0 <= msg_index < len(self.current_chat.message_list)):
             self.refresh_current_chat_display()    #如果索引无效，强制刷新显示以纠正可能的错误状态
             return
 
-        def confirm_del():
-            self.current_chat.remove_message(msg_index)
+        self._delete_current_chat_message_range(
+            start=msg_index,
+            end=msg_index + 1,
+            prompt="确定删除这条消息吗？",
+            success_message="已删除消息",
+        )
+
+    def delete_turn(self, msg_index: int) -> None:
+        """删除当前普通聊天中指定消息所属的完整轮次。"""
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
             self.refresh_current_chat_display()
-        WarningWindow("确定要删除这条信息吗",None,confirm_del).exec_()
+            return
+
+        message_range = self.current_chat.find_turn_range(msg_index)
+        selected_message = self.current_chat.message_list[msg_index]
+        preview_messages = self.current_chat.message_list[message_range.start:message_range.end]
+        preview = self._build_delete_preview_from_messages(
+            message_range.start,
+            message_range.end,
+            list(preview_messages),
+        )
+
+        if preview.deleted_user_count == 0:
+            prompt = "确定删除这组开场消息吗？"
+        elif selected_message.character_name == "User":
+            prompt = "确定删除这一轮对话吗？"
+        else:
+            prompt = "确定删除这条角色消息所属的整轮对话吗？\n这会连带删除之前的用户消息。"
+
+        self._delete_current_chat_message_range(
+            start=message_range.start,
+            end=message_range.end,
+            prompt=prompt,
+            success_message="已删除这一轮对话",
+        )
+
+    def _delete_current_chat_message_range(
+        self,
+        start: int,
+        end: int,
+        prompt: str,
+        success_message: str,
+    ) -> None:
+        """删除当前对话中的消息范围，并统一处理音频清理和界面刷新。"""
+        if not self._ensure_delete_operation_allowed():
+            return
+        if not (0 <= start <= end <= len(self.current_chat.message_list)):
+            self.refresh_current_chat_display()
+            return
+
+        preview = self._build_delete_preview_from_messages(
+            start,
+            end,
+            list(self.current_chat.message_list[start:end]),
+        )
+        accepted, should_delete_audio = self._confirm_delete_operation(prompt, preview)
+        if not accepted:
+            return
+
+        result = self.current_chat.delete_message_range(start, end)
+        audio_failed = self._delete_audio_for_messages_if_requested(
+            result.deleted_messages,
+            should_delete_audio,
+        )
+        self.chat_manager.save()
+        self._load_tool_call_records_cache()
+        self.refresh_current_chat_display()
+        self.refresh_chat_list()
+        self.schedule_context_usage_refresh()
+        self._show_delete_success_message(success_message, audio_failed)
 
     def regenerate_audio(self, msg_index):
         if hasattr(self, 'regen_thread') and self.regen_thread is not None and self.regen_thread.isRunning():
