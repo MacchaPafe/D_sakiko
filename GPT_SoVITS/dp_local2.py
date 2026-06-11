@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import re
 import time,os
 import uuid
@@ -10,7 +9,7 @@ from copy import deepcopy
 
 import json
 from queue import Empty
-from typing import Optional, Sequence, TYPE_CHECKING
+from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import litellm
@@ -31,6 +30,30 @@ TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
+
+
+class _QueueWriter(Protocol):
+    """
+    支持写入事件的队列协议。
+    """
+
+    def put(self, item: object) -> None:
+        """
+        向队列写入一条事件。
+        """
+        ...
+
+
+class _TextGeneratingQueue(Protocol):
+    """
+    支持非阻塞清理文本生成标志的队列协议。
+    """
+
+    def get_nowait(self) -> object:
+        """
+        非阻塞读取一条生成标志。
+        """
+        ...
 
 
 def completion(**kwargs):
@@ -114,9 +137,6 @@ class DSLocalAndVoiceGen:
         self.if_sakiko = False
         # 祥子的状态是黑祥还是白祥，True：黑祥，False：白祥
         self.sakiko_state = True
-        # 角色在空闲时，页面上方状态会显示的话。从列表中随机选择。
-        self.idle_texts = ["...", "...", "就绪", "..."]
-        
         # 实例化工具调用运行时。传入的大模型补全请求会被委托给 self._completion_with_current_config。
         # 这样成功将 LLM 内部具体请求格式和 Agent 工具调用逻辑解耦。
         self.tool_runtime = ToolCallingAgentRuntime(
@@ -238,17 +258,17 @@ class DSLocalAndVoiceGen:
             return ensure_openai_compatible_model(model)
         return DSLocalAndVoiceGen.concat_provider_and_model(provider, model)
 
-    def report_message_to_main_ui(self, message_queue, is_text_generating_queue, message: str):
+    def _clear_failed_turn_state(
+        self,
+        is_text_generating_queue: _TextGeneratingQueue,
+        rollback_user_message: bool,
+    ) -> None:
         """
-        向主界面的消息栏汇报一条错误信息，并且删除最新正在发给模型的对话记录。
+        清理失败轮次的生成标志，并按需回滚最新用户消息。
         """
-        message_queue.put(message)
-        is_text_generating_queue.get()
-        # 删除未能成功发送的信息
-        if self.current_chat.message_list:
+        self._clear_text_generating_flag_if_needed(is_text_generating_queue)
+        if rollback_user_message and self.current_chat.message_list:
             self.current_chat.message_list.pop()
-        # 源代码如此，我也不知道为啥要休息一会
-        #time.sleep(2) 不休息也已经可以了
 
     @staticmethod
     def _truncate_error_detail(text: str, limit: int = 1800) -> str:
@@ -322,8 +342,10 @@ class DSLocalAndVoiceGen:
 
     def _report_model_exception(
         self,
-        message_queue,
-        is_text_generating_queue,
+        dp2qt_queue: _QueueWriter,
+        chat_id: str,
+        turn_id: str,
+        is_text_generating_queue: _TextGeneratingQueue,
         user_message: str,
         exc: BaseException,
     ) -> None:
@@ -335,7 +357,8 @@ class DSLocalAndVoiceGen:
             exc_info=(type(exc), exc, exc.__traceback__),
         )
         ui_message = f"{user_message}\n\n详细错误信息：\n{self._truncate_error_detail(details)}"
-        self.report_message_to_main_ui(message_queue, is_text_generating_queue, ui_message)
+        self._emit_turn_error(dp2qt_queue, chat_id, turn_id, ui_message)
+        self._clear_failed_turn_state(is_text_generating_queue, rollback_user_message=True)
 
     def _build_runtime_system_instruction(self) -> str:
         """
@@ -586,7 +609,7 @@ class DSLocalAndVoiceGen:
             time.sleep(0.3)
 
     @staticmethod
-    def _clear_text_generating_flag_if_needed(is_text_generating_queue) -> None:
+    def _clear_text_generating_flag_if_needed(is_text_generating_queue: _TextGeneratingQueue) -> None:
         """
         取消收尾时，确保 Live2D 不会一直停留在思考状态。
         """
@@ -645,6 +668,44 @@ class DSLocalAndVoiceGen:
         # 直接从取消列表中删掉这轮对话。
         if status in {"cancelled", "error"}:
             self.clear_cancelled_turn(chat_id, turn_id)
+
+    def _emit_turn_phase(
+        self,
+        dp2qt_queue: _QueueWriter,
+        chat_id: str,
+        turn_id: str,
+        phase: str,
+        message: str | None = None,
+    ) -> None:
+        """
+        通知 UI 某一轮对话进入新的处理阶段。
+        """
+        payload: dict[str, object] = {
+            "type": "assistant_turn_phase",
+            "chat_id": chat_id,
+            "turn_id": turn_id,
+            "phase": phase,
+        }
+        if message:
+            payload["message"] = message
+        dp2qt_queue.put(payload)
+
+    def _emit_turn_error(
+        self,
+        dp2qt_queue: _QueueWriter,
+        chat_id: str,
+        turn_id: str,
+        message: str,
+    ) -> None:
+        """
+        通知 UI 当前对话轮次发生用户可见错误。
+        """
+        dp2qt_queue.put({
+            "type": "assistant_turn_error",
+            "chat_id": chat_id,
+            "turn_id": turn_id,
+            "message": message,
+        })
 
     @staticmethod
     def _segment_from_message(message_index: int, message: Message, force_no_audio: bool) -> dict[str, object]:
@@ -1023,16 +1084,23 @@ class DSLocalAndVoiceGen:
 
     def _report_model_format_error(
         self,
-        message_queue,
-        is_text_generating_queue,
+        dp2qt_queue: _QueueWriter,
+        chat_id: str,
+        turn_id: str,
+        is_text_generating_queue: _TextGeneratingQueue,
         message: str,
     ) -> None:
         """
         向 UI 报告模型输出格式错误，但保留用户原始消息。
         """
         logger.warning("模型输出格式错误：%s", message)
-        message_queue.put(f"模型返回内容格式不符合要求，请重试。\n\n详细信息：\n{message}")
-        self._clear_text_generating_flag_if_needed(is_text_generating_queue)
+        self._emit_turn_error(
+            dp2qt_queue,
+            chat_id,
+            turn_id,
+            f"模型返回内容格式不符合要求，请重试。\n\n详细信息：\n{message}",
+        )
+        self._clear_failed_turn_state(is_text_generating_queue, rollback_user_message=False)
 
     def _record_tool_call_started(
         self,
@@ -1384,9 +1452,6 @@ class DSLocalAndVoiceGen:
             while not AudioGenerator.is_change_complete:
                 time.sleep(0.4)
 
-            #message_queue.put(f"输入bye：退出程序	l：切换语言	m：更改LLM\n"+("conv：切换祥子状态	"if self.if_sakiko else '')+"clr：清空聊天记录	v：关闭/开启语音\n当前语言："+("中文" if self.audio_language_choice=="中英混合" else "日文")+ "		语音："+("开启" if self.if_generate_audio else "关闭")+('	mask...'if self.sakiko_state and self.if_sakiko else ''))
-            message_queue.put(self.idle_texts[random.randint(0,len(self.idle_texts)-1)])
-            #message_queue.put("语音："+("开启" if self.if_generate_audio else "关闭")+"语言："+("中文" if self.audio_language_choice=="中英混合" else "日文"))
             while True:
                 if not qt2dp_queue.empty():
                     user_input=qt2dp_queue.get()
@@ -1445,7 +1510,13 @@ class DSLocalAndVoiceGen:
             character_name = self.get_current_character().character_name
             to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
 
-            message_queue.put(f"{character_name}思考中...")
+            self._emit_turn_phase(
+                dp2qt_queue,
+                active_chat_id,
+                turn_id,
+                "llm",
+                f"{character_name}思考中...",
+            )
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
             # 复制一份模型配置，防止一轮对话中间配置修改导致出错
             self.d_sakiko_config = create_d_sakiko_config_snapshot()
@@ -1500,7 +1571,9 @@ class DSLocalAndVoiceGen:
 
             except litellm.exceptions.Timeout as e:
                 self._report_model_exception(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     "请求超时，请检查网络连接或稍后再试。",
                     e,
@@ -1509,7 +1582,9 @@ class DSLocalAndVoiceGen:
                 continue
             except litellm.exceptions.AuthenticationError as e:
                 self._report_model_exception(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     "API Key 认证失败，请检查 Key 是否正确。",
                     e,
@@ -1518,7 +1593,9 @@ class DSLocalAndVoiceGen:
                 continue
             except litellm.exceptions.RateLimitError as e:
                 self._report_model_exception(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     "请求过于频繁，请稍后再试。",
                     e,
@@ -1527,7 +1604,9 @@ class DSLocalAndVoiceGen:
                 continue
             except litellm.exceptions.APIConnectionError as e:
                 self._report_model_exception(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     "与大模型网站建立连接失败，请检查网络。",
                     e,
@@ -1540,14 +1619,18 @@ class DSLocalAndVoiceGen:
                 # 特殊处理 DeepSeek 无余额时返回的内容；其他 API 接口我也不清楚是否能捕获
                 if "Insufficient Balance" in getattr(e, "message", str(e)):
                     self._report_model_exception(
-                        message_queue,
+                        dp2qt_queue,
+                        active_chat_id,
+                        turn_id,
                         is_text_generating_queue,
                         "账户余额不足，如果正在用up的api，请联系UP充值",
                         e,
                     )
                 else:
                     self._report_model_exception(
-                        message_queue,
+                        dp2qt_queue,
+                        active_chat_id,
+                        turn_id,
                         is_text_generating_queue,
                         f"未知的请求错误，状态码：{getattr(e, 'status_code', '未知')}。",
                         e,
@@ -1556,7 +1639,9 @@ class DSLocalAndVoiceGen:
                 continue
             except litellm.exceptions.PermissionDeniedError as e:
                 self._report_model_exception(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     "无法访问所请求的模型，请检查是否有权限使用该模型，或余额是否足够",
                     e,
@@ -1565,7 +1650,9 @@ class DSLocalAndVoiceGen:
                 continue
             except Exception as e:
                 self._report_model_exception(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     "出现了未知错误，请再试一次。",
                     e,
@@ -1602,7 +1689,9 @@ class DSLocalAndVoiceGen:
                     raise ValueError("模型最终输出格式不符合要求，不是 list/dict 也不是 str")
             except ValueError as e:
                 self._report_model_format_error(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     str(e),
                 )
@@ -1610,7 +1699,9 @@ class DSLocalAndVoiceGen:
                 continue
             except Exception as e:
                 self._report_model_exception(
-                    message_queue,
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
                     is_text_generating_queue,
                     "模型格式纠正请求失败，请稍后再试。",
                     e,

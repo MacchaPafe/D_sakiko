@@ -36,7 +36,7 @@ def get_package_dir(version: str, app_root: Path | None = None) -> Path:
 
 
 def get_update_log_dir(app_root: Path | None = None) -> Path:
-    """返回 .updates/logs 目录。"""
+    """返回 logs/update 目录。"""
 
-    return get_update_root(app_root) / "logs"
-
+    root = app_root if app_root is not None else get_app_root()
+    return root / "logs" / "update"
