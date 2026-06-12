@@ -27,20 +27,29 @@ def get_model_input_token_limit(model: str) -> int | None:
     if not normalized_model:
         return None
 
-    litellm_limit = _get_litellm_model_input_token_limit(normalized_model)
+    local_override = _get_local_override_input_token_limit(normalized_model)
+    litellm_limit = _get_litellm_model_input_token_limit(
+        normalized_model,
+        suppress_unmapped_debug=local_override is not None,
+    )
     if litellm_limit is not None:
         return litellm_limit
-    return _get_local_override_input_token_limit(normalized_model)
+    return local_override
 
 
-def _get_litellm_model_input_token_limit(model: str) -> int | None:
+def _get_litellm_model_input_token_limit(
+    model: str,
+    *,
+    suppress_unmapped_debug: bool = False,
+) -> int | None:
     """从 LiteLLM 模型信息表中读取输入 token 上限。"""
     try:
         from litellm import get_model_info
 
         info = get_model_info(model=model)
     except Exception as exc:
-        logger.debug("查询 LiteLLM 模型上下文上限失败：%s", exc)
+        if not suppress_unmapped_debug or not _is_litellm_unmapped_model_error(exc):
+            logger.debug("查询 LiteLLM 模型上下文上限失败：%s", exc)
         return None
 
     if not isinstance(info, Mapping):
@@ -101,6 +110,11 @@ def _override_entry_matches_model(entry: Mapping[str, object], normalized_model:
 def _normalize_model_name(model: str) -> str:
     """规范化模型名，以便匹配不同 provider 前缀和大小写写法。"""
     return model.strip().lower()
+
+
+def _is_litellm_unmapped_model_error(exc: Exception) -> bool:
+    """判断异常是否表示 LiteLLM 尚未收录该模型。"""
+    return "this model isn't mapped yet." in str(exc).lower()
 
 
 def _as_positive_int(value: object) -> int | None:
