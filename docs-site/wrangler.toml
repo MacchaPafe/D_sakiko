@@ -2,4 +2,4 @@ name = "dsakiko-docs"
 compatibility_date = "2026-06-12"
 
 [assets]
-directory = "./docs-site/.vitepress/dist"
+directory = "./.vitepress/dist"
