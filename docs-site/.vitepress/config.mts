@@ -22,22 +22,16 @@ export default defineConfig({
           text: '使用指南',
           items: [
             { text: '快速开始', link: '/guide/start' },
-            { text: '更新说明', link: '/guide/update' }
+            { text: '更新说明', link: '/guide/update' },
+            { text: '获取帮助', link: '/guide/feedback'},
           ]
         },
         {
           text: '功能说明',
           items: [
-            { text: 'AI 模型设置', link: '/guide/llm' }
+            { text: 'AI 模型设置', link: '/guide/llm' },
            ]
-        },
-        {
-          text: '支持',
-          items: [
-            { text: '常见问题', link: '/guide/faq' },
-            { text: '问题反馈', link: '/guide/feedback' }
-          ]
-        }, 
+        }
       ],
       "dev": [
         {
