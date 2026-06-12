@@ -8,9 +8,9 @@
     "test": "tests"
   },
   "scripts": {
-    "docs:dev": "vitepress dev docs-site --host 127.0.0.1",
-    "docs:build": "vitepress build docs-site",
-    "docs:preview": "vitepress preview docs-site --host 127.0.0.1"
+    "docs:dev": "vitepress dev . --host 127.0.0.1",
+    "docs:build": "vitepress build .",
+    "docs:preview": "vitepress preview . --host 127.0.0.1"
   },
   "repository": {
     "type": "git",

@@ -33,6 +33,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: docs-site/package-lock.json
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

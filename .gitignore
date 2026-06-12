@@ -53,7 +53,7 @@ update_logs/**
 tools/hdiffz
 tools/hpatchz
 **/*.hdiff
-node_modules/**
+**/node_modules/**
 .scratch/**
 
 .idea/**
