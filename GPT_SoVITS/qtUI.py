@@ -2239,13 +2239,18 @@ class ChatGUI(QWidget):
         detail_lines = [prompt]
         if extra_detail_lines:
             detail_lines.extend(extra_detail_lines)
-        detail_lines.append(
-            f"将删除：{preview.deleted_user_count} 条用户消息、"
-            f"{preview.deleted_character_count} 条角色消息。"
-        )
+
+        if preview.deleted_user_count > 0:
+            delete_count_line = f"将删除你的 {preview.deleted_user_count} 条消息"
+            if preview.deleted_character_count > 0:
+                delete_count_line += f"和角色的 {preview.deleted_character_count} 条回复。"
+        else:
+            delete_count_line = f"将删除角色的 {preview.deleted_character_count} 条回复。"
+        detail_lines.append(delete_count_line)
+
         detail = "\n".join(detail_lines)
         box = QMessageBox(QMessageBox.Question, title, detail, QMessageBox.No | QMessageBox.Yes, self)
-        delete_audio_checkbox = QCheckBox("同时删除不再被其他对话引用的语音文件")
+        delete_audio_checkbox = QCheckBox("同时删除相关的语音")
         if deletable_audio_paths:
             delete_audio_checkbox.setChecked(True)
         else:
@@ -3061,7 +3066,7 @@ class ChatGUI(QWidget):
         elif selected_message.character_name == "User":
             prompt = "确定删除这一轮对话吗？"
         else:
-            prompt = "确定删除这条角色消息所属的整轮对话吗？\n这会连带删除之前的用户消息。"
+            prompt = "确定删除这条角色消息所属的整轮对话吗？\n这会连带删除之前你发送的消息。"
 
         self._delete_current_chat_message_range(
             start=message_range.start,
@@ -3123,9 +3128,9 @@ class ChatGUI(QWidget):
             )
             extra_detail_lines: list[str] = []
             if had_input_draft:
-                extra_detail_lines.append("当前输入框内容将被替换。")
+                extra_detail_lines.append("当前输入框内容将被覆盖。")
             accepted, should_delete_audio = self._confirm_delete_operation(
-                "确定编辑并重发这条用户消息吗？\n选择编辑与重发会清除这条消息及其后续消息。",
+                "确定编辑并重发你的这条消息吗？\n这会删除角色后续的回复。",
                 preview,
                 extra_detail_lines=extra_detail_lines,
             )
@@ -3208,7 +3213,7 @@ class ChatGUI(QWidget):
             list(self.current_chat.message_list[start:end]),
         )
         accepted, should_delete_audio = self._confirm_delete_operation(
-            "确定重新生成本轮回复吗？\n这会保留这条用户消息，并重新生成角色回复。",
+            "确定重新生成本轮回复吗？\n这会保留你的这条消息，并让角色重新回答。",
             preview,
             title="重新生成确认",
             confirm_button_text="重新生成",
