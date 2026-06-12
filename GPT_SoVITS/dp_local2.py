@@ -1299,7 +1299,6 @@ class DSLocalAndVoiceGen:
             chat_id = command.get("chat_id")
             if isinstance(chat_id, str) and self.switch_chat(chat_id):
                 character = self.get_current_character()
-                message_queue.put(f"已切换为对话：{self.current_chat.name}")
                 dp2qt_queue.put({"type": "chat_switched", "chat_id": chat_id, "character_name": character.character_name})
             else:
                 message_queue.put("切换对话失败：找不到目标对话。")

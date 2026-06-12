@@ -35,7 +35,11 @@ from chat.model_token_usage import count_message_tokens
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
-from ui_main.components.context_usage_indicator import ContextUsageIndicator, ContextUsageSnapshot
+from ui_main.components.context_usage_indicator import (
+    ContextUsageIndicator,
+    ContextUsageSnapshot,
+    resolve_context_usage_sizing,
+)
 from ui_main.components.message_input import MessageInput
 from ui_main.components.update_dialog import UpdateDialog
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
@@ -1583,11 +1587,12 @@ class ChatGUI(QWidget):
         self.save_dialog_btn.setIconSize(QSize(int(self.screen.height()*0.04*0.6),int(self.screen.height()*0.04*0.6)))
         self.save_dialog_btn.setToolTip("保存聊天记录")
 
+        context_usage_sizing = resolve_context_usage_sizing(self.screen.height(), sys.platform)
         self.context_usage_indicator = ContextUsageIndicator(
             self,
-            size=max(20, int(self.screen.height()*0.015)),
-            popup_width=max(150, int(self.screen.height()*0.23)),
-            popup_font_size=max(10, int(self.screen.height()*0.017)),
+            size=context_usage_sizing.indicator_size,
+            popup_width=context_usage_sizing.popup_width,
+            popup_font_size=context_usage_sizing.popup_font_size,
         )
         self._context_usage_refresh_timer = QTimer(self)
         self._context_usage_refresh_timer.setSingleShot(True)

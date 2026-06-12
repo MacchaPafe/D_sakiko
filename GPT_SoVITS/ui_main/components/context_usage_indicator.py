@@ -28,6 +28,25 @@ class ContextUsageSnapshot:
         return bool(self.error_message)
 
 
+@dataclass(frozen=True)
+class ContextUsageSizing:
+    """记录上下文用量组件使用的尺寸参数。"""
+
+    indicator_size: int = 26
+    popup_width: int = 188
+    popup_font_size: int = 12
+
+
+def resolve_context_usage_sizing(screen_height: int, platform_name: str) -> ContextUsageSizing:
+    """根据运行平台返回上下文用量组件的尺寸参数。"""
+    is_macos = platform_name == "darwin"
+    return ContextUsageSizing(
+        indicator_size=max(20, int(screen_height * 0.015)),
+        popup_width=188 if is_macos else max(150, int(screen_height * 0.23)),
+        popup_font_size=12 if is_macos else max(10, int(screen_height * 0.017)),
+    )
+
+
 class ContextUsagePopup(QFrame):
     """显示上下文 token 详情的轻量悬浮窗口。"""
 
