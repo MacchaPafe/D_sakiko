@@ -22,10 +22,14 @@ export default defineConfig({
           text: '使用指南',
           items: [
             { text: '快速开始', link: '/guide/start' },
-            { text: '更新说明', link: '/guide/update' },
-            { text: '大模型配置', link: '/guide/llm' },
-            { text: 'Live2D', link: '/guide/live2d' }
+            { text: '更新说明', link: '/guide/update' }
           ]
+        },
+        {
+          text: '功能说明',
+          items: [
+            { text: 'AI 模型设置', link: '/guide/llm' }
+           ]
         },
         {
           text: '支持',

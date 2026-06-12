@@ -36,6 +36,7 @@
 /GPT_SoVITS/deepseek_prompt_cache_debug/
 
 docs-site/.vitepress/cache
+docs-site/.vitepress/dist
 
 .env
 **/.DS_Store
