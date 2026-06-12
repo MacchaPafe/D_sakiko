@@ -123,6 +123,13 @@ def setup_logging(log_file: Path | None) -> TextIO | None:
     return handle
 
 
+def build_default_log_file(app_root: Path, timestamp: str | None = None) -> Path:
+    """返回手动更新默认日志文件路径。"""
+
+    log_timestamp = timestamp if timestamp is not None else datetime.now().strftime("%Y%m%d_%H%M%S")
+    return app_root / "logs" / "update" / f"update_manual_{log_timestamp}.log"
+
+
 def parse_restart_command(command_text: str) -> list[str]:
     """解析重启命令，支持 JSON list 或普通字符串。"""
 
@@ -735,8 +742,7 @@ def main() -> int:
         if args.log_file:
             log_file = Path(args.log_file).expanduser().resolve()
         else:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_file = app_root / ".updates" / "logs" / f"update_manual_{timestamp}.log"
+            log_file = build_default_log_file(app_root)
         log_handle = setup_logging(log_file)
 
         if args.wait_pid:

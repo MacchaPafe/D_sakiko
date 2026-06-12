@@ -1554,6 +1554,7 @@ class ChatGUI(QWidget):
                                 """)
         self.messages_box.setPlaceholderText("这里是各种消息提示框...")
         self.messages_box.setMaximumHeight(int(0.05*self.screen.height()))
+        self._set_message_box_idle()
         self.user_input = MessageInput()
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
@@ -1987,6 +1988,19 @@ class ChatGUI(QWidget):
         chats = self.single_character_chats()
         self.chat_sidebar.set_character_theme_colors(self._chat_sidebar_character_theme_colors())
         self.chat_sidebar.set_chats(chats, self.current_chat_id)
+
+    def _set_message_box_text(self, message: str) -> None:
+        """
+        用指定文本替换状态栏提示。
+        """
+        self.messages_box.clear()
+        self.messages_box.append(message)
+
+    def _set_message_box_idle(self) -> None:
+        """
+        将状态栏恢复为固定空闲提示。
+        """
+        self._set_message_box_text("就绪")
 
     def toggle_chat_panel(self) -> None:
         """
@@ -3315,7 +3329,7 @@ class ChatGUI(QWidget):
             logger.info("重新生成音频成功，新路径为：%s", msg.audio_path)
             self.play_history_audio(QUrl(f"{msg.audio_path}[{msg.emotion.as_label()}]?msg={msg_index}"))
 
-        self.QT_message_queue.put('...') # 强制恢复 messages_box 状态，允许继续对话
+        self._set_message_box_idle()
 
 
     def handle_response(self,response_text):
@@ -3432,12 +3446,24 @@ class ChatGUI(QWidget):
                     self.active_turn_message_indices = {
                         one for one in raw_message_indices if isinstance(one, int)
                     }
+                status_message = str(payload.get("message") or "")
+                if status_message:
+                    self._set_message_box_text(status_message)
                 self._refresh_send_button_state()
+            return
+        # 事件：当前对话轮次发生用户可见错误
+        if event_type == "assistant_turn_error":
+            if self._is_active_turn_payload(payload):
+                error_message = str(payload.get("message") or "出现了未知错误。")
+                self._set_message_box_text(error_message)
             return
         # 事件：完成一轮对话的生成
         if event_type == "assistant_turn_complete":
             if self._is_active_turn_payload(payload):
+                status = str(payload.get("status") or "ok")
                 self._clear_active_turn()
+                if status == "ok":
+                    self._set_message_box_idle()
                 self.refresh_chat_list()
                 self.schedule_context_usage_refresh()
             return

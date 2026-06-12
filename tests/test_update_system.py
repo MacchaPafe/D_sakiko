@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 sys.path.insert(0, str(ROOT))
 
 from tools.apply_update_patch import (
+    build_default_log_file,
     default_hpatch_bin,
     detect_arch,
     detect_platform,
@@ -27,6 +28,7 @@ from tools.release.verify_update_assets import verify_patch_chain
 from update.update_checker import build_update_plan
 from update.update_launcher import build_apply_command
 from update.update_models import parse_update_index
+from update.update_paths import get_update_log_dir
 from update.update_security import verify_patch_asset
 
 
@@ -214,6 +216,23 @@ class UpdateSystemTest(unittest.TestCase):
         self.assertEqual(command.count("--package"), 2)
         self.assertIn(str(app_root / ".updates/packages/2.7.0/a"), command)
         self.assertIn(str(app_root / ".updates/packages/2.7.1/b"), command)
+
+    def test_update_log_dir_uses_explicit_app_root(self) -> None:
+        """自动更新日志目录应基于传入的 app_root。"""
+
+        app_root = Path("/tmp/D_sakiko")
+
+        self.assertEqual(get_update_log_dir(app_root), app_root / "logs" / "update")
+
+    def test_manual_update_default_log_file_uses_visible_log_dir(self) -> None:
+        """手动更新默认日志应与自动更新使用同一日志目录。"""
+
+        app_root = Path("/tmp/D_sakiko")
+
+        self.assertEqual(
+            build_default_log_file(app_root, "20260612_123456"),
+            app_root / "logs" / "update" / "update_manual_20260612_123456.log",
+        )
 
     def test_write_manifest_marks_macos_uv_sync(self) -> None:
         """macOS 补丁修改依赖声明时应写入 uv sync 后处理标记。"""
