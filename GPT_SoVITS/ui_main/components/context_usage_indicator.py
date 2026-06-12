@@ -31,11 +31,14 @@ class ContextUsageSnapshot:
 class ContextUsagePopup(QFrame):
     """显示上下文 token 详情的轻量悬浮窗口。"""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, width: int = 188, font_size: int = 12) -> None:
         """初始化浮窗结构和样式。"""
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setObjectName("contextUsagePopup")
-        self.setFixedWidth(188)
+        width = max(150, width)
+        font_size = max(10, font_size)
+        self.setFixedWidth(width)
+        line_height = max(font_size + 2, int(font_size * 1.5))
 
         self.used_label = QLabel(self)
         self.limit_label = QLabel(self)
@@ -49,18 +52,18 @@ class ContextUsagePopup(QFrame):
         layout.addWidget(self.percent_label)
 
         self.setStyleSheet(
-            """
-            QFrame#contextUsagePopup {
+            f"""
+            QFrame#contextUsagePopup {{
                 background-color: #FFFFFF;
                 border: 1px solid rgba(0, 0, 0, 0.10);
                 border-radius: 8px;
-            }
-            QFrame#contextUsagePopup QLabel {
+            }}
+            QFrame#contextUsagePopup QLabel {{
                 background-color: transparent;
                 color: #4D5560;
-                font-size: 12px;
-                line-height: 18px;
-            }
+                font-size: {font_size}px;
+                line-height: {line_height}px;
+            }}
             """
         )
 
@@ -88,15 +91,22 @@ class ContextUsagePopup(QFrame):
 class ContextUsageIndicator(QWidget):
     """绘制上下文 token 用量圆环，并在点击时展示详情浮窗。"""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        size: int = 26,
+        popup_width: int = 188,
+        popup_font_size: int = 12,
+    ) -> None:
         """初始化圆环组件的默认状态。"""
         super().__init__(parent)
         self._snapshot = ContextUsageSnapshot(used_tokens=None, token_limit=None)
         self._theme_color = QColor("#7799CC")
-        self._popup = ContextUsagePopup(self)
+        self._size = max(20, size)
+        self._popup = ContextUsagePopup(self, popup_width, popup_font_size)
 
         self.setObjectName("contextUsageIndicator")
-        self.setFixedSize(26, 26)
+        self.setFixedSize(self._size, self._size)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("上下文用量：未知")
 
@@ -115,7 +125,7 @@ class ContextUsageIndicator(QWidget):
 
     def sizeHint(self) -> QSize:
         """返回圆环组件的推荐尺寸。"""
-        return QSize(26, 26)
+        return QSize(self._size, self._size)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """响应点击事件，切换详情浮窗显示状态。"""

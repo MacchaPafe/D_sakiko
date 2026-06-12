@@ -296,14 +296,21 @@ class InputCommandMatcher:
 class InputCommandRow(QFrame):
     """命令栏中的单行命令控件。"""
 
-    def __init__(self, spec: CommandSpec, parent: QWidget | None = None):
+    def __init__(
+        self,
+        spec: CommandSpec,
+        parent: QWidget | None = None,
+        font_size: int = 13,
+        row_height: int = 38,
+    ):
         """创建一行命令展示控件。"""
         super().__init__(parent)
         self.spec = spec
         self._selected = False
         self._theme_color = "#7799CC"
+        self._font_size = font_size
         self.setObjectName("inputCommandRow")
-        self.setFixedHeight(38)
+        self.setFixedHeight(row_height)
         self.setCursor(Qt.PointingHandCursor)
 
         layout = QHBoxLayout()
@@ -360,12 +367,12 @@ class InputCommandRow(QFrame):
                 border: none;
             }}
         """)
-        self.icon_label.setStyleSheet("color: #5F6368; font-size: 14px;")
+        self.icon_label.setStyleSheet(f"color: #5F6368; font-size: {self._font_size + 1}px;")
         self.command_label.setStyleSheet(
-            f"color: {self._theme_color}; font-family: Menlo, Consolas, monospace; font-size: 13px;"
+            f"color: {self._theme_color}; font-family: Menlo, Consolas, monospace; font-size: {self._font_size}px;"
         )
-        self.title_label.setStyleSheet("color: #202124; font-weight: 600; font-size: 13px;")
-        self.description_label.setStyleSheet("color: #8B8F94; font-size: 13px;")
+        self.title_label.setStyleSheet(f"color: #202124; font-weight: 600; font-size: {self._font_size}px;")
+        self.description_label.setStyleSheet(f"color: #8B8F94; font-size: {self._font_size}px;")
 
 
 class InputCommandPalette(QFrame):
@@ -383,6 +390,8 @@ class InputCommandPalette(QFrame):
         self._rows: list[InputCommandRow] = []
         self._selected_index = 0
         self._theme_color = "#7799CC"
+        self._command_font_size = 13
+        self._row_height = 38
 
         self.setObjectName("inputCommandPalette")
         self.setWindowFlags(Qt.Widget)
@@ -406,6 +415,10 @@ class InputCommandPalette(QFrame):
         layout.addWidget(self._scroll_area)
         self.setLayout(layout)
         self.set_theme_color(self._theme_color)
+
+    def set_screen_height(self, screen_height: int) -> None:
+        self._command_font_size = max(10, int(screen_height * 0.012))
+        self._row_height = max(30, int(screen_height * 0.035))
 
     def attach_to_input(
         self,
@@ -572,7 +585,7 @@ class InputCommandPalette(QFrame):
         anchor_top_left = self._anchor_widget.mapTo(parent, QPoint(0, 0))
         width = self._anchor_widget.width()
         row_count = min(max(len(self._filtered_specs), 1), 8)
-        height = row_count * 40 + 14
+        height = row_count * (self._row_height + 2) + 14
         self.setFixedWidth(width)
         self.setFixedHeight(height)
         self.move(anchor_top_left.x(), max(0, anchor_top_left.y() - height - 8))
@@ -587,7 +600,12 @@ class InputCommandPalette(QFrame):
         self._rows = []
 
         for index, spec in enumerate(self._filtered_specs):
-            row = InputCommandRow(spec, self._content_widget)
+            row = InputCommandRow(
+                spec,
+                self._content_widget,
+                font_size=self._command_font_size,
+                row_height=self._row_height,
+            )
             row.set_theme_color(self._theme_color)
             row.set_selected(index == self._selected_index)
             row.installEventFilter(self)

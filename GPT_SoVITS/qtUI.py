@@ -1582,7 +1582,12 @@ class ChatGUI(QWidget):
         self.save_dialog_btn.setIconSize(QSize(int(self.screen.height()*0.04*0.6),int(self.screen.height()*0.04*0.6)))
         self.save_dialog_btn.setToolTip("保存聊天记录")
 
-        self.context_usage_indicator = ContextUsageIndicator(self)
+        self.context_usage_indicator = ContextUsageIndicator(
+            self,
+            size=max(20, int(self.screen.height()*0.015)),
+            popup_width=max(150, int(self.screen.height()*0.23)),
+            popup_font_size=max(10, int(self.screen.height()*0.017)),
+        )
         self._context_usage_refresh_timer = QTimer(self)
         self._context_usage_refresh_timer.setSingleShot(True)
         self._context_usage_refresh_timer.timeout.connect(self.refresh_context_usage_indicator)  # noqa
@@ -2327,6 +2332,7 @@ class ChatGUI(QWidget):
         self.input_command_specs: tuple[CommandSpec, ...] = build_default_input_command_specs()
         self.input_command_matcher = InputCommandMatcher(self.input_command_specs)
         self.input_command_palette = InputCommandPalette(self.input_command_matcher, self)
+        self.input_command_palette.set_screen_height(self.screen.height())
         self.input_command_palette.attach_to_input(self.user_input, input_panel)
         self.input_command_palette.commandSelected.connect(self._on_input_command_selected)  # noqa
         self.input_command_palette.set_theme_color(self._current_theme_color if hasattr(self, "_current_theme_color") else "#7799CC")

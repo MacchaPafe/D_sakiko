@@ -10,6 +10,8 @@ from pathlib import Path
 from PyQt5.QtCore import QLockFile
 from PyQt5.QtGui import QColor
 
+from typing import Optional
+
 # 去广告
 with (contextlib.redirect_stdout(None)):
     from qfluentwidgets import QConfig, OptionsConfigItem, BoolValidator, ConfigItem, OptionsValidator, qconfig, \
@@ -285,8 +287,8 @@ class DSakikoConfig(QConfig):
 
     def __exit__(
             self,
-            exc_type: type[BaseException] | None,
-            exc_val: BaseException | None,
+            exc_type: Optional[type[BaseException]],
+            exc_val: Optional[BaseException],
             exc_tb: object,
     ) -> bool:
         depth = self._transaction_depth()
