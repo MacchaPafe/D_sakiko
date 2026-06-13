@@ -24,11 +24,21 @@ from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
 from deepseek_prompt_cache_debug import CACHE_DEBUG_PHASE_KEY, log_prompt_cache_usage
+from llm_provider.modelscope import (
+    ModelScopeQuotaExceededError,
+    ModelScopeRateLimitKind,
+    classify_rate_limit,
+    extract_error_headers,
+    parse_quota_headers,
+    parse_retry_after_seconds,
+)
 
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
+MODELSCOPE_MAX_RATE_LIMIT_RETRIES = 2
+MODELSCOPE_MAX_RETRY_DELAY_SECONDS = 5.0
 logger = get_logger(__name__)
 
 
@@ -56,7 +66,7 @@ class _TextGeneratingQueue(Protocol):
         ...
 
 
-def completion(**kwargs):
+def completion(**kwargs: object) -> object:
     """
     调用 litellm 的 completion 接口。
     如果模型属于 DeepSeek 模型，进行一次特殊的参数修改：
@@ -504,7 +514,95 @@ class DSLocalAndVoiceGen:
 
         return reasoning_kwargs
 
-    def _completion_with_current_config(self, model, messages, tools=None, tool_choice="auto", **kwargs):
+    @staticmethod
+    def _completion_with_modelscope_rate_limit_policy(
+        completion_kwargs: dict[str, object],
+    ) -> object:
+        """
+        执行 ModelScope 补全请求，并区分每日额度耗尽和临时速率限制。
+        """
+        import litellm
+
+        request_kwargs = dict(completion_kwargs)
+        request_kwargs["max_retries"] = 0
+
+        for retry_index in range(MODELSCOPE_MAX_RATE_LIMIT_RETRIES + 1):
+            try:
+                return completion(**request_kwargs)
+            except litellm.exceptions.RateLimitError as exc:
+                headers = extract_error_headers(exc)
+                quota = parse_quota_headers(headers)
+                rate_limit_kind = classify_rate_limit(quota)
+                if rate_limit_kind != ModelScopeRateLimitKind.TEMPORARY_RATE_LIMIT:
+                    raise ModelScopeQuotaExceededError(
+                        rate_limit_kind,
+                        quota,
+                        exc,
+                    ) from exc
+                if retry_index >= MODELSCOPE_MAX_RATE_LIMIT_RETRIES:
+                    raise
+
+                retry_after = parse_retry_after_seconds(headers)
+                fallback_delay = float(2**retry_index)
+                retry_delay = retry_after if retry_after is not None else fallback_delay
+                retry_delay = min(
+                    max(0.0, retry_delay),
+                    MODELSCOPE_MAX_RETRY_DELAY_SECONDS,
+                )
+                logger.warning(
+                    "ModelScope 临时限流，将在 %.2f 秒后进行第 %d/%d 次重试。",
+                    retry_delay,
+                    retry_index + 1,
+                    MODELSCOPE_MAX_RATE_LIMIT_RETRIES,
+                )
+                time.sleep(retry_delay)
+
+        raise RuntimeError("ModelScope 限流重试意外结束。")
+
+    @staticmethod
+    def _execute_completion_with_provider_policy(
+        provider_id: str,
+        completion_kwargs: dict[str, object],
+    ) -> object:
+        """
+        按内部 provider id 选择补全请求策略。
+        """
+        if provider_id == "modelscope":
+            return DSLocalAndVoiceGen._completion_with_modelscope_rate_limit_policy(
+                completion_kwargs
+            )
+        return completion(**completion_kwargs)
+
+    @staticmethod
+    def _modelscope_quota_exhausted_message(
+        exc: ModelScopeQuotaExceededError,
+    ) -> str:
+        """
+        根据 ModelScope 额度耗尽范围生成用户提示。
+        """
+        if exc.kind == ModelScopeRateLimitKind.USER_QUOTA_EXHAUSTED:
+            limit = exc.quota.user_limit
+            limit_text = f"（今日限额 {limit} 次）" if limit is not None else ""
+            return (
+                f"魔搭社区今日 API 总额度已用完{limit_text}，"
+                "请明日再试或更换 API 提供商。"
+            )
+
+        limit = exc.quota.model_limit
+        limit_text = f"（今日限额 {limit} 次）" if limit is not None else ""
+        return (
+            f"当前模型在魔搭社区的今日调用额度已用完{limit_text}，"
+            "可切换其他模型、明日再试或更换 API 提供商。"
+        )
+
+    def _completion_with_current_config(
+        self,
+        model: object,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+        tool_choice: object = "auto",
+        **kwargs: object,
+    ) -> object:
         """
         runtime 发起 LLM 请求的底层入口。
 
@@ -517,7 +615,7 @@ class DSLocalAndVoiceGen:
         model, messages, api_key, base_url, tools, tool_choice
         """
         # 提取运行时参数，避免后续和显式传参重复。
-        runtime_kwargs = dict(kwargs)
+        runtime_kwargs: dict[str, object] = dict(kwargs)
         stream = runtime_kwargs.pop("stream", False)
         timeout = runtime_kwargs.pop("timeout", 30)
         reasoning_snapshot_locked = bool(runtime_kwargs.pop("_reasoning_snapshot_locked", False))
@@ -528,8 +626,9 @@ class DSLocalAndVoiceGen:
 
         # 根据当前 API 配置选择模型、鉴权信息和可选 base_url。
         if self.d_sakiko_config.use_default_deepseek_api.value:
+            provider_id = "deepseek_up"
             logger.debug("正在使用 UP 的 DeepSeek API")
-            completion_kwargs = {
+            completion_kwargs: dict[str, object] = {
                 "model": "deepseek/deepseek-v4-flash",
                 "messages": messages,
                 "api_key": self.model,
@@ -537,6 +636,7 @@ class DSLocalAndVoiceGen:
                 "timeout": timeout,
             }
         elif self.d_sakiko_config.enable_custom_llm_api_provider.value:
+            provider_id = "custom"
             logger.debug("正在使用自定义大模型 API")
             logger.debug("API Base: %s", self.d_sakiko_config.custom_llm_api_url.value)
             logger.debug("API Model: %s", self.d_sakiko_config.custom_llm_api_model.value)
@@ -553,6 +653,7 @@ class DSLocalAndVoiceGen:
             logger.debug("Provider: %s", self.d_sakiko_config.llm_api_provider.value)
             logger.debug("Model: %s", self.d_sakiko_config.llm_api_model.value[self.d_sakiko_config.llm_api_provider.value])
             provider = self.d_sakiko_config.llm_api_provider.value
+            provider_id = str(provider)
             model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
             api_key = self.d_sakiko_config.llm_api_key.value.get(provider, "")
             base_url = self.d_sakiko_config.llm_api_base_url.value.get(provider)
@@ -601,7 +702,10 @@ class DSLocalAndVoiceGen:
         # 合并运行时参数并发起请求。runtime_kwargs 不允许覆盖上面确定的核心请求字段。
         completion_kwargs.update(runtime_kwargs)
         completion_kwargs[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
-        return completion(**completion_kwargs)
+        return self._execute_completion_with_provider_policy(
+            provider_id,
+            completion_kwargs,
+        )
 
     @staticmethod
     def _wait_audio_turn_complete(is_audio_play_complete):
@@ -1590,6 +1694,17 @@ class DSLocalAndVoiceGen:
                 )
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
+            except ModelScopeQuotaExceededError as e:
+                self._report_model_exception(
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
+                    is_text_generating_queue,
+                    self._modelscope_quota_exhausted_message(e),
+                    e,
+                )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
             except litellm.exceptions.RateLimitError as e:
                 self._report_model_exception(
                     dp2qt_queue,
@@ -1686,6 +1801,28 @@ class DSLocalAndVoiceGen:
                         raise ValueError("模型最终输出格式不符合要求")
                 else:
                     raise ValueError("模型最终输出格式不符合要求，不是 list/dict 也不是 str")
+            except ModelScopeQuotaExceededError as e:
+                self._report_model_exception(
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
+                    is_text_generating_queue,
+                    self._modelscope_quota_exhausted_message(e),
+                    e,
+                )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
+            except litellm.exceptions.RateLimitError as e:
+                self._report_model_exception(
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
+                    is_text_generating_queue,
+                    "请求过于频繁，请稍后再试。",
+                    e,
+                )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
             except ValueError as e:
                 self._report_model_format_error(
                     dp2qt_queue,
