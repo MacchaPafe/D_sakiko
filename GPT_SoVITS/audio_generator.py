@@ -265,12 +265,14 @@ class AudioGenerate:
         audio_lang_choice: str,
         character: CharacterAttributes,
         sakiko_state: bool | None = None,
+        segment_index: int | None = None,
+        segment_total: int | None = None,
     ) -> dict[str, object]:
         """构造角色的一次语音生成 payload。"""
         ref_audio_path, ref_text_path, ref_language = self._resolve_reference_materials(
             character=character, sakiko_state=sakiko_state
         )
-        return {
+        payload = {
             "character_name": character.character_name,
             "gpt_model_path": character.GPT_model_path,
             "sovits_model_path": character.sovits_model_path,
@@ -284,16 +286,30 @@ class AudioGenerate:
             "fragment_interval": self.pause_second,
             "text_split_method": "cut0",
         }
+        if segment_index is not None:
+            payload["segment_index"] = segment_index
+        if segment_total is not None:
+            payload["segment_total"] = segment_total
+        return payload
 
     def _build_synthesize_command(self, text: str, audio_lang_choice: str,
                                   character: CharacterAttributes,
-                                  sakiko_state: bool | None = None) -> WorkerCommand:
+                                  sakiko_state: bool | None = None,
+                                  segment_index: int | None = None,
+                                  segment_total: int | None = None) -> WorkerCommand:
         """构造发送给 worker 的语音生成命令。"""
         return {
             "type": "synthesize",
             "character_name": character.character_name,
             "character": character,
-            "payload": self.build_generation_payload(text, audio_lang_choice, character, sakiko_state),
+            "payload": self.build_generation_payload(
+                text,
+                audio_lang_choice,
+                character,
+                sakiko_state,
+                segment_index,
+                segment_total,
+            ),
         }
 
     @staticmethod
@@ -556,6 +572,8 @@ class AudioGenerate:
         character: CharacterAttributes,
         sakiko_state: bool,
         audio_lan_choice: str,
+        segment_index: int | None = None,
+        segment_total: int | None = None,
     ) -> VoiceTaskHandle:
         """提交一条语音生成命令，并返回等待句柄。"""
         command = self._build_synthesize_command(
@@ -563,6 +581,8 @@ class AudioGenerate:
             audio_lan_choice,
             character=character,
             sakiko_state=sakiko_state,
+            segment_index=segment_index,
+            segment_total=segment_total,
         )
         return self.submit_voice_task(command)
 
@@ -579,6 +599,8 @@ class AudioGenerate:
         character: CharacterAttributes,
         sakiko_state: bool,
         audio_lan_choice: str,
+        segment_index: int | None = None,
+        segment_total: int | None = None,
     ) -> str:
         """按显式给定角色配置同步生成语音。"""
         if not character.has_valid_voice_model():
@@ -599,6 +621,8 @@ class AudioGenerate:
             character,
             sakiko_state,
             audio_lan_choice,
+            segment_index=segment_index,
+            segment_total=segment_total,
         )
         self.audio_file_path = self._wait_for_synthesize_result(handle)
         return self.audio_file_path

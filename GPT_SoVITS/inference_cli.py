@@ -609,6 +609,7 @@ class CharacterVoiceRuntime:
         tts_manager: SharedTTSManager,
         dict_language_v2: dict[str, str],
         i18n_translator,
+        progress_callback=None,
     ) -> tuple[int, np.ndarray]:
         """执行一次语音合成并返回采样率与音频数据。"""
         self.apply_payload(payload)
@@ -634,6 +635,8 @@ class CharacterVoiceRuntime:
             "use_cuda_graph": True,
             "parallel_infer": False,
         }
+        if progress_callback is not None:
+            input_diction["progress_callback"] = progress_callback
         with open(os.devnull, "w", encoding="utf-8") as null:
             with contextlib.redirect_stdout(null):
                 generator = tts.run(input_diction)
@@ -775,6 +778,35 @@ def send_progress(progress_queue, message: str, request_id: str = '') -> None:
     )
 
 
+def build_audio_progress_message(
+    payload: Optional[PayloadDict],
+    message: str,
+    stage_index: Optional[int] = None,
+    stage_total: Optional[int] = None,
+) -> str:
+    """构造前台语音合成进度提示。"""
+    segment_index = None
+    segment_total = None
+    if payload is not None:
+        raw_segment_index = payload.get("segment_index")
+        raw_segment_total = payload.get("segment_total")
+        if isinstance(raw_segment_index, int) and raw_segment_index > 0:
+            segment_index = raw_segment_index
+        if isinstance(raw_segment_total, int) and raw_segment_total > 0:
+            segment_total = raw_segment_total
+
+    if segment_index is not None and segment_total is not None:
+        prefix = f"第{segment_index}/{segment_total}段音频"
+    elif segment_index is not None:
+        prefix = f"第{segment_index}段音频"
+    else:
+        prefix = ""
+
+    if stage_index is not None and stage_total is not None:
+        return f"{prefix} 进度{stage_index}/{stage_total}"
+    return f"{prefix} {message}"
+
+
 def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, log_queue=None) -> None:
     """作为独立 worker 进程处理 GPT-SoVITS 语音生成命令。"""
     if log_queue is not None:
@@ -832,7 +864,7 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
         if command_type == "load_model":
             try:
                 runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
-                send_progress(from_gptsovits_queue2, f"正在加载 {character_name} 的 GPT-SoVITS 模型...", request_id)
+                send_progress(from_gptsovits_queue2, "正在加载语音模型", request_id)
                 runtime.load_now(tts_manager)
                 put_ack(from_gptsovits_queue, "load_model", character_name, True, request_id)
             except Exception as exc:
@@ -870,7 +902,29 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
 
         try:
             runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
-            last_sampling_rate, last_audio_data = runtime.synthesize(payload, tts_manager, dict_language_v2, i18n_translator)
+            runtime.apply_payload(payload)
+            runtime_status = tts_manager.get_status(runtime)
+            if not bool(runtime_status.get("is_loaded", False)):
+                send_progress(
+                    from_gptsovits_queue2,
+                    build_audio_progress_message(payload, "正在加载语音模型"),
+                    request_id,
+                )
+
+            def report_tts_progress(stage_index: int, stage_total: int, stage_name: str) -> None:
+                send_progress(
+                    from_gptsovits_queue2,
+                    build_audio_progress_message(payload, stage_name, stage_index, stage_total),
+                    request_id,
+                )
+
+            last_sampling_rate, last_audio_data = runtime.synthesize(
+                payload,
+                tts_manager,
+                dict_language_v2,
+                i18n_translator,
+                progress_callback=report_tts_progress,
+            )
             output_dir = cast(str, payload.get("output_dir", "../reference_audio/generated_audios_temp"))
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)

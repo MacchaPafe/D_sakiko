@@ -182,7 +182,7 @@ class ChatDisplay(QTextBrowser):
                         lambda: self.regenerateTurnReplyRequested.emit(msg_index)
                     )
                     menu.addAction(regenerate_turn_action)
-                if meta.can_edit_message:
+                if meta.can_edit_message and meta.is_user_message:
                     edit_message_action = QAction("编辑消息", self)
                     edit_message_action.triggered.connect(lambda: self.editMessageRequested.emit(msg_index))
                     menu.addAction(edit_message_action)

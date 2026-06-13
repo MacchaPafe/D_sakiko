@@ -1317,7 +1317,16 @@ class TTS:
         min_chunk_length = inputs.get("min_chunk_length", 16)
         fixed_length_chunk = inputs.get("fixed_length_chunk", False)
         use_cuda_graph = inputs.get("use_cuda_graph", False)
+        progress_callback = inputs.get("progress_callback", None)
         chunk_split_thershold = 0.0 # 该值代表语义token与mute token的余弦相似度阈值，若大于该阈值，则视为可切分点。
+
+        def report_progress(stage_index: int, stage_total: int, stage_name: str) -> None:
+            if not callable(progress_callback):
+                return
+            try:
+                progress_callback(stage_index, stage_total, stage_name)
+            except Exception:
+                pass
 
         if parallel_infer and not streaming_mode:
             print(i18n("并行推理模式已开启"))
@@ -1383,7 +1392,8 @@ class TTS:
             raise ValueError(
                 "ref_audio_path cannot be empty, when the reference audio is not set using set_ref_audio()"
             )
-
+    
+        report_progress(1, 5, "准备参考音频与参考文本")
         ###### setting reference audio and prompt text preprocessing ########
         t0 = time.perf_counter()
         if (ref_audio_path is not None) and (
@@ -1422,6 +1432,7 @@ class TTS:
                 self.prompt_cache["bert_features"] = bert_features
                 self.prompt_cache["norm_text"] = norm_text
 
+        report_progress(2, 5, "解析输入文本")
         ###### text preprocessing ########
         t1 = time.perf_counter()
         data: list = None
@@ -1520,6 +1531,7 @@ class TTS:
                     if self.is_v2pro:
                         sv_emb.append(self.sv_model.compute_embedding3(audio_tensor))
 
+                report_progress(3, 5, "预测语义 Token")
                 if not streaming_mode:
                     print(f"############ {i18n('预测语义Token')} ############")
                     # 上游指出 cuda graph 不能和并行推理一起开启
@@ -1607,6 +1619,7 @@ class TTS:
                     #         pred_semantic, pred_semantic_len, batch_phones, batch_phones_len,refer_audio_spec
                     #     ))
                     print(f"############ {i18n('合成音频')} ############")
+                    report_progress(4, 5, "解码声学波形")
                     if not self.configs.use_vocoder:
                         if speed_factor == 1.0:
                             print(f"{i18n('并行合成中')}...")
@@ -1809,6 +1822,7 @@ class TTS:
                     return
 
             if not (return_fragment or streaming_mode):
+                report_progress(5, 5, "音频后处理")
                 print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t_34, t_45))
                 if len(audio) == 0:
                     yield output_sr, np.zeros(int(output_sr), dtype=np.int16)

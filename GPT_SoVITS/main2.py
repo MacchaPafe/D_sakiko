@@ -189,7 +189,7 @@ def handle_model_response_payload(payload: dict[str, object]) -> None:
                 emotion_queue.put(emotion_label)
                 continue
 
-            QT_message_queue.put(f"正在合成语音...{index + 1}/{len(segments_raw)}")
+            #QT_message_queue.put(f"正在合成语音...{index + 1}/{len(segments_raw)}")
             cleaned_text = clean_text_for_audio(text)
             audio_generate_count = 1
             generated_audio_path = "../reference_audio/silent_audio/silence.wav"
@@ -201,6 +201,8 @@ def handle_model_response_payload(payload: dict[str, object]) -> None:
                         current_character,
                         sakiko_state,
                         audio_language_choice,
+                        segment_index=index + 1,
+                        segment_total=len(segments_raw),
                     )
                     break
                 except Exception:
@@ -411,6 +413,8 @@ def main_thread():
                             current_character,
                             dp_chat.sakiko_state,
                             dp_chat.audio_language_choice,
+                            segment_index=i + 1,
+                            segment_total=len(segments),
                         )
                         break
                     except Exception as e:

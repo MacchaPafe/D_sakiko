@@ -47,16 +47,17 @@ class Sampler(nn.Module):
         )
         logits.scatter_(dim=1, index=previous_tokens, src=score)
 
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cum_probs = torch.cumsum(
-            torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1
-        )
-        sorted_indices_to_remove = cum_probs > top_p
-        sorted_indices_to_remove[:, 0] = False
-        indices_to_remove = sorted_indices_to_remove.scatter(
-            dim=1, index=sorted_indices, src=sorted_indices_to_remove
-        )
-        logits = logits.masked_fill(indices_to_remove, -float("Inf"))
+        if top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cum_probs = torch.cumsum(
+                torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1
+            )
+            sorted_indices_to_remove = cum_probs > top_p
+            sorted_indices_to_remove[:, 0] = False
+            indices_to_remove = sorted_indices_to_remove.scatter(
+                dim=1, index=sorted_indices, src=sorted_indices_to_remove
+            )
+            logits = logits.masked_fill(indices_to_remove, -float("Inf"))
 
         logits = logits / max(temperature, 1e-5)
 
@@ -566,9 +567,6 @@ class CUDAGraphRunner:
 
                 if idx == 2:
                     t1 = time.perf_counter()
-
-                if idx % 100 == 0 and self.device.type == "cuda":
-                    torch.cuda.empty_cache()
 
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
