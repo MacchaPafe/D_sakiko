@@ -68,7 +68,6 @@ wheels/**
 dsakiko_config.json
 run.bat
 LICENSE
-pyproject.toml
 tools/hdiffz.exe
 tools/hpatchz.exe
 启动参数配置.bat

@@ -17,13 +17,24 @@ export default defineConfig({
       { text: '开发文档', link: '/dev/setup' },
     ],
     sidebar: {
-      'guide': [
+      '/guide/': [
+        {
+          text: '开始使用',
+          collapsed: false,
+          items: [
+            { text: '开始使用', link: '/guide/start' },
+            { text: '运行要求', link: '/guide/getting-started/requirements' },
+            { text: 'Windows 安装', link: '/guide/getting-started/windows' },
+            { text: 'macOS 安装', link: '/guide/getting-started/macos' },
+            { text: '第一次启动', link: '/guide/getting-started/first-run' },
+            { text: '界面与基本操作', link: '/guide/getting-started/interface' },
+          ]
+        },
         {
           text: '使用指南',
           items: [
-            { text: '快速开始', link: '/guide/start' },
             { text: '更新说明', link: '/guide/update' },
-            { text: '获取帮助', link: '/guide/feedback'},
+            { text: '获取帮助', link: '/guide/feedback' },
           ]
         },
         {
@@ -34,7 +45,7 @@ export default defineConfig({
           ]
         }
       ],
-      "dev": [
+      '/dev/': [
         {
           text: '开发文档',
           items: [
