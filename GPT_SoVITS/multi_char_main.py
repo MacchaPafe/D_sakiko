@@ -1504,11 +1504,6 @@ class ViewerGUI(QWidget):
             return self.character_list[char_index].character_name
         return "未知角色"
 
-    @staticmethod
-    def _is_valid_model_path(path: Any) -> bool:
-        """模型路径有效性校验：非空且文件存在。"""
-        return isinstance(path, str) and bool(path.strip()) and os.path.exists(path.strip())
-
     def _find_character_by_name(self, character_name: str):
         """按角色名获取角色对象。"""
         for char in self.character_list:
@@ -1522,15 +1517,7 @@ class ViewerGUI(QWidget):
             char = self._find_character_by_name(name)
             if char is None:
                 return False
-            if not self._is_valid_model_path(getattr(char, "GPT_model_path", None)):
-                return False
-            if not self._is_valid_model_path(getattr(char, "sovits_model_path", None)):
-                return False
-            if char.character_name == '祥子':
-                # 祥子不具有 gptsovits_ref_audio 属性，因为她的参考音频是动态设置的。
-                # 只要满足前两个要求，我们直接认为她具有完整的语音模型。
-                continue
-            if not self._is_valid_model_path(getattr(char, "gptsovits_ref_audio", None)):
+            if not char.has_valid_voice_model():
                 return False
         return True
 

@@ -104,13 +104,14 @@ class CharacterAttributes:
         has_models = self._path_exists(self.GPT_model_path) and self._path_exists(self.sovits_model_path)
         if not has_models:
             return False
-        # 祥子可以不具有参考音频和参考音频文本，可以跳过这部分检查；其他人必须有
+        if not self.gptsovits_ref_audio_lan:
+            return False
+        # 祥子的参考音频和参考文本由语音生成模块动态选择。
         if self.character_name == '祥子':
             return True
         return (
             self._path_exists(self.gptsovits_ref_audio)
             and self._path_exists(self.gptsovits_ref_audio_text)
-            and bool(self.gptsovits_ref_audio_lan)
         )
 
     def print_attributes(self) -> None:
@@ -326,14 +327,20 @@ class GetCharacterAttributes:
 
                 if char!='sakiko':
                     if not os.path.exists(os.path.join("../reference_audio",char, 'reference_text.txt')):
-                        logger.error("没有找到角色：'%s' 的推理参考音频的文本文件！(reference_text.txt)", character.character_name)
-                        is_ready=False
+                        logger.warning(
+                            "没有找到角色：'%s' 的推理参考音频文本文件(reference_text.txt)，本次运行无法进行语音生成。",
+                            character.character_name,
+                        )
+                        character.gptsovits_ref_audio_text = None
                     else:
                         character.gptsovits_ref_audio_text=os.path.join("../reference_audio",char, 'reference_text.txt')
 
                 if not os.path.exists(os.path.join('../reference_audio',char,'reference_audio_language.txt')):
-                    logger.error("没有找到角色：'%s' 的参考音频语言文件！", character.character_name)
-                    is_ready=False
+                    logger.warning(
+                        "没有找到角色：'%s' 的参考音频语言文件(reference_audio_language.txt)，本次运行无法进行语音生成。",
+                        character.character_name,
+                    )
+                    character.gptsovits_ref_audio_lan = None
                 else:
                     ref_audio_language_file =os.path.join('../reference_audio',char,'reference_audio_language.txt')
                     with open(ref_audio_language_file, "r", encoding="utf-8") as f:

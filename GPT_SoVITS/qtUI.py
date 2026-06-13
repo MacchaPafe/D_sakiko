@@ -977,8 +977,19 @@ class ChangeReferenceAudioWindow(QDialog):
                 with open(self.audio_gen_module.ref_text_file_white_sakiko,'r',encoding='utf-8') as f:
                     current_ref_text=f.read().strip()
         else:
-            with open(self.current_character.gptsovits_ref_audio_text,'r',encoding='utf-8') as f:
-                current_ref_text=f.read().strip()
+            ref_text_path = (
+                self.current_character.gptsovits_ref_audio_text
+                or os.path.join(
+                    "../reference_audio",
+                    self.current_character.character_folder_name,
+                    "reference_text.txt",
+                )
+            )
+            if os.path.exists(ref_text_path):
+                with open(ref_text_path, 'r', encoding='utf-8') as f:
+                    current_ref_text = f.read().strip()
+            else:
+                current_ref_text = ""
         self.new_ref_text_input.setText(current_ref_text)
         self.new_ref_text_input.returnPressed.connect(self.change_ref_text)
         self.new_ref_text_input_confirm_btn=QPushButton("确认修改")
@@ -1039,9 +1050,17 @@ class ChangeReferenceAudioWindow(QDialog):
                     with open(self.audio_gen_module.ref_text_file_white_sakiko,'w',encoding='utf-8') as f:
                         f.write(new_ref_text)
             else:
-                with open(self.current_character.gptsovits_ref_audio_text,'w',encoding='utf-8') as f:
+                ref_text_path = (
+                    self.current_character.gptsovits_ref_audio_text
+                    or os.path.join(
+                        "../reference_audio",
+                        self.current_character.character_folder_name,
+                        "reference_text.txt",
+                    )
+                )
+                with open(ref_text_path, 'w', encoding='utf-8') as f:
                     f.write(new_ref_text)
-                #无需更改内存中的参考音频文本，因为每次生成前都是从文件中读取
+                self.current_character.gptsovits_ref_audio_text = ref_text_path
             self.change_ref_text_success_label.setText("修改成功!")
         else:
             self.change_ref_text_success_label.setText("文本不能为空!")
@@ -1645,7 +1664,7 @@ class ChatGUI(QWidget):
             )  # noqa
         else:
             self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
-        if self.current_character.GPT_model_path is None or self.current_character.gptsovits_ref_audio is None or self.current_character.sovits_model_path is None:
+        if not self.current_character.has_valid_voice_model():
             self.dp_chat.if_generate_audio=False
 
 
@@ -3299,7 +3318,7 @@ class ChatGUI(QWidget):
             self.refresh_current_chat_display()    #如果索引无效，强制刷新显示以纠正可能的错误状态
             return
         current_character= self.current_character
-        if not (current_character.GPT_model_path or current_character.gptsovits_ref_audio or current_character.sovits_model_path):
+        if not current_character.has_valid_voice_model():
             WarningWindow("当前角色未配置完整的音频生成条件，无法重新生成音频！").exec_()
             return
         # 防止重新生成时重复操作
