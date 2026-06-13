@@ -30,7 +30,8 @@ export default defineConfig({
           text: '功能说明',
           items: [
             { text: 'AI 模型设置', link: '/guide/llm' },
-           ]
+            { text: '设置中心与个性化', link: '/guide/settings' },
+          ]
         }
       ],
       "dev": [
