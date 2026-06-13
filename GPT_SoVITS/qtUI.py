@@ -400,7 +400,7 @@ class MoreFunctionWindow(QDialog):
         self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)  # noqa
         layout.addWidget(self.open_motion_editor_button)
 
-        self.open_persona_editor_button = QPushButton("编辑用户人设和角色信息")
+        self.open_persona_editor_button = QPushButton("编辑对话身份和角色信息")
         self.open_persona_editor_button.clicked.connect(self.on_click_open_persona_editor_button)
         layout.addWidget(self.open_persona_editor_button)
 
@@ -1228,7 +1228,7 @@ class NewSingleChatDialog(QDialog):
     创建普通单角色对话的弹窗。
     """
 
-    DEFAULT_PERSONA_NOTICE = "选择“无用户人设”时，AI 不会知道任何关于用户人设的信息。"
+    DEFAULT_PERSONA_NOTICE = "选择“无身份”时，AI 不会知道任何关于你的信息。"
 
     def __init__(
             self,
@@ -1287,13 +1287,13 @@ class NewSingleChatDialog(QDialog):
         self.character_combo.currentIndexChanged.connect(self._refresh_persona_preview)
 
         self.persona_open_layout = QHBoxLayout()
-        self.persona_view_hint = QLabel("创建对话后无法再次更改用户人设", self.persona_panel)
-        self.persona_edit_button = QPushButton("编辑人设信息", self.persona_panel)
+        self.persona_view_hint = QLabel("创建对话后无法再次更改对话身份", self.persona_panel)
+        self.persona_edit_button = QPushButton("编辑身份信息", self.persona_panel)
         self.persona_edit_button.clicked.connect(self._open_persona_editor)
         self.persona_open_layout.addWidget(self.persona_view_hint)
         self.persona_open_layout.addWidget(self.persona_edit_button)
 
-        self.persona_preview_label = QLabel("人设描述预览", self.persona_panel)
+        self.persona_preview_label = QLabel("身份描述预览", self.persona_panel)
         self.persona_preview = QTextBrowser(self.persona_panel)
         self.persona_preview.setFixedHeight(100)
         self.persona_preview.setOpenExternalLinks(False)
@@ -1359,10 +1359,10 @@ class NewSingleChatDialog(QDialog):
         name_counts: dict[str, int] = {}
         for persona in self.user_personas:
             if persona.is_default_user:
-                base_name = "无用户人设"
+                base_name = "无身份"
             else:
                 effective_name = persona.effective_character_name.strip()
-                base_name = effective_name or "未命名人设"
+                base_name = effective_name or "未命名身份"
             name_counts[base_name] = name_counts.get(base_name, 0) + 1
             occurrence = name_counts[base_name]
             display_name = base_name if occurrence == 1 else f"{base_name} ({occurrence})"
@@ -1392,7 +1392,7 @@ class NewSingleChatDialog(QDialog):
             self.adjustSize()
 
         self.persona_toggle_button.setText(
-            "▼ 用户人设" if expanded else "▶ 用户人设"
+            "▼ 你的身份" if expanded else "▶ 你的身份"
         )
         if save:
             d_sakiko_config.set(
@@ -1436,18 +1436,18 @@ class NewSingleChatDialog(QDialog):
         name = persona.effective_character_name.strip()
         description = persona.effective_character_description
         self.persona_preview.setPlainText(
-            description if description.strip() else "（未填写人设描述）"
+            description if description.strip() else "（未填写身份描述）"
         )
 
         notices: list[str] = []
         if not name:
-            notices.append("此人设没有名称，无法创建对话。")
+            notices.append("此身份没有名称，无法创建对话。")
         elif not description.strip():
-            notices.append("该人设只有名称，AI 不会获得人设描述信息。")
+            notices.append("该身份只有名称，AI 不会获得身份描述信息。")
 
         selected_character = self.selected_character()
         if name and name == selected_character.character_name.strip():
-            notices.append("用户人设与对话角色名称相同，AI 可能会混淆双方身份，导致对话体验下降。")
+            notices.append("你的身份与对话角色名称相同，AI 可能会混淆双方身份，导致对话体验下降。")
         self.persona_notice.setText("\n".join(notices))
         self._ensure_expanded_persona_layout()
 
@@ -1459,7 +1459,7 @@ class NewSingleChatDialog(QDialog):
                 and not persona.is_default_user
                 and not persona.effective_character_name.strip()
         ):
-            QMessageBox.warning(self, "无法创建对话", "所选用户人设没有名称，请先在设置中填写名称。")
+            QMessageBox.warning(self, "无法创建对话", "所选对话身份没有名称，请先在设置中填写名称。")
             return
         self.accept()
 

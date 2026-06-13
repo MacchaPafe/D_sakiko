@@ -42,7 +42,7 @@ def _get_internal_avatar_path(persona_id: str | None, suffix: str) -> Path:
             or Path(persona_id).name != persona_id
             or persona_id in {".", ".."}
     ):
-        raise ValueError("用户人设 ID 无效")
+        raise ValueError("对话身份 ID 无效")
 
     normalized_suffix = suffix.lower()
     if normalized_suffix not in AVATAR_SUFFIXES:
@@ -127,9 +127,9 @@ class UserPersonaDetailView(QWidget):
     """
     用户人设详情编辑视图
     """
-    DEFAULT_USER_NOTICE = "选择此人设时，AI 不会得知任何关于用户身份和人设的信息。"
-    DEFAULT_USER_DESCRIPTION = "无法为该人设填写内容，请新增人设。"
-    ROLE_NOTICE = "开启后，对话将使用所选角色的人设，无法手动编辑信息。"
+    DEFAULT_USER_NOTICE = "选择此身份时，AI 不会得知任何关于你的信息。"
+    DEFAULT_USER_DESCRIPTION = "这是默认的人设，无法填写内容，请新增身份。"
+    ROLE_NOTICE = "开启后，对话将使用所选角色的身份，无法手动编辑信息。"
     DEFAULT_DESCRIPTION = "输入你自己的详细信息... (例如：性格、背景、说话方式等)"
 
     character_data_changed = pyqtSignal(CharacterAttributes)
@@ -211,7 +211,7 @@ class UserPersonaDetailView(QWidget):
         self.v_layout.addWidget(self.role_card)
         
         # 3. Description
-        self.desc_label = StrongBodyLabel(self.tr("人设描述"), self)
+        self.desc_label = StrongBodyLabel(self.tr("身份描述"), self)
         self.desc_edit = TextEdit(self)
         self.desc_edit.setPlaceholderText(self.tr(self.DEFAULT_DESCRIPTION))
         self.desc_edit.textChanged.connect(self.on_desc_changed)
@@ -577,7 +577,7 @@ class CharacterArea(QWidget):
         
         # Segment Control
         self.segment = SegmentedWidget(self)
-        self.segment.addItem("user", "用户人设")
+        self.segment.addItem("user", "对话身份")
         self.segment.addItem("system", "系统角色")
         self.segment.currentItemChanged.connect(self.on_segment_changed)
         self.left_layout.addWidget(self.segment)
@@ -592,11 +592,11 @@ class CharacterArea(QWidget):
         # Buttons (Add/Delete) - only for User mode
         self.button_layout = QHBoxLayout()
         self.add_button = TransparentToolButton(FluentIcon.ADD, self)
-        self.add_button.setToolTip("添加新人设")
+        self.add_button.setToolTip("添加新身份")
         self.add_button.clicked.connect(self.add_character)
         
         self.delete_button = TransparentToolButton(FluentIcon.DELETE, self)
-        self.delete_button.setToolTip("删除当前人设")
+        self.delete_button.setToolTip("删除当前身份")
         self.delete_button.clicked.connect(self.delete_character)
         
         self.button_layout.addWidget(self.add_button)
@@ -641,7 +641,7 @@ class CharacterArea(QWidget):
         if key == "user":
             self.stack.setCurrentWidget(self.user_view)
             self.button_container.setVisible(True)
-            self.title_label.setText("用户人设列表")
+            self.title_label.setText("对话身份列表")
         else:
             self.stack.setCurrentWidget(self.system_view)
             self.button_container.setVisible(False)
@@ -658,7 +658,7 @@ class CharacterArea(QWidget):
             data_source = self.character_manager.character_class_list
             
         for char in data_source:
-            display_name = "无用户人设" if char.is_default_user else char.effective_character_name
+            display_name = "无身份" if char.is_default_user else char.effective_character_name
             item = QListWidgetItem(display_name)
             effective_icon_path = char.effective_icon_path
             if effective_icon_path and os.path.exists(effective_icon_path):
@@ -696,7 +696,7 @@ class CharacterArea(QWidget):
         for i in range(self.character_list_widget.count()):
             item = self.character_list_widget.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == char:
-                item.setText("无用户人设" if char.is_default_user else char.effective_character_name)
+                item.setText("无身份" if char.is_default_user else char.effective_character_name)
                 effective_icon_path = char.effective_icon_path
                 if effective_icon_path and os.path.exists(effective_icon_path):
                     item.setIcon(QIcon(effective_icon_path))
@@ -725,7 +725,7 @@ class CharacterArea(QWidget):
         if char_to_delete.is_default_user:
             InfoBar.warning(
                 title="无法删除",
-                content="内置的“无用户人设”用于保持普通用户对话模式，不能删除。",
+                content="内置的“无身份”用于保持普通用户对话模式，不能删除。",
                 orient=Qt.Orientations.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP_RIGHT,

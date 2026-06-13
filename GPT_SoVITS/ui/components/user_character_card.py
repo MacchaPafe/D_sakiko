@@ -98,7 +98,7 @@ class UserCharacterWidget(QWidget):
 
         self.vBoxLayout.addWidget(self.avatar_widget)
 
-        self.open_setting_action = Action(FluentIcon.SETTING, self.tr("设置用户人设..."), self)
+        self.open_setting_action = Action(FluentIcon.SETTING, self.tr("设置对话身份..."), self)
         self.open_setting_action.triggered.connect(self.open_setting)
 
         self.load_character()
@@ -106,12 +106,12 @@ class UserCharacterWidget(QWidget):
     @pyqtSlot()
     def open_setting(self):
         """
-        打开用户人设设置界面
+        打开对话身份设置界面
         """
         self.setting_requested.emit()
 
     def load_character(self, character: CharacterAttributes | None = None) -> None:
-        """加载并显示当前实际生效的用户人设头像。"""
+        """加载并显示当前实际生效的对话身份头像。"""
         if character is None:
             character = self.character
 
