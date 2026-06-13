@@ -1658,7 +1658,9 @@ def get_chat_manager() -> ChatManager:
             legacy_qt_file = "../reference_audio/history_messages_qt.json"
             legacy_theater_file = "../reference_audio/small_theater_history.json"
 
-            has_new_record = os.path.exists(all_conversation_file)
+            # 理论上 all_conversation.json 不该是空的，但似乎有用户手动删了内容而留下一个空的文件
+            # 因此，在这个文件为空时，同样认为它不存在。
+            has_new_record = os.path.exists(all_conversation_file) and not os.path.getsize(all_conversation_file) == 0
             # 旧的主对话记录和小剧场记录默认都是空白文件，
             # 空白文件会在 json.load 时被判定为加载失败；但我们不希望将其按照加载失败处理（打印错误消息），因为本来就没东西
             # 因此，只在这两个文件不为空时认为它可能存在。

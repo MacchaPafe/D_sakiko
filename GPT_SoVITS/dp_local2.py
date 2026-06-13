@@ -356,7 +356,7 @@ class DSLocalAndVoiceGen:
             details,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
-        ui_message = f"{user_message}\n\n详细错误信息：\n{self._truncate_error_detail(details)}"
+        ui_message = f"{user_message}"
         self._emit_turn_error(dp2qt_queue, chat_id, turn_id, ui_message)
         self._clear_failed_turn_state(is_text_generating_queue, rollback_user_message=True)
 
@@ -1622,7 +1622,7 @@ class DSLocalAndVoiceGen:
                         active_chat_id,
                         turn_id,
                         is_text_generating_queue,
-                        "账户余额不足，如果正在用up的api，请联系UP充值",
+                        "账户余额不足，请充值。如果正在用UP的api，请联系UP充值或改用自己的API",
                         e,
                     )
                 else:
