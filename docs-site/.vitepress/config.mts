@@ -42,6 +42,7 @@ export default defineConfig({
           items: [
             { text: 'AI 模型设置', link: '/guide/llm' },
             { text: '设置中心与个性化', link: '/guide/settings' },
+            { text: 'Live2D相关', link: '/guide/live2d' },
           ]
         }
       ],
