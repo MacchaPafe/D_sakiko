@@ -42,7 +42,7 @@ export default defineConfig({
         {
           text: '更多帮助',
           items: [
-            { text: '更新说明', link: '/guide/update' },
+            { text: '更新与维护', link: '/guide/update' },
             { text: '获取帮助', link: '/guide/feedback' },
           ]
         }
