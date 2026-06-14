@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import os,sys
 
-from ui_main.threads.update_config_thread import UpdateConfigThread
-
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
+from ui_main.threads.update_config_thread import UpdateConfigThread
 
 from queue import Queue, Empty
 import threading
