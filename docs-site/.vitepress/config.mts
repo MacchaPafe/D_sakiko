@@ -31,18 +31,19 @@ export default defineConfig({
           ]
         },
         {
-          text: '使用指南',
-          items: [
-            { text: '更新说明', link: '/guide/update' },
-            { text: '获取帮助', link: '/guide/feedback' },
-          ]
-        },
-        {
           text: '功能说明',
           items: [
             { text: 'AI 模型设置', link: '/guide/llm' },
             { text: '设置中心与个性化', link: '/guide/settings' },
             { text: 'Live2D相关', link: '/guide/live2d' },
+            { text: '语音合成', link: '/guide/tts' },
+          ]
+        },
+        {
+          text: '更多帮助',
+          items: [
+            { text: '更新说明', link: '/guide/update' },
+            { text: '获取帮助', link: '/guide/feedback' },
           ]
         }
       ],
