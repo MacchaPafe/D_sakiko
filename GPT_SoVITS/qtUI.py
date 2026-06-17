@@ -61,6 +61,17 @@ TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
 
+
+def append_generation_timing_log(message: str) -> None:
+    """把语音生成耗时写入本地调试日志。"""
+    try:
+        log_path = os.path.join(script_dir, "generation_log.txt")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            log_file.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        logger.exception("写入语音生成耗时日志失败")
+
 SINGLE_CHAT_COMBO_CSS = """
 QComboBox {
     background-color: #FFFFFF;
@@ -1742,6 +1753,7 @@ class ChatGUI(QWidget):
         self.setLayout(root_layout)  #因为需要character_list等参数，所以放在最后初始化
         self.refresh_chat_list()
         self.sync_current_chat_to_backends()
+        self.audio_gen.request_preload_character(self.current_character)    #预加载当前角色的语音模型，减少首次生成语音的等待时间
         self.schedule_context_usage_refresh()
 
         # 保存 Live2D 跨进程通信的共享变量和队列
@@ -2369,6 +2381,7 @@ class ChatGUI(QWidget):
         self.talk_speed_reset()
         self.pause_second_reset()
         self.dp_chat.if_generate_audio = self.current_character.has_valid_voice_model()
+        self.audio_gen.request_preload_character(self.current_character)
 
     def _setup_input_commands(self, input_panel: QFrame) -> None:
         """初始化输入框命令注册表、匹配器与命令栏控件。"""
@@ -3333,6 +3346,14 @@ class ChatGUI(QWidget):
         # UI反聩
         self.setWindowTitle("正在重新生成音频...")
         #self.chat_display.setEnabled(False) # 暂时禁用右键等交互
+        # self._regen_audio_timing = {
+        #     "started_at": time.perf_counter(),
+        #     "msg_index": msg_index,
+        #     "text": msg.text,
+        # }
+        # append_generation_timing_log(
+        #     f"重新生成音频开始 | msg_index={msg_index} | text={msg.text[:80]!r}"
+        # )
 
         # 启动后台合成线程
         self.regen_thread = AudioRegenThread(
@@ -3357,6 +3378,19 @@ class ChatGUI(QWidget):
             self.refresh_current_chat_display()
             logger.info("重新生成音频成功，新路径为：%s", msg.audio_path)
             self.play_history_audio(QUrl(f"{msg.audio_path}[{msg.emotion.as_label()}]?msg={msg_index}"))
+            # timing = getattr(self, "_regen_audio_timing", None)
+            # if isinstance(timing, dict) and timing.get("msg_index") == msg_index:
+            #     elapsed = time.perf_counter() - float(timing.get("started_at", time.perf_counter()))
+            #     try:
+            #         audio_size = os.path.getsize(msg.audio_path)
+            #     except OSError:
+            #         audio_size = -1
+            #     append_generation_timing_log(
+            #         "重新生成音频完成并送入播放队列 | "
+            #         f"msg_index={msg_index} | elapsed={elapsed:.3f}s | "
+            #         f"audio_size={audio_size} | path={msg.audio_path} | text={msg.text[:80]!r}"
+            #     )
+            #     self._regen_audio_timing = None
 
         self._set_message_box_idle()
 

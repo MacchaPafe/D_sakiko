@@ -193,6 +193,13 @@ class AudioGenerate:
         self.command_handles: dict[str, VoiceTaskHandle] = {}
         self.command_handles_lock = threading.Lock()
         self.worker_dispatch_thread: threading.Thread | None = None
+        # 语音模型调度状态：正式合成任务走 pending_worker_commands，预加载目标只保留最新一个。
+        self.voice_schedule_lock = threading.Lock()
+        self.loaded_voice_key: str | None = None
+        self.loading_voice_key: str | None = None
+        self.pending_preload_key: str | None = None
+        self.pending_preload_command: WorkerCommand | None = None
+        self.pending_preload_not_before: float = 0.0    # 预加载命令最早可执行的时间（单调时钟），用于防止模型加载过慢，加载时又切换了一次，角色导致正式合成时耗时反而更长（要加载两次模型）
 
         self._load_sakiko_default_reference_paths()
 
@@ -222,6 +229,8 @@ class AudioGenerate:
             self.gptsovits_process.start()
         self._ensure_worker_dispatch_thread()
         self.is_change_complete = True
+        if self.character_list:
+            self.request_preload_character(self.character_list[0])
 
     def _resolve_reference_materials(self, character: CharacterAttributes,
                                      sakiko_state: bool | None = None) -> tuple[str | None, str | None, str | None]:
@@ -311,7 +320,116 @@ class AudioGenerate:
                 segment_total,
             ),
         }
+#-------------------------------加载模型调度状态机相关的函数-------------------------------
+    def _build_load_model_command(self, character: CharacterAttributes) -> WorkerCommand:
+        """构造后台预加载语音模型的命令。"""
+        return {
+            "type": "load_model",
+            "character_name": character.character_name,
+            "character": character,
+            "payload": self._build_model_payload(character),
+            "silent": True,
+        }
 
+    def request_preload_character(self, character: CharacterAttributes | None) -> None:
+        """
+        请求后台预加载某个角色的语音模型。
+
+        预加载不会进入正式 worker FIFO 队列，只在调度线程空闲且没有正式合成任务时执行。
+        连续切换角色时，等待区只保留最新目标。
+        """
+        if character is None or not character.has_valid_voice_model():
+            return
+
+        key = character.character_name
+        command = self._build_load_model_command(character)
+        not_before = time.monotonic() + 1.5 #用户在同一角色页面停留1.5s后才正式预加载
+        with self.voice_schedule_lock:
+            if self.loading_voice_key is not None:
+                if key == self.loading_voice_key:
+                    self.pending_preload_key = None
+                    self.pending_preload_command = None
+                    self.pending_preload_not_before = 0.0
+                else:
+                    self.pending_preload_key = key
+                    self.pending_preload_command = command
+                    self.pending_preload_not_before = not_before
+                return
+
+            if key == self.loaded_voice_key:
+                self.pending_preload_key = None
+                self.pending_preload_command = None
+                self.pending_preload_not_before = 0.0
+                return
+
+            self.pending_preload_key = key
+            self.pending_preload_command = command
+            self.pending_preload_not_before = not_before
+
+    def _take_pending_preload_command(self) -> tuple[WorkerCommand, VoiceTaskHandle] | None:
+        """在正式任务队列为空时，取出最新的预加载目标。"""
+        with self.voice_schedule_lock:
+            if self.pending_preload_command is None:
+                return None
+            if time.monotonic() < self.pending_preload_not_before:
+                return None
+            command = dict(self.pending_preload_command)
+            key = self.pending_preload_key or cast(str, command.get("character_name", ""))
+            self.pending_preload_key = None
+            self.pending_preload_command = None
+            self.pending_preload_not_before = 0.0
+            self.loading_voice_key = key or None
+
+        request_id = self._create_request_id()
+        command["request_id"] = request_id
+        handle = VoiceTaskHandle(
+            request_id=request_id,
+            command_type=cast(str, command.get("type", "")),
+        )
+        self._register_command_handle(handle)
+        return command, handle
+
+    def _mark_worker_command_started(self, command: WorkerCommand) -> None:
+        """记录当前 worker 正在处理的语音模型目标。"""
+        command_type = cast(str, command.get("type", ""))
+        character_name = cast(str, command.get("character_name", ""))
+        if character_name == "":
+            return
+        with self.voice_schedule_lock:
+            if command_type == "load_model":
+                self.loading_voice_key = character_name
+            elif command_type == "synthesize":
+                if self.loaded_voice_key != character_name:
+                    self.loading_voice_key = character_name
+                if self.pending_preload_key == character_name:
+                    self.pending_preload_key = None
+                    self.pending_preload_command = None
+                    self.pending_preload_not_before = 0.0
+
+    def _mark_worker_command_finished(self, command: WorkerCommand, result: WorkerResult) -> None:
+        """根据 worker 返回结果更新语音模型调度状态。"""
+        command_type = cast(str, command.get("type", ""))
+        character_name = cast(str, command.get("character_name", ""))
+        result_type = cast(str, result.get("type", ""))
+        if character_name == "":
+            return
+
+        with self.voice_schedule_lock:
+            if self.loading_voice_key == character_name:
+                self.loading_voice_key = None
+
+            if command_type == "load_model":
+                if result_type == "ack" and bool(result.get("ok", False)):
+                    self.loaded_voice_key = character_name
+            elif command_type == "synthesize":
+                if result_type == "synthesize_result":
+                    self.loaded_voice_key = character_name
+
+            if self.pending_preload_key == self.loaded_voice_key:
+                self.pending_preload_key = None
+                self.pending_preload_command = None
+                self.pending_preload_not_before = 0.0
+#-------------------------------加载模型调度状态机相关的函数（结束）-------------------------------
     @staticmethod
     def _create_request_id() -> str:
         """生成一条新的 worker 请求编号。"""
@@ -412,7 +530,15 @@ class AudioGenerate:
     def _dispatch_worker_commands(self) -> None:
         """持续从调度队列中取出命令，并串行发送给 worker。"""
         while True:
-            command, handle = self.pending_worker_commands.get()
+            try:
+                command, handle = self.pending_worker_commands.get(timeout=0.1)
+            except Empty:
+                preload_item = self._take_pending_preload_command()
+                if preload_item is None:
+                    self._drain_progress_messages()
+                    continue
+                command, handle = preload_item
+
             command_type = cast(str, command.get("type", ""))
             if command_type == '':
                 self._set_handle_result(
@@ -427,19 +553,19 @@ class AudioGenerate:
                 )
                 continue
 
+            self._mark_worker_command_started(command)
             try:
                 self._send_worker_command(command)
             except ValueError:
-                self._set_handle_result(
-                    handle,
-                    {
-                        "type": "error",
-                        "command": command_type,
-                        "request_id": handle.request_id,
-                        "character_name": cast(str, command.get("character_name", "")),
-                        "message": "语音合成模块已经退出（崩溃）",
-                    },
-                )
+                error_result = {
+                    "type": "error",
+                    "command": command_type,
+                    "request_id": handle.request_id,
+                    "character_name": cast(str, command.get("character_name", "")),
+                    "message": "语音合成模块已经退出（崩溃）",
+                }
+                self._mark_worker_command_finished(command, error_result)
+                self._set_handle_result(handle, error_result)
                 if command_type == "shutdown":
                     break
                 continue
@@ -465,6 +591,7 @@ class AudioGenerate:
                     time.sleep(0.1)
                     continue
                 if self._matches_request_id(result, handle.request_id):
+                    self._mark_worker_command_finished(command, result)
                     self._set_handle_result(handle, result)
                     break
 

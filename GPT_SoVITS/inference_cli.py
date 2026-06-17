@@ -358,10 +358,11 @@ class SharedTTSManager:
         use_vocoder = vits_entry.model_version in {"v3", "v4"}
         needs_sv = vits_entry.model_version in {"v2Pro", "v2ProPlus"}
         vits_class_name = "SynthesizerTrnV3" if use_vocoder else "SynthesizerTrn"
+        is_half = target_device.type == "cuda" and not d_sakiko_config.enable_fp32_inference.value
         return ModelArchitectureSignature(
             model_version=vits_entry.model_version,
             device=str(target_device),
-            is_half=cast(bool, default_config["is_half"]),
+            is_half=is_half,
             bert_base_path=cast(str, default_config["bert_base_path"]),
             cnhuhbert_base_path=cast(str, default_config["cnhuhbert_base_path"]),
             use_vocoder=use_vocoder,
@@ -625,15 +626,17 @@ class CharacterVoiceRuntime:
             "ref_audio_path": cast(str, payload["ref_audio_path"]),
             "prompt_text": ref_text,
             "prompt_lang": dict_language_v2[i18n_translator(cast(str, payload["ref_language"]))],
+            "top_k": cast(int, payload.get("top_k", 15)),
             "top_p": 1,
             "temperature": 1,
             "text_split_method": cast(str, payload.get("text_split_method", "cut0")),
             "speed_factor": cast(float, payload.get("speed_factor", 1.0)),
             "sample_steps": gsv_sam_rate,
             "fragment_interval": cast(float, payload.get("fragment_interval", 0.5)),
+            "seed": cast(int, payload.get("seed", -1)),
             # 注释掉下面两行即可切换到旧的行为（无 cuda graph 支持）
-            "use_cuda_graph": True,
-            "parallel_infer": False,
+            "use_cuda_graph": cast(bool, payload.get("use_cuda_graph", True)),
+            "parallel_infer": cast(bool, payload.get("parallel_infer", False)),
         }
         if progress_callback is not None:
             input_diction["progress_callback"] = progress_callback
@@ -864,8 +867,24 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
         if command_type == "load_model":
             try:
                 runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
-                send_progress(from_gptsovits_queue2, "正在加载语音模型", request_id)
+                silent = bool(command.get("silent", False))
+                # started_at = time.perf_counter()
+                # logger.info(
+                #     "开始预加载语音模型 character=%s request_id=%s silent=%s",
+                #     character_name,
+                #     request_id,
+                #     silent,
+                # )
+                if not silent:
+                    send_progress(from_gptsovits_queue2, "正在加载语音模型", request_id)
                 runtime.load_now(tts_manager)
+                # logger.info(
+                #     "预加载语音模型完成 character=%s request_id=%s elapsed=%.3fs silent=%s",
+                #     character_name,
+                #     request_id,
+                #     time.perf_counter() - started_at,
+                #     silent,
+                # )
                 put_ack(from_gptsovits_queue, "load_model", character_name, True, request_id)
             except Exception as exc:
                 logger.exception("语音模型加载错误")
@@ -899,7 +918,8 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
 
         if command_type != "synthesize" or payload is None:
             continue
-
+        
+        #进入synthesize分支
         try:
             runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
             runtime.apply_payload(payload)

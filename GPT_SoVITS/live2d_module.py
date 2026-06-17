@@ -92,7 +92,7 @@ class Live2DModule:
         
         # 长音频动作循环状态机
         self.long_audio_motion_threshold_seconds = 6.0  #超过这个时长的音频才会触发
-        self.long_audio_motion_repeat_delay_seconds = 1.5   #每次动作结束后等待这么久才触发下一次，防止动作切换过快
+        self.long_audio_motion_repeat_delay_seconds = 2.5   #每次动作结束后等待这么久才触发下一次，防止动作切换过快
         self.long_audio_motion_max_repeats = 2  #最长音频动作循环的最大重复次数，防止某些极端长的音频导致动作一直循环，这也有点人机
         self.long_audio_motion_repeat_count = 0
         self.long_audio_motion_active = False
