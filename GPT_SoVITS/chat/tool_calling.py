@@ -413,10 +413,7 @@ class ToolCallingAgentRuntime:
 
             if tool_name == "get_current_datetime":
                 formatted = payload.get("formatted") or payload.get("iso")
-                timezone = payload.get("timezone")
                 if formatted:
-                    if timezone:
-                        return f"当前时间: {formatted}\n时区: {timezone}"
                     return f"当前时间: {formatted}"
 
             if tool_name == "get_system_hardware_status":
@@ -1106,10 +1103,8 @@ class DateTimeTool:
         formatted = now.strftime(fmt) if isinstance(fmt, str) and fmt else now.isoformat()
         return {
             "ok": True,
-            "timestamp": now.timestamp(),
             "iso": now.isoformat(),
             "formatted": formatted,
-            "timezone": str(now.tzinfo),
         }
 
 
