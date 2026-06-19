@@ -5,6 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+sys.path.insert(0, script_dir)
+
 from qconfig import DEFAULT_MULTI_CHAR_BGM_PATH, d_sakiko_config
 from ui_main.components.custom_bgm_dialog import (
     BGM_DIRECTORY,
@@ -12,10 +16,6 @@ from ui_main.components.custom_bgm_dialog import (
     CustomBGMDialog,
     validate_bgm_media_file,
 )
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(script_dir)
-sys.path.insert(0, script_dir)
 
 import time,copy
 import threading
