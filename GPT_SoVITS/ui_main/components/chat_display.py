@@ -3,12 +3,15 @@ from __future__ import annotations
 import html
 import os
 import re
+from pathlib import Path
+from urllib.parse import quote, unquote
 from dataclasses import dataclass
 
 from PyQt5.QtCore import QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QContextMenuEvent, QTextCursor
+from PyQt5.QtGui import QContextMenuEvent, QDesktopServices, QImageReader, QTextCursor
 from PyQt5.QtWidgets import QAction, QTextBrowser, QWidget
 
+from chat.attachments import resolve_attachment_path
 from chat.chat import Chat, Message, SingleCharacterPromptGenerator
 
 
@@ -112,7 +115,7 @@ class ChatDisplay(QTextBrowser):
         self._remember_message_meta(msg_index, message)
         if Chat.is_real_user_message(message):
             self._set_regenerable_turn_reply_index(msg_index)
-        if stream:
+        if stream and not message.attachments:
             self._append_message_streaming(message, msg_index, interval_ms)
             return
         self.append(self._render_message_html(message, msg_index))
@@ -300,12 +303,14 @@ class ChatDisplay(QTextBrowser):
         display_message = self._message_for_display(message)
         safe_text = html.escape(display_message.text)
         header = self._render_message_header_html(message, msg_index)
+        attachments_html = self._render_attachments_html(display_message)
         if self._is_user_message(display_message):
-            return header.replace("</a>", f"{safe_text}</a>", 1)
+            return header.replace("</a>", f"{safe_text}</a>{attachments_html}", 1)
         body = f"{safe_text}</a>"
         if display_message.translation:
             safe_translation = html.escape(display_message.translation)
             body += f'<br><span style="color: #B3D1F2; font-style: italic;">{safe_translation}</span>'
+        body += attachments_html
         return header.replace("</a>", body, 1)
 
     def _render_message_header_html(self, message: Message, msg_index: int) -> str:
@@ -342,6 +347,54 @@ class ChatDisplay(QTextBrowser):
             str(record.get("tool_call_id") or ""),
             self._tool_status_text(status, duration_sec),
         )
+
+    @staticmethod
+    def _render_attachments_html(message: Message) -> str:
+        """渲染消息图片附件缩略图。"""
+        image_blocks: list[str] = []
+        for attachment in message.attachments:
+            if not attachment.is_image():
+                continue
+            image_path = resolve_attachment_path(attachment.path)
+            if not image_path.exists() or not image_path.is_file():
+                image_blocks.append(
+                    '<span style="display: inline-block; margin-top: 6px; '
+                    'padding: 4px 8px; color: #B00020; '
+                    'background-color: rgba(176, 0, 32, 0.08); '
+                    'border-radius: 4px;">[图片已丢失]</span>'
+                )
+                continue
+            abs_path = str(image_path.resolve()).replace("\\", "/")
+            safe_src = html.escape(abs_path, quote=True)
+            safe_title = html.escape(attachment.original_name or os.path.basename(abs_path), quote=True)
+            href = f"image:{quote(abs_path, safe='')}"
+            size_attributes = ChatDisplay._image_thumbnail_size_attributes(image_path)
+            image_blocks.append(
+                f'<a href="{href}" style="text-decoration: none;">'
+                f'<img src="{safe_src}" title="{safe_title}" {size_attributes} '
+                f'style="margin-top: 6px; margin-right: 6px; '
+                f'border-radius: 6px; vertical-align: top;" />'
+                f'</a>'
+            )
+        if not image_blocks:
+            return ""
+        return '<br><span style="display: inline-block;">' + "".join(image_blocks) + "</span>"
+
+    @staticmethod
+    def _image_thumbnail_size_attributes(image_path: Path, max_size: int = 120) -> str:
+        """根据原图尺寸生成 QTextBrowser 可识别的缩略图宽高属性。"""
+        image_size = QImageReader(str(image_path)).size()
+        if not image_size.isValid() or image_size.width() <= 0 or image_size.height() <= 0:
+            return f'width="{max_size}" height="{max_size}"'
+
+        scale = min(
+            1.0,
+            max_size / image_size.width(),
+            max_size / image_size.height(),
+        )
+        width = max(1, int(image_size.width() * scale))
+        height = max(1, int(image_size.height() * scale))
+        return f'width="{width}" height="{height}"'
 
     @staticmethod
     def _render_tool_status_html(tool_call_id: str, text: str) -> str:
@@ -398,6 +451,7 @@ class ChatDisplay(QTextBrowser):
             translation=message.translation,
             emotion=message.emotion,
             audio_path=message.audio_path,
+            attachments=message.attachments,
         )
 
     @staticmethod
@@ -443,5 +497,9 @@ class ChatDisplay(QTextBrowser):
         url_text = anchor_url.toString()
         if url_text.startswith("toolcall:"):
             self.toolCallClicked.emit(url_text[len("toolcall:"):])
+            return
+        if url_text.startswith("image:"):
+            image_path = unquote(url_text[len("image:"):])
+            QDesktopServices.openUrl(QUrl.fromLocalFile(image_path))
             return
         self.audioLinkClicked.emit(anchor_url)

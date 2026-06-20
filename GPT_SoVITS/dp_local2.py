@@ -19,7 +19,8 @@ from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
 from log import get_logger
 
-from chat.chat import Chat, Message, ChatManager
+from chat.chat import Chat, Message, ChatManager, MessageAttachment
+from chat.attachments import import_image_attachment
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
@@ -236,6 +237,8 @@ class DSLocalAndVoiceGen:
             self._cancelled_turns.discard((chat_id, turn_id))
 
     def trim_list_to_340kb(self, data_list):
+        if Chat.messages_contain_image_content(data_list):
+            return data_list
         working_list = deepcopy(data_list)
         MAX_SIZE = 340 * 1024  # 主流大模型的上下文现在基本都是128Ktoken，差不多500KB，这里设置340KB以防万一
         while len(json.dumps(working_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
@@ -1060,6 +1063,47 @@ class DSLocalAndVoiceGen:
         model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
         return self.normalize_model_for_provider(provider, model_name)
 
+    def _current_model_supports_vision(self) -> bool:
+        """判断当前 LiteLLM 模型是否支持视觉输入。"""
+        import litellm
+
+        model = self._current_litellm_model_name()
+        try:
+            return bool(litellm.supports_vision(model))
+        except Exception as exc:
+            logger.warning("查询模型视觉能力失败，按不支持处理：model=%s，error=%s", model, exc)
+            return False
+
+    @staticmethod
+    def _image_source_paths_from_command(command: dict[str, object]) -> list[str]:
+        """从前端命令中提取图片源文件路径列表。"""
+        raw_paths = command.get("image_source_paths")
+        if not isinstance(raw_paths, list):
+            return []
+        return [path for path in raw_paths if isinstance(path, str) and path]
+
+    def _import_image_source_attachments(
+        self,
+        chat_id: str,
+        image_source_paths: Sequence[str],
+    ) -> list[MessageAttachment]:
+        """导入前端图片源文件并生成正式消息附件。"""
+        return [
+            import_image_attachment(chat_id, source_path)
+            for source_path in image_source_paths
+        ]
+
+    def _emit_business_turn_error(
+        self,
+        dp2qt_queue: _QueueWriter,
+        chat_id: str,
+        turn_id: str,
+        message: str,
+    ) -> None:
+        """向前端报告无需 traceback 的用户可见业务错误。"""
+        logger.warning("对话发送时出现问题：%s", message)
+        self._emit_turn_error(dp2qt_queue, chat_id, turn_id, message)
+
     @staticmethod
     def _is_response_format_unsupported(exc: "litellm.exceptions.BadRequestError") -> bool:
         """
@@ -1585,7 +1629,8 @@ class DSLocalAndVoiceGen:
             # 保存原始用户输入（不含指令后缀），用于存储到 Chat 中
             command_text = command.get("text")
             raw_user_input = str(command_text if command_text is not None else "")
-            if not raw_user_input:
+            image_source_paths = self._image_source_paths_from_command(command)
+            if not raw_user_input and not image_source_paths:
                 raw_user_input = "（什么也没说）"
             # 获得 qtUI 给我们的 turn id
             # 如果 qtUI 没有提供 turn_id，我们就自己生成一个，保证每轮对话都有唯一 id 供后续追踪和关联工具调用使用。
@@ -1598,6 +1643,37 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                 continue
 
+            # 复制一份模型配置，防止一轮对话中间配置修改导致出错。
+            # 图片导入前也需要使用本轮锁定的模型配置判断视觉能力。
+            self.d_sakiko_config = create_d_sakiko_config_snapshot()
+
+            if image_source_paths and not self._current_model_supports_vision():
+                self._emit_business_turn_error(
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
+                    "当前模型不支持图片输入，请切换支持视觉的模型后重试。",
+                )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
+
+            imported_attachments: list[MessageAttachment] = []
+            if image_source_paths:
+                try:
+                    imported_attachments = self._import_image_source_attachments(
+                        active_chat_id,
+                        image_source_paths,
+                    )
+                except Exception as exc:
+                    self._emit_business_turn_error(
+                        dp2qt_queue,
+                        active_chat_id,
+                        turn_id,
+                        f"图片导入失败：{exc}",
+                    )
+                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                    continue
+
             should_append_user_message = command.get("append_user_message") is not False
             if should_append_user_message:
                 # 将原始用户输入（不含任何指令后缀）存入 Chat
@@ -1606,12 +1682,44 @@ class DSLocalAndVoiceGen:
                     text=raw_user_input,
                     translation="",
                     emotion=EmotionEnum.HAPPINESS,
-                    audio_path=""
+                    audio_path="",
+                    attachments=imported_attachments,
                 )
                 self.current_chat.add_message(user_msg)
+                if imported_attachments:
+                    try:
+                        self.chat_manager.save()
+                    except Exception as exc:
+                        self.current_chat.message_list.pop()
+                        self._emit_business_turn_error(
+                            dp2qt_queue,
+                            active_chat_id,
+                            turn_id,
+                            f"图片消息保存失败：{exc}",
+                        )
+                        self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                        continue
 
             character_name = self.get_current_character().character_name
             to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
+            if Chat.messages_contain_image_content(to_llm_msg) and not self._current_model_supports_vision():
+                self._emit_business_turn_error(
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
+                    "当前对话包含图片附件，但当前模型不支持视觉输入，请切换支持视觉的模型后继续。",
+                )
+                self._clear_failed_turn_state(
+                    is_text_generating_queue,
+                    rollback_user_message=should_append_user_message,
+                )
+                if imported_attachments:
+                    try:
+                        self.chat_manager.save()
+                    except Exception:
+                        logger.exception("回滚图片消息后保存聊天记录失败。")
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
 
             self._emit_turn_phase(
                 dp2qt_queue,
@@ -1621,8 +1729,6 @@ class DSLocalAndVoiceGen:
                 f"{character_name}思考中...",
             )
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
-            # 复制一份模型配置，防止一轮对话中间配置修改导致出错
-            self.d_sakiko_config = create_d_sakiko_config_snapshot()
             # 为本轮用户输入锁定推理配置；如果用户在工具调用过程中修改 UI 设置，只会影响下一轮输入。
             reasoning_kwargs_snapshot = self._build_current_reasoning_kwargs_snapshot()
             # --------------------------

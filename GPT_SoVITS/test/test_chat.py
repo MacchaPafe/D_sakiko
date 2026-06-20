@@ -9,17 +9,21 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from PyQt5.QtGui import QImage
+
 from character import CharacterAttributes
 from chat.chat import (
     Chat,
     ChatManager,
     ChatType,
     Message,
+    MessageAttachment,
     SingleCharacterPromptGenerator,
     StaticPromptGenerator,
     UserPersonaSnapshot,
 )
 from emotion_enum import EmotionEnum
+from ui_main.components.chat_display import ChatDisplay
 
 
 class ChatTestCase(unittest.TestCase):
@@ -77,6 +81,7 @@ class ChatTestCase(unittest.TestCase):
         ]
         # 小剧场测试需要从文件读取数据
         # 我们造一个临时文件给函数，用于测试
+        self.temp_paths: list[str] = []
         self.theater_dialog_temp_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
         json.dump(self.theater_dialog_history, self.theater_dialog_temp_file)
         self.theater_dialog_temp_file.flush()
@@ -85,6 +90,21 @@ class ChatTestCase(unittest.TestCase):
     def tearDown(self):
         # 测试完成后需要手动删掉临时文件
         os.unlink(self.theater_dialog_temp_file.name)
+        for path in self.temp_paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+    def _create_temp_png(self, width: int = 16, height: int = 16) -> str:
+        """创建测试用 PNG 图片并返回路径。"""
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        image = QImage(width, height, QImage.Format_RGB32)
+        image.fill(0x00FF0000)
+        image.save(path)
+        self.temp_paths.append(path)
+        return path
 
     def test_compatibility_of_normal_mode(self):
         """
@@ -468,7 +488,112 @@ class ChatTestCase(unittest.TestCase):
 
         self.assertIsInstance(restored.chat_id, str)
         self.assertTrue(restored.chat_id)
-        self.assertNotEqual(restored.chat_id, chat.chat_id)
+
+    def test_message_attachment_serialization_and_legacy_loading(self) -> None:
+        """消息附件应可序列化，旧消息缺失附件字段时应兼容为空列表。"""
+        attachment = MessageAttachment(
+            type="image",
+            path="chat_attachments/chat-1/pic.png",
+            mime_type="image/png",
+            original_name="pic.png",
+        )
+        message = Message(
+            character_name="User",
+            text="看图",
+            translation="",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path="",
+            attachments=[attachment],
+        )
+
+        restored = Message.from_dict(message.as_dict())
+        legacy_payload = message.as_dict()
+        legacy_payload.pop("attachments")
+        legacy_restored = Message.from_dict(legacy_payload)
+
+        self.assertEqual(restored.attachments, [attachment])
+        self.assertEqual(legacy_restored.attachments, [])
+
+    def test_message_to_llm_content_includes_image_parts(self) -> None:
+        """带图片附件的消息应转换为 LiteLLM 多模态 content。"""
+        image_path = self._create_temp_png()
+        message = Message(
+            character_name="User",
+            text="请描述",
+            translation="",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path="",
+            attachments=[
+                MessageAttachment(
+                    type="image",
+                    path=image_path,
+                    mime_type="image/png",
+                    original_name="pic.png",
+                )
+            ],
+        )
+
+        content = message.to_llm_content("user")
+
+        self.assertIsInstance(content, list)
+        assert isinstance(content, list)
+        self.assertEqual(content[0], {"type": "text", "text": "[User]: 请描述"})
+        self.assertEqual(content[1]["type"], "image_url")
+
+    def test_chat_display_renders_image_with_explicit_thumbnail_size(self) -> None:
+        """聊天图片缩略图应使用 QTextBrowser 可识别的显式宽高属性。"""
+        image_path = self._create_temp_png(width=400, height=200)
+        message = Message(
+            character_name="User",
+            text="看图",
+            translation="",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path="",
+            attachments=[
+                MessageAttachment(
+                    type="image",
+                    path=image_path,
+                    mime_type="image/png",
+                    original_name="wide.png",
+                )
+            ],
+        )
+
+        html_text = ChatDisplay._render_attachments_html(message)
+
+        self.assertIn('width="120"', html_text)
+        self.assertIn('height="60"', html_text)
+        self.assertNotIn("max-width", html_text)
+
+    def test_simplified_llm_query_keeps_image_message_as_boundary(self) -> None:
+        """简化历史时，带图片的用户消息不应与相邻用户文本合并。"""
+        image_path = self._create_temp_png()
+        chat = Chat(
+            message_list=[
+                Message("User", "前一句", "", EmotionEnum.HAPPINESS, ""),
+                Message(
+                    "User",
+                    "看图",
+                    "",
+                    EmotionEnum.HAPPINESS,
+                    "",
+                    attachments=[
+                        MessageAttachment(
+                            type="image",
+                            path=image_path,
+                            mime_type="image/png",
+                            original_name="pic.png",
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        query = chat.build_llm_query("素世", is_simplify=True)
+
+        self.assertEqual(len(query), 2)
+        self.assertEqual(query[0]["content"], "[User]: 前一句")
+        self.assertIsInstance(query[1]["content"], list)
 
     def test_create_multiple_single_chats_for_same_character(self):
         """

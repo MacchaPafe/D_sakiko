@@ -29,6 +29,39 @@ logger = get_logger(__name__)
 
 
 @dataclasses.dataclass
+class MessageAttachment:
+    """对话消息中的附件元数据。"""
+
+    type: str
+    path: str
+    mime_type: str = ""
+    original_name: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "MessageAttachment":
+        """从存储字典中加载附件元数据。"""
+        return cls(
+            type=str(data.get("type") or ""),
+            path=str(data.get("path") or ""),
+            mime_type=str(data.get("mime_type") or ""),
+            original_name=str(data.get("original_name") or ""),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """将附件元数据转换为可存储字典。"""
+        return {
+            "type": self.type,
+            "path": self.path,
+            "mime_type": self.mime_type,
+            "original_name": self.original_name,
+        }
+
+    def is_image(self) -> bool:
+        """判断附件是否为图片。"""
+        return self.type == "image"
+
+
+@dataclasses.dataclass
 class Message:
     """
     对话中的单条消息
@@ -43,21 +76,30 @@ class Message:
     emotion: EmotionEnum
     # 消息对应的 GPT-SoVITS 生成的音频文件路径
     audio_path: str
+    # 消息携带的附件列表
+    attachments: list[MessageAttachment] = dataclasses.field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(cls, data: dict[str, object]) -> "Message":
         """
         从存储字典中加载一个 Message 实例
         """
+        raw_attachments = data.get("attachments", [])
+        attachments: list[MessageAttachment] = []
+        if isinstance(raw_attachments, list):
+            for raw_attachment in raw_attachments:
+                if isinstance(raw_attachment, dict):
+                    attachments.append(MessageAttachment.from_dict(raw_attachment))
         return cls(
-            character_name=data["character_name"],
-            text=data["text"],
-            translation=data["translation"],
-            emotion=EmotionEnum.from_string(data["emotion"]),
-            audio_path=data["audio_path"]
+            character_name=str(data.get("character_name") or ""),
+            text=str(data.get("text") or ""),
+            translation=str(data.get("translation") or ""),
+            emotion=EmotionEnum.from_string(str(data.get("emotion") or "")),
+            audio_path=str(data.get("audio_path") or ""),
+            attachments=attachments,
         )
 
-    def as_dict(self) -> Dict:
+    def as_dict(self) -> dict[str, object]:
         """
         将此 Message 实例转换为存储字典
         """
@@ -66,7 +108,8 @@ class Message:
             "text": self.text,
             "translation": self.translation,
             "emotion": self.emotion.as_string(),
-            "audio_path": self.audio_path
+            "audio_path": self.audio_path,
+            "attachments": [attachment.as_dict() for attachment in self.attachments],
         }
 
     @property
@@ -134,6 +177,57 @@ class Message:
             )
         else:
             raise ValueError(f"未知的角色视角: {role}")
+
+    def to_llm_content(
+            self,
+            role: str,
+            llm_character_name: str | None = None,
+    ) -> str | list[dict[str, object]]:
+        """
+        将此消息转换为 LiteLLM 可接收的文本或多模态 content。
+
+        :param role: 角色视角，可以是 "user" 或 "assistant"
+        :param llm_character_name: 可选的发送者标签覆盖值，仅影响发送给 LLM 的文本。
+        :returns: 纯文本字符串，或包含 text/image_url part 的多模态 content。
+        """
+        text_content = self.to_llm_query(role, llm_character_name)
+        image_parts = self._llm_image_parts()
+        if not image_parts:
+            return text_content
+        if role == "user" and not self.text.strip():
+            character_name = llm_character_name or self.character_name
+            text_content = f"[{character_name}]: （发送了图片）"
+        return [{"type": "text", "text": text_content}, *image_parts]
+
+    def _llm_image_parts(self) -> list[dict[str, object]]:
+        """把可读取的图片附件转换为 LiteLLM image_url parts。"""
+        if not self.attachments:
+            return []
+
+        from chat.attachments import resolve_attachment_path
+        from chat.image_upload import encode_image_file_as_base64
+
+        parts: list[dict[str, object]] = []
+        for attachment in self.attachments:
+            if not attachment.is_image() or not attachment.path:
+                continue
+            image_path = resolve_attachment_path(attachment.path)
+            if not image_path.exists() or not image_path.is_file():
+                logger.warning("跳过丢失的图片附件：%s", image_path)
+                continue
+            try:
+                data_uri = encode_image_file_as_base64(
+                    str(image_path),
+                    attachment.mime_type or None,
+                )
+            except Exception as exc:
+                logger.warning("图片附件编码失败，已跳过：%s；原因：%s", image_path, exc)
+                continue
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": data_uri},
+            })
+        return parts
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1008,7 +1102,7 @@ class Chat:
             llm_character_name = self._llm_character_name_for_message(msg, role)
             llm_history.append({
                 "role": role,
-                "content": msg.to_llm_query(role, llm_character_name),
+                "content": msg.to_llm_content(role, llm_character_name),
             })
 
         if not has_start_message and llm_history and llm_history[0]["role"] == "assistant":
@@ -1046,7 +1140,11 @@ class Chat:
         merged_list = [message_list[0]]
         for msg in message_list[1:]:
             last_msg = merged_list[-1]
-            if msg["role"] == last_msg["role"]:
+            if (
+                msg["role"] == last_msg["role"]
+                and isinstance(last_msg.get("content"), str)
+                and isinstance(msg.get("content"), str)
+            ):
                 # 合并内容
                 last_msg["content"] += "\n" + msg["content"]
             else:
@@ -1094,7 +1192,7 @@ class Chat:
         """
         合并相邻消息，并将 assistant 消息压缩为符合主程序输出协议的 JSON array。
         """
-        merged_list: list[dict[str, str]] = []
+        merged_list: list[dict[str, object]] = []
         active_role = ""
         active_content = ""
         active_assistant_segment: dict[str, str] | None = None
@@ -1125,7 +1223,19 @@ class Chat:
 
         for msg in message_list:
             role = str(msg["role"])
-            content = str(msg["content"])
+            raw_content = msg.get("content", "")
+            if not isinstance(raw_content, str):
+                flush_active_message()
+                merged_list.append({
+                    "role": role,
+                    "content": raw_content,
+                })
+                active_role = ""
+                active_content = ""
+                active_assistant_segment = None
+                continue
+
+            content = raw_content
             if role != active_role:
                 flush_active_message()
                 active_role = role
@@ -1152,6 +1262,20 @@ class Chat:
         message_list.clear()
         message_list.extend(merged_list)
         return message_list
+
+    @staticmethod
+    def messages_contain_image_content(message_list: Sequence[dict[str, object]]) -> bool:
+        """判断一组 LLM messages 是否实际包含图片 content part。"""
+        for message in message_list:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "image_url":
+                    return True
+        return False
 
     def add_message(self, message: Message) -> None:
         """

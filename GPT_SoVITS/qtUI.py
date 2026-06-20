@@ -6,7 +6,7 @@ import time
 import json
 import random
 import uuid
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -31,6 +31,7 @@ from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes, GetCharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, DeleteMessagesResult, Message, get_chat_manager
+from chat.attachments import delete_chat_attachment_dir, resolve_attachment_path
 from chat.model_token_usage import count_message_tokens
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
@@ -1592,6 +1593,7 @@ class ChatGUI(QWidget):
         self.user_input = MessageInput()
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
+        self.user_input.set_vision_support_checker(self._current_model_supports_vision)
 
         self.voice_button = QPushButton()
         self.voice_button.setObjectName("voiceInputButton")
@@ -2219,6 +2221,10 @@ class ChatGUI(QWidget):
             self.sync_current_chat_to_backends()
             self.apply_current_chat_ui_state()
         audio_failed = self._delete_audio_for_messages_if_requested(deleted_chat.message_list, should_delete_audio)
+        try:
+            delete_chat_attachment_dir(deleted_chat.chat_id)
+        except Exception:
+            logger.exception("删除对话附件目录失败：chat_id=%s", deleted_chat.chat_id)
         self.chat_manager.save()
         self.refresh_chat_list()
         self._show_delete_success_message("已删除对话", audio_failed)
@@ -2389,7 +2395,7 @@ class ChatGUI(QWidget):
         self.input_command_matcher = InputCommandMatcher(self.input_command_specs)
         self.input_command_palette = InputCommandPalette(self.input_command_matcher, self)
         self.input_command_palette.set_screen_height(self.screen.height())
-        self.input_command_palette.attach_to_input(self.user_input, input_panel)
+        self.input_command_palette.attach_to_input(self.user_input.text_edit, input_panel)
         self.input_command_palette.commandSelected.connect(self._on_input_command_selected)  # noqa
         self.input_command_palette.set_theme_color(self._current_theme_color if hasattr(self, "_current_theme_color") else "#7799CC")
 
@@ -2532,14 +2538,7 @@ class ChatGUI(QWidget):
                 border-radius: 13px;
             }}
         """)
-        self.user_input.setStyleSheet(f"""
-            QPlainTextEdit#messageTextInput {{
-                background-color: transparent;
-                border: none;
-                padding: 4px 2px;
-                color: {color};
-            }}
-        """)
+        self.user_input.set_theme_color(color)
         self.user_input.refresh_height()
         self.reasoning_menu_button.setStyleSheet(f"""
             QToolButton#reasoningMenuButton {{
@@ -2798,6 +2797,17 @@ class ChatGUI(QWidget):
         if "/" in model or not provider:
             return model
         return f"{provider}/{model}"
+
+    def _current_model_supports_vision(self) -> bool:
+        """判断当前选择的大模型是否支持视觉输入。"""
+        import litellm
+
+        model = self._current_litellm_model_name()
+        try:
+            return bool(litellm.supports_vision(model))
+        except Exception as exc:
+            logger.warning("查询模型视觉能力失败，按不支持处理：model=%s，error=%s", model, exc)
+            return False
 
     def refresh_current_chat_display(self):
         """从当前 Chat 数据重新渲染聊天显示。"""
@@ -3147,9 +3157,14 @@ class ChatGUI(QWidget):
             return
 
         original_text = message.text
+        image_paths_to_restore = [
+            str(resolve_attachment_path(attachment.path))
+            for attachment in message.attachments
+            if attachment.is_image()
+        ]
         end = len(self.current_chat.message_list)
         has_following_messages = end - msg_index > 1
-        had_input_draft = bool(self.user_input.toPlainText())
+        had_input_draft = bool(self.user_input.toPlainText() or self.user_input.pending_image_source_paths())
         should_delete_audio = False
 
         if has_following_messages:
@@ -3174,7 +3189,7 @@ class ChatGUI(QWidget):
             end,
             should_delete_audio,
         )
-        self.user_input.replace_draft(original_text)
+        failed_image_paths = self.user_input.replace_draft(original_text, image_paths=image_paths_to_restore)
 
         if had_input_draft:
             success_message = "已将消息移回输入框，原输入框内容已被替换。"
@@ -3182,6 +3197,8 @@ class ChatGUI(QWidget):
             success_message = "已清除后续消息，可编辑后重新发送。"
         else:
             success_message = "已将消息移回输入框，可编辑后重新发送。"
+        if failed_image_paths:
+            success_message += " 部分图片附件已丢失，无法恢复。"
         self._show_delete_success_message(success_message, audio_failed)
 
     def rollback_to_message(self, msg_index: int) -> None:
@@ -3527,6 +3544,8 @@ class ChatGUI(QWidget):
                 self._clear_active_turn()
                 if status == "ok":
                     self._set_message_box_idle()
+                else:
+                    self.refresh_current_chat_display()
                 self.refresh_chat_list()
                 self.schedule_context_usage_refresh()
             return
@@ -3921,16 +3940,25 @@ class ChatGUI(QWidget):
         self.setWindowTitle("数字小祥")
         raw_user_input = self.user_input.toPlainText()
         user_this_turn_input = self.user_input.prepared_message()
-        if not user_this_turn_input.strip():
+        image_source_paths = self.user_input.pending_image_source_paths()
+        if not user_this_turn_input.strip() and not image_source_paths:
             return
         # 不可以在 AI 回复时补充内容
         if self.is_chat_busy():
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再发送消息。")
             return
+        if image_source_paths and not self._current_model_supports_vision():
+            self.user_input.show_error("当前模型不支持图片输入，请切换支持视觉的模型或删除图片附件。")
+            return
+        failed_image_paths = self.user_input.validate_pending_images()
+        if failed_image_paths:
+            self.user_input.show_error(f"图片不存在或无法读取：{os.path.basename(failed_image_paths[0])}")
+            return
         # 存在换行符时，不处理输入框中的命令
         if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
             return
-        self._send_user_message_payload(user_this_turn_input)
+        optimistic_attachments = self.user_input.optimistic_image_attachments()
+        self._send_user_message_payload(user_this_turn_input, image_source_paths=image_source_paths)
         self.user_input.clear_after_send()
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能
@@ -3944,6 +3972,7 @@ class ChatGUI(QWidget):
             translation="",
             emotion=EmotionEnum.HAPPINESS,
             audio_path="",
+            attachments=optimistic_attachments,
         )
         self.chat_display.append_message(user_message, predicted_msg_index, stream=True, interval_ms=8)
 
@@ -3953,6 +3982,7 @@ class ChatGUI(QWidget):
         *,
         append_user_message: bool = True,
         context_usage_delay_ms: int = 1300,
+        image_source_paths: Sequence[str] = (),
     ) -> None:
         """向后端发送用户消息请求，并启动当前 active turn。"""
         turn_id = uuid.uuid4().hex
@@ -3963,6 +3993,7 @@ class ChatGUI(QWidget):
             "turn_id": turn_id,
             "text": text,
             "append_user_message": append_user_message,
+            "image_source_paths": list(image_source_paths),
         })
         self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
 

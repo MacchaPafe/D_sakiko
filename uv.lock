@@ -1542,7 +1542,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.83.0"
+version = "1.89.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
@@ -1558,9 +1558,9 @@ dependencies = [
     { name = "tiktoken", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "tokenizers", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/92/6ce9737554994ca8e536e5f4f6a87cc7c4774b656c9eb9add071caf7d54b/litellm-1.83.0.tar.gz", hash = "sha256:860bebc76c4bb27b4cf90b4a77acd66dba25aced37e3db98750de8a1766bfb7a", size = 17333062, upload-time = "2026-03-31T05:08:25.331Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/29/865d38325f9c424daf0bcc7ab61908cf51a87862b3a0dfebd059b60dac97/litellm-1.89.2.tar.gz", hash = "sha256:b2534d69568eed026310f4e006407db2d46494eb629bd1e71eb9603ec146540d", size = 14079449, upload-time = "2026-06-18T02:26:03.64Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/2c/a670cc050fcd6f45c6199eb99e259c73aea92edba8d5c2fc1b3686d36217/litellm-1.83.0-py3-none-any.whl", hash = "sha256:88c536d339248f3987571493015784671ba3f193a328e1ea6780dbebaa2094a8", size = 15610306, upload-time = "2026-03-31T05:08:21.987Z" },
+    { url = "https://files.pythonhosted.org/packages/32/c8/51c93e8d017e7af02600171b5b6cc3805b07507acb2b94de7235ce764015/litellm-1.89.2-py3-none-any.whl", hash = "sha256:07e8e43b1a70fe919021376742897d18ffe7577ccfbb84632c949670f9abdc03", size = 15492797, upload-time = "2026-06-18T02:25:59.863Z" },
 ]
 
 [[package]]
@@ -2341,7 +2341,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "2.11.0"
+version = "2.43.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
@@ -2353,9 +2353,9 @@ dependencies = [
     { name = "tqdm", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "typing-extensions", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/8c/aa6aea6072f985ace9d6515046b9088ff00c157f9654da0c7b1e129d9506/openai-2.11.0.tar.gz", hash = "sha256:b3da01d92eda31524930b6ec9d7167c535e843918d7ba8a76b1c38f1104f321e", size = 624540, upload-time = "2025-12-11T19:11:58.539Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/fa/88d0c58a0c58df7e6758e66b99c5d028d5e0bb49f8812d7203940cd9dbf1/openai-2.43.0.tar.gz", hash = "sha256:e74d238200a26868977002190fb6631613480a93dfe0c9c982e77021ed60a017", size = 785369, upload-time = "2026-06-17T17:06:56.06Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/f1/d9251b565fce9f8daeb45611e3e0d2f7f248429e40908dcee3b6fe1b5944/openai-2.11.0-py3-none-any.whl", hash = "sha256:21189da44d2e3d027b08c7a920ba4454b8b7d6d30ae7e64d9de11dbe946d4faa", size = 1064131, upload-time = "2025-12-11T19:11:56.816Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/d2/ba767f4bbb30776c03d40906a2d3afad716a165ffa1771fc23b8992f7920/openai-2.43.0-py3-none-any.whl", hash = "sha256:65a670b54fadf2268c9e1330133373c963eb779ee969e5cbad419ec2c21dce97", size = 1355077, upload-time = "2026-06-17T17:06:53.614Z" },
 ]
 
 [[package]]

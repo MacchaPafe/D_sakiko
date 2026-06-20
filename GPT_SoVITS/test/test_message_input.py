@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -15,6 +16,7 @@ from PyQt5.QtGui import (
     QInputMethodEvent,
     QKeyEvent,
     QTextCursor,
+    QImage,
 )
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QWidget
@@ -43,6 +45,7 @@ class MessageInputTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         """创建并展示固定宽度的消息输入框。"""
+        self.temp_paths: list[str] = []
         self.input = MessageInput()
         self.input.resize(240, self.input.height())
         self.input.show()
@@ -52,6 +55,11 @@ class MessageInputTestCase(unittest.TestCase):
         """销毁当前测试创建的输入框。"""
         self.input.close()
         self.input.deleteLater()
+        for path in self.temp_paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
         self.app.processEvents()
 
     def test_trim_surrounding_blank_lines_preserves_body(self) -> None:
@@ -76,7 +84,7 @@ class MessageInputTestCase(unittest.TestCase):
         self.input.setPlainText("hello")
         self.input.sendRequested.connect(record_send)
 
-        QTest.keyClick(self.input, Qt.Key_Return)
+        QTest.keyClick(self.input.text_edit, Qt.Key_Return)
 
         self.assertEqual(send_count, 1)
         self.assertEqual(self.input.toPlainText(), "hello")
@@ -101,7 +109,7 @@ class MessageInputTestCase(unittest.TestCase):
         for modifier in modifier_cases:
             self.input.setPlainText("hello")
             self.input.moveCursor(QTextCursor.End)
-            QTest.keyClick(self.input, Qt.Key_Return, modifier)
+            QTest.keyClick(self.input.text_edit, Qt.Key_Return, modifier)
             self.assertEqual(self.input.toPlainText(), "hello\n")
 
         self.assertEqual(send_count, 0)
@@ -117,7 +125,7 @@ class MessageInputTestCase(unittest.TestCase):
 
         self.input.sendRequested.connect(record_send)
 
-        QTest.keyClick(self.input, Qt.Key_Enter, Qt.KeypadModifier)
+        QTest.keyClick(self.input.text_edit, Qt.Key_Enter, Qt.KeypadModifier)
 
         self.assertEqual(send_count, 1)
 
@@ -141,7 +149,7 @@ class MessageInputTestCase(unittest.TestCase):
             2,
         )
 
-        QApplication.sendEvent(self.input, event)
+        QApplication.sendEvent(self.input.text_edit, event)
 
         self.assertEqual(send_count, 0)
         self.assertEqual(self.input.toPlainText(), "hello")
@@ -156,14 +164,14 @@ class MessageInputTestCase(unittest.TestCase):
             send_count += 1
 
         self.input.sendRequested.connect(record_send)
-        QApplication.sendEvent(self.input, QInputMethodEvent("拼", []))
+        QApplication.sendEvent(self.input.text_edit, QInputMethodEvent("拼", []))
 
-        QTest.keyClick(self.input, Qt.Key_Return)
+        QTest.keyClick(self.input.text_edit, Qt.Key_Return)
 
         self.assertEqual(send_count, 0)
 
-        QApplication.sendEvent(self.input, QInputMethodEvent("", []))
-        QTest.keyClick(self.input, Qt.Key_Return)
+        QApplication.sendEvent(self.input.text_edit, QInputMethodEvent("", []))
+        QTest.keyClick(self.input.text_edit, Qt.Key_Return)
         self.assertEqual(send_count, 1)
 
     def test_height_grows_and_stops_at_six_lines(self) -> None:
@@ -312,11 +320,11 @@ class MessageInputTestCase(unittest.TestCase):
             Qt.NoModifier,
         )
 
-        QApplication.sendEvent(self.input.viewport(), drag_enter_event)
-        QApplication.sendEvent(self.input.viewport(), drag_move_event)
-        QApplication.sendEvent(self.input.viewport(), drop_event)
+        QApplication.sendEvent(self.input.text_edit.viewport(), drag_enter_event)
+        QApplication.sendEvent(self.input.text_edit.viewport(), drag_move_event)
+        QApplication.sendEvent(self.input.text_edit.viewport(), drop_event)
         QTest.mouseClick(
-            self.input.viewport(),
+            self.input.text_edit.viewport(),
             Qt.LeftButton,
             Qt.NoModifier,
             QPoint(8, 16),
@@ -335,7 +343,7 @@ class MessageInputTestCase(unittest.TestCase):
             reference_input.setFocus()
             self.app.processEvents()
             QTest.mouseClick(
-                reference_input.viewport(),
+                reference_input.text_edit.viewport(),
                 Qt.LeftButton,
                 Qt.NoModifier,
                 QPoint(8, 16),
@@ -355,6 +363,62 @@ class MessageInputTestCase(unittest.TestCase):
         finally:
             reference_input.close()
             reference_input.deleteLater()
+
+    def test_image_drop_adds_preview_without_inserting_path(self) -> None:
+        """视觉模型可用时，拖入图片应添加草稿附件而不是插入路径。"""
+        image_path = self._create_temp_png()
+        self.input.set_vision_support_checker(lambda: True)
+
+        self._drop_paths([image_path])
+
+        self.assertEqual(self.input.toPlainText(), "")
+        self.assertEqual(self.input.pending_image_source_paths(), [image_path])
+        self.assertTrue(self.input.preview_area.isVisible())
+
+    def test_image_drop_without_vision_inserts_path_and_shows_error(self) -> None:
+        """视觉模型不可用时，拖入图片应退化为普通路径插入。"""
+        image_path = self._create_temp_png()
+        self.input.set_vision_support_checker(lambda: False)
+
+        self._drop_paths([image_path])
+
+        self.assertEqual(self.input.pending_image_source_paths(), [])
+        self.assertIn(f'"{image_path}"', self.input.toPlainText())
+        self.assertTrue(self.input.error_label.isVisible())
+
+    def _create_temp_png(self) -> str:
+        """创建测试用 PNG 图片并返回路径。"""
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        image = QImage(16, 16, QImage.Format_RGB32)
+        image.fill(Qt.red)
+        image.save(path)
+        self.temp_paths.append(path)
+        return path
+
+    def _drop_paths(self, paths: list[str]) -> None:
+        """向输入框模拟拖入一组本地路径。"""
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(path) for path in paths])
+        drop_position = QPoint(20, 20)
+        drag_enter_event = QDragEnterEvent(
+            drop_position,
+            Qt.CopyAction,
+            mime_data,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        drop_event = QDropEvent(
+            QPointF(drop_position),
+            Qt.CopyAction,
+            mime_data,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+
+        QApplication.sendEvent(self.input.text_edit.viewport(), drag_enter_event)
+        QApplication.sendEvent(self.input.text_edit.viewport(), drop_event)
+        self.app.processEvents()
 
 
 class InputCommandPaletteMultilineTestCase(unittest.TestCase):
@@ -380,7 +444,7 @@ class InputCommandPaletteMultilineTestCase(unittest.TestCase):
         self.input.setGeometry(10, 180, 340, 52)
         matcher = InputCommandMatcher(build_default_input_command_specs())
         self.palette = InputCommandPalette(matcher, self.window)
-        self.palette.attach_to_input(self.input, self.input)
+        self.palette.attach_to_input(self.input.text_edit, self.input)
         self.window.show()
         self.input.setFocus()
         self.app.processEvents()
@@ -398,7 +462,7 @@ class InputCommandPaletteMultilineTestCase(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(self.palette.isVisible())
 
-        QTest.keyClick(self.input, Qt.Key_Return, Qt.ControlModifier)
+        QTest.keyClick(self.input.text_edit, Qt.Key_Return, Qt.ControlModifier)
         self.app.processEvents()
 
         self.assertFalse(self.palette.isVisible())
@@ -432,7 +496,7 @@ class InputCommandPaletteMultilineTestCase(unittest.TestCase):
         self.input.setPlainText("/save")
         self.app.processEvents()
 
-        QTest.keyClick(self.input, Qt.Key_Return)
+        QTest.keyClick(self.input.text_edit, Qt.Key_Return)
 
         self.assertEqual(selected_commands, ["save"])
         self.assertEqual(send_count, 0)
