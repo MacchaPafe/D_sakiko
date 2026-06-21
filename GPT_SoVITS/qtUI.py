@@ -3039,9 +3039,12 @@ class ChatGUI(QWidget):
             self.voice_button.setEnabled(True)
             self.setWindowTitle("数字小祥")
 
-    def closeEvent(self, event):
-        self.stop_input_stream()
-        event.accept()
+    def closeEvent(self, a0):
+        try:
+            self.chat_manager.save()
+            self.stop_input_stream()
+        finally:
+            a0.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
         if self.motion_complete_value.value:
@@ -3573,6 +3576,7 @@ class ChatGUI(QWidget):
                     self.refresh_current_chat_display()
                 self.refresh_chat_list()
                 self.schedule_context_usage_refresh()
+                self.chat_manager.save()
             return
         if event_type != "assistant_segment_ready":
             return
@@ -3765,6 +3769,7 @@ class ChatGUI(QWidget):
         self.messages_box.append("已终止当前回复")
         self.refresh_chat_list()
         self.schedule_context_usage_refresh()
+        self.chat_manager.save()
 
     @staticmethod
     def _format_live2d_display_text(text: str, translation: str = "") -> str:
