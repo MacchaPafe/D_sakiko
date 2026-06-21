@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -376,15 +377,105 @@ class MessageInputTestCase(unittest.TestCase):
         self.assertTrue(self.input.preview_area.isVisible())
 
     def test_image_drop_without_vision_inserts_path_and_shows_error(self) -> None:
-        """视觉模型不可用时，拖入图片应退化为普通路径插入。"""
+        """视觉模型不可用时，可手动把图片退化为普通路径插入。"""
         image_path = self._create_temp_png()
         self.input.set_vision_support_checker(lambda: False)
+        self.input.set_image_upload_override_handlers(
+            lambda: "dashscope/qwen3.6-plus",
+            lambda: True,
+            lambda model: True,
+        )
 
         self._drop_paths([image_path])
 
         self.assertEqual(self.input.pending_image_source_paths(), [])
-        self.assertIn(f'"{image_path}"', self.input.toPlainText())
+        self.assertEqual(self.input.toPlainText(), "")
         self.assertTrue(self.input.error_label.isVisible())
+        self.assertTrue(self.input.force_send_button.isVisible())
+        self.assertTrue(self.input.insert_filename_button.isVisible())
+
+        self.input.insert_filename_button.click()
+
+        self.assertIn(f'"{image_path}"', self.input.toPlainText())
+        self.assertFalse(self.input.error_bar.isVisible())
+
+    def test_image_drop_without_force_option_only_shows_insert_filename(self) -> None:
+        """不能强制开启图片上传时，不应显示仍然发送按钮。"""
+        image_path = self._create_temp_png()
+        self.input.set_vision_support_checker(lambda: False)
+        self.input.set_image_upload_override_handlers(
+            lambda: "deepseek/deepseek-v4-flash",
+            lambda: False,
+            lambda model: True,
+        )
+
+        self._drop_paths([image_path])
+
+        self.assertTrue(self.input.error_label.isVisible())
+        self.assertFalse(self.input.force_send_button.isVisible())
+        self.assertTrue(self.input.insert_filename_button.isVisible())
+
+    def test_force_image_upload_confirmation_adds_preview(self) -> None:
+        """确认强制图片上传后，应保存模型并把暂存图片加入预览。"""
+        image_path = self._create_temp_png()
+        allowed_models: list[str] = []
+        self.input.set_vision_support_checker(lambda: False)
+        self.input.set_image_upload_override_handlers(
+            lambda: "dashscope/qwen3.6-plus",
+            lambda: True,
+            lambda model: not allowed_models.append(model),
+        )
+
+        self._drop_paths([image_path])
+
+        with mock.patch.object(
+            self.input,
+            "_confirm_force_image_upload",
+            return_value=True,
+        ):
+            self.input.force_send_button.click()
+
+        self.assertEqual(allowed_models, ["dashscope/qwen3.6-plus"])
+        self.assertEqual(self.input.pending_image_source_paths(), [image_path])
+        self.assertEqual(self.input.toPlainText(), "")
+        self.assertTrue(self.input.preview_area.isVisible())
+
+    def test_backspace_dismisses_pending_unsupported_image_when_empty(self) -> None:
+        """输入框为空时，Backspace 应取消待选择的不支持模型图片。"""
+        image_path = self._create_temp_png()
+        self.input.set_vision_support_checker(lambda: False)
+        self.input.set_image_upload_override_handlers(
+            lambda: "dashscope/qwen3.6-plus",
+            lambda: True,
+            lambda model: True,
+        )
+        self._drop_paths([image_path])
+
+        QTest.keyClick(self.input.text_edit, Qt.Key_Backspace)
+
+        self.assertEqual(self.input.toPlainText(), "")
+        self.assertEqual(self.input.pending_image_source_paths(), [])
+        self.assertFalse(self.input.error_bar.isVisible())
+        self.assertEqual(self.input._pending_unsupported_image_paths, [])
+
+    def test_backspace_keeps_pending_unsupported_image_when_text_not_empty(self) -> None:
+        """输入框不是空字符串时，Backspace 应保持普通删除行为。"""
+        image_path = self._create_temp_png()
+        self.input.set_vision_support_checker(lambda: False)
+        self.input.set_image_upload_override_handlers(
+            lambda: "dashscope/qwen3.6-plus",
+            lambda: True,
+            lambda model: True,
+        )
+        self.input.setPlainText("\n")
+        self.input.moveCursor(QTextCursor.End)
+        self._drop_paths([image_path])
+        self.assertTrue(self.input.error_bar.isVisible())
+
+        QTest.keyClick(self.input.text_edit, Qt.Key_Backspace)
+
+        self.assertEqual(self.input.toPlainText(), "")
+        self.assertEqual(self.input.pending_image_source_paths(), [])
 
     def _create_temp_png(self) -> str:
         """创建测试用 PNG 图片并返回路径。"""

@@ -34,6 +34,7 @@
 /GPT_SoVITS/faulthandler_log.txt
 /GPT_SoVITS/rag/pipeline/data/**
 /GPT_SoVITS/deepseek_prompt_cache_debug/
+/GPT_SoVITS/chat/model_attachment_capabilities.json
 
 docs-site/.vitepress/cache
 docs-site/.vitepress/dist

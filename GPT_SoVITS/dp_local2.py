@@ -20,7 +20,7 @@ from character import CharacterAttributes
 from log import get_logger
 
 from chat.chat import Chat, Message, ChatManager, MessageAttachment
-from chat.attachments import import_image_attachment
+from chat.attachments import import_image_attachment, model_supports_image_upload
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
@@ -1065,14 +1065,11 @@ class DSLocalAndVoiceGen:
 
     def _current_model_supports_vision(self) -> bool:
         """判断当前 LiteLLM 模型是否支持视觉输入。"""
-        import litellm
-
         model = self._current_litellm_model_name()
-        try:
-            return bool(litellm.supports_vision(model))
-        except Exception as exc:
-            logger.warning("查询模型视觉能力失败，按不支持处理：model=%s，error=%s", model, exc)
-            return False
+        return model_supports_image_upload(
+            model,
+            use_default_deepseek_api=bool(self.d_sakiko_config.use_default_deepseek_api.value),
+        )
 
     @staticmethod
     def _image_source_paths_from_command(command: dict[str, object]) -> list[str]:

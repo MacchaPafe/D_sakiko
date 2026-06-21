@@ -5,6 +5,7 @@ import os
 import unittest
 import sys
 import tempfile
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from PyQt5.QtGui import QImage
 
 from character import CharacterAttributes
+from chat import attachments
 from chat.chat import (
     Chat,
     ChatManager,
@@ -105,6 +107,15 @@ class ChatTestCase(unittest.TestCase):
         image.save(path)
         self.temp_paths.append(path)
         return path
+
+    def _create_temp_attachment_capabilities_config(self, data: dict[str, object]) -> Path:
+        """创建测试用模型附件能力配置文件。"""
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        with open(path, "w", encoding="utf-8") as config_file:
+            json.dump(data, config_file)
+        self.temp_paths.append(path)
+        return Path(path)
 
     def test_compatibility_of_normal_mode(self):
         """
@@ -539,6 +550,87 @@ class ChatTestCase(unittest.TestCase):
         assert isinstance(content, list)
         self.assertEqual(content[0], {"type": "text", "text": "[User]: 请描述"})
         self.assertEqual(content[1]["type"], "image_url")
+
+    def test_model_image_upload_uses_force_allowlist(self) -> None:
+        """LiteLLM 未识别视觉能力时，本地白名单应允许图片上传。"""
+        config_path = self._create_temp_attachment_capabilities_config({
+            "version": 1,
+            "image_upload": {
+                "force_allowlist": ["dashscope/qwen3.6-plus"],
+                "blocklist": [],
+            },
+        })
+
+        with (
+            mock.patch.object(attachments, "_MODEL_ATTACHMENT_CAPABILITIES_PATH", config_path),
+            mock.patch("litellm.supports_vision", return_value=False),
+        ):
+            self.assertTrue(attachments.model_supports_image_upload("dashscope/qwen3.6-plus"))
+
+    def test_model_image_upload_blocklist_overrides_allowlist_and_litellm(self) -> None:
+        """程序内置图片上传黑名单应同时压过 LiteLLM 与本地白名单。"""
+        config_path = self._create_temp_attachment_capabilities_config({
+            "version": 1,
+            "image_upload": {
+                "force_allowlist": ["deepseek/deepseek-v4-flash"],
+            },
+        })
+
+        with (
+            mock.patch.object(attachments, "_MODEL_ATTACHMENT_CAPABILITIES_PATH", config_path),
+            mock.patch("litellm.supports_vision", return_value=True),
+        ):
+            self.assertFalse(attachments.model_supports_image_upload("deepseek/deepseek-v4-flash"))
+            self.assertFalse(attachments.model_can_force_allow_image_upload("deepseek/deepseek-v4-flash"))
+
+    def test_up_deepseek_api_disables_image_upload(self) -> None:
+        """使用 Up 的 DeepSeek API 时，应固定禁止图片上传与强制允许。"""
+        config_path = self._create_temp_attachment_capabilities_config({
+            "version": 1,
+            "image_upload": {
+                "force_allowlist": ["dashscope/qwen3.6-plus"],
+                "blocklist": [],
+            },
+        })
+
+        with (
+            mock.patch.object(attachments, "_MODEL_ATTACHMENT_CAPABILITIES_PATH", config_path),
+            mock.patch("litellm.supports_vision", return_value=True),
+        ):
+            self.assertFalse(
+                attachments.model_supports_image_upload(
+                    "dashscope/qwen3.6-plus",
+                    use_default_deepseek_api=True,
+                )
+            )
+            self.assertFalse(
+                attachments.model_can_force_allow_image_upload(
+                    "dashscope/qwen3.6-plus",
+                    use_default_deepseek_api=True,
+                )
+            )
+
+    def test_add_model_image_upload_force_allow_writes_config(self) -> None:
+        """用户确认后的模型应写入图片上传强制允许白名单。"""
+        config_path = self._create_temp_attachment_capabilities_config({
+            "version": 1,
+            "image_upload": {
+                "force_allowlist": [],
+                "blocklist": [],
+            },
+        })
+
+        with mock.patch.object(attachments, "_MODEL_ATTACHMENT_CAPABILITIES_PATH", config_path):
+            attachments.add_model_image_upload_force_allow("dashscope/qwen3.6-plus")
+
+        with config_path.open("r", encoding="utf-8") as config_file:
+            data = json.load(config_file)
+
+        image_upload = data["image_upload"]
+        self.assertIsInstance(image_upload, dict)
+        assert isinstance(image_upload, dict)
+        self.assertEqual(image_upload["force_allowlist"], ["dashscope/qwen3.6-plus"])
+        self.assertNotIn("blocklist", image_upload)
 
     def test_chat_display_renders_image_with_explicit_thumbnail_size(self) -> None:
         """聊天图片缩略图应使用 QTextBrowser 可识别的显式宽高属性。"""

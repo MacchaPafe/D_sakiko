@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import mimetypes
+import json
 import shutil
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +38,24 @@ _MIME_TYPE_EXTENSIONS = {
     "image/gif": ".gif",
     "image/bmp": ".bmp",
 }
+
+_MODEL_ATTACHMENT_CAPABILITIES_PATH = Path(__file__).with_name("model_attachment_capabilities.json")
+_DEFAULT_IMAGE_UPLOAD_BLOCKLIST = [
+    "deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash",
+    "openai/deepseek-v4-flash",
+    "deepseek-ai/deepseek-v4-flash",
+    "openai/deepseek-ai/deepseek-v4-flash",
+    "deepseek-ai/DeepSeek-V4-Flash",
+    "openai/deepseek-ai/DeepSeek-V4-Flash",
+    "deepseek-v4-pro",
+    "deepseek/deepseek-v4-pro",
+    "openai/deepseek-v4-pro",
+    "deepseek-ai/deepseek-v4-pro",
+    "openai/deepseek-ai/deepseek-v4-pro",
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "openai/deepseek-ai/DeepSeek-V4-Pro",
+]
 
 
 def reference_audio_dir() -> Path:
@@ -79,6 +99,58 @@ def is_supported_image_file(path: str | Path) -> bool:
     return detect_image_mime_type(path) is not None
 
 
+def model_supports_image_upload(model: str, *, use_default_deepseek_api: bool = False) -> bool:
+    """判断当前模型是否允许上传图片附件。"""
+    if use_default_deepseek_api:
+        return False
+    if model_image_upload_is_blocked(model):
+        return False
+
+    if _litellm_supports_vision(model):
+        return True
+    return model_image_upload_is_force_allowed(model)
+
+
+def model_can_force_allow_image_upload(model: str, *, use_default_deepseek_api: bool = False) -> bool:
+    """判断当前模型是否允许用户手动加入图片上传白名单。"""
+    if use_default_deepseek_api:
+        return False
+    return bool(model.strip()) and not model_image_upload_is_blocked(model)
+
+
+def model_image_upload_is_blocked(model: str) -> bool:
+    """判断模型是否在图片上传黑名单中。"""
+    return _model_matches(model, _DEFAULT_IMAGE_UPLOAD_BLOCKLIST)
+
+
+def model_image_upload_is_force_allowed(model: str) -> bool:
+    """判断模型是否在图片上传强制允许白名单中。"""
+    image_upload = _load_image_upload_capabilities()
+    return _model_matches(model, _read_string_list(image_upload.get("force_allowlist")))
+
+
+def add_model_image_upload_force_allow(model: str) -> None:
+    """将模型加入图片上传强制允许白名单。"""
+    normalized_model = model.strip()
+    if not normalized_model:
+        raise ValueError("模型名称为空，无法加入图片上传白名单。")
+    if model_image_upload_is_blocked(normalized_model):
+        raise ValueError(f"模型在图片上传黑名单中，不能强制允许：{normalized_model}")
+
+    data = _load_model_attachment_capabilities()
+    image_upload = data.get("image_upload")
+    if not isinstance(image_upload, dict):
+        image_upload = {}
+        data["image_upload"] = image_upload
+
+    allowlist = _read_string_list(image_upload.get("force_allowlist"))
+    if not _model_matches(normalized_model, allowlist):
+        allowlist.append(normalized_model)
+    image_upload["force_allowlist"] = allowlist
+    image_upload.pop("blocklist", None)
+    _save_model_attachment_capabilities(data)
+
+
 def import_image_attachment(chat_id: str, source_path: str) -> "MessageAttachment":
     """复制图片到对话附件目录，并返回消息附件对象。"""
     if not chat_id:
@@ -116,3 +188,72 @@ def delete_chat_attachment_dir(chat_id: str) -> None:
     target_dir = chat_attachment_dir(chat_id)
     if target_dir.exists():
         shutil.rmtree(target_dir)
+
+
+def _litellm_supports_vision(model: str) -> bool:
+    """使用 LiteLLM 查询模型视觉能力，查询失败时按不支持处理。"""
+    try:
+        import litellm
+
+        return bool(litellm.supports_vision(model))
+    except Exception:
+        return False
+
+
+def _load_image_upload_capabilities() -> dict[str, object]:
+    """读取图片上传能力配置段。"""
+    data = _load_model_attachment_capabilities()
+    image_upload = data.get("image_upload")
+    if isinstance(image_upload, dict):
+        return image_upload
+    return {}
+
+
+def _load_model_attachment_capabilities() -> dict[str, object]:
+    """读取模型附件能力配置文件。"""
+    if not _MODEL_ATTACHMENT_CAPABILITIES_PATH.exists():
+        return _default_model_attachment_capabilities()
+    try:
+        with _MODEL_ATTACHMENT_CAPABILITIES_PATH.open("r", encoding="utf-8") as config_file:
+            data = json.load(config_file)
+    except (OSError, json.JSONDecodeError):
+        return _default_model_attachment_capabilities()
+    if isinstance(data, dict):
+        return data
+    return _default_model_attachment_capabilities()
+
+
+def _save_model_attachment_capabilities(data: dict[str, object]) -> None:
+    """保存模型附件能力配置文件。"""
+    _MODEL_ATTACHMENT_CAPABILITIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _MODEL_ATTACHMENT_CAPABILITIES_PATH.open("w", encoding="utf-8") as config_file:
+        json.dump(data, config_file, ensure_ascii=False, indent=2)
+        config_file.write("\n")
+
+
+def _read_string_list(value: object) -> list[str]:
+    """从未知 JSON 值中读取字符串列表。"""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item.strip()]
+
+
+def _model_matches(model: str, candidates: Sequence[str]) -> bool:
+    """按大小写不敏感的精确模型名匹配候选列表。"""
+    normalized_model = _normalize_model_name(model)
+    return any(_normalize_model_name(candidate) == normalized_model for candidate in candidates)
+
+
+def _normalize_model_name(model: str) -> str:
+    """规范化模型名称以便进行本地配置匹配。"""
+    return model.strip().lower()
+
+
+def _default_model_attachment_capabilities() -> dict[str, object]:
+    """返回内置模型附件能力配置。"""
+    return {
+        "version": 1,
+        "image_upload": {
+            "force_allowlist": [],
+        },
+    }

@@ -31,7 +31,13 @@ from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes, GetCharacterAttributes
 from chat.chat import ChatManager, Chat, ChatType, DeleteMessagesResult, Message, get_chat_manager
-from chat.attachments import delete_chat_attachment_dir, resolve_attachment_path
+from chat.attachments import (
+    add_model_image_upload_force_allow,
+    delete_chat_attachment_dir,
+    model_can_force_allow_image_upload,
+    model_supports_image_upload,
+    resolve_attachment_path,
+)
 from chat.model_token_usage import count_message_tokens
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
@@ -1594,6 +1600,11 @@ class ChatGUI(QWidget):
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
         self.user_input.set_vision_support_checker(self._current_model_supports_vision)
+        self.user_input.set_image_upload_override_handlers(
+            self._current_litellm_model_name,
+            self._current_model_can_force_image_upload,
+            self._force_allow_current_model_image_upload,
+        )
 
         self.voice_button = QPushButton()
         self.voice_button.setObjectName("voiceInputButton")
@@ -2800,13 +2811,27 @@ class ChatGUI(QWidget):
 
     def _current_model_supports_vision(self) -> bool:
         """判断当前选择的大模型是否支持视觉输入。"""
-        import litellm
-
         model = self._current_litellm_model_name()
+        return model_supports_image_upload(
+            model,
+            use_default_deepseek_api=bool(d_sakiko_config.use_default_deepseek_api.value),
+        )
+
+    def _current_model_can_force_image_upload(self) -> bool:
+        """判断当前模型是否允许用户手动强制开启图片上传。"""
+        model = self._current_litellm_model_name()
+        return model_can_force_allow_image_upload(
+            model,
+            use_default_deepseek_api=bool(d_sakiko_config.use_default_deepseek_api.value),
+        )
+
+    def _force_allow_current_model_image_upload(self, model: str) -> bool:
+        """将用户确认过的模型写入图片上传白名单。"""
         try:
-            return bool(litellm.supports_vision(model))
-        except Exception as exc:
-            logger.warning("查询模型视觉能力失败，按不支持处理：model=%s，error=%s", model, exc)
+            add_model_image_upload_force_allow(model)
+            return True
+        except Exception:
+            logger.exception("写入图片上传白名单失败：model=%s", model)
             return False
 
     def refresh_current_chat_display(self):

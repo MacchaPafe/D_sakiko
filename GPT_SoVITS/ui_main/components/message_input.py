@@ -22,9 +22,11 @@ from PyQt5.QtGui import (
     QTextDocument,
 )
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QScrollArea,
     QScrollBar,
@@ -149,6 +151,13 @@ class MessageTextEdit(QPlainTextEdit):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """将无功能修饰键的 Enter 转为发送，其余 Enter 保持换行。"""
+        if event.key() == Qt.Key_Backspace:
+            if self._composer.dismiss_pending_unsupported_images_if_empty():
+                event.accept()
+                return
+            super().keyPressEvent(event)
+            return
+
         if event.key() not in (Qt.Key_Return, Qt.Key_Enter):
             super().keyPressEvent(event)
             return
@@ -307,12 +316,38 @@ class MessageInput(QWidget):
         super().__init__(parent)
         self._theme_color = "#7799CC"
         self._vision_support_checker: Callable[[], bool] | None = None
+        self._current_model_name_provider: Callable[[], str] | None = None
+        self._image_upload_force_allowed_checker: Callable[[], bool] | None = None
+        self._force_image_upload_allow_callback: Callable[[str], bool] | None = None
         self._draft_images: list[DraftImageAttachment] = []
+        self._pending_unsupported_image_paths: list[str] = []
 
+        self.error_bar = QWidget(self)
+        self.error_bar.setObjectName("messageInputErrorBar")
+        self.error_bar.hide()
         self.error_label = QLabel("", self)
         self.error_label.setObjectName("messageInputErrorLabel")
         self.error_label.setWordWrap(True)
-        self.error_label.hide()
+        self.force_send_button = QToolButton(self)
+        self.force_send_button.setObjectName("messageInputErrorActionButton")
+        self.force_send_button.setText("仍然发送")
+        self.force_send_button.setToolTip("确认当前模型支持图片后仍然作为图片附件发送")
+        self.force_send_button.clicked.connect(self._handle_force_image_upload_requested)  # noqa
+        self.force_send_button.hide()
+        self.insert_filename_button = QToolButton(self)
+        self.insert_filename_button.setObjectName("messageInputErrorActionButton")
+        self.insert_filename_button.setText("插入文件名")
+        self.insert_filename_button.setToolTip("按普通文件路径插入到输入框")
+        self.insert_filename_button.clicked.connect(self._insert_pending_unsupported_image_paths)  # noqa
+        self.insert_filename_button.hide()
+
+        error_layout = QHBoxLayout()
+        error_layout.setContentsMargins(0, 0, 0, 0)
+        error_layout.setSpacing(6)
+        error_layout.addWidget(self.error_label, 1)
+        error_layout.addWidget(self.force_send_button, 0)
+        error_layout.addWidget(self.insert_filename_button, 0)
+        self.error_bar.setLayout(error_layout)
 
         self.preview_area = QScrollArea(self)
         self.preview_area.setObjectName("messageInputPreviewArea")
@@ -338,7 +373,7 @@ class MessageInput(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        layout.addWidget(self.error_label)
+        layout.addWidget(self.error_bar)
         layout.addWidget(self.preview_area)
         layout.addWidget(self.text_edit)
         self.setLayout(layout)
@@ -349,6 +384,17 @@ class MessageInput(QWidget):
     def set_vision_support_checker(self, checker: Callable[[], bool]) -> None:
         """设置当前模型是否支持视觉输入的同步检查回调。"""
         self._vision_support_checker = checker
+
+    def set_image_upload_override_handlers(
+        self,
+        current_model_name_provider: Callable[[], str],
+        image_upload_force_allowed_checker: Callable[[], bool],
+        force_image_upload_allow_callback: Callable[[str], bool],
+    ) -> None:
+        """设置图片上传强制允许流程所需的外部回调。"""
+        self._current_model_name_provider = current_model_name_provider
+        self._image_upload_force_allowed_checker = image_upload_force_allowed_checker
+        self._force_image_upload_allow_callback = force_image_upload_allow_callback
 
     def set_theme_color(self, color: str) -> None:
         """根据主题色刷新输入框内部样式。"""
@@ -361,10 +407,21 @@ class MessageInput(QWidget):
                 color: {self._theme_color};
             }}
         """)
-        self.error_label.setStyleSheet("""
+        self.error_bar.setStyleSheet("""
             QLabel#messageInputErrorLabel {
                 color: #B00020;
                 font-weight: bold;
+            }
+            QToolButton#messageInputErrorActionButton {
+                color: #B00020;
+                background-color: transparent;
+                border: 1px solid rgba(176, 0, 32, 0.55);
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-weight: bold;
+            }
+            QToolButton#messageInputErrorActionButton:hover {
+                background-color: rgba(176, 0, 32, 0.08);
             }
         """)
         self.preview_area.setStyleSheet("""
@@ -442,6 +499,7 @@ class MessageInput(QWidget):
     def handle_dropped_paths(self, paths: Sequence[str]) -> None:
         """按当前模型能力处理拖入的本地路径。"""
         paths_to_insert: list[str] = []
+        unsupported_image_paths: list[str] = []
         error_message = ""
         for path in paths:
             if not path:
@@ -450,8 +508,7 @@ class MessageInput(QWidget):
                 if self._model_supports_vision():
                     self.add_draft_image_path(path)
                 else:
-                    error_message = "当前模型不支持图片输入，已按普通文件路径插入。"
-                    paths_to_insert.append(path)
+                    unsupported_image_paths.append(os.path.abspath(path))
                 continue
             if self._looks_like_image_path(path):
                 error_message = "图片无法读取或格式不受支持，已按普通文件路径插入。"
@@ -459,6 +516,20 @@ class MessageInput(QWidget):
 
         if paths_to_insert:
             self.insert_file_paths(paths_to_insert)
+        if unsupported_image_paths:
+            self._pending_unsupported_image_paths = unsupported_image_paths
+            if self._can_force_image_upload():
+                self.show_error(
+                    "当前模型不支持图片输入。",
+                    show_force_send=True,
+                    show_insert_filename=True,
+                )
+            else:
+                self.show_error(
+                    "当前模型不支持图片输入。",
+                    show_insert_filename=True,
+                )
+            return
         if error_message:
             self.show_error(error_message)
 
@@ -511,16 +582,38 @@ class MessageInput(QWidget):
                 failed_paths.append(attachment.source_path)
         return failed_paths
 
-    def show_error(self, message: str) -> None:
+    def dismiss_pending_unsupported_images_if_empty(self) -> bool:
+        """在输入框为空时取消待选择的不支持模型图片。"""
+        if self.toPlainText() != "":
+            return False
+        if not self.error_bar.isVisible():
+            return False
+        if not self._pending_unsupported_image_paths:
+            return False
+        self.hide_error()
+        return True
+
+    def show_error(
+        self,
+        message: str,
+        *,
+        show_force_send: bool = False,
+        show_insert_filename: bool = False,
+    ) -> None:
         """显示输入框错误提示。"""
         self.error_label.setText(message)
-        self.error_label.show()
+        self.force_send_button.setVisible(show_force_send)
+        self.insert_filename_button.setVisible(show_insert_filename)
+        self.error_bar.show()
 
     def hide_error(self) -> None:
         """隐藏输入框错误提示。"""
-        if self.error_label.isVisible():
+        if self.error_bar.isVisible():
             self.error_label.clear()
-            self.error_label.hide()
+            self.force_send_button.hide()
+            self.insert_filename_button.hide()
+            self.error_bar.hide()
+        self._pending_unsupported_image_paths.clear()
 
     def refresh_height(self) -> None:
         """刷新内部文本框高度。"""
@@ -556,6 +649,42 @@ class MessageInput(QWidget):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(source_path)):
             self.show_error(f"无法打开图片：{os.path.basename(source_path)}")
 
+    def _handle_force_image_upload_requested(self) -> None:
+        """处理用户确认对当前模型强制启用图片上传。"""
+        pending_paths = list(self._pending_unsupported_image_paths)
+        if not pending_paths:
+            self.hide_error()
+            return
+        if not self._can_force_image_upload():
+            self.show_error("当前模型不能强制启用图片输入。", show_insert_filename=True)
+            return
+
+        model_name = self._current_model_name()
+        if not self._confirm_force_image_upload(model_name):
+            return
+        if not self._force_allow_model_image_upload(model_name):
+            self.show_error("保存图片上传白名单失败。", show_insert_filename=True)
+            return
+
+        failed_paths: list[str] = []
+        for image_path in pending_paths:
+            if not self.add_draft_image_path(image_path, show_error=False):
+                failed_paths.append(image_path)
+        if failed_paths:
+            self.show_error(f"图片不存在、无法读取或格式不受支持：{os.path.basename(failed_paths[0])}")
+            return
+        self.hide_error()
+
+    def _insert_pending_unsupported_image_paths(self) -> None:
+        """把暂存的不支持图片路径按普通文件路径插入输入框。"""
+        pending_paths = list(self._pending_unsupported_image_paths)
+        if not pending_paths:
+            self.hide_error()
+            return
+        self._pending_unsupported_image_paths.clear()
+        self.insert_file_paths(pending_paths)
+        self.hide_error()
+
     def _model_supports_vision(self) -> bool:
         """调用外部 checker 判断当前模型是否支持视觉输入。"""
         if self._vision_support_checker is None:
@@ -564,6 +693,52 @@ class MessageInput(QWidget):
             return bool(self._vision_support_checker())
         except Exception:
             return False
+
+    def _can_force_image_upload(self) -> bool:
+        """调用外部 checker 判断当前模型是否允许手动强制启用图片上传。"""
+        if self._image_upload_force_allowed_checker is None:
+            return False
+        try:
+            return bool(self._image_upload_force_allowed_checker())
+        except Exception:
+            return False
+
+    def _current_model_name(self) -> str:
+        """读取当前模型名称，读取失败时返回空字符串。"""
+        if self._current_model_name_provider is None:
+            return ""
+        try:
+            return str(self._current_model_name_provider())
+        except Exception:
+            return ""
+
+    def _force_allow_model_image_upload(self, model_name: str) -> bool:
+        """调用外部回调保存当前模型的图片上传白名单。"""
+        if self._force_image_upload_allow_callback is None:
+            return False
+        try:
+            return bool(self._force_image_upload_allow_callback(model_name))
+        except Exception:
+            return False
+
+    def _confirm_force_image_upload(self, model_name: str) -> bool:
+        """要求用户确认当前模型确实支持图片输入。"""
+        display_model = model_name or "当前模型"
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Warning)
+        message_box.setWindowTitle("确认图片输入")
+        message_box.setText("请前往平台查看模型文档，确定该模型确实支持图片输入。")
+        checkbox = QCheckBox(
+            f"我承诺我查阅了文档，确定当前模型 {display_model} 支持图像输入",
+            message_box,
+        )
+        message_box.setCheckBox(checkbox)
+        send_button = message_box.addButton("仍然发送", QMessageBox.AcceptRole)
+        send_button.setEnabled(False)
+        message_box.addButton("取消", QMessageBox.RejectRole)
+        checkbox.toggled.connect(send_button.setEnabled)  # noqa
+        message_box.exec()
+        return message_box.clickedButton() is send_button and checkbox.isChecked()
 
     @staticmethod
     def _is_supported_image_path(path: str) -> bool:
