@@ -53,6 +53,7 @@ d_sakiko_config.json
 update_logs/**
 tools/hdiffz
 tools/hpatchz
+tools/release/update_patch.local.json
 **/*.hdiff
 **/node_modules/**
 .scratch/**

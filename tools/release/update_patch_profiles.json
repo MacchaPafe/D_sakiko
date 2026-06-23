@@ -1,0 +1,41 @@
+{
+  "defaults": {
+    "current": ".",
+    "output": "patch_files",
+    "app_id": "D_sakiko",
+    "channel": "stable",
+    "min_updater_version": "1.0.0",
+    "manifest": "manifest.json",
+    "patch_file": "patch.hdiff",
+    "hdiff_bin": "tools/hdiffz",
+    "hpatch_bin": "tools/hpatchz",
+    "read_gitignore": true,
+    "use_git_tracked": true,
+    "clean_output": true,
+    "no_platform_includes": false,
+    "ignore": [
+      "GPT_SoVITS/configs/*",
+      "GPT_SoVITS/text/G2PWModel/*",
+      "MacOS 软件包安装指南.md",
+      "MacOS 软件包安装指南.assets/*",
+      "img_kasumi.png",
+      "img_sakiko.png",
+      "聊天记录注意事项！.txt",
+      "docs-site/*"
+    ],
+    "include": []
+  },
+  "profiles": {
+    "macos-arm64": {
+      "platform": "macos",
+      "arch": "arm64",
+      "ignore": [
+        "GPT_SoVITS/live2d_1.pyd"
+      ]
+    },
+    "windows-x64": {
+      "platform": "windows",
+      "arch": "x64"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "old_versions_root": "D://D_sakiko/",
+  "old_dir_pattern": "D_sakiko_{base_version}_*",
+  "extra_ignore": [],
+  "extra_include": [],
+  "profile_overrides": {
+    "macos-arm64": {
+      "old_versions_root": "/Volumes/Windows Bac/D_sakiko_versions"
+    },
+    "windows-x64": {
+      "old_versions_root": "D://D_sakiko/"
+    }
+  }
+}
