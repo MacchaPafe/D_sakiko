@@ -1,0 +1,273 @@
+name: Publish Update Smoke Prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_version:
+        description: "Base app version. Defaults to version.json."
+        required: false
+        default: ""
+      target_version:
+        description: "Smoke target version. Defaults to base version patch + 1."
+        required: false
+        default: ""
+      tag:
+        description: "Prerelease tag. Defaults to update-smoke-v<base>-to-v<target>."
+        required: false
+        default: ""
+
+jobs:
+  publish-update-smoke-prerelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.UPDATE_ED25519_PRIVATE_KEY }}
+      UPDATE_ED25519_PUBLIC_KEY: ${{ vars.UPDATE_ED25519_PUBLIC_KEY || secrets.UPDATE_ED25519_PUBLIC_KEY }}
+      HDIFFPATCH_VERSION: "4.12.2"
+      HDIFFPATCH_LINUX64_SHA256: "432886341e6099adeb5223427454e9bc0b565f81edfbe2e3387f804611c07e4a"
+      INPUT_BASE_VERSION: ${{ inputs.base_version }}
+      INPUT_TARGET_VERSION: ${{ inputs.target_version }}
+      INPUT_TAG: ${{ inputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install release dependencies
+        run: python -m pip install cryptography
+
+      - name: Resolve smoke versions
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+          import pathlib
+          import re
+
+          base_version = os.environ["INPUT_BASE_VERSION"].strip()
+          if not base_version:
+              version_data = json.loads(pathlib.Path("version.json").read_text(encoding="utf-8"))
+              base_version = str(version_data["version"]).strip()
+          if not re.fullmatch(r"\d+(?:\.\d+)*", base_version):
+              raise SystemExit(f"base_version must be numeric dot version: {base_version!r}")
+
+          target_version = os.environ["INPUT_TARGET_VERSION"].strip()
+          if not target_version:
+              parts = base_version.split(".")
+              parts[-1] = str(int(parts[-1]) + 1)
+              target_version = ".".join(parts)
+          if not re.fullmatch(r"\d+(?:\.\d+)*", target_version):
+              raise SystemExit(f"target_version must be numeric dot version: {target_version!r}")
+          if tuple(map(int, target_version.split("."))) <= tuple(map(int, base_version.split("."))):
+              raise SystemExit(f"target_version must be greater than base_version: {base_version} -> {target_version}")
+
+          tag = os.environ["INPUT_TAG"].strip() or f"update-smoke-v{base_version}-to-v{target_version}"
+          if "/" in tag or "\\" in tag or ".." in tag:
+              raise SystemExit(f"tag contains unsafe path characters: {tag!r}")
+
+          print(f"BASE_VERSION={base_version}")
+          print(f"TARGET_VERSION={target_version}")
+          print(f"SMOKE_TAG={tag}")
+          print(f"RELEASE_TITLE=Update smoke {base_version} -> {target_version}")
+          print(f"RELEASE_SUMMARY=Version-only update smoke package for testing the updater shipped in {base_version}.")
+          PY
+
+      - name: Download HDiffPatch
+        run: |
+          mkdir -p dist/tools
+          curl -fsSL \
+            "https://github.com/sisong/HDiffPatch/releases/download/v${HDIFFPATCH_VERSION}/hdiffpatch_v${HDIFFPATCH_VERSION}_bin_linux64.zip" \
+            -o dist/tools/hdiffpatch_linux64.zip
+          echo "${HDIFFPATCH_LINUX64_SHA256}  dist/tools/hdiffpatch_linux64.zip" | sha256sum -c -
+          unzip -q dist/tools/hdiffpatch_linux64.zip -d dist/tools/hdiffpatch
+          HDIFF_BIN="$(find dist/tools/hdiffpatch -type f -name hdiffz | head -n 1)"
+          if [ -z "$HDIFF_BIN" ]; then
+            echo "hdiffz not found in HDiffPatch archive" >&2
+            exit 1
+          fi
+          chmod +x "$HDIFF_BIN"
+          echo "HDIFF_BIN=$PWD/$HDIFF_BIN" >> "$GITHUB_ENV"
+
+      - name: Prepare version-only trees
+        run: |
+          mkdir -p dist/smoke/old dist/smoke/new dist/assets
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          old_version = {"version": os.environ["BASE_VERSION"]}
+          new_version = {"version": os.environ["TARGET_VERSION"]}
+          pathlib.Path("dist/smoke/old/version.json").write_text(
+              json.dumps(old_version, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          pathlib.Path("dist/smoke/new/version.json").write_text(
+              json.dumps(new_version, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Build smoke patch assets
+        run: |
+          set -euo pipefail
+          for target in "macos arm64" "windows x64"; do
+            platform="${target%% *}"
+            arch="${target##* }"
+            output_dir="dist/smoke/patch_${platform}_${arch}"
+            zip_name="D_sakiko_${BASE_VERSION}_to_${TARGET_VERSION}_${platform}_${arch}.patch.zip"
+            python tools/build_diff_patch.py \
+              --current dist/smoke/new \
+              --old dist/smoke/old \
+              --output "$output_dir" \
+              --base-version "$BASE_VERSION" \
+              --target-version "$TARGET_VERSION" \
+              --platform "$platform" \
+              --arch "$arch" \
+              --hdiff-bin "$HDIFF_BIN" \
+              --no-platform-includes \
+              --clean-output \
+              --zip-output "dist/assets/$zip_name"
+          done
+
+      - name: Sign smoke patch assets
+        working-directory: dist/assets
+        run: |
+          shopt -s nullglob
+          for patch in *.patch.zip; do
+            python ../../tools/release/sign_patch_asset.py \
+              --private-key-env UPDATE_ED25519_PRIVATE_KEY \
+              --input "$patch" \
+              --output "$patch.sig"
+            python - <<'PY' "$patch"
+          import hashlib
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          path.with_name(path.name + ".sha256").write_text(
+              hashlib.sha256(path.read_bytes()).hexdigest() + "\n",
+              encoding="utf-8",
+          )
+          PY
+          done
+
+      - name: Generate smoke release notes and update index
+        working-directory: dist/assets
+        run: |
+          cat > ../release_body.md <<'EOF'
+          This prerelease contains version-only update smoke packages.
+
+          It is intended for manually testing the updater by setting DSAKIKO_UPDATE_INDEX_URLS to this prerelease's update_index.json asset.
+          EOF
+          python ../../tools/release/generate_release_notes.py \
+            --release-body-file ../release_body.md \
+            --version "$TARGET_VERSION" \
+            --title "$RELEASE_TITLE" \
+            --output release_notes.md \
+            --summary-output ../release_summary.txt
+
+          python - <<'PY'
+          import json
+          import pathlib
+
+          assets = [
+              {"name": path.name, "size": path.stat().st_size}
+              for path in sorted(pathlib.Path(".").glob("*.patch.zip"))
+          ]
+          pathlib.Path("assets.json").write_text(
+              json.dumps(assets, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          PY
+
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          from urllib.parse import quote
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["SMOKE_TAG"]
+          notes = [{
+              "name": "GitHub",
+              "url": f"https://github.com/{repo}/releases/download/{tag}/{quote('release_notes.md')}",
+          }]
+          pathlib.Path("notes_urls.json").write_text(
+              json.dumps(notes, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          PY
+
+          python ../../tools/release/generate_update_index.py \
+            --assets-json assets.json \
+            --latest "$TARGET_VERSION" \
+            --min-supported "$BASE_VERSION" \
+            --release-title "$RELEASE_TITLE" \
+            --release-summary "$(cat ../release_summary.txt)" \
+            --notes-urls-json notes_urls.json \
+            --critical false \
+            --github-owner "$OWNER" \
+            --github-repo "$REPO" \
+            --tag "$SMOKE_TAG" \
+            --output update_index.json
+
+      - name: Verify smoke update assets
+        working-directory: dist/assets
+        run: |
+          patches=()
+          for patch in *.patch.zip; do
+            patches+=(--patch "$patch")
+          done
+          python ../../tools/release/verify_update_assets.py \
+            --index update_index.json \
+            --public-key-b64 "$UPDATE_ED25519_PUBLIC_KEY" \
+            "${patches[@]}"
+
+      - name: Create or update prerelease
+        run: |
+          if gh release view "$SMOKE_TAG" >/dev/null 2>&1; then
+            gh release edit "$SMOKE_TAG" \
+              --title "$RELEASE_TITLE" \
+              --notes-file dist/release_body.md \
+              --prerelease
+          else
+            gh release create "$SMOKE_TAG" \
+              --title "$RELEASE_TITLE" \
+              --notes-file dist/release_body.md \
+              --prerelease \
+              --target "$GITHUB_SHA"
+          fi
+          gh release upload "$SMOKE_TAG" \
+            dist/assets/update_index.json \
+            dist/assets/release_notes.md \
+            dist/assets/*.patch.zip \
+            dist/assets/*.patch.zip.sha256 \
+            dist/assets/*.patch.zip.sig \
+            --clobber
+
+      - name: Write smoke test instructions
+        run: |
+          INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${SMOKE_TAG}/update_index.json"
+          {
+            echo "## Update smoke prerelease"
+            echo ""
+            echo "- Base version: \`${BASE_VERSION}\`"
+            echo "- Target version: \`${TARGET_VERSION}\`"
+            echo "- Prerelease tag: \`${SMOKE_TAG}\`"
+            echo ""
+            echo "Use this environment variable when manually testing the updater:"
+            echo ""
+            echo '```bash'
+            echo "DSAKIKO_UPDATE_INDEX_URLS=${INDEX_URL}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
