@@ -2392,7 +2392,7 @@ class ChatGUI(QWidget):
             self.set_btn_color("#7799CC")
         self.refresh_current_chat_display()
         self._load_tool_call_records_cache()
-        self._refresh_reasoning_button()
+        self._refresh_input_option_buttons()
         if self.current_character.icon_path is not None:
             self.setWindowIcon(QIcon(self.current_character.icon_path))
         self.talk_speed_reset()
@@ -2425,7 +2425,13 @@ class ChatGUI(QWidget):
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(6)
-        bottom_layout.addStretch(1)
+
+        self.tool_calling_toggle_button = QToolButton()
+        self.tool_calling_toggle_button.setObjectName("toolCallingToggleButton")
+        self.tool_calling_toggle_button.setCheckable(True)
+        self.tool_calling_toggle_button.setFixedHeight(self.input_tool_button_height)
+        self.tool_calling_toggle_button.setMinimumWidth(max(46, int(self.input_tool_button_height * 1.8)))
+        self.tool_calling_toggle_button.clicked.connect(self._set_tool_calling_enabled)  # noqa
 
         self.reasoning_menu_button = QToolButton()
         self.reasoning_menu_button.setObjectName("reasoningMenuButton")
@@ -2433,8 +2439,10 @@ class ChatGUI(QWidget):
         self.reasoning_menu_button.setToolTip("设置当前对话的推理与推理强度")
         self.reasoning_menu_button.setMenu(self._build_reasoning_menu())
         self.reasoning_menu_button.setFixedHeight(self.input_tool_button_height)
-        self._refresh_reasoning_button()
+        self._refresh_input_option_buttons()
 
+        bottom_layout.addWidget(self.tool_calling_toggle_button, 0)
+        bottom_layout.addStretch(1)
         bottom_layout.addWidget(self.context_usage_indicator, 0)
         bottom_layout.addWidget(self.reasoning_menu_button, 0)
         bottom_layout.addWidget(self.voice_button, 0)
@@ -2470,6 +2478,39 @@ class ChatGUI(QWidget):
             effort_menu.addAction(action)
 
         return menu
+
+    def _set_tool_calling_enabled(self, enabled: bool) -> None:
+        """修改当前对话的工具调用开关配置。"""
+        self.current_chat.meta.tool_calling_enabled = bool(enabled)
+        self._refresh_tool_calling_button()
+        self._save_tool_calling_config()
+
+    def _refresh_input_option_buttons(self) -> None:
+        """刷新输入栏中的对话级选项按钮。"""
+        self._refresh_tool_calling_button()
+        self._refresh_reasoning_button()
+
+    def _refresh_tool_calling_button(self) -> None:
+        """根据当前对话配置刷新工具调用按钮文本和选中状态。"""
+        if not hasattr(self, "tool_calling_toggle_button"):
+            return
+        enabled = bool(self.current_chat.meta.tool_calling_enabled)
+        self.tool_calling_toggle_button.setChecked(enabled)
+        self.tool_calling_toggle_button.setText("工具 开" if enabled else "工具 关")
+        self.tool_calling_toggle_button.setToolTip(
+            "当前对话允许模型调用工具"
+            if enabled
+            else "当前对话不会调用工具"
+        )
+
+    def _save_tool_calling_config(self) -> None:
+        """保存当前对话的工具调用配置。"""
+        try:
+            self.chat_manager.save()
+            self.setWindowTitle("已更新工具调用设置")
+        except Exception:
+            logger.exception("保存工具调用设置失败")
+            self.setWindowTitle("工具调用设置保存失败！")
 
     def _set_reasoning_enabled(self, enabled: str) -> None:
         """修改当前对话的推理开关配置。"""
@@ -2542,6 +2583,32 @@ class ChatGUI(QWidget):
             self.context_usage_indicator.set_theme_color(send_color.name())
         send_hover_color = send_color.lighter(112).name()
         send_pressed_color = send_color.darker(108).name()
+        if hasattr(self, "tool_calling_toggle_button"):
+            self.tool_calling_toggle_button.setStyleSheet(f"""
+                QToolButton#toolCallingToggleButton {{
+                    color: {color};
+                    background-color: rgba(0, 0, 0, 0.035);
+                    border: 1px solid rgba(0, 0, 0, 0.08);
+                    border-radius: 9px;
+                    padding: 0px 9px;
+                }}
+                QToolButton#toolCallingToggleButton:hover {{
+                    background-color: rgba(0, 0, 0, 0.07);
+                }}
+                QToolButton#toolCallingToggleButton:checked {{
+                    color: #FFFFFF;
+                    background-color: {send_color.name()};
+                    border: 1px solid {send_color.name()};
+                }}
+                QToolButton#toolCallingToggleButton:checked:hover {{
+                    background-color: {send_hover_color};
+                    border: 1px solid {send_hover_color};
+                }}
+                QToolButton#toolCallingToggleButton:checked:pressed {{
+                    background-color: {send_pressed_color};
+                    border: 1px solid {send_pressed_color};
+                }}
+            """)
         self.input_panel.setStyleSheet(f"""
             QFrame#messageInputPanel {{
                 background-color: #FFFFFF;
@@ -2865,7 +2932,7 @@ class ChatGUI(QWidget):
         self._current_theme_color = color
         self.chat_display.set_theme_color(color)
         self._apply_input_panel_style(color)
-        self._refresh_reasoning_button()
+        self._refresh_input_option_buttons()
         self.refresh_current_chat_display()
         # 保存新颜色到本地以及修改内存中的颜色
         try:

@@ -174,6 +174,21 @@ class ChatTestCase(unittest.TestCase):
             self.assertEqual(original_msg.emotion, restored_msg.emotion)
             self.assertEqual(original_msg.audio_path, restored_msg.audio_path)
 
+    def test_tool_calling_enabled_defaults_and_serialization(self) -> None:
+        """
+        对话级工具调用开关应默认开启，并且只在关闭时写入存档。
+        """
+        default_chat = Chat()
+        self.assertTrue(default_chat.meta.tool_calling_enabled)
+        self.assertNotIn("tool_calling_enabled", default_chat.to_dict().get("meta", {}))
+
+        disabled_chat = Chat(meta={"tool_calling_enabled": False})
+        self.assertFalse(disabled_chat.meta.tool_calling_enabled)
+        self.assertEqual(
+            disabled_chat.to_dict().get("meta", {}).get("tool_calling_enabled"),
+            False,
+        )
+
     def test_clear_message_list_removes_tool_call_records(self):
         """
         清空聊天记录时，工具调用记录也应一并清空，避免按旧 message_index 重新渲染到新消息上。
@@ -193,6 +208,7 @@ class ChatTestCase(unittest.TestCase):
                 "tool_call_history": [{"tool_rounds": 1}],
                 "theater": {"situation": "保留的小剧场设定"},
                 "live2d_models": {"爱音": "/tmp/anon.model3.json"},
+                "tool_calling_enabled": False,
             },
         )
 
@@ -203,6 +219,7 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(chat.meta.tool_call_history, [])
         self.assertEqual(chat.meta.theater.situation, "保留的小剧场设定")
         self.assertEqual(chat.meta.live2d_models["爱音"], "/tmp/anon.model3.json")
+        self.assertFalse(chat.meta.tool_calling_enabled)
 
     def test_find_turn_range_for_user_and_assistant_messages(self):
         """

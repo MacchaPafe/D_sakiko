@@ -51,6 +51,13 @@ def _as_optional_bool(value: object) -> bool | None:
     return None
 
 
+def _as_bool(value: object, default: bool = False) -> bool:
+    """将外部输入安全转换为布尔值。"""
+    if isinstance(value, bool):
+        return value
+    return default
+
+
 @dataclass
 class TheaterCharacterMeta:
     """小剧场中单个角色的补充设定。"""
@@ -229,6 +236,8 @@ class ChatMeta:
     tool_call_history: list[ToolCallHistoryRecordMeta] = field(default_factory=list)
     # 模型推理强度设置
     llm_reasoning: ReasoningMeta = field(default_factory=ReasoningMeta)
+    # 当前对话是否允许模型调用工具。
+    tool_calling_enabled: bool = True
     # 用来存放一些无法分类的字段，避免旧程序载入新版本程序存档时丢失数据。
     # （不过有一说一，真的会有人更新版本后又用旧版本程序打开新版本对话记录吗？有点诡异了）
     extra: dict[str, object] = field(default_factory=dict)
@@ -261,6 +270,7 @@ class ChatMeta:
             "tool_call_records",
             "tool_call_history",
             "llm_reasoning",
+            "tool_calling_enabled",
         }
         # 保留所有未知的字段到 extra 中，确保数据不丢失
         extra = {str(key): value for key, value in mapping.items() if key not in known_keys}
@@ -271,6 +281,7 @@ class ChatMeta:
             tool_call_records=tool_call_records,
             tool_call_history=tool_call_history,
             llm_reasoning=ReasoningMeta.from_dict(mapping.get("llm_reasoning")),
+            tool_calling_enabled=_as_bool(mapping.get("tool_calling_enabled"), True),
             extra=extra,
         )
 
@@ -287,4 +298,6 @@ class ChatMeta:
             data["tool_call_history"] = [one.to_dict() for one in self.tool_call_history]
         if self.llm_reasoning != ReasoningMeta():
             data["llm_reasoning"] = self.llm_reasoning.to_dict()
+        if not self.tool_calling_enabled:
+            data["tool_calling_enabled"] = False
         return data

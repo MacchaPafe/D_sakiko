@@ -22,7 +22,7 @@ from log import get_logger
 from chat.chat import Chat, Message, ChatManager, MessageAttachment
 from chat.attachments import import_image_attachment, model_supports_image_upload
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
-from chat.tool_calling import ToolCallingAgentRuntime
+from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
 from deepseek_prompt_cache_debug import CACHE_DEBUG_PHASE_KEY, log_prompt_cache_usage
 from llm_provider.modelscope import (
@@ -1031,6 +1031,32 @@ class DSLocalAndVoiceGen:
 
         raise ValueError("模型连续返回空内容。")
 
+    def _run_plain_completion_turn(
+        self,
+        messages: list[dict[str, object]],
+        reasoning_kwargs: dict[str, object],
+    ) -> AgentRunResult:
+        """
+        执行不带工具 schema 的普通模型补全，并包装为统一的本轮结果。
+        """
+        runtime_messages = self.trim_list_to_340kb(messages)
+        response = self._completion_with_current_config(
+            model="plain-runtime",
+            messages=runtime_messages,
+            tools=None,
+            tool_choice="none",
+            stream=False,
+            timeout=30,
+            **reasoning_kwargs,
+        )
+        return AgentRunResult(
+            final_content=self._extract_response_content(response).strip(),
+            messages=runtime_messages,
+            tool_rounds=0,
+            tool_errors=0,
+            tool_execution_records=[],
+        )
+
     def _supports_json_object_response_format_for_current_config(self) -> bool:
         """
         使用 LiteLLM 的模型参数表判断当前配置是否应尝试 JSON Mode。
@@ -1728,31 +1754,39 @@ class DSLocalAndVoiceGen:
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
             # 为本轮用户输入锁定推理配置；如果用户在工具调用过程中修改 UI 设置，只会影响下一轮输入。
             reasoning_kwargs_snapshot = self._build_current_reasoning_kwargs_snapshot()
+            # 为本轮用户输入锁定工具调用开关；如果用户在请求过程中修改 UI 设置，只会影响下一轮输入。
+            tool_calling_enabled = bool(self.current_chat.meta.tool_calling_enabled)
             # --------------------------
             try:
-                # 构造 interim_callback（期间文本回调），用于接收大模型在决定调用工具前输出的“过渡台词”（如：“请稍等，我查一下天气”）
-                # 该回调收到文本后会迅速将其推入 text_queue，触发前端的文字显示和后端的 GPT-SoVITS 语音合成。
-                interim_callback = self._build_interim_message_callback(
-                    text_queue=text_queue,
-                    is_audio_play_complete=is_audio_play_complete,
-                    is_text_generating_queue=is_text_generating_queue,
-                    dp2qt_queue=dp2qt_queue,
-                    chat_id=active_chat_id,
-                    turn_id=turn_id,
-                )
-                
-                # 启动带有工具调用能力的 Agent 运行循环
-                # run() 内部会处理多轮 LLM 对话（如果触发了工具），直到提取出最终回答或达到循环上限才会返回 result。
-                runtime_result = self.tool_runtime.run(
-                    model="tool-runtime",
-                    messages=self.trim_list_to_340kb(to_llm_msg),
-                    llm_kwargs={
-                        "stream": False,
-                        "timeout": 30,
-                        **reasoning_kwargs_snapshot,
-                    },
-                    on_interim_message=interim_callback,
-                )
+                if tool_calling_enabled:
+                    # 构造 interim_callback（期间文本回调），用于接收大模型在决定调用工具前输出的“过渡台词”（如：“请稍等，我查一下天气”）
+                    # 该回调收到文本后会迅速将其推入 text_queue，触发前端的文字显示和后端的 GPT-SoVITS 语音合成。
+                    interim_callback = self._build_interim_message_callback(
+                        text_queue=text_queue,
+                        is_audio_play_complete=is_audio_play_complete,
+                        is_text_generating_queue=is_text_generating_queue,
+                        dp2qt_queue=dp2qt_queue,
+                        chat_id=active_chat_id,
+                        turn_id=turn_id,
+                    )
+
+                    # 启动带有工具调用能力的 Agent 运行循环
+                    # run() 内部会处理多轮 LLM 对话（如果触发了工具），直到提取出最终回答或达到循环上限才会返回 result。
+                    runtime_result = self.tool_runtime.run(
+                        model="tool-runtime",
+                        messages=self.trim_list_to_340kb(to_llm_msg),
+                        llm_kwargs={
+                            "stream": False,
+                            "timeout": 30,
+                            **reasoning_kwargs_snapshot,
+                        },
+                        on_interim_message=interim_callback,
+                    )
+                else:
+                    runtime_result = self._run_plain_completion_turn(
+                        messages=to_llm_msg,
+                        reasoning_kwargs=reasoning_kwargs_snapshot,
+                    )
 
                 # 在 AI 生成结束后，如果我们发现这轮对话在过程中被标记为取消了（可能用户在等待过程中点了取消按钮），就不处理结果了，直接进入下一轮循环等待新输入。
                 if self.is_turn_cancelled(active_chat_id, turn_id):
@@ -1760,20 +1794,22 @@ class DSLocalAndVoiceGen:
                     self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                     continue
 
-                for one_tool_exec in runtime_result.tool_execution_records:
-                    self._record_tool_call_completed(dp2qt_queue, one_tool_exec)
+                if tool_calling_enabled:
+                    for one_tool_exec in runtime_result.tool_execution_records:
+                        self._record_tool_call_completed(dp2qt_queue, one_tool_exec)
 
                 cleaned_text_of_model_response = runtime_result.final_content.strip()
 
-                # 为后续上下文压缩和调试保留最小工具轨迹。
-                self.current_chat.append_tool_call_history(
-                    ToolCallHistoryRecordMeta(
-                        time=int(time.time()),
-                        role=character_name,
-                        tool_rounds=runtime_result.tool_rounds,
-                        tool_errors=runtime_result.tool_errors,
+                if tool_calling_enabled:
+                    # 为后续上下文压缩和调试保留最小工具轨迹。
+                    self.current_chat.append_tool_call_history(
+                        ToolCallHistoryRecordMeta(
+                            time=int(time.time()),
+                            role=character_name,
+                            tool_rounds=runtime_result.tool_rounds,
+                            tool_errors=runtime_result.tool_errors,
+                        )
                     )
-                )
 
             except litellm.exceptions.Timeout as e:
                 self._report_model_exception(
