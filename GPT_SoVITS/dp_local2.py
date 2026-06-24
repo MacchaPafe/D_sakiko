@@ -19,8 +19,7 @@ from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
 from log import get_logger
 
-from chat.chat import Chat, Message, ChatManager, MessageAttachment
-from chat.attachments import import_image_attachment, model_supports_image_upload
+from chat.chat import Chat, Message, ChatManager
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.tool_calling import ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
@@ -237,8 +236,6 @@ class DSLocalAndVoiceGen:
             self._cancelled_turns.discard((chat_id, turn_id))
 
     def trim_list_to_340kb(self, data_list):
-        if Chat.messages_contain_image_content(data_list):
-            return data_list
         working_list = deepcopy(data_list)
         MAX_SIZE = 340 * 1024  # 主流大模型的上下文现在基本都是128Ktoken，差不多500KB，这里设置340KB以防万一
         while len(json.dumps(working_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
@@ -373,16 +370,9 @@ class DSLocalAndVoiceGen:
         self._emit_turn_error(dp2qt_queue, chat_id, turn_id, ui_message)
         self._clear_failed_turn_state(is_text_generating_queue, rollback_user_message=True)
 
-    def _build_runtime_system_instruction(self) -> str:
-        """
-        构造稳定的运行期系统提示词，描述渲染器需要的机器输出协议。
-        """
-        parts: list[str] = []
-        restriction = str(getattr(self, "restr", "") or "").strip()
-        if restriction:
-            parts.append(f"[角色边界]\n{restriction}")
-
-        parts.append(textwrap.dedent(
+    def _build_machine_contract(self) -> str:
+        """构造 Machine Output Contract（不包含角色边界限制）。"""
+        return textwrap.dedent(
             """# Machine Output Contract
             你不是直接向用户输出自由文本。
             你正在为一个语音与聊天渲染器生成结构化数据。
@@ -433,7 +423,18 @@ class DSLocalAndVoiceGen:
             6. 当 runtime.reply_language 为 ja_with_zh_translation 时，每个 segment 都必须有 translation 字段。
             7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
             8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"""
-        ))
+        )
+
+    def _build_runtime_system_instruction(self) -> str:
+        """
+        构造稳定的运行期系统提示词（含角色边界限制 + Machine Output Contract）。
+        供格式纠正 retry 和 token 统计等场景复用。
+        """
+        parts: list[str] = []
+        restriction = str(getattr(self, "restr", "") or "").strip()
+        if restriction:
+            parts.append(f"[角色边界]\n{restriction}")
+        parts.append(self._build_machine_contract())
         return "\n\n".join(parts)
 
     def _build_turn_runtime_controls(self) -> str:
@@ -469,6 +470,11 @@ class DSLocalAndVoiceGen:
     def _build_llm_messages_for_chat_turn(self, character_name: str) -> list[dict[str, object]]:
         """
         基于当前对话构造发送给 LLM 的请求副本。
+        结构：
+          [system] Jinja 模板（角色设定 + 规则） + Machine Output Contract
+          [system] [绝对禁止事项] 防恋爱限制（独立消息，更高权重）
+          [user/assistant] ... 对话历史 ...
+          [user] <runtime_controls>
         """
         messages = [
             dict(one)
@@ -479,19 +485,30 @@ class DSLocalAndVoiceGen:
                 include_translation=self.audio_language_choice == '日英混合',
             )
         ]
-        runtime_system_instruction = self._build_runtime_system_instruction()
-        system_idx = -1
 
-        # 为对话中的第一条 system 消息追加运行时系统提示词；该提示词不会存储到对话历史中。
+        # 定位第一条 system 消息（Jinja 模板生成的角色设定）
+        system_idx = -1
         for idx, one in enumerate(messages):
             if one.get("role") == "system":
                 system_idx = idx
                 break
+
+        # Machine Output Contract 追加到已有 system 消息末尾
+        machine_contract = self._build_machine_contract()
         if system_idx >= 0:
             content = str(messages[system_idx].get("content") or "")
-            messages[system_idx]["content"] = content + "\n" + runtime_system_instruction
+            messages[system_idx]["content"] = content + "\n\n" + machine_contract
         else:
-            messages.insert(0, {"role": "system", "content": runtime_system_instruction})
+            messages.insert(0, {"role": "system", "content": machine_contract})
+            system_idx = 0
+
+        # 防恋爱限制作为独立 system 消息，紧接在 Machine Contract 之后
+        restriction = str(getattr(self, "restr", "") or "").strip()
+        if restriction:
+            messages.insert(system_idx + 1, {
+                "role": "system",
+                "content": f"[绝对禁止事项]\n{restriction}"
+            })
 
         # 追加一条额外的用户消息描述本轮对话的选择（比如语言模式和祥子语气），该消息同样不会存储到对话历史中。
         self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
@@ -1063,44 +1080,6 @@ class DSLocalAndVoiceGen:
         model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
         return self.normalize_model_for_provider(provider, model_name)
 
-    def _current_model_supports_vision(self) -> bool:
-        """判断当前 LiteLLM 模型是否支持视觉输入。"""
-        model = self._current_litellm_model_name()
-        return model_supports_image_upload(
-            model,
-            use_default_deepseek_api=bool(self.d_sakiko_config.use_default_deepseek_api.value),
-        )
-
-    @staticmethod
-    def _image_source_paths_from_command(command: dict[str, object]) -> list[str]:
-        """从前端命令中提取图片源文件路径列表。"""
-        raw_paths = command.get("image_source_paths")
-        if not isinstance(raw_paths, list):
-            return []
-        return [path for path in raw_paths if isinstance(path, str) and path]
-
-    def _import_image_source_attachments(
-        self,
-        chat_id: str,
-        image_source_paths: Sequence[str],
-    ) -> list[MessageAttachment]:
-        """导入前端图片源文件并生成正式消息附件。"""
-        return [
-            import_image_attachment(chat_id, source_path)
-            for source_path in image_source_paths
-        ]
-
-    def _emit_business_turn_error(
-        self,
-        dp2qt_queue: _QueueWriter,
-        chat_id: str,
-        turn_id: str,
-        message: str,
-    ) -> None:
-        """向前端报告无需 traceback 的用户可见业务错误。"""
-        logger.warning("对话发送时出现问题：%s", message)
-        self._emit_turn_error(dp2qt_queue, chat_id, turn_id, message)
-
     @staticmethod
     def _is_response_format_unsupported(exc: "litellm.exceptions.BadRequestError") -> bool:
         """
@@ -1626,8 +1605,7 @@ class DSLocalAndVoiceGen:
             # 保存原始用户输入（不含指令后缀），用于存储到 Chat 中
             command_text = command.get("text")
             raw_user_input = str(command_text if command_text is not None else "")
-            image_source_paths = self._image_source_paths_from_command(command)
-            if not raw_user_input and not image_source_paths:
+            if not raw_user_input:
                 raw_user_input = "（什么也没说）"
             # 获得 qtUI 给我们的 turn id
             # 如果 qtUI 没有提供 turn_id，我们就自己生成一个，保证每轮对话都有唯一 id 供后续追踪和关联工具调用使用。
@@ -1640,37 +1618,6 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                 continue
 
-            # 复制一份模型配置，防止一轮对话中间配置修改导致出错。
-            # 图片导入前也需要使用本轮锁定的模型配置判断视觉能力。
-            self.d_sakiko_config = create_d_sakiko_config_snapshot()
-
-            if image_source_paths and not self._current_model_supports_vision():
-                self._emit_business_turn_error(
-                    dp2qt_queue,
-                    active_chat_id,
-                    turn_id,
-                    "当前模型不支持图片输入，请切换支持视觉的模型后重试。",
-                )
-                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
-                continue
-
-            imported_attachments: list[MessageAttachment] = []
-            if image_source_paths:
-                try:
-                    imported_attachments = self._import_image_source_attachments(
-                        active_chat_id,
-                        image_source_paths,
-                    )
-                except Exception as exc:
-                    self._emit_business_turn_error(
-                        dp2qt_queue,
-                        active_chat_id,
-                        turn_id,
-                        f"图片导入失败：{exc}",
-                    )
-                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
-                    continue
-
             should_append_user_message = command.get("append_user_message") is not False
             if should_append_user_message:
                 # 将原始用户输入（不含任何指令后缀）存入 Chat
@@ -1679,44 +1626,12 @@ class DSLocalAndVoiceGen:
                     text=raw_user_input,
                     translation="",
                     emotion=EmotionEnum.HAPPINESS,
-                    audio_path="",
-                    attachments=imported_attachments,
+                    audio_path=""
                 )
                 self.current_chat.add_message(user_msg)
-                if imported_attachments:
-                    try:
-                        self.chat_manager.save()
-                    except Exception as exc:
-                        self.current_chat.message_list.pop()
-                        self._emit_business_turn_error(
-                            dp2qt_queue,
-                            active_chat_id,
-                            turn_id,
-                            f"图片消息保存失败：{exc}",
-                        )
-                        self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
-                        continue
 
             character_name = self.get_current_character().character_name
             to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
-            if Chat.messages_contain_image_content(to_llm_msg) and not self._current_model_supports_vision():
-                self._emit_business_turn_error(
-                    dp2qt_queue,
-                    active_chat_id,
-                    turn_id,
-                    "当前对话包含图片附件，但当前模型不支持视觉输入，请切换支持视觉的模型后继续。",
-                )
-                self._clear_failed_turn_state(
-                    is_text_generating_queue,
-                    rollback_user_message=should_append_user_message,
-                )
-                if imported_attachments:
-                    try:
-                        self.chat_manager.save()
-                    except Exception:
-                        logger.exception("回滚图片消息后保存聊天记录失败。")
-                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
-                continue
 
             self._emit_turn_phase(
                 dp2qt_queue,
@@ -1726,6 +1641,8 @@ class DSLocalAndVoiceGen:
                 f"{character_name}思考中...",
             )
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
+            # 复制一份模型配置，防止一轮对话中间配置修改导致出错
+            self.d_sakiko_config = create_d_sakiko_config_snapshot()
             # 为本轮用户输入锁定推理配置；如果用户在工具调用过程中修改 UI 设置，只会影响下一轮输入。
             reasoning_kwargs_snapshot = self._build_current_reasoning_kwargs_snapshot()
             # --------------------------
