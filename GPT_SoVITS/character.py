@@ -137,6 +137,8 @@ def is_old_l2d_json(old_l2d_json_path) -> bool:
     """
         判断是否为老版 Live2D model.json 格式。
     """
+    if not str(old_l2d_json_path).endswith(".model.json"):
+        return False
     try:
         with open(old_l2d_json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -147,6 +149,17 @@ def is_old_l2d_json(old_l2d_json_path) -> bool:
     if 'motions' in data and 'rana' in data['motions']:
         return True
     return False
+
+def find_default_l2d_json(model_dir: str) -> str | None:
+    """
+        查找角色默认 Live2D 模型 JSON。
+        V2 使用 *.model.json，V3 使用 *.model3.json；优先保留现有 V2 行为。
+    """
+    for pattern in ("*.model.json", "*.model3.json"):
+        candidates = glob.glob(os.path.join(model_dir, pattern))
+        if candidates:
+            return max(candidates, key=os.path.getmtime)
+    return None
 
 def convert_old_l2d_json(old_l2d_json_path: str) -> None:
     """
@@ -251,18 +264,15 @@ class GetCharacterAttributes:
                     program_icon_path=max(program_icon_path, key=os.path.getmtime)
                     character.icon_path=program_icon_path
 
-                live2d_json=glob.glob(os.path.join(full_path,'live2D_model',f"*.model.json"))
+                live2d_json = find_default_l2d_json(os.path.join(full_path, 'live2D_model'))
                 if not live2d_json:
-                    logger.error("没有找到角色：'%s' 的默认 Live2D 模型 json 文件(.model.json)", character.character_name)
+                    logger.error("没有找到角色：'%s' 的默认 Live2D 模型 json 文件(.model.json/.model3.json)", character.character_name)
                     is_ready=False
                 if character.character_name in l2d_json_paths_dict:
                     if os.path.exists(l2d_json_paths_dict[character.character_name]):
                         live2d_json=l2d_json_paths_dict[character.character_name]
-                    else:
-                        live2d_json = max(live2d_json, key=os.path.getmtime)
                     character.live2d_json=live2d_json
-                else:
-                    live2d_json=max(live2d_json, key=os.path.getmtime)
+                elif live2d_json:
                     if is_old_l2d_json(live2d_json):
                         try:
                             convert_old_l2d_json(live2d_json)
