@@ -7,7 +7,6 @@ import time
 import wave
 from random import random
 from live2d.utils.lipsync import WavHandler
-import live2d.v2cpp as live2d
 import glob,os
 
 # 屏蔽 pygame 相关的警告和介绍信息
@@ -24,6 +23,13 @@ import queue
 from multi_char_live2d_module import TextOverlay
 from qconfig import d_sakiko_config, qconfig
 from log import setup_worker_logging, get_logger
+from live2d_runtime_adapter import (
+    Live2DModelAdapter,
+    detect_live2d_runtime_version,
+    initialize_live2d_runtime,
+    load_live2d_runtime,
+    release_live2d_runtime,
+)
 
 class BackgroundRen(object):
 
@@ -87,7 +93,7 @@ class Live2DModule:
         self.eye_open_pending = False
         self.eye_open_transition_start = 0.0
         self.eye_open_transition_duration = 0.1
-        self.eye_open_param_ids = ("PARAM_EYE_L_OPEN", "PARAM_EYE_R_OPEN")
+        self.eye_open_param_ids = ("eye_l_open", "eye_r_open")
         self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
         
         # 长音频动作循环状态机
@@ -216,6 +222,12 @@ class Live2DModule:
         self.eye_open_transition_start = 0.0
 
     def _get_model_parameter_value(self, model, param_id: str, default: float = 1.0) -> float:
+        get_parameter_value = getattr(model, "get_parameter_value", None)
+        if callable(get_parameter_value):
+            try:
+                return float(get_parameter_value(param_id, default))
+            except Exception:
+                return default
         try:
             for index in range(model.GetParameterCount()):
                 param = model.GetParameter(index)
@@ -226,6 +238,14 @@ class Live2DModule:
         return default
 
     def _set_model_eye_open_values(self, model, value_by_param_id):
+        set_parameter_value = getattr(model, "set_parameter_value", None)
+        if callable(set_parameter_value):
+            for param_id, value in value_by_param_id.items():
+                try:
+                    set_parameter_value(param_id, value)
+                except Exception:
+                    pass
+            return
         try:
             for param_id, value in value_by_param_id.items():
                 model.SetParameterValue(param_id, value)
@@ -316,12 +336,16 @@ class Live2DModule:
             return
 
         self.motion_is_over = False
-        model.StartRandomMotion(
+        started = model.StartRandomMotion(
             self.long_audio_motion_group,
             3,
             self.onStartCallback,
             self.onFinishCallback,
         )
+        if not started:
+            self.motion_is_over = True
+            self._reset_long_audio_motion_loop()
+            return
         self.long_audio_motion_repeat_count += 1
         self.long_audio_next_motion_at = 0.0
 
@@ -376,19 +400,19 @@ class Live2DModule:
 
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
         pygame.init()
-        live2d.init()
 
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-        live2d.glInit()
+        glViewport(0, 0, *display)
+        current_runtime = load_live2d_runtime(detect_live2d_runtime_version(self.PATH_JSON))
+        initialize_live2d_runtime(current_runtime)
 
         frame_clock = pygame.time.Clock()
         self.target_fps = 60
 
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
 
-        model = live2d.LAppModel()
-        model.LoadModelJson(self.PATH_JSON)
+        model = Live2DModelAdapter.create(self.PATH_JSON)
         model.Resize(win_w_and_h, win_w_and_h)
         model.SetAutoBlinkEnable(True)
         model.SetAutoBreathEnable(True)
@@ -556,11 +580,47 @@ class Live2DModule:
                             character_name,
                             str(model_json) if isinstance(model_json, str) and model_json else None,
                         )
-                        new_model=live2d.LAppModel()
+                        target_version = detect_live2d_runtime_version(new_model_path)
+                        version_changed = target_version != model.version
                         if self.if_sakiko and self.sakiko_state:
-                            new_model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                            new_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
+                            target_version = detect_live2d_runtime_version(new_model_path)
+                            version_changed = target_version != model.version
+
+                        if version_changed:
+                            try:
+                                pygame.mixer.music.stop()
+                            except Exception:
+                                pass
+                            self.wavHandler = WavHandler()
+                            mouth_keep_open_value = 0.0
+                            self.motion_is_over = True
+                            self.think_motion_is_over = True
+                            self._reset_eye_open_transition()
+                            model.dispose()
+                            release_live2d_runtime(current_runtime)
+                            try:
+                                glDeleteTextures([texture])
+                            except Exception:
+                                pass
+                            pygame.display.quit()
+                            pygame.display.init()
+                            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"
+                            pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+                            glViewport(0, 0, *display)
+                            current_runtime = load_live2d_runtime(target_version)
+                            initialize_live2d_runtime(current_runtime)
+                            frame_clock = pygame.time.Clock()
+                            glEnable(GL_TEXTURE_2D)
+                            texture = BackgroundRen.render(
+                                pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha()
+                            )
+                            overlay = TextOverlay((win_w_and_h, win_w_and_h), [self.current_character.character_name])
+                            overlay.set_text(self.current_character.character_name, self.new_text or "...")
+                            new_model = Live2DModelAdapter.create(new_model_path)
                         else:
-                            new_model.LoadModelJson(new_model_path)
+                            new_model = Live2DModelAdapter.create(new_model_path)
+                            model.dispose()
                         new_model.Resize(win_w_and_h, win_w_and_h)
                         new_model.SetAutoBlinkEnable(True)
                         new_model.SetAutoBreathEnable(True)
@@ -568,8 +628,11 @@ class Live2DModule:
                         logger.exception("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。")
                         try:
                             fallback_model_path = self.switch_live2d_target(character_name)
-                            new_model=live2d.LAppModel()
-                            new_model.LoadModelJson(fallback_model_path)
+                            fallback_version = detect_live2d_runtime_version(fallback_model_path)
+                            current_runtime_version = "v3" if getattr(current_runtime, "LIVE2D_VERSION", 2) == 3 else "v2"
+                            if fallback_version != current_runtime_version:
+                                raise RuntimeError("Live2D 默认模型版本与当前 runtime 不一致，无法在本轮回退。")
+                            new_model = Live2DModelAdapter.create(fallback_model_path)
                             new_model.Resize(win_w_and_h, win_w_and_h)
                             new_model.SetAutoBlinkEnable(True)
                             new_model.SetAutoBreathEnable(True)
@@ -577,7 +640,6 @@ class Live2DModule:
                             logger.exception("Live2D 默认模型回退也失败。")
                             new_model = None
                     if new_model is not None:
-                        del model
                         model=new_model
                         overlay.set_text(self.current_character.character_name,'...')
                         if self.if_sakiko and self.sakiko_state:
@@ -588,6 +650,10 @@ class Live2DModule:
                         if self.current_character.icon_path is not None:
                             pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
                         logger.debug("Live2D模型切换成功：%s", self.PATH_JSON)
+                    else:
+                        logger.error("Live2D 模型切换后没有可用模型，停止渲染循环。")
+                        self.run = False
+                        break
                 elif command_type == "switch_l2d_fps":
                     fps = int(x.get("fps"))
                     self.target_fps = fps
@@ -635,17 +701,26 @@ class Live2DModule:
                 self._reset_long_audio_motion_loop()
                 if self.if_sakiko:
                     conv_index=char_is_converted_queue.get()
+                    if model.version != "v2":
+                        logger.warning("当前 Live2D 模型为 v3，跳过祥子黑白模型特殊切换。")
+                        continue
                     if conv_index!='maskoff':
                         if not conv_index:      #切换为白祥
-                            model.LoadModelJson(self.PATH_JSON)
+                            model.dispose()
+                            model = Live2DModelAdapter.create(self.PATH_JSON)
                             model.Resize(win_w_and_h, win_w_and_h)
+                            model.SetAutoBlinkEnable(True)
+                            model.SetAutoBreathEnable(True)
                             model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback)
                             model.SetExpression("idle")
                             self.sakiko_state=False
 
                         else:       #切换为黑祥
-                            model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                            model.dispose()
+                            model = Live2DModelAdapter.create('../live2d_related/sakiko/live2D_model_costume/3.model.json')
                             model.Resize(win_w_and_h, win_w_and_h)
+                            model.SetAutoBlinkEnable(True)
+                            model.SetAutoBreathEnable(True)
 
                             self.if_mask=random()<0.5
                             model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback)
@@ -663,7 +738,9 @@ class Live2DModule:
                 if emotion=='bye':
                     self._reset_long_audio_motion_loop()
                     if not if_bye:
-                        model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
+                        started = model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
+                        if not started:
+                            self.motion_is_over = True
                     if_bye=True
                     glClear(GL_COLOR_BUFFER_BIT)
                     model.Update()
@@ -684,7 +761,11 @@ class Live2DModule:
                     continue
                 self._prepare_long_audio_motion_loop(motion_group, this_turn_audio_file_path)
                 self.motion_is_over = False
-                model.StartRandomMotion(motion_group,3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
+                started = model.StartRandomMotion(motion_group,3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
+                if not started:
+                    self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path)
+                    self.motion_is_over = True
+                    self._reset_long_audio_motion_loop()
                 self.think_motion_is_over=True  #放在这里就对了。。
                 overlay.set_text(self.current_character.character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
 
@@ -721,7 +802,7 @@ class Live2DModule:
         except Exception:
             pass
         try:
-            del model
+            model.dispose()
         except Exception:
             pass
         try:
@@ -729,12 +810,7 @@ class Live2DModule:
         except Exception:
             pass
 
-        live2d.dispose()
-        if hasattr(live2d, "glRelease"):
-            try:
-                live2d.glRelease()
-            except Exception:                
-                pass
+        release_live2d_runtime(current_runtime)
         #结束pygame
         try:
             pygame.mixer.quit()

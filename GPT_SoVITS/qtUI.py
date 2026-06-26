@@ -835,10 +835,8 @@ class ChangeL2DModelWindow(QDialog):
             # 移除旧布局本身（通过将其父对象设为新的临时 Widget 然后销毁）
             QWidget().setLayout(old_layout)
 
-        import glob
-        default_live2d_json = glob.glob(
-            os.path.join(f'../live2d_related/{self.current_char_folder_name}', 'live2D_model', f"*.model.json"))
-        default_live2d_json = default_live2d_json[0] if default_live2d_json else None
+        default_model_dir = os.path.join(f'../live2d_related/{self.current_char_folder_name}', 'live2D_model')
+        default_live2d_json = self._find_preferred_model_json(default_model_dir)
         self.current_char_l2d_models = [{"model_name": "默认", "model_json_path": default_live2d_json}]
         self.find_extra_models(self.current_char_folder_name)
         layout = QVBoxLayout()
@@ -910,26 +908,48 @@ class ChangeL2DModelWindow(QDialog):
         for model_dir_name in model_dirs:
             # 构建这个模型文件夹的完整路径，例如 ../live2d_related/miku/extra_model/Miku
             model_dir_path = os.path.join(base_path, model_dir_name)
-            #在这个具体的模型文件夹里，递归查找 .model.json
+            full_path = self._find_preferred_model_json(model_dir_path)
+            if full_path is not None:
+                self.current_char_l2d_models.append({"model_name":model_dir_name,"model_json_path":full_path})
 
-            for file in os.listdir(model_dir_path):
-                if file.endswith(".model.json"):
-                    full_path = os.path.join(model_dir_path, file)
-                    # 将路径标准化（把反斜杠\变成正斜杠/），避免Windows路径问题
-                    full_path = full_path.replace("\\", "/")
-                    self.current_char_l2d_models.append({"model_name":model_dir_name,"model_json_path":full_path})
-                    break  # 找到一个就跳出当前文件夹的循环
+    @staticmethod
+    def _find_preferred_model_json(model_dir_path: str) -> str | None:
+        """查找目录中的 Live2D 模型 JSON，同目录同时存在 v2/v3 时优先 v3。"""
+        if not os.path.isdir(model_dir_path):
+            return None
+        model2_paths: list[str] = []
+        model3_paths: list[str] = []
+        for current_dir, _dir_names, file_names in os.walk(model_dir_path):
+            current_model2_paths: list[str] = []
+            current_model3_paths: list[str] = []
+            for file in sorted(file_names):
+                full_path = os.path.join(current_dir, file)
+                if file.endswith(".model3.json"):
+                    current_model3_paths.append(full_path)
+                elif file.endswith(".model.json"):
+                    current_model2_paths.append(full_path)
+            if current_model2_paths and current_model3_paths:
+                logger.warning(
+                    "Live2D 模型目录同时存在 .model.json 和 .model3.json，将优先使用 v3：%s",
+                    current_dir,
+                )
+            model2_paths.extend(current_model2_paths)
+            model3_paths.extend(current_model3_paths)
+        if model3_paths:
+            return model3_paths[0].replace("\\", "/")
+        if model2_paths:
+            return model2_paths[0].replace("\\", "/")
+        return None
+
     @staticmethod
     def find_all_models() -> list[str]:
         all_models = []
         for char_folder in os.listdir("../live2d_related"):
             char_folder_path = os.path.join("../live2d_related", char_folder)
             if os.path.isdir(char_folder_path):
-                for file in os.listdir(char_folder_path):
-                    if file.endswith(".model.json"):
-                        full_path = os.path.join(char_folder_path, file)
-                        full_path = full_path.replace("\\", "/")
-                        all_models.append(full_path)
+                full_path = ChangeL2DModelWindow._find_preferred_model_json(char_folder_path)
+                if full_path is not None:
+                    all_models.append(full_path)
         return all_models
 
 
