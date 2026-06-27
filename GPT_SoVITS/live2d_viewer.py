@@ -169,7 +169,17 @@ class Live2DModule:
                 model_adapter.SetExpression('serious')
             return model_adapter
 
-        model = setup_model(Live2DModelAdapter.create(self.PATH_JSON))
+        def create_viewer_model(model_json_path: str) -> Live2DModelAdapter:
+            if detect_live2d_runtime_version(model_json_path) == "v3":
+                model_dir = pathlib.Path(model_json_path).parent
+                motion_paths = sorted(str(path) for path in model_dir.glob("*.motion3.json"))
+                Live2DModelAdapter.prepare_preview_motion_files(model_json_path, motion_paths)
+                model_adapter = Live2DModelAdapter.create(model_json_path)
+                model_adapter.remove_preview_motion_group()
+                return model_adapter
+            return Live2DModelAdapter.create(model_json_path)
+
+        model = setup_model(create_viewer_model(self.PATH_JSON))
         glEnable(GL_TEXTURE_2D)
 
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
@@ -200,9 +210,9 @@ class Live2DModule:
                 initialize_live2d_runtime(current_runtime)
                 glEnable(GL_TEXTURE_2D)
                 texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
-                return setup_model(Live2DModelAdapter.create(model_json_path))
+                return setup_model(create_viewer_model(model_json_path))
 
-            new_model = setup_model(Live2DModelAdapter.create(model_json_path))
+            new_model = setup_model(create_viewer_model(model_json_path))
             model_adapter.dispose()
             return new_model
 
@@ -238,18 +248,17 @@ class Live2DModule:
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
-                if model.version == "v3" and str(motion_name).lower().endswith(".motion3.json"):
+                if isinstance(motion_name, dict) and motion_name.get("type") == "motion_group":
+                    group_name = str(motion_name.get("group", ""))
                     try:
-                        if model.prepare_preview_motion_file(motion_name):
-                            model = switch_model_runtime(model, model.model_json_path)
-                            model.StartMotion(model.PREVIEW_MOTION_GROUP, 0, 3)
-                            model.remove_preview_motion_group()
-                        else:
-                            model.StartMotionFile(motion_name)
-                    except Exception:
-                        logger.exception("播放 Live2D V3 预览动作失败：%s", motion_name)
-                else:
-                    model.StartMotionFile(motion_name)
+                        motion_index = int(motion_name.get("index", 0))
+                    except (TypeError, ValueError):
+                        motion_index = 0
+                    if group_name:
+                        model.StartMotion(group_name, motion_index, 3)
+                    motion_name = None
+                if motion_name is not None:
+                    model.StartMotionFile(str(motion_name))
 
             # 清除缓冲区
             #live2d.clearBuffer()
@@ -661,7 +670,11 @@ class ViewerGUI(QWidget):
                 return
 
             abs_path = (self.current_char_folder_path / motion_filename).resolve().as_posix()
-            self.motion_queue.put(abs_path)
+            if self.current_model_version == "v3":
+                preview_group = Live2DModelAdapter.preview_group_for_motion_file(abs_path)
+                self.motion_queue.put({"type": "motion_group", "group": preview_group, "index": 0})
+            else:
+                self.motion_queue.put(abs_path)
             self.message_box.clear()
             self.message_box.append(
                 f"已选中动作：{motion_filename}\n"
@@ -673,7 +686,11 @@ class ViewerGUI(QWidget):
 
         # 兼容旧格式：如果仍然是路径链接，就当作“预览动作”
         if os.path.exists(url_str):
-            self.motion_queue.put(url_str)
+            if self.current_model_version == "v3":
+                preview_group = Live2DModelAdapter.preview_group_for_motion_file(url_str)
+                self.motion_queue.put({"type": "motion_group", "group": preview_group, "index": 0})
+            else:
+                self.motion_queue.put(url_str)
             self.message_box.clear()
             self.message_box.append(f"当前预览动作：\n{os.path.basename(url_str)}")
 
@@ -685,7 +702,11 @@ class ViewerGUI(QWidget):
         self.message_box.append(f"当前选中动作（左侧）：\n{os.path.basename(motion_path)}")
 
         if os.path.exists(motion_path):
-            self.motion_queue.put(motion_path)
+            if self.current_model_version == "v3":
+                preview_group = Live2DModelAdapter.preview_group_for_motion_file(motion_path)
+                self.motion_queue.put({"type": "motion_group", "group": preview_group, "index": 0})
+            else:
+                self.motion_queue.put(motion_path)
 
         self.update_button_states()
 
@@ -721,7 +742,7 @@ class ViewerGUI(QWidget):
         html_parts: list[str] = []
         motions = self._get_motion_groups()
         for group_key, motion_values in motions.items():
-            if group_key == Live2DModelAdapter.PREVIEW_MOTION_GROUP:
+            if Live2DModelAdapter.is_preview_motion_group(group_key):
                 continue
             title = self.group_display_titles.get(group_key, group_key)
             if group_key == self.right_selected_group and self.right_selected_index is None:
@@ -759,7 +780,9 @@ class ViewerGUI(QWidget):
         if self.all_motion_data is None or self.current_model_json_path is None:
             return
         if self.current_model_version == "v3":
-            self._get_motion_groups().pop(Live2DModelAdapter.PREVIEW_MOTION_GROUP, None)
+            for group_key in list(self._get_motion_groups().keys()):
+                if Live2DModelAdapter.is_preview_motion_group(group_key):
+                    self._get_motion_groups().pop(group_key, None)
         with open(self.current_model_json_path, 'w', encoding='utf-8') as f:
             json.dump(self.all_motion_data, f, indent=4, ensure_ascii=False)
 

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import importlib
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, ClassVar, Literal, cast
+from typing import Callable, ClassVar, Iterable, Literal, cast
 
 from log import get_logger
 
@@ -140,6 +141,67 @@ class Live2DModelAdapter:
     motion_groups: frozenset[str]
     expression_ids: frozenset[str]
     parameter_ids: frozenset[str]
+
+    @classmethod
+    def preview_group_for_motion_file(cls, motion_path: str) -> str:
+        motion_key = str(Path(motion_path).resolve())
+        digest = hashlib.sha1(motion_key.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        return f"{cls.PREVIEW_MOTION_GROUP}_{digest}"
+
+    @classmethod
+    def is_preview_motion_group(cls, group_name: object) -> bool:
+        if not isinstance(group_name, str):
+            return False
+        return group_name == cls.PREVIEW_MOTION_GROUP or group_name.startswith(f"{cls.PREVIEW_MOTION_GROUP}_")
+
+    @classmethod
+    def _motion_file_for_model(cls, model_json_path: str, motion_path: str) -> str:
+        motion_path_obj = Path(motion_path)
+        model_json_path_obj = Path(model_json_path)
+        try:
+            motion_file = os.path.relpath(motion_path_obj, model_json_path_obj.parent).replace("\\", "/")
+        except ValueError:
+            motion_file = motion_path_obj.name
+        if motion_file.startswith("../"):
+            motion_file = motion_path_obj.name
+        return motion_file
+
+    @classmethod
+    def prepare_preview_motion_files(cls, model_json_path: str, motion_paths: Iterable[str]) -> bool:
+        """Register V3 preview motions before LoadModelJson so playback does not require model reload."""
+        if detect_live2d_runtime_version(model_json_path) != "v3":
+            return False
+
+        model_data = _read_model_json(model_json_path)
+        file_references = model_data.setdefault("FileReferences", {})
+        if not isinstance(file_references, dict):
+            raise ValueError(f"Live2D V3 模型 FileReferences 格式错误：{model_json_path}")
+        motions = file_references.setdefault("Motions", {})
+        if not isinstance(motions, dict):
+            motions = {}
+            file_references["Motions"] = motions
+
+        changed = False
+        for motion_path in motion_paths:
+            motion_path_obj = Path(motion_path)
+            if not motion_path_obj.is_file():
+                continue
+            group_name = cls.preview_group_for_motion_file(str(motion_path_obj))
+            motion_file = cls._motion_file_for_model(model_json_path, str(motion_path_obj))
+            value = [{
+                "File": motion_file,
+                "FadeInTime": 3.0,
+                "FadeOutTime": 3.0,
+            }]
+            if motions.get(group_name) != value:
+                motions[group_name] = value
+                changed = True
+        
+
+        if changed:
+            with open(model_json_path, "w", encoding="utf-8") as file:
+                json.dump(model_data, file, ensure_ascii=False, indent=4)
+        return changed
 
     @classmethod
     def create(cls, model_json_path: str) -> Live2DModelAdapter:
@@ -362,6 +424,11 @@ class Live2DModelAdapter:
             on_finish: MotionCallback | None = None,
     ) -> bool:
         """播放一个外部动作文件，用于动作编辑器预览。"""
+        if self.version == "v3":
+            group_name = self.preview_group_for_motion_file(motion_path)
+            if group_name in self.motion_groups:
+                return self.start_motion(group_name, 0, priority, on_start, on_finish)
+
         model = self._require_model()
         load_motion = getattr(model, "LoadMotion", None)
         start_loaded_motion = getattr(model, "StartLoadedMotion", None)
@@ -404,27 +471,7 @@ class Live2DModelAdapter:
         """为不支持动态加载外部动作的 V3 runtime 写入预览动作组。"""
         if self.version != "v3":
             return False
-        motion_path_obj = Path(motion_path)
-        model_json_path_obj = Path(self.model_json_path)
-        try:
-            motion_file = os.path.relpath(motion_path_obj, model_json_path_obj.parent).replace("\\", "/")
-        except ValueError:
-            motion_file = motion_path_obj.name
-        if motion_file.startswith("../"):
-            motion_file = motion_path_obj.name
-
-        model_data = _read_model_json(self.model_json_path)
-        file_references = model_data.setdefault("FileReferences", {})
-        if not isinstance(file_references, dict):
-            raise ValueError(f"Live2D V3 模型 FileReferences 格式错误：{self.model_json_path}")
-        motions = file_references.setdefault("Motions", {})
-        if not isinstance(motions, dict):
-            motions = {}
-            file_references["Motions"] = motions
-        motions[self.PREVIEW_MOTION_GROUP] = [{"File": motion_file}]
-        with open(self.model_json_path, "w", encoding="utf-8") as file:
-            json.dump(model_data, file, ensure_ascii=False, indent=4)
-        return True
+        return self.prepare_preview_motion_files(self.model_json_path, [motion_path])
 
     def remove_preview_motion_group(self) -> None:
         """从 model3.json 中移除动作编辑器临时预览动作组。"""
@@ -438,9 +485,15 @@ class Live2DModelAdapter:
             motions = file_references.get("Motions")
             if not isinstance(motions, dict):
                 return
-            if self.PREVIEW_MOTION_GROUP not in motions:
+            preview_groups = [
+                group_name
+                for group_name in list(motions.keys())
+                if self.is_preview_motion_group(group_name)
+            ]
+            if not preview_groups:
                 return
-            motions.pop(self.PREVIEW_MOTION_GROUP, None)
+            for group_name in preview_groups:
+                motions.pop(group_name, None)
             with open(self.model_json_path, "w", encoding="utf-8") as file:
                 json.dump(model_data, file, ensure_ascii=False, indent=4)
         except Exception:

@@ -4036,7 +4036,12 @@ class ChatGUI(QWidget):
 
     def _send_l2d_model_payload(self, new_model_json: str) -> None:
         """校验并发送 Live2D 模型切换 payload。"""
-        from character import is_old_l2d_json,convert_old_l2d_json
+        from character import (
+            convert_old_l2d_json,
+            is_l2d_model3_json,
+            is_old_l2d_json,
+            rebuild_model3_motion_groups,
+        )
         if is_old_l2d_json(new_model_json):
             try:
                 convert_old_l2d_json(new_model_json)
@@ -4045,6 +4050,15 @@ class ChatGUI(QWidget):
                 logger.exception("切换模型失败，转换旧版 Live2D 配置文件时出错。")
                 return
             logger.info("成功转换旧版 Live2D 配置文件。")
+        elif is_l2d_model3_json(new_model_json):
+            try:
+                if rebuild_model3_motion_groups(new_model_json):
+                    self.QT_message_queue.put("已自动修复 Live2D V3 模型动作组配置")
+                    logger.info("已自动修复 Live2D V3 模型动作组配置：%s", new_model_json)
+            except Exception:
+                self.QT_message_queue.put("切换模型失败，检查 Live2D V3 配置文件时出错。")
+                logger.exception("切换模型失败，检查 Live2D V3 配置文件时出错：%s", new_model_json)
+                return
         character_name = self.current_character.character_name
         try:
             self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)

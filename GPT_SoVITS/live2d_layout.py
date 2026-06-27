@@ -76,7 +76,7 @@ def _as_float(value: object, default: float) -> float:
     """将配置值转换为浮点数，失败时使用默认值。"""
     if isinstance(value, bool):
         return default
-    if isinstance(value, int | float):
+    if isinstance(value, (int, float)):
         return float(value)
     return default
 
