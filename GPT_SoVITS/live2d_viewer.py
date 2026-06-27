@@ -15,7 +15,6 @@ sys.path.insert(0, script_dir)
 
 import time
 
-import live2d.v2cpp as live2d
 from qtUI import ChangeL2DModelWindow
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
@@ -28,6 +27,13 @@ from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
 import character
 from log import get_logger, setup_logging, shutdown_logging, setup_worker_logging, get_log_queue
+from live2d_runtime_adapter import (
+    Live2DModelAdapter,
+    detect_live2d_runtime_version,
+    initialize_live2d_runtime,
+    load_live2d_runtime,
+    release_live2d_runtime,
+)
 
 logger = get_logger(__name__)
 
@@ -64,9 +70,6 @@ class BackgroundRen(object):
         glTexCoord2f(1, 1);glVertex3f(*args[2])
         glTexCoord2f(0, 1);glVertex3f(*args[0])
         glEnd()
-
-idle_recover_timer=time.time()
-
 
 class Live2DModule:
     def __init__(self):
@@ -138,28 +141,70 @@ class Live2DModule:
 
         os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"   #设置窗口位置，与qt窗口对齐
         pygame.init()
-        live2d.init()
 
 
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-        live2d.glInit()
+        glViewport(0, 0, *display)
+        current_runtime = load_live2d_runtime(detect_live2d_runtime_version(self.PATH_JSON))
+        initialize_live2d_runtime(current_runtime)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
-        model = live2d.LAppModel()
-        model.LoadModelJson(self.PATH_JSON)
 
-        model.Resize(win_w_and_h, win_w_and_h)
-        model.SetAutoBlinkEnable(True)
-        model.SetAutoBreathEnable(True)
-        if self.if_sakiko:
-            model.SetExpression('serious')
+        v3_viewer_scale = 2.2
+        v3_viewer_offset_x = 0.0
+        v3_viewer_offset_y = -0.7
+
+        def setup_model(model_adapter: Live2DModelAdapter) -> Live2DModelAdapter:
+            model_adapter.Resize(win_w_and_h, win_w_and_h)
+            if model_adapter.version == "v3" and model_adapter.model is not None:
+                set_scale = getattr(model_adapter.model, "SetScale", None)
+                if callable(set_scale):
+                    set_scale(v3_viewer_scale)
+                set_offset = getattr(model_adapter.model, "SetOffset", None)
+                if callable(set_offset):
+                    set_offset(v3_viewer_offset_x, v3_viewer_offset_y)
+            model_adapter.SetAutoBlinkEnable(True)
+            model_adapter.SetAutoBreathEnable(True)
+            if self.if_sakiko:
+                model_adapter.SetExpression('serious')
+            return model_adapter
+
+        model = setup_model(Live2DModelAdapter.create(self.PATH_JSON))
         glEnable(GL_TEXTURE_2D)
 
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
         texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
-        glBindTexture(GL_TEXTURE_2D, texture)
 
-        global idle_recover_timer
+        def render_background(texture_id: object) -> None:
+            glUseProgram(0)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, texture_id)
+            BackgroundRen.blit(*self.BACKGROUND_POSITION)
+
+        def switch_model_runtime(model_adapter: Live2DModelAdapter, model_json_path: str) -> Live2DModelAdapter:
+            nonlocal current_runtime, texture
+            target_version = detect_live2d_runtime_version(model_json_path)
+            if target_version != model_adapter.version:
+                model_adapter.dispose()
+                release_live2d_runtime(current_runtime)
+                try:
+                    glDeleteTextures([texture])
+                except Exception:
+                    pass
+                pygame.display.quit()
+                pygame.display.init()
+                os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"
+                pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+                glViewport(0, 0, *display)
+                current_runtime = load_live2d_runtime(target_version)
+                initialize_live2d_runtime(current_runtime)
+                glEnable(GL_TEXTURE_2D)
+                texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
+                return setup_model(Live2DModelAdapter.create(model_json_path))
+
+            new_model = setup_model(Live2DModelAdapter.create(model_json_path))
+            model_adapter.dispose()
+            return new_model
 
         logger.info("当前 Live2D 界面渲染硬件：%s", glGetString(GL_RENDERER).decode())
         while self.run:
@@ -181,26 +226,30 @@ class Live2DModule:
                 if x == "change_character":
                     self.change_character()
                     if self.if_sakiko and self.sakiko_state:
-                        model.LoadModelJson('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                        model = switch_model_runtime(model, '../live2d_related/sakiko/live2D_model_costume/3.model.json')
                     else:
-                        model.LoadModelJson(self.PATH_JSON)
-                    model.Resize(win_w_and_h, win_w_and_h)
-                    model.SetAutoBlinkEnable(True)
-                    model.SetAutoBreathEnable(True)
+                        model = switch_model_runtime(model, self.PATH_JSON)
 
                     if self.character_list[self.current_character_num].icon_path is not None:
                         pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
                 # 传入一个路径，表示要求加载同角色一个新的 live2d 模型
                 elif os.path.exists(x):
-                    model.LoadModelJson(x)
-                    model.Resize(win_w_and_h, win_w_and_h)
-                    model.SetAutoBlinkEnable(True)
-                    model.SetAutoBreathEnable(True)
+                    model = switch_model_runtime(model, x)
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
-                no = model.LoadMotion(motion_name)
-                model.StartLoadedMotion(no)
+                if model.version == "v3" and str(motion_name).lower().endswith(".motion3.json"):
+                    try:
+                        if model.prepare_preview_motion_file(motion_name):
+                            model = switch_model_runtime(model, model.model_json_path)
+                            model.StartMotion(model.PREVIEW_MOTION_GROUP, 0, 3)
+                            model.remove_preview_motion_group()
+                        else:
+                            model.StartMotionFile(motion_name)
+                    except Exception:
+                        logger.exception("播放 Live2D V3 预览动作失败：%s", motion_name)
+                else:
+                    model.StartMotionFile(motion_name)
 
             # 清除缓冲区
             #live2d.clearBuffer()
@@ -208,7 +257,7 @@ class Live2DModule:
             # 更新live2d到缓冲区
             model.Update()
             # 渲染背景图片
-            BackgroundRen.blit(*self.BACKGROUND_POSITION)
+            render_background(texture)
 
             model.Draw()
             glUseProgram(0)
@@ -216,7 +265,11 @@ class Live2DModule:
             pygame.display.flip()
 
 
-        live2d.dispose()
+        try:
+            model.dispose()
+        except Exception:
+            logger.debug("释放 Live2D 模型失败", exc_info=True)
+        release_live2d_runtime(current_runtime)
         #结束pygame
         pygame.quit()
 
@@ -369,6 +422,8 @@ class ViewerGUI(QWidget):
         self.current_char_base_folder_name = ""  # 存储当前角色的基础文件夹名称（其实就是角色名称）
 
         self.current_char_folder_path = pathlib.Path("")  # 存储当前角色的动作文件夹路径（这个路径可能为默认 live2d 模型的路径，也可能为 extra_model 中的某个模型路径，取决于用户选择）
+        self.current_model_json_path: pathlib.Path | None = None
+        self.current_model_version: str | None = None
 
         # 默认使用默认模型（这句话多少有点废话了）
         self.use_default_model = {0: True} # 角色 index-bool；True 表示使用默认模型，False 表示使用 extra_model 中的模型
@@ -406,6 +461,42 @@ class ViewerGUI(QWidget):
         self.extra_model_name[self.current_char_index] = extra_model_name
         self.load_model(extra_model_name)
 
+    def _find_model_json_in_folder(self, folder_path: pathlib.Path) -> pathlib.Path | None:
+        model_json = ChangeL2DModelWindow._find_preferred_model_json(str(folder_path))
+        if model_json is None:
+            return None
+        return pathlib.Path(model_json)
+
+    def _get_motion_groups(self) -> dict:
+        if self.all_motion_data is None:
+            return {}
+        if self.current_model_version == "v3":
+            file_references = self.all_motion_data.get("FileReferences", {})
+            if not isinstance(file_references, dict):
+                return {}
+            motions = file_references.get("Motions", {})
+        else:
+            motions = self.all_motion_data.get("motions", {})
+        if isinstance(motions, dict):
+            return motions
+        return {}
+
+    def _motion_file_key(self) -> str:
+        return "File" if self.current_model_version == "v3" else "file"
+
+    def _get_motion_file_name(self, motion: object) -> str:
+        if not isinstance(motion, dict):
+            return ""
+        file_name = motion.get(self._motion_file_key(), "")
+        return file_name if isinstance(file_name, str) else ""
+
+    def _set_motion_file_name(self, motion: object, file_name: str) -> None:
+        if isinstance(motion, dict):
+            motion[self._motion_file_key()] = file_name
+
+    def _current_motion_suffix(self) -> str:
+        return ".motion3.json" if self.current_model_version == "v3" else ".mtn"
+
     def load_model(self, extra_model_name=None):
         """
         加载一个角色模型的所有动作名称信息。
@@ -425,6 +516,9 @@ class ViewerGUI(QWidget):
             else:
                 self.current_char_folder_path = default_path
 
+            self.current_model_json_path = self._find_model_json_in_folder(self.current_char_folder_path)
+            if self.current_model_json_path is not None:
+                self.current_model_version = detect_live2d_runtime_version(str(self.current_model_json_path))
             self.all_motion_data = None
             self.left_selected_motion_path = None
             self.right_selected_group = None
@@ -436,10 +530,22 @@ class ViewerGUI(QWidget):
             self.current_char_base_folder_name = self.character_list[self.current_char_index].character_folder_name
             if extra_model_name is not None:
                 self.current_char_folder_path = pathlib.Path("../live2d_related") / self.character_list[self.current_char_index].character_folder_name / "extra_model" / extra_model_name
+                self.current_model_json_path = self._find_model_json_in_folder(self.current_char_folder_path)
             else:
-                self.current_char_folder_path = pathlib.Path("../live2d_related") / self.character_list[self.current_char_index].character_folder_name / "live2D_model"
+                self.current_model_json_path = pathlib.Path(self.character_list[self.current_char_index].live2d_json)
+                self.current_char_folder_path = self.current_model_json_path.parent
 
-            with open(self.current_char_folder_path / '3.model.json','r',encoding='utf-8') as f:
+            if self.current_model_json_path is None or not self.current_model_json_path.exists():
+                self.all_motion_data = None
+                self.message_box.append("没有找到当前模型的 model.json/model3.json，无法编辑动作组。")
+                self.update_button_states(disable_all=True)
+                return
+
+            self.current_model_version = detect_live2d_runtime_version(str(self.current_model_json_path))
+            if self.current_model_version == "v3":
+                character.rebuild_model3_motion_groups(str(self.current_model_json_path))
+
+            with open(self.current_model_json_path,'r',encoding='utf-8') as f:
                 self.all_motion_data=json.load(f)
 
             # 切换角色/模型时，重置选中状态
@@ -454,11 +560,13 @@ class ViewerGUI(QWidget):
         # 重新填充左侧可选 mtn 文件列表
         self.all_mnt_display.clear()
         folder_path=self.current_char_folder_path
+        self.all_mnt_title.setText("所有motion3文件" if self.current_model_version == "v3" else "所有mtn文件")
 
         all_paths = []
+        suffix = self._current_motion_suffix()
         for filename in os.listdir(folder_path):
             full_path = (folder_path / filename).resolve()
-            if full_path.is_file() and filename.lower().endswith('.mtn'):
+            if full_path.is_file() and filename.lower().endswith(suffix):
                 full_path=full_path.as_posix()
                 all_paths.append(full_path)
 
@@ -548,7 +656,7 @@ class ViewerGUI(QWidget):
             self.right_selected_index = index
 
             try:
-                motion_filename = self.all_motion_data['motions'][group_key][index]['file']
+                motion_filename = self._get_motion_file_name(self._get_motion_groups()[group_key][index])
             except Exception:
                 return
 
@@ -611,8 +719,10 @@ class ViewerGUI(QWidget):
         # - group:{group_key}
         # - item:{group_key}:{index}
         html_parts: list[str] = []
-        motions = self.all_motion_data.get('motions', {})
+        motions = self._get_motion_groups()
         for group_key, motion_values in motions.items():
+            if group_key == Live2DModelAdapter.PREVIEW_MOTION_GROUP:
+                continue
             title = self.group_display_titles.get(group_key, group_key)
             if group_key == self.right_selected_group and self.right_selected_index is None:
                 title_color = "#ED784A"
@@ -628,7 +738,7 @@ class ViewerGUI(QWidget):
             )
 
             for idx, motion in enumerate(motion_values):
-                file_name = motion.get('file', '')
+                file_name = self._get_motion_file_name(motion)
                 if group_key == self.right_selected_group and self.right_selected_index == idx:
                     item_color = "#ED784A"
                 else:
@@ -646,9 +756,11 @@ class ViewerGUI(QWidget):
             scroll_bar.setValue(saved_pos)
 
     def _write_motion_json(self):
-        if self.all_motion_data is None:
+        if self.all_motion_data is None or self.current_model_json_path is None:
             return
-        with open(self.current_char_folder_path / '3.model.json', 'w', encoding='utf-8') as f:
+        if self.current_model_version == "v3":
+            self._get_motion_groups().pop(Live2DModelAdapter.PREVIEW_MOTION_GROUP, None)
+        with open(self.current_model_json_path, 'w', encoding='utf-8') as f:
             json.dump(self.all_motion_data, f, indent=4, ensure_ascii=False)
 
     def _generate_unique_motion_name(self, group_key: str) -> str:
@@ -660,7 +772,7 @@ class ViewerGUI(QWidget):
             return f"{group_key}_1"
 
         existing_names: set[str] = set()
-        motions = self.all_motion_data.get('motions', {})
+        motions = self._get_motion_groups()
         for _g, motion_list in motions.items():
             for entry in motion_list:
                 if isinstance(entry, dict):
@@ -676,6 +788,8 @@ class ViewerGUI(QWidget):
             n += 1
 
     def _make_motion_entry(self, file_name: str, reference_entry: Optional[dict], motion_name: str) -> dict:
+        if self.current_model_version == "v3":
+            return {"File": file_name}
         if reference_entry is None:
             return {"name": motion_name, "file": file_name}
         # 复制参考 entry 的所有字段，但覆盖 name/file
@@ -705,7 +819,7 @@ class ViewerGUI(QWidget):
             self.right_selected_group = old_group
             self.right_selected_index = old_index
 
-            motions = self.all_motion_data.get('motions', {})
+            motions = self._get_motion_groups()
             if self.right_selected_group not in motions:
                 self.right_selected_group = None
                 self.right_selected_index = None
@@ -743,7 +857,7 @@ class ViewerGUI(QWidget):
             return
 
         group_key = self.right_selected_group
-        target_list = self.all_motion_data.get('motions', {}).get(group_key)
+        target_list = self._get_motion_groups().get(group_key)
         if target_list is None:
             self.message_box.clear()
             self.message_box.append(f"动作组 '{group_key}' 不存在，无法添加！")
@@ -752,7 +866,7 @@ class ViewerGUI(QWidget):
         file_name = os.path.basename(self.left_selected_motion_path)
 
         # 新动作的 name：{group}_{n}，n 取最小可用
-        new_motion_name = self._generate_unique_motion_name(group_key)
+        new_motion_name = self._generate_unique_motion_name(group_key) if self.current_model_version != "v3" else ""
 
         # 找一个参考 entry 来复制参数（fade 等）
         reference_entry = target_list[0] if len(target_list) > 0 else None
@@ -795,14 +909,14 @@ class ViewerGUI(QWidget):
 
         group_key = self.right_selected_group
         idx = self.right_selected_index
-        target_list = self.all_motion_data.get('motions', {}).get(group_key)
+        target_list = self._get_motion_groups().get(group_key)
         if target_list is None or idx < 0 or idx >= len(target_list):
             self.message_box.clear()
             self.message_box.append("右侧选中动作无效，无法替换！")
             return
 
         file_name = os.path.basename(self.left_selected_motion_path)
-        target_list[idx]['file'] = file_name
+        self._set_motion_file_name(target_list[idx], file_name)
         self._write_motion_json()
         self.message_box.clear()
         self.message_box.append(
@@ -822,14 +936,14 @@ class ViewerGUI(QWidget):
 
         group_key = self.right_selected_group
         idx = self.right_selected_index
-        target_list = self.all_motion_data.get('motions', {}).get(group_key)
+        target_list = self._get_motion_groups().get(group_key)
         if target_list is None or idx < 0 or idx >= len(target_list):
             self.message_box.clear()
             self.message_box.append("右侧选中动作无效，无法删除！")
             return
 
         removed = target_list.pop(idx)
-        removed_name = removed.get('file', '') if isinstance(removed, dict) else str(removed)
+        removed_name = self._get_motion_file_name(removed) if isinstance(removed, dict) else str(removed)
         self._write_motion_json()
 
         # 删除后，将右侧选中移动到同组的一个合理位置

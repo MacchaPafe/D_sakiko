@@ -3,10 +3,11 @@ from __future__ import annotations
 import gc
 import importlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, Literal, cast
+from typing import Callable, ClassVar, Literal, cast
 
 from log import get_logger
 
@@ -129,6 +130,8 @@ def _collect_expression_ids(data: dict[str, object], version: Live2DVersion) -> 
 @dataclass
 class Live2DModelAdapter:
     """封装单个 Live2D 模型实例，隐藏 v2/v3 API 差异。"""
+
+    PREVIEW_MOTION_GROUP: ClassVar[str] = "__dsakiko_motion_preview__"
 
     model_json_path: str
     version: Live2DVersion
@@ -318,6 +321,108 @@ class Live2DModelAdapter:
     ) -> bool:
         """兼容旧调用风格，播放指定动作。"""
         return self.start_motion(group_name, motion_index, priority, on_start, on_finish)
+
+    def start_motion_file(
+            self,
+            motion_path: str,
+            priority: int = 3,
+            on_start: MotionCallback | None = None,
+            on_finish: MotionCallback | None = None,
+    ) -> bool:
+        """播放一个外部动作文件，用于动作编辑器预览。"""
+        model = self._require_model()
+        load_motion = getattr(model, "LoadMotion", None)
+        start_loaded_motion = getattr(model, "StartLoadedMotion", None)
+        if callable(load_motion) and callable(start_loaded_motion):
+            try:
+                motion_no = load_motion(motion_path)
+                start_loaded_motion(motion_no)
+                return True
+            except Exception:
+                logger.exception("播放 Live2D 外部动作文件失败：%s", motion_path)
+                return False
+
+        load_extra_motion = getattr(model, "LoadExtraMotion", None)
+        if callable(load_extra_motion):
+            group_name = self.PREVIEW_MOTION_GROUP
+            try:
+                load_result = int(load_extra_motion(group_name, motion_path))
+                if load_result < 0:
+                    logger.warning("Live2D V3 外部动作加载失败：%s", motion_path)
+                    return False
+                motion_index = max(0, load_result - 1)
+                get_motion_groups = getattr(model, "GetMotionGroups", None)
+                if callable(get_motion_groups):
+                    motion_groups = get_motion_groups()
+                    if isinstance(motion_groups, dict):
+                        group_count = motion_groups.get(group_name)
+                        if group_count is not None:
+                            motion_index = max(0, int(group_count) - 1)
+                getattr(model, "StartMotion")(group_name, motion_index, priority, on_start, on_finish)
+                self.motion_groups = frozenset((*self.motion_groups, group_name))
+                return True
+            except Exception:
+                logger.exception("播放 Live2D V3 外部动作文件失败：%s", motion_path)
+                return False
+
+        logger.warning("当前 Live2D runtime 不支持按文件预览动作：%s", motion_path)
+        return False
+
+    def prepare_preview_motion_file(self, motion_path: str) -> bool:
+        """为不支持动态加载外部动作的 V3 runtime 写入预览动作组。"""
+        if self.version != "v3":
+            return False
+        motion_path_obj = Path(motion_path)
+        model_json_path_obj = Path(self.model_json_path)
+        try:
+            motion_file = os.path.relpath(motion_path_obj, model_json_path_obj.parent).replace("\\", "/")
+        except ValueError:
+            motion_file = motion_path_obj.name
+        if motion_file.startswith("../"):
+            motion_file = motion_path_obj.name
+
+        model_data = _read_model_json(self.model_json_path)
+        file_references = model_data.setdefault("FileReferences", {})
+        if not isinstance(file_references, dict):
+            raise ValueError(f"Live2D V3 模型 FileReferences 格式错误：{self.model_json_path}")
+        motions = file_references.setdefault("Motions", {})
+        if not isinstance(motions, dict):
+            motions = {}
+            file_references["Motions"] = motions
+        motions[self.PREVIEW_MOTION_GROUP] = [{"File": motion_file}]
+        with open(self.model_json_path, "w", encoding="utf-8") as file:
+            json.dump(model_data, file, ensure_ascii=False, indent=4)
+        return True
+
+    def remove_preview_motion_group(self) -> None:
+        """从 model3.json 中移除动作编辑器临时预览动作组。"""
+        if self.version != "v3":
+            return
+        try:
+            model_data = _read_model_json(self.model_json_path)
+            file_references = model_data.get("FileReferences")
+            if not isinstance(file_references, dict):
+                return
+            motions = file_references.get("Motions")
+            if not isinstance(motions, dict):
+                return
+            if self.PREVIEW_MOTION_GROUP not in motions:
+                return
+            motions.pop(self.PREVIEW_MOTION_GROUP, None)
+            with open(self.model_json_path, "w", encoding="utf-8") as file:
+                json.dump(model_data, file, ensure_ascii=False, indent=4)
+        except Exception:
+            logger.debug("移除 Live2D V3 预览动作组失败：%s", self.model_json_path, exc_info=True)
+
+    def StartMotionFile(
+            self,
+            motion_path: str,
+            priority: int = 3,
+            on_start: MotionCallback | None = None,
+            on_finish: MotionCallback | None = None,
+    ) -> bool:
+        """兼容旧调用风格，播放一个外部动作文件。"""
+        return self.start_motion_file(motion_path, priority, on_start, on_finish)
 
     def resolve_parameter_id(self, semantic_name: str) -> str | None:
         """把语义参数名解析为当前模型实际参数 ID。"""

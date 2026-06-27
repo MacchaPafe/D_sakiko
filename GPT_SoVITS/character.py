@@ -4,6 +4,7 @@ import copy
 import glob
 import json
 import os
+import random
 import uuid
 
 from qconfig import d_sakiko_config
@@ -161,6 +162,66 @@ def find_default_l2d_json(model_dir: str) -> str | None:
             return max(candidates, key=os.path.getmtime)
     return None
 
+def is_l2d_model3_json(l2d_json_path: str | None) -> bool:
+    """判断是否为 Live2D V3 model3.json。"""
+    return bool(l2d_json_path) and str(l2d_json_path).endswith(".model3.json")
+
+def rebuild_model3_motion_groups(model3_json_path: str) -> bool:
+    """
+        检查并修复 V3 model3.json 的 FileReferences.Motions。
+        如果缺少项目标准动作组，则重建为 V2 同名动作组结构，每组放入一个同目录 motion3.json。
+    """
+    L2D_STANDARD_MOTION_GROUPS = [
+        "happiness",
+        "sadness",
+        "anger",
+        "disgust",
+        "like",
+        "surprise",
+        "fear",
+        "IDLE",
+        "text_generating",
+        "bye",
+        "change_character",
+        "idle_motion",
+        "talking_motion",
+    ]
+
+    with open(model3_json_path, 'r', encoding='utf-8') as f:
+        model_data = json.load(f)
+
+    file_references = model_data.setdefault("FileReferences", {})
+    motions = file_references.get("Motions", {})
+    if isinstance(motions, dict) and all(group in motions for group in L2D_STANDARD_MOTION_GROUPS):
+        return False
+
+    model_dir = os.path.dirname(model3_json_path)
+    motion_files = sorted(glob.glob(os.path.join(model_dir, "*.motion3.json")))
+    if not motion_files:
+        logger.warning("Live2D V3 模型没有找到同级 motion3.json 文件，已重建空动作组：%s", model3_json_path)
+        file_references["Motions"] = {group: [] for group in L2D_STANDARD_MOTION_GROUPS}
+    else:
+        motion_file_names = [os.path.basename(path) for path in motion_files]
+        file_references["Motions"] = {
+            group: [{"File": random.choice(motion_file_names)}]
+            for group in L2D_STANDARD_MOTION_GROUPS
+        }
+    
+    expressions=file_references.get("Expressions", [])
+    for exp in expressions:
+        if exp.get("File") and "expressions/" in exp["File"]:
+            exp["File"] = exp["File"].replace("expressions/", "")
+    
+    textures=file_references.get("Textures", [])
+    for i,tex in enumerate(textures):
+        if "textures/" in tex:
+            textures[i] = tex.replace("textures/", "")
+
+    with open(model3_json_path, 'w', encoding='utf-8') as f:
+        json.dump(model_data, f, ensure_ascii=False, indent=4)
+    
+    return True
+
 def convert_old_l2d_json(old_l2d_json_path: str) -> None:
     """
         读取老版 Live2D model.json，转换为新版格式并返回字典。
@@ -271,8 +332,7 @@ class GetCharacterAttributes:
                 if character.character_name in l2d_json_paths_dict:
                     if os.path.exists(l2d_json_paths_dict[character.character_name]):
                         live2d_json=l2d_json_paths_dict[character.character_name]
-                    character.live2d_json=live2d_json
-                elif live2d_json:
+                if live2d_json:
                     if is_old_l2d_json(live2d_json):
                         try:
                             convert_old_l2d_json(live2d_json)
@@ -281,6 +341,15 @@ class GetCharacterAttributes:
                             del character
                             continue
                         logger.info("已将角色：%s 的旧版 Live2D 模型 json 文件(.model.json)转换为新版格式并覆盖保存。", character.character_name)
+                        character.live2d_json=live2d_json
+                    elif is_l2d_model3_json(live2d_json):
+                        try:
+                            if rebuild_model3_motion_groups(live2d_json):
+                                logger.info("已将角色：%s 的 Live2D V3 Motions 重构为项目标准动作组。", character.character_name)
+                        except Exception as e:
+                            logger.exception("角色：'%s' 的 Live2D V3 模型 json 文件(.model3.json)检查失败", character.character_name)
+                            del character
+                            continue
                         character.live2d_json=live2d_json
                     else:
                         character.live2d_json=live2d_json
