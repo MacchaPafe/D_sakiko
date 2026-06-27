@@ -740,6 +740,8 @@ class SettingWindow(QDialog):
         self.change_l2d_background_btn.clicked.connect(self.change_l2d_background)
         self.change_l2d_model_btn=QPushButton("更改当前角色Live2D模型")
         self.change_l2d_model_btn.clicked.connect(self.change_live2d_model_1)
+        self.edit_l2d_layout_btn=QPushButton("调整Live2D位置/大小")
+        self.edit_l2d_layout_btn.clicked.connect(self.edit_live2d_layout)
         self.change_l2d_fps_btn=QPushButton(f"Live2D渲染帧率：{self.parent_window.get_current_l2d_fps()}")
         self.change_l2d_fps_btn.clicked.connect(self.change_l2d_fps)
         self.convert_sakiko_state_btn=QPushButton("黑/白祥")
@@ -760,6 +762,7 @@ class SettingWindow(QDialog):
         setting_layout_2.addWidget(self.change_theme_color_btn,0,0,1,2)
         setting_layout_2.addWidget(self.change_reference_audio_btn,1,0,1,2)
         setting_layout_2.addWidget(self.change_l2d_model_btn,2,0,1,2)
+        setting_layout_2.addWidget(self.edit_l2d_layout_btn,3,0,1,2)
         setting_group_2=QGroupBox("角色与外观")
         setting_group_2.setLayout(setting_layout_2)
         layout=QVBoxLayout()
@@ -799,6 +802,9 @@ class SettingWindow(QDialog):
     def change_l2d_fps(self):
         self.parent_window.run_input_command_text('switch_l2d_fps', 'setting_button')
         self.change_l2d_fps_btn.setText(f"Live2D渲染帧率：{self.parent_window.get_current_l2d_fps()}")
+    def edit_live2d_layout(self) -> None:
+        """通知主窗口切换 Live2D 布局编辑模式。"""
+        self.parent_window.toggle_live2d_layout_edit()
 
 
     def change_live2d_model_1(self):
@@ -4012,6 +4018,15 @@ class ChatGUI(QWidget):
             "fps": current_fps
         })
         self.QT_message_queue.put(f"已切换 Live2D 渲染帧率为 {current_fps} fps")
+
+    def toggle_live2d_layout_edit(self) -> None:
+        """通知 Live2D 窗口切换模型布局编辑模式。"""
+        if self.change_char_queue is None:
+            return
+        self.change_char_queue.put({
+            "type": "toggle_l2d_layout_edit",
+        })
+        self.QT_message_queue.put("已切换 Live2D 布局编辑模式")
     
     def get_current_l2d_fps(self):
         if hasattr(self, 'l2d_fps_dict'):

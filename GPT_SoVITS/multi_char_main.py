@@ -1586,7 +1586,13 @@ class ViewerGUI(QWidget):
 
         return playlist_queue
 
-    def _build_active_slots_payload(self, indices: Optional[List[int]] = None, override_paths: Optional[Dict[int, str]] = None, preserve_playback: bool = False) -> Dict[str, Any]:
+    def _build_active_slots_payload(
+            self,
+            indices: Optional[List[int]] = None,
+            override_paths: Optional[Dict[int, str]] = None,
+            preserve_playback: bool = False,
+            changed_slot: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """构建发送给 Live2D 子进程的 `set_active_slots` payload。
 
         模型路径优先级：
@@ -1618,16 +1624,30 @@ class ViewerGUI(QWidget):
                 "model_json_path": model_path,
             })
 
-        return {
+        payload = {
             "type": "set_active_slots",
             "slots": slots,
             # True: 仅切模型，不打断当前对话播放；False: 切模型时可中断当前播放
             "preserve_playback": preserve_playback,
         }
+        if changed_slot in (0, 1):
+            payload["changed_slot"] = changed_slot
+        return payload
 
-    def sync_live2d_active_slots(self, indices: Optional[List[int]] = None, override_paths: Optional[Dict[int, str]] = None, preserve_playback: bool = False) -> None:
+    def sync_live2d_active_slots(
+            self,
+            indices: Optional[List[int]] = None,
+            override_paths: Optional[Dict[int, str]] = None,
+            preserve_playback: bool = False,
+            changed_slot: Optional[int] = None,
+    ) -> None:
         """将双模型状态同步到 Live2D 子进程。"""
-        payload = self._build_active_slots_payload(indices=indices, override_paths=override_paths, preserve_playback=preserve_playback)
+        payload = self._build_active_slots_payload(
+            indices=indices,
+            override_paths=override_paths,
+            preserve_playback=preserve_playback,
+            changed_slot=changed_slot,
+        )
         self.to_live2d_change_character_queue.put(payload)
 
     def display_live2d_message(self, msg: list[dict], preserve_playback: bool = False) -> None:
@@ -1650,7 +1670,11 @@ class ViewerGUI(QWidget):
         随后，将新的模型路径保存到对话信息中。
         """
         # 设置面板中的“切同角色不同模型”不应中断正在播放的句子
-        self.sync_live2d_active_slots(override_paths={char_index: model_path}, preserve_playback=True)
+        self.sync_live2d_active_slots(
+            override_paths={char_index: model_path},
+            preserve_playback=True,
+            changed_slot=char_index,
+        )
         if self.current_chat is not None:
             self.current_chat.update_custom_live2d_model_meta(character_name, model_path)
             self.chat_manager.save()

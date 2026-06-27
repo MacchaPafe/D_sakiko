@@ -232,6 +232,38 @@ class Live2DModelAdapter:
         """兼容旧调用风格，设置自动呼吸。"""
         self.set_auto_breath_enable(enabled)
 
+    def set_offset(self, offset_x: float, offset_y: float) -> bool:
+        """设置模型显示平移，runtime 不支持时返回 False。"""
+        set_offset = getattr(self._require_model(), "SetOffset", None)
+        if not callable(set_offset):
+            return False
+        try:
+            set_offset(offset_x, offset_y)
+            return True
+        except Exception:
+            logger.debug("设置 Live2D 模型平移失败：%s", self.model_json_path, exc_info=True)
+            return False
+
+    def SetOffset(self, offset_x: float, offset_y: float) -> bool:
+        """兼容旧调用风格，设置模型显示平移。"""
+        return self.set_offset(offset_x, offset_y)
+
+    def set_scale(self, scale: float) -> bool:
+        """设置模型显示缩放，runtime 不支持时返回 False。"""
+        set_scale = getattr(self._require_model(), "SetScale", None)
+        if not callable(set_scale):
+            return False
+        try:
+            set_scale(scale)
+            return True
+        except Exception:
+            logger.debug("设置 Live2D 模型缩放失败：%s", self.model_json_path, exc_info=True)
+            return False
+
+    def SetScale(self, scale: float) -> bool:
+        """兼容旧调用风格，设置模型显示缩放。"""
+        return self.set_scale(scale)
+
     def set_expression_if_supported(self, expression_id: str) -> bool:
         """在模型支持指定表情时设置表情。"""
         if not expression_id:

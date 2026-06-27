@@ -146,6 +146,8 @@ class DSakikoConfig(QConfig):
     l2d_json_paths_dict = ConfigItem("character_setting", "l2d_json_paths_dict", {})
     # 默认的 live2d 背景图片选择
     background_image_path = ConfigItem("character_setting", "background_image_path", "")
+    # Live2D 模型布局配置，key 为模型 json 的项目相对路径，value 按 single/theater 场景保存缩放和平移。
+    live2d_model_layouts = ConfigItem("character_setting", "live2d_model_layouts", {})
 
     # 普通聊天侧栏的展示模式：flat 为平铺模式，folded 为按角色折叠模式
     chat_sidebar_mode = OptionsConfigItem("ui_state", "chat_sidebar_mode", "flat",

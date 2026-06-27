@@ -30,6 +30,12 @@ from live2d_runtime_adapter import (
     load_live2d_runtime,
     release_live2d_runtime,
 )
+from live2d_layout import (
+    format_live2d_layout_status,
+    get_live2d_layout,
+    reset_live2d_layout,
+    save_live2d_layout,
+)
 
 class BackgroundRen(object):
 
@@ -431,6 +437,67 @@ class Live2DModule:
             glBindTexture(GL_TEXTURE_2D, texture_id)
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
 
+        layout_scene = "single"
+        current_layout_model_path = self.PATH_JSON
+        current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+        layout_editing = False
+        layout_dirty = False
+        layout_dragging = False
+        layout_last_mouse_pos: tuple[int, int] | None = None
+
+        def apply_current_layout() -> None:
+            """将当前布局应用到正在显示的 Live2D 模型。"""
+            model.SetScale(current_layout.scale)
+            model.SetOffset(current_layout.offset_x, current_layout.offset_y)
+
+        def show_layout_edit_overlay() -> None:
+            """刷新布局编辑模式下的提示文本。"""
+            overlay.set_text(
+                self.current_character.character_name,
+                "布局编辑中：左键拖动，滚轮缩放，R重置，Esc/Q保存并退出"
+            )
+
+        def restore_normal_overlay() -> None:
+            """退出布局编辑后恢复普通对话文本。"""
+            overlay.set_text(self.current_character.character_name, self.new_text or "...")
+
+        def enter_layout_edit_mode() -> None:
+            """进入 Live2D 布局编辑模式。"""
+            nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
+            layout_editing = True
+            layout_dragging = False
+            layout_last_mouse_pos = None
+            pygame.display.set_caption(f"{self.current_character.character_name}布局编辑中")
+            show_layout_edit_overlay()
+
+        def exit_layout_edit_mode() -> None:
+            """退出 Live2D 布局编辑模式，并在有修改时保存布局。"""
+            nonlocal layout_editing, layout_dirty, layout_dragging, layout_last_mouse_pos
+            if layout_dirty:
+                try:
+                    save_live2d_layout(current_layout_model_path, layout_scene, current_layout)
+                except Exception:
+                    logger.exception("保存 Live2D 布局配置失败")
+                layout_dirty = False
+            layout_editing = False
+            layout_dragging = False
+            layout_last_mouse_pos = None
+            restore_normal_overlay()
+
+        def reset_current_layout() -> None:
+            """重置当前模型在普通对话场景下的自定义布局。"""
+            nonlocal current_layout, layout_dirty
+            try:
+                reset_live2d_layout(current_layout_model_path, layout_scene)
+            except Exception:
+                logger.exception("重置 Live2D 布局配置失败")
+            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+            apply_current_layout()
+            layout_dirty = False
+            show_layout_edit_overlay()
+
+        apply_current_layout()
+
         mtn_group_mapping={
             "LABEL_0":"happiness",
             "LABEL_1":"sadness",
@@ -441,7 +508,7 @@ class Live2DModule:
             "LABEL_6": "fear"
         }
 
-        mouse_position_x = None
+        mouse_position_x = 0
         last_saved_time=time.time()     #待机动作计时器
         last_saved_time_think=time.time()
         global idle_recover_timer
@@ -456,11 +523,54 @@ class Live2DModule:
         while self.run:
             for event in pygame.event.get():    #退出程序逻辑
                 if event.type == pygame.QUIT:
+                    if layout_editing:
+                        exit_layout_edit_mode()
                     self.run = False
                     break
+                elif event.type == pygame.KEYDOWN and layout_editing:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                        exit_layout_edit_mode()
+                    elif event.key == pygame.K_r:
+                        reset_current_layout()
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 3:
+                        if layout_editing:
+                            exit_layout_edit_mode()
+                        else:
+                            enter_layout_edit_mode()
+                    elif layout_editing and event.button == 1:
+                        layout_dragging = True
+                        layout_last_mouse_pos = event.pos
+                    elif layout_editing and event.button in (4, 5):
+                        current_layout = current_layout.zoomed(1 if event.button == 4 else -1)
+                        apply_current_layout()
+                        layout_dirty = True
+                        show_layout_edit_overlay()
                 elif event.type == pygame.MOUSEBUTTONUP:
-                    mouse_position_x, _= event.pos
-
+                    if layout_editing and event.button == 1:
+                        layout_dragging = False
+                        layout_last_mouse_pos = None
+                    elif not layout_editing and event.button == 1:
+                        mouse_position_x, _= event.pos
+                elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
+                    if layout_last_mouse_pos is not None:
+                        last_x, last_y = layout_last_mouse_pos
+                        current_x, current_y = event.pos
+                        current_layout = current_layout.moved_by_pixels(
+                            current_x - last_x,
+                            current_y - last_y,
+                            win_w_and_h,
+                            win_w_and_h,
+                        )
+                        apply_current_layout()
+                        layout_dirty = True
+                        show_layout_edit_overlay()
+                    layout_last_mouse_pos = event.pos
+                elif event.type == pygame.MOUSEWHEEL and layout_editing:
+                    current_layout = current_layout.zoomed(int(event.y))
+                    apply_current_layout()
+                    layout_dirty = True
+                    show_layout_edit_overlay()
                 else:
                     pass
 
@@ -517,7 +627,8 @@ class Live2DModule:
                     break
             if latest_text is not None:
                 self.new_text = latest_text
-                overlay.set_text(self.current_character.character_name, self.new_text)
+                if not layout_editing:
+                    overlay.set_text(self.current_character.character_name, self.new_text)
 
             if not change_char_queue.empty():
                 x=change_char_queue.get()
@@ -572,6 +683,8 @@ class Live2DModule:
                         pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
                     render_background(texture)
                 elif command_type == "switch_live2d":
+                    if layout_editing:
+                        exit_layout_edit_mode()
                     self._reset_long_audio_motion_loop()
                     character_name = str(x.get("character_name") or "")
                     model_json = x.get("model_json")
@@ -641,6 +754,9 @@ class Live2DModule:
                             new_model = None
                     if new_model is not None:
                         model=new_model
+                        current_layout_model_path = new_model_path
+                        current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+                        apply_current_layout()
                         overlay.set_text(self.current_character.character_name,'...')
                         if self.if_sakiko and self.sakiko_state:
                             model.SetExpression('serious')
@@ -659,7 +775,15 @@ class Live2DModule:
                     self.target_fps = fps
                     logger.info("已切换 Live2D 渲染帧率为 %d fps", self.target_fps)
 
+                elif command_type == "toggle_l2d_layout_edit":
+                    if layout_editing:
+                        exit_layout_edit_mode()
+                    else:
+                        enter_layout_edit_mode()
+
                 elif command_type == "exit":
+                    if layout_editing:
+                        exit_layout_edit_mode()
                     self.run = False
                     break
                 else:
@@ -672,7 +796,9 @@ class Live2DModule:
                     last_saved_time_think=time.time()
                     interval_think=15
 
-            if  is_text_generating_queue.empty():
+            if layout_editing:
+                pygame.display.set_caption(f"{self.current_character.character_name}布局编辑中")
+            elif  is_text_generating_queue.empty():
                 if self.if_sakiko:
                     pygame.display.set_caption("祥子") if not self.sakiko_state else pygame.display.set_caption("Oblivionis")
                 else:
@@ -687,7 +813,7 @@ class Live2DModule:
                     model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback)
                 last_saved_time=time.time()
 
-            if mouse_position_x != 0:  # 点击画面随机做动作
+            if not layout_editing and mouse_position_x != 0:  # 点击画面随机做动作
                 if self.if_sakiko:
                     model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback)
                 mouse_position_x = 0
@@ -711,6 +837,9 @@ class Live2DModule:
                             model.Resize(win_w_and_h, win_w_and_h)
                             model.SetAutoBlinkEnable(True)
                             model.SetAutoBreathEnable(True)
+                            current_layout_model_path = self.PATH_JSON
+                            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+                            apply_current_layout()
                             model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback)
                             model.SetExpression("idle")
                             self.sakiko_state=False
@@ -721,6 +850,13 @@ class Live2DModule:
                             model.Resize(win_w_and_h, win_w_and_h)
                             model.SetAutoBlinkEnable(True)
                             model.SetAutoBreathEnable(True)
+                            current_layout_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
+                            current_layout = get_live2d_layout(
+                                current_layout_model_path,
+                                model.version,
+                                layout_scene,
+                            )
+                            apply_current_layout()
 
                             self.if_mask=random()<0.5
                             model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback)
@@ -789,7 +925,7 @@ class Live2DModule:
             model.Draw()
             overlay.update()
             # 从共享变量读取是否显示文本
-            if is_display_text_value.value:
+            if layout_editing or is_display_text_value.value:
                 overlay.draw()
             glUseProgram(0)
             # 4、pygame刷新
@@ -797,6 +933,11 @@ class Live2DModule:
             frame_clock.tick(self.target_fps)
 
 
+        try:
+            if layout_editing:
+                exit_layout_edit_mode()
+        except Exception:
+            logger.exception("退出 Live2D 布局编辑模式失败")
         try:
             pygame.mixer.music.stop()
         except Exception:
