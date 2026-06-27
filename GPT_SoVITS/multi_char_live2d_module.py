@@ -17,6 +17,13 @@ with open(os.devnull, 'w') as devnull:
 
 
 from log import get_logger
+from live2d_layout import (
+    Live2DLayout,
+    format_live2d_layout_status,
+    get_live2d_layout,
+    reset_live2d_layout,
+    save_live2d_layout,
+)
 
 logger = get_logger(__name__)
 
@@ -503,14 +510,58 @@ class Live2DModule:
 
         return normalized
 
-    def _apply_model_common_setup(self, model: LAppModel, win_w_and_h: int, slot: Optional[int] = None):
+    def _apply_model_common_setup(
+            self,
+            model: LAppModel,
+            win_w_and_h: int,
+            slot: Optional[int] = None,
+            layout: Optional[Live2DLayout] = None,
+    ) -> None:
         """应用模型加载后的通用初始化参数，包含缩放、自动眨眼、自动呼吸等。"""
         model.Resize(int(win_w_and_h * 1.33), win_w_and_h)
         model.SetAutoBlinkEnable(True)
         model.SetAutoBreathEnable(True)
         if slot in (0, 1):
-            model.SetOffset(*self.model_pos_offset[slot])
-            model.SetScale(self.model_scale)
+            applied_layout = layout if layout is not None else Live2DLayout(
+                scale=self.model_scale,
+                offset_x=0.0,
+                offset_y=0.0,
+            )
+            slot_offset_x, slot_offset_y = self.model_pos_offset[slot]
+            model.SetOffset(slot_offset_x + applied_layout.offset_x, slot_offset_y + applied_layout.offset_y)
+            model.SetScale(applied_layout.scale)
+
+    def _draw_layout_edit_selection_mask(self, selected_slot: int) -> None:
+        """在小剧场布局编辑时绘制当前选中槽位的半屏提示。"""
+        selected_left = -1.0 if selected_slot == 0 else 0.0
+        selected_right = 0.0 if selected_slot == 0 else 1.0
+        masked_left = 0.0 if selected_slot == 0 else -1.0
+        masked_right = 1.0 if selected_slot == 0 else 0.0
+
+        glPushAttrib(GL_ALL_ATTRIB_BITS)
+        glUseProgram(0)
+        glDisable(GL_TEXTURE_2D)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        glColor4f(0.0, 0.0, 0.0, 0.18)
+        glBegin(GL_QUADS)
+        glVertex3f(masked_left, 1.0, 0.0)
+        glVertex3f(masked_right, 1.0, 0.0)
+        glVertex3f(masked_right, -1.0, 0.0)
+        glVertex3f(masked_left, -1.0, 0.0)
+        glEnd()
+
+        glLineWidth(3.0)
+        glColor4f(0.50, 0.70, 0.95, 0.90)
+        glBegin(GL_LINE_LOOP)
+        glVertex3f(selected_left, 1.0, 0.0)
+        glVertex3f(selected_right, 1.0, 0.0)
+        glVertex3f(selected_right, -1.0, 0.0)
+        glVertex3f(selected_left, -1.0, 0.0)
+        glEnd()
+
+        glPopAttrib()
 
     def _force_model_eyes_open(self, model: LAppModel):
         """只恢复眼睛开合参数，保留动作尾帧的身体和表情姿势。"""
@@ -531,7 +582,15 @@ class Live2DModule:
             return ["角色A", "角色B"]
         return [self.active_slots[0]["character_name"], self.active_slots[1]["character_name"]]
 
-    def _handle_set_active_slots(self, payload: Dict[str, Any], model_0: LAppModel, model_1: LAppModel, win_w_and_h: int, overlay: TextOverlay):
+    def _handle_set_active_slots(
+            self,
+            payload: Dict[str, object],
+            model_0: LAppModel,
+            model_1: LAppModel,
+            win_w_and_h: int,
+            overlay: TextOverlay,
+            model_layouts: list[Live2DLayout],
+    ) -> None:
         """处理 `set_active_slots` 消息：原子更新双槽位与双模型。
 
         注意：先做完整校验，再一次性替换 `active_slots`，避免出现一边更新成功一边失败的状态。
@@ -541,13 +600,21 @@ class Live2DModule:
         self.active_slots = normalized_slots
 
         model_0.LoadModelJson(self.active_slots[0]["model_json_path"], disable_precision=True)
-        self._apply_model_common_setup(model_0, win_w_and_h, 0)
+        model_layouts[0] = get_live2d_layout(self.active_slots[0]["model_json_path"], "v2", "theater")
+        self._apply_model_common_setup(model_0, win_w_and_h, 0, model_layouts[0])
         model_1.LoadModelJson(self.active_slots[1]["model_json_path"], disable_precision=True)
-        self._apply_model_common_setup(model_1, win_w_and_h, 1)
+        model_layouts[1] = get_live2d_layout(self.active_slots[1]["model_json_path"], "v2", "theater")
+        self._apply_model_common_setup(model_1, win_w_and_h, 1, model_layouts[1])
         self._clear_eye_reopen_state()
         overlay.set_text(f"{self.active_slots[0]['character_name']} & {self.active_slots[1]['character_name']}", "...")
 
-    def _handle_toggle_sakiko_model(self, model_0: LAppModel, model_1: LAppModel, win_w_and_h: int):
+    def _handle_toggle_sakiko_model(
+            self,
+            model_0: LAppModel,
+            model_1: LAppModel,
+            win_w_and_h: int,
+            model_layouts: list[Live2DLayout],
+    ) -> None:
         """在当前槽位中查找“祥子”，并切换黑/白祥模型。
 
         切换后会同步更新 `active_slots` 里的 `model_json_path`，保证状态与实际渲染一致。
@@ -571,7 +638,8 @@ class Live2DModule:
             this_sakiko_model.LoadModelJson(new_model_path, disable_precision=True)
             this_sakiko_model.StartRandomMotion('IDLE', 3)
 
-        self._apply_model_common_setup(this_sakiko_model, win_w_and_h, sakiko_slot)
+        model_layouts[sakiko_slot] = get_live2d_layout(new_model_path, "v2", "theater")
+        self._apply_model_common_setup(this_sakiko_model, win_w_and_h, sakiko_slot, model_layouts[sakiko_slot])
         self._clear_eye_reopen_state()
         self.active_slots[sakiko_slot]["model_json_path"] = new_model_path
 
@@ -670,13 +738,18 @@ class Live2DModule:
         frame_clock = pygame.time.Clock()
         target_fps = 60
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
-        pygame.display.set_caption('数字小祥 小剧场')
+        window_caption = "数字小祥 小剧场"
+        pygame.display.set_caption(window_caption)
         model_0 = live2d.LAppModel()
         model_0.LoadModelJson(self.active_slots[0]["model_json_path"], disable_precision=True)
         model_1 = live2d.LAppModel()
         model_1.LoadModelJson(self.active_slots[1]["model_json_path"], disable_precision=True)
-        self._apply_model_common_setup(model_0, win_w_and_h, 0)
-        self._apply_model_common_setup(model_1, win_w_and_h, 1)
+        model_layouts = [
+            get_live2d_layout(self.active_slots[0]["model_json_path"], "v2", "theater"),
+            get_live2d_layout(self.active_slots[1]["model_json_path"], "v2", "theater"),
+        ]
+        self._apply_model_common_setup(model_0, win_w_and_h, 0, model_layouts[0])
+        self._apply_model_common_setup(model_1, win_w_and_h, 1, model_layouts[1])
         model_group = [model_0, model_1]
 
         overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h), self._active_character_names())
@@ -710,12 +783,125 @@ class Live2DModule:
         stop_on_next_sentence = False  # 是否在下一句开始时停止（用于外部发送 STOP 命令的响应）
         queued_playlist: deque[dict] = deque()  # 用于存储外部发送的新播放列表，等当前播放完再切换
         last_speaker_slot = 1
+        layout_editing = False
+        layout_dragging = False
+        layout_selected_slot = 0
+        layout_dirty_slots: set[int] = set()
+        layout_last_mouse_pos: tuple[int, int] | None = None
+
+        def slot_from_mouse_x(mouse_x: int) -> int:
+            """根据鼠标横坐标判断正在编辑的小剧场槽位。"""
+            return 0 if mouse_x < display[0] / 2 else 1
+
+        def apply_slot_layout(slot: int) -> None:
+            """将指定槽位当前布局应用到对应模型。"""
+            self._apply_model_common_setup(model_group[slot], win_w_and_h, slot, model_layouts[slot])
+
+        def show_layout_edit_overlay() -> None:
+            """刷新小剧场布局编辑模式下的提示文本。"""
+            slot_data = self.active_slots[layout_selected_slot]
+            character_name = str(slot_data.get("character_name", f"slot{layout_selected_slot}"))
+            overlay.set_text(
+                character_name,
+                "布局编辑中：左键拖动，滚轮缩放，R重置，Esc/Q保存并退出"
+            )
+
+        def save_dirty_layouts() -> None:
+            """保存所有已修改槽位对应模型的小剧场布局。"""
+            for slot in tuple(layout_dirty_slots):
+                try:
+                    save_live2d_layout(str(self.active_slots[slot]["model_json_path"]), "theater", model_layouts[slot])
+                except Exception:
+                    logger.exception("保存小剧场 Live2D 布局配置失败")
+            layout_dirty_slots.clear()
+
+        def enter_layout_edit_mode(selected_slot: int) -> None:
+            """进入小剧场 Live2D 布局编辑模式。"""
+            nonlocal layout_editing, layout_dragging, layout_selected_slot, layout_last_mouse_pos
+            layout_editing = True
+            layout_dragging = False
+            layout_selected_slot = selected_slot
+            layout_last_mouse_pos = None
+            pygame.display.set_caption(f"{window_caption} - 布局编辑中")
+            show_layout_edit_overlay()
+
+        def exit_layout_edit_mode() -> None:
+            """退出小剧场 Live2D 布局编辑模式，并保存已修改布局。"""
+            nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
+            save_dirty_layouts()
+            layout_editing = False
+            layout_dragging = False
+            layout_last_mouse_pos = None
+            pygame.display.set_caption(window_caption)
+            overlay.set_text(f"{self.active_slots[0]['character_name']} & {self.active_slots[1]['character_name']}", "...")
+
+        def reset_selected_layout() -> None:
+            """重置当前选中模型的小剧场布局。"""
+            try:
+                reset_live2d_layout(self.active_slots[layout_selected_slot]["model_json_path"], "theater")
+            except Exception:
+                logger.exception("重置小剧场 Live2D 布局配置失败")
+            model_layouts[layout_selected_slot] = get_live2d_layout(
+                self.active_slots[layout_selected_slot]["model_json_path"],
+                "v2",
+                "theater",
+            )
+            apply_slot_layout(layout_selected_slot)
+            layout_dirty_slots.discard(layout_selected_slot)
+            show_layout_edit_overlay()
 
         while self.run:
             for event in pygame.event.get():  # 退出程序逻辑
                 if event.type == pygame.QUIT:
+                    if layout_editing:
+                        exit_layout_edit_mode()
                     self.run = False
                     break
+                elif event.type == pygame.KEYDOWN and layout_editing:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                        exit_layout_edit_mode()
+                    elif event.key == pygame.K_r:
+                        reset_selected_layout()
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 3:
+                        if layout_editing:
+                            exit_layout_edit_mode()
+                        else:
+                            enter_layout_edit_mode(slot_from_mouse_x(event.pos[0]))
+                    elif layout_editing and event.button == 1:
+                        layout_selected_slot = slot_from_mouse_x(event.pos[0])
+                        layout_dragging = True
+                        layout_last_mouse_pos = event.pos
+                        show_layout_edit_overlay()
+                    elif layout_editing and event.button in (4, 5):
+                        model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].zoomed(
+                            1 if event.button == 4 else -1
+                        )
+                        apply_slot_layout(layout_selected_slot)
+                        layout_dirty_slots.add(layout_selected_slot)
+                        show_layout_edit_overlay()
+                elif event.type == pygame.MOUSEBUTTONUP and layout_editing and event.button == 1:
+                    layout_dragging = False
+                    layout_last_mouse_pos = None
+                elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
+                    if layout_last_mouse_pos is not None:
+                        last_x, last_y = layout_last_mouse_pos
+                        current_x, current_y = event.pos
+                        model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].moved_by_pixels(
+                            current_x - last_x,
+                            current_y - last_y,
+                            display[0],
+                            display[1],
+                        )
+                        apply_slot_layout(layout_selected_slot)
+                        layout_dirty_slots.add(layout_selected_slot)
+                        show_layout_edit_overlay()
+                    layout_last_mouse_pos = event.pos
+                elif event.type == pygame.MOUSEWHEEL and layout_editing:
+                    model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].zoomed(int(event.y))
+                    apply_slot_layout(layout_selected_slot)
+                    layout_dirty_slots.add(layout_selected_slot)
+                    show_layout_edit_overlay()
                 # if event.type == pygame.MOUSEMOTION:
                 #     x,y=pygame.mouse.get_pos()
                 #     model_0.Drag(x,y)
@@ -726,6 +912,8 @@ class Live2DModule:
             if not change_char_queue.empty():
                 x = change_char_queue.get()
                 if x == "EXIT":
+                    if layout_editing:
+                        exit_layout_edit_mode()
                     self.run = False
                     tell_qt_this_turn_finish_queue.put('EXIT')
                     continue
@@ -748,9 +936,13 @@ class Live2DModule:
                 try:
                     # 统一按 type 分发，避免旧字符串协议带来的解析歧义
                     if message_type == "set_active_slots":
-                        self._handle_set_active_slots(x, model_0, model_1, win_w_and_h, overlay)
+                        if layout_editing:
+                            exit_layout_edit_mode()
+                        self._handle_set_active_slots(x, model_0, model_1, win_w_and_h, overlay, model_layouts)
                     elif message_type == "toggle_sakiko_model":
-                        self._handle_toggle_sakiko_model(model_0, model_1, win_w_and_h)
+                        if layout_editing:
+                            exit_layout_edit_mode()
+                        self._handle_toggle_sakiko_model(model_0, model_1, win_w_and_h, model_layouts)
                     elif message_type == "switch_l2d_fps":
                         fps = int(x.get("fps"))
                         if fps in (30, 60, 120):
@@ -758,6 +950,11 @@ class Live2DModule:
                             logger.info("已切换小剧场 Live2D 渲染帧率为 %d fps", target_fps)
                         else:
                             logger.warning("忽略不支持的小剧场 Live2D 帧率：%s", fps)
+                    elif message_type == "toggle_l2d_layout_edit":
+                        if layout_editing:
+                            exit_layout_edit_mode()
+                        else:
+                            enter_layout_edit_mode(layout_selected_slot)
                     else:
                         logger.warning("忽略未知消息类型：%s", message_type)
                 except Exception:
@@ -901,6 +1098,9 @@ class Live2DModule:
             model_0.Draw()
             model_1.Draw()
 
+            if layout_editing:
+                show_layout_edit_overlay()
+                self._draw_layout_edit_selection_mask(layout_selected_slot)
             overlay.update()
             overlay.draw()
             glUseProgram(0)
@@ -908,6 +1108,13 @@ class Live2DModule:
             pygame.display.flip()
             frame_clock.tick(target_fps)
 
+        try:
+            if layout_editing:
+                exit_layout_edit_mode()
+            else:
+                save_dirty_layouts()
+        except Exception:
+            logger.exception("退出小剧场 Live2D 布局编辑模式失败")
         try:
             pygame.mixer.music.stop()
         except Exception:

@@ -14,7 +14,11 @@ class DSLocalAndVoiceGen:
 
 		self.audio_language = ["中英混合", "日英混合"]
 		self.audio_language_choice = self.audio_language[1]
-		self.model=__import__('live2d_1').get_live2d()
+		try:
+			self.model = __import__('live2d_1').get_live2d()
+		except ImportError:
+			self.model = None
+
 		self.base_prompt = '''
 								# Role
 								你是一位精通心理学和戏剧创作的资深编剧，擅长创作符合ACG角色设定的沉浸式对话（小剧场）。
