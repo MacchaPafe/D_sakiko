@@ -166,7 +166,7 @@ class Live2DModule:
             model_adapter.SetAutoBlinkEnable(True)
             model_adapter.SetAutoBreathEnable(True)
             if self.if_sakiko:
-                model_adapter.SetExpression('serious')
+                model_adapter.SetSemanticExpression('serious')
             return model_adapter
 
         def create_viewer_model(model_json_path: str) -> Live2DModelAdapter:

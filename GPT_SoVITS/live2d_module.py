@@ -424,7 +424,7 @@ class Live2DModule:
         model.SetAutoBlinkEnable(True)
         model.SetAutoBreathEnable(True)
         if self.if_sakiko:
-            model.SetExpression('serious')
+            model.SetSemanticExpression('serious')
 
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.current_character.character_name])
         glEnable(GL_TEXTURE_2D)
@@ -760,9 +760,9 @@ class Live2DModule:
                         apply_current_layout()
                         overlay.set_text(self.current_character.character_name,'...')
                         if self.if_sakiko and self.sakiko_state:
-                            model.SetExpression('serious')
+                            model.SetSemanticExpression('serious')
                         else:
-                            model.SetExpression('idle')
+                            model.SetSemanticExpression('idle')
                         model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback, position="C")
                         if self.current_character.icon_path is not None:
                             pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
@@ -842,7 +842,7 @@ class Live2DModule:
                             current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
                             apply_current_layout()
                             model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback, position="C")
-                            model.SetExpression("idle")
+                            model.SetSemanticExpression("idle")
                             self.sakiko_state=False
 
                         else:       #切换为黑祥
@@ -861,7 +861,7 @@ class Live2DModule:
 
                             self.if_mask=random()<0.5
                             model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback, position="C")
-                            model.SetExpression("serious")
+                            model.SetSemanticExpression("serious")
                             self.sakiko_state=True
                     else:
                         if self.sakiko_state:   #黑祥
