@@ -507,10 +507,9 @@ dependencies = [
     { name = "ko-pron", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "librosa", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "litellm", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "live2d-py", version = "0.7.0.4+d.sakiko.1", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_14_0_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "live2d-py", version = "0.7.0.4+d.sakiko.1", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_15_0_arm64.whl" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'arm64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "live2d-py", version = "0.7.0.4+d.sakiko.1", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "live2d-py", version = "0.7.0.4+d.sakiko.1", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-win_amd64.whl" }, marker = "(platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine != 'AMD64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "live2d-py", version = "0.7.0.4+d.sakiko.2", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" }, marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "live2d-py", version = "0.7.0.4+d.sakiko.2", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "live2d-py", version = "0.7.0.4+d.sakiko.2", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl" }, marker = "(platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine != 'AMD64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "modelscope", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "numba", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
@@ -602,11 +601,11 @@ requires-dist = [
     { name = "ko-pron", specifier = ">=1.3" },
     { name = "librosa", specifier = "==0.10.2" },
     { name = "litellm", specifier = ">=1.83" },
-    { name = "live2d-py", marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and sys_platform == 'linux') or (platform_machine != 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')", specifier = "==0.7.0.4+d.sakiko.1" },
-    { name = "live2d-py", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_15_0_arm64.whl" },
-    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_14_0_x86_64.whl" },
-    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { name = "live2d-py", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-win_amd64.whl" },
+    { name = "live2d-py", marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and sys_platform == 'linux') or (platform_machine != 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')", specifier = "==0.7.0.4+d.sakiko.2" },
+    { name = "live2d-py", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" },
+    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" },
+    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { name = "live2d-py", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl" },
     { name = "modelscope", specifier = ">=1.32.0" },
     { name = "numba", specifier = ">=0.62.1,<0.63" },
     { name = "numpy", specifier = "<2.0" },
@@ -1565,18 +1564,19 @@ wheels = [
 
 [[package]]
 name = "live2d-py"
-version = "0.7.0.4+d.sakiko.1"
-source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_14_0_x86_64.whl" }
+version = "0.7.0.4+d.sakiko.2"
+source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" }
 resolution-markers = [
+    "platform_machine == 'arm64' and sys_platform == 'darwin'",
     "platform_machine == 'x86_64' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "numpy", marker = "(platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "pillow", marker = "(platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "pyopengl", marker = "(platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "numpy", marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "pillow", marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "pyopengl", marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
 wheels = [
-    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_14_0_x86_64.whl", hash = "sha256:dc8bc623c7c0a676ad45ad9f99bd06158c4e6b7115db3469d8a3abaca1e3e8bb" },
+    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl", hash = "sha256:b1e4f99be74bd282d6672d301aee9da455ceda0c51b6b33a585bcbf5dcddddec" },
 ]
 
 [package.metadata]
@@ -1588,31 +1588,8 @@ requires-dist = [
 
 [[package]]
 name = "live2d-py"
-version = "0.7.0.4+d.sakiko.1"
-source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_15_0_arm64.whl" }
-resolution-markers = [
-    "platform_machine == 'arm64' and sys_platform == 'darwin'",
-]
-dependencies = [
-    { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'arm64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "pillow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'arm64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "pyopengl", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'arm64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-]
-wheels = [
-    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:ad20a220b90f9bcb84a3af33d605e4e14c1e546e7a037cd351ae95a6babbbaf3" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy" },
-    { name = "pillow" },
-    { name = "pyopengl" },
-]
-
-[[package]]
-name = "live2d-py"
-version = "0.7.0.4+d.sakiko.1"
-source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+version = "0.7.0.4+d.sakiko.2"
+source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -1622,7 +1599,7 @@ dependencies = [
     { name = "pyopengl", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
 wheels = [
-    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8cc54382dd63f2738ea696dbfb5c2dca1f9630b1034593c04b812af4d46ac500" },
+    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:43567399011bcc767a8b6878fab8abf0d1da8511a19b4cd62ad960b1b169b9f9" },
 ]
 
 [package.metadata]
@@ -1634,8 +1611,8 @@ requires-dist = [
 
 [[package]]
 name = "live2d-py"
-version = "0.7.0.4+d.sakiko.1"
-source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-win_amd64.whl" }
+version = "0.7.0.4+d.sakiko.2"
+source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl" }
 resolution-markers = [
     "platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
@@ -1645,7 +1622,7 @@ dependencies = [
     { name = "pyopengl", marker = "(platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine != 'AMD64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
 wheels = [
-    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.1/live2d_py-0.7.0.4+d.sakiko.1-cp311-cp311-win_amd64.whl", hash = "sha256:c36991c18d8292a7590a984888d8a8e56d7367c0a18c9ddb7e1e9578589d72b4" },
+    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl", hash = "sha256:2584ebbdf59fecdbae7f98a6d254b7c4dddc7b02819e0b1dd47ebceeec669658" },
 ]
 
 [package.metadata]

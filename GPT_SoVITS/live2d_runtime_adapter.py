@@ -30,6 +30,8 @@ PARAMETER_CANDIDATES: dict[str, tuple[str, str]] = {
     "eye_r_open": ("PARAM_EYE_R_OPEN", "ParamEyeROpen"),
 }
 
+BREATH_PARAMETER_ONLY_METHOD = "SetAutoBreathParameterOnlyEnable"
+
 
 def _read_model_json(model_json_path: str) -> dict[str, object]:
     """读取 Live2D 模型 JSON，并保证顶层是对象。"""
@@ -71,6 +73,15 @@ def _call_noarg(target: object, method_name: str) -> None:
     method = getattr(target, method_name, None)
     if callable(method):
         method()
+
+
+def _call_breath_parameter_only(target: object, enabled: bool) -> bool:
+    """调用 runtime 支持的仅 ParamBreath 自动呼吸方法。"""
+    method = getattr(target, BREATH_PARAMETER_ONLY_METHOD, None)
+    if not callable(method):
+        return False
+    method(enabled)
+    return True
 
 
 def initialize_live2d_runtime(runtime: ModuleType) -> None:
@@ -288,8 +299,25 @@ class Live2DModelAdapter:
         self.set_auto_blink_enable(enabled)
 
     def set_auto_breath_enable(self, enabled: bool) -> None:
-        """设置自动呼吸。"""
-        getattr(self._require_model(), "SetAutoBreathEnable")(enabled)
+        """设置自动呼吸，V3 开启时优先只驱动 ParamBreath。"""
+        model = self._require_model()
+        if self.version == "v3" and enabled:
+            if _call_breath_parameter_only(model, True):
+                return
+            logger.warning(
+                "当前 live2d.v3 runtime 不支持仅 ParamBreath 自动呼吸 API，"
+                "将回退到完整 AutoBreath：%s",
+                self.model_json_path,
+            )
+        getattr(model, "SetAutoBreathEnable")(enabled)
+
+    def set_auto_breath_parameter_only_enable(self, enabled: bool) -> bool:
+        """设置仅 ParamBreath 自动呼吸，runtime 不支持时返回 False。"""
+        return _call_breath_parameter_only(self._require_model(), enabled)
+
+    def SetAutoBreathParameterOnlyEnable(self, enabled: bool) -> bool:
+        """兼容旧调用风格，设置仅 ParamBreath 自动呼吸。"""
+        return self.set_auto_breath_parameter_only_enable(enabled)
 
     def SetAutoBreathEnable(self, enabled: bool) -> None:
         """兼容旧调用风格，设置自动呼吸。"""
