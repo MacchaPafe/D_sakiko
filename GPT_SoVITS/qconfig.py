@@ -168,6 +168,13 @@ class DSakikoConfig(QConfig):
         DEFAULT_MULTI_CHAR_BGM_PATH,
         FileValidator(DEFAULT_MULTI_CHAR_BGM_PATH, (".mp3", ".wav")),
     )
+    # 小剧场 Live2D 动作朝向：screen 为两侧都看向屏幕，face_to_face 为左右角色互相面向。
+    multi_char_motion_facing_mode = OptionsConfigItem(
+        "ui_state",
+        "multi_char_motion_facing_mode",
+        "screen",
+        validator=OptionsValidator(["screen", "face_to_face"]),
+    )
 
     # 颜色主题默认信息
     theme_color = ConfigItem("theme_color_setting", "theme_color", [

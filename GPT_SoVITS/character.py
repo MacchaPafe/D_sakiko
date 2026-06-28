@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import copy
 import glob
 import json
 import os
-import random
 import uuid
 
+from live2d_model_normalizer import (
+    convert_old_l2d_json as normalize_old_l2d_json,
+    is_l2d_model3_json as is_model3_l2d_json,
+    is_old_l2d_json as is_legacy_l2d_json,
+    normalize_model3_for_project,
+)
 from qconfig import d_sakiko_config
 from log import get_logger
 
@@ -134,22 +138,9 @@ ref_audio_language_list = [
     "多语种混合(粤语)"
 ]
 
-def is_old_l2d_json(old_l2d_json_path) -> bool:
-    """
-        判断是否为老版 Live2D model.json 格式。
-    """
-    if not str(old_l2d_json_path).endswith(".model.json"):
-        return False
-    try:
-        with open(old_l2d_json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception:
-        logger.exception("读取 Live2D JSON 文件失败")
-        return False
-
-    if 'motions' in data and 'rana' in data['motions']:
-        return True
-    return False
+def is_old_l2d_json(old_l2d_json_path: str | None) -> bool:
+    """判断是否为老版 Live2D model.json 格式。"""
+    return is_legacy_l2d_json(old_l2d_json_path)
 
 def find_default_l2d_json(model_dir: str) -> str | None:
     """
@@ -164,111 +155,18 @@ def find_default_l2d_json(model_dir: str) -> str | None:
 
 def is_l2d_model3_json(l2d_json_path: str | None) -> bool:
     """判断是否为 Live2D V3 model3.json。"""
-    return bool(l2d_json_path) and str(l2d_json_path).endswith(".model3.json")
+    return is_model3_l2d_json(l2d_json_path)
 
 def rebuild_model3_motion_groups(model3_json_path: str) -> bool:
     """
-        检查并修复 V3 model3.json 的 FileReferences.Motions。
-        如果缺少项目标准动作组，则重建为 V2 同名动作组结构，每组放入一个同目录 motion3.json。
+        检查并规范化 V3 model3.json 的项目标准动作组。
+        保留旧函数名供现有调用点使用。
     """
-    L2D_STANDARD_MOTION_GROUPS = [
-        "happiness",
-        "sadness",
-        "anger",
-        "disgust",
-        "like",
-        "surprise",
-        "fear",
-        "IDLE",
-        "text_generating",
-        "bye",
-        "change_character",
-        "idle_motion",
-        "talking_motion",
-    ]
-
-    with open(model3_json_path, 'r', encoding='utf-8') as f:
-        model_data = json.load(f)
-
-    file_references = model_data.setdefault("FileReferences", {})
-    motions = file_references.get("Motions", {})
-    if isinstance(motions, dict) and all(group in motions for group in L2D_STANDARD_MOTION_GROUPS):
-        return False
-
-    model_dir = os.path.dirname(model3_json_path)
-    motion_files = sorted(glob.glob(os.path.join(model_dir, "*.motion3.json")))
-    if not motion_files:
-        logger.warning("Live2D V3 模型没有找到同级 motion3.json 文件，已重建空动作组：%s", model3_json_path)
-        file_references["Motions"] = {group: [] for group in L2D_STANDARD_MOTION_GROUPS}
-    else:
-        motion_file_names = [os.path.basename(path) for path in motion_files]
-        file_references["Motions"] = {
-            group: [{"File": random.choice(motion_file_names)}]
-            for group in L2D_STANDARD_MOTION_GROUPS
-        }
-    
-    expressions=file_references.get("Expressions", [])
-    for exp in expressions:
-        if exp.get("File") and "expressions/" in exp["File"]:
-            exp["File"] = exp["File"].replace("expressions/", "")
-    
-    textures=file_references.get("Textures", [])
-    for i,tex in enumerate(textures):
-        if "textures/" in tex:
-            textures[i] = tex.replace("textures/", "")
-
-    with open(model3_json_path, 'w', encoding='utf-8') as f:
-        json.dump(model_data, f, ensure_ascii=False, indent=4)
-    
-    return True
+    return normalize_model3_for_project(model3_json_path)
 
 def convert_old_l2d_json(old_l2d_json_path: str) -> None:
-    """
-        读取老版 Live2D model.json，转换为新版格式并返回字典。
-    """
-    with open(old_l2d_json_path, 'r', encoding='utf-8') as f:
-        old_data = json.load(f)
-
-
-    new_data = copy.deepcopy(old_data)
-    if 'controllers' in new_data:
-        del new_data['controllers']
-
-    if 'hit_areas' in new_data:
-        del new_data['hit_areas']
-    # 处理 Motions
-    old_rana_list = old_data.get('motions', {}).get('rana', [])
-    if not old_rana_list:
-        return  # 如果没有rana字段，认为是新版格式，直接返回
-    # 定义新版 13 个分类的切片映射关系
-    # 格式: (新键名, 起始索引, 结束索引)
-    motion_mapping = [
-        ("happiness", 0, 6),  # 0-5 (共6个)
-        ("sadness", 6, 12),  # 6-11 (共6个)
-        ("anger", 12, 18),  # 12-17 (共6个)
-        ("disgust", 18, 24),  # 18-23 (共6个)
-        ("like", 24, 30),  # 24-29 (共6个)
-        ("surprise", 30, 36),  # 30-35 (共6个)
-        ("fear", 36, 42),  # 36-41 (共6个)
-        ("IDLE", 42, 51),  # 42-50 (共9个)
-        ("text_generating", 51, 54),  # 51-53 (共3个)
-        ("bye", 54, 56),  # 54-55 (共2个)
-        ("change_character", 56, 59),  # 56-58 (共3个)
-        ("idle_motion", 59, 60),  # 59 (共1个)
-        ("talking_motion", 60, 61)  # 60 (共1个)
-    ]
-
-    new_motions = {}
-    for name, start_idx, end_idx in motion_mapping:
-        # 进行切片操作。如果 old_rana_list 长度不够，Python 不会报错，只会返回空列表或部分列表
-        new_motions[name] = old_rana_list[start_idx:end_idx]
-
-    # 将重构好的 motions 覆盖回去
-    new_data['motions'] = new_motions
-
-    with open(old_l2d_json_path, 'w', encoding='utf-8') as f:
-        json.dump(new_data, f, ensure_ascii=False, indent=4)
-        f.close()
+    """读取老版 Live2D model.json，转换为新版格式并覆盖保存。"""
+    normalize_old_l2d_json(old_l2d_json_path)
 
 
 class GetCharacterAttributes:

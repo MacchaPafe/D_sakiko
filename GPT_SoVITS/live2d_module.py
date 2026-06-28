@@ -347,6 +347,7 @@ class Live2DModule:
             3,
             self.onStartCallback,
             self.onFinishCallback,
+            position="C",
         )
         if not started:
             self.motion_is_over = True
@@ -645,7 +646,7 @@ class Live2DModule:
                 command_type = str(x.get("type") or "")
                 if command_type =='start_talking':   #录音时
                     self._reset_long_audio_motion_loop()
-                    model.StartRandomMotion("talking_motion", 4, self.onStartCallback)
+                    model.StartRandomMotion("talking_motion", 4, self.onStartCallback, position="C")
                 elif command_type=='stop_talking':   #录音结束
                     self._reset_long_audio_motion_loop()
                     self.onFinishCallback()
@@ -762,7 +763,7 @@ class Live2DModule:
                             model.SetExpression('serious')
                         else:
                             model.SetExpression('idle')
-                        model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback)
+                        model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback, position="C")
                         if self.current_character.icon_path is not None:
                             pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
                         logger.debug("Live2D模型切换成功：%s", self.PATH_JSON)
@@ -791,7 +792,7 @@ class Live2DModule:
 
             if not is_text_generating_queue.empty() and self.think_motion_is_over:  # 思考时
                 if time.time()-last_saved_time_think>interval_think:
-                    model.StartRandomMotion("text_generating",3,self.onStartCallback_think_motion_version, self.onFinishCallback_think_motion_version)
+                    model.StartRandomMotion("text_generating",3,self.onStartCallback_think_motion_version, self.onFinishCallback_think_motion_version, position="C")
 
                     last_saved_time_think=time.time()
                     interval_think=15
@@ -806,16 +807,16 @@ class Live2DModule:
 
             if self.motion_is_over and not pygame.mixer.music.get_busy():  #恢复idle动作
                 if is_text_generating_queue.empty() and time.time()-idle_recover_timer>2.5:
-                    model.StartRandomMotion("idle_motion", 1, self.onStartCallback)
+                    model.StartRandomMotion("idle_motion", 1, self.onStartCallback, position="C")
 
             if (time.time()-last_saved_time)>25 :   #待机动作
                 if self.live2d_this_turn_motion_complete and is_text_generating_queue.empty():
-                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback)
+                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
                 last_saved_time=time.time()
 
             if not layout_editing and mouse_position_x != 0:  # 点击画面随机做动作
                 if self.if_sakiko:
-                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback)
+                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
                 mouse_position_x = 0
                 self.think_motion_is_over=True
 
@@ -840,7 +841,7 @@ class Live2DModule:
                             current_layout_model_path = self.PATH_JSON
                             current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
                             apply_current_layout()
-                            model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback)
+                            model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback, position="C")
                             model.SetExpression("idle")
                             self.sakiko_state=False
 
@@ -859,22 +860,22 @@ class Live2DModule:
                             apply_current_layout()
 
                             self.if_mask=random()<0.5
-                            model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback)
+                            model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback, position="C")
                             model.SetExpression("serious")
                             self.sakiko_state=True
                     else:
                         if self.sakiko_state:   #黑祥
-                            model.StartRandomMotion("change_character_maskoff" if self.if_mask else "maskon",3,self.onStartCallback,self.onFinishCallback)
+                            model.StartRandomMotion("change_character_maskoff" if self.if_mask else "maskon",3,self.onStartCallback,self.onFinishCallback, position="C")
                             self.if_mask = not self.if_mask
                         else:
-                            model.StartMotion("text_generating", 0, 3, self.onStartCallback, self.onFinishCallback)
+                            model.StartMotion("text_generating", 0, 3, self.onStartCallback, self.onFinishCallback, position="C")
 
             if not emotion_queue.empty():
                 emotion = emotion_queue.get()
                 if emotion=='bye':
                     self._reset_long_audio_motion_loop()
                     if not if_bye:
-                        started = model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback)
+                        started = model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback, position="C")
                         if not started:
                             self.motion_is_over = True
                     if_bye=True
@@ -897,7 +898,7 @@ class Live2DModule:
                     continue
                 self._prepare_long_audio_motion_loop(motion_group, this_turn_audio_file_path)
                 self.motion_is_over = False
-                started = model.StartRandomMotion(motion_group,3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback)
+                started = model.StartRandomMotion(motion_group,3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback, position="C")
                 if not started:
                     self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path)
                     self.motion_is_over = True

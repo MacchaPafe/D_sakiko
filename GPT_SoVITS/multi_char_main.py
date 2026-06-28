@@ -32,6 +32,8 @@ from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGe
 from chat.chat_meta import TheaterMeta
 from log import get_logger, setup_logging, get_log_queue, shutdown_logging
 from qtUI import ChangeL2DModelWindow
+from live2d_model_normalizer import normalize_live2d_model_for_project
+from live2d_runtime_adapter import detect_live2d_runtime_version
 
 
 logger = get_logger(__name__)
@@ -909,10 +911,16 @@ class SettingsDialog(QDialog):
         self.btn_live2d_fps.setMinimumHeight(btn_h)
         self.btn_set_bgm = QPushButton("设置背景音乐")
         self.btn_set_bgm.setMinimumHeight(btn_h)
+        self.btn_motion_facing = QPushButton(self.parent_gui.motion_facing_mode_button_text() if self.parent_gui else "对话朝向：正常")
+        self.btn_motion_facing.setMinimumHeight(btn_h)
         live2d_render_layout.addWidget(self.btn_live2d_fps)
         live2d_render_layout.addWidget(self.btn_set_bgm)
+        live2d_render_layout.addWidget(self.btn_motion_facing)
         live2d_render_group.setLayout(live2d_render_layout)
         layout.addWidget(live2d_render_group)
+
+        if self.parent_gui is None or not self.parent_gui.is_motion_facing_mode_available():
+            self.btn_motion_facing.hide()
 
         # 如果当前没有角色，隐藏 live2d 模型切换按钮
         if len(character_names) < 2:
@@ -980,6 +988,7 @@ class SettingsDialog(QDialog):
             self.btn_sakiko_model.clicked.connect(self.parent_gui.convert_sakiko_model)
             self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
             self.btn_set_bgm.clicked.connect(self.parent_gui.set_bgm)
+            self.btn_motion_facing.clicked.connect(self.change_motion_facing_mode)
 
     def change_live2d_model(self, char_index):
         if len(self.character_names) <= char_index:
@@ -1015,6 +1024,13 @@ class SettingsDialog(QDialog):
             return
         self.parent_gui.switch_l2d_fps()
         self.btn_live2d_fps.setText(f"Live2D渲染帧率：{self.parent_gui.get_current_l2d_fps()}")
+
+    def change_motion_facing_mode(self) -> None:
+        """切换小剧场 Live2D 动作朝向模式。"""
+        if not self.parent_gui:
+            return
+        self.parent_gui.toggle_motion_facing_mode()
+        self.btn_motion_facing.setText(self.parent_gui.motion_facing_mode_button_text())
 
 
 class ViewerGUI(QWidget):
@@ -1527,6 +1543,25 @@ class ViewerGUI(QWidget):
             return self.character_list[char_index].live2d_json
         return ""
 
+    def _prepare_live2d_model_for_switch(self, model_path: str, action_label: str) -> bool:
+        """在小剧场切换或加载 Live2D 模型前完成项目规范化。"""
+        result = normalize_live2d_model_for_project(model_path)
+        if not result.ok:
+            self.message_queue.put(f"{action_label}失败，检查 Live2D 配置文件时出错。")
+            logger.error(
+                "%s失败，检查 Live2D 配置文件时出错：%s；%s",
+                action_label,
+                model_path,
+                result.error_message,
+            )
+            return False
+        if result.converted_old_model:
+            logger.info("成功转换旧版 Live2D 配置文件：%s", model_path)
+        if result.normalized_model3:
+            self.message_queue.put("已自动修复 Live2D V3 模型动作组配置")
+            logger.info("已自动修复 Live2D V3 模型动作组配置：%s", model_path)
+        return True
+
     def _next_turn_uid(self, turn_index: int) -> str:
         """为本轮生成的每一句对话分配唯一序号，用于去重。"""
         return f"{self._generation_serial}:{turn_index}"
@@ -1617,6 +1652,11 @@ class ViewerGUI(QWidget):
                 model_path = self.current_chat.get_custom_live2d_model_meta(char_name)
             if not model_path:
                 model_path = self._default_model_path_from_index(char_index)
+            if model_path and not self._prepare_live2d_model_for_switch(model_path, "加载小剧场 Live2D 模型"):
+                default_model_path = self._default_model_path_from_index(char_index)
+                if default_model_path and default_model_path != model_path:
+                    model_path = default_model_path
+                    self._prepare_live2d_model_for_switch(model_path, "加载默认 Live2D 模型")
 
             slots.append({
                 "slot": slot,
@@ -1627,6 +1667,7 @@ class ViewerGUI(QWidget):
         payload = {
             "type": "set_active_slots",
             "slots": slots,
+            "motion_facing_mode": str(d_sakiko_config.multi_char_motion_facing_mode.value),
             # True: 仅切模型，不打断当前对话播放；False: 切模型时可中断当前播放
             "preserve_playback": preserve_playback,
         }
@@ -1669,6 +1710,8 @@ class ViewerGUI(QWidget):
         接收 SettingsDialog 中角色模型更换的回调，并通知 Live2D 模块更新指定角色的模型。
         随后，将新的模型路径保存到对话信息中。
         """
+        if not self._prepare_live2d_model_for_switch(model_path, "切换小剧场 Live2D 模型"):
+            return
         # 设置面板中的“切同角色不同模型”不应中断正在播放的句子
         self.sync_live2d_active_slots(
             override_paths={char_index: model_path},
@@ -2011,6 +2054,45 @@ class ViewerGUI(QWidget):
 
     def get_current_l2d_fps(self):
         return self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
+
+    def current_live2d_model_paths(self) -> list[str]:
+        """返回当前小剧场两个槽位使用的 Live2D 模型路径。"""
+        payload = self._build_active_slots_payload(preserve_playback=True)
+        slots = payload.get("slots", [])
+        if not isinstance(slots, list):
+            return []
+        model_paths: list[str] = []
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            model_path = slot.get("model_json_path", "")
+            if isinstance(model_path, str) and model_path:
+                model_paths.append(model_path)
+        return model_paths
+
+    def is_motion_facing_mode_available(self) -> bool:
+        """判断当前小剧场模型组合是否支持动作朝向模式。"""
+        model_paths = self.current_live2d_model_paths()
+        if len(model_paths) != 2:
+            return False
+        try:
+            return all(detect_live2d_runtime_version(model_path) == "v3" for model_path in model_paths)
+        except Exception:
+            logger.debug("检测小剧场 Live2D 版本失败，隐藏动作朝向设置", exc_info=True)
+            return False
+
+    def motion_facing_mode_button_text(self) -> str:
+        """返回小剧场动作朝向按钮文案。"""
+        mode = str(d_sakiko_config.multi_char_motion_facing_mode.value)
+        label = "面对面" if mode == "face_to_face" else "正常"
+        return f"对话朝向：{label}"
+
+    def toggle_motion_facing_mode(self) -> None:
+        """切换并保存小剧场动作朝向模式。"""
+        current_mode = str(d_sakiko_config.multi_char_motion_facing_mode.value)
+        next_mode = "screen" if current_mode == "face_to_face" else "face_to_face"
+        d_sakiko_config.set(d_sakiko_config.multi_char_motion_facing_mode, next_mode)
+        self.sync_live2d_active_slots(preserve_playback=True)
 
 
     def start_generation(self) -> None:

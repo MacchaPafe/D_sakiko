@@ -27,6 +27,7 @@ from live2d_layout import (
 )
 from live2d_runtime_adapter import (
     Live2DModelAdapter,
+    MotionPosition,
     Live2DVersion,
     detect_live2d_runtime_version,
     initialize_live2d_runtime,
@@ -633,7 +634,12 @@ class Live2DModule:
                 logger.debug("小剧场口型同步读取音频失败，已跳过：%s", audio_file_path, exc_info=True)
         return True
 
-    def _try_start_emotion_motion(self, model: Live2DModelAdapter | None, emotion: str) -> bool:
+    def _try_start_emotion_motion(
+            self,
+            model: Live2DModelAdapter | None,
+            emotion: str,
+            position: MotionPosition,
+    ) -> bool:
         """尝试根据情绪触发可见模型动作，动作缺失时安静失败。"""
         if model is None:
             self.last_motion_model = None
@@ -654,12 +660,26 @@ class Live2DModule:
         self.last_motion_model = model
         self.force_eyes_open = False
 
-        started = model.StartRandomMotion(group_name, 3, None, self.onFinishCallback_motion)
+        started = model.StartRandomMotion(group_name, 3, None, self.onFinishCallback_motion, position=position)
         if not started:
             # logger.warning("Live2D 动作组不存在或启动失败，已跳过：%s", group_name)
             self.motion_is_over = True
             return False
         return True
+
+    @staticmethod
+    def _motion_position_for_slot(
+            slot: int | None,
+            versions: list[Live2DVersion],
+            facing_mode: str,
+    ) -> MotionPosition:
+        """根据小剧场槽位、模型版本和朝向模式选择动作位置。"""
+        if facing_mode == "face_to_face" and versions == ["v3", "v3"]:
+            if slot == 0:
+                return "L"
+            if slot == 1:
+                return "R"
+        return "C"
 
     def _build_default_active_slots(self) -> List[Dict[str, Any]]:
         """从角色列表前两位构建默认槽位配置。
@@ -902,7 +922,7 @@ class Live2DModule:
         model_layouts[sakiko_slot] = get_live2d_layout(new_model_path, "v2", "theater")
         self._apply_model_common_setup(model_group[sakiko_slot], win_w_and_h, sakiko_slot, model_layouts[sakiko_slot])
         if "live2D_model_costume" in new_model_path:
-            model_group[sakiko_slot].StartRandomMotion('IDLE', 3)
+            model_group[sakiko_slot].StartRandomMotion('IDLE', 3, position="C")
         self._clear_eye_reopen_state()
         self.active_slots[sakiko_slot]["model_json_path"] = new_model_path
 
@@ -1053,6 +1073,7 @@ class Live2DModule:
         stop_on_next_sentence = False  # 是否在下一句开始时停止（用于外部发送 STOP 命令的响应）
         queued_playlist: deque[dict] = deque()  # 用于存储外部发送的新播放列表，等当前播放完再切换
         last_speaker_slot = 1
+        active_motion_facing_mode = "screen"
         layout_editing = False
         layout_dragging = False
         layout_selected_slot = 0
@@ -1142,11 +1163,19 @@ class Live2DModule:
 
         def apply_slots_payload(payload: dict[str, object]) -> None:
             """应用 set_active_slots 消息，并按版本一致性决定可见模型。"""
+            nonlocal active_motion_facing_mode
             old_slots = [dict(slot_data) for slot_data in self.active_slots]
             old_runtime_version = current_runtime_version
+            old_motion_facing_mode = active_motion_facing_mode
             try:
                 slots_payload = payload.get("slots")
                 normalized_slots = self._normalize_slots_payload(slots_payload)
+                facing_mode_value = payload.get("motion_facing_mode")
+                active_motion_facing_mode = (
+                    facing_mode_value
+                    if isinstance(facing_mode_value, str) and facing_mode_value in ("screen", "face_to_face")
+                    else "screen"
+                )
                 self.active_slots = normalized_slots
                 changed_slot_value = payload.get("changed_slot")
                 changed_slot = int(changed_slot_value) if type(changed_slot_value) is int and changed_slot_value in (0, 1) else None
@@ -1158,6 +1187,7 @@ class Live2DModule:
             except Exception:
                 logger.exception("小剧场 Live2D 模型切换失败，尝试恢复旧模型。")
                 self.active_slots = old_slots
+                active_motion_facing_mode = old_motion_facing_mode
                 try:
                     switch_runtime_if_needed(old_runtime_version)
                     self._load_visible_models(model_group, model_layouts, win_w_and_h, None, current_runtime_version)
@@ -1440,6 +1470,11 @@ class Live2DModule:
                     self._try_start_emotion_motion(
                         model=this_turn_model,
                         emotion=str(emotion),
+                        position=self._motion_position_for_slot(
+                            speaker_slot,
+                            self._active_model_versions(),
+                            active_motion_facing_mode,
+                        ),
                     )
 
                     tell_qt_this_turn_finish_queue.put(this_turn_elements)

@@ -14,6 +14,7 @@ from log import get_logger
 
 
 Live2DVersion = Literal["v2", "v3"]
+MotionPosition = Literal["C", "L", "R"]
 MotionCallback = Callable[..., object]
 
 logger = get_logger(__name__)
@@ -348,27 +349,37 @@ class Live2DModelAdapter:
         """兼容旧调用风格，安全设置表情。"""
         return self.set_expression_if_supported(expression_id)
 
+    def resolve_positioned_motion_group(self, group_name: str, position: MotionPosition | None) -> str:
+        """根据位置参数选择动作组，缺少位置组时回退到基础组。"""
+        if position is None:
+            return group_name
+        positioned_group_name = f"{group_name}_{position}"
+        if positioned_group_name in self.motion_groups:
+            return positioned_group_name
+        return group_name
+
     def start_random_motion(
             self,
             group_name: str,
             priority: int,
             on_start: MotionCallback | None = None,
             on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
     ) -> bool:
         """播放随机动作组，动作组缺失时返回 False。"""
-        if group_name not in self.motion_groups:
-            # 由于主程序调用 IDLE 动作的频率太高了，这个日志会刷屏，暂时去掉
-            # logger.warning(
-            #     "Live2D 模型不包含动作组 '%s'，已跳过：%s",
-            #     group_name,
-            #     self.model_json_path,
-            # )
+        resolved_group_name = self.resolve_positioned_motion_group(group_name, position)
+        if resolved_group_name not in self.motion_groups:
+            logger.warning(
+                "Live2D 模型不包含动作组 '%s'，已跳过：%s",
+                resolved_group_name,
+                self.model_json_path,
+            )
             return False
         try:
-            getattr(self._require_model(), "StartRandomMotion")(group_name, priority, on_start, on_finish)
+            getattr(self._require_model(), "StartRandomMotion")(resolved_group_name, priority, on_start, on_finish)
             return True
         except Exception:
-            logger.exception("播放 Live2D 随机动作失败：%s", group_name)
+            logger.exception("播放 Live2D 随机动作失败：%s", resolved_group_name)
             return False
 
     def StartRandomMotion(
@@ -377,9 +388,10 @@ class Live2DModelAdapter:
             priority: int,
             on_start: MotionCallback | None = None,
             on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
     ) -> bool:
         """兼容旧调用风格，播放随机动作组。"""
-        return self.start_random_motion(group_name, priority, on_start, on_finish)
+        return self.start_random_motion(group_name, priority, on_start, on_finish, position)
 
     def start_motion(
             self,
@@ -388,21 +400,22 @@ class Live2DModelAdapter:
             priority: int,
             on_start: MotionCallback | None = None,
             on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
     ) -> bool:
         """播放指定动作组中的指定动作，动作组缺失时返回 False。"""
-        if group_name not in self.motion_groups:
-            # 主程序调用 IDLE 动作的频率太高了，这个日志会刷屏，暂时去掉
-            # logger.warning(
-            #     "Live2D 模型不包含动作组 '%s'，已跳过：%s",
-            #     group_name,
-            #     self.model_json_path,
-            # )
+        resolved_group_name = self.resolve_positioned_motion_group(group_name, position)
+        if resolved_group_name not in self.motion_groups:
+            logger.warning(
+                "Live2D 模型不包含动作组 '%s'，已跳过：%s",
+                resolved_group_name,
+                self.model_json_path,
+            )
             return False
         try:
-            getattr(self._require_model(), "StartMotion")(group_name, motion_index, priority, on_start, on_finish)
+            getattr(self._require_model(), "StartMotion")(resolved_group_name, motion_index, priority, on_start, on_finish)
             return True
         except Exception:
-            logger.exception("播放 Live2D 指定动作失败：%s[%d]", group_name, motion_index)
+            logger.exception("播放 Live2D 指定动作失败：%s[%d]", resolved_group_name, motion_index)
             return False
 
     def StartMotion(
@@ -412,9 +425,10 @@ class Live2DModelAdapter:
             priority: int,
             on_start: MotionCallback | None = None,
             on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
     ) -> bool:
         """兼容旧调用风格，播放指定动作。"""
-        return self.start_motion(group_name, motion_index, priority, on_start, on_finish)
+        return self.start_motion(group_name, motion_index, priority, on_start, on_finish, position)
 
     def start_motion_file(
             self,
