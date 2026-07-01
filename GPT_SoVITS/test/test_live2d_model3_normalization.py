@@ -8,9 +8,11 @@ import unittest
 from pathlib import Path
 from typing import cast
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+script_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
-from live2d_model_normalizer import normalize_live2d_model_for_project, normalize_model3_for_project
+from live2d_support.model_normalizer import normalize_live2d_model_for_project, normalize_model3_for_project
 
 
 class Live2DModel3NormalizationTestCase(unittest.TestCase):

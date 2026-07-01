@@ -7,7 +7,11 @@ import time
 import wave
 from random import random
 from live2d.utils.lipsync import WavHandler
-import glob,os
+import glob, os, sys
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 # 屏蔽 pygame 相关的警告和介绍信息
 with open(os.devnull, 'w') as devnull:
@@ -17,20 +21,19 @@ with open(os.devnull, 'w') as devnull:
             from pygame.locals import DOUBLEBUF, OPENGL
 
 from OpenGL.GL import *
-import sys
 import queue
 
 from multi_char_live2d_module import TextOverlay
 from qconfig import d_sakiko_config, qconfig
 from log import setup_worker_logging, get_logger
-from live2d_runtime_adapter import (
+from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
     detect_live2d_runtime_version,
     initialize_live2d_runtime,
     load_live2d_runtime,
     release_live2d_runtime,
 )
-from live2d_layout import (
+from live2d_support.layout import (
     format_live2d_layout_status,
     get_live2d_layout,
     reset_live2d_layout,
@@ -1002,7 +1005,8 @@ if __name__=='__main__':        #单独测试live2d
     import os, sys
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, script_dir)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
     os.chdir(script_dir)
 
     import character

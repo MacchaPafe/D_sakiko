@@ -7,7 +7,8 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
-sys.path.insert(0, script_dir)
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 from qconfig import DEFAULT_MULTI_CHAR_BGM_PATH, d_sakiko_config
 from ui_main.components.custom_bgm_dialog import (
@@ -32,8 +33,8 @@ from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGe
 from chat.chat_meta import TheaterMeta
 from log import get_logger, setup_logging, get_log_queue, shutdown_logging
 from qtUI import ChangeL2DModelWindow
-from live2d_model_normalizer import normalize_live2d_model_for_project
-from live2d_runtime_adapter import detect_live2d_runtime_version
+from live2d_support.model_normalizer import normalize_live2d_model_for_project
+from live2d_support.runtime_adapter import detect_live2d_runtime_version
 
 
 logger = get_logger(__name__)

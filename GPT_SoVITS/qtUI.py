@@ -25,7 +25,8 @@ from ui_main.threads.get_model_limit_thread import GetModelLimitThread
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
-sys.path.insert(0, script_dir)
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
@@ -61,7 +62,7 @@ from input_commands import (
     InputCommandPalette,
     build_default_input_command_specs,
 )
-from live2d_model_normalizer import normalize_live2d_model_for_project
+from live2d_support.model_normalizer import normalize_live2d_model_for_project
 
 
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
@@ -4238,7 +4239,8 @@ if __name__=='__main__':
 
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, script_dir)  # noqa
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)  # noqa
     import character
     get_all = character.GetCharacterAttributes()
     characters = get_all.character_class_list

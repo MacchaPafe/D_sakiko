@@ -11,7 +11,8 @@ from PyQt5.QtCore import Qt
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
-sys.path.insert(0, script_dir)
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 import time
 
@@ -27,7 +28,7 @@ from PyQt5.QtGui import QFontDatabase, QFont, QIcon
 
 import character
 from log import get_logger, setup_logging, shutdown_logging, setup_worker_logging, get_log_queue
-from live2d_runtime_adapter import (
+from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
     detect_live2d_runtime_version,
     initialize_live2d_runtime,

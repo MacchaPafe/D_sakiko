@@ -3,9 +3,14 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 import uuid
 
-from live2d_model_normalizer import (
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
+from live2d_support.model_normalizer import (
     convert_old_l2d_json as normalize_old_l2d_json,
     is_l2d_model3_json as is_model3_l2d_json,
     is_old_l2d_json as is_legacy_l2d_json,

@@ -10,6 +10,10 @@ from collections import deque
 from typing import Dict, List, Any, Optional
 from types import ModuleType
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
 with open(os.devnull, 'w') as devnull:
     with contextlib.redirect_stdout(devnull):
         with contextlib.redirect_stderr(devnull):
@@ -18,14 +22,14 @@ with open(os.devnull, 'w') as devnull:
 
 
 from log import get_logger
-from live2d_layout import (
+from live2d_support.layout import (
     Live2DLayout,
     format_live2d_layout_status,
     get_live2d_layout,
     reset_live2d_layout,
     save_live2d_layout,
 )
-from live2d_runtime_adapter import (
+from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
     MotionPosition,
     Live2DVersion,
@@ -1161,6 +1165,28 @@ class Live2DModule:
                 f"当前只显示 {'、'.join(visible_names)}，{'、'.join(hidden_names)} 已暂时隐藏。\n请将两名角色切换为同一 Live2D 版本。"
             )
 
+        def is_dialogue_idle() -> bool:
+            """判断小剧场当前是否没有正在播放或等待推进的对话句。"""
+            return (
+                self.playlist_pointer == len(self.playlist)
+                and not pygame.mixer.music.get_busy()
+                and (not waiting_between_turns or time.time() >= next_turn_earliest_start_at)
+            )
+
+        def apply_idle_facing_motion_if_dialogue_idle() -> None:
+            """空闲时立即把两个可见模型切到当前朝向对应的 IDLE 动作。"""
+            if not is_dialogue_idle():
+                return
+
+            versions = self._active_model_versions()
+            for slot, model in enumerate(model_group):
+                if model is None:
+                    continue
+                position = self._motion_position_for_slot(slot, versions, active_motion_facing_mode)
+                started = model.StartRandomMotion("IDLE", 3, position=position)
+                if not started:
+                    model.SetSemanticExpression("idle")
+
         def apply_slots_payload(payload: dict[str, object]) -> None:
             """应用 set_active_slots 消息，并按版本一致性决定可见模型。"""
             nonlocal active_motion_facing_mode
@@ -1184,6 +1210,7 @@ class Live2DModule:
                 self._load_visible_models(model_group, model_layouts, win_w_and_h, changed_slot, current_runtime_version)
                 self._clear_eye_reopen_state()
                 show_version_mismatch_overlay(refresh_version_notice_overlay())
+                apply_idle_facing_motion_if_dialogue_idle()
             except Exception:
                 logger.exception("小剧场 Live2D 模型切换失败，尝试恢复旧模型。")
                 self.active_slots = old_slots
@@ -1192,6 +1219,7 @@ class Live2DModule:
                     switch_runtime_if_needed(old_runtime_version)
                     self._load_visible_models(model_group, model_layouts, win_w_and_h, None, current_runtime_version)
                     show_version_mismatch_overlay(refresh_version_notice_overlay())
+                    apply_idle_facing_motion_if_dialogue_idle()
                 except Exception:
                     logger.exception("恢复旧小剧场 Live2D 模型失败。")
 
@@ -1587,7 +1615,8 @@ if __name__ == "__main__":
     import sys
     from queue import Queue
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, script_dir)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
     import character
 
     motion_queue = Queue()
