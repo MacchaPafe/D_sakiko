@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import gc
-import hashlib
 import importlib
 import json
-import os
-import random
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Callable, ClassVar, Iterable, Literal, cast
 
+from live2d_support.expression_policy import (
+    select_expression_for_motion,
+    select_supported_expression as select_supported_expression_id,
+    semantic_expression_candidates,
+)
+from live2d_support.motion_selection import (
+    MotionPosition,
+    resolve_positioned_motion_group as resolve_positioned_motion_group_name,
+    select_random_motion as select_random_motion_entry,
+)
 from log import get_logger
 
 
 Live2DVersion = Literal["v2", "v3"]
-MotionPosition = Literal["C", "L", "R"]
 MotionCallback = Callable[..., object]
 
 logger = get_logger(__name__)
@@ -33,36 +38,6 @@ PARAMETER_CANDIDATES: dict[str, tuple[str, str]] = {
 }
 
 BREATH_PARAMETER_ONLY_METHOD = "SetAutoBreathParameterOnlyEnable"
-MOTION_TOKEN_EXPRESSION_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("smile", ("exp_smile02", "exp_smile01", "exp_bsmile01")),
-    ("kime", ("exp_kime01", "exp_smile01")),
-    ("wink", ("exp_smile01", "exp_shy01")),
-    ("cry", ("exp_cry01", "exp_sad01")),
-    ("sad", ("exp_sad01",)),
-    ("angry", ("exp_angry01",)),
-    ("denial", ("exp_upset01", "exp_sneer01", "exp_serious02", "exp_angry01")),
-    ("question", ("exp_surprised01",)),
-    ("surprised", ("exp_surprised01",)),
-    ("nervous", ("exp_pale01", "exp_dispair01")),
-    ("thinking", ("exp_thinking01", "exp_serious01")),
-    ("check", ("exp_thinking01", "exp_serious01")),
-    ("serious", ("exp_serious01", "exp_serious02")),
-    ("look", ("exp_idle01",)),
-    ("idle", ("exp_idle01",)),
-    ("bye", ("exp_smile01", "exp_bsmile01", "exp_idle01")),
-)
-SEMANTIC_EXPRESSION_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "idle": ("idle", "exp_idle01", "exp_idle02", "exp_idle03"),
-    "serious": ("serious", "exp_serious01", "exp_serious02", "exp_idle01"),
-    "happiness": ("exp_smile02", "exp_smile01", "exp_bsmile01", "exp_kime01", "exp_idle01"),
-    "like": ("exp_smile02", "exp_shy01", "exp_bsmile01", "exp_smile01", "exp_kime01", "exp_idle01"),
-    "sadness": ("exp_sad01", "exp_sad02", "exp_cry01", "exp_cry02", "exp_pale01", "exp_serious01", "exp_idle01"),
-    "anger": ("exp_angry01", "exp_angry02", "exp_hatred01", "exp_upset01", "exp_serious02", "exp_serious01", "exp_idle01"),
-    "disgust": ("exp_upset01", "exp_sneer01", "exp_smirk01", "exp_serious02", "exp_angry01", "exp_sad01", "exp_idle01"),
-    "surprise": ("exp_surprised01", "exp_surprised02", "exp_amazed01", "exp_pale01", "exp_upset01", "exp_idle01"),
-    "fear": ("exp_pale01", "exp_dispair01", "exp_surprised01", "exp_cry01", "exp_sad01", "exp_serious01", "exp_idle01"),
-    "text_generating": ("exp_thinking01", "exp_thinking02", "exp_serious01", "exp_idle01"),
-}
 
 
 def _read_model_json(model_json_path: str) -> dict[str, object]:
@@ -205,34 +180,6 @@ def _collect_expression_ids(data: dict[str, object], version: Live2DVersion) -> 
     return frozenset(expression_ids)
 
 
-def _normalized_name_tokens(value: str) -> tuple[str, ...]:
-    """把动作文件名或动作组名规范化为用于匹配的 token。"""
-    stem = Path(value).name
-    lowered_stem = stem.lower()
-    tokens: list[str] = []
-    for raw_token in re.split(r"[^0-9a-zA-Z]+", lowered_stem):
-        if not raw_token:
-            continue
-        normalized_token = re.sub(r"\d+$", "", raw_token)
-        if normalized_token:
-            tokens.append(normalized_token)
-    return tuple(tokens)
-
-
-def _expression_candidates_for_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
-    """根据规范化 token 返回表情候选列表。"""
-    token_set = frozenset(tokens)
-    for token, candidates in MOTION_TOKEN_EXPRESSION_RULES:
-        if token in token_set:
-            return candidates
-    return ()
-
-
-def _semantic_expression_key(value: str) -> str:
-    """把语义表情名规范化为候选表的 key。"""
-    return value.strip().lower()
-
-
 @dataclass
 class Live2DModelAdapter:
     """封装单个 Live2D 模型实例，隐藏 v2/v3 API 差异。"""
@@ -247,67 +194,7 @@ class Live2DModelAdapter:
     motion_files_by_group: dict[str, tuple[str, ...]]
     expression_ids: frozenset[str]
     parameter_ids: frozenset[str]
-
-    @classmethod
-    def preview_group_for_motion_file(cls, motion_path: str) -> str:
-        motion_key = str(Path(motion_path).resolve())
-        digest = hashlib.sha1(motion_key.encode("utf-8", errors="ignore")).hexdigest()[:12]
-        return f"{cls.PREVIEW_MOTION_GROUP}_{digest}"
-
-    @classmethod
-    def is_preview_motion_group(cls, group_name: object) -> bool:
-        if not isinstance(group_name, str):
-            return False
-        return group_name == cls.PREVIEW_MOTION_GROUP or group_name.startswith(f"{cls.PREVIEW_MOTION_GROUP}_")
-
-    @classmethod
-    def _motion_file_for_model(cls, model_json_path: str, motion_path: str) -> str:
-        motion_path_obj = Path(motion_path)
-        model_json_path_obj = Path(model_json_path)
-        try:
-            motion_file = os.path.relpath(motion_path_obj, model_json_path_obj.parent).replace("\\", "/")
-        except ValueError:
-            motion_file = motion_path_obj.name
-        if motion_file.startswith("../"):
-            motion_file = motion_path_obj.name
-        return motion_file
-
-    @classmethod
-    def prepare_preview_motion_files(cls, model_json_path: str, motion_paths: Iterable[str]) -> bool:
-        """Register V3 preview motions before LoadModelJson so playback does not require model reload."""
-        if detect_live2d_runtime_version(model_json_path) != "v3":
-            return False
-
-        model_data = _read_model_json(model_json_path)
-        file_references = model_data.setdefault("FileReferences", {})
-        if not isinstance(file_references, dict):
-            raise ValueError(f"Live2D V3 模型 FileReferences 格式错误：{model_json_path}")
-        motions = file_references.setdefault("Motions", {})
-        if not isinstance(motions, dict):
-            motions = {}
-            file_references["Motions"] = motions
-
-        changed = False
-        for motion_path in motion_paths:
-            motion_path_obj = Path(motion_path)
-            if not motion_path_obj.is_file():
-                continue
-            group_name = cls.preview_group_for_motion_file(str(motion_path_obj))
-            motion_file = cls._motion_file_for_model(model_json_path, str(motion_path_obj))
-            value = [{
-                "File": motion_file,
-                "FadeInTime": 3.0,
-                "FadeOutTime": 3.0,
-            }]
-            if motions.get(group_name) != value:
-                motions[group_name] = value
-                changed = True
-        
-
-        if changed:
-            with open(model_json_path, "w", encoding="utf-8") as file:
-                json.dump(model_data, file, ensure_ascii=False, indent=4)
-        return changed
+    preview_motion_indices_by_path: dict[str, int]
 
     @classmethod
     def create(cls, model_json_path: str) -> Live2DModelAdapter:
@@ -327,6 +214,7 @@ class Live2DModelAdapter:
             motion_files_by_group=_collect_motion_files_by_group(data, version),
             expression_ids=_collect_expression_ids(data, version),
             parameter_ids=frozenset(),
+            preview_motion_indices_by_path={},
         )
         adapter.refresh_parameter_ids()
         return adapter
@@ -474,15 +362,11 @@ class Live2DModelAdapter:
 
     def select_supported_expression(self, candidates: Iterable[str]) -> str | None:
         """从候选表情 ID 中选择当前模型支持的第一个表情。"""
-        for candidate in candidates:
-            if candidate in self.expression_ids:
-                return candidate
-        return None
+        return select_supported_expression_id(candidates, self.expression_ids)
 
     def set_semantic_expression(self, semantic_name: str) -> bool:
         """按语义名设置表情，允许不同模型使用不同实际表情 ID。"""
-        semantic_key = _semantic_expression_key(semantic_name)
-        candidates = SEMANTIC_EXPRESSION_CANDIDATES.get(semantic_key)
+        candidates = semantic_expression_candidates(semantic_name)
         if candidates is None:
             logger.warning("未知 Live2D 语义表情 '%s'，已跳过。", semantic_name)
             return False
@@ -508,12 +392,7 @@ class Live2DModelAdapter:
 
     def resolve_positioned_motion_group(self, group_name: str, position: MotionPosition | None) -> str:
         """根据位置参数选择动作组，缺少位置组时回退到基础组。"""
-        if position is None:
-            return group_name
-        positioned_group_name = f"{group_name}_{position}"
-        if positioned_group_name in self.motion_groups:
-            return positioned_group_name
-        return group_name
+        return resolve_positioned_motion_group_name(group_name, position, self.motion_groups)
 
     def _motion_file_at(self, group_name: str, motion_index: int) -> str | None:
         """读取动作组中指定 index 对应的动作文件名。"""
@@ -526,50 +405,11 @@ class Live2DModelAdapter:
 
     def _select_random_motion(self, group_name: str | None, position: MotionPosition | None) -> tuple[str, int] | None:
         """按 adapter 记录的动作文件列表选择一个随机动作。"""
-        if group_name:
-            resolved_group_name = self.resolve_positioned_motion_group(group_name, position)
-            motion_files = self.motion_files_by_group.get(resolved_group_name, ())
-            if not motion_files:
-                return None
-            return resolved_group_name, random.randrange(len(motion_files))
-
-        non_empty_groups = [
-            name
-            for name, motion_files in self.motion_files_by_group.items()
-            if motion_files
-        ]
-        if not non_empty_groups:
-            return None
-        resolved_group_name = random.choice(non_empty_groups)
-        motion_files = self.motion_files_by_group[resolved_group_name]
-        return resolved_group_name, random.randrange(len(motion_files))
+        return select_random_motion_entry(group_name, position, self.motion_groups, self.motion_files_by_group)
 
     def _select_expression_for_motion(self, group_name: str, motion_file: str | None) -> str | None:
         """根据动作文件名和动作组名选择当前模型支持的自动表情。"""
-        if motion_file:
-            motion_candidates = _expression_candidates_for_tokens(_normalized_name_tokens(motion_file))
-            expression_id = self.select_supported_expression(motion_candidates)
-            if expression_id is not None:
-                return expression_id
-
-        semantic_candidates = SEMANTIC_EXPRESSION_CANDIDATES.get(_semantic_expression_key(group_name))
-        expression_id = self.select_supported_expression(semantic_candidates or ())
-        if expression_id is not None:
-            return expression_id
-
-        group_tokens = _normalized_name_tokens(group_name)
-        group_candidates = _expression_candidates_for_tokens(group_tokens)
-        expression_id = self.select_supported_expression(group_candidates)
-        if expression_id is not None:
-            return expression_id
-
-        for group_token in group_tokens:
-            semantic_candidates = SEMANTIC_EXPRESSION_CANDIDATES.get(group_token)
-            expression_id = self.select_supported_expression(semantic_candidates or ())
-            if expression_id is not None:
-                return expression_id
-
-        return self.select_supported_expression(SEMANTIC_EXPRESSION_CANDIDATES["idle"])
+        return select_expression_for_motion(group_name, motion_file, self.expression_ids)
 
     def _apply_auto_expression_for_motion(self, group_name: str, motion_index: int) -> None:
         """为即将播放的 V3 动作应用自动表情。"""
@@ -711,11 +551,6 @@ class Live2DModelAdapter:
             auto_expression: bool = True,
     ) -> bool:
         """播放一个外部动作文件，用于动作编辑器预览。"""
-        if self.version == "v3":
-            group_name = self.preview_group_for_motion_file(motion_path)
-            if group_name in self.motion_groups:
-                return self.start_motion(group_name, 0, priority, on_start, on_finish, None, auto_expression)
-
         model = self._require_model()
         load_motion = getattr(model, "LoadMotion", None)
         start_loaded_motion = getattr(model, "StartLoadedMotion", None)
@@ -732,18 +567,15 @@ class Live2DModelAdapter:
         if callable(load_extra_motion):
             group_name = self.PREVIEW_MOTION_GROUP
             try:
-                load_result = int(load_extra_motion(group_name, motion_path))
-                if load_result < 0:
-                    logger.warning("Live2D V3 外部动作加载失败：%s", motion_path)
-                    return False
-                motion_index = max(0, load_result - 1)
-                get_motion_groups = getattr(model, "GetMotionGroups", None)
-                if callable(get_motion_groups):
-                    motion_groups = get_motion_groups()
-                    if isinstance(motion_groups, dict):
-                        group_count = motion_groups.get(group_name)
-                        if group_count is not None:
-                            motion_index = max(0, int(group_count) - 1)
+                motion_key = str(Path(motion_path).resolve())
+                motion_index = self.preview_motion_indices_by_path.get(motion_key)
+                if motion_index is None:
+                    load_result = int(load_extra_motion(group_name, motion_path))
+                    if load_result < 0:
+                        logger.warning("Live2D V3 外部动作加载失败：%s", motion_path)
+                        return False
+                    motion_index = load_result
+                    self.preview_motion_indices_by_path[motion_key] = motion_index
                 if auto_expression and self.version == "v3":
                     expression_id = self._select_expression_for_motion(group_name, motion_path)
                     if expression_id is not None:
@@ -769,38 +601,6 @@ class Live2DModelAdapter:
 
         logger.warning("当前 Live2D runtime 不支持按文件预览动作：%s", motion_path)
         return False
-
-    def prepare_preview_motion_file(self, motion_path: str) -> bool:
-        """为不支持动态加载外部动作的 V3 runtime 写入预览动作组。"""
-        if self.version != "v3":
-            return False
-        return self.prepare_preview_motion_files(self.model_json_path, [motion_path])
-
-    def remove_preview_motion_group(self) -> None:
-        """从 model3.json 中移除动作编辑器临时预览动作组。"""
-        if self.version != "v3":
-            return
-        try:
-            model_data = _read_model_json(self.model_json_path)
-            file_references = model_data.get("FileReferences")
-            if not isinstance(file_references, dict):
-                return
-            motions = file_references.get("Motions")
-            if not isinstance(motions, dict):
-                return
-            preview_groups = [
-                group_name
-                for group_name in list(motions.keys())
-                if self.is_preview_motion_group(group_name)
-            ]
-            if not preview_groups:
-                return
-            for group_name in preview_groups:
-                motions.pop(group_name, None)
-            with open(self.model_json_path, "w", encoding="utf-8") as file:
-                json.dump(model_data, file, ensure_ascii=False, indent=4)
-        except Exception:
-            logger.debug("移除 Live2D V3 预览动作组失败：%s", self.model_json_path, exc_info=True)
 
     def StartMotionFile(
             self,

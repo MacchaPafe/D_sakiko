@@ -171,13 +171,6 @@ class Live2DModule:
             return model_adapter
 
         def create_viewer_model(model_json_path: str) -> Live2DModelAdapter:
-            if detect_live2d_runtime_version(model_json_path) == "v3":
-                model_dir = pathlib.Path(model_json_path).parent
-                motion_paths = sorted(str(path) for path in model_dir.glob("*.motion3.json"))
-                Live2DModelAdapter.prepare_preview_motion_files(model_json_path, motion_paths)
-                model_adapter = Live2DModelAdapter.create(model_json_path)
-                model_adapter.remove_preview_motion_group()
-                return model_adapter
             return Live2DModelAdapter.create(model_json_path)
 
         model = setup_model(create_viewer_model(self.PATH_JSON))
@@ -249,17 +242,7 @@ class Live2DModule:
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
-                if isinstance(motion_name, dict) and motion_name.get("type") == "motion_group":
-                    group_name = str(motion_name.get("group", ""))
-                    try:
-                        motion_index = int(motion_name.get("index", 0))
-                    except (TypeError, ValueError):
-                        motion_index = 0
-                    if group_name:
-                        model.StartMotion(group_name, motion_index, 3)
-                    motion_name = None
-                if motion_name is not None:
-                    model.StartMotionFile(str(motion_name))
+                model.StartMotionFile(str(motion_name))
 
             # 清除缓冲区
             #live2d.clearBuffer()
@@ -671,11 +654,7 @@ class ViewerGUI(QWidget):
                 return
 
             abs_path = (self.current_char_folder_path / motion_filename).resolve().as_posix()
-            if self.current_model_version == "v3":
-                preview_group = Live2DModelAdapter.preview_group_for_motion_file(abs_path)
-                self.motion_queue.put({"type": "motion_group", "group": preview_group, "index": 0})
-            else:
-                self.motion_queue.put(abs_path)
+            self.motion_queue.put(abs_path)
             self.message_box.clear()
             self.message_box.append(
                 f"已选中动作：{motion_filename}\n"
@@ -687,11 +666,7 @@ class ViewerGUI(QWidget):
 
         # 兼容旧格式：如果仍然是路径链接，就当作“预览动作”
         if os.path.exists(url_str):
-            if self.current_model_version == "v3":
-                preview_group = Live2DModelAdapter.preview_group_for_motion_file(url_str)
-                self.motion_queue.put({"type": "motion_group", "group": preview_group, "index": 0})
-            else:
-                self.motion_queue.put(url_str)
+            self.motion_queue.put(url_str)
             self.message_box.clear()
             self.message_box.append(f"当前预览动作：\n{os.path.basename(url_str)}")
 
@@ -703,11 +678,7 @@ class ViewerGUI(QWidget):
         self.message_box.append(f"当前选中动作（左侧）：\n{os.path.basename(motion_path)}")
 
         if os.path.exists(motion_path):
-            if self.current_model_version == "v3":
-                preview_group = Live2DModelAdapter.preview_group_for_motion_file(motion_path)
-                self.motion_queue.put({"type": "motion_group", "group": preview_group, "index": 0})
-            else:
-                self.motion_queue.put(motion_path)
+            self.motion_queue.put(motion_path)
 
         self.update_button_states()
 
@@ -743,8 +714,6 @@ class ViewerGUI(QWidget):
         html_parts: list[str] = []
         motions = self._get_motion_groups()
         for group_key, motion_values in motions.items():
-            if Live2DModelAdapter.is_preview_motion_group(group_key):
-                continue
             title = self.group_display_titles.get(group_key, group_key)
             if group_key == self.right_selected_group and self.right_selected_index is None:
                 title_color = "#ED784A"
@@ -780,10 +749,6 @@ class ViewerGUI(QWidget):
     def _write_motion_json(self):
         if self.all_motion_data is None or self.current_model_json_path is None:
             return
-        if self.current_model_version == "v3":
-            for group_key in list(self._get_motion_groups().keys()):
-                if Live2DModelAdapter.is_preview_motion_group(group_key):
-                    self._get_motion_groups().pop(group_key, None)
         with open(self.current_model_json_path, 'w', encoding='utf-8') as f:
             json.dump(self.all_motion_data, f, indent=4, ensure_ascii=False)
 
