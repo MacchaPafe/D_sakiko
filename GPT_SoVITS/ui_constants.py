@@ -1,5 +1,6 @@
 from random import randint
 from log import get_logger
+from live2d_support.motion_semantics import build_downloaded_v2_standard_motions
 
 logger = get_logger(__name__)
 
@@ -497,40 +498,16 @@ class AddCostume:
             model_json_content["physics"]=f"{os.path.basename(cache_physics[0])}"
             model_json_content["physics_v2"]= {"file":f"{os.path.basename(cache_physics[0])}"}
 
-        possible_motion_groups={
-            "happiness":["smile","kime","nnf03","nnf04"],
-            "sadness":["sad","cry","serious"],
-            "anger":["angry","serious"],
-            "disgust":["angry","serious","scared"],
-            "like":["smile","kime","jaan","gattsu","oowarai","nnf04"],
-            "surprise":["surprised","scared","jaan","oowarai","odoodo"],
-            "fear":["scared","cry","serious","sneeze","odoodo"],
-            "IDLE":["kime","nnf","smile01","wink","sleep","niyaniya","nf_left","nf_right"],
-            "text_generating":["thinking","eeto"],
-            "bye":["bye","wink","smile"],
-            "change_character":["bye","smile","kime","shame","gattsu","jaan"],
-            "idle_motion":["idle","smile"],
-            "talking_motion":["nnf02","nod"]
-        }
-        motions={}
-        count=0
-        stop_count_value=[5,11,17,23,29,35,41,50,53,55,58,59,60]
-        for i,(group_name,possible_motion_list) in enumerate(possible_motion_groups.items()):
-            motions[group_name]=[]
-            for possible_motion in possible_motion_list:
-                for motion_file in cache_motions:
-                    if os.path.basename(motion_file).startswith(possible_motion):
-                        motions[group_name].append({"name":f"{group_name}_{count}","file":os.path.basename(motion_file)})
-                        count+=1
-                        if count == stop_count_value[i]:
-                            break
-                if count == stop_count_value[i]:
-                    break
-            if count != stop_count_value[i]:   #这一组没有填充指定数量的动作
-                count=stop_count_value[i]
-                if not motions[group_name]:   #如果这一组一个动作都没有
-                    motions[group_name].append({"name":f"{group_name}_{count}","file":os.path.basename(cache_motions[randint(0,len(cache_motions)-1)])})
-        model_json_content["motions"]=motions
+        cache_motion_names = [os.path.basename(motion_file) for motion_file in cache_motions]
+        fallback_motion_name = (
+            os.path.basename(cache_motions[randint(0, len(cache_motions) - 1)])
+            if cache_motions
+            else None
+        )
+        model_json_content["motions"] = build_downloaded_v2_standard_motions(
+            cache_motion_names,
+            fallback_file_name=fallback_motion_name,
+        )
         model_json_content["expressions"]=[{"name":"idle","file":"idle01.exp.json"}]    #修复没有表情字段导致切换角色崩溃
         with open(f"{save_model_folder_path}/3.model.json",'w',encoding='utf-8') as f:
             json.dump(model_json_content,f, indent=4, ensure_ascii=False)
@@ -551,7 +528,6 @@ class AddCostume:
 3''')
         with open(f"../reference_audio/{character_folder_name}/reference_text.txt",'w',encoding='utf-8') as f:
             f.write('')
-
 
 
 

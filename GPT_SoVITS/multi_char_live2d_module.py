@@ -38,6 +38,7 @@ from live2d_support.runtime_adapter import (
     load_live2d_runtime,
     release_live2d_runtime,
 )
+from live2d_support.motion_semantics import motion_group_for_emotion
 
 logger = get_logger(__name__)
 
@@ -651,16 +652,7 @@ class Live2DModule:
             self.motion_is_over = True
             return False
 
-        emotion_to_group = {
-            "happiness": "happiness",
-            "sadness": "sadness",
-            "anger": "anger",
-            "disgust": "disgust",
-            "like": "like",
-            "surprise": "surprise",
-            "fear": "fear",
-        }
-        group_name = emotion_to_group.get(str(emotion).strip(), "IDLE")
+        group_name = motion_group_for_emotion(str(emotion), default="IDLE")
         self.last_motion_model = model
         self.force_eyes_open = False
 

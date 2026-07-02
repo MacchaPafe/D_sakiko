@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import random
 from collections.abc import Container, Mapping
-from typing import Literal
 
-
-# 动作的方向：C 代表角色面向屏幕，L 代表角色位于左侧（向右倾身），R 代表角色位于右侧（向左倾身）。
-MotionPosition = Literal["C", "L", "R"]
+from live2d_support.motion_semantics import MotionPosition
 
 
 def resolve_positioned_motion_group(

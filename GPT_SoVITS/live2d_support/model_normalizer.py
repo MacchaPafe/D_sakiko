@@ -6,74 +6,22 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, cast
+from typing import Iterable, cast
 
-MotionPosition = Literal["C", "L", "R"]
+from live2d_support.motion_semantics import (
+    MotionPosition,
+    POSITION_MOTION_SUFFIXES,
+    direct_motion_keywords,
+    fallback_motion_groups,
+    rana_motion_slices,
+    standard_motion_group_ids,
+    weak_motion_keywords,
+)
 
+# 本项目规范化后，在 Live2D V3 model3.json 中写入的版本号。
 NORMALIZED_MODEL3_VERSION = 1
+# 规范化后在 model3.json 中写入的数据名称，标识这个模型结构是我们认识的
 DSAKIKO_MODEL3_METADATA_KEY = "DSakiko"
-POSITION_MOTION_SUFFIXES: tuple[MotionPosition, ...] = ("C", "L", "R")
-L2D_STANDARD_MOTION_GROUPS = [
-    "happiness",
-    "sadness",
-    "anger",
-    "disgust",
-    "like",
-    "surprise",
-    "fear",
-    "IDLE",
-    "text_generating",
-    "bye",
-    "change_character",
-    "idle_motion",
-    "talking_motion",
-]
-
-DIRECT_MOTION_KEYWORDS: dict[str, frozenset[str]] = {
-    "happiness": frozenset(("smile", "kime", "wink", "note")),
-    "sadness": frozenset(("sad", "cry")),
-    "anger": frozenset(("angry",)),
-    "disgust": frozenset(("denial", "confrict")),
-    "like": frozenset(("smile", "kime", "wink", "note")),
-    "surprise": frozenset(("surprised", "question")),
-    "fear": frozenset(("nervous",)),
-    "IDLE": frozenset(("idle",)),
-    "text_generating": frozenset(("thinking", "check", "look", "nervous")),
-    "bye": frozenset(("bye", "finish")),
-    "change_character": frozenset(("bye", "join", "kime", "smile", "action", "spin", "maskoff")),
-    "idle_motion": frozenset(("idle",)),
-    "talking_motion": frozenset(("nod", "sing")),
-}
-
-WEAK_MOTION_KEYWORDS: dict[str, frozenset[str]] = {
-    "sadness": frozenset(("serious", "denial")),
-    "anger": frozenset(("serious", "denial", "confrict")),
-    "disgust": frozenset(("serious", "angry")),
-    "fear": frozenset(("cry", "serious", "surprised", "confrict")),
-    "happiness": frozenset(("play01", "play02", "play", "action")),
-    "like": frozenset(("play01", "play02", "play")),
-    "surprise": frozenset(("action", "play02")),
-    "text_generating": frozenset(("nod", "serious")),
-    "talking_motion": frozenset(("play01", "play02")),
-    "change_character": frozenset(("play01", "play02")),
-}
-
-FALLBACK_MOTION_GROUPS: dict[str, tuple[str, ...]] = {
-    "happiness": ("like", "IDLE"),
-    "sadness": ("fear", "IDLE"),
-    "anger": ("disgust", "sadness", "IDLE"),
-    "disgust": ("anger", "sadness", "IDLE"),
-    "like": ("happiness", "IDLE"),
-    "surprise": ("happiness", "IDLE"),
-    "fear": ("sadness", "surprise", "IDLE"),
-    "text_generating": ("talking_motion", "IDLE"),
-    "bye": ("change_character", "happiness", "IDLE"),
-    "change_character": ("bye", "happiness", "IDLE"),
-    "idle_motion": ("IDLE",),
-    "talking_motion": ("text_generating", "IDLE"),
-    "IDLE": ("idle_motion", "happiness"),
-}
-
 MODEL3_ASSET_REFERENCE_KEYS = ("Moc", "Physics", "Pose", "DisplayInfo", "UserData")
 
 
@@ -131,24 +79,8 @@ def convert_old_l2d_json(old_l2d_json_path: str) -> bool:
     if not old_rana_list:
         return False
 
-    motion_mapping: list[tuple[str, int, int]] = [
-        ("happiness", 0, 6),
-        ("sadness", 6, 12),
-        ("anger", 12, 18),
-        ("disgust", 18, 24),
-        ("like", 24, 30),
-        ("surprise", 30, 36),
-        ("fear", 36, 42),
-        ("IDLE", 42, 51),
-        ("text_generating", 51, 54),
-        ("bye", 54, 56),
-        ("change_character", 56, 59),
-        ("idle_motion", 59, 60),
-        ("talking_motion", 60, 61),
-    ]
-
     new_motions: dict[str, object] = {}
-    for name, start_idx, end_idx in motion_mapping:
+    for name, start_idx, end_idx in rana_motion_slices():
         new_motions[name] = old_rana_list[start_idx:end_idx]
 
     new_data['motions'] = new_motions
@@ -326,18 +258,19 @@ def _build_standard_model3_motions(
     """根据动作候选生成项目标准动作组和位置变体组。"""
     grouped_by_standard: dict[str, dict[MotionPosition, list[dict[str, object]]]] = {}
     all_position_entries = _entries_by_position(candidates)
+    standard_group_ids = standard_motion_group_ids()
 
-    for group_name in L2D_STANDARD_MOTION_GROUPS:
-        matched_candidates = _matching_motion_entries(candidates, DIRECT_MOTION_KEYWORDS.get(group_name, frozenset()))
+    for group_name in standard_group_ids:
+        matched_candidates = _matching_motion_entries(candidates, direct_motion_keywords(group_name))
         if not matched_candidates:
-            matched_candidates = _matching_motion_entries(candidates, WEAK_MOTION_KEYWORDS.get(group_name, frozenset()))
+            matched_candidates = _matching_motion_entries(candidates, weak_motion_keywords(group_name))
         grouped_by_standard[group_name] = _entries_by_position(matched_candidates)
 
-    for group_name in L2D_STANDARD_MOTION_GROUPS:
+    for group_name in standard_group_ids:
         for suffix in POSITION_MOTION_SUFFIXES:
             if grouped_by_standard[group_name][suffix]:
                 continue
-            for fallback_group in FALLBACK_MOTION_GROUPS.get(group_name, ()):
+            for fallback_group in fallback_motion_groups(group_name):
                 fallback_entries = grouped_by_standard.get(fallback_group, {}).get(suffix, [])
                 if fallback_entries:
                     grouped_by_standard[group_name][suffix] = [dict(entry) for entry in fallback_entries]
@@ -346,7 +279,7 @@ def _build_standard_model3_motions(
                 grouped_by_standard[group_name][suffix] = [dict(entry) for entry in all_position_entries[suffix]]
 
     result: dict[str, list[dict[str, object]]] = {}
-    for group_name in L2D_STANDARD_MOTION_GROUPS:
+    for group_name in standard_group_ids:
         center_entries = [dict(entry) for entry in grouped_by_standard[group_name]["C"]]
         result[group_name] = center_entries
         for suffix in POSITION_MOTION_SUFFIXES:
@@ -359,7 +292,7 @@ def _standard_model3_motion_schema_is_complete(motions: object) -> bool:
     if not isinstance(motions, dict):
         return False
     motion_mapping = cast(dict[str, object], motions)
-    for group_name in L2D_STANDARD_MOTION_GROUPS:
+    for group_name in standard_motion_group_ids():
         if not isinstance(motion_mapping.get(group_name), list):
             return False
         for suffix in POSITION_MOTION_SUFFIXES:

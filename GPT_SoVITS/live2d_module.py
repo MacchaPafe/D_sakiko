@@ -33,6 +33,7 @@ from live2d_support.runtime_adapter import (
     load_live2d_runtime,
     release_live2d_runtime,
 )
+from live2d_support.motion_semantics import motion_group_for_emotion
 from live2d_support.layout import (
     format_live2d_layout_status,
     get_live2d_layout,
@@ -502,16 +503,6 @@ class Live2DModule:
 
         apply_current_layout()
 
-        mtn_group_mapping={
-            "LABEL_0":"happiness",
-            "LABEL_1":"sadness",
-            "LABEL_2": "anger",
-            "LABEL_3": "disgust",
-            "LABEL_4": "like",
-            "LABEL_5": "surprise",
-            "LABEL_6": "fear"
-        }
-
         mouse_position_x = 0
         last_saved_time=time.time()     #待机动作计时器
         last_saved_time_think=time.time()
@@ -895,8 +886,8 @@ class Live2DModule:
                     continue
 
                 this_turn_audio_file_path=audio_file_queue.get()
-                motion_group = mtn_group_mapping.get(emotion)
-                if motion_group is None:
+                motion_group = motion_group_for_emotion(str(emotion), default="")
+                if not motion_group:
                     logger.warning("忽略未知情感标签：%s", emotion)
                     continue
                 self._prepare_long_audio_motion_loop(motion_group, this_turn_audio_file_path)

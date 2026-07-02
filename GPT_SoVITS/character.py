@@ -11,10 +11,10 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 from live2d_support.model_normalizer import (
-    convert_old_l2d_json as normalize_old_l2d_json,
-    is_l2d_model3_json as is_model3_l2d_json,
-    is_old_l2d_json as is_legacy_l2d_json,
-    normalize_model3_for_project,
+    convert_old_l2d_json,
+    is_l2d_model3_json,
+    is_old_l2d_json,
+    normalize_model3_for_project as rebuild_model3_motion_groups,
 )
 from qconfig import d_sakiko_config
 from log import get_logger
@@ -143,9 +143,6 @@ ref_audio_language_list = [
     "多语种混合(粤语)"
 ]
 
-def is_old_l2d_json(old_l2d_json_path: str | None) -> bool:
-    """判断是否为老版 Live2D model.json 格式。"""
-    return is_legacy_l2d_json(old_l2d_json_path)
 
 def find_default_l2d_json(model_dir: str) -> str | None:
     """
@@ -157,21 +154,6 @@ def find_default_l2d_json(model_dir: str) -> str | None:
         if candidates:
             return max(candidates, key=os.path.getmtime)
     return None
-
-def is_l2d_model3_json(l2d_json_path: str | None) -> bool:
-    """判断是否为 Live2D V3 model3.json。"""
-    return is_model3_l2d_json(l2d_json_path)
-
-def rebuild_model3_motion_groups(model3_json_path: str) -> bool:
-    """
-        检查并规范化 V3 model3.json 的项目标准动作组。
-        保留旧函数名供现有调用点使用。
-    """
-    return normalize_model3_for_project(model3_json_path)
-
-def convert_old_l2d_json(old_l2d_json_path: str) -> None:
-    """读取老版 Live2D model.json，转换为新版格式并覆盖保存。"""
-    normalize_old_l2d_json(old_l2d_json_path)
 
 
 class GetCharacterAttributes:

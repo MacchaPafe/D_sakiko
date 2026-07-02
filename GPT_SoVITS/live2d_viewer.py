@@ -35,6 +35,7 @@ from live2d_support.runtime_adapter import (
     load_live2d_runtime,
     release_live2d_runtime,
 )
+from live2d_support.motion_semantics import motion_group_display_title
 
 logger = get_logger(__name__)
 
@@ -395,23 +396,6 @@ class ViewerGUI(QWidget):
         self.right_selected_group: Optional[str] = None
         self.right_selected_index: Optional[int] = None
 
-        # 动作组标题显示（key -> 显示名）
-        self.group_display_titles = {
-            "happiness": "1. 开心",
-            "sadness": "2. 伤心",
-            "anger": "3. 生气",
-            "disgust": "4. 反感",
-            "like": "5. 喜欢",
-            "surprise": "6. 惊讶",
-            "fear": "7. 害怕",
-            "IDLE": "8. 待机时随机",
-            "text_generating": "9. 思考时",
-            "bye": "10. 退出程序",
-            "change_character": "11. 登场动作",
-            "idle_motion": "12. 待机",
-            "talking_motion": "13. 按下语音按钮",
-        }
-
         self.current_char_base_folder_name = ""  # 存储当前角色的基础文件夹名称（其实就是角色名称）
 
         self.current_char_folder_path = pathlib.Path("")  # 存储当前角色的动作文件夹路径（这个路径可能为默认 live2d 模型的路径，也可能为 extra_model 中的某个模型路径，取决于用户选择）
@@ -631,7 +615,7 @@ class ViewerGUI(QWidget):
             self.right_selected_group = group_key
             self.right_selected_index = None
             self.message_box.clear()
-            self.message_box.append(f"已选中动作组：{self.group_display_titles.get(group_key, group_key)}\n"
+            self.message_box.append(f"已选中动作组：{motion_group_display_title(group_key)}\n"
                                     f"选择左侧动作后，点击『添加』将动作添加到该组中。")
             self.refresh_current_mnt_display(preserve_scroll=True)
             self.update_button_states()
@@ -714,7 +698,7 @@ class ViewerGUI(QWidget):
         html_parts: list[str] = []
         motions = self._get_motion_groups()
         for group_key, motion_values in motions.items():
-            title = self.group_display_titles.get(group_key, group_key)
+            title = motion_group_display_title(group_key)
             if group_key == self.right_selected_group and self.right_selected_index is None:
                 title_color = "#ED784A"
             else:
@@ -865,7 +849,7 @@ class ViewerGUI(QWidget):
             # 选中的是组标题：追加到末尾
             target_list.append(new_entry)
             self.message_box.clear()
-            self.message_box.append(f"已添加动作到组 {self.group_display_titles.get(group_key, group_key)}：{file_name}")
+            self.message_box.append(f"已添加动作到组 {motion_group_display_title(group_key)}：{file_name}")
         else:
             # 选中的是具体动作：插入到该动作之后
             insert_pos = self.right_selected_index + 1
@@ -876,7 +860,7 @@ class ViewerGUI(QWidget):
             target_list.insert(insert_pos, new_entry)
             self.message_box.clear()
             self.message_box.append(
-                f"已在组 {self.group_display_titles.get(group_key, group_key)} 中添加动作：{file_name}"
+                f"已在组 {motion_group_display_title(group_key)} 中添加动作：{file_name}"
             )
 
         self._write_motion_json()
@@ -909,7 +893,7 @@ class ViewerGUI(QWidget):
         self._write_motion_json()
         self.message_box.clear()
         self.message_box.append(
-            f"已替换组 {self.group_display_titles.get(group_key, group_key)} 的第 {idx + 1} 个动作为：{file_name}"
+            f"已替换组 {motion_group_display_title(group_key)} 的第 {idx + 1} 个动作为：{file_name}"
         )
         self._reload_after_change()
 
@@ -943,7 +927,7 @@ class ViewerGUI(QWidget):
 
         self.message_box.clear()
         self.message_box.append(
-            f"已从组 {self.group_display_titles.get(group_key, group_key)} 删除动作：{removed_name}"
+            f"已从组 {motion_group_display_title(group_key)} 删除动作：{removed_name}"
         )
         self._reload_after_change()
 
