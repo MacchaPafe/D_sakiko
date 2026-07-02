@@ -13,6 +13,7 @@ from typing import cast, TYPE_CHECKING, Optional, Any
 
 from character import CharacterAttributes
 from inference_cli import synthesize
+from qconfig import d_sakiko_config
 
 
 if TYPE_CHECKING:
@@ -331,6 +332,12 @@ class AudioGenerate:
             "silent": True,
         }
 
+    def _clear_pending_preload_locked(self) -> None:
+        """清空尚未提交给 worker 的语音模型预加载请求。"""
+        self.pending_preload_key = None
+        self.pending_preload_command = None
+        self.pending_preload_not_before = 0.0
+
     def request_preload_character(self, character: CharacterAttributes | None) -> None:
         """
         请求后台预加载某个角色的语音模型。
@@ -338,6 +345,11 @@ class AudioGenerate:
         预加载不会进入正式 worker FIFO 队列，只在调度线程空闲且没有正式合成任务时执行。
         连续切换角色时，等待区只保留最新目标。
         """
+        if not d_sakiko_config.enable_voice_model_preload.value:
+            with self.voice_schedule_lock:
+                self._clear_pending_preload_locked()
+            return
+
         if character is None or not character.has_valid_voice_model():
             return
 
@@ -347,9 +359,7 @@ class AudioGenerate:
         with self.voice_schedule_lock:
             if self.loading_voice_key is not None:
                 if key == self.loading_voice_key:
-                    self.pending_preload_key = None
-                    self.pending_preload_command = None
-                    self.pending_preload_not_before = 0.0
+                    self._clear_pending_preload_locked()
                 else:
                     self.pending_preload_key = key
                     self.pending_preload_command = command
@@ -357,9 +367,7 @@ class AudioGenerate:
                 return
 
             if key == self.loaded_voice_key:
-                self.pending_preload_key = None
-                self.pending_preload_command = None
-                self.pending_preload_not_before = 0.0
+                self._clear_pending_preload_locked()
                 return
 
             self.pending_preload_key = key
@@ -369,15 +377,16 @@ class AudioGenerate:
     def _take_pending_preload_command(self) -> tuple[WorkerCommand, VoiceTaskHandle] | None:
         """在正式任务队列为空时，取出最新的预加载目标。"""
         with self.voice_schedule_lock:
+            if not d_sakiko_config.enable_voice_model_preload.value:
+                self._clear_pending_preload_locked()
+                return None
             if self.pending_preload_command is None:
                 return None
             if time.monotonic() < self.pending_preload_not_before:
                 return None
             command = dict(self.pending_preload_command)
             key = self.pending_preload_key or cast(str, command.get("character_name", ""))
-            self.pending_preload_key = None
-            self.pending_preload_command = None
-            self.pending_preload_not_before = 0.0
+            self._clear_pending_preload_locked()
             self.loading_voice_key = key or None
 
         request_id = self._create_request_id()
@@ -402,9 +411,7 @@ class AudioGenerate:
                 if self.loaded_voice_key != character_name:
                     self.loading_voice_key = character_name
                 if self.pending_preload_key == character_name:
-                    self.pending_preload_key = None
-                    self.pending_preload_command = None
-                    self.pending_preload_not_before = 0.0
+                    self._clear_pending_preload_locked()
 
     def _mark_worker_command_finished(self, command: WorkerCommand, result: WorkerResult) -> None:
         """根据 worker 返回结果更新语音模型调度状态。"""
@@ -426,9 +433,7 @@ class AudioGenerate:
                     self.loaded_voice_key = character_name
 
             if self.pending_preload_key == self.loaded_voice_key:
-                self.pending_preload_key = None
-                self.pending_preload_command = None
-                self.pending_preload_not_before = 0.0
+                self._clear_pending_preload_locked()
 #-------------------------------加载模型调度状态机相关的函数（结束）-------------------------------
     @staticmethod
     def _create_request_id() -> str:

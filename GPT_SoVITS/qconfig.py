@@ -110,6 +110,9 @@ class DSakikoConfig(QConfig):
     # 是否在退出时删除推理音频
     delete_audio_cache_on_exit = OptionsConfigItem("audio_setting", "delete_audio_cache_on_exit", False,
                                                            validator=BoolValidator())
+    # 是否后台预加载当前角色语音模型
+    enable_voice_model_preload = OptionsConfigItem("audio_setting", "enable_voice_model_preload", True,
+                                                           validator=BoolValidator())
     # 是否使用 fp32 精度推理音频
     # 如果设为 False，则使用 fp16 精度推理
     enable_fp32_inference = OptionsConfigItem("audio_setting", "enable_fp32_inference", True,

@@ -38,6 +38,14 @@ class GPTSoVITSArea(TransparentScrollArea):
             parent=self.audio_setting_group,
         )
 
+        self.voice_model_preload_card = SwitchSettingCard(
+            FluentIcon.SYNC,
+            self.tr("后台预加载语音模型"),
+            self.tr("提前加载语音模型，减少首次语音生成时间，但会增加资源占用"),
+            d_sakiko_config.enable_voice_model_preload,
+            parent=self.audio_setting_group,
+        )
+
         # 是否启用 fp16 推理（注意：配置项存的是 enable_fp32_inference，逻辑与 UI 反过来）
         self.fp_precision_card = ComboBoxSettingCard(
             d_sakiko_config.enable_fp32_inference,
@@ -113,6 +121,7 @@ class GPTSoVITSArea(TransparentScrollArea):
         self.memory_thread.start()
 
         self.audio_setting_group.addSettingCard(self.delete_audio_card)
+        self.audio_setting_group.addSettingCard(self.voice_model_preload_card)
         self.audio_setting_group.addSettingCard(self.fp_precision_card)
         self.audio_setting_group.addSettingCard(self.inference_step_card)
         self.audio_setting_group.addSettingCard(self.cuda_setting_card)
@@ -235,4 +244,3 @@ class GPTSoVITSArea(TransparentScrollArea):
             duration=-1,
             parent=self.window()
         )
-
