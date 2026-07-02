@@ -34,6 +34,7 @@ from live2d_support.runtime_adapter import (
     release_live2d_runtime,
 )
 from live2d_support.motion_semantics import motion_group_for_emotion
+from live2d_support.runtime_window import recreate_runtime_window
 from live2d_support.layout import (
     format_live2d_layout_status,
     get_live2d_layout,
@@ -706,23 +707,18 @@ class Live2DModule:
                             self.think_motion_is_over = True
                             self._reset_eye_open_transition()
                             model.dispose()
-                            release_live2d_runtime(current_runtime)
-                            try:
-                                glDeleteTextures([texture])
-                            except Exception:
-                                pass
-                            pygame.display.quit()
-                            pygame.display.init()
-                            os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"
-                            pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-                            glViewport(0, 0, *display)
-                            current_runtime = load_live2d_runtime(target_version)
-                            initialize_live2d_runtime(current_runtime)
-                            frame_clock = pygame.time.Clock()
-                            glEnable(GL_TEXTURE_2D)
-                            texture = BackgroundRen.render(
-                                pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha()
+                            recreate_result = recreate_runtime_window(
+                                current_runtime=current_runtime,
+                                current_texture=texture,
+                                target_version=target_version,
+                                display=display,
+                                window_position=f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}",
+                                background_path=self.BACK_IMAGE[self.back_img_index],
+                                render_texture=BackgroundRen.render,
                             )
+                            current_runtime = recreate_result.runtime
+                            texture = recreate_result.texture
+                            frame_clock = pygame.time.Clock()
                             overlay = TextOverlay((win_w_and_h, win_w_and_h), [self.current_character.character_name])
                             overlay.set_text(self.current_character.character_name, self.new_text or "...")
                             new_model = Live2DModelAdapter.create(new_model_path)

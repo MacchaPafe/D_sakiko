@@ -39,6 +39,7 @@ from live2d_support.runtime_adapter import (
     release_live2d_runtime,
 )
 from live2d_support.motion_semantics import motion_group_for_emotion
+from live2d_support.runtime_window import recreate_runtime_window
 
 logger = get_logger(__name__)
 
@@ -1099,28 +1100,22 @@ class Live2DModule:
             this_turn_model = None
             lip_sync_model = None
             self._dispose_model_group(model_group)
-            release_live2d_runtime(current_runtime)
-            current_runtime = None
-            try:
-                glDeleteTextures([texture])
-            except Exception:
-                pass
             version_notice_overlay.dispose()
-
-            pygame.display.quit()
-            pygame.display.init()
-            if sdl_window_pos:
-                os.environ['SDL_VIDEO_WINDOW_POS'] = sdl_window_pos
-            pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-            current_runtime = load_live2d_runtime(target_version)
-            initialize_live2d_runtime(current_runtime)
+            recreate_result = recreate_runtime_window(
+                current_runtime=current_runtime,
+                current_texture=texture,
+                target_version=target_version,
+                display=display,
+                window_position=sdl_window_pos,
+                background_path=self.BACK_IMAGE,
+                render_texture=BackgroundRen.render,
+            )
+            current_runtime = recreate_result.runtime
+            texture = recreate_result.texture
             current_runtime_version = target_version
             frame_clock = pygame.time.Clock()
             pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
             pygame.display.set_caption(window_caption)
-            glEnable(GL_TEXTURE_2D)
-            texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
-            glBindTexture(GL_TEXTURE_2D, texture)
             overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h), self._active_character_names())
             version_notice_overlay = SlotVersionNoticeOverlay(display)
 

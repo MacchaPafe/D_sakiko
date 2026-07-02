@@ -35,7 +35,14 @@ from live2d_support.runtime_adapter import (
     load_live2d_runtime,
     release_live2d_runtime,
 )
+from live2d_support.layout import (
+    Live2DLayout,
+    Live2DLayoutRuntime,
+    default_live2d_layout,
+    format_live2d_layout_status,
+)
 from live2d_support.motion_semantics import motion_group_display_title
+from live2d_support.runtime_window import recreate_runtime_window
 
 logger = get_logger(__name__)
 
@@ -152,19 +159,53 @@ class Live2DModule:
         initialize_live2d_runtime(current_runtime)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
 
-        v3_viewer_scale = 2.2
-        v3_viewer_offset_x = 0.0
-        v3_viewer_offset_y = -0.7
+        viewer_layout: Live2DLayout = default_live2d_layout(detect_live2d_runtime_version(self.PATH_JSON), "single")
+        layout_editing = False
+        layout_dragging = False
+        layout_last_mouse_pos: tuple[int, int] | None = None
+
+        def apply_viewer_layout(model_adapter: Live2DModelAdapter) -> None:
+            """将动作预览窗口的临时布局应用到当前模型。"""
+            model_adapter.SetScale(viewer_layout.scale)
+            model_adapter.SetOffset(viewer_layout.offset_x, viewer_layout.offset_y)
+
+        def update_viewer_caption() -> None:
+            """根据临时布局编辑状态刷新动作预览窗口标题。"""
+            if layout_editing:
+                pygame.display.set_caption(f"Live2D动作预览布局编辑中 {format_live2d_layout_status(viewer_layout)}")
+            else:
+                pygame.display.set_caption("Live2D动作预览")
+
+        def reset_transient_viewer_layout(
+                runtime_version: Live2DLayoutRuntime,
+                model_adapter: Live2DModelAdapter | None = None,
+        ) -> None:
+            """重置动作预览窗口的临时布局，不写入配置。"""
+            nonlocal viewer_layout
+            viewer_layout = default_live2d_layout(runtime_version, "single")
+            if model_adapter is not None:
+                apply_viewer_layout(model_adapter)
+            update_viewer_caption()
+
+        def enter_layout_edit_mode() -> None:
+            """进入动作预览窗口的临时布局编辑模式。"""
+            nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
+            layout_editing = True
+            layout_dragging = False
+            layout_last_mouse_pos = None
+            update_viewer_caption()
+
+        def exit_layout_edit_mode() -> None:
+            """退出动作预览窗口的临时布局编辑模式，不保存布局。"""
+            nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
+            layout_editing = False
+            layout_dragging = False
+            layout_last_mouse_pos = None
+            update_viewer_caption()
 
         def setup_model(model_adapter: Live2DModelAdapter) -> Live2DModelAdapter:
             model_adapter.Resize(win_w_and_h, win_w_and_h)
-            if model_adapter.version == "v3" and model_adapter.model is not None:
-                set_scale = getattr(model_adapter.model, "SetScale", None)
-                if callable(set_scale):
-                    set_scale(v3_viewer_scale)
-                set_offset = getattr(model_adapter.model, "SetOffset", None)
-                if callable(set_offset):
-                    set_offset(v3_viewer_offset_x, v3_viewer_offset_y)
+            apply_viewer_layout(model_adapter)
             model_adapter.SetAutoBlinkEnable(True)
             model_adapter.SetAutoBreathEnable(True)
             if self.if_sakiko:
@@ -175,6 +216,7 @@ class Live2DModule:
             return Live2DModelAdapter.create(model_json_path)
 
         model = setup_model(create_viewer_model(self.PATH_JSON))
+        update_viewer_caption()
         glEnable(GL_TEXTURE_2D)
 
         #texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
@@ -187,26 +229,28 @@ class Live2DModule:
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
 
         def switch_model_runtime(model_adapter: Live2DModelAdapter, model_json_path: str) -> Live2DModelAdapter:
-            nonlocal current_runtime, texture
+            nonlocal current_runtime, texture, layout_editing, layout_dragging, layout_last_mouse_pos
             target_version = detect_live2d_runtime_version(model_json_path)
+            layout_editing = False
+            layout_dragging = False
+            layout_last_mouse_pos = None
             if target_version != model_adapter.version:
                 model_adapter.dispose()
-                release_live2d_runtime(current_runtime)
-                try:
-                    glDeleteTextures([texture])
-                except Exception:
-                    pass
-                pygame.display.quit()
-                pygame.display.init()
-                os.environ['SDL_VIDEO_WINDOW_POS'] = f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}"
-                pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-                glViewport(0, 0, *display)
-                current_runtime = load_live2d_runtime(target_version)
-                initialize_live2d_runtime(current_runtime)
-                glEnable(GL_TEXTURE_2D)
-                texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
+                recreate_result = recreate_runtime_window(
+                    current_runtime=current_runtime,
+                    current_texture=texture,
+                    target_version=target_version,
+                    display=display,
+                    window_position=f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}",
+                    background_path=self.BACK_IMAGE,
+                    render_texture=BackgroundRen.render,
+                )
+                current_runtime = recreate_result.runtime
+                texture = recreate_result.texture
+                reset_transient_viewer_layout(target_version)
                 return setup_model(create_viewer_model(model_json_path))
 
+            reset_transient_viewer_layout(target_version)
             new_model = setup_model(create_viewer_model(model_json_path))
             model_adapter.dispose()
             return new_model
@@ -218,6 +262,44 @@ class Live2DModule:
                 if event.type == pygame.QUIT:
                     self.run = False
                     break
+                elif event.type == pygame.KEYDOWN and layout_editing:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                        exit_layout_edit_mode()
+                    elif event.key == pygame.K_r:
+                        reset_transient_viewer_layout(model.version, model)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 3:
+                        if layout_editing:
+                            exit_layout_edit_mode()
+                        else:
+                            enter_layout_edit_mode()
+                    elif layout_editing and event.button == 1:
+                        layout_dragging = True
+                        layout_last_mouse_pos = event.pos
+                    elif layout_editing and event.button in (4, 5):
+                        viewer_layout = viewer_layout.zoomed(1 if event.button == 4 else -1)
+                        apply_viewer_layout(model)
+                        update_viewer_caption()
+                elif event.type == pygame.MOUSEBUTTONUP and layout_editing and event.button == 1:
+                    layout_dragging = False
+                    layout_last_mouse_pos = None
+                elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
+                    if layout_last_mouse_pos is not None:
+                        last_x, last_y = layout_last_mouse_pos
+                        current_x, current_y = event.pos
+                        viewer_layout = viewer_layout.moved_by_pixels(
+                            current_x - last_x,
+                            current_y - last_y,
+                            win_w_and_h,
+                            win_w_and_h,
+                        )
+                        apply_viewer_layout(model)
+                        update_viewer_caption()
+                    layout_last_mouse_pos = event.pos
+                elif event.type == pygame.MOUSEWHEEL and layout_editing:
+                    viewer_layout = viewer_layout.zoomed(int(event.y))
+                    apply_viewer_layout(model)
+                    update_viewer_caption()
 
                 else:
                     pass
