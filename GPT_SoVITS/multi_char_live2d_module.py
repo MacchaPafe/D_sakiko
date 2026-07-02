@@ -840,7 +840,6 @@ class Live2DModule:
         selected_slot = changed_slot if changed_slot in (0, 1) else 0
         logger.warning(
             "小剧场 Live2D 模型版本不一致，暂时只显示一个角色：%s / %s",
-            selected_slot,
             versions[0],
             versions[1],
         )
