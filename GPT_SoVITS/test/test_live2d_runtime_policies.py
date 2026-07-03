@@ -16,6 +16,7 @@ from live2d_support.expression_policy import (
     select_supported_expression,
     semantic_expression_candidates,
 )
+from live2d_support.motion_capabilities import motion_capabilities_from_motion_files_by_group
 from live2d_support.motion_selection import resolve_positioned_motion_group, select_random_motion
 from live2d_support.runtime_adapter import Live2DModelAdapter
 
@@ -155,6 +156,43 @@ class Live2DMotionSelectionTestCase(unittest.TestCase):
             )
 
         self.assertEqual(selected_motion, ("idle", 0))
+
+
+class Live2DMotionCapabilitiesTestCase(unittest.TestCase):
+    """测试 Live2D 方向动作能力查询。"""
+
+    def test_capabilities_use_non_empty_standard_position_groups(self) -> None:
+        """验证方向能力只来自非空的项目标准方向变体组。"""
+        capabilities = motion_capabilities_from_motion_files_by_group({
+            "happiness": ("base.motion3.json",),
+            "happiness_L": ("left.motion3.json",),
+            "happiness_R": (),
+            "custom_L": ("custom_left.motion3.json",),
+        })
+
+        self.assertTrue(capabilities.supports_position("L"))
+        self.assertFalse(capabilities.supports_position("R"))
+        self.assertTrue(capabilities.supports_group_position("happiness", "L"))
+        self.assertFalse(capabilities.supports_group_position("happiness", "R"))
+
+    def test_adapter_capabilities_ignore_preview_group(self) -> None:
+        """验证 adapter 能力查询不受动作编辑器预览组影响。"""
+        adapter = Live2DModelAdapter(
+            model_json_path="model.model3.json",
+            version="v3",
+            runtime=ModuleType("fake_live2d_v3"),
+            model=FakeExtraMotionModel(),
+            motion_groups=frozenset({"happiness", Live2DModelAdapter.PREVIEW_MOTION_GROUP}),
+            motion_files_by_group={
+                "happiness": ("base.motion3.json",),
+                Live2DModelAdapter.PREVIEW_MOTION_GROUP: ("preview_L.motion3.json",),
+            },
+            expression_ids=frozenset(),
+            parameter_ids=frozenset(),
+            preview_motion_indices_by_path={},
+        )
+
+        self.assertFalse(adapter.supports_positioned_motion("L"))
 
 
 class Live2DPreviewMotionTestCase(unittest.TestCase):

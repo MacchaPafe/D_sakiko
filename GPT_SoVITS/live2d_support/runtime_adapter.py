@@ -13,6 +13,10 @@ from live2d_support.expression_policy import (
     select_supported_expression as select_supported_expression_id,
     semantic_expression_candidates,
 )
+from live2d_support.motion_capabilities import (
+    Live2DMotionCapabilities,
+    motion_capabilities_from_motion_files_by_group,
+)
 from live2d_support.motion_selection import (
     MotionPosition,
     resolve_positioned_motion_group as resolve_positioned_motion_group_name,
@@ -393,6 +397,21 @@ class Live2DModelAdapter:
     def resolve_positioned_motion_group(self, group_name: str, position: MotionPosition | None) -> str:
         """根据位置参数选择动作组，缺少位置组时回退到基础组。"""
         return resolve_positioned_motion_group_name(group_name, position, self.motion_groups)
+
+    def motion_capabilities(self) -> Live2DMotionCapabilities:
+        """返回当前模型持久动作组声明出的方向动作能力。"""
+        return motion_capabilities_from_motion_files_by_group(
+            self.motion_files_by_group,
+            ignored_groups={self.PREVIEW_MOTION_GROUP},
+        )
+
+    def supports_positioned_motion(self, position: MotionPosition) -> bool:
+        """判断当前模型是否支持指定方向的持久动作组。"""
+        return self.motion_capabilities().supports_position(position)
+
+    def supports_group_positioned_motion(self, group_name: str, position: MotionPosition) -> bool:
+        """判断当前模型的指定标准动作组是否支持指定方向。"""
+        return self.motion_capabilities().supports_group_position(group_name, position)
 
     def _motion_file_at(self, group_name: str, motion_index: int) -> str | None:
         """读取动作组中指定 index 对应的动作文件名。"""

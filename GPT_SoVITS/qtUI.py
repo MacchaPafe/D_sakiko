@@ -13,7 +13,7 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
-    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QSizePolicy, QPlainTextEdit, QApplication
+    QListWidget, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QSizePolicy, QPlainTextEdit, QApplication, QFileDialog
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
@@ -62,6 +62,7 @@ from input_commands import (
     InputCommandPalette,
     build_default_input_command_specs,
 )
+from live2d_support.model_importer import Live2DModelImportError, import_live2d_model_to_extra_model
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 
 
@@ -854,6 +855,10 @@ class ChangeL2DModelWindow(QDialog):
         refresh_btn.setIcon(QIcon("./icons/refresh.svg"))
         refresh_btn.clicked.connect(self.refresh_ui)  # noqa
         title_layout.addWidget(title_label)
+        if self.current_char_folder_name != 'sakiko':
+            import_btn = QPushButton("导入模型")
+            import_btn.clicked.connect(self.import_l2d_model)  # noqa
+            title_layout.addWidget(import_btn)
         title_layout.addWidget(refresh_btn)
         layout.addLayout(title_layout)
 
@@ -903,6 +908,34 @@ class ChangeL2DModelWindow(QDialog):
         open_downloader_btn.clicked.connect(lambda _:MoreFunctionWindow.open_live2d_downloader())  # noqa
         layout.addWidget(open_downloader_btn)
         self.setLayout(layout)
+
+    def import_l2d_model(self) -> None:
+        """从本地选择 Live2D 模型 JSON 并导入当前角色的 extra_model 目录。"""
+        selected_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入 Live2D 模型",
+            "",
+            "Live2D Model JSON (*.model3.json *.model.json);;JSON Files (*.json)",
+        )
+        if not selected_path:
+            return
+
+        try:
+            result = import_live2d_model_to_extra_model(selected_path, self.current_char_folder_name)
+        except Live2DModelImportError as exc:
+            QMessageBox.warning(self, "导入失败", str(exc))
+            return
+        except Exception as exc:
+            logger.exception("导入 Live2D 模型失败")
+            QMessageBox.warning(self, "导入失败", str(exc) or exc.__class__.__name__)
+            return
+
+        self.refresh_ui()
+        QMessageBox.information(
+            self,
+            "导入成功",
+            f"已导入模型：{result.model_name}。",
+        )
 
     def find_extra_models(self,current_char_folder_name):
         base_path = f"../live2d_related/{current_char_folder_name}/extra_model"

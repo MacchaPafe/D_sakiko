@@ -241,15 +241,28 @@ def _matching_motion_entries(
 def _entries_by_position(
         candidates: list[tuple[dict[str, object], frozenset[str], MotionPosition | None, str]],
 ) -> dict[MotionPosition, list[dict[str, object]]]:
-    """将动作候选按位置后缀分配到 C/L/R 组。"""
+    """将有位置后缀的动作候选按 C/L/R 分组。"""
     grouped: dict[MotionPosition, list[dict[str, object]]] = {"C": [], "L": [], "R": []}
     for entry, _keywords, position, _sort_key in sorted(candidates, key=lambda item: item[3]):
-        if position is None:
-            for suffix in POSITION_MOTION_SUFFIXES:
-                _append_unique_motion_entry(grouped[suffix], entry)
-        else:
+        if position is not None:
             _append_unique_motion_entry(grouped[position], entry)
     return grouped
+
+
+def _default_motion_entries(
+        candidates: list[tuple[dict[str, object], frozenset[str], MotionPosition | None, str]],
+) -> list[dict[str, object]]:
+    """从候选动作中选择基础动作组默认条目。"""
+    suffixless_entries: list[dict[str, object]] = []
+    center_entries: list[dict[str, object]] = []
+    for entry, _keywords, position, _sort_key in sorted(candidates, key=lambda item: item[3]):
+        if position is None:
+            _append_unique_motion_entry(suffixless_entries, entry)
+        elif position == "C":
+            _append_unique_motion_entry(center_entries, entry)
+    if suffixless_entries:
+        return suffixless_entries
+    return center_entries
 
 
 def _build_standard_model3_motions(
@@ -257,7 +270,9 @@ def _build_standard_model3_motions(
 ) -> dict[str, list[dict[str, object]]]:
     """根据动作候选生成项目标准动作组和位置变体组。"""
     grouped_by_standard: dict[str, dict[MotionPosition, list[dict[str, object]]]] = {}
+    default_by_standard: dict[str, list[dict[str, object]]] = {}
     all_position_entries = _entries_by_position(candidates)
+    all_default_entries = _default_motion_entries(candidates)
     standard_group_ids = standard_motion_group_ids()
 
     for group_name in standard_group_ids:
@@ -265,8 +280,18 @@ def _build_standard_model3_motions(
         if not matched_candidates:
             matched_candidates = _matching_motion_entries(candidates, weak_motion_keywords(group_name))
         grouped_by_standard[group_name] = _entries_by_position(matched_candidates)
+        default_by_standard[group_name] = _default_motion_entries(matched_candidates)
 
     for group_name in standard_group_ids:
+        if not default_by_standard[group_name]:
+            for fallback_group in fallback_motion_groups(group_name):
+                fallback_entries = default_by_standard.get(fallback_group, [])
+                if fallback_entries:
+                    default_by_standard[group_name] = [dict(entry) for entry in fallback_entries]
+                    break
+            if not default_by_standard[group_name] and all_default_entries:
+                default_by_standard[group_name] = [dict(entry) for entry in all_default_entries]
+
         for suffix in POSITION_MOTION_SUFFIXES:
             if grouped_by_standard[group_name][suffix]:
                 continue
@@ -280,15 +305,16 @@ def _build_standard_model3_motions(
 
     result: dict[str, list[dict[str, object]]] = {}
     for group_name in standard_group_ids:
-        center_entries = [dict(entry) for entry in grouped_by_standard[group_name]["C"]]
-        result[group_name] = center_entries
+        result[group_name] = [dict(entry) for entry in default_by_standard[group_name]]
         for suffix in POSITION_MOTION_SUFFIXES:
-            result[f"{group_name}_{suffix}"] = [dict(entry) for entry in grouped_by_standard[group_name][suffix]]
+            positioned_entries = grouped_by_standard[group_name][suffix]
+            if positioned_entries:
+                result[f"{group_name}_{suffix}"] = [dict(entry) for entry in positioned_entries]
     return result
 
 
 def _standard_model3_motion_schema_is_complete(motions: object) -> bool:
-    """检查 model3.json 是否包含完整的标准动作组结构。"""
+    """检查 model3.json 是否包含基础标准动作组和合法方向组。"""
     if not isinstance(motions, dict):
         return False
     motion_mapping = cast(dict[str, object], motions)
@@ -296,7 +322,8 @@ def _standard_model3_motion_schema_is_complete(motions: object) -> bool:
         if not isinstance(motion_mapping.get(group_name), list):
             return False
         for suffix in POSITION_MOTION_SUFFIXES:
-            if not isinstance(motion_mapping.get(f"{group_name}_{suffix}"), list):
+            positioned_group = motion_mapping.get(f"{group_name}_{suffix}")
+            if positioned_group is not None and not isinstance(positioned_group, list):
                 return False
     return True
 
