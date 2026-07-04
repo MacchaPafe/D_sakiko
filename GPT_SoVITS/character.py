@@ -18,9 +18,21 @@ from live2d_support.model_normalizer import (
 )
 from qconfig import d_sakiko_config
 from log import get_logger
+from emotion_enum import EmotionEnum
 
 
 logger = get_logger(__name__)
+
+EMOTION_REFERENCE_KEYS = [
+    "happiness",
+    "sadness",
+    "anger",
+    "disgust",
+    "like",
+    "surprise",
+    "fear",
+]
+REFERENCE_AUDIO_AND_TEXT_JSON = "reference_audio_and_text.json"
 
 
 class CharacterAttributes:
@@ -40,9 +52,9 @@ class CharacterAttributes:
         # 角色的描述，即角色文件夹内 character_description.txt 记录的内容
         self.character_description: str = ''
         # 角色语音模型参考音频的相对路径。祥子的该属性为 None。
-        self.gptsovits_ref_audio: str | None = ''
+        self.gptsovits_ref_audio: str | dict[str, str] | None = ''
         # 角色语音模型参考音频文本的相对路径。祥子的该属性为 None。
-        self.gptsovits_ref_audio_text: str | None = ''
+        self.gptsovits_ref_audio_text: str | dict[str, str] | None = ''
         # 角色语音模型参考音频的语言（例如‘日文’）
         self.gptsovits_ref_audio_lan: str | None = ''
         # 角色的 qt css 样式表
@@ -106,7 +118,211 @@ class CharacterAttributes:
     @staticmethod
     def _path_exists(path: str | None) -> bool:
         """判断给定路径是否存在。"""
-        return path is not None and os.path.exists(path)
+        return isinstance(path, str) and bool(path) and os.path.exists(path)
+
+    @property
+    def is_sakiko(self) -> bool:
+        return self.character_folder_name == "sakiko" or self.character_name == "祥子"
+
+    @staticmethod
+    def normalize_reference_emotion(emotion: str | EmotionEnum | None) -> str:
+        if isinstance(emotion, EmotionEnum):
+            return emotion.as_string()
+        if emotion is None:
+            return "happiness"
+        return EmotionEnum.from_string(str(emotion)).as_string()
+
+    def reference_audio_dir(self) -> str:
+        return os.path.join("../reference_audio", self.character_folder_name)
+
+    def reference_audio_config_path(self) -> str:
+        return os.path.join(self.reference_audio_dir(), REFERENCE_AUDIO_AND_TEXT_JSON)
+
+    def reference_audio_language_path(self) -> str:
+        return os.path.join(self.reference_audio_dir(), "reference_audio_language.txt")
+
+    def _emotion_dict(self, value: object) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, str] = {}
+        for key, item in value.items():
+            result[self.normalize_reference_emotion(str(key))] = str(item or "")
+        return result
+
+    def _legacy_reference_text_content(self) -> str:
+        if isinstance(self.gptsovits_ref_audio_text, str) and self.gptsovits_ref_audio_text:
+            if os.path.exists(self.gptsovits_ref_audio_text):
+                try:
+                    with open(self.gptsovits_ref_audio_text, "r", encoding="utf-8") as file:
+                        return file.read().strip()
+                except Exception:
+                    logger.exception("读取旧参考文本失败：%s", self.gptsovits_ref_audio_text)
+        return ""
+
+    def _candidate_reference_keys(self, emotion: str | EmotionEnum | None) -> list[str]:
+        preferred = self.normalize_reference_emotion(emotion)
+        keys = [preferred]
+        if preferred != "happiness":
+            keys.append("happiness")
+        keys.extend(key for key in EMOTION_REFERENCE_KEYS if key not in keys)
+        return keys
+
+    def get_reference_materials_for_emotion(
+        self,
+        emotion: str | EmotionEnum | None,
+    ) -> tuple[str | None, str | None, str | None]:
+        if self.is_sakiko:
+            return None, None, self.gptsovits_ref_audio_lan
+
+        audio_refs = self._emotion_dict(self.gptsovits_ref_audio)
+        text_refs = self._emotion_dict(self.gptsovits_ref_audio_text)
+        if audio_refs or text_refs:
+            for key in self._candidate_reference_keys(emotion):
+                audio_path = audio_refs.get(key)
+                prompt_text = text_refs.get(key, "").strip()
+                if self._path_exists(audio_path) and prompt_text:
+                    return audio_path, prompt_text, self.gptsovits_ref_audio_lan
+            return None, None, self.gptsovits_ref_audio_lan
+
+        if self._path_exists(self.gptsovits_ref_audio):
+            prompt_text = self._legacy_reference_text_content()
+            if prompt_text and isinstance(self.gptsovits_ref_audio, str):
+                return self.gptsovits_ref_audio, prompt_text, self.gptsovits_ref_audio_lan
+        return None, None, self.gptsovits_ref_audio_lan
+
+    def get_reference_audio_for_emotion(self, emotion: str | EmotionEnum | None) -> str | None:
+        return self.get_reference_materials_for_emotion(emotion)[0]
+
+    def get_reference_text_for_emotion(self, emotion: str | EmotionEnum | None) -> str | None:
+        return self.get_reference_materials_for_emotion(emotion)[1]
+
+    def _read_emotion_reference_json(self) -> tuple[dict[str, str], dict[str, str]] | None:
+        config_path = self.reference_audio_config_path()
+        if not os.path.exists(config_path):
+            return None
+        try:
+            with open(config_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except Exception:
+            logger.exception("读取多情绪参考音频配置失败：%s", config_path)
+            return None
+
+        refs = data.get("emotion_refs", data) if isinstance(data, dict) else {}
+        if not isinstance(refs, dict):
+            return None
+
+        audio_refs: dict[str, str] = {}
+        text_refs: dict[str, str] = {}
+        for raw_key, raw_value in refs.items():
+            key = self.normalize_reference_emotion(str(raw_key))
+            if isinstance(raw_value, dict):
+                audio_refs[key] = str(raw_value.get("audio_path") or "")
+                text_refs[key] = str(raw_value.get("text") or "")
+        return audio_refs, text_refs
+
+    def _build_legacy_emotion_references(self) -> tuple[dict[str, str], dict[str, str]]:
+        audio_path = ""
+        default_path_file = os.path.join(self.reference_audio_dir(), "default_ref_audio.txt")
+        if os.path.exists(default_path_file):
+            try:
+                with open(default_path_file, "r", encoding="utf-8") as file:
+                    candidate = file.read().strip()
+                if self._path_exists(candidate):
+                    audio_path = candidate
+            except Exception:
+                logger.exception("读取旧参考音频路径失败：%s", default_path_file)
+
+        if not audio_path:
+            candidates = glob.glob(os.path.join(self.reference_audio_dir(), "*.wav"))
+            candidates.extend(glob.glob(os.path.join(self.reference_audio_dir(), "*.mp3")))
+            if candidates:
+                audio_path = max(candidates, key=os.path.getmtime)
+
+        text = ""
+        legacy_text_path = os.path.join(self.reference_audio_dir(), "reference_text.txt")
+        if os.path.exists(legacy_text_path):
+            try:
+                with open(legacy_text_path, "r", encoding="utf-8") as file:
+                    text = file.read().strip()
+            except Exception:
+                logger.exception("读取旧参考文本失败：%s", legacy_text_path)
+
+        audio_refs = {key: audio_path for key in EMOTION_REFERENCE_KEYS} if audio_path else {}
+        text_refs = {key: text for key in EMOTION_REFERENCE_KEYS} if audio_path or text else {}
+        return audio_refs, text_refs
+
+    def save_emotion_reference_config(
+        self,
+        audio_refs: dict[str, str] | None = None,
+        text_refs: dict[str, str] | None = None,
+        cleanup_legacy: bool = False,
+    ) -> bool:
+        if self.is_sakiko:
+            return False
+        audio_refs = self._emotion_dict(audio_refs if audio_refs is not None else self.gptsovits_ref_audio)
+        text_refs = self._emotion_dict(text_refs if text_refs is not None else self.gptsovits_ref_audio_text)
+        refs = {
+            key: {
+                "audio_path": audio_refs.get(key, ""),
+                "text": text_refs.get(key, ""),
+            }
+            for key in EMOTION_REFERENCE_KEYS
+        }
+        config_path = self.reference_audio_config_path()
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as file:
+                json.dump({"emotion_refs": refs}, file, ensure_ascii=False, indent=2)
+            with open(config_path, "r", encoding="utf-8") as file:
+                json.load(file)
+        except Exception:
+            logger.exception("写入多情绪参考音频配置失败：%s", config_path)
+            return False
+
+        self.gptsovits_ref_audio = {key: refs[key]["audio_path"] for key in EMOTION_REFERENCE_KEYS}
+        self.gptsovits_ref_audio_text = {key: refs[key]["text"] for key in EMOTION_REFERENCE_KEYS}
+
+        if cleanup_legacy:
+            for legacy_name in ("default_ref_audio.txt", "reference_text.txt"):
+                legacy_path = os.path.join(self.reference_audio_dir(), legacy_name)
+                if os.path.exists(legacy_path):
+                    try:
+                        os.remove(legacy_path)
+                    except Exception:
+                        logger.warning("旧参考配置文件删除失败：%s", legacy_path, exc_info=True)
+        return True
+
+    def reload_emotion_reference_config_from_disk(self, migrate_if_missing: bool = True) -> None:
+        if self.is_sakiko:
+            return
+        loaded = self._read_emotion_reference_json()
+        if loaded is not None:
+            self.gptsovits_ref_audio, self.gptsovits_ref_audio_text = loaded
+            return
+        if not migrate_if_missing:
+            self.gptsovits_ref_audio = {}
+            self.gptsovits_ref_audio_text = {}
+            return
+        audio_refs, text_refs = self._build_legacy_emotion_references()
+        self.gptsovits_ref_audio = audio_refs
+        self.gptsovits_ref_audio_text = text_refs
+        if audio_refs or text_refs:
+            self.save_emotion_reference_config(audio_refs, text_refs, cleanup_legacy=True)
+
+    def write_reference_audio_language(self, language: str) -> bool:
+        try:
+            os.makedirs(self.reference_audio_dir(), exist_ok=True)
+            if language in ref_audio_language_list:
+                value = str(ref_audio_language_list.index(language) + 1)
+            else:
+                value = language
+            with open(self.reference_audio_language_path(), "w", encoding="utf-8") as file:
+                file.write(value)
+            self.gptsovits_ref_audio_lan = language
+            return True
+        except Exception:
+            logger.exception("写入参考音频语言失败：%s", self.reference_audio_language_path())
+            return False
 
     def has_valid_voice_model(self) -> bool:
         """判断当前角色是否具备可用的语音生成配置。"""
@@ -117,12 +333,10 @@ class CharacterAttributes:
         if not self.gptsovits_ref_audio_lan:
             return False
         # 祥子的参考音频和参考文本由语音生成模块动态选择。
-        if self.character_name == '祥子':
+        if self.is_sakiko:
             return True
-        return (
-            self._path_exists(self.gptsovits_ref_audio)
-            and self._path_exists(self.gptsovits_ref_audio_text)
-        )
+        ref_audio, prompt_text, _language = self.get_reference_materials_for_emotion("happiness")
+        return self._path_exists(ref_audio) and bool(prompt_text)
 
     def print_attributes(self) -> None:
         """打印当前角色对象的全部属性。"""
@@ -267,37 +481,18 @@ class GetCharacterAttributes:
                     SoVITS_model_file = max(SoVITS_model_file, key=os.path.getmtime)
                     character.sovits_model_path=SoVITS_model_file
 
-                #加载上次设置的参考音频（如果有设置过），而不是每次都用最新的参考音频
-                if char!='sakiko':
-                    if os.path.exists(os.path.join("../reference_audio",char, f"default_ref_audio.txt")):
-                        with open(os.path.join("../reference_audio",char, f"default_ref_audio.txt"),'r',encoding='utf-8') as f:
-                            default_ref_audio_path=f.read().strip()
-                            f.close()
-                        if os.path.exists(default_ref_audio_path):
-                            character.gptsovits_ref_audio=default_ref_audio_path
-                    else:
-                        ref_audio_file_wav = glob.glob(os.path.join("../reference_audio", char, f"*.wav"))
-                        ref_audio_file_mp3 = glob.glob(os.path.join("../reference_audio", char, f"*.mp3"))
-                        if not ref_audio_file_wav + ref_audio_file_mp3:
-                            logger.warning(
-                                "没有找到角色：'%s' 的推理参考音频文件(.wav/.mp3)，本次运行无法进行语音生成。",
-                                character.character_name,
-                            )
-
-                            character.gptsovits_ref_audio=None
-                        else:
-                            ref_audio=max(ref_audio_file_mp3 + ref_audio_file_wav, key=os.path.getmtime)
-                            character.gptsovits_ref_audio=ref_audio
-
-                if char!='sakiko':
-                    if not os.path.exists(os.path.join("../reference_audio",char, 'reference_text.txt')):
+                if not character.is_sakiko:
+                    character.reload_emotion_reference_config_from_disk(migrate_if_missing=True)
+                    if not character.gptsovits_ref_audio:
                         logger.warning(
-                            "没有找到角色：'%s' 的推理参考音频文本文件(reference_text.txt)，本次运行无法进行语音生成。",
+                            "没有找到角色：'%s' 的推理参考音频文件(.wav/.mp3)，本次运行无法进行语音生成。",
                             character.character_name,
                         )
-                        character.gptsovits_ref_audio_text = None
-                    else:
-                        character.gptsovits_ref_audio_text=os.path.join("../reference_audio",char, 'reference_text.txt')
+                    if not character.gptsovits_ref_audio_text:
+                        logger.warning(
+                            "没有找到角色：'%s' 的推理参考音频文本配置，本次运行无法进行语音生成。",
+                            character.character_name,
+                        )
 
                 if not os.path.exists(os.path.join('../reference_audio',char,'reference_audio_language.txt')):
                     logger.warning(
@@ -312,7 +507,10 @@ class GetCharacterAttributes:
                             for line in f:
                                 line = line.strip()
                                 if line and not line.startswith("#"):
-                                    ref_audio_language = ref_audio_language_list[int(line) - 1]
+                                    if line.isdigit():
+                                        ref_audio_language = ref_audio_language_list[int(line) - 1]
+                                    else:
+                                        ref_audio_language = line
                                     break
                             character.gptsovits_ref_audio_lan = ref_audio_language
                             f.close()

@@ -616,9 +616,15 @@ class CharacterVoiceRuntime:
         self.apply_payload(payload)
         tts = tts_manager.get_tts_for_runtime(self)
 
-        ref_text_path = cast(str, payload["ref_text_path"])
-        with open(ref_text_path, 'r', encoding='utf-8') as file:
-            ref_text = file.read()
+        prompt_text = payload.get("prompt_text")
+        if isinstance(prompt_text, str):
+            ref_text = prompt_text
+        else:
+            ref_text = ""
+            ref_text_path = payload.get("ref_text_path")
+            if isinstance(ref_text_path, str) and ref_text_path:
+                with open(ref_text_path, 'r', encoding='utf-8') as file:
+                    ref_text = file.read()
 
         input_diction = {
             "text": cast(str, payload["text"]),

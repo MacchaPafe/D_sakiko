@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from character import CharacterAttributes, GetCharacterAttributes
+from character import CharacterAttributes, EMOTION_REFERENCE_KEYS, GetCharacterAttributes
 from qconfig import d_sakiko_config
 
 
@@ -71,7 +71,8 @@ class CharacterVoiceConfigTestCase(unittest.TestCase):
             self.assertEqual(len(loader.character_class_list), 1)
             character = loader.character_class_list[0]
             self.assertEqual(character.character_name, "测试角色")
-            self.assertIsNone(character.gptsovits_ref_audio_text)
+            self.assertIsInstance(character.gptsovits_ref_audio_text, dict)
+            self.assertFalse(any(character.gptsovits_ref_audio_text.values()))
             self.assertIsNone(character.gptsovits_ref_audio_lan)
             self.assertFalse(character.has_valid_voice_model())
 
@@ -94,18 +95,55 @@ class CharacterVoiceConfigTestCase(unittest.TestCase):
                 character.gptsovits_ref_audio_text,
             ):
                 Path(path).touch()
+            Path(character.gptsovits_ref_audio_text).write_text("参考文本", encoding="utf-8")
 
             self.assertTrue(character.has_valid_voice_model())
 
             Path(character.gptsovits_ref_audio_text).unlink()
             self.assertFalse(character.has_valid_voice_model())
 
-            Path(character.gptsovits_ref_audio_text).touch()
+            Path(character.gptsovits_ref_audio_text).write_text("参考文本", encoding="utf-8")
             character.gptsovits_ref_audio_lan = None
             self.assertFalse(character.has_valid_voice_model())
 
             character.character_name = "祥子"
             self.assertFalse(character.has_valid_voice_model())
+
+    def test_legacy_reference_config_migrates_to_emotion_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            working_dir = root / "GPT_SoVITS"
+            voice_dir = root / "reference_audio" / "test_character"
+            working_dir.mkdir()
+            voice_dir.mkdir(parents=True)
+
+            audio_path = voice_dir / "reference.wav"
+            audio_path.touch()
+            default_file = voice_dir / "default_ref_audio.txt"
+            text_file = voice_dir / "reference_text.txt"
+            default_file.write_text(str(audio_path), encoding="utf-8")
+            text_file.write_text("参考文本", encoding="utf-8")
+
+            character = CharacterAttributes()
+            character.character_folder_name = "test_character"
+            character.character_name = "测试角色"
+
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(working_dir)
+                character.reload_emotion_reference_config_from_disk()
+            finally:
+                os.chdir(original_cwd)
+
+            config_path = voice_dir / "reference_audio_and_text.json"
+            self.assertTrue(config_path.exists())
+            self.assertFalse(default_file.exists())
+            self.assertFalse(text_file.exists())
+            self.assertIsInstance(character.gptsovits_ref_audio, dict)
+            self.assertIsInstance(character.gptsovits_ref_audio_text, dict)
+            self.assertEqual(set(character.gptsovits_ref_audio), set(EMOTION_REFERENCE_KEYS))
+            self.assertEqual(character.gptsovits_ref_audio["anger"], str(audio_path))
+            self.assertEqual(character.gptsovits_ref_audio_text["anger"], "参考文本")
 
 
 if __name__ == "__main__":

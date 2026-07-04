@@ -509,8 +509,9 @@ class SystemCharacterDetailView(QWidget):
         self.sovits_card.setContent(os.path.basename(self.current_character.sovits_model_path) if self.current_character.sovits_model_path else "无")
         self.sovits_card.setToolTip(self.current_character.sovits_model_path)
         
-        self.ref_audio_card.setContent(os.path.basename(self.current_character.gptsovits_ref_audio) if self.current_character.gptsovits_ref_audio else "无")
-        self.ref_audio_card.setToolTip(self.current_character.gptsovits_ref_audio)
+        ref_audio_path = self.current_character.get_reference_audio_for_emotion("happiness")
+        self.ref_audio_card.setContent(os.path.basename(ref_audio_path) if ref_audio_path else "无")
+        self.ref_audio_card.setToolTip(ref_audio_path or "")
         
         self.is_loading = False
 

@@ -24,6 +24,7 @@ class _MessageDisplayMeta:
     can_edit_and_resend: bool
     can_rollback: bool
     can_regenerate_turn_reply: bool
+    emotion_label: str = "happiness"
 
 
 class ChatDisplay(QTextBrowser):
@@ -214,7 +215,7 @@ class ChatDisplay(QTextBrowser):
 
             if meta is not None and not meta.is_user_message:
                 menu.addSeparator()
-                regen_action = QAction("重新生成音频", self)
+                regen_action = QAction(f"重新生成音频：情绪{meta.emotion_label}", self)
                 regen_action.triggered.connect(lambda: self.regenerateAudioRequested.emit(msg_index))
                 menu.addAction(regen_action)
 
@@ -278,6 +279,7 @@ class ChatDisplay(QTextBrowser):
             can_edit_and_resend=Chat.can_edit_and_resend_user_message(message),
             can_rollback=Chat.can_rollback_to_message(message),
             can_regenerate_turn_reply=False,
+            emotion_label=self._message_emotion_label(message),
         )
 
     def _mark_regenerable_turn_reply(self, chat: Chat) -> None:
@@ -294,9 +296,17 @@ class ChatDisplay(QTextBrowser):
                 can_edit_and_resend=meta.can_edit_and_resend,
                 can_rollback=meta.can_rollback,
                 can_regenerate_turn_reply=index == message_index,
+                emotion_label=meta.emotion_label,
             )
         if message_index is None:
             return
+
+    @staticmethod
+    def _message_emotion_label(message: Message) -> str:
+        try:
+            return message.emotion.as_string()
+        except Exception:
+            return "happiness"
 
     def _render_message_html(self, message: Message, msg_index: int) -> str:
         """将一条消息渲染成完整 HTML 片段。"""

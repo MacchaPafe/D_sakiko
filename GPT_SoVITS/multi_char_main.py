@@ -427,23 +427,27 @@ class DisplayTalkText(QThread):
 
 class WaitUntilAudioGenModuleSynthesisComplete(QThread):
     synthesis_complete_signal = pyqtSignal(list)
-    def __init__(self, audio_gen_module, char_texts_list, character, sakiko_state, audio_language_choice):
+    def __init__(self, audio_gen_module, char_texts_list, character, sakiko_state, audio_language_choice,
+                 char_emotions_list=None):
         super().__init__()
         self.audio_gen_module = audio_gen_module
         self.char_texts_list = char_texts_list
         self.character = character
         self.sakiko_state = sakiko_state
         self.audio_language_choice = audio_language_choice
+        self.char_emotions_list = char_emotions_list or []
 
     def run(self):
         char_text_audio_path_list = []
-        for text in self.char_texts_list:
+        for index, text in enumerate(self.char_texts_list):
+            emotion = self.char_emotions_list[index] if index < len(self.char_emotions_list) else None
             char_text_audio_path_list.append(
                 self.audio_gen_module.generate_audio_for_character_sync(
                     text,
                     self.character,
                     self.sakiko_state,
                     self.audio_language_choice,
+                    emotion=emotion,
                 )
             )
         self.synthesis_complete_signal.emit(char_text_audio_path_list)
@@ -2192,24 +2196,29 @@ class ViewerGUI(QWidget):
         if not self.original_response:
             return
         self.char_0_talk_texts=[]
+        self.char_0_talk_emotions=[]
         self.char_0_audio_path_list=[]
         self.char_talk_texts_match_original_response_indices=[]
         self.char_1_talk_texts=[]
+        self.char_1_talk_emotions=[]
         self.char_1_audio_path_list=[]
         idx_0 = self.current_char_index[0]
         idx_1 = self.current_char_index[1]
         for i,turn in enumerate(self.original_response):
             speaker_name_from_llm = turn.get('speaker', '').strip()  # 去除首尾空格
             text = turn.get('text', '')
+            emotion = str(turn.get('emotion') or "happiness")
 
             # === 【关键修改】使用智能匹配 ===
             matched_idx = self.match_speaker_index(speaker_name_from_llm, [idx_0, idx_1])
 
             if matched_idx == idx_0:
                 self.char_0_talk_texts.append(text)
+                self.char_0_talk_emotions.append(emotion)
                 self.char_talk_texts_match_original_response_indices.append('char_0')
             elif matched_idx == idx_1:
                 self.char_1_talk_texts.append(text)
+                self.char_1_talk_emotions.append(emotion)
                 self.char_talk_texts_match_original_response_indices.append('char_1')
             else:
                 # 两个都没匹配上（比如大模型突然输出了“旁白”或者幻觉出了第三个人）
@@ -2237,6 +2246,7 @@ class ViewerGUI(QWidget):
             self.character_list[self.current_char_index[0]],
             self.sakiko_state,
             self.audio_gen_module.audio_language_choice,
+            self.char_0_talk_emotions,
         )
         self.audio_gen_generate_audio_thread_0.synthesis_complete_signal.connect(self.handle_response_continue_1)
         self.audio_gen_generate_audio_thread_0.start()
@@ -2253,6 +2263,7 @@ class ViewerGUI(QWidget):
             self.character_list[self.current_char_index[1]],
             self.sakiko_state,
             self.audio_gen_module.audio_language_choice,
+            self.char_1_talk_emotions,
         )
         self.audio_gen_generate_audio_thread_1.synthesis_complete_signal.connect(self.final_handle_response)
         self.audio_gen_generate_audio_thread_1.start()
@@ -2374,6 +2385,11 @@ class ViewerGUI(QWidget):
 
         message = self.current_chat.message_list[index]
         self.regenerate_text = message.text
+        self.regenerate_emotion = (
+            message.emotion.as_string()
+            if hasattr(message.emotion, "as_string")
+            else str(message.emotion or "happiness")
+        )
         this_char_name = message.character_name
         char_index=0
         self.replace_audio_index = index
@@ -2391,6 +2407,7 @@ class ViewerGUI(QWidget):
             self.regenerate_character,
             self.sakiko_state,
             self.audio_gen_module.audio_language_choice,
+            [self.regenerate_emotion],
         )
         self.generate_thread.synthesis_complete_signal.connect(self.replace_audio_path)
         self.generate_thread.start()

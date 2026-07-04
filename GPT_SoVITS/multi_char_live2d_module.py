@@ -1516,6 +1516,7 @@ class Live2DModule:
                     model.Update()
             if self.force_eyes_open and self.last_motion_model is not None:
                 self._force_model_eyes_open(self.last_motion_model)
+                self._clear_eye_reopen_state()
             # 渲染背景图片
             # 强制恢复OpenGL状态，确保背景和UI的渲染不受Live2D的影响
             # 因为多模型下，不知道为什么，live2d-py 库渲染模型时会修改 OpenGL 上下文，抢走了纹理的绑定。

@@ -269,7 +269,7 @@ class Live2DModule:
                 param_id: self._get_model_parameter_value(model, param_id)
                 for param_id in self.eye_open_param_ids
             }
-            if self.eye_open_start_values.get("PARAM_EYE_L_OPEN", 1.0) > 0.5:
+            if self.eye_open_start_values.get("eye_l_open", 1.0) > 0.5:
                 self._reset_eye_open_transition()
                 return
             self.eye_open_transition_start = time.time()
@@ -278,6 +278,7 @@ class Live2DModule:
         if self.eye_open_transition_start <= 0:
             if self.force_eyes_open:
                 self._set_model_eye_open_values(model, {param_id: 1.0 for param_id in self.eye_open_param_ids})
+                self._reset_eye_open_transition()
             return
 
         elapsed = time.time() - self.eye_open_transition_start
@@ -288,8 +289,8 @@ class Live2DModule:
         }
         self._set_model_eye_open_values(model, eye_values)
         if progress >= 1.0:
-            self.force_eyes_open = True
-            self.eye_open_transition_start = 0.0
+            self._set_model_eye_open_values(model, {param_id: 1.0 for param_id in self.eye_open_param_ids})
+            self._reset_eye_open_transition()
 
     def _reset_long_audio_motion_loop(self):
         self.long_audio_motion_active = False
@@ -910,7 +911,7 @@ class Live2DModule:
             if self.wavHandler.Update() and is_update_mouth_sync % 3==0:  # 控制说话时的嘴型
                 mouth_keep_open_value=self.wavHandler.GetRms() * self.lipSyncN
                 idle_recover_timer = time.time()
-            model.SetParameterValue("PARAM_MOUTH_OPEN_Y", mouth_keep_open_value)
+            model.set_parameter_value("mouth_open_y", mouth_keep_open_value)
             is_update_mouth_sync += 1
 
             model.Draw()

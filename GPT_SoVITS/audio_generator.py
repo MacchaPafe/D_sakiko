@@ -222,6 +222,16 @@ class AudioGenerate:
             if os.path.exists(default_ref_audio_white_path):
                 self.ref_audio_file_white_sakiko = default_ref_audio_white_path
 
+    @staticmethod
+    def _read_reference_text_file(path: str | None) -> str | None:
+        if not path:
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                return file.read().strip()
+        except Exception:
+            return None
+
     def initialize(self, character_list: list[CharacterAttributes], message_queue: queue.Queue) -> None:
         """初始化语音生成模块并启动 worker 进程。"""
         self.character_list = character_list
@@ -234,32 +244,29 @@ class AudioGenerate:
             self.request_preload_character(self.character_list[0])
 
     def _resolve_reference_materials(self, character: CharacterAttributes,
-                                     sakiko_state: bool | None = None) -> tuple[str | None, str | None, str | None]:
+                                     sakiko_state: bool | None = None,
+                                     emotion: str | None = None) -> tuple[str | None, str | None, str | None]:
         """
         根据显式角色对象和祥子状态解析参考音频材料。
 
-        :returns: 三元组：参考音频文件路径、存放参考音频文本的文件路径、参考音频的语言
+        :returns: 三元组：参考音频文件路径、参考音频文本内容、参考音频的语言
         """
         if sakiko_state is None:
             sakiko_state: bool = self.sakiko_which_state
 
-        if character.character_name == '祥子':
+        if character.is_sakiko:
             if sakiko_state:
                 return (
                     self.ref_audio_file_black_sakiko,
-                    self.ref_text_file_black_sakiko,
+                    self._read_reference_text_file(self.ref_text_file_black_sakiko),
                     character.gptsovits_ref_audio_lan,
                 )
             return (
                 self.ref_audio_file_white_sakiko,
-                self.ref_text_file_white_sakiko,
+                self._read_reference_text_file(self.ref_text_file_white_sakiko),
                 character.gptsovits_ref_audio_lan,
             )
-        return (
-            character.gptsovits_ref_audio,
-            character.gptsovits_ref_audio_text,
-            character.gptsovits_ref_audio_lan,
-        )
+        return character.get_reference_materials_for_emotion(emotion)
 
     @staticmethod
     def _build_model_payload(character: CharacterAttributes) -> dict[str, object]:
@@ -277,17 +284,20 @@ class AudioGenerate:
         sakiko_state: bool | None = None,
         segment_index: int | None = None,
         segment_total: int | None = None,
+        emotion: str | None = None,
     ) -> dict[str, object]:
         """构造角色的一次语音生成 payload。"""
-        ref_audio_path, ref_text_path, ref_language = self._resolve_reference_materials(
-            character=character, sakiko_state=sakiko_state
+        ref_audio_path, prompt_text, ref_language = self._resolve_reference_materials(
+            character=character,
+            sakiko_state=sakiko_state,
+            emotion=emotion,
         )
         payload = {
             "character_name": character.character_name,
             "gpt_model_path": character.GPT_model_path,
             "sovits_model_path": character.sovits_model_path,
             "ref_audio_path": ref_audio_path,
-            "ref_text_path": ref_text_path,
+            "prompt_text": prompt_text,
             "ref_language": ref_language,
             "text": text,
             "text_language": audio_lang_choice,
@@ -306,7 +316,8 @@ class AudioGenerate:
                                   character: CharacterAttributes,
                                   sakiko_state: bool | None = None,
                                   segment_index: int | None = None,
-                                  segment_total: int | None = None) -> WorkerCommand:
+                                  segment_total: int | None = None,
+                                  emotion: str | None = None) -> WorkerCommand:
         """构造发送给 worker 的语音生成命令。"""
         return {
             "type": "synthesize",
@@ -319,6 +330,7 @@ class AudioGenerate:
                 sakiko_state,
                 segment_index,
                 segment_total,
+                emotion,
             ),
         }
 #-------------------------------加载模型调度状态机相关的函数-------------------------------
@@ -706,6 +718,7 @@ class AudioGenerate:
         audio_lan_choice: str,
         segment_index: int | None = None,
         segment_total: int | None = None,
+        emotion: str | None = None,
     ) -> VoiceTaskHandle:
         """提交一条语音生成命令，并返回等待句柄。"""
         command = self._build_synthesize_command(
@@ -715,6 +728,7 @@ class AudioGenerate:
             sakiko_state=sakiko_state,
             segment_index=segment_index,
             segment_total=segment_total,
+            emotion=emotion,
         )
         return self.submit_voice_task(command)
 
@@ -733,6 +747,7 @@ class AudioGenerate:
         audio_lan_choice: str,
         segment_index: int | None = None,
         segment_total: int | None = None,
+        emotion: str | None = None,
     ) -> str:
         """按显式给定角色配置同步生成语音。"""
         if not character.has_valid_voice_model():
@@ -755,6 +770,7 @@ class AudioGenerate:
             audio_lan_choice,
             segment_index=segment_index,
             segment_total=segment_total,
+            emotion=emotion,
         )
         self.audio_file_path = self._wait_for_synthesize_result(handle)
         return self.audio_file_path
@@ -777,7 +793,14 @@ class AudioGenerate:
             cleaned = re.sub(re.escape(key), value, cleaned, flags=re.IGNORECASE)
         return cleaned
 
-    def generate_audio_sync(self, text: str, character: CharacterAttributes, sakiko_state: bool, audio_lan_choice: str) -> str:
+    def generate_audio_sync(
+        self,
+        text: str,
+        character: CharacterAttributes,
+        sakiko_state: bool,
+        audio_lan_choice: str,
+        emotion: str | None = None,
+    ) -> str:
         """同步生成音频，用于重新生成音频功能。"""
         if not character.has_valid_voice_model():
             return SILENCE_WAV_PATH
@@ -790,5 +813,5 @@ class AudioGenerate:
         if text == '' or text == '不能送去合成':
             return SILENCE_WAV_PATH
 
-        handle = self.generate_audio(text, character, sakiko_state, audio_lan_choice)
+        handle = self.generate_audio(text, character, sakiko_state, audio_lan_choice, emotion=emotion)
         return self._wait_for_synthesize_result(handle)

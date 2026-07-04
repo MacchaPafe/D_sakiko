@@ -202,6 +202,7 @@ def handle_model_response_payload(payload: dict[str, object]) -> None:
                         audio_language_choice,
                         segment_index=index + 1,
                         segment_total=len(segments_raw),
+                        emotion=emotion_label,
                     )
                     break
                 except Exception:
@@ -414,6 +415,7 @@ def main_thread():
                             dp_chat.audio_language_choice,
                             segment_index=i + 1,
                             segment_total=len(segments),
+                            emotion=emotion_label or "LABEL_0",
                         )
                         break
                     except Exception as e:

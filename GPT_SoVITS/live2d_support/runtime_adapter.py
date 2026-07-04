@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import importlib
 import json
-from dataclasses import dataclass
+import os
+import time
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Callable, ClassVar, Iterable, Literal, cast
@@ -76,7 +80,14 @@ def detect_live2d_runtime_version(model_json_path: str) -> Live2DVersion:
 
 def load_live2d_runtime(version: Live2DVersion) -> ModuleType:
     """按 Live2D 版本导入 runtime 模块。"""
-    return importlib.import_module(RUNTIME_MODULE_BY_VERSION[version])
+    if version == "v3":
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                runtime = importlib.import_module(RUNTIME_MODULE_BY_VERSION[version])
+    else:
+        runtime = importlib.import_module(RUNTIME_MODULE_BY_VERSION[version])
+    _disable_live2d_runtime_logging(runtime)
+    return runtime
 
 
 def _call_noarg(target: object, method_name: str) -> None:
@@ -95,10 +106,33 @@ def _call_breath_parameter_only(target: object, enabled: bool) -> bool:
     return True
 
 
+def _disable_live2d_runtime_logging(runtime: ModuleType) -> None:
+    """关闭第三方 Live2D runtime 自带日志，避免 V3 在终端刷 debug 信息。"""
+    enable_log = getattr(runtime, "enableLog", None)
+    if callable(enable_log):
+        try:
+            enable_log(False)
+        except Exception:
+            logger.debug("关闭 Live2D runtime 日志失败", exc_info=True)
+
+    set_log_level = getattr(runtime, "setLogLevel", None)
+    if callable(set_log_level):
+        log_levels = getattr(runtime, "Live2DLogLevels", None)
+        error_level = getattr(log_levels, "LV_ERROR", None)
+        if error_level is not None:
+            try:
+                set_log_level(error_level)
+            except Exception:
+                logger.debug("设置 Live2D runtime 日志等级失败", exc_info=True)
+
+
 def initialize_live2d_runtime(runtime: ModuleType) -> None:
     """初始化 Live2D runtime 及其 OpenGL 资源。"""
+    _disable_live2d_runtime_logging(runtime)
     _call_noarg(runtime, "init")
+    _disable_live2d_runtime_logging(runtime)
     _call_noarg(runtime, "glInit")
+    _disable_live2d_runtime_logging(runtime)
 
 
 def release_live2d_runtime(runtime: ModuleType | None) -> None:
@@ -199,6 +233,68 @@ class Live2DModelAdapter:
     expression_ids: frozenset[str]
     parameter_ids: frozenset[str]
     preview_motion_indices_by_path: dict[str, int]
+    auto_blink_enabled: bool = False
+    _last_update_time: float = field(default_factory=time.time)
+
+    @classmethod
+    def preview_group_for_motion_file(cls, motion_path: str) -> str:
+        motion_key = str(Path(motion_path).resolve())
+        digest = hashlib.sha1(motion_key.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        return f"{cls.PREVIEW_MOTION_GROUP}_{digest}"
+
+    @classmethod
+    def is_preview_motion_group(cls, group_name: object) -> bool:
+        if not isinstance(group_name, str):
+            return False
+        return group_name == cls.PREVIEW_MOTION_GROUP or group_name.startswith(f"{cls.PREVIEW_MOTION_GROUP}_")
+
+    @classmethod
+    def _motion_file_for_model(cls, model_json_path: str, motion_path: str) -> str:
+        motion_path_obj = Path(motion_path)
+        model_json_path_obj = Path(model_json_path)
+        try:
+            motion_file = os.path.relpath(motion_path_obj, model_json_path_obj.parent).replace("\\", "/")
+        except ValueError:
+            motion_file = motion_path_obj.name
+        if motion_file.startswith("../"):
+            motion_file = motion_path_obj.name
+        return motion_file
+
+    @classmethod
+    def prepare_preview_motion_files(cls, model_json_path: str, motion_paths: Iterable[str]) -> bool:
+        """Register V3 preview motions before LoadModelJson so playback does not require model reload."""
+        if detect_live2d_runtime_version(model_json_path) != "v3":
+            return False
+
+        model_data = _read_model_json(model_json_path)
+        file_references = model_data.setdefault("FileReferences", {})
+        if not isinstance(file_references, dict):
+            raise ValueError(f"Live2D V3 模型 FileReferences 格式错误：{model_json_path}")
+        motions = file_references.setdefault("Motions", {})
+        if not isinstance(motions, dict):
+            motions = {}
+            file_references["Motions"] = motions
+
+        changed = False
+        for motion_path in motion_paths:
+            motion_path_obj = Path(motion_path)
+            if not motion_path_obj.is_file():
+                continue
+            group_name = cls.preview_group_for_motion_file(str(motion_path_obj))
+            motion_file = cls._motion_file_for_model(model_json_path, str(motion_path_obj))
+            value = [{
+                "File": motion_file,
+                "FadeInTime": 3.0,
+                "FadeOutTime": 3.0,
+            }]
+            if motions.get(group_name) != value:
+                motions[group_name] = value
+                changed = True
+
+        if changed:
+            with open(model_json_path, "w", encoding="utf-8") as file:
+                json.dump(model_data, file, ensure_ascii=False, indent=4)
+        return changed
 
     @classmethod
     def create(cls, model_json_path: str) -> Live2DModelAdapter:
@@ -263,7 +359,23 @@ class Live2DModelAdapter:
 
     def update(self) -> None:
         """更新模型状态。"""
-        getattr(self._require_model(), "Update")()
+        model = self._require_model()
+        now = time.time()
+        delta_seconds = min(max(now - self._last_update_time, 0.0), 0.1)
+        self._last_update_time = now
+        getattr(model, "Update")()
+        if self.version == "v3" and self.auto_blink_enabled:
+            is_motion_finished = getattr(model, "IsMotionFinished", None)
+            if callable(is_motion_finished):
+                try:
+                    if not is_motion_finished():
+                        return
+                except Exception:
+                    logger.debug("Check Live2D V3 motion state failed", exc_info=True)
+            raw_model = getattr(model, "_model", None)
+            update_blink = getattr(raw_model, "UpdateBlink", None)
+            if callable(update_blink):
+                update_blink(delta_seconds)
 
     def Update(self) -> None:
         """兼容旧调用风格，更新模型状态。"""
@@ -279,7 +391,21 @@ class Live2DModelAdapter:
 
     def set_auto_blink_enable(self, enabled: bool) -> None:
         """设置自动眨眼。"""
-        getattr(self._require_model(), "SetAutoBlinkEnable")(enabled)
+        model = self._require_model()
+        self.auto_blink_enabled = enabled
+        if self.version == "v3":
+            raw_model = getattr(model, "_model", None)
+            update_blink = getattr(raw_model, "UpdateBlink", None)
+            set_auto_blink = getattr(raw_model, "SetAutoBlink", None)
+            if callable(update_blink) and callable(set_auto_blink):
+                set_auto_blink(False)
+                return
+        for method_name in ("SetAutoBlinkEnable", "SetAutoBlink"):
+            method = getattr(model, method_name, None)
+            if callable(method):
+                method(enabled)
+                return
+        logger.debug("Current Live2D runtime does not support auto blink API: %s", self.model_json_path)
 
     def SetAutoBlinkEnable(self, enabled: bool) -> None:
         """兼容旧调用风格，设置自动眨眼。"""
@@ -561,6 +687,51 @@ class Live2DModelAdapter:
         """兼容旧调用风格，播放指定动作。"""
         return self.start_motion(group_name, motion_index, priority, on_start, on_finish, position, auto_expression)
 
+    def _find_loaded_motion_by_file(self, motion_path: str) -> tuple[str, int] | None:
+        model_dir = Path(self.model_json_path).resolve().parent
+        try:
+            target_path = Path(motion_path).resolve()
+        except Exception:
+            return None
+
+        for group_name, motion_files in self.motion_files_by_group.items():
+            for motion_index, motion_file in enumerate(motion_files):
+                candidate_path = Path(motion_file)
+                if not candidate_path.is_absolute():
+                    candidate_path = model_dir / candidate_path
+                try:
+                    if candidate_path.resolve() == target_path:
+                        return group_name, motion_index
+                except Exception:
+                    continue
+        return None
+
+    def remove_preview_motion_group(self) -> None:
+        """从 model3.json 中移除动作编辑器临时预览动作组。"""
+        if self.version != "v3":
+            return
+        try:
+            model_data = _read_model_json(self.model_json_path)
+            file_references = model_data.get("FileReferences")
+            if not isinstance(file_references, dict):
+                return
+            motions = file_references.get("Motions")
+            if not isinstance(motions, dict):
+                return
+            preview_groups = [
+                group_name
+                for group_name in list(motions.keys())
+                if self.is_preview_motion_group(group_name)
+            ]
+            if not preview_groups:
+                return
+            for group_name in preview_groups:
+                motions.pop(group_name, None)
+            with open(self.model_json_path, "w", encoding="utf-8") as file:
+                json.dump(model_data, file, ensure_ascii=False, indent=4)
+        except Exception:
+            logger.debug("移除 Live2D V3 预览动作组失败：%s", self.model_json_path, exc_info=True)
+
     def start_motion_file(
             self,
             motion_path: str,
@@ -570,6 +741,30 @@ class Live2DModelAdapter:
             auto_expression: bool = True,
     ) -> bool:
         """播放一个外部动作文件，用于动作编辑器预览。"""
+        if self.version == "v3":
+            group_name = self.preview_group_for_motion_file(motion_path)
+            if group_name in self.motion_groups:
+                return self.start_motion(
+                    group_name,
+                    0,
+                    priority,
+                    on_start,
+                    on_finish,
+                    auto_expression=auto_expression,
+                )
+
+            loaded_motion = self._find_loaded_motion_by_file(motion_path)
+            if loaded_motion is not None:
+                group_name, motion_index = loaded_motion
+                return self.start_motion(
+                    group_name,
+                    motion_index,
+                    priority,
+                    on_start,
+                    on_finish,
+                    auto_expression=auto_expression,
+                )
+
         model = self._require_model()
         load_motion = getattr(model, "LoadMotion", None)
         start_loaded_motion = getattr(model, "StartLoadedMotion", None)
@@ -645,9 +840,41 @@ class Live2DModelAdapter:
                 return candidate
         return None
 
+    def _set_runtime_parameter_value(self, parameter_id: str, value: float) -> bool:
+        model = self._require_model()
+        if self.version == "v3":
+            raw_model = getattr(model, "_model", None)
+            set_parameter_value_by_id = getattr(raw_model, "SetParameterValueById", None)
+            if callable(set_parameter_value_by_id):
+                set_parameter_value_by_id(parameter_id, value)
+                return True
+            set_parameter_value_by_id = getattr(model, "SetParameterValueById", None)
+            if callable(set_parameter_value_by_id):
+                set_parameter_value_by_id(parameter_id, value)
+                return True
+        getattr(model, "SetParameterValue")(parameter_id, value)
+        return True
+
     def set_parameter_value(self, semantic_name: str, value: float) -> bool:
         """按语义名设置模型参数值。"""
         parameter_id = self.resolve_parameter_id(semantic_name)
+        if parameter_id is None and not self.parameter_ids:
+            candidates = PARAMETER_CANDIDATES.get(semantic_name)
+            if candidates is not None:
+                preferred = candidates[0] if self.version == "v2" else candidates[1]
+                fallback_candidates = (preferred,) + tuple(
+                    candidate for candidate in candidates if candidate != preferred
+                )
+                for fallback_parameter_id in fallback_candidates:
+                    try:
+                        self._set_runtime_parameter_value(fallback_parameter_id, value)
+                        return True
+                    except Exception:
+                        logger.debug(
+                            "Set Live2D parameter failed: %s",
+                            fallback_parameter_id,
+                            exc_info=True,
+                        )
         if parameter_id is None:
             logger.debug(
                 "Live2D 模型不包含参数 '%s'，已跳过：%s",
@@ -656,7 +883,7 @@ class Live2DModelAdapter:
             )
             return False
         try:
-            getattr(self._require_model(), "SetParameterValue")(parameter_id, value)
+            self._set_runtime_parameter_value(parameter_id, value)
             return True
         except Exception:
             logger.debug("设置 Live2D 参数失败：%s", parameter_id, exc_info=True)
@@ -671,8 +898,11 @@ class Live2DModelAdapter:
                     semantic_parameter_id = self.resolve_parameter_id(semantic_name)
                     if semantic_parameter_id is not None:
                         resolved_parameter_id = semantic_parameter_id
+                    elif not self.parameter_ids:
+                        candidates = PARAMETER_CANDIDATES[semantic_name]
+                        resolved_parameter_id = candidates[0] if self.version == "v2" else candidates[1]
                     break
-        if resolved_parameter_id not in self.parameter_ids:
+        if self.parameter_ids and resolved_parameter_id not in self.parameter_ids:
             logger.debug(
                 "Live2D 模型不包含参数 ID '%s'，已跳过：%s",
                 parameter_id,
@@ -680,7 +910,7 @@ class Live2DModelAdapter:
             )
             return False
         try:
-            getattr(self._require_model(), "SetParameterValue")(resolved_parameter_id, value)
+            self._set_runtime_parameter_value(resolved_parameter_id, value)
             return True
         except Exception:
             logger.debug("设置 Live2D 参数失败：%s", resolved_parameter_id, exc_info=True)
