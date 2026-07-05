@@ -198,6 +198,28 @@ class Live2DMotionCapabilitiesTestCase(unittest.TestCase):
 class Live2DPreviewMotionTestCase(unittest.TestCase):
     """测试 Live2D 外部动作预览。"""
 
+    def test_start_motion_file_uses_configured_v3_motion_group(self) -> None:
+        """验证已配置的 V3 动作文件会按原动作组和 index 播放。"""
+        model = FakeExtraMotionModel()
+        model_dir = os.path.abspath("live2d-test-model")
+        motion_path = os.path.join(model_dir, "motions", "configured.motion3.json")
+        adapter = Live2DModelAdapter(
+            model_json_path=os.path.join(model_dir, "model.model3.json"),
+            version="v3",
+            runtime=ModuleType("fake_live2d_v3"),
+            model=model,
+            motion_groups=frozenset({"happiness"}),
+            motion_files_by_group={"happiness": ("motions/configured.motion3.json",)},
+            expression_ids=frozenset(),
+            parameter_ids=frozenset(),
+            preview_motion_indices_by_path={},
+        )
+
+        self.assertTrue(adapter.start_motion_file(motion_path))
+
+        self.assertEqual(model.load_calls, [])
+        self.assertEqual(model.start_calls, [("happiness", 0, 3, None, None)])
+
     def test_start_motion_file_reuses_loaded_v3_extra_motion(self) -> None:
         """验证同一个 V3 外部动作文件不会被重复追加加载。"""
         model = FakeExtraMotionModel()

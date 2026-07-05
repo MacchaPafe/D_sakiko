@@ -213,13 +213,6 @@ class Live2DModule:
             return model_adapter
 
         def create_viewer_model(model_json_path: str) -> Live2DModelAdapter:
-            if detect_live2d_runtime_version(model_json_path) == "v3":
-                model_dir = pathlib.Path(model_json_path).parent
-                motion_paths = sorted(str(path) for path in model_dir.glob("*.motion3.json"))
-                Live2DModelAdapter.prepare_preview_motion_files(model_json_path, motion_paths)
-                model_adapter = Live2DModelAdapter.create(model_json_path)
-                model_adapter.remove_preview_motion_group()
-                return model_adapter
             return Live2DModelAdapter.create(model_json_path)
 
         model = setup_model(create_viewer_model(self.PATH_JSON))
@@ -331,18 +324,8 @@ class Live2DModule:
                     model = switch_model_runtime(model, x)
 
             if not motion_queue.empty():
-                motion_command = motion_queue.get()
-                if isinstance(motion_command, dict) and motion_command.get("type") in {"motion_group", "motion_index"}:
-                    try:
-                        model.StartMotion(
-                            str(motion_command["group"]),
-                            int(motion_command["index"]),
-                            3,
-                        )
-                    except Exception:
-                        logger.exception("播放 Live2D 动作组动作失败：%s", motion_command)
-                else:
-                    model.StartMotionFile(str(motion_command))
+                motion_name=motion_queue.get()
+                model.StartMotionFile(str(motion_name))
 
             # 清除缓冲区
             #live2d.clearBuffer()
@@ -737,15 +720,7 @@ class ViewerGUI(QWidget):
                 return
 
             abs_path = (self.current_char_folder_path / motion_filename).resolve().as_posix()
-            if self.current_model_version == "v3":
-                preview_group = Live2DModelAdapter.preview_group_for_motion_file(abs_path)
-                self.motion_queue.put({
-                    "type": "motion_group",
-                    "group": preview_group,
-                    "index": 0,
-                })
-            else:
-                self.motion_queue.put(abs_path)
+            self.motion_queue.put(abs_path)
             self.message_box.clear()
             self.message_box.append(
                 f"已选中动作：{motion_filename}\n"
@@ -757,15 +732,7 @@ class ViewerGUI(QWidget):
 
         # 兼容旧格式：如果仍然是路径链接，就当作“预览动作”
         if os.path.exists(url_str):
-            if self.current_model_version == "v3":
-                preview_group = Live2DModelAdapter.preview_group_for_motion_file(url_str)
-                self.motion_queue.put({
-                    "type": "motion_group",
-                    "group": preview_group,
-                    "index": 0,
-                })
-            else:
-                self.motion_queue.put(url_str)
+            self.motion_queue.put(url_str)
             self.message_box.clear()
             self.message_box.append(f"当前预览动作：\n{os.path.basename(url_str)}")
 
@@ -777,15 +744,7 @@ class ViewerGUI(QWidget):
         self.message_box.append(f"当前选中动作（左侧）：\n{os.path.basename(motion_path)}")
 
         if os.path.exists(motion_path):
-            if self.current_model_version == "v3":
-                preview_group = Live2DModelAdapter.preview_group_for_motion_file(motion_path)
-                self.motion_queue.put({
-                    "type": "motion_group",
-                    "group": preview_group,
-                    "index": 0,
-                })
-            else:
-                self.motion_queue.put(motion_path)
+            self.motion_queue.put(motion_path)
 
         self.update_button_states()
 
