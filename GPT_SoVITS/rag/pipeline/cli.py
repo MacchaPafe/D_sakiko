@@ -42,6 +42,13 @@ from .stage3_rag_import import (
     save_stage3_normalized_import_artifact,
     upsert_stage3_normalized_import_artifact,
 )
+from .stage3_lore_deduplicate import (
+    apply_lore_dedup_decisions_from_files,
+    build_lore_dedup_review_from_directory,
+    save_deduped_stage3_artifacts,
+    save_lore_dedup_decisions,
+    save_lore_dedup_review_artifact,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -119,6 +126,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     backfill_stage3_parser.add_argument("--input", required=True, help="现有 stage3 artifact JSON 路径，或包含多个此类 JSON 的目录")
     backfill_stage3_parser.add_argument("--output", required=True, help="输出更新后的 stage3 artifact JSON 路径，或目录")
+
+    lore_review_parser = subparsers.add_parser(
+        "build-lore-dedup-review",
+        help="为 stage3 lore_entries 生成去重 review 文件与自动 decisions 草稿",
+    )
+    lore_review_parser.add_argument("--input-dir", required=True, help="包含 stage3 artifact JSON 的输入目录")
+    lore_review_parser.add_argument("--review-output", required=True, help="输出 lore dedup review JSON 路径")
+    lore_review_parser.add_argument("--decisions-output", required=True, help="输出自动 decisions 草稿 JSON 路径")
+
+    lore_apply_parser = subparsers.add_parser(
+        "apply-lore-dedup-decisions",
+        help="应用 lore dedup decisions，并输出 deduped stage3 artifact 目录",
+    )
+    lore_apply_parser.add_argument("--input-dir", required=True, help="包含 stage3 artifact JSON 的输入目录")
+    lore_apply_parser.add_argument("--decisions", required=True, help="lore dedup decisions JSON 路径")
+    lore_apply_parser.add_argument("--output-dir", required=True, help="输出 deduped stage3 artifact 的目录")
 
     import_stage3_parser = subparsers.add_parser(
         "import-stage3-rag",
@@ -279,6 +302,36 @@ def main(argv: list[str] | None = None) -> int:
         print(f"已写入更新后的 stage3 artifact: {output_path.resolve()}")
         print(f"character_relations 条目数: {len(updated_artifact.character_relations)}")
         print(f"issues 条目数: {len(updated_artifact.issues)}")
+        return 0
+
+    if args.command == "build-lore-dedup-review":
+        review_artifact = build_lore_dedup_review_from_directory(args.input_dir)
+        save_lore_dedup_review_artifact(review_artifact, args.review_output)
+        save_lore_dedup_decisions(list(review_artifact.automatic_decisions), args.decisions_output)
+        review_group_count = len(review_artifact.exact_groups) + len(review_artifact.fuzzy_groups)
+        required_decision_count = sum(
+            1
+            for group in [*review_artifact.exact_groups, *review_artifact.fuzzy_groups]
+            if group.requires_decision
+        )
+        print(f"已写入 lore dedup review: {Path(args.review_output).resolve()}")
+        print(f"已写入自动 decisions 草稿: {Path(args.decisions_output).resolve()}")
+        print(f"输入文件数: {len(review_artifact.input_files)}")
+        print(f"review 分组数: {review_group_count}")
+        print(f"需要人工决策的分组数: {required_decision_count}")
+        print(f"自动合并决策数: {len(review_artifact.automatic_decisions)}")
+        return 0
+
+    if args.command == "apply-lore-dedup-decisions":
+        deduped_artifacts = apply_lore_dedup_decisions_from_files(
+            input_dir=args.input_dir,
+            decisions_path=args.decisions,
+        )
+        save_deduped_stage3_artifacts(deduped_artifacts, args.output_dir)
+        total_lore_entries = sum(len(artifact.lore_entries) for _, artifact in deduped_artifacts)
+        print(f"已写入 deduped stage3 artifact 目录: {Path(args.output_dir).resolve()}")
+        print(f"处理文件数: {len(deduped_artifacts)}")
+        print(f"lore_entries 总条目数: {total_lore_entries}")
         return 0
 
     if args.command == "import-stage3-rag":
