@@ -37,6 +37,7 @@ class ChatDisplay(QTextBrowser):
     rollbackRequested = pyqtSignal(int)
     regenerateTurnReplyRequested = pyqtSignal(int)
     regenerateAudioRequested = pyqtSignal(int)
+    forkChatRequested = pyqtSignal(int)
     toolCallClicked = pyqtSignal(str)
     audioLinkClicked = pyqtSignal(QUrl)
     streamFinished = pyqtSignal()
@@ -213,6 +214,11 @@ class ChatDisplay(QTextBrowser):
             delete_turn_action.triggered.connect(lambda: self.deleteTurnRequested.emit(msg_index))
             menu.addAction(delete_turn_action)
 
+            if self._can_fork_after_message(msg_index):
+                fork_chat_action = QAction("从这里分叉对话", self)
+                fork_chat_action.triggered.connect(lambda: self.forkChatRequested.emit(msg_index))
+                menu.addAction(fork_chat_action)
+
             if meta is not None and not meta.is_user_message:
                 menu.addSeparator()
                 regen_action = QAction(f"重新生成音频：情绪{meta.emotion_label}", self)
@@ -281,6 +287,16 @@ class ChatDisplay(QTextBrowser):
             can_regenerate_turn_reply=False,
             emotion_label=self._message_emotion_label(message),
         )
+
+    def _can_fork_after_message(self, msg_index: int) -> bool:
+        """判断指定消息后方是否是语义完整的分叉位置。"""
+        meta = self._message_meta_by_index.get(msg_index)
+        if meta is None:
+            return False
+        if meta.is_user_message:
+            return True
+        next_meta = self._message_meta_by_index.get(msg_index + 1)
+        return next_meta is None or next_meta.is_user_message
 
     def _mark_regenerable_turn_reply(self, chat: Chat) -> None:
         """标记最后一条真实用户消息是否允许重新生成本轮回复。"""

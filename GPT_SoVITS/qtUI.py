@@ -12,9 +12,39 @@ from typing import Callable, Optional, Sequence, cast
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 import numpy as np
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
-    QSlider, QLabel, QToolButton, QDialog, QGroupBox, QGridLayout, QColorDialog, QMessageBox, QScrollArea, QFrame, QMenu, QAction, \
-    QListWidget, QListWidgetItem, QInputDialog, QComboBox, QListView, QStyledItemDelegate, QCheckBox, QSizePolicy, QPlainTextEdit, QApplication, QFileDialog
+from PyQt5.QtWidgets import (
+    QAction,
+    QApplication,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDesktopWidget,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListView,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QStyledItemDelegate,
+    QTextBrowser,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
@@ -32,7 +62,7 @@ from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_map
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes, GetCharacterAttributes, EMOTION_REFERENCE_KEYS, ref_audio_language_list
-from chat.chat import ChatManager, Chat, ChatType, DeleteMessagesResult, Message, get_chat_manager
+from chat.chat import ChatBackupImportResult, ChatManager, Chat, ChatType, DeleteMessagesResult, Message, get_chat_manager
 from chat.attachments import (
     add_model_image_upload_force_allow,
     delete_chat_attachment_dir,
@@ -2114,6 +2144,154 @@ class NewSingleChatDialog(QDialog):
         return self.chat_name_edit.text().strip()
 
 
+class ChatBackupExportOptionsDialog(QDialog):
+    """选择单个对话备份包导出路径和导出选项的弹窗。"""
+
+    def __init__(
+            self,
+            title: str,
+            default_filename: str,
+            file_filter: str,
+            parent: QWidget | None = None,
+    ) -> None:
+        """创建单个对话导出设置弹窗。"""
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.default_filename = default_filename
+        self.file_filter = file_filter
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+
+        path_layout = QHBoxLayout()
+        self.path_edit = QLineEdit(self)
+        self.path_edit.setPlaceholderText("请选择导出文件路径")
+        browse_button = QPushButton("浏览...", self)
+        browse_button.clicked.connect(self._browse_output_path)
+        path_layout.addWidget(self.path_edit, 1)
+        path_layout.addWidget(browse_button)
+        layout.addLayout(path_layout)
+
+        self.include_audio_checkbox = QCheckBox("包含历史语音（导出文件会更大）", self)
+        self.include_audio_checkbox.setChecked(True)
+        layout.addWidget(self.include_audio_checkbox)
+
+        self.validation_label = QLabel("", self)
+        self.validation_label.setStyleSheet("color: #B00020;")
+        layout.addWidget(self.validation_label)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok, self)
+        button_box.button(QDialogButtonBox.Ok).setText("导出")
+        button_box.button(QDialogButtonBox.Cancel).setText("取消")
+        button_box.accepted.connect(self._accept_if_valid)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def output_path(self) -> str:
+        """返回用户填写的绝对导出路径。"""
+        raw_path = self.path_edit.text().strip()
+        if not raw_path:
+            return ""
+        return os.path.abspath(raw_path)
+
+    def include_audio(self) -> bool:
+        """返回是否在备份包中包含历史语音。"""
+        return self.include_audio_checkbox.isChecked()
+
+    def _browse_output_path(self) -> None:
+        """打开保存文件对话框，并把选择结果写入路径输入框。"""
+        start_path = self.path_edit.text().strip() or self.default_filename
+        output_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出对话备份",
+            start_path,
+            self.file_filter,
+        )
+        if output_path:
+            self.path_edit.setText(os.path.abspath(output_path))
+            self.validation_label.clear()
+
+    def _accept_if_valid(self) -> None:
+        """确认导出路径非空后接受弹窗。"""
+        if not self.output_path():
+            self.validation_label.setText("请选择导出文件路径。")
+            return
+        self.accept()
+
+
+class ChatBackupMultiExportDialog(QDialog):
+    """选择需要导出的多条普通对话及导出选项。"""
+
+    def __init__(self, chats: Sequence[Chat], parent: QWidget | None = None) -> None:
+        """用当前普通对话列表初始化多选导出弹窗。"""
+        super().__init__(parent)
+        self.setWindowTitle("导出多个对话")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+        self.chat_list_widget = QListWidget(self)
+        self.chat_list_widget.setMinimumHeight(260)
+        for chat in chats:
+            item = QListWidgetItem(chat.name.strip() or "未命名对话")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, chat.chat_id)
+            self.chat_list_widget.addItem(item)
+        layout.addWidget(self.chat_list_widget)
+
+        quick_select_layout = QHBoxLayout()
+        select_all_button = QPushButton("全选", self)
+        select_none_button = QPushButton("全不选", self)
+        select_all_button.clicked.connect(lambda: self._set_all_checked(True))
+        select_none_button.clicked.connect(lambda: self._set_all_checked(False))
+        quick_select_layout.addWidget(select_all_button)
+        quick_select_layout.addWidget(select_none_button)
+        quick_select_layout.addStretch(1)
+        layout.addLayout(quick_select_layout)
+
+        self.include_audio_checkbox = QCheckBox("包含历史语音（导出文件会更大）", self)
+        self.include_audio_checkbox.setChecked(True)
+        layout.addWidget(self.include_audio_checkbox)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok, self)
+        button_box.button(QDialogButtonBox.Ok).setText("导出")
+        button_box.button(QDialogButtonBox.Cancel).setText("取消")
+        button_box.accepted.connect(self._accept_if_valid)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def selected_chat_ids(self) -> list[str]:
+        """返回已勾选的对话 ID 列表。"""
+        selected_ids: list[str] = []
+        for row in range(self.chat_list_widget.count()):
+            item = self.chat_list_widget.item(row)
+            if item.checkState() != Qt.Checked:
+                continue
+            chat_id = item.data(Qt.UserRole)
+            if isinstance(chat_id, str):
+                selected_ids.append(chat_id)
+        return selected_ids
+
+    def include_audio(self) -> bool:
+        """返回是否在备份包中包含历史语音。"""
+        return self.include_audio_checkbox.isChecked()
+
+    def _set_all_checked(self, checked: bool) -> None:
+        """批量设置所有对话条目的勾选状态。"""
+        check_state = Qt.Checked if checked else Qt.Unchecked
+        for row in range(self.chat_list_widget.count()):
+            self.chat_list_widget.item(row).setCheckState(check_state)
+
+    def _accept_if_valid(self) -> None:
+        """确保至少选择一条对话后接受弹窗。"""
+        if not self.selected_chat_ids():
+            QMessageBox.information(self, "请选择对话", "请至少选择一条要导出的对话。")
+            return
+        self.accept()
+
+
 class ChatGUI(QWidget):
     def __init__(self,
                  dp2qt_queue,
@@ -2175,6 +2353,7 @@ class ChatGUI(QWidget):
         self.chat_display.rollbackRequested.connect(self.rollback_to_message)  # noqa
         self.chat_display.regenerateTurnReplyRequested.connect(self.regenerate_turn_reply)  # noqa
         self.chat_display.regenerateAudioRequested.connect(self.regenerate_audio)  # noqa
+        self.chat_display.forkChatRequested.connect(self.fork_chat_from_message)  # noqa
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
 
         self.messages_box = QTextBrowser()
@@ -2768,12 +2947,22 @@ class ChatGUI(QWidget):
         self.btn_new_chat = QPushButton("新建")
         self.btn_delete_chat = QPushButton("删除")
         self.btn_chat_sidebar_mode = QPushButton()
+        self.btn_chat_backup_menu = QToolButton()
+        self.btn_chat_backup_menu.setIcon(QIcon("./icons/more.svg"))
+        self.btn_chat_backup_menu.setToolTip("对话备份")
+        self.chat_backup_menu = QMenu(self)
+        import_backup_action = self.chat_backup_menu.addAction("导入对话备份...")
+        export_many_action = self.chat_backup_menu.addAction("导出多个对话...")
+        import_backup_action.triggered.connect(self.import_chat_backup)
+        export_many_action.triggered.connect(self.export_multiple_chats)
+        self.btn_chat_backup_menu.clicked.connect(self.show_chat_backup_menu)  # noqa
         self.btn_chat_sidebar_mode.clicked.connect(self.toggle_chat_sidebar_mode)  # noqa
         self.btn_new_chat.clicked.connect(self.create_new_chat)
         self.btn_delete_chat.clicked.connect(self.delete_current_chat)
         action_layout.addWidget(self.btn_new_chat)
         action_layout.addWidget(self.btn_delete_chat)
         action_layout.addWidget(self.btn_chat_sidebar_mode)
+        action_layout.addWidget(self.btn_chat_backup_menu)
 
         self.chat_sidebar = ChatSidebarView()
         self.chat_sidebar.set_mode(self._chat_sidebar_mode())
@@ -2842,18 +3031,281 @@ class ChatGUI(QWidget):
         self.chat_manager.reorder_chats_by_type(ChatType.SINGLE_CHARACTER, ordered_chat_ids)
         self.chat_manager.save()
 
+    def show_chat_backup_menu(self) -> None:
+        """在备份工具按钮下方弹出对话备份菜单。"""
+        if not hasattr(self, "chat_backup_menu"):
+            return
+        button = self.btn_chat_backup_menu
+        menu_pos = button.mapToGlobal(QPoint(0, button.height()))
+        self.chat_backup_menu.exec_(menu_pos)
+
     def show_chat_list_menu(self, chat_id: str, global_pos: QPoint) -> None:
         """
         显示对话项右键菜单。
         """
         menu = QMenu(self)
-        rename_action = menu.addAction("重命名")
+        clone_action = menu.addAction("复制对话")
+        export_action = menu.addAction("导出此对话...")
+        menu.addSeparator()
+        rename_action = menu.addAction("重命名...")
         delete_action = menu.addAction("删除")
         selected_action = menu.exec_(global_pos)
-        if selected_action == rename_action:
+        if selected_action == clone_action:
+            self.clone_chat_from_sidebar(chat_id)
+        elif selected_action == export_action:
+            self.export_single_chat(chat_id)
+        elif selected_action == rename_action:
             self.rename_chat(chat_id)
         elif selected_action == delete_action:
             self.delete_chat_by_id(chat_id)
+
+    def clone_chat_from_sidebar(self, chat_id: str) -> None:
+        """从侧栏右键入口复制一条普通对话并切换到副本。"""
+        if not self._ensure_chat_history_operation_allowed("复制对话"):
+            return
+        source_chat = self.chat_manager.get_chat_by_id(chat_id)
+        if source_chat is None:
+            return
+        try:
+            cloned_chat = self.chat_manager.clone_chat(chat_id)
+            self.chat_manager.save()
+        except Exception:
+            logger.exception("复制对话失败：chat_id=%s", chat_id)
+            QMessageBox.warning(self, "复制失败", "复制对话失败，请稍后重试。")
+            return
+        self.refresh_chat_list()
+        self.switch_chat_by_id(cloned_chat.chat_id)
+        self._set_message_box_text(f"已复制对话“{source_chat.name}”。")
+
+    def fork_chat_from_message(self, msg_index: int) -> None:
+        """从当前普通对话的指定消息处分叉出一条新对话。"""
+        if not (0 <= msg_index < len(self.current_chat.message_list)):
+            self.refresh_current_chat_display()
+            return
+        if not self._ensure_chat_history_operation_allowed("分叉对话"):
+            return
+        try:
+            forked_chat = self.chat_manager.clone_chat(
+                self.current_chat_id,
+                fork_after_message_index=msg_index,
+            )
+            self.chat_manager.save()
+        except Exception:
+            logger.exception("分叉对话失败：chat_id=%s, msg_index=%s", self.current_chat_id, msg_index)
+            QMessageBox.warning(self, "分叉失败", "分叉对话失败，请稍后重试。")
+            return
+        self.refresh_chat_list()
+        self.switch_chat_by_id(forked_chat.chat_id)
+        self._set_message_box_text("已从所选消息分叉出新对话。")
+
+    def export_single_chat(self, chat_id: str) -> None:
+        """导出侧栏右键选中的单条对话备份包。"""
+        if not self._ensure_chat_history_operation_allowed("导出对话"):
+            return
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is None:
+            return
+
+        options_dialog = ChatBackupExportOptionsDialog(
+            "导出此对话",
+            self._default_single_chat_backup_filename(chat),
+            self._chat_backup_save_file_filter(),
+            self,
+        )
+        if options_dialog.exec_() != QDialog.Accepted:
+            return
+
+        output_path = self._ensure_chat_backup_extension(options_dialog.output_path())
+        self._export_chat_ids_to_backup(
+            [chat_id],
+            output_path,
+            include_audio=options_dialog.include_audio(),
+        )
+
+    def export_multiple_chats(self) -> None:
+        """导出当前普通聊天侧栏中的多条对话。"""
+        if not self._ensure_chat_history_operation_allowed("导出对话"):
+            return
+        chats = self.single_character_chats()
+        if not chats:
+            QMessageBox.information(self, "没有可导出的对话", "当前没有可导出的普通对话。")
+            return
+
+        dialog = ChatBackupMultiExportDialog(chats, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        output_path = self._select_chat_backup_output_path(self._default_multi_chat_backup_filename())
+        if not output_path:
+            return
+        self._export_chat_ids_to_backup(
+            dialog.selected_chat_ids(),
+            output_path,
+            include_audio=dialog.include_audio(),
+        )
+
+    def import_chat_backup(self) -> None:
+        """从用户选择的 zip 对话备份包导入所有对话。"""
+        if not self._ensure_chat_history_operation_allowed("导入对话备份"):
+            return
+        input_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入对话备份",
+            "",
+            self._chat_backup_open_file_filter(),
+        )
+        if not input_path:
+            return
+        try:
+            result = self.chat_manager.import_chats_from_backup(input_path)
+            self.chat_manager.save()
+        except Exception:
+            logger.exception("导入对话备份失败：%s", input_path)
+            QMessageBox.warning(self, "导入失败", "这不是有效的 D_sakiko 对话备份文件。")
+            return
+
+        self.refresh_chat_list()
+        self._show_chat_backup_import_result(result)
+
+    def _export_chat_ids_to_backup(
+            self,
+            chat_ids: Sequence[str],
+            output_path: str,
+            *,
+            include_audio: bool,
+    ) -> None:
+        """调用模型层导出接口并展示导出结果。"""
+        try:
+            result = self.chat_manager.export_chats_to_backup(
+                chat_ids,
+                output_path,
+                include_audio=include_audio,
+            )
+        except Exception:
+            logger.exception("导出对话备份失败：%s", output_path)
+            QMessageBox.warning(self, "导出失败", "导出对话备份失败，请稍后重试。")
+            return
+
+        success_line = (
+            f"已导出 {result.exported_chat_count} 条对话，"
+            f"包含 {result.exported_attachment_count} 个附件、{result.exported_audio_count} 段历史语音。"
+        )
+        if result.warnings:
+            QMessageBox.warning(
+                self,
+                "导出完成，但有内容未包含",
+                "\n".join([success_line, *self._summarize_chat_backup_warnings(result.warnings)]),
+            )
+        else:
+            self._set_message_box_text(success_line)
+
+    def _show_chat_backup_import_result(self, result: ChatBackupImportResult) -> None:
+        """展示对话备份包导入结果。"""
+        single_count = sum(1 for chat in result.imported_chats if chat.type == ChatType.SINGLE_CHARACTER)
+        theater_count = sum(1 for chat in result.imported_chats if chat.type == ChatType.SMALL_THEATER)
+        missing_role_count = self._count_imported_chats_with_missing_roles(result.imported_chats)
+        lines = [
+            f"已导入 {result.imported_chat_count} 条对话。",
+            f"普通聊天：{single_count} 条，小剧场：{theater_count} 条。",
+        ]
+        if result.restored_audio_count or result.reused_audio_count or result.restored_attachment_count:
+            lines.append(
+                f"恢复语音 {max(result.restored_audio_count, result.reused_audio_count)} 段，"
+                f"恢复附件 {result.restored_attachment_count} 个。"
+            )
+        warning_lines = self._summarize_chat_backup_warnings(result.warnings)
+        if missing_role_count:
+            warning_lines.append(f"角色缺失：{missing_role_count} 条对话暂时无法打开。")
+        if warning_lines:
+            QMessageBox.warning(self, "导入完成，但有内容未恢复", "\n".join([*lines, *warning_lines]))
+        else:
+            QMessageBox.information(self, "导入完成", "\n".join(lines))
+
+    def _ensure_chat_history_operation_allowed(self, action_text: str) -> bool:
+        """检查当前是否允许执行对话历史管理操作。"""
+        return self._ensure_delete_operation_allowed(action_text)
+
+    def _select_chat_backup_output_path(self, default_filename: str) -> str:
+        """弹出保存文件对话框并返回带备份扩展名的路径。"""
+        output_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出对话备份",
+            default_filename,
+            self._chat_backup_save_file_filter(),
+        )
+        if not output_path:
+            return ""
+        return self._ensure_chat_backup_extension(output_path)
+
+    @staticmethod
+    def _chat_backup_save_file_filter() -> str:
+        """返回对话备份包保存文件筛选器。"""
+        return "D_sakiko 对话备份 (*.dsakiko-chat.zip);;Zip 文件 (*.zip)"
+
+    @staticmethod
+    def _chat_backup_open_file_filter() -> str:
+        """返回对话备份包打开文件筛选器。"""
+        return "D_sakiko 对话备份 (*.dsakiko-chat.zip *.zip);;Zip 文件 (*.zip)"
+
+    @staticmethod
+    def _ensure_chat_backup_extension(output_path: str) -> str:
+        """确保导出路径带有对话备份包扩展名。"""
+        if output_path.endswith(".dsakiko-chat.zip") or output_path.endswith(".zip"):
+            return output_path
+        return f"{output_path}.dsakiko-chat.zip"
+
+    @classmethod
+    def _default_single_chat_backup_filename(cls, chat: Chat) -> str:
+        """生成单条对话导出的默认文件名。"""
+        safe_name = cls._safe_backup_filename_part(chat.name.strip() or "未命名对话")
+        return f"{safe_name}_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko-chat.zip"
+
+    @staticmethod
+    def _default_multi_chat_backup_filename() -> str:
+        """生成多条对话导出的默认文件名。"""
+        return f"D_sakiko_对话备份_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko-chat.zip"
+
+    @staticmethod
+    def _safe_backup_filename_part(text: str) -> str:
+        """清理文件名中不适合作为路径组成部分的字符。"""
+        cleaned = re.sub(r'[\\/:*?"<>|]+', "_", text).strip(" .")
+        return cleaned or "未命名对话"
+
+    @staticmethod
+    def _summarize_chat_backup_warnings(warnings_list: Sequence[str]) -> list[str]:
+        """把模型层 warning 聚合成适合弹窗展示的摘要。"""
+        audio_count = 0
+        attachment_count = 0
+        skipped_chat_count = 0
+        other_count = 0
+        for warning in warnings_list:
+            lowered_warning = warning.lower()
+            if "音频" in warning or "语音" in warning or "audio" in lowered_warning:
+                audio_count += 1
+            elif "附件" in warning or "图片" in warning or "attachment" in lowered_warning:
+                attachment_count += 1
+            elif "对话" in warning:
+                skipped_chat_count += 1
+            else:
+                other_count += 1
+
+        summary: list[str] = []
+        if audio_count:
+            summary.append(f"缺失语音：{audio_count} 项。")
+        if attachment_count:
+            summary.append(f"缺失附件：{attachment_count} 项。")
+        if skipped_chat_count:
+            summary.append(f"跳过对话：{skipped_chat_count} 条。")
+        return summary
+
+    def _count_imported_chats_with_missing_roles(self, imported_chats: Sequence[Chat]) -> int:
+        """统计导入后因角色缺失而无法在普通聊天窗口打开的对话数量。"""
+        missing_count = 0
+        for chat in imported_chats:
+            character_name = chat.get_character_name()
+            if character_name and character_name not in self.character_by_name:
+                missing_count += 1
+        return missing_count
 
     def rename_chat(self, chat_id: str) -> None:
         """
@@ -3045,6 +3497,9 @@ class ChatGUI(QWidget):
         confirm_button_text: str = "删除",
     ) -> tuple[bool, bool]:
         """显示统一删除确认框，并返回是否确认及是否清理音频。"""
+        related_audio_paths = self.chat_manager.collect_audio_paths_from_messages(
+            preview.deleted_messages
+        )
         deletable_audio_paths = self.chat_manager.collect_deletable_audio_paths_from_messages(
             preview.deleted_messages
         )
@@ -3068,7 +3523,9 @@ class ChatGUI(QWidget):
         else:
             delete_audio_checkbox.setChecked(False)
             delete_audio_checkbox.setEnabled(False)
-            delete_audio_checkbox.setToolTip("没有需要删除的音频")
+            delete_audio_checkbox.setToolTip(
+                self._disabled_delete_audio_tooltip(has_related_audio=bool(related_audio_paths))
+            )
         box.setCheckBox(delete_audio_checkbox)
         box.setEscapeButton(QMessageBox.No)
         box.setDefaultButton(QMessageBox.No)
@@ -3077,6 +3534,13 @@ class ChatGUI(QWidget):
         accepted = box.exec_() == QMessageBox.Yes
         should_delete_audio = accepted and delete_audio_checkbox.isEnabled() and delete_audio_checkbox.isChecked()
         return accepted, should_delete_audio
+
+    @staticmethod
+    def _disabled_delete_audio_tooltip(has_related_audio: bool) -> str:
+        """返回删除语音勾选框不可用时的提示文本。"""
+        if has_related_audio:
+            return "相关语音仍被其他对话引用，删除当前内容时会保留这些语音。"
+        return "没有相关语音可删除。"
 
     def _delete_audio_for_messages_if_requested(
         self,

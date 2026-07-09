@@ -12,4 +12,4 @@ Use the default five-label triage vocabulary: `needs-triage`, `needs-info`, `rea
 
 ### Domain docs
 
-This repo currently uses a single-context domain documentation layout. See `docs/agents/domain.md`.
+This repo currently uses a single-context domain documentation layout. See `docs/agents/domain.md`. Use Chinese when writing or updating these docs.

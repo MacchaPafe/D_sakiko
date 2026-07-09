@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import unittest
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from PyQt5.QtGui import QImage
 
+from chat import chat as chat_module
 from character import CharacterAttributes
 from chat import attachments
 from chat.chat import (
@@ -967,6 +970,178 @@ class ChatTestCase(unittest.TestCase):
             for path in (shared_path, current_shared_path, unique_path):
                 if os.path.exists(path):
                     os.unlink(path)
+
+    def test_clone_chat_generates_new_identity_and_copies_attachments(self):
+        """
+        克隆/分叉对话应生成新 ID、记录来源、截断消息，并复制图片附件到新对话目录。
+        """
+        with tempfile.TemporaryDirectory() as reference_audio_dir:
+            attachment_source = self._create_temp_png()
+            source_chat = Chat(
+                name="原对话",
+                message_list=[
+                    Message(
+                        "User",
+                        "看图",
+                        "",
+                        EmotionEnum.HAPPINESS,
+                        "",
+                        attachments=[
+                            MessageAttachment(
+                                type="image",
+                                path=attachment_source,
+                                mime_type="image/png",
+                                original_name="pic.png",
+                            )
+                        ],
+                    ),
+                    self._message("祥子", "保留回复"),
+                    self._message("User", "删除用户"),
+                    self._message("祥子", "删除回复"),
+                ],
+                meta={
+                    "import_source": {"backup_id": "backup-a"},
+                    "tool_call_records": [
+                        {"tool_call_id": "kept", "message_index": 1},
+                        {"tool_call_id": "removed", "message_index": 3},
+                    ],
+                },
+            )
+            another_chat = Chat(name="其他对话")
+            manager = ChatManager([source_chat, another_chat])
+
+            with mock.patch.object(attachments, "reference_audio_dir", return_value=Path(reference_audio_dir)):
+                cloned_chat = manager.clone_chat(source_chat.chat_id, fork_after_message_index=1)
+
+            self.assertEqual(manager.chat_list, [source_chat, cloned_chat, another_chat])
+            self.assertNotEqual(cloned_chat.chat_id, source_chat.chat_id)
+            self.assertEqual([message.text for message in cloned_chat.message_list], ["看图", "保留回复"])
+            self.assertEqual(cloned_chat.meta.extra["import_source"], {"backup_id": "backup-a"})
+            clone_source = cloned_chat.meta.extra["clone_source"]
+            self.assertIsInstance(clone_source, dict)
+            self.assertEqual(clone_source["source_chat_id"], source_chat.chat_id)
+            self.assertEqual(clone_source["fork_after_message_index"], 1)
+            self.assertEqual(
+                [(record.tool_call_id, record.message_index) for record in cloned_chat.meta.tool_call_records],
+                [("kept", 1)],
+            )
+
+            cloned_attachment = cloned_chat.message_list[0].attachments[0]
+            self.assertTrue(cloned_attachment.path.startswith(f"chat_attachments/{cloned_chat.chat_id}/"))
+            restored_attachment_path = Path(reference_audio_dir) / cloned_attachment.path
+            self.assertTrue(restored_attachment_path.is_file())
+            self.assertEqual(source_chat.message_list[0].attachments[0].path, attachment_source)
+
+    def test_export_import_backup_reuses_matching_audio(self):
+        """
+        导入备份包时，同名且 sha256 一致的本地音频应被复用。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reference_audio_dir = Path(temp_dir) / "reference_audio"
+            generated_audio_dir = reference_audio_dir / "generated_audios_temp"
+            generated_audio_dir.mkdir(parents=True)
+            audio_path = generated_audio_dir / "output1.wav"
+            audio_path.write_bytes(b"same-audio")
+            backup_path = Path(temp_dir) / "chat-backup.zip"
+            chat = Chat(
+                name="音频对话",
+                message_list=[self._message("祥子", "有声音", str(audio_path))],
+            )
+            manager = ChatManager([chat])
+
+            with mock.patch.object(chat_module, "_reference_audio_dir", return_value=reference_audio_dir):
+                export_result = manager.export_chats_to_backup([chat.chat_id], backup_path)
+                imported_manager = ChatManager()
+                import_result = imported_manager.import_chats_from_backup(backup_path)
+
+            self.assertEqual(export_result.exported_audio_count, 1)
+            self.assertEqual(import_result.imported_chat_count, 1)
+            self.assertEqual(import_result.reused_audio_count, 1)
+            self.assertEqual(import_result.restored_audio_count, 0)
+            imported_chat = import_result.imported_chats[0]
+            self.assertEqual(imported_chat.message_list[0].audio_path, "../reference_audio/generated_audios_temp/output1.wav")
+            import_source = imported_chat.meta.extra["import_source"]
+            self.assertIsInstance(import_source, dict)
+            self.assertEqual(import_source["source_chat_id"], chat.chat_id)
+
+            with zipfile.ZipFile(backup_path, "r") as backup_file:
+                manifest = json.loads(backup_file.read("manifest.json").decode("utf-8"))
+            exported_audio_path = manifest["chats"][0]["chat"]["message_list"][0]["audio_path"]
+            self.assertTrue(exported_audio_path.startswith("backup-resource://audio/"))
+
+    def test_import_backup_renames_conflicting_audio(self):
+        """
+        导入备份包时，同名但 sha256 不一致的音频应改名复制，避免覆盖本地文件。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reference_audio_dir = Path(temp_dir) / "reference_audio"
+            generated_audio_dir = reference_audio_dir / "generated_audios_temp"
+            generated_audio_dir.mkdir(parents=True)
+            audio_path = generated_audio_dir / "output7.wav"
+            backup_audio_content = b"backup-audio"
+            audio_path.write_bytes(backup_audio_content)
+            expected_digest = hashlib.sha256(backup_audio_content).hexdigest()
+            backup_path = Path(temp_dir) / "chat-backup.zip"
+            chat = Chat(
+                name="冲突音频对话",
+                message_list=[self._message("祥子", "有声音", str(audio_path))],
+            )
+            manager = ChatManager([chat])
+
+            with mock.patch.object(chat_module, "_reference_audio_dir", return_value=reference_audio_dir):
+                manager.export_chats_to_backup([chat.chat_id], backup_path)
+                audio_path.write_bytes(b"local-different-audio")
+                imported_manager = ChatManager()
+                import_result = imported_manager.import_chats_from_backup(backup_path)
+
+            self.assertEqual(import_result.reused_audio_count, 0)
+            self.assertEqual(import_result.restored_audio_count, 1)
+            imported_audio_path = import_result.imported_chats[0].message_list[0].audio_path
+            self.assertEqual(
+                imported_audio_path,
+                f"../reference_audio/generated_audios_temp/imported_{expected_digest[:12]}.wav",
+            )
+            restored_path = generated_audio_dir / f"imported_{expected_digest[:12]}.wav"
+            self.assertEqual(restored_path.read_bytes(), backup_audio_content)
+
+    def test_export_backup_records_missing_attachment_warning(self):
+        """
+        导出备份包时，缺失图片附件不应导致整包导出失败。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            backup_path = Path(temp_dir) / "chat-backup.zip"
+            missing_attachment_path = str(Path(temp_dir) / "missing.png")
+            chat = Chat(
+                name="缺失附件对话",
+                message_list=[
+                    Message(
+                        "User",
+                        "图片丢了",
+                        "",
+                        EmotionEnum.HAPPINESS,
+                        "",
+                        attachments=[
+                            MessageAttachment(
+                                type="image",
+                                path=missing_attachment_path,
+                                mime_type="image/png",
+                                original_name="missing.png",
+                            )
+                        ],
+                    )
+                ],
+            )
+            manager = ChatManager([chat])
+
+            result = manager.export_chats_to_backup([chat.chat_id], backup_path)
+
+            self.assertEqual(result.exported_chat_count, 1)
+            self.assertEqual(result.exported_attachment_count, 0)
+            self.assertTrue(result.warnings)
+            with zipfile.ZipFile(backup_path, "r") as backup_file:
+                manifest = json.loads(backup_file.read("manifest.json").decode("utf-8"))
+            exported_attachment_path = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]["path"]
+            self.assertEqual(exported_attachment_path, missing_attachment_path)
 
     @staticmethod
     def _character(name: str) -> CharacterAttributes:
