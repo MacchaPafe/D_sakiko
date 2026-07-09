@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import sys
 import tempfile
@@ -14,6 +15,7 @@ sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 sys.path.insert(0, str(ROOT))
 
 from tools.apply_update_patch import (
+    UpdateResultRecorder,
     build_default_log_file,
     default_hpatch_bin,
     detect_arch,
@@ -28,7 +30,7 @@ from tools.release.verify_update_assets import verify_patch_chain
 from update.update_checker import build_update_plan
 from update.update_launcher import build_apply_command
 from update.update_models import parse_update_index
-from update.update_paths import get_update_log_dir
+from update.update_paths import get_update_log_dir, get_update_result_file
 from update.update_security import verify_patch_asset
 
 
@@ -175,6 +177,46 @@ class UpdateSystemTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             normalize_manifest_path("C:\\temp\\version.json", "files[].path")
 
+    def test_verify_modified_file_reports_all_file_mismatches(self) -> None:
+        """预校验应一次性报告所有文件级不匹配问题。"""
+
+        from tools.apply_update_patch import verify_modified_file
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir)
+            first_file = app_root / "first.txt"
+            second_file = app_root / "second.txt"
+            first_file.write_text("current first", encoding="utf-8")
+            second_file.write_text("current second", encoding="utf-8")
+            manifest = {
+                "files": [
+                    {
+                        "action": "modify",
+                        "path": "first.txt",
+                        "old_file_sha256": "0" * 64,
+                    },
+                    {
+                        "action": "remove",
+                        "path": "second.txt",
+                        "old_file_sha256": "1" * 64,
+                    },
+                    {
+                        "action": "modify",
+                        "path": "missing.txt",
+                        "old_file_sha256": "2" * 64,
+                    },
+                ]
+            }
+
+            with self.assertRaises(RuntimeError) as context:
+                verify_modified_file(manifest, app_root)
+
+            message = str(context.exception)
+            self.assertIn("共发现 3 个问题", message)
+            self.assertIn("待修改文件 SHA256 校验失败：first.txt", message)
+            self.assertIn("待删除文件 SHA256 校验失败：second.txt", message)
+            self.assertIn("待修改文件不存在或不是普通文件：missing.txt", message)
+
     def test_default_hpatch_bin_uses_windows_exe(self) -> None:
         """Windows 默认 hpatchz 路径应包含 .exe 扩展名。"""
 
@@ -217,12 +259,36 @@ class UpdateSystemTest(unittest.TestCase):
         self.assertIn(str(app_root / ".updates/packages/2.7.0/a"), command)
         self.assertIn(str(app_root / ".updates/packages/2.7.1/b"), command)
 
+    def test_build_apply_command_passes_status_file_when_requested(self) -> None:
+        """自动更新启动 updater 时应可要求更新器写结果记录。"""
+
+        app_root = Path("/tmp/D_sakiko")
+        status_file = app_root / "logs/update/last_update_result.json"
+        command = build_apply_command(
+            app_root=app_root,
+            package_dirs=[],
+            wait_pid=None,
+            restart_command=None,
+            log_file=None,
+            status_file=status_file,
+        )
+
+        self.assertIn("--status-file", command)
+        self.assertIn(str(status_file), command)
+
     def test_update_log_dir_uses_explicit_app_root(self) -> None:
         """自动更新日志目录应基于传入的 app_root。"""
 
         app_root = Path("/tmp/D_sakiko")
 
         self.assertEqual(get_update_log_dir(app_root), app_root / "logs" / "update")
+
+    def test_update_result_file_uses_visible_log_dir(self) -> None:
+        """更新结果记录应与更新日志位于同一可见目录。"""
+
+        app_root = Path("/tmp/D_sakiko")
+
+        self.assertEqual(get_update_result_file(app_root), app_root / "logs" / "update" / "last_update_result.json")
 
     def test_manual_update_default_log_file_uses_visible_log_dir(self) -> None:
         """手动更新默认日志应与自动更新使用同一日志目录。"""
@@ -233,6 +299,43 @@ class UpdateSystemTest(unittest.TestCase):
             build_default_log_file(app_root, "20260612_123456"),
             app_root / "logs" / "update" / "update_manual_20260612_123456.log",
         )
+
+    def test_update_result_recorder_writes_relative_log_path(self) -> None:
+        """更新结果记录中的日志路径应相对 app_root 保存。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir)
+            log_file = app_root / "logs" / "update" / "update_1.0.0_to_1.1.0.log"
+            status_file = app_root / "logs" / "update" / "last_update_result.json"
+            recorder = UpdateResultRecorder(app_root, status_file, log_file)
+
+            recorder.set_versions("1.0.0", "1.1.0")
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
+
+            result = json.loads(status_file.read_text(encoding="utf-8"))
+            self.assertEqual(result["schema_version"], 1)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["base_version"], "1.0.0")
+            self.assertEqual(result["target_version"], "1.1.0")
+            self.assertEqual(result["rollback_performed"], False)
+            self.assertIsNone(result["rollback_succeeded"])
+            self.assertEqual(result["log_file"], "logs/update/update_1.0.0_to_1.1.0.log")
+            self.assertEqual(result["notified"], False)
+
+    def test_update_result_recorder_records_successful_rollback(self) -> None:
+        """应用阶段失败且回滚成功时应记录回滚成功。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_root = Path(temp_dir)
+            status_file = app_root / "logs" / "update" / "last_update_result.json"
+            recorder = UpdateResultRecorder(app_root, status_file, app_root / "logs" / "update" / "update.log")
+
+            recorder.write_failed(rollback_performed=True, rollback_succeeded=True)
+
+            result = json.loads(status_file.read_text(encoding="utf-8"))
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["rollback_performed"], True)
+            self.assertEqual(result["rollback_succeeded"], True)
 
     def test_write_manifest_marks_macos_uv_sync(self) -> None:
         """macOS 补丁修改依赖声明时应写入 uv sync 后处理标记。"""

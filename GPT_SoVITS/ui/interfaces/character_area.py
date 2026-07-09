@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal, QUrl
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QFrame, QListWidgetItem, QStackedWidget
-from PyQt5.QtGui import QIcon, QDesktopServices
+from PyQt5.QtGui import QIcon
 
 from qfluentwidgets import (
     ListWidget, PushButton, LineEdit, TextEdit,
@@ -24,6 +22,7 @@ from qfluentwidgets import (
 
 from ..components.fluent_icon import MyFluentIcon
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
+from ..file_manager import show_file_in_manager
 
 try:
     from character import GetCharacterAttributes, CharacterAttributes
@@ -459,27 +458,7 @@ class SystemCharacterDetailView(QWidget):
     @staticmethod
     def show_file(file_path: str | None) -> None:
         """在系统文件管理器中定位文件，无法选中时至少打开其所在目录。"""
-        if not file_path:
-            return
-
-        path = Path(file_path).expanduser().resolve()
-        if not path.exists():
-            return
-
-        try:
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", str(path)])
-                return
-
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer.exe", "/select,", os.path.normpath(path)])
-                return
-        except OSError:
-            pass
-
-        directory = path if path.is_dir() else path.parent
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory))):
-            pass
+        show_file_in_manager(file_path)
 
     def set_character(self, character: CharacterAttributes):
         self.current_character = character

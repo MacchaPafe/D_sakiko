@@ -6,7 +6,8 @@ import time
 import json
 import random
 import uuid
-from typing import Callable, Optional, Sequence
+from pathlib import Path
+from typing import Callable, Optional, Sequence, cast
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -51,10 +52,11 @@ from ui_main.components.context_usage_indicator import (
 from ui_main.components.message_input import MessageInput
 from ui_main.components.update_dialog import UpdateDialog
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
-from update.update_checker import get_configured_index_urls
+from ui.file_manager import show_file_in_manager
+from update.update_checker import get_configured_index_urls, read_current_version
 from update.update_launcher import build_restart_command, launch_update_process
 from update.update_models import DownloadedPatch, UpdatePlan
-from update.update_paths import get_app_root
+from update.update_paths import get_app_root, get_update_result_file, get_version_file
 from llm_model_utils import ensure_openai_compatible_model
 from input_commands import (
     CommandSpec,
@@ -411,7 +413,7 @@ class TranscriptionWorker(QObject):
 
 
 class MoreFunctionWindow(QDialog):
-    def __init__(self,parent_window_close_fun,check_update_fun=None):
+    def __init__(self,parent_window_close_fun,check_update_fun=None,has_update: bool=False):
         super().__init__()
         self.setWindowTitle("更多功能...")
         self.screen = QDesktopWidget().screenGeometry()
@@ -438,10 +440,15 @@ class MoreFunctionWindow(QDialog):
         layout.addWidget(open_live2d_downloader_btn)
 
         if check_update_fun is not None:
-            self.check_update_btn = QPushButton("检查更新")
+            check_update_text = "检查更新（有新版本）" if has_update else "检查更新"
+            self.check_update_btn = QPushButton(check_update_text)
             self.check_update_btn.clicked.connect(check_update_fun)  # noqa
             self.check_update_btn.clicked.connect(self.close)  # noqa
             layout.addWidget(self.check_update_btn)
+
+        self.version_label = QLabel(f"当前版本: {read_current_version(get_version_file(get_app_root()))}")
+        self.version_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.version_label)
 
         self.text_label = QLabel("更多小功能还在开发中...")
         self.text_label.setAlignment(Qt.AlignCenter)
@@ -2183,6 +2190,7 @@ class ChatGUI(QWidget):
         self.messages_box.setPlaceholderText("这里是各种消息提示框...")
         self.messages_box.setMaximumHeight(int(0.05*self.screen.height()))
         self._set_message_box_idle()
+        self.update_banner = self._create_update_banner()
         self.user_input = MessageInput()
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
@@ -2336,6 +2344,7 @@ class ChatGUI(QWidget):
         top_layout.addWidget(self.more_function_button,0)
 
         layout.addLayout(top_layout)
+        layout.addWidget(self.update_banner)
         layout.addWidget(self.chat_display)
         layout.addLayout(slider_layout)
         layout.addWidget(input_panel)
@@ -2371,7 +2380,81 @@ class ChatGUI(QWidget):
         self.record_data=[]
         self.voice_is_valid=False
         self.load_whisper_model()
+        QTimer.singleShot(0, self.show_last_update_failure_if_needed)
         QTimer.singleShot(30000, self.start_auto_update_check)
+
+    def show_last_update_failure_if_needed(self) -> None:
+        """在主窗口启动后提示上次 detached 更新器失败结果。"""
+
+        result_file = get_update_result_file(get_app_root())
+        if not result_file.exists():
+            return
+        try:
+            result = json.loads(result_file.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("读取更新结果记录失败：%s", result_file)
+            return
+        if not isinstance(result, dict):
+            return
+        result_data = cast(dict[str, object], result)
+        if result_data.get("status") != "failed" or result_data.get("notified") is not False:
+            return
+
+        log_path = self._resolve_update_log_path(result_data.get("log_file"))
+        self._show_last_update_failure_dialog(result_data, log_path)
+        self._mark_update_result_notified(result_file, result_data)
+
+    def _resolve_update_log_path(self, log_file_value: object) -> Path | None:
+        """把更新结果记录中的日志路径解析为本机绝对路径。"""
+
+        log_file = str(log_file_value or "").strip()
+        if not log_file:
+            return None
+        path = Path(log_file).expanduser()
+        if path.is_absolute():
+            return path.resolve(strict=False)
+        return (get_app_root() / path).resolve(strict=False)
+
+    def _show_last_update_failure_dialog(self, result: dict[str, object], log_path: Path | None) -> None:
+        """显示上次更新失败并可定位日志文件的一次性提示。"""
+
+        rollback_performed = result.get("rollback_performed") is True
+        rollback_succeeded = result.get("rollback_succeeded")
+        if not rollback_performed:
+            detail = "上次更新没有完成，程序仍停留在旧版本。"
+        elif rollback_succeeded is False:
+            detail = "上次更新没有完成，且自动回滚可能失败。"
+        else:
+            detail = "上次更新没有完成，程序已自动回滚到旧版本。"
+
+        message = (
+            f"{detail}\n\n"
+            "如果你愿意反馈这个问题，可以点击“显示日志文件”，把该更新日志文件发给开发者。\n\n"
+            "问题提示只会显示这一次。"
+        )
+        if log_path is not None:
+            message += f"\n\n日志文件：\n{log_path}"
+
+        box = QMessageBox(QMessageBox.Warning, "上次更新未完成", message, QMessageBox.Ok, self)
+        box.button(QMessageBox.Ok).setText("确定")
+        show_log_button = None
+        if log_path is not None:
+            show_log_button = box.addButton("显示日志文件", QMessageBox.ActionRole)
+        box.exec_()
+        if show_log_button is not None and box.clickedButton() == show_log_button:
+            show_file_in_manager(log_path)
+
+    def _mark_update_result_notified(self, result_file: Path, result: dict[str, object]) -> None:
+        """在用户看过提示后把更新结果记录标记为已提示。"""
+
+        try:
+            updated_result = dict(result)
+            updated_result["notified"] = True
+            temp_file = result_file.with_name(f".{result_file.name}.tmp")
+            temp_file.write_text(json.dumps(updated_result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temp_file.replace(result_file)
+        except Exception:
+            logger.exception("更新结果记录已提示状态写回失败：%s", result_file)
 
     def start_auto_update_check(self) -> None:
         """启动一次静默自动更新检查。"""
@@ -2410,14 +2493,14 @@ class ChatGUI(QWidget):
 
         self.pending_update_plan = update_plan
         if silent and not update_plan.critical:
-            self.messages_box.clear()
-            self.messages_box.append(f"发现新版本 {update_plan.target_version}，点击顶部“更新”查看。")
+            self._show_update_banner(update_plan)
             return
         self.open_update_dialog(update_plan)
 
     def _on_no_update(self, silent: bool) -> None:
         """处理没有新版本的结果。"""
 
+        self._hide_update_banner()
         if not silent:
             self.setWindowTitle("数字小祥")
             QMessageBox.information(self, "检查更新", "当前已是最新版本。")
@@ -2460,6 +2543,100 @@ class ChatGUI(QWidget):
 
         if self.update_dialog is not None:
             self.update_dialog.set_release_notes(markdown, source_name)
+
+    def _create_update_banner(self) -> QFrame:
+        """创建发现新版本时显示的顶部横幅。"""
+
+        banner = QFrame(self)
+        banner.setObjectName("updateBanner")
+        banner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        banner_layout = QHBoxLayout(banner)
+        banner_layout.setContentsMargins(12, 6, 8, 6)
+        banner_layout.setSpacing(8)
+
+        self.update_banner_label = QLabel("发现新版本", banner)
+        self.update_banner_label.setObjectName("updateBannerLabel")
+        self.update_banner_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        banner_layout.addWidget(self.update_banner_label, 1)
+
+        self.update_banner_view_button = QPushButton("查看更新", banner)
+        self.update_banner_view_button.setObjectName("updateBannerViewButton")
+        self.update_banner_view_button.clicked.connect(lambda: self.open_update_dialog())  # noqa
+        banner_layout.addWidget(self.update_banner_view_button, 0)
+
+        self.update_banner_dismiss_button = QPushButton("稍后", banner)
+        self.update_banner_dismiss_button.setObjectName("updateBannerDismissButton")
+        self.update_banner_dismiss_button.clicked.connect(self._hide_update_banner)  # noqa
+        banner_layout.addWidget(self.update_banner_dismiss_button, 0)
+
+        banner.setVisible(False)
+        return banner
+
+    def _show_update_banner(self, update_plan: UpdatePlan) -> None:
+        """显示普通更新的持久入口横幅。"""
+
+        self.update_banner_label.setText(f"发现新版本 {update_plan.target_version}")
+        self.update_banner.setVisible(True)
+
+    def _hide_update_banner(self) -> None:
+        """隐藏普通更新入口横幅。"""
+
+        if hasattr(self, "update_banner"):
+            self.update_banner.setVisible(False)
+
+    def _apply_update_banner_style(self, color: str) -> None:
+        """根据当前主题色刷新更新横幅样式。"""
+
+        if not hasattr(self, "update_banner"):
+            return
+        theme_color = QColor(color)
+        if not theme_color.isValid():
+            theme_color = QColor("#7799CC")
+        hover_color = theme_color.lighter(112).name()
+        pressed_color = theme_color.darker(108).name()
+        background_color = f"rgba({theme_color.red()}, {theme_color.green()}, {theme_color.blue()}, 0.10)"
+        self.update_banner.setStyleSheet(f"""
+            QFrame#updateBanner {{
+                background-color: {background_color};
+                border: 1px solid {theme_color.name()};
+                border-radius: 9px;
+            }}
+            QLabel#updateBannerLabel {{
+                color: #272636;
+                background: transparent;
+                font-weight: bold;
+            }}
+            QPushButton#updateBannerViewButton {{
+                color: #FFFFFF;
+                background-color: {theme_color.name()};
+                border: 1px solid {theme_color.name()};
+                border-radius: 7px;
+                padding: 4px 10px;
+                font-weight: bold;
+            }}
+            QPushButton#updateBannerViewButton:hover {{
+                background-color: {hover_color};
+                border: 1px solid {hover_color};
+            }}
+            QPushButton#updateBannerViewButton:pressed {{
+                background-color: {pressed_color};
+                border: 1px solid {pressed_color};
+            }}
+            QPushButton#updateBannerDismissButton {{
+                color: {theme_color.name()};
+                background-color: transparent;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 7px;
+                padding: 4px 10px;
+            }}
+            QPushButton#updateBannerDismissButton:hover {{
+                background-color: rgba(255, 255, 255, 0.50);
+            }}
+            QPushButton#updateBannerDismissButton:pressed {{
+                background-color: rgba(0, 0, 0, 0.06);
+            }}
+        """)
 
     def start_update_download_and_install(self) -> None:
         """确认后下载当前更新计划中的补丁链，并在下载完成后自动安装。"""
@@ -3168,6 +3345,7 @@ class ChatGUI(QWidget):
             send_color = QColor("#7799CC")
         if hasattr(self, "context_usage_indicator"):
             self.context_usage_indicator.set_theme_color(send_color.name())
+        self._apply_update_banner_style(send_color.name())
         send_hover_color = send_color.lighter(112).name()
         send_pressed_color = send_color.darker(108).name()
         if hasattr(self, "tool_calling_toggle_button"):
@@ -3551,7 +3729,11 @@ class ChatGUI(QWidget):
         self.schedule_context_usage_refresh()
 
     def open_more_function_window(self):
-        more_function_win=MoreFunctionWindow(self.close_program,self.check_update_manual)
+        more_function_win=MoreFunctionWindow(
+            self.close_program,
+            self.check_update_manual,
+            has_update=self.pending_update_plan is not None,
+        )
         more_function_win.exec_()
 
     def close_program(self):

@@ -40,3 +40,9 @@ def get_update_log_dir(app_root: Path | None = None) -> Path:
 
     root = app_root if app_root is not None else get_app_root()
     return root / "logs" / "update"
+
+
+def get_update_result_file(app_root: Path | None = None) -> Path:
+    """返回主程序读取的最近一次更新结果记录路径。"""
+
+    return get_update_log_dir(app_root) / "last_update_result.json"

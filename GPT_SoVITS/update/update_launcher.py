@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .update_models import DownloadedPatch
-from .update_paths import get_update_log_dir
+from .update_paths import get_update_log_dir, get_update_result_file
 
 
 def build_apply_command(
@@ -17,6 +17,7 @@ def build_apply_command(
     wait_pid: int | None,
     restart_command: list[str] | None,
     log_file: Path | None,
+    status_file: Path | None = None,
 ) -> list[str]:
     """构造调用 tools/apply_update_patch.py 的命令。"""
 
@@ -35,6 +36,8 @@ def build_apply_command(
         command.extend(["--restart-command", json.dumps(restart_command, ensure_ascii=False)])
     if log_file is not None:
         command.extend(["--log-file", str(log_file)])
+    if status_file is not None:
+        command.extend(["--status-file", str(status_file)])
     return command
 
 
@@ -62,8 +65,9 @@ def launch_update_process(
     """启动 updater 子进程，然后由 UI 触发主程序退出。"""
 
     log_file = _make_log_file(downloaded_patches, app_root)
+    status_file = get_update_result_file(app_root)
     package_dirs = [downloaded.package_dir for downloaded in downloaded_patches]
-    command = build_apply_command(app_root, package_dirs, main_pid, restart_command, log_file)
+    command = build_apply_command(app_root, package_dirs, main_pid, restart_command, log_file, status_file)
     if os.name == "nt":
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         subprocess.Popen(

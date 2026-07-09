@@ -14,7 +14,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import TextIO
+from typing import Literal, TextIO
 
 
 APP_ID = "D_sakiko"
@@ -62,6 +62,90 @@ class TeeWriter:
         self.log_file.flush()
 
 
+UpdateStatus = Literal["running", "success", "failed"]
+
+
+class UpdateResultRecorder:
+    """维护 detached 更新器留给主程序读取的更新结果记录。"""
+
+    def __init__(self, app_root: Path, status_file: Path | None, log_file: Path) -> None:
+        """保存更新结果记录位置和本次更新的基础上下文。"""
+
+        self.app_root = app_root
+        self.status_file = status_file
+        self.log_file = log_file
+        self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        self.base_version: str | None = None
+        self.target_version: str | None = None
+
+    def set_versions(self, base_version: str | None, target_version: str | None) -> None:
+        """记录当前正在处理的更新版本范围。"""
+
+        self.base_version = base_version
+        self.target_version = target_version
+
+    def write_running(self) -> None:
+        """写入更新器正在执行的结果记录。"""
+
+        self._write(
+            status="running",
+            finished_at=None,
+            rollback_performed=False,
+            rollback_succeeded=None,
+        )
+
+    def write_success(self) -> None:
+        """写入更新器成功完成的结果记录。"""
+
+        self._write(
+            status="success",
+            finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            rollback_performed=False,
+            rollback_succeeded=None,
+        )
+
+    def write_failed(self, rollback_performed: bool, rollback_succeeded: bool | None) -> None:
+        """写入更新器失败完成的结果记录。"""
+
+        self._write(
+            status="failed",
+            finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            rollback_performed=rollback_performed,
+            rollback_succeeded=rollback_succeeded,
+        )
+
+    def _write(
+        self,
+        status: UpdateStatus,
+        finished_at: str | None,
+        rollback_performed: bool,
+        rollback_succeeded: bool | None,
+    ) -> None:
+        """把当前更新结果记录原子写入磁盘。"""
+
+        if self.status_file is None:
+            return
+        content: dict[str, object] = {
+            "schema_version": 1,
+            "status": status,
+            "base_version": self.base_version,
+            "target_version": self.target_version,
+            "started_at": self.started_at,
+            "finished_at": finished_at,
+            "rollback_performed": rollback_performed,
+            "rollback_succeeded": rollback_succeeded,
+            "log_file": path_relative_to_app_root(self.log_file, self.app_root),
+            "notified": False,
+        }
+        try:
+            self.status_file.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = self.status_file.with_name(f".{self.status_file.name}.tmp")
+            temp_file.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temp_file.replace(self.status_file)
+        except Exception as exc:
+            print(f"[警告] 更新结果记录写入失败：{exc}", file=sys.stderr)
+
+
 def parse_args() -> argparse.Namespace:
     """解析应用 hdiff 补丁所需参数。"""
 
@@ -80,6 +164,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wait-pid", type=int, default=0, help="等待指定 PID 退出后再应用更新。")
     parser.add_argument("--restart-command", default="", help="更新成功后执行的重启命令，支持 JSON list 或普通字符串。")
     parser.add_argument("--log-file", default="", help="更新日志文件路径。")
+    parser.add_argument("--status-file", default="", help="写入给主程序读取的更新结果记录路径。")
     parser.add_argument("--no-remove-package", action="store_true", help="更新成功后保留补丁包目录。")
     return parser.parse_args()
 
@@ -128,6 +213,29 @@ def build_default_log_file(app_root: Path, timestamp: str | None = None) -> Path
 
     log_timestamp = timestamp if timestamp is not None else datetime.now().strftime("%Y%m%d_%H%M%S")
     return app_root / "logs" / "update" / f"update_manual_{log_timestamp}.log"
+
+
+def path_relative_to_app_root(path: Path, app_root: Path) -> str:
+    """把路径转换为相对程序根目录的文本，无法相对化时保留绝对路径。"""
+
+    resolved_path = path.expanduser().resolve(strict=False)
+    resolved_root = app_root.expanduser().resolve(strict=False)
+    try:
+        return resolved_path.relative_to(resolved_root).as_posix()
+    except ValueError:
+        return str(resolved_path)
+
+
+def resolve_optional_status_file(app_root: Path, status_file_arg: str) -> Path | None:
+    """解析可选更新结果记录路径。"""
+
+    text = status_file_arg.strip()
+    if not text:
+        return None
+    status_file = Path(text).expanduser()
+    if status_file.is_absolute():
+        return status_file.resolve(strict=False)
+    return (app_root / status_file).resolve(strict=False)
 
 
 def parse_restart_command(command_text: str) -> list[str]:
@@ -429,6 +537,7 @@ def verify_modified_file(manifest: dict[str, object], app_root: Path):
     files = manifest.get("files", [])
     if not isinstance(files, list):
         raise RuntimeError("manifest 格式错误：缺少 files 字段")
+    verification_errors: list[str] = []
     for item in files:
         if not isinstance(item, dict):
             raise RuntimeError("manifest 格式错误：files 字段内必须为字典")
@@ -443,16 +552,19 @@ def verify_modified_file(manifest: dict[str, object], app_root: Path):
                 if target.exists() and target.is_file():
                     actual_sha = sha256_file(target)
                     if actual_sha != expected_sha:
-                        raise RuntimeError(
+                        verification_errors.append(
                             f"待{'修改' if action == 'modify' else '删除'}文件 SHA256 校验失败：{relative_path}，"
                             f"期望 {expected_sha}，实际 {actual_sha}"
                         )
                 elif action == "modify":
                     # modify 动作：文件必须存在
-                    raise RuntimeError(f"待修改文件不存在或不是普通文件：{relative_path}")
+                    verification_errors.append(f"待修改文件不存在或不是普通文件：{relative_path}")
                 # remove 动作：文件不存在是可接受的，不报错
             else:
                 print(f"[警告] {item.get('path')!r} 没有旧版本 sha256 记录，无法校验")
+    if verification_errors:
+        details = "\n".join(f"- {error}" for error in verification_errors)
+        raise RuntimeError(f"待修改文件预校验失败，共发现 {len(verification_errors)} 个问题：\n{details}")
 
 
 def read_current_version(version_file: Path) -> str:
@@ -618,6 +730,7 @@ def apply_package_chain(
     package_roots: list[Path],
     hpatch_bin: Path,
     args: argparse.Namespace,
+    recorder: UpdateResultRecorder,
 ) -> int:
     """按补丁链顺序应用多个 package。"""
 
@@ -636,6 +749,7 @@ def apply_package_chain(
 
     if not pending:
         print("错误：未找到可解析的更新清单。", file=sys.stderr)
+        recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
         return 1
 
     applied_count = 0
@@ -644,6 +758,7 @@ def apply_package_chain(
             app_version = read_current_version(version_file)
         except Exception as exc:
             print(f"错误：读取当前版本失败：{exc}", file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
 
         matched: list[tuple[Path, dict[str, object]]] = []
@@ -659,6 +774,7 @@ def apply_package_chain(
             matched_paths = "\n".join(str(item[0]) for item in matched)
             print("错误：发现多个可应用更新包，请只保留一个：", file=sys.stderr)
             print(matched_paths, file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
 
         package_root, manifest = matched[0]
@@ -668,12 +784,20 @@ def apply_package_chain(
             pending.remove((package_root, manifest))
             continue
 
+        recorder.set_versions(
+            str(manifest.get("base_version", "") or "") or None,
+            str(manifest.get("target_version", "") or "") or None,
+        )
+        recorder.write_running()
         try:
             base_version, target_version = verify_manifest_and_version(manifest, app_version)
+            recorder.set_versions(base_version, target_version)
+            recorder.write_running()
             print(f"[信息] 版本校验通过：{base_version} -> {target_version}")
             print(f"[信息] 更新包：{package_root}")
         except Exception as exc:
             print(f"错误：{exc}", file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
 
         try:
@@ -681,6 +805,7 @@ def apply_package_chain(
             print(f"[信息] 待修改文件校验全部通过")
         except Exception as exc:
             print(f"错误：{exc}", file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
 
         backup_root = app_root / args.backup_dir / f"{target_version}"
@@ -716,14 +841,20 @@ def apply_package_chain(
             applied_count += 1
         except Exception as exc:
             print(f"[错误] 更新失败，开始回滚：{exc}", file=sys.stderr)
-            restore_backup(app_root, backup_root, touch_records)
-            print(f"[回滚] 已恢复到更新前状态。备份目录：{backup_root}", file=sys.stderr)
+            try:
+                restore_backup(app_root, backup_root, touch_records)
+                print(f"[回滚] 已恢复到更新前状态。备份目录：{backup_root}", file=sys.stderr)
+                recorder.write_failed(rollback_performed=True, rollback_succeeded=True)
+            except Exception as rollback_error:
+                print(f"[回滚] 自动回滚失败：{rollback_error}", file=sys.stderr)
+                recorder.write_failed(rollback_performed=True, rollback_succeeded=False)
             return 1
 
     if applied_count == 0:
         print("[信息] 未找到可应用到当前版本的更新包。")
     else:
         print(f"[完成] 已应用 {applied_count} 个更新包。")
+    recorder.write_success()
     return 0
 
 
@@ -734,6 +865,7 @@ def main() -> int:
     log_handle: TextIO | None = None
     original_stdout = sys.stdout
     original_stderr = sys.stderr
+    recorder: UpdateResultRecorder | None = None
     try:
         app_root = Path(args.app_root).expanduser().resolve()
         if not app_root.exists() or not app_root.is_dir():
@@ -744,14 +876,23 @@ def main() -> int:
         else:
             log_file = build_default_log_file(app_root)
         log_handle = setup_logging(log_file)
+        status_file = resolve_optional_status_file(app_root, args.status_file)
+        recorder = UpdateResultRecorder(app_root, status_file, log_file)
+        recorder.write_running()
 
         if args.wait_pid:
             print(f"[等待] 等待主程序退出：PID={args.wait_pid}")
-            wait_for_process_exit(args.wait_pid)
+            try:
+                wait_for_process_exit(args.wait_pid)
+            except Exception:
+                if recorder is not None:
+                    recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
+                raise
 
         version_file = app_root / args.version_file
         if not version_file.exists():
             print(f"错误：未找到版本文件：{version_file}", file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
 
         if args.package:
@@ -761,14 +902,19 @@ def main() -> int:
 
         if not package_roots:
             print("错误：未找到可用更新包目录（需要同时包含 manifest.json 和 patch.hdiff）。", file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
 
         hpatch_bin = resolve_hpatch_bin(app_root, args.hpatch_bin)
-        exit_code = apply_package_chain(app_root, version_file, package_roots, hpatch_bin, args)
+        exit_code = apply_package_chain(app_root, version_file, package_roots, hpatch_bin, args, recorder)
         print(f"[退出码] {exit_code}")
         if exit_code == 0:
             restart_app(parse_restart_command(args.restart_command))
         return exit_code
+    except Exception:
+        if recorder is not None:
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
+        raise
     finally:
         if log_handle is not None:
             sys.stdout = original_stdout
