@@ -23,6 +23,24 @@
       "聊天记录注意事项！.txt",
       "docs-site/*"
     ],
+    "hard_exclude": [
+      ".git/**",
+      ".updates/**",
+      ".update_backup/**",
+      ".repair_backup/**",
+      "logs/**",
+      "patch_files/**",
+      "dist/**",
+      ".idea/**",
+      ".vscode/**",
+      "._*",
+      ".DS_Store",
+      "__MACOSX/**",
+      "**/__MACOSX/**",
+      "__pycache__/**",
+      "**/__pycache__/**",
+      "*.pyc"
+    ],
     "include": []
   },
   "profiles": {
@@ -31,6 +49,10 @@
       "arch": "arm64",
       "ignore": [
         "GPT_SoVITS/live2d_1.pyd"
+      ],
+      "include": [
+        "*.command",
+        "install_brew.sh"
       ]
     },
     "windows-x64": {

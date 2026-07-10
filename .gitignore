@@ -60,6 +60,7 @@ tools/release/update_patch.local.json
 **/*.hdiff
 **/node_modules/**
 .scratch/**
+dist/**
 
 .idea/**
 .vscode/**

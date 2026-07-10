@@ -70,9 +70,26 @@ def verify_ed25519_signature(
         raise RuntimeError(f"Ed25519 公钥格式错误：{exc}") from exc
 
 
+def verify_ed25519_bytes(
+    content: bytes,
+    signature_b64: str,
+    public_key_b64: str = PUBLIC_KEY_B64,
+) -> None:
+    """校验内存中字节内容的 Ed25519 detached signature。"""
+
+    public_key_bytes = _decode_base64_text(_resolve_public_key(public_key_b64), "公钥")
+    signature = _decode_base64_text(signature_b64, "签名")
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+        public_key.verify(signature, content)
+    except InvalidSignature as exc:
+        raise RuntimeError("Ed25519 签名校验失败") from exc
+    except ValueError as exc:
+        raise RuntimeError(f"Ed25519 公钥格式错误：{exc}") from exc
+
+
 def verify_patch_asset(path: Path, expected_sha256: str, signature_b64: str) -> None:
     """先校验 SHA256，再校验 Ed25519 签名。"""
 
     verify_sha256(path, expected_sha256)
     verify_ed25519_signature(path, signature_b64)
-

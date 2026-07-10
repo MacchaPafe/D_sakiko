@@ -15,6 +15,7 @@ dependencies = [
     "fastapi[standard]>=0.115.2",
     "faster-whisper>=1.2.1",
     "ffmpeg-python>=0.2.0",
+    "filelock>=3.20.0",
     "funasr==1.0.27",
     "g2p-en>=2.1.0",
     "g2pk2>=0.0.3",
@@ -92,6 +93,9 @@ cu128 = [
     "torch>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torchaudio>=2.2,<2.8 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "torchaudio>=2.7,<2.8 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+release = [
+    "boto3>=1.40,<2",
 ]
 
 [tool.uv]

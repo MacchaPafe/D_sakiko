@@ -1,0 +1,99 @@
+{
+  "defaults": {
+    "app_id": "D_sakiko",
+    "channel": "stable",
+    "min_repair_client_version": "1.0.0",
+    "allow": [
+      "GPT_SoVITS/*.py",
+      "GPT_SoVITS/**/*.py",
+      "GPT_SoVITS/*.json",
+      "GPT_SoVITS/**/*.json",
+      "GPT_SoVITS/*.jinja",
+      "GPT_SoVITS/**/*.jinja",
+      "GPT_SoVITS/icons/*.svg",
+      "GPT_SoVITS/icons/*.png",
+      "GPT_SoVITS/char_headprof/*.png",
+      "tools/*.py",
+      "tools/**/*.py",
+      "tools/*.json",
+      "tools/**/*.json",
+      "version.json",
+      "pyproject.toml",
+      "uv.lock"
+    ],
+    "include": [
+      "GPT_SoVITS/text/cmudict*.rep",
+      "GPT_SoVITS/text/g2pw/polyphonic*.rep",
+      "GPT_SoVITS/text/opencpop-strict.txt",
+      "GPT_SoVITS/text/restr.rep"
+    ],
+    "exclude": [
+      "README*",
+      "LICENSE*",
+      "docs/**",
+      "docs-site/**",
+      "tests/**",
+      "GPT_SoVITS/test/**"
+    ],
+    "hard_exclude": [
+      ".git/**",
+      ".updates/**",
+      ".update_backup/**",
+      ".repair_backup/**",
+      ".venv/**",
+      "runtime/**",
+      "logs/**",
+      "reference_audio/**",
+      "live2d_related/**",
+      "avatar/**",
+      "font/**",
+      "wheels/**",
+      "GPT_SoVITS/pretrained_models/**",
+      "GPT_SoVITS/text/G2PWModel/**",
+      "GPT_SoVITS/text/ja_userdic/**",
+      "GPT_SoVITS/tool_data/**",
+      "GPT_SoVITS/training_dir/**",
+      "GPT_SoVITS/configs/*.yaml",
+      "GPT_SoVITS/configs/*.yml",
+      "GPT_SoVITS/text/engdict-hot.rep",
+      "GPT_SoVITS/text/*.pickle",
+      "GPT_SoVITS/text/**/*.pickle",
+      "*.pyd",
+      "*.so",
+      "._*",
+      ".DS_Store",
+      "**/__MACOSX/**",
+      "__MACOSX/**",
+      "**/__pycache__/**",
+      "__pycache__/**",
+      "*.pyc",
+      "d_sakiko_config.json",
+      "dsakiko_config.json"
+    ]
+  },
+  "profiles": {
+    "macos-arm64": {
+      "platform": "macos",
+      "arch": "arm64",
+      "include": [
+        "*.command",
+        "install_brew.sh"
+      ],
+      "exclude": [
+        "*.bat"
+      ]
+    },
+    "windows-x64": {
+      "platform": "windows",
+      "arch": "x64",
+      "include": [
+        "*.bat",
+        "双击run.bat即可运行程序，注意不要有中文路径！"
+      ],
+      "exclude": [
+        "*.command",
+        "install_brew.sh"
+      ]
+    }
+  }
+}

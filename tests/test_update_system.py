@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import base64
 import json
 import os
@@ -7,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -28,7 +31,7 @@ from tools.build_diff_patch import FileRecord, write_manifest
 from tools.release.generate_update_index import parse_patch_filename
 from tools.release.verify_update_assets import verify_patch_chain
 from update.update_checker import build_update_plan
-from update.update_launcher import build_apply_command
+from update.update_launcher import build_apply_command, launch_detached_process
 from update.update_models import parse_update_index
 from update.update_paths import get_update_log_dir, get_update_result_file
 from update.update_security import verify_patch_asset
@@ -275,6 +278,15 @@ class UpdateSystemTest(unittest.TestCase):
 
         self.assertIn("--status-file", command)
         self.assertIn(str(status_file), command)
+
+    @patch("update.update_launcher.subprocess.Popen")
+    def test_detached_launcher_uses_new_session_on_unix(self, popen: object) -> None:
+        """Unix detached 进程必须脱离主程序所在会话。"""
+
+        launch_detached_process(["python", "worker.py"], Path("/tmp/D_sakiko"))
+
+        call = popen.call_args
+        self.assertTrue(call.kwargs["start_new_session"])
 
     def test_update_log_dir_uses_explicit_app_root(self) -> None:
         """自动更新日志目录应基于传入的 app_root。"""

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import hashlib
 import json
@@ -15,6 +17,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal, TextIO
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "GPT_SoVITS") not in sys.path:
+    sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
+
+from update.operation_lock import OperationLockBusy, acquire_operation_lock
 
 
 APP_ID = "D_sakiko"
@@ -906,11 +915,17 @@ def main() -> int:
             return 1
 
         hpatch_bin = resolve_hpatch_bin(app_root, args.hpatch_bin)
-        exit_code = apply_package_chain(app_root, version_file, package_roots, hpatch_bin, args, recorder)
-        print(f"[退出码] {exit_code}")
-        if exit_code == 0:
-            restart_app(parse_restart_command(args.restart_command))
-        return exit_code
+        try:
+            with acquire_operation_lock(app_root, "update"):
+                exit_code = apply_package_chain(app_root, version_file, package_roots, hpatch_bin, args, recorder)
+                print(f"[退出码] {exit_code}")
+                if exit_code == 0:
+                    restart_app(parse_restart_command(args.restart_command))
+                return exit_code
+        except OperationLockBusy as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
+            return 1
     except Exception:
         if recorder is not None:
             recorder.write_failed(rollback_performed=False, rollback_succeeded=None)

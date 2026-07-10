@@ -35,6 +35,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -81,12 +82,17 @@ from ui_main.components.context_usage_indicator import (
 )
 from ui_main.components.message_input import MessageInput
 from ui_main.components.update_dialog import UpdateDialog
+from ui_main.components.repair_dialog import RepairDialog
+from ui_main.threads.repair_controller import RepairCheckThread, RepairPrepareThread
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
 from ui.file_manager import show_file_in_manager
 from update.update_checker import get_configured_index_urls, read_current_version
 from update.update_launcher import build_restart_command, launch_update_process
 from update.update_models import DownloadedPatch, UpdatePlan
 from update.update_paths import get_app_root, get_update_result_file, get_version_file
+from repair.repair_checker import PreparedRepair, RepairCheckResult, get_configured_repair_base_urls
+from repair.repair_launcher import launch_repair_process
+from repair.repair_paths import get_repair_result_file
 from llm_model_utils import ensure_openai_compatible_model
 from input_commands import (
     CommandSpec,
@@ -443,7 +449,13 @@ class TranscriptionWorker(QObject):
 
 
 class MoreFunctionWindow(QDialog):
-    def __init__(self,parent_window_close_fun,check_update_fun=None,has_update: bool=False):
+    def __init__(
+        self,
+        parent_window_close_fun: Callable[[], None],
+        check_update_fun: Callable[[], None] | None = None,
+        check_repair_fun: Callable[[], None] | None = None,
+        has_update: bool = False,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("更多功能...")
         self.screen = QDesktopWidget().screenGeometry()
@@ -476,7 +488,17 @@ class MoreFunctionWindow(QDialog):
             self.check_update_btn.clicked.connect(self.close)  # noqa
             layout.addWidget(self.check_update_btn)
 
-        self.version_label = QLabel(f"当前版本: {read_current_version(get_version_file(get_app_root()))}")
+        if check_repair_fun is not None:
+            self.check_repair_btn = QPushButton("检查并修复程序文件")
+            self.check_repair_btn.clicked.connect(check_repair_fun)  # noqa
+            self.check_repair_btn.clicked.connect(self.close)  # noqa
+            layout.addWidget(self.check_repair_btn)
+
+        try:
+            current_version = read_current_version(get_version_file(get_app_root()))
+        except Exception:
+            current_version = "无法识别"
+        self.version_label = QLabel(f"当前版本: {current_version}")
         self.version_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.version_label)
 
@@ -2446,6 +2468,12 @@ class ChatGUI(QWidget):
         self.update_dialog: UpdateDialog | None = None
         self.pending_update_plan: UpdatePlan | None = None
         self.downloaded_update_patches: list[DownloadedPatch] = []
+        self.repair_check_thread: RepairCheckThread | None = None
+        self.repair_prepare_thread: RepairPrepareThread | None = None
+        self.repair_check_progress: QProgressDialog | None = None
+        self.repair_dialog: RepairDialog | None = None
+        self.pending_repair_result: RepairCheckResult | None = None
+        self.repair_workflow_active = False
         #----------------------------------------------------------
         # 获取当前主题色
         self._current_theme_color = self._get_theme_color()
@@ -2560,6 +2588,7 @@ class ChatGUI(QWidget):
         self.voice_is_valid=False
         self.load_whisper_model()
         QTimer.singleShot(0, self.show_last_update_failure_if_needed)
+        QTimer.singleShot(0, self.show_last_repair_failure_if_needed)
         QTimer.singleShot(30000, self.start_auto_update_check)
 
     def show_last_update_failure_if_needed(self) -> None:
@@ -2635,6 +2664,194 @@ class ChatGUI(QWidget):
         except Exception:
             logger.exception("更新结果记录已提示状态写回失败：%s", result_file)
 
+    def show_last_repair_failure_if_needed(self) -> None:
+        """在主窗口启动后提示上次 detached 修复器失败结果。"""
+
+        result_file = get_repair_result_file(get_app_root())
+        if not result_file.exists():
+            return
+        try:
+            result = json.loads(result_file.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("读取修复结果记录失败：%s", result_file)
+            return
+        if not isinstance(result, dict):
+            return
+        result_data = cast(dict[str, object], result)
+        if result_data.get("status") != "failed" or result_data.get("notified") is not False:
+            return
+        log_path = self._resolve_update_log_path(result_data.get("log_file"))
+        rollback_performed = result_data.get("rollback_performed") is True
+        rollback_succeeded = result_data.get("rollback_succeeded")
+        if rollback_performed and rollback_succeeded is False:
+            detail = "上次程序文件修复失败，且自动回滚可能没有完整完成。"
+        elif rollback_performed:
+            detail = "上次程序文件修复失败，已自动恢复本次修改。"
+        else:
+            detail = "上次程序文件修复没有完成，未修改或未完成替换程序文件。"
+        message = f"{detail}\n\n问题提示只会显示这一次。"
+        if log_path is not None:
+            message += f"\n\n日志文件：\n{log_path}"
+        box = QMessageBox(QMessageBox.Warning, "上次程序文件修复未完成", message, QMessageBox.Ok, self)
+        box.button(QMessageBox.Ok).setText("确定")
+        show_log_button = None
+        if log_path is not None:
+            show_log_button = box.addButton("显示日志文件", QMessageBox.ActionRole)
+        box.exec_()
+        if show_log_button is not None and box.clickedButton() == show_log_button:
+            show_file_in_manager(log_path)
+        self._mark_update_result_notified(result_file, result_data)
+
+    def _update_operation_in_progress(self) -> bool:
+        """判断主程序内是否正在检查或下载更新。"""
+
+        return bool(
+            (self.update_check_thread is not None and self.update_check_thread.isRunning())
+            or (self.update_download_thread is not None and self.update_download_thread.isRunning())
+        )
+
+    def check_repair_manual(self) -> None:
+        """响应用户手动检查并修复程序文件。"""
+
+        if self.repair_workflow_active:
+            QMessageBox.information(self, "程序文件修复", "正在检查或准备修复，请稍候。")
+            return
+        if self._update_operation_in_progress():
+            QMessageBox.information(self, "程序文件修复", "当前正在检查或下载更新，请稍后再试。")
+            return
+        base_urls = get_configured_repair_base_urls()
+        if not base_urls:
+            QMessageBox.information(self, "程序文件修复", "尚未配置程序文件修复资源地址。")
+            return
+        self.repair_workflow_active = True
+        self.pending_repair_result = None
+        progress = QProgressDialog("正在获取当前版本修复清单...", "取消", 0, 0, self)
+        progress.setWindowTitle("检查程序文件")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        self.repair_check_progress = progress
+        self.repair_check_thread = RepairCheckThread(base_urls, self)
+        progress.canceled.connect(self.repair_check_thread.cancel)  # noqa
+        self.repair_check_thread.progressChanged.connect(self._on_repair_check_progress)  # noqa
+        self.repair_check_thread.checkFinished.connect(self._on_repair_check_finished)  # noqa
+        self.repair_check_thread.checkFailed.connect(self._on_repair_check_failed)  # noqa
+        self.repair_check_thread.start()
+        progress.show()
+
+    def _on_repair_check_progress(self, completed: int, total: int, path: str) -> None:
+        """刷新本地文件扫描进度。"""
+
+        if self.repair_check_progress is None:
+            return
+        self.repair_check_progress.setRange(0, max(total, 1))
+        self.repair_check_progress.setValue(min(completed, max(total, 1)))
+        self.repair_check_progress.setLabelText(f"正在检查程序文件 {completed}/{total}\n{path}")
+
+    def _close_repair_check_progress(self) -> None:
+        """关闭并释放检查进度弹窗。"""
+
+        if self.repair_check_progress is not None:
+            self.repair_check_progress.close()
+            self.repair_check_progress.deleteLater()
+            self.repair_check_progress = None
+
+    def _on_repair_check_finished(self, result: RepairCheckResult) -> None:
+        """处理完整性扫描完成结果。"""
+
+        self._close_repair_check_progress()
+        if not result.candidates:
+            self.repair_workflow_active = False
+            QMessageBox.information(self, "程序文件修复", "程序文件完整。")
+            return
+        self.pending_repair_result = result
+        dialog = RepairDialog(result, self)
+        self.repair_dialog = dialog
+        dialog.prepareRequested.connect(self.start_repair_prepare)  # noqa
+        dialog.cancelRequested.connect(self.cancel_repair_prepare)  # noqa
+        dialog.exec_()
+        if self.repair_prepare_thread is None or not self.repair_prepare_thread.isRunning():
+            self.repair_workflow_active = False
+
+    def _on_repair_check_failed(self, reason: str, message: str) -> None:
+        """处理检查取消、不支持或服务错误。"""
+
+        self._close_repair_check_progress()
+        self.repair_workflow_active = False
+        if reason == "cancelled":
+            return
+        title = "当前版本暂不支持修复" if reason == "unsupported" else "程序文件检查失败"
+        QMessageBox.warning(self, title, message)
+
+    def start_repair_prepare(self) -> None:
+        """下载并校验用户已经确认的全部修复文件。"""
+
+        if self.pending_repair_result is None:
+            return
+        if self.repair_prepare_thread is not None and self.repair_prepare_thread.isRunning():
+            return
+        if self.repair_dialog is not None:
+            self.repair_dialog.set_preparing()
+        self.repair_prepare_thread = RepairPrepareThread(self.pending_repair_result, self)
+        self.repair_prepare_thread.progressChanged.connect(self._on_repair_prepare_progress)  # noqa
+        self.repair_prepare_thread.prepareFinished.connect(self._on_repair_prepare_finished)  # noqa
+        self.repair_prepare_thread.prepareFailed.connect(self._on_repair_prepare_failed)  # noqa
+        self.repair_prepare_thread.start()
+
+    def cancel_repair_prepare(self) -> None:
+        """取消尚未进入独立替换阶段的修复准备。"""
+
+        if self.repair_prepare_thread is not None and self.repair_prepare_thread.isRunning():
+            self.repair_prepare_thread.cancel()
+            if self.repair_dialog is not None:
+                self.repair_dialog.set_status("正在取消修复资源下载...")
+            return
+        if self.repair_dialog is not None:
+            self.repair_dialog.reject()
+
+    def _on_repair_prepare_progress(self, completed: int, total: int, path: str) -> None:
+        """刷新修复资源准备进度。"""
+
+        if self.repair_dialog is not None:
+            self.repair_dialog.set_progress(completed, total, path)
+
+    def _on_repair_prepare_failed(self, reason: str, message: str) -> None:
+        """处理下载取消或修复准备失败。"""
+
+        if self.repair_dialog is None:
+            self.repair_workflow_active = False
+            return
+        if reason == "cancelled":
+            self.repair_dialog.set_cancelled()
+        else:
+            logger.warning("准备程序文件修复失败：%s", message)
+            self.repair_dialog.set_error(message)
+
+    def _on_repair_prepare_finished(self, prepared: PreparedRepair) -> None:
+        """启动独立修复器并退出当前主程序。"""
+
+        if self.repair_dialog is not None:
+            self.repair_dialog.set_launching()
+        app_root = get_app_root()
+        try:
+            self.save_data()
+            launch_repair_process(
+                app_root=app_root,
+                plan_file=prepared.plan_file,
+                main_pid=os.getpid(),
+                restart_command=build_restart_command(app_root),
+            )
+        except Exception as exc:
+            logger.exception("启动独立修复器失败")
+            if self.repair_dialog is not None:
+                self.repair_dialog.set_error(f"启动独立修复器失败：{exc}")
+            return
+        if self.repair_dialog is not None:
+            self.repair_dialog.accept()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        self.close()
+
     def start_auto_update_check(self) -> None:
         """启动一次静默自动更新检查。"""
 
@@ -2643,6 +2860,9 @@ class ChatGUI(QWidget):
     def check_update_manual(self) -> None:
         """响应用户手动检查更新。"""
 
+        if self.repair_workflow_active:
+            QMessageBox.information(self, "检查更新", "当前正在检查或准备修复程序文件，请稍后再试。")
+            return
         if self.pending_update_plan is not None:
             self.open_update_dialog(self.pending_update_plan)
             return
@@ -2651,6 +2871,10 @@ class ChatGUI(QWidget):
     def _start_update_check(self, silent: bool) -> None:
         """创建后台线程检查更新。"""
 
+        if self.repair_workflow_active:
+            if not silent:
+                QMessageBox.information(self, "检查更新", "当前正在检查或准备修复程序文件，请稍后再试。")
+            return
         if self.update_check_thread is not None and self.update_check_thread.isRunning():
             if not silent:
                 QMessageBox.information(self, "检查更新", "正在检查更新，请稍候。")
@@ -2695,6 +2919,9 @@ class ChatGUI(QWidget):
     def open_update_dialog(self, update_plan: UpdatePlan | None = None) -> None:
         """打开更新弹窗并启动更新公告加载。"""
 
+        if self.repair_workflow_active:
+            QMessageBox.information(self, "检查更新", "当前正在检查或准备修复程序文件，请稍后再试。")
+            return
         plan = update_plan or self.pending_update_plan
         if plan is None:
             self.check_update_manual()
@@ -2821,6 +3048,9 @@ class ChatGUI(QWidget):
         """确认后下载当前更新计划中的补丁链，并在下载完成后自动安装。"""
 
         if self.pending_update_plan is None:
+            return
+        if self.repair_workflow_active:
+            QMessageBox.information(self, "更新", "当前正在检查或准备修复程序文件，请稍后再试。")
             return
         if self.update_download_thread is not None and self.update_download_thread.isRunning():
             return
@@ -4196,6 +4426,7 @@ class ChatGUI(QWidget):
         more_function_win=MoreFunctionWindow(
             self.close_program,
             self.check_update_manual,
+            self.check_repair_manual,
             has_update=self.pending_update_plan is not None,
         )
         more_function_win.exec_()

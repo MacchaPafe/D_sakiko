@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
-import fnmatch
 import hashlib
 import json
 import os
@@ -16,6 +17,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.release.file_selection import (
+    FileSelectionRules,
+    collect_selected_files,
+    directory_might_contain_include as shared_directory_might_contain_include,
+    list_directory_files,
+    list_git_tracked_files as shared_list_git_tracked_files,
+    path_matches,
+    select_files,
+)
 
 
 DEFAULT_IGNORE_PATTERNS = [
@@ -43,6 +58,26 @@ DEFAULT_IGNORE_PATTERNS = [
 ]
 
 
+DEFAULT_HARD_EXCLUDE_PATTERNS = [
+    ".git/**",
+    ".updates/**",
+    ".update_backup/**",
+    ".repair_backup/**",
+    "logs/**",
+    "patch_files/**",
+    "dist/**",
+    ".idea/**",
+    ".vscode/**",
+    "._*",
+    ".DS_Store",
+    "__MACOSX/**",
+    "**/__MACOSX/**",
+    "__pycache__/**",
+    "**/__pycache__/**",
+    "*.pyc",
+]
+
+
 PLATFORM_IGNORE_PATTERNS = {
     "macos": [
         "*.bat",
@@ -61,6 +96,8 @@ DEFAULT_INCLUDE_PATTERNS: list[str] = []
 PLATFORM_INCLUDE_PATTERNS = {
     "macos": [
         "GPT_SoVITS/live2d_1.cpython-311-darwin.so",
+        "*.command",
+        "install_brew.sh",
     ],
     "windows": [
         "GPT_SoVITS/live2d_1.pyd",
@@ -121,6 +158,12 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="强制包含哪些文件（支持 glob），可多次传入。",
+    )
+    parser.add_argument(
+        "--hard-exclude",
+        action="append",
+        default=[],
+        help="最终排除哪些文件（支持 glob），不能被 include 覆盖，可多次传入。",
     )
     parser.add_argument(
         "--no-platform-includes",
@@ -202,120 +245,33 @@ def read_gitignore_patterns(base_dir: Path) -> list[str]:
 def should_ignore(rel_path: str, ignore_patterns: Iterable[str]) -> bool:
     """判断相对路径是否命中忽略规则。"""
 
-    rel_posix = rel_path.replace("\\", "/")
-    name = Path(rel_posix).name
-    for pattern in ignore_patterns:
-        normalized = pattern.replace("\\", "/")
-        if fnmatch.fnmatch(rel_posix, normalized) or fnmatch.fnmatch(name, normalized):
-            return True
-    return False
+    return path_matches(rel_path, ignore_patterns)
 
 
 def should_force_include(rel_path: str, include_patterns: Iterable[str]) -> bool:
     """判断相对路径是否命中强制包含规则。"""
 
-    rel_posix = rel_path.replace("\\", "/")
-    name = Path(rel_posix).name
-    for pattern in include_patterns:
-        normalized = pattern.replace("\\", "/")
-        if fnmatch.fnmatch(rel_posix, normalized) or fnmatch.fnmatch(name, normalized):
-            return True
-    return False
+    return path_matches(rel_path, include_patterns)
 
 
 def directory_might_contain_include(rel_dir: str, include_patterns: Iterable[str]) -> bool:
     """判断目录 rel_dir 是否可能包含 include_patterns 中的任何强制包含文件。"""
 
-    rel_posix = rel_dir.replace("\\", "/").strip("/")
-    if not rel_posix:
-        return True
-
-    dir_parts = rel_posix.split("/")
-
-    for pattern in include_patterns:
-        pat_posix = pattern.replace("\\", "/").strip("/")
-        if not pat_posix:
-            continue
-
-        if "**" in pat_posix:
-            return True
-
-        pat_parts = pat_posix.split("/")
-
-        if len(dir_parts) < len(pat_parts):
-            match = True
-            for d_part, p_part in zip(dir_parts, pat_parts):
-                if not fnmatch.fnmatch(d_part, p_part):
-                    match = False
-                    break
-            if match:
-                return True
-        else:
-            if fnmatch.fnmatch(rel_posix, pat_posix):
-                return True
-
-    return False
+    return shared_directory_might_contain_include(rel_dir, include_patterns)
 
 
 def list_files(base_dir: Path, ignore_patterns: list[str], include_patterns: list[str]) -> set[str]:
     """列出目录内满足筛选规则的全部文件相对路径集合。"""
 
-    result: set[str] = set()
-    for root, dirs, files in os.walk(base_dir):
-        root_path = Path(root)
-
-        kept_dirs: list[str] = []
-        for dirname in dirs:
-            dir_path = root_path / dirname
-            rel_dir = dir_path.relative_to(base_dir).as_posix()
-            # 目录忽略规则通常形如 "runtime/**"。用一个虚拟子路径判断，
-            # 可以在遍历阶段直接剪枝，避免先递归进大目录再过滤文件。
-            probe = f"{rel_dir}/__dir__"
-            # 同时满足三个条件的目录会被忽略：
-            # 1. 目录本身命中黑名单
-            # 2. 目录不命中白名单（白名单优先于黑名单）
-            # 3. 目录下不包含任何命中白名单的文件
-            if should_ignore(probe, ignore_patterns) and not should_force_include(probe, include_patterns) and not directory_might_contain_include(rel_dir, include_patterns):
-                    continue
-            kept_dirs.append(dirname)
-        dirs[:] = kept_dirs
-
-        for filename in files:
-            file = root_path / filename
-            if not file.is_file():
-                continue
-            rel = file.relative_to(base_dir).as_posix()
-            # 筛选规则为：
-            # 1. 命中白名单，强制保留（即使文件同时在黑名单）
-            # 2. 命中黑名单，忽略
-            # 3. 其他正常保留
-            if should_ignore(rel, ignore_patterns) and not should_force_include(rel, include_patterns):
-                continue
-            result.add(rel)
-    return result
+    rules = FileSelectionRules(include=tuple(include_patterns), exclude=tuple(ignore_patterns))
+    candidates = list_directory_files(base_dir, rules)
+    return set(select_files(base_dir, candidates, rules).selected)
 
 
 def list_git_tracked_files(base_dir: Path) -> set[str]:
     """读取 Git 跟踪文件列表，失败时返回空集合。"""
 
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(base_dir), "ls-files", "-z"],
-            capture_output=True,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return set()
-
-    tracked: set[str] = set()
-    # 使用 -z 输出避免中文路径被 quotePath 转义；按字节解码后再标准化路径分隔符。
-    for raw_item in completed.stdout.split(b"\0"):
-        if not raw_item:
-            continue
-        file = raw_item.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-        if file:
-            tracked.add(file)
-    return tracked
+    return shared_list_git_tracked_files(base_dir)
 
 
 def resolve_filtered_files(
@@ -324,40 +280,24 @@ def resolve_filtered_files(
     ignore_patterns: list[str],
     include_patterns: list[str],
     use_git_tracked: bool,
+    hard_exclude_patterns: list[str] | None = None,
 ) -> tuple[set[str], set[str]]:
     """按黑白名单与 Git 跟踪策略，得到新旧版本的可比较文件集合。"""
-    # 列出旧版本目录下的所有文件
-    # 在旧版本目录下不使用 git 跟踪文件列表，因为旧版本可能不在 git 仓库中，或跟踪状态不可靠。
-    old_files = list_files(old_root, ignore_patterns, include_patterns)
-
-    # 如果扫描新版本文件夹时，不使用 git 跟踪文件列表，则直接按黑白名单规则扫描目录，得到当前版本文件集合。
-    if not use_git_tracked:
-        current_files = list_files(current_root, ignore_patterns, include_patterns)
-        return current_files, old_files
-
-    # 如果使用 git 跟踪文件列表，优先获取 git 跟踪文件集合，作为当前版本文件的初始候选集合。
-    tracked_files = list_git_tracked_files(current_root)
-    if not tracked_files:
+    rules = FileSelectionRules(
+        include=tuple(include_patterns),
+        exclude=tuple(ignore_patterns),
+        hard_exclude=tuple(hard_exclude_patterns or ()),
+    )
+    old_result = collect_selected_files(old_root, rules, use_git_tracked=False)
+    tracked_files = shared_list_git_tracked_files(current_root) if use_git_tracked else set()
+    if use_git_tracked and not tracked_files:
         print("[警告] 未获取到 git 跟踪文件，回退到目录扫描。")
-        current_files = list_files(current_root, ignore_patterns, include_patterns)
-        return current_files, old_files
-
-    # 寻找强制包含的文件集合，补充到 git 跟踪文件集合中，确保它们不会被忽略规则过滤掉。
-    forced_include = {
-        file
-        for file in list_files(current_root, [], include_patterns)
-        if should_force_include(file, include_patterns)
-    }
-
-    selected: set[str] = set()
-    for file in tracked_files | forced_include:
-        # 白名单优先于黑名单：若同时命中，仍保留该文件。
-        if should_ignore(file, ignore_patterns) and not should_force_include(file, include_patterns):
-            continue
-        if (current_root / file).is_file():
-            selected.add(file)
-
-    return selected, old_files
+    current_result = collect_selected_files(
+        current_root,
+        rules,
+        use_git_tracked=use_git_tracked and bool(tracked_files),
+    )
+    return set(current_result.selected), set(old_result.selected)
 
 
 def calculate_changes(
@@ -605,6 +545,7 @@ def main() -> int:
     if not args.no_platform_includes:
         include_patterns.extend(PLATFORM_INCLUDE_PATTERNS[args.platform])
     include_patterns.extend(args.include)
+    hard_exclude_patterns = [*DEFAULT_HARD_EXCLUDE_PATTERNS, *args.hard_exclude]
 
     # 准备输出目录：如果已存在且 --clean-output，则先清空再创建；否则直接创建（已存在则覆盖）。
     if output_root.exists() and args.clean_output:
@@ -618,6 +559,7 @@ def main() -> int:
         ignore_patterns=ignore_patterns,
         include_patterns=include_patterns,
         use_git_tracked=args.use_git_tracked,
+        hard_exclude_patterns=hard_exclude_patterns,
     )
     # 计算差异，得到删除/新增/修改三类文件列表
     remove_files, added_files, changed_files = calculate_changes(

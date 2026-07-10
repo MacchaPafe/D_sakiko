@@ -221,6 +221,34 @@ wheels = [
 ]
 
 [[package]]
+name = "boto3"
+version = "1.43.45"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "jmespath", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "s3transfer", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/c0/bcbe0a924ed89f8982a87727cd0f88a73397fa423a60df17ae76aa013514/boto3-1.43.45.tar.gz", hash = "sha256:65e0ae541a9948ac41b706d5c7165d96ebf155812562b6518b862be027ee7347", size = 112666, upload-time = "2026-07-09T19:30:06.944Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/cf/0d7d1e537d301cf0d079fa4a0765c9febf0eb74d65c115cababa6368c1b3/boto3-1.43.45-py3-none-any.whl", hash = "sha256:bb076647526c491ce75cab896543afcda5b81c97d3f8e8da08a033fc1ddb7429", size = 140031, upload-time = "2026-07-09T19:30:04.87Z" },
+]
+
+[[package]]
+name = "botocore"
+version = "1.43.45"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jmespath", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "python-dateutil", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "urllib3", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/25/fa/fb07ee4025ec257ff7b45d40411a922c86da3a4eaa98783da74404071d99/botocore-1.43.45.tar.gz", hash = "sha256:a2da80ff3caa2873769b9a32ae5f1fb18b3571ab63a981896639955611ca01e6", size = 15689068, upload-time = "2026-07-09T19:29:55.584Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/a5/ac3ca5d2d42456eb497a4aafc6b1b15502b0817299ca8fc7c9bd7969c301/botocore-1.43.45-py3-none-any.whl", hash = "sha256:a04871d814124e65daf429fb99640def23b8c4d3edc6438603b31f11116d7a67", size = 15376233, upload-time = "2026-07-09T19:29:52.312Z" },
+]
+
+[[package]]
 name = "budoux"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -498,6 +526,7 @@ dependencies = [
     { name = "fastapi", extra = ["standard"], marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "faster-whisper", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "ffmpeg-python", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "filelock", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "funasr", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "g2p-en", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "g2pk2", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
@@ -573,6 +602,9 @@ cu128 = [
     { name = "torchaudio", version = "2.7.1", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cu128') or (platform_machine != 'arm64' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "torchaudio", version = "2.7.1+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cu128') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
+release = [
+    { name = "boto3", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -584,6 +616,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "av", specifier = ">=11" },
+    { name = "boto3", marker = "extra == 'release'", specifier = ">=1.40,<2" },
     { name = "chardet", specifier = ">=5.2.0" },
     { name = "cn2an", specifier = ">=0.5.23" },
     { name = "ctranslate2", specifier = ">=4.0,<5" },
@@ -592,6 +625,7 @@ requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.2" },
     { name = "faster-whisper", specifier = ">=1.2.1" },
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
+    { name = "filelock", specifier = ">=3.20.0" },
     { name = "funasr", specifier = "==1.0.27" },
     { name = "g2p-en", specifier = ">=2.1.0" },
     { name = "g2pk2", specifier = ">=0.0.3" },
@@ -660,7 +694,7 @@ requires-dist = [
     { name = "wordsegment", specifier = ">=1.3.1" },
     { name = "x-transformers", specifier = ">=2.11.23" },
 ]
-provides-extras = ["cpu", "cu128"]
+provides-extras = ["cpu", "cu128", "release"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5557,6 +5591,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/12/0d/15cc82da5d83f27a3c6b04f3a232d61bc8c50d38a6cd8da79228e5f8b8d6/ruff-0.14.9-py3-none-win32.whl", hash = "sha256:df0937f30aaabe83da172adaf8937003ff28172f59ca9f17883b4213783df197", size = 13202651, upload-time = "2025-12-11T21:39:26.628Z" },
     { url = "https://files.pythonhosted.org/packages/32/f7/c78b060388eefe0304d9d42e68fab8cffd049128ec466456cef9b8d4f06f/ruff-0.14.9-py3-none-win_amd64.whl", hash = "sha256:c0b53a10e61df15a42ed711ec0bda0c582039cf6c754c49c020084c55b5b0bc2", size = 14702079, upload-time = "2025-12-11T21:39:11.954Z" },
     { url = "https://files.pythonhosted.org/packages/26/09/7a9520315decd2334afa65ed258fed438f070e31f05a2e43dd480a5e5911/ruff-0.14.9-py3-none-win_arm64.whl", hash = "sha256:8e821c366517a074046d92f0e9213ed1c13dbc5b37a7fc20b07f79b64d62cc84", size = 13744730, upload-time = "2025-12-11T21:39:29.659Z" },
+]
+
+[[package]]
+name = "s3transfer"
+version = "0.19.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'darwin' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f6/94/dcdaeb1713cab9c84def276cfac7388b17c7d9855bbcfe88d77e4dbafd44/s3transfer-0.19.0.tar.gz", hash = "sha256:ce436931687addc4c1712d52d40b32f53e88315723f107ffa20ba82b05a0f685", size = 165171, upload-time = "2026-06-16T19:44:51.599Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/5f/4c174edad94f82de888ac00a5ddd8d07b35609b6c94f0bdf4d74af57703e/s3transfer-0.19.0-py3-none-any.whl", hash = "sha256:777cc2415536f1debadb5c2ef7779275d0fc0fe0e042411cdd6caebeb2685262", size = 90101, upload-time = "2026-06-16T19:44:50.439Z" },
 ]
 
 [[package]]

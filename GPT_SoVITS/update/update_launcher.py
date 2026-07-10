@@ -11,6 +11,32 @@ from .update_models import DownloadedPatch
 from .update_paths import get_update_log_dir, get_update_result_file
 
 
+def launch_detached_process(command: list[str], app_root: Path) -> None:
+    """按平台启动不会随主程序终端退出而终止的子进程。"""
+
+    if os.name == "nt":
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        subprocess.Popen(
+            command,
+            cwd=str(app_root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creation_flags,
+        )
+        return
+    subprocess.Popen(
+        command,
+        cwd=str(app_root),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
+
+
 def build_apply_command(
     app_root: Path,
     package_dirs: list[Path] | tuple[Path, ...] | None,
@@ -68,27 +94,7 @@ def launch_update_process(
     status_file = get_update_result_file(app_root)
     package_dirs = [downloaded.package_dir for downloaded in downloaded_patches]
     command = build_apply_command(app_root, package_dirs, main_pid, restart_command, log_file, status_file)
-    if os.name == "nt":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-        subprocess.Popen(
-            command,
-            cwd=str(app_root),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=creation_flags,
-        )
-        return
-    subprocess.Popen(
-        command,
-        cwd=str(app_root),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        start_new_session=True,
-    )
+    launch_detached_process(command, app_root)
 
 
 def build_restart_command(app_root: Path) -> list[str]:

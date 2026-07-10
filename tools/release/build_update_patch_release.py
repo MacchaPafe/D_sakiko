@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
-import fnmatch
 import json
 import os
-import platform
 import re
 import subprocess
 import sys
@@ -14,12 +14,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.release.file_selection import list_git_untracked_files, path_matches
+
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 APP_ID = "D_sakiko"
 CHANNEL = "stable"
-REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_FILE = REPO_ROOT / "tools" / "release" / "update_patch_profiles.json"
 LOCAL_FILE = REPO_ROOT / "tools" / "release" / "update_patch.local.json"
 LOCAL_EXAMPLE_FILE = REPO_ROOT / "tools" / "release" / "update_patch.local.example.json"
@@ -78,6 +83,7 @@ class BuildConfig:
     no_platform_includes: bool
     ignore: list[str]
     include: list[str]
+    hard_exclude: list[str]
     zip_output: Path
 
 
@@ -97,6 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--arch", default="", choices=["", "x64", "arm64", "universal"], help="覆盖 profile 架构。")
     parser.add_argument("--ignore", action="append", default=[], help="追加忽略规则，可重复。")
     parser.add_argument("--include", action="append", default=[], help="追加强制包含规则，可重复。")
+    parser.add_argument("--hard-exclude", action="append", default=[], help="追加不可被 include 覆盖的最终排除规则。")
     parser.add_argument("--zip-output", default="", help="patch zip 输出路径；默认使用规范文件名。")
     parser.add_argument("--app-id", default="", help="覆盖 app_id。")
     parser.add_argument("--channel", default="", help="覆盖 channel。")
@@ -370,6 +377,13 @@ def build_config(args: argparse.Namespace, repo_root: Path) -> BuildConfig:
         *string_list_field(local_override, "include"),
         *args.include,
     ]
+    hard_exclude = [
+        *string_list_field(defaults, "hard_exclude"),
+        *string_list_field(profile_data, "hard_exclude"),
+        *string_list_field(local_config, "extra_hard_exclude"),
+        *string_list_field(local_override, "hard_exclude"),
+        *args.hard_exclude,
+    ]
 
     current = resolve_relative_to_root(repo_root, current_text)
     old = find_old_directory(
@@ -407,6 +421,7 @@ def build_config(args: argparse.Namespace, repo_root: Path) -> BuildConfig:
         no_platform_includes=choose_bool("no_platform_includes", args.no_platform_includes, profile_data, defaults, local_override, False),
         ignore=ignore,
         include=include,
+        hard_exclude=hard_exclude,
         zip_output=zip_output,
     )
 
@@ -474,13 +489,7 @@ def assert_git_ready(config: BuildConfig) -> None:
 def rel_path_matches(path: str, patterns: list[str] | tuple[str, ...]) -> bool:
     """判断相对路径是否命中 glob 规则。"""
 
-    rel_posix = path.replace("\\", "/")
-    name = Path(rel_posix).name
-    for pattern in patterns:
-        normalized = pattern.replace("\\", "/")
-        if fnmatch.fnmatch(rel_posix, normalized) or fnmatch.fnmatch(name, normalized):
-            return True
-    return False
+    return path_matches(path, patterns)
 
 
 def find_untracked_includes(config: BuildConfig) -> list[str]:
@@ -488,18 +497,15 @@ def find_untracked_includes(config: BuildConfig) -> list[str]:
 
     if not config.use_git_tracked or not config.include:
         return []
-    completed = run_command(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=config.current, check=False)
-    if completed.returncode != 0:
-        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
-        raise BuildError(f"git ls-files --others 失败：{stderr or '<无 stderr>'}")
-    result: list[str] = []
-    for raw_item in completed.stdout.split(b"\0"):
-        if not raw_item:
-            continue
-        relative_path = raw_item.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-        if rel_path_matches(relative_path, config.include):
-            result.append(relative_path)
-    return sorted(result)
+    try:
+        untracked = list_git_untracked_files(config.current, fail_on_error=True)
+    except RuntimeError as exc:
+        raise BuildError(str(exc)) from exc
+    return sorted(
+        path
+        for path in untracked
+        if rel_path_matches(path, config.include) and not rel_path_matches(path, config.hard_exclude)
+    )
 
 
 def confirm_or_raise(title: str, details: list[str], accepted: bool) -> None:
@@ -628,6 +634,8 @@ def build_command(config: BuildConfig, no_zip: bool) -> list[str]:
         command.extend(["--ignore", pattern])
     for pattern in config.include:
         command.extend(["--include", pattern])
+    for pattern in config.hard_exclude:
+        command.extend(["--hard-exclude", pattern])
     if not no_zip:
         command.extend(["--zip-output", str(config.zip_output)])
     return command
@@ -767,6 +775,7 @@ def write_build_metadata(config: BuildConfig, command: list[str]) -> None:
         "clean_output": config.clean_output,
         "ignore": config.ignore,
         "include": config.include,
+        "hard_exclude": config.hard_exclude,
         "command": command,
     }
     metadata_path = config.output / "build_metadata.json"
