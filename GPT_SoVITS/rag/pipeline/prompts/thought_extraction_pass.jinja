@@ -1,0 +1,92 @@
+你是一个动漫角色认知标注助手。请只依据当前场景字幕、说话人信息和当前场景已经提取的剧情事件，输出按需的客观事实与角色观点更新。
+
+不要使用场景外剧情知识补全。证据不足时可以不输出。`present_characters` 只是整个场景的候选角色集合，不能单独证明某人听见了局部台词。
+
+## 当前场景
+
+- scene_id: `{{ scene.scene_id }}`
+- episode: `{{ scene.episode }}`
+- 时间: `{{ scene.scene_start_text }} - {{ scene.scene_end_text }}`
+- 在场候选角色: {{ scene.present_characters | join('、') if scene.present_characters else '无' }}
+
+## 当前场景的 Story Event 候选
+
+{% if story_events %}
+{% for event in story_events %}
+- `{{ event.event_local_id }}` {{ event.title }}：{{ event.summary }}
+{% endfor %}
+{% else %}
+- 无。仍可提取 standalone topic 或无法链接当前事件的观点。
+{% endif %}
+
+## 台词
+
+{% for utterance in scene.utterances %}
+- `{{ utterance.u_id }}` `{{ utterance.start_text }}-{{ utterance.end_text }}`
+  - speaker: {{ utterance.speaker_name if utterance.speaker_name else '未知' }}
+  - speaker_confidence: {{ utterance.speaker_confidence }}
+  - inner_monologue: {{ utterance.is_inner_monologue }}
+  - addressee: {{ utterance.addressee_candidates | join('、') if utterance.addressee_candidates else '无' }}
+  - 中文：{{ utterance.zh_text if utterance.zh_text else '无' }}
+  - 日文：{{ utterance.jp_text if utterance.jp_text else '无' }}
+{% endfor %}
+
+## 提取 Event Fact
+
+Event Fact 只为角色观点链接和知情隔离服务，不要完整拆分所有事件。仅在以下情况抽取：
+
+- 被本场景的角色观点引用；
+- 不同角色知情范围明显不同；
+- 涉及秘密、原因、身份、计划、责任等高泄漏风险信息。
+
+## 提取 Character Thought Update
+
+Character Thought 表示角色对事件、事实或独立主题的认知、推测、否认或解释，不包括普通情绪、行动意图，也不等同于对另一个人的持续关系态度。
+
+- `subject_kind`: `event` / `event_fact` / `standalone_topic` / `uncertain`
+- `epistemic_status`: `knows` / `believes` / `suspects` / `uncertain` / `rejects`
+- `provisional_update_type`: `acquired` / `reaffirmed` / `revised` / `retracted` / `disclosed_existing` / `unspecified`
+- `evidence_strength`: `explicit` / `inferred`
+- `effective_from_hint`: `current_scene` / `earlier_than_current_scene` / `explicit_prior_scene` / `unknown`
+
+明确台词、内心独白或明确回应使用 `explicit`。局部上下文能较可靠证明角色目击、听见或理解时可以使用 `inferred`，但必须填写 `inference_note`。不要通过推断补全隐藏动机、未说出口的原因或他人内心。
+
+本地事件或事实 ID 无法确定时留空，不要编造。独立自我认知等内容使用 `standalone_topic`；实在无法判断对象时使用 `uncertain`。
+
+每条结果必须引用真实的 evidence ID。只输出严格 JSON，不输出 Markdown 或解释文字：
+
+{
+  "scene_id": "{{ scene.scene_id }}",
+  "event_facts": [
+    {
+      "scene_id": "{{ scene.scene_id }}",
+      "fact_local_id": "fact_01",
+      "event_local_id": "event_01 或 null",
+      "fact_text": "客观原子事实",
+      "tags": [],
+      "evidence_u_ids": [],
+      "evidence_s_ids": [],
+      "confidence": 0.0
+    }
+  ],
+  "character_thought_updates": [
+    {
+      "scene_id": "{{ scene.scene_id }}",
+      "update_local_id": "thought_01",
+      "character_name": "角色标准名",
+      "thought_text": "角色在当前阶段持有的观点",
+      "subject_kind": "event",
+      "subject_text": "观点谈论的语义对象",
+      "epistemic_status": "believes",
+      "provisional_update_type": "unspecified",
+      "evidence_strength": "explicit",
+      "evidence_u_ids": [],
+      "about_event_local_id": null,
+      "about_fact_local_id": null,
+      "effective_from_hint": "current_scene",
+      "inference_note": null,
+      "ambiguity_notes": [],
+      "extraction_confidence": 0.0
+    }
+  ]
+}

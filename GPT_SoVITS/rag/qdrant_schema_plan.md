@@ -7,8 +7,9 @@
 - `story_events`
 - `character_relations`
 - `lore_entries`
+- `character_thoughts`
 
-本轮只输出设计与实施计划，不开始编写 `models.py`。
+前三张 collection 的原始设计已完成实现；角色视角安全改造新增第四张 `character_thoughts`。
 
 ---
 
@@ -204,11 +205,12 @@ embedding 向量是运行时生成结果，因此推荐：
 
 ### 3. 核心实体 dataclass
 
-建议实现 3 个主实体：
+建议实现 4 个主实体：
 
 - `StoryEventDocument`
 - `CharacterRelationDocument`
 - `LoreEntryDocument`
+- `CharacterThoughtDocument`
 
 每个实体：
 
@@ -622,3 +624,21 @@ Qdrant 查询常见会落到这些模式：
 - 后续扩展空间明确
 - 查询逻辑不和 schema 混杂
 - UI 常量、RAG schema、Qdrant 查询三层职责清楚
+
+---
+
+## 十一、角色视角安全扩展：`character_thoughts`
+
+`character_thoughts` 保存某个角色在一段剧情时间内实际持有的认知、推测、否认或解释，
+用于替代“事件发生且角色参与，所以角色知道事件摘要”的粗粒度假设。它采用扁平 payload：
+
+- 角色与范围：`character_id`、`series_id`、`season_id`、`canon_branch`
+- 语义对象：`subject_kind`、`about_event_id`、`about_fact_id`、`standalone_topic_key`
+- 时间线：`thought_thread_key`、`valid_from`、`valid_to`
+- 可注入内容：`thought_text`、`epistemic_status`、`retrieval_text`、`tags`
+- 可追溯证据：`source_scene_ids`、`evidence_u_ids`、`evidence_strength`
+- 质量信息：`extraction_confidence`、`link_confidence`
+
+只为运行时过滤字段建立 payload index：角色、系列、季、分支和有效期。Event Fact 继续保存在
+离线标注 JSON 中，不建立独立 Qdrant collection。`unresolved` 或 `subject_kind=uncertain` 的记录
+由导入器拒绝，避免把未解决的语义链接带入角色扮演检索。

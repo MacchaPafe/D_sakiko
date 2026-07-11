@@ -31,6 +31,12 @@ from .stage2_document_extraction import (
     load_stage2_annotation_artifact,
     save_stage2_annotation_artifact,
 )
+from .stage2b_thought_extraction import (
+    DEFAULT_TEMPLATE_PATH as DEFAULT_STAGE2B_TEMPLATE_PATH,
+    annotate_stage2b_artifact,
+    load_stage2b_annotation_artifact,
+    save_stage2b_annotation_artifact,
+)
 from .stage3_rag_import import (
     backfill_existing_stage3_character_relations,
     backfill_stage3_character_relations_across_artifacts,
@@ -48,6 +54,13 @@ from .stage3_lore_deduplicate import (
     save_deduped_stage3_artifacts,
     save_lore_dedup_decisions,
     save_lore_dedup_review_artifact,
+)
+from .stage3_thought_pipeline import (
+    DEFAULT_LINK_TEMPLATE_PATH,
+    build_stage3_thought_import_artifact,
+    load_stage3_thought_import_artifact,
+    save_stage3_thought_import_artifact,
+    upsert_stage3_thought_import_artifact,
 )
 
 
@@ -112,6 +125,40 @@ def _build_parser() -> argparse.ArgumentParser:
     annotate_stage2_parser.add_argument("--stream", action="store_true", help="开启 LLM 流式输出")
     annotate_stage2_parser.add_argument("--quiet-status", action="store_true", help="关闭场景级状态日志")
 
+    annotate_stage2b_parser = subparsers.add_parser(
+        "annotate-stage2b",
+        help="结合 Stage 2A 事件候选抽取 Event Fact 与角色观点更新",
+    )
+    annotate_stage2b_parser.add_argument("--input", required=True, help="stage2_input JSON 路径")
+    annotate_stage2b_parser.add_argument(
+        "--stage2a-annotation",
+        required=True,
+        help="annotate-stage2 输出的 pass2_raw JSON 路径",
+    )
+    annotate_stage2b_parser.add_argument("--output", required=True, help="输出 Stage 2B JSON 路径")
+    annotate_stage2b_parser.add_argument("--model", required=True, help="litellm 使用的模型名")
+    annotate_stage2b_parser.add_argument(
+        "--template",
+        default=str(DEFAULT_STAGE2B_TEMPLATE_PATH),
+        help="Stage 2B prompt 模板路径",
+    )
+    annotate_stage2b_parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
+    annotate_stage2b_parser.add_argument("--max-tokens", type=int, default=None, help="LLM max_tokens")
+    annotate_stage2b_parser.add_argument("--retries", type=int, default=2, help="LLM 调用失败时的重试次数")
+    annotate_stage2b_parser.add_argument("--scene-id", action="append", default=None, help="只跑指定 scene_id，可重复传入")
+    annotate_stage2b_parser.add_argument("--max-scenes", type=int, default=None, help="最多处理多少个 scene")
+    annotate_stage2b_parser.add_argument("--prompts-dir", default=None, help="若提供，则把每个场景的渲染 prompt 单独落盘")
+    annotate_stage2b_parser.add_argument("--stream", action="store_true", help="开启 LLM 流式输出")
+    annotate_stage2b_parser.add_argument("--quiet-status", action="store_true", help="关闭场景级状态日志")
+    annotate_stage2b_parser.add_argument(
+        "--max-prompt-chars",
+        type=int,
+        default=None,
+        help="完整场景 prompt 超过该字符数时启用重叠窗口；默认不限制",
+    )
+    annotate_stage2b_parser.add_argument("--window-utterances", type=int, default=40, help="fallback 窗口台词数")
+    annotate_stage2b_parser.add_argument("--window-overlap", type=int, default=8, help="fallback 窗口重叠台词数")
+
     normalize_stage3_parser = subparsers.add_parser(
         "normalize-stage3-rag",
         help="将第二阶段 raw 结果规范化为待入库的审查文件",
@@ -119,6 +166,33 @@ def _build_parser() -> argparse.ArgumentParser:
     normalize_stage3_parser.add_argument("--input", required=True, help="stage2_input JSON 路径")
     normalize_stage3_parser.add_argument("--annotation", required=True, help="annotate-stage2 输出的 pass2_raw JSON 路径")
     normalize_stage3_parser.add_argument("--output", required=True, help="输出待入库 artifact JSON 路径")
+
+    normalize_thoughts_parser = subparsers.add_parser(
+        "normalize-stage3-thoughts",
+        help="链接并跨场景聚合 Stage 2B 角色观点，输出风险审查文件",
+    )
+    normalize_thoughts_parser.add_argument("--input", required=True, help="stage2_input JSON 路径")
+    normalize_thoughts_parser.add_argument("--stage2b-annotation", required=True, help="Stage 2B JSON 路径")
+    normalize_thoughts_parser.add_argument(
+        "--stage3-rag",
+        required=True,
+        help="normalize-stage3-rag 输出的现有三表 artifact 路径",
+    )
+    normalize_thoughts_parser.add_argument("--output", required=True, help="输出 Character Thought 审查 JSON 路径")
+    normalize_thoughts_parser.add_argument(
+        "--link-model",
+        default=None,
+        help="可选：用于解决跨场景语义引用的 litellm 模型；不提供时保守保留 unresolved",
+    )
+    normalize_thoughts_parser.add_argument(
+        "--link-template",
+        default=str(DEFAULT_LINK_TEMPLATE_PATH),
+        help="Stage 3 引用链接 prompt 模板路径",
+    )
+    normalize_thoughts_parser.add_argument("--link-temperature", type=float, default=0.1, help="链接 LLM temperature")
+    normalize_thoughts_parser.add_argument("--link-max-tokens", type=int, default=None, help="链接 LLM max_tokens")
+    normalize_thoughts_parser.add_argument("--link-retries", type=int, default=2, help="链接 LLM 重试次数")
+    normalize_thoughts_parser.add_argument("--max-link-candidates", type=int, default=8, help="每类最多提供多少个链接候选")
 
     backfill_stage3_parser = subparsers.add_parser(
         "backfill-stage3-relations",
@@ -160,6 +234,33 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Qdrant 连接方式",
     )
     import_stage3_parser.add_argument(
+        "--embedding-model-path",
+        default="pretrained_models/multilingual-e5-small",
+        help="sentence-transformer 模型路径",
+    )
+
+    import_thoughts_parser = subparsers.add_parser(
+        "import-stage3-thoughts",
+        help="将通过人工复核的 Character Thought 写入 Qdrant",
+    )
+    import_thoughts_parser.add_argument("--input", required=True, help="Character Thought 审查 JSON 路径")
+    import_thoughts_parser.add_argument(
+        "--allow-unreviewed",
+        action="store_true",
+        help="测试时允许导入未复核记录；unresolved 和结构非法记录仍会跳过",
+    )
+    import_thoughts_parser.add_argument(
+        "--qdrant-location",
+        default="../knowledge_base/default_world_info",
+        help="Qdrant 本地路径或服务地址",
+    )
+    import_thoughts_parser.add_argument(
+        "--qdrant-connect-type",
+        default="local",
+        choices=["memory", "local", "grpc", "http"],
+        help="Qdrant 连接方式",
+    )
+    import_thoughts_parser.add_argument(
         "--embedding-model-path",
         default="pretrained_models/multilingual-e5-small",
         help="sentence-transformer 模型路径",
@@ -266,6 +367,50 @@ def main(argv: list[str] | None = None) -> int:
         print(f"失败场景数: {error_count}")
         return 0
 
+    if args.command == "annotate-stage2b":
+        input_artifact = load_stage2_input_artifact(args.input)
+        stage2a_artifact = load_stage2_annotation_artifact(args.stage2a_annotation)
+        result = annotate_stage2b_artifact(
+            input_artifact=input_artifact,
+            stage2a_artifact=stage2a_artifact,
+            llm_config=LiteLLMConfig(
+                model=args.model,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                retries=args.retries,
+            ),
+            template_path=args.template,
+            source_stage2a_output_path=str(Path(args.stage2a_annotation).resolve()),
+            scene_ids=set(args.scene_id) if args.scene_id else None,
+            max_scenes=args.max_scenes,
+            prompts_dir=args.prompts_dir,
+            stream=args.stream,
+            status_callback=None if args.quiet_status else default_status_printer,
+            stream_callback=default_stream_printer if args.stream else None,
+            max_prompt_chars=args.max_prompt_chars,
+            window_utterances=args.window_utterances,
+            window_overlap=args.window_overlap,
+        )
+        save_stage2b_annotation_artifact(result, args.output)
+        success_count = sum(1 for item in result.results if item.annotation is not None)
+        error_count = sum(1 for item in result.results if item.error is not None)
+        fact_count = sum(
+            len(item.annotation.event_facts)
+            for item in result.results
+            if item.annotation is not None
+        )
+        thought_count = sum(
+            len(item.annotation.character_thought_updates)
+            for item in result.results
+            if item.annotation is not None
+        )
+        print(f"已写入 Stage 2B 角色观点抽取结果: {Path(args.output).resolve()}")
+        print(f"成功场景数: {success_count}")
+        print(f"失败场景数: {error_count}")
+        print(f"Event Fact 候选数: {fact_count}")
+        print(f"角色观点更新候选数: {thought_count}")
+        return 0
+
     if args.command == "normalize-stage3-rag":
         input_artifact = load_stage2_input_artifact(args.input)
         annotation_artifact = load_stage2_annotation_artifact(args.annotation)
@@ -279,6 +424,42 @@ def main(argv: list[str] | None = None) -> int:
         print(f"character_relations 条目数: {len(normalized_artifact.character_relations)}")
         print(f"lore_entries 条目数: {len(normalized_artifact.lore_entries)}")
         print(f"规范化问题数: {len(normalized_artifact.issues)}")
+        return 0
+
+    if args.command == "normalize-stage3-thoughts":
+        input_artifact = load_stage2_input_artifact(args.input)
+        stage2b_artifact = load_stage2b_annotation_artifact(args.stage2b_annotation)
+        stage3_rag_artifact = load_stage3_normalized_import_artifact(args.stage3_rag)
+        thought_artifact = build_stage3_thought_import_artifact(
+            input_artifact=input_artifact,
+            stage2b_artifact=stage2b_artifact,
+            stage3_rag_artifact=stage3_rag_artifact,
+            linker_llm_config=(
+                None
+                if args.link_model is None
+                else LiteLLMConfig(
+                    model=args.link_model,
+                    temperature=args.link_temperature,
+                    max_tokens=args.link_max_tokens,
+                    retries=args.link_retries,
+                )
+            ),
+            linker_template_path=args.link_template,
+            max_link_candidates=args.max_link_candidates,
+        )
+        save_stage3_thought_import_artifact(thought_artifact, args.output)
+        unresolved_count = sum(
+            1 for record in thought_artifact.character_thoughts if record.link_status == "unresolved"
+        )
+        high_risk_count = sum(
+            1 for record in thought_artifact.character_thoughts if record.risk_level == "high"
+        )
+        print(f"已写入 Character Thought 审查 artifact: {Path(args.output).resolve()}")
+        print(f"Event Fact 条目数: {len(thought_artifact.event_facts)}")
+        print(f"观点更新条目数: {len(thought_artifact.linked_updates)}")
+        print(f"观点状态条目数: {len(thought_artifact.character_thoughts)}")
+        print(f"未解决链接数: {unresolved_count}")
+        print(f"高风险条目数: {high_risk_count}")
         return 0
 
     if args.command == "backfill-stage3-relations":
@@ -351,6 +532,28 @@ def main(argv: list[str] | None = None) -> int:
                 f"{collection_name}: 请求 {report.requested_count} 条，"
                 f"成功 {report.success_count} 条，失败 {report.failure_count} 条"
             )
+        return 0
+
+    if args.command == "import-stage3-thoughts":
+        thought_artifact = load_stage3_thought_import_artifact(args.input)
+        service = create_rag_service(
+            qdrant_location=args.qdrant_location,
+            qdrant_connect_type=args.qdrant_connect_type,
+            embedding_model_path=args.embedding_model_path,
+        )
+        try:
+            report = upsert_stage3_thought_import_artifact(
+                thought_artifact,
+                service,
+                require_review_approval=not args.allow_unreviewed,
+            )
+        finally:
+            service.close()
+        print(f"已导入 Character Thought artifact: {Path(args.input).resolve()}")
+        print(
+            f"character_thoughts: 请求 {report.requested_count} 条，"
+            f"成功 {report.success_count} 条，失败 {report.failure_count} 条"
+        )
         return 0
 
     parser.error(f"未知命令: {args.command}")

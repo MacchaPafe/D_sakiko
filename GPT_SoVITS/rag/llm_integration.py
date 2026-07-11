@@ -10,6 +10,7 @@ from .character_resolver import resolve_character_id
 from .context_builder import RagContextBuilder
 from .models import (
     CharacterRelationQuery,
+    CharacterThoughtQuery,
     LoreQuery,
     StoryEventQuery,
 )
@@ -32,6 +33,8 @@ class LLMRagIntegration:
         formatter: RagPromptFormatter,
         cache_enabled: bool = True,
         cache_ttl_minutes: int = 5,
+        use_character_thoughts: bool = False,
+        include_story_events_in_single_mode: bool = True,
     ) -> None:
         """初始化 RAG 集成层。
 
@@ -46,6 +49,8 @@ class LLMRagIntegration:
         self.formatter = formatter
         self.cache_enabled = cache_enabled
         self.cache_ttl_seconds = cache_ttl_minutes * 60
+        self.use_character_thoughts = use_character_thoughts
+        self.include_story_events_in_single_mode = include_story_events_in_single_mode
         self._cache: Dict[str, Tuple[str, float]] = {}
 
     def _get_cache_key(
@@ -105,6 +110,7 @@ class LLMRagIntegration:
         top_k_events: int = 3,
         top_k_relations: int = 2,
         top_k_lore: int = 2,
+        top_k_thoughts: int = 3,
     ) -> str:
         """执行 RAG 检索并返回格式化后的 prompt 文本。
 
@@ -148,13 +154,46 @@ class LLMRagIntegration:
         )
 
         # 执行检索
-        story_hits = self.rag_service.query_story_events(
-            query_text=query_text,
-            context=retrieval_context,
-            # 查询故事时，不要求当前角色必须出现在故事中
-            options=StoryEventQuery(require_character_match=False),
-            top_k=top_k_events,
-        )
+        story_hits = []
+        if mode == "theater" or self.include_story_events_in_single_mode:
+            story_hits = self.rag_service.query_story_events(
+                query_text=query_text,
+                context=retrieval_context,
+                options=StoryEventQuery(require_character_match=False),
+                top_k=top_k_events,
+            )
+
+        thought_hits = []
+        if mode == "single" and self.use_character_thoughts and current_character_id is not None:
+            thought_hits = self.rag_service.query_character_thoughts(
+                query_text=query_text,
+                context=retrieval_context,
+                options=CharacterThoughtQuery(require_character_match=True),
+                top_k=top_k_thoughts,
+            )
+        elif mode == "theater" and self.use_character_thoughts and theater_pair is not None:
+            seen_thought_ids: set[str] = set()
+            for theater_character_name in theater_pair:
+                theater_character_id = resolve_character_id(theater_character_name)
+                if theater_character_id is None:
+                    continue
+                theater_context = self.context_builder.build_retrieval_context(
+                    current_time=current_time,
+                    current_character_id=theater_character_id,
+                    series_id=series_id,
+                    season_id=season_id,
+                    canon_branch=canon_branch,
+                )
+                for hit in self.rag_service.query_character_thoughts(
+                    query_text=query_text,
+                    context=theater_context,
+                    options=CharacterThoughtQuery(require_character_match=True),
+                    top_k=top_k_thoughts,
+                ):
+                    if hit.point_id in seen_thought_ids:
+                        continue
+                    seen_thought_ids.add(hit.point_id)
+                    thought_hits.append(hit)
 
         relation_hits = []
         if mode == "theater":
@@ -186,6 +225,7 @@ class LLMRagIntegration:
                 character_relations=relation_hits,
                 lore_entries=lore_hits,
                 character_pair=theater_pair,
+                character_thoughts=thought_hits,
             )
         else:
             result = self.formatter.format_for_single_character(
@@ -193,6 +233,7 @@ class LLMRagIntegration:
                 character_relations=relation_hits,
                 lore_entries=lore_hits,
                 perspective_character=character_name,
+                character_thoughts=thought_hits,
             )
 
         # 写入缓存

@@ -74,6 +74,8 @@ def build_stage2_scene_input(scene: SceneChunk, annotation: SceneAnnotationPass1
                 start_text=ms_to_timestamp(utterance.start_ms),
                 end_text=ms_to_timestamp(utterance.end_ms),
                 speaker_name=None if annotation_item is None else annotation_item.speaker_name,
+                speaker_confidence=0.0 if annotation_item is None else annotation_item.speaker_confidence,
+                is_inner_monologue=False if annotation_item is None else annotation_item.is_inner_monologue,
                 addressee_candidates=(
                     [] if annotation_item is None else _unique_preserving_order(annotation_item.addressee_candidates)
                 ),

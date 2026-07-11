@@ -1,0 +1,47 @@
+你是角色观点引用链接助手。你只能在下面给出的候选集合中选择，不得创造事件或事实 ID。
+
+待链接观点：
+- source_local_id: `{{ update.source_local_id }}`
+- 角色: `{{ update.character_id }}`
+- 原 subject_kind: `{{ update.subject_kind }}`
+- subject_text: {{ update.subject_text }}
+- thought_text: {{ update.thought_text }}
+- 证据时间: {{ update.evidence_time }}
+
+可选 Story Events：
+{% for candidate in event_candidates %}
+- id: `{{ candidate.id }}`
+  title: {{ candidate.title }}
+  summary: {{ candidate.summary }}
+  time: {{ candidate.time }}
+{% else %}
+- 无
+{% endfor %}
+
+可选 Event Facts：
+{% for candidate in fact_candidates %}
+- id: `{{ candidate.id }}`
+  text: {{ candidate.text }}
+  event_id: {{ candidate.event_id }}
+{% else %}
+- 无
+{% endfor %}
+
+决策规则：
+
+- 只有语义明确吻合时才使用 `linked`，且 target_id 必须来自候选集合。
+- 若观点本身是自我认知、价值判断、长期目标等独立主题，不需要由具体剧情事件“产生”，使用 `standalone` / `standalone_topic`，target_id 为 null。
+- 无法可靠判断时使用 `unresolved`，不要勉强链接。
+- `thought_aspect` 用简短文本区分同一对象的不同认知方面，例如“事件状态”“退出原因”“责任归属”。
+
+只输出严格 JSON：
+
+{
+  "source_local_id": "{{ update.source_local_id }}",
+  "link_status": "linked 或 standalone 或 unresolved",
+  "target_kind": "event 或 event_fact 或 standalone_topic 或 unresolved",
+  "target_id": null,
+  "thought_aspect": "认知方面",
+  "link_confidence": 0.0,
+  "reason_brief": "简短理由"
+}

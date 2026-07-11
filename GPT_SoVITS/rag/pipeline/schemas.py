@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rag.models import CanonBranch, CharacterId, ScopeType, SeasonId, SeriesId
@@ -163,6 +165,8 @@ class Stage2Utterance(BaseModel):
     start_text: str
     end_text: str
     speaker_name: str | None = None
+    speaker_confidence: float = 0.0
+    is_inner_monologue: bool = False
     addressee_candidates: list[str] = Field(default_factory=list)
     mentioned_characters: list[str] = Field(default_factory=list)
     emotion_hint: str | None = None
@@ -300,6 +304,215 @@ class Stage2AnnotationArtifact(BaseModel):
     results: list[Stage2SceneAnnotationResult] = Field(default_factory=list)
 
 
+ThoughtSubjectKind = Literal["event", "event_fact", "standalone_topic", "uncertain"]
+EpistemicStatus = Literal["knows", "believes", "suspects", "uncertain", "rejects"]
+ProvisionalThoughtUpdateType = Literal[
+    "acquired",
+    "reaffirmed",
+    "revised",
+    "retracted",
+    "disclosed_existing",
+    "unspecified",
+]
+ThoughtEvidenceStrength = Literal["explicit", "inferred"]
+ThoughtEffectiveFromHint = Literal[
+    "current_scene",
+    "earlier_than_current_scene",
+    "explicit_prior_scene",
+    "unknown",
+]
+
+
+class EventFactCandidate(BaseModel):
+    """表示为角色观点链接而按需抽取的客观原子事实。"""
+
+    scene_id: str
+    fact_local_id: str
+    event_local_id: str | None = None
+    fact_text: str
+    tags: list[str] = Field(default_factory=list)
+    evidence_u_ids: list[str] = Field(default_factory=list)
+    evidence_s_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class CharacterThoughtUpdateCandidate(BaseModel):
+    """表示当前场景中有证据支持的一次角色观点更新。"""
+
+    scene_id: str
+    update_local_id: str
+    character_name: str
+    thought_text: str
+    subject_kind: ThoughtSubjectKind
+    subject_text: str
+    epistemic_status: EpistemicStatus
+    provisional_update_type: ProvisionalThoughtUpdateType
+    evidence_strength: ThoughtEvidenceStrength
+    evidence_u_ids: list[str] = Field(default_factory=list)
+    about_event_local_id: str | None = None
+    about_fact_local_id: str | None = None
+    effective_from_hint: ThoughtEffectiveFromHint = "current_scene"
+    inference_note: str | None = None
+    ambiguity_notes: list[str] = Field(default_factory=list)
+    extraction_confidence: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_inference_note(self) -> "CharacterThoughtUpdateCandidate":
+        """确保推断型证据说明其推断依据。"""
+
+        if self.evidence_strength == "inferred" and not (self.inference_note or "").strip():
+            raise ValueError("evidence_strength 为 inferred 时必须提供 inference_note")
+        return self
+
+
+class SceneThoughtExtractionPass2B(BaseModel):
+    """表示单场景的 Event Fact 与角色观点更新抽取结果。"""
+
+    scene_id: str
+    event_facts: list[EventFactCandidate] = Field(default_factory=list)
+    character_thought_updates: list[CharacterThoughtUpdateCandidate] = Field(default_factory=list)
+
+
+class Stage2BSceneAnnotationResult(BaseModel):
+    """表示单场景 Stage 2B 调用及校验结果。"""
+
+    scene_id: str
+    prompt_path: str | None = None
+    prompt_paths: list[str] = Field(default_factory=list)
+    raw_response_text: str | None = None
+    annotation: SceneThoughtExtractionPass2B | None = None
+    error: str | None = None
+
+
+class Stage2BAnnotationArtifact(BaseModel):
+    """表示 Stage 2B 批量角色观点抽取产物。"""
+
+    metadata: Stage2InputMetadata
+    source_stage2a_model: str
+    source_stage2a_output_path: str | None = None
+    model: str
+    template_path: str
+    results: list[Stage2BSceneAnnotationResult] = Field(default_factory=list)
+
+
+ThoughtLinkStatus = Literal["linked", "standalone", "unresolved"]
+ResolvedThoughtUpdateType = Literal["acquired", "reaffirmed", "revised", "retracted"]
+ThoughtReviewStatus = Literal["unreviewed", "approved", "edited", "rejected", "needs_followup"]
+ThoughtRiskLevel = Literal["low", "medium", "high"]
+ThoughtReferenceTargetKind = Literal["event", "event_fact", "standalone_topic", "unresolved"]
+
+
+class ThoughtReferenceLinkDecision(BaseModel):
+    """表示 Stage 3 LLM 在受限候选集合内作出的观点链接决策。"""
+
+    source_local_id: str
+    link_status: ThoughtLinkStatus
+    target_kind: ThoughtReferenceTargetKind
+    target_id: str | None = None
+    thought_aspect: str
+    link_confidence: float = Field(ge=0.0, le=1.0)
+    reason_brief: str
+
+
+class NormalizedEventFact(BaseModel):
+    """表示 Stage 3 中可供角色观点引用的规范化 Event Fact。"""
+
+    fact_id: str
+    source_scene_id: str
+    source_local_id: str
+    about_event_id: str | None = None
+    fact_text: str
+    tags: list[str] = Field(default_factory=list)
+    evidence_u_ids: list[str] = Field(default_factory=list)
+    evidence_s_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class LinkedCharacterThoughtUpdate(BaseModel):
+    """表示 Stage 3 已尝试完成语义对象链接的角色观点更新。"""
+
+    source_scene_id: str
+    source_local_id: str
+    character_id: CharacterId
+    thought_text: str
+    subject_kind: ThoughtSubjectKind
+    subject_text: str
+    epistemic_status: EpistemicStatus
+    provisional_update_type: ProvisionalThoughtUpdateType
+    resolved_update_type: ResolvedThoughtUpdateType
+    evidence_strength: ThoughtEvidenceStrength
+    evidence_u_ids: list[str] = Field(default_factory=list)
+    inference_note: str | None = None
+    ambiguity_notes: list[str] = Field(default_factory=list)
+    effective_from_hint: ThoughtEffectiveFromHint
+    extraction_confidence: float = Field(ge=0.0, le=1.0)
+    link_status: ThoughtLinkStatus
+    link_confidence: float = Field(ge=0.0, le=1.0)
+    about_event_id: str | None = None
+    about_fact_id: str | None = None
+    standalone_topic_key: str | None = None
+    thought_aspect: str
+    thought_thread_key: str
+    evidence_time: int
+
+
+class CharacterThoughtPayload(BaseModel):
+    """表示可直接实例化为 CharacterThoughtDocument 的 payload。"""
+
+    character_id: CharacterId
+    series_id: SeriesId
+    season_id: SeasonId
+    canon_branch: CanonBranch
+    thought_thread_key: str
+    subject_kind: ThoughtSubjectKind
+    about_event_id: str | None = None
+    about_fact_id: str | None = None
+    standalone_topic_key: str | None = None
+    thought_text: str
+    epistemic_status: EpistemicStatus
+    valid_from: int
+    valid_to: int
+    tags: list[str] = Field(default_factory=list)
+    retrieval_text: str
+    source_scene_ids: list[str] = Field(default_factory=list)
+    evidence_u_ids: list[str] = Field(default_factory=list)
+    evidence_strength: ThoughtEvidenceStrength
+    extraction_confidence: float = Field(ge=0.0, le=1.0)
+    link_confidence: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_subject_reference(self) -> "CharacterThoughtPayload":
+        """确保最终观点的 subject_kind 与引用字段一致且可入库。"""
+
+        if self.subject_kind == "event" and self.about_event_id is None:
+            raise ValueError("event 类型必须包含 about_event_id")
+        if self.subject_kind == "event_fact" and self.about_fact_id is None:
+            raise ValueError("event_fact 类型必须包含 about_fact_id")
+        if self.subject_kind == "standalone_topic" and self.standalone_topic_key is None:
+            raise ValueError("standalone_topic 类型必须包含 standalone_topic_key")
+        if self.subject_kind == "uncertain":
+            raise ValueError("uncertain 类型不得生成最终 CharacterThought payload")
+        if self.valid_from > self.valid_to:
+            raise ValueError("valid_from 不能大于 valid_to")
+        return self
+
+
+class CharacterThoughtReviewRecord(BaseModel):
+    """表示一条可供人工复核并在通过后导入的角色观点。"""
+
+    point_id: str
+    source_update_ids: list[str] = Field(default_factory=list)
+    link_status: ThoughtLinkStatus
+    review_status: ThoughtReviewStatus = "unreviewed"
+    risk_level: ThoughtRiskLevel
+    risk_score: int = Field(ge=0, le=100)
+    risk_reasons: list[str] = Field(default_factory=list)
+    validation_errors: list[str] = Field(default_factory=list)
+    provisional_update_types: list[ProvisionalThoughtUpdateType] = Field(default_factory=list)
+    resolved_update_type: ResolvedThoughtUpdateType
+    document: CharacterThoughtPayload | None = None
+
+
 class StoryEventPayload(BaseModel):
     """表示可直接实例化为 StoryEventDocument 的 payload。"""
 
@@ -415,4 +628,15 @@ class Stage3NormalizedImportArtifact(BaseModel):
     story_events: list[StoryEventImportRecord] = Field(default_factory=list)
     character_relations: list[CharacterRelationImportRecord] = Field(default_factory=list)
     lore_entries: list[LoreEntryImportRecord] = Field(default_factory=list)
+    issues: list[NormalizationIssue] = Field(default_factory=list)
+
+
+class Stage3ThoughtImportArtifact(BaseModel):
+    """表示 Character Thought 跨场景聚合与风险分析后的审查产物。"""
+
+    metadata: Stage3ImportMetadata
+    source_stage2b_model: str
+    event_facts: list[NormalizedEventFact] = Field(default_factory=list)
+    linked_updates: list[LinkedCharacterThoughtUpdate] = Field(default_factory=list)
+    character_thoughts: list[CharacterThoughtReviewRecord] = Field(default_factory=list)
     issues: list[NormalizationIssue] = Field(default_factory=list)

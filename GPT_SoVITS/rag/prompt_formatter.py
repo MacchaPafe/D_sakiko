@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .models import (
     CharacterRelationDocument,
+    CharacterThoughtDocument,
     LoreEntryDocument,
     StoryEventDocument,
 )
@@ -25,6 +26,7 @@ class RagPromptFormatter:
         character_relations: List[QueryHit[CharacterRelationDocument]],
         lore_entries: List[QueryHit[LoreEntryDocument]],
         perspective_character: str,
+        character_thoughts: Optional[List[QueryHit[CharacterThoughtDocument]]] = None,
     ) -> str:
         """为单角色对话模式格式化 RAG 检索结果。
 
@@ -36,8 +38,14 @@ class RagPromptFormatter:
         """
         sections: List[str] = []
 
+        if character_thoughts:
+            thought_lines = ["【当前角色的认知与观点】"]
+            for hit in character_thoughts:
+                thought_lines.append(self.format_single_thought(hit.document))
+            sections.append("\n".join(thought_lines))
+
         if story_events:
-            event_lines = ["【相关剧情】"]
+            event_lines = ["【近期剧情】"]
             for hit in story_events:
                 event_lines.append(self.format_single_event(hit.document))
             sections.append("\n".join(event_lines))
@@ -68,6 +76,7 @@ class RagPromptFormatter:
         character_relations: List[QueryHit[CharacterRelationDocument]],
         lore_entries: List[QueryHit[LoreEntryDocument]],
         character_pair: Tuple[str, str],
+        character_thoughts: Optional[List[QueryHit[CharacterThoughtDocument]]] = None,
     ) -> str:
         """为小剧场模式格式化 RAG 检索结果。
 
@@ -78,6 +87,12 @@ class RagPromptFormatter:
         :return: 格式化后的 prompt 文本，无结果时返回空字符串。
         """
         sections: List[str] = []
+
+        if character_thoughts:
+            thought_lines = ["【各角色当前认知】"]
+            for hit in character_thoughts:
+                thought_lines.append(self.format_single_thought(hit.document))
+            sections.append("\n".join(thought_lines))
 
         if character_relations:
             relation_lines = ["【角色关系】"]
@@ -157,3 +172,20 @@ class RagPromptFormatter:
         :return: 格式化后的单行文本描述。
         """
         return "- {title}：{content}".format(title=lore.title, content=lore.content)
+
+    def format_single_thought(self, thought: CharacterThoughtDocument) -> str:
+        """格式化一条在当前剧情时间有效的角色观点。"""
+
+        status_labels = {
+            "knows": "知道",
+            "believes": "相信",
+            "suspects": "怀疑",
+            "uncertain": "不确定",
+            "rejects": "不认同",
+        }
+        status = status_labels.get(thought.epistemic_status, thought.epistemic_status)
+        return "- {character}{status}：{text}".format(
+            character=thought.character_id.common_name,
+            status=status,
+            text=thought.thought_text,
+        )

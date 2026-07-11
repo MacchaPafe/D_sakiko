@@ -18,6 +18,7 @@ class CollectionName(str, Enum):
     CHARACTER_RELATIONS = "character_relations"
     STYLE_SAMPLES = "style_samples"
     LORE_ENTRIES = "lore_entries"
+    CHARACTER_THOUGHTS = "character_thoughts"
 
 
 class SeriesId(str, Enum):
@@ -475,6 +476,64 @@ class LoreEntryDocument(BaseQdrantDocument):
 
 
 @dataclass
+class CharacterThoughtDocument(BaseQdrantDocument):
+    """表示某角色在指定剧情时间区间内持有的一条观点。"""
+
+    collection_name: ClassVar[CollectionName] = CollectionName.CHARACTER_THOUGHTS
+
+    character_id: CharacterId
+    series_id: SeriesId
+    season_id: SeasonId
+    canon_branch: CanonBranch
+    thought_thread_key: str
+    subject_kind: str
+    about_event_id: Optional[str]
+    about_fact_id: Optional[str]
+    standalone_topic_key: Optional[str]
+    thought_text: str
+    epistemic_status: str
+    valid_from: int
+    valid_to: int
+    tags: List[str]
+    retrieval_text: str
+    source_scene_ids: List[str]
+    evidence_u_ids: List[str]
+    evidence_strength: str
+    extraction_confidence: float
+    link_confidence: float
+
+    def __post_init__(self) -> None:
+        """收敛枚举、文本和列表字段，并校验观点引用与有效期。"""
+
+        self.character_id = _coerce_enum_value(CharacterId, "character_id", self.character_id)
+        self.series_id = _coerce_enum_value(SeriesId, "series_id", self.series_id)
+        self.season_id = _coerce_enum_value(SeasonId, "season_id", self.season_id)
+        self.canon_branch = _coerce_enum_value(CanonBranch, "canon_branch", self.canon_branch)
+        self.thought_thread_key = _normalize_text("thought_thread_key", self.thought_thread_key)
+        self.subject_kind = _normalize_text("subject_kind", self.subject_kind)
+        self.thought_text = _normalize_text("thought_text", self.thought_text)
+        self.epistemic_status = _normalize_text("epistemic_status", self.epistemic_status)
+        self.tags = _normalize_string_list("tags", self.tags, allow_empty=True)
+        self.retrieval_text = _normalize_text("retrieval_text", self.retrieval_text)
+        self.source_scene_ids = _normalize_string_list("source_scene_ids", self.source_scene_ids)
+        self.evidence_u_ids = _normalize_string_list("evidence_u_ids", self.evidence_u_ids)
+        self.evidence_strength = _normalize_text("evidence_strength", self.evidence_strength)
+        if self.subject_kind == "event" and self.about_event_id is None:
+            raise ValueError("event 类型的观点必须包含 about_event_id")
+        if self.subject_kind == "event_fact" and self.about_fact_id is None:
+            raise ValueError("event_fact 类型的观点必须包含 about_fact_id")
+        if self.subject_kind == "standalone_topic" and self.standalone_topic_key is None:
+            raise ValueError("standalone_topic 类型的观点必须包含 standalone_topic_key")
+        if self.subject_kind == "uncertain":
+            raise ValueError("uncertain 类型的观点不得进入 Qdrant")
+        if not 0.0 <= self.extraction_confidence <= 1.0:
+            raise ValueError("extraction_confidence 必须位于 0 到 1 之间")
+        if not 0.0 <= self.link_confidence <= 1.0:
+            raise ValueError("link_confidence 必须位于 0 到 1 之间")
+        _validate_time_window(self.valid_from, self.valid_to, "CharacterThoughtDocument")
+
+
+@dataclass
 class RetrievalContext:
     """描述一次检索请求的公共上下文信息。"""
 
@@ -564,12 +623,24 @@ class LoreQuery:
     limit_to_canon_branch: bool = True
 
 
+@dataclass
+class CharacterThoughtQuery:
+    """描述 `character_thoughts` collection 的角色视角安全查询偏好。"""
+
+    require_character_match: bool = True
+    limit_to_series: bool = True
+    limit_to_season: bool = True
+    limit_to_canon_branch: bool = True
+
+
 __all__ = [
     "BaseQdrantDocument",
     "CanonBranch",
     "CharacterId",
     "CharacterRelationDocument",
     "CharacterRelationQuery",
+    "CharacterThoughtDocument",
+    "CharacterThoughtQuery",
     "CollectionName",
     "LoreEntryDocument",
     "LoreQuery",

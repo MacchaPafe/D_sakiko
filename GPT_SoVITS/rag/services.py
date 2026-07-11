@@ -15,6 +15,8 @@ from .models import (
     BaseQdrantDocument,
     CharacterRelationDocument,
     CharacterRelationQuery,
+    CharacterThoughtDocument,
+    CharacterThoughtQuery,
     CollectionName,
     LoreEntryDocument,
     LoreQuery,
@@ -126,6 +128,8 @@ class RagDatasetBundle:
     character_relations: List[PointRecord[CharacterRelationDocument]] = field(default_factory=list)
     #: 要写入 `lore_entries` collection 的记录。
     lore_entries: List[PointRecord[LoreEntryDocument]] = field(default_factory=list)
+    #: 要写入 `character_thoughts` collection 的记录。
+    character_thoughts: List[PointRecord[CharacterThoughtDocument]] = field(default_factory=list)
 
 
 @dataclass
@@ -320,6 +324,18 @@ class CollectionRegistry:
                     _PayloadIndexSpec("canon_branch", "KEYWORD"),
                 ],
             ),
+            CollectionName.CHARACTER_THOUGHTS: _CollectionSpec(
+                collection_name=CollectionName.CHARACTER_THOUGHTS,
+                document_type=CharacterThoughtDocument,
+                payload_indexes=[
+                    _PayloadIndexSpec("character_id", "KEYWORD"),
+                    _PayloadIndexSpec("series_id", "KEYWORD"),
+                    _PayloadIndexSpec("season_id", "INTEGER"),
+                    _PayloadIndexSpec("canon_branch", "KEYWORD"),
+                    _PayloadIndexSpec("valid_from", "INTEGER"),
+                    _PayloadIndexSpec("valid_to", "INTEGER"),
+                ],
+            ),
         }
 
     def get(self, collection_name: CollectionName) -> _CollectionSpec[Any]:
@@ -429,6 +445,7 @@ class QdrantRagService:
         aggregate_report.merge(self.upsert_story_events(bundle.story_events))
         aggregate_report.merge(self.upsert_character_relations(bundle.character_relations))
         aggregate_report.merge(self.upsert_lore_entries(bundle.lore_entries))
+        aggregate_report.merge(self.upsert_character_thoughts(bundle.character_thoughts))
         return aggregate_report
 
     def upsert_story_events(self, records: Sequence[PointRecord[StoryEventDocument]]) -> UpsertReport:
@@ -445,6 +462,14 @@ class QdrantRagService:
         """向 `lore_entries` collection 批量写入或更新数据。"""
 
         return self._upsert_documents(CollectionName.LORE_ENTRIES, records)
+
+    def upsert_character_thoughts(
+        self,
+        records: Sequence[PointRecord[CharacterThoughtDocument]],
+    ) -> UpsertReport:
+        """向 `character_thoughts` collection 批量写入或更新数据。"""
+
+        return self._upsert_documents(CollectionName.CHARACTER_THOUGHTS, records)
 
     def delete_by_point_ids(self, collection_name: CollectionName, point_ids: Sequence[PointId]) -> DeleteReport:
         """根据 point id 列表删除指定 collection 中的数据。"""
@@ -541,6 +566,30 @@ class QdrantRagService:
         return self._query_documents(
             collection_name=CollectionName.LORE_ENTRIES,
             document_type=LoreEntryDocument,
+            query_text=query_text,
+            query_mode=query_mode,
+            context=context,
+            options=options,
+            tag_keywords=tag_keywords,
+            top_k=top_k,
+        )
+
+    def query_character_thoughts(
+        self,
+        query_text: Optional[str],
+        context: RetrievalContext,
+        options: CharacterThoughtQuery,
+        query_mode: RetrievalMode = RetrievalMode.VECTOR,
+        tag_keywords: Optional[Sequence[str]] = None,
+        top_k: Optional[int] = None,
+    ) -> List[QueryHit[CharacterThoughtDocument]]:
+        """查询当前角色在当前剧情时间有效的 `character_thoughts`。"""
+
+        if query_mode == RetrievalMode.DIRECT:
+            raise ValueError("character_thoughts 不支持 DIRECT 查询模式。")
+        return self._query_documents(
+            collection_name=CollectionName.CHARACTER_THOUGHTS,
+            document_type=CharacterThoughtDocument,
             query_text=query_text,
             query_mode=query_mode,
             context=context,
@@ -762,7 +811,7 @@ class QdrantRagService:
         query_text: Optional[str],
         query_mode: RetrievalMode,
         context: RetrievalContext,
-        options: Union[LoreQuery, StoryEventQuery, CharacterRelationQuery],
+        options: Union[LoreQuery, StoryEventQuery, CharacterRelationQuery, CharacterThoughtQuery],
         tag_keywords: Optional[Sequence[str]],
         top_k: Optional[int],
     ) -> List[QueryHit[DocumentT]]:
@@ -797,7 +846,7 @@ class QdrantRagService:
         document_type: Type[DocumentT],
         query_text: str,
         context: RetrievalContext,
-        options: Union[LoreQuery, StoryEventQuery, CharacterRelationQuery],
+        options: Union[LoreQuery, StoryEventQuery, CharacterRelationQuery, CharacterThoughtQuery],
         limit: int,
     ) -> List[QueryHit[DocumentT]]:
         """执行向量检索模式的查询。"""
@@ -839,7 +888,7 @@ class QdrantRagService:
         document_type: Type[DocumentT],
         normalized_keywords: Sequence[str],
         context: RetrievalContext,
-        options: Union[LoreQuery, StoryEventQuery, CharacterRelationQuery],
+        options: Union[LoreQuery, StoryEventQuery, CharacterRelationQuery, CharacterThoughtQuery],
         limit: int,
     ) -> List[QueryHit[DocumentT]]:
         """执行纯关键词模式的查询。"""
@@ -933,6 +982,8 @@ class QdrantRagService:
             must_conditions.extend(self._build_relation_conditions(context, options))
         elif collection_name == CollectionName.LORE_ENTRIES:
             must_conditions.extend(self._build_lore_conditions(context, options))
+        elif collection_name == CollectionName.CHARACTER_THOUGHTS:
+            must_conditions.extend(self._build_thought_conditions(context, options))
         return qdrant_models.Filter(must=must_conditions)
 
     def _build_story_event_conditions(self, context: RetrievalContext, options: StoryEventQuery) -> List[Any]:
@@ -1027,6 +1078,49 @@ class QdrantRagService:
             )
         return conditions
 
+    def _build_thought_conditions(
+        self,
+        context: RetrievalContext,
+        options: CharacterThoughtQuery,
+    ) -> List[Any]:
+        """构造角色观点的角色、时间线与剧情范围过滤条件。"""
+
+        conditions: List[Any] = [
+            qdrant_models.FieldCondition(key="valid_from", range=qdrant_models.Range(lte=context.current_time)),
+            qdrant_models.FieldCondition(key="valid_to", range=qdrant_models.Range(gte=context.current_time)),
+        ]
+        if options.require_character_match:
+            if context.current_character_id is None:
+                raise ValueError("查询 character_thoughts 时 current_character_id 不能为空")
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="character_id",
+                    match=qdrant_models.MatchValue(value=context.current_character_id.value),
+                )
+            )
+        if options.limit_to_series and context.current_series_id is not None:
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="series_id",
+                    match=qdrant_models.MatchValue(value=context.current_series_id.value),
+                )
+            )
+        if options.limit_to_season and context.current_season_id is not None:
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="season_id",
+                    match=qdrant_models.MatchValue(value=int(context.current_season_id.value)),
+                )
+            )
+        if options.limit_to_canon_branch and context.current_canon_branch is not None:
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="canon_branch",
+                    match=qdrant_models.MatchValue(value=context.current_canon_branch.value),
+                )
+            )
+        return conditions
+
     def _document_matches_runtime_constraints(
         self,
         collection_name: CollectionName,
@@ -1042,7 +1136,33 @@ class QdrantRagService:
             return self._character_relation_matches(document, context, options)
         if collection_name == CollectionName.LORE_ENTRIES and isinstance(document, LoreEntryDocument):
             return self._lore_entry_matches(document, context, options)
+        if collection_name == CollectionName.CHARACTER_THOUGHTS and isinstance(document, CharacterThoughtDocument):
+            return self._character_thought_matches(document, context, options)
         return False
+
+    def _character_thought_matches(
+        self,
+        document: CharacterThoughtDocument,
+        context: RetrievalContext,
+        options: CharacterThoughtQuery,
+    ) -> bool:
+        """判断角色观点是否属于当前角色且在当前时间有效。"""
+
+        if not (document.valid_from <= context.current_time <= document.valid_to):
+            return False
+        if options.require_character_match:
+            if context.current_character_id is None or document.character_id != context.current_character_id:
+                return False
+        if options.limit_to_series and context.current_series_id is not None:
+            if document.series_id != context.current_series_id:
+                return False
+        if options.limit_to_season and context.current_season_id is not None:
+            if document.season_id != context.current_season_id:
+                return False
+        if options.limit_to_canon_branch and context.current_canon_branch is not None:
+            if document.canon_branch != context.current_canon_branch:
+                return False
+        return True
 
     def _story_event_matches(
         self,

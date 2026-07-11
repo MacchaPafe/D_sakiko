@@ -91,6 +91,23 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline annotate-stage2 \
   --stream
 ```
 
+接着运行独立的 Stage 2B。它会读取同一份场景输入以及上一步的 Story Event 候选，按需提取
+Event Fact 和角色观点更新；该步骤不会修改现有三张表，也不会直接写入 Qdrant。
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline annotate-stage2b \
+  --input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_stage2_input.json \
+  --stage2a-annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2_raw.json \
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2b_raw.json \
+  --model deepseek/deepseek-v4-pro \
+  --temperature 1 \
+  --prompts-dir GPT_SoVITS/rag/pipeline/data/annotations_stage2/prompts_ep01_thoughts \
+  --stream
+```
+
+Stage 2B 输出是跨场景观点聚合的输入。`Event Fact` 只为角色观点的证据和链接服务，
+不会作为一张独立的 Qdrant 表导入。
+
 ## 3. 插入数据库阶段
 
 首先，运行这条命令把第二阶段 LLM 返回的原始数据转化为能直接入库的格式：
@@ -109,6 +126,33 @@ python GPT_SoVITS/rag/pipeline/stage3_dataset_editor.py \
   --input GPT_SoVITS/rag/pipeline/data/annotations_stage3/ep01_rag_ready.json
 ```
 
+角色观点使用独立的 Stage 3 规范化命令。它会精确链接当前场景本地 ID、聚合 Thought Thread、
+计算有效期，并为每条记录生成可解释的风险标记：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline normalize-stage3-thoughts \
+  --input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_stage2_input.json \
+  --stage2b-annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2b_raw.json \
+  --stage3-rag GPT_SoVITS/rag/pipeline/data/annotations_stage3/ep01_rag_ready.json \
+  --link-model deepseek/deepseek-v4-pro \
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage3/ep01_thoughts_review.json
+```
+
+`--link-model` 只处理本地 ID 无法确定的跨场景链接，并且只能从时间兼容的少量候选中选择；
+它也可以把“并非由某个具体剧情事实产生”的观点判为 `standalone`。省略该参数时，无法精确链接的
+记录会安全地保留为 `unresolved`，等待人工处理。
+
+使用风险优先查看器进行人工复核：
+
+```bash
+PYTHONPATH=GPT_SoVITS python GPT_SoVITS/rag/pipeline/stage3_thought_dataset_editor.py \
+  --input GPT_SoVITS/rag/pipeline/data/annotations_stage3/ep01_thoughts_review.json \
+  --stage2-input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_stage2_input.json
+```
+
+查看器允许浏览全部记录，也可以只筛选高风险内容。默认只有标记为 `approved` 或 `edited`
+的合法记录会被导入；`unresolved` 和结构非法记录始终不会入库。
+
 最后，运行这条命令把文件中的数据插入到 qdrant 数据库中：
 
 > 这个步骤并不必要；如果你只是在标注数据，把 ep01_rag_ready.json 或者其他名称的，你在上一步中审查的文件发送回来就好了。
@@ -116,6 +160,16 @@ python GPT_SoVITS/rag/pipeline/stage3_dataset_editor.py \
 ```bash
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline import-stage3-rag \
   --input GPT_SoVITS/rag/pipeline/data/annotations_stage3/ep01_rag_ready.json \
+  --qdrant-location knowledge_base/default_world_info \
+  --qdrant-connect-type local \
+  --embedding-model-path GPT_SoVITS/pretrained_models/multilingual-e5-small
+```
+
+最后将复核通过的角色观点写入第四张 collection：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline import-stage3-thoughts \
+  --input GPT_SoVITS/rag/pipeline/data/annotations_stage3/ep01_thoughts_review.json \
   --qdrant-location knowledge_base/default_world_info \
   --qdrant-connect-type local \
   --embedding-model-path GPT_SoVITS/pretrained_models/multilingual-e5-small

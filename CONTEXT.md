@@ -51,3 +51,61 @@ _Avoid_: 文件路径、文件名
 **对话分叉**:
 从某条既有消息创建一条新的可继续对话，新对话保留分叉点及之前的上下文，之后的内容与原对话独立发展。它不同于回溯，回溯会修改原对话。
 _Avoid_: 回溯、重生成
+
+## RAG Knowledge Context
+
+本上下文描述角色扮演 RAG 中客观剧情、原子事实与角色主观认知之间的区别，用于避免把观众视角的事实泄露给角色。
+
+### Language
+
+**Story Event**:
+作品中客观发生的一段相对完整、可独立检索的剧情。
+_Avoid_: Fact, Thought
+
+**Event Fact**:
+从 Story Event 中按需拆出的、可独立判断真伪及角色是否知晓的客观原子事实。它只在角色观点链接、知情差异或知识泄漏风险需要时存在，不追求完整分解 Story Event。
+_Avoid_: Knowledge Claim, Story Event
+
+**Character Thought**:
+某个角色在一段剧情时间内对 Story Event 或 Event Fact 持有的认知、推测、否认或主观解释；它可以不完整或不符合客观事实。该术语不泛指情绪、行动意图或与剧情认知无关的任意内心独白。
+_Avoid_: Character Knowledge, Character Belief State
+
+**Character Thought Update**:
+有字幕证据支持的局部认知变化，例如角色获知、目击、怀疑、否认、确认或修正了关于 Story Event 或 Event Fact 的想法。它是构建 Character Thought 时间区间的证据，不是最终认知状态。
+_Avoid_: Character Thought, Knowledge Update
+
+**Thought Transition**:
+Stage 3 根据 Character Thought Update 与既有 Thought Thread 解析出的观点状态变化，例如获得、重申、修正、撤回或披露既有观点。它只用于构建时间区间和复核，不属于最终注入角色 prompt 的 Character Thought 内容。
+_Avoid_: Epistemic Status, Character Thought
+
+**Thought Subject**:
+Character Thought 所谈论的语义对象；它可以是 Story Event、Event Fact、无需事件链接的独立主题，或暂时无法判断的对象。Thought Subject 描述观点“关于什么”，不描述观点由什么原因产生。
+_Avoid_: Thought Source, Reference Kind
+
+**Thought Thread**:
+同一角色围绕同一 Thought Subject 的某一个认知方面所形成的连续观点脉络，例如事件状态、原因或责任判断。不同 Thought Thread 可以同时有效，只有同一脉络中的明确修正或替代才会结束旧的 Character Thought。
+_Avoid_: Story Event, Character Thought
+
+**Evidence Time**:
+字幕首次明确证明角色持有某个 Character Thought 的剧情时间。它描述证据何时出现，不保证该观点在此之前不存在。
+_Avoid_: Thought Effective Time
+
+**Thought Effective Time**:
+有充分证据支持 Character Thought 已经生效的最早剧情时间；缺少可靠的先前时间锚点时，它等于 Evidence Time。
+_Avoid_: Evidence Time
+
+**Thought Evidence Strength**:
+Character Thought Update 的字幕依据是明确表达还是由局部场景上下文合理推断。它描述证据的直接程度，不描述角色自身有多确定，也不等同于标注模型的置信度。
+_Avoid_: Epistemic Status, Extraction Confidence
+
+**Epistemic Status**:
+角色自身对 Character Thought 所持的认知立场，第一版限定为 `knows`、`believes`、`suspects`、`uncertain` 或 `rejects`。它只描述角色的主观确信程度，不保证观点客观正确。
+_Avoid_: Thought Evidence Strength, Extraction Confidence
+
+**Extraction Confidence**:
+标注模型对 Character Thought Update 抽取结果正确性的置信度。它不表示观点客观为真，也不表示角色自身确信。
+_Avoid_: Epistemic Status, Thought Evidence Strength
+
+**Character Relation**:
+一个角色面对另一个角色时相对持续的互动态度、称呼方式与说话倾向。它不承载角色对具体事件、事实或责任归属的解释。
+_Avoid_: Character Thought
