@@ -14,7 +14,7 @@
 
 ```bash
 pip install jinja2 pysubs2 nicegui qdrant-client sentence-transformers
-``` 
+```
 
 其中，只有 `qdrant-client` 和 `sentence-transformers` 是之后主程序执行时需要新增的依赖，其他依赖都只用于数据集的标注。
 
@@ -36,9 +36,9 @@ model.save("GPT_SoVITS/pretrained_models/multilingual-e5-small")
 请你首先获取一份动漫的 ass 字幕文件，放到一个你喜欢的地方，记住这个文件的路径，然后运行这条命令来提取所有对话：
 
 ```bash
-PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \         
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
   --subtitle '你的字幕文件的路径' \
-  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_prepared.json 
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_prepared.json
 ```
 
 > 建议从字幕组的如下仓库中获取 MyGO 字幕：https://github.com/Nekomoekissaten-SUB/Nekomoekissaten-Storage/tree/master/BanG_Dream/MyGO

@@ -69,7 +69,7 @@ class RagContextBuilder:
         # 截断到最大长度
         if len(query_text) > max_length:
             query_text = query_text[:max_length]
-        
+
         print(f"构建的查询文本：{query_text}")
 
         return query_text

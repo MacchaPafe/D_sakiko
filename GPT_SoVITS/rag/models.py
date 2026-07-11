@@ -441,7 +441,7 @@ class LoreEntryDocument(BaseQdrantDocument):
     #: 该条目适用的系列范围列表。
     series_ids: Optional[List[SeriesId]]
     #: 该条目适用的虚拟时间线范围列表。
-    season_ids: Optional[List[SeasonId]]  
+    season_ids: Optional[List[SeasonId]]
     #: 该条目从哪个时间点开始可见，可为空。
     visible_from: Optional[int]
     #: 该条目到哪个时间点结束可见，可为空。

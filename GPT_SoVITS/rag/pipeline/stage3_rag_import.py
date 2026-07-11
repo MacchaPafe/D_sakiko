@@ -109,7 +109,7 @@ def _story_event_episode_base(episode: int, series_id: SeriesId) -> int:
         event_base = EVENT_BASE_MAP[series_id]
     except KeyError:
         raise ValueError(f"未找到 {series_id} 对应的事件开始值。这不应当发生。请检查你传入的是否是 SeriesId 枚举类的对象。当前对象的类型为：{type(series_id)}")
-  
+
     return event_base + (episode - 1) * EPISODE_EVENT_SLOT_SIZE
 
 

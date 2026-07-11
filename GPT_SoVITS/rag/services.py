@@ -723,7 +723,7 @@ class QdrantRagService:
 
     def _normalize_point_id(self, collection_name: CollectionName, point_id: PointId) -> PointId:
         """将外部 point id 归一化为当前 Qdrant 可接受的稳定 UUID 字符串。"""
- 
+
         try:
             return str(UUID(str(point_id)))
         except (TypeError, ValueError):
