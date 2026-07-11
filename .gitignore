@@ -3,6 +3,7 @@
 /docs/
 !/docs/
 /docs/*
+!/docs/repair-feature-guide.md
 !/docs/agents/
 !/docs/agents/**
 !/docs/adr/
