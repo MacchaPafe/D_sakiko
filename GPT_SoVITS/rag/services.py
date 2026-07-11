@@ -979,6 +979,18 @@ class QdrantRagService:
             qdrant_models.FieldCondition(key="visible_from", range=qdrant_models.Range(lte=context.current_time)),
             qdrant_models.FieldCondition(key="visible_to", range=qdrant_models.Range(gte=context.current_time)),
         ]
+        if options.require_subject_character_match:
+            if context.current_character_id is None:
+                raise ValueError(
+                    "启用 require_subject_character_match 时，"
+                    "RetrievalContext.current_character_id 不能为空"
+                )
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="subject_character_id",
+                    match=qdrant_models.MatchValue(value=context.current_character_id.value),
+                )
+            )
         if options.limit_to_series and context.current_series_id is not None:
             conditions.append(
                 qdrant_models.FieldCondition(
@@ -1071,6 +1083,11 @@ class QdrantRagService:
 
         if not (document.visible_from <= context.current_time <= document.visible_to):
             return False
+        if options.require_subject_character_match:
+            if context.current_character_id is None:
+                return False
+            if document.subject_character_id != context.current_character_id:
+                return False
         if options.limit_to_series and context.current_series_id is not None:
             if document.series_id != context.current_series_id:
                 return False

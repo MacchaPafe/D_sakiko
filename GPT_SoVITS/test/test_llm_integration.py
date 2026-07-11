@@ -4,10 +4,12 @@ import os
 import sys
 import time
 import unittest
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from rag.llm_integration import LLMRagIntegration
+from rag.models import CharacterId, RetrievalContext
 
 
 class TestInjectRagIntoMessages(unittest.TestCase):
@@ -160,6 +162,65 @@ class TestCacheBehavior(unittest.TestCase):
         result = integration._get_from_cache("key1")
         self.assertIsNone(result)
 
+
+class TestRelationshipPerspectiveFiltering(unittest.TestCase):
+    """验证集成层按当前扮演角色选择关系检索策略。"""
+
+    def _build_integration(self) -> tuple[LLMRagIntegration, MagicMock, MagicMock]:
+        """构造不依赖真实数据库的 RAG 集成对象。"""
+
+        rag_service = MagicMock()
+        rag_service.query_story_events.return_value = []
+        rag_service.query_character_relations.return_value = []
+        rag_service.query_lore_entries.return_value = []
+
+        context_builder = MagicMock()
+        context_builder.build_query_text.return_value = "测试查询"
+        context_builder.build_retrieval_context.return_value = RetrievalContext(current_time=50)
+
+        formatter = MagicMock()
+        formatter.format_for_single_character.return_value = "格式化结果"
+
+        integration = LLMRagIntegration(
+            rag_service=rag_service,
+            context_builder=context_builder,
+            formatter=formatter,
+            cache_enabled=False,
+        )
+        return integration, rag_service, context_builder
+
+    def test_known_character_enables_subject_filter(self) -> None:
+        """已知角色会写入上下文并启用关系主体筛选。"""
+
+        integration, rag_service, context_builder = self._build_integration()
+
+        integration.retrieve_and_format(
+            current_message="你好",
+            recent_messages=[],
+            character_name="祥子",
+            current_time=50,
+        )
+
+        context_kwargs = context_builder.build_retrieval_context.call_args.kwargs
+        self.assertEqual(context_kwargs["current_character_id"], CharacterId.SAKIKO)
+        relation_options = rag_service.query_character_relations.call_args.kwargs["options"]
+        self.assertTrue(relation_options.require_subject_character_match)
+
+    def test_unknown_character_skips_relation_query(self) -> None:
+        """未知角色不会退化成无主体限制的关系查询。"""
+
+        integration, rag_service, context_builder = self._build_integration()
+
+        integration.retrieve_and_format(
+            current_message="你好",
+            recent_messages=[],
+            character_name="自定义角色",
+            current_time=50,
+        )
+
+        context_kwargs = context_builder.build_retrieval_context.call_args.kwargs
+        self.assertIsNone(context_kwargs["current_character_id"])
+        rag_service.query_character_relations.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

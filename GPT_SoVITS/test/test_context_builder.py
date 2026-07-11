@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from rag.context_builder import RagContextBuilder
-from rag.models import CanonBranch, SeriesId, SeasonId
+from rag.models import CanonBranch, CharacterId, SeriesId, SeasonId
 
 
 class TestBuildQueryText(unittest.TestCase):
@@ -91,11 +91,13 @@ class TestBuildRetrievalContext(unittest.TestCase):
         """提供所有参数。"""
         ctx = self.builder.build_retrieval_context(
             current_time=50,
+            current_character_id=CharacterId.SAKIKO,
             series_id="its_mygo",
             season_id=1,
             canon_branch="main",
         )
         self.assertEqual(ctx.current_time, 50)
+        self.assertEqual(ctx.current_character_id, CharacterId.SAKIKO)
         self.assertEqual(ctx.current_series_id, SeriesId("its_mygo"))
         self.assertEqual(ctx.current_season_id, SeasonId(1))
 

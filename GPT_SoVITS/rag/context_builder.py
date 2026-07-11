@@ -7,6 +7,7 @@ from typing import List, Optional, Set
 
 from .models import (
     CanonBranch,
+    CharacterId,
     RetrievalContext,
     SeasonId,
     SeriesId,
@@ -79,6 +80,7 @@ class RagContextBuilder:
         series_id: Optional[str] = None,
         season_id: Optional[int] = None,
         canon_branch: str = "main",
+        current_character_id: Optional[CharacterId] = None,
     ) -> RetrievalContext:
         """构建 RetrievalContext 对象，供 QdrantRagService 查询使用。
 
@@ -86,6 +88,7 @@ class RagContextBuilder:
         :param series_id: 系列 ID 字符串（可选），将转换为 SeriesId 枚举。
         :param season_id: 季 ID 整数（可选），将转换为 SeasonId 枚举。
         :param canon_branch: 剧情分支字符串，默认为 "main"。
+        :param current_character_id: 当前扮演角色对应的知识库角色标识（可选）。
         :return: 构建好的 RetrievalContext 实例。
         """
         resolved_series: Optional[SeriesId] = None
@@ -100,7 +103,7 @@ class RagContextBuilder:
 
         return RetrievalContext(
             current_time=current_time,
-            current_character_id=None,
+            current_character_id=current_character_id,
             current_series_id=resolved_series,
             current_season_id=resolved_season,
             current_canon_branch=resolved_branch,

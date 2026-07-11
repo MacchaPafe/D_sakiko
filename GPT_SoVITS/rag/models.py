@@ -520,6 +520,8 @@ class StoryEventQuery:
 class CharacterRelationQuery:
     """描述 `character_relations` collection 的查询偏好。"""
 
+    #: 是否要求关系主体必须是检索上下文中的当前角色。
+    require_subject_character_match: bool = False
     #: 是否启用小剧场模式下的双角色直接插入策略。
     use_direct_pair_insert: bool = False
     #: 小剧场模式下需要直接匹配的双角色组合。

@@ -244,6 +244,47 @@ class RagServiceTest(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertTrue(all(result.source == RetrievalMode.DIRECT.value for result in results))
 
+    def test_query_character_relations_filters_current_subject(self) -> None:
+        """启用主体筛选后只返回当前角色作为主体的关系。"""
+
+        self.service.create_database(self._build_bundle(), drop_existing=True)
+        context = RetrievalContext(
+            current_time=50,
+            current_character_id=CharacterId.ANON,
+            current_series_id=SeriesId.ITS_MYGO,
+            current_season_id=SeasonId.THREE,
+            current_canon_branch=CanonBranch.MAIN,
+        )
+        results = self.service.query_character_relations(
+            query_text="爱音和灯的关系",
+            context=context,
+            options=CharacterRelationQuery(require_subject_character_match=True),
+            query_mode=RetrievalMode.VECTOR,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].document.subject_character_id, CharacterId.ANON)
+        self.assertEqual(results[0].document.object_character_id, CharacterId.TOMORI)
+
+    def test_relation_subject_filter_requires_current_character(self) -> None:
+        """缺少当前角色时启用主体筛选会给出明确错误。"""
+
+        self.service.create_database(self._build_bundle(), drop_existing=True)
+        context = RetrievalContext(
+            current_time=50,
+            current_series_id=SeriesId.ITS_MYGO,
+            current_season_id=SeasonId.THREE,
+            current_canon_branch=CanonBranch.MAIN,
+        )
+
+        with self.assertRaisesRegex(ValueError, "current_character_id"):
+            self.service.query_character_relations(
+                query_text="爱音和灯的关系",
+                context=context,
+                options=CharacterRelationQuery(require_subject_character_match=True),
+                query_mode=RetrievalMode.VECTOR,
+            )
+
     def test_query_lore_entries_keyword_mode(self):
         """验证 lore_entries 支持纯关键词查询。"""
 

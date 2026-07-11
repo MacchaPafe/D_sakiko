@@ -6,6 +6,7 @@ import hashlib
 import time
 from typing import Dict, List, Optional, Tuple
 
+from .character_resolver import resolve_character_id
 from .context_builder import RagContextBuilder
 from .models import (
     CharacterRelationQuery,
@@ -137,8 +138,10 @@ class LLMRagIntegration:
             return cached_result
 
         # 构建检索上下文
+        current_character_id = resolve_character_id(character_name)
         retrieval_context = self.context_builder.build_retrieval_context(
             current_time=current_time,
+            current_character_id=current_character_id,
             series_id=series_id,
             season_id=season_id,
             canon_branch=canon_branch,
@@ -153,12 +156,21 @@ class LLMRagIntegration:
             top_k=top_k_events,
         )
 
-        relation_hits = self.rag_service.query_character_relations(
-            query_text=query_text,
-            context=retrieval_context,
-            options=CharacterRelationQuery(),
-            top_k=top_k_relations,
-        )
+        relation_hits = []
+        if mode == "theater":
+            relation_hits = self.rag_service.query_character_relations(
+                query_text=query_text,
+                context=retrieval_context,
+                options=CharacterRelationQuery(),
+                top_k=top_k_relations,
+            )
+        elif current_character_id is not None:
+            relation_hits = self.rag_service.query_character_relations(
+                query_text=query_text,
+                context=retrieval_context,
+                options=CharacterRelationQuery(require_subject_character_match=True),
+                top_k=top_k_relations,
+            )
 
         lore_hits = self.rag_service.query_lore_entries(
             query_text=query_text,
