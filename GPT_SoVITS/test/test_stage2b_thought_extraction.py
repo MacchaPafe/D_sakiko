@@ -126,6 +126,11 @@ class TestStage2BThoughtExtraction(unittest.TestCase):
         self.assertIn(first_result.annotation.story_events[0].title, prompt)
         self.assertIn("speaker_confidence", prompt)
         self.assertIn("inner_monologue", prompt)
+        self.assertIn("Event Fact 必须能独立判断真假", prompt)
+        self.assertIn("短暂感受或即时反应", prompt)
+        self.assertIn("standalone_topic`：两个本地 ID 都必须为 null", prompt)
+        self.assertIn("禁止引入证据中没有出现的角色名", prompt)
+        self.assertIn("输出前自检", prompt)
 
     def test_batch_artifact_round_trip(self) -> None:
         """批量抽取结果应通过 schema 校验并可保存后重新读取。"""
