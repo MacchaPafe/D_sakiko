@@ -370,7 +370,7 @@ class Stage3DatasetEditor:
             return document.get("title", "") or record["point_id"]
         if section == "character_relations":
             subject = document.get("subject_character_id", "?")
-            relation = document.get("relation_label", "未命名关系")
+            relation = record.get("relation_type_key") or document.get("relation_label", "未命名关系")
             obj = document.get("object_character_id", "?")
             return f"{subject} -> {obj} · {relation}"
         return document.get("title", "") or record["point_id"]
@@ -398,7 +398,11 @@ class Stage3DatasetEditor:
                 f"{document.get('subject_character_id', '-')}",
                 f"{document.get('object_character_id', '-')}",
             ]
-            base.extend(document.get("tags", [])[:1])
+            if record.get("risk_level") == "high":
+                base.append("⚠ 高风险")
+            relation_type_key = record.get("relation_type_key")
+            if relation_type_key:
+                base.append(str(relation_type_key))
             return base
         base = [f"scene {record.get('source_scene_id', '-')}", f"scope {document.get('scope_type', '-')}"]
         base.extend(document.get("tags", [])[:2])
@@ -568,6 +572,9 @@ class Stage3DatasetEditor:
             elif self.current_section == "character_relations":
                 ui.badge(f"subject {document.get('subject_character_id', '-')}").classes("meta-badge")
                 ui.badge(f"object {document.get('object_character_id', '-')}").classes("meta-badge")
+                ui.badge(f"type {record.get('relation_type_key', '-')}").classes("meta-badge")
+                if record.get("risk_level") == "high":
+                    ui.badge("⚠ 高风险，建议优先复核").classes("meta-badge")
             else:
                 ui.badge(f"scope {document.get('scope_type', '-')}").classes("meta-badge")
                 visible_from = document.get("visible_from")
@@ -583,6 +590,16 @@ class Stage3DatasetEditor:
                     with ui.column().classes("gap-2"):
                         ui.label("evidence_s_ids").classes("field-label")
                         self._readonly_badge_row(record.get("evidence_s_ids", []), empty_text="无 screen-text 证据")
+                if self.current_section == "character_relations":
+                    with ui.column().classes("gap-2"):
+                        ui.label("supporting_observation_ids").classes("field-label")
+                        self._readonly_badge_row(
+                            record.get("supporting_observation_ids", []),
+                            empty_text="无 Observation 追踪信息",
+                        )
+                    with ui.column().classes("gap-2"):
+                        ui.label("risk_reasons").classes("field-label")
+                        self._readonly_badge_row(record.get("risk_reasons", []), empty_text="无高风险原因")
 
     def _build_text_input(
         self,

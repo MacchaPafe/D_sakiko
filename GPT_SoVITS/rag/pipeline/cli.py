@@ -48,6 +48,12 @@ from .stage3_rag_import import (
     save_stage3_normalized_import_artifact,
     upsert_stage3_normalized_import_artifact,
 )
+from .stage3_relation_aggregation import (
+    DEFAULT_TEMPLATE_PATH as DEFAULT_RELATION_AGGREGATION_TEMPLATE_PATH,
+    build_stage3_relation_aggregation_artifact_from_many,
+    load_stage3_relation_aggregation_artifact,
+    save_stage3_relation_aggregation_artifact,
+)
 from .stage3_lore_deduplicate import (
     apply_lore_dedup_decisions_from_files,
     build_lore_dedup_review_from_directory,
@@ -165,7 +171,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     normalize_stage3_parser.add_argument("--input", required=True, help="stage2_input JSON 路径")
     normalize_stage3_parser.add_argument("--annotation", required=True, help="annotate-stage2 输出的 pass2_raw JSON 路径")
+    normalize_stage3_parser.add_argument(
+        "--relation-aggregation",
+        default=None,
+        help="可选：全量关系聚合审查 JSON；提供后用长期 State 替代逐场景关系",
+    )
     normalize_stage3_parser.add_argument("--output", required=True, help="输出待入库 artifact JSON 路径")
+
+    aggregate_relations_parser = subparsers.add_parser(
+        "aggregate-stage3-relations",
+        help="按有向角色对全量聚合 Relation Observation，输出长期关系审查文件",
+    )
+    aggregate_relations_parser.add_argument(
+        "--input",
+        required=True,
+        action="append",
+        help="stage2_input JSON 路径；跨集全量构建时按集重复传入",
+    )
+    aggregate_relations_parser.add_argument(
+        "--annotation",
+        required=True,
+        action="append",
+        help="与 --input 同序的 pass2_raw JSON 路径；可按集重复传入",
+    )
+    aggregate_relations_parser.add_argument("--output", required=True, help="输出长期关系聚合审查 JSON 路径")
+    aggregate_relations_parser.add_argument("--model", required=True, help="litellm 使用的聚合模型名")
+    aggregate_relations_parser.add_argument(
+        "--template",
+        default=str(DEFAULT_RELATION_AGGREGATION_TEMPLATE_PATH),
+        help="关系聚合 prompt 模板路径",
+    )
+    aggregate_relations_parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
+    aggregate_relations_parser.add_argument("--max-tokens", type=int, default=None, help="LLM max_tokens")
+    aggregate_relations_parser.add_argument("--retries", type=int, default=2, help="LLM 调用失败时的重试次数")
+    aggregate_relations_parser.add_argument("--quiet-status", action="store_true", help="关闭角色对级状态日志")
 
     normalize_thoughts_parser = subparsers.add_parser(
         "normalize-stage3-thoughts",
@@ -411,12 +450,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"角色观点更新候选数: {thought_count}")
         return 0
 
+    if args.command == "aggregate-stage3-relations":
+        if len(args.input) != len(args.annotation):
+            parser.error("aggregate-stage3-relations 的 --input 与 --annotation 数量必须一致")
+        relation_artifact = build_stage3_relation_aggregation_artifact_from_many(
+            input_artifacts=[load_stage2_input_artifact(path) for path in args.input],
+            annotation_artifacts=[load_stage2_annotation_artifact(path) for path in args.annotation],
+            llm_config=LiteLLMConfig(
+                model=args.model,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                retries=args.retries,
+            ),
+            template_path=args.template,
+            status_callback=None if args.quiet_status else default_status_printer,
+        )
+        save_stage3_relation_aggregation_artifact(relation_artifact, args.output)
+        high_risk_count = sum(
+            1
+            for record in relation_artifact.character_relation_states
+            if record.risk_level == "high"
+        )
+        validation_error_count = sum(
+            1
+            for record in relation_artifact.character_relation_states
+            if record.validation_errors
+        )
+        print(f"已写入角色关系聚合审查 artifact: {Path(args.output).resolve()}")
+        print(f"Relation Observation 数量: {len(relation_artifact.observations)}")
+        print(f"Character Relation State 数量: {len(relation_artifact.character_relation_states)}")
+        print(f"未合并 Observation 数量: {len(relation_artifact.unmerged_observations)}")
+        print(f"高风险 State 数量: {high_risk_count}")
+        print(f"结构校验失败 State 数量: {validation_error_count}")
+        return 0
+
     if args.command == "normalize-stage3-rag":
         input_artifact = load_stage2_input_artifact(args.input)
         annotation_artifact = load_stage2_annotation_artifact(args.annotation)
         normalized_artifact = build_stage3_normalized_import_artifact(
             input_artifact=input_artifact,
             annotation_artifact=annotation_artifact,
+            relation_aggregation_artifact=(
+                None
+                if args.relation_aggregation is None
+                else load_stage3_relation_aggregation_artifact(args.relation_aggregation)
+            ),
         )
         save_stage3_normalized_import_artifact(normalized_artifact, args.output)
         print(f"已写入待入库 artifact: {Path(args.output).resolve()}")

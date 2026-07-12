@@ -239,24 +239,28 @@ class StoryEventCandidate(BaseModel):
     confidence: float
 
 
-class CharacterRelationCandidate(BaseModel):
-    """表示第二阶段抽取的一条角色关系候选。"""
+RelationEvidenceStrength = Literal["explicit", "inferred"]
+
+
+class RelationObservationCandidate(BaseModel):
+    """表示第二阶段抽取的一条场景级角色关系观察。"""
 
     scene_id: str
-    relation_local_id: str
+    observation_local_id: str
     subject_character_name: str
     object_character_name: str
-    relation_label: str
-    state_summary: str
-    speech_hint: str
-    object_character_nickname: str
-    tags: list[str] = Field(default_factory=list)
-    retrieval_text: str
+    observation_text: str
+    speech_hint: str = ""
+    object_character_nickname: str = ""
     evidence_u_ids: list[str] = Field(default_factory=list)
-    confidence: float
+    evidence_strength: RelationEvidenceStrength
+    confidence: float = Field(ge=0.0, le=1.0)
+    ambiguity_notes: str = ""
 
     @model_validator(mode="after")
-    def validate_distinct_characters(self) -> "CharacterRelationCandidate":
+    def validate_distinct_characters(self) -> "RelationObservationCandidate":
+        """确保关系观察的主体与客体不是同一角色。"""
+
         if self.subject_character_name == self.object_character_name:
             raise ValueError("subject_character_name 与 object_character_name 不能相同")
         return self
@@ -281,8 +285,46 @@ class SceneAnnotationPass2(BaseModel):
 
     scene_id: str
     story_events: list[StoryEventCandidate] = Field(default_factory=list)
-    character_relations: list[CharacterRelationCandidate] = Field(default_factory=list)
+    relation_observations: list[RelationObservationCandidate] = Field(default_factory=list)
     lore_entries: list[LoreEntryCandidate] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_character_relations(cls, data: object) -> object:
+        """把旧版场景关系候选迁移为新的关系观察结构。"""
+
+        if not isinstance(data, dict) or "relation_observations" in data:
+            return data
+        legacy_relations = data.get("character_relations")
+        if not isinstance(legacy_relations, list):
+            return data
+
+        migrated: list[dict[str, object]] = []
+        for raw_relation in legacy_relations:
+            if not isinstance(raw_relation, dict):
+                continue
+            confidence_value = raw_relation.get("confidence", 0.0)
+            confidence = float(confidence_value) if isinstance(confidence_value, (int, float)) else 0.0
+            migrated.append(
+                {
+                    "scene_id": str(raw_relation.get("scene_id", data.get("scene_id", ""))),
+                    "observation_local_id": str(raw_relation.get("relation_local_id", "")),
+                    "subject_character_name": str(raw_relation.get("subject_character_name", "")),
+                    "object_character_name": str(raw_relation.get("object_character_name", "")),
+                    "observation_text": str(raw_relation.get("state_summary", "")),
+                    "speech_hint": str(raw_relation.get("speech_hint", "")),
+                    "object_character_nickname": str(raw_relation.get("object_character_nickname", "")),
+                    "evidence_u_ids": raw_relation.get("evidence_u_ids", []),
+                    "evidence_strength": "inferred",
+                    "confidence": confidence,
+                    "ambiguity_notes": "由旧版 character_relations 迁移，原始证据强度未标注。",
+                }
+            )
+
+        copied = dict(data)
+        copied.pop("character_relations", None)
+        copied["relation_observations"] = migrated
+        return copied
 
 
 class Stage2SceneAnnotationResult(BaseModel):
@@ -302,6 +344,105 @@ class Stage2AnnotationArtifact(BaseModel):
     model: str
     template_path: str
     results: list[Stage2SceneAnnotationResult] = Field(default_factory=list)
+
+
+class RelationStateProposal(BaseModel):
+    """表示 Stage 3 LLM 为一个有向角色对提出的长期关系状态。"""
+
+    relation_type_key: str
+    summary: str
+    speech_hint: str = ""
+    object_character_nickname: str = ""
+    supporting_observation_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    ambiguity_notes: str = ""
+
+
+class UnmergedRelationObservation(BaseModel):
+    """表示没有被提升为长期关系状态的场景观察及其原因。"""
+
+    observation_id: str
+    reason: str
+
+
+class RelationAggregationResponse(BaseModel):
+    """表示一次有向角色对关系聚合的 LLM 输出。"""
+
+    subject_character_name: str
+    object_character_name: str
+    states: list[RelationStateProposal] = Field(default_factory=list)
+    unmerged_observations: list[UnmergedRelationObservation] = Field(default_factory=list)
+
+
+RelationReviewStatus = Literal["unreviewed", "approved", "rejected"]
+RelationRiskLevel = Literal["low", "high"]
+
+
+class CharacterRelationStatePayload(BaseModel):
+    """表示供人工审核的精简角色关系状态。"""
+
+    subject_character_id: CharacterId
+    object_character_id: CharacterId
+    season_id: SeasonId
+    series_id: SeriesId
+    visible_from: int
+    visible_to: int
+    canon_branch: CanonBranch
+    relation_type_key: str
+    summary: str
+    speech_hint: str = ""
+    object_character_nickname: str = ""
+
+
+class CharacterRelationStateReviewRecord(BaseModel):
+    """表示一条可追溯、可人工复核的长期角色关系状态。"""
+
+    state_id: str
+    supporting_observation_ids: list[str] = Field(default_factory=list)
+    review_status: RelationReviewStatus = "unreviewed"
+    risk_level: RelationRiskLevel = "low"
+    risk_reasons: list[str] = Field(default_factory=list)
+    validation_errors: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    ambiguity_notes: str = ""
+    document: CharacterRelationStatePayload | None = None
+
+
+class RelationObservationReviewRecord(BaseModel):
+    """表示带剧情顺序与规范角色 ID 的场景关系观察。"""
+
+    observation_id: str
+    scene_id: str
+    time_order: int
+    subject_character_id: CharacterId
+    object_character_id: CharacterId
+    observation_text: str
+    speech_hint: str = ""
+    object_character_nickname: str = ""
+    evidence_u_ids: list[str] = Field(default_factory=list)
+    evidence_strength: RelationEvidenceStrength
+    confidence: float = Field(ge=0.0, le=1.0)
+    ambiguity_notes: str = ""
+
+
+class UnmergedRelationObservationReviewRecord(BaseModel):
+    """表示 Stage 3 审核产物中没有合并为长期状态的观察。"""
+
+    observation_id: str
+    reason: str
+    risk_level: RelationRiskLevel = "low"
+    risk_reasons: list[str] = Field(default_factory=list)
+
+
+class Stage3RelationAggregationMetadata(BaseModel):
+    """表示跨一个或多个剧集进行关系聚合的公共范围。"""
+
+    anime_title: str
+    series_id: str
+    season_id: int
+    canon_branch: str
+    episodes: list[int] = Field(default_factory=list)
+    subtitle_paths: list[str] = Field(default_factory=list)
 
 
 ThoughtSubjectKind = Literal["event", "event_fact", "standalone_topic", "uncertain"]
@@ -583,6 +724,11 @@ class CharacterRelationImportRecord(BaseModel):
     source_scene_id: str
     source_local_id: str
     evidence_u_ids: list[str] = Field(default_factory=list)
+    supporting_observation_ids: list[str] = Field(default_factory=list)
+    relation_type_key: str = ""
+    risk_level: RelationRiskLevel = "low"
+    risk_reasons: list[str] = Field(default_factory=list)
+    validation_errors: list[str] = Field(default_factory=list)
     confidence: float
     document: CharacterRelationPayload
 
@@ -606,6 +752,18 @@ class NormalizationIssue(BaseModel):
     collection_name: str
     candidate_local_id: str
     message: str
+
+
+class Stage3RelationAggregationArtifact(BaseModel):
+    """表示全量角色关系聚合与风险分析后的审查产物。"""
+
+    metadata: Stage3RelationAggregationMetadata
+    source_stage2_models: list[str] = Field(default_factory=list)
+    aggregation_model: str
+    observations: list[RelationObservationReviewRecord] = Field(default_factory=list)
+    character_relation_states: list[CharacterRelationStateReviewRecord] = Field(default_factory=list)
+    unmerged_observations: list[UnmergedRelationObservationReviewRecord] = Field(default_factory=list)
+    issues: list[NormalizationIssue] = Field(default_factory=list)
 
 
 class Stage3ImportMetadata(BaseModel):

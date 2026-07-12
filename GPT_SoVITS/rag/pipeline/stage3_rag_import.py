@@ -32,6 +32,7 @@ from .schemas import (
     Stage2SceneInput,
     Stage3ImportMetadata,
     Stage3NormalizedImportArtifact,
+    Stage3RelationAggregationArtifact,
     StoryEventImportRecord,
     StoryEventPayload,
 )
@@ -151,6 +152,7 @@ def _build_scene_anchor_map(
 def build_stage3_normalized_import_artifact(
     input_artifact: Stage2InputArtifact,
     annotation_artifact: Stage2AnnotationArtifact,
+    relation_aggregation_artifact: Stage3RelationAggregationArtifact | None = None,
 ) -> Stage3NormalizedImportArtifact:
     """将第二阶段原始结果规范化为待入库 artifact。"""
 
@@ -204,14 +206,15 @@ def build_stage3_normalized_import_artifact(
             issues=issues,
             sink=story_events,
         )
-        _normalize_scene_character_relations(
-            scene=scene,
-            annotation=result.annotation,
-            metadata=metadata,
-            scene_anchor=scene_anchor_map[result.scene_id],
-            issues=issues,
-            sink=character_relations,
-        )
+        if relation_aggregation_artifact is None:
+            _normalize_scene_character_relations(
+                scene=scene,
+                annotation=result.annotation,
+                metadata=metadata,
+                scene_anchor=scene_anchor_map[result.scene_id],
+                issues=issues,
+                sink=character_relations,
+            )
         _normalize_scene_lore_entries(
             scene=scene,
             annotation=result.annotation,
@@ -220,7 +223,15 @@ def build_stage3_normalized_import_artifact(
             sink=lore_entries,
         )
 
-    _backfill_character_relation_visible_to(character_relations, issues)
+    if relation_aggregation_artifact is None:
+        _backfill_character_relation_visible_to(character_relations, issues)
+    else:
+        _project_relation_states(
+            artifact=relation_aggregation_artifact,
+            input_artifact=input_artifact,
+            issues=issues,
+            sink=character_relations,
+        )
 
     return Stage3NormalizedImportArtifact(
         metadata=metadata,
@@ -321,14 +332,14 @@ def _normalize_scene_character_relations(
 ) -> None:
     utterance_ids = {item.u_id for item in scene.utterances}
 
-    for candidate in annotation.character_relations:
+    for candidate in annotation.relation_observations:
         valid_u_ids, invalid_u_ids = _split_existing_ids(candidate.evidence_u_ids, utterance_ids)
         if invalid_u_ids:
             issues.append(
                 NormalizationIssue(
                     scene_id=scene.scene_id,
                     collection_name=CollectionName.CHARACTER_RELATIONS.value,
-                    candidate_local_id=candidate.relation_local_id,
+                    candidate_local_id=candidate.observation_local_id,
                     message=f"发现不存在的 evidence_u_ids: {', '.join(invalid_u_ids)}",
                 )
             )
@@ -344,19 +355,19 @@ def _normalize_scene_character_relations(
                 visible_from=scene_anchor,
                 visible_to=RELATION_VISIBLE_TO_DEFAULT,
                 canon_branch=metadata.canon_branch,
-                relation_label=_clean_text(candidate.relation_label),
-                state_summary=_clean_text(candidate.state_summary),
+                relation_label="legacy_scene_observation",
+                state_summary=_clean_text(candidate.observation_text),
                 speech_hint=_clean_text(candidate.speech_hint),
                 object_character_nickname=_clean_text(candidate.object_character_nickname),
-                tags=_clean_text_list(candidate.tags),
-                retrieval_text=_clean_text(candidate.retrieval_text),
+                tags=["legacy_scene_observation"],
+                retrieval_text=_clean_text(candidate.observation_text),
             )
         except Exception as exc:
             issues.append(
                 NormalizationIssue(
                     scene_id=scene.scene_id,
                     collection_name=CollectionName.CHARACTER_RELATIONS.value,
-                    candidate_local_id=candidate.relation_local_id,
+                    candidate_local_id=candidate.observation_local_id,
                     message=f"无法规范化为 CharacterRelationDocument: {type(exc).__name__}: {exc}",
                 )
             )
@@ -366,13 +377,138 @@ def _normalize_scene_character_relations(
             CharacterRelationImportRecord(
                 point_id=(
                     f"character_relation:{metadata.series_id.value}:s{metadata.season_id.value}:"
-                    f"{scene.scene_id}:{candidate.relation_local_id}:"
+                    f"{scene.scene_id}:{candidate.observation_local_id}:"
                     f"{document.subject_character_id.value}:{document.object_character_id.value}"
                 ),
                 source_scene_id=scene.scene_id,
-                source_local_id=candidate.relation_local_id,
+                source_local_id=candidate.observation_local_id,
                 evidence_u_ids=valid_u_ids,
+                supporting_observation_ids=[],
+                relation_type_key="legacy_scene_observation",
+                risk_level=(
+                    "high"
+                    if candidate.evidence_strength == "inferred" or bool(candidate.ambiguity_notes)
+                    else "low"
+                ),
+                risk_reasons=(
+                    ["旧版兼容路径中的场景观察尚未经过长期关系聚合。"]
+                    if candidate.evidence_strength == "inferred" or bool(candidate.ambiguity_notes)
+                    else []
+                ),
                 confidence=candidate.confidence,
+                document=CharacterRelationPayload.model_validate(document.to_payload()),
+            )
+        )
+
+
+def _project_relation_states(
+    artifact: Stage3RelationAggregationArtifact,
+    input_artifact: Stage2InputArtifact,
+    issues: list[NormalizationIssue],
+    sink: list[CharacterRelationImportRecord],
+) -> None:
+    """把精简关系状态投影到现有 Qdrant 关系文档兼容结构。"""
+
+    if (
+        artifact.metadata.series_id != input_artifact.metadata.series_id
+        or artifact.metadata.season_id != input_artifact.metadata.season_id
+        or artifact.metadata.canon_branch != input_artifact.metadata.canon_branch
+    ):
+        issues.append(
+            NormalizationIssue(
+                scene_id="__dataset__",
+                collection_name=CollectionName.CHARACTER_RELATIONS.value,
+                candidate_local_id="__relation_aggregation_scope__",
+                message="关系聚合产物与当前 Stage 2 输入的系列、季度或剧情分支不一致。",
+            )
+        )
+        return
+
+    observation_map = {
+        observation.observation_id: observation
+        for observation in artifact.observations
+    }
+    current_scene_ids = {scene.scene_id for scene in input_artifact.scenes}
+    for record in artifact.character_relation_states:
+        if record.review_status == "rejected":
+            continue
+        if record.document is None or record.validation_errors:
+            issues.append(
+                NormalizationIssue(
+                    scene_id="",
+                    collection_name=CollectionName.CHARACTER_RELATIONS.value,
+                    candidate_local_id=record.state_id,
+                    message=(
+                        "关系 State 未通过结构校验，未生成入库投影: "
+                        + "; ".join(record.validation_errors or ["document 为空"])
+                    ),
+                )
+            )
+            continue
+        supporting_observations = [
+            observation_map[observation_id]
+            for observation_id in record.supporting_observation_ids
+            if observation_id in observation_map
+        ]
+        if not supporting_observations:
+            issues.append(
+                NormalizationIssue(
+                    scene_id="",
+                    collection_name=CollectionName.CHARACTER_RELATIONS.value,
+                    candidate_local_id=record.state_id,
+                    message="关系 State 没有可解析的支持 Observation，未生成入库投影。",
+                )
+            )
+            continue
+        first_observation = min(supporting_observations, key=lambda item: item.time_order)
+        if first_observation.scene_id not in current_scene_ids:
+            continue
+        evidence_u_ids = _clean_text_list(
+            [
+                evidence_id
+                for observation in supporting_observations
+                for evidence_id in observation.evidence_u_ids
+            ]
+        )
+        state = record.document
+        try:
+            document = CharacterRelationDocument(
+                subject_character_id=state.subject_character_id,
+                object_character_id=state.object_character_id,
+                season_id=state.season_id,
+                series_id=state.series_id,
+                visible_from=state.visible_from,
+                visible_to=state.visible_to,
+                canon_branch=state.canon_branch,
+                relation_label=state.relation_type_key,
+                state_summary=_clean_text(state.summary),
+                speech_hint=_clean_text(state.speech_hint),
+                object_character_nickname=_clean_text(state.object_character_nickname),
+                tags=[state.relation_type_key],
+                retrieval_text=_clean_text(state.summary),
+            )
+        except Exception as exc:
+            issues.append(
+                NormalizationIssue(
+                    scene_id=first_observation.scene_id,
+                    collection_name=CollectionName.CHARACTER_RELATIONS.value,
+                    candidate_local_id=record.state_id,
+                    message=f"无法投影为 CharacterRelationDocument: {type(exc).__name__}: {exc}",
+                )
+            )
+            continue
+        sink.append(
+            CharacterRelationImportRecord(
+                point_id=record.state_id,
+                source_scene_id=first_observation.scene_id,
+                source_local_id=record.state_id,
+                evidence_u_ids=evidence_u_ids,
+                supporting_observation_ids=record.supporting_observation_ids,
+                relation_type_key=state.relation_type_key,
+                risk_level=record.risk_level,
+                risk_reasons=record.risk_reasons,
+                validation_errors=record.validation_errors,
+                confidence=record.confidence,
                 document=CharacterRelationPayload.model_validate(document.to_payload()),
             )
         )
@@ -382,12 +518,16 @@ def _backfill_character_relation_visible_to(
     records: list[CharacterRelationImportRecord],
     issues: list[NormalizationIssue],
 ) -> None:
-    grouped_records: dict[tuple[CharacterId, CharacterId], list[CharacterRelationImportRecord]] = {}
+    grouped_records: dict[tuple[CharacterId, CharacterId, str], list[CharacterRelationImportRecord]] = {}
     for record in records:
-        key = (record.document.subject_character_id, record.document.object_character_id)
+        key = (
+            record.document.subject_character_id,
+            record.document.object_character_id,
+            record.relation_type_key or "legacy_scene_observation",
+        )
         grouped_records.setdefault(key, []).append(record)
 
-    for (subject_character_id, object_character_id), group in grouped_records.items():
+    for group in grouped_records.values():
         ordered_group = sorted(
             group,
             key=lambda item: (
@@ -404,7 +544,7 @@ def _backfill_character_relation_visible_to(
                         collection_name=CollectionName.CHARACTER_RELATIONS.value,
                         candidate_local_id=current_record.source_local_id,
                         message=(
-                            "无法回填 visible_to，因为下一条同主客体关系的 visible_from "
+                            "无法回填 visible_to，因为下一条同主客体、同关系语义的 visible_from "
                             f"({next_record.document.visible_from}) 不大于当前 visible_from "
                             f"({current_record.document.visible_from})。"
                         ),
@@ -564,9 +704,13 @@ def backfill_stage3_character_relations_across_artifacts(
     for _, artifact in artifacts:
         all_records.extend(artifact.character_relations)
 
-    grouped_records: dict[tuple[CharacterId, CharacterId], list[CharacterRelationImportRecord]] = {}
+    grouped_records: dict[tuple[CharacterId, CharacterId, str], list[CharacterRelationImportRecord]] = {}
     for record in all_records:
-        key = (record.document.subject_character_id, record.document.object_character_id)
+        key = (
+            record.document.subject_character_id,
+            record.document.object_character_id,
+            record.relation_type_key or "legacy_scene_observation",
+        )
         grouped_records.setdefault(key, []).append(record)
 
     for group in grouped_records.values():

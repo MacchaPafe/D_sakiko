@@ -9,7 +9,8 @@ import uuid
 from dataclasses import dataclass, field
 from multiprocessing import Process, Queue
 from queue import Empty
-from typing import cast, TYPE_CHECKING, Optional, Any
+from collections.abc import Mapping
+from typing import cast, TYPE_CHECKING, Optional
 
 from character import CharacterAttributes
 from inference_cli import synthesize
@@ -54,7 +55,7 @@ class VoiceTaskHandle:
 class AudioGenerate:
     """管理主线程侧的语音生成流程与 worker 进程通信。"""
 
-    def __init__(self, log_queue: Any | None = None) -> None:
+    def __init__(self, log_queue: object | None = None) -> None:
         # gpt（t2s）模型路径
         self.GPT_model_file: str | None = ''
         # sovits 模型路径
@@ -687,9 +688,11 @@ class AudioGenerate:
         text: str,
         audio_language_choice: str,
         character: CharacterAttributes,
+        pronunciation_overrides: Mapping[str, str] | None = None,
     ) -> tuple[str, bool]:
         """将待合成文本转换为适合送入语音模块的内容。"""
         if audio_language_choice == '日英混合':
+            text = self._apply_pronunciation_overrides(text, pronunciation_overrides)
             text = re.sub(r'CRYCHIC', 'クライシック', text, flags=re.IGNORECASE)
             text = re.sub(r'\bave\s*mujica\b', 'アヴェムジカ', text, flags=re.IGNORECASE)
             if character.character_name == "爱音":
@@ -709,6 +712,31 @@ class AudioGenerate:
         if text == '' or text == '不能送去合成':
             return '今年', False
         return text, True
+
+    @staticmethod
+    def _apply_pronunciation_overrides(
+        text: str,
+        pronunciation_overrides: Mapping[str, str] | None,
+    ) -> str:
+        """按原文本长度降序应用单次请求的读音覆盖。"""
+
+        if not pronunciation_overrides:
+            return text
+        ordered_items = sorted(
+            pronunciation_overrides.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+        for source_text, pronunciation in ordered_items:
+            if not source_text:
+                continue
+            text = re.sub(
+                re.escape(source_text),
+                pronunciation,
+                text,
+                flags=re.IGNORECASE,
+            )
+        return text
 
     def generate_audio(
         self,
@@ -748,6 +776,7 @@ class AudioGenerate:
         segment_index: int | None = None,
         segment_total: int | None = None,
         emotion: str | None = None,
+        pronunciation_overrides: Mapping[str, str] | None = None,
     ) -> str:
         """按显式给定角色配置同步生成语音。"""
         if not character.has_valid_voice_model():
@@ -758,6 +787,7 @@ class AudioGenerate:
             text,
             audio_lan_choice,
             character,
+            pronunciation_overrides=pronunciation_overrides,
         )
         if not is_valid_text:
             self.audio_file_path = SILENCE_WAV_PATH
@@ -775,7 +805,11 @@ class AudioGenerate:
         self.audio_file_path = self._wait_for_synthesize_result(handle)
         return self.audio_file_path
 
-    def clean_text_for_audio(self, text: str) -> str:
+    def clean_text_for_audio(
+        self,
+        text: str,
+        pronunciation_overrides: Mapping[str, str] | None = None,
+    ) -> str:
         """清洗文本使其适合送入语音合成模块。"""
         cleaned = re.sub(r"（.*?）", "", text)
         cleaned = re.sub(r"\(.*?\)", "", cleaned)
@@ -789,6 +823,7 @@ class AudioGenerate:
         cleaned = cleaned.replace('...', '，')
         if not cleaned or bool(re.fullmatch(r'[\W_]+', cleaned)):
             cleaned = '不能送去合成'
+        cleaned = self._apply_pronunciation_overrides(cleaned, pronunciation_overrides)
         for key, value in self.replacements_jap.items():
             cleaned = re.sub(re.escape(key), value, cleaned, flags=re.IGNORECASE)
         return cleaned
@@ -800,6 +835,7 @@ class AudioGenerate:
         sakiko_state: bool,
         audio_lan_choice: str,
         emotion: str | None = None,
+        pronunciation_overrides: Mapping[str, str] | None = None,
     ) -> str:
         """同步生成音频，用于重新生成音频功能。"""
         if not character.has_valid_voice_model():
@@ -809,7 +845,12 @@ class AudioGenerate:
             text = re.sub(r'CRYCHIC', 'クライシック', text, flags=re.IGNORECASE)
             text = re.sub(r'\bave\s*mujica\b', 'アヴェムジカ', text, flags=re.IGNORECASE)
             text = re.sub(r'立希', 'りっき', text, flags=re.IGNORECASE)
-        text = self.clean_text_for_audio(text)
+        text = self.clean_text_for_audio(
+            text,
+            pronunciation_overrides=(
+                pronunciation_overrides if audio_lan_choice == '日英混合' else None
+            ),
+        )
         if text == '' or text == '不能送去合成':
             return SILENCE_WAV_PATH
 

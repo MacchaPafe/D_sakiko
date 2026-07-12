@@ -302,6 +302,10 @@ embedding 向量是运行时生成结果，因此推荐：
 
 - 必须显式区分 `subject` 与 `object`
 - 这是关系的有向记录，不能抽象成无方向边
+- 入库文档来自 Stage 3 跨场景聚合后的 `Character Relation State`，不再把每个场景的局部表现直接视为长期关系
+- Stage 2 的 `Relation Observation` 只作为离线证据，不进入 Qdrant
+- 当前 collection schema 仍保留 `relation_label/tags/retrieval_text` 以兼容已有数据；新审核 State 不要求人工维护这些字段，导入边界分别用 `relation_type_key` 与 `summary` 确定性生成兼容投影
+- 独立关系语义按 `relation_type_key` 分别维护时间窗口，回填时不能只按主客体分组
 
 建议验证：
 

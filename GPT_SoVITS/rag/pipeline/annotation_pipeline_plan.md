@@ -1,5 +1,7 @@
 # Annotation Pipeline Plan
 
+> 角色关系部分已由 ADR 0021 更新：Stage 2 现在输出 `relation_observations`，Stage 3 再跨场景聚合为长期 `Character Relation State`。本文后续仍出现的逐场景 `character_relations` 字段仅用于说明旧版设计与兼容数据。
+
 ## 1. 目标
 
 本方案用于从 `It's MyGO!!!!!` 动漫字幕中抽取三张 RAG 数据表所需的数据：
