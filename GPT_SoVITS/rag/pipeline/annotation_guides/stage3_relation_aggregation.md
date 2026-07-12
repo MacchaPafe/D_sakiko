@@ -2,7 +2,7 @@
 
 ## 你的任务
 
-把同一系列、季度和剧情分支中，一个有向角色对的全部场景级 Relation Observation 聚合为少量、具有明确
+把同一系列、剧情时间线和剧情分支中，一个有向角色对的全部场景级 Relation Observation 聚合为少量、具有明确
 有效时间的长期 Character Relation State。
 
 这里不是再次描述每个场景，也不是替每条 observation 生成一条 state。任务的核心就是跨场景合并、判断
@@ -14,8 +14,8 @@
 
 - 每集 Stage 2 Input：`annotations_stage2/epXX_stage2_input.json`
 - 每集 Stage 2A 标注：`annotations_stage2/epXX_pass2_raw.json`
-- Prompt Package：例如 `prompt_packages/mygo_s01_stage3_relations/`
-- 正式输出：例如 `annotations_stage3/mygo_s01_relation_states_review.json`
+- Prompt Package：例如 `prompt_packages/bang_dream_original_stage3_relations/`
+- 正式输出：例如 `annotations_stage3/bang_dream_original_relation_states_review.json`
 
 每一个 `--input` 必须与同位置的 `--annotation` 属于同一集。按集数顺序重复参数，例如 ep01、ep02、ep03。
 不要只因为当前想检查某一集，就覆盖已经存在的全量关系产物；试验应使用单独 Package 和输出文件。
@@ -26,6 +26,7 @@
 
 - `--input` 与 `--annotation` 数量相同，顺序一一对应；
 - 所有文件属于同一 `series_id`、`timeline_id` 和 `canon_branch`；
+- `story_year` 只是可空的辅助学年标签，不是聚合分组键；不得因为学年相同就跨 `timeline_id` 聚合，也不得因为学年为空就拒绝同时间线输入；
 - 输入覆盖你希望关系 State 生效的完整时间范围；
 - Stage 2A 中的 relation observations 已经完成基本复核，没有明显的方向错误或逐句过度拆分。
 
@@ -39,7 +40,7 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage3-relation-prompts \
   --annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2_raw.json \
   --input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep02_stage2_input.json \
   --annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep02_pass2_raw.json \
-  --output-dir GPT_SoVITS/rag/pipeline/data/prompt_packages/mygo_s01_stage3_relations
+  --output-dir GPT_SoVITS/rag/pipeline/data/prompt_packages/bang_dream_original_stage3_relations
 ```
 
 每个任务对应一个有向角色对，例如“爱音 → 立希”。反方向会是另一个任务，不能互相代替。
@@ -56,8 +57,8 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage3-relation-prompts \
 
 ```bash
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage3-relations \
-  --manifest GPT_SoVITS/rag/pipeline/data/prompt_packages/mygo_s01_stage3_relations/manifest.json \
-  --output GPT_SoVITS/rag/pipeline/data/annotations_stage3/mygo_s01_relation_states_review.json \
+  --manifest GPT_SoVITS/rag/pipeline/data/prompt_packages/bang_dream_original_stage3_relations/manifest.json \
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage3/bang_dream_original_relation_states_review.json \
   --model-label codex-workspace
 ```
 

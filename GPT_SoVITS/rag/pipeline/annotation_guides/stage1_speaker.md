@@ -17,6 +17,13 @@
 不要把另一集的 `prepared.json`、Package 或输出路径混进当前任务。Prompt Package 必须使用一个尚未包含
 `manifest.json` 的新目录；不要覆盖旧 Package，以免旧回复与新 Prompt 混用。
 
+开始前还要确定两个时间字段：
+
+- `timeline_id`：剧情时间轴标识。只有同一时间轴内的剧情顺序和有效区间才能直接比较。MyGO 与
+  Ave Mujica 当前使用 `bang_dream_original`；世界连续性未确认的新作品应使用独立、稳定的时间线 ID。
+- `story_year`：可空的作品内剧情学年，只在能够确认时填写。它不是动画季度，也不决定剧情顺序；
+  不要为了沿用旧的三年级结构而猜测一个学年。
+
 ## 第一步：从字幕生成预处理输入
 
 如果 `epXX_prepared.json` 尚不存在，运行：
@@ -24,13 +31,31 @@
 ```bash
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
   --subtitle '该集字幕.ass' \
-  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/epXX_prepared.json
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/epXX_prepared.json \
+  --timeline-id bang_dream_original \
+  --story-year 3
+```
+
+上例适用于剧情学年能够确认为三年级、且属于 BanG Dream 原作时间线的内容。标注其他作品时必须替换
+`--timeline-id`；`story_year` 无法确认时应在产物中保持 `null`，不能用 `3` 充当默认答案。
+
+学年未知时显式传入 `--story-year 0`。CLI 会把 `0` 或负数转换成 `None`，因此 prepared JSON 中保存
+`null`，渲染后的 Prompt 中显示 `None`；正式产物不会保存 `0` 或负数。例如：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
+  --subtitle '学年未知作品的字幕.ass' \
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/epXX_prepared.json \
+  --timeline-id independent_story_timeline \
+  --story-year 0
 ```
 
 生成后确认：
 
 - `metadata.episode` 是当前集数；
 - `metadata.subtitle_path` 指向预期字幕；
+- `metadata.timeline_id` 是当前作品实际所属的剧情时间线；
+- `metadata.story_year` 只在能够确认时为正整数，否则为 `null`；
 - `scenes` 非空，且台词时间范围合理。
 
 ## 第二步：渲染静态 Prompt Package

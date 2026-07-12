@@ -16,7 +16,7 @@ from rag.pipeline.prompt_package import (
     read_prompt_package_responses,
 )
 from rag.pipeline.prompt_package_litellm import complete_prompt_package_with_litellm
-from rag.pipeline.cli import main as pipeline_cli_main
+from rag.pipeline.cli import _normalize_cli_story_year, main as pipeline_cli_main
 from rag.pipeline.stage1_speaker_annotation import (
     assemble_stage1_prompt_package,
     load_stage1_annotation_artifact,
@@ -56,6 +56,14 @@ STAGE3_RAG = ROOT_DIR / "GPT_SoVITS/rag/pipeline/data/annotations_stage3/ep01_ra
 
 class PromptPackagePipelineTest(unittest.TestCase):
     """验证五个 LLM 阶段的静态 Prompt Package seam。"""
+
+    def test_cli_story_year_normalizes_non_positive_values(self) -> None:
+        """CLI 应把非正剧情学年转换为未知，同时保留正整数。"""
+
+        self.assertIsNone(_normalize_cli_story_year(0))
+        self.assertIsNone(_normalize_cli_story_year(-2))
+        self.assertEqual(_normalize_cli_story_year(1), 1)
+        self.assertEqual(_normalize_cli_story_year(3), 3)
 
     def test_stage1_roundtrip_from_offline_response(self) -> None:
         """Stage 1 离线 response 应还原既有场景标注。"""

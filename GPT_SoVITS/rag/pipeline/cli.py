@@ -93,6 +93,12 @@ def _add_offline_assemble_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--allow-stale", action="store_true", help="允许源文件或 Prompt 哈希已经变化")
 
 
+def _normalize_cli_story_year(value: int) -> int | None:
+    """把 CLI 的非正剧情学年哨兵值规范化为未知。"""
+
+    return None if value <= 0 else value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RAG 第一阶段字幕标注流水线")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -103,7 +109,12 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--anime-title", default="It's MyGO!!!!!", help="动画标题")
     prepare_parser.add_argument("--series-id", default=SeriesId.ITS_MYGO.value, help="系列 id")
     prepare_parser.add_argument("--timeline-id", default="bang_dream_original", help="剧情时间线 id")
-    prepare_parser.add_argument("--story-year", type=int, default=3, help="可空剧情学年")
+    prepare_parser.add_argument(
+        "--story-year",
+        type=int,
+        default=3,
+        help="剧情学年；0 或负数表示未知，内部保存为 null",
+    )
     prepare_parser.add_argument("--canon-branch", default=CanonBranch.MAIN.value, help="剧情分支")
     prepare_parser.add_argument("--scene-gap-ms", type=int, default=12000, help="场景切分时间阈值")
 
@@ -463,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
             anime_title=args.anime_title,
             series_id=SeriesId(args.series_id),
             timeline_id=args.timeline_id,
-            story_year=args.story_year,
+            story_year=_normalize_cli_story_year(args.story_year),
             canon_branch=CanonBranch(args.canon_branch),
             scene_gap_ms=args.scene_gap_ms,
         )

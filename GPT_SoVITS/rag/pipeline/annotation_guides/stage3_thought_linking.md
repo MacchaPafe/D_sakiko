@@ -25,6 +25,7 @@ Story Event；不要拿已发布文件或另一轮去重后的旧文件随意替
 抽查：
 
 - 三个文件的集数和剧情范围一致；
+- 三个文件属于同一个 `timeline_id`；观点与候选事件的时间先后只能在这条时间线内比较；
 - Stage 2B 中已有 `character_thought_updates`；
 - `rag_ready.json` 中的 Story Event 时间不晚于被链接观点时，才可能成为合法候选；
 - Stage 2B 的明显提取错误应返回 Stage 2B 修复，本阶段不能靠链接操作掩盖错误观点。
@@ -123,4 +124,3 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage3-thoughts \
 - `thought_aspect` 简短且能区分认知方面；
 - source local ID 原样返回，response 为纯 JSON；
 - 组装命令成功，输出中没有 response 相关 issue。
-

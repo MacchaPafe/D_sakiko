@@ -35,6 +35,7 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline build-stage2-input \
 抽查 `epXX_stage2_input.json`：
 
 - `metadata.episode` 与文件编号一致；
+- `metadata.timeline_id` 与当前作品预期的剧情时间线一致；`metadata.story_year` 可以为 `null`，不能把它当作季度或排序字段；
 - `scenes` 非空；
 - 台词包含 `speaker_name` 和真实 `u_id`；
 - 说话人明显错误时先暂停，不要试图在本阶段偷偷纠正并继续抽取。

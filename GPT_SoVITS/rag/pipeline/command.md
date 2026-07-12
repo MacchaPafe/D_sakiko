@@ -18,7 +18,7 @@ pip install jinja2 pysubs2 nicegui qdrant-client sentence-transformers
 
 其中，只有 `qdrant-client` 和 `sentence-transformers` 是之后主程序执行时需要新增的依赖，其他依赖都只用于数据集的标注。
 
-当前正式运行环境已经直接包含这两个世界书索引依赖。标注任务使用 `--timeline-id` 和可选 `--story-year`，不再使用旧 `SeasonId`。
+当前正式运行环境已经直接包含这两个世界书索引依赖。标注任务使用 `--timeline-id` 和可空的 `story_year`，不再使用旧 `SeasonId`。`prepare-stage1 --story-year 0`（或任意负数）表示学年未知，CLI 会在写入产物前转换成 `None`；省略参数仍沿用兼容默认值 `3`。
 
 审核后的 Stage 3 artifact 可通过 `publish-worldbook` 转换为不含证据字段的官方世界书包；新来源只有显式传入 `--allocate-new-ids` 才会写入开发侧稳定 ID map。
 
@@ -100,8 +100,15 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage2-responses \
 ```bash
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
   --subtitle '你的字幕文件的路径' \
-  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_prepared.json
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_prepared.json \
+  --timeline-id bang_dream_original \
+  --story-year 3
 ```
+
+`timeline_id` 表示剧情顺序可以互相比较的时间轴；MyGO 与 Ave Mujica 当前使用
+`bang_dream_original`。`story_year` 是可空的作品内剧情学年，不是动画季度；无法确认学年时不应猜测或
+沿用默认三年级，而应显式传入 `--story-year 0`。`0` 和负数只作为 CLI 哨兵值，正式 JSON 中保存为
+`null`。
 
 > 建议从字幕组的如下仓库中获取 MyGO 字幕：https://github.com/Nekomoekissaten-SUB/Nekomoekissaten-Storage/tree/master/BanG_Dream/MyGO
 >
@@ -170,7 +177,7 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline annotate-stage2b \
 Stage 2B 输出是跨场景观点聚合的输入。`Event Fact` 只为角色观点的证据和链接服务，
 不会作为一张独立的 Qdrant 表导入。
 
-Stage 2 输出的 `relation_observations` 还不是长期关系。使用下面的命令按系列、季度、剧情分支和
+Stage 2 输出的 `relation_observations` 还不是长期关系。使用下面的命令按系列、剧情时间线、剧情分支和
 有向角色对进行一次全量 LLM 聚合，生成带证据链、有效时间和风险标记的关系 State：
 
 ```bash
@@ -182,7 +189,9 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline aggregate-stage3-relations \
   --temperature 1
 ```
 
-全季度重建时，按相同顺序重复传入每一集的 `--input` 与 `--annotation`。聚合器会先校验它们属于同一系列、季度和剧情分支，再按有向角色对统一调用 LLM。
+完整标注范围重建时，按相同顺序重复传入每一集的 `--input` 与 `--annotation`。聚合器会先校验它们属于
+同一系列、`timeline_id` 和剧情分支，再按有向角色对统一调用 LLM。`story_year` 只是可空的辅助学年标签，
+不作为关系聚合的分组或排序依据。
 
 ## 3. 插入数据库阶段
 

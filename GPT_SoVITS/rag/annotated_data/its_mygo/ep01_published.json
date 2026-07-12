@@ -3,15 +3,16 @@
     "subtitle_path": "[Nekomoe kissaten] BanG Dream! It’s MyGO!!!!! [01][BDRip].JPSC.ass",
     "anime_title": "It's MyGO!!!!!",
     "series_id": "its_mygo",
-    "season_id": 3,
     "canon_branch": "main",
     "episode": 1,
     "source_stage2_model": "deepseek/deepseek-reasoner",
-    "source_stage2_template_path": "/Users/liyanxiao/Documents/Python Files/D_sakiko/GPT_SoVITS/rag/pipeline/prompts/extraction_pass.jinja"
+    "source_stage2_template_path": "/Users/liyanxiao/Documents/Python Files/D_sakiko/GPT_SoVITS/rag/pipeline/prompts/extraction_pass.jinja",
+    "timeline_id": "bang_dream_original",
+    "story_year": 3
   },
   "story_events": [
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s001:event_01:4000",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s001:event_01:4000",
       "source_scene_id": "ep01_s001",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -62,7 +63,6 @@
       "evidence_s_ids": [],
       "confidence": 0.96,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4000,
@@ -85,11 +85,13 @@
           "情绪爆发",
           "CRYCHIC"
         ],
-        "retrieval_text": "在雨中，祥子向CRYCHIC的旧成员宣布退出乐队，引发强烈反应。素世关心并挽留她，立希直接指责她不负责，灯则不安询问。祥子冷淡反驳，批评灯缺乏练习，最后若叶睦透露从未觉得玩乐队开心，导致气氛紧张。"
+        "retrieval_text": "在雨中，祥子向CRYCHIC的旧成员宣布退出乐队，引发强烈反应。素世关心并挽留她，立希直接指责她不负责，灯则不安询问。祥子冷淡反驳，批评灯缺乏练习，最后若叶睦透露从未觉得玩乐队开心，导致气氛紧张。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s002:event_01:4001",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s002:event_01:4001",
       "source_scene_id": "ep01_s002",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -108,7 +110,6 @@
       "evidence_s_ids": [],
       "confidence": 0.9,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4001,
@@ -128,11 +129,13 @@
           "入学",
           "羽丘"
         ],
-        "retrieval_text": "爱音参加羽丘中学入学面试，被问及初中时是学生会长，她积极肯定并表达在高中也会积极进取、争取充实生活；面试官认可并结束面试后，爱音自言自语感觉良好，认为档案成绩好、入学没问题，并决心在这里从头来过。标签：面试、决心、自我介绍。"
+        "retrieval_text": "爱音参加羽丘中学入学面试，被问及初中时是学生会长，她积极肯定并表达在高中也会积极进取、争取充实生活；面试官认可并结束面试后，爱音自言自语感觉良好，认为档案成绩好、入学没问题，并决心在这里从头来过。标签：面试、决心、自我介绍。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s003:event_01:4002",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s003:event_01:4002",
       "source_scene_id": "ep01_s003",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -200,7 +203,6 @@
       "evidence_s_ids": [],
       "confidence": 0.9,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4002,
@@ -220,11 +222,13 @@
           "自我介绍",
           "班级互动"
         ],
-        "retrieval_text": "爱音作为转学生进入班级，礼貌地自我介绍并尝试融入。午休时与同学交流，但讨论很快转向灯的行为，让爱音感到失落。标签：入学、社交、自我介绍、班级互动。"
+        "retrieval_text": "爱音作为转学生进入班级，礼貌地自我介绍并尝试融入。午休时与同学交流，但讨论很快转向灯的行为，让爱音感到失落。标签：入学、社交、自我介绍、班级互动。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s004:event_01:4003",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s004:event_01:4003",
       "source_scene_id": "ep01_s004",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -247,7 +251,6 @@
       "evidence_s_ids": [],
       "confidence": 0.95,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4003,
@@ -267,11 +270,13 @@
           "犹豫",
           "学校生活"
         ],
-        "retrieval_text": "爱音在放学路上与同学灯和立希等人交谈，了解到学校里有Afterglow、PasPale、Roselia、RAS等多支乐队。她表达想举办Live的渴望，随后绘里三人邀请她加入自己的乐队，翻唱Afterglow的歌曲。爱音透露自己想做吉他主唱，担心作为吉他手在角落位置，最终表示考虑一下。回家后她感到疲惫但高兴交到了朋友。"
+        "retrieval_text": "爱音在放学路上与同学灯和立希等人交谈，了解到学校里有Afterglow、PasPale、Roselia、RAS等多支乐队。她表达想举办Live的渴望，随后绘里三人邀请她加入自己的乐队，翻唱Afterglow的歌曲。爱音透露自己想做吉他主唱，担心作为吉他手在角落位置，最终表示考虑一下。回家后她感到疲惫但高兴交到了朋友。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s005:event_01:4004",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s005:event_01:4004",
       "source_scene_id": "ep01_s005",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -297,7 +302,6 @@
       ],
       "confidence": 0.9,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4004,
@@ -316,11 +320,13 @@
           "犹豫",
           "计划"
         ],
-        "retrieval_text": "爱音在场景中表示庆幸自己有吉他，并认为大家都玩乐队所以自己也得参与。面对绘里的乐队邀请，她因不熟悉Afterglow而犹豫并道歉，但感谢邀请。随后她开始计划组建自己的乐队，偏好吉他主唱，并疑惑学校没有轻音部，考虑去吹奏乐部寻找成员。"
+        "retrieval_text": "爱音在场景中表示庆幸自己有吉他，并认为大家都玩乐队所以自己也得参与。面对绘里的乐队邀请，她因不熟悉Afterglow而犹豫并道歉，但感谢邀请。随后她开始计划组建自己的乐队，偏好吉他主唱，并疑惑学校没有轻音部，考虑去吹奏乐部寻找成员。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s006:event_01:4005",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s006:event_01:4005",
       "source_scene_id": "ep01_s006",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -345,7 +351,6 @@
       "evidence_s_ids": [],
       "confidence": 0.95,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4005,
@@ -365,11 +370,13 @@
           "初次见面",
           "乐队招募"
         ],
-        "retrieval_text": "爱音在听到祥子弹琴后，主动上前夸奖并邀请她加入乐队。祥子拒绝邀请，并以吹奏乐部活动为借口建议爱音离开，爱音注意到祥子的语气非常像大小姐。"
+        "retrieval_text": "爱音在听到祥子弹琴后，主动上前夸奖并邀请她加入乐队。祥子拒绝邀请，并以吹奏乐部活动为借口建议爱音离开，爱音注意到祥子的语气非常像大小姐。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s007:event_01:4006",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s007:event_01:4006",
       "source_scene_id": "ep01_s007",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -385,7 +392,6 @@
       "evidence_s_ids": [],
       "confidence": 0.9,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4006,
@@ -405,11 +411,13 @@
           "互动",
           "过去阴影"
         ],
-        "retrieval_text": "爱音找到灯并邀请她组建新乐队，但灯因过去乐队失败的经历而拒绝，表示组乐队也会再次失败；爱音最后提议去卡拉OK玩。"
+        "retrieval_text": "爱音找到灯并邀请她组建新乐队，但灯因过去乐队失败的经历而拒绝，表示组乐队也会再次失败；爱音最后提议去卡拉OK玩。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s008:event_01:4007",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s008:event_01:4007",
       "source_scene_id": "ep01_s008",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -436,7 +444,6 @@
       "evidence_s_ids": [],
       "confidence": 0.95,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4007,
@@ -456,11 +463,13 @@
           "计划",
           "倾诉"
         ],
-        "retrieval_text": "素世在月之森女子学园与若叶睦对话，向她倾诉对祥子近况的担忧，后悔当初没有在祥子退出乐队时多追问，并计划社团活动后去找立希，希望恢复旧乐队的关系。"
+        "retrieval_text": "素世在月之森女子学园与若叶睦对话，向她倾诉对祥子近况的担忧，后悔当初没有在祥子退出乐队时多追问，并计划社团活动后去找立希，希望恢复旧乐队的关系。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s009:event_01:4008",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s009:event_01:4008",
       "source_scene_id": "ep01_s009",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -481,7 +490,6 @@
       "evidence_s_ids": [],
       "confidence": 0.9,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4008,
@@ -501,11 +509,13 @@
           "拒绝",
           "情绪低落"
         ],
-        "retrieval_text": "在咖啡店场景中，燐子与立希进行工作交流，燐子表扬立希的咖啡技能并建议她做服务员，但立希因社交不适而拒绝。"
+        "retrieval_text": "在咖啡店场景中，燐子与立希进行工作交流，燐子表扬立希的咖啡技能并建议她做服务员，但立希因社交不适而拒绝。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s010:event_01:4009",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s010:event_01:4009",
       "source_scene_id": "ep01_s010",
       "source_local_id": "event_01",
       "evidence_u_ids": [
@@ -524,7 +534,6 @@
       ],
       "confidence": 0.95,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4009,
@@ -546,11 +555,13 @@
           "逃跑",
           "CRYCHIC"
         ],
-        "retrieval_text": "在卡拉OK馆，爱音与灯对话，爱音邀请灯组乐队并鼓励她克服过去的失败。灯表达自责并请求一辈子组乐队，随后跑走。"
+        "retrieval_text": "在卡拉OK馆，爱音与灯对话，爱音邀请灯组乐队并鼓励她克服过去的失败。灯表达自责并请求一辈子组乐队，随后跑走。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     },
     {
-      "point_id": "story_event:its_mygo:s3:ep01_s010:event_02:4010",
+      "point_id": "story_event:bang_dream_original:y3:ep01_s010:event_02:4010",
       "source_scene_id": "ep01_s010",
       "source_local_id": "event_02",
       "evidence_u_ids": [
@@ -568,7 +579,6 @@
       "evidence_s_ids": [],
       "confidence": 0.94,
       "document": {
-        "season_id": 3,
         "series_id": "its_mygo",
         "episode": 1,
         "time_order": 4010,
@@ -588,13 +598,15 @@
           "质问",
           "争执"
         ],
-        "retrieval_text": "立希在卡拉OK馆外找到灯和爱音，质问爱音为什么邀请灯组乐队，双方发生口角，关系紧张。"
+        "retrieval_text": "立希在卡拉OK馆外找到灯和爱音，质问爱音为什么邀请灯组乐队，双方发生口角，关系紧张。",
+        "timeline_id": "bang_dream_original",
+        "occurred_story_year": 3
       }
     }
   ],
   "character_relations": [
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_01:soyo:sakiko",
+      "point_id": "character_relation:bang_dream_original:ep01_s001:rel_01:soyo:sakiko",
       "source_scene_id": "ep01_s001",
       "source_local_id": "rel_01",
       "evidence_u_ids": [
@@ -618,7 +630,6 @@
       "document": {
         "subject_character_id": "soyo",
         "object_character_id": "sakiko",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4000,
         "visible_to": 4006,
@@ -633,11 +644,12 @@
           "不解",
           "旧友"
         ],
-        "retrieval_text": "素世对祥子表现出关心和挽留态度，用昵称'小祥'称呼她，担忧她的状态，并试图沟通以阻止她退出乐队。"
+        "retrieval_text": "素世对祥子表现出关心和挽留态度，用昵称'小祥'称呼她，担忧她的状态，并试图沟通以阻止她退出乐队。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_02:taki:sakiko",
+      "point_id": "character_relation:bang_dream_original:ep01_s001:rel_02:taki:sakiko",
       "source_scene_id": "ep01_s001",
       "source_local_id": "rel_02",
       "evidence_u_ids": [
@@ -652,7 +664,6 @@
       "document": {
         "subject_character_id": "taki",
         "object_character_id": "sakiko",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4000,
         "visible_to": 999999,
@@ -667,11 +678,12 @@
           "冲突",
           "不满"
         ],
-        "retrieval_text": "立希对祥子表现出愤怒和指责，认为她退出乐队是不负责任的行为，质问她为什么不说话，并抱怨等待她浪费时间。"
+        "retrieval_text": "立希对祥子表现出愤怒和指责，认为她退出乐队是不负责任的行为，质问她为什么不说话，并抱怨等待她浪费时间。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_03:tomori:sakiko",
+      "point_id": "character_relation:bang_dream_original:ep01_s001:rel_03:tomori:sakiko",
       "source_scene_id": "ep01_s001",
       "source_local_id": "rel_03",
       "evidence_u_ids": [
@@ -682,7 +694,6 @@
       "document": {
         "subject_character_id": "tomori",
         "object_character_id": "sakiko",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4000,
         "visible_to": 999999,
@@ -697,11 +708,12 @@
           "确认",
           "关切"
         ],
-        "retrieval_text": "灯对祥子表现出不安和依赖，用昵称'小祥'称呼她，询问她是否真的要退出，并表达没有她的话会困难。"
+        "retrieval_text": "灯对祥子表现出不安和依赖，用昵称'小祥'称呼她，询问她是否真的要退出，并表达没有她的话会困难。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s001:rel_04:sakiko:tomori",
+      "point_id": "character_relation:bang_dream_original:ep01_s001:rel_04:sakiko:tomori",
       "source_scene_id": "ep01_s001",
       "source_local_id": "rel_04",
       "evidence_u_ids": [
@@ -713,7 +725,6 @@
       "document": {
         "subject_character_id": "sakiko",
         "object_character_id": "tomori",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4000,
         "visible_to": 999999,
@@ -728,11 +739,12 @@
           "质问",
           "冷淡"
         ],
-        "retrieval_text": "祥子对灯表现出批评和指责，说她推卸责任，并质问她在乐队中做了什么练习，语气冷淡而尖锐。"
+        "retrieval_text": "祥子对灯表现出批评和指责，说她推卸责任，并质问她在乐队中做了什么练习，语气冷淡而尖锐。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s006:rel_01:anon:sakiko",
+      "point_id": "character_relation:bang_dream_original:ep01_s006:rel_01:anon:sakiko",
       "source_scene_id": "ep01_s006",
       "source_local_id": "rel_01",
       "evidence_u_ids": [
@@ -750,7 +762,6 @@
       "document": {
         "subject_character_id": "anon",
         "object_character_id": "sakiko",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4005,
         "visible_to": 999999,
@@ -765,11 +776,12 @@
           "夸奖",
           "招募"
         ],
-        "retrieval_text": "爱音对祥子：夸奖她弹琴好，邀请她一起组乐队，自我介绍并希望被称呼为爱音，表现出积极的合作意愿和友好态度。"
+        "retrieval_text": "爱音对祥子：夸奖她弹琴好，邀请她一起组乐队，自我介绍并希望被称呼为爱音，表现出积极的合作意愿和友好态度。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s006:rel_02:sakiko:anon",
+      "point_id": "character_relation:bang_dream_original:ep01_s006:rel_02:sakiko:anon",
       "source_scene_id": "ep01_s006",
       "source_local_id": "rel_02",
       "evidence_u_ids": [
@@ -784,7 +796,6 @@
       "document": {
         "subject_character_id": "sakiko",
         "object_character_id": "anon",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4005,
         "visible_to": 999999,
@@ -799,11 +810,12 @@
           "正式",
           "保持距离"
         ],
-        "retrieval_text": "祥子对爱音：询问她是否是吹奏乐部成员，拒绝组队邀请，提醒活动时间并建议离开，说话方式正式像大小姐，表现出疏远和拒绝的态度。"
+        "retrieval_text": "祥子对爱音：询问她是否是吹奏乐部成员，拒绝组队邀请，提醒活动时间并建议离开，说话方式正式像大小姐，表现出疏远和拒绝的态度。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s007:rel_01:anon:tomori",
+      "point_id": "character_relation:bang_dream_original:ep01_s007:rel_01:anon:tomori",
       "source_scene_id": "ep01_s007",
       "source_local_id": "rel_01",
       "evidence_u_ids": [
@@ -816,7 +828,6 @@
       "document": {
         "subject_character_id": "anon",
         "object_character_id": "tomori",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4006,
         "visible_to": 4008,
@@ -830,11 +841,12 @@
           "邀请",
           "关心"
         ],
-        "retrieval_text": "爱音对灯的关系：她称呼灯为‘小灯’，主动邀请她组乐队并提议去卡拉OK，表现出友好和关心的态度。"
+        "retrieval_text": "爱音对灯的关系：她称呼灯为‘小灯’，主动邀请她组乐队并提议去卡拉OK，表现出友好和关心的态度。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s007:rel_02:tomori:anon",
+      "point_id": "character_relation:bang_dream_original:ep01_s007:rel_02:tomori:anon",
       "source_scene_id": "ep01_s007",
       "source_local_id": "rel_02",
       "evidence_u_ids": [
@@ -846,7 +858,6 @@
       "document": {
         "subject_character_id": "tomori",
         "object_character_id": "anon",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4006,
         "visible_to": 4008,
@@ -860,11 +871,12 @@
           "拒绝",
           "谨慎"
         ],
-        "retrieval_text": "灯对爱音的关系：她拒绝爱音的组乐队邀请，表示乐队会再次失败，语气消极且犹豫。"
+        "retrieval_text": "灯对爱音的关系：她拒绝爱音的组乐队邀请，表示乐队会再次失败，语气消极且犹豫。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s008:rel_01:soyo:sakiko",
+      "point_id": "character_relation:bang_dream_original:ep01_s008:rel_01:soyo:sakiko",
       "source_scene_id": "ep01_s008",
       "source_local_id": "rel_01",
       "evidence_u_ids": [
@@ -881,7 +893,6 @@
       "document": {
         "subject_character_id": "soyo",
         "object_character_id": "sakiko",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4007,
         "visible_to": 999999,
@@ -896,11 +907,12 @@
           "后悔",
           "期待"
         ],
-        "retrieval_text": "素世对祥子的关系：她非常担心祥子的下落和状况，用昵称‘小祥’称呼她，语气中透露出关心、后悔当初没有多沟通，并希望重建联系。"
+        "retrieval_text": "素世对祥子的关系：她非常担心祥子的下落和状况，用昵称‘小祥’称呼她，语气中透露出关心、后悔当初没有多沟通，并希望重建联系。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s008:rel_02:soyo:mutsumi",
+      "point_id": "character_relation:bang_dream_original:ep01_s008:rel_02:soyo:mutsumi",
       "source_scene_id": "ep01_s008",
       "source_local_id": "rel_02",
       "evidence_u_ids": [
@@ -925,7 +937,6 @@
       "document": {
         "subject_character_id": "soyo",
         "object_character_id": "mutsumi",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4007,
         "visible_to": 999999,
@@ -940,11 +951,12 @@
           "倾诉",
           "邀请"
         ],
-        "retrieval_text": "素世对若叶睦的关系：她称呼若叶睦为‘小睦’，语气友好，向她倾诉对祥子的担忧，并邀请她一起去找立希，表现出依赖和信任。"
+        "retrieval_text": "素世对若叶睦的关系：她称呼若叶睦为‘小睦’，语气友好，向她倾诉对祥子的担忧，并邀请她一起去找立希，表现出依赖和信任。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s009:rel_01:rinko:taki",
+      "point_id": "character_relation:bang_dream_original:ep01_s009:rel_01:rinko:taki",
       "source_scene_id": "ep01_s009",
       "source_local_id": "rel_01",
       "evidence_u_ids": [
@@ -959,7 +971,6 @@
       "document": {
         "subject_character_id": "rinko",
         "object_character_id": "taki",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4008,
         "visible_to": 999999,
@@ -973,11 +984,12 @@
           "关心",
           "调侃"
         ],
-        "retrieval_text": "燐子对立希的关系：在工作场合中，燐子对立希表现出友好和关心，称赞她做咖啡熟练，并提议她尝试服务员工作，用亲切的语气称呼她为'立希ちゃん'。"
+        "retrieval_text": "燐子对立希的关系：在工作场合中，燐子对立希表现出友好和关心，称赞她做咖啡熟练，并提议她尝试服务员工作，用亲切的语气称呼她为'立希ちゃん'。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_01:anon:tomori",
+      "point_id": "character_relation:bang_dream_original:ep01_s010:rel_01:anon:tomori",
       "source_scene_id": "ep01_s010",
       "source_local_id": "rel_01",
       "evidence_u_ids": [
@@ -991,7 +1003,6 @@
       "document": {
         "subject_character_id": "anon",
         "object_character_id": "tomori",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4009,
         "visible_to": 999999,
@@ -1005,11 +1016,12 @@
           "鼓励",
           "昵称"
         ],
-        "retrieval_text": "爱音对灯表现出关心和鼓励，称呼她为'小灯'，试图让她放松并参与乐队。"
+        "retrieval_text": "爱音对灯表现出关心和鼓励，称呼她为'小灯'，试图让她放松并参与乐队。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_02:tomori:anon",
+      "point_id": "character_relation:bang_dream_original:ep01_s010:rel_02:tomori:anon",
       "source_scene_id": "ep01_s010",
       "source_local_id": "rel_02",
       "evidence_u_ids": [
@@ -1022,7 +1034,6 @@
       "document": {
         "subject_character_id": "tomori",
         "object_character_id": "anon",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4009,
         "visible_to": 999999,
@@ -1036,11 +1047,12 @@
           "依赖",
           "请求"
         ],
-        "retrieval_text": "灯对爱音表现出信任和依赖，分享乐队失败的自责，并请求一辈子组乐队。"
+        "retrieval_text": "灯对爱音表现出信任和依赖，分享乐队失败的自责，并请求一辈子组乐队。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_03:anon:taki",
+      "point_id": "character_relation:bang_dream_original:ep01_s010:rel_03:anon:taki",
       "source_scene_id": "ep01_s010",
       "source_local_id": "rel_03",
       "evidence_u_ids": [
@@ -1053,7 +1065,6 @@
       "document": {
         "subject_character_id": "anon",
         "object_character_id": "taki",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4009,
         "visible_to": 999999,
@@ -1067,11 +1078,12 @@
           "挑衅",
           "冲突"
         ],
-        "retrieval_text": "爱音对立希表现出防御性和挑衅，质疑她的身份并捍卫自己与灯的关系。"
+        "retrieval_text": "爱音对立希表现出防御性和挑衅，质疑她的身份并捍卫自己与灯的关系。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_04:taki:anon",
+      "point_id": "character_relation:bang_dream_original:ep01_s010:rel_04:taki:anon",
       "source_scene_id": "ep01_s010",
       "source_local_id": "rel_04",
       "evidence_u_ids": [
@@ -1084,7 +1096,6 @@
       "document": {
         "subject_character_id": "taki",
         "object_character_id": "anon",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4009,
         "visible_to": 999999,
@@ -1098,11 +1109,12 @@
           "指责",
           "冲突"
         ],
-        "retrieval_text": "立希对爱音表现出怀疑和指责，质问她邀请灯组乐队的行为。"
+        "retrieval_text": "立希对爱音表现出怀疑和指责，质问她邀请灯组乐队的行为。",
+        "timeline_id": "bang_dream_original"
       }
     },
     {
-      "point_id": "character_relation:its_mygo:s3:ep01_s010:rel_05:taki:tomori",
+      "point_id": "character_relation:bang_dream_original:ep01_s010:rel_05:taki:tomori",
       "source_scene_id": "ep01_s010",
       "source_local_id": "rel_05",
       "evidence_u_ids": [
@@ -1114,7 +1126,6 @@
       "document": {
         "subject_character_id": "taki",
         "object_character_id": "tomori",
-        "season_id": 3,
         "series_id": "its_mygo",
         "visible_from": 4009,
         "visible_to": 999999,
@@ -1128,13 +1139,14 @@
           "保护",
           "寻找"
         ],
-        "retrieval_text": "立希对灯表现出关心和保护，寻找她并询问她的状况。"
+        "retrieval_text": "立希对灯表现出关心和保护，寻找她并询问她的状况。",
+        "timeline_id": "bang_dream_original"
       }
     }
   ],
   "lore_entries": [
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s001:lore_01:CRYCHIC",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s001:lore_01:CRYCHIC",
       "source_scene_id": "ep01_s001",
       "source_local_id": "lore_01",
       "evidence_u_ids": [
@@ -1148,9 +1160,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1162,11 +1171,15 @@
           "音乐团体",
           "旧乐队",
           "冲突核心"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s003:lore_01:羽丘",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s003:lore_01:羽丘",
       "source_scene_id": "ep01_s003",
       "source_local_id": "lore_01",
       "evidence_u_ids": [
@@ -1179,9 +1192,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1191,11 +1201,15 @@
         "tags": [
           "学校",
           "地点"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s003:lore_02:天文部",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s003:lore_02:天文部",
       "source_scene_id": "ep01_s003",
       "source_local_id": "lore_02",
       "evidence_u_ids": [
@@ -1208,9 +1222,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1220,11 +1231,15 @@
         "tags": [
           "社团",
           "学校活动"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_01:Afterglow",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s004:lore_01:Afterglow",
       "source_scene_id": "ep01_s004",
       "source_local_id": "lore_01",
       "evidence_u_ids": [
@@ -1238,9 +1253,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1250,11 +1262,15 @@
         "tags": [
           "乐队",
           "学校乐队"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_02:PasPale",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s004:lore_02:PasPale",
       "source_scene_id": "ep01_s004",
       "source_local_id": "lore_02",
       "evidence_u_ids": [
@@ -1267,9 +1283,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1279,11 +1292,15 @@
         "tags": [
           "乐队",
           "毕业乐队"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_03:Roselia",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s004:lore_03:Roselia",
       "source_scene_id": "ep01_s004",
       "source_local_id": "lore_03",
       "evidence_u_ids": [
@@ -1296,9 +1313,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1308,11 +1322,15 @@
         "tags": [
           "乐队",
           "学校乐队"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s004:lore_04:RAS",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s004:lore_04:RAS",
       "source_scene_id": "ep01_s004",
       "source_local_id": "lore_04",
       "evidence_u_ids": [
@@ -1325,9 +1343,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1337,11 +1352,15 @@
         "tags": [
           "乐队",
           "学校乐队"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s007:lore_01:CiRCLE",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s007:lore_01:CiRCLE",
       "source_scene_id": "ep01_s007",
       "source_local_id": "lore_01",
       "evidence_u_ids": [
@@ -1354,9 +1373,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1366,11 +1382,15 @@
         "tags": [
           "Live House",
           "地点"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s007:lore_02:RiNG",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s007:lore_02:RiNG",
       "source_scene_id": "ep01_s007",
       "source_local_id": "lore_02",
       "evidence_u_ids": [
@@ -1384,9 +1404,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1396,11 +1413,15 @@
         "tags": [
           "Live House",
           "地点"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s007:lore_04:春日影",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s007:lore_04:春日影",
       "source_scene_id": "ep01_s007",
       "source_local_id": "lore_04",
       "evidence_u_ids": [
@@ -1413,9 +1434,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1425,11 +1443,15 @@
         "tags": [
           "歌曲",
           "CRYCHIC"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s008:lore_01:月之森女子学园",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s008:lore_01:月之森女子学园",
       "source_scene_id": "ep01_s008",
       "source_local_id": "lore_01",
       "evidence_u_ids": [],
@@ -1442,9 +1464,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1454,11 +1473,15 @@
         "tags": [
           "学校",
           "地点"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     },
     {
-      "point_id": "lore_entry:its_mygo:s3:ep01_s010:lore_01:sumimi",
+      "point_id": "lore_entry:bang_dream_original:y3:ep01_s010:lore_01:sumimi",
       "source_scene_id": "ep01_s010",
       "source_local_id": "lore_01",
       "evidence_u_ids": [
@@ -1473,9 +1496,6 @@
         "series_ids": [
           "its_mygo"
         ],
-        "season_ids": [
-          3
-        ],
         "visible_from": null,
         "visible_to": null,
         "canon_branch": "main",
@@ -1485,6 +1505,10 @@
         "tags": [
           "组合",
           "乐队"
+        ],
+        "timeline_id": "bang_dream_original",
+        "applicable_story_years": [
+          3
         ]
       }
     }

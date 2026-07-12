@@ -26,6 +26,7 @@
 抽查两个输入文件：
 
 - `metadata.episode` 一致；
+- 两份输入的 `metadata.timeline_id` 一致；可空的 `story_year` 在能够确认时也应一致；
 - Stage 2A 的每个结果能按 `scene_id` 对应到 Stage 2 Input；
 - 台词说话人已经确认；
 - Story Event 的 local ID 在各自场景内唯一。
