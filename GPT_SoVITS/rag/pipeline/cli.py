@@ -8,6 +8,8 @@ from pathlib import Path
 from rag.models import CanonBranch, SeasonId, SeriesId
 
 from .llm_client import LiteLLMConfig
+from .prompt_package import load_prompt_package_manifest
+from .prompt_package_litellm import complete_prompt_package_with_litellm
 from .stage1_speaker_annotation import (
     DEFAULT_TEMPLATE_PATH,
     annotate_prepared_stage1_artifact,
@@ -16,6 +18,8 @@ from .stage1_speaker_annotation import (
     load_stage1_annotation_artifact,
     load_stage1_prepared_artifact,
     prepare_stage1_artifact,
+    prepare_stage1_prompt_package,
+    assemble_stage1_prompt_package,
     save_stage1_annotation_artifact,
     save_stage1_prepared_artifact,
 )
@@ -28,14 +32,18 @@ from .stage2_input_builder import (
 from .stage2_document_extraction import (
     DEFAULT_TEMPLATE_PATH as DEFAULT_STAGE2_TEMPLATE_PATH,
     annotate_stage2_input_artifact,
+    assemble_stage2_prompt_package,
     load_stage2_annotation_artifact,
     save_stage2_annotation_artifact,
+    prepare_stage2_prompt_package,
 )
 from .stage2b_thought_extraction import (
     DEFAULT_TEMPLATE_PATH as DEFAULT_STAGE2B_TEMPLATE_PATH,
     annotate_stage2b_artifact,
+    assemble_stage2b_prompt_package,
     load_stage2b_annotation_artifact,
     save_stage2b_annotation_artifact,
+    prepare_stage2b_prompt_package,
 )
 from .stage3_rag_import import (
     backfill_existing_stage3_character_relations,
@@ -51,8 +59,10 @@ from .stage3_rag_import import (
 from .stage3_relation_aggregation import (
     DEFAULT_TEMPLATE_PATH as DEFAULT_RELATION_AGGREGATION_TEMPLATE_PATH,
     build_stage3_relation_aggregation_artifact_from_many,
+    assemble_stage3_relation_prompt_package,
     load_stage3_relation_aggregation_artifact,
     save_stage3_relation_aggregation_artifact,
+    prepare_stage3_relation_prompt_package,
 )
 from .stage3_lore_deduplicate import (
     apply_lore_dedup_decisions_from_files,
@@ -64,10 +74,22 @@ from .stage3_lore_deduplicate import (
 from .stage3_thought_pipeline import (
     DEFAULT_LINK_TEMPLATE_PATH,
     build_stage3_thought_import_artifact,
+    assemble_stage3_thought_link_prompt_package,
     load_stage3_thought_import_artifact,
     save_stage3_thought_import_artifact,
     upsert_stage3_thought_import_artifact,
+    prepare_stage3_thought_link_prompt_package,
 )
+
+
+def _add_offline_assemble_flags(parser: argparse.ArgumentParser) -> None:
+    """为离线 response 组装命令添加一致的公共参数。"""
+
+    parser.add_argument("--manifest", required=True, help="Prompt Package manifest.json 路径")
+    parser.add_argument("--output", required=True, help="输出正式 artifact JSON 路径")
+    parser.add_argument("--model-label", default="codex-workspace", help="写入 artifact 的模型来源标签")
+    parser.add_argument("--allow-partial", action="store_true", help="允许缺少部分 response 并生成部分产物")
+    parser.add_argument("--allow-stale", action="store_true", help="允许源文件或 Prompt 哈希已经变化")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -82,6 +104,20 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--season-id", type=int, default=SeasonId.THREE.value, help="season id")
     prepare_parser.add_argument("--canon-branch", default=CanonBranch.MAIN.value, help="剧情分支")
     prepare_parser.add_argument("--scene-gap-ms", type=int, default=12000, help="场景切分时间阈值")
+
+    complete_package_parser = subparsers.add_parser(
+        "complete-prompt-package",
+        help="使用 LiteLLM 请求 Prompt Package，并把原始回复写入 responses 目录",
+    )
+    complete_package_parser.add_argument("--manifest", required=True, help="Prompt Package manifest.json 路径")
+    complete_package_parser.add_argument("--model", required=True, help="litellm 使用的模型名")
+    complete_package_parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
+    complete_package_parser.add_argument("--max-tokens", type=int, default=None, help="LLM max_tokens")
+    complete_package_parser.add_argument("--retries", type=int, default=2, help="LLM 调用失败时的重试次数")
+    complete_package_parser.add_argument("--overwrite", action="store_true", help="覆盖已有的非空 response")
+    complete_package_parser.add_argument("--allow-stale", action="store_true", help="允许源文件或 Prompt 哈希已经变化")
+    complete_package_parser.add_argument("--stream", action="store_true", help="开启 LLM 流式输出")
+    complete_package_parser.add_argument("--quiet-status", action="store_true", help="关闭任务级状态日志")
 
     annotate_parser = subparsers.add_parser("annotate-stage1", help="批量调用 LLM 进行第一阶段 speaker 标注")
     annotate_parser.add_argument("--prepared", required=True, help="prepare-stage1 输出的 JSON 文件路径")
@@ -100,6 +136,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--stage2-output",
         default=None,
         help="若提供，则把第一阶段结果自动转换后的第二阶段输入保存到该路径",
+    )
+
+    render_stage1_parser = subparsers.add_parser(
+        "render-stage1-prompts",
+        help="只渲染 Stage 1 Speaker Prompt Package，不请求模型",
+    )
+    render_stage1_parser.add_argument("--prepared", required=True, help="prepare-stage1 输出路径")
+    render_stage1_parser.add_argument("--output-dir", required=True, help="Prompt Package 输出目录")
+    render_stage1_parser.add_argument("--template", default=str(DEFAULT_TEMPLATE_PATH), help="Prompt 模板路径")
+    render_stage1_parser.add_argument("--scene-id", action="append", default=None, help="只渲染指定 scene_id")
+    render_stage1_parser.add_argument("--max-scenes", type=int, default=None, help="最多渲染多少个场景")
+
+    assemble_stage1_parser = subparsers.add_parser(
+        "assemble-stage1-responses",
+        help="校验离线 response 并组装 Stage 1 Speaker artifact",
+    )
+    _add_offline_assemble_flags(assemble_stage1_parser)
+    assemble_stage1_parser.add_argument(
+        "--stage2-output",
+        default=None,
+        help="可选：同时生成 Stage 2 Input JSON",
     )
 
     convert_parser = subparsers.add_parser(
@@ -130,6 +187,22 @@ def _build_parser() -> argparse.ArgumentParser:
     annotate_stage2_parser.add_argument("--prompts-dir", default=None, help="若提供，则把每个场景的渲染 prompt 单独落盘")
     annotate_stage2_parser.add_argument("--stream", action="store_true", help="开启 LLM 流式输出")
     annotate_stage2_parser.add_argument("--quiet-status", action="store_true", help="关闭场景级状态日志")
+
+    render_stage2_parser = subparsers.add_parser(
+        "render-stage2-prompts",
+        help="只渲染 Stage 2A Document Prompt Package，不请求模型",
+    )
+    render_stage2_parser.add_argument("--input", required=True, help="Stage 2 Input JSON 路径")
+    render_stage2_parser.add_argument("--output-dir", required=True, help="Prompt Package 输出目录")
+    render_stage2_parser.add_argument("--template", default=str(DEFAULT_STAGE2_TEMPLATE_PATH), help="Prompt 模板路径")
+    render_stage2_parser.add_argument("--scene-id", action="append", default=None, help="只渲染指定 scene_id")
+    render_stage2_parser.add_argument("--max-scenes", type=int, default=None, help="最多渲染多少个场景")
+
+    assemble_stage2_parser = subparsers.add_parser(
+        "assemble-stage2-responses",
+        help="校验离线 response 并组装 Stage 2A artifact",
+    )
+    _add_offline_assemble_flags(assemble_stage2_parser)
 
     annotate_stage2b_parser = subparsers.add_parser(
         "annotate-stage2b",
@@ -164,6 +237,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     annotate_stage2b_parser.add_argument("--window-utterances", type=int, default=40, help="fallback 窗口台词数")
     annotate_stage2b_parser.add_argument("--window-overlap", type=int, default=8, help="fallback 窗口重叠台词数")
+
+    render_stage2b_parser = subparsers.add_parser(
+        "render-stage2b-prompts",
+        help="只渲染 Stage 2B Thought Prompt Package，不请求模型",
+    )
+    render_stage2b_parser.add_argument("--input", required=True, help="Stage 2 Input JSON 路径")
+    render_stage2b_parser.add_argument("--stage2a-annotation", required=True, help="Stage 2A artifact 路径")
+    render_stage2b_parser.add_argument("--output-dir", required=True, help="Prompt Package 输出目录")
+    render_stage2b_parser.add_argument("--template", default=str(DEFAULT_STAGE2B_TEMPLATE_PATH), help="Prompt 模板路径")
+    render_stage2b_parser.add_argument("--scene-id", action="append", default=None, help="只渲染指定 scene_id")
+    render_stage2b_parser.add_argument("--max-scenes", type=int, default=None, help="最多渲染多少个场景")
+    render_stage2b_parser.add_argument("--max-prompt-chars", type=int, default=None, help="超过字符数时启用窗口")
+    render_stage2b_parser.add_argument("--window-utterances", type=int, default=40, help="窗口台词数")
+    render_stage2b_parser.add_argument("--window-overlap", type=int, default=8, help="窗口重叠台词数")
+
+    assemble_stage2b_parser = subparsers.add_parser(
+        "assemble-stage2b-responses",
+        help="校验离线窗口 response 并组装 Stage 2B artifact",
+    )
+    _add_offline_assemble_flags(assemble_stage2b_parser)
 
     normalize_stage3_parser = subparsers.add_parser(
         "normalize-stage3-rag",
@@ -206,6 +299,25 @@ def _build_parser() -> argparse.ArgumentParser:
     aggregate_relations_parser.add_argument("--retries", type=int, default=2, help="LLM 调用失败时的重试次数")
     aggregate_relations_parser.add_argument("--quiet-status", action="store_true", help="关闭角色对级状态日志")
 
+    render_relations_parser = subparsers.add_parser(
+        "render-stage3-relation-prompts",
+        help="只渲染跨场景角色关系聚合 Prompt Package",
+    )
+    render_relations_parser.add_argument("--input", required=True, action="append", help="Stage 2 Input，可重复")
+    render_relations_parser.add_argument("--annotation", required=True, action="append", help="Stage 2A artifact，可重复")
+    render_relations_parser.add_argument("--output-dir", required=True, help="Prompt Package 输出目录")
+    render_relations_parser.add_argument(
+        "--template",
+        default=str(DEFAULT_RELATION_AGGREGATION_TEMPLATE_PATH),
+        help="关系聚合 Prompt 模板路径",
+    )
+
+    assemble_relations_parser = subparsers.add_parser(
+        "assemble-stage3-relations",
+        help="校验离线角色对 response 并组装关系 State artifact",
+    )
+    _add_offline_assemble_flags(assemble_relations_parser)
+
     normalize_thoughts_parser = subparsers.add_parser(
         "normalize-stage3-thoughts",
         help="链接并跨场景聚合 Stage 2B 角色观点，输出风险审查文件",
@@ -232,6 +344,27 @@ def _build_parser() -> argparse.ArgumentParser:
     normalize_thoughts_parser.add_argument("--link-max-tokens", type=int, default=None, help="链接 LLM max_tokens")
     normalize_thoughts_parser.add_argument("--link-retries", type=int, default=2, help="链接 LLM 重试次数")
     normalize_thoughts_parser.add_argument("--max-link-candidates", type=int, default=8, help="每类最多提供多少个链接候选")
+
+    render_thought_links_parser = subparsers.add_parser(
+        "render-stage3-thought-link-prompts",
+        help="只为 unresolved Character Thought 渲染语义链接 Prompt Package",
+    )
+    render_thought_links_parser.add_argument("--input", required=True, help="Stage 2 Input JSON 路径")
+    render_thought_links_parser.add_argument("--stage2b-annotation", required=True, help="Stage 2B artifact 路径")
+    render_thought_links_parser.add_argument("--stage3-rag", required=True, help="Stage 3 RAG artifact 路径")
+    render_thought_links_parser.add_argument("--output-dir", required=True, help="Prompt Package 输出目录")
+    render_thought_links_parser.add_argument(
+        "--template",
+        default=str(DEFAULT_LINK_TEMPLATE_PATH),
+        help="观点链接 Prompt 模板路径",
+    )
+    render_thought_links_parser.add_argument("--max-link-candidates", type=int, default=8, help="每类最多候选数")
+
+    assemble_thoughts_parser = subparsers.add_parser(
+        "assemble-stage3-thoughts",
+        help="应用离线语义链接 response 并组装 Character Thought artifact",
+    )
+    _add_offline_assemble_flags(assemble_thoughts_parser)
 
     backfill_stage3_parser = subparsers.add_parser(
         "backfill-stage3-relations",
@@ -326,6 +459,67 @@ def main(argv: list[str] | None = None) -> int:
         print(f"scene 数量: {len(artifact.scenes)}")
         return 0
 
+    if args.command == "complete-prompt-package":
+        report = complete_prompt_package_with_litellm(
+            manifest_path=args.manifest,
+            llm_config=LiteLLMConfig(
+                model=args.model,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                retries=args.retries,
+            ),
+            overwrite=args.overwrite,
+            allow_stale=args.allow_stale,
+            stream=args.stream,
+            status_callback=None if args.quiet_status else default_status_printer,
+            stream_callback=default_stream_printer if args.stream else None,
+        )
+        print(f"已完成 response 数: {len(report.completed_task_ids)}")
+        print(f"已跳过 response 数: {len(report.skipped_task_ids)}")
+        print(f"请求失败数: {len(report.errors)}")
+        for error in report.errors:
+            print(f"- {error}")
+        return 1 if report.errors else 0
+
+    if args.command == "render-stage1-prompts":
+        artifact = load_stage1_prepared_artifact(args.prepared)
+        manifest = prepare_stage1_prompt_package(
+            artifact=artifact,
+            prepared_path=args.prepared,
+            output_dir=args.output_dir,
+            template_path=args.template,
+            scene_ids=set(args.scene_id) if args.scene_id else None,
+            max_scenes=args.max_scenes,
+        )
+        print(f"已写入 Stage 1 Prompt Package: {Path(args.output_dir).resolve()}")
+        print(f"任务数: {len(manifest.tasks)}")
+        return 0
+
+    if args.command == "assemble-stage1-responses":
+        result = assemble_stage1_prompt_package(
+            manifest_path=args.manifest,
+            model_label=args.model_label,
+            allow_partial=args.allow_partial,
+            allow_stale=args.allow_stale,
+        )
+        save_stage1_annotation_artifact(result, args.output)
+        if args.stage2_output is not None:
+            manifest = load_prompt_package_manifest(args.manifest)
+            prepared_path = manifest.parameters["prepared_path"]
+            prepared_artifact = load_stage1_prepared_artifact(prepared_path)
+            stage2_input = build_stage2_input_artifact(
+                prepared_artifact=prepared_artifact,
+                annotation_artifact=result,
+                source_stage1_output_path=str(Path(args.output).resolve()),
+            )
+            save_stage2_input_artifact(stage2_input, args.stage2_output)
+            print(f"已写入 Stage 2 Input: {Path(args.stage2_output).resolve()}")
+        error_count = sum(1 for item in result.results if item.error is not None)
+        print(f"已写入 Stage 1 artifact: {Path(args.output).resolve()}")
+        print(f"成功场景数: {len(result.results) - error_count}")
+        print(f"失败场景数: {error_count}")
+        return 1 if error_count else 0
+
     if args.command == "annotate-stage1":
         artifact = load_stage1_prepared_artifact(args.prepared)
         result = annotate_prepared_stage1_artifact(
@@ -379,6 +573,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"可直接进入第二阶段的场景数: {len(stage2_input_artifact.scenes)}")
         print(f"被跳过的场景数: {len(stage2_input_artifact.skipped_scenes)}")
         return 0
+
+    if args.command == "render-stage2-prompts":
+        artifact = load_stage2_input_artifact(args.input)
+        manifest = prepare_stage2_prompt_package(
+            artifact=artifact,
+            input_path=args.input,
+            output_dir=args.output_dir,
+            template_path=args.template,
+            scene_ids=set(args.scene_id) if args.scene_id else None,
+            max_scenes=args.max_scenes,
+        )
+        print(f"已写入 Stage 2A Prompt Package: {Path(args.output_dir).resolve()}")
+        print(f"任务数: {len(manifest.tasks)}")
+        return 0
+
+    if args.command == "assemble-stage2-responses":
+        result = assemble_stage2_prompt_package(
+            manifest_path=args.manifest,
+            model_label=args.model_label,
+            allow_partial=args.allow_partial,
+            allow_stale=args.allow_stale,
+        )
+        save_stage2_annotation_artifact(result, args.output)
+        error_count = sum(1 for item in result.results if item.error is not None)
+        print(f"已写入 Stage 2A artifact: {Path(args.output).resolve()}")
+        print(f"成功场景数: {len(result.results) - error_count}")
+        print(f"失败场景数: {error_count}")
+        return 1 if error_count else 0
 
     if args.command == "annotate-stage2":
         artifact = load_stage2_input_artifact(args.input)
@@ -450,6 +672,76 @@ def main(argv: list[str] | None = None) -> int:
         print(f"角色观点更新候选数: {thought_count}")
         return 0
 
+    if args.command == "render-stage2b-prompts":
+        input_artifact = load_stage2_input_artifact(args.input)
+        stage2a_artifact = load_stage2_annotation_artifact(args.stage2a_annotation)
+        manifest = prepare_stage2b_prompt_package(
+            input_artifact=input_artifact,
+            stage2a_artifact=stage2a_artifact,
+            input_path=args.input,
+            stage2a_path=args.stage2a_annotation,
+            output_dir=args.output_dir,
+            template_path=args.template,
+            scene_ids=set(args.scene_id) if args.scene_id else None,
+            max_scenes=args.max_scenes,
+            max_prompt_chars=args.max_prompt_chars,
+            window_utterances=args.window_utterances,
+            window_overlap=args.window_overlap,
+        )
+        print(f"已写入 Stage 2B Prompt Package: {Path(args.output_dir).resolve()}")
+        print(f"任务数: {len(manifest.tasks)}")
+        return 0
+
+    if args.command == "assemble-stage2b-responses":
+        result = assemble_stage2b_prompt_package(
+            manifest_path=args.manifest,
+            model_label=args.model_label,
+            allow_partial=args.allow_partial,
+            allow_stale=args.allow_stale,
+        )
+        save_stage2b_annotation_artifact(result, args.output)
+        error_count = sum(1 for item in result.results if item.error is not None)
+        print(f"已写入 Stage 2B artifact: {Path(args.output).resolve()}")
+        print(f"成功场景数: {len(result.results) - error_count}")
+        print(f"失败场景数: {error_count}")
+        return 1 if error_count else 0
+
+    if args.command == "render-stage3-relation-prompts":
+        if len(args.input) != len(args.annotation):
+            parser.error("render-stage3-relation-prompts 的 --input 与 --annotation 数量必须一致")
+        input_artifacts = [load_stage2_input_artifact(path) for path in args.input]
+        annotation_artifacts = [load_stage2_annotation_artifact(path) for path in args.annotation]
+        manifest = prepare_stage3_relation_prompt_package(
+            input_artifacts=input_artifacts,
+            annotation_artifacts=annotation_artifacts,
+            input_paths=args.input,
+            annotation_paths=args.annotation,
+            output_dir=args.output_dir,
+            template_path=args.template,
+        )
+        print(f"已写入 Stage 3 Relation Prompt Package: {Path(args.output_dir).resolve()}")
+        print(f"有向角色对任务数: {len(manifest.tasks)}")
+        return 0
+
+    if args.command == "assemble-stage3-relations":
+        relation_artifact = assemble_stage3_relation_prompt_package(
+            manifest_path=args.manifest,
+            model_label=args.model_label,
+            allow_partial=args.allow_partial,
+            allow_stale=args.allow_stale,
+        )
+        save_stage3_relation_aggregation_artifact(relation_artifact, args.output)
+        response_error_count = sum(
+            1
+            for issue in relation_artifact.issues
+            if "response" in issue.message or "manifest" in issue.message
+        )
+        print(f"已写入 Stage 3 Relation artifact: {Path(args.output).resolve()}")
+        print(f"Relation Observation 数量: {len(relation_artifact.observations)}")
+        print(f"Character Relation State 数量: {len(relation_artifact.character_relation_states)}")
+        print(f"Response 问题数: {response_error_count}")
+        return 1 if response_error_count else 0
+
     if args.command == "aggregate-stage3-relations":
         if len(args.input) != len(args.annotation):
             parser.error("aggregate-stage3-relations 的 --input 与 --annotation 数量必须一致")
@@ -503,6 +795,46 @@ def main(argv: list[str] | None = None) -> int:
         print(f"lore_entries 条目数: {len(normalized_artifact.lore_entries)}")
         print(f"规范化问题数: {len(normalized_artifact.issues)}")
         return 0
+
+    if args.command == "render-stage3-thought-link-prompts":
+        input_artifact = load_stage2_input_artifact(args.input)
+        stage2b_artifact = load_stage2b_annotation_artifact(args.stage2b_annotation)
+        stage3_rag_artifact = load_stage3_normalized_import_artifact(args.stage3_rag)
+        manifest = prepare_stage3_thought_link_prompt_package(
+            input_artifact=input_artifact,
+            stage2b_artifact=stage2b_artifact,
+            stage3_rag_artifact=stage3_rag_artifact,
+            input_path=args.input,
+            stage2b_path=args.stage2b_annotation,
+            stage3_rag_path=args.stage3_rag,
+            output_dir=args.output_dir,
+            template_path=args.template,
+            max_link_candidates=args.max_link_candidates,
+        )
+        print(f"已写入 Stage 3 Thought Link Prompt Package: {Path(args.output_dir).resolve()}")
+        print(f"Unresolved 链接任务数: {len(manifest.tasks)}")
+        return 0
+
+    if args.command == "assemble-stage3-thoughts":
+        thought_artifact = assemble_stage3_thought_link_prompt_package(
+            manifest_path=args.manifest,
+            model_label=args.model_label,
+            allow_partial=args.allow_partial,
+            allow_stale=args.allow_stale,
+        )
+        save_stage3_thought_import_artifact(thought_artifact, args.output)
+        response_error_count = sum(
+            1
+            for issue in thought_artifact.issues
+            if "response" in issue.message or "manifest" in issue.message
+        )
+        unresolved_count = sum(
+            1 for record in thought_artifact.character_thoughts if record.link_status == "unresolved"
+        )
+        print(f"已写入 Stage 3 Thought artifact: {Path(args.output).resolve()}")
+        print(f"未解决链接数: {unresolved_count}")
+        print(f"Response 问题数: {response_error_count}")
+        return 1 if response_error_count else 0
 
     if args.command == "normalize-stage3-thoughts":
         input_artifact = load_stage2_input_artifact(args.input)

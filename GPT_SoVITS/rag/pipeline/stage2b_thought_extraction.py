@@ -12,6 +12,16 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import ValidationError
 
 from .llm_client import LiteLLMConfig, LiteLLMJsonClient
+from .prompt_package import (
+    PreparedPrompt,
+    PromptPackageError,
+    PromptPackageManifest,
+    create_prompt_package,
+    load_prompt_package_manifest,
+    parse_json_response,
+    read_prompt_package_responses,
+    task_prompt_path,
+)
 from .schemas import (
     CharacterThoughtUpdateCandidate,
     EventFactCandidate,
@@ -368,6 +378,189 @@ def load_stage2b_annotation_artifact(input_path: str | Path) -> Stage2BAnnotatio
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
     return Stage2BAnnotationArtifact.model_validate(payload)
+
+
+def prepare_stage2b_prompt_package(
+    input_artifact: Stage2InputArtifact,
+    stage2a_artifact: Stage2AnnotationArtifact,
+    input_path: str | Path,
+    stage2a_path: str | Path,
+    output_dir: str | Path,
+    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    scene_ids: set[str] | None = None,
+    max_scenes: int | None = None,
+    max_prompt_chars: int | None = None,
+    window_utterances: int = 40,
+    window_overlap: int = 8,
+) -> PromptPackageManifest:
+    """为 Stage 2B 观点抽取生成逐场景或逐窗口静态任务包。"""
+
+    resolved_template_path = Path(template_path).resolve()
+    _validate_window_options(max_prompt_chars, window_utterances, window_overlap)
+    selected_scenes = input_artifact.scenes
+    if scene_ids:
+        selected_scenes = [scene for scene in selected_scenes if scene.scene_id in scene_ids]
+    if max_scenes is not None:
+        selected_scenes = selected_scenes[:max_scenes]
+    story_event_map = _build_story_event_map(stage2a_artifact)
+    prepared_prompts: list[PreparedPrompt] = []
+    for scene in selected_scenes:
+        prompts = _render_stage2b_prompt_windows(
+            scene,
+            story_event_map.get(scene.scene_id, []),
+            resolved_template_path,
+            max_prompt_chars,
+            window_utterances,
+            window_overlap,
+        )
+        for window_index, prompt in enumerate(prompts, start=1):
+            task_id = (
+                scene.scene_id
+                if len(prompts) == 1
+                else f"{scene.scene_id}__w{window_index:03d}"
+            )
+            prepared_prompts.append(
+                PreparedPrompt(
+                    task_id=task_id,
+                    prompt=prompt,
+                    context={
+                        "scene_id": scene.scene_id,
+                        "window_index": str(window_index),
+                        "window_count": str(len(prompts)),
+                    },
+                )
+            )
+    return create_prompt_package(
+        output_dir=output_dir,
+        stage_kind="stage2b_thought",
+        prompts=prepared_prompts,
+        source_paths=[input_path, stage2a_path],
+        template_paths=[resolved_template_path],
+        parameters={
+            "input_path": str(Path(input_path).resolve()),
+            "stage2a_path": str(Path(stage2a_path).resolve()),
+            "template_path": str(resolved_template_path),
+            "max_prompt_chars": "" if max_prompt_chars is None else str(max_prompt_chars),
+            "window_utterances": str(window_utterances),
+            "window_overlap": str(window_overlap),
+        },
+    )
+
+
+def assemble_stage2b_prompt_package(
+    manifest_path: str | Path,
+    model_label: str = "codex-workspace",
+    allow_partial: bool = False,
+    allow_stale: bool = False,
+) -> Stage2BAnnotationArtifact:
+    """校验窗口 response、合并重复项并组装 Stage 2B 产物。"""
+
+    manifest = load_prompt_package_manifest(manifest_path)
+    if manifest.stage_kind != "stage2b_thought":
+        raise PromptPackageError("manifest 不是 Stage 2B Thought 任务包。")
+    input_path = manifest.parameters.get("input_path")
+    stage2a_path = manifest.parameters.get("stage2a_path")
+    if not input_path or not stage2a_path:
+        raise PromptPackageError("Stage 2B manifest 缺少 input_path 或 stage2a_path。")
+    from .stage2_document_extraction import load_stage2_annotation_artifact
+    from .stage2_input_builder import load_stage2_input_artifact
+
+    input_artifact = load_stage2_input_artifact(input_path)
+    stage2a_artifact = load_stage2_annotation_artifact(stage2a_path)
+    scene_map = {scene.scene_id: scene for scene in input_artifact.scenes}
+    response_bundle = read_prompt_package_responses(
+        manifest_path,
+        allow_partial=allow_partial,
+        allow_stale=allow_stale,
+    )
+    tasks_by_scene: dict[str, list[tuple[str, str, str | None]]] = {}
+    for task in manifest.tasks:
+        scene_id = task.context.get("scene_id", task.task_id)
+        tasks_by_scene.setdefault(scene_id, []).append(
+            (
+                str(task_prompt_path(manifest_path, task)),
+                task.task_id,
+                response_bundle.responses.get(task.task_id),
+            )
+        )
+
+    results: list[Stage2BSceneAnnotationResult] = []
+    for scene_id, scene_tasks in tasks_by_scene.items():
+        if scene_id not in scene_map:
+            results.append(
+                Stage2BSceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_paths=[item[0] for item in scene_tasks],
+                    error="manifest 引用了 Stage 2 Input 中不存在的场景。",
+                )
+            )
+            continue
+        annotations: list[SceneThoughtExtractionPass2B] = []
+        raw_contents: list[str] = []
+        error_message: str | None = None
+        for _, task_id, raw_response in scene_tasks:
+            if raw_response is None:
+                error_message = f"缺少 response: {task_id}"
+                break
+            try:
+                annotation = SceneThoughtExtractionPass2B.model_validate(
+                    parse_json_response(raw_response)
+                )
+                if annotation.scene_id != scene_id:
+                    raise ValueError(
+                        f"Stage 2B scene_id 不匹配: expected={scene_id}, actual={annotation.scene_id}"
+                    )
+                annotations.append(annotation)
+                raw_contents.append(raw_response)
+            except Exception as exc:
+                error_message = f"{type(exc).__name__}: {exc}"
+                break
+        prompt_paths = [item[0] for item in scene_tasks]
+        if error_message is not None:
+            results.append(
+                Stage2BSceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_paths[0] if prompt_paths else None,
+                    prompt_paths=prompt_paths,
+                    raw_response_text="\n\n--- Stage 2B window ---\n\n".join(raw_contents) or None,
+                    error=error_message,
+                )
+            )
+            continue
+        results.append(
+            Stage2BSceneAnnotationResult(
+                scene_id=scene_id,
+                prompt_path=prompt_paths[0] if prompt_paths else None,
+                prompt_paths=prompt_paths,
+                raw_response_text="\n\n--- Stage 2B window ---\n\n".join(raw_contents),
+                annotation=_merge_window_annotations(scene_id, annotations),
+            )
+        )
+    result_order = {scene.scene_id: index for index, scene in enumerate(input_artifact.scenes)}
+    results.sort(key=lambda result: result_order.get(result.scene_id, len(result_order)))
+    return Stage2BAnnotationArtifact(
+        metadata=input_artifact.metadata,
+        source_stage2a_model=stage2a_artifact.model,
+        source_stage2a_output_path=stage2a_path,
+        model=model_label,
+        template_path=manifest.parameters.get("template_path", ""),
+        results=results,
+    )
+
+
+def _validate_window_options(
+    max_prompt_chars: int | None,
+    window_utterances: int,
+    window_overlap: int,
+) -> None:
+    """校验 Stage 2B 窗口参数。"""
+
+    if max_prompt_chars is not None and max_prompt_chars < 1:
+        raise ValueError("max_prompt_chars 必须大于等于 1")
+    if window_utterances < 1:
+        raise ValueError("window_utterances 必须大于等于 1")
+    if window_overlap < 0 or window_overlap >= window_utterances:
+        raise ValueError("window_overlap 必须大于等于 0 且小于 window_utterances")
 
 
 def _emit_status(callback: Callable[[str], None] | None, message: str) -> None:

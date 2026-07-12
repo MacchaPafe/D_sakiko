@@ -794,6 +794,7 @@ class Stage3ThoughtImportArtifact(BaseModel):
 
     metadata: Stage3ImportMetadata
     source_stage2b_model: str
+    linker_model: str | None = None
     event_facts: list[NormalizedEventFact] = Field(default_factory=list)
     linked_updates: list[LinkedCharacterThoughtUpdate] = Field(default_factory=list)
     character_thoughts: list[CharacterThoughtReviewRecord] = Field(default_factory=list)

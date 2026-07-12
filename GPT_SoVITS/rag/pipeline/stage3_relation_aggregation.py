@@ -15,6 +15,15 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import ValidationError
 
 from .llm_client import LiteLLMConfig, LiteLLMJsonClient
+from .prompt_package import (
+    PreparedPrompt,
+    PromptPackageError,
+    PromptPackageManifest,
+    create_prompt_package,
+    load_prompt_package_manifest,
+    parse_json_response,
+    read_prompt_package_responses,
+)
 from .schemas import (
     CharacterRelationStatePayload,
     CharacterRelationStateReviewRecord,
@@ -78,14 +87,9 @@ def build_stage3_relation_aggregation_artifact_from_many(
     _validate_common_scope(input_artifacts)
 
     issues: list[NormalizationIssue] = []
-    sources: list[_ObservationSource] = []
-    for input_artifact, annotation_artifact in zip(input_artifacts, annotation_artifacts):
-        sources.extend(_normalize_observations(input_artifact, annotation_artifact, issues))
-    sources.sort(key=lambda source: (source.record.time_order, source.record.observation_id))
+    sources = _collect_observation_sources(input_artifacts, annotation_artifacts, issues)
     reference_input = input_artifacts[0]
-    grouped: dict[tuple[str, str], list[_ObservationSource]] = defaultdict(list)
-    for source in sources:
-        grouped[(source.subject_character_name, source.object_character_name)].append(source)
+    grouped = _group_observation_sources(sources)
 
     state_records: list[CharacterRelationStateReviewRecord] = []
     unmerged_records: list[UnmergedRelationObservationReviewRecord] = []
@@ -134,31 +138,22 @@ def build_stage3_relation_aggregation_artifact_from_many(
         state_records.extend(records)
         unmerged_records.extend(unmerged)
 
-    return Stage3RelationAggregationArtifact(
-        metadata=Stage3RelationAggregationMetadata(
-            anime_title=reference_input.metadata.anime_title,
-            series_id=reference_input.metadata.series_id,
-            season_id=reference_input.metadata.season_id,
-            canon_branch=reference_input.metadata.canon_branch,
-            episodes=sorted({artifact.metadata.episode for artifact in input_artifacts}),
-            subtitle_paths=list(
-                dict.fromkeys(artifact.metadata.subtitle_path for artifact in input_artifacts)
-            ),
-        ),
-        source_stage2_models=list(
-            dict.fromkeys(artifact.model for artifact in annotation_artifacts)
-        ),
-        aggregation_model=llm_config.model,
-        observations=[source.record for source in sources],
-        character_relation_states=state_records,
-        unmerged_observations=unmerged_records,
+    return _build_relation_aggregation_artifact(
+        input_artifacts=input_artifacts,
+        annotation_artifacts=annotation_artifacts,
+        sources=sources,
+        state_records=state_records,
+        unmerged_records=unmerged_records,
         issues=issues,
+        aggregation_model=llm_config.model,
     )
 
 
 def _validate_common_scope(input_artifacts: list[Stage2InputArtifact]) -> None:
     """确保多集聚合输入属于同一系列、季度与剧情分支。"""
 
+    if not input_artifacts:
+        raise ValueError("关系全量聚合至少需要一份 Stage 2 Input。")
     reference = input_artifacts[0].metadata
     for artifact in input_artifacts[1:]:
         metadata = artifact.metadata
@@ -215,6 +210,222 @@ def load_stage3_relation_aggregation_artifact(
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
     return Stage3RelationAggregationArtifact.model_validate(payload)
+
+
+def prepare_stage3_relation_prompt_package(
+    input_artifacts: list[Stage2InputArtifact],
+    annotation_artifacts: list[Stage2AnnotationArtifact],
+    input_paths: list[str | Path],
+    annotation_paths: list[str | Path],
+    output_dir: str | Path,
+    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+) -> PromptPackageManifest:
+    """按有向角色对生成跨场景关系聚合静态任务包。"""
+
+    if len(input_paths) != len(input_artifacts) or len(annotation_paths) != len(annotation_artifacts):
+        raise ValueError("关系聚合 artifact 与来源路径数量必须一致。")
+    _validate_common_scope(input_artifacts)
+    issues: list[NormalizationIssue] = []
+    sources = _collect_observation_sources(input_artifacts, annotation_artifacts, issues)
+    grouped = _group_observation_sources(sources)
+    resolved_template_path = Path(template_path).resolve()
+    prepared_prompts: list[PreparedPrompt] = []
+    for (subject_name, object_name), group_sources in sorted(grouped.items()):
+        ordered_sources = sorted(group_sources, key=lambda source: source.record.time_order)
+        subject_id = ordered_sources[0].record.subject_character_id.value
+        object_id = ordered_sources[0].record.object_character_id.value
+        prepared_prompts.append(
+            PreparedPrompt(
+                task_id=f"relation_pair:{subject_id}:{object_id}",
+                prompt=render_relation_aggregation_prompt(
+                    subject_character_name=subject_name,
+                    object_character_name=object_name,
+                    observations=[source.record for source in ordered_sources],
+                    template_path=resolved_template_path,
+                ),
+                context={
+                    "subject_character_name": subject_name,
+                    "object_character_name": object_name,
+                    "observation_count": str(len(ordered_sources)),
+                },
+            )
+        )
+    return create_prompt_package(
+        output_dir=output_dir,
+        stage_kind="stage3_relation",
+        prompts=prepared_prompts,
+        source_paths=[*input_paths, *annotation_paths],
+        template_paths=[resolved_template_path],
+        parameters={
+            "input_paths": json.dumps([str(Path(path).resolve()) for path in input_paths]),
+            "annotation_paths": json.dumps(
+                [str(Path(path).resolve()) for path in annotation_paths]
+            ),
+            "template_path": str(resolved_template_path),
+            "preparation_issue_count": str(len(issues)),
+        },
+    )
+
+
+def assemble_stage3_relation_prompt_package(
+    manifest_path: str | Path,
+    model_label: str = "codex-workspace",
+    allow_partial: bool = False,
+    allow_stale: bool = False,
+) -> Stage3RelationAggregationArtifact:
+    """校验角色对 response 并生成带时间窗口和风险的关系审查产物。"""
+
+    manifest = load_prompt_package_manifest(manifest_path)
+    if manifest.stage_kind != "stage3_relation":
+        raise PromptPackageError("manifest 不是 Stage 3 Relation 任务包。")
+    input_paths = _load_manifest_path_list(manifest.parameters, "input_paths")
+    annotation_paths = _load_manifest_path_list(manifest.parameters, "annotation_paths")
+    if len(input_paths) != len(annotation_paths):
+        raise PromptPackageError("关系聚合 manifest 的输入与标注路径数量不一致。")
+    from .stage2_document_extraction import load_stage2_annotation_artifact
+    from .stage2_input_builder import load_stage2_input_artifact
+
+    input_artifacts = [load_stage2_input_artifact(path) for path in input_paths]
+    annotation_artifacts = [load_stage2_annotation_artifact(path) for path in annotation_paths]
+    _validate_common_scope(input_artifacts)
+    issues: list[NormalizationIssue] = []
+    sources = _collect_observation_sources(input_artifacts, annotation_artifacts, issues)
+    grouped = _group_observation_sources(sources)
+    response_bundle = read_prompt_package_responses(
+        manifest_path,
+        allow_partial=allow_partial,
+        allow_stale=allow_stale,
+    )
+    reference_input = input_artifacts[0]
+    state_records: list[CharacterRelationStateReviewRecord] = []
+    unmerged_records: list[UnmergedRelationObservationReviewRecord] = []
+    for task in manifest.tasks:
+        subject_name = task.context.get("subject_character_name", "")
+        object_name = task.context.get("object_character_name", "")
+        group_sources = grouped.get((subject_name, object_name), [])
+        raw_response = response_bundle.responses.get(task.task_id)
+        if not group_sources:
+            issues.append(
+                NormalizationIssue(
+                    scene_id="",
+                    collection_name="character_relation_states",
+                    candidate_local_id=task.task_id,
+                    message="manifest 角色对在当前 Observation 中不存在。",
+                )
+            )
+            continue
+        if raw_response is None:
+            issues.append(
+                NormalizationIssue(
+                    scene_id=group_sources[0].record.scene_id,
+                    collection_name="character_relation_states",
+                    candidate_local_id=task.task_id,
+                    message="缺少关系聚合 response。",
+                )
+            )
+            continue
+        try:
+            response = RelationAggregationResponse.model_validate(
+                parse_json_response(raw_response)
+            )
+            records, unmerged = _normalize_group_response(
+                response=response,
+                expected_subject_name=subject_name,
+                expected_object_name=object_name,
+                sources=sorted(group_sources, key=lambda source: source.record.time_order),
+                input_artifact=reference_input,
+                issues=issues,
+            )
+            state_records.extend(records)
+            unmerged_records.extend(unmerged)
+        except Exception as exc:
+            issues.append(
+                NormalizationIssue(
+                    scene_id=group_sources[0].record.scene_id,
+                    collection_name="character_relation_states",
+                    candidate_local_id=task.task_id,
+                    message=f"关系聚合 response 无效: {type(exc).__name__}: {exc}",
+                )
+            )
+    return _build_relation_aggregation_artifact(
+        input_artifacts=input_artifacts,
+        annotation_artifacts=annotation_artifacts,
+        sources=sources,
+        state_records=state_records,
+        unmerged_records=unmerged_records,
+        issues=issues,
+        aggregation_model=model_label,
+    )
+
+
+def _collect_observation_sources(
+    input_artifacts: list[Stage2InputArtifact],
+    annotation_artifacts: list[Stage2AnnotationArtifact],
+    issues: list[NormalizationIssue],
+) -> list[_ObservationSource]:
+    """跨多集规范化并排序所有关系观察。"""
+
+    if len(input_artifacts) != len(annotation_artifacts):
+        raise ValueError("Stage 2 Input 与 Stage 2A 标注数量必须一致。")
+    sources: list[_ObservationSource] = []
+    for input_artifact, annotation_artifact in zip(input_artifacts, annotation_artifacts):
+        sources.extend(_normalize_observations(input_artifact, annotation_artifact, issues))
+    return sorted(sources, key=lambda source: (source.record.time_order, source.record.observation_id))
+
+
+def _group_observation_sources(
+    sources: list[_ObservationSource],
+) -> dict[tuple[str, str], list[_ObservationSource]]:
+    """按有向角色名称对分组关系观察。"""
+
+    grouped: dict[tuple[str, str], list[_ObservationSource]] = defaultdict(list)
+    for source in sources:
+        grouped[(source.subject_character_name, source.object_character_name)].append(source)
+    return grouped
+
+
+def _build_relation_aggregation_artifact(
+    input_artifacts: list[Stage2InputArtifact],
+    annotation_artifacts: list[Stage2AnnotationArtifact],
+    sources: list[_ObservationSource],
+    state_records: list[CharacterRelationStateReviewRecord],
+    unmerged_records: list[UnmergedRelationObservationReviewRecord],
+    issues: list[NormalizationIssue],
+    aggregation_model: str,
+) -> Stage3RelationAggregationArtifact:
+    """根据已完成的关系聚合结果组装最终审查产物。"""
+
+    reference_input = input_artifacts[0]
+    return Stage3RelationAggregationArtifact(
+        metadata=Stage3RelationAggregationMetadata(
+            anime_title=reference_input.metadata.anime_title,
+            series_id=reference_input.metadata.series_id,
+            season_id=reference_input.metadata.season_id,
+            canon_branch=reference_input.metadata.canon_branch,
+            episodes=sorted({artifact.metadata.episode for artifact in input_artifacts}),
+            subtitle_paths=list(
+                dict.fromkeys(artifact.metadata.subtitle_path for artifact in input_artifacts)
+            ),
+        ),
+        source_stage2_models=list(dict.fromkeys(artifact.model for artifact in annotation_artifacts)),
+        aggregation_model=aggregation_model,
+        observations=[source.record for source in sources],
+        character_relation_states=state_records,
+        unmerged_observations=unmerged_records,
+        issues=issues,
+    )
+
+
+def _load_manifest_path_list(parameters: dict[str, str], key: str) -> list[str]:
+    """从 manifest 参数中读取字符串路径列表。"""
+
+    raw_value = parameters.get(key)
+    if raw_value is None:
+        raise PromptPackageError(f"manifest 缺少参数: {key}")
+    payload = json.loads(raw_value)
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        raise PromptPackageError(f"manifest 参数 {key} 不是字符串列表。")
+    return list(payload)
 
 
 def _normalize_observations(

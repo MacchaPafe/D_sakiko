@@ -45,6 +45,25 @@ class LiteLLMJsonClient:
     ) -> LiteLLMJsonResponse:
         """发送 prompt 并解析为 JSON。"""
 
+        content = self.complete_text(
+            prompt,
+            stream=stream,
+            status_callback=status_callback,
+            stream_callback=stream_callback,
+        )
+        if status_callback is not None:
+            status_callback("LLM 响应接收完成，开始解析 JSON")
+        return LiteLLMJsonResponse(raw_content=content, parsed_payload=_parse_json_payload(content))
+
+    def complete_text(
+        self,
+        prompt: str,
+        stream: bool = False,
+        status_callback: Callable[[str], None] | None = None,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> str:
+        """发送 Prompt 并返回未经 JSON 清理的原始模型文本。"""
+
         from litellm import completion
 
         last_error: Exception | None = None
@@ -85,8 +104,8 @@ class LiteLLMJsonClient:
                     content = _extract_completion_content(response)
 
                 if status_callback is not None:
-                    status_callback("LLM 响应接收完成，开始解析 JSON")
-                return LiteLLMJsonResponse(raw_content=content, parsed_payload=_parse_json_payload(content))
+                    status_callback("LLM 原始响应接收完成")
+                return content
             except Exception as exc:  # pragma: no cover - 真实 API 调用路径
                 last_error = exc
                 if status_callback is not None:

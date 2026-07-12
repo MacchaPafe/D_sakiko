@@ -14,6 +14,15 @@ from rag.models import CharacterThoughtDocument
 from rag.services import PointRecord, QdrantRagService, UpsertReport
 
 from .llm_client import LiteLLMConfig, LiteLLMJsonClient
+from .prompt_package import (
+    PreparedPrompt,
+    PromptPackageError,
+    PromptPackageManifest,
+    create_prompt_package,
+    load_prompt_package_manifest,
+    parse_json_response,
+    read_prompt_package_responses,
+)
 from .schemas import (
     CharacterThoughtPayload,
     CharacterThoughtReviewRecord,
@@ -54,6 +63,18 @@ class _FactLinkCandidate:
     event_id: str | None
 
 
+@dataclass(slots=True)
+class _ThoughtPipelinePreparation:
+    """保存观点链接前的确定性规范化结果。"""
+
+    issues: list[NormalizationIssue]
+    scene_time_map: dict[str, int]
+    utterance_map: dict[str, Stage2Utterance]
+    evidence_scene_map: dict[str, str]
+    facts: list[NormalizedEventFact]
+    linked_updates: list[LinkedCharacterThoughtUpdate]
+
+
 def build_stage3_thought_import_artifact(
     input_artifact: Stage2InputArtifact,
     stage2b_artifact: Stage2BAnnotationArtifact,
@@ -66,6 +87,47 @@ def build_stage3_thought_import_artifact(
 
     if max_link_candidates < 1:
         raise ValueError("max_link_candidates 必须大于等于 1")
+    preparation = _prepare_thought_pipeline(
+        input_artifact,
+        stage2b_artifact,
+        stage3_rag_artifact,
+    )
+    if linker_llm_config is not None:
+        _resolve_unlinked_updates_with_llm(
+            preparation.linked_updates,
+            preparation.facts,
+            stage3_rag_artifact,
+            preparation.scene_time_map,
+            linker_llm_config,
+            linker_template_path,
+            max_link_candidates,
+            preparation.issues,
+        )
+    thought_records = _build_thought_timeline(
+        preparation.linked_updates,
+        preparation.utterance_map,
+        preparation.evidence_scene_map,
+        preparation.facts,
+        stage3_rag_artifact,
+    )
+    return Stage3ThoughtImportArtifact(
+        metadata=stage3_rag_artifact.metadata,
+        source_stage2b_model=stage2b_artifact.model,
+        linker_model=None if linker_llm_config is None else linker_llm_config.model,
+        event_facts=preparation.facts,
+        linked_updates=preparation.linked_updates,
+        character_thoughts=thought_records,
+        issues=preparation.issues,
+    )
+
+
+def _prepare_thought_pipeline(
+    input_artifact: Stage2InputArtifact,
+    stage2b_artifact: Stage2BAnnotationArtifact,
+    stage3_rag_artifact: Stage3NormalizedImportArtifact,
+) -> _ThoughtPipelinePreparation:
+    """执行观点语义链接之前的全部确定性规范化。"""
+
     issues: list[NormalizationIssue] = []
     event_map = {
         (record.source_scene_id, record.source_local_id): record
@@ -83,10 +145,7 @@ def build_stage3_thought_import_artifact(
         for utterance in scene.utterances
     }
     facts = _normalize_event_facts(stage2b_artifact, event_map, issues)
-    fact_map = {
-        (fact.source_scene_id, fact.source_local_id): fact
-        for fact in facts
-    }
+    fact_map = {(fact.source_scene_id, fact.source_local_id): fact for fact in facts}
     linked_updates = _link_updates(
         stage2b_artifact,
         event_map,
@@ -94,31 +153,181 @@ def build_stage3_thought_import_artifact(
         scene_time_map,
         issues,
     )
-    if linker_llm_config is not None:
-        _resolve_unlinked_updates_with_llm(
-            linked_updates,
-            facts,
+    return _ThoughtPipelinePreparation(
+        issues=issues,
+        scene_time_map=scene_time_map,
+        utterance_map=utterance_map,
+        evidence_scene_map=evidence_scene_map,
+        facts=facts,
+        linked_updates=linked_updates,
+    )
+
+
+def prepare_stage3_thought_link_prompt_package(
+    input_artifact: Stage2InputArtifact,
+    stage2b_artifact: Stage2BAnnotationArtifact,
+    stage3_rag_artifact: Stage3NormalizedImportArtifact,
+    input_path: str | Path,
+    stage2b_path: str | Path,
+    stage3_rag_path: str | Path,
+    output_dir: str | Path,
+    template_path: str | Path = DEFAULT_LINK_TEMPLATE_PATH,
+    max_link_candidates: int = 8,
+) -> PromptPackageManifest:
+    """只为确定性链接未解决的观点生成 Stage 3 静态任务包。"""
+
+    if max_link_candidates < 1:
+        raise ValueError("max_link_candidates 必须大于等于 1")
+    preparation = _prepare_thought_pipeline(
+        input_artifact,
+        stage2b_artifact,
+        stage3_rag_artifact,
+    )
+    resolved_template_path = Path(template_path).resolve()
+    prompts: list[PreparedPrompt] = []
+    for update in preparation.linked_updates:
+        if update.link_status != "unresolved":
+            continue
+        event_candidates, fact_candidates = _select_link_candidates(
+            update,
+            preparation.facts,
             stage3_rag_artifact,
-            scene_time_map,
-            linker_llm_config,
-            linker_template_path,
+            preparation.scene_time_map,
             max_link_candidates,
-            issues,
         )
+        prompts.append(
+            PreparedPrompt(
+                task_id=f"thought_link:{update.source_scene_id}:{update.source_local_id}",
+                prompt=_render_link_prompt(
+                    update,
+                    event_candidates,
+                    fact_candidates,
+                    resolved_template_path,
+                ),
+                context={
+                    "source_scene_id": update.source_scene_id,
+                    "source_local_id": update.source_local_id,
+                    "event_candidate_count": str(len(event_candidates)),
+                    "fact_candidate_count": str(len(fact_candidates)),
+                },
+            )
+        )
+    return create_prompt_package(
+        output_dir=output_dir,
+        stage_kind="stage3_thought_link",
+        prompts=prompts,
+        source_paths=[input_path, stage2b_path, stage3_rag_path],
+        template_paths=[resolved_template_path],
+        parameters={
+            "input_path": str(Path(input_path).resolve()),
+            "stage2b_path": str(Path(stage2b_path).resolve()),
+            "stage3_rag_path": str(Path(stage3_rag_path).resolve()),
+            "template_path": str(resolved_template_path),
+            "max_link_candidates": str(max_link_candidates),
+            "preparation_issue_count": str(len(preparation.issues)),
+        },
+    )
+
+
+def assemble_stage3_thought_link_prompt_package(
+    manifest_path: str | Path,
+    model_label: str = "codex-workspace",
+    allow_partial: bool = False,
+    allow_stale: bool = False,
+) -> Stage3ThoughtImportArtifact:
+    """应用离线语义链接 response 并构建 Character Thought 审查产物。"""
+
+    manifest = load_prompt_package_manifest(manifest_path)
+    if manifest.stage_kind != "stage3_thought_link":
+        raise PromptPackageError("manifest 不是 Stage 3 Thought Link 任务包。")
+    input_path = manifest.parameters.get("input_path")
+    stage2b_path = manifest.parameters.get("stage2b_path")
+    stage3_rag_path = manifest.parameters.get("stage3_rag_path")
+    if not input_path or not stage2b_path or not stage3_rag_path:
+        raise PromptPackageError("Stage 3 Thought manifest 缺少来源路径。")
+    from .stage2_input_builder import load_stage2_input_artifact
+    from .stage2b_thought_extraction import load_stage2b_annotation_artifact
+    from .stage3_rag_import import load_stage3_normalized_import_artifact
+
+    input_artifact = load_stage2_input_artifact(input_path)
+    stage2b_artifact = load_stage2b_annotation_artifact(stage2b_path)
+    stage3_rag_artifact = load_stage3_normalized_import_artifact(stage3_rag_path)
+    preparation = _prepare_thought_pipeline(
+        input_artifact,
+        stage2b_artifact,
+        stage3_rag_artifact,
+    )
+    max_link_candidates = int(manifest.parameters.get("max_link_candidates", "8"))
+    update_map = {
+        (update.source_scene_id, update.source_local_id): update
+        for update in preparation.linked_updates
+    }
+    response_bundle = read_prompt_package_responses(
+        manifest_path,
+        allow_partial=allow_partial,
+        allow_stale=allow_stale,
+    )
+    for task in manifest.tasks:
+        scene_id = task.context.get("source_scene_id", "")
+        local_id = task.context.get("source_local_id", "")
+        update = update_map.get((scene_id, local_id))
+        raw_response = response_bundle.responses.get(task.task_id)
+        if update is None:
+            preparation.issues.append(
+                NormalizationIssue(
+                    scene_id=scene_id,
+                    collection_name="character_thoughts",
+                    candidate_local_id=local_id or task.task_id,
+                    message="manifest 引用的观点更新不存在。",
+                )
+            )
+            continue
+        if raw_response is None:
+            preparation.issues.append(
+                NormalizationIssue(
+                    scene_id=scene_id,
+                    collection_name="character_thoughts",
+                    candidate_local_id=local_id,
+                    message="缺少 Stage 3 Thought Link response。",
+                )
+            )
+            continue
+        event_candidates, fact_candidates = _select_link_candidates(
+            update,
+            preparation.facts,
+            stage3_rag_artifact,
+            preparation.scene_time_map,
+            max_link_candidates,
+        )
+        try:
+            decision = ThoughtReferenceLinkDecision.model_validate(
+                parse_json_response(raw_response)
+            )
+            _apply_link_decision(update, decision, event_candidates, fact_candidates)
+        except Exception as exc:
+            preparation.issues.append(
+                NormalizationIssue(
+                    scene_id=scene_id,
+                    collection_name="character_thoughts",
+                    candidate_local_id=local_id,
+                    message=f"Stage 3 Thought Link response 无效: {type(exc).__name__}: {exc}",
+                )
+            )
     thought_records = _build_thought_timeline(
-        linked_updates,
-        utterance_map,
-        evidence_scene_map,
-        facts,
+        preparation.linked_updates,
+        preparation.utterance_map,
+        preparation.evidence_scene_map,
+        preparation.facts,
         stage3_rag_artifact,
     )
     return Stage3ThoughtImportArtifact(
         metadata=stage3_rag_artifact.metadata,
         source_stage2b_model=stage2b_artifact.model,
-        event_facts=facts,
-        linked_updates=linked_updates,
+        linker_model=model_label,
+        event_facts=preparation.facts,
+        linked_updates=preparation.linked_updates,
         character_thoughts=thought_records,
-        issues=issues,
+        issues=preparation.issues,
     )
 
 
@@ -287,38 +496,13 @@ def _resolve_unlinked_updates_with_llm(
     for update in updates:
         if update.link_status != "unresolved":
             continue
-        event_candidates = [
-            _EventLinkCandidate(
-                id=record.point_id,
-                title=record.document.title,
-                summary=record.document.summary,
-                time=record.document.visible_from,
-            )
-            for record in stage3_rag_artifact.story_events
-            if record.document.visible_from <= update.evidence_time
-        ]
-        fact_candidates = [
-            _FactLinkCandidate(
-                id=fact.fact_id,
-                text=fact.fact_text,
-                event_id=fact.about_event_id,
-            )
-            for fact in facts
-            if scene_time_map.get(fact.source_scene_id, 0) <= update.evidence_time
-        ]
-        event_candidates.sort(
-            key=lambda candidate: _semantic_overlap_score(
-                update.subject_text,
-                f"{candidate.title} {candidate.summary}",
-            ),
-            reverse=True,
+        selected_events, selected_facts = _select_link_candidates(
+            update,
+            facts,
+            stage3_rag_artifact,
+            scene_time_map,
+            max_candidates,
         )
-        fact_candidates.sort(
-            key=lambda candidate: _semantic_overlap_score(update.subject_text, candidate.text),
-            reverse=True,
-        )
-        selected_events = event_candidates[:max_candidates]
-        selected_facts = fact_candidates[:max_candidates]
         prompt = _render_link_prompt(update, selected_events, selected_facts, template_path)
         try:
             response = LiteLLMJsonClient(llm_config).complete_json(prompt)
@@ -333,6 +517,48 @@ def _resolve_unlinked_updates_with_llm(
                     message=f"Stage 3 LLM 链接失败：{type(exc).__name__}: {exc}",
                 )
             )
+
+
+def _select_link_candidates(
+    update: LinkedCharacterThoughtUpdate,
+    facts: list[NormalizedEventFact],
+    stage3_rag_artifact: Stage3NormalizedImportArtifact,
+    scene_time_map: dict[str, int],
+    max_candidates: int,
+) -> tuple[list[_EventLinkCandidate], list[_FactLinkCandidate]]:
+    """为一条未解决观点选择时间兼容且语义最接近的候选。"""
+
+    event_candidates = [
+        _EventLinkCandidate(
+            id=record.point_id,
+            title=record.document.title,
+            summary=record.document.summary,
+            time=record.document.visible_from,
+        )
+        for record in stage3_rag_artifact.story_events
+        if record.document.visible_from <= update.evidence_time
+    ]
+    fact_candidates = [
+        _FactLinkCandidate(
+            id=fact.fact_id,
+            text=fact.fact_text,
+            event_id=fact.about_event_id,
+        )
+        for fact in facts
+        if scene_time_map.get(fact.source_scene_id, 0) <= update.evidence_time
+    ]
+    event_candidates.sort(
+        key=lambda candidate: _semantic_overlap_score(
+            update.subject_text,
+            f"{candidate.title} {candidate.summary}",
+        ),
+        reverse=True,
+    )
+    fact_candidates.sort(
+        key=lambda candidate: _semantic_overlap_score(update.subject_text, candidate.text),
+        reverse=True,
+    )
+    return event_candidates[:max_candidates], fact_candidates[:max_candidates]
 
 
 def _render_link_prompt(

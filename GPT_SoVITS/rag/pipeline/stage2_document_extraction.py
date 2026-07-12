@@ -13,6 +13,16 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import ValidationError
 
 from .llm_client import LiteLLMConfig, LiteLLMJsonClient
+from .prompt_package import (
+    PreparedPrompt,
+    PromptPackageError,
+    PromptPackageManifest,
+    create_prompt_package,
+    load_prompt_package_manifest,
+    parse_json_response,
+    read_prompt_package_responses,
+    task_prompt_path,
+)
 from .schemas import (
     SceneAnnotationPass2,
     Stage2AnnotationArtifact,
@@ -20,6 +30,7 @@ from .schemas import (
     Stage2SceneAnnotationResult,
     Stage2SceneInput,
 )
+from .stage2_input_builder import load_stage2_input_artifact
 
 
 DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "extraction_pass.jinja"
@@ -214,6 +225,118 @@ def load_stage2_annotation_artifact(input_path: str | Path) -> Stage2AnnotationA
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
     return Stage2AnnotationArtifact.model_validate(payload)
+
+
+def prepare_stage2_prompt_package(
+    artifact: Stage2InputArtifact,
+    input_path: str | Path,
+    output_dir: str | Path,
+    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    scene_ids: set[str] | None = None,
+    max_scenes: int | None = None,
+) -> PromptPackageManifest:
+    """为 Stage 2A 文档抽取生成可离线完成的静态任务包。"""
+
+    resolved_template_path = Path(template_path).resolve()
+    selected_scenes = artifact.scenes
+    if scene_ids:
+        selected_scenes = [scene for scene in selected_scenes if scene.scene_id in scene_ids]
+    if max_scenes is not None:
+        selected_scenes = selected_scenes[:max_scenes]
+    prompts = [
+        PreparedPrompt(
+            task_id=scene.scene_id,
+            prompt=render_stage2_prompt(scene, resolved_template_path),
+            context={"scene_id": scene.scene_id, "episode": str(scene.episode)},
+        )
+        for scene in selected_scenes
+    ]
+    return create_prompt_package(
+        output_dir=output_dir,
+        stage_kind="stage2_document",
+        prompts=prompts,
+        source_paths=[input_path],
+        template_paths=[resolved_template_path],
+        parameters={
+            "input_path": str(Path(input_path).resolve()),
+            "template_path": str(resolved_template_path),
+        },
+    )
+
+
+def assemble_stage2_prompt_package(
+    manifest_path: str | Path,
+    model_label: str = "codex-workspace",
+    allow_partial: bool = False,
+    allow_stale: bool = False,
+) -> Stage2AnnotationArtifact:
+    """校验离线 response 并组装 Stage 2A 标注产物。"""
+
+    manifest = load_prompt_package_manifest(manifest_path)
+    if manifest.stage_kind != "stage2_document":
+        raise PromptPackageError("manifest 不是 Stage 2A Document 任务包。")
+    input_path = manifest.parameters.get("input_path")
+    if not input_path:
+        raise PromptPackageError("Stage 2A manifest 缺少 input_path。")
+    artifact = load_stage2_input_artifact(input_path)
+    scene_ids = {scene.scene_id for scene in artifact.scenes}
+    response_bundle = read_prompt_package_responses(
+        manifest_path,
+        allow_partial=allow_partial,
+        allow_stale=allow_stale,
+    )
+    results: list[Stage2SceneAnnotationResult] = []
+    for task in manifest.tasks:
+        scene_id = task.context.get("scene_id", task.task_id)
+        prompt_path = str(task_prompt_path(manifest_path, task))
+        raw_response = response_bundle.responses.get(task.task_id)
+        if scene_id not in scene_ids:
+            results.append(
+                Stage2SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    error="manifest 引用了 Stage 2 Input 中不存在的场景。",
+                )
+            )
+            continue
+        if raw_response is None:
+            results.append(
+                Stage2SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    error="缺少 response。",
+                )
+            )
+            continue
+        try:
+            annotation = SceneAnnotationPass2.model_validate(parse_json_response(raw_response))
+            if annotation.scene_id != scene_id:
+                raise ValueError(
+                    f"Stage 2 scene_id 不匹配: expected={scene_id}, actual={annotation.scene_id}"
+                )
+            results.append(
+                Stage2SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    raw_response_text=raw_response,
+                    annotation=annotation,
+                )
+            )
+        except Exception as exc:
+            results.append(
+                Stage2SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    raw_response_text=raw_response,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+    return Stage2AnnotationArtifact(
+        metadata=artifact.metadata,
+        model=model_label,
+        template_path=manifest.parameters.get("template_path", ""),
+        results=results,
+    )
 
 
 def _annotate_stage2_scene_request(

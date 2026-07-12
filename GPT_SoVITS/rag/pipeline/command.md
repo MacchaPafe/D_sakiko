@@ -31,6 +31,64 @@ model = SentenceTransformer("intfloat/multilingual-e5-small")
 model.save("GPT_SoVITS/pretrained_models/multilingual-e5-small")
 ```
 
+## Prompt Package 拆分模式
+
+所有需要 LLM 的标注步骤现在都支持两种执行方式：
+
+- 原有的一体化命令：例如 `annotate-stage2`，一次完成 Prompt 渲染、API 请求和结果组装。
+- Prompt Package：先渲染静态 Prompt，再由 Codex 或 LiteLLM 生成回复，最后校验并组装正式 artifact。
+
+让 Codex 直接参与标注时，请只向它提供当前小阶段对应的独立指南。指南索引位于
+[annotation_guides/README.md](annotation_guides/README.md)。
+
+Prompt Package 目录包含 `manifest.json`、`prompts/` 和 `responses/`。`manifest.json` 会记录输入文件、
+模板和每个 Prompt 的 SHA-256；组装时默认拒绝输入或 Prompt 已变化的过期 Package。不要修改
+`prompts/` 中的内容。让 Codex 标注时，可以让 agent 阅读 `manifest.json` 和 `prompts/`，并把每个任务的
+纯 JSON 回复写到 manifest 声明的 `responses/` 路径。
+
+如果仍想通过 API 请求已经渲染的 Package，可在渲染与组装命令之间运行：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline complete-prompt-package --stream \
+  --manifest 你的_prompt_package目录/manifest.json \
+  --model deepseek/deepseek-reasoner \
+  --temperature 1
+```
+
+该命令默认跳过已经存在的非空回复，适合中断后继续；只有传入 `--overwrite` 才会覆盖它们。
+模型请求失败不会删除已经完成的回复。若使用 Codex 直接填写 `responses/`，则不需要运行此命令。
+使用 LiteLLM 请求后，组装命令应通过 `--model-label` 写入实际模型名；默认值
+`codex-workspace` 是为 Codex 直接标注准备的。
+
+五类 LLM 步骤对应的拆分命令如下：
+
+| 标注内容 | 渲染 Prompt | 校验、组装正式结果 |
+| --- | --- | --- |
+| Stage 1 说话人 | `render-stage1-prompts` | `assemble-stage1-responses` |
+| Stage 2A 剧情、关系观察、名词 | `render-stage2-prompts` | `assemble-stage2-responses` |
+| Stage 2B Event Fact、角色观点更新 | `render-stage2b-prompts` | `assemble-stage2b-responses` |
+| Stage 3 长期角色关系 | `render-stage3-relation-prompts` | `assemble-stage3-relations` |
+| Stage 3 unresolved 观点链接 | `render-stage3-thought-link-prompts` | `assemble-stage3-thoughts` |
+
+例如，Stage 2A 的完整拆分流程是：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage2-prompts \
+  --input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_stage2_input.json \
+  --output-dir GPT_SoVITS/rag/pipeline/data/prompt_packages/ep01_stage2a
+
+# 在这里让 Codex 填写 responses/，或运行 complete-prompt-package。
+
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage2-responses \
+  --manifest GPT_SoVITS/rag/pipeline/data/prompt_packages/ep01_stage2a/manifest.json \
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2_raw.json \
+  --model-label codex-workspace
+```
+
+其余阶段使用相同的目录约定。可以用各命令的 `--help` 查看输入参数。Stage 2B 会把长场景的每个窗口
+作为独立任务，组装时仍复用原有的窗口合并逻辑；Stage 3 长期关系按有向角色对建立任务；Stage 3
+观点链接只为确定性规则无法解决的 `unresolved` 更新建立任务。
+
 ## 1. 说话人标注阶段
 
 请你首先获取一份动漫的 ass 字幕文件，放到一个你喜欢的地方，记住这个文件的路径，然后运行这条命令来提取所有对话：

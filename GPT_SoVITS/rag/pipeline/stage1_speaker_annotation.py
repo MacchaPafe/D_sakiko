@@ -15,6 +15,16 @@ from pydantic import ValidationError
 from rag.models import CanonBranch, SeasonId, SeriesId
 
 from .llm_client import LiteLLMConfig, LiteLLMJsonClient
+from .prompt_package import (
+    PreparedPrompt,
+    PromptPackageError,
+    PromptPackageManifest,
+    create_prompt_package,
+    load_prompt_package_manifest,
+    parse_json_response,
+    read_prompt_package_responses,
+    task_prompt_path,
+)
 from .scene_segmenter import segment_scenes_from_subtitle_path
 from .schemas import (
     SceneAnnotationPass1,
@@ -321,6 +331,119 @@ def load_stage1_annotation_artifact(input_path: str | Path) -> Stage1AnnotationA
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
     return Stage1AnnotationArtifact.model_validate(payload)
+
+
+def prepare_stage1_prompt_package(
+    artifact: Stage1PreparedArtifact,
+    prepared_path: str | Path,
+    output_dir: str | Path,
+    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    scene_ids: set[str] | None = None,
+    max_scenes: int | None = None,
+) -> PromptPackageManifest:
+    """为 Stage 1 说话人标注生成可由 Codex 完成的静态任务包。"""
+
+    resolved_template_path = Path(template_path).resolve()
+    selected_scenes = artifact.scenes
+    if scene_ids:
+        selected_scenes = [scene for scene in selected_scenes if scene.scene_id in scene_ids]
+    if max_scenes is not None:
+        selected_scenes = selected_scenes[:max_scenes]
+    prompts = [
+        PreparedPrompt(
+            task_id=scene.scene_id,
+            prompt=render_stage1_prompt(scene, resolved_template_path),
+            context={"scene_id": scene.scene_id, "episode": str(scene.episode)},
+        )
+        for scene in selected_scenes
+    ]
+    return create_prompt_package(
+        output_dir=output_dir,
+        stage_kind="stage1_speaker",
+        prompts=prompts,
+        source_paths=[prepared_path],
+        template_paths=[resolved_template_path],
+        parameters={
+            "prepared_path": str(Path(prepared_path).resolve()),
+            "template_path": str(resolved_template_path),
+        },
+    )
+
+
+def assemble_stage1_prompt_package(
+    manifest_path: str | Path,
+    model_label: str = "codex-workspace",
+    allow_partial: bool = False,
+    allow_stale: bool = False,
+) -> Stage1AnnotationArtifact:
+    """校验 Codex response 并组装 Stage 1 说话人标注产物。"""
+
+    manifest = load_prompt_package_manifest(manifest_path)
+    if manifest.stage_kind != "stage1_speaker":
+        raise PromptPackageError("manifest 不是 Stage 1 Speaker 任务包。")
+    prepared_path = manifest.parameters.get("prepared_path")
+    if not prepared_path:
+        raise PromptPackageError("Stage 1 manifest 缺少 prepared_path。")
+    artifact = load_stage1_prepared_artifact(prepared_path)
+    scene_map = {scene.scene_id: scene for scene in artifact.scenes}
+    response_bundle = read_prompt_package_responses(
+        manifest_path,
+        allow_partial=allow_partial,
+        allow_stale=allow_stale,
+    )
+    results: list[Stage1SceneAnnotationResult] = []
+    for task in manifest.tasks:
+        scene_id = task.context.get("scene_id", task.task_id)
+        prompt_path = str(task_prompt_path(manifest_path, task))
+        scene = scene_map.get(scene_id)
+        raw_response = response_bundle.responses.get(task.task_id)
+        if scene is None:
+            results.append(
+                Stage1SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    error="manifest 引用了 prepared artifact 中不存在的场景。",
+                )
+            )
+            continue
+        if raw_response is None:
+            results.append(
+                Stage1SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    error="缺少 response。",
+                )
+            )
+            continue
+        try:
+            annotation = SceneAnnotationPass1.model_validate(parse_json_response(raw_response))
+            if annotation.scene_id != scene_id:
+                raise ValueError(
+                    f"Stage 1 scene_id 不匹配: expected={scene_id}, actual={annotation.scene_id}"
+                )
+            results.append(
+                Stage1SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    raw_response_text=raw_response,
+                    annotation=annotation,
+                )
+            )
+        except Exception as exc:
+            results.append(
+                Stage1SceneAnnotationResult(
+                    scene_id=scene_id,
+                    prompt_path=prompt_path,
+                    raw_response_text=raw_response,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+    return Stage1AnnotationArtifact(
+        metadata=artifact.metadata,
+        model=model_label,
+        template_path=manifest.parameters.get("template_path", ""),
+        results=results,
+    )
 
 
 def default_status_printer(message: str) -> None:
