@@ -446,7 +446,7 @@ class Stage2DatasetEditor:
         return "；".join(merged_summaries) if merged_summaries else None
 
     def _validate_merge_pair(self, left_scene: dict[str, Any], right_scene: dict[str, Any]) -> None:
-        for field_name in ("anime_title", "series_id", "season_id", "episode"):
+        for field_name in ("anime_title", "series_id", "timeline_id", "story_year", "episode"):
             if left_scene.get(field_name) != right_scene.get(field_name):
                 raise ValueError(f"相邻场景的 {field_name} 不一致，无法自动合并。")
 

@@ -31,15 +31,6 @@ class SeriesId(str, Enum):
     AVE_MUJICA = "ave_mujica"
 
 
-class SeasonId(int, Enum):
-    """BanG Dream! 中统一的三年时间线"""
-    # 你知道吗？邦邦世界观里目前只经过了三年，就是 ksm 高一到高三的三年……
-
-    ONE = 1
-    TWO = 2
-    THREE = 3
-
-
 class CanonBranch(str, Enum):
     """定义剧情所属的世界线分支。"""
     # 主要动画剧情
@@ -329,8 +320,10 @@ class StoryEventDocument(BaseQdrantDocument):
 
     collection_name: ClassVar[CollectionName] = CollectionName.STORY_EVENTS
 
-    #: 事件所属的虚拟时间线编号。
-    season_id: SeasonId
+    #: 事件所属的剧情时间线。
+    timeline_id: str
+    #: 事件能够确认的剧情学年；未知时为空。
+    occurred_story_year: Optional[int]
     #: 事件所属的动画系列编号。
     series_id: SeriesId
     #: 事件所在的具体集数。
@@ -359,7 +352,7 @@ class StoryEventDocument(BaseQdrantDocument):
     def __post_init__(self) -> None:
         """在对象创建后执行基础类型收敛与业务校验。"""
 
-        self.season_id = _coerce_enum_value(SeasonId, "season_id", self.season_id)
+        self.timeline_id = _normalize_text("timeline_id", self.timeline_id)
         self.series_id = _coerce_enum_value(SeriesId, "series_id", self.series_id)
         self.canon_branch = _coerce_enum_value(CanonBranch, "canon_branch", self.canon_branch)
         self.participants = _coerce_enum_list(CharacterId, "participants", self.participants)
@@ -386,8 +379,8 @@ class CharacterRelationDocument(BaseQdrantDocument):
     subject_character_id: CharacterId
     #: 被主观判断或被提及的目标角色。
     object_character_id: CharacterId
-    #: 当前关系所属的虚拟时间线编号。
-    season_id: SeasonId
+    #: 当前关系所属的剧情时间线。
+    timeline_id: str
     #: 当前关系所属的动画系列编号。
     series_id: SeriesId
     #: 当前关系从哪个时间点开始可见。
@@ -414,7 +407,7 @@ class CharacterRelationDocument(BaseQdrantDocument):
 
         self.subject_character_id = _coerce_enum_value(CharacterId, "subject_character_id", self.subject_character_id)
         self.object_character_id = _coerce_enum_value(CharacterId, "object_character_id", self.object_character_id)
-        self.season_id = _coerce_enum_value(SeasonId, "season_id", self.season_id)
+        self.timeline_id = _normalize_text("timeline_id", self.timeline_id)
         self.series_id = _coerce_enum_value(SeriesId, "series_id", self.series_id)
         self.canon_branch = _coerce_enum_value(CanonBranch, "canon_branch", self.canon_branch)
         self.relation_label = _normalize_text("relation_label", self.relation_label)
@@ -440,8 +433,10 @@ class LoreEntryDocument(BaseQdrantDocument):
     scope_type: ScopeType
     #: 该条目适用的系列范围列表。
     series_ids: Optional[List[SeriesId]]
-    #: 该条目适用的虚拟时间线范围列表。
-    season_ids: Optional[List[SeasonId]]
+    #: 该条目所属的剧情时间线。
+    timeline_id: str
+    #: 该条目适用的剧情学年；为空表示不按学年限制。
+    applicable_story_years: Optional[List[int]]
     #: 该条目从哪个时间点开始可见，可为空。
     visible_from: Optional[int]
     #: 该条目到哪个时间点结束可见，可为空。
@@ -461,9 +456,13 @@ class LoreEntryDocument(BaseQdrantDocument):
         """在对象创建后执行基础类型收敛与业务校验。"""
 
         self.scope_type = _coerce_enum_value(ScopeType, "scope_type", self.scope_type)
+        self.timeline_id = _normalize_text("timeline_id", self.timeline_id)
         self.canon_branch = _coerce_enum_value(CanonBranch, "canon_branch", self.canon_branch)
         self.series_ids = None if self.series_ids is None else _coerce_enum_list(SeriesId, "series_ids", self.series_ids)
-        self.season_ids = None if self.season_ids is None else _coerce_enum_list(SeasonId, "season_ids", self.season_ids)
+        if self.applicable_story_years is not None:
+            if not all(isinstance(year, int) and year > 0 for year in self.applicable_story_years):
+                raise ValueError("applicable_story_years 必须只包含正整数")
+            self.applicable_story_years = list(dict.fromkeys(self.applicable_story_years))
         self.title = _normalize_text("title", self.title)
         self.content = _normalize_text("content", self.content)
         self.retrieval_text = _normalize_text("retrieval_text", self.retrieval_text)
@@ -483,7 +482,7 @@ class CharacterThoughtDocument(BaseQdrantDocument):
 
     character_id: CharacterId
     series_id: SeriesId
-    season_id: SeasonId
+    timeline_id: str
     canon_branch: CanonBranch
     thought_thread_key: str
     subject_kind: str
@@ -507,7 +506,7 @@ class CharacterThoughtDocument(BaseQdrantDocument):
 
         self.character_id = _coerce_enum_value(CharacterId, "character_id", self.character_id)
         self.series_id = _coerce_enum_value(SeriesId, "series_id", self.series_id)
-        self.season_id = _coerce_enum_value(SeasonId, "season_id", self.season_id)
+        self.timeline_id = _normalize_text("timeline_id", self.timeline_id)
         self.canon_branch = _coerce_enum_value(CanonBranch, "canon_branch", self.canon_branch)
         self.thought_thread_key = _normalize_text("thought_thread_key", self.thought_thread_key)
         self.subject_kind = _normalize_text("subject_kind", self.subject_kind)
@@ -543,8 +542,10 @@ class RetrievalContext:
     current_character_id: Optional[CharacterId] = None
     #: 当前对话限定的系列编号。
     current_series_id: Optional[SeriesId] = None
-    #: 当前对话限定的虚拟时间线编号。
-    current_season_id: Optional[SeasonId] = None
+    #: 当前对话限定的剧情时间线。
+    current_timeline_id: Optional[str] = None
+    #: 当前对话能够确认的剧情学年。
+    current_story_year: Optional[int] = None
     #: 当前对话限定的剧情分支。
     current_canon_branch: Optional[CanonBranch] = None
 
@@ -555,8 +556,10 @@ class RetrievalContext:
             self.current_character_id = _coerce_enum_value(CharacterId, "current_character_id", self.current_character_id)
         if self.current_series_id is not None:
             self.current_series_id = _coerce_enum_value(SeriesId, "current_series_id", self.current_series_id)
-        if self.current_season_id is not None:
-            self.current_season_id = _coerce_enum_value(SeasonId, "current_season_id", self.current_season_id)
+        if self.current_timeline_id is not None:
+            self.current_timeline_id = _normalize_text("current_timeline_id", self.current_timeline_id)
+        if self.current_story_year is not None and self.current_story_year <= 0:
+            raise ValueError("current_story_year 必须是正整数")
         if self.current_canon_branch is not None:
             self.current_canon_branch = _coerce_enum_value(CanonBranch, "current_canon_branch", self.current_canon_branch)
 
@@ -569,8 +572,8 @@ class StoryEventQuery:
     require_character_match: bool = True
     #: 是否要求限制到当前系列。
     limit_to_series: bool = True
-    #: 是否要求限制到当前虚拟时间线。
-    limit_to_season: bool = True
+    #: 是否要求限制到当前剧情时间线。
+    limit_to_timeline: bool = True
     #: 是否要求限制到当前剧情分支。
     limit_to_canon_branch: bool = True
 
@@ -587,8 +590,8 @@ class CharacterRelationQuery:
     direct_insert_pair: Optional[Tuple[CharacterId, CharacterId]] = None
     #: 是否要求限制到当前系列。
     limit_to_series: bool = True
-    #: 是否要求限制到当前虚拟时间线。
-    limit_to_season: bool = True
+    #: 是否要求限制到当前剧情时间线。
+    limit_to_timeline: bool = True
     #: 是否要求限制到当前剧情分支。
     limit_to_canon_branch: bool = True
 
@@ -615,8 +618,10 @@ class LoreQuery:
 
     #: 是否要求按系列范围做过滤。
     require_series_match: bool = True
-    #: 是否要求按虚拟时间线范围做过滤。
-    require_season_match: bool = True
+    #: 是否要求限制到当前剧情时间线。
+    limit_to_timeline: bool = True
+    #: 是否要求应用 Lore 的剧情学年适用性。
+    require_story_year_match: bool = True
     #: 是否要求按时间窗口做过滤。
     require_time_window: bool = True
     #: 是否要求限制到当前剧情分支。
@@ -629,7 +634,7 @@ class CharacterThoughtQuery:
 
     require_character_match: bool = True
     limit_to_series: bool = True
-    limit_to_season: bool = True
+    limit_to_timeline: bool = True
     limit_to_canon_branch: bool = True
 
 
@@ -646,7 +651,6 @@ __all__ = [
     "LoreQuery",
     "RetrievalContext",
     "ScopeType",
-    "SeasonId",
     "SeriesId",
     "StoryEventDocument",
     "StoryEventQuery",

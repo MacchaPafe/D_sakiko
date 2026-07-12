@@ -469,6 +469,10 @@ class MoreFunctionWindow(QDialog):
         self.open_persona_editor_button.clicked.connect(self.on_click_open_persona_editor_button)
         layout.addWidget(self.open_persona_editor_button)
 
+        self.open_worldbook_button = QPushButton("世界书管理")
+        self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
+        layout.addWidget(self.open_worldbook_button)
+
         self.open_start_config_button=QPushButton("启动参数配置")
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
         layout.addWidget(self.open_start_config_button)
@@ -555,6 +559,17 @@ class MoreFunctionWindow(QDialog):
             subprocess.Popen([sys.executable, "dsakiko_configuration.py", "CharacterArea"])
         except Exception:
             logger.exception("启动配置窗口失败")
+        self.close()
+
+    def on_click_open_worldbook(self) -> None:
+        """在配置程序中直接打开世界书管理 interface。"""
+
+        try:
+            import subprocess
+            import sys
+            subprocess.Popen([sys.executable, "dsakiko_configuration.py", "WorldbookArea"])
+        except Exception:
+            logger.exception("启动世界书管理窗口失败")
         self.close()
 
     def on_click_open_start_config_button(self):
@@ -2589,6 +2604,9 @@ class ChatGUI(QWidget):
         self.load_whisper_model()
         QTimer.singleShot(0, self.show_last_update_failure_if_needed)
         QTimer.singleShot(0, self.show_last_repair_failure_if_needed)
+        from ui.controllers.worldbook_sync_controller import WorldbookSyncController
+        self.worldbook_sync_controller = WorldbookSyncController(Path(get_app_root()), self)
+        QTimer.singleShot(0, self.worldbook_sync_controller.reconcile_all)
         QTimer.singleShot(30000, self.start_auto_update_check)
 
     def show_last_update_failure_if_needed(self) -> None:

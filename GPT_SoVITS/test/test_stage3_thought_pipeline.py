@@ -210,7 +210,7 @@ class TestStage3ThoughtPipeline(unittest.TestCase):
         document = CharacterThoughtDocument(
             character_id=CharacterId.SOYO,
             series_id=self.stage3.metadata.series_id,
-            season_id=self.stage3.metadata.season_id,
+            timeline_id=self.stage3.metadata.timeline_id,
             canon_branch=self.stage3.metadata.canon_branch,
             thought_thread_key="soyo:standalone:test",
             subject_kind="standalone_topic",

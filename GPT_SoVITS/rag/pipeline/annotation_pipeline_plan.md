@@ -73,10 +73,11 @@
 当前计划以 `It's MyGO!!!!!` 动画字幕为主，系列字段固定映射到：
 
 - `series_id = SeriesId.ITS_MYGO`
-- `season_id = SeasonId.THREE`
+- `timeline_id = "bang_dream_original"`
+- `story_year = 3`
 - `canon_branch = CanonBranch.MAIN`
 
-其中 `season_id` 不交给 LLM 判断，直接由程序固定写入 `SeasonId.THREE`。
+其中时间线和可确认的剧情学年不交给 LLM 判断，由任务元数据显式传入；剧情学年无法确认时允许为空。
 
 ### 3.2 当前抽取边界
 
@@ -551,7 +552,8 @@ Python 对第一阶段结果做：
 
 ### 应由程序生成的字段
 
-- `season_id`
+- `timeline_id`
+- `occurred_story_year`
 - `series_id`
 - `episode`
 - `time_order`
@@ -602,7 +604,7 @@ Python 对第一阶段结果做：
 
 ### 应由程序生成的字段
 
-- `season_id`
+- `timeline_id`
 - `series_id`
 - `visible_from`
 - `visible_to`
@@ -650,7 +652,8 @@ Python 对第一阶段结果做：
 
 - `scope_type`
 - `series_ids`
-- `season_ids`
+- `timeline_id`
+- `applicable_story_years`
 - `visible_from`
 - `visible_to`
 - `canon_branch`
@@ -661,8 +664,8 @@ Python 对第一阶段结果做：
   - 当前字幕数据默认生成 `ScopeType.SERIES`
 - `series_ids`
   - 固定为 `[SeriesId.ITS_MYGO]`
-- `season_ids`
-  - 固定为当前系列对应 season
+- `applicable_story_years`
+  - 能够确认学年时写入对应列表，否则为空
 - `visible_from/visible_to`
   - 初版统一设置为 `None`
   - 后续若人工需要做剧透控制，再单独补充时间窗口
@@ -684,7 +687,8 @@ LLM 负责：
 
 程序负责：
 
-- `season_id`
+- `timeline_id`
+- `occurred_story_year`
 - `series_id`
 - `episode`
 - `time_order`
@@ -707,7 +711,7 @@ LLM 负责：
 
 程序负责：
 
-- `season_id`
+- `timeline_id`
 - `series_id`
 - `visible_from`
 - `visible_to`
@@ -726,7 +730,8 @@ LLM 负责：
 
 - `scope_type`
 - `series_ids`
-- `season_ids`
+- `timeline_id`
+- `applicable_story_years`
 - `visible_from`
 - `visible_to`
 - `canon_branch`

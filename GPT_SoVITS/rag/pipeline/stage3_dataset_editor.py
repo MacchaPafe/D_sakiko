@@ -536,7 +536,7 @@ class Stage3DatasetEditor:
                 for text in (
                     metadata.get("anime_title", ""),
                     f"series {metadata.get('series_id', '-')}",
-                    f"season {metadata.get('season_id', '-')}",
+                    f"timeline {metadata.get('timeline_id', '-')}",
                     f"episode {metadata.get('episode', '-')}",
                     f"branch {metadata.get('canon_branch', '-')}",
                 ):

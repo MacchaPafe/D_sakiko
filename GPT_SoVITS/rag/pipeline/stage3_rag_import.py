@@ -14,7 +14,6 @@ from rag.models import (
     CollectionName,
     LoreEntryDocument,
     ScopeType,
-    SeasonId,
     SeriesId,
     StoryEventDocument,
 )
@@ -168,7 +167,8 @@ def build_stage3_normalized_import_artifact(
         subtitle_path=input_artifact.metadata.subtitle_path,
         anime_title=input_artifact.metadata.anime_title,
         series_id=SeriesId(input_artifact.metadata.series_id),
-        season_id=SeasonId(input_artifact.metadata.season_id),
+        timeline_id=input_artifact.metadata.timeline_id,
+        story_year=input_artifact.metadata.story_year,
         canon_branch=CanonBranch(input_artifact.metadata.canon_branch),
         episode=input_artifact.metadata.episode,
         source_stage2_model=annotation_artifact.model,
@@ -281,7 +281,8 @@ def _normalize_scene_story_events(
 
         try:
             document = StoryEventDocument(
-                season_id=metadata.season_id,
+                timeline_id=metadata.timeline_id,
+                occurred_story_year=metadata.story_year,
                 series_id=metadata.series_id,
                 episode=metadata.episode,
                 time_order=scene_anchor + index,
@@ -309,7 +310,7 @@ def _normalize_scene_story_events(
         sink.append(
             StoryEventImportRecord(
                 point_id=(
-                    f"story_event:{metadata.series_id.value}:s{metadata.season_id.value}:"
+                    f"story_event:{metadata.timeline_id}:y{metadata.story_year or 'unknown'}:"
                     f"{scene.scene_id}:{candidate.event_local_id}:{document.time_order}"
                 ),
                 source_scene_id=scene.scene_id,
@@ -350,7 +351,7 @@ def _normalize_scene_character_relations(
             document = CharacterRelationDocument(
                 subject_character_id=subject_character_id,
                 object_character_id=object_character_id,
-                season_id=metadata.season_id,
+                timeline_id=metadata.timeline_id,
                 series_id=metadata.series_id,
                 visible_from=scene_anchor,
                 visible_to=RELATION_VISIBLE_TO_DEFAULT,
@@ -376,7 +377,7 @@ def _normalize_scene_character_relations(
         sink.append(
             CharacterRelationImportRecord(
                 point_id=(
-                    f"character_relation:{metadata.series_id.value}:s{metadata.season_id.value}:"
+                    f"character_relation:{metadata.timeline_id}:"
                     f"{scene.scene_id}:{candidate.observation_local_id}:"
                     f"{document.subject_character_id.value}:{document.object_character_id.value}"
                 ),
@@ -411,7 +412,7 @@ def _project_relation_states(
 
     if (
         artifact.metadata.series_id != input_artifact.metadata.series_id
-        or artifact.metadata.season_id != input_artifact.metadata.season_id
+        or artifact.metadata.timeline_id != input_artifact.metadata.timeline_id
         or artifact.metadata.canon_branch != input_artifact.metadata.canon_branch
     ):
         issues.append(
@@ -419,7 +420,7 @@ def _project_relation_states(
                 scene_id="__dataset__",
                 collection_name=CollectionName.CHARACTER_RELATIONS.value,
                 candidate_local_id="__relation_aggregation_scope__",
-                message="关系聚合产物与当前 Stage 2 输入的系列、季度或剧情分支不一致。",
+                message="关系聚合产物与当前 Stage 2 输入的系列、时间线或剧情分支不一致。",
             )
         )
         return
@@ -475,7 +476,7 @@ def _project_relation_states(
             document = CharacterRelationDocument(
                 subject_character_id=state.subject_character_id,
                 object_character_id=state.object_character_id,
-                season_id=state.season_id,
+                timeline_id=state.timeline_id,
                 series_id=state.series_id,
                 visible_from=state.visible_from,
                 visible_to=state.visible_to,
@@ -580,7 +581,8 @@ def _normalize_scene_lore_entries(
             document = LoreEntryDocument(
                 scope_type=ScopeType.SERIES,
                 series_ids=[metadata.series_id],
-                season_ids=[metadata.season_id],
+                timeline_id=metadata.timeline_id,
+                applicable_story_years=None if metadata.story_year is None else [metadata.story_year],
                 visible_from=None,
                 visible_to=None,
                 canon_branch=metadata.canon_branch,
@@ -603,7 +605,7 @@ def _normalize_scene_lore_entries(
         sink.append(
             LoreEntryImportRecord(
                 point_id=(
-                    f"lore_entry:{metadata.series_id.value}:s{metadata.season_id.value}:"
+                    f"lore_entry:{metadata.timeline_id}:y{metadata.story_year or 'unknown'}:"
                     f"{scene.scene_id}:{candidate.lore_local_id}:{document.title}"
                 ),
                 source_scene_id=scene.scene_id,
@@ -718,7 +720,7 @@ def backfill_stage3_character_relations_across_artifacts(
             group,
             key=lambda item: (
                 item.document.visible_from,
-                item.document.season_id.value,
+                item.document.timeline_id,
                 item.source_scene_id,
                 item.source_local_id,
             ),

@@ -150,7 +150,7 @@ def build_stage3_relation_aggregation_artifact_from_many(
 
 
 def _validate_common_scope(input_artifacts: list[Stage2InputArtifact]) -> None:
-    """确保多集聚合输入属于同一系列、季度与剧情分支。"""
+    """确保多集聚合输入属于同一系列、时间线与剧情分支。"""
 
     if not input_artifacts:
         raise ValueError("关系全量聚合至少需要一份 Stage 2 Input。")
@@ -159,10 +159,10 @@ def _validate_common_scope(input_artifacts: list[Stage2InputArtifact]) -> None:
         metadata = artifact.metadata
         if (
             metadata.series_id != reference.series_id
-            or metadata.season_id != reference.season_id
+            or metadata.timeline_id != reference.timeline_id
             or metadata.canon_branch != reference.canon_branch
         ):
-            raise ValueError("关系全量聚合只接受同一系列、季度与剧情分支的输入。")
+            raise ValueError("关系全量聚合只接受同一系列、时间线与剧情分支的输入。")
 
 
 def render_relation_aggregation_prompt(
@@ -400,7 +400,8 @@ def _build_relation_aggregation_artifact(
         metadata=Stage3RelationAggregationMetadata(
             anime_title=reference_input.metadata.anime_title,
             series_id=reference_input.metadata.series_id,
-            season_id=reference_input.metadata.season_id,
+            timeline_id=reference_input.metadata.timeline_id,
+            story_year=reference_input.metadata.story_year,
             canon_branch=reference_input.metadata.canon_branch,
             episodes=sorted({artifact.metadata.episode for artifact in input_artifacts}),
             subtitle_paths=list(
@@ -518,7 +519,7 @@ def _normalize_observation(
     observation_id = _stable_id(
         "relation_observation",
         input_artifact.metadata.series_id,
-        str(input_artifact.metadata.season_id),
+        input_artifact.metadata.timeline_id,
         input_artifact.metadata.canon_branch,
         scene_id,
         observation.observation_local_id,
@@ -600,7 +601,7 @@ def _normalize_group_response(
         state_id = _stable_id(
             "character_relation_state",
             input_artifact.metadata.series_id,
-            str(input_artifact.metadata.season_id),
+            input_artifact.metadata.timeline_id,
             input_artifact.metadata.canon_branch,
             subject_character_id.value,
             object_character_id.value,
@@ -612,7 +613,7 @@ def _normalize_group_response(
             document = CharacterRelationStatePayload(
                 subject_character_id=subject_character_id,
                 object_character_id=object_character_id,
-                season_id=input_artifact.metadata.season_id,
+                timeline_id=input_artifact.metadata.timeline_id,
                 series_id=input_artifact.metadata.series_id,
                 visible_from=visible_from,
                 visible_to=RELATION_VISIBLE_TO_DEFAULT,

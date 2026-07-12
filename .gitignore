@@ -8,6 +8,8 @@
 !/docs/agents/**
 !/docs/adr/
 !/docs/adr/**
+!/docs/design/
+!/docs/design/**
 /live2d_related/
 /pythonProject1/
 /reference_audio/

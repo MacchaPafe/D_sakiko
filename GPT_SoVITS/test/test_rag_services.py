@@ -16,7 +16,6 @@ from rag.models import (
     LoreQuery,
     RetrievalContext,
     ScopeType,
-    SeasonId,
     SeriesId,
     StoryEventDocument,
     StoryEventQuery,
@@ -89,7 +88,8 @@ class RagServiceTest(unittest.TestCase):
         self.service._embedding_provider = FakeEmbeddingProvider()
 
         self.story_event = StoryEventDocument(
-            season_id=SeasonId.THREE,
+            timeline_id="bang_dream_original",
+            occurred_story_year=3,
             series_id=SeriesId.ITS_MYGO,
             episode=1,
             time_order=10,
@@ -106,7 +106,7 @@ class RagServiceTest(unittest.TestCase):
         self.relation_forward = CharacterRelationDocument(
             subject_character_id=CharacterId.ANON,
             object_character_id=CharacterId.TOMORI,
-            season_id=SeasonId.THREE,
+            timeline_id="bang_dream_original",
             series_id=SeriesId.ITS_MYGO,
             visible_from=1,
             visible_to=100,
@@ -121,7 +121,7 @@ class RagServiceTest(unittest.TestCase):
         self.relation_reverse = CharacterRelationDocument(
             subject_character_id=CharacterId.TOMORI,
             object_character_id=CharacterId.ANON,
-            season_id=SeasonId.THREE,
+            timeline_id="bang_dream_original",
             series_id=SeriesId.ITS_MYGO,
             visible_from=1,
             visible_to=100,
@@ -136,7 +136,8 @@ class RagServiceTest(unittest.TestCase):
         self.lore_entry = LoreEntryDocument(
             scope_type=ScopeType.SERIES,
             series_ids=[SeriesId.ITS_MYGO],
-            season_ids=[SeasonId.THREE],
+            timeline_id="bang_dream_original",
+            applicable_story_years=[3],
             visible_from=None,
             visible_to=None,
             canon_branch=CanonBranch.MAIN,
@@ -183,7 +184,8 @@ class RagServiceTest(unittest.TestCase):
             current_time=50,
             current_character_id=CharacterId.SAKIKO,
             current_series_id=SeriesId.ITS_MYGO,
-            current_season_id=SeasonId.THREE,
+            current_timeline_id="bang_dream_original",
+            current_story_year=3,
             current_canon_branch=CanonBranch.MAIN,
         )
         results = self.service.query_story_events(
@@ -206,7 +208,8 @@ class RagServiceTest(unittest.TestCase):
             current_time=50,
             current_character_id=CharacterId.SAKIKO,
             current_series_id=SeriesId.ITS_MYGO,
-            current_season_id=SeasonId.THREE,
+            current_timeline_id="bang_dream_original",
+            current_story_year=3,
             current_canon_branch=CanonBranch.MAIN,
         )
         results = self.service.query_story_events(
@@ -227,7 +230,8 @@ class RagServiceTest(unittest.TestCase):
         context = RetrievalContext(
             current_time=50,
             current_series_id=SeriesId.ITS_MYGO,
-            current_season_id=SeasonId.THREE,
+            current_timeline_id="bang_dream_original",
+            current_story_year=3,
             current_canon_branch=CanonBranch.MAIN,
         )
         options = CharacterRelationQuery(
@@ -252,7 +256,8 @@ class RagServiceTest(unittest.TestCase):
             current_time=50,
             current_character_id=CharacterId.ANON,
             current_series_id=SeriesId.ITS_MYGO,
-            current_season_id=SeasonId.THREE,
+            current_timeline_id="bang_dream_original",
+            current_story_year=3,
             current_canon_branch=CanonBranch.MAIN,
         )
         results = self.service.query_character_relations(
@@ -273,7 +278,8 @@ class RagServiceTest(unittest.TestCase):
         context = RetrievalContext(
             current_time=50,
             current_series_id=SeriesId.ITS_MYGO,
-            current_season_id=SeasonId.THREE,
+            current_timeline_id="bang_dream_original",
+            current_story_year=3,
             current_canon_branch=CanonBranch.MAIN,
         )
 
@@ -292,7 +298,8 @@ class RagServiceTest(unittest.TestCase):
         context = RetrievalContext(
             current_time=50,
             current_series_id=SeriesId.ITS_MYGO,
-            current_season_id=SeasonId.THREE,
+            current_timeline_id="bang_dream_original",
+            current_story_year=3,
             current_canon_branch=CanonBranch.MAIN,
         )
         results = self.service.query_lore_entries(
@@ -342,7 +349,8 @@ class RagServiceTest(unittest.TestCase):
             current_time=50,
             current_character_id=CharacterId.SAKIKO,
             current_series_id=SeriesId.ITS_MYGO,
-            current_season_id=SeasonId.THREE,
+            current_timeline_id="bang_dream_original",
+            current_story_year=3,
             current_canon_branch=CanonBranch.MAIN,
         )
         results = self.service.query_all(

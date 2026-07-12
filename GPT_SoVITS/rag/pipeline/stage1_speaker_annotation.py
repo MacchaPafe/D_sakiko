@@ -12,7 +12,7 @@ from typing import Any, Callable
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import ValidationError
 
-from rag.models import CanonBranch, SeasonId, SeriesId
+from rag.models import CanonBranch, SeriesId
 
 from .llm_client import LiteLLMConfig, LiteLLMJsonClient
 from .prompt_package import (
@@ -63,7 +63,8 @@ def prepare_stage1_scenes(
     subtitle_path: str | Path,
     anime_title: str = "It's MyGO!!!!!",
     series_id: SeriesId = SeriesId.ITS_MYGO,
-    season_id: SeasonId = SeasonId.THREE,
+    timeline_id: str = "bang_dream_original",
+    story_year: int | None = 3,
     canon_branch: CanonBranch = CanonBranch.MAIN,
     scene_gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> list[SceneChunk]:
@@ -80,7 +81,8 @@ def prepare_stage1_scenes(
         screen_texts=screen_texts,
         anime_title=anime_title,
         series_id=series_id.value,
-        season_id=season_id.value,
+        timeline_id=timeline_id,
+        story_year=story_year,
         gap_ms=scene_gap_ms,
     )
 
@@ -89,7 +91,8 @@ def prepare_stage1_artifact(
     subtitle_path: str | Path,
     anime_title: str = "It's MyGO!!!!!",
     series_id: SeriesId = SeriesId.ITS_MYGO,
-    season_id: SeasonId = SeasonId.THREE,
+    timeline_id: str = "bang_dream_original",
+    story_year: int | None = 3,
     canon_branch: CanonBranch = CanonBranch.MAIN,
     scene_gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> Stage1PreparedArtifact:
@@ -100,7 +103,8 @@ def prepare_stage1_artifact(
         subtitle_path=subtitle_path,
         anime_title=anime_title,
         series_id=series_id,
-        season_id=season_id,
+        timeline_id=timeline_id,
+        story_year=story_year,
         canon_branch=canon_branch,
         scene_gap_ms=scene_gap_ms,
     )
@@ -110,7 +114,8 @@ def prepare_stage1_artifact(
             subtitle_path=str(subtitle_path),
             anime_title=anime_title,
             series_id=series_id.value,
-            season_id=season_id.value,
+            timeline_id=timeline_id,
+            story_year=story_year,
             canon_branch=canon_branch.value,
             episode=episode,
             scene_gap_ms=scene_gap_ms,
@@ -141,7 +146,8 @@ def _scene_to_prompt_context(scene: SceneChunk) -> dict[str, Any]:
     return {
         "anime_title": scene.anime_title,
         "series_id": scene.series_id,
-        "season_id": scene.season_id,
+        "timeline_id": scene.timeline_id,
+        "story_year": scene.story_year,
         "episode": scene.episode,
         "scene_id": scene.scene_id,
         "scene_start_text": ms_to_timestamp(scene.start_ms),

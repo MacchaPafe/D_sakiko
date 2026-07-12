@@ -45,7 +45,7 @@ from rag.pipeline.subtitle_loader import (
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-SAMPLE_SUBTITLE_PATH = ROOT_DIR / "[Nekomoe kissaten] BanG Dream! It’s MyGO!!!!! [01][BDRip].JPSC.ass"
+SAMPLE_SUBTITLE_PATH = ROOT_DIR / "GPT_SoVITS/rag/pipeline/data/BanG_Dream_MyGO_BD_JPCH_e00558ac/[Nekomoe kissaten] BanG Dream! It’s MyGO!!!!! [01][BDRip].JPSC.ass"
 SAMPLE_PREPARED_PATH = ROOT_DIR / "GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_prepared.json"
 SAMPLE_PASS1_RAW_PATH = ROOT_DIR / "GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_pass1_raw.json"
 SAMPLE_STAGE2_INPUT_PATH = ROOT_DIR / "GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_stage2_input.json"
@@ -69,7 +69,7 @@ class RagStage1PipelineTest(unittest.TestCase):
     def test_build_utterance_units(self):
         lines = load_relevant_subtitle_lines(SAMPLE_SUBTITLE_PATH)
         utterances = build_utterance_units(lines, episode=1)
-        self.assertGreaterEqual(len(utterances), 395)
+        self.assertGreaterEqual(len(utterances), 390)
         first = utterances[0]
         self.assertEqual(first.jp_text, "祥ちゃん")
         self.assertEqual(first.zh_text, "小祥")
@@ -81,7 +81,7 @@ class RagStage1PipelineTest(unittest.TestCase):
         texts = [item.text for item in screen_texts]
         self.assertIn("田径部", texts)
         self.assertEqual(texts.count("田径部"), 1)
-        self.assertIn("月之森女子学园", texts)
+        self.assertIn("卡拉OK馆", texts)
 
     def test_segment_scenes_and_candidate_characters(self):
         lines = load_relevant_subtitle_lines(SAMPLE_SUBTITLE_PATH)
@@ -92,7 +92,8 @@ class RagStage1PipelineTest(unittest.TestCase):
             screen_texts=screen_texts,
             anime_title="It's MyGO!!!!!",
             series_id="its_mygo",
-            season_id=3,
+            timeline_id="bang_dream_original",
+            story_year=3,
         )
         self.assertGreater(len(scenes), 5)
         first_scene = scenes[0]
@@ -106,7 +107,8 @@ class RagStage1PipelineTest(unittest.TestCase):
         first_scene = scenes[0]
         self.assertEqual(first_scene.scene_id, "ep01_s001")
         self.assertEqual(first_scene.series_id, "its_mygo")
-        self.assertEqual(first_scene.season_id, 3)
+        self.assertEqual(first_scene.timeline_id, "bang_dream_original")
+        self.assertEqual(first_scene.story_year, 3)
 
     def test_render_stage1_prompt(self):
         scenes = prepare_stage1_scenes(SAMPLE_SUBTITLE_PATH)
@@ -138,7 +140,8 @@ class RagStage1PipelineTest(unittest.TestCase):
 
             loaded = load_stage1_prepared_artifact(output_path)
             self.assertEqual(loaded.metadata.series_id, "its_mygo")
-            self.assertEqual(loaded.metadata.season_id, 3)
+            self.assertEqual(loaded.metadata.timeline_id, "bang_dream_original")
+            self.assertEqual(loaded.metadata.story_year, 3)
             self.assertGreater(len(loaded.scenes), 5)
 
     def test_build_stage2_input_artifact_from_real_pass1(self):

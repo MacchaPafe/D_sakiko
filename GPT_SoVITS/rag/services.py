@@ -290,7 +290,8 @@ class CollectionRegistry:
                 document_type=StoryEventDocument,
                 payload_indexes=[
                     _PayloadIndexSpec("series_id", "KEYWORD"),
-                    _PayloadIndexSpec("season_id", "INTEGER"),
+                    _PayloadIndexSpec("timeline_id", "KEYWORD"),
+                    _PayloadIndexSpec("occurred_story_year", "INTEGER"),
                     _PayloadIndexSpec("episode", "INTEGER"),
                     _PayloadIndexSpec("time_order", "INTEGER"),
                     _PayloadIndexSpec("visible_from", "INTEGER"),
@@ -306,7 +307,7 @@ class CollectionRegistry:
                     _PayloadIndexSpec("subject_character_id", "KEYWORD"),
                     _PayloadIndexSpec("object_character_id", "KEYWORD"),
                     _PayloadIndexSpec("series_id", "KEYWORD"),
-                    _PayloadIndexSpec("season_id", "INTEGER"),
+                    _PayloadIndexSpec("timeline_id", "KEYWORD"),
                     _PayloadIndexSpec("visible_from", "INTEGER"),
                     _PayloadIndexSpec("visible_to", "INTEGER"),
                     _PayloadIndexSpec("canon_branch", "KEYWORD"),
@@ -318,7 +319,8 @@ class CollectionRegistry:
                 payload_indexes=[
                     _PayloadIndexSpec("scope_type", "KEYWORD"),
                     _PayloadIndexSpec("series_ids", "KEYWORD"),
-                    _PayloadIndexSpec("season_ids", "INTEGER"),
+                    _PayloadIndexSpec("timeline_id", "KEYWORD"),
+                    _PayloadIndexSpec("applicable_story_years", "INTEGER"),
                     _PayloadIndexSpec("visible_from", "INTEGER"),
                     _PayloadIndexSpec("visible_to", "INTEGER"),
                     _PayloadIndexSpec("canon_branch", "KEYWORD"),
@@ -330,7 +332,7 @@ class CollectionRegistry:
                 payload_indexes=[
                     _PayloadIndexSpec("character_id", "KEYWORD"),
                     _PayloadIndexSpec("series_id", "KEYWORD"),
-                    _PayloadIndexSpec("season_id", "INTEGER"),
+                    _PayloadIndexSpec("timeline_id", "KEYWORD"),
                     _PayloadIndexSpec("canon_branch", "KEYWORD"),
                     _PayloadIndexSpec("valid_from", "INTEGER"),
                     _PayloadIndexSpec("valid_to", "INTEGER"),
@@ -1007,11 +1009,11 @@ class QdrantRagService:
                     match=qdrant_models.MatchValue(value=context.current_series_id.value),
                 )
             )
-        if options.limit_to_season and context.current_season_id is not None:
+        if options.limit_to_timeline and context.current_timeline_id is not None:
             conditions.append(
                 qdrant_models.FieldCondition(
-                    key="season_id",
-                    match=qdrant_models.MatchValue(value=int(context.current_season_id.value)),
+                    key="timeline_id",
+                    match=qdrant_models.MatchValue(value=context.current_timeline_id),
                 )
             )
         if options.limit_to_canon_branch and context.current_canon_branch is not None:
@@ -1049,11 +1051,11 @@ class QdrantRagService:
                     match=qdrant_models.MatchValue(value=context.current_series_id.value),
                 )
             )
-        if options.limit_to_season and context.current_season_id is not None:
+        if options.limit_to_timeline and context.current_timeline_id is not None:
             conditions.append(
                 qdrant_models.FieldCondition(
-                    key="season_id",
-                    match=qdrant_models.MatchValue(value=int(context.current_season_id.value)),
+                    key="timeline_id",
+                    match=qdrant_models.MatchValue(value=context.current_timeline_id),
                 )
             )
         if options.limit_to_canon_branch and context.current_canon_branch is not None:
@@ -1069,6 +1071,13 @@ class QdrantRagService:
         """构造 `lore_entries` 的基础过滤条件。"""
 
         conditions: List[Any] = []
+        if options.limit_to_timeline and context.current_timeline_id is not None:
+            conditions.append(
+                qdrant_models.FieldCondition(
+                    key="timeline_id",
+                    match=qdrant_models.MatchValue(value=context.current_timeline_id),
+                )
+            )
         if options.limit_to_canon_branch and context.current_canon_branch is not None:
             conditions.append(
                 qdrant_models.FieldCondition(
@@ -1105,11 +1114,11 @@ class QdrantRagService:
                     match=qdrant_models.MatchValue(value=context.current_series_id.value),
                 )
             )
-        if options.limit_to_season and context.current_season_id is not None:
+        if options.limit_to_timeline and context.current_timeline_id is not None:
             conditions.append(
                 qdrant_models.FieldCondition(
-                    key="season_id",
-                    match=qdrant_models.MatchValue(value=int(context.current_season_id.value)),
+                    key="timeline_id",
+                    match=qdrant_models.MatchValue(value=context.current_timeline_id),
                 )
             )
         if options.limit_to_canon_branch and context.current_canon_branch is not None:
@@ -1156,8 +1165,8 @@ class QdrantRagService:
         if options.limit_to_series and context.current_series_id is not None:
             if document.series_id != context.current_series_id:
                 return False
-        if options.limit_to_season and context.current_season_id is not None:
-            if document.season_id != context.current_season_id:
+        if options.limit_to_timeline and context.current_timeline_id is not None:
+            if document.timeline_id != context.current_timeline_id:
                 return False
         if options.limit_to_canon_branch and context.current_canon_branch is not None:
             if document.canon_branch != context.current_canon_branch:
@@ -1182,10 +1191,9 @@ class QdrantRagService:
         if options.limit_to_series and context.current_series_id is not None:
             if document.series_id != context.current_series_id:
                 return False
-        # 判断整体时间年份是否匹配（整体时间是指香澄从高一到高三的三年时间线；邦目前所有动画的时间都局限于这三年中）
-        if options.limit_to_season and context.current_season_id is not None:
-            # 如果年份不满足条件，则丢弃
-            if document.season_id != context.current_season_id:
+        # 时间位置只在同一剧情时间线中可比较；事件发生学年不限制后续回忆。
+        if options.limit_to_timeline and context.current_timeline_id is not None:
+            if document.timeline_id != context.current_timeline_id:
                 return False
         # 判断事件所属分支（动画/游戏剧情）是否匹配
         if options.limit_to_canon_branch and context.current_canon_branch is not None:
@@ -1211,8 +1219,8 @@ class QdrantRagService:
         if options.limit_to_series and context.current_series_id is not None:
             if document.series_id != context.current_series_id:
                 return False
-        if options.limit_to_season and context.current_season_id is not None:
-            if document.season_id != context.current_season_id:
+        if options.limit_to_timeline and context.current_timeline_id is not None:
+            if document.timeline_id != context.current_timeline_id:
                 return False
         if options.limit_to_canon_branch and context.current_canon_branch is not None:
             if document.canon_branch != context.current_canon_branch:
@@ -1234,8 +1242,13 @@ class QdrantRagService:
             if document.scope_type.value == "series":
                 if not document.series_ids or context.current_series_id not in document.series_ids:
                     return False
-        if options.require_season_match and context.current_season_id is not None:
-            if document.season_ids is not None and context.current_season_id not in document.season_ids:
+        if options.limit_to_timeline and context.current_timeline_id is not None:
+            if document.timeline_id != context.current_timeline_id:
+                return False
+        if options.require_story_year_match and document.applicable_story_years is not None:
+            if context.current_story_year is None:
+                return False
+            if context.current_story_year not in document.applicable_story_years:
                 return False
         if options.require_time_window:
             if document.visible_from is not None and document.visible_from > context.current_time:

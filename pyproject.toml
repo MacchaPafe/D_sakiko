@@ -79,6 +79,9 @@ dependencies = [
     "requests>=2.32.5",
     "platformdirs>=4.5.1",
     "rapidfuzz>=3.14.3",
+    # 世界书运行时派生索引
+    "qdrant-client>=1.17.1",
+    "sentence-transformers>=5.3.0",
 ]
 
 [project.optional-dependencies]
@@ -101,8 +104,6 @@ rag = [
     "jinja2>=3.1.6",
     "nicegui>=2.12.1",
     "pysubs2>=1.8.1",
-    "qdrant-client>=1.17.1",
-    "sentence-transformers>=5.3.0",
 ]
 
 [tool.uv]

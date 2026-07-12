@@ -9,7 +9,6 @@ from .models import (
     CanonBranch,
     CharacterId,
     RetrievalContext,
-    SeasonId,
     SeriesId,
 )
 
@@ -78,7 +77,8 @@ class RagContextBuilder:
         self,
         current_time: int,
         series_id: Optional[str] = None,
-        season_id: Optional[int] = None,
+        timeline_id: Optional[str] = None,
+        story_year: Optional[int] = None,
         canon_branch: str = "main",
         current_character_id: Optional[CharacterId] = None,
     ) -> RetrievalContext:
@@ -86,7 +86,8 @@ class RagContextBuilder:
 
         :param current_time: 当前剧情时间点。
         :param series_id: 系列 ID 字符串（可选），将转换为 SeriesId 枚举。
-        :param season_id: 季 ID 整数（可选），将转换为 SeasonId 枚举。
+        :param timeline_id: 当前剧情时间线（可选）。
+        :param story_year: 当前剧情学年（可选）。
         :param canon_branch: 剧情分支字符串，默认为 "main"。
         :param current_character_id: 当前扮演角色对应的知识库角色标识（可选）。
         :return: 构建好的 RetrievalContext 实例。
@@ -95,17 +96,14 @@ class RagContextBuilder:
         if series_id is not None:
             resolved_series = SeriesId(series_id)
 
-        resolved_season: Optional[SeasonId] = None
-        if season_id is not None:
-            resolved_season = SeasonId(season_id)
-
         resolved_branch = CanonBranch(canon_branch)
 
         return RetrievalContext(
             current_time=current_time,
             current_character_id=current_character_id,
             current_series_id=resolved_series,
-            current_season_id=resolved_season,
+            current_timeline_id=timeline_id,
+            current_story_year=story_year,
             current_canon_branch=resolved_branch,
         )
 

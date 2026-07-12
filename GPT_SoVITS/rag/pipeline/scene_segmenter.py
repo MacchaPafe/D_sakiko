@@ -100,7 +100,8 @@ def segment_scenes(
     screen_texts: list[ScreenTextUnit],
     anime_title: str,
     series_id: str,
-    season_id: int,
+    timeline_id: str,
+    story_year: int | None,
     gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> list[SceneChunk]:
     """根据对白时间间隔切分场景，并附上候选角色。"""
@@ -123,7 +124,8 @@ def segment_scenes(
         scene = SceneChunk(
             anime_title=anime_title,
             series_id=series_id,
-            season_id=season_id,
+            timeline_id=timeline_id,
+            story_year=story_year,
             scene_id=f"ep{episode:02d}_s{scene_index:03d}",
             episode=episode,
             start_ms=start_ms,
@@ -157,7 +159,8 @@ def segment_scenes_from_subtitle_path(
     screen_texts: list[ScreenTextUnit],
     anime_title: str,
     series_id: str,
-    season_id: int,
+    timeline_id: str,
+    story_year: int | None,
     gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> list[SceneChunk]:
     """基于字幕路径和已提取结果切分场景。"""
@@ -168,6 +171,7 @@ def segment_scenes_from_subtitle_path(
         screen_texts=screen_texts,
         anime_title=anime_title,
         series_id=series_id,
-        season_id=season_id,
+        timeline_id=timeline_id,
+        story_year=story_year,
         gap_ms=gap_ms,
     )

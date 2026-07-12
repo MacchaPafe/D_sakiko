@@ -727,7 +727,7 @@ def _build_thought_timeline(
             document = CharacterThoughtPayload(
                 character_id=update.character_id,
                 series_id=stage3_rag_artifact.metadata.series_id,
-                season_id=stage3_rag_artifact.metadata.season_id,
+                timeline_id=stage3_rag_artifact.metadata.timeline_id,
                 canon_branch=stage3_rag_artifact.metadata.canon_branch,
                 thought_thread_key=update.thought_thread_key,
                 subject_kind=update.subject_kind,

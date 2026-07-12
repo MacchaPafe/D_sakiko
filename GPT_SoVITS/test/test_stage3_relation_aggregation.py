@@ -129,9 +129,9 @@ class Stage3RelationAggregationTest(unittest.TestCase):
 
         input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
         other_scope = input_artifact.model_copy(deep=True)
-        other_scope.metadata.season_id = input_artifact.metadata.season_id + 1
+        other_scope.metadata.timeline_id = "another_timeline"
         annotation_artifact = self._build_annotation_artifact(input_artifact)
-        with self.assertRaisesRegex(ValueError, "同一系列、季度与剧情分支"):
+        with self.assertRaisesRegex(ValueError, "同一系列、时间线与剧情分支"):
             build_stage3_relation_aggregation_artifact_from_many(
                 input_artifacts=[input_artifact, other_scope],
                 annotation_artifacts=[annotation_artifact, annotation_artifact],

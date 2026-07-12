@@ -105,7 +105,8 @@ class LLMRagIntegration:
         theater_pair: Optional[Tuple[str, str]] = None,
         situation: Optional[str] = None,
         series_id: Optional[str] = None,
-        season_id: Optional[int] = None,
+        timeline_id: Optional[str] = None,
+        story_year: Optional[int] = None,
         canon_branch: str = "main",
         top_k_events: int = 3,
         top_k_relations: int = 2,
@@ -122,7 +123,8 @@ class LLMRagIntegration:
         :param theater_pair: 小剧场模式的角色名称对（可选）。
         :param situation: 场景描述（可选）。
         :param series_id: 系列 ID（可选）。
-        :param season_id: 季 ID（可选）。
+        :param timeline_id: 当前剧情时间线（可选）。
+        :param story_year: 当前剧情学年（可选）。
         :param canon_branch: 剧情分支，默认 "main"。
         :param top_k_events: 剧情事件返回数量。
         :param top_k_relations: 角色关系返回数量。
@@ -149,7 +151,8 @@ class LLMRagIntegration:
             current_time=current_time,
             current_character_id=current_character_id,
             series_id=series_id,
-            season_id=season_id,
+            timeline_id=timeline_id,
+            story_year=story_year,
             canon_branch=canon_branch,
         )
 
@@ -181,7 +184,8 @@ class LLMRagIntegration:
                     current_time=current_time,
                     current_character_id=theater_character_id,
                     series_id=series_id,
-                    season_id=season_id,
+                    timeline_id=timeline_id,
+                    story_year=story_year,
                     canon_branch=canon_branch,
                 )
                 for hit in self.rag_service.query_character_thoughts(

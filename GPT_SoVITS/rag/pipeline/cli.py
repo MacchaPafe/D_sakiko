@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rag.models import CanonBranch, SeasonId, SeriesId
+from rag.models import CanonBranch, SeriesId
 
 from .llm_client import LiteLLMConfig
 from .prompt_package import load_prompt_package_manifest
@@ -80,6 +80,7 @@ from .stage3_thought_pipeline import (
     upsert_stage3_thought_import_artifact,
     prepare_stage3_thought_link_prompt_package,
 )
+from rag.worldbook.publisher import publish_worldbook_package
 
 
 def _add_offline_assemble_flags(parser: argparse.ArgumentParser) -> None:
@@ -101,9 +102,20 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--output", required=True, help="输出 prepared JSON 路径")
     prepare_parser.add_argument("--anime-title", default="It's MyGO!!!!!", help="动画标题")
     prepare_parser.add_argument("--series-id", default=SeriesId.ITS_MYGO.value, help="系列 id")
-    prepare_parser.add_argument("--season-id", type=int, default=SeasonId.THREE.value, help="season id")
+    prepare_parser.add_argument("--timeline-id", default="bang_dream_original", help="剧情时间线 id")
+    prepare_parser.add_argument("--story-year", type=int, default=3, help="可空剧情学年")
     prepare_parser.add_argument("--canon-branch", default=CanonBranch.MAIN.value, help="剧情分支")
     prepare_parser.add_argument("--scene-gap-ms", type=int, default=12000, help="场景切分时间阈值")
+
+    publish_parser = subparsers.add_parser("publish-worldbook", help="把审核后的 Stage 3 artifact 发布为世界书包")
+    publish_parser.add_argument("--artifact", type=Path, required=True, help="审核后的 Stage 3 JSON")
+    publish_parser.add_argument("--package-dir", type=Path, required=True, help="世界书包输出目录")
+    publish_parser.add_argument("--package-id", required=True, help="稳定包 ID")
+    publish_parser.add_argument("--package-version", required=True, help="SemVer 包版本")
+    publish_parser.add_argument("--display-name", required=True, help="显示名称")
+    publish_parser.add_argument("--timeline-id", required=True, help="剧情时间线 ID")
+    publish_parser.add_argument("--id-map", type=Path, required=True, help="开发侧稳定 entry ID map")
+    publish_parser.add_argument("--allocate-new-ids", action="store_true", help="允许为新来源分配 UUID")
 
     complete_package_parser = subparsers.add_parser(
         "complete-prompt-package",
@@ -450,13 +462,28 @@ def main(argv: list[str] | None = None) -> int:
             subtitle_path=args.subtitle,
             anime_title=args.anime_title,
             series_id=SeriesId(args.series_id),
-            season_id=SeasonId(args.season_id),
+            timeline_id=args.timeline_id,
+            story_year=args.story_year,
             canon_branch=CanonBranch(args.canon_branch),
             scene_gap_ms=args.scene_gap_ms,
         )
         save_stage1_prepared_artifact(artifact, args.output)
         print(f"已写入第一阶段预处理结果: {Path(args.output).resolve()}")
         print(f"scene 数量: {len(artifact.scenes)}")
+        return 0
+
+    if args.command == "publish-worldbook":
+        manifest = publish_worldbook_package(
+            artifact_path=args.artifact,
+            package_dir=args.package_dir,
+            package_id=args.package_id,
+            package_version=args.package_version,
+            display_name=args.display_name,
+            timeline_id=args.timeline_id,
+            id_map_path=args.id_map,
+            allocate_new_ids=args.allocate_new_ids,
+        )
+        print(f"已发布世界书包: {manifest.package_id} {manifest.package_version}")
         return 0
 
     if args.command == "complete-prompt-package":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import contextlib
 import os
+from pathlib import Path
 
 from PyQt5.QtWidgets import (QApplication,
                              QVBoxLayout, QLabel,
@@ -23,6 +24,7 @@ from ui.components.gpt_sovits_area import GPTSoVITSArea
 from ui.components.llm_api_area import LLMAPIArea
 from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
 from ui.interfaces.character_area import CharacterArea
+from ui.interfaces.worldbook_area import WorldbookArea
 from ui_main.threads.update_config_thread import notify_config_reload
 
 
@@ -149,6 +151,7 @@ class DSakikoConfigWindow(FluentWindow):
         :param initial_interface: 初始打开时显示的分栏界面，取值为界面的 object_name。如果不传、传空字符串或不存在的界面，则默认为配置界面。
         目前所有可选的输入为：
         - 'CharacterArea': 显示用户人设与角色查看页面
+        - 'WorldbookArea': 显示世界书管理页面
         - 'DSakikoConfigArea': 显示配置页面（默认）
         """
         super().__init__()
@@ -157,13 +160,16 @@ class DSakikoConfigWindow(FluentWindow):
         self.setMinimumSize(700, 800)
 
         self.character_area = CharacterArea(self)
+        self.worldbook_area = WorldbookArea(self, app_root=Path(__file__).resolve().parent.parent)
         self.config_area = DSakikoConfigArea()
         self.addSubInterface(self.character_area, FluentIcon.PEOPLE, self.tr("角色与用户人设"))
+        self.addSubInterface(self.worldbook_area, FluentIcon.DOCUMENT, self.tr("世界书"))
         self.addSubInterface(self.config_area, FluentIcon.SETTING, self.tr("设置"),
                              position=NavigationItemPosition.BOTTOM)
 
         self.object_name_to_interface = {
             self.character_area.objectName(): self.character_area,
+            self.worldbook_area.objectName(): self.worldbook_area,
             self.config_area.objectName(): self.config_area,
         }
 

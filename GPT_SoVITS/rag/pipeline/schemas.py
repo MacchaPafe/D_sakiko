@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rag.models import CanonBranch, CharacterId, ScopeType, SeasonId, SeriesId
+from rag.models import CanonBranch, CharacterId, ScopeType, SeriesId
 
 
 class RawSubtitleLine(BaseModel):
@@ -72,7 +72,8 @@ class SceneChunk(BaseModel):
 
     anime_title: str
     series_id: str
-    season_id: int
+    timeline_id: str
+    story_year: int | None = None
     scene_id: str
     episode: int
     start_ms: int
@@ -112,7 +113,8 @@ class Stage1Metadata(BaseModel):
     subtitle_path: str
     anime_title: str
     series_id: str
-    season_id: int
+    timeline_id: str
+    story_year: int | None = None
     canon_branch: str
     episode: int
     scene_gap_ms: int
@@ -179,7 +181,8 @@ class Stage2SceneInput(BaseModel):
 
     anime_title: str
     series_id: str
-    season_id: int
+    timeline_id: str
+    story_year: int | None = None
     episode: int
     scene_id: str
     start_ms: int
@@ -206,7 +209,8 @@ class Stage2InputMetadata(BaseModel):
     subtitle_path: str
     anime_title: str
     series_id: str
-    season_id: int
+    timeline_id: str
+    story_year: int | None = None
     canon_branch: str
     episode: int
     scene_gap_ms: int
@@ -383,7 +387,7 @@ class CharacterRelationStatePayload(BaseModel):
 
     subject_character_id: CharacterId
     object_character_id: CharacterId
-    season_id: SeasonId
+    timeline_id: str
     series_id: SeriesId
     visible_from: int
     visible_to: int
@@ -439,7 +443,8 @@ class Stage3RelationAggregationMetadata(BaseModel):
 
     anime_title: str
     series_id: str
-    season_id: int
+    timeline_id: str
+    story_year: int | None = None
     canon_branch: str
     episodes: list[int] = Field(default_factory=list)
     subtitle_paths: list[str] = Field(default_factory=list)
@@ -602,7 +607,7 @@ class CharacterThoughtPayload(BaseModel):
 
     character_id: CharacterId
     series_id: SeriesId
-    season_id: SeasonId
+    timeline_id: str
     canon_branch: CanonBranch
     thought_thread_key: str
     subject_kind: ThoughtSubjectKind
@@ -657,7 +662,8 @@ class CharacterThoughtReviewRecord(BaseModel):
 class StoryEventPayload(BaseModel):
     """表示可直接实例化为 StoryEventDocument 的 payload。"""
 
-    season_id: SeasonId
+    timeline_id: str
+    occurred_story_year: int | None = None
     series_id: SeriesId
     episode: int
     time_order: int
@@ -677,7 +683,7 @@ class CharacterRelationPayload(BaseModel):
 
     subject_character_id: CharacterId
     object_character_id: CharacterId
-    season_id: SeasonId
+    timeline_id: str
     series_id: SeriesId
     visible_from: int
     visible_to: int
@@ -695,7 +701,8 @@ class LoreEntryPayload(BaseModel):
 
     scope_type: ScopeType
     series_ids: list[SeriesId] | None = None
-    season_ids: list[SeasonId] | None = None
+    timeline_id: str
+    applicable_story_years: list[int] | None = None
     visible_from: int | None = None
     visible_to: int | None = None
     canon_branch: CanonBranch
@@ -772,7 +779,8 @@ class Stage3ImportMetadata(BaseModel):
     subtitle_path: str
     anime_title: str
     series_id: SeriesId
-    season_id: SeasonId
+    timeline_id: str
+    story_year: int | None = None
     canon_branch: CanonBranch
     episode: int
     source_stage2_model: str

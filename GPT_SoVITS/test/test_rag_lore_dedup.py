@@ -68,7 +68,7 @@ class RagLoreDedupTest(unittest.TestCase):
 
         point_id = build_canonical_lore_point_id(record)
 
-        self.assertEqual(point_id, "lore_entry:its_mygo:s3:main:A%3AB_%2F_羽丘")
+        self.assertEqual(point_id, "lore_entry:its_mygo:y3:main:A%3AB_%2F_羽丘")
 
     def test_build_review_detects_fuzzy_lore_title_candidates(self) -> None:
         """review 生成应能用 rapidfuzz 找出疑似重复标题。"""

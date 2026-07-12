@@ -32,7 +32,7 @@ class LoreScopeKey:
 
     scope_type: str
     series_ids: tuple[str, ...]
-    season_ids: tuple[int, ...]
+    applicable_story_years: tuple[int, ...]
     canon_branch: str
 
     def to_json(self) -> JsonObject:
@@ -41,7 +41,7 @@ class LoreScopeKey:
         return {
             "scope_type": self.scope_type,
             "series_ids": list(self.series_ids),
-            "season_ids": list(self.season_ids),
+            "applicable_story_years": list(self.applicable_story_years),
             "canon_branch": self.canon_branch,
         }
 
@@ -232,11 +232,11 @@ def build_lore_scope_key(record: LoreEntryImportRecord) -> LoreScopeKey:
 
     document = record.document
     series_ids = tuple(str(series_id.value) for series_id in (document.series_ids or []))
-    season_ids = tuple(int(season_id.value) for season_id in (document.season_ids or []))
+    applicable_story_years = tuple(document.applicable_story_years or [])
     return LoreScopeKey(
         scope_type=str(document.scope_type.value),
         series_ids=series_ids,
-        season_ids=season_ids,
+        applicable_story_years=applicable_story_years,
         canon_branch=str(document.canon_branch.value),
     )
 
@@ -407,9 +407,9 @@ def _build_series_segment(scope_key: LoreScopeKey) -> str:
 def _build_season_segment(scope_key: LoreScopeKey) -> str:
     """构造 canonical point id 中的 season 片段。"""
 
-    if not scope_key.season_ids:
+    if not scope_key.applicable_story_years:
         return "all_seasons"
-    return "+".join(f"s{season_id}" for season_id in scope_key.season_ids)
+    return "+".join(f"y{story_year}" for story_year in scope_key.applicable_story_years)
 
 
 def _build_snapshots(

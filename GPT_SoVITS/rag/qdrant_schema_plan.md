@@ -646,3 +646,4 @@ Qdrant 查询常见会落到这些模式：
 只为运行时过滤字段建立 payload index：角色、系列、季、分支和有效期。Event Fact 继续保存在
 离线标注 JSON 中，不建立独立 Qdrant collection。`unresolved` 或 `subject_kind=uncertain` 的记录
 由导入器拒绝，避免把未解决的语义链接带入角色扮演检索。
+> **历史文档，已被替代：** 本文保留最初 Schema 讨论记录，其中的 `SeasonId/season_id(s)` 已不再有效。当前实现以 `docs/design/worldbook-management.md`、ADR-0024 以及运行时模型为准，使用 `timeline_id` 和可空剧情学年。

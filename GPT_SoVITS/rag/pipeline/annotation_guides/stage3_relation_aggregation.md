@@ -25,7 +25,7 @@
 在渲染前确认：
 
 - `--input` 与 `--annotation` 数量相同，顺序一一对应；
-- 所有文件属于同一 `series_id`、`season_id` 和 `canon_branch`；
+- 所有文件属于同一 `series_id`、`timeline_id` 和 `canon_branch`；
 - 输入覆盖你希望关系 State 生效的完整时间范围；
 - Stage 2A 中的 relation observations 已经完成基本复核，没有明显的方向错误或逐句过度拆分。
 
@@ -113,4 +113,3 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage3-relations \
 - 每条 observation 要么支持 State，要么有明确 unmerged 理由；
 - response 是纯 JSON，主体和客体方向与 Prompt 完全一致；
 - 全量组装成功，输出中没有 response 相关 issue。
-

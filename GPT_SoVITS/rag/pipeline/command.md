@@ -18,6 +18,10 @@ pip install jinja2 pysubs2 nicegui qdrant-client sentence-transformers
 
 其中，只有 `qdrant-client` 和 `sentence-transformers` 是之后主程序执行时需要新增的依赖，其他依赖都只用于数据集的标注。
 
+当前正式运行环境已经直接包含这两个世界书索引依赖。标注任务使用 `--timeline-id` 和可选 `--story-year`，不再使用旧 `SeasonId`。
+
+审核后的 Stage 3 artifact 可通过 `publish-worldbook` 转换为不含证据字段的官方世界书包；新来源只有显式传入 `--allocate-new-ids` 才会写入开发侧稳定 ID map。
+
 如果你想在本地测试标注效果，请下载一个 embedding 模型。如果不在本地测试导入效果，只标注数据，那么这不是必须的。
 
 https://huggingface.co/intfloat/multilingual-e5-small
