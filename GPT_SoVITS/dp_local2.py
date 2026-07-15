@@ -5,7 +5,6 @@ import time,os
 import uuid
 import threading
 import textwrap
-from copy import deepcopy
 
 import json
 from queue import Empty
@@ -22,6 +21,18 @@ from log import get_logger
 from chat.chat import Chat, Message, ChatManager, MessageAttachment
 from chat.attachments import import_image_attachment, model_supports_image_upload
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
+from chat.model_token_usage import count_message_tokens, get_model_input_token_limit
+from chat.rolling_summary import (
+    DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO,
+    ROLLING_SUMMARY_MAX_TOKENS,
+    SUMMARY_FAILURE_COOLDOWN_SECONDS,
+    build_llm_query_with_rolling_summary,
+    build_rolling_summary_update,
+    context_reaches_summary_threshold,
+    rolling_summary_validation_error,
+    set_rolling_summary,
+    trim_messages_for_emergency,
+)
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
 from deepseek_prompt_cache_debug import CACHE_DEBUG_PHASE_KEY, log_prompt_cache_usage
@@ -236,14 +247,22 @@ class DSLocalAndVoiceGen:
         with self._cancelled_turns_lock:
             self._cancelled_turns.discard((chat_id, turn_id))
 
-    def trim_list_to_340kb(self, data_list):
-        if Chat.messages_contain_image_content(data_list):
-            return data_list
-        working_list = deepcopy(data_list)
-        MAX_SIZE = 340 * 1024  # 主流大模型的上下文现在基本都是128Ktoken，差不多500KB，这里设置340KB以防万一
-        while len(json.dumps(working_list, ensure_ascii=False).encode('utf-8')) > MAX_SIZE:
-            del working_list[1]
-        return working_list
+    def _prepare_runtime_messages(self, messages: list[dict[str, object]]) -> list[dict[str, object]]:
+        """为主请求构造只读副本，并在逼近上限时执行最后一道紧急裁剪。"""
+        model = self._current_litellm_model_name()
+        token_limit = get_model_input_token_limit(model)
+        prepared = trim_messages_for_emergency(
+            messages,
+            model=model,
+            token_limit=token_limit,
+        )
+        if len(prepared) < len(messages):
+            logger.warning(
+                "主请求上下文逼近模型上限，已仅对本次请求执行紧急裁剪：%d -> %d 条消息。",
+                len(messages),
+                len(prepared),
+            )
+        return prepared
 
     @staticmethod
     def concat_provider_and_model(provider: str, model: str) -> str:
@@ -473,7 +492,8 @@ class DSLocalAndVoiceGen:
         messages = [
             dict(one)
             # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
-            for one in self.current_chat.build_llm_query(
+            for one in build_llm_query_with_rolling_summary(
+                self.current_chat,
                 perspective=character_name,
                 is_simplify=True,
                 include_translation=self.audio_language_choice == '日英混合',
@@ -496,6 +516,103 @@ class DSLocalAndVoiceGen:
         # 追加一条额外的用户消息描述本轮对话的选择（比如语言模式和祥子语气），该消息同样不会存储到对话历史中。
         self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
         return messages
+
+    def _maybe_update_rolling_summary(
+        self,
+        chat: Chat,
+        character_name: str,
+        current_request_messages: list[dict[str, object]],
+        dp2qt_queue: _QueueWriter | None = None,
+        turn_id: str = "",
+    ) -> bool:
+        """在当前请求达到用户设置的阈值时，同步生成并保存累计摘要。"""
+        model = self._current_litellm_model_name()
+        token_limit = get_model_input_token_limit(model)
+        if token_limit is None:
+            logger.debug("模型 %s 的上下文上限未知，跳过滚动摘要检查。", model)
+            return False
+
+        try:
+            used_tokens = count_message_tokens(model, current_request_messages)
+        except Exception:
+            logger.exception("统计滚动摘要触发 token 数失败，继续使用当前上下文。")
+            return False
+        trigger_ratio_item = getattr(
+            getattr(self, "d_sakiko_config", None),
+            "rolling_summary_trigger_ratio",
+            None,
+        )
+        try:
+            trigger_ratio = float(getattr(trigger_ratio_item, "value"))
+        except (TypeError, ValueError, AttributeError):
+            trigger_ratio = DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO
+        if not context_reaches_summary_threshold(used_tokens, token_limit, trigger_ratio):
+            return False
+
+        cooldowns = getattr(self, "_rolling_summary_failure_cooldowns", None)
+        if not isinstance(cooldowns, dict):
+            cooldowns = {}
+            self._rolling_summary_failure_cooldowns = cooldowns
+        cooldown_until = float(cooldowns.get(chat.chat_id, 0.0) or 0.0)
+        if time.monotonic() < cooldown_until:
+            logger.debug("滚动摘要处于失败冷却期，本轮直接使用原始上下文。")
+            return False
+
+        update = build_rolling_summary_update(
+            chat,
+            perspective=character_name,
+        )
+        if update is None:
+            return False
+
+        logger.info(
+            "上下文长度达到token设定阈值：%d/%d token，正在同步压缩至消息索引 %d。",
+            used_tokens,
+            token_limit,
+            update.summary_until_message_index,
+        )
+        if dp2qt_queue is not None and turn_id:
+            dp2qt_queue.put({
+                "type": "context_compaction_started",
+                "chat_id": chat.chat_id,
+                "turn_id": turn_id,
+                "message": "正在整理过往思绪...",
+            })
+        try:
+            response = self._completion_with_current_config(
+                model="rolling-summary",
+                messages=update.messages,
+                tools=None,
+                tool_choice="none",
+                stream=False,
+                timeout=30,
+                max_tokens=ROLLING_SUMMARY_MAX_TOKENS,
+                _reasoning_snapshot_locked=True,
+            )
+            summary_text = self._extract_response_content(response).strip()
+        except Exception:
+            logger.exception("生成滚动摘要失败，本轮继续使用压缩前的上下文。")
+            cooldowns[chat.chat_id] = time.monotonic() + SUMMARY_FAILURE_COOLDOWN_SECONDS
+            return False
+        validation_error = rolling_summary_validation_error(summary_text)
+        if validation_error is not None:
+            logger.warning("滚动摘要结果无效：%s，本轮继续使用压缩前的上下文。", validation_error)
+            cooldowns[chat.chat_id] = time.monotonic() + SUMMARY_FAILURE_COOLDOWN_SECONDS
+            return False
+
+        set_rolling_summary(
+            chat,
+            text=summary_text,
+            summary_until_message_index=update.summary_until_message_index,
+            reserved_recent_rounds=update.reserved_recent_rounds,
+            model=model,
+        )
+        cooldowns.pop(chat.chat_id, None)
+        try:
+            self.chat_manager.save()
+        except Exception:
+            logger.exception("滚动摘要已在内存中更新，但保存聊天记录失败。")
+        return True
 
     def _build_current_reasoning_kwargs_snapshot(self) -> dict[str, object]:
         """
@@ -1039,7 +1156,7 @@ class DSLocalAndVoiceGen:
         """
         执行不带工具 schema 的普通模型补全，并包装为统一的本轮结果。
         """
-        runtime_messages = self.trim_list_to_340kb(messages)
+        runtime_messages = self._prepare_runtime_messages(messages)
         response = self._completion_with_current_config(
             model="plain-runtime",
             messages=runtime_messages,
@@ -1278,12 +1395,14 @@ class DSLocalAndVoiceGen:
         dp2qt_queue,
         tool_call_id: str,
         tool_name: str,
+        arguments: dict[str, object],
         message_index: int,
     ) -> None:
         now_ts = int(time.time())
         record = ToolCallRecordMeta(
             tool_call_id=tool_call_id,
             tool_name=tool_name,
+            arguments=dict(arguments),
             message_index=message_index,
             status="running",
             result_content="工具运行中...",
@@ -1311,10 +1430,12 @@ class DSLocalAndVoiceGen:
                 one.status = "completed"
                 one.duration_sec = float(tool_exec.get("duration_sec") or 0.0)
                 one.result_content = str(tool_exec.get("result_content") or "")
+                one.raw_result_content = str(tool_exec.get("raw_result_content") or "")
                 one.ok = bool(tool_exec.get("ok", True))
                 one.updated_at = int(time.time())
                 self.current_chat.update_tool_call_record(one)
                 payload = one.to_dict()
+                payload.pop("raw_result_content", None)
                 payload["chat_id"] = self.current_chat.chat_id
                 self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_UPDATE_EVENT_PREFIX, payload)
 
@@ -1390,11 +1511,15 @@ class DSLocalAndVoiceGen:
                 for one_call in raw_tool_calls:
                     tool_call_id = str(getattr(one_call, "tool_call_id", "") or "")
                     tool_name = str(getattr(one_call, "name", "") or "unknown")
+                    tool_arguments = getattr(one_call, "arguments", {})
+                    if not isinstance(tool_arguments, dict):
+                        tool_arguments = {}
                     if tool_call_id:
                         self._record_tool_call_started(
                             dp2qt_queue=dp2qt_queue,
                             tool_call_id=tool_call_id,
                             tool_name=tool_name,
+                            arguments=tool_arguments,
                             message_index=bind_msg_index,
                         )
 
@@ -1698,6 +1823,7 @@ class DSLocalAndVoiceGen:
                     continue
 
             should_append_user_message = command.get("append_user_message") is not False
+            did_append_real_user_message = False
             if should_append_user_message:
                 # 将原始用户输入（不含任何指令后缀）存入 Chat
                 user_msg = Message(
@@ -1709,6 +1835,7 @@ class DSLocalAndVoiceGen:
                     attachments=imported_attachments,
                 )
                 self.current_chat.add_message(user_msg)
+                did_append_real_user_message = Chat.is_real_user_message(user_msg)
                 if imported_attachments:
                     try:
                         self.chat_manager.save()
@@ -1725,6 +1852,17 @@ class DSLocalAndVoiceGen:
 
             character_name = self.get_current_character().character_name
             to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
+            if did_append_real_user_message and self._maybe_update_rolling_summary(
+                self.current_chat,
+                character_name,
+                to_llm_msg,
+                dp2qt_queue=dp2qt_queue,
+                turn_id=turn_id,
+            ):
+                to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
+            if self.is_turn_cancelled(active_chat_id, turn_id):
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
+                continue
             if Chat.messages_contain_image_content(to_llm_msg) and not self._current_model_supports_vision():
                 self._emit_business_turn_error(
                     dp2qt_queue,
@@ -1774,7 +1912,7 @@ class DSLocalAndVoiceGen:
                     # run() 内部会处理多轮 LLM 对话（如果触发了工具），直到提取出最终回答或达到循环上限才会返回 result。
                     runtime_result = self.tool_runtime.run(
                         model="tool-runtime",
-                        messages=self.trim_list_to_340kb(to_llm_msg),
+                        messages=self._prepare_runtime_messages(to_llm_msg),
                         llm_kwargs={
                             "stream": False,
                             "timeout": 30,

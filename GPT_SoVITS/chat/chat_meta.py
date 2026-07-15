@@ -119,9 +119,11 @@ class ToolCallRecordMeta:
 
     tool_call_id: str = ""
     tool_name: str = "unknown"
+    arguments: dict[str, object] = field(default_factory=dict)
     message_index: int = -1
     status: str = "running"
     result_content: str = ""
+    raw_result_content: str = ""
     duration_sec: float | None = None
     started_at: int = 0
     updated_at: int = 0
@@ -134,9 +136,11 @@ class ToolCallRecordMeta:
         return cls(
             tool_call_id=_as_str(mapping.get("tool_call_id")),
             tool_name=_as_str(mapping.get("tool_name"), "unknown"),
+            arguments=dict(_as_mapping(mapping.get("arguments"))),
             message_index=_as_int(mapping.get("message_index"), -1),
             status=_as_str(mapping.get("status"), "running"),
             result_content=_as_str(mapping.get("result_content")),
+            raw_result_content=_as_str(mapping.get("raw_result_content")),
             duration_sec=_as_optional_float(mapping.get("duration_sec")),
             started_at=_as_int(mapping.get("started_at")),
             updated_at=_as_int(mapping.get("updated_at")),
@@ -148,9 +152,11 @@ class ToolCallRecordMeta:
         data: dict[str, object] = {
             "tool_call_id": self.tool_call_id,
             "tool_name": self.tool_name,
+            "arguments": dict(self.arguments),
             "message_index": self.message_index,
             "status": self.status,
             "result_content": self.result_content,
+            "raw_result_content": self.raw_result_content,
             "duration_sec": self.duration_sec,
             "started_at": self.started_at,
             "updated_at": self.updated_at,

@@ -295,6 +295,7 @@ class ToolCallingAgentRuntime:
                         "duration_sec": round(duration_sec, 3),
                         "started_at": int(started_at),
                         "result_content": self._format_tool_output_for_display(call.name, tool_output),
+                        "raw_result_content": tool_output[:12000],
                     }
                 )
 

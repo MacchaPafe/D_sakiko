@@ -72,6 +72,10 @@ from chat.attachments import (
     resolve_attachment_path,
 )
 from chat.model_token_usage import count_message_tokens
+from chat.rolling_summary import (
+    build_llm_query_with_rolling_summary,
+    invalidate_rolling_summary_from_message_index,
+)
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
@@ -2433,6 +2437,12 @@ class ChatGUI(QWidget):
             popup_width=context_usage_sizing.popup_width,
             popup_font_size=context_usage_sizing.popup_font_size,
         )
+        self.context_usage_indicator.set_summary_threshold_ratio(
+            float(d_sakiko_config.rolling_summary_trigger_ratio.value)
+        )
+        self.context_usage_indicator.summaryThresholdChanged.connect(
+            self._set_summary_compression_threshold
+        )  # noqa
         self._context_usage_refresh_timer = QTimer(self)
         self._context_usage_refresh_timer.setSingleShot(True)
         self._context_usage_refresh_timer.timeout.connect(self.refresh_context_usage_indicator)  # noqa
@@ -4207,6 +4217,16 @@ class ChatGUI(QWidget):
             return
         self._context_usage_refresh_timer.start(max(0, delay_ms))
 
+    @pyqtSlot(float)
+    def _set_summary_compression_threshold(self, ratio: float) -> None:
+        """保存用户在上下文用量浮窗中设置的压缩阈值。"""
+        normalized_ratio = max(0.20, min(0.80, round(float(ratio) * 20) / 20))
+        d_sakiko_config.set(
+            d_sakiko_config.rolling_summary_trigger_ratio,
+            normalized_ratio,
+        )
+        self.context_usage_indicator.set_summary_threshold_ratio(normalized_ratio)
+
     def refresh_context_usage_indicator(self) -> None:
         """重新计算当前对话上下文 token 用量并刷新圆环组件。"""
         if not hasattr(self, "context_usage_indicator"):
@@ -4242,7 +4262,8 @@ class ChatGUI(QWidget):
         """生成用于 token 统计的消息列表，不包含输入框中尚未发送的文本。"""
         character_name = self.current_character.character_name
         messages = self._normalize_llm_messages(
-            self.current_chat.build_llm_query(
+            build_llm_query_with_rolling_summary(
+                self.current_chat,
                 perspective=character_name,
                 is_simplify=True,
                 include_translation=getattr(self.dp_chat, "audio_language_choice", "") == "日英混合",
@@ -4697,7 +4718,7 @@ class ChatGUI(QWidget):
         message.text = dialog.edited_text()
         if message.character_name != "User":
             message.translation = dialog.edited_translation()
-        self._save_after_message_content_edit()
+        self._save_after_message_content_edit(msg_index)
         self.messages_box.clear()
         self.messages_box.append("已保存消息修改。")
 
@@ -4891,8 +4912,9 @@ class ChatGUI(QWidget):
         self.schedule_context_usage_refresh()
         return audio_failed
 
-    def _save_after_message_content_edit(self) -> None:
+    def _save_after_message_content_edit(self, msg_index: int) -> None:
         """保存消息内容编辑结果，并刷新相关界面状态。"""
+        invalidate_rolling_summary_from_message_index(self.current_chat, msg_index)
         self.chat_manager.save()
         self._load_tool_call_records_cache()
         self.refresh_current_chat_display()
@@ -5064,6 +5086,13 @@ class ChatGUI(QWidget):
         if self._is_cancelled_turn_payload(payload):
             if event_type == "assistant_turn_complete":
                 self.cancelled_turn_ids.discard(str(payload.get("turn_id") or ""))
+            return
+        if event_type == "context_compaction_started":
+            chat_id = str(payload.get("chat_id") or "")
+            if self._is_active_turn_payload(payload) and chat_id == self.current_chat_id:
+                self.chat_display.append_context_compaction_notice(
+                    str(payload.get("message") or "正在整理过往思绪...")
+                )
             return
         if event_type in {"tool_call_started", "tool_call_updated"}:
             chat_id = str(payload.get("chat_id") or self.current_chat_id)

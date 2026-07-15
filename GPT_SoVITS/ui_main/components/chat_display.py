@@ -137,6 +137,17 @@ class ChatDisplay(QTextBrowser):
             text if text is not None else self._tool_status_text(status, duration_sec),
         ))
 
+    def append_context_compaction_notice(self, text: str) -> None:
+        """在聊天文档末尾追加一条不绑定消息索引的上下文压缩提示。"""
+        self.finish_stream_now()
+        safe_text = html.escape(text.strip() or "正在整理过往思绪...")
+        self.append(
+            '<div style="color: #AAB8CC; font-size: small; text-align: center; '
+            'margin-top: 8px; margin-bottom: 8px; white-space: nowrap;">'
+            f'----------------&nbsp;{safe_text}&nbsp;----------------'
+            '</div>'
+        )
+
     def is_streaming(self) -> bool:
         """返回当前是否仍在逐字打印消息正文。"""
         return self._stream_timer.isActive()

@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PyQt5.QtCore import QPoint, QRectF, QSize, Qt
+from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen
-from PyQt5.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFrame, QLabel, QSlider, QVBoxLayout, QWidget
+
+
+MIN_SUMMARY_THRESHOLD_PERCENT = 20
+MAX_SUMMARY_THRESHOLD_PERCENT = 80
+SUMMARY_THRESHOLD_STEP_PERCENT = 5
+DEFAULT_SUMMARY_THRESHOLD_PERCENT = 60
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,8 @@ def resolve_context_usage_sizing(screen_height: int, platform_name: str) -> Cont
 class ContextUsagePopup(QFrame):
     """显示上下文 token 详情的轻量悬浮窗口。"""
 
+    summaryThresholdChanged = pyqtSignal(float)
+
     def __init__(self, parent: QWidget | None = None, width: int = 188, font_size: int = 12) -> None:
         """初始化浮窗结构和样式。"""
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
@@ -58,10 +66,22 @@ class ContextUsagePopup(QFrame):
         font_size = max(10, font_size)
         self.setFixedWidth(width)
         line_height = max(font_size + 2, int(font_size * 1.5))
+        self._font_size = font_size
+        self._line_height = line_height
 
         self.used_label = QLabel(self)
         self.limit_label = QLabel(self)
         self.percent_label = QLabel(self)
+        self.summary_threshold_label = QLabel(self)
+        self.summary_threshold_slider = QSlider(Qt.Horizontal, self)
+        self.summary_threshold_slider.setObjectName("summaryCompressionThresholdSlider")
+        self.summary_threshold_slider.setRange(
+            MIN_SUMMARY_THRESHOLD_PERCENT // SUMMARY_THRESHOLD_STEP_PERCENT,
+            MAX_SUMMARY_THRESHOLD_PERCENT // SUMMARY_THRESHOLD_STEP_PERCENT,
+        )
+        self.summary_threshold_slider.setSingleStep(1)
+        self.summary_threshold_slider.setPageStep(1)
+        self.summary_threshold_slider.valueChanged.connect(self._on_summary_threshold_changed)  # noqa
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -69,7 +89,17 @@ class ContextUsagePopup(QFrame):
         layout.addWidget(self.used_label)
         layout.addWidget(self.limit_label)
         layout.addWidget(self.percent_label)
+        layout.addSpacing(4)
+        layout.addWidget(self.summary_threshold_label)
+        layout.addWidget(self.summary_threshold_slider)
 
+        self._theme_color = QColor("#7799CC")
+        self._apply_style(font_size, line_height)
+        self.set_summary_threshold_ratio(DEFAULT_SUMMARY_THRESHOLD_PERCENT / 100)
+
+    def _apply_style(self, font_size: int, line_height: int) -> None:
+        """应用浮窗与阈值滑块样式。"""
+        theme_color = self._theme_color.name()
         self.setStyleSheet(
             f"""
             QFrame#contextUsagePopup {{
@@ -83,8 +113,56 @@ class ContextUsagePopup(QFrame):
                 font-size: {font_size}px;
                 line-height: {line_height}px;
             }}
+            QSlider#summaryCompressionThresholdSlider::groove:horizontal {{
+                height: 4px;
+                background: #DDE4EA;
+                border-radius: 2px;
+            }}
+            QSlider#summaryCompressionThresholdSlider::sub-page:horizontal {{
+                background: {theme_color};
+                border-radius: 2px;
+            }}
+            QSlider#summaryCompressionThresholdSlider::handle:horizontal {{
+                width: 12px;
+                margin: -4px 0;
+                background: {theme_color};
+                border: 1px solid {theme_color};
+                border-radius: 6px;
+            }}
             """
         )
+
+    def set_theme_color(self, color: QColor) -> None:
+        """同步角色主题色到阈值滑块。"""
+        if color.isValid():
+            self._theme_color = QColor(color)
+            self._apply_style(self._font_size, self._line_height)
+
+    def set_summary_threshold_ratio(self, ratio: float) -> None:
+        """设置上下文压缩阈值，不触发用户修改信号。"""
+        percent = max(
+            MIN_SUMMARY_THRESHOLD_PERCENT,
+            min(MAX_SUMMARY_THRESHOLD_PERCENT, int(round(float(ratio) * 100))),
+        )
+        slider_value = int(round(percent / SUMMARY_THRESHOLD_STEP_PERCENT))
+        self.summary_threshold_slider.blockSignals(True)
+        self.summary_threshold_slider.setValue(slider_value)
+        self.summary_threshold_slider.blockSignals(False)
+        self._update_summary_threshold_text(slider_value * SUMMARY_THRESHOLD_STEP_PERCENT)
+
+    def _on_summary_threshold_changed(self, slider_value: int) -> None:
+        percent = slider_value * SUMMARY_THRESHOLD_STEP_PERCENT
+        self._update_summary_threshold_text(percent)
+        self.summaryThresholdChanged.emit(percent / 100)
+
+    def _update_summary_threshold_text(self, percent: int) -> None:
+        self.summary_threshold_label.setText(f"上下文压缩阈值：{percent}%")
+        tooltip = (
+            f"当累计 token 数达到上下文上限的 {percent}% 时，自动进行历史记录压缩，"
+            "以达到节省费用、减少 LLM 注意力涣散的目的。"
+        )
+        self.summary_threshold_label.setToolTip(tooltip)
+        self.summary_threshold_slider.setToolTip(tooltip)
 
     def set_snapshot(self, snapshot: ContextUsageSnapshot) -> None:
         """根据最新 token 快照刷新浮窗文案。"""
@@ -110,6 +188,8 @@ class ContextUsagePopup(QFrame):
 class ContextUsageIndicator(QWidget):
     """绘制上下文 token 用量圆环，并在点击时展示详情浮窗。"""
 
+    summaryThresholdChanged = pyqtSignal(float)
+
     def __init__(
         self,
         parent: QWidget | None = None,
@@ -123,6 +203,7 @@ class ContextUsageIndicator(QWidget):
         self._theme_color = QColor("#7799CC")
         self._size = max(20, size)
         self._popup = ContextUsagePopup(self, popup_width, popup_font_size)
+        self._popup.summaryThresholdChanged.connect(self.summaryThresholdChanged.emit)  # noqa
 
         self.setObjectName("contextUsageIndicator")
         self.setFixedSize(self._size, self._size)
@@ -133,7 +214,12 @@ class ContextUsageIndicator(QWidget):
         """设置圆环已用部分的主题色。"""
         theme_color = QColor(color)
         self._theme_color = theme_color if theme_color.isValid() else QColor("#7799CC")
+        self._popup.set_theme_color(self._theme_color)
         self.update()
+
+    def set_summary_threshold_ratio(self, ratio: float) -> None:
+        """同步上下文压缩阈值到详情浮窗。"""
+        self._popup.set_summary_threshold_ratio(ratio)
 
     def set_snapshot(self, snapshot: ContextUsageSnapshot) -> None:
         """设置新的上下文 token 用量快照并刷新展示。"""
