@@ -78,7 +78,7 @@ from chat.rolling_summary import (
 )
 from emotion_enum import EmotionEnum
 from ui_main.components.chat_display import ChatDisplay
-from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarView
+from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarToolbar, ChatSidebarView
 from ui_main.components.context_usage_indicator import (
     ContextUsageIndicator,
     ContextUsageSnapshot,
@@ -3187,26 +3187,12 @@ class ChatGUI(QWidget):
         layout.setContentsMargins(8, 0, 0, 0)
         layout.setSpacing(6)
 
-        action_layout = QHBoxLayout()
-        self.btn_new_chat = QPushButton("新建")
-        self.btn_delete_chat = QPushButton("删除")
-        self.btn_chat_sidebar_mode = QPushButton()
-        self.btn_chat_backup_menu = QToolButton()
-        self.btn_chat_backup_menu.setIcon(QIcon("./icons/more.svg"))
-        self.btn_chat_backup_menu.setToolTip("对话备份")
-        self.chat_backup_menu = QMenu(self)
-        import_backup_action = self.chat_backup_menu.addAction("导入对话备份...")
-        export_many_action = self.chat_backup_menu.addAction("导出多个对话...")
-        import_backup_action.triggered.connect(self.import_chat_backup)
-        export_many_action.triggered.connect(self.export_multiple_chats)
-        self.btn_chat_backup_menu.clicked.connect(self.show_chat_backup_menu)  # noqa
-        self.btn_chat_sidebar_mode.clicked.connect(self.toggle_chat_sidebar_mode)  # noqa
-        self.btn_new_chat.clicked.connect(self.create_new_chat)
-        self.btn_delete_chat.clicked.connect(self.delete_current_chat)
-        action_layout.addWidget(self.btn_new_chat)
-        action_layout.addWidget(self.btn_delete_chat)
-        action_layout.addWidget(self.btn_chat_sidebar_mode)
-        action_layout.addWidget(self.btn_chat_backup_menu)
+        self.chat_sidebar_toolbar = ChatSidebarToolbar(panel)
+        self.chat_sidebar_toolbar.new_chat_requested.connect(self.create_new_chat)
+        self.chat_sidebar_toolbar.delete_current_chat_requested.connect(self.delete_current_chat)
+        self.chat_sidebar_toolbar.mode_toggle_requested.connect(self.toggle_chat_sidebar_mode)
+        self.chat_sidebar_toolbar.import_backup_requested.connect(self.import_chat_backup)
+        self.chat_sidebar_toolbar.export_multiple_requested.connect(self.export_multiple_chats)
 
         self.chat_sidebar = ChatSidebarView()
         self.chat_sidebar.set_mode(self._chat_sidebar_mode())
@@ -3221,7 +3207,7 @@ class ChatGUI(QWidget):
         self._model_limit_query_thread = GetModelLimitThread(model="", parent=self)
         self._model_limit_query_thread.model_input_token_limit.connect(self._on_model_limit_queryed)
 
-        layout.addLayout(action_layout)
+        layout.addWidget(self.chat_sidebar_toolbar)
         layout.addWidget(self.chat_sidebar, 1)
         return panel
 
@@ -3274,14 +3260,6 @@ class ChatGUI(QWidget):
         """
         self.chat_manager.reorder_chats_by_type(ChatType.SINGLE_CHARACTER, ordered_chat_ids)
         self.chat_manager.save()
-
-    def show_chat_backup_menu(self) -> None:
-        """在备份工具按钮下方弹出对话备份菜单。"""
-        if not hasattr(self, "chat_backup_menu"):
-            return
-        button = self.btn_chat_backup_menu
-        menu_pos = button.mapToGlobal(QPoint(0, button.height()))
-        self.chat_backup_menu.exec_(menu_pos)
 
     def show_chat_list_menu(self, chat_id: str, global_pos: QPoint) -> None:
         """
@@ -3619,12 +3597,10 @@ class ChatGUI(QWidget):
         """
         根据当前模式刷新聊天侧栏模式按钮。
         """
-        if not hasattr(self, "btn_chat_sidebar_mode"):
+        if not hasattr(self, "chat_sidebar_toolbar"):
             return
         mode = self._chat_sidebar_mode()
-        # 这边我感觉显示“点击后侧边栏切换到什么状态”比“目前侧边栏是什么状态“更好一些
-        # 所以这里的显示文字是反过来的
-        self.btn_chat_sidebar_mode.setText("折叠" if mode == "flat" else "展开")
+        self.chat_sidebar_toolbar.set_mode(mode)
 
     def on_chat_sidebar_expanded_changed(self, character_names: list[str]) -> None:
         """
