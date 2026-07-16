@@ -2750,12 +2750,16 @@ class ChatGUI(QWidget):
 
     def _on_repair_check_progress(self, completed: int, total: int, path: str) -> None:
         """刷新本地文件扫描进度。"""
-
+        # 这里有一个比较严重的并发问题：repair_check_progress 这个条甚至可能在三个语句执行期间变为 None。
+        # 因此我们在检查后，设置进度条时同样要忽略一切 AttributeError，避免报错出现。
         if self.repair_check_progress is None:
             return
-        self.repair_check_progress.setRange(0, max(total, 1))
-        self.repair_check_progress.setValue(min(completed, max(total, 1)))
-        self.repair_check_progress.setLabelText(f"正在检查程序文件 {completed}/{total}\n{path}")
+        try:
+            self.repair_check_progress.setRange(0, max(total, 1))
+            self.repair_check_progress.setValue(min(completed, max(total, 1)))
+            self.repair_check_progress.setLabelText(f"正在检查程序文件 {completed}/{total}\n{path}")
+        except AttributeError:
+            pass
 
     def _close_repair_check_progress(self) -> None:
         """关闭并释放检查进度弹窗。"""
