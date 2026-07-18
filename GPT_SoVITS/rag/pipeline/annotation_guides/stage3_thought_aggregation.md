@@ -14,13 +14,13 @@
 
 ```bash
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage3-thought-prompts \
-  --input data/ep01_stage2_input.json \
-  --stage2b-annotation data/ep01_pass2b_raw.json \
-  --stage3-rag data/ep01_rag_review.json \
-  --input data/ep02_stage2_input.json \
-  --stage2b-annotation data/ep02_pass2b_raw.json \
-  --stage3-rag data/ep02_rag_review.json \
-  --output-dir data/prompts/mygo_thoughts
+  --input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_stage2_input.json \
+  --stage2b-annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2b_raw.json \
+  --stage3-rag GPT_SoVITS/rag/annotated_data/its_mygo/reviews/ep01_rag_review.json \
+  --input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep02_stage2_input.json \
+  --stage2b-annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep02_pass2b_raw.json \
+  --stage3-rag GPT_SoVITS/rag/annotated_data/its_mygo/reviews/ep02_rag_review.json \
+  --output-dir GPT_SoVITS/rag/pipeline/data/prompt_packages/mygo_thoughts
 ```
 
 每个任务对应一个角色，并包含该角色在全部输入集数中的 Update、可引用 Story Event 和只供推理使用的 Event Fact。
@@ -56,12 +56,14 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage3-thought-prompts \
 
 ```bash
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage3-thought-responses \
-  --manifest data/prompts/mygo_thoughts/manifest.json \
-  --output data/mygo_thought_review.json
+  --manifest GPT_SoVITS/rag/pipeline/data/prompt_packages/mygo_thoughts/manifest.json \
+  --output GPT_SoVITS/rag/annotated_data/its_mygo/mygo_thought_review.json
 ```
 
 组装器会校验 Update 覆盖、引用、时间线和状态有效期。之后以完整 Thread 为单位人工审核；任何 State 内容、
 时间、引用、拆分或合并修改都会撤销旧审批。未归属 Update 只能 reject/exclude，若要发布必须先归入 Thread。
+正常人工审核请使用 `review-stage3-workbench --build-spec <worldbook_build.json>`：工作台能按角色查看完整 Thread、
+机器基准、上一版人工结果和 Update/Event Fact 证据，并在同一角色内完成归线、拆分与合并。CLI 仅作为备用入口。
 
 完成前检查：
 

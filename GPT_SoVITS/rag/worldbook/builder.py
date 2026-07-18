@@ -168,7 +168,8 @@ def build_staging_package(
         if relation_type.disposition != "publish":
             continue
         relation_type_key = resolver.resolve(relation_type.relation_type_id)
-        for state in relation_type.effective_sequence():
+        relation_content = relation_type.effective_content()
+        for state in relation_content.states:
             entries.append(
                 WorldbookEntry(
                     entry_id=resolver.resolve(state.relation_state_id),
@@ -195,7 +196,8 @@ def build_staging_package(
         if thread.disposition != "publish":
             continue
         thread_key = resolver.resolve(thread.thought_thread_id)
-        for state in thread.effective_sequence():
+        thought_content = thread.effective_content()
+        for state in thought_content.states:
             event_ids: list[str] = []
             for candidate_id in state.story_event_candidate_ids:
                 target = story_entry_ids.get(candidate_id)
@@ -213,8 +215,8 @@ def build_staging_package(
                         "timeline_id": thread.timeline_id,
                         "canon_branch": thread.canon_branch.value,
                         "thought_thread_key": str(thread_key),
-                        "canonical_subject": thread.canonical_subject,
-                        "thought_aspect": thread.thought_aspect,
+                        "canonical_subject": thought_content.canonical_subject,
+                        "thought_aspect": thought_content.thought_aspect,
                         "thought_text": state.thought_text,
                         "epistemic_status": state.epistemic_status,
                         "visible_from": state.visible_from,
@@ -400,7 +402,12 @@ def _validate_review_completion(
         if record.disposition == "publish" and not record.effective_sequence():
             raise ValueError(f"发布的 Relation Type 不得为空: {record.relation_type_id}")
         _validate_sequence_windows(record.relation_type_id, [(item.visible_from, item.visible_to) for item in record.effective_sequence()])
-        for observation_id in record.covered_observation_ids:
+        effective_observation_ids = {
+            observation_id
+            for state in record.effective_sequence()
+            for observation_id in state.supporting_observation_ids
+        }
+        for observation_id in effective_observation_ids:
             relation_coverage[observation_id] = relation_coverage.get(observation_id, 0) + 1
     for decision in relations.unmerged_observations:
         _assert_reviewed(decision.observation_id, decision)
@@ -420,7 +427,12 @@ def _validate_review_completion(
         if thread.disposition == "publish" and not thread.effective_sequence():
             raise ValueError(f"发布的 Thought Thread 不得为空: {thread.thought_thread_id}")
         _validate_sequence_windows(thread.thought_thread_id, [(item.visible_from, item.visible_to) for item in thread.effective_sequence()])
-        for update_id in thread.covered_update_ids:
+        effective_update_ids = {
+            update_id
+            for state in thread.effective_sequence()
+            for update_id in state.supporting_update_ids
+        }
+        for update_id in effective_update_ids:
             thought_coverage[update_id] = thought_coverage.get(update_id, 0) + 1
     for decision in thoughts.unassigned_updates:
         _assert_reviewed(decision.update_id, decision)

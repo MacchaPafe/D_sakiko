@@ -23,6 +23,7 @@ from .schemas import (
 )
 from .stage3_relation_models import (
     RelationStateDraft,
+    RelationTypeContentDraft,
     RelationTypeReviewRecord,
     Stage3RelationReviewArtifact,
     UnmergedRelationObservationDecision,
@@ -78,9 +79,9 @@ def _sequence_basis(
         {
             "subject_character_id": record.subject_character_id,
             "object_character_id": record.object_character_id,
-            "semantic_label": record.semantic_label,
+            "semantic_label": record.generated_content.semantic_label,
             "observations": observation_payloads,
-            "generated_sequence": sequence_payload,
+            "generated_content": sequence_payload,
         }
     )
 
@@ -91,6 +92,40 @@ def _unmerged_basis(observation: BaseModel, reason: str) -> str:
     return canonical_json_sha256(
         {"observation": observation.model_dump(mode="json"), "generated_reason": reason}
     )
+
+
+def _relation_type_risk_reasons(
+    records: list[CharacterRelationStateReviewRecord],
+) -> list[str]:
+    """保留 Relation State 的具体聚合歧义、置信度和校验原因。"""
+
+    generic_reasons = {
+        "聚合置信度低于 0.7。",
+        "聚合结果包含歧义说明。",
+        "存在阻断校验错误。",
+    }
+    reasons: list[str] = []
+    for index, record in enumerate(records, start=1):
+        document = record.document
+        visible_from = None if document is None else document.visible_from
+        state_label = f"State {index}"
+        if visible_from is not None:
+            state_label += f"（visible_from={visible_from}）"
+        reasons.extend(
+            reason
+            for reason in record.risk_reasons
+            if reason not in generic_reasons
+        )
+        if record.confidence < 0.7:
+            reasons.append(f"{state_label} 聚合置信度为 {record.confidence:.2f}，低于 0.70。")
+        ambiguity_notes = record.ambiguity_notes.strip()
+        if ambiguity_notes:
+            reasons.append(f"{state_label} 聚合歧义：{ambiguity_notes}")
+        reasons.extend(
+            f"{state_label} 校验错误：{error}"
+            for error in record.validation_errors
+        )
+    return list(dict.fromkeys(reasons))
 
 
 def _inherit_state_ids(
@@ -151,7 +186,7 @@ def build_stage3_relation_review_artifact(
             }
         )
         risk_level = "high" if any(record.risk_level == "high" for record in ordered_records) else "low"
-        risk_reasons = sorted({reason for record in ordered_records for reason in record.risk_reasons})
+        risk_reasons = _relation_type_risk_reasons(ordered_records)
         relation_type = RelationTypeReviewRecord(
             relation_type_id=f"relation_type:{uuid4()}",
             subject_character_id=first_document.subject_character_id,
@@ -159,9 +194,11 @@ def build_stage3_relation_review_artifact(
             series_id=legacy.metadata.series_id,
             timeline_id=legacy.metadata.timeline_id,
             canon_branch=first_document.canon_branch,
-            semantic_label=key[2],
             covered_observation_ids=covered,
-            generated_sequence=sequence,
+            generated_content=RelationTypeContentDraft(
+                semantic_label=key[2],
+                states=sequence,
+            ),
             risk_level=risk_level,
             risk_reasons=risk_reasons,
             review_basis_sha256="0" * 64,
@@ -230,10 +267,10 @@ def build_stage3_relation_review_artifact(
         matched_ids.add(old.relation_type_id)
         if item.review_basis_sha256 == old.review_basis_sha256:
             copy_completed_review(item, old)
-            item.reviewed_sequence = old.reviewed_sequence
+            item.reviewed_content = old.reviewed_content
             report.migrated_ids.append(item.relation_type_id)
         else:
-            item.previous_reviewed_sequence = old.reviewed_sequence
+            item.previous_reviewed_content = old.reviewed_content
             report.reset_ids.append(item.relation_type_id)
     for item in unmerged:
         old = previous_unmerged_by_id.get(item.observation_id)

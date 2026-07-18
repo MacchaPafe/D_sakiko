@@ -43,6 +43,7 @@ from .stage3_thought_models import (
     Stage3ThoughtReviewArtifact,
     ThoughtAggregationMetadata,
     ThoughtStateDraft,
+    ThoughtThreadContentDraft,
     ThoughtThreadReviewRecord,
     ThoughtTransitionDraft,
     ThoughtUpdateEvidence,
@@ -551,11 +552,11 @@ def _thread_basis(
     return canonical_json_sha256(
         {
             "character_id": thread.character_id,
-            "canonical_subject": thread.canonical_subject,
-            "thought_aspect": thread.thought_aspect,
+            "canonical_subject": thread.generated_content.canonical_subject,
+            "thought_aspect": thread.generated_content.thought_aspect,
             "updates": update_payloads,
             "transitions": [item.model_dump(mode="json") for item in thread.transitions],
-            "generated_sequence": sequence_payloads,
+            "generated_content": sequence_payloads,
         }
     )
 
@@ -679,11 +680,13 @@ def _build_character_threads(
             series_id=series_id,
             timeline_id=timeline_id,
             canon_branch=canon_branch,
-            canonical_subject=thread_key[0],
-            thought_aspect=thread_key[1],
             covered_update_ids=sorted(set(covered)),
             transitions=transitions,
-            generated_sequence=sequence,
+            generated_content=ThoughtThreadContentDraft(
+                canonical_subject=thread_key[0],
+                thought_aspect=thread_key[1],
+                states=sequence,
+            ),
             risk_level=risk_level,
             review_basis_sha256="0" * 64,
         )
@@ -783,10 +786,10 @@ def _migrate_thought_review(
         matched.add(old.thought_thread_id)
         if thread.review_basis_sha256 == old.review_basis_sha256:
             copy_completed_review(thread, old)
-            thread.reviewed_sequence = old.reviewed_sequence
+            thread.reviewed_content = old.reviewed_content
             report.migrated_ids.append(thread.thought_thread_id)
         else:
-            thread.previous_reviewed_sequence = old.reviewed_sequence
+            thread.previous_reviewed_content = old.reviewed_content
             report.reset_ids.append(thread.thought_thread_id)
     previous_unassigned = {item.update_id: item for item in previous.unassigned_updates}
     for decision in artifact.unassigned_updates:

@@ -14,8 +14,11 @@
 
 - 每集 Stage 2 Input：`annotations_stage2/epXX_stage2_input.json`
 - 每集 Stage 2A 标注：`annotations_stage2/epXX_pass2_raw.json`
-- Prompt Package：例如 `prompt_packages/bang_dream_original_stage3_relations/`
-- 正式输出：例如 `annotations_stage3/bang_dream_original_relation_states_review.json`
+- Prompt Package：例如 `GPT_SoVITS/rag/pipeline/data/prompt_packages/mygo_relations/`
+- 正式输出：例如 `GPT_SoVITS/rag/annotated_data/its_mygo/mygo_relation_review.json`
+
+`reviews/` 子目录只保存逐集 Story/Lore Review。Relation 是跨集唯一产物，应直接放在对应世界书的
+`annotated_data/<worldbook>/` 根目录下。
 
 每一个 `--input` 必须与同位置的 `--annotation` 属于同一集。按集数顺序重复参数，例如 ep01、ep02、ep03。
 不要只因为当前想检查某一集，就覆盖已经存在的全量关系产物；试验应使用单独 Package 和输出文件。
@@ -40,7 +43,7 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage3-relation-prompts \
   --annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2_raw.json \
   --input GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep02_stage2_input.json \
   --annotation GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep02_pass2_raw.json \
-  --output-dir GPT_SoVITS/rag/pipeline/data/prompt_packages/bang_dream_original_stage3_relations
+  --output-dir GPT_SoVITS/rag/pipeline/data/prompt_packages/mygo_relations
 ```
 
 每个任务对应一个有向角色对，例如“爱音 → 立希”。反方向会是另一个任务，不能互相代替。
@@ -57,8 +60,8 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage3-relation-prompts \
 
 ```bash
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage3-relations \
-  --manifest GPT_SoVITS/rag/pipeline/data/prompt_packages/bang_dream_original_stage3_relations/manifest.json \
-  --output GPT_SoVITS/rag/pipeline/data/annotations_stage3/bang_dream_original_relation_states_review.json \
+  --manifest GPT_SoVITS/rag/pipeline/data/prompt_packages/mygo_relations/manifest.json \
+  --output GPT_SoVITS/rag/annotated_data/its_mygo/mygo_relation_review.json \
   --model-label codex-workspace
 ```
 

@@ -132,6 +132,16 @@ class ThoughtTransitionDraft(BaseModel):
     evidence_time: int
 
 
+class ThoughtThreadContentDraft(BaseModel):
+    """表示 Thought Thread 可被人工完整替换的语义内容。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    canonical_subject: str = Field(min_length=1)
+    thought_aspect: str = Field(min_length=1)
+    states: list[ThoughtStateDraft] = Field(default_factory=list)
+
+
 class ThoughtThreadReviewRecord(ReviewFields):
     """表示一个角色围绕同一主题和方面的完整 Thought Thread。"""
 
@@ -142,19 +152,56 @@ class ThoughtThreadReviewRecord(ReviewFields):
     series_id: str
     timeline_id: str
     canon_branch: CanonBranch
-    canonical_subject: str = Field(min_length=1)
-    thought_aspect: str = Field(min_length=1)
     covered_update_ids: list[str] = Field(default_factory=list)
     transitions: list[ThoughtTransitionDraft] = Field(default_factory=list)
-    generated_sequence: list[ThoughtStateDraft] = Field(default_factory=list)
-    reviewed_sequence: list[ThoughtStateDraft] | None = None
-    previous_reviewed_sequence: list[ThoughtStateDraft] | None = None
+    generated_content: ThoughtThreadContentDraft
+    reviewed_content: ThoughtThreadContentDraft | None = None
+    previous_reviewed_content: ThoughtThreadContentDraft | None = None
     identity_suggestions: list[IdentitySuggestion] = Field(default_factory=list)
+
+    @property
+    def canonical_subject(self) -> str:
+        """返回机器基准中的规范化主题。"""
+
+        return self.generated_content.canonical_subject
+
+    @property
+    def thought_aspect(self) -> str:
+        """返回机器基准中的认知方面。"""
+
+        return self.generated_content.thought_aspect
+
+    @property
+    def generated_sequence(self) -> list[ThoughtStateDraft]:
+        """返回机器基准状态序列。"""
+
+        return self.generated_content.states
+
+    @property
+    def reviewed_sequence(self) -> list[ThoughtStateDraft] | None:
+        """返回人工状态序列，供只读兼容调用。"""
+
+        return None if self.reviewed_content is None else self.reviewed_content.states
+
+    @property
+    def previous_reviewed_sequence(self) -> list[ThoughtStateDraft] | None:
+        """返回上一版人工状态序列，供只读对比。"""
+
+        return (
+            None
+            if self.previous_reviewed_content is None
+            else self.previous_reviewed_content.states
+        )
+
+    def effective_content(self) -> ThoughtThreadContentDraft:
+        """返回发布和展示应使用的最终观点内容。"""
+
+        return self.reviewed_content or self.generated_content
 
     def effective_sequence(self) -> list[ThoughtStateDraft]:
         """返回发布和展示应使用的最终 Thought 状态序列。"""
 
-        return self.reviewed_sequence or self.generated_sequence
+        return self.effective_content().states
 
 
 class UnassignedThoughtUpdateDecision(ReviewFields):

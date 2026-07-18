@@ -101,10 +101,13 @@ from .stage3_thought_aggregation import (
     save_stage3_thought_review_artifact,
 )
 from .stage3_review_editor import (
+    clear_lore_dedup_decision,
     complete_artifact_item_review,
     complete_lore_dedup_decision,
+    mark_artifact_item_followup,
     replace_artifact_item_content,
     resolve_artifact_identity,
+    restore_artifact_item_content,
     update_artifact_item_notes,
 )
 from .stage3_review_upgrade import upgrade_stage3_review_schema
@@ -156,6 +159,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     validate_build_parser.add_argument("--build-spec", type=Path, required=True, help="worldbook_build.json 路径")
 
+    workbench_parser = subparsers.add_parser(
+        "review-stage3-workbench",
+        help="以 worldbook_build.json 启动统一 Stage 3 图形审核工作台",
+    )
+    workbench_parser.add_argument(
+        "--build-spec",
+        type=Path,
+        required=True,
+        help="worldbook_build.json 路径",
+    )
+    workbench_parser.add_argument("--host", default="127.0.0.1", help="NiceGUI 绑定 host")
+    workbench_parser.add_argument("--port", type=int, default=8188, help="NiceGUI 端口")
+    workbench_parser.add_argument("--native", action="store_true", help="使用 NiceGUI native 模式")
+
     publish_parser = subparsers.add_parser("publish-worldbook", help="从 build spec 审计并发布一个世界书包")
     publish_parser.add_argument("--build-spec", type=Path, required=True, help="worldbook_build.json 路径")
     publish_parser.add_argument("--allow-removed-id", action="append", default=[], help="允许本次停用的开发身份；可重复")
@@ -197,6 +214,21 @@ def _build_parser() -> argparse.ArgumentParser:
     note_item_parser.add_argument("--item-id", required=True)
     note_item_parser.add_argument("--notes", default=None)
 
+    followup_item_parser = subparsers.add_parser(
+        "followup-stage3-item",
+        help="把审核项标记为需要继续处理",
+    )
+    followup_item_parser.add_argument("--artifact", required=True)
+    followup_item_parser.add_argument("--item-id", required=True)
+    followup_item_parser.add_argument("--notes", default=None)
+
+    restore_item_parser = subparsers.add_parser(
+        "restore-stage3-item",
+        help="删除人工快照并恢复机器版本",
+    )
+    restore_item_parser.add_argument("--artifact", required=True)
+    restore_item_parser.add_argument("--item-id", required=True)
+
     identity_parser = subparsers.add_parser("resolve-stage3-identity", help="确认候选继承旧身份或保留新身份")
     identity_parser.add_argument("--artifact", required=True)
     identity_parser.add_argument("--item-id", required=True)
@@ -210,6 +242,13 @@ def _build_parser() -> argparse.ArgumentParser:
     lore_decision_parser.add_argument("--primary-candidate-id", default=None)
     lore_decision_parser.add_argument("--replacement", default=None, help="merge 后的完整 Lore 文档 JSON")
     lore_decision_parser.add_argument("--notes", default=None)
+
+    clear_lore_decision_parser = subparsers.add_parser(
+        "clear-lore-decision",
+        help="清除人工 Lore 去重决定并恢复 pending",
+    )
+    clear_lore_decision_parser.add_argument("--artifact", required=True)
+    clear_lore_decision_parser.add_argument("--group-id", required=True)
 
     upgrade_review_parser = subparsers.add_parser(
         "upgrade-stage3-review-schema",
@@ -632,6 +671,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if args.command == "review-stage3-workbench":
+        from .stage3_review_workbench import main as workbench_main
+
+        workbench_arguments = [
+            "--build-spec",
+            str(args.build_spec),
+            "--host",
+            str(args.host),
+            "--port",
+            str(args.port),
+        ]
+        if args.native:
+            workbench_arguments.append("--native")
+        workbench_main(workbench_arguments)
+        return 0
+
     if args.command == "prepare-stage1":
         artifact = prepare_stage1_artifact(
             subtitle_path=args.subtitle,
@@ -727,6 +782,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"已更新审核备注: {args.item_id}")
         return 0
 
+    if args.command == "followup-stage3-item":
+        mark_artifact_item_followup(args.artifact, args.item_id, args.notes)
+        print(f"已标记为需要跟进: {args.item_id}")
+        return 0
+
+    if args.command == "restore-stage3-item":
+        restore_artifact_item_content(args.artifact, args.item_id)
+        print(f"已恢复机器版本并重置审核: {args.item_id}")
+        return 0
+
     if args.command == "resolve-stage3-identity":
         resolved_id = resolve_artifact_identity(
             args.artifact,
@@ -747,6 +812,11 @@ def main(argv: list[str] | None = None) -> int:
             review_notes=args.notes,
         )
         print(f"已完成 Lore 去重决定: {args.group_id}")
+        return 0
+
+    if args.command == "clear-lore-decision":
+        clear_lore_dedup_decision(args.artifact, args.group_id)
+        print(f"已清除 Lore 去重决定: {args.group_id}")
         return 0
 
     if args.command == "upgrade-stage3-review-schema":

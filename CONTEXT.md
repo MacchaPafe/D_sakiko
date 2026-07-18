@@ -78,6 +78,10 @@ _Avoid_: 世界书包、发布内容快照、Qdrant 索引
 一次官方世界书发布所使用的包元数据和标注输入文件清单，可由发布命令重复读取。它不包含转换后的世界书条目，也不是发布内容或审核结果的权威副本。
 _Avoid_: 世界书包、worldbook_release.json、世界书构建报告
 
+**Stage 3 审核工作台**:
+以一份世界书构建配置界定单个世界书包审核范围、集中处理 Story/Lore、Relation、Thought 与 Lore 去重人工决策的开发侧工作界面。它不是运行时世界书管理界面，也不以单个审核文件作为正常工作范围。
+_Avoid_: 世界书查看器、单文件 JSON 编辑器、发布工具
+
 **世界书身份映射**:
 开发侧保存的标注身份到正式世界书 entry、Thought Thread 和 Relation Type UUID 的命名空间映射，用于在重复构建与内容修订中保持身份稳定。映射区分当前发布的 active、暂不发布但可恢复的 inactive，以及因拆分、合并等身份终结而永久退役的 retired；它不随世界书包发布，也不参与运行时加载、用户 Override 合并或索引。
 _Avoid_: 世界书条目、运行时迁移表、世界书构建报告
@@ -102,12 +106,12 @@ _Avoid_: source_scene_id、source_local_id、正式 entry UUID、内容哈希
 Thought Thread、Relation Type 及其内部 State 在审核产物中使用的稳定 ID，用于重生成匹配、身份继承和人工复核。它在审核阶段分配并纳入版本管理，不是正式世界书 UUID，也不由发布器的 ID map 产生。
 _Avoid_: 正式 entry UUID、Thought Thread UUID、Relation Type UUID、内容哈希
 
-**人工审核序列**:
-审核者首次修改机器生成的 Thought Thread 或 Relation Type 状态序列时创建的完整替换快照，之后的文本和结构修改都只作用于该快照。它属于开发侧标注产物，并受审核基础摘要控制迁移，不是发布后用户对世界书条目的 Override。
-_Avoid_: 世界书 Override、结构操作日志、直接修改机器序列
+**人工审核内容**:
+审核者首次修改机器生成的 Thought Thread 或 Relation Type 时创建的完整替换快照，同时包含可编辑的主题字段和状态序列；之后的文本与结构修改都只作用于该快照。它属于开发侧标注产物，并受审核基础摘要控制迁移，不是发布后用户对世界书条目的 Override。
+_Avoid_: 人工审核序列、世界书 Override、结构操作日志、直接修改机器内容
 
 **人工审核文档**:
-审核者首次修改机器生成的 Story Event 或 Lore Entry 时创建的完整替换文档，之后的修改只作用于该文档。它与人工审核序列采用相同的开发侧 copy-on-write 模式，不是世界书 Override。
+审核者首次修改机器生成的 Story Event 或 Lore Entry 时创建的完整替换文档，之后的修改只作用于该文档。它与人工审核内容采用相同的开发侧 copy-on-write 模式，不是世界书 Override。
 _Avoid_: 世界书 Override、字段补丁、直接修改机器文档
 
 **通用世界书包**:

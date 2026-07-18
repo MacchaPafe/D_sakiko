@@ -61,6 +61,34 @@ class TestStage3RelationReview(unittest.TestCase):
         self.assertEqual(migrated.disposition, "publish")
         self.assertIn(migrated.relation_type_id, report.migrated_ids)
 
+    def test_preserves_detailed_aggregation_ambiguity_in_risk_reasons(self) -> None:
+        """Relation Type 风险原因应保留 State 的具体聚合歧义文本。"""
+
+        state = self.legacy.character_relation_states[0]
+        state.risk_level = "high"
+        state.risk_reasons = ["聚合结果包含歧义说明。"]
+        state.ambiguity_notes = "该关系变化可能只针对当前争执。"
+        document = state.document
+        self.assertIsNotNone(document)
+        assert document is not None
+
+        artifact, _ = build_stage3_relation_review_artifact(self.legacy, self.sources)
+        relation_type = next(
+            item
+            for item in artifact.relation_types
+            if item.subject_character_id == document.subject_character_id
+            and item.object_character_id == document.object_character_id
+            and item.semantic_label == document.relation_type_key
+        )
+
+        self.assertNotIn("聚合结果包含歧义说明。", relation_type.risk_reasons)
+        self.assertTrue(
+            any(
+                "聚合歧义：该关系变化可能只针对当前争执。" in reason
+                for reason in relation_type.risk_reasons
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

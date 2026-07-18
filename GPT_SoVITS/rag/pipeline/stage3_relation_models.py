@@ -32,6 +32,15 @@ class RelationStateDraft(BaseModel):
     retrieval_text: str = Field(min_length=1)
 
 
+class RelationTypeContentDraft(BaseModel):
+    """表示 Relation Type 可被人工完整替换的语义内容。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    semantic_label: str = Field(min_length=1)
+    states: list[RelationStateDraft] = Field(default_factory=list)
+
+
 class RelationTypeReviewRecord(ReviewFields):
     """表示一个有向角色对下完整的 Relation Type 状态序列。"""
 
@@ -43,17 +52,49 @@ class RelationTypeReviewRecord(ReviewFields):
     series_id: str
     timeline_id: str
     canon_branch: CanonBranch
-    semantic_label: str = Field(min_length=1)
     covered_observation_ids: list[str] = Field(default_factory=list)
-    generated_sequence: list[RelationStateDraft] = Field(default_factory=list)
-    reviewed_sequence: list[RelationStateDraft] | None = None
-    previous_reviewed_sequence: list[RelationStateDraft] | None = None
+    generated_content: RelationTypeContentDraft
+    reviewed_content: RelationTypeContentDraft | None = None
+    previous_reviewed_content: RelationTypeContentDraft | None = None
     identity_suggestions: list[IdentitySuggestion] = Field(default_factory=list)
+
+    @property
+    def semantic_label(self) -> str:
+        """返回机器基准中的关系语义标签。"""
+
+        return self.generated_content.semantic_label
+
+    @property
+    def generated_sequence(self) -> list[RelationStateDraft]:
+        """返回机器基准状态序列。"""
+
+        return self.generated_content.states
+
+    @property
+    def reviewed_sequence(self) -> list[RelationStateDraft] | None:
+        """返回人工状态序列，供只读兼容调用。"""
+
+        return None if self.reviewed_content is None else self.reviewed_content.states
+
+    @property
+    def previous_reviewed_sequence(self) -> list[RelationStateDraft] | None:
+        """返回上一版人工状态序列，供只读对比。"""
+
+        return (
+            None
+            if self.previous_reviewed_content is None
+            else self.previous_reviewed_content.states
+        )
+
+    def effective_content(self) -> RelationTypeContentDraft:
+        """返回发布和展示应使用的最终关系内容。"""
+
+        return self.reviewed_content or self.generated_content
 
     def effective_sequence(self) -> list[RelationStateDraft]:
         """返回发布和展示应使用的最终关系状态序列。"""
 
-        return self.reviewed_sequence or self.generated_sequence
+        return self.effective_content().states
 
 
 class UnmergedRelationObservationDecision(ReviewFields):
