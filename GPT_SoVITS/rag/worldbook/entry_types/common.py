@@ -1,4 +1,4 @@
-"""三类当前 Type Module 共享的无业务展示辅助函数。"""
+"""四类当前 Type Module 共享的无业务展示辅助函数。"""
 
 from __future__ import annotations
 

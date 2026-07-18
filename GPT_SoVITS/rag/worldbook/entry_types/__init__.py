@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from .character_relation import CharacterRelationTypeModule
+from .character_thought import CharacterThoughtTypeModule
 from .lore_entry import LoreEntryTypeModule
 from .story_event import StoryEventTypeModule
 
-__all__ = ["CharacterRelationTypeModule", "LoreEntryTypeModule", "StoryEventTypeModule"]
+__all__ = [
+    "CharacterRelationTypeModule",
+    "CharacterThoughtTypeModule",
+    "LoreEntryTypeModule",
+    "StoryEventTypeModule",
+]

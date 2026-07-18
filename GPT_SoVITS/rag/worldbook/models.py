@@ -6,10 +6,12 @@ from enum import Enum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .versioning import parse_semver, validate_version_spec
 
 
-EntryType = Literal["story_event", "character_relation", "lore_entry"]
+EntryType = Literal["story_event", "character_relation", "lore_entry", "character_thought"]
 
 
 class PackageReadiness(str, Enum):
@@ -35,6 +37,23 @@ class PackageDependency(BaseModel):
     package_id: str
     version_spec: str = ">=0.0.0"
 
+    @field_validator("package_id")
+    @classmethod
+    def validate_package_id(cls, value: str) -> str:
+        """拒绝空依赖包 ID。"""
+
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("依赖 package_id 不能为空")
+        return normalized
+
+    @field_validator("version_spec")
+    @classmethod
+    def validate_spec(cls, value: str) -> str:
+        """校验第一版支持的显式 SemVer 比较器。"""
+
+        return validate_version_spec(value)
+
 
 class ContentFileRecord(BaseModel):
     """描述 manifest 声明的一份内容文件。"""
@@ -57,6 +76,26 @@ class WorldbookManifest(BaseModel):
     timeline_id: str
     dependencies: list[PackageDependency] = Field(default_factory=list)
     content_files: list[ContentFileRecord] = Field(default_factory=list)
+
+    @field_validator("package_version")
+    @classmethod
+    def validate_package_version(cls, value: str) -> str:
+        """要求包版本为完整 SemVer。"""
+
+        normalized = value.strip()
+        parse_semver(normalized)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_unique_dependencies(self) -> "WorldbookManifest":
+        """拒绝重复依赖和包对自身的直接依赖。"""
+
+        dependency_ids = [item.package_id for item in self.dependencies]
+        if len(dependency_ids) != len(set(dependency_ids)):
+            raise ValueError("dependencies 不得重复声明同一 package_id")
+        if self.package_id in dependency_ids:
+            raise ValueError("世界书包不得直接依赖自身")
+        return self
 
 
 class WorldbookEntry(BaseModel):

@@ -7,6 +7,7 @@ from typing import Protocol
 
 from .models import EffectiveWorldbookEntry, EntryType, IndexProjection, WorldbookEntry
 from .entry_types.character_relation import CharacterRelationTypeModule
+from .entry_types.character_thought import CharacterThoughtTypeModule
 from .entry_types.lore_entry import LoreEntryTypeModule
 from .entry_types.story_event import StoryEventTypeModule
 
@@ -123,13 +124,14 @@ class AdapterRegistry:
 
 
 def create_default_registry() -> AdapterRegistry:
-    """创建包含三类 Schema v0 的默认注册表。"""
+    """创建包含四类 Schema v0 的默认注册表。"""
 
     registry = AdapterRegistry()
     modules: tuple[EntryTypeModule, ...] = (
         StoryEventTypeModule(),
         CharacterRelationTypeModule(),
         LoreEntryTypeModule(),
+        CharacterThoughtTypeModule(),
     )
     for module in modules:
         registry.register_adapter(_SchemaV0Adapter(module.entry_type))

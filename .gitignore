@@ -71,6 +71,8 @@ dist/**
 *.pyc
 PyQt-Fluent-Widgets/**
 knowledge_base/**
+**/.build/**
+*.migration-report.json
 install_patch/**
 wheels/**
 

@@ -37,8 +37,6 @@ def merge_effective_entries(
             continue
         replacement = WorldbookEntry(entry_id=official.entry_id, entry_type=override.entry_type, schema_version=override.schema_version, content=override.content)
         effective.append(EffectiveWorldbookEntry(package_id=package_id, entry=replacement, revision=entry_revision(replacement), source="override", base_conflict=override.base_revision != base_revision))
-    for override_id in overrides.keys() - official_map.keys():
-        issues.append(ValidationIssue(code="orphan_override", message="Override 对应的官方条目不存在", package_id=package_id, entry_id=override_id))
     known_ids = set(official_map)
     for extension in user_state.extensions:
         if extension.entry_id in known_ids:

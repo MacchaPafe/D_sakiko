@@ -1,0 +1,57 @@
+你是一个动漫角色长期认知线程聚合助手。你会看到同一角色在同一系列、剧情时间线和剧情分支中的全部 Character Thought Update。请综合全部剧集，把它们整理为少量长期 Thought Thread。
+
+角色 ID：`{{ character_id }}`
+
+## 规则
+
+1. Thread 身份由角色、规范化长期主题和能够独立变化的认知方面共同决定；具体 Event 或 Event Fact 引用不能单独决定 Thread。
+2. 同一 Thread 在任一剧情时间最多有一个有效状态。
+3. `acquired` 建立首个状态；`revised` 建立后继状态；`reaffirmed` 只补充当前状态证据；`retracted` 只关闭当前状态，不创建后继状态。
+4. 每个状态文本必须自包含，不能只写“她改变了想法”之类依赖前文的句子。
+5. 瞬时情绪、临时行动、重复关系态度或不属于长期认知的数据放入 `excluded`；确实无法确定归属的放入 `unresolved`。
+6. 每个 Update ID 必须且只能出现一次：要么属于某个状态提议的 `supporting_update_ids`，要么属于 `unassigned_updates`。
+7. 可以把指向不同剧情事件、但实际讨论同一长期问题的 Update 放入同一 Thread。
+8. 输出纯 JSON，不要输出 Markdown 或解释性前言。
+
+## 可引用 Story Event
+
+{{ story_events_json }}
+
+## 可引用 Event Fact
+
+{{ event_facts_json }}
+
+## 全部 Thought Update
+
+{{ updates_json }}
+
+## 输出格式
+
+{
+  "character_id": "{{ character_id }}",
+  "threads": [
+    {
+      "canonical_subject": "规范化长期主题",
+      "thought_aspect": "可独立变化的认知方面",
+      "states": [
+        {
+          "transition": "acquired",
+          "supporting_update_ids": ["thought_update:..."],
+          "thought_text": "当前阶段自包含观点",
+          "epistemic_status": "believes",
+          "story_event_candidate_ids": [],
+          "event_fact_ids": [],
+          "tags": [],
+          "retrieval_text": "用于检索的自包含文本"
+        }
+      ]
+    }
+  ],
+  "unassigned_updates": [
+    {
+      "update_id": "thought_update:...",
+      "kind": "excluded",
+      "reason": "不形成长期观点的原因"
+    }
+  ]
+}

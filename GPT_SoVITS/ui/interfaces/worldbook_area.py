@@ -222,7 +222,7 @@ class WorldbookArea(QWidget):
 def _content_title(content: dict[str, object]) -> str:
     """从尚未稳定的内容中提取安全列表标题。"""
 
-    for key in ("title", "relation_label", "state_summary"):
+    for key in ("title", "state_summary", "thought_text", "canonical_subject"):
         value = content.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()

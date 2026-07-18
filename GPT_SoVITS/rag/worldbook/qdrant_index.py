@@ -18,11 +18,12 @@ _COLLECTIONS: dict[EntryType, str] = {
     "story_event": "story_events",
     "character_relation": "character_relations",
     "lore_entry": "lore_entries",
+    "character_thought": "character_thoughts",
 }
 
 
 class QdrantWorldbookIndex:
-    """只拥有三类世界书 collection 的本地 Qdrant adapter。"""
+    """只拥有四类世界书 collection 的本地 Qdrant adapter。"""
 
     def __init__(self, index_path: Path, embedding_model_path: Path, batch_size: int = 32) -> None:
         """保存路径并延迟初始化重型资源。"""
@@ -38,7 +39,7 @@ class QdrantWorldbookIndex:
 
         return canonical_json_sha256(
             {
-                "index_schema_version": 1,
+                "index_schema_version": 2,
                 "projection_version": 0,
                 "embedding_model_id": "multilingual-e5-small",
                 "embedding_model_digest": _directory_digest(self._embedding_model_path),
@@ -47,7 +48,7 @@ class QdrantWorldbookIndex:
         )
 
     def scan_metadata(self) -> dict[UUID, IndexPointMetadata]:
-        """分页扫描三类 collection 中的统一 envelope。"""
+        """分页扫描四类 collection 中的统一 envelope。"""
 
         client = self._ensure_client()
         result: dict[UUID, IndexPointMetadata] = {}
@@ -103,7 +104,7 @@ class QdrantWorldbookIndex:
         return len(projections)
 
     def delete(self, point_ids: list[UUID]) -> int:
-        """从三类 collection 删除给定 UUID。"""
+        """从四类 collection 删除给定 UUID。"""
 
         if not point_ids:
             return 0
@@ -129,7 +130,7 @@ class QdrantWorldbookIndex:
         return deleted
 
     def rebuild(self) -> None:
-        """删除且仅删除世界书拥有的三类 collection。"""
+        """删除且仅删除世界书拥有的四类 collection。"""
 
         client = self._ensure_client()
         for collection_name in _COLLECTIONS.values():
@@ -153,7 +154,7 @@ class QdrantWorldbookIndex:
         return self._client
 
     def _ensure_collections(self) -> None:
-        """在真正写入前加载模型并建立三类 collection。"""
+        """在真正写入前加载模型并建立四类 collection。"""
 
         client = self._ensure_client()
         vector_size = self._embedding.get_dimension()

@@ -9,7 +9,8 @@
 | Stage 2A | [stage2a_document_extraction.md](stage2a_document_extraction.md) | Story Event、Relation Observation、Lore |
 | Stage 2B | [stage2b_thought_extraction.md](stage2b_thought_extraction.md) | Event Fact、Character Thought Update |
 | Stage 3 Relation | [stage3_relation_aggregation.md](stage3_relation_aggregation.md) | 跨场景 Character Relation State |
-| Stage 3 Thought Link | [stage3_thought_linking.md](stage3_thought_linking.md) | unresolved 观点的语义链接决策与观点审查产物 |
+| Stage 3 Thought | [stage3_thought_aggregation.md](stage3_thought_aggregation.md) | 按角色跨集 Thought Thread 与状态序列 |
 
 这些指南面向 Codex 工作区标注。原有的一体化 LiteLLM 命令仍然可用，但不属于 Codex 直接标注的首选流程。
 
+`stage3_thought_linking.md` 只保留为旧逐集流程说明；新正式数据不要再使用它。

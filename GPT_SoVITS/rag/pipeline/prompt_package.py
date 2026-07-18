@@ -18,6 +18,7 @@ PromptStageKind = Literal[
     "stage2b_thought",
     "stage3_relation",
     "stage3_thought_link",
+    "stage3_thought_aggregation",
 ]
 
 

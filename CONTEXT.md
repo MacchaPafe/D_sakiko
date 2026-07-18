@@ -66,12 +66,56 @@ _Avoid_: 标注产物、Qdrant 数据库、预构建索引
 由有效世界书条目生成、用于运行时检索的可重建派生数据。它不承载世界书内容的权威版本，也不包含用户修改本身。
 _Avoid_: 世界书源数据、世界书包、用户数据
 
+**世界书索引就绪状态**:
+表示派生索引是否已经完成与当前有效世界书条目的对账、因而可以参与运行时检索。`ready` 表示完整可用，`degraded` 表示对账已经完成但个别不兼容用户内容被隔离、其余内容仍可用；同步中或不可用不能被解释为合法的零命中。该状态不是世界书内容的一部分，也不是需要随包发布的持久内容。
+_Avoid_: 世界书包可用性、空检索结果、发布版本
+
+**世界书构建报告**:
+正式世界书包构建时生成的开发侧追踪记录，用来关联输入标注产物、正式世界书条目身份、内容摘要和验证结果。它不重复保存完整运行时内容，不参与世界书加载或索引，也不是世界书内容权威来源。
+_Avoid_: 世界书包、发布内容快照、Qdrant 索引
+
+**世界书构建配置**:
+一次官方世界书发布所使用的包元数据和标注输入文件清单，可由发布命令重复读取。它不包含转换后的世界书条目，也不是发布内容或审核结果的权威副本。
+_Avoid_: 世界书包、worldbook_release.json、世界书构建报告
+
+**世界书身份映射**:
+开发侧保存的标注身份到正式世界书 entry、Thought Thread 和 Relation Type UUID 的命名空间映射，用于在重复构建与内容修订中保持身份稳定。映射区分当前发布的 active、暂不发布但可恢复的 inactive，以及因拆分、合并等身份终结而永久退役的 retired；它不随世界书包发布，也不参与运行时加载、用户 Override 合并或索引。
+_Avoid_: 世界书条目、运行时迁移表、世界书构建报告
+
+**标注审核状态**:
+描述一项标注候选是否已经完成复核的工作流状态，与该候选最终发布、拒绝或排除的处置结论相互独立。LLM 给出的处置建议不能自行使审核状态变为完成。
+_Avoid_: 发布处置、内容是否编辑、模型建议
+
+**发布处置**:
+审核完成后对标注候选作出的结果决定：作为正式世界书内容发布、拒绝错误候选，或把不属于目标长期知识的候选排除在外。它不表示审核流程是否已经完成。
+_Avoid_: 标注审核状态、审核风险、LLM 分类
+
+**审核基础摘要**:
+对标注候选接受人工审核时所依据的直接证据与完整机器生成文档或序列计算的确定性摘要，包括生成文本、语义结构、链接和时间边界。它用于判断上一版人工快照与处置能否安全迁移，不包含人工编辑结果、审核字段、备注或正式 UUID。
+_Avoid_: 世界书条目 revision、文件 SHA-256、人工文本摘要
+
+**标注候选身份**:
+Story Event 或 Lore Entry 候选在开发侧重生成与人工审核过程中保持稳定的 `candidate_id`，表示它仍是同一项知识候选，不由场景位置、本地编号或文本相似度单独决定。来源变化时可以由确定性规则或 LLM 提议继承，但语义身份不明确时必须人工确认。
+_Avoid_: source_scene_id、source_local_id、正式 entry UUID、内容哈希
+
+**开发侧聚合身份**:
+Thought Thread、Relation Type 及其内部 State 在审核产物中使用的稳定 ID，用于重生成匹配、身份继承和人工复核。它在审核阶段分配并纳入版本管理，不是正式世界书 UUID，也不由发布器的 ID map 产生。
+_Avoid_: 正式 entry UUID、Thought Thread UUID、Relation Type UUID、内容哈希
+
+**人工审核序列**:
+审核者首次修改机器生成的 Thought Thread 或 Relation Type 状态序列时创建的完整替换快照，之后的文本和结构修改都只作用于该快照。它属于开发侧标注产物，并受审核基础摘要控制迁移，不是发布后用户对世界书条目的 Override。
+_Avoid_: 世界书 Override、结构操作日志、直接修改机器序列
+
+**人工审核文档**:
+审核者首次修改机器生成的 Story Event 或 Lore Entry 时创建的完整替换文档，之后的修改只作用于该文档。它与人工审核序列采用相同的开发侧 copy-on-write 模式，不是世界书 Override。
+_Avoid_: 世界书 Override、字段补丁、直接修改机器文档
+
 **通用世界书包**:
 保存多个动画季度明确共享的世界观内容、并由这些季度的世界书包共同依赖的独立世界书包。它的“通用”范围由显式包依赖决定，不等同于同一品牌下所有作品均适用。
 _Avoid_: 全品牌全局设定、季度包、重复设定副本
 
 **世界书包依赖**:
-一个世界书包声明其运行时内容还需要哪些其他世界书包的关系；依赖决定当前作品可使用的包集合，而作品品牌或相同剧情分支不能隐式建立这种关系。
+一个世界书包声明其运行时内容还需要哪些其他世界书包的关系；依赖具有传递性，根包使用时递归引入完整无环依赖闭包，任一必需包不可用都会使根包检索不可用。依赖决定当前作品可使用的包集合，而作品品牌或相同剧情分支不能隐式建立这种关系。
 _Avoid_: Python 依赖、自动品牌继承、Qdrant collection 关系
 
 **内置官方世界书包**:
@@ -93,6 +137,10 @@ _Avoid_: 直接编辑官方 JSON、字段补丁、自定义条目
 **Override 基准冲突**:
 官方条目自用户创建 Override 后已经变化、但用户完整替换仍能被当前格式验证和索引的复核状态。该状态继续以用户版本为有效内容，不中断世界书使用，直到用户保留、合并或放弃修改。
 _Avoid_: 格式错误、同步失败、自动合并
+
+**孤立 Override**:
+当前官方世界书包中已经不存在其目标条目身份、因而无法应用的用户完整替换。它作为用户数据继续保留，但不自动迁移或删除，也不等同于内容格式已经失效的不兼容 Override。
+_Avoid_: Override 基准冲突、不兼容 Override、自动迁移
 
 **不兼容 Override**:
 无法被当前世界书格式验证、迁移或投影到索引的用户完整替换。该条目在用户处理前从有效内容和索引中隔离，不影响其他条目，也不静默回退到官方版本。
@@ -150,17 +198,33 @@ _Avoid_: Character Knowledge, Character Belief State
 有字幕证据支持的局部认知变化，例如角色获知、目击、怀疑、否认、确认或修正了关于 Story Event 或 Event Fact 的想法。它是构建 Character Thought 时间区间的证据，不是最终认知状态。
 _Avoid_: Character Thought, Knowledge Update
 
+**Excluded Thought Update**:
+Stage 3 根据跨集上下文提议、并经人工审核确认不应形成长期 Character Thought 的局部候选，例如瞬时情绪、临时行动、关系态度重复或缺乏持有者证据的抽取结果。它必须连同排除原因保留，不等同于语义对象或 Thread 暂时无法确定的 unresolved Update。
+_Avoid_: Unresolved Thought Update, 静默丢弃
+
 **Thought Transition**:
-Stage 3 根据 Character Thought Update 与既有 Thought Thread 解析出的观点状态变化，例如获得、重申、修正、撤回或披露既有观点。它只用于构建时间区间和复核，不属于最终注入角色 prompt 的 Character Thought 内容。
+Stage 3 根据 Character Thought Update 与既有 Thought Thread 解析出的观点状态变化，例如获得、重申、修正或撤回。纯撤回只结束旧状态而不创建后继 Character Thought；只有字幕同时支持新的认知立场时，才以修正建立后继状态。Thought Transition 只用于构建时间区间和复核，不属于最终注入角色 prompt 的 Character Thought 内容。
 _Avoid_: Epistemic Status, Character Thought
 
 **Thought Subject**:
-Character Thought 所谈论的语义对象；它可以是 Story Event、Event Fact、无需事件链接的独立主题，或暂时无法判断的对象。Thought Subject 描述观点“关于什么”，不描述观点由什么原因产生。
+Character Thought Update 当时直接谈论的语义对象；它可以是 Story Event、Event Fact、无需事件链接的独立主题，或暂时无法判断的对象。具体 Event 或 Fact 链接用于保留该次表达的剧情对象与证据来源，但不单独决定长期 Thought Thread 的身份。
 _Avoid_: Thought Source, Reference Kind
 
+**规范化 Thought Subject**:
+把同一角色在不同场景中对同一长期主题的不同表达归一后得到的可读语义主题。它可以汇集不同的具体 Thought Subject 或剧情引用，并与 Thought Aspect 共同界定 Thought Thread。
+_Avoid_: Event Fact ID、Story Event ID、Thought Thread Key
+
+**Thought Aspect**:
+同一规范化 Thought Subject 下能够独立变化的认知方面，例如可能性、原因或责任判断。不同 Thought Aspect 属于不同 Thought Thread，即使它们关联相同剧情内容。
+_Avoid_: Epistemic Status、Relation Type Key、标签
+
 **Thought Thread**:
-同一角色围绕同一 Thought Subject 的某一个认知方面所形成的连续观点脉络，例如事件状态、原因或责任判断。不同 Thought Thread 可以同时有效，只有同一脉络中的明确修正或替代才会结束旧的 Character Thought。
+同一角色围绕同一规范化语义主题的某一个认知方面所形成的连续观点脉络，例如恢复可能性、原因或责任判断；它可以汇集引用不同 Story Event 或 Event Fact、但实际讨论同一长期问题的 Character Thought Update。一个 Thought Thread 在任一剧情时间最多有一个有效状态：重申只补充证据，重要扩充、修正或撤回产生后继状态；能独立变化的认知方面属于不同 Thread，并可以同时有效。
 _Avoid_: Story Event, Character Thought
+
+**Thought Thread 身份**:
+Thought Thread 首次审核通过时获得、并在后续状态变化与发布版本中保持稳定的 UUID。规范化 Subject、Thought Aspect 或状态文本的措辞变化不改变该身份，Thread 拆分或合并时才由人工确认身份继承。
+_Avoid_: Character Thought entry ID、主题哈希、可读 Thread 名称
 
 **Evidence Time**:
 字幕首次明确证明角色持有某个 Character Thought 的剧情时间。它描述证据何时出现，不保证该观点在此之前不存在。
@@ -203,5 +267,5 @@ _Avoid_: 全局读音词典, Relation Observation, TTS 推断规则
 _Avoid_: Character Address State, 剧情时间上下文, RAG 查询参数
 
 **Relation Type Key**:
-标识同一有向角色关系中可独立演变的一类关系语义，使信任、依赖、亲近程度或说话方式等状态可以分别延续和更新。第一版 Stage 3 按系列、季度、剧情分支及有向角色对汇集全部 Observation，并在一次完整 LLM 调用中创建或复用该角色对的语义键。它是稳定的内部语义键，但不是固定枚举、情绪标签或注入角色提示词的内容。
-_Avoid_: State Label, Relation Aspect, Character Relation State ID
+同一有向角色对中某个可独立演变的关系方面首次审核通过时获得、并跨后继 State 与发布版本保持稳定的 UUID，使信任、依赖、亲近程度或说话方式等脉络能够分别延续。LLM 可以建议创建、复用、拆分或合并关系方面，但普通摘要措辞变化不改变该身份，拆分与合并时由人工确认身份继承。
+_Avoid_: State Label, Relation Aspect 文本、Character Relation State entry ID、LLM 生成 snake_case

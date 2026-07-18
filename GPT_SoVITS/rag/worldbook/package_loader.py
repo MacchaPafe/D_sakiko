@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from uuid import UUID
 
@@ -17,9 +16,7 @@ from .models import (
     WorldbookEntry,
     WorldbookManifest,
 )
-
-
-_SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$")
+from .versioning import version_satisfies
 
 
 class WorldbookPackageLoader:
@@ -66,8 +63,6 @@ class WorldbookPackageLoader:
             return PackageLoadResult(issues=[ValidationIssue(code="invalid_manifest", message=str(exc), path=str(manifest_path))])
         if manifest.format_version != 1:
             issues.append(ValidationIssue(code="unsupported_manifest", message=f"不支持 manifest v{manifest.format_version}", package_id=manifest.package_id))
-        if _SEMVER_PATTERN.fullmatch(manifest.package_version) is None:
-            issues.append(ValidationIssue(code="invalid_semver", message="package_version 不是 SemVer", package_id=manifest.package_id))
         declared_paths: set[str] = set()
         entries: list[WorldbookEntry] = []
         seen_ids: set[UUID] = set()
@@ -129,7 +124,7 @@ class WorldbookPackageLoader:
         return resolved
 
     def _validate_dependencies(self, results: dict[str, PackageLoadResult]) -> None:
-        """标记缺失依赖和依赖循环。"""
+        """校验依赖存在、版本、循环和传递可用性。"""
 
         graph: dict[str, list[str]] = {}
         for package_id, result in results.items():
@@ -137,8 +132,23 @@ class WorldbookPackageLoader:
                 continue
             graph[package_id] = [dependency.package_id for dependency in result.manifest.dependencies]
             for dependency in result.manifest.dependencies:
-                if dependency.package_id not in results:
+                target = results.get(dependency.package_id)
+                if target is None:
                     result.issues.append(ValidationIssue(code="missing_dependency", message=f"缺少依赖 {dependency.package_id}", package_id=package_id))
+                    result.readiness = PackageReadiness.UNAVAILABLE
+                    continue
+                if target.manifest is None:
+                    result.issues.append(ValidationIssue(code="unavailable_dependency", message=f"依赖 {dependency.package_id} 的 manifest 不可用", package_id=package_id))
+                    result.readiness = PackageReadiness.UNAVAILABLE
+                    continue
+                if not version_satisfies(target.manifest.package_version, dependency.version_spec):
+                    result.issues.append(
+                        ValidationIssue(
+                            code="dependency_version_mismatch",
+                            message=f"依赖 {dependency.package_id} 的版本 {target.manifest.package_version} 不满足 {dependency.version_spec}",
+                            package_id=package_id,
+                        )
+                    )
                     result.readiness = PackageReadiness.UNAVAILABLE
         visiting: set[str] = set()
         visited: set[str] = set()
@@ -161,3 +171,37 @@ class WorldbookPackageLoader:
 
         for package_id in graph:
             visit(package_id)
+
+        changed = True
+        while changed:
+            changed = False
+            for package_id, dependencies in graph.items():
+                result = results[package_id]
+                if result.readiness == PackageReadiness.UNAVAILABLE:
+                    continue
+                dependency_results = [results[item] for item in dependencies if item in results]
+                unavailable = next((item for item in dependency_results if item.readiness == PackageReadiness.UNAVAILABLE), None)
+                if unavailable is not None:
+                    dependency_id = unavailable.manifest.package_id if unavailable.manifest is not None else "unknown"
+                    result.issues.append(
+                        ValidationIssue(
+                            code="unavailable_dependency",
+                            message=f"依赖闭包中的包 {dependency_id} 不可用",
+                            package_id=package_id,
+                        )
+                    )
+                    result.readiness = PackageReadiness.UNAVAILABLE
+                    changed = True
+                    continue
+                if result.readiness == PackageReadiness.READY and any(
+                    item.readiness == PackageReadiness.DEGRADED for item in dependency_results
+                ):
+                    result.issues.append(
+                        ValidationIssue(
+                            code="degraded_dependency",
+                            message="依赖闭包中存在已降级的包",
+                            package_id=package_id,
+                        )
+                    )
+                    result.readiness = PackageReadiness.DEGRADED
+                    changed = True
