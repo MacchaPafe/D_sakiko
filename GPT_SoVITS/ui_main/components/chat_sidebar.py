@@ -11,19 +11,87 @@ from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPe
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDesktopWidget,
+    QHBoxLayout,
     QListView,
+    QMenu,
+    QPushButton,
+    QSizePolicy,
     QStyle,
     QStyleOptionViewItem,
     QStyledItemDelegate,
+    QToolButton,
+    QWidget,
 )
 
 from chat.chat import Chat
 from ui_main.components.character_avatar import build_initial_avatar
 
 
-
 ChatSidebarMode = Literal["flat", "folded"]
 ChatSidebarRowType = Literal["character_header", "chat_flat", "chat_child"]
+
+
+class ChatSidebarToolbar(QWidget):
+    """
+    封装聊天侧栏顶部的主操作、视图切换和低频操作菜单。
+    """
+    new_chat_requested = pyqtSignal()
+    delete_current_chat_requested = pyqtSignal()
+    mode_toggle_requested = pyqtSignal()
+    import_backup_requested = pyqtSignal()
+    export_multiple_requested = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """
+        创建具有明确操作层级的聊天侧栏工具栏。
+        """
+        super().__init__(parent)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self._new_chat_button = QPushButton("＋ 新建对话", self)
+        self._new_chat_button.setToolTip("新建对话")
+        self._new_chat_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._new_chat_button.clicked.connect(self.new_chat_requested)
+
+        self._mode_button = QToolButton(self)
+        self._mode_button.setAutoRaise(True)
+        self._mode_button.clicked.connect(self.mode_toggle_requested)
+
+        self._more_button = QToolButton(self)
+        self._more_button.setText("⋯")
+        self._more_button.setToolTip("更多对话操作")
+        self._more_button.setAutoRaise(True)
+        self._more_button.setPopupMode(QToolButton.InstantPopup)
+        self._more_button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
+
+        more_menu = QMenu(self._more_button)
+        delete_action = more_menu.addAction("删除当前对话…")
+        more_menu.addSeparator()
+        more_menu.addSection("备份与迁移")
+        import_action = more_menu.addAction("导入对话备份…")
+        export_action = more_menu.addAction("导出多个对话…")
+        delete_action.triggered.connect(self.delete_current_chat_requested)
+        import_action.triggered.connect(self.import_backup_requested)
+        export_action.triggered.connect(self.export_multiple_requested)
+        self._more_button.setMenu(more_menu)
+
+        layout.addWidget(self._new_chat_button, 1)
+        layout.addWidget(self._mode_button)
+        layout.addWidget(self._more_button)
+
+    def set_mode(self, mode: ChatSidebarMode) -> None:
+        """
+        根据当前展示模式更新视图切换按钮的下一步动作提示。
+        """
+        if mode == "flat":
+            self._mode_button.setText("分组")
+            self._mode_button.setToolTip("按角色分组显示")
+            return
+        self._mode_button.setText("列表")
+        self._mode_button.setToolTip("按对话平铺显示")
 
 
 @lru_cache(maxsize=256)

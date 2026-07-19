@@ -724,6 +724,10 @@ class Chat:
                 deleted_character_count=0,
             )
 
+        from chat.rolling_summary import (
+            invalidate_rolling_summary_from_message_index,
+        )
+        invalidate_rolling_summary_from_message_index(self, start)
         deleted_messages = list(self.message_list[start:end])
         deleted_user_count = sum(1 for message in deleted_messages if message.character_name == "User")
         deleted_character_count = len(deleted_messages) - deleted_user_count
@@ -1322,6 +1326,8 @@ class Chat:
         """
         清空当前对话中的所有消息
         """
+        from chat.rolling_summary import clear_rolling_summary
+        clear_rolling_summary(self)
         self.message_list.clear()
         # 必须同时清除该对话的工具调用记录
         # 这些元数据绑定到 message_index；清空消息后若保留，重启渲染时会挂到新消息上。

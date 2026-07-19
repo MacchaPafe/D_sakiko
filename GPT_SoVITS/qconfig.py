@@ -103,6 +103,13 @@ class DSakikoConfig(QConfig):
     llm_temperature = RangeConfigItem("llm_setting", "llm_temperature", 1.0, validator=RangeValidator(0.0, 2.0))
     # 模型的 top-p
     llm_top_p = RangeConfigItem("llm_setting", "llm_top_p", 1.0, validator=RangeValidator(0.0, 1.0))
+    # 上下文达到模型输入上限的指定比例后触发历史记录压缩
+    rolling_summary_trigger_ratio = RangeConfigItem(
+        "llm_setting",
+        "rolling_summary_trigger_ratio",
+        0.60,
+        validator=RangeValidator(0.20, 0.80),
+    )
     # 是否仍然展示不符合格式要求的模型回复
     display_unformatted_llm_response = OptionsConfigItem("llm_setting", "display_unformatted_llm_response", False,
                                                          validator=BoolValidator())
