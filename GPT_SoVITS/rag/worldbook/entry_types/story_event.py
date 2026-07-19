@@ -16,6 +16,7 @@ class StoryEventTypeModule:
 
     entry_type: EntryType = "story_event"
     projection_version: int = 0
+    semantic_fields: frozenset[str] = frozenset({"title", "summary", "participants"})
 
     def _document(self, entry: WorldbookEntry) -> StoryEventDocument:
         """解析强类型剧情事件。"""
@@ -36,6 +37,11 @@ class StoryEventTypeModule:
         """生成剧情事件 embedding 文本。"""
 
         return self._document(entry).retrieval_text
+
+    def basic_retrieval_text(self, entry: WorldbookEntry) -> str:
+        """使用事件摘要生成不冒充智能改写的基础检索文本。"""
+
+        return self._document(entry).summary
 
     def payload(self, entry: WorldbookEntry) -> dict[str, object]:
         """生成剧情事件索引投影。"""

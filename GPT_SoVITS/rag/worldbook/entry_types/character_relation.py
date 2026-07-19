@@ -64,6 +64,9 @@ class CharacterRelationTypeModule:
 
     entry_type: EntryType = "character_relation"
     projection_version: int = 0
+    semantic_fields: frozenset[str] = frozenset(
+        {"state_summary", "speech_hint", "object_character_nickname"}
+    )
 
     def _document(self, entry: WorldbookEntry) -> CharacterRelationContentV0:
         """解析正式角色关系内容。"""
@@ -84,6 +87,13 @@ class CharacterRelationTypeModule:
         """生成角色关系 embedding 文本。"""
 
         return self._document(entry).retrieval_text
+
+    def basic_retrieval_text(self, entry: WorldbookEntry) -> str:
+        """按正式关系规则拼接摘要与说话方式。"""
+
+        document = self._document(entry)
+        suffix = f" 说话方式：{document.speech_hint}" if document.speech_hint else ""
+        return f"{document.state_summary}{suffix}"
 
     def payload(self, entry: WorldbookEntry) -> dict[str, object]:
         """生成角色关系索引投影。"""

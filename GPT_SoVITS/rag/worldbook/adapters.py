@@ -27,6 +27,7 @@ class EntryTypeModule(Protocol):
 
     entry_type: EntryType
     projection_version: int
+    semantic_fields: frozenset[str]
 
     def validate(self, entry: WorldbookEntry) -> None:
         """验证当前条目内容。"""
@@ -36,6 +37,9 @@ class EntryTypeModule(Protocol):
 
     def embedding_text(self, entry: WorldbookEntry) -> str:
         """生成用于 embedding 的文本。"""
+
+    def basic_retrieval_text(self, entry: WorldbookEntry) -> str:
+        """生成透明、确定性的基础检索文本。"""
 
     def payload(self, entry: WorldbookEntry) -> dict[str, object]:
         """生成扁平 Qdrant payload。"""

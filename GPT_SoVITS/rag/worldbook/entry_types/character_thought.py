@@ -74,6 +74,9 @@ class CharacterThoughtTypeModule:
 
     entry_type: EntryType = "character_thought"
     projection_version: int = 0
+    semantic_fields: frozenset[str] = frozenset(
+        {"canonical_subject", "thought_aspect", "thought_text", "epistemic_status"}
+    )
 
     def _document(self, entry: WorldbookEntry) -> CharacterThoughtContentV0:
         """解析正式角色观点内容。"""
@@ -94,6 +97,11 @@ class CharacterThoughtTypeModule:
         """生成角色观点 embedding 文本。"""
 
         return self._document(entry).retrieval_text
+
+    def basic_retrieval_text(self, entry: WorldbookEntry) -> str:
+        """使用观点正文生成不作额外推断的基础检索文本。"""
+
+        return self._document(entry).thought_text
 
     def payload(self, entry: WorldbookEntry) -> dict[str, object]:
         """生成角色观点索引投影。"""

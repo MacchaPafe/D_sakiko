@@ -16,6 +16,7 @@ class LoreEntryTypeModule:
 
     entry_type: EntryType = "lore_entry"
     projection_version: int = 0
+    semantic_fields: frozenset[str] = frozenset({"title", "content"})
 
     def _document(self, entry: WorldbookEntry) -> LoreEntryDocument:
         """解析强类型世界观条目。"""
@@ -36,6 +37,12 @@ class LoreEntryTypeModule:
         """生成 Lore embedding 文本。"""
 
         return self._document(entry).retrieval_text
+
+    def basic_retrieval_text(self, entry: WorldbookEntry) -> str:
+        """用标题和正文生成透明的基础检索文本。"""
+
+        document = self._document(entry)
+        return f"{document.title}：{document.content}"
 
     def payload(self, entry: WorldbookEntry) -> dict[str, object]:
         """生成 Lore 索引投影。"""
