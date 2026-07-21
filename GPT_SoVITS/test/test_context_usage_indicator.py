@@ -43,19 +43,21 @@ class ContextUsageThresholdTestCase(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_threshold_slider_uses_five_percent_steps_and_dynamic_tooltip(self) -> None:
+    def test_threshold_slider_uses_seventy_to_ninety_percent_range(self) -> None:
         indicator = ContextUsageIndicator()
         received: list[float] = []
         indicator.summaryThresholdChanged.connect(received.append)
 
         indicator.set_summary_threshold_ratio(0.65)
         popup = indicator._popup
-        self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：65%")
-        self.assertIn("上下文上限的 65%", popup.summary_threshold_slider.toolTip())
-
-        popup.summary_threshold_slider.setValue(14)
-        self.assertEqual(received[-1], 0.70)
+        self.assertEqual(popup.summary_threshold_slider.minimum(), 14)
+        self.assertEqual(popup.summary_threshold_slider.maximum(), 18)
         self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：70%")
+        self.assertIn("上下文上限的 70%", popup.summary_threshold_slider.toolTip())
+
+        popup.summary_threshold_slider.setValue(17)
+        self.assertEqual(received[-1], 0.85)
+        self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：85%")
 
 
 if __name__ == "__main__":

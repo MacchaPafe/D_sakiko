@@ -107,8 +107,8 @@ class DSakikoConfig(QConfig):
     rolling_summary_trigger_ratio = RangeConfigItem(
         "llm_setting",
         "rolling_summary_trigger_ratio",
-        0.60,
-        validator=RangeValidator(0.20, 0.80),
+        0.80,
+        validator=RangeValidator(0.70, 0.90),
     )
     # 是否仍然展示不符合格式要求的模型回复
     display_unformatted_llm_response = OptionsConfigItem("llm_setting", "display_unformatted_llm_response", False,

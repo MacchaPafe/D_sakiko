@@ -12,7 +12,6 @@ import dp_local2
 from chat.chat import Chat, ChatManager, Message, MessageAttachment, StaticPromptGenerator
 from chat.chat_meta import ToolCallRecordMeta
 from chat.rolling_summary import (
-    ROLLING_SUMMARY_MAX_TOKENS,
     ROLLING_SUMMARY_META_KEY,
     build_llm_query_with_rolling_summary,
     build_rolling_summary_update,
@@ -21,11 +20,13 @@ from chat.rolling_summary import (
     find_recent_window_start,
     get_rolling_summary,
     invalidate_rolling_summary_from_message_index,
+    rolling_summary_token_budget,
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
 )
 from emotion_enum import EmotionEnum
+from qconfig import DSakikoConfig
 
 
 class RollingSummaryTestCase(unittest.TestCase):
@@ -49,12 +50,27 @@ class RollingSummaryTestCase(unittest.TestCase):
             message_list=messages,
         )
 
-    def test_threshold_uses_configurable_ratio_with_sixty_percent_default(self) -> None:
-        self.assertFalse(context_reaches_summary_threshold(599, 1000))
-        self.assertTrue(context_reaches_summary_threshold(600, 1000))
-        self.assertFalse(context_reaches_summary_threshold(600, None))
-        self.assertFalse(context_reaches_summary_threshold(349, 1000, 0.35))
-        self.assertTrue(context_reaches_summary_threshold(350, 1000, 0.35))
+    def test_threshold_uses_configurable_ratio_with_eighty_percent_default(self) -> None:
+        self.assertFalse(context_reaches_summary_threshold(799, 1000))
+        self.assertTrue(context_reaches_summary_threshold(800, 1000))
+        self.assertFalse(context_reaches_summary_threshold(800, None))
+        self.assertFalse(context_reaches_summary_threshold(749, 1000, 0.75))
+        self.assertTrue(context_reaches_summary_threshold(750, 1000, 0.75))
+
+    def test_threshold_config_is_limited_to_seventy_through_ninety_percent(self) -> None:
+        item = DSakikoConfig.rolling_summary_trigger_ratio
+
+        self.assertEqual(item.defaultValue, 0.80)
+        self.assertEqual(item.range, (0.70, 0.90))
+        self.assertEqual(item.validator.correct(0.20), 0.70)
+        self.assertEqual(item.validator.correct(0.95), 0.90)
+
+    def test_summary_budget_is_ten_percent_without_a_fixed_upper_cap(self) -> None:
+        self.assertEqual(rolling_summary_token_budget(1000), 100)
+        self.assertEqual(rolling_summary_token_budget(128_000), 12_800)
+        self.assertEqual(rolling_summary_token_budget(1_000_000), 100_000)
+        with self.assertRaises(ValueError):
+            rolling_summary_token_budget(0)
 
     def test_dp_updates_summary_at_threshold_and_saves_it(self) -> None:
         chat = self._chat_with_turns(12)
@@ -73,7 +89,7 @@ class RollingSummaryTestCase(unittest.TestCase):
                 return_value=completion_response,
             ) as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=600),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,
@@ -93,7 +109,7 @@ class RollingSummaryTestCase(unittest.TestCase):
         completion_mock.assert_called_once()
         self.assertEqual(
             completion_mock.call_args.kwargs["max_tokens"],
-            ROLLING_SUMMARY_MAX_TOKENS,
+            100,
         )
         event_queue.put.assert_called_once_with({
             "type": "context_compaction_started",
@@ -111,7 +127,7 @@ class RollingSummaryTestCase(unittest.TestCase):
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config") as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=599),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=799),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,
@@ -136,7 +152,7 @@ class RollingSummaryTestCase(unittest.TestCase):
                 side_effect=TimeoutError("summary timeout"),
             ) as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=600),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             first = subject._maybe_update_rolling_summary(
                 chat,
@@ -158,14 +174,14 @@ class RollingSummaryTestCase(unittest.TestCase):
         subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
         subject.chat_manager = mock.Mock()
         subject.d_sakiko_config = SimpleNamespace(
-            rolling_summary_trigger_ratio=SimpleNamespace(value=0.35),
+            rolling_summary_trigger_ratio=SimpleNamespace(value=0.75),
         )
 
         with (
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config") as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=349),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=749),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,
@@ -176,10 +192,10 @@ class RollingSummaryTestCase(unittest.TestCase):
         self.assertFalse(updated)
         completion_mock.assert_not_called()
 
-    def test_summary_validation_rejects_short_error_and_oversized_results(self) -> None:
+    def test_summary_validation_rejects_short_and_error_results_without_length_cap(self) -> None:
         self.assertIsNotNone(rolling_summary_validation_error("无"))
         self.assertIsNotNone(rolling_summary_validation_error("Internal Server Error"))
-        self.assertIsNotNone(rolling_summary_validation_error("摘" * 12001))
+        self.assertIsNone(rolling_summary_validation_error("摘" * 12001))
         self.assertIsNone(rolling_summary_validation_error("用户希望以后继续讨论 Live2D 性能优化。"))
 
     def test_dp_rejects_invalid_summary_without_advancing_boundary(self) -> None:
@@ -192,7 +208,7 @@ class RollingSummaryTestCase(unittest.TestCase):
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config", return_value=response),
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=600),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,

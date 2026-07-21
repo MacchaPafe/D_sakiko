@@ -4200,7 +4200,7 @@ class ChatGUI(QWidget):
     @pyqtSlot(float)
     def _set_summary_compression_threshold(self, ratio: float) -> None:
         """保存用户在上下文用量浮窗中设置的压缩阈值。"""
-        normalized_ratio = max(0.20, min(0.80, round(float(ratio) * 20) / 20))
+        normalized_ratio = max(0.70, min(0.90, round(float(ratio) * 20) / 20))
         d_sakiko_config.set(
             d_sakiko_config.rolling_summary_trigger_ratio,
             normalized_ratio,

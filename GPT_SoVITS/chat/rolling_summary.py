@@ -13,11 +13,10 @@ if TYPE_CHECKING:
 
 ROLLING_SUMMARY_META_KEY = "rolling_summary"
 ROLLING_SUMMARY_VERSION = 1
-DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO = 0.60
+DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO = 0.80
 RESERVED_RECENT_ROUNDS = 10
-ROLLING_SUMMARY_MAX_TOKENS = 2000
+ROLLING_SUMMARY_TOKEN_BUDGET_RATIO = 0.10
 ROLLING_SUMMARY_MIN_CHARS = 8
-ROLLING_SUMMARY_MAX_CHARS = 12000
 EMERGENCY_CONTEXT_RATIO = 0.90
 UNKNOWN_MODEL_MAX_BYTES = 340 * 1024
 SUMMARY_FAILURE_COOLDOWN_SECONDS = 60
@@ -188,14 +187,19 @@ def context_reaches_summary_threshold(
     return used_tokens >= token_limit * trigger_ratio
 
 
+def rolling_summary_token_budget(token_limit: int) -> int:
+    """按模型上下文上限的固定比例计算本轮摘要输出预算。"""
+    if token_limit <= 0:
+        raise ValueError("模型上下文上限必须大于 0。")
+    return max(1, int(token_limit * ROLLING_SUMMARY_TOKEN_BUDGET_RATIO))
+
+
 def rolling_summary_validation_error(text: str) -> str | None:
     """校验摘要结果；有效时返回 None，无效时返回适合写入日志的原因。"""
     normalized = text.strip()
     compact_length = len(re.sub(r"\s+", "", normalized))
     if compact_length < ROLLING_SUMMARY_MIN_CHARS:
         return f"摘要内容过短（{compact_length} 字符）"
-    if len(normalized) > ROLLING_SUMMARY_MAX_CHARS:
-        return f"摘要内容过长（{len(normalized)} 字符）"
 
     lowered = normalized.lower()
     if any(lowered.startswith(prefix) for prefix in _SUMMARY_ERROR_PREFIXES):
@@ -357,9 +361,10 @@ def trim_messages_for_emergency(
             try:
                 from chat.model_token_usage import count_message_tokens
 
+                summary_budget = rolling_summary_token_budget(token_limit)
                 target = min(
-                    int(token_limit * EMERGENCY_CONTEXT_RATIO),
-                    max(1, token_limit - ROLLING_SUMMARY_MAX_TOKENS),
+                    max(1, int(token_limit * EMERGENCY_CONTEXT_RATIO)),
+                    max(1, token_limit - summary_budget),
                 )
                 return count_message_tokens(model, candidate) > target
             except Exception:

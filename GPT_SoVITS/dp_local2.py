@@ -24,11 +24,11 @@ from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.model_token_usage import count_message_tokens, get_model_input_token_limit
 from chat.rolling_summary import (
     DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO,
-    ROLLING_SUMMARY_MAX_TOKENS,
     SUMMARY_FAILURE_COOLDOWN_SECONDS,
     build_llm_query_with_rolling_summary,
     build_rolling_summary_update,
     context_reaches_summary_threshold,
+    rolling_summary_token_budget,
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
@@ -586,7 +586,7 @@ class DSLocalAndVoiceGen:
                 tool_choice="none",
                 stream=False,
                 timeout=30,
-                max_tokens=ROLLING_SUMMARY_MAX_TOKENS,
+                max_tokens=rolling_summary_token_budget(token_limit),
                 _reasoning_snapshot_locked=True,
             )
             summary_text = self._extract_response_content(response).strip()
