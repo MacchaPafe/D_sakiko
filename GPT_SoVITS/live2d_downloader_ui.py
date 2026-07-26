@@ -93,7 +93,8 @@ class PageCharSelect(QWidget):
         self.bottom_btn_group = QButtonGroup(self)
         self.bottom_btn_group.buttonClicked.connect(self.on_bottom_group_clicked)
         self.all_bottom_btns = []  # 存个引用，方便后面批量禁用/启用
-        for i, (char_name,info) in enumerate(ui_constants.char_info_json.items()):
+        for i, char_name in enumerate(ui_constants.downloadable_character_names()):
+            info = ui_constants.char_info_json[char_name]
             btn = QToolButton()
             btn.setCheckable(True)
             btn.setEnabled(False)  # 【核心逻辑】初始化时全部不可用

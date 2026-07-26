@@ -387,8 +387,49 @@ char_info_json={
     "bestdori_index": 341,
     "romaji": "sakiko",
     "full_name": "丰川祥子（豊川祥子-Ave Mujica）"
+  },
+  "阿拉蕾": {
+    "theme_color": "#FFEE55",
+    "bestdori_index": None,
+    "romaji": "arale",
+    "full_name": "仲町阿拉蕾（仲町あられ-夢限大MewType）"
+  },
+  "野乃花": {
+    "theme_color": "#FFBBCC",
+    "bestdori_index": None,
+    "romaji": "nonoka",
+    "full_name": "宫永野乃花（宮永ののか-夢限大MewType）"
+  },
+  "律": {
+    "theme_color": "#4477CC",
+    "bestdori_index": None,
+    "romaji": "ritsu",
+    "full_name": "峰月律（峰月律-夢限大MewType）"
+  },
+  "都子": {
+    "theme_color": "#9977CC",
+    "bestdori_index": None,
+    "romaji": "miyako",
+    "full_name": "藤都子（藤都子-夢限大MewType）"
+  },
+  "由乃": {
+    "theme_color": "#EE5577",
+    "bestdori_index": None,
+    "romaji": "yuno",
+    "full_name": "千石由乃（千石ユノ-夢限大MewType）"
   }
 }
+
+
+def downloadable_character_names() -> list[str]:
+    """返回具有有效 Bestdori 角色编号的可下载角色名称。"""
+
+    return [
+        character_name
+        for character_name, info in char_info_json.items()
+        if isinstance(info.get("bestdori_index"), int)
+    ]
+
 
 class CurrentConfig:
     selected_existing_character:str="kasumi"
@@ -528,7 +569,6 @@ class AddCostume:
 3''')
         with open(f"../reference_audio/{character_folder_name}/reference_text.txt",'w',encoding='utf-8') as f:
             f.write('')
-
 
 
 
