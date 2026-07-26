@@ -42,7 +42,8 @@ EVENT_BASE_MAP: dict[SeriesId, int] = {
     SeriesId.BANG_DREAM_2: 2000,
     SeriesId.BANG_DREAM_3: 3000,
     SeriesId.ITS_MYGO: 4000,
-    SeriesId.AVE_MUJICA: 5000
+    SeriesId.AVE_MUJICA: 5000,
+    SeriesId.YUME_MITA: 6000,
 }
 
 EPISODE_EVENT_SLOT_SIZE = 50

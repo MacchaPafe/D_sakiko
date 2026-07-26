@@ -29,6 +29,7 @@ class SeriesId(str, Enum):
     BANG_DREAM_3 = "bang_dream_3"
     ITS_MYGO = "its_mygo"
     AVE_MUJICA = "ave_mujica"
+    YUME_MITA = "yume_mita"
 
 
 class CanonBranch(str, Enum):
@@ -77,6 +78,9 @@ class BandId(str, Enum):
     AVE_MUJICA = "ave_mujica"
     """表示 Ave Mujica 乐队。"""
 
+    MUGENDAI_MEWTYPE = "mugendai_mewtype"
+    """表示梦限大乐队"""
+
     @property
     def display_name(self) -> str:
         """返回乐队的用户可读正式名称。"""
@@ -92,8 +96,9 @@ _BAND_DISPLAY_NAMES: dict[BandId, str] = {
     BandId.ROSELIA: "Roselia",
     BandId.MORFONICA: "Morfonica",
     BandId.RAISE_A_SUILEN: "RAISE A SUILEN",
-    BandId.MYGO: "MyGO!!!!!",
+    BandId.MYGO: "It's MyGO!!!!!",
     BandId.AVE_MUJICA: "Ave Mujica",
+    BandId.MUGENDAI_MEWTYPE: "梦限大 Mewtype",
 }
 
 
@@ -145,6 +150,11 @@ class CharacterId(str, Enum):
     UMIRI = "umiri"  # 海铃 / 八幡海铃
     NYAMU = "nyamu"  # 喵梦 / 祐天寺喵梦
     SAKIKO = "sakiko"  # 祥子 / 丰川祥子
+    ARALE = "arale" # 阿拉蕾 / 仲町阿拉蕾
+    NONOKA = "nonoka" # 野乃花 / 宫永野乃花
+    RITSU = "ritsu" # 律 / 峰月律
+    MIYAKO = "miyako" # 都子 / 藤都子
+    YUNO = "yuno" # 由乃 / 千石由乃
 
     @property
     def common_name(self) -> str:
@@ -202,6 +212,11 @@ _ROMAJI_TO_COMMON_NAME: Dict[CharacterId, str] = {
     CharacterId.UMIRI: "海铃",
     CharacterId.NYAMU: "喵梦",
     CharacterId.SAKIKO: "祥子",
+    CharacterId.ARALE: "阿拉蕾",
+    CharacterId.NONOKA: "野乃花",
+    CharacterId.RITSU: "律",
+    CharacterId.MIYAKO: "都子",
+    CharacterId.YUNO: "由乃",
 }
 
 
@@ -268,6 +283,13 @@ BAND_MEMBERS: dict[BandId, tuple[CharacterId, ...]] = {
         CharacterId.UMIRI,
         CharacterId.NYAMU,
         CharacterId.SAKIKO,
+    ),
+    BandId.MUGENDAI_MEWTYPE: (
+        CharacterId.ARALE,
+        CharacterId.NONOKA,
+        CharacterId.RITSU,
+        CharacterId.MIYAKO,
+        CharacterId.YUNO
     ),
 }
 

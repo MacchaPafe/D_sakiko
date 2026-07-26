@@ -16,6 +16,7 @@ _SERIES_BASES: dict[SeriesId, int] = {
     SeriesId.BANG_DREAM_3: 3000,
     SeriesId.ITS_MYGO: 4000,
     SeriesId.AVE_MUJICA: 5000,
+    SeriesId.YUME_MITA: 6000,
 }
 
 

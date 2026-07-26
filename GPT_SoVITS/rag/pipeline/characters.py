@@ -40,6 +40,11 @@ MANUAL_ALIAS_OVERRIDES = {
     "lock": ["六花", "LOCK", "Lock", "朝日六花", "罗克"],
     "ako": ["亚子", "宇田川亚子", "宇田川あこ"],
     "chuchu": ["知由", "珠手知由", "CHU2", "Chu2", "chu2"],
+    "arale": ["阿拉蕾", "仲町阿拉蕾", "仲町あられ", "Nakamachi Arale"],
+    "nonoka": ["野乃花", "宫永野乃花", "宮永ののか", "Miyanaga Nonoka"],
+    "ritsu": ["律", "峰月律", "Minetsuki Ritsu"],
+    "miyako": ["都子", "藤都子", "Fuji Miyako"],
+    "yuno": ["由乃", "千石由乃", "千石ユノ", "Sengoku Yuno"],
 }
 
 

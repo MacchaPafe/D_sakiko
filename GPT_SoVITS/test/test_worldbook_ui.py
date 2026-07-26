@@ -663,7 +663,7 @@ class WorldbookUiTest(unittest.TestCase):
             parent,
         )
         headers = _visible_group_headers(dialog)
-        self.assertEqual(headers[:2], ["MyGO!!!!!", "Ave Mujica"])
+        self.assertEqual(headers[:2], ["It's MyGO!!!!!", "Ave Mujica"])
 
         uika_item = next(
             dialog.list_widget.item(index)
@@ -683,12 +683,12 @@ class WorldbookUiTest(unittest.TestCase):
 
         dialog.search_edit.setText("MyGO")
         self.app.processEvents()
-        self.assertEqual(_visible_group_headers(dialog), ["MyGO!!!!!"])
+        self.assertEqual(_visible_group_headers(dialog), ["It's MyGO!!!!!"])
         self.assertEqual(_visible_option_count(dialog), 5)
 
         dialog.search_edit.setText("灯")
         self.app.processEvents()
-        self.assertEqual(_visible_group_headers(dialog), ["MyGO!!!!!"])
+        self.assertEqual(_visible_group_headers(dialog), ["It's MyGO!!!!!"])
         self.assertEqual(_visible_option_count(dialog), 1)
         dialog.close()
         parent.close()

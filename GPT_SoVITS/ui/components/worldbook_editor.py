@@ -1868,6 +1868,7 @@ def _series_options() -> list[SelectionOption]:
         SeriesId.BANG_DREAM_3: "BanG Dream! 第三季",
         SeriesId.ITS_MYGO: "BanG Dream! It’s MyGO!!!!!",
         SeriesId.AVE_MUJICA: "BanG Dream! Ave Mujica",
+        SeriesId.YUME_MITA: "BanG Dream! Yume∞Mita",
     }
     return [SelectionOption(series.value, labels[series], series.value) for series in SeriesId]
 
