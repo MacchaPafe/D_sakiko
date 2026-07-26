@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from PyQt5.QtCore import QSettings, QSignalBlocker, Qt, QUrl
-from PyQt5.QtGui import QDesktopServices, QKeySequence
+from PyQt5.QtCore import QSettings, QSignalBlocker, Qt
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -68,6 +68,7 @@ from rag.worldbook.time_coordinates import OPEN_ENDED_TIME, decode_story_time
 from rag.worldbook.user_state import WorldbookUserStateRepository
 from ui.components.worldbook_editor import EntryEditorHost
 from ui.controllers.worldbook_sync_controller import WorldbookSyncController
+from ui.file_manager import show_file_in_manager
 
 
 _ENTRY_TYPE_LABELS: tuple[tuple[EntryType, str], ...] = (
@@ -153,7 +154,11 @@ class StoryEventDeletionBox(MessageBoxBase):
         scroll.setMinimumHeight(180)
         scroll.setMaximumHeight(420)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
+        scroll.viewport().setAutoFillBackground(False)
         content = QWidget(scroll)
+        content.setStyleSheet("background: transparent;")
+        content.setAutoFillBackground(False)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 8, 0)
         content_layout.setSpacing(8)
@@ -455,31 +460,47 @@ class WorldbookArea(QWidget):
         return scroll
 
     def _build_more_menu(self) -> None:
-        """创建条目操作和疑难解答菜单。"""
+        """创建可复用动作，并按当前条目状态组装初始菜单。"""
 
-        menu = RoundMenu(parent=self)
         self.hide_action = Action(FluentIcon.HIDE, self.tr("隐藏条目"), self)
         self.restore_official_action = Action(FluentIcon.RETURN, self.tr("恢复官方内容"), self)
         self.confirm_base_action = Action(FluentIcon.UPDATE, self.tr("保留我的修改"), self)
         self.export_action = Action(FluentIcon.SAVE, self.tr("导出原始修改"), self)
         self.delete_extension_action = Action(FluentIcon.DELETE, self.tr("永久删除条目"), self)
         self.show_state_location_action = Action(
-            FluentIcon.DOCUMENT, self.tr("查看用户状态位置"), self
+            FluentIcon.DOCUMENT, self.tr("打开用户状态文件位置"), self
         )
         self.sync_action = Action(FluentIcon.SYNC, self.tr("检查并修复搜索功能"), self)
         self.rebuild_action = Action(FluentIcon.HISTORY, self.tr("重新生成全部搜索数据…"), self)
-        menu.addActions(
-            [
-                self.hide_action,
-                self.restore_official_action,
-                self.confirm_base_action,
-                self.export_action,
-                self.delete_extension_action,
-            ]
+        for action in self._entry_actions():
+            action.setEnabled(False)
+        self._refresh_more_menu()
+
+    def _entry_actions(self) -> tuple[Action, ...]:
+        """按设计约定返回条目动作的固定相对顺序。"""
+
+        return (
+            self.hide_action,
+            self.restore_official_action,
+            self.confirm_base_action,
+            self.export_action,
+            self.show_state_location_action,
+            self.delete_extension_action,
         )
-        menu.addSeparator()
+
+    def _refresh_more_menu(self) -> None:
+        """只用当前适用动作重新组装条目菜单和固定维护组。"""
+
+        menu = RoundMenu(parent=self)
+        entry_actions = [action for action in self._entry_actions() if action.isEnabled()]
+        if entry_actions:
+            menu.addActions(entry_actions)
+            menu.addSeparator()
         menu.addActions([self.sync_action, self.rebuild_action])
+        previous_menu = self.more_button.menu()
         self.more_button.setMenu(menu)
+        if previous_menu is not None:
+            previous_menu.deleteLater()
 
     def _connect_signals(self) -> None:
         """连接导航、编辑、用户状态操作和异步同步信号。"""
@@ -858,6 +879,7 @@ class WorldbookArea(QWidget):
         self.discard_button.show()
         self.save_button.setEnabled(True)
         self.discard_button.setEnabled(True)
+        self._refresh_more_menu()
 
     def _on_entry_selected(
         self,
@@ -920,7 +942,6 @@ class WorldbookArea(QWidget):
         if record.orphaned_override:
             self.orphan_badge.show()
             self.export_action.setEnabled(True)
-            self.show_state_location_action.setEnabled(True)
             self.delete_extension_action.setText(self.tr("永久删除孤立修改"))
             self.delete_extension_action.setEnabled(
                 record.owner_package_id == self._root_package_id
@@ -943,6 +964,7 @@ class WorldbookArea(QWidget):
                 message += self.tr(f" 原始内容也无法解析：{record.issue.message}")
             self.problem_label.setText(message)
             self.problem_label.show()
+            self._refresh_more_menu()
             return
 
         if record.hidden:
@@ -955,6 +977,7 @@ class WorldbookArea(QWidget):
                 message += self.tr(" 官方内容在隐藏期间已有更新，恢复后请检查内容。")
             self.problem_label.setText(message)
             self.problem_label.show()
+            self._refresh_more_menu()
             return
 
         if record.issue is not None:
@@ -970,6 +993,7 @@ class WorldbookArea(QWidget):
                 self._configure_extension_actions(record)
             self.problem_label.setText(self.tr(f"这条自定义内容暂时无法使用：{record.issue.message}"))
             self.problem_label.show()
+            self._refresh_more_menu()
             return
 
         if record.effective_entry is None:
@@ -996,6 +1020,7 @@ class WorldbookArea(QWidget):
             self.export_action.setEnabled(True)
             self.confirm_base_action.setEnabled(effective.base_conflict)
             if effective.base_conflict:
+                self.show_state_location_action.setEnabled(True)
                 self.problem_label.setText(
                     self.tr("官方内容已有更新，请检查你的修改。")
                 )
@@ -1015,11 +1040,11 @@ class WorldbookArea(QWidget):
             self.save_button.setEnabled(False)
             self.discard_button.show()
             self.discard_button.setEnabled(False)
+        self._refresh_more_menu()
 
     def _configure_extension_actions(self, record: PackageEntryRecord) -> None:
-        """根据扩展所有权配置永久删除和状态文件操作。"""
+        """根据扩展所有权配置永久删除操作。"""
 
-        self.show_state_location_action.setEnabled(True)
         self.delete_extension_action.setEnabled(
             record.owner_package_id == self._root_package_id
         )
@@ -1113,6 +1138,8 @@ class WorldbookArea(QWidget):
         editor = self.modified_host.editor()
         if not editor.is_dirty():
             return False
+        if not self._validate_editor_form(self.tr("无法保存修改")):
+            return False
         if effective.source == "extension":
             return self._save_existing_extension(record)
         official = record.official_entry
@@ -1158,6 +1185,8 @@ class WorldbookArea(QWidget):
         if self._draft_entry is None or self._root_package_id is None:
             return False
         editor = self.modified_host.editor()
+        if not self._validate_editor_form(self.tr("无法创建条目")):
+            return False
         try:
             saved = self._edit_service.save_extension(
                 self._root_package_id,
@@ -1217,6 +1246,15 @@ class WorldbookArea(QWidget):
             parent=self.window(),
         )
         return True
+
+    def _validate_editor_form(self, error_title: str) -> bool:
+        """使用类型编辑器的用户文案校验当前表单。"""
+
+        message = self.modified_host.editor().validate_form()
+        if message is None:
+            return True
+        self._show_error(error_title, message)
+        return False
 
     def _persistent_catalog(self) -> list[PersistentEntryRecord]:
         """返回覆盖全部已安装包及隐藏内容的写入校验目录。"""
@@ -1289,7 +1327,11 @@ class WorldbookArea(QWidget):
         """确认后删除当前 Override 并恢复官方内容。"""
 
         record = self._current_record
-        if record is None or record.official_entry is None:
+        if (
+            record is None
+            or record.official_entry is None
+            or not self._resolve_unsaved_changes()
+        ):
             return
         box = MessageBox(
             self.tr("恢复官方内容吗？"),
@@ -1318,7 +1360,11 @@ class WorldbookArea(QWidget):
         """确认继续使用用户内容并接受当前官方 revision 为新基准。"""
 
         record = self._current_record
-        if record is None or record.official_entry is None:
+        if (
+            record is None
+            or record.official_entry is None
+            or not self._resolve_unsaved_changes()
+        ):
             return
         self._edit_service.confirm_current_base(record.owner_package_id, record.official_entry)
         self._refresh_records(record.official_entry.entry_id)
@@ -1470,16 +1516,29 @@ class WorldbookArea(QWidget):
             )
             for package_id, result in self._packages.items()
         }
-        box = StoryEventDeletionBox(plan, package_names, self.window())
-        result = box.exec()
-        if result == StoryEventDeletionBox.SWITCH_RESULT:
-            if box.switch_package_id is not None:
-                index = self.package_combo.findData(box.switch_package_id)
-                if index >= 0:
-                    self.package_combo.setCurrentIndex(index)
-            return
-        if result != QDialog.Accepted or not plan.can_apply:
-            return
+        if plan.impacts:
+            box = StoryEventDeletionBox(plan, package_names, self.window())
+            result = box.exec()
+            if result == StoryEventDeletionBox.SWITCH_RESULT:
+                if box.switch_package_id is not None:
+                    index = self.package_combo.findData(box.switch_package_id)
+                    if index >= 0:
+                        self.package_combo.setCurrentIndex(index)
+                return
+            if result != QDialog.Accepted or not plan.can_apply:
+                return
+        else:
+            box = MessageBox(
+                self.tr(f"删除“{_entry_title(record.entry)}”？"),
+                self.tr(
+                    "这个剧情事件将被永久删除，并从世界书搜索中移除。此操作无法撤销。"
+                ),
+                self.window(),
+            )
+            box.yesButton.setText(self.tr("永久删除"))
+            box.cancelButton.setText(self.tr("取消"))
+            if not box.exec():
+                return
         next_entry_id, previous_entry_id = self._neighbor_entry_ids()
         try:
             self._edit_service.apply_story_event_deletion(
@@ -1498,7 +1557,11 @@ class WorldbookArea(QWidget):
         self._refresh_records(next_entry_id or previous_entry_id)
         self._controller.reconcile_all()
         InfoBar.success(
-            self.tr("剧情事件及关联修改已处理"),
+            self.tr(
+                "剧情事件及关联修改已处理"
+                if plan.impacts
+                else "剧情事件已永久删除"
+            ),
             self.tr("正在更新世界书的搜索内容。"),
             duration=2500,
             position=InfoBarPosition.TOP_RIGHT,
@@ -1522,14 +1585,13 @@ class WorldbookArea(QWidget):
         return next_id, previous_id
 
     def _show_user_state_location(self) -> None:
-        """在系统文件管理器中打开当前条目所属用户状态的位置。"""
+        """在系统文件管理器中定位当前条目所属的用户状态文件。"""
 
         record = self._current_record
         if record is None:
             return
         path = self._states.path_for(record.owner_package_id)
-        target = path if path.exists() else path.parent
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+        show_file_in_manager(path if path.exists() else path.parent)
 
     def _confirm_rebuild(self) -> None:
         """确认后异步重新生成全部世界书搜索数据。"""
@@ -1614,6 +1676,7 @@ class WorldbookArea(QWidget):
         self.export_action.setEnabled(False)
         self.delete_extension_action.setEnabled(False)
         self.show_state_location_action.setEnabled(False)
+        self._refresh_more_menu()
 
     def resolve_pending_changes(self) -> bool:
         """供配置窗口关闭前处理世界书页面的未保存内容。"""

@@ -14,15 +14,18 @@ from PyQt5.QtCore import QRect, QSettings, Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QFormLayout, QSplitter, QWidget
 from qfluentwidgets import (
+    BodyLabel,
     CaptionLabel,
     ComboBox,
     ListWidget,
     PrimaryPushButton,
     SearchLineEdit,
+    ScrollArea,
     ToolButton,
     TransparentDropDownPushButton,
 )
 
+from rag.models import BAND_MEMBERS, BandId, CharacterId
 from rag.worldbook.adapters import create_default_registry
 from rag.worldbook.hashing import file_sha256
 from rag.worldbook.models import (
@@ -35,13 +38,19 @@ from rag.worldbook.models import (
 from rag.worldbook.user_state import WorldbookUserStateRepository
 from ui.components.worldbook_editor import (
     EntryEditorHost,
+    MultiSelectDialog,
     MultiSelectField,
     SelectionChip,
     SelectionOption,
     StoryEventEditor,
     TagEditor,
+    _character_options,
 )
-from ui.interfaces.worldbook_area import UnsavedChangesBox, WorldbookArea
+from ui.interfaces.worldbook_area import (
+    StoryEventDeletionBox,
+    UnsavedChangesBox,
+    WorldbookArea,
+)
 
 
 class WorldbookUiTest(unittest.TestCase):
@@ -79,6 +88,10 @@ class WorldbookUiTest(unittest.TestCase):
             self.assertIsInstance(area.more_button, TransparentDropDownPushButton)
             self.assertEqual(area.sync_action.text(), "检查并修复搜索功能")
             self.assertEqual(area.rebuild_action.text(), "重新生成全部搜索数据…")
+            self.assertEqual(
+                _menu_action_texts(area),
+                ["检查并修复搜索功能", "重新生成全部搜索数据…"],
+            )
             self.assertEqual(area.right_panel.minimumWidth(), 0)
             self.assertFalse(
                 area.show_hidden_check.geometry().intersects(
@@ -144,15 +157,59 @@ class WorldbookUiTest(unittest.TestCase):
             if isinstance(row, QWidget):
                 self.assertIn("我添加的", row.findChild(CaptionLabel).text())
 
-            with patch(
-                "ui.interfaces.worldbook_area.StoryEventDeletionBox.exec",
-                return_value=1,
-            ):
+            with patch("ui.interfaces.worldbook_area.MessageBox") as message_box:
+                message_box.return_value.exec.return_value = True
                 area._delete_current_extension()
+            message_box.assert_called_once_with(
+                "删除“我添加的事件”？",
+                "这个剧情事件将被永久删除，并从世界书搜索中移除。此操作无法撤销。",
+                area.window(),
+            )
             self.app.processEvents()
             self.assertEqual(area._states.load("test.package").extensions, [])
             self.assertEqual(area.source_filter_combo.currentData(), "user")
             self.assertEqual(area.entry_list.count(), 0)
+            area.close()
+
+    def test_story_extension_validation_uses_aggregated_user_facing_message(self) -> None:
+        """空白剧情事件应一次提示全部缺失内容，并聚焦首个字段。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_package(root, _story_entry())
+            settings = QSettings(str(root / "ui.ini"), QSettings.IniFormat)
+            area = WorldbookArea(app_root=root, settings=settings)
+            area.resize(1120, 820)
+            area.show()
+            area._begin_create_extension()
+            self.app.processEvents()
+            editor = area.modified_host.editor()
+            self.assertIsInstance(editor, StoryEventEditor)
+            if not isinstance(editor, StoryEventEditor):
+                self.fail("新增草稿没有使用剧情事件编辑器")
+
+            with (
+                patch.object(area, "_show_error") as show_error,
+                patch.object(area._edit_service, "save_extension") as save_extension,
+            ):
+                self.assertFalse(area._save_current())
+            self.app.processEvents()
+
+            show_error.assert_called_once_with(
+                "无法创建条目",
+                "请完善以下内容：事件标题；事件摘要；至少一名参与角色；至少一个标签。",
+            )
+            save_extension.assert_not_called()
+            self.assertTrue(editor.title_edit.hasFocus())
+            self.assertEqual(
+                editor.tags_field.help_label.text(),
+                "添加角色、地点、事件或主题等关键词，可以让这条内容更容易在相关对话中被找到。",
+            )
+            self.assertTrue(editor.tags_field.help_label.isVisible())
+            self.assertIn(
+                "标签（必填）",
+                [label.text() for label in editor.findChildren(BodyLabel)],
+            )
             area.close()
 
     def test_orphan_override_is_only_in_my_content_and_deletes_without_sync(self) -> None:
@@ -201,6 +258,15 @@ class WorldbookUiTest(unittest.TestCase):
             self.assertTrue(area.orphan_badge.isVisible())
             self.assertTrue(area.modified_host.editor()._read_only)
             self.assertTrue(area.delete_extension_action.isEnabled())
+            self.assertEqual(
+                _menu_action_texts(area),
+                [
+                    "导出原始修改",
+                    "永久删除孤立修改",
+                    "检查并修复搜索功能",
+                    "重新生成全部搜索数据…",
+                ],
+            )
 
             with patch("ui.interfaces.worldbook_area.MessageBox") as message_box:
                 message_box.return_value.exec.return_value = True
@@ -232,6 +298,26 @@ class WorldbookUiTest(unittest.TestCase):
             area.show()
             self.app.processEvents()
             area._display_record(area._records[story.entry_id])
+
+            plan = area._edit_service.plan_story_event_deletion(
+                "test.package",
+                story.entry_id,
+                area._persistent_catalog(),
+            )
+            deletion_box = StoryEventDeletionBox(
+                plan,
+                {"test.package": "测试世界书"},
+                area.window(),
+            )
+            impact_scroll = deletion_box.findChild(ScrollArea)
+            self.assertIsNotNone(impact_scroll)
+            if impact_scroll is None:
+                self.fail("关联内容删除对话框缺少滚动区域")
+            self.assertIn("transparent", impact_scroll.viewport().styleSheet())
+            self.assertIsNotNone(impact_scroll.widget())
+            if impact_scroll.widget() is not None:
+                self.assertIn("transparent", impact_scroll.widget().styleSheet())
+            deletion_box.close()
 
             with patch(
                 "ui.interfaces.worldbook_area.StoryEventDeletionBox.exec",
@@ -298,7 +384,11 @@ class WorldbookUiTest(unittest.TestCase):
                 "该条目属于“通用世界书”。请在上方直接选择该世界书后进行编辑。",
             )
             self.assertFalse(area.delete_extension_action.isEnabled())
-            self.assertTrue(area.show_state_location_action.isEnabled())
+            self.assertFalse(area.show_state_location_action.isEnabled())
+            self.assertEqual(
+                _menu_action_texts(area),
+                ["检查并修复搜索功能", "重新生成全部搜索数据…"],
+            )
 
             area.package_combo.setCurrentIndex(
                 area.package_combo.findData("common.package")
@@ -308,6 +398,114 @@ class WorldbookUiTest(unittest.TestCase):
             self.app.processEvents()
             self.assertFalse(area.modified_host.editor()._read_only)
             self.assertTrue(area.delete_extension_action.isEnabled())
+            self.assertEqual(
+                _menu_action_texts(area),
+                [
+                    "永久删除条目",
+                    "检查并修复搜索功能",
+                    "重新生成全部搜索数据…",
+                ],
+            )
+            area.close()
+
+    def test_more_menu_uses_current_record_state_instead_of_disabled_actions(self) -> None:
+        """菜单应只包含当前条目适用动作，并仅在基准冲突时暴露状态文件。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            official = _story_entry()
+            _write_package(root, official)
+            repository = WorldbookUserStateRepository(
+                root / "knowledge_base" / "worldbooks" / "package-state"
+            )
+            repository.put_override(
+                "test.package",
+                WorldbookOverride(
+                    entry_id=official.entry_id,
+                    entry_type=official.entry_type,
+                    schema_version=official.schema_version,
+                    base_revision="outdated-base",
+                    content={**official.content, "title": "用户标题"},
+                ),
+            )
+            settings = QSettings(str(root / "ui.ini"), QSettings.IniFormat)
+            area = WorldbookArea(app_root=root, settings=settings)
+            area._controller.reconcile_all = _do_nothing
+            area.show()
+            self.app.processEvents()
+
+            self.assertEqual(
+                _menu_action_texts(area),
+                [
+                    "隐藏条目",
+                    "恢复官方内容",
+                    "保留我的修改",
+                    "导出原始修改",
+                    "打开用户状态文件位置",
+                    "检查并修复搜索功能",
+                    "重新生成全部搜索数据…",
+                ],
+            )
+            self.assertEqual(
+                sum(
+                    area.more_button.menu().view.item(index).data(Qt.DecorationRole)
+                    == "seperator"
+                    for index in range(area.more_button.menu().view.count())
+                ),
+                1,
+            )
+            with patch(
+                "ui.interfaces.worldbook_area.show_file_in_manager"
+            ) as show_file:
+                area._show_user_state_location()
+            show_file.assert_called_once_with(repository.path_for("test.package"))
+            with (
+                patch.object(area, "_resolve_unsaved_changes", return_value=False),
+                patch("ui.interfaces.worldbook_area.MessageBox") as message_box,
+                patch.object(
+                    area._edit_service, "confirm_current_base"
+                ) as confirm_current_base,
+            ):
+                area._restore_official()
+                area._confirm_current_base()
+            message_box.assert_not_called()
+            confirm_current_base.assert_not_called()
+
+            repository.remove_override("test.package", official.entry_id)
+            area._refresh_records(official.entry_id)
+            self.app.processEvents()
+            self.assertEqual(
+                _menu_action_texts(area),
+                [
+                    "隐藏条目",
+                    "检查并修复搜索功能",
+                    "重新生成全部搜索数据…",
+                ],
+            )
+
+            broken_content = dict(official.content)
+            broken_content.pop("summary")
+            repository.put_override(
+                "test.package",
+                WorldbookOverride(
+                    entry_id=official.entry_id,
+                    entry_type=official.entry_type,
+                    schema_version=official.schema_version,
+                    base_revision="outdated-base",
+                    content=broken_content,
+                ),
+            )
+            area._refresh_records(official.entry_id)
+            self.app.processEvents()
+            self.assertEqual(
+                _menu_action_texts(area),
+                [
+                    "恢复官方内容",
+                    "导出原始修改",
+                    "检查并修复搜索功能",
+                    "重新生成全部搜索数据…",
+                ],
+            )
             area.close()
 
     def test_story_form_is_responsive_and_header_click_toggles_card(self) -> None:
@@ -381,6 +579,46 @@ class WorldbookUiTest(unittest.TestCase):
         self._assert_flow_items_do_not_overlap(editor)
         editor.close()
 
+    def test_free_tag_chip_edits_inline_and_merges_duplicates(self) -> None:
+        """自由标签应支持原位改名、逗号文字和重复标签合并。"""
+
+        editor = TagEditor()
+        editor.set_value(["旧标签", "已有标签"])
+        editor.resize(360, 180)
+        editor.show()
+        changed = Mock()
+        editor.value_changed.connect(changed)
+        self.app.processEvents()
+
+        first_item = editor.chip_layout.itemAt(0)
+        first_chip = first_item.widget() if first_item is not None else None
+        self.assertIsInstance(first_chip, SelectionChip)
+        if not isinstance(first_chip, SelectionChip):
+            self.fail("标签布局中缺少可编辑 SelectionChip")
+        QTest.mouseDClick(first_chip.label, Qt.LeftButton)
+        self.app.processEvents()
+        self.assertTrue(first_chip.edit_field.isVisible())
+        self._assert_flow_items_do_not_overlap(editor)
+        first_chip.edit_field.setText("新,标签")
+        QTest.keyClick(first_chip.edit_field, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(editor.value(), ["新,标签", "已有标签"])
+        self.assertEqual(changed.call_count, 1)
+
+        renamed_item = editor.chip_layout.itemAt(0)
+        renamed_chip = renamed_item.widget() if renamed_item is not None else None
+        self.assertIsInstance(renamed_chip, SelectionChip)
+        if not isinstance(renamed_chip, SelectionChip):
+            self.fail("改名后标签布局中缺少 SelectionChip")
+        renamed_chip._start_edit()
+        renamed_chip.edit_field.setText("已有标签")
+        QTest.keyClick(renamed_chip.edit_field, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(editor.value(), ["已有标签"])
+        self.assertEqual(changed.call_count, 2)
+        self._assert_flow_items_do_not_overlap(editor)
+        editor.close()
+
     def test_multi_select_reflows_immediately_after_selection_changes(self) -> None:
         """多选标签变化后应隐藏旧控件并立即重新排列新控件。"""
 
@@ -409,7 +647,59 @@ class WorldbookUiTest(unittest.TestCase):
             if chip.isVisible()
         ]
         self.assertEqual(len(visible_chips), 2)
+        self.assertTrue(all(not chip._editable for chip in visible_chips))
         field.close()
+
+    def test_character_dialog_prioritizes_selected_bands_without_reordering_values(self) -> None:
+        """角色对话框应置顶已选乐队、搜索分组并保持参与角色值顺序。"""
+
+        parent = QWidget()
+        parent.resize(900, 700)
+        parent.show()
+        dialog = MultiSelectDialog(
+            "选择参与角色",
+            _character_options(),
+            [CharacterId.ANON.value, CharacterId.SAKIKO.value],
+            parent,
+        )
+        headers = _visible_group_headers(dialog)
+        self.assertEqual(headers[:2], ["MyGO!!!!!", "Ave Mujica"])
+
+        uika_item = next(
+            dialog.list_widget.item(index)
+            for index in range(dialog.list_widget.count())
+            if dialog.list_widget.item(index).data(Qt.UserRole) == CharacterId.UIKA.value
+        )
+        uika_item.setCheckState(Qt.Checked)
+        self.assertEqual(
+            dialog.selected_keys(),
+            [
+                CharacterId.ANON.value,
+                CharacterId.SAKIKO.value,
+                CharacterId.UIKA.value,
+            ],
+        )
+        self.assertEqual(_visible_group_headers(dialog)[:2], headers[:2])
+
+        dialog.search_edit.setText("MyGO")
+        self.app.processEvents()
+        self.assertEqual(_visible_group_headers(dialog), ["MyGO!!!!!"])
+        self.assertEqual(_visible_option_count(dialog), 5)
+
+        dialog.search_edit.setText("灯")
+        self.app.processEvents()
+        self.assertEqual(_visible_group_headers(dialog), ["MyGO!!!!!"])
+        self.assertEqual(_visible_option_count(dialog), 1)
+        dialog.close()
+        parent.close()
+
+    def test_role_bands_cover_every_supported_character_exactly_once(self) -> None:
+        """九支角色乐队应各含五人并完整覆盖受支持角色。"""
+
+        members = [character for band in BandId for character in BAND_MEMBERS[band]]
+        self.assertTrue(all(len(BAND_MEMBERS[band]) == 5 for band in BandId))
+        self.assertEqual(len(members), len(set(members)))
+        self.assertEqual(set(members), set(CharacterId))
 
     def test_clean_entry_cannot_create_empty_override(self) -> None:
         """未修改的条目应禁用保存，直接调用保存也不得写入 Override。"""
@@ -491,6 +781,38 @@ class WorldbookUiTest(unittest.TestCase):
             geometry = widget.geometry()
             self.assertTrue(all(not geometry.intersects(existing) for existing in geometries))
             geometries.append(geometry)
+
+
+def _menu_action_texts(area: WorldbookArea) -> list[str]:
+    """返回动态更多菜单中除分隔线外的动作文字。"""
+
+    return [
+        action.text()
+        for action in area.more_button.menu().menuActions()
+        if not action.isSeparator()
+    ]
+
+
+def _visible_group_headers(dialog: MultiSelectDialog) -> list[str]:
+    """返回多选对话框当前可见的不可勾选分组标题。"""
+
+    return [
+        dialog.list_widget.item(index).text()
+        for index in range(dialog.list_widget.count())
+        if not dialog.list_widget.item(index).isHidden()
+        and not dialog.list_widget.item(index).flags() & Qt.ItemIsUserCheckable
+    ]
+
+
+def _visible_option_count(dialog: MultiSelectDialog) -> int:
+    """统计多选对话框当前可见的可勾选项。"""
+
+    return sum(
+        1
+        for index in range(dialog.list_widget.count())
+        if not dialog.list_widget.item(index).isHidden()
+        and dialog.list_widget.item(index).flags() & Qt.ItemIsUserCheckable
+    )
 
 
 def _do_nothing() -> None:

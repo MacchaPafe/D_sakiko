@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PyQt5.QtCore import QEvent, QObject, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QMouseEvent, QResizeEvent
+from PyQt5.QtGui import QKeyEvent, QMouseEvent, QResizeEvent
 from PyQt5.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
@@ -35,7 +35,7 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from rag.models import CanonBranch, CharacterId, SeriesId
+from rag.models import BAND_MEMBERS, BandId, CanonBranch, SeriesId
 from rag.worldbook.adapters import AdapterRegistry
 from rag.worldbook.models import EntryType, WorldbookEntry
 from rag.worldbook.time_coordinates import (
@@ -96,6 +96,61 @@ class SelectionOption:
     key: str
     label: str
     search_text: str = ""
+    group_key: str = ""
+    group_label: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FormValidationIssue:
+    """描述一个需要用户处理的表单问题及其聚焦控件。"""
+
+    message: str
+    focus_widget: QWidget
+
+
+_OPTION_SEARCH_ROLE = Qt.UserRole + 1
+_GROUP_KEY_ROLE = Qt.UserRole + 2
+_ITEM_KIND_ROLE = Qt.UserRole + 3
+_GROUP_SEARCH_ROLE = Qt.UserRole + 4
+_OPTION_ITEM_KIND = "option"
+_GROUP_ITEM_KIND = "group"
+
+
+def _prioritize_selection_groups(
+    options: list[SelectionOption],
+    selected_keys: list[str],
+) -> list[SelectionOption]:
+    """按既有选择首次命中的顺序置顶完整选项分组。"""
+
+    group_order = list(
+        dict.fromkeys(option.group_key for option in options if option.group_key)
+    )
+    if not group_order:
+        return list(options)
+
+    group_by_key = {option.key: option.group_key for option in options}
+    prioritized_groups = list(
+        dict.fromkeys(
+            group_by_key[key]
+            for key in selected_keys
+            if key in group_by_key and group_by_key[key]
+        )
+    )
+    ordered_groups = [
+        *prioritized_groups,
+        *(group for group in group_order if group not in prioritized_groups),
+    ]
+    grouped_options = {
+        group: [option for option in options if option.group_key == group]
+        for group in group_order
+    }
+    ordered = [
+        option
+        for group in ordered_groups
+        for option in grouped_options[group]
+    ]
+    ordered.extend(option for option in options if not option.group_key)
+    return ordered
 
 
 class MultiSelectDialog(MessageBoxBase):
@@ -111,8 +166,9 @@ class MultiSelectDialog(MessageBoxBase):
         """创建带初始选择的多选对话框。"""
 
         super().__init__(parent)
-        self._options = options
-        self._selected_keys = selected_keys
+        self._selected_keys = list(dict.fromkeys(selected_keys))
+        self._options = _prioritize_selection_groups(options, self._selected_keys)
+        self._known_keys = {option.key for option in options}
         self.widget.setMinimumWidth(560)
         self.title_label = BodyLabel(title, self)
         self.search_edit = SearchLineEdit(self)
@@ -128,13 +184,27 @@ class MultiSelectDialog(MessageBoxBase):
         self._populate()
 
     def _populate(self) -> None:
-        """用可复选列表项填充全部选项。"""
+        """用不可选择的分组标题和可复选选项填充列表。"""
 
         selected = set(self._selected_keys)
+        previous_group = ""
         for option in self._options:
+            if option.group_key and option.group_key != previous_group:
+                header = QListWidgetItem(option.group_label)
+                header.setData(_ITEM_KIND_ROLE, _GROUP_ITEM_KIND)
+                header.setData(_GROUP_KEY_ROLE, option.group_key)
+                header.setData(_GROUP_SEARCH_ROLE, option.group_label.casefold())
+                header.setFlags(Qt.ItemIsEnabled)
+                self.list_widget.addItem(header)
+            previous_group = option.group_key
             item = QListWidgetItem(option.label)
             item.setData(Qt.UserRole, option.key)
-            item.setData(Qt.UserRole + 1, f"{option.label} {option.search_text}".casefold())
+            item.setData(
+                _OPTION_SEARCH_ROLE,
+                f"{option.label} {option.search_text}".casefold(),
+            )
+            item.setData(_GROUP_KEY_ROLE, option.group_key)
+            item.setData(_ITEM_KIND_ROLE, _OPTION_ITEM_KIND)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if option.key in selected else Qt.Unchecked)
             self.list_widget.addItem(item)
@@ -143,46 +213,206 @@ class MultiSelectDialog(MessageBoxBase):
         """根据用户可读文本即时过滤列表。"""
 
         needle = text.strip().casefold()
+        matching_groups: set[str] = set()
         for index in range(self.list_widget.count()):
             item = self.list_widget.item(index)
-            haystack = str(item.data(Qt.UserRole + 1))
-            item.setHidden(bool(needle) and needle not in haystack)
+            if item.data(_ITEM_KIND_ROLE) != _GROUP_ITEM_KIND:
+                continue
+            group_key = str(item.data(_GROUP_KEY_ROLE) or "")
+            group_search = str(item.data(_GROUP_SEARCH_ROLE) or "")
+            if needle and needle in group_search:
+                matching_groups.add(group_key)
+
+        visible_groups: set[str] = set()
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            if item.data(_ITEM_KIND_ROLE) != _OPTION_ITEM_KIND:
+                continue
+            group_key = str(item.data(_GROUP_KEY_ROLE) or "")
+            haystack = str(item.data(_OPTION_SEARCH_ROLE) or "")
+            visible = not needle or group_key in matching_groups or needle in haystack
+            item.setHidden(not visible)
+            if visible and group_key:
+                visible_groups.add(group_key)
+
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            if item.data(_ITEM_KIND_ROLE) == _GROUP_ITEM_KIND:
+                item.setHidden(str(item.data(_GROUP_KEY_ROLE) or "") not in visible_groups)
 
     def selected_keys(self) -> list[str]:
-        """按选项原始顺序返回勾选值。"""
+        """保留既有值顺序，并按当前显示顺序追加新勾选值。"""
 
-        keys: list[str] = []
+        checked_keys: list[str] = []
         for index in range(self.list_widget.count()):
             item = self.list_widget.item(index)
-            if item.checkState() == Qt.Checked:
-                keys.append(str(item.data(Qt.UserRole)))
-        return keys
+            if (
+                item.data(_ITEM_KIND_ROLE) == _OPTION_ITEM_KIND
+                and item.checkState() == Qt.Checked
+            ):
+                checked_keys.append(str(item.data(Qt.UserRole)))
+        checked = set(checked_keys)
+        preserved = [
+            key
+            for key in self._selected_keys
+            if key not in self._known_keys or key in checked
+        ]
+        existing = set(self._selected_keys)
+        appended = [key for key in checked_keys if key not in existing]
+        return [*preserved, *appended]
+
+
+class _InlineTagEdit(LineEdit):
+    """为标签原位编辑提供失焦提交和 Esc 取消信号。"""
+
+    commit_requested = pyqtSignal()
+    cancel_requested = pyqtSignal()
+
+    def focusOutEvent(self, event: QEvent) -> None:
+        """失去焦点时请求提交当前文字。"""
+
+        super().focusOutEvent(event)
+        self.commit_requested.emit()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """按 Esc 时取消，其余按键沿用 Fluent 输入框行为。"""
+
+        if event.key() == Qt.Key_Escape:
+            self.cancel_requested.emit()
+            return
+        super().keyPressEvent(event)
 
 
 class SelectionChip(SimpleCardWidget):
-    """显示一个可移除的已选值。"""
+    """显示一个可移除、可按需原位编辑的已选值。"""
 
     remove_requested = pyqtSignal(str)
+    edit_committed = pyqtSignal(str, str)
 
-    def __init__(self, key: str, label: str, parent: QWidget | None = None) -> None:
-        """创建带 Fluent 关闭按钮的紧凑标签。"""
+    def __init__(
+        self,
+        key: str,
+        label: str,
+        parent: QWidget | None = None,
+        *,
+        editable: bool = False,
+    ) -> None:
+        """创建带移除按钮及可选编辑入口的紧凑标签。"""
 
         super().__init__(parent)
         self._key = key
+        self._editable = editable
+        self._read_only = False
+        self._editing = False
         self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 3, 4, 3)
         layout.setSpacing(4)
-        layout.addWidget(BodyLabel(label, self))
+        self.label = BodyLabel(label, self)
+        self.label.installEventFilter(self)
+        layout.addWidget(self.label)
+        self.edit_field = _InlineTagEdit(self)
+        self.edit_field.setText(label)
+        self.edit_field.setMinimumWidth(max(80, self.label.sizeHint().width() + 16))
+        self.edit_field.returnPressed.connect(self._commit_edit)
+        self.edit_field.commit_requested.connect(self._commit_edit)
+        self.edit_field.cancel_requested.connect(self._cancel_edit)
+        self.edit_field.hide()
+        layout.addWidget(self.edit_field)
+        self.edit_button = TransparentToolButton(FluentIcon.EDIT, self)
+        self.edit_button.setFixedSize(24, 24)
+        self.edit_button.setToolTip(self.tr("编辑标签"))
+        self.edit_button.clicked.connect(self._start_edit)
+        self.edit_button.hide()
+        layout.addWidget(self.edit_button)
         self.remove_button = TransparentToolButton(FluentIcon.CLOSE, self)
         self.remove_button.setFixedSize(24, 24)
         self.remove_button.clicked.connect(lambda: self.remove_requested.emit(self._key))
         layout.addWidget(self.remove_button)
 
     def set_read_only(self, read_only: bool) -> None:
-        """控制移除按钮是否可用。"""
+        """控制移除和编辑入口是否可用。"""
 
-        self.remove_button.setVisible(not read_only)
+        if read_only and self._editing:
+            self._cancel_edit()
+        self._read_only = read_only
+        self.remove_button.setVisible(not read_only and not self._editing)
+        self.edit_button.setVisible(
+            self._editable and not read_only and not self._editing and self.underMouse()
+        )
+        self.updateGeometry()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """双击标签正文时进入可编辑模式。"""
+
+        if (
+            watched is getattr(self, "label", None)
+            and event.type() == QEvent.MouseButtonDblClick
+            and self._editable
+            and not self._read_only
+        ):
+            self._start_edit()
+            return True
+        return super().eventFilter(watched, event)
+
+    def enterEvent(self, event: QEvent) -> None:
+        """悬停时显示自由标签的编辑按钮。"""
+
+        super().enterEvent(event)
+        if self._editable and not self._read_only and not self._editing:
+            self.edit_button.show()
+            self.updateGeometry()
+
+    def leaveEvent(self, event: QEvent) -> None:
+        """离开标签时隐藏编辑按钮。"""
+
+        super().leaveEvent(event)
+        if not self._editing:
+            self.edit_button.hide()
+            self.updateGeometry()
+
+    def _start_edit(self) -> None:
+        """切换到行内文字编辑器并选中当前标签。"""
+
+        if not self._editable or self._read_only or self._editing:
+            return
+        self._editing = True
+        self.edit_field.setText(self.label.text())
+        self.label.hide()
+        self.edit_button.hide()
+        self.remove_button.hide()
+        self.edit_field.show()
+        self.edit_field.setFocus()
+        self.edit_field.selectAll()
+        self.updateGeometry()
+
+    def _commit_edit(self) -> None:
+        """提交非空且实际变化的标签文字。"""
+
+        if not self._editing:
+            return
+        value = self.edit_field.text().strip()
+        self._finish_edit()
+        if value and value != self._key:
+            self.edit_committed.emit(self._key, value)
+
+    def _cancel_edit(self) -> None:
+        """取消原位编辑并恢复原标签。"""
+
+        if not self._editing:
+            return
+        self._finish_edit()
+
+    def _finish_edit(self) -> None:
+        """退出原位编辑并恢复当前读写状态的按钮。"""
+
+        self._editing = False
+        self.edit_field.hide()
+        self.label.show()
+        self.remove_button.setVisible(not self._read_only)
+        self.edit_button.setVisible(
+            self._editable and not self._read_only and self.underMouse()
+        )
         self.updateGeometry()
 
 
@@ -331,6 +561,14 @@ class TagEditor(QWidget):
         self.input_edit.returnPressed.connect(self._commit_input)
         self.input_edit.textEdited.connect(self._commit_on_comma)
         layout.addWidget(self.input_edit)
+        self.help_label = CaptionLabel(
+            self.tr(
+                "添加角色、地点、事件或主题等关键词，可以让这条内容更容易在相关对话中被找到。"
+            ),
+            self,
+        )
+        self.help_label.setWordWrap(True)
+        layout.addWidget(self.help_label)
 
     def set_value(self, tags: list[str]) -> None:
         """设置清理并去重后的标签。"""
@@ -349,6 +587,7 @@ class TagEditor(QWidget):
 
         self._read_only = read_only
         self.input_edit.setVisible(not read_only)
+        self.help_label.setVisible(not read_only)
         for index in range(self.chip_layout.count()):
             item = self.chip_layout.itemAt(index)
             widget = item.widget() if item is not None else None
@@ -394,14 +633,31 @@ class TagEditor(QWidget):
         self._render_chips()
         self.value_changed.emit()
 
+    def _edit_tag(self, old_tag: str, new_tag: str) -> None:
+        """原位替换标签，并把重复目标收敛为已有标签。"""
+
+        if self._read_only or old_tag not in self._tags:
+            return
+        normalized = new_tag.strip()
+        if not normalized or normalized == old_tag:
+            return
+        if normalized in self._tags:
+            self._tags.remove(old_tag)
+        else:
+            index = self._tags.index(old_tag)
+            self._tags[index] = normalized
+        self._render_chips()
+        self.value_changed.emit()
+
     def _render_chips(self) -> None:
         """根据当前标签重新构建流式显示。"""
 
         _clear_flow_widgets(self.chip_layout)
         for tag in self._tags:
-            chip = SelectionChip(tag, tag, self.chip_container)
+            chip = SelectionChip(tag, tag, self.chip_container, editable=True)
             chip.set_read_only(self._read_only)
             chip.remove_requested.connect(self._remove_tag)
+            chip.edit_committed.connect(self._edit_tag)
             self.chip_layout.addWidget(chip)
         self._schedule_chip_layout_refresh()
 
@@ -841,6 +1097,23 @@ class BaseEntryEditor(QWidget):
         for card in self.findChildren(CollapsibleCard):
             card.set_expanded(True)
 
+    def validate_form(self) -> str | None:
+        """返回面向用户的汇总校验提示，并聚焦第一个问题字段。"""
+
+        issues = self._validation_issues()
+        if not issues:
+            return None
+        self.reveal_validation_fields()
+        issues[0].focus_widget.setFocus(Qt.OtherFocusReason)
+        return self.tr("请完善以下内容：") + "；".join(
+            issue.message for issue in issues
+        ) + "。"
+
+    def _validation_issues(self) -> list[FormValidationIssue]:
+        """返回当前类型编辑器需要用户处理的表单问题。"""
+
+        return []
+
     def _mark_dirty(self) -> None:
         """在非加载阶段记录普通未保存变化。"""
 
@@ -914,7 +1187,7 @@ class StoryEventEditor(BaseEntryEditor):
         normal.addRow(BodyLabel(self.tr("标题"), self), self.title_edit)
         normal.addRow(BodyLabel(self.tr("摘要"), self), self.summary_edit)
         normal.addRow(BodyLabel(self.tr("参与角色"), self), self.participants_field)
-        normal.addRow(BodyLabel(self.tr("标签"), self), self.tags_field)
+        normal.addRow(BodyLabel(self.tr("标签（必填）"), self), self.tags_field)
         self.add_editor_card(normal_card)
         advanced = CollapsibleCard(self.tr("高级设置"), False, self)
         advanced_form = self._card_form(advanced)
@@ -982,6 +1255,27 @@ class StoryEventEditor(BaseEntryEditor):
             "visible_to": end,
         }
 
+    def _validation_issues(self) -> list[FormValidationIssue]:
+        """返回剧情事件缺少的必填内容。"""
+
+        issues: list[FormValidationIssue] = []
+        if not self.title_edit.text().strip():
+            issues.append(FormValidationIssue(self.tr("事件标题"), self.title_edit))
+        if not self.summary_edit.toPlainText().strip():
+            issues.append(FormValidationIssue(self.tr("事件摘要"), self.summary_edit))
+        if not self.participants_field.value():
+            issues.append(
+                FormValidationIssue(
+                    self.tr("至少一名参与角色"),
+                    self.participants_field.select_button,
+                )
+            )
+        if not self.tags_field.value():
+            issues.append(
+                FormValidationIssue(self.tr("至少一个标签"), self.tags_field.input_edit)
+            )
+        return issues
+
     def content_base(self) -> dict[str, object]:
         """返回不经过表单递归构造的原始 content。"""
 
@@ -1031,7 +1325,7 @@ class CharacterThoughtEditor(BaseEntryEditor):
         normal.addRow(BodyLabel(self.tr("认知方面"), self), self.aspect_edit)
         normal.addRow(BodyLabel(self.tr("观点正文"), self), self.thought_edit)
         normal.addRow(BodyLabel(self.tr("认知状态"), self), self.status_combo)
-        normal.addRow(BodyLabel(self.tr("标签"), self), self.tags_field)
+        normal.addRow(BodyLabel(self.tr("标签（可选）"), self), self.tags_field)
         self.add_editor_card(normal_card)
         advanced = CollapsibleCard(self.tr("高级设置"), False, self)
         advanced_form = self._card_form(advanced)
@@ -1149,6 +1443,18 @@ class CharacterThoughtEditor(BaseEntryEditor):
             "visible_to": end,
         }
 
+    def _validation_issues(self) -> list[FormValidationIssue]:
+        """返回角色想法缺少的必填内容。"""
+
+        issues: list[FormValidationIssue] = []
+        if not self.subject_edit.text().strip():
+            issues.append(FormValidationIssue(self.tr("规范化主题"), self.subject_edit))
+        if not self.aspect_edit.text().strip():
+            issues.append(FormValidationIssue(self.tr("认知方面"), self.aspect_edit))
+        if not self.thought_edit.toPlainText().strip():
+            issues.append(FormValidationIssue(self.tr("观点正文"), self.thought_edit))
+        return issues
+
     def _refresh_extension_context(self) -> None:
         """保留时间坐标并刷新当前范围可选的剧情事件。"""
 
@@ -1198,7 +1504,7 @@ class CharacterRelationEditor(BaseEntryEditor):
         normal.addRow(BodyLabel(self.tr("关系状态摘要"), self), self.summary_edit)
         normal.addRow(BodyLabel(self.tr("说话方式"), self), self.speech_edit)
         normal.addRow(BodyLabel(self.tr("目标角色称呼"), self), self.nickname_edit)
-        normal.addRow(BodyLabel(self.tr("标签"), self), self.tags_field)
+        normal.addRow(BodyLabel(self.tr("标签（可选）"), self), self.tags_field)
         self.add_editor_card(normal_card)
         advanced = CollapsibleCard(self.tr("高级设置"), False, self)
         advanced_form = self._card_form(advanced)
@@ -1268,6 +1574,25 @@ class CharacterRelationEditor(BaseEntryEditor):
             "visible_to": end,
         }
 
+    def _validation_issues(self) -> list[FormValidationIssue]:
+        """返回角色关系需要用户处理的表单问题。"""
+
+        issues: list[FormValidationIssue] = []
+        if not self.summary_edit.toPlainText().strip():
+            issues.append(
+                FormValidationIssue(self.tr("关系状态摘要"), self.summary_edit)
+            )
+        if _combo_text(self.extension_subject_combo) == _combo_text(
+            self.extension_object_combo
+        ):
+            issues.append(
+                FormValidationIssue(
+                    self.tr("主体角色和目标角色不能相同"),
+                    self.extension_object_combo,
+                )
+            )
+        return issues
+
 
 class LoreEntryEditor(BaseEntryEditor):
     """编辑 Lore Entry 的正文、适用范围和时间限制。"""
@@ -1293,7 +1618,7 @@ class LoreEntryEditor(BaseEntryEditor):
         self.tags_field = TagEditor(self)
         normal.addRow(BodyLabel(self.tr("标题"), self), self.title_edit)
         normal.addRow(BodyLabel(self.tr("正文"), self), self.content_edit)
-        normal.addRow(BodyLabel(self.tr("标签"), self), self.tags_field)
+        normal.addRow(BodyLabel(self.tr("标签（必填）"), self), self.tags_field)
         self.add_editor_card(normal_card)
         advanced = CollapsibleCard(self.tr("高级设置"), False, self)
         advanced_form = self._card_form(advanced)
@@ -1366,6 +1691,27 @@ class LoreEntryEditor(BaseEntryEditor):
             "visible_from": start,
             "visible_to": None if end == OPEN_ENDED_TIME else end,
         }
+
+    def _validation_issues(self) -> list[FormValidationIssue]:
+        """返回名词解释缺少的必填内容。"""
+
+        issues: list[FormValidationIssue] = []
+        if not self.title_edit.text().strip():
+            issues.append(FormValidationIssue(self.tr("条目标题"), self.title_edit))
+        if not self.content_edit.toPlainText().strip():
+            issues.append(FormValidationIssue(self.tr("条目正文"), self.content_edit))
+        if not self.tags_field.value():
+            issues.append(
+                FormValidationIssue(self.tr("至少一个标签"), self.tags_field.input_edit)
+            )
+        if self.scope_combo.currentData() == "series" and not self.series_field.value():
+            issues.append(
+                FormValidationIssue(
+                    self.tr("至少一个适用系列"),
+                    self.series_field.select_button,
+                )
+            )
+        return issues
 
     def _sync_scope_state(self) -> None:
         """全包范围时隐藏不适用的系列选择。"""
@@ -1498,11 +1844,18 @@ def _combo_text(combo: ComboBox) -> str:
 
 
 def _character_options() -> list[SelectionOption]:
-    """返回按枚举顺序排列的中文角色选项。"""
+    """返回按角色乐队及固定团内顺序排列的中文角色选项。"""
 
     return [
-        SelectionOption(character.value, character.common_name, character.value)
-        for character in CharacterId
+        SelectionOption(
+            character.value,
+            character.common_name,
+            character.value,
+            band.value,
+            band.display_name,
+        )
+        for band in BandId
+        for character in BAND_MEMBERS[band]
     ]
 
 

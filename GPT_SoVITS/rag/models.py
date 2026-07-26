@@ -47,6 +47,56 @@ class ScopeType(str, Enum):
     GLOBAL = "global"
 
 
+class BandId(str, Enum):
+    """定义项目当前支持角色所属的九支主要乐队。"""
+
+    POPPIN_PARTY = "poppin_party"
+    """表示 Poppin'Party 乐队。"""
+
+    AFTERGLOW = "afterglow"
+    """表示 Afterglow 乐队。"""
+
+    HELLO_HAPPY_WORLD = "hello_happy_world"
+    """表示 Hello, Happy World! 乐队。"""
+
+    PASTEL_PALETTES = "pastel_palettes"
+    """表示 Pastel＊Palettes 乐队。"""
+
+    ROSELIA = "roselia"
+    """表示 Roselia 乐队。"""
+
+    MORFONICA = "morfonica"
+    """表示 Morfonica 乐队。"""
+
+    RAISE_A_SUILEN = "raise_a_suilen"
+    """表示 RAISE A SUILEN 乐队。"""
+
+    MYGO = "mygo"
+    """表示 MyGO!!!!! 乐队。"""
+
+    AVE_MUJICA = "ave_mujica"
+    """表示 Ave Mujica 乐队。"""
+
+    @property
+    def display_name(self) -> str:
+        """返回乐队的用户可读正式名称。"""
+
+        return _BAND_DISPLAY_NAMES[self]
+
+
+_BAND_DISPLAY_NAMES: dict[BandId, str] = {
+    BandId.POPPIN_PARTY: "Poppin'Party",
+    BandId.AFTERGLOW: "Afterglow",
+    BandId.HELLO_HAPPY_WORLD: "Hello, Happy World!",
+    BandId.PASTEL_PALETTES: "Pastel＊Palettes",
+    BandId.ROSELIA: "Roselia",
+    BandId.MORFONICA: "Morfonica",
+    BandId.RAISE_A_SUILEN: "RAISE A SUILEN",
+    BandId.MYGO: "MyGO!!!!!",
+    BandId.AVE_MUJICA: "Ave Mujica",
+}
+
+
 class CharacterId(str, Enum):
     """定义项目中可参与 RAG 检索的角色标识。"""
 
@@ -152,6 +202,73 @@ _ROMAJI_TO_COMMON_NAME: Dict[CharacterId, str] = {
     CharacterId.UMIRI: "海铃",
     CharacterId.NYAMU: "喵梦",
     CharacterId.SAKIKO: "祥子",
+}
+
+
+BAND_MEMBERS: dict[BandId, tuple[CharacterId, ...]] = {
+    BandId.POPPIN_PARTY: (
+        CharacterId.KASUMI,
+        CharacterId.TAE,
+        CharacterId.RIMI,
+        CharacterId.SAAYA,
+        CharacterId.ARISA,
+    ),
+    BandId.AFTERGLOW: (
+        CharacterId.RAN,
+        CharacterId.MOCA,
+        CharacterId.HIMARI,
+        CharacterId.TOMOE,
+        CharacterId.TSUGUMI,
+    ),
+    BandId.HELLO_HAPPY_WORLD: (
+        CharacterId.KOKORO,
+        CharacterId.KAORU,
+        CharacterId.HAGUMI,
+        CharacterId.KANON,
+        CharacterId.MISAKI,
+    ),
+    BandId.PASTEL_PALETTES: (
+        CharacterId.AYA,
+        CharacterId.HINA,
+        CharacterId.CHISATO,
+        CharacterId.MAMI,
+        CharacterId.EVE,
+    ),
+    BandId.ROSELIA: (
+        CharacterId.YUKINA,
+        CharacterId.SAYO,
+        CharacterId.LISA,
+        CharacterId.AKO,
+        CharacterId.RINKO,
+    ),
+    BandId.MORFONICA: (
+        CharacterId.MASHIRO,
+        CharacterId.TOKO,
+        CharacterId.NANAMI,
+        CharacterId.TSUKUSHI,
+        CharacterId.RUI,
+    ),
+    BandId.RAISE_A_SUILEN: (
+        CharacterId.LAYER,
+        CharacterId.LOCK,
+        CharacterId.MASKING,
+        CharacterId.PAREO,
+        CharacterId.CHUCHU,
+    ),
+    BandId.MYGO: (
+        CharacterId.TOMORI,
+        CharacterId.ANON,
+        CharacterId.RANA,
+        CharacterId.SOYO,
+        CharacterId.TAKI,
+    ),
+    BandId.AVE_MUJICA: (
+        CharacterId.UIKA,
+        CharacterId.MUTSUMI,
+        CharacterId.UMIRI,
+        CharacterId.NYAMU,
+        CharacterId.SAKIKO,
+    ),
 }
 
 
@@ -639,6 +756,8 @@ class CharacterThoughtQuery:
 
 
 __all__ = [
+    "BAND_MEMBERS",
+    "BandId",
     "BaseQdrantDocument",
     "CanonBranch",
     "CharacterId",
