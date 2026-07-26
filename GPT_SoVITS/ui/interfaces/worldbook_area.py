@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
-from PyQt5.QtCore import QSettings, QSignalBlocker, Qt
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtCore import QSettings, QSignalBlocker, Qt, QUrl
+from PyQt5.QtGui import QDesktopServices, QKeySequence
 from PyQt5.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -41,6 +42,7 @@ from qfluentwidgets import (
     SegmentedWidget,
     SubtitleLabel,
     TitleLabel,
+    ToolButton,
     TransparentDropDownPushButton,
 )
 
@@ -48,11 +50,16 @@ from rag.models import CharacterId
 from rag.worldbook.adapters import AdapterRegistry, create_default_registry
 from rag.worldbook.editing import (
     PackageEntryRecord,
+    PersistentEntryRecord,
     RetrievalSummaryReviewRequired,
+    StoryEventDeletionImpact,
+    StoryEventDeletionPlan,
     WorldbookEditService,
+    WorldbookExtensionReferencedError,
     WorldbookReferenceError,
     WorldbookSequenceConflict,
     build_package_entry_records,
+    build_persistent_entry_catalog,
 )
 from rag.worldbook.models import EntryType, PackageLoadResult, PackageReadiness, WorldbookEntry
 from rag.worldbook.package_loader import WorldbookPackageLoader
@@ -68,6 +75,22 @@ _ENTRY_TYPE_LABELS: tuple[tuple[EntryType, str], ...] = (
     ("character_thought", "角色想法"),
     ("character_relation", "角色关系"),
     ("lore_entry", "名词解释"),
+)
+
+_SOURCE_FILTER_LABELS: tuple[tuple[str, str], ...] = (
+    ("all", "全部条目"),
+    ("official", "官方条目"),
+    ("user", "我的内容"),
+)
+
+_DELETION_ACTION_LABELS: tuple[tuple[str, str], ...] = (
+    ("detach_reference", "移除关联并保留正文"),
+    ("create_official_override", "为官方条目创建 Override"),
+    ("delete_orphan_override", "永久删除孤立修改"),
+    ("delete_incompatible_extension", "永久删除不兼容用户扩展"),
+    ("restore_official", "删除不兼容 Override 后恢复官方内容"),
+    ("cross_package_blocker", "位于其他世界书，阻止删除"),
+    ("validation_blocker", "无法安全处理，阻止删除"),
 )
 
 
@@ -88,6 +111,126 @@ class UnsavedChangesBox(MessageBoxBase):
         self.discard_button.setAttribute(Qt.WA_LayoutUsesWidgetRect)
         self.discard_button.clicked.connect(lambda: self.done(self.DISCARD_RESULT))
         self.buttonLayout.insertWidget(1, self.discard_button, 1, Qt.AlignVCenter)
+
+
+class StoryEventDeletionBox(MessageBoxBase):
+    """展示剧情事件删除的完整影响列表和跨包阻断入口。"""
+
+    SWITCH_RESULT = 3
+
+    def __init__(
+        self,
+        plan: StoryEventDeletionPlan,
+        package_names: dict[str, str],
+        parent: QWidget | None = None,
+    ) -> None:
+        """创建可滚动的级联删除确认对话框。"""
+
+        super().__init__(parent)
+        self.switch_package_id: str | None = None
+        self.widget.setMinimumWidth(620)
+        cross_package_blockers = [
+            item for item in plan.blockers if item.action == "cross_package_blocker"
+        ]
+        title = (
+            self.tr("暂时无法删除剧情事件")
+            if plan.blockers
+            else self.tr("删除剧情事件并处理关联内容？")
+        )
+        self.viewLayout.addWidget(SubtitleLabel(title, self))
+        if cross_package_blockers:
+            description = self.tr("以下其他世界书仍有引用。请先切换并处理这些内容。")
+        elif plan.blockers:
+            description = self.tr("以下内容无法安全处理，因此没有执行删除。")
+        else:
+            description = self.tr("确认后将一次性应用以下修改。想法正文会尽可能保留。")
+        summary = BodyLabel(description, self)
+        summary.setWordWrap(True)
+        self.viewLayout.addWidget(summary)
+
+        scroll = ScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(180)
+        scroll.setMaximumHeight(420)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        content = QWidget(scroll)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 8, 0)
+        content_layout.setSpacing(8)
+        impacts_by_action = {
+            action: [item for item in plan.impacts if item.action == action]
+            for action, _label in _DELETION_ACTION_LABELS
+        }
+        for action, label in _DELETION_ACTION_LABELS:
+            impacts = impacts_by_action[action]
+            if not impacts:
+                continue
+            content_layout.addWidget(BodyLabel(self.tr(f"{label}（{len(impacts)}）"), content))
+            for impact in impacts:
+                item_label = BodyLabel(
+                    self._impact_text(impact, package_names),
+                    content,
+                )
+                item_label.setWordWrap(True)
+                content_layout.addWidget(item_label)
+        if not plan.impacts:
+            content_layout.addWidget(BodyLabel(self.tr("没有关联的角色想法。"), content))
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        self.viewLayout.addWidget(scroll)
+
+        blocker_packages = list(
+            dict.fromkeys(
+                item.owner_package_id for item in cross_package_blockers
+            )
+        )
+        if blocker_packages:
+            self.package_combo = ComboBox(self)
+            for blocker_package_id in blocker_packages:
+                self.package_combo.addItem(
+                    package_names.get(blocker_package_id, blocker_package_id),
+                    userData=blocker_package_id,
+                )
+            self.switch_button = PushButton(self.tr("切换到该世界书"), self)
+            self.switch_button.clicked.connect(self._choose_blocker_package)
+            self.viewLayout.addWidget(self.package_combo)
+            self.viewLayout.addWidget(self.switch_button)
+        if plan.blockers:
+            self.yesButton.hide()
+            self.cancelButton.setText(self.tr("取消"))
+        else:
+            self.yesButton.setText(self.tr("删除事件并应用以上更改"))
+            self.cancelButton.setText(self.tr("取消"))
+
+    def _choose_blocker_package(self) -> None:
+        """记录用户选择的阻断包并关闭对话框。"""
+
+        value = self.package_combo.currentData()
+        if value is None:
+            return
+        self.switch_package_id = str(value)
+        self.done(self.SWITCH_RESULT)
+
+    @staticmethod
+    def _impact_text(
+        impact: StoryEventDeletionImpact,
+        package_names: dict[str, str],
+    ) -> str:
+        """生成包含标题、角色、所属包和状态的影响项文案。"""
+
+        character = _character_name(impact.entry.content.get("character_id"))
+        owner = package_names.get(impact.owner_package_id, impact.owner_package_id)
+        source_label = {
+            "official": "官方条目",
+            "override": "我的修改",
+            "extension": "我添加的",
+        }[impact.source]
+        hidden_label = " · 已隐藏" if impact.hidden else ""
+        detail = f" · {impact.detail}" if impact.detail else ""
+        return (
+            f"• {_entry_title(impact.entry)} · {character} · {owner}"
+            f" · {source_label}{hidden_label}{detail}"
+        )
 
 
 class EntryListRow(QWidget):
@@ -119,7 +262,7 @@ class EntryListRow(QWidget):
 
 
 class WorldbookArea(QWidget):
-    """浏览根世界书依赖闭包并编辑官方条目的用户替换版本。"""
+    """浏览根世界书依赖闭包并管理 Override 与用户扩展。"""
 
     def __init__(
         self,
@@ -143,7 +286,10 @@ class WorldbookArea(QWidget):
         self._root_package_id: str | None = None
         self._selected_entry_type: EntryType = "story_event"
         self._current_record: PackageEntryRecord | None = None
+        self._draft_entry: WorldbookEntry | None = None
+        self._draft_previous_entry_id: UUID | None = None
         self._session_selection: dict[tuple[str, EntryType], UUID] = {}
+        self._last_orphan_navigation_id: UUID | None = None
         self._loading_ui = False
         self._settings = settings or QSettings("D_sakiko", "WorldbookEditor")
         self._controller = WorldbookSyncController(resolved_root, self)
@@ -176,20 +322,34 @@ class WorldbookArea(QWidget):
         left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 0, 8, 0)
         left_layout.setSpacing(10)
+        type_layout = QHBoxLayout()
+        type_layout.setContentsMargins(0, 0, 0, 0)
+        type_layout.setSpacing(6)
         self.type_combo = ComboBox(self.left_panel)
         for entry_type, label in _ENTRY_TYPE_LABELS:
             self.type_combo.addItem(label, userData=entry_type)
-        left_layout.addWidget(self.type_combo)
+        self.add_entry_button = ToolButton(FluentIcon.ADD, self.left_panel)
+        type_layout.addWidget(self.type_combo, 1)
+        type_layout.addWidget(self.add_entry_button)
+        left_layout.addLayout(type_layout)
         self.search_edit = SearchLineEdit(self.left_panel)
         self.search_edit.setPlaceholderText(self.tr("搜索当前类型的条目"))
         left_layout.addWidget(self.search_edit)
         filter_layout = QHBoxLayout()
         filter_layout.setContentsMargins(0, 0, 0, 0)
         filter_layout.setSpacing(6)
-        self.modified_only_check = CheckBox(self.tr("只看已修改"), self.left_panel)
-        self.show_hidden_check = CheckBox(self.tr("显示隐藏内容"), self.left_panel)
-        filter_layout.addWidget(self.modified_only_check)
-        filter_layout.addWidget(self.show_hidden_check)
+        self.source_filter_combo = ComboBox(self.left_panel)
+        for source_key, label in _SOURCE_FILTER_LABELS:
+            self.source_filter_combo.addItem(self.tr(label), userData=source_key)
+        self.orphan_navigation_button = PushButton("", self.left_panel)
+        self.orphan_navigation_button.setStyleSheet(
+            "PushButton { color: rgb(196, 43, 28); font-weight: 600; }"
+        )
+        self.orphan_navigation_button.hide()
+        self.show_hidden_check = CheckBox(self.tr("显示隐藏的条目"), self.left_panel)
+        filter_layout.addWidget(self.source_filter_combo, 1)
+        filter_layout.addWidget(self.orphan_navigation_button, 0)
+        filter_layout.addWidget(self.show_hidden_check, 0)
         left_layout.addLayout(filter_layout)
         self.entry_list = ListWidget(self.left_panel)
         left_layout.addWidget(self.entry_list, 1)
@@ -206,9 +366,21 @@ class WorldbookArea(QWidget):
         self.detail_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.modified_badge = InfoBadge.success(self.tr("该条目已修改"), self.right_panel)
         self.modified_badge.hide()
+        self.added_badge = InfoBadge.info(self.tr("我添加的"), self.right_panel)
+        self.added_badge.hide()
+        self.orphan_badge = InfoBadge.error(
+            self.tr("官方条目已不存在"),
+            self.right_panel,
+        )
+        self.orphan_badge.hide()
+        self.draft_badge = InfoBadge.info(self.tr("尚未保存"), self.right_panel)
+        self.draft_badge.hide()
         self.owner_label = CaptionLabel("", self.right_panel)
         header_layout.addWidget(self.detail_title)
         header_layout.addWidget(self.modified_badge)
+        header_layout.addWidget(self.added_badge)
+        header_layout.addWidget(self.orphan_badge)
+        header_layout.addWidget(self.draft_badge)
         right_layout.addLayout(header_layout)
         right_layout.addWidget(self.owner_label)
         self.problem_label = CaptionLabel("", self.right_panel)
@@ -277,7 +449,7 @@ class WorldbookArea(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setWidget(host)
         host.setMinimumWidth(0)
-        host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         host.setStyleSheet("QWidget { background: transparent; }")
         return scroll
@@ -290,6 +462,10 @@ class WorldbookArea(QWidget):
         self.restore_official_action = Action(FluentIcon.RETURN, self.tr("恢复官方内容"), self)
         self.confirm_base_action = Action(FluentIcon.UPDATE, self.tr("保留我的修改"), self)
         self.export_action = Action(FluentIcon.SAVE, self.tr("导出原始修改"), self)
+        self.delete_extension_action = Action(FluentIcon.DELETE, self.tr("永久删除条目"), self)
+        self.show_state_location_action = Action(
+            FluentIcon.DOCUMENT, self.tr("查看用户状态位置"), self
+        )
         self.sync_action = Action(FluentIcon.SYNC, self.tr("检查并修复搜索功能"), self)
         self.rebuild_action = Action(FluentIcon.HISTORY, self.tr("重新生成全部搜索数据…"), self)
         menu.addActions(
@@ -298,6 +474,7 @@ class WorldbookArea(QWidget):
                 self.restore_official_action,
                 self.confirm_base_action,
                 self.export_action,
+                self.delete_extension_action,
             ]
         )
         menu.addSeparator()
@@ -309,8 +486,12 @@ class WorldbookArea(QWidget):
 
         self.package_combo.currentIndexChanged.connect(self._on_package_changed)
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
+        self.add_entry_button.clicked.connect(self._begin_create_extension)
         self.search_edit.textChanged.connect(lambda _text: self._populate_entry_list())
-        self.modified_only_check.stateChanged.connect(lambda _state: self._populate_entry_list())
+        self.source_filter_combo.currentIndexChanged.connect(
+            lambda _index: self._populate_entry_list()
+        )
+        self.orphan_navigation_button.clicked.connect(self._navigate_to_next_orphan)
         self.show_hidden_check.stateChanged.connect(lambda _state: self._populate_entry_list())
         self.entry_list.currentItemChanged.connect(self._on_entry_selected)
         self.source_segment.currentItemChanged.connect(self._on_source_changed)
@@ -322,6 +503,8 @@ class WorldbookArea(QWidget):
         self.restore_official_action.triggered.connect(self._restore_official)
         self.confirm_base_action.triggered.connect(self._confirm_current_base)
         self.export_action.triggered.connect(self._export_override)
+        self.delete_extension_action.triggered.connect(self._delete_current_extension)
+        self.show_state_location_action.triggered.connect(self._show_user_state_location)
         self.sync_action.triggered.connect(self._controller.reconcile_all)
         self.rebuild_action.triggered.connect(self._confirm_rebuild)
         self._controller.started_signal.connect(self._on_sync_started)
@@ -362,7 +545,9 @@ class WorldbookArea(QWidget):
         if self._root_package_id is None:
             self.package_info_label.clear()
             self.entry_list.clear()
+            self.orphan_navigation_button.hide()
             self._show_empty(self.tr("尚未安装可用的世界书"), "")
+            self._update_add_action()
             return
         self._refresh_records()
 
@@ -401,6 +586,7 @@ class WorldbookArea(QWidget):
             return
         self._selected_entry_type = self._current_entry_type()
         self._settings.setValue("last_entry_type", self._selected_entry_type)
+        self._update_add_action()
         self._populate_entry_list()
 
     def _refresh_records(self, preferred_entry_id: UUID | None = None) -> None:
@@ -413,8 +599,10 @@ class WorldbookArea(QWidget):
         if result.readiness == PackageReadiness.UNAVAILABLE:
             self._records.clear()
             self.entry_list.clear()
+            self.orphan_navigation_button.hide()
             messages = "\n".join(issue.message for issue in result.issues)
             self._show_empty(self.tr("这个世界书暂时无法使用"), messages)
+            self._update_add_action()
             return
         records, issues = build_package_entry_records(
             self._packages, self._states, self._root_package_id, self._registry
@@ -433,7 +621,89 @@ class WorldbookArea(QWidget):
         if preferred_entry_id is not None:
             key = (self._root_package_id, self._current_entry_type())
             self._session_selection[key] = preferred_entry_id
+        self._update_orphan_navigation()
+        self._update_add_action()
         self._populate_entry_list()
+
+    def _update_orphan_navigation(self) -> None:
+        """按依赖闭包中的孤立 Override 数量更新紧凑导航提示。"""
+
+        orphan_count = sum(
+            1 for record in self._records.values() if record.orphaned_override
+        )
+        self.orphan_navigation_button.setText(
+            self.tr(f"{orphan_count} 条修改需处理")
+        )
+        self.orphan_navigation_button.setVisible(orphan_count > 0)
+        if orphan_count == 0:
+            self._last_orphan_navigation_id = None
+
+    def _navigate_to_next_orphan(self) -> None:
+        """切换到“我的内容”并按确定顺序定位下一条孤立修改。"""
+
+        if self._root_package_id is None or not self._resolve_unsaved_changes():
+            return
+        type_order = {
+            entry_type: index for index, (entry_type, _label) in enumerate(_ENTRY_TYPE_LABELS)
+        }
+        orphans = sorted(
+            (
+                record
+                for record in self._records.values()
+                if record.orphaned_override
+            ),
+            key=lambda record: (
+                record.owner_package_id != self._root_package_id,
+                type_order.get(record.entry.entry_type, len(type_order)),
+                _record_sort_key(record),
+                str(record.entry.entry_id),
+            ),
+        )
+        if not orphans:
+            return
+        current_index = next(
+            (
+                index
+                for index, record in enumerate(orphans)
+                if record.entry.entry_id == self._last_orphan_navigation_id
+            ),
+            -1,
+        )
+        target = orphans[(current_index + 1) % len(orphans)]
+        self._last_orphan_navigation_id = target.entry.entry_id
+        self._loading_ui = True
+        self.source_filter_combo.setCurrentIndex(
+            self.source_filter_combo.findData("user")
+        )
+        self.type_combo.setCurrentIndex(
+            self.type_combo.findData(target.entry.entry_type)
+        )
+        self._loading_ui = False
+        self._selected_entry_type = target.entry.entry_type
+        self._settings.setValue("last_entry_type", target.entry.entry_type)
+        self._populate_entry_list()
+        for row in range(self.entry_list.count()):
+            item = self.entry_list.item(row)
+            if UUID(str(item.data(Qt.UserRole))) == target.entry.entry_id:
+                self.entry_list.setCurrentRow(row)
+                self._display_record(target)
+                break
+
+    def _update_add_action(self) -> None:
+        """按当前根世界书状态更新新增按钮及说明。"""
+
+        entry_label = dict(_ENTRY_TYPE_LABELS).get(self._current_entry_type(), self.tr("条目"))
+        result = self._packages.get(self._root_package_id or "")
+        available = (
+            result is not None
+            and result.manifest is not None
+            and result.readiness != PackageReadiness.UNAVAILABLE
+        )
+        self.add_entry_button.setEnabled(available)
+        if available:
+            self.add_entry_button.setToolTip(self.tr(f"添加{entry_label}"))
+        else:
+            self.add_entry_button.setToolTip(self.tr("当前世界书暂时不能添加条目"))
 
     def _update_package_info(self, result: PackageLoadResult) -> None:
         """使用面向用户的文案显示包版本和可用性。"""
@@ -465,7 +735,7 @@ class WorldbookArea(QWidget):
         )
         selected_type = self._current_entry_type()
         needle = self.search_edit.text().strip().casefold()
-        modified_only = self.modified_only_check.isChecked()
+        source_filter = str(self.source_filter_combo.currentData() or "all")
         show_hidden = self.show_hidden_check.isChecked()
         visible_records = [
             record
@@ -473,12 +743,10 @@ class WorldbookArea(QWidget):
             if record.entry.entry_type == selected_type
             and (show_hidden or not record.hidden)
             and (
-                not modified_only
-                or (
-                    record.effective_entry is not None
-                    and record.effective_entry.source == "override"
-                )
+                (source_filter == "all" and not record.orphaned_override)
+                or source_filter != "all"
             )
+            and (source_filter == "all" or _record_source(record) == source_filter)
             and (not needle or needle in _record_search_text(record).casefold())
         ]
         visible_records.sort(key=_record_sort_key)
@@ -492,6 +760,13 @@ class WorldbookArea(QWidget):
             item = QListWidgetItem()
             item.setData(Qt.UserRole, str(record.entry.entry_id))
             secondary = _entry_secondary(record.entry)
+            user_kind = _record_user_kind(record)
+            if user_kind == "extension":
+                secondary = f"{secondary} · {self.tr('我添加的')}"
+            elif user_kind == "override":
+                secondary = f"{secondary} · {self.tr('我修改的')}"
+            elif user_kind == "orphan":
+                secondary = f"{secondary} · {self.tr('官方条目已不存在')}"
             if record.hidden:
                 secondary = f"{secondary} · {self.tr('已隐藏')}"
             row_widget = EntryListRow(
@@ -519,6 +794,71 @@ class WorldbookArea(QWidget):
         if current is not None and not preserve_dirty_editor:
             self._display_record(self._records[UUID(str(current.data(Qt.UserRole)))])
 
+    def _begin_create_extension(self) -> None:
+        """在当前类型中打开一条尚未持久化的用户扩展草稿。"""
+
+        if not self.add_entry_button.isEnabled() or self._root_package_id is None:
+            return
+        if not self._resolve_unsaved_changes():
+            return
+        result = self._packages.get(self._root_package_id)
+        if result is None or result.manifest is None:
+            return
+        current_item = self.entry_list.currentItem()
+        self._draft_previous_entry_id = (
+            UUID(str(current_item.data(Qt.UserRole))) if current_item is not None else None
+        )
+        series_values = {
+            value
+            for record in self._records.values()
+            if isinstance((value := record.entry.content.get("series_id")), str) and value
+        }
+        canon_values = {
+            value
+            for record in self._records.values()
+            if isinstance((value := record.entry.content.get("canon_branch")), str) and value
+        }
+        self._draft_entry = self._edit_service.create_extension_draft(
+            self._current_entry_type(),
+            result.manifest.timeline_id,
+            next(iter(series_values)) if len(series_values) == 1 else None,
+            next(iter(canon_values)) if len(canon_values) == 1 else None,
+        )
+        self._current_record = None
+        with QSignalBlocker(self.entry_list):
+            self.entry_list.clearSelection()
+            self.entry_list.setCurrentRow(-1)
+        self._display_draft(self._draft_entry)
+
+    def _display_draft(self, entry: WorldbookEntry) -> None:
+        """展示可直接填写的用户扩展草稿。"""
+
+        self.detail_title.setText(self.tr("新建条目"))
+        self.owner_label.setText(self.tr("将添加到当前世界书"))
+        self.problem_label.hide()
+        self.modified_host.set_available_entries(self._available_entries)
+        self.modified_host.load_entry(entry, False, extension_mode=True)
+        self.detail_stack.setCurrentWidget(self.editor_page)
+        self.source_stack.setCurrentWidget(self.modified_scroll)
+        self.source_segment.hide()
+        self.modified_badge.hide()
+        self.added_badge.hide()
+        self.orphan_badge.hide()
+        self.draft_badge.show()
+        self.restore_display_button.hide()
+        self.hide_action.setEnabled(False)
+        self.restore_official_action.setEnabled(False)
+        self.confirm_base_action.setEnabled(False)
+        self.export_action.setEnabled(False)
+        self.delete_extension_action.setEnabled(False)
+        self.show_state_location_action.setEnabled(False)
+        self.save_button.setText(self.tr("创建条目"))
+        self.discard_button.setText(self.tr("取消创建"))
+        self.save_button.show()
+        self.discard_button.show()
+        self.save_button.setEnabled(True)
+        self.discard_button.setEnabled(True)
+
     def _on_entry_selected(
         self,
         current: QListWidgetItem | None,
@@ -542,6 +882,8 @@ class WorldbookArea(QWidget):
     def _display_record(self, record: PackageEntryRecord) -> None:
         """根据官方、修改、隐藏或不兼容状态配置详情与操作。"""
 
+        self._draft_entry = None
+        self._draft_previous_entry_id = None
         self._current_record = record
         if self._root_package_id is not None:
             self._session_selection[(self._root_package_id, record.entry.entry_type)] = record.entry.entry_id
@@ -562,10 +904,46 @@ class WorldbookArea(QWidget):
         self.discard_button.hide()
         self.source_segment.hide()
         self.modified_badge.hide()
+        self.added_badge.hide()
+        self.orphan_badge.hide()
+        self.draft_badge.hide()
+        self.save_button.setText(self.tr("保存修改"))
+        self.discard_button.setText(self.tr("放弃未保存修改"))
         self.hide_action.setEnabled(False)
         self.restore_official_action.setEnabled(False)
         self.confirm_base_action.setEnabled(False)
         self.export_action.setEnabled(False)
+        self.delete_extension_action.setEnabled(False)
+        self.delete_extension_action.setText(self.tr("永久删除条目"))
+        self.show_state_location_action.setEnabled(False)
+
+        if record.orphaned_override:
+            self.orphan_badge.show()
+            self.export_action.setEnabled(True)
+            self.show_state_location_action.setEnabled(True)
+            self.delete_extension_action.setText(self.tr("永久删除孤立修改"))
+            self.delete_extension_action.setEnabled(
+                record.owner_package_id == self._root_package_id
+            )
+            if record.raw_entry is not None and record.issue is None:
+                self.modified_host.load_entry(record.raw_entry, True)
+                self.source_stack.setCurrentWidget(self.modified_scroll)
+            else:
+                self.empty_title.setText(self.tr("这条修改无法使用类型化表单显示"))
+                self.empty_message.setText(
+                    self.tr("仍可导出原始修改，或在直接选择所属世界书后永久删除。")
+                )
+                self.detail_stack.setCurrentWidget(self.empty_page)
+            message = self.tr(
+                "对应的官方条目已不存在。这条修改不会生效，也不会进入搜索索引。"
+            )
+            if record.owner_package_id != self._root_package_id:
+                message += self.tr(f" 请先切换到“{owner_name}”后再永久删除。")
+            if record.issue is not None:
+                message += self.tr(f" 原始内容也无法解析：{record.issue.message}")
+            self.problem_label.setText(message)
+            self.problem_label.show()
+            return
 
         if record.hidden:
             if record.official_entry is not None:
@@ -582,11 +960,16 @@ class WorldbookArea(QWidget):
         if record.issue is not None:
             if record.official_entry is not None:
                 self.official_host.load_entry(record.official_entry, True)
-            self.source_stack.setCurrentWidget(self.official_scroll)
-            self.problem_label.setText(self.tr(f"修改暂时无法使用：{record.issue.message}"))
+                self.source_stack.setCurrentWidget(self.official_scroll)
+                self.restore_official_action.setEnabled(record.has_override)
+                self.export_action.setEnabled(record.has_override)
+            elif record.raw_entry is not None:
+                self.modified_host.load_entry(record.raw_entry, True, extension_mode=True)
+                self.source_stack.setCurrentWidget(self.modified_scroll)
+                self.added_badge.show()
+                self._configure_extension_actions(record)
+            self.problem_label.setText(self.tr(f"这条自定义内容暂时无法使用：{record.issue.message}"))
             self.problem_label.show()
-            self.restore_official_action.setEnabled(True)
-            self.export_action.setEnabled(True)
             return
 
         if record.effective_entry is None:
@@ -594,8 +977,13 @@ class WorldbookArea(QWidget):
             return
 
         effective = record.effective_entry
-        read_only = effective.source == "extension"
-        self.modified_host.load_entry(effective.entry, read_only)
+        is_extension = effective.source == "extension"
+        read_only = is_extension and record.owner_package_id != self._root_package_id
+        self.modified_host.load_entry(
+            effective.entry,
+            read_only,
+            extension_mode=is_extension,
+        )
         self.source_stack.setCurrentWidget(self.modified_scroll)
         self._set_source_key("modified")
         if record.official_entry is not None:
@@ -612,14 +1000,29 @@ class WorldbookArea(QWidget):
                     self.tr("官方内容已有更新，请检查你的修改。")
                 )
                 self.problem_label.show()
-        if not read_only and record.official_entry is not None:
+        elif is_extension:
+            self.added_badge.show()
+            self._configure_extension_actions(record)
+            if read_only:
+                self.problem_label.setText(
+                    self.tr(
+                        f"该条目属于“{owner_name}”。请在上方直接选择该世界书后进行编辑。"
+                    )
+                )
+                self.problem_label.show()
+        if not read_only and (record.official_entry is not None or is_extension):
             self.save_button.show()
             self.save_button.setEnabled(False)
             self.discard_button.show()
             self.discard_button.setEnabled(False)
-        elif read_only:
-            self.problem_label.setText(self.tr("现有的“我的条目”在第一版编辑器中只读显示。"))
-            self.problem_label.show()
+
+    def _configure_extension_actions(self, record: PackageEntryRecord) -> None:
+        """根据扩展所有权配置永久删除和状态文件操作。"""
+
+        self.show_state_location_action.setEnabled(True)
+        self.delete_extension_action.setEnabled(
+            record.owner_package_id == self._root_package_id
+        )
 
     def _on_source_changed(self, route_key: str) -> None:
         """在未保存保护后切换修改后内容或官方原文。"""
@@ -659,7 +1062,7 @@ class WorldbookArea(QWidget):
             return True
         result = UnsavedChangesBox(self.window()).exec()
         if result == QDialog.Accepted:
-            return self._save_current()
+            return self._save_current() or not self._has_unsaved_changes()
         if result == UnsavedChangesBox.DISCARD_RESULT:
             self._discard_current()
             return True
@@ -668,35 +1071,52 @@ class WorldbookArea(QWidget):
     def _has_unsaved_changes(self) -> bool:
         """判断当前可编辑表单是否存在脏状态。"""
 
+        if self._draft_entry is not None:
+            return True
         try:
             return self._can_edit_current() and self.modified_host.editor().is_dirty()
         except ValueError:
             return False
 
     def _can_edit_current(self) -> bool:
-        """判断当前记录是否为可创建或更新 Override 的官方条目。"""
+        """判断当前表单是否允许保存官方修改或自定义条目。"""
 
+        if self._draft_entry is not None:
+            return True
         return (
             self._current_record is not None
             and not self._current_record.hidden
             and self._current_record.issue is None
-            and self._current_record.official_entry is not None
             and self._current_record.effective_entry is not None
-            and self._current_record.effective_entry.source in {"official", "override"}
+            and (
+                self._current_record.effective_entry.source in {"official", "override"}
+                or (
+                    self._current_record.effective_entry.source == "extension"
+                    and self._current_record.owner_package_id == self._root_package_id
+                )
+            )
         )
 
     def _save_current(self) -> bool:
-        """保存完整 Override，并在成功后异步更新搜索索引。"""
+        """保存完整 Override 或用户扩展，并异步更新搜索索引。"""
 
-        if not self._can_edit_current() or self._current_record is None:
+        if not self._can_edit_current() or self._root_package_id is None:
+            return False
+        if self._draft_entry is not None:
+            return self._save_extension_draft()
+        if self._current_record is None:
             return False
         record = self._current_record
-        official = record.official_entry
         effective = record.effective_entry
-        if official is None or effective is None:
+        if effective is None:
             return False
         editor = self.modified_host.editor()
         if not editor.is_dirty():
+            return False
+        if effective.source == "extension":
+            return self._save_existing_extension(record)
+        official = record.official_entry
+        if official is None:
             return False
         try:
             current_content = editor.content()
@@ -713,9 +1133,11 @@ class WorldbookArea(QWidget):
             )
         except RetrievalSummaryReviewRequired as exc:
             self._show_error(self.tr("请确认检索摘要"), str(exc))
+            editor.reveal_validation_fields()
             return False
         except (KeyError, TypeError, ValueError, WorldbookReferenceError, WorldbookSequenceConflict) as exc:
             self._show_error(self.tr("无法保存修改"), str(exc))
+            editor.reveal_validation_fields()
             return False
         entry_id = official.entry_id
         editor.mark_saved()
@@ -730,9 +1152,94 @@ class WorldbookArea(QWidget):
         )
         return True
 
+    def _save_extension_draft(self) -> bool:
+        """校验、持久化当前草稿，并保持新条目选中。"""
+
+        if self._draft_entry is None or self._root_package_id is None:
+            return False
+        editor = self.modified_host.editor()
+        try:
+            saved = self._edit_service.save_extension(
+                self._root_package_id,
+                editor.candidate_entry(),
+                self._persistent_catalog(),
+            )
+        except (KeyError, OSError, TypeError, ValueError, WorldbookReferenceError, WorldbookSequenceConflict) as exc:
+            editor.reveal_validation_fields()
+            self._show_error(self.tr("无法创建条目"), str(exc))
+            return False
+        self._draft_entry = None
+        self._draft_previous_entry_id = None
+        with QSignalBlocker(self.source_filter_combo):
+            self.source_filter_combo.setCurrentIndex(
+                self.source_filter_combo.findData("all")
+            )
+        editor.mark_saved()
+        self._refresh_records(saved.entry_id)
+        self._controller.reconcile_all()
+        InfoBar.success(
+            self.tr("条目已创建"),
+            self.tr("正在更新世界书的搜索内容。"),
+            duration=2500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+        return True
+
+    def _save_existing_extension(self, record: PackageEntryRecord) -> bool:
+        """直接更新归属于当前根世界书的用户扩展。"""
+
+        if self._root_package_id is None or record.effective_entry is None:
+            return False
+        editor = self.modified_host.editor()
+        candidate = editor.candidate_entry()
+        if candidate.content == record.effective_entry.entry.content:
+            editor.mark_saved()
+            return False
+        try:
+            saved = self._edit_service.save_extension(
+                self._root_package_id,
+                candidate,
+                self._persistent_catalog(),
+            )
+        except (KeyError, OSError, TypeError, ValueError, WorldbookReferenceError, WorldbookSequenceConflict) as exc:
+            editor.reveal_validation_fields()
+            self._show_error(self.tr("无法保存修改"), str(exc))
+            return False
+        editor.mark_saved()
+        self._refresh_records(saved.entry_id)
+        self._controller.reconcile_all()
+        InfoBar.success(
+            self.tr("修改已保存"),
+            self.tr("正在更新世界书的搜索内容。"),
+            duration=2500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+        return True
+
+    def _persistent_catalog(self) -> list[PersistentEntryRecord]:
+        """返回覆盖全部已安装包及隐藏内容的写入校验目录。"""
+
+        return build_persistent_entry_catalog(self._packages, self._states)
+
     def _discard_current(self) -> None:
         """从最近保存的有效内容重新加载当前表单。"""
 
+        if self._draft_entry is not None:
+            previous_entry_id = self._draft_previous_entry_id
+            self._draft_entry = None
+            self._draft_previous_entry_id = None
+            if previous_entry_id is None:
+                self._current_record = None
+                self._populate_entry_list()
+                with QSignalBlocker(self.entry_list):
+                    self.entry_list.clearSelection()
+                    self.entry_list.setCurrentRow(-1)
+                self._show_empty(self.tr("请从左侧选择一个条目"), "")
+            else:
+                self._refresh_records(previous_entry_id)
+            return
         if self._current_record is not None:
             self._display_record(self._current_record)
 
@@ -760,7 +1267,20 @@ class WorldbookArea(QWidget):
         record = self._current_record
         if record is None or not record.hidden:
             return
-        self._edit_service.restore_entry(record.owner_package_id, record.entry.entry_id)
+        if record.official_entry is None:
+            return
+        try:
+            self._edit_service.restore_hidden_entry(
+                record.owner_package_id,
+                record.official_entry,
+                self._persistent_catalog(),
+            )
+        except WorldbookReferenceError as exc:
+            self._show_error(
+                self.tr("无法恢复显示"),
+                self.tr(f"官方角色想法仍有无效的剧情事件引用：{exc}"),
+            )
+            return
         self.show_hidden_check.setChecked(False)
         self._refresh_records(record.entry.entry_id)
         self._controller.reconcile_all()
@@ -779,7 +1299,18 @@ class WorldbookArea(QWidget):
         box.yesButton.setText(self.tr("恢复官方内容"))
         box.cancelButton.setText(self.tr("取消"))
         if box.exec():
-            self._edit_service.remove_override(record.owner_package_id, record.official_entry.entry_id)
+            try:
+                self._edit_service.restore_official_content(
+                    record.owner_package_id,
+                    record.official_entry,
+                    self._persistent_catalog(),
+                )
+            except WorldbookReferenceError as exc:
+                self._show_error(
+                    self.tr("无法恢复官方内容"),
+                    self.tr(f"官方角色想法仍有无效的剧情事件引用：{exc}"),
+                )
+                return
             self._refresh_records(record.official_entry.entry_id)
             self._controller.reconcile_all()
 
@@ -821,6 +1352,184 @@ class WorldbookArea(QWidget):
             )
         except OSError as exc:
             self._show_error(self.tr("导出失败"), str(exc))
+
+    def _delete_current_extension(self) -> None:
+        """永久删除当前扩展，或按规划级联删除剧情事件。"""
+
+        record = self._current_record
+        if (
+            record is None
+            or self._root_package_id is None
+            or record.owner_package_id != self._root_package_id
+            or not self._resolve_unsaved_changes()
+        ):
+            return
+        if record.orphaned_override:
+            self._delete_current_orphan_override(record)
+            return
+        if _record_user_kind(record) != "extension":
+            return
+        if record.entry.entry_type == "story_event":
+            self._delete_story_event_extension(record)
+            return
+        self._delete_simple_extension(record)
+
+    def _delete_current_orphan_override(self, record: PackageEntryRecord) -> None:
+        """确认后删除当前所属包中的孤立 Override，且不触发索引同步。"""
+
+        next_entry_id, previous_entry_id = self._neighbor_entry_ids()
+        box = MessageBox(
+            self.tr(f"永久删除“{_entry_title(record.entry)}”的孤立修改？"),
+            self.tr("对应官方条目已不存在；删除后这份修改无法恢复。"),
+            self.window(),
+        )
+        box.yesButton.setText(self.tr("永久删除修改"))
+        box.cancelButton.setText(self.tr("取消"))
+        if not box.exec():
+            return
+        try:
+            self._edit_service.delete_orphan_override(
+                record.owner_package_id,
+                record.entry.entry_id,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            self._show_error(self.tr("无法删除修改"), str(exc))
+            return
+        self._current_record = None
+        self._refresh_records(next_entry_id or previous_entry_id)
+        if self.orphan_navigation_button.isVisible():
+            self._navigate_to_next_orphan()
+        InfoBar.success(
+            self.tr("修改已永久删除"),
+            "",
+            duration=2500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+
+    def _delete_simple_extension(self, record: PackageEntryRecord) -> None:
+        """确认后删除不需要级联规划的普通用户扩展。"""
+
+        next_entry_id, previous_entry_id = self._neighbor_entry_ids()
+        title = _entry_title(record.entry)
+        box = MessageBox(
+            self.tr(f"删除“{title}”？"),
+            self.tr("这个条目将被永久删除，并从世界书搜索中移除。此操作无法撤销。"),
+            self.window(),
+        )
+        box.yesButton.setText(self.tr("永久删除"))
+        box.cancelButton.setText(self.tr("取消"))
+        if not box.exec():
+            return
+        try:
+            self._edit_service.delete_extension(
+                self._root_package_id,
+                record.entry.entry_id,
+                self._persistent_catalog(),
+            )
+        except WorldbookExtensionReferencedError as exc:
+            references = "、".join(_entry_title(entry) for entry in exc.referencing_entries)
+            self._show_error(
+                self.tr("无法删除剧情事件"),
+                self.tr(f"以下角色想法仍在引用它：{references}"),
+            )
+            return
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            self._show_error(self.tr("无法删除条目"), str(exc))
+            return
+        self._current_record = None
+        self._refresh_records(next_entry_id or previous_entry_id)
+        self._controller.reconcile_all()
+        InfoBar.success(
+            self.tr("条目已永久删除"),
+            "",
+            duration=2500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+
+    def _delete_story_event_extension(self, record: PackageEntryRecord) -> None:
+        """展示完整影响计划，并在确认后单次提交剧情事件级联删除。"""
+
+        if self._root_package_id is None:
+            return
+        try:
+            plan = self._edit_service.plan_story_event_deletion(
+                self._root_package_id,
+                record.entry.entry_id,
+                self._persistent_catalog(),
+            )
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            self._show_error(self.tr("无法检查删除影响"), str(exc))
+            return
+        package_names = {
+            package_id: (
+                result.manifest.display_name
+                if result.manifest is not None
+                else package_id
+            )
+            for package_id, result in self._packages.items()
+        }
+        box = StoryEventDeletionBox(plan, package_names, self.window())
+        result = box.exec()
+        if result == StoryEventDeletionBox.SWITCH_RESULT:
+            if box.switch_package_id is not None:
+                index = self.package_combo.findData(box.switch_package_id)
+                if index >= 0:
+                    self.package_combo.setCurrentIndex(index)
+            return
+        if result != QDialog.Accepted or not plan.can_apply:
+            return
+        next_entry_id, previous_entry_id = self._neighbor_entry_ids()
+        try:
+            self._edit_service.apply_story_event_deletion(
+                plan,
+                self._persistent_catalog(),
+            )
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            WorldbookExtensionReferencedError,
+        ) as exc:
+            self._show_error(self.tr("无法删除剧情事件"), str(exc))
+            return
+        self._current_record = None
+        self._refresh_records(next_entry_id or previous_entry_id)
+        self._controller.reconcile_all()
+        InfoBar.success(
+            self.tr("剧情事件及关联修改已处理"),
+            self.tr("正在更新世界书的搜索内容。"),
+            duration=2500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+
+    def _neighbor_entry_ids(self) -> tuple[UUID | None, UUID | None]:
+        """返回当前可见列表中优先选中的下一项和上一项。"""
+
+        row = self.entry_list.currentRow()
+        next_item = self.entry_list.item(row + 1) if row >= 0 else None
+        previous_item = self.entry_list.item(row - 1) if row > 0 else None
+        next_id = (
+            UUID(str(next_item.data(Qt.UserRole))) if next_item is not None else None
+        )
+        previous_id = (
+            UUID(str(previous_item.data(Qt.UserRole)))
+            if previous_item is not None
+            else None
+        )
+        return next_id, previous_id
+
+    def _show_user_state_location(self) -> None:
+        """在系统文件管理器中打开当前条目所属用户状态的位置。"""
+
+        record = self._current_record
+        if record is None:
+            return
+        path = self._states.path_for(record.owner_package_id)
+        target = path if path.exists() else path.parent
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def _confirm_rebuild(self) -> None:
         """确认后异步重新生成全部世界书搜索数据。"""
@@ -888,13 +1597,28 @@ class WorldbookArea(QWidget):
 
         self.detail_title.setText(self.tr("世界书"))
         self.modified_badge.hide()
+        self.added_badge.hide()
+        self.orphan_badge.hide()
+        self.draft_badge.hide()
         self.owner_label.clear()
+        self.problem_label.hide()
         self.empty_title.setText(title)
         self.empty_message.setText(message)
         self.detail_stack.setCurrentWidget(self.empty_page)
         self.save_button.hide()
         self.discard_button.hide()
         self.restore_display_button.hide()
+        self.hide_action.setEnabled(False)
+        self.restore_official_action.setEnabled(False)
+        self.confirm_base_action.setEnabled(False)
+        self.export_action.setEnabled(False)
+        self.delete_extension_action.setEnabled(False)
+        self.show_state_location_action.setEnabled(False)
+
+    def resolve_pending_changes(self) -> bool:
+        """供配置窗口关闭前处理世界书页面的未保存内容。"""
+
+        return self._resolve_unsaved_changes()
 
     def _show_error(self, title: str, message: str) -> None:
         """使用 Fluent InfoBar 展示保存或导出错误。"""
@@ -924,6 +1648,28 @@ def _entry_title(entry: WorldbookEntry) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return "未命名条目"
+
+
+def _record_source(record: PackageEntryRecord) -> str:
+    """返回适用于列表筛选的互斥用户来源。"""
+
+    if record.has_override or record.official_entry is None:
+        return "user"
+    return "official"
+
+
+def _record_user_kind(
+    record: PackageEntryRecord,
+) -> Literal["official", "override", "extension", "orphan"]:
+    """返回仅用于标签和操作差异的用户内容子类型。"""
+
+    if record.orphaned_override:
+        return "orphan"
+    if record.has_override:
+        return "override"
+    if record.official_entry is None:
+        return "extension"
+    return "official"
 
 
 def _entry_secondary(entry: WorldbookEntry) -> str:

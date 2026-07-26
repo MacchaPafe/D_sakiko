@@ -95,6 +95,11 @@ class WorldbookUserStateRepository:
         self.save(state)
         return state
 
+    def path_for(self, package_id: str) -> Path:
+        """返回指定世界书的用户状态文件路径。"""
+
+        return self._path(package_id)
+
     def _path(self, package_id: str) -> Path:
         """生成安全的包状态文件路径。"""
 

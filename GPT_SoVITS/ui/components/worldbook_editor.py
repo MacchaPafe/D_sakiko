@@ -9,6 +9,7 @@ from PyQt5.QtGui import QMouseEvent, QResizeEvent
 from PyQt5.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
+    QLayout,
     QListWidgetItem,
     QSizePolicy,
     QVBoxLayout,
@@ -34,7 +35,7 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from rag.models import CharacterId, SeriesId
+from rag.models import CanonBranch, CharacterId, SeriesId
 from rag.worldbook.adapters import AdapterRegistry
 from rag.worldbook.models import EntryType, WorldbookEntry
 from rag.worldbook.time_coordinates import (
@@ -77,10 +78,15 @@ def _refresh_flow_container(container: QWidget, layout: FlowLayout) -> None:
     if container.minimumHeight() != target_height:
         container.setMinimumHeight(target_height)
     layout.setGeometry(container.contentsRect())
-    container.updateGeometry()
-    parent = container.parentWidget()
-    if parent is not None:
-        parent.updateGeometry()
+    current: QWidget | None = container
+    while current is not None:
+        current.updateGeometry()
+        parent = current.parentWidget()
+        parent_layout = QWidget.layout(parent) if parent is not None else None
+        if parent_layout is not None:
+            parent_layout.invalidate()
+            parent_layout.activate()
+        current = parent
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +221,11 @@ class MultiSelectField(QWidget):
 
         self._options = options
         self._render_chips()
+
+    def option_keys(self) -> set[str]:
+        """返回当前对话框允许选择的稳定值集合。"""
+
+        return {option.key for option in self._options}
 
     def set_value(self, keys: list[str]) -> None:
         """设置当前选择并保持第一次出现的顺序。"""
@@ -503,9 +514,15 @@ class TimeRangeEditor(QWidget):
     def set_series_id(self, series_id: str | None) -> None:
         """设置用于时间编码的单一系列，并尽量恢复已保存坐标。"""
 
-        self._series_id = series_id
-        if series_id is not None:
+        self._series_id = series_id or None
+        if self._series_id is not None:
             self._apply_preserved_values()
+        self._update_enabled_state()
+
+    def change_series_id(self, series_id: str | None) -> None:
+        """切换系列并保留当前界面上的集数与时间点。"""
+
+        self._series_id = series_id or None
         self._update_enabled_state()
 
     def set_values(self, start: int | None, end: int | None) -> None:
@@ -634,7 +651,9 @@ class BaseEntryEditor(QWidget):
         self._dirty = False
         self._semantic_dirty = False
         self._read_only = False
+        self._extension_mode = False
         self._editable_widgets: list[QWidget] = []
+        self.extension_scope_card: HeaderCardWidget | None = None
         self.root_layout = QVBoxLayout(self)
         self.root_layout.setContentsMargins(0, 0, 0, 0)
         self.root_layout.setSpacing(12)
@@ -700,6 +719,15 @@ class BaseEntryEditor(QWidget):
         index = self.root_layout.indexOf(self.retrieval_card)
         self.root_layout.insertWidget(index, card)
 
+    def create_extension_scope_card(self) -> tuple[HeaderCardWidget, QFormLayout]:
+        """创建仅供用户扩展显示且不可折叠的基础范围卡片。"""
+
+        card = self._create_card(self.tr("基础范围"))
+        card.hide()
+        self.extension_scope_card = card
+        self.add_editor_card(card)
+        return card, self._card_form(card)
+
     def register_widget(self, widget: QWidget, semantic: bool) -> None:
         """注册可编辑控件并连接其变化信号。"""
 
@@ -726,10 +754,16 @@ class BaseEntryEditor(QWidget):
         elif isinstance(widget, TimeRangeEditor):
             widget.value_changed.connect(callback)
 
-    def load_entry(self, entry: WorldbookEntry, read_only: bool) -> None:
+    def load_entry(
+        self,
+        entry: WorldbookEntry,
+        read_only: bool,
+        extension_mode: bool = False,
+    ) -> None:
         """加载完整条目并重置脏状态和检索摘要提示。"""
 
         self._loading = True
+        self._extension_mode = extension_mode
         self._entry = entry.model_copy(deep=True)
         self.retrieval_edit.setPlainText(_string_value(entry.content, "retrieval_text"))
         self.retrieval_warning.hide()
@@ -737,6 +771,8 @@ class BaseEntryEditor(QWidget):
         self._semantic_dirty = False
         self._dirty = False
         self._loading = False
+        if self.extension_scope_card is not None:
+            self.extension_scope_card.setVisible(extension_mode)
         self.set_read_only(read_only)
         self.dirty_changed.emit(False)
 
@@ -799,6 +835,12 @@ class BaseEntryEditor(QWidget):
             else:
                 widget.setEnabled(not read_only)
 
+    def reveal_validation_fields(self) -> None:
+        """展开全部折叠卡片，便于用户定位保存校验错误。"""
+
+        for card in self.findChildren(CollapsibleCard):
+            card.set_expanded(True)
+
     def _mark_dirty(self) -> None:
         """在非加载阶段记录普通未保存变化。"""
 
@@ -854,6 +896,13 @@ class StoryEventEditor(BaseEntryEditor):
         """创建 Story Event 表单。"""
 
         super().__init__(registry, parent)
+        scope_card, scope = self.create_extension_scope_card()
+        self.extension_series_combo = _series_combo(scope_card)
+        self.extension_canon_combo = _canon_combo(scope_card)
+        self.extension_timeline_label = CaptionLabel(scope_card)
+        scope.addRow(BodyLabel(self.tr("系列"), scope_card), self.extension_series_combo)
+        scope.addRow(BodyLabel(self.tr("剧情分支"), scope_card), self.extension_canon_combo)
+        scope.addRow(BodyLabel(self.tr("剧情时间线"), scope_card), self.extension_timeline_label)
         normal_card = self._create_card(self.tr("剧情事件"))
         normal = self._card_form(normal_card)
         self.title_edit = LineEdit(self)
@@ -874,7 +923,14 @@ class StoryEventEditor(BaseEntryEditor):
         advanced_form.addRow(BodyLabel(self.tr("发生学年"), self), self.story_year_field)
         advanced_form.addRow(BodyLabel(self.tr("剧情时间"), self), self.time_range_field)
         self.add_editor_card(advanced)
+        self.extension_series_combo.currentIndexChanged.connect(
+            lambda _index: self.time_range_field.change_series_id(
+                _combo_text(self.extension_series_combo)
+            )
+        )
         for widget, semantic in (
+            (self.extension_series_combo, False),
+            (self.extension_canon_combo, False),
             (self.title_edit, True),
             (self.summary_edit, True),
             (self.participants_field, True),
@@ -887,6 +943,11 @@ class StoryEventEditor(BaseEntryEditor):
     def _load_fields(self, content: dict[str, object]) -> None:
         """加载剧情事件字段。"""
 
+        _select_combo_value(self.extension_series_combo, _string_value(content, "series_id"))
+        _select_combo_value(
+            self.extension_canon_combo, _string_value(content, "canon_branch")
+        )
+        self.extension_timeline_label.setText(self.tr("使用当前世界书的剧情时间线"))
         self.title_edit.setText(_string_value(content, "title"))
         self.summary_edit.setPlainText(_string_value(content, "summary"))
         self.participants_field.set_value(_string_list(content, "participants"))
@@ -905,8 +966,11 @@ class StoryEventEditor(BaseEntryEditor):
         start, end = self.time_range_field.values()
         if start is None or end is None:
             raise ValueError("剧情事件必须具有完整可见时间区间")
-        coordinate = decode_story_time(_string_value(self.content_base(), "series_id"), start)
+        series_id = _combo_text(self.extension_series_combo)
+        coordinate = decode_story_time(series_id, start)
         return {
+            "series_id": series_id,
+            "canon_branch": _combo_text(self.extension_canon_combo),
             "title": self.title_edit.text().strip(),
             "summary": self.summary_edit.toPlainText().strip(),
             "participants": self.participants_field.value(),
@@ -941,6 +1005,18 @@ class CharacterThoughtEditor(BaseEntryEditor):
         """创建 Character Thought 表单。"""
 
         super().__init__(registry, parent)
+        self._available_context_entries: list[WorldbookEntry] = []
+        scope_card, scope = self.create_extension_scope_card()
+        self.extension_character_combo = _character_combo(scope_card)
+        self.extension_series_combo = _series_combo(scope_card)
+        self.extension_canon_combo = _canon_combo(scope_card)
+        self.extension_timeline_label = CaptionLabel(scope_card)
+        scope.addRow(
+            BodyLabel(self.tr("所属角色"), scope_card), self.extension_character_combo
+        )
+        scope.addRow(BodyLabel(self.tr("系列"), scope_card), self.extension_series_combo)
+        scope.addRow(BodyLabel(self.tr("剧情分支"), scope_card), self.extension_canon_combo)
+        scope.addRow(BodyLabel(self.tr("剧情时间线"), scope_card), self.extension_timeline_label)
         normal_card = self._create_card(self.tr("角色想法"))
         normal = self._card_form(normal_card)
         self.subject_edit = LineEdit(self)
@@ -960,11 +1036,28 @@ class CharacterThoughtEditor(BaseEntryEditor):
         advanced = CollapsibleCard(self.tr("高级设置"), False, self)
         advanced_form = self._card_form(advanced)
         self.event_field = MultiSelectField(self.tr("选择关联剧情事件"), self)
+        self.event_warning = CaptionLabel(
+            self.tr("已有的关联剧情事件与当前系列或剧情分支不兼容，请移除后重新选择。"),
+            advanced,
+        )
+        self.event_warning.setWordWrap(True)
+        self.event_warning.hide()
         self.time_range_field = TimeRangeEditor(False, self)
         advanced_form.addRow(BodyLabel(self.tr("关联剧情事件"), self), self.event_field)
+        advanced_form.addRow(self.event_warning)
         advanced_form.addRow(BodyLabel(self.tr("可见区间"), self), self.time_range_field)
         self.add_editor_card(advanced)
+        self.extension_series_combo.currentIndexChanged.connect(
+            lambda _index: self._refresh_extension_context()
+        )
+        self.extension_canon_combo.currentIndexChanged.connect(
+            lambda _index: self._refresh_extension_context()
+        )
+        self.event_field.value_changed.connect(self._update_event_warning)
         for widget, semantic in (
+            (self.extension_character_combo, False),
+            (self.extension_series_combo, False),
+            (self.extension_canon_combo, False),
             (self.subject_edit, True),
             (self.aspect_edit, True),
             (self.thought_edit, True),
@@ -978,6 +1071,14 @@ class CharacterThoughtEditor(BaseEntryEditor):
     def _load_fields(self, content: dict[str, object]) -> None:
         """加载角色想法字段。"""
 
+        _select_combo_value(
+            self.extension_character_combo, _string_value(content, "character_id")
+        )
+        _select_combo_value(self.extension_series_combo, _string_value(content, "series_id"))
+        _select_combo_value(
+            self.extension_canon_combo, _string_value(content, "canon_branch")
+        )
+        self.extension_timeline_label.setText(self.tr("使用当前世界书的剧情时间线"))
         self.subject_edit.setText(_string_value(content, "canonical_subject"))
         self.aspect_edit.setText(_string_value(content, "thought_aspect"))
         self.thought_edit.setPlainText(_string_value(content, "thought_text"))
@@ -995,16 +1096,28 @@ class CharacterThoughtEditor(BaseEntryEditor):
     def _set_available_entries(self, entries: list[WorldbookEntry]) -> None:
         """把范围相容的剧情事件提供给引用选择器。"""
 
+        self._available_context_entries = entries
         if self._entry is None:
             return
         content = self._entry.content
+        series_id = (
+            _combo_text(self.extension_series_combo)
+            if self._extension_mode
+            else _string_value(content, "series_id")
+        )
+        canon_branch = (
+            _combo_text(self.extension_canon_combo)
+            if self._extension_mode
+            else _string_value(content, "canon_branch")
+        )
         options: list[SelectionOption] = []
         for entry in entries:
             if entry.entry_type != "story_event":
                 continue
-            if any(
-                entry.content.get(field) != content.get(field)
-                for field in ("series_id", "timeline_id", "canon_branch")
+            if (
+                entry.content.get("series_id") != series_id
+                or entry.content.get("timeline_id") != content.get("timeline_id")
+                or entry.content.get("canon_branch") != canon_branch
             ):
                 continue
             title = _string_value(entry.content, "title") or str(entry.entry_id)
@@ -1014,6 +1127,7 @@ class CharacterThoughtEditor(BaseEntryEditor):
                 SelectionOption(str(entry.entry_id), f"{prefix}{title}", _string_value(entry.content, "summary"))
             )
         self.event_field.set_options(options)
+        self._update_event_warning()
 
     def _field_content(self) -> dict[str, object]:
         """返回角色想法可编辑字段。"""
@@ -1022,6 +1136,9 @@ class CharacterThoughtEditor(BaseEntryEditor):
         if start is None or end is None:
             raise ValueError("角色想法必须具有完整可见时间区间")
         return {
+            "character_id": _combo_text(self.extension_character_combo),
+            "series_id": _combo_text(self.extension_series_combo),
+            "canon_branch": _combo_text(self.extension_canon_combo),
             "canonical_subject": self.subject_edit.text().strip(),
             "thought_aspect": self.aspect_edit.text().strip(),
             "thought_text": self.thought_edit.toPlainText().strip(),
@@ -1032,6 +1149,21 @@ class CharacterThoughtEditor(BaseEntryEditor):
             "visible_to": end,
         }
 
+    def _refresh_extension_context(self) -> None:
+        """保留时间坐标并刷新当前范围可选的剧情事件。"""
+
+        if not self._extension_mode:
+            return
+        self.time_range_field.change_series_id(_combo_text(self.extension_series_combo))
+        self._set_available_entries(self._available_context_entries)
+
+    def _update_event_warning(self) -> None:
+        """提示仍保留但已不属于当前范围的剧情事件引用。"""
+
+        compatible = self.event_field.option_keys()
+        incompatible = set(self.event_field.value()) - compatible
+        self.event_warning.setVisible(self._extension_mode and bool(incompatible))
+
 
 class CharacterRelationEditor(BaseEntryEditor):
     """编辑 Character Relation 的关系摘要、说话方式与称呼。"""
@@ -1040,6 +1172,21 @@ class CharacterRelationEditor(BaseEntryEditor):
         """创建 Character Relation 表单。"""
 
         super().__init__(registry, parent)
+        scope_card, scope = self.create_extension_scope_card()
+        self.extension_subject_combo = _character_combo(scope_card)
+        self.extension_object_combo = _character_combo(scope_card)
+        self.extension_series_combo = _series_combo(scope_card)
+        self.extension_canon_combo = _canon_combo(scope_card)
+        self.extension_timeline_label = CaptionLabel(scope_card)
+        scope.addRow(
+            BodyLabel(self.tr("主体角色"), scope_card), self.extension_subject_combo
+        )
+        scope.addRow(
+            BodyLabel(self.tr("目标角色"), scope_card), self.extension_object_combo
+        )
+        scope.addRow(BodyLabel(self.tr("系列"), scope_card), self.extension_series_combo)
+        scope.addRow(BodyLabel(self.tr("剧情分支"), scope_card), self.extension_canon_combo)
+        scope.addRow(BodyLabel(self.tr("剧情时间线"), scope_card), self.extension_timeline_label)
         normal_card = self._create_card(self.tr("角色关系"))
         normal = self._card_form(normal_card)
         self.summary_edit = TextEdit(self)
@@ -1058,7 +1205,16 @@ class CharacterRelationEditor(BaseEntryEditor):
         self.time_range_field = TimeRangeEditor(False, self)
         advanced_form.addRow(BodyLabel(self.tr("可见区间"), self), self.time_range_field)
         self.add_editor_card(advanced)
+        self.extension_series_combo.currentIndexChanged.connect(
+            lambda _index: self.time_range_field.change_series_id(
+                _combo_text(self.extension_series_combo)
+            )
+        )
         for widget, semantic in (
+            (self.extension_subject_combo, False),
+            (self.extension_object_combo, False),
+            (self.extension_series_combo, False),
+            (self.extension_canon_combo, False),
             (self.summary_edit, True),
             (self.speech_edit, True),
             (self.nickname_edit, True),
@@ -1070,6 +1226,19 @@ class CharacterRelationEditor(BaseEntryEditor):
     def _load_fields(self, content: dict[str, object]) -> None:
         """加载角色关系字段。"""
 
+        _select_combo_value(
+            self.extension_subject_combo,
+            _string_value(content, "subject_character_id"),
+        )
+        _select_combo_value(
+            self.extension_object_combo,
+            _string_value(content, "object_character_id"),
+        )
+        _select_combo_value(self.extension_series_combo, _string_value(content, "series_id"))
+        _select_combo_value(
+            self.extension_canon_combo, _string_value(content, "canon_branch")
+        )
+        self.extension_timeline_label.setText(self.tr("使用当前世界书的剧情时间线"))
         self.summary_edit.setPlainText(_string_value(content, "state_summary"))
         self.speech_edit.setPlainText(_string_value(content, "speech_hint"))
         self.nickname_edit.setText(_string_value(content, "object_character_nickname"))
@@ -1087,6 +1256,10 @@ class CharacterRelationEditor(BaseEntryEditor):
         if start is None or end is None:
             raise ValueError("角色关系必须具有完整可见时间区间")
         return {
+            "subject_character_id": _combo_text(self.extension_subject_combo),
+            "object_character_id": _combo_text(self.extension_object_combo),
+            "series_id": _combo_text(self.extension_series_combo),
+            "canon_branch": _combo_text(self.extension_canon_combo),
             "state_summary": self.summary_edit.toPlainText().strip(),
             "speech_hint": self.speech_edit.toPlainText().strip(),
             "object_character_nickname": self.nickname_edit.text().strip(),
@@ -1103,6 +1276,15 @@ class LoreEntryEditor(BaseEntryEditor):
         """创建 Lore Entry 表单。"""
 
         super().__init__(registry, parent)
+        scope_card, extension_scope = self.create_extension_scope_card()
+        self.extension_canon_combo = _canon_combo(scope_card)
+        self.extension_timeline_label = CaptionLabel(scope_card)
+        extension_scope.addRow(
+            BodyLabel(self.tr("剧情分支"), scope_card), self.extension_canon_combo
+        )
+        extension_scope.addRow(
+            BodyLabel(self.tr("剧情时间线"), scope_card), self.extension_timeline_label
+        )
         normal_card = self._create_card(self.tr("名词解释"))
         normal = self._card_form(normal_card)
         self.title_edit = LineEdit(self)
@@ -1131,6 +1313,7 @@ class LoreEntryEditor(BaseEntryEditor):
         self.series_field.value_changed.connect(self._sync_lore_time_series)
         self.scope_combo.currentIndexChanged.connect(lambda _index: self._sync_scope_state())
         for widget, semantic in (
+            (self.extension_canon_combo, False),
             (self.title_edit, True),
             (self.content_edit, True),
             (self.tags_field, False),
@@ -1144,6 +1327,10 @@ class LoreEntryEditor(BaseEntryEditor):
     def _load_fields(self, content: dict[str, object]) -> None:
         """加载名词解释字段。"""
 
+        _select_combo_value(
+            self.extension_canon_combo, _string_value(content, "canon_branch")
+        )
+        self.extension_timeline_label.setText(self.tr("使用当前世界书的剧情时间线"))
         self.title_edit.setText(_string_value(content, "title"))
         self.content_edit.setPlainText(_string_value(content, "content"))
         self.tags_field.set_value(_string_list(content, "tags"))
@@ -1169,6 +1356,7 @@ class LoreEntryEditor(BaseEntryEditor):
         scope_type = str(self.scope_combo.currentData())
         series_ids = self.series_field.value() if scope_type == "series" else []
         return {
+            "canon_branch": _combo_text(self.extension_canon_combo),
             "title": self.title_edit.text().strip(),
             "content": self.content_edit.toPlainText().strip(),
             "tags": self.tags_field.value(),
@@ -1206,6 +1394,7 @@ class EntryEditorHost(QWidget):
         self._available_entries: list[WorldbookEntry] = []
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSizeConstraint(QLayout.SetMinimumSize)
 
     def set_available_entries(self, entries: list[WorldbookEntry]) -> None:
         """保存依赖闭包条目并更新当前跨条目选择器。"""
@@ -1214,15 +1403,21 @@ class EntryEditorHost(QWidget):
         if self._editor is not None:
             self._editor.set_available_entries(entries)
 
-    def load_entry(self, entry: WorldbookEntry, read_only: bool) -> None:
+    def load_entry(
+        self,
+        entry: WorldbookEntry,
+        read_only: bool,
+        extension_mode: bool = False,
+    ) -> None:
         """为指定条目创建正确表单并加载内容。"""
 
         if self._editor is not None:
             self.layout.removeWidget(self._editor)
+            self._editor.hide()
             self._editor.deleteLater()
         editor_class = _EDITOR_CLASSES[entry.entry_type]
         self._editor = editor_class(self._registry, self)
-        self._editor.load_entry(entry, read_only)
+        self._editor.load_entry(entry, read_only, extension_mode)
         self._editor.set_available_entries(self._available_entries)
         self._editor.dirty_changed.connect(self.dirty_changed)
         self.layout.addWidget(self._editor)
@@ -1239,6 +1434,7 @@ class EntryEditorHost(QWidget):
 
         if self._editor is not None:
             self.layout.removeWidget(self._editor)
+            self._editor.hide()
             self._editor.deleteLater()
             self._editor = None
 
@@ -1249,6 +1445,56 @@ _EDITOR_CLASSES: dict[EntryType, type[BaseEntryEditor]] = {
     "character_relation": CharacterRelationEditor,
     "lore_entry": LoreEntryEditor,
 }
+
+
+def _character_combo(parent: QWidget) -> ComboBox:
+    """创建要求用户选择单个角色的 Fluent ComboBox。"""
+
+    combo = ComboBox(parent)
+    combo.setPlaceholderText(combo.tr("请选择角色"))
+    for option in _character_options():
+        combo.addItem(option.label, userData=option.key)
+    combo.setCurrentIndex(-1)
+    return combo
+
+
+def _series_combo(parent: QWidget) -> ComboBox:
+    """创建要求用户选择单个作品系列的 Fluent ComboBox。"""
+
+    combo = ComboBox(parent)
+    combo.setPlaceholderText(combo.tr("请选择系列"))
+    for option in _series_options():
+        combo.addItem(option.label, userData=option.key)
+    combo.setCurrentIndex(-1)
+    return combo
+
+
+def _canon_combo(parent: QWidget) -> ComboBox:
+    """创建剧情分支 Fluent ComboBox。"""
+
+    labels: dict[CanonBranch, str] = {
+        CanonBranch.MAIN: "动画主线",
+        CanonBranch.GAME: "手游补充剧情",
+    }
+    combo = ComboBox(parent)
+    combo.setPlaceholderText(combo.tr("请选择剧情分支"))
+    for branch in CanonBranch:
+        combo.addItem(labels[branch], userData=branch.value)
+    combo.setCurrentIndex(-1)
+    return combo
+
+
+def _select_combo_value(combo: ComboBox, value: str) -> None:
+    """按稳定值选择 ComboBox，不存在时保持未选择。"""
+
+    combo.setCurrentIndex(combo.findData(value))
+
+
+def _combo_text(combo: ComboBox) -> str:
+    """返回 ComboBox 当前稳定字符串值。"""
+
+    value = combo.currentData()
+    return value if isinstance(value, str) else ""
 
 
 def _character_options() -> list[SelectionOption]:

@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (QApplication,
                              QVBoxLayout, QLabel,
                              QStackedWidget, QMainWindow, QWidget)
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QCloseEvent
 
 # 去广告
 with contextlib.redirect_stdout(None):
@@ -176,6 +177,14 @@ class DSakikoConfigWindow(FluentWindow):
         initial_widget = self.object_name_to_interface.get(initial_interface, self.config_area)
         self.switchTo(initial_widget)
 
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """关闭配置窗口前处理世界书页面尚未保存的修改。"""
+
+        if not self.worldbook_area.resolve_pending_changes():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
 
 if __name__ == '__main__':
     import os
@@ -191,9 +200,6 @@ if __name__ == '__main__':
     try:
         app = QApplication(sys.argv)
         w = DSakikoConfigWindow(sys.argv[1] if len(sys.argv) > 1 else "")
-        # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
-        # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
-        w.closeEvent = lambda e: app.quit()
 
         w.show()
         sys.exit(app.exec_())

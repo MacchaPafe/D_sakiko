@@ -6,21 +6,33 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Literal
+from unittest.mock import Mock, patch
+from uuid import UUID, uuid4
 
 from PyQt5.QtCore import QRect, QSettings, Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QFormLayout, QSplitter, QWidget
 from qfluentwidgets import (
+    CaptionLabel,
     ComboBox,
     ListWidget,
     PrimaryPushButton,
     SearchLineEdit,
+    ToolButton,
     TransparentDropDownPushButton,
 )
 
 from rag.worldbook.adapters import create_default_registry
 from rag.worldbook.hashing import file_sha256
-from rag.worldbook.models import ContentFileRecord, WorldbookEntry, WorldbookManifest
+from rag.worldbook.models import (
+    ContentFileRecord,
+    PackageDependency,
+    WorldbookEntry,
+    WorldbookManifest,
+    WorldbookOverride,
+)
+from rag.worldbook.user_state import WorldbookUserStateRepository
 from ui.components.worldbook_editor import (
     EntryEditorHost,
     MultiSelectField,
@@ -55,6 +67,9 @@ class WorldbookUiTest(unittest.TestCase):
             self.assertFalse(area._controller.is_rag_available())
             self.assertIsInstance(area.package_combo, ComboBox)
             self.assertIsInstance(area.type_combo, ComboBox)
+            self.assertIsInstance(area.add_entry_button, ToolButton)
+            self.assertIsInstance(area.source_filter_combo, ComboBox)
+            self.assertEqual(area.source_filter_combo.count(), 3)
             self.assertIsInstance(area.search_edit, SearchLineEdit)
             self.assertIsInstance(area.entry_list, ListWidget)
             self.assertIsInstance(area.splitter, QSplitter)
@@ -67,9 +82,232 @@ class WorldbookUiTest(unittest.TestCase):
             self.assertEqual(area.right_panel.minimumWidth(), 0)
             self.assertFalse(
                 area.show_hidden_check.geometry().intersects(
-                    area.modified_only_check.geometry()
+                    area.source_filter_combo.geometry()
                 )
             )
+            area.close()
+
+    def test_story_extension_can_be_created_and_filtered(self) -> None:
+        """新增按钮应创建可编辑草稿，并在保存后选中用户条目。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_package(root, _story_entry())
+            settings = QSettings(str(root / "ui.ini"), QSettings.IniFormat)
+            area = WorldbookArea(app_root=root, settings=settings)
+            area._controller.reconcile_all = _do_nothing
+            area.resize(1120, 820)
+            area.show()
+            self.app.processEvents()
+
+            area._begin_create_extension()
+            self.app.processEvents()
+            self.assertIsNotNone(area._draft_entry)
+            self.assertTrue(area.draft_badge.isVisible())
+            self.assertEqual(area.save_button.text(), "创建条目")
+            self.assertEqual(area.discard_button.text(), "取消创建")
+
+            editor = area.modified_host.editor()
+            self.assertIsInstance(editor, StoryEventEditor)
+            if not isinstance(editor, StoryEventEditor):
+                self.fail("新增草稿没有使用剧情事件编辑器")
+            self.assertTrue(editor.extension_scope_card.isVisible())
+            self.assertGreater(
+                area.modified_host.height(), area.modified_scroll.viewport().height()
+            )
+            self.assertGreater(
+                area.modified_scroll.verticalScrollBar().maximum(), 0
+            )
+            editor.title_edit.setText("我添加的事件")
+            editor.summary_edit.setPlainText("用于自动生成检索文本的摘要")
+            editor.participants_field.set_value(["anon"])
+            editor.tags_field.set_value(["测试"])
+
+            self.assertTrue(area._save_current())
+            extensions = area._states.load("test.package").extensions
+            self.assertEqual(len(extensions), 1)
+            saved = extensions[0]
+            self.assertEqual(saved.content["importance"], 3)
+            self.assertEqual(saved.content["retrieval_text"], "用于自动生成检索文本的摘要")
+            self.assertEqual(area.source_filter_combo.currentData(), "all")
+            self.assertIsNotNone(area._current_record)
+            self.assertEqual(area._current_record.entry.entry_id, saved.entry_id)
+            self.assertTrue(area.added_badge.isVisible())
+
+            area.source_filter_combo.setCurrentIndex(
+                area.source_filter_combo.findData("user")
+            )
+            self.app.processEvents()
+            self.assertEqual(area.entry_list.count(), 1)
+            row = area.entry_list.itemWidget(area.entry_list.item(0))
+            self.assertIsInstance(row, QWidget)
+            if isinstance(row, QWidget):
+                self.assertIn("我添加的", row.findChild(CaptionLabel).text())
+
+            with patch(
+                "ui.interfaces.worldbook_area.StoryEventDeletionBox.exec",
+                return_value=1,
+            ):
+                area._delete_current_extension()
+            self.app.processEvents()
+            self.assertEqual(area._states.load("test.package").extensions, [])
+            self.assertEqual(area.source_filter_combo.currentData(), "user")
+            self.assertEqual(area.entry_list.count(), 0)
+            area.close()
+
+    def test_orphan_override_is_only_in_my_content_and_deletes_without_sync(self) -> None:
+        """孤立修改应由警告入口导航，并在所属包中删除而不触发索引同步。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            official = _story_entry()
+            _write_package(root, official)
+            orphan = official.model_copy(
+                update={
+                    "entry_id": uuid4(),
+                    "content": {**official.content, "title": "失去官方条目的修改"},
+                }
+            )
+            repository = WorldbookUserStateRepository(
+                root / "knowledge_base" / "worldbooks" / "package-state"
+            )
+            repository.put_override(
+                "test.package",
+                WorldbookOverride(
+                    entry_id=orphan.entry_id,
+                    entry_type="story_event",
+                    schema_version=0,
+                    base_revision="missing-base",
+                    content=orphan.content,
+                ),
+            )
+            settings = QSettings(str(root / "ui.ini"), QSettings.IniFormat)
+            area = WorldbookArea(app_root=root, settings=settings)
+            reconcile = Mock()
+            area._controller.reconcile_all = reconcile
+            area.show()
+            self.app.processEvents()
+
+            self.assertEqual(area.entry_list.count(), 1)
+            self.assertTrue(area.orphan_navigation_button.isVisible())
+            self.assertEqual(area.orphan_navigation_button.text(), "1 条修改需处理")
+
+            area._navigate_to_next_orphan()
+            self.app.processEvents()
+            self.assertEqual(area.source_filter_combo.currentData(), "user")
+            self.assertEqual(area.entry_list.count(), 1)
+            self.assertIsNotNone(area._current_record)
+            self.assertTrue(area._current_record.orphaned_override)
+            self.assertTrue(area.orphan_badge.isVisible())
+            self.assertTrue(area.modified_host.editor()._read_only)
+            self.assertTrue(area.delete_extension_action.isEnabled())
+
+            with patch("ui.interfaces.worldbook_area.MessageBox") as message_box:
+                message_box.return_value.exec.return_value = True
+                area._delete_current_extension()
+            self.app.processEvents()
+
+            self.assertEqual(repository.load("test.package").overrides, [])
+            self.assertFalse(area.orphan_navigation_button.isVisible())
+            reconcile.assert_not_called()
+            area.close()
+
+    def test_story_event_delete_dialog_applies_reference_detach_once(self) -> None:
+        """剧情事件删除确认后应保留扩展想法正文并只触发一次索引同步。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_package(root, _story_entry())
+            story = _story_entry().model_copy(update={"entry_id": uuid4()})
+            thought = _thought_entry(story.entry_id)
+            repository = WorldbookUserStateRepository(
+                root / "knowledge_base" / "worldbooks" / "package-state"
+            )
+            repository.put_extension("test.package", story)
+            repository.put_extension("test.package", thought)
+            settings = QSettings(str(root / "ui.ini"), QSettings.IniFormat)
+            area = WorldbookArea(app_root=root, settings=settings)
+            reconcile = Mock()
+            area._controller.reconcile_all = reconcile
+            area.show()
+            self.app.processEvents()
+            area._display_record(area._records[story.entry_id])
+
+            with patch(
+                "ui.interfaces.worldbook_area.StoryEventDeletionBox.exec",
+                return_value=1,
+            ):
+                area._delete_current_extension()
+            self.app.processEvents()
+            state = repository.load("test.package")
+
+            self.assertNotIn(story.entry_id, {entry.entry_id for entry in state.extensions})
+            saved_thought = next(
+                entry for entry in state.extensions if entry.entry_id == thought.entry_id
+            )
+            self.assertEqual(saved_thought.content["story_event_entry_ids"], [])
+            self.assertEqual(saved_thought.content["thought_text"], thought.content["thought_text"])
+            reconcile.assert_called_once_with()
+            area.close()
+
+    def test_dependency_extension_is_read_only_until_owner_is_selected(self) -> None:
+        """依赖包扩展应提示切换所属世界书，并只在所属根包下开放编辑。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            common_official = _story_entry()
+            root_official = _story_entry().model_copy(update={"entry_id": uuid4()})
+            _write_package(
+                root,
+                common_official,
+                package_id="common.package",
+                display_name="通用世界书",
+                package_type="common",
+            )
+            _write_package(
+                root,
+                root_official,
+                package_id="root.package",
+                display_name="根世界书",
+                dependencies=[PackageDependency(package_id="common.package")],
+            )
+            extension = _story_entry().model_copy(
+                update={
+                    "entry_id": uuid4(),
+                    "content": {**_story_entry().content, "title": "依赖包自定义事件"},
+                }
+            )
+            repository = WorldbookUserStateRepository(
+                root / "knowledge_base" / "worldbooks" / "package-state"
+            )
+            repository.put_extension("common.package", extension)
+            settings = QSettings(str(root / "ui.ini"), QSettings.IniFormat)
+            settings.setValue("last_package_id", "root.package")
+            area = WorldbookArea(app_root=root, settings=settings)
+            area._controller.reconcile_all = _do_nothing
+            area.show()
+            self.app.processEvents()
+
+            dependency_record = area._records[extension.entry_id]
+            area._display_record(dependency_record)
+            self.app.processEvents()
+            self.assertTrue(area.added_badge.isVisible())
+            self.assertTrue(area.modified_host.editor()._read_only)
+            self.assertEqual(
+                area.problem_label.text(),
+                "该条目属于“通用世界书”。请在上方直接选择该世界书后进行编辑。",
+            )
+            self.assertFalse(area.delete_extension_action.isEnabled())
+            self.assertTrue(area.show_state_location_action.isEnabled())
+
+            area.package_combo.setCurrentIndex(
+                area.package_combo.findData("common.package")
+            )
+            self.app.processEvents()
+            area._display_record(area._records[extension.entry_id])
+            self.app.processEvents()
+            self.assertFalse(area.modified_host.editor()._read_only)
+            self.assertTrue(area.delete_extension_action.isEnabled())
             area.close()
 
     def test_story_form_is_responsive_and_header_click_toggles_card(self) -> None:
@@ -284,10 +522,42 @@ def _story_entry() -> WorldbookEntry:
     )
 
 
-def _write_package(root: Path, entry: WorldbookEntry) -> None:
+def _thought_entry(story_entry_id: UUID) -> WorldbookEntry:
+    """创建引用指定剧情事件的测试角色想法扩展。"""
+
+    return WorldbookEntry(
+        entry_id=uuid4(),
+        entry_type="character_thought",
+        content={
+            "character_id": "tomori",
+            "series_id": "its_mygo",
+            "timeline_id": "bang_dream_original",
+            "canon_branch": "main",
+            "thought_thread_key": str(uuid4()),
+            "canonical_subject": "测试事件",
+            "thought_aspect": "记忆",
+            "thought_text": "灯仍然记得这个事件的影响。",
+            "epistemic_status": "believes",
+            "visible_from": 4000,
+            "visible_to": 999999,
+            "story_event_entry_ids": [str(story_entry_id)],
+            "tags": ["测试"],
+            "retrieval_text": "灯仍然记得这个事件的影响。",
+        },
+    )
+
+
+def _write_package(
+    root: Path,
+    entry: WorldbookEntry,
+    package_id: str = "test.package",
+    display_name: str = "测试世界书",
+    package_type: Literal["season", "common"] = "season",
+    dependencies: list[PackageDependency] | None = None,
+) -> None:
     """写入 UI 测试使用的最小正式世界书包。"""
 
-    package_dir = root / "GPT_SoVITS" / "rag" / "worldbooks" / "official" / "test.package"
+    package_dir = root / "GPT_SoVITS" / "rag" / "worldbooks" / "official" / package_id
     content_dir = package_dir / "content"
     content_dir.mkdir(parents=True)
     content_path = content_dir / "story_events.json"
@@ -296,11 +566,12 @@ def _write_package(root: Path, entry: WorldbookEntry) -> None:
         encoding="utf-8",
     )
     manifest = WorldbookManifest(
-        package_id="test.package",
+        package_id=package_id,
         package_version="1.0.0",
-        display_name="测试世界书",
-        package_type="season",
+        display_name=display_name,
+        package_type=package_type,
         timeline_id="bang_dream_original",
+        dependencies=dependencies or [],
         content_files=[
             ContentFileRecord(
                 path="content/story_events.json",
