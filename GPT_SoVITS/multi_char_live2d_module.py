@@ -7,7 +7,6 @@ import glob, os,time
 from random import randint
 import sys
 from collections import deque
-from typing import Dict, List, Any, Optional
 from types import ModuleType
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -403,7 +402,7 @@ class SlotVersionNoticeOverlay:
             self,
             hidden_slots: set[int],
             active_slots: list[dict[str, object]],
-            versions: list[Live2DVersion],
+            versions: list[Live2DVersion | None],
     ) -> None:
         """根据隐藏槽位集合刷新半屏提示内容。"""
         next_messages: dict[int, tuple[str, str]] = {}
@@ -603,7 +602,7 @@ class Live2DModule:
         self.character_list = []
         # 当前渲染的两个对话角色
         # 每个元素是一个 dict，包含 "slot"（0 或 1，对应左侧/右侧渲染的角色）、"character_name"（字符串）和 "model_json_path"（字符串）三个键
-        self.active_slots: List[Dict[str, Any]] = []
+        self.active_slots: list[dict[str, object]] = []
         self.live2D_initialize(characters)
         self.model_pos_offset=[(-0.4,0),(0.4,0)]  #两个模型的位置偏移设置
         self.model_scale = 0.8
@@ -667,7 +666,7 @@ class Live2DModule:
     @staticmethod
     def _motion_position_for_slot(
             slot: int | None,
-            versions: list[Live2DVersion],
+            versions: list[Live2DVersion | None],
             facing_mode: str,
     ) -> MotionPosition:
         """根据小剧场槽位、模型版本和朝向模式选择动作位置。"""
@@ -678,14 +677,14 @@ class Live2DModule:
                 return "R"
         return "C"
 
-    def _build_default_active_slots(self) -> List[Dict[str, Any]]:
+    def _build_default_active_slots(self) -> list[dict[str, object]]:
         """从角色列表前两位构建默认槽位配置。
 
         槽位约定：
         - slot=0：左侧显示的模型
         - slot=1：右侧显示的模型
         """
-        return [
+        slots: list[dict[str, object]] = [
             {
                 "slot": 0,
                 "character_name": self.character_list[0].character_name,
@@ -697,8 +696,9 @@ class Live2DModule:
                 "model_json_path": self.character_list[1].live2d_json,
             }
         ]
+        return self._normalize_slots_payload(slots)
 
-    def _normalize_slots_payload(self, slots_payload: Any) -> List[Dict[str, Any]]:
+    def _normalize_slots_payload(self, slots_payload: object) -> list[dict[str, object]]:
         """校验并标准化 `set_active_slots` 的输入内容。
 
         设计目的：
@@ -709,7 +709,7 @@ class Live2DModule:
         if not isinstance(slots_payload, list) or len(slots_payload) != 2:
             raise ValueError("set_active_slots 需要提供两个槽位")
 
-        normalized: List[Dict[str, Any]] = []
+        normalized: list[dict[str, object]] = []
         for expected_slot in (0, 1):
             slot_data = None
             for item in slots_payload:
@@ -722,19 +722,32 @@ class Live2DModule:
                 raise ValueError(f"缺少 slot={expected_slot} 的配置")
 
             character_name = str(slot_data.get("character_name", "")).strip()
-            model_json_path = str(slot_data.get("model_json_path", "")).strip()
+            raw_model_json_path = slot_data.get("model_json_path")
+            model_json_path = (
+                raw_model_json_path.strip()
+                if isinstance(raw_model_json_path, str) and raw_model_json_path.strip()
+                else None
+            )
 
             if not character_name:
                 raise ValueError(f"slot={expected_slot} 缺少 character_name")
-            if not model_json_path:
-                raise ValueError(f"slot={expected_slot} 缺少 model_json_path")
-            if not os.path.exists(model_json_path):
-                raise FileNotFoundError(f"slot={expected_slot} 模型文件不存在: {model_json_path}")
+
+            model_version: Live2DVersion | None = None
+            if model_json_path is not None:
+                try:
+                    model_version = detect_live2d_runtime_version(model_json_path)
+                except Exception:
+                    logger.exception(
+                        "小剧场 slot=%d Live2D 模型目标无法识别，将使用空模型槽位：%s",
+                        expected_slot,
+                        model_json_path,
+                    )
 
             normalized.append({
                 "slot": expected_slot,
                 "character_name": character_name,
                 "model_json_path": model_json_path,
+                "model_version": model_version,
             })
 
         return normalized
@@ -743,8 +756,8 @@ class Live2DModule:
             self,
             model: Live2DModelAdapter,
             win_w_and_h: int,
-            slot: Optional[int] = None,
-            layout: Optional[Live2DLayout] = None,
+            slot: int | None = None,
+            layout: Live2DLayout | None = None,
     ) -> None:
         """应用模型加载后的通用初始化参数，包含缩放、自动眨眼、自动呼吸等。"""
         model.Resize(int(win_w_and_h * 1.33), win_w_and_h)
@@ -804,40 +817,69 @@ class Live2DModule:
         self.last_motion_model = None
         self.force_eyes_open = False
 
-    def _active_character_names(self) -> List[str]:
+    def _active_character_names(self) -> list[str]:
         """返回当前两个正在渲染的角色名，供 Overlay 等 UI 展示使用。"""
         if len(self.active_slots) < 2:
             # 理论上不应该发生，除非 qt 那边传了错误数据导致初始化失败。这里做个兜底，避免崩溃。
             return ["角色A", "角色B"]
-        return [self.active_slots[0]["character_name"], self.active_slots[1]["character_name"]]
-
-    def _active_model_paths(self) -> list[str]:
-        """返回当前两个槽位的目标模型路径。"""
         return [
-            str(self.active_slots[0]["model_json_path"]),
-            str(self.active_slots[1]["model_json_path"]),
+            str(self.active_slots[0]["character_name"]),
+            str(self.active_slots[1]["character_name"]),
         ]
 
-    def _active_model_versions(self) -> list[Live2DVersion]:
-        """检测当前两个槽位目标模型的 Live2D runtime 版本。"""
-        return [detect_live2d_runtime_version(path) for path in self._active_model_paths()]
+    def _active_model_paths(self) -> list[str | None]:
+        """返回当前两个槽位的目标模型路径。"""
+        return [
+            self.active_slots[0]["model_json_path"]
+            if isinstance(self.active_slots[0].get("model_json_path"), str)
+            else None,
+            self.active_slots[1]["model_json_path"]
+            if isinstance(self.active_slots[1].get("model_json_path"), str)
+            else None,
+        ]
 
-    def _select_runtime_version(self, versions: list[Live2DVersion], changed_slot: int | None) -> Live2DVersion:
+    def _active_model_versions(self) -> list[Live2DVersion | None]:
+        """返回当前两个槽位已经解析的可选 Live2D runtime 版本。"""
+        return [
+            version if version in ("v2", "v3") else None
+            for version in (
+                self.active_slots[0].get("model_version"),
+                self.active_slots[1].get("model_version"),
+            )
+        ]
+
+    def _select_runtime_version(
+            self,
+            versions: list[Live2DVersion | None],
+            changed_slot: int | None,
+    ) -> Live2DVersion | None:
         """根据版本列表和本次变更槽位选择当前窗口 runtime 版本。"""
+        available_versions = [version for version in versions if version is not None]
+        if not available_versions:
+            return None
+        if len(set(available_versions)) == 1:
+            return available_versions[0]
         if versions[0] == versions[1]:
             return versions[0]
         selected_slot = changed_slot if changed_slot in (0, 1) else 0
-        return versions[selected_slot]
+        return versions[selected_slot] or available_versions[0]
 
     def _visible_slots_for_runtime(
             self,
-            versions: list[Live2DVersion],
-            runtime_version: Live2DVersion,
+            versions: list[Live2DVersion | None],
+            runtime_version: Live2DVersion | None,
             changed_slot: int | None,
     ) -> set[int]:
         """计算当前 runtime 下应当渲染的槽位集合。"""
-        if versions[0] == versions[1]:
-            return {0, 1}
+        if runtime_version is None:
+            return set()
+        configured_slots = {slot for slot, version in enumerate(versions) if version is not None}
+        if len(configured_slots) <= 1 or versions[0] == versions[1]:
+            return {
+                slot
+                for slot in configured_slots
+                if versions[slot] == runtime_version
+            }
         selected_slot = changed_slot if changed_slot in (0, 1) else 0
         logger.warning(
             "小剧场 Live2D 模型版本不一致，暂时只显示一个角色：%s / %s",
@@ -864,7 +906,7 @@ class Live2DModule:
             model_layouts: list[Live2DLayout],
             win_w_and_h: int,
             changed_slot: int | None,
-            runtime_version: Live2DVersion,
+            runtime_version: Live2DVersion | None,
     ) -> None:
         """按当前 runtime 加载可见槽位模型，并隐藏版本不一致的槽位。"""
         versions = self._active_model_versions()
@@ -874,18 +916,28 @@ class Live2DModule:
         for slot in (0, 1):
             if slot not in visible_slots:
                 continue
-            model_path = str(self.active_slots[slot]["model_json_path"])
-            model = Live2DModelAdapter.create(model_path)
-            model_layouts[slot] = get_live2d_layout(model_path, model.version, "theater")
-            self._apply_model_common_setup(model, win_w_and_h, slot, model_layouts[slot])
-            model_group[slot] = model
+            model_path = self.active_slots[slot].get("model_json_path")
+            if not isinstance(model_path, str):
+                continue
+            try:
+                model = Live2DModelAdapter.create(model_path)
+                model_layouts[slot] = get_live2d_layout(model_path, model.version, "theater")
+                self._apply_model_common_setup(model, win_w_and_h, slot, model_layouts[slot])
+                model_group[slot] = model
+            except Exception:
+                logger.exception(
+                    "小剧场 slot=%d Live2D 模型加载失败，将使用空模型槽位：%s",
+                    slot,
+                    model_path,
+                )
+                self.active_slots[slot]["model_version"] = None
 
     def _handle_toggle_sakiko_model(
             self,
             model_group: list[Live2DModelAdapter | None],
             win_w_and_h: int,
             model_layouts: list[Live2DLayout],
-            runtime_version: Live2DVersion,
+            runtime_version: Live2DVersion | None,
     ) -> None:
         """在当前槽位中查找“祥子”，并切换黑/白祥模型。
 
@@ -1014,27 +1066,45 @@ class Live2DModule:
         display = (int(win_w_and_h*1.33), win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         current_runtime_version = self._select_runtime_version(self._active_model_versions(), None)
-        current_runtime: ModuleType | None = load_live2d_runtime(current_runtime_version)
-        initialize_live2d_runtime(current_runtime)
+        current_runtime: ModuleType | None = None
+        if current_runtime_version is not None:
+            current_runtime = load_live2d_runtime(current_runtime_version)
+            initialize_live2d_runtime(current_runtime)
         frame_clock = pygame.time.Clock()
         target_fps = 60
         pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
         window_caption = "数字小祥 小剧场"
         pygame.display.set_caption(window_caption)
         model_layouts = [
-            get_live2d_layout(
-                self.active_slots[0]["model_json_path"],
-                detect_live2d_runtime_version(self.active_slots[0]["model_json_path"]),
-                "theater",
-            ),
-            get_live2d_layout(
-                self.active_slots[1]["model_json_path"],
-                detect_live2d_runtime_version(self.active_slots[1]["model_json_path"]),
-                "theater",
-            ),
+            Live2DLayout(scale=self.model_scale, offset_x=0.0, offset_y=0.0),
+            Live2DLayout(scale=self.model_scale, offset_x=0.0, offset_y=0.0),
         ]
         model_group: list[Live2DModelAdapter | None] = [None, None]
         self._load_visible_models(model_group, model_layouts, win_w_and_h, None, current_runtime_version)
+        if not any(model_group):
+            fallback_runtime_version = self._select_runtime_version(
+                self._active_model_versions(),
+                None,
+            )
+            if (
+                    fallback_runtime_version is not None
+                    and fallback_runtime_version != current_runtime_version
+            ):
+                release_live2d_runtime(current_runtime)
+                current_runtime = load_live2d_runtime(fallback_runtime_version)
+                initialize_live2d_runtime(current_runtime)
+                current_runtime_version = fallback_runtime_version
+                self._load_visible_models(
+                    model_group,
+                    model_layouts,
+                    win_w_and_h,
+                    None,
+                    current_runtime_version,
+                )
+            if not any(model_group):
+                release_live2d_runtime(current_runtime)
+                current_runtime = None
+                current_runtime_version = None
 
         overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h), self._active_character_names())
         version_notice_overlay = SlotVersionNoticeOverlay(display)
@@ -1086,7 +1156,7 @@ class Live2DModule:
             if model is not None:
                 self._apply_model_common_setup(model, win_w_and_h, slot, model_layouts[slot])
 
-        def switch_runtime_if_needed(target_version: Live2DVersion) -> None:
+        def switch_runtime_if_needed(target_version: Live2DVersion | None) -> None:
             """在目标版本变化时重建小剧场 OpenGL 窗口与 Live2D runtime。"""
             nonlocal current_runtime_version, current_runtime, texture, overlay, version_notice_overlay, frame_clock, this_turn_model, lip_sync_model
             if target_version == current_runtime_version:
@@ -1120,8 +1190,15 @@ class Live2DModule:
             version_notice_overlay = SlotVersionNoticeOverlay(display)
 
         def hidden_slots_for_current_models() -> set[int]:
-            """返回当前因版本不一致或未加载而隐藏的槽位。"""
-            return {slot for slot, model in enumerate(model_group) if model is None}
+            """返回当前只因版本不一致而隐藏的槽位。"""
+            versions = self._active_model_versions()
+            if current_runtime_version is None:
+                return set()
+            return {
+                slot
+                for slot, version in enumerate(versions)
+                if version is not None and version != current_runtime_version
+            }
 
         def refresh_version_notice_overlay() -> set[int]:
             """刷新半屏版本不一致提示，并返回当前隐藏槽位集合。"""
@@ -1194,6 +1271,22 @@ class Live2DModule:
                 target_runtime_version = self._select_runtime_version(self._active_model_versions(), changed_slot)
                 switch_runtime_if_needed(target_runtime_version)
                 self._load_visible_models(model_group, model_layouts, win_w_and_h, changed_slot, current_runtime_version)
+                if not any(model_group):
+                    fallback_runtime_version = self._select_runtime_version(
+                        self._active_model_versions(),
+                        None,
+                    )
+                    if fallback_runtime_version is not None:
+                        switch_runtime_if_needed(fallback_runtime_version)
+                        self._load_visible_models(
+                            model_group,
+                            model_layouts,
+                            win_w_and_h,
+                            None,
+                            current_runtime_version,
+                        )
+                    if not any(model_group):
+                        switch_runtime_if_needed(None)
                 self._clear_eye_reopen_state()
                 show_version_mismatch_overlay(refresh_version_notice_overlay())
                 apply_idle_facing_motion_if_dialogue_idle()
@@ -1219,16 +1312,22 @@ class Live2DModule:
             )
 
         def show_hidden_slot_overlay(slot: int) -> None:
-            """提示用户当前槽位因版本不一致而暂时隐藏。"""
+            """提示用户当前槽位为何无法编辑模型布局。"""
             slot_data = self.active_slots[slot]
             character_name = str(slot_data.get("character_name", f"slot{slot}"))
-            overlay.set_text(character_name, "该模型当前因 Live2D 版本不一致而暂时隐藏。")
+            if slot_data.get("model_version") is None:
+                overlay.set_text(character_name, "当前角色未配置可用 Live2D 模型，无法编辑布局。")
+            else:
+                overlay.set_text(character_name, "该模型当前因 Live2D 版本不一致而暂时隐藏。")
 
         def save_dirty_layouts() -> None:
             """保存所有已修改槽位对应模型的小剧场布局。"""
             for slot in tuple(layout_dirty_slots):
+                model_path = self.active_slots[slot].get("model_json_path")
+                if not isinstance(model_path, str):
+                    continue
                 try:
-                    save_live2d_layout(str(self.active_slots[slot]["model_json_path"]), "theater", model_layouts[slot])
+                    save_live2d_layout(model_path, "theater", model_layouts[slot])
                 except Exception:
                     logger.exception("保存小剧场 Live2D 布局配置失败")
             layout_dirty_slots.clear()
@@ -1261,13 +1360,17 @@ class Live2DModule:
             if model_group[layout_selected_slot] is None:
                 show_hidden_slot_overlay(layout_selected_slot)
                 return
+            model_path = self.active_slots[layout_selected_slot].get("model_json_path")
+            selected_model = model_group[layout_selected_slot]
+            if not isinstance(model_path, str) or selected_model is None:
+                return
             try:
-                reset_live2d_layout(self.active_slots[layout_selected_slot]["model_json_path"], "theater")
+                reset_live2d_layout(model_path, "theater")
             except Exception:
                 logger.exception("重置小剧场 Live2D 布局配置失败")
             model_layouts[layout_selected_slot] = get_live2d_layout(
-                self.active_slots[layout_selected_slot]["model_json_path"],
-                "v2",
+                model_path,
+                selected_model.version,
                 "theater",
             )
             apply_slot_layout(layout_selected_slot)

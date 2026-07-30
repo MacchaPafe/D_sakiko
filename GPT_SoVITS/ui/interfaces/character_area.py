@@ -8,7 +8,18 @@ import tempfile
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QFrame, QListWidgetItem, QStackedWidget
+from PyQt5.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QListWidgetItem,
+    QMessageBox,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 from PyQt5.QtGui import QIcon
 
 from qfluentwidgets import (
@@ -17,7 +28,8 @@ from qfluentwidgets import (
     SwitchButton, ComboBox, CardWidget, IconWidget,
     FluentIcon, InfoBar, InfoBarPosition, TransparentToolButton,
     BodyLabel, ToolTipFilter, SegmentedWidget,
-    SettingCardGroup, PushSettingCard
+    SettingCardGroup, PushSettingCard, CaptionLabel,
+    MessageBoxBase,
 )
 
 from ..components.fluent_icon import MyFluentIcon
@@ -25,9 +37,34 @@ from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 from ..file_manager import show_file_in_manager
 
 try:
-    from character import GetCharacterAttributes, CharacterAttributes
+    from character import CharacterAttributes, GetCharacterAttributes, find_default_l2d_json
 except ImportError:
-    from GPT_SoVITS.character import GetCharacterAttributes, CharacterAttributes
+    from GPT_SoVITS.character import CharacterAttributes, GetCharacterAttributes, find_default_l2d_json
+
+try:
+    from character_creation import (
+        CharacterCreationError,
+        CharacterDiskRecord,
+        create_character_resources,
+        discover_complete_character_records,
+        safe_character_id_from_name,
+    )
+    from live2d_support.model_importer import (
+        Live2DModelImportError,
+        import_live2d_model,
+    )
+except ImportError:
+    from GPT_SoVITS.character_creation import (
+        CharacterCreationError,
+        CharacterDiskRecord,
+        create_character_resources,
+        discover_complete_character_records,
+        safe_character_id_from_name,
+    )
+    from GPT_SoVITS.live2d_support.model_importer import (
+        Live2DModelImportError,
+        import_live2d_model,
+    )
 
 
 AVATAR_PATH = Path("../avatar")
@@ -120,6 +157,154 @@ def _remove_internal_avatar_files(
             candidate.unlink()
         except OSError:
             pass
+
+
+class CharacterCreationDialog(MessageBoxBase):
+    """收集角色必要信息，并在确认时原子创建角色资源。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """初始化角色创建表单。"""
+        super().__init__(parent)
+        self.created_record: CharacterDiskRecord | None = None
+        self.avatar_source_path: str | None = None
+        self._suggested_id = ""
+        self.widget.setMinimumWidth(600)
+        self.widget.setMinimumHeight(570)
+
+        self.title_label = SubtitleLabel("创建角色", self)
+        self.description_label = BodyLabel(
+            "角色只需要名称、稳定 ID 和角色描述即可参与对话；Live2D、语音和头像都可以稍后添加。",
+            self,
+        )
+        self.description_label.setWordWrap(True)
+
+        self.name_edit = LineEdit(self)
+        self.name_edit.setPlaceholderText("角色显示名称")
+        self.id_edit = LineEdit(self)
+        self.id_edit.setPlaceholderText("小写英文、数字、下划线或连字符")
+        self.description_edit = TextEdit(self)
+        self.description_edit.setPlaceholderText("请亲自填写角色设定；该内容会作为 system prompt。")
+        self.description_edit.setMinimumHeight(220)
+        self.avatar_edit = LineEdit(self)
+        self.avatar_edit.setReadOnly(True)
+        self.avatar_button = PushButton("选择头像（可选）", self)
+        self.avatar_button.clicked.connect(self._select_avatar)
+
+        self.name_label = StrongBodyLabel("角色名称", self)
+        self.id_label = StrongBodyLabel("角色 ID", self)
+        self.id_hint_label = CaptionLabel(
+            "只能使用小写英文字母、数字、下划线和连字符；创建后作为稳定资源 ID。",
+            self,
+        )
+        self.id_hint_label.setWordWrap(True)
+        self.prompt_label = StrongBodyLabel("角色描述（Prompt）", self)
+        self.prompt_hint_label = CaptionLabel(
+            "必须由你亲自填写，内容会作为角色对话的 system prompt。",
+            self,
+        )
+        self.prompt_hint_label.setWordWrap(True)
+        self.avatar_label = StrongBodyLabel("角色头像", self)
+
+        avatar_row = QHBoxLayout()
+        avatar_row.setContentsMargins(0, 0, 0, 0)
+        avatar_row.setSpacing(8)
+        avatar_row.addWidget(self.avatar_edit, stretch=1)
+        avatar_row.addWidget(self.avatar_button)
+
+        form_layout = QGridLayout()
+        form_layout.setContentsMargins(0, 4, 0, 0)
+        form_layout.setHorizontalSpacing(16)
+        form_layout.setVerticalSpacing(8)
+        form_layout.addWidget(self.name_label, 0, 0, Qt.AlignTop)
+        form_layout.addWidget(self.name_edit, 0, 1)
+        form_layout.addWidget(self.id_label, 1, 0, Qt.AlignTop)
+        form_layout.addWidget(self.id_edit, 1, 1)
+        form_layout.addWidget(self.id_hint_label, 2, 1)
+        form_layout.addWidget(self.prompt_label, 3, 0, Qt.AlignTop)
+        form_layout.addWidget(self.description_edit, 3, 1)
+        form_layout.addWidget(self.prompt_hint_label, 4, 1)
+        form_layout.addWidget(self.avatar_label, 5, 0, Qt.AlignTop)
+        form_layout.addLayout(avatar_row, 5, 1)
+
+        self.restart_hint_label = CaptionLabel(
+            "创建完成后会立即出现在此面板中，并在程序重启后进入对话角色列表。",
+            self,
+        )
+        self.restart_hint_label.setWordWrap(True)
+
+        self.viewLayout.addWidget(self.title_label)
+        self.viewLayout.addWidget(self.description_label)
+        self.viewLayout.addLayout(form_layout)
+        self.viewLayout.addWidget(self.restart_hint_label)
+        self.yesButton.setText("创建")
+        self.cancelButton.setText("取消")
+
+        self.name_edit.textChanged.connect(self._suggest_character_id)
+
+    def _suggest_character_id(self, character_name: str) -> None:
+        """在用户尚未填写 ID 时，从安全英文名称生成建议。"""
+        if self.id_edit.text().strip() not in ("", self._suggested_id):
+            return
+        suggested_id = safe_character_id_from_name(character_name)
+        if suggested_id:
+            self._suggested_id = suggested_id
+            self.id_edit.setText(suggested_id)
+
+    def _select_avatar(self) -> None:
+        """选择可选角色头像文件。"""
+        selected_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择角色头像",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp)",
+        )
+        if selected_path:
+            self.avatar_source_path = selected_path
+            self.avatar_edit.setText(selected_path)
+
+    def validate(self) -> bool:
+        """校验并创建角色资源；失败时保持 Fluent 对话框打开。"""
+        try:
+            self.created_record = create_character_resources(
+                character_name=self.name_edit.text(),
+                character_folder_name=self.id_edit.text(),
+                character_description=self.description_edit.toPlainText(),
+                avatar_source_path=self.avatar_source_path,
+            )
+        except (CharacterCreationError, OSError, ValueError) as exc:
+            InfoBar.warning(
+                title="创建角色失败",
+                content=str(exc),
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3000,
+                parent=self,
+            )
+            return False
+        return True
+
+
+def _character_from_disk_record(record: CharacterDiskRecord) -> CharacterAttributes:
+    """把待启用磁盘角色转换为仅供角色面板展示的对象。"""
+    character = CharacterAttributes()
+    character.character_folder_name = record.character_folder_name
+    character.character_name = record.character_name
+    character.character_description = record.character_description
+    character.icon_path = record.icon_path
+    character.live2d_json = find_default_l2d_json(
+        os.path.join(
+            "../live2d_related",
+            record.character_folder_name,
+            "live2D_model",
+        )
+    )
+    character.GPT_model_path = None
+    character.sovits_model_path = None
+    character.gptsovits_ref_audio = None
+    character.gptsovits_ref_audio_text = None
+    character.gptsovits_ref_audio_lan = None
+    return character
 
 
 class UserPersonaDetailView(QWidget):
@@ -453,6 +638,9 @@ class SystemCharacterDetailView(QWidget):
         self.specs_group.addSettingCard(self.ref_audio_card)
         
         self.v_layout.addWidget(self.specs_group)
+        self.import_live2d_button = PushButton("添加 Live2D 模型", self)
+        self.import_live2d_button.clicked.connect(self.import_live2d_model)
+        self.v_layout.addWidget(self.import_live2d_button)
         self.v_layout.addStretch(1)
 
     @staticmethod
@@ -479,20 +667,54 @@ class SystemCharacterDetailView(QWidget):
             self.avatar_widget.setImage(MyFluentIcon.USER.path())
             
         # Update specs
-        self.live2d_card.setContent(os.path.basename(self.current_character.live2d_json) if self.current_character.live2d_json else "无")
-        self.live2d_card.setToolTip(self.current_character.live2d_json)
+        self.live2d_card.setContent(
+            os.path.basename(self.current_character.live2d_json)
+            if self.current_character.live2d_json
+            else "未配置"
+        )
+        self.live2d_card.setToolTip(self.current_character.live2d_json or "")
+        self.import_live2d_button.setText(
+            "导入更多 Live2D 模型"
+            if self.current_character.live2d_json
+            else "添加 Live2D 模型"
+        )
         
         self.gpt_card.setContent(os.path.basename(self.current_character.GPT_model_path) if self.current_character.GPT_model_path else "无")
-        self.gpt_card.setToolTip(self.current_character.GPT_model_path)
+        self.gpt_card.setToolTip(self.current_character.GPT_model_path or "")
         
         self.sovits_card.setContent(os.path.basename(self.current_character.sovits_model_path) if self.current_character.sovits_model_path else "无")
-        self.sovits_card.setToolTip(self.current_character.sovits_model_path)
+        self.sovits_card.setToolTip(self.current_character.sovits_model_path or "")
         
         ref_audio_path = self.current_character.get_reference_audio_for_emotion("happiness")
         self.ref_audio_card.setContent(os.path.basename(ref_audio_path) if ref_audio_path else "无")
         self.ref_audio_card.setToolTip(ref_audio_path or "")
         
         self.is_loading = False
+
+    def import_live2d_model(self) -> None:
+        """为当前角色导入 Live2D 模型，首次导入自动成为默认模型。"""
+        if self.current_character is None:
+            return
+        selected_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入 Live2D 模型",
+            "",
+            "Live2D Model JSON (*.model3.json *.model.json);;JSON Files (*.json)",
+        )
+        if not selected_path:
+            return
+        try:
+            result = import_live2d_model(
+                selected_path,
+                self.current_character.character_folder_name,
+            )
+        except (Live2DModelImportError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "导入失败", str(exc))
+            return
+        if self.current_character.live2d_json is None:
+            self.current_character.live2d_json = result.model_json_path
+        self.update_view()
+        QMessageBox.information(self, "导入成功", f"已导入模型：{result.model_name}。")
 
     def on_name_changed(self, text):
         if self.is_loading or not self.current_character:
@@ -536,6 +758,7 @@ class CharacterArea(QWidget):
         super().__init__(parent)
         self.setObjectName("CharacterArea")
         self.character_manager = GetCharacterAttributes()
+        self.pending_characters = self._load_pending_characters()
         
         self.init_ui()
         # Default to User mode
@@ -558,7 +781,7 @@ class CharacterArea(QWidget):
         # Segment Control
         self.segment = SegmentedWidget(self)
         self.segment.addItem("user", "对话身份")
-        self.segment.addItem("system", "系统角色")
+        self.segment.addItem("system", "角色")
         self.segment.currentItemChanged.connect(self.on_segment_changed)
         self.left_layout.addWidget(self.segment)
         
@@ -587,6 +810,13 @@ class CharacterArea(QWidget):
         self.button_container.setLayout(self.button_layout)
 
         self.left_layout.addWidget(self.button_container, alignment=Qt.AlignmentFlag.AlignBottom)
+        self.restart_notice = BodyLabel(
+            "新建角色已写入磁盘，将在程序重启后进入对话角色列表。",
+            self,
+        )
+        self.restart_notice.setWordWrap(True)
+        self.restart_notice.setVisible(bool(self.pending_characters))
+        self.left_layout.addWidget(self.restart_notice)
         
 
         # --- Right Content Area ---
@@ -621,11 +851,15 @@ class CharacterArea(QWidget):
         if key == "user":
             self.stack.setCurrentWidget(self.user_view)
             self.button_container.setVisible(True)
+            self.add_button.setToolTip("添加新身份")
+            self.delete_button.setVisible(True)
             self.title_label.setText("对话身份列表")
         else:
             self.stack.setCurrentWidget(self.system_view)
-            self.button_container.setVisible(False)
-            self.title_label.setText("系统角色列表")
+            self.button_container.setVisible(True)
+            self.add_button.setToolTip("创建角色")
+            self.delete_button.setVisible(False)
+            self.title_label.setText("角色列表")
 
         self.load_list_data(key)
 
@@ -635,10 +869,20 @@ class CharacterArea(QWidget):
         if mode == "user":
             data_source = self.character_manager.user_characters
         else:
-            data_source = self.character_manager.character_class_list
+            data_source = [
+                *self.character_manager.character_class_list,
+                *self.pending_characters,
+            ]
+
+        pending_ids = {
+            character.character_folder_name
+            for character in self.pending_characters
+        }
             
         for char in data_source:
             display_name = "无身份" if char.is_default_user else char.effective_character_name
+            if mode != "user" and char.character_folder_name in pending_ids:
+                display_name = f"{display_name}（重启后生效）"
             item = QListWidgetItem(display_name)
             effective_icon_path = char.effective_icon_path
             if effective_icon_path and os.path.exists(effective_icon_path):
@@ -684,7 +928,38 @@ class CharacterArea(QWidget):
                     item.setIcon(MyFluentIcon.USER.icon())
                 break
 
-    def add_character(self):
+    def add_character(self) -> None:
+        """按当前页签创建对话身份或待启用角色。"""
+        if self.segment.currentRouteKey() == "system":
+            dialog = CharacterCreationDialog(self)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            self.pending_characters = self._load_pending_characters()
+            self.restart_notice.setVisible(bool(self.pending_characters))
+            self.load_list_data("system")
+            if dialog.created_record is not None:
+                for row in range(self.character_list_widget.count()):
+                    item = self.character_list_widget.item(row)
+                    character = item.data(Qt.ItemDataRole.UserRole)
+                    if (
+                            isinstance(character, CharacterAttributes)
+                            and character.character_folder_name
+                            == dialog.created_record.character_folder_name
+                    ):
+                        self.character_list_widget.setCurrentRow(row)
+                        self.on_character_selected(item)
+                        break
+            InfoBar.success(
+                title="角色已创建",
+                content="角色资源已写入磁盘。重启程序后即可用它创建对话。",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=3500,
+                parent=self,
+            )
+            return
+
         new_char = CharacterAttributes.create_user(name="New User", description="")
         self.character_manager.user_characters.append(new_char)
         self.character_manager.save_data()
@@ -695,6 +970,25 @@ class CharacterArea(QWidget):
         self.character_list_widget.addItem(item)
         self.character_list_widget.setCurrentRow(self.character_list_widget.count() - 1)
         self.on_character_selected(item)
+
+    def _load_pending_characters(self) -> list[CharacterAttributes]:
+        """读取磁盘完整角色，并排除当前进程已经加载的角色。"""
+        loaded_ids = {
+            character.character_folder_name
+            for character in self.character_manager.character_class_list
+        }
+        loaded_names = {
+            character.character_name
+            for character in self.character_manager.character_class_list
+        }
+        return [
+            _character_from_disk_record(record)
+            for record in discover_complete_character_records()
+            if (
+                record.character_folder_name not in loaded_ids
+                and record.character_name not in loaded_names
+            )
+        ]
 
     def delete_character(self):
         row = self.character_list_widget.currentRow()

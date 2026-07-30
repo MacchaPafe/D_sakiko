@@ -37,12 +37,12 @@ class _ReferenceCopyContext:
     used_targets: dict[str, str]
 
 
-def import_live2d_model_to_extra_model(
+def import_live2d_model(
         source_model_json_path: str,
         character_folder_name: str,
         live2d_related_dir: str = "../live2d_related",
 ) -> Live2DModelImportResult:
-    """把本地 Live2D 模型复制到指定角色的 extra_model 目录并完成项目规范化。"""
+    """导入模型；角色没有默认模型时写入默认目录，否则写入额外模型目录。"""
     source_model_json = Path(source_model_json_path).expanduser().resolve(strict=True)
     if not _is_supported_model_json_name(source_model_json.name):
         raise Live2DModelImportError("请选择 .model.json 或 .model3.json 模型配置文件。")
@@ -58,9 +58,14 @@ def import_live2d_model_to_extra_model(
     model_data = cast(dict[str, object], loaded_data)
 
     model_name = _sanitize_model_dir_name(source_model_json.parent.name)
-    extra_model_dir = live2d_related_root / character_folder_name / "extra_model"
-    extra_model_dir.mkdir(parents=True, exist_ok=True)
-    target_dir = _create_unique_model_dir(extra_model_dir, model_name)
+    character_dir = live2d_related_root / character_folder_name
+    if not character_dir.is_dir():
+        raise Live2DModelImportError(f"角色目录不存在：{character_folder_name}")
+    default_model_dir = character_dir / "live2D_model"
+    has_default_model = _contains_model_json(default_model_dir)
+    target_root = character_dir / "extra_model" if has_default_model else default_model_dir
+    target_root.mkdir(parents=True, exist_ok=True)
+    target_dir = _create_unique_model_dir(target_root, model_name)
 
     try:
         target_model_json = _copy_model_references_and_write_json(source_model_json, model_data, target_dir)
@@ -73,9 +78,22 @@ def import_live2d_model_to_extra_model(
         raise
 
     return Live2DModelImportResult(
-        model_name=target_dir.name,
+        model_name="默认" if not has_default_model else target_dir.name,
         model_json_path=str(target_model_json),
         target_dir=str(target_dir),
+    )
+
+
+def import_live2d_model_to_extra_model(
+        source_model_json_path: str,
+        character_folder_name: str,
+        live2d_related_dir: str = "../live2d_related",
+) -> Live2DModelImportResult:
+    """兼容旧调用名称，按当前默认模型优先规则导入 Live2D 模型。"""
+    return import_live2d_model(
+        source_model_json_path,
+        character_folder_name,
+        live2d_related_dir,
     )
 
 
@@ -270,6 +288,16 @@ def _sanitize_model_dir_name(name: str) -> str:
 def _is_supported_model_json_name(file_name: str) -> bool:
     """判断文件名是否是支持导入的 Live2D 模型 JSON。"""
     return file_name.endswith(".model3.json") or file_name.endswith(".model.json")
+
+
+def _contains_model_json(model_dir: Path) -> bool:
+    """判断目录树中是否已经存在受支持的 Live2D 模型 JSON。"""
+    if not model_dir.is_dir():
+        return False
+    return any(
+        path.is_file() and _is_supported_model_json_name(path.name)
+        for path in model_dir.rglob("*.json")
+    )
 
 
 def _is_relative_to_path(child: Path, parent: Path) -> bool:

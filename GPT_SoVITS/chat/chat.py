@@ -847,19 +847,17 @@ class Chat:
     
     def get_custom_live2d_model_meta(self, character_name: str) -> Optional[str]:
         """
-        获取指定角色的自定义 Live2D 模型路径（如果有的话）。如果没有设置自定义模型或者自定义模型路径不存在，则从角色信息中读取默认模型路径。
+        获取指定角色的模型目标；显式目标即使失效也原样返回，否则解析默认模型。
         """
         model_path = self.meta.live2d_models.get(character_name)
-        if isinstance(model_path, str) and os.path.exists(model_path):
+        if isinstance(model_path, str) and model_path.strip():
             return model_path.strip()
-        else:
-            from character import GetCharacterAttributes
-            char_manager = GetCharacterAttributes()
-            for one in char_manager.character_class_list:
-                if one.character_name == character_name:
-                    return one.live2d_json
-            else:
-                return None  # 如果没找到对应角色，返回 None
+        from character import GetCharacterAttributes
+        char_manager = GetCharacterAttributes()
+        for one in char_manager.character_class_list:
+            if one.character_name == character_name:
+                return one.live2d_json
+        return None
     
     def update_custom_live2d_model_meta(self, character_name: str, model_path: str) -> None:
         """

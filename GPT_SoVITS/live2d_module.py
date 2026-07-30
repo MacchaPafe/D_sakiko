@@ -28,6 +28,8 @@ from qconfig import d_sakiko_config, qconfig
 from log import setup_worker_logging, get_logger
 from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
+    Live2DModelProtocol,
+    NullLive2DModel,
     detect_live2d_runtime_version,
     initialize_live2d_runtime,
     load_live2d_runtime,
@@ -36,6 +38,7 @@ from live2d_support.runtime_adapter import (
 from live2d_support.motion_semantics import motion_group_for_emotion
 from live2d_support.runtime_window import recreate_runtime_window
 from live2d_support.layout import (
+    Live2DLayout,
     format_live2d_layout_status,
     get_live2d_layout,
     reset_live2d_layout,
@@ -94,8 +97,9 @@ class Live2DModule:
         self.if_mask=True
         self.character_list=[]
         self.character_by_name = {}
+        self.character_by_folder = {}
         self.current_character_name = ""
-        self.current_model_json = ""
+        self.current_model_json: str | None = None
         self.is_display_text=True
         self.new_text=''
 
@@ -127,24 +131,41 @@ class Live2DModule:
             return self.character_list[0]
         raise ValueError("Live2D 角色列表为空。")
 
-    def _default_model_json_for_character(self, character):
+    def _default_model_json_for_character(self, character) -> str | None:
         """获取角色默认模型路径，缺失时尝试从角色目录中恢复。"""
-        if os.path.exists(character.live2d_json):
+        if character.live2d_json and os.path.exists(character.live2d_json):
             return character.live2d_json
         default_path = f"../live2d_related/{character.character_folder_name}/live2D_model"
-        candidates = glob.glob(os.path.join(default_path, "*.model.json"))
+        candidates = [
+            *glob.glob(os.path.join(default_path, "**", "*.model.json"), recursive=True),
+            *glob.glob(os.path.join(default_path, "**", "*.model3.json"), recursive=True),
+        ]
         if not candidates:
-            raise FileNotFoundError(f"找不到角色 {character.character_name} 的 Live2D 模型。")
-        character.live2d_json = candidates[0]
+            character.live2d_json = None
+            return None
+        character.live2d_json = max(candidates, key=os.path.getmtime)
         return character.live2d_json
 
-    def switch_live2d_target(self, character_name: str, model_json: str | None = None) -> str:
+    def switch_live2d_target(
+            self,
+            character_name: str,
+            model_json: str | None = None,
+            *,
+            character_folder_name: str = "",
+            use_default: bool = True,
+    ) -> str | None:
         """切换当前 Live2D 目标角色和模型路径。"""
-        character = self.character_by_name.get(character_name)
+        character = (
+            self.character_by_folder.get(character_folder_name)
+            if character_folder_name
+            else None
+        )
+        if character is None:
+            character = self.character_by_name.get(character_name)
         if character is None:
             raise ValueError(f"找不到 Live2D 角色：{character_name}")
-        target_model_json = model_json if model_json and os.path.exists(model_json) else None
-        if target_model_json is None:
+        target_model_json = model_json
+        if use_default:
             target_model_json = self._default_model_json_for_character(character)
         self.current_character_name = character.character_name
         self.current_model_json = target_model_json
@@ -159,6 +180,10 @@ class Live2DModule:
         # self.PATH_JSON=max(self.PATH_JSON,key=os.path.getmtime)
         self.character_list=characters
         self.character_by_name = {character.character_name: character for character in self.character_list}
+        self.character_by_folder = {
+            character.character_folder_name: character
+            for character in self.character_list
+        }
         if self.character_list:
             self.switch_live2d_target(self.character_list[0].character_name)
 
@@ -366,7 +391,7 @@ class Live2DModule:
     def save_l2d_json_paths_and_bg(self):
         l2d_json_paths_dict = {}
         for char in self.character_list:
-            if char.character_name!="祥子":
+            if char.character_name!="祥子" and char.live2d_json:
                 l2d_json_paths_dict[char.character_name] = char.live2d_json
         with d_sakiko_config as cfg:
             cfg.set(cfg.l2d_json_paths_dict, l2d_json_paths_dict)
@@ -417,19 +442,38 @@ class Live2DModule:
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         glViewport(0, 0, *display)
-        current_runtime = load_live2d_runtime(detect_live2d_runtime_version(self.PATH_JSON))
-        initialize_live2d_runtime(current_runtime)
+        current_runtime = None
+        current_runtime_version = None
+        model: Live2DModelProtocol = NullLive2DModel()
+        if self.PATH_JSON is not None:
+            try:
+                current_runtime_version = detect_live2d_runtime_version(self.PATH_JSON)
+                current_runtime = load_live2d_runtime(current_runtime_version)
+                initialize_live2d_runtime(current_runtime)
+                loaded_model = Live2DModelAdapter.create(self.PATH_JSON)
+                loaded_model.Resize(win_w_and_h, win_w_and_h)
+                loaded_model.SetAutoBlinkEnable(True)
+                loaded_model.SetAutoBreathEnable(True)
+                model = loaded_model
+            except Exception:
+                logger.exception(
+                    "Live2D 模型加载失败，将使用无模型展示：%s",
+                    self.PATH_JSON,
+                )
+                release_live2d_runtime(current_runtime)
+                current_runtime = None
+                current_runtime_version = None
+                model = NullLive2DModel()
 
         frame_clock = pygame.time.Clock()
         self.target_fps = 60
 
-        pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
+        initial_icon_path = self.current_character.icon_path
+        if not initial_icon_path or not os.path.exists(initial_icon_path):
+            initial_icon_path = "../live2d_related/sakiko/sakiko_icon.png"
+        pygame.display.set_icon(pygame.image.load(initial_icon_path))
 
-        model = Live2DModelAdapter.create(self.PATH_JSON)
-        model.Resize(win_w_and_h, win_w_and_h)
-        model.SetAutoBlinkEnable(True)
-        model.SetAutoBreathEnable(True)
-        if self.if_sakiko:
+        if self.if_sakiko and isinstance(model, Live2DModelAdapter):
             model.SetSemanticExpression('serious')
 
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.current_character.character_name])
@@ -446,7 +490,11 @@ class Live2DModule:
 
         layout_scene = "single"
         current_layout_model_path = self.PATH_JSON
-        current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+        current_layout = (
+            get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+            if current_layout_model_path is not None and isinstance(model, Live2DModelAdapter)
+            else Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
+        )
         layout_editing = False
         layout_dirty = False
         layout_dragging = False
@@ -471,6 +519,12 @@ class Live2DModule:
         def enter_layout_edit_mode() -> None:
             """进入 Live2D 布局编辑模式。"""
             nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
+            if not isinstance(model, Live2DModelAdapter):
+                overlay.set_text(
+                    self.current_character.character_name,
+                    "当前角色未加载 Live2D 模型，无法编辑布局。",
+                )
+                return
             layout_editing = True
             layout_dragging = False
             layout_last_mouse_pos = None
@@ -480,7 +534,7 @@ class Live2DModule:
         def exit_layout_edit_mode() -> None:
             """退出 Live2D 布局编辑模式，并在有修改时保存布局。"""
             nonlocal layout_editing, layout_dirty, layout_dragging, layout_last_mouse_pos
-            if layout_dirty:
+            if layout_dirty and current_layout_model_path is not None:
                 try:
                     save_live2d_layout(current_layout_model_path, layout_scene, current_layout)
                 except Exception:
@@ -494,6 +548,8 @@ class Live2DModule:
         def reset_current_layout() -> None:
             """重置当前模型在普通对话场景下的自定义布局。"""
             nonlocal current_layout, layout_dirty
+            if current_layout_model_path is None or not isinstance(model, Live2DModelAdapter):
+                return
             try:
                 reset_live2d_layout(current_layout_model_path, layout_scene)
             except Exception:
@@ -684,20 +740,27 @@ class Live2DModule:
                         exit_layout_edit_mode()
                     self._reset_long_audio_motion_loop()
                     character_name = str(x.get("character_name") or "")
+                    character_folder_name = str(x.get("character_folder_name") or "")
                     model_json = x.get("model_json")
-                    try:
-                        new_model_path = self.switch_live2d_target(
-                            character_name,
-                            str(model_json) if isinstance(model_json, str) and model_json else None,
-                        )
-                        target_version = detect_live2d_runtime_version(new_model_path)
-                        version_changed = target_version != model.version
-                        if self.if_sakiko and self.sakiko_state:
-                            new_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
-                            target_version = detect_live2d_runtime_version(new_model_path)
-                            version_changed = target_version != model.version
+                    target_model_path = self.switch_live2d_target(
+                        character_name,
+                        model_json if isinstance(model_json, str) and model_json else None,
+                        character_folder_name=character_folder_name,
+                        use_default=False,
+                    )
+                    if self.if_sakiko and self.sakiko_state and target_model_path is not None:
+                        target_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
 
-                        if version_changed:
+                    try:
+                        model.dispose()
+                    except Exception:
+                        logger.debug("释放旧 Live2D 模型失败", exc_info=True)
+                    model = NullLive2DModel()
+                    target_version = None
+                    try:
+                        if target_model_path is not None:
+                            target_version = detect_live2d_runtime_version(target_model_path)
+                        if target_version != current_runtime_version:
                             try:
                                 pygame.mixer.music.stop()
                             except Exception:
@@ -707,7 +770,6 @@ class Live2DModule:
                             self.motion_is_over = True
                             self.think_motion_is_over = True
                             self._reset_eye_open_transition()
-                            model.dispose()
                             recreate_result = recreate_runtime_window(
                                 current_runtime=current_runtime,
                                 current_texture=texture,
@@ -718,38 +780,42 @@ class Live2DModule:
                                 render_texture=BackgroundRen.render,
                             )
                             current_runtime = recreate_result.runtime
+                            current_runtime_version = target_version
                             texture = recreate_result.texture
                             frame_clock = pygame.time.Clock()
                             overlay = TextOverlay((win_w_and_h, win_w_and_h), [self.current_character.character_name])
                             overlay.set_text(self.current_character.character_name, self.new_text or "...")
-                            new_model = Live2DModelAdapter.create(new_model_path)
-                        else:
-                            new_model = Live2DModelAdapter.create(new_model_path)
-                            model.dispose()
-                        new_model.Resize(win_w_and_h, win_w_and_h)
-                        new_model.SetAutoBlinkEnable(True)
-                        new_model.SetAutoBreathEnable(True)
+                        if target_model_path is not None:
+                            loaded_model = Live2DModelAdapter.create(target_model_path)
+                            loaded_model.Resize(win_w_and_h, win_w_and_h)
+                            loaded_model.SetAutoBlinkEnable(True)
+                            loaded_model.SetAutoBreathEnable(True)
+                            model = loaded_model
                     except Exception:
-                        logger.exception("Live2D模型切换失败，请检查模型组成文件是否齐全以及是否完好。")
-                        try:
-                            fallback_model_path = self.switch_live2d_target(character_name)
-                            fallback_version = detect_live2d_runtime_version(fallback_model_path)
-                            current_runtime_version = "v3" if getattr(current_runtime, "LIVE2D_VERSION", 2) == 3 else "v2"
-                            if fallback_version != current_runtime_version:
-                                raise RuntimeError("Live2D 默认模型版本与当前 runtime 不一致，无法在本轮回退。")
-                            new_model = Live2DModelAdapter.create(fallback_model_path)
-                            new_model.Resize(win_w_and_h, win_w_and_h)
-                            new_model.SetAutoBlinkEnable(True)
-                            new_model.SetAutoBreathEnable(True)
-                        except Exception:
-                            logger.exception("Live2D 默认模型回退也失败。")
-                            new_model = None
-                    if new_model is not None:
-                        model=new_model
-                        current_layout_model_path = new_model_path
+                        logger.exception(
+                            "Live2D 模型切换失败，将使用无模型展示：%s",
+                            target_model_path,
+                        )
+                        recreate_result = recreate_runtime_window(
+                            current_runtime=current_runtime,
+                            current_texture=texture,
+                            target_version=None,
+                            display=display,
+                            window_position=f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}",
+                            background_path=self.BACK_IMAGE[self.back_img_index],
+                            render_texture=BackgroundRen.render,
+                        )
+                        current_runtime = recreate_result.runtime
+                        current_runtime_version = None
+                        texture = recreate_result.texture
+                        frame_clock = pygame.time.Clock()
+                        overlay = TextOverlay((win_w_and_h, win_w_and_h), [self.current_character.character_name])
+                        model = NullLive2DModel()
+
+                    if isinstance(model, Live2DModelAdapter) and target_model_path is not None:
+                        current_layout_model_path = target_model_path
                         current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
                         apply_current_layout()
-                        overlay.set_text(self.current_character.character_name,'...')
                         if self.if_sakiko and self.sakiko_state:
                             model.SetSemanticExpression('serious')
                         else:
@@ -759,9 +825,9 @@ class Live2DModule:
                             pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
                         logger.debug("Live2D模型切换成功：%s", self.PATH_JSON)
                     else:
-                        logger.error("Live2D 模型切换后没有可用模型，停止渲染循环。")
-                        self.run = False
-                        break
+                        current_layout_model_path = None
+                        current_layout = Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
+                    overlay.set_text(self.current_character.character_name, '...')
                 elif command_type == "switch_l2d_fps":
                     fps = int(x.get("fps"))
                     self.target_fps = fps
@@ -819,11 +885,14 @@ class Live2DModule:
                 self._reset_long_audio_motion_loop()
                 if self.if_sakiko:
                     conv_index=char_is_converted_queue.get()
-                    if model.version != "v2":
-                        logger.warning("当前 Live2D 模型为 v3，跳过祥子黑白模型特殊切换。")
+                    if not isinstance(model, Live2DModelAdapter) or model.version != "v2":
+                        logger.warning("当前没有可用的 Live2D V2 模型，跳过祥子黑白模型特殊切换。")
                         continue
                     if conv_index!='maskoff':
                         if not conv_index:      #切换为白祥
+                            if self.PATH_JSON is None:
+                                logger.warning("祥子默认 Live2D 模型未配置，跳过特殊模型切换。")
+                                continue
                             model.dispose()
                             model = Live2DModelAdapter.create(self.PATH_JSON)
                             model.Resize(win_w_and_h, win_w_and_h)

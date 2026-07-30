@@ -1552,11 +1552,11 @@ class ViewerGUI(QWidget):
                 return False
         return True
 
-    def _default_model_path_from_index(self, char_index: int) -> str:
-        """根据角色索引获取默认 Live2D 模型路径，越界时返回空字符串。"""
+    def _default_model_path_from_index(self, char_index: int) -> str | None:
+        """根据角色索引获取可选默认 Live2D 模型路径。"""
         if 0 <= char_index < len(self.character_list):
             return self.character_list[char_index].live2d_json
-        return ""
+        return None
 
     def _prepare_live2d_model_for_switch(self, model_path: str, action_label: str) -> bool:
         """在小剧场切换或加载 Live2D 模型前完成项目规范化。"""
@@ -1638,11 +1638,11 @@ class ViewerGUI(QWidget):
 
     def _build_active_slots_payload(
             self,
-            indices: Optional[List[int]] = None,
-            override_paths: Optional[Dict[int, str]] = None,
+            indices: list[int] | None = None,
+            override_paths: dict[int, str] | None = None,
             preserve_playback: bool = False,
-            changed_slot: Optional[int] = None,
-    ) -> Dict[str, Any]:
+            changed_slot: int | None = None,
+    ) -> dict[str, object]:
         """构建发送给 Live2D 子进程的 `set_active_slots` payload。
 
         模型路径优先级：
@@ -1655,36 +1655,33 @@ class ViewerGUI(QWidget):
             raise ValueError("至少需要两个角色索引来构造 active_slots")
 
         override_paths = override_paths or {}
-        slots: List[Dict[str, Any]] = []
-        model_paths: List[str] = []
+        slots: list[dict[str, object]] = []
+        model_paths: list[str] = []
 
         for slot in (0, 1):
             char_index = active_indices[slot]
             char_name = self._character_name_from_index(char_index)
 
             # 允许仅覆盖某一个槽位，未覆盖槽位按“对话自定义 -> 默认模型”回退到已有的值
-            model_path = override_paths.get(slot, "")
-            if not model_path and self.current_chat is not None:
+            model_path: str | None = override_paths.get(slot)
+            if slot not in override_paths and self.current_chat is not None:
                 model_path = self.current_chat.get_custom_live2d_model_meta(char_name)
-            if not model_path:
+            if slot not in override_paths and self.current_chat is None:
                 model_path = self._default_model_path_from_index(char_index)
-            if model_path and not self._prepare_live2d_model_for_switch(model_path, "加载小剧场 Live2D 模型"):
-                default_model_path = self._default_model_path_from_index(char_index)
-                if default_model_path and default_model_path != model_path:
-                    model_path = default_model_path
-                    self._prepare_live2d_model_for_switch(model_path, "加载默认 Live2D 模型")
 
             slots.append({
                 "slot": slot,
                 "character_name": char_name,
+                "character_folder_name": self.character_list[char_index].character_folder_name,
                 "model_json_path": model_path,
             })
-            model_paths.append(model_path)
+            if model_path is not None:
+                model_paths.append(model_path)
 
         motion_facing_mode = str(d_sakiko_config.multi_char_motion_facing_mode.value)
         if motion_facing_mode == "face_to_face" and not self._model_paths_support_motion_facing(model_paths):
             motion_facing_mode = "screen"
-        payload = {
+        payload: dict[str, object] = {
             "type": "set_active_slots",
             "slots": slots,
             "motion_facing_mode": motion_facing_mode,

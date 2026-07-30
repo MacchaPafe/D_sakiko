@@ -929,7 +929,7 @@ def register_live2d_tools(
     注册获取和切换前台角色 Live2D 模型的专用大模型工具。
     采用依赖注入方式传入获取角色名以及切换模型的执行回调。
     """
-    def _fetch_all_live2d_models_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _fetch_all_live2d_models_handler(arguments: dict[str, object]) -> dict[str, object]:
         """具体的获取可用 Live2D 模型列表的处理闭包函数。"""
         char_folder = get_char_folder_func()
         if char_folder == 'sakiko':
@@ -941,10 +941,19 @@ def register_live2d_tools(
         import glob
         import os
         base_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '../../live2d_related', char_folder))
-        default_live2d_json_list = glob.glob(os.path.join(base_path, 'live2D_model', '*.model.json'))
+        default_live2d_json_list = [
+            *glob.glob(
+                os.path.join(base_path, 'live2D_model', '**', '*.model3.json'),
+                recursive=True,
+            ),
+            *glob.glob(
+                os.path.join(base_path, 'live2D_model', '**', '*.model.json'),
+                recursive=True,
+            ),
+        ]
         default_live2d_json = default_live2d_json_list[0].replace("\\", "/") if default_live2d_json_list else None
 
-        models = []
+        models: list[dict[str, str]] = []
         if default_live2d_json:
             models.append({'model_name': '默认', 'model_json_path': default_live2d_json})
 
@@ -953,15 +962,19 @@ def register_live2d_tools(
             for model_dir in os.listdir(extra_path):
                 dp = os.path.join(extra_path, model_dir)
                 if os.path.isdir(dp):
-                    jsons = glob.glob(os.path.join(dp, '*.model.json'))
+                    jsons = [
+                        *glob.glob(os.path.join(dp, '**', '*.model3.json'), recursive=True),
+                        *glob.glob(os.path.join(dp, '**', '*.model.json'), recursive=True),
+                    ]
                     if jsons:
                         models.append({'model_name': model_dir, 'model_json_path': jsons[0].replace("\\", "/")})
 
         return {'ok': True, 'character_folder': char_folder, 'models': models}
 
-    def _change_character_live2d_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _change_character_live2d_handler(arguments: dict[str, object]) -> dict[str, object]:
         """具体的执行前台 Live2D 模型切换效果的闭包回调执行器。"""
-        target_path = arguments.get('model_json_path', '').strip()
+        target_path_value = arguments.get('model_json_path')
+        target_path = target_path_value.strip() if isinstance(target_path_value, str) else ""
         if not target_path:
             return {'ok': False, 'error': 'model_json_path 参数不能为空'}
 
