@@ -76,6 +76,49 @@ class CharacterVoiceConfigTestCase(unittest.TestCase):
             self.assertIsNone(character.gptsovits_ref_audio_lan)
             self.assertFalse(character.has_valid_voice_model())
 
+    def test_missing_live2d_model_does_not_skip_character(self) -> None:
+        """缺少 Live2D 模型时仍应加载角色并把默认模型目标设为空。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            working_dir = project_root / "GPT_SoVITS"
+            character_dir = project_root / "live2d_related" / "uika"
+            working_dir.mkdir()
+            character_dir.mkdir(parents=True)
+            (character_dir / "name.txt").write_text("三角初华", encoding="utf-8")
+            (character_dir / "character_description.txt").write_text(
+                "擅长隐藏真实想法的吉他手。",
+                encoding="utf-8",
+            )
+
+            loader = object.__new__(GetCharacterAttributes)
+            loader.character_num = 0
+            loader.character_class_list = []
+            loader.user_characters = []
+
+            original_cwd = os.getcwd()
+            original_order = d_sakiko_config.character_order.value
+            original_users = d_sakiko_config.user_characters.value
+            original_live2d_paths = d_sakiko_config.l2d_json_paths_dict.value
+            try:
+                os.chdir(working_dir)
+                d_sakiko_config.character_order.value = {
+                    "character_num": 0,
+                    "character_names": [],
+                }
+                d_sakiko_config.user_characters.value = []
+                d_sakiko_config.l2d_json_paths_dict.value = {}
+                with mock.patch.object(d_sakiko_config, "set"):
+                    loader.load_data()
+            finally:
+                os.chdir(original_cwd)
+                d_sakiko_config.character_order.value = original_order
+                d_sakiko_config.user_characters.value = original_users
+                d_sakiko_config.l2d_json_paths_dict.value = original_live2d_paths
+
+            self.assertEqual(len(loader.character_class_list), 1)
+            self.assertEqual(loader.character_class_list[0].character_name, "三角初华")
+            self.assertIsNone(loader.character_class_list[0].live2d_json)
+
     def test_reference_text_and_language_are_required_for_voice(self) -> None:
         """参考文本或语言缺失时语音能力判定应为不可用。"""
         with tempfile.TemporaryDirectory() as temp_dir:

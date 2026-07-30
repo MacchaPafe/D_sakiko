@@ -9,7 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, ClassVar, Iterable, Literal, cast
+from typing import Callable, ClassVar, Iterable, Literal, Protocol, cast
 
 from live2d_support.expression_policy import (
     select_expression_for_motion,
@@ -45,6 +45,152 @@ PARAMETER_CANDIDATES: dict[str, tuple[str, str]] = {
 }
 
 BREATH_PARAMETER_ONLY_METHOD = "SetAutoBreathParameterOnlyEnable"
+
+
+class Live2DModelProtocol(Protocol):
+    """定义普通对话渲染循环实际依赖的最小模型接口。"""
+
+    def Resize(self, width: int, height: int) -> None:
+        """调整模型视口尺寸。"""
+
+    def Update(self) -> None:
+        """更新模型状态。"""
+
+    def Draw(self) -> None:
+        """绘制模型。"""
+
+    def SetAutoBlinkEnable(self, enabled: bool) -> None:
+        """设置自动眨眼。"""
+
+    def SetAutoBreathEnable(self, enabled: bool) -> None:
+        """设置自动呼吸。"""
+
+    def SetOffset(self, offset_x: float, offset_y: float) -> bool:
+        """设置模型平移。"""
+
+    def SetScale(self, scale: float) -> bool:
+        """设置模型缩放。"""
+
+    def SetSemanticExpression(self, semantic_name: str) -> bool:
+        """按语义名设置表情。"""
+
+    def StartRandomMotion(
+            self,
+            group_name: str | None = None,
+            priority: int = 3,
+            on_start: MotionCallback | None = None,
+            on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
+            auto_expression: bool = True,
+    ) -> bool:
+        """尝试播放随机动作。"""
+
+    def StartMotion(
+            self,
+            group_name: str,
+            motion_index: int,
+            priority: int,
+            on_start: MotionCallback | None = None,
+            on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
+            auto_expression: bool = True,
+    ) -> bool:
+        """尝试播放指定动作。"""
+
+    def set_parameter_value(self, semantic_name: str, value: float) -> bool:
+        """按语义名设置模型参数。"""
+
+    def get_parameter_value(self, semantic_name: str, default: float = 1.0) -> float:
+        """按语义名读取模型参数。"""
+
+    def motion_capabilities(self) -> Live2DMotionCapabilities:
+        """返回模型的方向动作能力。"""
+
+    def dispose(self) -> None:
+        """释放模型资源。"""
+
+
+class NullLive2DModel:
+    """表示正常无模型展示，并安全吸收渲染循环的模型调用。"""
+
+    def Resize(self, width: int, height: int) -> None:
+        """忽略视口尺寸更新。"""
+
+    def Update(self) -> None:
+        """忽略逐帧模型更新。"""
+
+    def Draw(self) -> None:
+        """不绘制任何模型内容。"""
+
+    def SetAutoBlinkEnable(self, enabled: bool) -> None:
+        """忽略自动眨眼设置。"""
+
+    def SetAutoBreathEnable(self, enabled: bool) -> None:
+        """忽略自动呼吸设置。"""
+
+    def SetOffset(self, offset_x: float, offset_y: float) -> bool:
+        """忽略平移设置并报告不支持。"""
+        return False
+
+    def SetScale(self, scale: float) -> bool:
+        """忽略缩放设置并报告不支持。"""
+        return False
+
+    def SetSemanticExpression(self, semantic_name: str) -> bool:
+        """忽略表情设置并报告不支持。"""
+        return False
+
+    def StartRandomMotion(
+            self,
+            group_name: str | None = None,
+            priority: int = 3,
+            on_start: MotionCallback | None = None,
+            on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
+            auto_expression: bool = True,
+    ) -> bool:
+        """忽略随机动作请求并报告未开始。"""
+        return False
+
+    def StartMotion(
+            self,
+            group_name: str,
+            motion_index: int,
+            priority: int,
+            on_start: MotionCallback | None = None,
+            on_finish: MotionCallback | None = None,
+            position: MotionPosition | None = None,
+            auto_expression: bool = True,
+    ) -> bool:
+        """忽略指定动作请求并报告未开始。"""
+        return False
+
+    def set_parameter_value(self, semantic_name: str, value: float) -> bool:
+        """忽略参数设置并报告不支持。"""
+        return False
+
+    def SetParameterValue(self, parameter_id: str, value: float) -> bool:
+        """兼容旧调用风格，忽略参数设置。"""
+        return False
+
+    def get_parameter_value(self, semantic_name: str, default: float = 1.0) -> float:
+        """返回调用方提供的参数默认值。"""
+        return default
+
+    def GetParameterCount(self) -> int:
+        """返回零个模型参数。"""
+        return 0
+
+    def GetParameter(self, index: int) -> object:
+        """空模型没有参数，读取时抛出索引错误。"""
+        raise IndexError(index)
+
+    def motion_capabilities(self) -> Live2DMotionCapabilities:
+        """返回空方向动作能力。"""
+        return Live2DMotionCapabilities(supported_positions_by_group={})
+
+    def dispose(self) -> None:
+        """幂等释放空模型，不执行任何操作。"""
 
 
 def _read_model_json(model_json_path: str) -> dict[str, object]:

@@ -31,7 +31,7 @@ TextureRenderer = Callable[[object], object]
 class RuntimeWindowRecreateResult:
     """记录 Live2D runtime 窗口重建后的资源。"""
 
-    runtime: ModuleType
+    runtime: ModuleType | None
     texture: object
 
 
@@ -39,14 +39,14 @@ def recreate_runtime_window(
         *,
         current_runtime: ModuleType | None,
         current_texture: object,
-        target_version: Live2DVersion,
+        target_version: Live2DVersion | None,
         display: tuple[int, int],
         window_position: str | None,
         background_path: str,
         render_texture: TextureRenderer,
 ) -> RuntimeWindowRecreateResult:
     """
-    重建 pygame OpenGL 窗口、目标 Live2D runtime 和背景纹理。
+    重建 pygame OpenGL 窗口、可选目标 Live2D runtime 和背景纹理。
     在切换了 live2d v2/v3 版本的模型后，需要使用此函数来重建窗口和相关资源。
     """
     release_live2d_runtime(current_runtime)
@@ -62,8 +62,10 @@ def recreate_runtime_window(
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     glViewport(0, 0, *display)
 
-    runtime = load_live2d_runtime(target_version)
-    initialize_live2d_runtime(runtime)
+    runtime: ModuleType | None = None
+    if target_version is not None:
+        runtime = load_live2d_runtime(target_version)
+        initialize_live2d_runtime(runtime)
     glEnable(GL_TEXTURE_2D)
 
     texture = render_texture(pygame.image.load(background_path).convert_alpha())

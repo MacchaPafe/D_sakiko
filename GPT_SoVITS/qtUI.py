@@ -107,7 +107,7 @@ from input_commands import (
     InputCommandPalette,
     build_default_input_command_specs,
 )
-from live2d_support.model_importer import Live2DModelImportError, import_live2d_model_to_extra_model
+from live2d_support.model_importer import Live2DModelImportError, import_live2d_model
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from rag.worldbook.paths import WorldbookPaths
 from rag.worldbook.runtime.catalog import WorldbookRootCatalog
@@ -828,6 +828,9 @@ class SettingWindow(QDialog):
         self.change_l2d_model_btn.clicked.connect(self.change_live2d_model_1)
         self.edit_l2d_layout_btn=QPushButton("调整Live2D位置/大小")
         self.edit_l2d_layout_btn.clicked.connect(self.edit_live2d_layout)
+        if not current_chara.live2d_json:
+            self.change_l2d_model_btn.setText("添加 Live2D 模型")
+            self.edit_l2d_layout_btn.setEnabled(False)
         self.change_l2d_fps_btn=QPushButton(f"Live2D渲染帧率：{self.parent_window.get_current_l2d_fps()}")
         self.change_l2d_fps_btn.clicked.connect(self.change_l2d_fps)
         self.convert_sakiko_state_btn=QPushButton("黑/白祥")
@@ -929,7 +932,12 @@ class ChangeL2DModelWindow(QDialog):
 
         default_model_dir = os.path.join(f'../live2d_related/{self.current_char_folder_name}', 'live2D_model')
         default_live2d_json = self._find_preferred_model_json(default_model_dir)
-        self.current_char_l2d_models = [{"model_name": "默认", "model_json_path": default_live2d_json}]
+        self.current_char_l2d_models = []
+        if default_live2d_json is not None:
+            self.current_char_l2d_models.append({
+                "model_name": "默认",
+                "model_json_path": default_live2d_json,
+            })
         self.find_extra_models(self.current_char_folder_name)
         layout = QVBoxLayout()
         title_layout=QHBoxLayout()
@@ -945,7 +953,7 @@ class ChangeL2DModelWindow(QDialog):
         title_layout.addWidget(refresh_btn)
         layout.addLayout(title_layout)
 
-        display_group = QGroupBox(f"共有 {len(self.current_char_l2d_models)} 套服装")
+        display_group = QGroupBox(f"共有 {len(self.current_char_l2d_models)} 个 Live2D 模型")
         group_layout = QVBoxLayout()
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)  # 【关键！】必须设为True，让内部画布能自适应宽度
@@ -964,6 +972,8 @@ class ChangeL2DModelWindow(QDialog):
             except Exception as e:
                 logger.exception("删除 Live2D 模型文件夹失败")
         if self.current_char_folder_name != 'sakiko':
+            if not self.current_char_l2d_models:
+                display_layout.addWidget(QLabel("当前角色尚未配置 Live2D 模型，可点击“导入模型”添加。"))
             for model in self.current_char_l2d_models:
                 model_layout = QHBoxLayout()
                 name_label = QLabel(model["model_name"])
@@ -993,7 +1003,7 @@ class ChangeL2DModelWindow(QDialog):
         self.setLayout(layout)
 
     def import_l2d_model(self) -> None:
-        """从本地选择 Live2D 模型 JSON 并导入当前角色的 extra_model 目录。"""
+        """从本地导入模型；缺少默认模型时自动设为默认，否则加入额外模型。"""
         selected_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入 Live2D 模型",
@@ -1004,7 +1014,7 @@ class ChangeL2DModelWindow(QDialog):
             return
 
         try:
-            result = import_live2d_model_to_extra_model(selected_path, self.current_char_folder_name)
+            result = import_live2d_model(selected_path, self.current_char_folder_name)
         except Live2DModelImportError as exc:
             QMessageBox.warning(self, "导入失败", str(exc))
             return
@@ -1013,11 +1023,21 @@ class ChangeL2DModelWindow(QDialog):
             QMessageBox.warning(self, "导入失败", str(exc) or exc.__class__.__name__)
             return
 
+        if result.model_name == "默认":
+            for character in GetCharacterAttributes().character_class_list:
+                if character.character_folder_name == self.current_char_folder_name:
+                    character.live2d_json = result.model_json_path
+                    break
+            self.change_l2d_model_func(result.model_json_path)
         self.refresh_ui()
         QMessageBox.information(
             self,
             "导入成功",
-            f"已导入模型：{result.model_name}。",
+            (
+                "已导入并启用首个默认模型。"
+                if result.model_name == "默认"
+                else f"已导入模型：{result.model_name}。"
+            ),
         )
 
     def find_extra_models(self,current_char_folder_name):
@@ -3870,8 +3890,6 @@ class ChatGUI(QWidget):
         self.qt2dp_queue.put({"type": "switch_chat", "chat_id": self.current_chat_id})
         character_name = self.current_character.character_name
         model_json = self.current_chat.get_custom_live2d_model_meta(character_name)
-        if not self._prepare_live2d_model_for_switch(model_json, "加载对话 Live2D 模型"):
-            model_json = None
         self._send_live2d_switch(character_name, model_json)
 
     def apply_current_chat_ui_state(self) -> None:
@@ -5582,8 +5600,9 @@ class ChatGUI(QWidget):
             return
         self.change_char_queue.put({
             "type": "switch_live2d",
+            "character_folder_name": self.current_character.character_folder_name,
             "character_name": character_name,
-            "model_json": model_json or "",
+            "model_json": model_json,
         })
 
     def handle_user_input(self) -> None:

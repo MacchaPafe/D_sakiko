@@ -12,7 +12,7 @@ script_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-from live2d_support.model_importer import Live2DModelImportError, import_live2d_model_to_extra_model
+from live2d_support.model_importer import Live2DModelImportError, import_live2d_model
 
 
 class Live2DModelImporterTestCase(unittest.TestCase):
@@ -36,6 +36,7 @@ class Live2DModelImporterTestCase(unittest.TestCase):
             source_dir = temp_path / "source" / "Band Model"
             shared_dir = temp_path / "source" / "shared"
             live2d_related_dir = temp_path / "live2d_related"
+            (live2d_related_dir / "tomori").mkdir(parents=True)
             self._write_file(source_dir / "moc" / "model.moc3", "moc")
             self._write_file(source_dir / "textures" / "texture_00.png", "texture")
             self._write_file(source_dir / "expressions" / "smile.exp3.json")
@@ -67,7 +68,7 @@ class Live2DModelImporterTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = import_live2d_model_to_extra_model(
+            result = import_live2d_model(
                 str(source_model_json),
                 "tomori",
                 str(live2d_related_dir),
@@ -75,10 +76,10 @@ class Live2DModelImporterTestCase(unittest.TestCase):
 
             target_dir = Path(result.target_dir)
             target_model_json = Path(result.model_json_path)
-            self.assertEqual(result.model_name, "Band Model")
+            self.assertEqual(result.model_name, "默认")
             self.assertEqual(
                 target_dir.parent.resolve(strict=False),
-                (live2d_related_dir / "tomori" / "extra_model").resolve(strict=False),
+                (live2d_related_dir / "tomori" / "live2D_model").resolve(strict=False),
             )
             self.assertTrue(target_model_json.is_file())
             self.assertTrue((target_dir / "model.moc3").is_file())
@@ -104,6 +105,7 @@ class Live2DModelImporterTestCase(unittest.TestCase):
             source_dir = temp_path / "source" / "Stage:Model"
             shared_dir = temp_path / "source" / "voice"
             live2d_related_dir = temp_path / "live2d_related"
+            (live2d_related_dir / "tomori").mkdir(parents=True)
             self._write_file(source_dir / "moc" / "model.moc", "moc")
             self._write_file(source_dir / "textures" / "texture.png", "texture")
             self._write_file(source_dir / "motions" / "idle.mtn", "motion")
@@ -128,12 +130,17 @@ class Live2DModelImporterTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            first_result = import_live2d_model_to_extra_model(
+            first_result = import_live2d_model(
                 str(source_model_json),
                 "tomori",
                 str(live2d_related_dir),
             )
-            second_result = import_live2d_model_to_extra_model(
+            second_result = import_live2d_model(
+                str(source_model_json),
+                "tomori",
+                str(live2d_related_dir),
+            )
+            third_result = import_live2d_model(
                 str(source_model_json),
                 "tomori",
                 str(live2d_related_dir),
@@ -141,8 +148,11 @@ class Live2DModelImporterTestCase(unittest.TestCase):
 
             first_target_dir = Path(first_result.target_dir)
             second_target_dir = Path(second_result.target_dir)
-            self.assertEqual(first_result.model_name, "Stage_Model")
-            self.assertEqual(second_result.model_name, "Stage_Model_2")
+            self.assertEqual(first_result.model_name, "默认")
+            self.assertEqual(second_result.model_name, "Stage_Model")
+            self.assertEqual(third_result.model_name, "Stage_Model_2")
+            self.assertEqual(first_target_dir.parent.name, "live2D_model")
+            self.assertEqual(second_target_dir.parent.name, "extra_model")
             self.assertTrue((first_target_dir / "moc" / "model.moc").is_file())
             self.assertTrue((first_target_dir / "textures" / "texture.png").is_file())
             self.assertTrue((first_target_dir / "motions" / "idle.mtn").is_file())
@@ -167,7 +177,7 @@ class Live2DModelImporterTestCase(unittest.TestCase):
             source_model_json.write_text("{}", encoding="utf-8")
 
             with self.assertRaises(Live2DModelImportError):
-                import_live2d_model_to_extra_model(
+                import_live2d_model(
                     str(source_model_json),
                     "tomori",
                     str(live2d_related_dir),
@@ -179,6 +189,7 @@ class Live2DModelImporterTestCase(unittest.TestCase):
             temp_path = Path(temp_dir)
             source_dir = temp_path / "source" / "Broken Model"
             live2d_related_dir = temp_path / "live2d_related"
+            (live2d_related_dir / "tomori").mkdir(parents=True)
             source_dir.mkdir(parents=True)
             source_model_json = source_dir / "broken.model.json"
             source_model_json.write_text(
@@ -187,14 +198,14 @@ class Live2DModelImporterTestCase(unittest.TestCase):
             )
 
             with self.assertRaises(Live2DModelImportError):
-                import_live2d_model_to_extra_model(
+                import_live2d_model(
                     str(source_model_json),
                     "tomori",
                     str(live2d_related_dir),
                 )
 
-            extra_model_dir = live2d_related_dir / "tomori" / "extra_model"
-            self.assertEqual(list(extra_model_dir.iterdir()), [])
+            default_model_dir = live2d_related_dir / "tomori" / "live2D_model"
+            self.assertEqual(list(default_model_dir.iterdir()), [])
 
 
 if __name__ == "__main__":
