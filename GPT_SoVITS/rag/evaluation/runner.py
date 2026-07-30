@@ -124,6 +124,16 @@ class WorldbookEvaluationRunner:
                 result.trace.selected_entry_ids,
                 result.failure.message if result.failure is not None else None,
             )
+        if case.query_type == "direct_context":
+            result = self._service.direct_context(
+                context,
+                case.query,
+                case.current_user_text or case.query,
+            )
+            return (
+                result.trace.selected_entry_ids,
+                result.failure.message if result.failure is not None else None,
+            )
         if case.query_type == "lore":
             result = self._service.search_lore(context, case.query)
             return (

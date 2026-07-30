@@ -1758,11 +1758,11 @@ def _record_search_text(record: PackageEntryRecord) -> str:
 
     entry = record.entry
     parts = [str(value) for value in entry.content.values() if isinstance(value, (str, int))]
-    for key in ("participants", "tags"):
+    for key in ("participants", "known_by_character_ids", "tags"):
         value = entry.content.get(key)
         if isinstance(value, list):
             parts.extend(str(item) for item in value)
-            if key == "participants":
+            if key in {"participants", "known_by_character_ids"}:
                 parts.extend(_character_name(item) for item in value)
     for key in ("character_id", "subject_character_id", "object_character_id"):
         parts.append(_character_name(entry.content.get(key)))

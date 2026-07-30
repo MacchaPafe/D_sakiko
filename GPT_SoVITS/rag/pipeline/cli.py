@@ -111,6 +111,7 @@ from .stage3_review_editor import (
     update_artifact_item_notes,
 )
 from .stage3_review_upgrade import upgrade_stage3_review_schema
+from .stage3_review_workspace import ReviewWorkspace
 from rag.worldbook.publisher import (
     publish_worldbook_package,
     publish_worldbook_packages,
@@ -172,6 +173,37 @@ def _build_parser() -> argparse.ArgumentParser:
     workbench_parser.add_argument("--host", default="127.0.0.1", help="NiceGUI 绑定 host")
     workbench_parser.add_argument("--port", type=int, default=8188, help="NiceGUI 端口")
     workbench_parser.add_argument("--native", action="store_true", help="使用 NiceGUI native 模式")
+
+    revalidate_sources_parser = subparsers.add_parser(
+        "revalidate-stage3-sources",
+        help="验证或人工接受 Stage 3 审核产物的当前直接来源",
+    )
+    revalidate_sources_parser.add_argument(
+        "--build-spec",
+        type=Path,
+        required=True,
+        help="worldbook_build.json 路径",
+    )
+    revalidate_sources_parser.add_argument(
+        "--slot",
+        required=True,
+        help="审核槽位，例如 document:1、relation、thought 或 lore_decisions",
+    )
+    revalidate_sources_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="消费投影不同或缺少基线时仍人工接受",
+    )
+    revalidate_sources_parser.add_argument(
+        "--reason",
+        default=None,
+        help="人工接受说明；使用 --force 时必填",
+    )
+    revalidate_sources_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只输出来源和消费投影差异，不写文件",
+    )
 
     publish_parser = subparsers.add_parser("publish-worldbook", help="从 build spec 审计并发布一个世界书包")
     publish_parser.add_argument("--build-spec", type=Path, required=True, help="worldbook_build.json 路径")
@@ -685,6 +717,40 @@ def main(argv: list[str] | None = None) -> int:
         if args.native:
             workbench_arguments.append("--native")
         workbench_main(workbench_arguments)
+        return 0
+
+    if args.command == "revalidate-stage3-sources":
+        workspace = ReviewWorkspace(
+            args.build_spec,
+            bootstrap_baselines=not args.dry_run,
+        )
+        workspace.select(args.slot)
+        preview = workspace.preview_source_revalidation(args.slot)
+        print(
+            json.dumps(
+                preview.model_dump(mode="json"),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        if args.dry_run:
+            return 0
+        result = workspace.accept_current_sources(
+            preview,
+            force=args.force,
+            reason=args.reason,
+        )
+        print(f"已重新确认来源: {result.slot_key}")
+        print(f"本地记录: {result.sidecar_path}")
+        print(
+            "全包构建审计: "
+            + ("通过" if result.audit_report.succeeded else "仍有其他问题")
+        )
+        if result.stale_slots:
+            print("仍然过期: " + ", ".join(result.stale_slots))
+        if result.newly_stale_slots:
+            print("本次新近过期: " + ", ".join(result.newly_stale_slots))
         return 0
 
     if args.command == "prepare-stage1":

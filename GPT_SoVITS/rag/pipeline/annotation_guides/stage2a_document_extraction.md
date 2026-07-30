@@ -73,6 +73,9 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage2-responses \
 - 同一个目标和冲突连续发展时通常合并为一条；只有场景中出现清晰的新行动或转折才拆第二条。
 - `summary` 必须是字幕支持的事实，不要补充角色没说出的动机、后续结果或场外原因。
 - `participants` 只包含实际参与该事件的人；仅被提到、只是在场但未参与的人不应机械加入。
+- `known_by_character_names` 只包含从事件发生起可以安全获知完整 `summary` 的角色，允许为空。
+- 知情角色与参与角色分开判断；不得仅凭 `participants`、`present_characters` 或 Thought 链接推断。
+- 非参与者只有在当前场景存在明确正面证据表明其知道完整摘要时才可加入；任何重要细节超出角色认知范围时不要加入。
 - `retrieval_text` 要能脱离标题独立理解，写成简洁自然的检索摘要，而不是字段拼接。
 - `importance` 数字越小越重要，但不要把每个普通场景都标成最高重要度。
 

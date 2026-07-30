@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from .models import EntryType
 
 
-INDEX_SCHEMA_VERSION = 3
+INDEX_SCHEMA_VERSION = 4
 """当前世界书派生索引结构版本。"""
 
 PROJECTION_VERSION = 1
@@ -42,6 +42,7 @@ PAYLOAD_INDEXES: dict[EntryType, tuple[PayloadIndexSpec, ...]] = {
         PayloadIndexSpec("visible_from", "INTEGER"),
         PayloadIndexSpec("visible_to", "INTEGER"),
         PayloadIndexSpec("participants", "KEYWORD"),
+        PayloadIndexSpec("known_by_character_ids", "KEYWORD"),
     ),
     "character_relation": (
         PayloadIndexSpec("package_id", "KEYWORD"),

@@ -12,6 +12,7 @@ from rag.models import CharacterId
 
 EvaluationQueryType = Literal[
     "direct_thought",
+    "direct_context",
     "lore",
     "relation",
     "memory",

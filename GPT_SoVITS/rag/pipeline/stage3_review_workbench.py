@@ -74,6 +74,7 @@ from rag.pipeline.stage3_review_regeneration import (
     Stage3ReviewRegenerator,
 )
 from rag.pipeline.stage3_review_workspace import ArtifactSlot, ReviewWorkspace
+from rag.pipeline.stage3_source_revalidation import SourceRevalidationPreview
 from rag.pipeline.stage3_thought_models import (
     Stage3ThoughtReviewArtifact,
     ThoughtStateDraft,
@@ -114,6 +115,53 @@ class ReviewListItem:
     risk_level: str
     identity_pending: bool
     human_edited: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StoryThoughtLinkInfo:
+    """表示审核器展示的一条 Story Event 反向 Thought 链接。"""
+
+    character_name: str
+    canonical_subject: str
+    thought_aspect: str
+    thought_text: str
+    epistemic_status: str
+    visible_from: int
+    visible_to: int
+    review_status: str
+    disposition: str | None
+    stale: bool
+
+
+def story_thought_links(
+    artifact: Stage3ThoughtReviewArtifact,
+    story_candidate_id: str,
+    *,
+    stale: bool,
+) -> list[StoryThoughtLinkInfo]:
+    """从全部 effective Thought State 计算指定事件的反向链接。"""
+
+    links: list[StoryThoughtLinkInfo] = []
+    for thread in artifact.threads:
+        content = thread.effective_content()
+        for state in content.states:
+            if story_candidate_id not in state.story_event_candidate_ids:
+                continue
+            links.append(
+                StoryThoughtLinkInfo(
+                    character_name=thread.character_id.common_name,
+                    canonical_subject=content.canonical_subject,
+                    thought_aspect=content.thought_aspect,
+                    thought_text=state.thought_text,
+                    epistemic_status=state.epistemic_status,
+                    visible_from=state.visible_from,
+                    visible_to=state.visible_to,
+                    review_status=thread.review_status,
+                    disposition=thread.disposition,
+                    stale=stale,
+                )
+            )
+    return links
 
 
 class Stage3ReviewWorkbench:
@@ -567,6 +615,15 @@ class Stage3ReviewWorkbench:
                 with ui.expansion("最近一次构建审计", icon="fact_check").classes("w-full"):
                     for message in self.last_audit_messages:
                         ui.label(message).classes("text-sm mono-wrap")
+            current_slot = self.workspace.current_slot()
+            current_freshness = self.workspace.freshness(current_slot.key)
+            if current_freshness.stale_sources:
+                ui.button(
+                    "处理当前产物的来源变化",
+                    on_click=lambda target=current_slot.key: (
+                        self.open_source_revalidation_dialog(target)
+                    ),
+                ).props("outline color=secondary")
 
     def refresh_detail(self) -> None:
         """按当前选择构建类型化编辑表单与审核操作。"""
@@ -616,8 +673,18 @@ class Stage3ReviewWorkbench:
                     ui.label("直接来源已变化：" + "、".join(result.stale_sources)).classes(
                         "text-sm text-red-700"
                     )
+                    ui.button(
+                        "处理来源变化",
+                        on_click=lambda target=slot.key: self.open_source_revalidation_dialog(
+                            target
+                        ),
+                    ).props("outline dense color=secondary")
                 else:
                     ui.label("来源摘要一致。").classes("text-sm text-emerald-700")
+        if self.workspace.baseline_warnings:
+            with ui.expansion("本地投影基线警告").classes("w-full"):
+                for warning in self.workspace.baseline_warnings:
+                    ui.label(warning).classes("text-sm text-amber-700")
 
     def _build_story_form(self, slot_key: str, record: StoryEventReviewRecord) -> None:
         """构建 Story Event 完整文档表单。"""
@@ -638,7 +705,7 @@ class Stage3ReviewWorkbench:
             fields["canon_branch"] = ui.input("canon_branch", value=content.canon_branch.value)
         fields["title"] = ui.input("标题", value=content.title).classes("w-full")
         fields["summary"] = ui.textarea("摘要", value=content.summary).props("autogrow").classes("w-full")
-        fields["participants"] = ui.select(
+        participant_select = ui.select(
             {
                 character.value: f"{character.common_name}（{character.value}）"
                 for character in CharacterId
@@ -649,6 +716,27 @@ class Stage3ReviewWorkbench:
             multiple=True,
             clearable=True,
         ).props("use-chips options-dense input-debounce=0").classes("w-full")
+        fields["participants"] = participant_select
+        known_by_select = ui.select(
+            {
+                character.value: f"{character.common_name}（{character.value}）"
+                for character in CharacterId
+            },
+            label="可直接知道完整事件的角色",
+            value=[item.value for item in content.known_by_character_ids],
+            with_input=True,
+            multiple=True,
+            clearable=True,
+        ).props("use-chips options-dense input-debounce=0").classes("w-full")
+        fields["known_by_character_ids"] = known_by_select
+        ui.button(
+            "从参与角色复制",
+            on_click=lambda: known_by_select.set_value(list(participant_select.value or [])),
+        ).props("outline dense")
+        ui.label(
+            "这是一次性复制；之后修改参与角色不会自动同步。完整事件权限与是否参与相互独立。"
+        ).classes("field-hint")
+        self._build_story_thought_links(record)
         fields["tags"] = ui.input("标签（逗号分隔）", value=", ".join(content.tags)).classes("w-full")
         fields["retrieval_text"] = ui.textarea(
             "检索文本", value=content.retrieval_text
@@ -679,6 +767,9 @@ class Stage3ReviewWorkbench:
                 title=_widget_text(fields["title"]),
                 summary=_widget_text(fields["summary"]),
                 participants=_widget_string_list(fields["participants"]),
+                known_by_character_ids=_widget_string_list(
+                    fields["known_by_character_ids"]
+                ),
                 importance=_widget_int(fields["importance"]),
                 tags=_widget_csv(fields["tags"]),
                 retrieval_text=_widget_text(fields["retrieval_text"]),
@@ -690,6 +781,43 @@ class Stage3ReviewWorkbench:
             self._notify_success("已更新 Story Event 草稿并撤销旧审批")
         except (TypeError, ValueError) as exc:
             self._notify_error(exc)
+
+    def _build_story_thought_links(self, record: StoryEventReviewRecord) -> None:
+        """展示所有 effective Thought 对当前 Story Event 的反向链接。"""
+
+        thought_slot = self.workspace.slots.get("thought")
+        thought_artifact = None if thought_slot is None else thought_slot.artifact
+        if not isinstance(thought_artifact, Stage3ThoughtReviewArtifact):
+            ui.label("Thought 反向链接：Thought 审核产物尚未生成。").classes("field-hint")
+            return
+        linked = story_thought_links(
+            thought_artifact,
+            record.candidate_id,
+            stale=bool(self.workspace.freshness("thought").stale_sources),
+        )
+        if not linked:
+            ui.label("Thought 反向链接：无。").classes("field-hint")
+            return
+        ui.label("Thought 反向链接（仅提示，不自动授予事件权限）").classes(
+            "text-sm font-semibold"
+        )
+        for link in linked:
+            with ui.row().classes("items-center gap-2"):
+                ui.label(
+                    f"{link.character_name} · "
+                    f"{link.canonical_subject} / "
+                    f"{link.thought_aspect}"
+                ).classes("text-sm text-slate-700")
+                ui.badge(f"审核：{link.review_status}")
+                ui.badge(f"处置：{link.disposition or '未定'}")
+                ui.badge(
+                    "stale" if link.stale else "fresh",
+                    color="negative" if link.stale else "positive",
+                )
+            ui.label(
+                f"{link.epistemic_status} · {link.visible_from}–{link.visible_to} · "
+                f"{link.thought_text}"
+            ).classes("field-hint")
 
     def _build_lore_form(self, slot_key: str, record: LoreEntryReviewRecord) -> None:
         """构建 Lore Entry 完整文档表单。"""
@@ -2119,6 +2247,220 @@ class Stage3ReviewWorkbench:
                 ui.button("关闭", on_click=dialog.close).props("flat")
         dialog.open()
 
+    def open_source_revalidation_dialog(self, slot_key: str | None = None) -> None:
+        """打开消费投影差异和人工来源重新确认对话框。"""
+
+        if slot_key is not None:
+            self.workspace.select(slot_key)
+        slot = self.workspace.current_slot()
+        if self.workspace.dirty_keys():
+            with ui.dialog() as save_dialog, ui.card().classes(
+                "w-[620px] max-w-full gap-4"
+            ):
+                ui.label("处理来源变化前需要保存全部草稿").classes(
+                    "text-xl font-semibold"
+                )
+                ui.label(
+                    "保存后会重新读取来源并生成新的差异预览，避免使用磁盘旧版本。"
+                )
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("取消", on_click=save_dialog.close).props("flat")
+                    ui.button(
+                        "保存全部并继续",
+                        on_click=lambda: self._save_all_and_continue_revalidation(
+                            save_dialog,
+                            slot.key,
+                        ),
+                    ).props("unelevated color=primary")
+            save_dialog.open()
+            return
+        try:
+            preview = self.workspace.preview_source_revalidation(slot.key)
+        except (OSError, TypeError, ValueError, KeyError) as exc:
+            self._notify_error(exc)
+            return
+        with ui.dialog() as dialog, ui.card().classes(
+            "w-[940px] max-w-full gap-4"
+        ):
+            ui.label(f"接受当前来源并保留审核结果 · {slot.label}").classes(
+                "text-xl font-semibold"
+            )
+            ui.label(
+                "此操作不会调用 LLM，也不会修改现有审核内容；确认后会立即保存新的来源指纹。"
+            ).classes("text-sm text-slate-600")
+            self._build_source_revalidation_summary(preview)
+            force = not preview.can_accept_automatically
+            if force:
+                confirmation = ui.checkbox(
+                    "我确认上述来源变化不影响当前审核产物"
+                )
+                reason = ui.input(
+                    "确认说明",
+                    value="人工确认当前来源变化不影响此审核产物",
+                ).classes("w-full")
+            else:
+                confirmation = None
+                reason = None
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button(
+                    (
+                        "人工接受变化"
+                        if force
+                        else "刷新来源指纹"
+                    ),
+                    on_click=lambda: self._accept_source_revalidation(
+                        dialog,
+                        preview,
+                        force,
+                        reason,
+                        confirmation,
+                    ),
+                ).props(
+                    "unelevated color=warning"
+                    if force
+                    else "unelevated color=positive"
+                )
+        dialog.open()
+
+    def _build_source_revalidation_summary(
+        self,
+        preview: SourceRevalidationPreview,
+    ) -> None:
+        """构建来源指纹、投影判定和有限差异列表。"""
+
+        ui.label("变化来源：" + ("、".join(preview.stale_sources) or "无")).classes(
+            "text-sm"
+        )
+        if preview.can_accept_automatically:
+            ui.badge("消费投影一致，可自动验证").props("color=positive")
+        elif preview.baseline_status == "missing":
+            ui.badge("缺少旧投影基线，需要人工确认").props("color=warning")
+        elif preview.baseline_status == "corrupt":
+            ui.badge("本地投影 sidecar 损坏，需要人工确认").props("color=warning")
+        elif preview.baseline_status == "incompatible":
+            ui.badge("投影版本不兼容，需要人工确认").props("color=warning")
+        else:
+            ui.badge("消费投影发生变化，需要人工确认").props("color=warning")
+        with ui.expansion(
+            f"来源指纹（旧 {len(preview.old_source_fingerprints)} / "
+            f"新 {len(preview.new_source_fingerprints)}）"
+        ).classes("w-full"):
+            ui.code(
+                json.dumps(
+                    {
+                        "old": [
+                            item.model_dump(mode="json")
+                            for item in preview.old_source_fingerprints
+                        ],
+                        "new": [
+                            item.model_dump(mode="json")
+                            for item in preview.new_source_fingerprints
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            ).classes("mono-wrap")
+        if preview.differences:
+            with ui.expansion(
+                f"消费投影差异 · {len(preview.differences)} 项"
+            ).classes("w-full"):
+                for difference in preview.differences[:200]:
+                    ui.label(
+                        f"{difference.change} · {difference.path}"
+                    ).classes("text-sm font-semibold")
+                    if difference.before_summary is not None:
+                        ui.label(f"旧：{difference.before_summary}").classes(
+                            "field-hint mono-wrap"
+                        )
+                    if difference.after_summary is not None:
+                        ui.label(f"新：{difference.after_summary}").classes(
+                            "field-hint mono-wrap"
+                        )
+                if len(preview.differences) > 200:
+                    ui.label(
+                        f"界面仅显示前 200 项；本地 sidecar 将保存全部 "
+                        f"{len(preview.differences)} 项摘要。"
+                    ).classes("text-sm text-amber-700")
+
+    def _save_all_and_continue_revalidation(
+        self,
+        dialog: object,
+        slot_key: str,
+    ) -> None:
+        """保存全部草稿后重新打开来源确认预览。"""
+
+        try:
+            result = self.workspace.save_all()
+            if result.failed:
+                raise ValueError(
+                    "部分文件保存失败：" + "、".join(result.failed)
+                )
+            getattr(dialog, "close")()
+            self.open_source_revalidation_dialog(slot_key)
+        except (OSError, TypeError, ValueError) as exc:
+            self._notify_error(exc)
+
+    async def _accept_source_revalidation(
+        self,
+        dialog: object,
+        preview: SourceRevalidationPreview,
+        force: bool,
+        reason_widget: object | None,
+        confirmation_widget: object | None,
+    ) -> None:
+        """在 I/O worker 中保存来源确认并展示构建审计结果。"""
+
+        if force and (
+            confirmation_widget is None
+            or not _widget_bool(confirmation_widget)
+        ):
+            ui.notify("请先确认来源变化不影响当前审核产物", color="warning")
+            return
+        reason = None if reason_widget is None else _widget_text(reason_widget)
+        try:
+            result = await run.io_bound(
+                self.workspace.accept_current_sources,
+                preview,
+                force=force,
+                reason=reason,
+            )
+            getattr(dialog, "close")()
+            self.last_audit_messages = [
+                " · ".join(
+                    part
+                    for part in (
+                        issue.code,
+                        issue.message,
+                        (
+                            None
+                            if issue.entry_id is None
+                            else f"entry={issue.entry_id}"
+                        ),
+                        None if issue.path is None else f"path={issue.path}",
+                    )
+                    if part is not None
+                )
+                for issue in result.audit_report.issues
+            ] or ["审计成功：当前世界书构建输入已就绪。"]
+            self.refresh()
+            if result.audit_report.succeeded:
+                ui.notify("来源已重新确认，构建审计通过", color="positive")
+            else:
+                remaining = "、".join(result.stale_slots) or "其他构建问题"
+                newly_stale = (
+                    ""
+                    if not result.newly_stale_slots
+                    else "；本次新近过期：" + "、".join(result.newly_stale_slots)
+                )
+                ui.notify(
+                    f"当前来源已重新确认；全包仍需处理：{remaining}{newly_stale}",
+                    color="warning",
+                )
+        except (OSError, TypeError, ValueError, KeyError) as exc:
+            self._notify_error(exc)
+
     def _build_prompt_regeneration_controls(
         self,
         dialog: object,
@@ -2269,11 +2611,13 @@ class Stage3ReviewWorkbench:
     ) -> None:
         """重新加载已覆盖的 artifact，并展示一次迁移摘要。"""
 
+        baseline_written = self.workspace.record_generation_baseline(result.slot_key)
         self.workspace.reload(result.slot_key, discard_dirty=True)
         self.workspace.select(result.slot_key)
         self.current_item_id = None
         getattr(dialog, "close")()
-        self._notify_success(f"重生成完成：{result.summary()}")
+        suffix = "" if baseline_written else "；本地投影基线写入失败，请查看警告"
+        self._notify_success(f"重生成完成：{result.summary()}{suffix}")
 
     def run_audit(self) -> None:
         """运行纯构建审计并展示结构化问题。"""

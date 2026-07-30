@@ -17,8 +17,12 @@ from rag.pipeline.stage3_review_workbench import (
     _lore_dedup_action_description,
     _review_risk_explanations,
     _widget_text,
+    story_thought_links,
 )
 from rag.pipeline.stage3_thought_models import (
+    Stage3ThoughtReviewArtifact,
+    ThoughtAggregationMetadata,
+    ThoughtStateDraft,
     ThoughtThreadContentDraft,
     ThoughtThreadReviewRecord,
     ThoughtUpdateEvidence,
@@ -156,6 +160,61 @@ class TestStage3ReviewWorkbench(unittest.TestCase):
         self.assertTrue(
             any("冲突可能只针对当前组乐队事件" in reason for reason in reasons)
         )
+
+    def test_story_reverse_links_use_effective_thought_and_show_status(self) -> None:
+        """Story 提示应扫描 effective Thought 并携带审核与 stale 状态。"""
+
+        candidate_id = "story_candidate:11111111-1111-4111-8111-111111111111"
+        state = ThoughtStateDraft(
+            thought_state_id="thought_state:00000000-0000-0000-0000-000000000002",
+            transition="acquired",
+            thought_text="爱音记得灯递来的创可贴。",
+            epistemic_status="knows",
+            visible_from=4002,
+            visible_to=999999,
+            story_event_candidate_ids=[candidate_id],
+            retrieval_text="爱音记得初遇灯时的创可贴。",
+        )
+        thread = ThoughtThreadReviewRecord(
+            thought_thread_id="thought_thread:00000000-0000-0000-0000-000000000001",
+            character_id="anon",
+            series_id="its_mygo",
+            timeline_id="main",
+            canon_branch="main",
+            generated_content=ThoughtThreadContentDraft(
+                canonical_subject="初遇灯",
+                thought_aspect="长期印象",
+            ),
+            reviewed_content=ThoughtThreadContentDraft(
+                canonical_subject="初遇灯",
+                thought_aspect="记忆",
+                states=[state],
+            ),
+            review_status="completed",
+            disposition="publish",
+            risk_level="low",
+            review_basis_sha256="0" * 64,
+        )
+        artifact = Stage3ThoughtReviewArtifact(
+            metadata=ThoughtAggregationMetadata(
+                anime_title="It's MyGO!!!!!",
+                series_id="its_mygo",
+                timeline_id="main",
+                canon_branch="main",
+                episodes=[1],
+            ),
+            aggregation_model="test",
+            threads=[thread],
+        )
+
+        links = story_thought_links(artifact, candidate_id, stale=True)
+
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0].character_name, "爱音")
+        self.assertEqual(links[0].thought_aspect, "记忆")
+        self.assertEqual(links[0].review_status, "completed")
+        self.assertEqual(links[0].disposition, "publish")
+        self.assertTrue(links[0].stale)
 
 
 if __name__ == "__main__":

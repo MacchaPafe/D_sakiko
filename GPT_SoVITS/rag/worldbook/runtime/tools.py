@@ -9,7 +9,13 @@ from uuid import UUID
 from chat.tool_calling import ToolRegistry
 from rag.models import CharacterId
 
-from .models import RetrievalCandidate, WorldbookResolvedContext
+from .models import (
+    CharacterMemoryKnowledge,
+    RetrievalCandidate,
+    SourceRetrievalFailure,
+    WorldbookKnowledgeResult,
+    WorldbookResolvedContext,
+)
 from .service import WorldbookConversationService
 
 
@@ -27,6 +33,15 @@ class WorldbookToolDiagnostic:
     candidates: list[RetrievalCandidate]
     result: dict[str, object]
     duration_sec: float
+    thought_selected_entry_ids: list[UUID] = field(default_factory=list)
+    event_selected_entry_ids: list[UUID] = field(default_factory=list)
+    thought_candidates: list[RetrievalCandidate] = field(default_factory=list)
+    event_candidates: list[RetrievalCandidate] = field(default_factory=list)
+    linked_event_ids: list[UUID] = field(default_factory=list)
+    unauthorized_linked_event_ids: list[UUID] = field(default_factory=list)
+    deduplicated_event_ids: list[UUID] = field(default_factory=list)
+    source_failures: list[SourceRetrievalFailure] = field(default_factory=list)
+    source_durations_sec: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -113,8 +128,8 @@ class WorldbookToolSession:
         registry.register_tool(
             name="search_character_memory",
             description=(
-                "查询当前角色在当前剧情进度已经持有的记忆、判断、信念或怀疑。"
-                "只在需要角色主观经历或想法时调用。"
+                "查询当前角色在当前剧情进度已经持有的经历、已知事实、判断、"
+                "信念或怀疑。需要确认角色知道什么或如何理解某件事时调用。"
             ),
             parameters={
                 "type": "object",
@@ -292,25 +307,69 @@ class WorldbookToolSession:
         return payload
 
     def _search_memory(self, arguments: dict[str, object]) -> dict[str, object]:
-        """执行角色记忆查询并展开显式关联事件。"""
+        """执行角色事实与观点的双来源记忆查询。"""
 
         query = self._required_string(arguments, "query")
         started = time.perf_counter()
         self.budget.consume()
         result = self.service.search_memory(self.context, query)
-        payload = self._result_payload(
-            [item.model_dump(mode="json") for item in result.items],
-            result.failure.model_dump(mode="json") if result.failure is not None else None,
-        )
-        self._record(
+        if not isinstance(result.knowledge, CharacterMemoryKnowledge):
+            raise TypeError("记忆查询返回了错误的知识结果类型")
+        payload: dict[str, object] = {
+            "ok": len(result.source_failures) < 2,
+            "events": [
+                item.model_dump(mode="json") for item in result.knowledge.events
+            ],
+            "thoughts": [
+                item.model_dump(mode="json") for item in result.knowledge.thoughts
+            ],
+            "source_errors": [
+                {
+                    "source": item.source,
+                    **item.failure.model_dump(mode="json"),
+                }
+                for item in result.source_failures
+            ],
+        }
+        self._append_budget_notice(payload)
+        self._record_knowledge(
             "search_character_memory",
             arguments,
-            result.trace.selected_entry_ids,
-            result.trace.candidates,
+            result,
             payload,
             started,
         )
         return payload
+
+    def _record_knowledge(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        result: WorldbookKnowledgeResult,
+        payload: dict[str, object],
+        started: float,
+    ) -> None:
+        """记录双来源知识查询的选中项、候选、权限拒绝与耗时。"""
+
+        self.diagnostics.append(
+            WorldbookToolDiagnostic(
+                tool_name=tool_name,
+                arguments=dict(arguments),
+                selected_entry_ids=result.trace.selected_entry_ids,
+                candidates=result.trace.candidates,
+                result=dict(payload),
+                duration_sec=max(0.0, time.perf_counter() - started),
+                thought_selected_entry_ids=result.thought_trace.selected_entry_ids,
+                event_selected_entry_ids=result.event_trace.selected_entry_ids,
+                thought_candidates=result.thought_trace.candidates,
+                event_candidates=result.event_trace.candidates,
+                linked_event_ids=result.linked_event_ids,
+                unauthorized_linked_event_ids=result.unauthorized_linked_event_ids,
+                deduplicated_event_ids=result.deduplicated_event_ids,
+                source_failures=result.source_failures,
+                source_durations_sec=dict(result.source_durations_sec),
+            )
+        )
 
     def _result_payload(
         self,

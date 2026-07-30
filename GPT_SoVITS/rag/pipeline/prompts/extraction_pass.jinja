@@ -29,6 +29,10 @@
 - `title`
 - `summary`
 - `participants`
+- `known_by_character_names`
+  - 仅填写从该事件发生起，可以安全获知完整 `summary` 的角色标准名
+  - 这与是否参与事件分开；不能仅凭 `participants` 或 `present_characters` 推断
+  - Thought 链接不授予该权限；证据不足时必须输出空数组
 - `importance`
 - `tags`
 - `retrieval_text`
@@ -113,7 +117,9 @@
 1. 角色名必须使用输入中出现的标准角色名。
    不要输出别名，不要输出角色 id。
 
-2. `participants`、`subject_character_name`、`object_character_name` 必须使用角色标准名。
+2. `participants`、`known_by_character_names`、`subject_character_name`、`object_character_name` 必须使用角色标准名。
+
+   `known_by_character_names` 只表示角色可以从事件的 `visible_from` 起安全获得完整摘要。角色即使参与事件，也可能只知道局部信息；角色即使没有参与，也可能通过明确证据知道全貌。不确定时输出 `[]`。
 
 3. `object_character_nickname` 是“主体角色对客体角色在这个场景中体现出来的称呼方式”。优先记录中文字幕中实际出现的称呼；中文字幕没有对应文本时才保留日文原写法。不要自行改写为假名读音。
    如果没有明确证据，可以输出空字符串 `""`。
@@ -178,6 +184,7 @@
       "title": "字符串",
       "summary": "字符串",
       "participants": ["角色名1", "角色名2"],
+      "known_by_character_names": ["角色名1"],
       "importance": 1,
       "tags": ["标签1", "标签2"],
       "retrieval_text": "适合向量检索的一段自然语言摘要",
@@ -281,6 +288,7 @@
       "title": "祥子宣布退出 CRYCHIC",
       "summary": "在旧成员的关心与追问中，祥子正式表示自己要退出 CRYCHIC，现场气氛迅速紧张起来，其他成员难以接受这一决定。",
       "participants": ["素世", "祥子", "灯", "立希", "若叶睦"],
+      "known_by_character_names": ["素世", "祥子", "灯", "立希", "若叶睦"],
       "importance": 1,
       "tags": ["CRYCHIC", "退出", "宣布", "旧成员冲突"],
       "retrieval_text": "祥子在与 CRYCHIC 旧成员见面时正式宣布退出乐队。素世试图关心并挽留她，立希则直接指责她不负责任，现场关系立刻紧张。标签：CRYCHIC、退出、冲突、挽留。",

@@ -280,6 +280,23 @@ def _normalize_scene_story_events(
                     )
                 )
 
+        known_by_character_ids: list[CharacterId] = []
+        for name in candidate.known_by_character_names:
+            try:
+                character_id = resolve_character_id(name)
+            except ValueError as exc:
+                issues.append(
+                    NormalizationIssue(
+                        scene_id=scene.scene_id,
+                        collection_name=CollectionName.STORY_EVENTS.value,
+                        candidate_local_id=candidate.event_local_id,
+                        message=f"无法解析事件知情角色: {exc}",
+                    )
+                )
+                continue
+            if character_id not in known_by_character_ids:
+                known_by_character_ids.append(character_id)
+
         try:
             document = StoryEventDocument(
                 timeline_id=metadata.timeline_id,
@@ -293,6 +310,7 @@ def _normalize_scene_story_events(
                 title=_clean_text(candidate.title),
                 summary=_clean_text(candidate.summary),
                 participants=participants,
+                known_by_character_ids=known_by_character_ids,
                 importance=int(candidate.importance),
                 tags=_clean_text_list(candidate.tags),
                 retrieval_text=_clean_text(candidate.retrieval_text),

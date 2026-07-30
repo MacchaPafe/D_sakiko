@@ -73,6 +73,7 @@ PyQt-Fluent-Widgets/**
 knowledge_base/**
 **/.build/**
 *.migration-report.json
+*.source-acceptances.json
 install_patch/**
 wheels/**
 

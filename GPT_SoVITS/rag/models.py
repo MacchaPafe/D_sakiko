@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import MISSING, dataclass, fields, is_dataclass
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Tuple, Type, TypeVar, Union, get_args, get_origin, get_type_hints
 
@@ -488,6 +488,8 @@ class StoryEventDocument(BaseQdrantDocument):
     tags: List[str]
     #: 用于生成 embedding 的检索文本。
     retrieval_text: str
+    #: 可以安全获得完整事件正文的角色列表。
+    known_by_character_ids: List[CharacterId] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """在对象创建后执行基础类型收敛与业务校验。"""
@@ -496,6 +498,15 @@ class StoryEventDocument(BaseQdrantDocument):
         self.series_id = _coerce_enum_value(SeriesId, "series_id", self.series_id)
         self.canon_branch = _coerce_enum_value(CanonBranch, "canon_branch", self.canon_branch)
         self.participants = _coerce_enum_list(CharacterId, "participants", self.participants)
+        self.known_by_character_ids = list(
+            dict.fromkeys(
+                _coerce_enum_list(
+                    CharacterId,
+                    "known_by_character_ids",
+                    self.known_by_character_ids,
+                )
+            )
+        )
         self.title = _normalize_text("title", self.title)
         self.summary = _normalize_text("summary", self.summary)
         self.tags = _normalize_string_list("tags", self.tags, allow_empty=False)

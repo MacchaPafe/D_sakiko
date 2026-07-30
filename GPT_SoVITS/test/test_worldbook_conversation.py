@@ -18,8 +18,10 @@ from rag.worldbook.runtime.conversation import (
     normalize_character_knowledge_mappings,
 )
 from rag.worldbook.runtime.models import (
+    DirectWorldbookContext,
     DirectThought,
-    WorldbookQueryResult,
+    KnownStoryEvent,
+    WorldbookKnowledgeResult,
     WorldbookTurnSnapshot,
 )
 
@@ -32,24 +34,33 @@ class _FakeWorldbookService:
 
         self.queries: list[str] = []
 
-    def direct_thoughts(
+    def direct_context(
         self,
         context: WorldbookTurnSnapshot,
         query: str,
         current_user_text: str,
-    ) -> WorldbookQueryResult[DirectThought]:
-        """记录参数并返回一条模型安全观点。"""
+    ) -> WorldbookKnowledgeResult:
+        """记录参数并返回一条模型安全事件和观点。"""
 
         del context, current_user_text
         self.queries.append(query)
-        return WorldbookQueryResult[DirectThought](
-            items=[
-                DirectThought(
-                    character_name="爱音",
-                    thought_text="爱音想继续组建乐队。",
-                    epistemic_status="believes",
-                )
-            ]
+        return WorldbookKnowledgeResult(
+            knowledge=DirectWorldbookContext(
+                events=[
+                    KnownStoryEvent(
+                        title="初次相遇",
+                        summary="爱音摔倒后得到灯递来的创可贴。",
+                        participant_names=["爱音", "灯"],
+                    )
+                ],
+                thoughts=[
+                    DirectThought(
+                        character_name="爱音",
+                        thought_text="爱音想继续组建乐队。",
+                        epistemic_status="believes",
+                    )
+                ],
+            )
         )
 
     def close(self) -> None:
@@ -223,7 +234,7 @@ class WorldbookConversationStateTest(unittest.TestCase):
         self.assertNotIn("更早回答", query)
 
     def test_direct_context_is_temporary_user_message_before_runtime_controls(self) -> None:
-        """直接观点应插在真实输入后、运行控制前，且不修改 Chat 历史。"""
+        """直接知识应插在真实输入后、运行控制前，且不修改 Chat 历史。"""
 
         chat = Chat(message_list=[_message(_snapshot())])
         manager = ChatManager([chat])
@@ -251,6 +262,8 @@ class WorldbookConversationStateTest(unittest.TestCase):
         self.assertEqual(len(chat.message_list), 1)
         self.assertEqual(prepared[-2]["role"], "user")
         self.assertIn("<worldbook_context>", str(prepared[-2]["content"]))
+        self.assertIn('"events"', str(prepared[-2]["content"]))
+        self.assertIn('"thoughts"', str(prepared[-2]["content"]))
         self.assertNotIn("entry_id", str(prepared[-2]["content"]))
         self.assertTrue(str(prepared[-1]["content"]).startswith("<runtime_controls>"))
 

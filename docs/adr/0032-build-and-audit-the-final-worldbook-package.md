@@ -4,6 +4,10 @@ status: accepted
 
 # 直接构建并审计正式世界书包
 
+> [ADR-0040](0040-authorize-story-event-retrieval-by-character.md) 补充了 Story Event 的 `known_by_character_ids`、人工审核和索引投影契约；四类条目与实验 `schema_version=0` 决策不变。
+>
+> [ADR-0047](0047-allow-human-revalidation-of-stage3-source-fingerprints.md) 补充并部分取代本文的严格重生成规则：来源过期仍阻断构建，但审核者可以在消费投影比较、结构校验和显式确认后更新来源指纹，而不必对无影响变化重新调用 LLM。
+
 官方发布把审核后的 Story Event、Character Relation、Lore Entry 和 Character Thought 直接构建成带正式稳定身份的 staging 世界书包，并使用正式 loader、Schema adapter 和跨条目校验审计该包；不再生成重复内容的 `worldbook_release.json`。审计通过后整体替换正式包目录，再从全部有效官方包与用户状态全量重建四张 Qdrant collection。
 
 ## 构建输入

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
@@ -29,6 +31,7 @@ from rag.pipeline.stage2_document_extraction import (
     load_stage2_annotation_artifact,
     render_stage2_prompt,
 )
+from rag.pipeline.schemas import StoryEventCandidate
 from rag.pipeline.stage3_rag_import import (
     backfill_existing_stage3_character_relations,
     build_stage3_normalized_import_artifact,
@@ -168,12 +171,43 @@ class RagStage1PipelineTest(unittest.TestCase):
         artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
         prompt = render_stage2_prompt(artifact.scenes[0])
         self.assertIn("story_events", prompt)
+        self.assertIn("known_by_character_names", prompt)
         self.assertIn("relation_observations", prompt)
         self.assertNotIn("relation_local_id", prompt)
         self.assertIn("lore_entries", prompt)
         self.assertIn("ep01_s001", prompt)
         self.assertIn("speaker_name", prompt)
         self.assertIn("小祥", prompt)
+
+    def test_story_event_candidate_known_by_is_optional_and_deduplicated(
+        self,
+    ) -> None:
+        """Stage 2A 旧候选应保持关闭，新候选知情角色应稳定去重。"""
+
+        base = {
+            "scene_id": "ep01_s001",
+            "event_local_id": "event_01",
+            "title": "测试",
+            "summary": "测试摘要",
+            "participants": ["爱音"],
+            "importance": 1,
+            "tags": ["测试"],
+            "retrieval_text": "测试摘要",
+            "evidence_u_ids": [],
+            "evidence_s_ids": [],
+            "confidence": 1.0,
+        }
+
+        legacy = StoryEventCandidate.model_validate(base)
+        proposed = StoryEventCandidate.model_validate(
+            {
+                **base,
+                "known_by_character_names": [" 爱音 ", "灯", "爱音"],
+            }
+        )
+
+        self.assertEqual(legacy.known_by_character_names, [])
+        self.assertEqual(proposed.known_by_character_names, ["爱音", "灯"])
 
     def test_build_stage3_normalized_import_artifact_from_real_pass2(self):
         input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
@@ -188,6 +222,7 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertGreater(len(normalized.lore_entries), 0)
         self.assertEqual(normalized.story_events[0].document.time_order, 4000)
         self.assertEqual(normalized.story_events[0].document.participants[0].value, "tomori")
+        self.assertEqual(normalized.story_events[0].document.known_by_character_ids, [])
         self.assertEqual(normalized.character_relations[0].document.subject_character_id.value, "soyo")
         self.assertEqual(normalized.lore_entries[0].document.scope_type.value, "series")
 

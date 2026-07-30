@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import tempfile
 
 from pydantic import BaseModel
 
@@ -20,6 +22,16 @@ from .stage3_document_models import Stage3DocumentReviewArtifact
 from .stage3_lore_models import Stage3LoreDecisionsArtifact
 from .stage3_relation_models import Stage3RelationReviewArtifact
 from .stage3_review_operations import ReviewArtifact, ReviewCommand, apply_review_command
+from .stage3_source_revalidation import (
+    SourceRevalidationPreview,
+    build_acceptance_log,
+    build_source_projection,
+    load_source_acceptance_log,
+    projection_differences,
+    save_generation_baseline,
+    source_acceptance_path,
+    validate_current_references,
+)
 from .stage3_thought_models import Stage3ThoughtReviewArtifact
 
 
@@ -61,17 +73,36 @@ class FreshnessResult:
         return not self.missing and not self.stale_sources
 
 
+@dataclass(frozen=True, slots=True)
+class SourceAcceptanceResult:
+    """描述一次来源重新确认的保存、审计和剩余过期状态。"""
+
+    slot_key: str
+    sidecar_path: Path
+    audit_report: WorldbookBuildReport
+    stale_slots: tuple[str, ...]
+    newly_stale_slots: tuple[str, ...]
+
+
 class ReviewWorkspace:
     """以世界书构建配置为入口管理完整 Stage 3 审核会话。"""
 
-    def __init__(self, build_spec_path: str | Path) -> None:
+    def __init__(
+        self,
+        build_spec_path: str | Path,
+        *,
+        bootstrap_baselines: bool = True,
+    ) -> None:
         """加载构建配置及当前存在的全部审核产物。"""
 
         self.resolved: ResolvedBuildSpec = load_build_spec(build_spec_path)
         self.slots: dict[str, ArtifactSlot] = {}
         self.current_key: str | None = None
         self._stage2_cache: dict[int, Stage2InputArtifact] = {}
+        self.baseline_warnings: list[str] = []
         self._load_slots()
+        if bootstrap_baselines:
+            self._bootstrap_fresh_baselines()
 
     def _load_slots(self) -> None:
         """按构建配置创建逐集与全量审核文件槽位。"""
@@ -219,6 +250,7 @@ class ReviewWorkspace:
             raise ValueError("存在未保存草稿，重新加载前必须显式丢弃")
         reloaded = self._load_slot(slot.key, slot.label, slot.path)
         self.slots[key] = reloaded
+        self._bootstrap_slot_baseline(reloaded)
 
     def dirty_keys(self) -> tuple[str, ...]:
         """返回当前所有包含未保存修改的文件键。"""
@@ -252,6 +284,188 @@ class ReviewWorkspace:
         """返回全部审核文件的来源状态。"""
 
         return tuple(self.freshness(key) for key in self.slots)
+
+    def preview_source_revalidation(
+        self,
+        key: str | None = None,
+    ) -> SourceRevalidationPreview:
+        """计算当前来源、消费投影和本地基线之间的可确认差异。"""
+
+        if self.dirty_keys():
+            raise ValueError("处理来源变化前必须先保存全部草稿")
+        slot = self.slots[key or self.current_slot().key]
+        if slot.artifact is None or not slot.path.exists():
+            raise ValueError("审核产物尚未生成，不能重新确认来源")
+        self._assert_no_external_change(slot)
+        freshness = self.freshness(slot.key)
+        if freshness.is_fresh:
+            raise ValueError("当前审核产物来源未过期，无需重新确认")
+        new_fingerprints = self.expected_source_fingerprints(slot.key)
+        current_baseline = build_source_projection(
+            self.resolved,
+            slot.key,
+            new_fingerprints,
+        )
+        baseline_status, log = load_source_acceptance_log(slot.path)
+        old_fingerprints = list(slot.artifact.direct_sources)
+        projection_equal = False
+        differences = []
+        if baseline_status == "ready" and log is not None:
+            stored = log.current_baseline
+            if not _fingerprints_equal(
+                stored.source_fingerprints,
+                old_fingerprints,
+            ):
+                baseline_status = "incompatible"
+            elif (
+                stored.projection_kind == current_baseline.projection_kind
+                and stored.projection_version == current_baseline.projection_version
+            ):
+                projection_equal = (
+                    stored.projection_sha256 == current_baseline.projection_sha256
+                )
+                differences = projection_differences(
+                    stored.projection,
+                    current_baseline.projection,
+                )
+            else:
+                baseline_status = "incompatible"
+        return SourceRevalidationPreview(
+            slot_key=slot.key,
+            artifact_path=str(slot.path.resolve()),
+            artifact_sha256=file_sha256(slot.path),
+            build_spec_sha256=file_sha256(self.resolved.path),
+            stale_sources=list(freshness.stale_sources),
+            baseline_status=baseline_status,
+            projection_equal=projection_equal,
+            can_accept_automatically=(
+                baseline_status == "ready" and projection_equal
+            ),
+            old_source_fingerprints=old_fingerprints,
+            new_source_fingerprints=new_fingerprints,
+            current_baseline=current_baseline,
+            differences=differences,
+        )
+
+    def accept_current_sources(
+        self,
+        preview: SourceRevalidationPreview,
+        *,
+        force: bool = False,
+        reason: str | None = None,
+    ) -> SourceAcceptanceResult:
+        """重新校验预览并原子保存当前来源指纹与本地接受记录。"""
+
+        if self.dirty_keys():
+            raise ValueError("接受当前来源前必须先保存全部草稿")
+        if force and not (reason or "").strip():
+            raise ValueError("人工接受来源变化必须填写确认说明")
+        slot = self.slots.get(preview.slot_key)
+        if slot is None or slot.artifact is None:
+            raise ValueError("预览对应的审核产物已经不存在")
+        self._assert_no_external_change(slot)
+        current = self.preview_source_revalidation(slot.key)
+        _assert_same_revalidation_preview(preview, current)
+        if not force and not current.can_accept_automatically:
+            raise ValueError("消费投影不同或缺少兼容基线，必须显式人工确认")
+        candidate = validate_review_artifact(
+            slot.artifact.model_copy(
+                update={"direct_sources": current.new_source_fingerprints},
+                deep=True,
+            )
+        )
+        validate_current_references(self.resolved, slot.key, candidate)
+        mode = "manual" if force else "automatic"
+        log = build_acceptance_log(
+            slot.path,
+            current,
+            mode=mode,
+            reason=reason,
+        )
+        sidecar = source_acceptance_path(slot.path)
+        stale_before = {
+            result.key
+            for result in self.all_freshness()
+            if not result.missing and result.stale_sources
+        }
+        artifact_before = slot.path.read_bytes()
+        sidecar_existed = sidecar.exists()
+        sidecar_before = sidecar.read_bytes() if sidecar_existed else None
+        try:
+            safely_write_json_model(candidate, slot.path)
+            safely_write_json_model(log, sidecar)
+        except BaseException:
+            _write_bytes_atomically(slot.path, artifact_before)
+            if sidecar_before is not None:
+                _write_bytes_atomically(sidecar, sidecar_before)
+            elif sidecar.exists():
+                sidecar.unlink()
+            raise
+        self.reload(slot.key, discard_dirty=True)
+        self.select(slot.key)
+        audit_report = validate_worldbook_build(self.resolved.path)
+        stale_slots = tuple(
+            result.key
+            for result in self.all_freshness()
+            if not result.missing and result.stale_sources
+        )
+        newly_stale_slots = tuple(
+            key for key in stale_slots if key not in stale_before
+        )
+        return SourceAcceptanceResult(
+            slot_key=slot.key,
+            sidecar_path=sidecar,
+            audit_report=audit_report,
+            stale_slots=stale_slots,
+            newly_stale_slots=newly_stale_slots,
+        )
+
+    def expected_source_fingerprints(self, key: str) -> list[SourceFingerprint]:
+        """返回当前 build spec 所声明来源的完整确定性指纹。"""
+
+        fingerprints: list[SourceFingerprint] = []
+        for (role, episode), path in self._expected_sources(key).items():
+            if not path.exists():
+                raise ValueError(f"直接来源缺失，不能接受: {role}@{episode}")
+            fingerprints.append(
+                SourceFingerprint(
+                    role=role,
+                    episode=episode,
+                    sha256=file_sha256(path),
+                )
+            )
+        return sorted(
+            fingerprints,
+            key=lambda item: (
+                item.role,
+                item.episode if item.episode is not None else -1,
+            ),
+        )
+
+    def record_generation_baseline(self, key: str) -> bool:
+        """在正常生成或重生成后尽力写入新的消费投影基线。"""
+
+        slot = self.slots[key]
+        try:
+            generated = load_review_artifact(slot.path)
+            current_fingerprints = self.expected_source_fingerprints(key)
+            if not _fingerprints_equal(
+                list(generated.direct_sources),
+                current_fingerprints,
+            ):
+                raise ValueError("新生成产物的 direct_sources 与当前来源不一致")
+            baseline = build_source_projection(
+                self.resolved,
+                key,
+                current_fingerprints,
+            )
+            save_generation_baseline(slot.path, baseline)
+            return True
+        except (OSError, TypeError, ValueError, KeyError) as exc:
+            self.baseline_warnings.append(
+                f"{key}: 未写入自动比较基线：{type(exc).__name__}: {exc}"
+            )
+            return False
 
     def run_audit(self) -> WorldbookBuildReport:
         """在没有未保存草稿时运行只读世界书构建审计。"""
@@ -312,6 +526,47 @@ class ReviewWorkspace:
             raise ValueError(f"审核文件存在状态已被外部修改: {slot.path}")
         if exists_now and slot.loaded_sha256 != file_sha256(slot.path):
             raise ValueError(f"审核文件已被外部修改，请重新加载: {slot.path}")
+
+    def _bootstrap_fresh_baselines(self) -> None:
+        """为来源仍 fresh 的生成产物尽力建立或更新本地消费投影基线。"""
+
+        for slot in self.slots.values():
+            self._bootstrap_slot_baseline(slot)
+
+    def _bootstrap_slot_baseline(self, slot: ArtifactSlot) -> None:
+        """为一个 fresh slot 尽力写入与当前生成结果匹配的投影基线。"""
+
+        if slot.artifact is None or not self.freshness(slot.key).is_fresh:
+            return
+        status, log = load_source_acceptance_log(slot.path)
+        if status in {"corrupt", "incompatible"}:
+            self.baseline_warnings.append(
+                f"{slot.key}: 来源接受 sidecar {status}，未自动覆盖"
+            )
+            return
+        current_fingerprints = self.expected_source_fingerprints(slot.key)
+        if status == "ready" and log is not None:
+            if _fingerprints_equal(
+                log.current_baseline.source_fingerprints,
+                list(slot.artifact.direct_sources),
+            ):
+                return
+            self.baseline_warnings.append(
+                f"{slot.key}: 本地投影基线与 artifact 来源不一致，"
+                "可能存在未完成确认或外部重生成；未自动覆盖"
+            )
+            return
+        try:
+            baseline = build_source_projection(
+                self.resolved,
+                slot.key,
+                current_fingerprints,
+            )
+            save_generation_baseline(slot.path, baseline)
+        except (OSError, TypeError, ValueError, KeyError) as exc:
+            self.baseline_warnings.append(
+                f"{slot.key}: 未写入自动比较基线：{type(exc).__name__}: {exc}"
+            )
 
     def _expected_sources(self, key: str) -> dict[tuple[str, int | None], Path]:
         """返回一个审核文件按逻辑角色声明的当前直接来源。"""
@@ -389,3 +644,63 @@ def _artifact_sources(artifact: ReviewArtifact) -> dict[tuple[str, int | None], 
     """把 artifact 直接来源转换为可比较映射。"""
 
     return {(item.role, item.episode): item for item in artifact.direct_sources}
+
+
+def _assert_same_revalidation_preview(
+    expected: SourceRevalidationPreview,
+    current: SourceRevalidationPreview,
+) -> None:
+    """确认来源、artifact、build spec 与投影在用户确认前没有变化。"""
+
+    if expected.slot_key != current.slot_key:
+        raise ValueError("来源确认目标已经变化，请重新预览")
+    if expected.artifact_sha256 != current.artifact_sha256:
+        raise ValueError("审核 artifact 在预览后发生变化，请重新预览")
+    if expected.build_spec_sha256 != current.build_spec_sha256:
+        raise ValueError("build spec 在预览后发生变化，请重新预览")
+    if expected.new_source_fingerprints != current.new_source_fingerprints:
+        raise ValueError("直接来源在预览后发生变化，请重新预览")
+    if (
+        expected.current_baseline.projection_sha256
+        != current.current_baseline.projection_sha256
+        or expected.baseline_status != current.baseline_status
+    ):
+        raise ValueError("消费投影或本地基线在预览后发生变化，请重新预览")
+
+
+def _fingerprints_equal(
+    first: list[SourceFingerprint],
+    second: list[SourceFingerprint],
+) -> bool:
+    """忽略列表顺序比较两组逻辑来源指纹。"""
+
+    first_values = sorted(
+        (item.role, item.episode, item.sha256) for item in first
+    )
+    second_values = sorted(
+        (item.role, item.episode, item.sha256) for item in second
+    )
+    return first_values == second_values
+
+
+def _write_bytes_atomically(path: Path, payload: bytes) -> None:
+    """使用同目录临时文件原子恢复一份原始字节内容。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".rollback",
+        dir=path.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise

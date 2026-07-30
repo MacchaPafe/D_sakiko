@@ -62,6 +62,49 @@ class TestStage3DocumentReview(unittest.TestCase):
         self.assertIsNone(reset.disposition)
         self.assertIn(candidate.candidate_id, report.reset_ids)
 
+    def test_empty_known_by_basis_upgrade_preserves_only_excluded_story(self) -> None:
+        """新增空知情字段时只保留已排除事件，发布事件仍需重新审核。"""
+
+        excluded, _ = build_stage3_document_review_artifact(
+            self.normalized,
+            self.sources,
+        )
+        excluded_candidate = excluded.story_events[0]
+        complete_review(
+            excluded_candidate,
+            "exclude",
+            reason_code="not_long_term_knowledge",
+        )
+        excluded_candidate.review_basis_sha256 = "f" * 64
+        migrated, migrated_report = build_stage3_document_review_artifact(
+            self.normalized,
+            self.sources,
+            previous=excluded,
+        )
+
+        published, _ = build_stage3_document_review_artifact(
+            self.normalized,
+            self.sources,
+        )
+        published_candidate = published.story_events[0]
+        complete_review(published_candidate, "publish")
+        published_candidate.review_basis_sha256 = "f" * 64
+        reset, reset_report = build_stage3_document_review_artifact(
+            self.normalized,
+            self.sources,
+            previous=published,
+        )
+
+        self.assertEqual(migrated.story_events[0].review_status, "completed")
+        self.assertEqual(migrated.story_events[0].disposition, "exclude")
+        self.assertIn(
+            excluded_candidate.candidate_id,
+            migrated_report.migrated_ids,
+        )
+        self.assertEqual(reset.story_events[0].review_status, "unreviewed")
+        self.assertIsNone(reset.story_events[0].disposition)
+        self.assertIn(published_candidate.candidate_id, reset_report.reset_ids)
+
     def test_published_candidate_disappearance_is_blocked(self) -> None:
         """已完成发布的候选消失时应要求一次性许可。"""
 

@@ -15,6 +15,7 @@ from rag.models import CharacterId
 from rag.worldbook.hashing import file_sha256
 from rag.worldbook.index_schema import (
     INDEX_SCHEMA_VERSION,
+    PAYLOAD_INDEXES,
     e5_passage_text,
     e5_query_text,
 )
@@ -29,10 +30,13 @@ from rag.worldbook.models import (
 )
 from rag.worldbook.runtime.catalog import WorldbookCatalogError, WorldbookRootCatalog
 from rag.worldbook.runtime.models import (
+    CharacterMemoryKnowledge,
+    DirectWorldbookContext,
     PayloadBatch,
     PayloadRecord,
     RetrievalBatch,
     RetrievalCandidate,
+    RetrievalFailure,
     WorldbookResolvedContext,
 )
 from rag.worldbook.runtime.retrieval import (
@@ -73,6 +77,7 @@ class _FakeRetrieval:
         """创建空预置结果。"""
 
         self.semantic: dict[EntryType, list[RetrievalCandidate]] = {}
+        self.failures: dict[EntryType, RetrievalFailure] = {}
         self.scanned: list[PayloadRecord] = []
         self.semantic_calls = 0
 
@@ -80,7 +85,10 @@ class _FakeRetrieval:
         """返回指定条目类型的候选副本。"""
 
         self.semantic_calls += 1
-        return RetrievalBatch(candidates=list(self.semantic.get(request.entry_type, [])))
+        return RetrievalBatch(
+            candidates=list(self.semantic.get(request.entry_type, [])),
+            failure=self.failures.get(request.entry_type),
+        )
 
     def scan_payloads(self, request: PayloadScanRequest) -> PayloadBatch:
         """返回预置 payload 记录。"""
@@ -134,6 +142,7 @@ def _candidate(
     *,
     package_id: str = "root",
     score: float = 0.8,
+    entry_id: UUID | None = None,
 ) -> RetrievalCandidate:
     """创建通过通用时间过滤的内部候选。"""
 
@@ -145,7 +154,7 @@ def _candidate(
         **payload,
     }
     return RetrievalCandidate(
-        entry_id=uuid4(),
+        entry_id=entry_id or uuid4(),
         package_id=package_id,
         entry_type=entry_type,
         payload=complete,
@@ -162,7 +171,14 @@ class WorldbookRuntimeTest(unittest.TestCase):
 
         self.assertEqual(e5_passage_text("正文"), "passage: 正文")
         self.assertEqual(e5_query_text("问题"), "query: 问题")
-        self.assertGreaterEqual(INDEX_SCHEMA_VERSION, 3)
+        self.assertGreaterEqual(INDEX_SCHEMA_VERSION, 4)
+        self.assertIn(
+            ("known_by_character_ids", "KEYWORD"),
+            [
+                (item.field_name, item.schema_name)
+                for item in PAYLOAD_INDEXES["story_event"]
+            ],
+        )
 
     def test_catalog_resolves_fixed_episode_and_dependency_closure(self) -> None:
         """根包应解析依赖闭包与固定第 1～13 集结束坐标。"""
@@ -186,6 +202,28 @@ class WorldbookRuntimeTest(unittest.TestCase):
         self.assertEqual(context.package_ids, ["root", "base"])
         self.assertEqual(context.package_depths, {"root": 0, "base": 1})
         self.assertEqual(context.current_time, 4099)
+
+    def test_story_event_filter_uses_known_by_array_membership(self) -> None:
+        """Event 查询必须使用独立知情字段而不是参与者或关系主体字段。"""
+
+        repository = WorldbookRetrievalRepository.__new__(
+            WorldbookRetrievalRepository
+        )
+        query_filter = repository._qdrant_filter(
+            "story_event",
+            RetrievalConstraints(
+                context=_context(),
+                known_by_character_id=CharacterId.ANON,
+            ),
+        )
+        payload = json.dumps(
+            query_filter.model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+
+        self.assertIn("known_by_character_ids", payload)
+        self.assertNotIn("subject_character_id", payload)
+        self.assertNotIn('"participants"', payload)
 
     def test_same_layer_overlapping_state_key_disables_root(self) -> None:
         """同层依赖包复用并重叠同一关系 key 时根包必须禁用。"""
@@ -482,7 +520,7 @@ class WorldbookRuntimeTest(unittest.TestCase):
         self.assertEqual(result.page.next_page, 2)
 
     def test_memory_expands_only_explicit_visible_events(self) -> None:
-        """记忆只展开显式引用且没有越过当前剧情进度的权威事件。"""
+        """记忆只补充展开获授权且没有越过当前进度的关联事件。"""
 
         visible_event_id = uuid4()
         future_event_id = uuid4()
@@ -510,8 +548,271 @@ class WorldbookRuntimeTest(unittest.TestCase):
 
         result = service.search_memory(_context(), "发生了什么")
 
-        self.assertEqual(len(result.items), 1)
-        self.assertEqual([item.title for item in result.items[0].events], ["已发生"])
+        self.assertIsInstance(result.knowledge, CharacterMemoryKnowledge)
+        if not isinstance(result.knowledge, CharacterMemoryKnowledge):
+            self.fail("记忆查询没有返回 CharacterMemoryKnowledge")
+        self.assertEqual(len(result.knowledge.thoughts), 1)
+        self.assertEqual(
+            [item.title for item in result.knowledge.events],
+            ["已发生"],
+        )
+
+    def test_direct_context_filters_event_permission_and_uses_fixed_quotas(self) -> None:
+        """直接上下文只公开授权事件，并固定为三 Event 加两 Thought。"""
+
+        retrieval = _FakeRetrieval()
+        retrieval.semantic["character_thought"] = [
+            _candidate(
+                "character_thought",
+                {
+                    "character_id": "anon",
+                    "thought_thread_key": str(uuid4()),
+                    "thought_text": f"观点 {index}",
+                    "epistemic_status": "believes",
+                },
+                score=0.95 - index * 0.01,
+            )
+            for index in range(4)
+        ]
+        retrieval.semantic["story_event"] = [
+            _candidate(
+                "story_event",
+                {
+                    "title": f"授权事件 {index}",
+                    "summary": f"摘要 {index}",
+                    "participants": ["tomori"],
+                    "known_by_character_ids": ["anon"],
+                },
+                score=0.95 - index * 0.01,
+            )
+            for index in range(4)
+        ] + [
+            _candidate(
+                "story_event",
+                {
+                    "title": "未授权参与事件",
+                    "summary": "即使参与也不能公开",
+                    "participants": ["anon"],
+                    "known_by_character_ids": ["soyo"],
+                },
+                score=0.99,
+            ),
+            _candidate(
+                "story_event",
+                {
+                    "title": "旧字段缺失事件",
+                    "summary": "参与者也不能因缺字段而获得权限",
+                    "participants": ["anon"],
+                },
+                score=0.985,
+            ),
+            _candidate(
+                "story_event",
+                {
+                    "title": "未来事件",
+                    "summary": "尚未发生",
+                    "participants": ["anon"],
+                    "known_by_character_ids": ["anon"],
+                    "visible_from": 4100,
+                },
+                score=0.98,
+            ),
+        ]
+        service = WorldbookConversationService(_FakeCatalog([]), retrieval)
+
+        result = service.direct_context(_context(), "认识灯", "怎么认识灯")
+
+        self.assertIsInstance(result.knowledge, DirectWorldbookContext)
+        if not isinstance(result.knowledge, DirectWorldbookContext):
+            self.fail("直接检索没有返回 DirectWorldbookContext")
+        self.assertEqual(len(result.knowledge.events), 3)
+        self.assertEqual(len(result.knowledge.thoughts), 2)
+        self.assertTrue(
+            all(item.title.startswith("授权事件") for item in result.knowledge.events)
+        )
+        self.assertEqual(result.knowledge.events[0].participant_names, ["灯"])
+
+    def test_thought_link_cannot_grant_event_permission(self) -> None:
+        """Thought 链接不得越过事件知情角色权限。"""
+
+        event_id = uuid4()
+        retrieval = _FakeRetrieval()
+        retrieval.semantic["character_thought"] = [
+            _candidate(
+                "character_thought",
+                {
+                    "character_id": "anon",
+                    "thought_thread_key": str(uuid4()),
+                    "thought_text": "只知道自己的判断",
+                    "epistemic_status": "believes",
+                    "story_event_entry_ids": [str(event_id)],
+                },
+            )
+        ]
+        event = self._effective_event(
+            event_id,
+            4050,
+            "不应展开",
+            known_by=[CharacterId.SOYO],
+        )
+        service = WorldbookConversationService(_FakeCatalog([event]), retrieval)
+
+        result = service.search_memory(_context(), "发生了什么")
+
+        self.assertIsInstance(result.knowledge, CharacterMemoryKnowledge)
+        if not isinstance(result.knowledge, CharacterMemoryKnowledge):
+            self.fail("记忆查询没有返回 CharacterMemoryKnowledge")
+        self.assertEqual(result.knowledge.events, [])
+        self.assertEqual(len(result.knowledge.thoughts), 1)
+        self.assertEqual(result.unauthorized_linked_event_ids, [event_id])
+
+    def test_memory_uses_independent_five_plus_five_quotas(self) -> None:
+        """记忆工具应独立保留最多五条 Event 与五条 Thought。"""
+
+        retrieval = _FakeRetrieval()
+        retrieval.semantic["character_thought"] = [
+            _candidate(
+                "character_thought",
+                {
+                    "character_id": "anon",
+                    "thought_thread_key": str(uuid4()),
+                    "thought_text": f"观点 {index}",
+                    "epistemic_status": "believes",
+                },
+                score=0.95 - index * 0.01,
+            )
+            for index in range(7)
+        ]
+        retrieval.semantic["story_event"] = [
+            _candidate(
+                "story_event",
+                {
+                    "title": f"事件 {index}",
+                    "summary": f"摘要 {index}",
+                    "participants": ["anon"],
+                    "known_by_character_ids": ["anon"],
+                },
+                score=0.95 - index * 0.01,
+            )
+            for index in range(7)
+        ]
+        service = WorldbookConversationService(_FakeCatalog([]), retrieval)
+
+        result = service.search_memory(_context(), "过去发生了什么")
+
+        self.assertIsInstance(result.knowledge, CharacterMemoryKnowledge)
+        if not isinstance(result.knowledge, CharacterMemoryKnowledge):
+            self.fail("记忆查询没有返回 CharacterMemoryKnowledge")
+        self.assertEqual(len(result.knowledge.events), 5)
+        self.assertEqual(len(result.knowledge.thoughts), 5)
+
+    def test_independent_and_linked_event_hits_are_deduplicated(self) -> None:
+        """同一 Event 被独立命中和 Thought 链接时只返回一次。"""
+
+        event_id = uuid4()
+        retrieval = _FakeRetrieval()
+        retrieval.semantic["story_event"] = [
+            _candidate(
+                "story_event",
+                {
+                    "title": "同一事件",
+                    "summary": "同一摘要",
+                    "participants": ["anon"],
+                    "known_by_character_ids": ["anon"],
+                },
+                entry_id=event_id,
+            )
+        ]
+        retrieval.semantic["character_thought"] = [
+            _candidate(
+                "character_thought",
+                {
+                    "character_id": "anon",
+                    "thought_thread_key": str(uuid4()),
+                    "thought_text": "关联观点",
+                    "epistemic_status": "knows",
+                    "story_event_entry_ids": [str(event_id)],
+                },
+            )
+        ]
+        service = WorldbookConversationService(
+            _FakeCatalog([self._effective_event(event_id, 4050, "同一事件")]),
+            retrieval,
+        )
+
+        result = service.search_memory(_context(), "同一事件")
+
+        self.assertIsInstance(result.knowledge, CharacterMemoryKnowledge)
+        if not isinstance(result.knowledge, CharacterMemoryKnowledge):
+            self.fail("记忆查询没有返回 CharacterMemoryKnowledge")
+        self.assertEqual(len(result.knowledge.events), 1)
+        self.assertEqual(result.deduplicated_event_ids, [event_id])
+
+    def test_event_failure_keeps_thought_results(self) -> None:
+        """Event 来源失败时仍应返回成功的 Thought 结果。"""
+
+        retrieval = _FakeRetrieval()
+        retrieval.failures["story_event"] = RetrievalFailure(
+            code="retrieval_failed",
+            message="event unavailable",
+        )
+        retrieval.semantic["character_thought"] = [
+            _candidate(
+                "character_thought",
+                {
+                    "character_id": "anon",
+                    "thought_thread_key": str(uuid4()),
+                    "thought_text": "仍可使用的观点",
+                    "epistemic_status": "knows",
+                },
+            )
+        ]
+        service = WorldbookConversationService(_FakeCatalog([]), retrieval)
+
+        result = service.direct_context(_context(), "问题", "问题")
+
+        self.assertIsInstance(result.knowledge, DirectWorldbookContext)
+        if not isinstance(result.knowledge, DirectWorldbookContext):
+            self.fail("直接检索没有返回 DirectWorldbookContext")
+        self.assertEqual(len(result.knowledge.thoughts), 1)
+        self.assertEqual(result.knowledge.events, [])
+        self.assertEqual(
+            [item.source for item in result.source_failures],
+            ["event"],
+        )
+
+    def test_thought_failure_keeps_event_results(self) -> None:
+        """Thought 来源失败时仍应返回成功的授权 Event 结果。"""
+
+        retrieval = _FakeRetrieval()
+        retrieval.failures["character_thought"] = RetrievalFailure(
+            code="retrieval_failed",
+            message="thought unavailable",
+        )
+        retrieval.semantic["story_event"] = [
+            _candidate(
+                "story_event",
+                {
+                    "title": "仍可使用的事件",
+                    "summary": "事件来源成功。",
+                    "participants": ["anon"],
+                    "known_by_character_ids": ["anon"],
+                },
+            )
+        ]
+        service = WorldbookConversationService(_FakeCatalog([]), retrieval)
+
+        result = service.direct_context(_context(), "问题", "问题")
+
+        self.assertIsInstance(result.knowledge, DirectWorldbookContext)
+        if not isinstance(result.knowledge, DirectWorldbookContext):
+            self.fail("直接检索没有返回 DirectWorldbookContext")
+        self.assertEqual(len(result.knowledge.events), 1)
+        self.assertEqual(result.knowledge.thoughts, [])
+        self.assertEqual(
+            [item.source for item in result.source_failures],
+            ["thought"],
+        )
 
     def _constraints(self) -> RetrievalConstraints:
         """创建仓库测试使用的检索约束。"""
@@ -605,6 +906,8 @@ class WorldbookRuntimeTest(unittest.TestCase):
         entry_id: UUID,
         visible_from: int,
         title: str,
+        *,
+        known_by: list[CharacterId] | None = None,
     ) -> EffectiveWorldbookEntry:
         """创建权威有效剧情事件。"""
 
@@ -623,6 +926,9 @@ class WorldbookRuntimeTest(unittest.TestCase):
                 "title": title,
                 "summary": f"{title}摘要",
                 "participants": ["anon"],
+                "known_by_character_ids": [
+                    item.value for item in (known_by or [CharacterId.ANON])
+                ],
                 "importance": 1,
                 "tags": [title],
                 "retrieval_text": title,

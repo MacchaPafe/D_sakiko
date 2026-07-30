@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from uuid import uuid4
 import zipfile
 
 from dp_local2 import DSLocalAndVoiceGen
@@ -14,7 +15,14 @@ from rag.worldbook.runtime.diagnostics import (
     WorldbookDiagnosticCollector,
     WorldbookDiagnosticStore,
 )
-from rag.worldbook.runtime.models import WorldbookTurnSnapshot
+from rag.worldbook.runtime.models import (
+    DirectWorldbookContext,
+    KnownStoryEvent,
+    RetrievalCandidate,
+    RetrievalTrace,
+    WorldbookKnowledgeResult,
+    WorldbookTurnSnapshot,
+)
 
 
 def _snapshot() -> WorldbookTurnSnapshot:
@@ -77,6 +85,57 @@ class WorldbookDiagnosticsTest(unittest.TestCase):
         self.assertEqual(len(recent), 10)
         self.assertEqual(recent[0].turn_id, "turn-2")
         self.assertEqual(recent[-1].turn_id, "turn-11")
+
+    def test_direct_diagnostic_uses_v2_split_source_fields(self) -> None:
+        """直接诊断应分别记录 Event、Thought 候选与实际注入。"""
+
+        event_id = uuid4()
+        candidate = RetrievalCandidate(
+            entry_id=event_id,
+            package_id="root",
+            entry_type="story_event",
+            payload={"title": "初次相遇"},
+            score=0.9,
+            final_score=0.9,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorldbookDiagnosticStore(Path(directory) / "diagnostics.jsonl")
+            collector = _collector(store, "turn-v2")
+            collector.record_direct(
+                "怎么认识灯",
+                WorldbookKnowledgeResult(
+                    knowledge=DirectWorldbookContext(
+                        events=[
+                            KnownStoryEvent(
+                                title="初次相遇",
+                                summary="爱音摔倒，灯递给她创可贴。",
+                                participant_names=["爱音", "灯"],
+                            )
+                        ]
+                    ),
+                    event_trace=RetrievalTrace(
+                        selected_entry_ids=[event_id],
+                        candidates=[candidate],
+                    ),
+                ),
+            )
+            record = collector.finish("completed")
+            store.close()
+
+        self.assertIsNotNone(record)
+        if record is None:
+            self.fail("诊断记录没有完成")
+        payload = record.to_dict()
+        direct = payload["direct_retrieval"]
+        self.assertEqual(payload["format_version"], 2)
+        self.assertIsInstance(direct, dict)
+        if not isinstance(direct, dict):
+            self.fail("直接诊断不是字典")
+        self.assertEqual(direct["selected_event_ids"], [str(event_id)])
+        self.assertEqual(
+            direct["injected_context"]["events"][0]["title"],
+            "初次相遇",
+        )
 
     def test_timed_rotating_handler_uses_daily_three_backups(self) -> None:
         """磁盘诊断应直接使用标准库按日轮转和三个备份。"""

@@ -16,7 +16,9 @@ class StoryEventTypeModule:
 
     entry_type: EntryType = "story_event"
     projection_version: int = 0
-    semantic_fields: frozenset[str] = frozenset({"title", "summary", "participants"})
+    semantic_fields: frozenset[str] = frozenset(
+        {"title", "summary", "participants", "known_by_character_ids"}
+    )
 
     def _document(self, entry: WorldbookEntry) -> StoryEventDocument:
         """解析强类型剧情事件。"""

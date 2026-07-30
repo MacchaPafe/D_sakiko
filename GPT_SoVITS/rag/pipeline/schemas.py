@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from rag.models import CanonBranch, CharacterId, ScopeType, SeriesId
 
@@ -235,12 +235,20 @@ class StoryEventCandidate(BaseModel):
     title: str
     summary: str
     participants: list[str] = Field(default_factory=list)
+    known_by_character_names: list[str] = Field(default_factory=list)
     importance: int
     tags: list[str] = Field(default_factory=list)
     retrieval_text: str
     evidence_u_ids: list[str] = Field(default_factory=list)
     evidence_s_ids: list[str] = Field(default_factory=list)
     confidence: float
+
+    @field_validator("known_by_character_names")
+    @classmethod
+    def normalize_known_character_names(cls, values: list[str]) -> list[str]:
+        """去重并保留事件知情角色标准名的首次出现顺序。"""
+
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
 
 
 RelationEvidenceStrength = Literal["explicit", "inferred"]
@@ -673,9 +681,20 @@ class StoryEventPayload(BaseModel):
     title: str
     summary: str
     participants: list[CharacterId] = Field(default_factory=list)
+    known_by_character_ids: list[CharacterId] = Field(default_factory=list)
     importance: int
     tags: list[str] = Field(default_factory=list)
     retrieval_text: str
+
+    @field_validator("known_by_character_ids")
+    @classmethod
+    def normalize_known_character_ids(
+        cls,
+        values: list[CharacterId],
+    ) -> list[CharacterId]:
+        """去重并保留事件知情角色 ID 的首次出现顺序。"""
+
+        return list(dict.fromkeys(values))
 
 
 class CharacterRelationPayload(BaseModel):

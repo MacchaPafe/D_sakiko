@@ -367,6 +367,7 @@ class WorldbookEditService:
                 "title": "",
                 "summary": "",
                 "participants": [],
+                "known_by_character_ids": [],
                 "importance": 3,
                 "tags": [],
             }

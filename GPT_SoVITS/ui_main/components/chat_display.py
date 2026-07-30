@@ -158,11 +158,36 @@ class ChatDisplay(QTextBrowser):
             query = direct.get("query")
             if isinstance(query, str) and query:
                 lines.append(f"直接检索：{query}")
-            injected_items = direct.get("injected_items")
-            if isinstance(injected_items, list):
+            injected_context = direct.get("injected_context")
+            if isinstance(injected_context, dict):
                 lines.append(
                     "直接提供："
-                    + json.dumps(injected_items, ensure_ascii=False, separators=(",", ":"))
+                    + json.dumps(
+                        injected_context,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+            else:
+                injected_items = direct.get("injected_items")
+                if isinstance(injected_items, list):
+                    lines.append(
+                        "直接提供："
+                        + json.dumps(
+                            injected_items,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    )
+            source_failures = direct.get("source_failures")
+            if isinstance(source_failures, list) and source_failures:
+                lines.append(
+                    "来源错误："
+                    + json.dumps(
+                        source_failures,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
                 )
         tool_calls = record.get("tool_calls")
         if isinstance(tool_calls, list):

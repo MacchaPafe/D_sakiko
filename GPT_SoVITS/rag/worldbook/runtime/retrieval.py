@@ -53,6 +53,7 @@ class RetrievalConstraints:
     query_time: int | None = None
     subject_character_id: CharacterId | None = None
     object_character_id: CharacterId | None = None
+    known_by_character_id: CharacterId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +329,17 @@ class WorldbookRetrievalRepository:
                     key="object_character_id",
                     match=qdrant_models.MatchValue(
                         value=constraints.object_character_id.value
+                    ),
+                )
+            )
+        if constraints.known_by_character_id is not None:
+            if entry_type != "story_event":
+                raise ValueError("known_by_character_id 只允许用于 story_event")
+            must.append(
+                qdrant_models.FieldCondition(
+                    key="known_by_character_ids",
+                    match=qdrant_models.MatchValue(
+                        value=constraints.known_by_character_id.value
                     ),
                 )
             )

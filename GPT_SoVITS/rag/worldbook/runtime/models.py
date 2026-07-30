@@ -126,6 +126,25 @@ class DirectThought(BaseModel):
     epistemic_status: str
 
 
+class KnownStoryEvent(BaseModel):
+    """表示当前角色获准知道完整正文的剧情事件。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    summary: str
+    participant_names: list[str]
+
+
+class DirectWorldbookContext(BaseModel):
+    """表示直接注入模型的事实事件与角色观点。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[KnownStoryEvent] = Field(default_factory=list)
+    thoughts: list[DirectThought] = Field(default_factory=list)
+
+
 class LoreKnowledge(BaseModel):
     """表示世界书 Lore 工具可返回的一条知识。"""
 
@@ -157,25 +176,70 @@ class RelationHistoryPage(BaseModel):
     next_page: int | None = None
 
 
-class LinkedStoryEvent(BaseModel):
-    """表示 Thought 显式关联且对当前进度可见的剧情事件。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    title: str
-    summary: str
-    participant_names: list[str]
-
-
 class ThoughtMemory(BaseModel):
-    """表示记忆工具返回的角色观点及其显式事件。"""
+    """表示记忆工具返回的一条角色观点。"""
 
     model_config = ConfigDict(extra="forbid")
 
     character_name: str
     thought_text: str
     epistemic_status: str
-    events: list[LinkedStoryEvent] = Field(default_factory=list)
+
+
+class CharacterMemoryKnowledge(BaseModel):
+    """表示记忆工具返回的顶层事实事件与角色观点。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[KnownStoryEvent] = Field(default_factory=list)
+    thoughts: list[ThoughtMemory] = Field(default_factory=list)
+
+
+class SourceRetrievalFailure(BaseModel):
+    """描述 Thought 或 Event 单一来源的可降级失败。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["thought", "event"]
+    failure: RetrievalFailure
+
+
+class WorldbookKnowledgeResult(BaseModel):
+    """保存双来源知识结果、独立追踪与合并诊断。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge: DirectWorldbookContext | CharacterMemoryKnowledge
+    thought_trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
+    event_trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
+    linked_event_ids: list[UUID] = Field(default_factory=list)
+    unauthorized_linked_event_ids: list[UUID] = Field(default_factory=list)
+    deduplicated_event_ids: list[UUID] = Field(default_factory=list)
+    source_failures: list[SourceRetrievalFailure] = Field(default_factory=list)
+    source_durations_sec: dict[Literal["thought", "event"], float] = Field(
+        default_factory=dict
+    )
+
+    @property
+    def failure(self) -> RetrievalFailure | None:
+        """兼容读取第一个来源失败，同时保留完整失败列表。"""
+
+        return self.source_failures[0].failure if self.source_failures else None
+
+    @property
+    def trace(self) -> RetrievalTrace:
+        """兼容返回合并后的选中 ID 与候选列表。"""
+
+        return RetrievalTrace(
+            selected_entry_ids=[
+                *self.event_trace.selected_entry_ids,
+                *self.thought_trace.selected_entry_ids,
+            ],
+            candidates=[
+                *self.event_trace.candidates,
+                *self.thought_trace.candidates,
+            ],
+        )
 
 
 class WorldbookQueryResult(BaseModel, Generic[ResultItemT]):

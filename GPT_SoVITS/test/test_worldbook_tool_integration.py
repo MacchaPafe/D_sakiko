@@ -11,12 +11,15 @@ from chat.tool_calling import (
 )
 from rag.models import CharacterId
 from rag.worldbook.runtime.models import (
+    CharacterMemoryKnowledge,
+    KnownStoryEvent,
     LoreKnowledge,
     RelationHistoryPage,
     RelationHistoryQueryResult,
     RelationKnowledge,
     RelationTargetsQueryResult,
     ThoughtMemory,
+    WorldbookKnowledgeResult,
     WorldbookQueryResult,
     WorldbookResolvedContext,
 )
@@ -183,11 +186,28 @@ class _FakeWorldbookService:
         self,
         context: WorldbookResolvedContext,
         query: str,
-    ) -> WorldbookQueryResult[ThoughtMemory]:
-        """返回空的固定记忆结果。"""
+    ) -> WorldbookKnowledgeResult:
+        """返回固定的顶层事件与观点记忆结果。"""
 
         del context, query
-        return WorldbookQueryResult[ThoughtMemory]()
+        return WorldbookKnowledgeResult(
+            knowledge=CharacterMemoryKnowledge(
+                events=[
+                    KnownStoryEvent(
+                        title="初次相遇",
+                        summary="爱音摔倒后得到灯递来的创可贴。",
+                        participant_names=["爱音", "灯"],
+                    )
+                ],
+                thoughts=[
+                    ThoughtMemory(
+                        character_name="爱音",
+                        thought_text="灯很特别。",
+                        epistemic_status="believes",
+                    )
+                ],
+            )
+        )
 
 
 class WorldbookHiddenToolTest(unittest.TestCase):
@@ -348,6 +368,29 @@ class WorldbookHiddenToolTest(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertNotIn("traceback", output)
+
+    def test_memory_tool_returns_top_level_events_and_thoughts(self) -> None:
+        """记忆工具应按顶层来源返回事实与观点，不再把 Event 嵌套进 Thought。"""
+
+        registry = WorldbookToolSession(
+            _FakeWorldbookService(),
+            _context(),
+            "最近对话",
+        ).build_registry()
+
+        ok, output = registry.execute(
+            ToolCallRequest(
+                tool_call_id="memory",
+                name="search_character_memory",
+                arguments={"query": "最初怎么认识灯"},
+            )
+        )
+        payload = json.loads(output)
+
+        self.assertTrue(ok)
+        self.assertEqual(payload["events"][0]["title"], "初次相遇")
+        self.assertEqual(payload["thoughts"][0]["thought_text"], "灯很特别。")
+        self.assertNotIn("results", payload)
 
 
 if __name__ == "__main__":

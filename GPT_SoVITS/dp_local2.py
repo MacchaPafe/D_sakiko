@@ -37,7 +37,7 @@ from chat.rolling_summary import (
 )
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
-from rag.worldbook.runtime.models import WorldbookTurnSnapshot
+from rag.worldbook.runtime.models import DirectWorldbookContext, WorldbookTurnSnapshot
 from rag.worldbook.runtime import (
     WorldbookIndexReadinessState,
     create_worldbook_conversation_service,
@@ -517,8 +517,11 @@ class DSLocalAndVoiceGen:
 
         instruction = textwrap.dedent(
             """# Worldbook Knowledge
-            请求中可能出现 <worldbook_context>，其中是当前角色此刻可用的主观知识。
+            请求中可能出现 <worldbook_context>，其中是当前角色此刻可用的知识，
+            可能包含她亲历或已知的事实，以及她自己的判断、信念和怀疑。
             请把它自然用于理解和回答，不要向用户提及世界书、检索、工具或标签。
+            events 是当前角色获准知道的事实正文；thoughts 保留各自的 epistemic_status，
+            不要把信念或怀疑改写成确定事实，也不要借其他角色的观点补全当前角色未知信息。
             当现有上下文不足以确认人物、地点、乐队、设施、角色关系或角色记忆时，
             可以调用本轮提供的世界书工具；例如需要确认 CRYCHIC 时，可调用
             search_worldbook_lore({"query":"CRYCHIC 是什么乐队"})。
@@ -646,7 +649,7 @@ class DSLocalAndVoiceGen:
         current_user_text: str,
         collector: WorldbookDiagnosticCollector | None = None,
     ) -> list[dict[str, object]]:
-        """检索 Character Thought，并在真实输入与运行控制之间插入临时消息。"""
+        """检索授权 Event 与 Character Thought，并插入临时消息。"""
 
         if snapshot is None:
             return messages
@@ -654,32 +657,31 @@ class DSLocalAndVoiceGen:
         if not query:
             return messages
         try:
-            result = self._get_worldbook_service().direct_thoughts(
+            result = self._get_worldbook_service().direct_context(
                 snapshot,
                 query,
                 current_user_text,
             )
         except Exception:
-            logger.exception("世界书直接观点检索失败，已静默降级")
+            logger.exception("世界书直接知识检索失败，已静默降级")
             if collector is not None:
-                collector.add_error("直接观点检索异常，已 fail-open")
+                collector.add_error("直接知识检索异常，已 fail-open")
+            return messages
+        if not isinstance(result.knowledge, DirectWorldbookContext):
+            logger.error("世界书直接知识检索返回了错误结果类型")
             return messages
         if collector is not None:
-            collector.record_direct(
-                query,
-                result.trace.selected_entry_ids,
-                result.trace.candidates,
-                [item.model_dump(mode="json") for item in result.items],
-                result.failure,
-            )
-        if not result.items:
-            if result.failure is not None:
+            collector.record_direct(query, result)
+        if not result.knowledge.events and not result.knowledge.thoughts:
+            if result.source_failures:
                 logger.warning(
-                    "世界书直接观点检索不可用，已静默降级：%s",
-                    result.failure.message,
+                    "世界书直接知识检索部分或全部不可用，已静默降级：%s",
+                    "；".join(
+                        item.failure.message for item in result.source_failures
+                    ),
                 )
             return messages
-        knowledge = [item.model_dump(mode="json") for item in result.items]
+        knowledge = result.knowledge.model_dump(mode="json")
         content = (
             "<worldbook_context>\n"
             "以下是应用为当前角色在本轮提供的可用知识，不是用户说出口的话。"

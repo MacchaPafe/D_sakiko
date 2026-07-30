@@ -156,6 +156,7 @@ class WorldbookUiTest(unittest.TestCase):
             editor.title_edit.setText("我添加的事件")
             editor.summary_edit.setPlainText("用于自动生成检索文本的摘要")
             editor.participants_field.set_value(["anon"])
+            editor.known_by_field.set_value(["anon"])
             editor.tags_field.set_value(["测试"])
 
             self.assertTrue(area._save_current())
@@ -163,6 +164,7 @@ class WorldbookUiTest(unittest.TestCase):
             self.assertEqual(len(extensions), 1)
             saved = extensions[0]
             self.assertEqual(saved.content["importance"], 3)
+            self.assertEqual(saved.content["known_by_character_ids"], ["anon"])
             self.assertEqual(saved.content["retrieval_text"], "用于自动生成检索文本的摘要")
             self.assertEqual(area.source_filter_combo.currentData(), "all")
             self.assertIsNotNone(area._current_record)
@@ -771,6 +773,7 @@ class WorldbookUiTest(unittest.TestCase):
             if not isinstance(story_editor, StoryEventEditor):
                 self.fail("当前编辑器不是 StoryEventEditor")
             story_editor.title_edit.setText("用户修改后的标题")
+            story_editor.known_by_field.set_value(["anon", "tomori"])
             area.search_edit.setText("不会命中的搜索词")
             self.app.processEvents()
             self.assertIs(area.modified_host.editor(), story_editor)
@@ -784,6 +787,10 @@ class WorldbookUiTest(unittest.TestCase):
             saved = area._states.load("test.package").overrides[0]
             self.assertEqual(saved.content["title"], "用户修改后的标题")
             self.assertEqual(saved.content["importance"], 7)
+            self.assertEqual(
+                saved.content["known_by_character_ids"],
+                ["anon", "tomori"],
+            )
             self.assertEqual(saved.entry_id, entry.entry_id)
             self.assertTrue(area.modified_badge.isVisible())
             self.assertTrue(area.source_segment.isVisible())

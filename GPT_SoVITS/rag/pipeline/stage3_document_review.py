@@ -110,6 +110,24 @@ def _new_lore_record(record: LoreEntryImportRecord) -> LoreEntryReviewRecord:
     )
 
 
+def _can_preserve_excluded_story_permission_migration(
+    current: StoryEventReviewRecord,
+    previous: StoryEventReviewRecord,
+) -> bool:
+    """判断已排除事件是否仅受新增空知情字段的基础摘要变化影响。"""
+
+    return (
+        previous.review_status == "completed"
+        and previous.disposition == "exclude"
+        and current.source_scene_id == previous.source_scene_id
+        and current.source_local_id == previous.source_local_id
+        and current.evidence_u_ids == previous.evidence_u_ids
+        and current.evidence_s_ids == previous.evidence_s_ids
+        and current.generated_document == previous.generated_document
+        and not current.generated_document.known_by_character_ids
+    )
+
+
 def _migrate_story_records(
     current: list[StoryEventReviewRecord],
     previous: list[StoryEventReviewRecord],
@@ -131,6 +149,10 @@ def _migrate_story_records(
             item.previous_review_reference = old.candidate_id
             matched_previous.add(old.candidate_id)
             if item.review_basis_sha256 == old.review_basis_sha256:
+                copy_completed_review(item, old)
+                item.reviewed_document = old.reviewed_document
+                report.migrated_ids.append(item.candidate_id)
+            elif _can_preserve_excluded_story_permission_migration(item, old):
                 copy_completed_review(item, old)
                 item.reviewed_document = old.reviewed_document
                 report.migrated_ids.append(item.candidate_id)

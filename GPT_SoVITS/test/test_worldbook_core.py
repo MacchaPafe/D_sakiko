@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from rag.models import StoryEventDocument
 from rag.worldbook.adapters import create_default_registry
 from rag.worldbook.effective_entries import entry_revision, merge_effective_entries
 from rag.worldbook.hashing import file_sha256
@@ -78,6 +79,54 @@ class WorldbookCoreTest(unittest.TestCase):
         )
 
         self.assertIsNone(manifest.conversation_context)
+
+    def test_story_event_known_by_defaults_closed_and_roundtrips(self) -> None:
+        """旧事件默认无人可直接检索，新权限允许非参与者并确定性去重。"""
+
+        legacy = StoryEventDocument.from_payload(_story_entry().content)
+        authorized = StoryEventDocument.from_payload(
+            {
+                **_story_entry().content,
+                "known_by_character_ids": ["soyo", "anon", "soyo"],
+            }
+        )
+
+        self.assertEqual(legacy.known_by_character_ids, [])
+        self.assertEqual(
+            [item.value for item in authorized.known_by_character_ids],
+            ["soyo", "anon"],
+        )
+        self.assertEqual(
+            authorized.to_payload()["known_by_character_ids"],
+            ["soyo", "anon"],
+        )
+        self.assertEqual(authorized.participants[0].value, "anon")
+        authorized_entry = WorldbookEntry(
+            entry_id=uuid4(),
+            entry_type="story_event",
+            content=authorized.to_payload(),
+        )
+        projection = create_default_registry().projection(
+            EffectiveWorldbookEntry(
+                package_id="test.package",
+                entry=authorized_entry,
+                revision=entry_revision(authorized_entry),
+                source="official",
+            )
+        )
+        self.assertEqual(
+            projection.payload["known_by_character_ids"],
+            ["soyo", "anon"],
+        )
+        self.assertEqual(projection.embedding_text, "测试事件摘要")
+        self.assertNotIn("soyo", projection.embedding_text)
+        with self.assertRaises(ValueError):
+            StoryEventDocument.from_payload(
+                {
+                    **_story_entry().content,
+                    "known_by_character_ids": ["unknown-character"],
+                }
+            )
 
     def test_user_state_roundtrip_and_override_conflict(self) -> None:
         """用户状态应原子往返，并保留官方更新后的 base conflict。"""

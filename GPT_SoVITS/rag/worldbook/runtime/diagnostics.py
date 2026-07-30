@@ -10,12 +10,12 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 import threading
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import uuid4
 import zipfile
 
 from log import get_logger
 
-from .models import RetrievalCandidate, RetrievalFailure, WorldbookTurnSnapshot
+from .models import WorldbookKnowledgeResult, WorldbookTurnSnapshot
 from .tools import WorldbookToolDiagnostic
 
 
@@ -23,41 +23,56 @@ logger = get_logger(__name__)
 
 
 class DirectRetrievalDiagnostic:
-    """保存一次直接观点检索的内部诊断数据。"""
+    """保存一次直接双来源检索的内部诊断数据。"""
 
     def __init__(
         self,
         query: str,
-        selected_entry_ids: list[UUID],
-        candidates: list[RetrievalCandidate],
-        injected_items: list[dict[str, object]],
-        failure: RetrievalFailure | None,
+        result: WorldbookKnowledgeResult,
     ) -> None:
         """复制直接检索数据，避免后续调用修改。"""
 
         self.query = query
-        self.selected_entry_ids = list(selected_entry_ids)
-        self.candidates = list(candidates)
-        self.injected_items = [dict(item) for item in injected_items]
-        self.failure = failure
+        self.result = result.model_copy(deep=True)
 
     def to_dict(self) -> dict[str, object]:
         """转换成可写入诊断 JSON 的字典。"""
 
         return {
             "query": self.query,
-            "selected_entry_ids": [
-                str(entry_id) for entry_id in self.selected_entry_ids
+            "thought_candidates": [
+                item.model_dump(mode="json")
+                for item in self.result.thought_trace.candidates
             ],
-            "candidates": [
-                item.model_dump(mode="json") for item in self.candidates
+            "selected_thought_ids": [
+                str(entry_id)
+                for entry_id in self.result.thought_trace.selected_entry_ids
             ],
-            "injected_items": list(self.injected_items),
-            "failure": (
-                self.failure.model_dump(mode="json")
-                if self.failure is not None
-                else None
-            ),
+            "event_candidates": [
+                item.model_dump(mode="json")
+                for item in self.result.event_trace.candidates
+            ],
+            "selected_event_ids": [
+                str(entry_id)
+                for entry_id in self.result.event_trace.selected_entry_ids
+            ],
+            "linked_event_ids": [
+                str(entry_id) for entry_id in self.result.linked_event_ids
+            ],
+            "unauthorized_linked_event_ids": [
+                str(entry_id)
+                for entry_id in self.result.unauthorized_linked_event_ids
+            ],
+            "deduplicated_event_ids": [
+                str(entry_id)
+                for entry_id in self.result.deduplicated_event_ids
+            ],
+            "source_failures": [
+                item.model_dump(mode="json")
+                for item in self.result.source_failures
+            ],
+            "source_durations_sec": dict(self.result.source_durations_sec),
+            "injected_context": self.result.knowledge.model_dump(mode="json"),
         }
 
 
@@ -105,7 +120,7 @@ class WorldbookDiagnosticRecord:
         """转换成独立带格式版本的 JSON 记录。"""
 
         return {
-            "format_version": 1,
+            "format_version": 2,
             "record_id": self.record_id,
             "chat_id": self.chat_id,
             "turn_id": self.turn_id,
@@ -134,6 +149,38 @@ class WorldbookDiagnosticRecord:
                     ],
                     "result": dict(item.result),
                     "duration_sec": item.duration_sec,
+                    "thought_candidates": [
+                        candidate.model_dump(mode="json")
+                        for candidate in item.thought_candidates
+                    ],
+                    "selected_thought_ids": [
+                        str(entry_id)
+                        for entry_id in item.thought_selected_entry_ids
+                    ],
+                    "event_candidates": [
+                        candidate.model_dump(mode="json")
+                        for candidate in item.event_candidates
+                    ],
+                    "selected_event_ids": [
+                        str(entry_id)
+                        for entry_id in item.event_selected_entry_ids
+                    ],
+                    "linked_event_ids": [
+                        str(entry_id) for entry_id in item.linked_event_ids
+                    ],
+                    "unauthorized_linked_event_ids": [
+                        str(entry_id)
+                        for entry_id in item.unauthorized_linked_event_ids
+                    ],
+                    "deduplicated_event_ids": [
+                        str(entry_id)
+                        for entry_id in item.deduplicated_event_ids
+                    ],
+                    "source_failures": [
+                        failure.model_dump(mode="json")
+                        for failure in item.source_failures
+                    ],
+                    "source_durations_sec": dict(item.source_durations_sec),
                 }
                 for item in self.tool_calls
             ],
@@ -249,7 +296,7 @@ class WorldbookDiagnosticStore:
                 "summary.json",
                 json.dumps(
                     {
-                        "format_version": 1,
+                        "format_version": 2,
                         "chat_id": chat_id,
                         "record_count": len(ordered),
                         "exported_at": _utc_now(),
@@ -311,20 +358,11 @@ class WorldbookDiagnosticCollector:
     def record_direct(
         self,
         query: str,
-        selected_entry_ids: list[UUID],
-        candidates: list[RetrievalCandidate],
-        injected_items: list[dict[str, object]],
-        failure: RetrievalFailure | None,
+        result: WorldbookKnowledgeResult,
     ) -> None:
-        """保存直接 Character Thought 查询详情。"""
+        """保存直接 Event 与 Thought 双来源查询详情。"""
 
-        self._direct = DirectRetrievalDiagnostic(
-            query,
-            selected_entry_ids,
-            candidates,
-            injected_items,
-            failure,
-        )
+        self._direct = DirectRetrievalDiagnostic(query, result)
 
     def record_tools(self, calls: list[WorldbookToolDiagnostic]) -> None:
         """保存本轮全部隐藏世界书工具诊断。"""

@@ -1183,10 +1183,13 @@ class StoryEventEditor(BaseEntryEditor):
         self.summary_edit.setMinimumHeight(120)
         self.participants_field = MultiSelectField(self.tr("选择参与角色"), self)
         self.participants_field.set_options(_character_options())
+        self.known_by_field = MultiSelectField(self.tr("选择知情角色"), self)
+        self.known_by_field.set_options(_character_options())
         self.tags_field = TagEditor(self)
         normal.addRow(BodyLabel(self.tr("标题"), self), self.title_edit)
         normal.addRow(BodyLabel(self.tr("摘要"), self), self.summary_edit)
         normal.addRow(BodyLabel(self.tr("参与角色"), self), self.participants_field)
+        normal.addRow(BodyLabel(self.tr("可知完整事件"), self), self.known_by_field)
         normal.addRow(BodyLabel(self.tr("标签（必填）"), self), self.tags_field)
         self.add_editor_card(normal_card)
         advanced = CollapsibleCard(self.tr("高级设置"), False, self)
@@ -1207,6 +1210,7 @@ class StoryEventEditor(BaseEntryEditor):
             (self.title_edit, True),
             (self.summary_edit, True),
             (self.participants_field, True),
+            (self.known_by_field, True),
             (self.tags_field, False),
             (self.story_year_field, False),
             (self.time_range_field, False),
@@ -1224,6 +1228,7 @@ class StoryEventEditor(BaseEntryEditor):
         self.title_edit.setText(_string_value(content, "title"))
         self.summary_edit.setPlainText(_string_value(content, "summary"))
         self.participants_field.set_value(_string_list(content, "participants"))
+        self.known_by_field.set_value(_string_list(content, "known_by_character_ids"))
         self.tags_field.set_value(_string_list(content, "tags"))
         self.story_year_field.set_value(_optional_integer(content, "occurred_story_year"))
         series_id = _string_value(content, "series_id")
@@ -1241,7 +1246,7 @@ class StoryEventEditor(BaseEntryEditor):
             raise ValueError("剧情事件必须具有完整可见时间区间")
         series_id = _combo_text(self.extension_series_combo)
         coordinate = decode_story_time(series_id, start)
-        return {
+        content: dict[str, object] = {
             "series_id": series_id,
             "canon_branch": _combo_text(self.extension_canon_combo),
             "title": self.title_edit.text().strip(),
@@ -1254,6 +1259,10 @@ class StoryEventEditor(BaseEntryEditor):
             "visible_from": start,
             "visible_to": end,
         }
+        known_by = self.known_by_field.value()
+        if known_by or "known_by_character_ids" in self.content_base():
+            content["known_by_character_ids"] = known_by
+        return content
 
     def _validation_issues(self) -> list[FormValidationIssue]:
         """返回剧情事件缺少的必填内容。"""

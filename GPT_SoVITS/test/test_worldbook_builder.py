@@ -79,6 +79,7 @@ def _prepare_build_spec(root: Path) -> Path:
                     title="CRYCHIC 解散",
                     summary="CRYCHIC 在祥子离开后解散。",
                     participants=[CharacterId.SAKIKO, CharacterId.TOMORI],
+                    known_by_character_ids=[CharacterId.SAKIKO],
                     importance=3,
                     tags=["CRYCHIC"],
                     retrieval_text="CRYCHIC 解散。",
@@ -181,6 +182,15 @@ class WorldbookBuilderTest(unittest.TestCase):
             self.assertEqual(
                 (first_dir / "content" / "story_events.json").read_bytes(),
                 (second_dir / "content" / "story_events.json").read_bytes(),
+            )
+            story_payload = json.loads(
+                (first_dir / "content" / "story_events.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                story_payload["entries"][0]["content"]["known_by_character_ids"],
+                ["sakiko"],
             )
             self.assertEqual(first.manifest.package_id, "official.test.mygo")
             self.assertEqual(issues, [])

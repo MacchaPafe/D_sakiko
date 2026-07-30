@@ -9,8 +9,10 @@ from rag.worldbook.paths import WorldbookPaths
 
 from .catalog import WorldbookCatalogError, WorldbookRootCatalog
 from .models import (
+    CharacterMemoryKnowledge,
+    DirectWorldbookContext,
     DirectThought,
-    LinkedStoryEvent,
+    KnownStoryEvent,
     LoreKnowledge,
     RelationHistoryPage,
     RelationKnowledge,
@@ -46,7 +48,9 @@ def create_worldbook_conversation_service(
 
 __all__ = [
     "DirectThought",
-    "LinkedStoryEvent",
+    "DirectWorldbookContext",
+    "KnownStoryEvent",
+    "CharacterMemoryKnowledge",
     "LoreKnowledge",
     "RelationHistoryPage",
     "RelationKnowledge",

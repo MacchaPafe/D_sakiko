@@ -66,12 +66,16 @@ class WorldbookEvaluationTest(unittest.TestCase):
         future_id = UUID("10000000-0000-0000-0000-000000000003")
         other_character_id = UUID("10000000-0000-0000-0000-000000000004")
         selected_duplicate_id = UUID("10000000-0000-0000-0000-000000000005")
+        known_event_id = UUID("10000000-0000-0000-0000-000000000006")
+        unauthorized_event_id = UUID("10000000-0000-0000-0000-000000000007")
+        future_event_id = UUID("10000000-0000-0000-0000-000000000008")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             index_path = root / "index"
             client = QdrantClient(path=str(index_path))
             self._create_collection(client, "lore_entry")
             self._create_collection(client, "character_thought")
+            self._create_collection(client, "story_event")
             client.upsert(
                 COLLECTION_NAMES["lore_entry"],
                 [
@@ -118,6 +122,30 @@ class WorldbookEvaluationTest(unittest.TestCase):
                 ],
                 wait=True,
             )
+            client.upsert(
+                COLLECTION_NAMES["story_event"],
+                [
+                    self._story_point(
+                        known_event_id,
+                        known_by=["anon"],
+                        participants=["tomori"],
+                        visible_from=4000,
+                    ),
+                    self._story_point(
+                        unauthorized_event_id,
+                        known_by=["soyo"],
+                        participants=["anon"],
+                        visible_from=4000,
+                    ),
+                    self._story_point(
+                        future_event_id,
+                        known_by=["anon"],
+                        participants=["anon"],
+                        visible_from=4050,
+                    ),
+                ],
+                wait=True,
+            )
             client.close()
             app_root = Path(__file__).resolve().parents[2]
             catalog = WorldbookRootCatalog(
@@ -159,6 +187,18 @@ class WorldbookEvaluationTest(unittest.TestCase):
                             "direct_thought",
                             expected=[selected_duplicate_id],
                             forbidden=[thought_id, other_character_id],
+                        ),
+                        self._case(
+                            "known-nonparticipant-event",
+                            "direct_context",
+                            expected=[known_event_id],
+                            forbidden=[unauthorized_event_id],
+                        ),
+                        self._case(
+                            "future-event",
+                            "direct_context",
+                            expected=[known_event_id],
+                            forbidden=[unauthorized_event_id, future_event_id],
                         ),
                     ],
                 ),
@@ -216,6 +256,30 @@ class WorldbookEvaluationTest(unittest.TestCase):
                 "thought_text": text,
                 "epistemic_status": "believes",
                 "story_event_entry_ids": [],
+            },
+        )
+
+    def _story_point(
+        self,
+        entry_id: UUID,
+        *,
+        known_by: list[str],
+        participants: list[str],
+        visible_from: int,
+    ) -> qdrant_models.PointStruct:
+        """创建用于权限和时间过滤的 Story Event 测试点。"""
+
+        return qdrant_models.PointStruct(
+            id=str(entry_id),
+            vector=[1.0, 0.0],
+            payload={
+                **self._base_payload(),
+                "visible_from": visible_from,
+                "visible_to": 999999,
+                "known_by_character_ids": known_by,
+                "participants": participants,
+                "title": f"事件 {entry_id}",
+                "summary": "测试事件摘要",
             },
         )
 
