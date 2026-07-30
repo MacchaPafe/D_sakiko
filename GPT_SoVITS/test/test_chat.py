@@ -876,6 +876,15 @@ class ChatTestCase(unittest.TestCase):
         self.assertIn("用户正在扮演动漫BangDream中的角色爱音", system_prompt)
         self.assertIn("[正在与你对话的爱音的人物设定]", system_prompt)
 
+    def test_explicit_live2d_target_is_returned_even_when_file_is_missing(self) -> None:
+        """对话级显式模型路径失效时仍应交给渲染进程严格尝试。"""
+        character = self._character("初华")
+        chat = Chat.new_single_chat(character)
+        missing_path = "/missing/uika.model3.json"
+        chat.meta.live2d_models["初华"] = missing_path
+
+        self.assertEqual(chat.get_custom_live2d_model_meta("初华"), missing_path)
+
     def test_reorder_chats_by_type_keeps_other_type_order(self):
         """
         类型内重排不应改变其他类型对话的相对顺序。

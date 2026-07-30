@@ -86,6 +86,41 @@ class Live2DRuntimeWindowTestCase(unittest.TestCase):
         active_texture.assert_called_once_with(runtime_window.GL_TEXTURE0)
         bind_texture.assert_called_once_with(runtime_window.GL_TEXTURE_2D, rendered_texture)
 
+    def test_recreate_runtime_window_without_target_skips_runtime_initialization(self) -> None:
+        """验证无模型展示只重建窗口和背景，不加载 Live2D runtime。"""
+        rendered_texture = object()
+        with (
+            patch("live2d_support.runtime_window.release_live2d_runtime"),
+            patch("live2d_support.runtime_window.glDeleteTextures"),
+            patch("live2d_support.runtime_window.pygame.display.quit"),
+            patch("live2d_support.runtime_window.pygame.display.init"),
+            patch("live2d_support.runtime_window.pygame.display.set_mode"),
+            patch("live2d_support.runtime_window.glViewport"),
+            patch("live2d_support.runtime_window.load_live2d_runtime") as load_runtime,
+            patch("live2d_support.runtime_window.initialize_live2d_runtime") as initialize_runtime,
+            patch("live2d_support.runtime_window.glEnable"),
+            patch(
+                "live2d_support.runtime_window.pygame.image.load",
+                return_value=FakeLoadedImage(object()),
+            ),
+            patch("live2d_support.runtime_window.glActiveTexture"),
+            patch("live2d_support.runtime_window.glBindTexture"),
+        ):
+            result = recreate_runtime_window(
+                current_runtime=ModuleType("old_runtime"),
+                current_texture="old-texture",
+                target_version=None,
+                display=(640, 480),
+                window_position=None,
+                background_path="background.png",
+                render_texture=lambda _surface: rendered_texture,
+            )
+
+        self.assertIsNone(result.runtime)
+        self.assertIs(result.texture, rendered_texture)
+        load_runtime.assert_not_called()
+        initialize_runtime.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

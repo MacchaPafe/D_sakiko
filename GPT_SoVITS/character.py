@@ -16,6 +16,7 @@ from live2d_support.model_normalizer import (
     is_old_l2d_json,
     normalize_model3_for_project as rebuild_model3_motion_groups,
 )
+from character_creation import read_character_creation_order
 from qconfig import d_sakiko_config
 from log import get_logger
 from emotion_enum import EmotionEnum
@@ -44,7 +45,7 @@ class CharacterAttributes:
         # 角色图标（文件夹内一个 .png 文件）的相对路径。如果该图标存在，切换到该角色时，应用程序会切换为此图标。
         self.icon_path: str | None = None
         # 角色的 live2d 模型的 model.json 所在的相对路径。这里只会指向角色的默认模型，不会指向自定义模型
-        self.live2d_json: str = ''
+        self.live2d_json: str | None = None
         # 角色的 GPT (t2s）模型相对路径
         self.GPT_model_path: str | None = ''
         # 角色的 sovits 模型相对路径
@@ -364,7 +365,7 @@ def find_default_l2d_json(model_dir: str) -> str | None:
         V2 使用 *.model.json，V3 使用 *.model3.json；优先保留现有 V2 行为。
     """
     for pattern in ("*.model.json", "*.model3.json"):
-        candidates = glob.glob(os.path.join(model_dir, pattern))
+        candidates = glob.glob(os.path.join(model_dir, "**", pattern), recursive=True)
         if candidates:
             return max(candidates, key=os.path.getmtime)
     return None
@@ -399,10 +400,11 @@ class GetCharacterAttributes:
         """加载系统角色和用户人设。"""
         # 角色的默认 live2d 信息
         l2d_json_paths_dict = d_sakiko_config.l2d_json_paths_dict.value
-        # 有多少角色没有完整的信息（is_ready = False）
-        partial_character_count = 0
+        loaded_character_names: set[str] = set()
 
-        for char in os.listdir("../live2d_related"):
+        for char in sorted(os.listdir("../live2d_related")):
+            if char.startswith("."):
+                continue
             full_path = os.path.join("../live2d_related", char)
             if  os.path.isdir(full_path):    #只遍历文件夹
                 self.character_num+=1
@@ -416,8 +418,11 @@ class GetCharacterAttributes:
                     character.character_name=char   #只是为了下面不报错
                 else:
                     with open(os.path.join(full_path,'name.txt'),'r',encoding='utf-8') as f:
-                        character.character_name=f.read()
-                        f.close()
+                        character.character_name=f.read().strip()
+                    if not character.character_name:
+                        logger.error("角色目录：'%s' 的 name.txt 内容为空！", char)
+                        is_ready = False
+                        character.character_name = char
 
                 program_icon_path = glob.glob(os.path.join(full_path, f"*.png"))
                 if program_icon_path:
@@ -426,29 +431,29 @@ class GetCharacterAttributes:
 
                 live2d_json = find_default_l2d_json(os.path.join(full_path, 'live2D_model'))
                 if not live2d_json:
-                    logger.error("没有找到角色：'%s' 的默认 Live2D 模型 json 文件(.model.json/.model3.json)", character.character_name)
-                    is_ready=False
+                    logger.info("角色：'%s' 未配置默认 Live2D 模型，将使用无模型展示。", character.character_name)
                 if character.character_name in l2d_json_paths_dict:
-                    if os.path.exists(l2d_json_paths_dict[character.character_name]):
-                        live2d_json=l2d_json_paths_dict[character.character_name]
+                    configured_live2d_json = l2d_json_paths_dict[character.character_name]
+                    if (
+                            isinstance(configured_live2d_json, str)
+                            and os.path.exists(configured_live2d_json)
+                    ):
+                        live2d_json=configured_live2d_json
                 if live2d_json:
                     if is_old_l2d_json(live2d_json):
                         try:
                             convert_old_l2d_json(live2d_json)
-                        except Exception as e:
+                        except Exception:
                             logger.exception("角色：'%s' 的旧版 Live2D 模型 json 文件(.model.json)转换失败", character.character_name)
-                            del character
-                            continue
-                        logger.info("已将角色：%s 的旧版 Live2D 模型 json 文件(.model.json)转换为新版格式并覆盖保存。", character.character_name)
+                        else:
+                            logger.info("已将角色：%s 的旧版 Live2D 模型 json 文件(.model.json)转换为新版格式并覆盖保存。", character.character_name)
                         character.live2d_json=live2d_json
                     elif is_l2d_model3_json(live2d_json):
                         try:
                             if rebuild_model3_motion_groups(live2d_json):
                                 logger.info("已将角色：%s 的 Live2D V3 Motions 重构为项目标准动作组。", character.character_name)
-                        except Exception as e:
+                        except Exception:
                             logger.exception("角色：'%s' 的 Live2D V3 模型 json 文件(.model3.json)检查失败", character.character_name)
-                            del character
-                            continue
                         character.live2d_json=live2d_json
                     else:
                         character.live2d_json=live2d_json
@@ -458,8 +463,10 @@ class GetCharacterAttributes:
                     is_ready=False
                 else:
                     with open(os.path.join(full_path,'character_description.txt'),'r',encoding='utf-8') as f:
-                        character.character_description=f.read()
-                        f.close()
+                        character.character_description=f.read().strip()
+                    if not character.character_description:
+                        logger.error("角色：'%s' 的角色描述文件内容为空！", character.character_name)
+                        is_ready = False
 
                 gpt_model_path=glob.glob(os.path.join('../reference_audio',char,'GPT-SoVITS_models',f"*.ckpt"))
                 if not gpt_model_path:
@@ -524,43 +531,39 @@ class GetCharacterAttributes:
                         f.close()
 
                 if is_ready:
-                    self.character_class_list.append(character)
-                    logger.info("成功加载角色：'%s'", character.character_name)
+                    if character.character_name in loaded_character_names:
+                        logger.error(
+                            "角色显示名称重复，跳过后出现的角色目录：'%s'（名称：'%s'）",
+                            char,
+                            character.character_name,
+                        )
+                    else:
+                        loaded_character_names.add(character.character_name)
+                        self.character_class_list.append(character)
+                        logger.info("成功加载角色：'%s'", character.character_name)
                 else:
                     logger.info("加载角色：'%s' 时出现以上错误，跳过该角色的加载。", char)
-                    partial_character_count += 1
 
-        # 新增调整角色顺序的功能
+        # 先保留已配置的角色顺序，再按角色目录创建时间追加新角色。
         char_order_list = d_sakiko_config.character_order.value
-        if len(self.character_class_list) > int(char_order_list['character_num']):
-            is_convert_1 = False
-            logger.info("似乎有新角色加入了，之前设置的角色顺序不适用，重新设置一下吧")
-        elif len(self.character_class_list) < int(char_order_list['character_num']):
-            # 经过测试，事实上，如果一个角色是在加载时被判定为不完整而被跳过的，那么它不会影响角色顺序的应用
-            # 只有目前角色数量 + 不完整角色数量 != 之前设置的角色数量时，才会出现角色被删除的情况，才需要重置角色顺序
-            if len(self.character_class_list) + partial_character_count != int(char_order_list['character_num']):
-                is_convert_1 = False
-                logger.info("似乎有角色被删除了，之前设置的角色顺序不适用，重新设置一下吧")
-            else:
-                is_convert_1 = True
-        else:
-            is_convert_1 = True
-        this_character_names = [char.character_name for char in self.character_class_list]
+        configured_names_value = char_order_list.get("character_names", [])
+        configured_names = (
+            [str(name) for name in configured_names_value]
+            if isinstance(configured_names_value, list)
+            else []
+        )
+        configured_indexes = {name: index for index, name in enumerate(configured_names)}
 
-        is_convert_2=True
-        if is_convert_1:
-            for name in this_character_names:
-                if name not in char_order_list['character_names']:
-                    logger.info("似乎有角色的名字被修改了，之前设置的角色顺序不适用，重新设置一下吧")
-                    is_convert_2 = False
-                    break
-        if is_convert_1 and is_convert_2:
-            new_character_class_list=[]
-            char_name2char={char.character_name:char for char in self.character_class_list}
-            for name in d_sakiko_config.character_order.value['character_names']:
-                new_character_class_list.append(char_name2char[name])
+        def character_sort_key(character: CharacterAttributes) -> tuple[int, int, str]:
+            """按已配置顺序优先、目录创建时间次之排列角色。"""
+            configured_index = configured_indexes.get(character.character_name)
+            if configured_index is not None:
+                return 0, configured_index, character.character_folder_name
+            character_dir = os.path.join("../live2d_related", character.character_folder_name)
+            creation_order = read_character_creation_order(character_dir)
+            return 1, creation_order, character.character_folder_name
 
-            self.character_class_list=new_character_class_list
+        self.character_class_list.sort(key=character_sort_key)
 
         self._load_user_characters()
 

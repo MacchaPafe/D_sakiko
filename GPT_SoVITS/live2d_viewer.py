@@ -108,8 +108,15 @@ class Live2DModule:
         else:
             self.if_sakiko=False
 
-    def live2D_initialize(self,characters):
-        self.character_list=characters
+    def live2D_initialize(self, characters: list[character.CharacterAttributes]) -> None:
+        """只使用已经配置默认 Live2D 模型的角色初始化动作预览器。"""
+        self.character_list = [
+            one_character
+            for one_character in characters
+            if one_character.live2d_json
+        ]
+        if not self.character_list:
+            raise ValueError("没有可供动作编辑器使用的 Live2D 模型。")
         self.PATH_JSON=self.character_list[self.current_character_num].live2d_json
         if self.character_list[self.current_character_num].character_name=='祥子':
             self.if_sakiko=True
@@ -1026,14 +1033,22 @@ if __name__ == "__main__":
 
     live2d_player = Live2DModule()
     get_char_attr = character.GetCharacterAttributes()
+    model_characters = [
+        one_character
+        for one_character in get_char_attr.character_class_list
+        if one_character.live2d_json
+    ]
+    if not model_characters:
+        logger.error("没有已配置 Live2D 模型的角色，无法启动动作编辑器。")
+        raise SystemExit(1)
     motion_queue = multiprocessing.Queue()
     change_char_queue=multiprocessing.Queue()
 
-    live2d_player.live2D_initialize(get_char_attr.character_class_list)
+    live2d_player.live2D_initialize(model_characters)
 
     app = QApplication(sys.argv)
 
-    window = ViewerGUI(get_char_attr.character_class_list,motion_queue,change_char_queue)
+    window = ViewerGUI(model_characters,motion_queue,change_char_queue)
     # 如果出现加载字体问题，则忽略设置字体
     font_path = os.path.join(project_root, "font", "ft.ttf")
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
