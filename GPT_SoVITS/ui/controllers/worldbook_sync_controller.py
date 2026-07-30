@@ -8,6 +8,9 @@ from pathlib import Path
 
 from PyQt5.QtCore import QObject, QProcess, pyqtSignal
 
+from rag.worldbook.models import WorldbookReadiness
+from rag.worldbook.runtime.readiness import WorldbookIndexReadinessState
+
 
 class WorldbookSyncController(QObject):
     """管理 worker 生命周期和 NDJSON 协议，不直接打开 Qdrant。"""
@@ -19,7 +22,13 @@ class WorldbookSyncController(QObject):
     failed_signal = pyqtSignal(str)
     readiness_changed = pyqtSignal(str)
 
-    def __init__(self, app_root: Path, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        app_root: Path,
+        parent: QObject | None = None,
+        *,
+        readiness_state: WorldbookIndexReadinessState | None = None,
+    ) -> None:
         """创建可复用的单任务 QProcess controller。"""
 
         super().__init__(parent)
@@ -33,7 +42,12 @@ class WorldbookSyncController(QObject):
         self._reconcile_pending = False
         self._waiting_for_lock = False
         self._terminal_event_seen = False
-        self._readiness = "unavailable"
+        self._readiness_state = readiness_state
+        self._readiness = (
+            readiness_state.get().value
+            if readiness_state is not None
+            else WorldbookReadiness.UNAVAILABLE.value
+        )
 
     @property
     def readiness(self) -> str:
@@ -140,7 +154,13 @@ class WorldbookSyncController(QObject):
     def _set_readiness(self, readiness: str) -> None:
         """更新并广播世界书索引可用性。"""
 
-        if readiness == self._readiness:
+        try:
+            normalized = WorldbookReadiness(readiness)
+        except ValueError:
+            normalized = WorldbookReadiness.UNAVAILABLE
+        if self._readiness_state is not None:
+            self._readiness_state.update(normalized)
+        if normalized.value == self._readiness:
             return
-        self._readiness = readiness
-        self.readiness_changed.emit(readiness)
+        self._readiness = normalized.value
+        self.readiness_changed.emit(normalized.value)

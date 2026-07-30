@@ -397,8 +397,8 @@ def _quote_lore_slug_character(character: str) -> str:
 def _build_series_segment(scope_key: LoreScopeKey) -> str:
     """构造 canonical point id 中的 series 片段。"""
 
-    if scope_key.scope_type == "global":
-        return "global"
+    if scope_key.scope_type == "package":
+        return "package"
     if not scope_key.series_ids:
         return "series_unknown"
     return "+".join(scope_key.series_ids)

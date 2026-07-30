@@ -226,6 +226,40 @@ class ReasoningMeta:
 
 
 @dataclass
+class WorldbookChatSettings:
+    """保存单个对话选择的世界书开关、根包和剧情集数。"""
+
+    enabled: bool = False
+    root_package_id: str = ""
+    episode: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: object) -> "WorldbookChatSettings":
+        """从旧存档兼容地读取世界书对话设置。"""
+
+        mapping = _as_mapping(data)
+        raw_episode = mapping.get("episode")
+        episode = _as_int(raw_episode) if raw_episode is not None else None
+        if episode is not None and not 1 <= episode <= 13:
+            episode = None
+        return cls(
+            enabled=_as_bool(mapping.get("enabled"), False),
+            root_package_id=_as_str(mapping.get("root_package_id")),
+            episode=episode,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """把世界书对话设置转换成稳定 JSON 字典。"""
+
+        data: dict[str, object] = {"enabled": self.enabled}
+        if self.root_package_id:
+            data["root_package_id"] = self.root_package_id
+        if self.episode is not None:
+            data["episode"] = self.episode
+        return data
+
+
+@dataclass
 class ChatMeta:
     """
     对话级别的元数据与配置。
@@ -244,6 +278,8 @@ class ChatMeta:
     llm_reasoning: ReasoningMeta = field(default_factory=ReasoningMeta)
     # 当前对话是否允许模型调用工具。
     tool_calling_enabled: bool = True
+    # 当前对话的世界书开关、根包与剧情进度。
+    worldbook: WorldbookChatSettings = field(default_factory=WorldbookChatSettings)
     # 用来存放一些无法分类的字段，避免旧程序载入新版本程序存档时丢失数据。
     # （不过有一说一，真的会有人更新版本后又用旧版本程序打开新版本对话记录吗？有点诡异了）
     extra: dict[str, object] = field(default_factory=dict)
@@ -277,6 +313,7 @@ class ChatMeta:
             "tool_call_history",
             "llm_reasoning",
             "tool_calling_enabled",
+            "worldbook",
         }
         # 保留所有未知的字段到 extra 中，确保数据不丢失
         extra = {str(key): value for key, value in mapping.items() if key not in known_keys}
@@ -288,6 +325,7 @@ class ChatMeta:
             tool_call_history=tool_call_history,
             llm_reasoning=ReasoningMeta.from_dict(mapping.get("llm_reasoning")),
             tool_calling_enabled=_as_bool(mapping.get("tool_calling_enabled"), True),
+            worldbook=WorldbookChatSettings.from_dict(mapping.get("worldbook")),
             extra=extra,
         )
 
@@ -306,4 +344,6 @@ class ChatMeta:
             data["llm_reasoning"] = self.llm_reasoning.to_dict()
         if not self.tool_calling_enabled:
             data["tool_calling_enabled"] = False
+        if self.worldbook != WorldbookChatSettings():
+            data["worldbook"] = self.worldbook.to_dict()
         return data

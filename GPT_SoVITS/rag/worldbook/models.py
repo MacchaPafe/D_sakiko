@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from rag.models import CanonBranch, SeriesId
+
 from .versioning import parse_semver, validate_version_spec
 
 
@@ -63,6 +65,16 @@ class ContentFileRecord(BaseModel):
     entry_type: EntryType
 
 
+class WorldbookConversationContext(BaseModel):
+    """描述季度根世界书包可用于对话的作品上下文。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: SeriesId
+    canon_branch: CanonBranch
+    story_year: int | None = Field(default=None, ge=1)
+
+
 class WorldbookManifest(BaseModel):
     """描述可独立发布的官方世界书包。"""
 
@@ -74,6 +86,7 @@ class WorldbookManifest(BaseModel):
     display_name: str
     package_type: Literal["season", "common"]
     timeline_id: str
+    conversation_context: WorldbookConversationContext | None = None
     dependencies: list[PackageDependency] = Field(default_factory=list)
     content_files: list[ContentFileRecord] = Field(default_factory=list)
 
@@ -88,13 +101,15 @@ class WorldbookManifest(BaseModel):
 
     @model_validator(mode="after")
     def validate_unique_dependencies(self) -> "WorldbookManifest":
-        """拒绝重复依赖和包对自身的直接依赖。"""
+        """拒绝重复依赖、自依赖及缺少对话上下文的季度包。"""
 
         dependency_ids = [item.package_id for item in self.dependencies]
         if len(dependency_ids) != len(set(dependency_ids)):
             raise ValueError("dependencies 不得重复声明同一 package_id")
         if self.package_id in dependency_ids:
             raise ValueError("世界书包不得直接依赖自身")
+        if self.package_type == "season" and self.conversation_context is None:
+            raise ValueError("season 世界书包必须声明 conversation_context")
         return self
 
 

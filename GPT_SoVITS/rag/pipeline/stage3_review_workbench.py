@@ -22,7 +22,7 @@ try:
 except ImportError as exc:  # pragma: no cover - 运行期依赖提示
     raise SystemExit("缺少 nicegui 依赖，请先执行 `uv sync` 或安装 nicegui。") from exc
 
-from rag.models import CharacterId
+from rag.models import CharacterId, SeriesId
 from rag.pipeline.review_models import ReviewFields
 from rag.pipeline.review_reason_catalog import (
     ReviewItemKind,
@@ -697,15 +697,43 @@ class Stage3ReviewWorkbench:
         content = record.effective_document()
         fields: dict[str, object] = {}
         with ui.grid(columns=3).classes("w-full gap-3"):
-            fields["scope_type"] = ui.input("scope_type", value=content.scope_type.value)
+            scope_field = ui.select(
+                {
+                    "series": "仅当前作品（SERIES）",
+                    "package": "随所属世界书包继承（PACKAGE）",
+                },
+                label="适用范围",
+                value=content.scope_type.value,
+            ).props("outlined dense")
+            fields["scope_type"] = scope_field
             fields["timeline_id"] = ui.input("timeline_id", value=content.timeline_id)
             fields["canon_branch"] = ui.input("canon_branch", value=content.canon_branch.value)
             fields["visible_from"] = ui.number("visible_from", value=content.visible_from, precision=0)
             fields["visible_to"] = ui.number("visible_to", value=content.visible_to, precision=0)
-        fields["series_ids"] = ui.input(
-            "series_ids（逗号分隔；空表示 null）",
-            value="" if content.series_ids is None else ", ".join(item.value for item in content.series_ids),
-        ).classes("w-full")
+        ui.label(
+            "SERIES 只在根世界书作品命中时可见，后续依赖作品不会自动继承；"
+            "PACKAGE 会随所属世界书包进入依赖闭包，但仍受时间与分支过滤。"
+        ).classes("field-hint")
+        series_field = ui.select(
+            {series.value: series.value for series in SeriesId},
+            label="适用作品（SERIES）",
+            value=[] if content.series_ids is None else [item.value for item in content.series_ids],
+            multiple=True,
+            clearable=True,
+            with_input=True,
+        ).props("use-chips options-dense input-debounce=0").classes("w-full")
+        series_field.set_visibility(content.scope_type.value == "series")
+        fields["series_ids"] = series_field
+
+        def update_series_visibility(event: object) -> None:
+            """根据 Lore 适用范围切换作品多选控件。"""
+
+            is_series = str(getattr(event, "value", "") or "") == "series"
+            series_field.set_visibility(is_series)
+            if not is_series:
+                series_field.value = []
+
+        scope_field.on_value_change(update_series_visibility)
         fields["applicable_story_years"] = ui.input(
             "适用学年（逗号分隔；空表示 null）",
             value=(
@@ -734,10 +762,11 @@ class Stage3ReviewWorkbench:
         """校验并应用 Lore Entry 表单。"""
 
         try:
-            series_ids = _widget_csv(fields["series_ids"])
+            scope_type = _widget_text(fields["scope_type"])
+            series_ids = _widget_string_list(fields["series_ids"]) if scope_type == "series" else []
             years = [int(item) for item in _widget_csv(fields["applicable_story_years"])]
             payload = LoreEntryPayload(
-                scope_type=_widget_text(fields["scope_type"]),
+                scope_type=scope_type,
                 series_ids=series_ids or None,
                 timeline_id=_widget_text(fields["timeline_id"]),
                 applicable_story_years=years or None,

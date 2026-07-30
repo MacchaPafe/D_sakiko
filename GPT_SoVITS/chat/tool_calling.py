@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import concurrent.futures
 import dataclasses
 import datetime
@@ -10,7 +12,7 @@ import sys
 import time
 import traceback
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import psutil
 import requests
@@ -33,6 +35,14 @@ class RegisteredTool:
     description: str
     parameters: Dict[str, Any]
     handler: ToolHandler
+    channel: Literal["general-visible", "worldbook-hidden"] = "general-visible"
+    availability: Callable[[], bool] | None = None
+    unavailable_message: str = "工具当前不可用"
+
+    def is_available(self) -> bool:
+        """判断该工具是否应继续出现在下一轮 schema 中。"""
+
+        return self.availability is None or self.availability()
 
     def as_openai_schema(self) -> Dict[str, Any]:
         """将注册的工具转换为 OpenAI 要求的 functions/tools JSON schema 格式。"""
@@ -60,6 +70,8 @@ class AgentRunResult:
     tool_rounds: int
     tool_errors: int
     tool_execution_records: List[Dict[str, Any]]
+    visible_tool_rounds: int = 0
+    visible_tool_errors: int = 0
 
 
 class ToolRegistry:
@@ -72,6 +84,9 @@ class ToolRegistry:
         description: str,
         parameters: Dict[str, Any],
         handler: ToolHandler,
+        channel: Literal["general-visible", "worldbook-hidden"] = "general-visible",
+        availability: Callable[[], bool] | None = None,
+        unavailable_message: str = "工具当前不可用",
     ) -> None:
         """注册一个新的工具到工具注册表中。"""
         self._tools[name] = RegisteredTool(
@@ -79,6 +94,9 @@ class ToolRegistry:
             description=description,
             parameters=parameters,
             handler=handler,
+            channel=channel,
+            availability=availability,
+            unavailable_message=unavailable_message,
         )
 
     def has_tool(self, name: str) -> bool:
@@ -87,7 +105,29 @@ class ToolRegistry:
 
     def build_tools_schema(self) -> List[Dict[str, Any]]:
         """构建所有已注册工具的 OpenAPI schema 列表，供 LLM API 调用时传入。"""
-        return [tool.as_openai_schema() for tool in self._tools.values()]
+        return [
+            tool.as_openai_schema()
+            for tool in self._tools.values()
+            if tool.is_available()
+        ]
+
+    def channel_for(
+        self,
+        name: str,
+    ) -> Literal["general-visible", "worldbook-hidden"] | None:
+        """返回工具展示通道；未知工具返回空。"""
+
+        tool = self._tools.get(name)
+        return tool.channel if tool is not None else None
+
+    def combined(self, overlay: "ToolRegistry" | None) -> "ToolRegistry":
+        """生成每轮独立注册表，overlay 中同名工具覆盖基础工具。"""
+
+        combined = ToolRegistry()
+        combined._tools = dict(self._tools)
+        if overlay is not None:
+            combined._tools.update(overlay._tools)
+        return combined
 
     def execute(self, request: ToolCallRequest) -> Tuple[bool, str]:
         """执行指定的工具调用请求，返回执行是否成功以及执行结果的字符串或JSON内容。"""
@@ -98,6 +138,15 @@ class ToolRegistry:
                     "ok": False,
                     "error": "tool_not_found",
                     "tool": request.name,
+                },
+                ensure_ascii=False,
+            )
+        if not tool.is_available():
+            return True, json.dumps(
+                {
+                    "ok": False,
+                    "error": "tool_unavailable",
+                    "message": tool.unavailable_message,
                 },
                 ensure_ascii=False,
             )
@@ -115,8 +164,9 @@ class ToolRegistry:
                 "error": "tool_execution_failed",
                 "tool": request.name,
                 "message": str(exc),
-                "traceback": traceback.format_exc(limit=3),
             }
+            if tool.channel != "worldbook-hidden":
+                error_payload["traceback"] = traceback.format_exc(limit=3)
             return False, json.dumps(error_payload, ensure_ascii=False)
 
 #-------------------------------  工具调用主循环的实现--------------------------------
@@ -177,6 +227,8 @@ class ToolCallingAgentRuntime:
         messages: List[Dict[str, Any]],
         llm_kwargs: Optional[Dict[str, Any]] = None,
         on_interim_message: Optional[InterimMessageCallback] = None,
+        tool_overlay: ToolRegistry | None = None,
+        include_base_tools: bool = True,
     ) -> AgentRunResult:
         """
         执行 Agent 工具调用主循环（简化版的 ReAct 模式）。
@@ -190,8 +242,15 @@ class ToolCallingAgentRuntime:
         history: List[Dict[str, Any]] = list(messages)
         tool_rounds = 0
         tool_errors = 0
+        visible_tool_rounds = 0
+        visible_tool_errors = 0
         tool_execution_records: List[Dict[str, Any]] = []
         pending_interim_future: Optional[concurrent.futures.Future] = None
+        active_registry = (
+            self.tool_registry.combined(tool_overlay)
+            if include_base_tools
+            else ToolRegistry().combined(tool_overlay)
+        )
 
         while True:
             if tool_rounds >= self.max_tool_rounds:
@@ -203,6 +262,7 @@ class ToolCallingAgentRuntime:
                 model=model,
                 messages=history,
                 llm_kwargs=llm_kwargs or {},
+                tool_registry=active_registry,
             )
             #print("LLM原始响应内容：\n" + self._serialize_response(response) + "\n--- 以上是完整响应内容 ---")
             parsed = self._parse_llm_response(response)
@@ -214,19 +274,24 @@ class ToolCallingAgentRuntime:
                 pending_interim_future = None
 
             tool_calls = parsed.get("tool_calls", [])
+            visible_tool_calls = [
+                call
+                for call in tool_calls
+                if active_registry.channel_for(call.name) == "general-visible"
+            ]
             interim_text = parsed.get("interim_message")
             interim_is_placeholder = False
-            if tool_calls and not interim_text:
+            if visible_tool_calls and not interim_text:
                 interim_text = "..."
                 interim_is_placeholder = True
-            if interim_text and on_interim_message is not None:
+            if visible_tool_calls and interim_text and on_interim_message is not None:
                 # 异步执行回调（这通常会把文本塞进队列，触发 TTS 和前端更新），并保存句柄
                 def _invoke_callback():
                     try:
-                        return on_interim_message(interim_text, tool_calls, interim_is_placeholder)
+                        return on_interim_message(interim_text, visible_tool_calls, interim_is_placeholder)
                     except TypeError:
                         try:
-                            return on_interim_message(interim_text, tool_calls)
+                            return on_interim_message(interim_text, visible_tool_calls)
                         except TypeError:
                             return on_interim_message(interim_text)
 
@@ -243,6 +308,8 @@ class ToolCallingAgentRuntime:
                     tool_rounds=tool_rounds,
                     tool_errors=tool_errors,
                     tool_execution_records=tool_execution_records,
+                    visible_tool_rounds=visible_tool_rounds,
+                    visible_tool_errors=visible_tool_errors,
                 )
 
             assistant_message = {
@@ -273,7 +340,11 @@ class ToolCallingAgentRuntime:
             history.append(assistant_message)
 
             # 遍历并执行所有工具调用，将结果转化为 tool 消息压入历史中供下一轮循环读取
+            round_has_visible_tool = False
             for call in tool_calls:
+                is_hidden = active_registry.channel_for(call.name) != "general-visible"
+                if not is_hidden:
+                    round_has_visible_tool = True
                 # 抽签窗口属于强交互型 UI，优先等待过渡文本播报完成后再弹出，避免体验割裂。
                 if call.name == "start_lottery" and pending_interim_future is not None:
                     pending_interim_future.result()
@@ -281,23 +352,26 @@ class ToolCallingAgentRuntime:
 
                 started_at = time.time()
                 started_perf = time.perf_counter()
-                ok, tool_output = self.tool_registry.execute(call)
+                ok, tool_output = active_registry.execute(call)
                 duration_sec = max(0.0, time.perf_counter() - started_perf)
                 if not ok:
                     tool_errors += 1
+                    if not is_hidden:
+                        visible_tool_errors += 1
 
-                tool_execution_records.append(
-                    {
-                        "tool_call_id": call.tool_call_id,
-                        "tool_name": call.name,
-                        "arguments": call.arguments,
-                        "ok": ok,
-                        "duration_sec": round(duration_sec, 3),
-                        "started_at": int(started_at),
-                        "result_content": self._format_tool_output_for_display(call.name, tool_output),
-                        "raw_result_content": tool_output[:12000],
-                    }
-                )
+                if not is_hidden:
+                    tool_execution_records.append(
+                        {
+                            "tool_call_id": call.tool_call_id,
+                            "tool_name": call.name,
+                            "arguments": call.arguments,
+                            "ok": ok,
+                            "duration_sec": round(duration_sec, 3),
+                            "started_at": int(started_at),
+                            "result_content": self._format_tool_output_for_display(call.name, tool_output),
+                            "raw_result_content": tool_output[:12000],
+                        }
+                    )
 
                 self._log(
                     "工具调用结果 raw json:\n"
@@ -321,6 +395,8 @@ class ToolCallingAgentRuntime:
                 )
 
             tool_rounds += 1
+            if round_has_visible_tool:
+                visible_tool_rounds += 1
 
         if pending_interim_future is not None:
             pending_interim_future.result()
@@ -338,15 +414,24 @@ class ToolCallingAgentRuntime:
             tool_rounds=tool_rounds,
             tool_errors=tool_errors,
             tool_execution_records=tool_execution_records,
+            visible_tool_rounds=visible_tool_rounds,
+            visible_tool_errors=visible_tool_errors,
         )
 
-    def _call_llm(self, model: str, messages: List[Dict[str, Any]], llm_kwargs: Dict[str, Any]) -> Any:
+    def _call_llm(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        llm_kwargs: Dict[str, Any],
+        tool_registry: ToolRegistry,
+    ) -> Any:
         """封装底层LiteLLM的接口请求，带上注册好的可用工具 Schema 以及当前聊天历史发送请求。"""
+        tools_schema = tool_registry.build_tools_schema()
         kwargs = {
             "model": model,
             "messages": messages,
-            "tools": self.tool_registry.build_tools_schema(),
-            "tool_choice": "auto",
+            "tools": tools_schema or None,
+            "tool_choice": "auto" if tools_schema else "none",
         }
         kwargs.update(llm_kwargs)
         # 只输出本轮请求摘要，不打印完整聊天历史，避免刷屏。

@@ -52,6 +52,11 @@ class WorldbookSyncTest(unittest.TestCase):
             display_name="测试包",
             package_type="season",
             timeline_id="test_timeline",
+            conversation_context={
+                "series_id": "its_mygo",
+                "canon_branch": "main",
+                "story_year": None,
+            },
             content_files=[ContentFileRecord(path="content/story_events.json", sha256=file_sha256(content_path), entry_type="story_event")],
         )
         (package_dir / "manifest.json").write_text(json.dumps(manifest.model_dump(mode="json")), encoding="utf-8")

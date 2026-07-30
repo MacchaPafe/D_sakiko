@@ -151,6 +151,26 @@ class DSakikoConfig(QConfig):
 
     # 用户自定义人设。内置的默认用户人设由程序创建，不写入配置。
     user_characters = ConfigItem("character_setting", "user_characters", [])
+    # AI 角色文件夹到世界书规范 CharacterId 的全局知识视角映射。
+    worldbook_character_mappings = ConfigItem(
+        "worldbook_setting",
+        "character_knowledge_mappings",
+        {},
+    )
+    # 是否把世界书诊断以短期滚动日志写入磁盘。
+    worldbook_diagnostics_persistence = OptionsConfigItem(
+        "worldbook_setting",
+        "diagnostics_persistence",
+        True,
+        validator=BoolValidator(),
+    )
+    # 是否已经向用户说明世界书诊断会短期包含相关对话文本。
+    worldbook_diagnostics_disclosure_seen = OptionsConfigItem(
+        "worldbook_setting",
+        "diagnostics_disclosure_seen",
+        False,
+        validator=BoolValidator(),
+    )
     
     # 角色的默认 live2d json 选择
     l2d_json_paths_dict = ConfigItem("character_setting", "l2d_json_paths_dict", {})

@@ -215,7 +215,11 @@ class _CollectionSpec(Generic[DocumentT]):
 class EmbeddingProvider:
     """负责加载并调用 sentence-transformer 模型。"""
 
-    def __init__(self, model_path: str, default_batch_size: int = 64) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        default_batch_size: int = 64,
+    ) -> None:
         """初始化 embedding provider。"""
 
         self._model_path: str = model_path
@@ -230,7 +234,7 @@ class EmbeddingProvider:
             return
 
         self._model = SentenceTransformer(self._model_path)
-        self._dimension = self._model.get_sentence_embedding_dimension()
+        self._dimension = self._model.get_embedding_dimension()
         if not self._dimension:
             raise ValueError("无法从 embedding 模型中获取有效向量维度。")
 

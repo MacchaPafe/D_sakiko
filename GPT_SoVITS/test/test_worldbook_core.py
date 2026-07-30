@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from rag.worldbook.adapters import create_default_registry
 from rag.worldbook.effective_entries import entry_revision, merge_effective_entries
 from rag.worldbook.hashing import file_sha256
@@ -51,6 +53,31 @@ def _story_entry() -> WorldbookEntry:
 
 class WorldbookCoreTest(unittest.TestCase):
     """验证 JSON 权威层的核心不变量。"""
+
+    def test_season_manifest_requires_conversation_context(self) -> None:
+        """季度包必须声明对话作品、正史分支和可选剧情年份。"""
+
+        with self.assertRaises(ValidationError):
+            WorldbookManifest(
+                package_id="test.season",
+                package_version="1.0.0",
+                display_name="测试季度",
+                package_type="season",
+                timeline_id="main",
+            )
+
+    def test_common_manifest_may_omit_conversation_context(self) -> None:
+        """公共依赖包无需伪造一个季度对话上下文。"""
+
+        manifest = WorldbookManifest(
+            package_id="test.common",
+            package_version="1.0.0",
+            display_name="测试公共包",
+            package_type="common",
+            timeline_id="main",
+        )
+
+        self.assertIsNone(manifest.conversation_context)
 
     def test_user_state_roundtrip_and_override_conflict(self) -> None:
         """用户状态应原子往返，并保留官方更新后的 base conflict。"""
@@ -128,6 +155,11 @@ class WorldbookCoreTest(unittest.TestCase):
                 display_name="测试包",
                 package_type="season",
                 timeline_id="test_timeline",
+                conversation_context={
+                    "series_id": "its_mygo",
+                    "canon_branch": "main",
+                    "story_year": None,
+                },
                 content_files=[ContentFileRecord(path="content/story_events.json", sha256=file_sha256(content_path), entry_type="story_event")],
             )
             (package_dir / "manifest.json").write_text(json.dumps(manifest.model_dump(mode="json")), encoding="utf-8")

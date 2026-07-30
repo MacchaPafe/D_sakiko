@@ -87,6 +87,9 @@ from ui_main.components.context_usage_indicator import (
 from ui_main.components.message_input import MessageInput
 from ui_main.components.update_dialog import UpdateDialog
 from ui_main.components.repair_dialog import RepairDialog
+from ui_main.components.worldbook_conversation_control import (
+    WorldbookConversationControl,
+)
 from ui_main.threads.repair_controller import RepairCheckThread, RepairPrepareThread
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
 from ui.file_manager import show_file_in_manager
@@ -106,6 +109,8 @@ from input_commands import (
 )
 from live2d_support.model_importer import Live2DModelImportError, import_live2d_model_to_extra_model
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
+from rag.worldbook.paths import WorldbookPaths
+from rag.worldbook.runtime.catalog import WorldbookRootCatalog
 
 
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
@@ -804,7 +809,7 @@ class SettingWindow(QDialog):
         self.resize(int(desktop_size.width()*0.2),int(desktop_size.height()*0.4))
         self.change_lan_btn=QPushButton("切换语言")
         self.change_lan_btn.clicked.connect(self.change_lan)
-        self.switch_voice_btn=QPushButton("开启/关闭语言合成")
+        self.switch_voice_btn=QPushButton("开启/关闭语音合成")
         self.switch_voice_btn.clicked.connect(self.switch_voice)
         self.clear_history_btn=QPushButton("清空聊天记录")
         self.clear_history_btn.clicked.connect(self.clear_history_msg)
@@ -2383,7 +2388,7 @@ class ChatGUI(QWidget):
         self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
         self.screen = QDesktopWidget().screenGeometry()
         self.input_tool_button_height = int(self.screen.height()*0.027)
-        self.resize(int(0.37 * self.screen.width()), int(0.7 * self.screen.height()))
+        self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
         self.chat_display = ChatDisplay(self)
         self.chat_display.audioLinkClicked.connect(self.play_history_audio)  # noqa
         self.chat_display.toolCallClicked.connect(self._open_tool_call_dialog)  # noqa
@@ -2461,6 +2466,28 @@ class ChatGUI(QWidget):
         self._context_usage_refresh_timer = QTimer(self)
         self._context_usage_refresh_timer.setSingleShot(True)
         self._context_usage_refresh_timer.timeout.connect(self.refresh_context_usage_indicator)  # noqa
+
+        worldbook_paths = WorldbookPaths(Path(get_app_root()))
+        self.worldbook_control = WorldbookConversationControl(
+            chat_manager=self.chat_manager,
+            config=d_sakiko_config,
+            catalog=WorldbookRootCatalog(
+                worldbook_paths.official_packages,
+                worldbook_paths.user_state,
+            ),
+            diagnostic_store=getattr(
+                self.dp_chat,
+                "worldbook_diagnostic_store",
+                None,
+            ),
+            button_height=self.input_tool_button_height,
+            parent=self,
+        )
+        self.worldbook_control.status_changed.connect(self.setWindowTitle)  # noqa
+        self.worldbook_control.diagnostic_ready.connect(
+            self.chat_display.append_worldbook_diagnostic
+        )  # noqa
+        self.worldbook_control.bind(self.current_chat, self.current_character)
 
         layout = QVBoxLayout()
 
@@ -2615,7 +2642,11 @@ class ChatGUI(QWidget):
         QTimer.singleShot(0, self.show_last_update_failure_if_needed)
         QTimer.singleShot(0, self.show_last_repair_failure_if_needed)
         from ui.controllers.worldbook_sync_controller import WorldbookSyncController
-        self.worldbook_sync_controller = WorldbookSyncController(Path(get_app_root()), self)
+        self.worldbook_sync_controller = WorldbookSyncController(
+            Path(get_app_root()),
+            self,
+            readiness_state=self.dp_chat.worldbook_index_readiness,
+        )
         QTimer.singleShot(0, self.worldbook_sync_controller.reconcile_all)
         QTimer.singleShot(30000, self.start_auto_update_check)
 
@@ -3908,6 +3939,7 @@ class ChatGUI(QWidget):
         self._refresh_input_option_buttons()
 
         bottom_layout.addWidget(self.tool_calling_toggle_button, 0)
+        bottom_layout.addWidget(self.worldbook_control.button, 0)
         bottom_layout.addStretch(1)
         bottom_layout.addWidget(self.context_usage_indicator, 0)
         bottom_layout.addWidget(self.reasoning_menu_button, 0)
@@ -3954,6 +3986,8 @@ class ChatGUI(QWidget):
     def _refresh_input_option_buttons(self) -> None:
         """刷新输入栏中的对话级选项按钮。"""
         self._refresh_tool_calling_button()
+        if hasattr(self, "worldbook_control"):
+            self.worldbook_control.bind(self.current_chat, self.current_character)
         self._refresh_reasoning_button()
 
     def _refresh_tool_calling_button(self) -> None:
@@ -4076,6 +4110,8 @@ class ChatGUI(QWidget):
                     border: 1px solid {send_pressed_color};
                 }}
             """)
+        if hasattr(self, "worldbook_control"):
+            self.worldbook_control.set_theme_color(send_color.name())
         self.input_panel.setStyleSheet(f"""
             QFrame#messageInputPanel {{
                 background-color: #FFFFFF;
@@ -5092,6 +5128,12 @@ class ChatGUI(QWidget):
                     str(payload.get("message") or "正在整理过往思绪...")
                 )
             return
+        if event_type == "worldbook_diagnostic":
+            chat_id = str(payload.get("chat_id") or "")
+            record = payload.get("record")
+            if isinstance(record, dict):
+                self.worldbook_control.accept_diagnostic(chat_id, record)
+            return
         if event_type in {"tool_call_started", "tool_call_updated"}:
             chat_id = str(payload.get("chat_id") or self.current_chat_id)
             if chat_id != self.current_chat_id:
@@ -5595,6 +5637,9 @@ class ChatGUI(QWidget):
     ) -> None:
         """向后端发送用户消息请求，并启动当前 active turn。"""
         turn_id = uuid.uuid4().hex
+        worldbook_snapshot = self.worldbook_control.freeze_turn_snapshot(
+            append_user_message=append_user_message
+        )
         self._start_active_turn(self.current_chat_id, turn_id, "llm")
         self.qt2dp_queue.put({
             "type": "send_message",
@@ -5603,6 +5648,7 @@ class ChatGUI(QWidget):
             "text": text,
             "append_user_message": append_user_message,
             "image_source_paths": list(image_source_paths),
+            "worldbook_snapshot": worldbook_snapshot,
         })
         self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
 

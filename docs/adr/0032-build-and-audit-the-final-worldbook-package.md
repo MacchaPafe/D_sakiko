@@ -18,7 +18,7 @@ status: accepted
 
 审核工作台负责人工编辑与处置、显式重生成受影响审核产物，以及运行只读构建审计并把错误定位到对应文件和审核项；它不提供正式发布操作。单包与批量 `publish-worldbook(s)` 继续作为独立 CLI，在审核者确认工作台已达到审计就绪后执行，从而不把权威标注编辑与正式包替换、身份映射修改和索引重建放进同一个界面动作。
 
-构建配置显式声明 `package_id`、`package_version`、`display_name`、`package_type`、`series_id`、`timeline_id`、`canon_branch` 和可空的 `story_year`。前三类范围字段作为所有输入必须满足的构建预期，不能从第一份 artifact 隐式推导；`story_year` 非空时才要求适用输入一致，空值表示不强制整个包属于同一学年。`series_id` 与 `canon_branch` 即使不进入 manifest，也必须参与构建校验。
+构建配置显式声明 `package_id`、`package_version`、`display_name`、`package_type`、`series_id`、`timeline_id`、`canon_branch` 和可空的 `story_year`。前三类范围字段作为所有输入必须满足的构建预期，不能从第一份 artifact 隐式推导；`story_year` 非空时才要求适用输入一致，空值表示不强制整个包属于同一学年。季度包把 `series_id`、`canon_branch` 和可空 `story_year` 写入 manifest 的对话上下文，供运行时解释用户选择的分集进度；通用依赖包不作为对话根包，可以省略这组元数据。
 
 每份单包构建配置还必须由发布者显式提供 `dependencies` 列表及其 `package_id`、`version_spec`；发布器原样生成正式 manifest 并执行依赖图审计。依赖不从系列、品牌、时间线、包名或上一版 manifest 推导，省略列表即表示没有依赖。构建报告可以显示依赖集合变化，但不自动继承、恢复或判断其业务合理性；构建配置是开发侧依赖声明的唯一来源，manifest 是运行时来源。
 

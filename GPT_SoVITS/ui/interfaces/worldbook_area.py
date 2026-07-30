@@ -1750,7 +1750,7 @@ def _entry_secondary(entry: WorldbookEntry) -> str:
         target = _character_name(entry.content.get("object_character_id"))
         return f"{subject} → {target} · {_time_label(entry)}"
     scope = entry.content.get("scope_type")
-    return "适用于整个世界书包" if scope == "global" else "适用于指定系列"
+    return "随所属世界书包生效" if scope == "package" else "仅适用于指定作品"
 
 
 def _record_search_text(record: PackageEntryRecord) -> str:

@@ -1,4 +1,6 @@
 # 配置自定义的个性化设置参数的相关 UI
+from __future__ import annotations
+
 import contextlib
 import glob
 import os
@@ -6,13 +8,14 @@ import shutil
 import time
 
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import QVBoxLayout, QFileDialog
+from PyQt5.QtWidgets import QFileDialog, QVBoxLayout, QWidget
 
 import character
 from log import get_logger
 from qconfig import d_sakiko_config
 
 from ..custom_widgets.character_setting_card import CharacterSettingCard
+from ..custom_widgets.custom_switch_setting_card import SwitchSettingCard
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import SettingCardGroup, ComboBoxSettingCard, FluentIcon, \
@@ -30,7 +33,9 @@ class CustomSettingArea(TransparentScrollArea):
     # 发送通知信息的信号
     status_signal = pyqtSignal(InfoBarIcon, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """创建个性化设置区域。"""
+
         super().__init__(parent)
 
         self.v_box_layout = QVBoxLayout(self.view)
@@ -65,6 +70,13 @@ class CustomSettingArea(TransparentScrollArea):
             self.tr('选择设置界面的主题色'),
             self.personal_group,
         )
+        self.worldbook_diagnostics_card = SwitchSettingCard(
+            FluentIcon.DOCUMENT,
+            self.tr("保存世界书诊断"),
+            self.tr("短期滚动保存相关对话、模型文本和检索结果，便于反馈检索问题"),
+            d_sakiko_config.worldbook_diagnostics_persistence,
+            parent=self.personal_group,
+        )
 
         self.font_card.clicked.connect(self.user_select_font_file)
 
@@ -72,16 +84,19 @@ class CustomSettingArea(TransparentScrollArea):
         self.personal_group.addSettingCard(self.font_card)
         self.personal_group.addSettingCard(self.theme_card)
         self.personal_group.addSettingCard(self.theme_color_card)
+        self.personal_group.addSettingCard(self.worldbook_diagnostics_card)
 
         self.v_box_layout.addWidget(self.personal_group)
 
         self.theme_card.comboBox.currentIndexChanged.connect(lambda: setTheme(d_sakiko_config.get(d_sakiko_config.themeMode), lazy=True))
 
-    def load_config_to_ui(self):
-        """
-        从 d_sakiko_config 中加载设置到 UI 上。
-        """
+    def load_config_to_ui(self) -> None:
+        """从 d_sakiko_config 中加载设置到 UI 上。"""
+
         self.character_setting_card.load_config_to_ui()
+        self.worldbook_diagnostics_card.setChecked(
+            bool(d_sakiko_config.worldbook_diagnostics_persistence.value)
+        )
 
     def save_ui_to_config(self) -> bool:
         """
@@ -89,8 +104,10 @@ class CustomSettingArea(TransparentScrollArea):
         """
         return self.character_setting_card.save_ui_to_config()
 
-    def user_select_font_file(self):
-        file_path, file_type = QFileDialog.getOpenFileName(
+    def user_select_font_file(self) -> None:
+        """选择并复制自定义字体文件。"""
+
+        file_path, _file_type = QFileDialog.getOpenFileName(
             self,
             "选择字体文件（.ttf/.otf/.ttc）",
             "",

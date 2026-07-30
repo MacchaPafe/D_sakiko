@@ -11,15 +11,16 @@ from qdrant_client import QdrantClient, models as qdrant_models
 from rag.services import EmbeddingProvider
 
 from .hashing import canonical_json_sha256
+from .index_schema import (
+    COLLECTION_NAMES,
+    EMBEDDING_MODEL_ID,
+    INDEX_SCHEMA_VERSION,
+    PAYLOAD_INDEXES,
+    PROJECTION_VERSION,
+    e5_passage_text,
+    payload_schema_type,
+)
 from .models import EntryType, IndexPointMetadata, IndexProjection
-
-
-_COLLECTIONS: dict[EntryType, str] = {
-    "story_event": "story_events",
-    "character_relation": "character_relations",
-    "lore_entry": "lore_entries",
-    "character_thought": "character_thoughts",
-}
 
 
 class QdrantWorldbookIndex:
@@ -39,11 +40,12 @@ class QdrantWorldbookIndex:
 
         return canonical_json_sha256(
             {
-                "index_schema_version": 2,
-                "projection_version": 0,
-                "embedding_model_id": "multilingual-e5-small",
+                "index_schema_version": INDEX_SCHEMA_VERSION,
+                "projection_version": PROJECTION_VERSION,
+                "embedding_model_id": EMBEDDING_MODEL_ID,
                 "embedding_model_digest": _directory_digest(self._embedding_model_path),
                 "distance": "cosine",
+                "e5_prefix_strategy": "query-passage-v1",
             }
         )
 
@@ -52,7 +54,7 @@ class QdrantWorldbookIndex:
 
         client = self._ensure_client()
         result: dict[UUID, IndexPointMetadata] = {}
-        for entry_type, collection_name in _COLLECTIONS.items():
+        for entry_type, collection_name in COLLECTION_NAMES.items():
             if not client.collection_exists(collection_name):
                 continue
             offset: int | str | UUID | None = None
@@ -80,13 +82,16 @@ class QdrantWorldbookIndex:
             return 0
         client = self._ensure_client()
         self._ensure_collections()
-        grouped: dict[EntryType, list[IndexProjection]] = {entry_type: [] for entry_type in _COLLECTIONS}
+        grouped: dict[EntryType, list[IndexProjection]] = {entry_type: [] for entry_type in COLLECTION_NAMES}
         for projection in projections:
             grouped[projection.entry_type].append(projection)
         for entry_type, items in grouped.items():
             if not items:
                 continue
-            vectors = self._embedding.encode_texts([item.embedding_text for item in items], batch_size=self._batch_size)
+            vectors = self._embedding.encode_texts(
+                [e5_passage_text(item.embedding_text) for item in items],
+                batch_size=self._batch_size,
+            )
             points: list[qdrant_models.PointStruct] = []
             for item, vector in zip(items, vectors):
                 payload = dict(item.payload)
@@ -100,7 +105,7 @@ class QdrantWorldbookIndex:
                 )
                 payload["index_fingerprint"] = index_fingerprint
                 points.append(qdrant_models.PointStruct(id=str(item.entry_id), vector=vector, payload=payload))
-            client.upsert(collection_name=_COLLECTIONS[entry_type], points=points, wait=True)
+            client.upsert(collection_name=COLLECTION_NAMES[entry_type], points=points, wait=True)
         return len(projections)
 
     def delete(self, point_ids: list[UUID]) -> int:
@@ -110,7 +115,7 @@ class QdrantWorldbookIndex:
             return 0
         client = self._ensure_client()
         ids = [str(point_id) for point_id in point_ids]
-        for collection_name in _COLLECTIONS.values():
+        for collection_name in COLLECTION_NAMES.values():
             if client.collection_exists(collection_name):
                 client.delete(collection_name=collection_name, points_selector=qdrant_models.PointIdsList(points=ids), wait=True)
         return len(point_ids)
@@ -121,7 +126,7 @@ class QdrantWorldbookIndex:
         client = self._ensure_client()
         deleted = 0
         package_filter = qdrant_models.Filter(must=[qdrant_models.FieldCondition(key="package_id", match=qdrant_models.MatchValue(value=package_id))])
-        for collection_name in _COLLECTIONS.values():
+        for collection_name in COLLECTION_NAMES.values():
             if not client.collection_exists(collection_name):
                 continue
             before = client.count(collection_name=collection_name, count_filter=package_filter, exact=True).count
@@ -133,7 +138,7 @@ class QdrantWorldbookIndex:
         """删除且仅删除世界书拥有的四类 collection。"""
 
         client = self._ensure_client()
-        for collection_name in _COLLECTIONS.values():
+        for collection_name in COLLECTION_NAMES.values():
             if client.collection_exists(collection_name):
                 client.delete_collection(collection_name)
 
@@ -158,13 +163,20 @@ class QdrantWorldbookIndex:
 
         client = self._ensure_client()
         vector_size = self._embedding.get_dimension()
-        for collection_name in _COLLECTIONS.values():
+        for entry_type, collection_name in COLLECTION_NAMES.items():
             if not client.collection_exists(collection_name):
                 client.create_collection(collection_name=collection_name, vectors_config=qdrant_models.VectorParams(size=vector_size, distance=qdrant_models.Distance.COSINE))
-            try:
-                client.create_payload_index(collection_name=collection_name, field_name="package_id", field_schema=qdrant_models.PayloadSchemaType.KEYWORD)
-            except Exception:
-                pass
+            for spec in PAYLOAD_INDEXES[entry_type]:
+                try:
+                    client.create_payload_index(
+                        collection_name=collection_name,
+                        field_name=spec.field_name,
+                        field_schema=qdrant_models.PayloadSchemaType(
+                            payload_schema_type(spec.schema_name).lower()
+                        ),
+                    )
+                except Exception:
+                    pass
 
 
 def _directory_digest(path: Path) -> str:

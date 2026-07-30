@@ -42,10 +42,11 @@ class CanonBranch(str, Enum):
 
 class ScopeType(str, Enum):
     """定义世界观名词条目的适用范围类型。"""
-    # 只在特定烯类动漫中适用
+
+    # 只在特定系列动漫中适用
     SERIES = "series"
-    # 全局适用
-    GLOBAL = "global"
+    # 在所属世界书包进入根包依赖闭包时适用
+    PACKAGE = "package"
 
 
 class BandId(str, Enum):
@@ -568,7 +569,7 @@ class LoreEntryDocument(BaseQdrantDocument):
 
     collection_name: ClassVar[CollectionName] = CollectionName.LORE_ENTRIES
 
-    #: 该条目的适用范围类型，例如全局或特定系列。
+    #: 该条目的适用范围类型，例如所属世界书包或特定系列。
     scope_type: ScopeType
     #: 该条目适用的系列范围列表。
     series_ids: Optional[List[SeriesId]]

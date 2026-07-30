@@ -23,7 +23,13 @@ from rag.pipeline.schemas import LoreEntryPayload
 from .build_models import EpisodeBuildInput, WorldbookBuildSpec
 from .hashing import file_sha256 as output_file_sha256
 from .identity_map import IdentityResolver
-from .models import ContentFileRecord, EntryType, WorldbookEntry, WorldbookManifest
+from .models import (
+    ContentFileRecord,
+    EntryType,
+    WorldbookConversationContext,
+    WorldbookEntry,
+    WorldbookManifest,
+)
 
 
 _ENTRY_FILES: tuple[tuple[EntryType, str], ...] = (
@@ -535,6 +541,15 @@ def _write_package(
         display_name=spec.display_name,
         package_type=spec.package_type,
         timeline_id=spec.timeline_id,
+        conversation_context=(
+            WorldbookConversationContext(
+                series_id=spec.series_id,
+                canon_branch=spec.canon_branch,
+                story_year=spec.story_year,
+            )
+            if spec.package_type == "season"
+            else None
+        ),
         dependencies=sorted(spec.dependencies, key=lambda item: item.package_id),
         content_files=records,
     )

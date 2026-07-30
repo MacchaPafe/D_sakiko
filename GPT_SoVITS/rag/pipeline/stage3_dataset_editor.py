@@ -24,6 +24,7 @@ except ImportError as exc:  # pragma: no cover - 运行期依赖提示
     ) from exc
 
 from rag.pipeline.schemas import Stage3NormalizedImportArtifact
+from rag.models import SeriesId
 
 DEFAULT_INPUT_PATH = PIPELINE_ROOT / "data" / "annotations_stage3" / "ep01_rag_ready.json"
 
@@ -363,6 +364,47 @@ class Stage3DatasetEditor:
         self.refresh_record_list()
         self.refresh_metadata_panel()
         self.refresh_editor()
+
+    def _update_lore_scope(self, value: object) -> None:
+        """更新 Lore 适用范围，并维护 series_ids 不变量。"""
+
+        if self._syncing_form:
+            return
+        document = self.current_document()
+        if document is None:
+            return
+        scope_type = str(value or "").strip()
+        if scope_type not in {"series", "package"}:
+            return
+        document["scope_type"] = scope_type
+        if scope_type == "package":
+            document["series_ids"] = None
+        elif not document.get("series_ids"):
+            series_id = str(self.data.get("metadata", {}).get("series_id") or "").strip()
+            document["series_ids"] = [series_id] if series_id else []
+        self.mark_dirty()
+        self.refresh_record_list()
+        self.refresh_metadata_panel()
+        self.refresh_editor()
+
+    def _update_lore_series_ids(self, value: object) -> None:
+        """更新 SERIES Lore 的适用作品列表。"""
+
+        if self._syncing_form:
+            return
+        document = self.current_document()
+        if document is None or document.get("scope_type") != "series":
+            return
+        if isinstance(value, (list, tuple)):
+            normalized = dedupe_texts([str(item) for item in value])
+        elif value is None:
+            normalized = []
+        else:
+            normalized = dedupe_texts([str(value)])
+        document["series_ids"] = normalized
+        self.mark_dirty()
+        self.refresh_record_list()
+        self.refresh_metadata_panel()
 
     def _record_title(self, section: str, record: dict[str, Any]) -> str:
         document = record["document"]
@@ -735,6 +777,29 @@ class Stage3DatasetEditor:
 
     def _build_lore_form(self, document: dict[str, Any]) -> None:
         with ui.column().classes("w-full gap-4"):
+            ui.select(
+                {
+                    "series": "仅当前作品（SERIES）",
+                    "package": "随所属世界书包继承（PACKAGE）",
+                },
+                label="适用范围",
+                value=document.get("scope_type", "series"),
+                on_change=lambda event: self._update_lore_scope(event.value),
+            ).props("outlined dense").classes("w-full")
+            ui.label(
+                "SERIES 只适用于所选作品，依赖它的后续作品默认看不到；"
+                "PACKAGE 会随所属世界书包被后续依赖作品继承。"
+            ).classes("text-xs text-slate-500")
+            series_select = ui.select(
+                {series.value: series.value for series in SeriesId},
+                label="适用作品（SERIES）",
+                value=document.get("series_ids") or [],
+                multiple=True,
+                clearable=True,
+                with_input=True,
+                on_change=lambda event: self._update_lore_series_ids(event.value),
+            ).props("use-chips options-dense input-debounce=0").classes("w-full")
+            series_select.set_visibility(document.get("scope_type") == "series")
             self._build_text_input(
                 "title",
                 document.get("title", ""),

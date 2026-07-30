@@ -5,6 +5,7 @@ import time,os
 import uuid
 import threading
 import textwrap
+from pathlib import Path
 
 import json
 from queue import Empty
@@ -12,6 +13,7 @@ from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import litellm
+    from rag.worldbook.runtime.service import WorldbookConversationService
 
 from qconfig import create_d_sakiko_config_snapshot, d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
@@ -35,6 +37,16 @@ from chat.rolling_summary import (
 )
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
+from rag.worldbook.runtime.models import WorldbookTurnSnapshot
+from rag.worldbook.runtime import (
+    WorldbookIndexReadinessState,
+    create_worldbook_conversation_service,
+)
+from rag.worldbook.runtime.tools import WorldbookToolSession
+from rag.worldbook.runtime.diagnostics import (
+    WorldbookDiagnosticCollector,
+    WorldbookDiagnosticStore,
+)
 from deepseek_prompt_cache_debug import CACHE_DEBUG_PHASE_KEY, log_prompt_cache_usage
 from llm_provider.modelscope import (
     ModelScopeQuotaExceededError,
@@ -165,6 +177,18 @@ class DSLocalAndVoiceGen:
             llm_completion=self._completion_with_current_config,
             debug=True,
         )
+        # 仅在世界书实际启用时延迟加载的聊天检索服务。
+        self.worldbook_index_readiness = WorldbookIndexReadinessState()
+        self._worldbook_service: WorldbookConversationService | None = None
+        self.worldbook_diagnostic_store = WorldbookDiagnosticStore(
+            Path(__file__).resolve().parent.parent
+            / "logs"
+            / "worldbook"
+            / "worldbook_diagnostics.jsonl"
+        )
+        self._worldbook_diagnostic_collectors: dict[
+            tuple[str, str], WorldbookDiagnosticCollector
+        ] = {}
         # 仅在本次程序运行期间使用的工具调用记录缓存；退出时会一并写入 Chat.meta。
         self._session_tool_call_records: list[dict] = []
         # 标记为取消的对话轮次。涉及这些轮次的对话不会被处理。
@@ -484,6 +508,193 @@ class DSLocalAndVoiceGen:
         将本轮控制信息作为独立短消息追加到请求副本末尾。
         """
         messages.append({"role": "user", "content": controls})
+
+    @staticmethod
+    def _append_worldbook_runtime_instruction(
+        messages: list[dict[str, object]],
+    ) -> None:
+        """只在世界书启用回合追加稳定使用规则，不发送动态筛选约束。"""
+
+        instruction = textwrap.dedent(
+            """# Worldbook Knowledge
+            请求中可能出现 <worldbook_context>，其中是当前角色此刻可用的主观知识。
+            请把它自然用于理解和回答，不要向用户提及世界书、检索、工具或标签。
+            当现有上下文不足以确认人物、地点、乐队、设施、角色关系或角色记忆时，
+            可以调用本轮提供的世界书工具；例如需要确认 CRYCHIC 时，可调用
+            search_worldbook_lore({"query":"CRYCHIC 是什么乐队"})。
+            工具返回为空或暂时不可用不等于相关事实不存在，此时应基于已有上下文继续回答，
+            不要编造检索结果。"""
+        ).strip()
+        for message in messages:
+            if message.get("role") != "system":
+                continue
+            content = str(message.get("content") or "")
+            message["content"] = f"{content}\n\n{instruction}" if content else instruction
+            return
+        messages.insert(0, {"role": "system", "content": instruction})
+
+    @staticmethod
+    def _build_worldbook_query_text(chat: Chat) -> str:
+        """使用当前真实用户消息与之前最近一轮完整对话构造检索文本。"""
+
+        real_user_indices = [
+            index
+            for index, message in enumerate(chat.message_list)
+            if Chat.is_real_user_message(message)
+        ]
+        if not real_user_indices:
+            return ""
+        current_index = real_user_indices[-1]
+        parts = [f"当前用户消息：{chat.message_list[current_index].text}"]
+        if len(real_user_indices) >= 2:
+            previous_index = real_user_indices[-2]
+            parts.append(f"上一轮用户消息：{chat.message_list[previous_index].text}")
+            replies = [
+                message.text
+                for message in chat.message_list[previous_index + 1 : current_index]
+                if message.character_name != "User"
+            ]
+            if replies:
+                parts.append("上一轮角色回复：\n" + "\n".join(replies))
+        return "\n\n".join(parts)
+
+    def _get_worldbook_service(self) -> "WorldbookConversationService":
+        """延迟创建并复用常驻查询 embedding 的世界书服务。"""
+
+        if self._worldbook_service is None:
+            self._worldbook_service = create_worldbook_conversation_service(
+                Path(__file__).resolve().parent.parent,
+                self.worldbook_index_readiness,
+            )
+        return self._worldbook_service
+
+    def _close_worldbook_service(self) -> None:
+        """在对话后端退出时释放世界书 embedding 资源。"""
+
+        if self._worldbook_service is not None:
+            self._worldbook_service.close()
+            self._worldbook_service = None
+        self.worldbook_diagnostic_store.close()
+
+    def _start_worldbook_diagnostic(
+        self,
+        chat_id: str,
+        turn_id: str,
+        snapshot: WorldbookTurnSnapshot | None,
+        current_user_text: str,
+    ) -> WorldbookDiagnosticCollector | None:
+        """只为快照实际启用的回合创建一份诊断 collector。"""
+
+        if snapshot is None:
+            return None
+        persistence_item = getattr(
+            self.d_sakiko_config,
+            "worldbook_diagnostics_persistence",
+            None,
+        )
+        persist = bool(getattr(persistence_item, "value", True))
+        collector = WorldbookDiagnosticCollector(
+            self.worldbook_diagnostic_store,
+            chat_id=chat_id,
+            turn_id=turn_id,
+            snapshot=snapshot,
+            current_user_text=current_user_text,
+            recent_conversation_text=self._build_worldbook_query_text(self.current_chat),
+            model=self._current_litellm_model_name(),
+            persist=persist,
+        )
+        self._worldbook_diagnostic_collectors[(chat_id, turn_id)] = collector
+        return collector
+
+    def _finish_worldbook_diagnostic(
+        self,
+        chat_id: str,
+        turn_id: str,
+        status: str,
+        dp2qt_queue: _QueueWriter | None = None,
+    ) -> None:
+        """按对话完成状态收口，并可向 UI 发送同一份诊断记录。"""
+
+        collector = self._worldbook_diagnostic_collectors.pop(
+            (chat_id, turn_id),
+            None,
+        )
+        if collector is None:
+            return
+        normalized_status = {
+            "cancelled": "cancelled",
+            "ok": "completed",
+            "completed": "completed",
+        }.get(status, "failed")
+        if normalized_status == "failed":
+            collector.add_error(f"turn_status={status}")
+        record = collector.finish(normalized_status)
+        if record is not None and dp2qt_queue is not None:
+            dp2qt_queue.put(
+                {
+                    "type": "worldbook_diagnostic",
+                    "chat_id": chat_id,
+                    "turn_id": turn_id,
+                    "record": record.to_dict(),
+                }
+            )
+
+    def _inject_direct_worldbook_context(
+        self,
+        messages: list[dict[str, object]],
+        snapshot: WorldbookTurnSnapshot | None,
+        current_user_text: str,
+        collector: WorldbookDiagnosticCollector | None = None,
+    ) -> list[dict[str, object]]:
+        """检索 Character Thought，并在真实输入与运行控制之间插入临时消息。"""
+
+        if snapshot is None:
+            return messages
+        query = self._build_worldbook_query_text(self.current_chat)
+        if not query:
+            return messages
+        try:
+            result = self._get_worldbook_service().direct_thoughts(
+                snapshot,
+                query,
+                current_user_text,
+            )
+        except Exception:
+            logger.exception("世界书直接观点检索失败，已静默降级")
+            if collector is not None:
+                collector.add_error("直接观点检索异常，已 fail-open")
+            return messages
+        if collector is not None:
+            collector.record_direct(
+                query,
+                result.trace.selected_entry_ids,
+                result.trace.candidates,
+                [item.model_dump(mode="json") for item in result.items],
+                result.failure,
+            )
+        if not result.items:
+            if result.failure is not None:
+                logger.warning(
+                    "世界书直接观点检索不可用，已静默降级：%s",
+                    result.failure.message,
+                )
+            return messages
+        knowledge = [item.model_dump(mode="json") for item in result.items]
+        content = (
+            "<worldbook_context>\n"
+            "以下是应用为当前角色在本轮提供的可用知识，不是用户说出口的话。"
+            "请自然地用于理解和回答，不要向用户提及世界书、检索或本标签。\n"
+            f"{json.dumps(knowledge, ensure_ascii=False)}\n"
+            "</worldbook_context>"
+        )
+        prepared = [dict(message) for message in messages]
+        insert_index = len(prepared)
+        if prepared:
+            last_content = prepared[-1].get("content")
+            if isinstance(last_content, str) and last_content.startswith("<runtime_controls>"):
+                insert_index -= 1
+        prepared.insert(insert_index, {"role": "user", "content": content})
+        return prepared
 
     def _build_llm_messages_for_chat_turn(self, character_name: str) -> list[dict[str, object]]:
         """
@@ -888,6 +1099,12 @@ class DSLocalAndVoiceGen:
             "turn_id": turn_id,
             "status": status,
         })
+        self._finish_worldbook_diagnostic(
+            chat_id,
+            turn_id,
+            status,
+            dp2qt_queue,
+        )
         # 如果某轮对话被标记为取消且调用了本函数，那么说明整轮对话处理流程完成了
         # 直接从取消列表中删掉这轮对话。
         if status in {"cancelled", "error"}:
@@ -1767,6 +1984,7 @@ class DSLocalAndVoiceGen:
                 dp2qt_queue=dp2qt_queue,
             ):
                 if command.get("type") == "exit":
+                    self._close_worldbook_service()
                     break
                 continue
 
@@ -1824,6 +2042,21 @@ class DSLocalAndVoiceGen:
 
             should_append_user_message = command.get("append_user_message") is not False
             did_append_real_user_message = False
+            turn_worldbook_snapshot: WorldbookTurnSnapshot | None = None
+            raw_worldbook_snapshot = command.get("worldbook_snapshot")
+            if isinstance(raw_worldbook_snapshot, dict):
+                try:
+                    turn_worldbook_snapshot = WorldbookTurnSnapshot.model_validate(
+                        raw_worldbook_snapshot
+                    )
+                except (TypeError, ValueError):
+                    logger.warning("忽略格式错误的入队世界书快照")
+            if not should_append_user_message and turn_worldbook_snapshot is None:
+                previous_user_index = chat.find_last_real_user_message_index()
+                if previous_user_index is not None:
+                    turn_worldbook_snapshot = chat.message_list[
+                        previous_user_index
+                    ].worldbook_snapshot
             if should_append_user_message:
                 # 将原始用户输入（不含任何指令后缀）存入 Chat
                 user_msg = Message(
@@ -1833,6 +2066,7 @@ class DSLocalAndVoiceGen:
                     emotion=EmotionEnum.HAPPINESS,
                     audio_path="",
                     attachments=imported_attachments,
+                    worldbook_snapshot=turn_worldbook_snapshot,
                 )
                 self.current_chat.add_message(user_msg)
                 did_append_real_user_message = Chat.is_real_user_message(user_msg)
@@ -1850,6 +2084,13 @@ class DSLocalAndVoiceGen:
                         self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                         continue
 
+            worldbook_diagnostic = self._start_worldbook_diagnostic(
+                active_chat_id,
+                turn_id,
+                turn_worldbook_snapshot,
+                raw_user_input,
+            )
+
             character_name = self.get_current_character().character_name
             to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
             if did_append_real_user_message and self._maybe_update_rolling_summary(
@@ -1860,6 +2101,14 @@ class DSLocalAndVoiceGen:
                 turn_id=turn_id,
             ):
                 to_llm_msg = self._build_llm_messages_for_chat_turn(character_name)
+            if turn_worldbook_snapshot is not None:
+                self._append_worldbook_runtime_instruction(to_llm_msg)
+            to_llm_msg = self._inject_direct_worldbook_context(
+                to_llm_msg,
+                turn_worldbook_snapshot,
+                raw_user_input,
+                worldbook_diagnostic,
+            )
             if self.is_turn_cancelled(active_chat_id, turn_id):
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                 continue
@@ -1894,9 +2143,20 @@ class DSLocalAndVoiceGen:
             reasoning_kwargs_snapshot = self._build_current_reasoning_kwargs_snapshot()
             # 为本轮用户输入锁定工具调用开关；如果用户在请求过程中修改 UI 设置，只会影响下一轮输入。
             tool_calling_enabled = bool(self.current_chat.meta.tool_calling_enabled)
+            worldbook_tool_session: WorldbookToolSession | None = None
+            if turn_worldbook_snapshot is not None:
+                try:
+                    worldbook_tool_session = WorldbookToolSession(
+                        service=self._get_worldbook_service(),
+                        context=turn_worldbook_snapshot,
+                        fallback_query=self._build_worldbook_query_text(self.current_chat),
+                    )
+                except Exception:
+                    logger.exception("创建本轮世界书工具失败，已静默降级")
+            worldbook_tools_enabled = worldbook_tool_session is not None
             # --------------------------
             try:
-                if tool_calling_enabled:
+                if tool_calling_enabled or worldbook_tools_enabled:
                     # 构造 interim_callback（期间文本回调），用于接收大模型在决定调用工具前输出的“过渡台词”（如：“请稍等，我查一下天气”）
                     # 该回调收到文本后会迅速将其推入 text_queue，触发前端的文字显示和后端的 GPT-SoVITS 语音合成。
                     interim_callback = self._build_interim_message_callback(
@@ -1919,6 +2179,12 @@ class DSLocalAndVoiceGen:
                             **reasoning_kwargs_snapshot,
                         },
                         on_interim_message=interim_callback,
+                        tool_overlay=(
+                            worldbook_tool_session.build_registry()
+                            if worldbook_tool_session is not None
+                            else None
+                        ),
+                        include_base_tools=tool_calling_enabled,
                     )
                 else:
                     runtime_result = self._run_plain_completion_turn(
@@ -1937,15 +2203,23 @@ class DSLocalAndVoiceGen:
                         self._record_tool_call_completed(dp2qt_queue, one_tool_exec)
 
                 cleaned_text_of_model_response = runtime_result.final_content.strip()
+                if worldbook_diagnostic is not None:
+                    if worldbook_tool_session is not None:
+                        worldbook_diagnostic.record_tools(
+                            worldbook_tool_session.diagnostics
+                        )
+                    worldbook_diagnostic.set_candidate_response(
+                        cleaned_text_of_model_response
+                    )
 
-                if tool_calling_enabled:
+                if tool_calling_enabled and runtime_result.tool_execution_records:
                     # 为后续上下文压缩和调试保留最小工具轨迹。
                     self.current_chat.append_tool_call_history(
                         ToolCallHistoryRecordMeta(
                             time=int(time.time()),
                             role=character_name,
-                            tool_rounds=runtime_result.tool_rounds,
-                            tool_errors=runtime_result.tool_errors,
+                            tool_rounds=runtime_result.visible_tool_rounds,
+                            tool_errors=runtime_result.visible_tool_errors,
                         )
                     )
 
@@ -2126,7 +2400,17 @@ class DSLocalAndVoiceGen:
                 self._segment_from_message(index, self.current_chat.message_list[index], not self.if_generate_audio)
                 for index in added_msg_indices
             ]
+            if worldbook_diagnostic is not None:
+                worldbook_diagnostic.set_final_response(
+                    "\n".join(str(segment.get("text") or "") for segment in segments)
+                )
             text_queue.put(self._build_model_response_payload(turn_id, character_name, segments))
 
             while is_audio_play_complete.get() is None:
                 time.sleep(0.5)		#不加就无法正常运行
+            self._finish_worldbook_diagnostic(
+                active_chat_id,
+                turn_id,
+                "completed",
+                dp2qt_queue,
+            )

@@ -150,6 +150,20 @@ class WorldbookPackageLoader:
                         )
                     )
                     result.readiness = PackageReadiness.UNAVAILABLE
+                    continue
+                if target.manifest.timeline_id != result.manifest.timeline_id:
+                    result.issues.append(
+                        ValidationIssue(
+                            code="dependency_timeline_mismatch",
+                            message=(
+                                f"依赖 {dependency.package_id} 的时间轴 "
+                                f"{target.manifest.timeline_id} 与根包时间轴 "
+                                f"{result.manifest.timeline_id} 不一致"
+                            ),
+                            package_id=package_id,
+                        )
+                    )
+                    result.readiness = PackageReadiness.UNAVAILABLE
         visiting: set[str] = set()
         visited: set[str] = set()
 

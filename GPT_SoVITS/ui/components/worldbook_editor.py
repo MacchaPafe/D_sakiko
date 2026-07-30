@@ -1624,7 +1624,7 @@ class LoreEntryEditor(BaseEntryEditor):
         advanced_form = self._card_form(advanced)
         self.scope_combo = ComboBox(self)
         self.scope_combo.addItem(self.tr("适用于指定系列"), userData="series")
-        self.scope_combo.addItem(self.tr("适用于整个世界书包"), userData="global")
+        self.scope_combo.addItem(self.tr("随所属世界书包生效"), userData="package")
         self.series_field = MultiSelectField(self.tr("选择适用系列"), self)
         self.series_field.set_options(_series_options())
         self.story_years_edit = LineEdit(self)

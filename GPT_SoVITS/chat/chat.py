@@ -25,6 +25,7 @@ from character import CharacterAttributes
 from emotion_enum import EmotionEnum
 from log import get_logger
 from chat.chat_meta import ChatMeta, TheaterMeta, ToolCallHistoryRecordMeta, ToolCallRecordMeta
+from rag.worldbook.runtime.models import WorldbookTurnSnapshot
 
 
 logger = get_logger(__name__)
@@ -111,6 +112,8 @@ class Message:
     audio_path: str
     # 消息携带的附件列表
     attachments: list[MessageAttachment] = dataclasses.field(default_factory=list)
+    # 真实用户消息入队时冻结的世界书上下文；旧消息为空。
+    worldbook_snapshot: WorldbookTurnSnapshot | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Message":
@@ -123,6 +126,13 @@ class Message:
             for raw_attachment in raw_attachments:
                 if isinstance(raw_attachment, dict):
                     attachments.append(MessageAttachment.from_dict(raw_attachment))
+        raw_snapshot = data.get("worldbook_snapshot")
+        worldbook_snapshot: WorldbookTurnSnapshot | None = None
+        if isinstance(raw_snapshot, dict):
+            try:
+                worldbook_snapshot = WorldbookTurnSnapshot.model_validate(raw_snapshot)
+            except (TypeError, ValueError):
+                logger.warning("忽略格式错误的世界书回合快照")
         return cls(
             character_name=str(data.get("character_name") or ""),
             text=str(data.get("text") or ""),
@@ -130,13 +140,14 @@ class Message:
             emotion=EmotionEnum.from_string(str(data.get("emotion") or "")),
             audio_path=str(data.get("audio_path") or ""),
             attachments=attachments,
+            worldbook_snapshot=worldbook_snapshot,
         )
 
     def as_dict(self) -> dict[str, object]:
         """
         将此 Message 实例转换为存储字典
         """
-        return {
+        data: dict[str, object] = {
             "character_name": self.character_name,
             "text": self.text,
             "translation": self.translation,
@@ -144,6 +155,9 @@ class Message:
             "audio_path": self.audio_path,
             "attachments": [attachment.as_dict() for attachment in self.attachments],
         }
+        if self.worldbook_snapshot is not None:
+            data["worldbook_snapshot"] = self.worldbook_snapshot.model_dump(mode="json")
+        return data
 
     @property
     def character(self) -> CharacterAttributes:

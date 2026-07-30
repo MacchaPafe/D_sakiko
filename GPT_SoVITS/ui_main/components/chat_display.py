@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 from pathlib import Path
@@ -146,6 +147,56 @@ class ChatDisplay(QTextBrowser):
             'margin-top: 8px; margin-bottom: 8px; white-space: nowrap;">'
             f'----------------&nbsp;{safe_text}&nbsp;----------------'
             '</div>'
+        )
+
+    def append_worldbook_diagnostic(self, record: dict[str, object]) -> None:
+        """在回复下方追加仅供本次运行查看的世界书检索诊断。"""
+
+        lines: list[str] = []
+        direct = record.get("direct_retrieval")
+        if isinstance(direct, dict):
+            query = direct.get("query")
+            if isinstance(query, str) and query:
+                lines.append(f"直接检索：{query}")
+            injected_items = direct.get("injected_items")
+            if isinstance(injected_items, list):
+                lines.append(
+                    "直接提供："
+                    + json.dumps(injected_items, ensure_ascii=False, separators=(",", ":"))
+                )
+        tool_calls = record.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for raw_call in tool_calls:
+                if not isinstance(raw_call, dict):
+                    continue
+                tool_name = str(raw_call.get("tool_name") or "unknown")
+                arguments = raw_call.get("arguments")
+                result = raw_call.get("result")
+                lines.append(
+                    f"{tool_name} "
+                    f"{json.dumps(arguments, ensure_ascii=False, separators=(',', ':'))}"
+                )
+                lines.append(
+                    "返回："
+                    + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                )
+        errors = record.get("errors")
+        if isinstance(errors, list) and errors:
+            lines.append(
+                "错误："
+                + json.dumps(errors, ensure_ascii=False, separators=(",", ":"))
+            )
+        if not lines:
+            lines.append("本轮没有执行世界书检索。")
+        safe_text = html.escape("\n".join(lines))
+        self.finish_stream_now()
+        self.append(
+            '<div style="color: #6F7F96; background-color: rgba(119,153,204,0.08); '
+            'border-left: 3px solid #AAB8CC; padding: 7px; margin-top: 8px; '
+            'font-size: small; white-space: pre-wrap;">'
+            '<b>世界书诊断（仅本次运行）</b><br>'
+            f"{safe_text}"
+            "</div>"
         )
 
     def is_streaming(self) -> bool:

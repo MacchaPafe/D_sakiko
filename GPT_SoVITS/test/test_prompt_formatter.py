@@ -82,7 +82,7 @@ def _make_lore(
     doc = LoreEntryDocument(
         title=title,
         content=content,
-        scope_type=ScopeType("global"),
+        scope_type=ScopeType("package"),
         series_ids=None,
         timeline_id="bang_dream_original",
         applicable_story_years=None,

@@ -402,7 +402,7 @@ class WorldbookEditService:
         else:
             content = {
                 **common,
-                "scope_type": "global",
+                "scope_type": "package",
                 "series_ids": None,
                 "applicable_story_years": None,
                 "visible_from": None,

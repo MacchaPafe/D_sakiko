@@ -34,7 +34,9 @@ from rag.worldbook.models import (
     WorldbookEntry,
     WorldbookManifest,
     WorldbookOverride,
+    WorldbookReadiness,
 )
+from rag.worldbook.runtime.readiness import WorldbookIndexReadinessState
 from rag.worldbook.user_state import WorldbookUserStateRepository
 from ui.components.worldbook_editor import (
     EntryEditorHost,
@@ -51,6 +53,7 @@ from ui.interfaces.worldbook_area import (
     UnsavedChangesBox,
     WorldbookArea,
 )
+from ui.controllers.worldbook_sync_controller import WorldbookSyncController
 
 
 class WorldbookUiTest(unittest.TestCase):
@@ -99,6 +102,25 @@ class WorldbookUiTest(unittest.TestCase):
                 )
             )
             area.close()
+
+    def test_sync_controller_updates_shared_query_readiness(self) -> None:
+        """同步状态变化应立即写入聊天检索共享状态。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = WorldbookIndexReadinessState(WorldbookReadiness.READY)
+            controller = WorldbookSyncController(
+                Path(directory),
+                readiness_state=state,
+            )
+
+            controller._set_readiness("syncing")
+            self.assertEqual(state.get(), WorldbookReadiness.SYNCING)
+            self.assertFalse(controller.is_rag_available())
+
+            controller._set_readiness("degraded")
+            self.assertEqual(state.get(), WorldbookReadiness.DEGRADED)
+            self.assertTrue(controller.is_rag_available())
+            controller.deleteLater()
 
     def test_story_extension_can_be_created_and_filtered(self) -> None:
         """新增按钮应创建可编辑草稿，并在保存后选中用户条目。"""
@@ -893,6 +915,15 @@ def _write_package(
         display_name=display_name,
         package_type=package_type,
         timeline_id="bang_dream_original",
+        conversation_context=(
+            {
+                "series_id": "its_mygo",
+                "canon_branch": "main",
+                "story_year": None,
+            }
+            if package_type == "season"
+            else None
+        ),
         dependencies=dependencies or [],
         content_files=[
             ContentFileRecord(

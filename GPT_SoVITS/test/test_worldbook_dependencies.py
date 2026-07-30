@@ -17,6 +17,7 @@ def _write_empty_package(
     package_id: str,
     version: str,
     dependencies: list[PackageDependency] | None = None,
+    timeline_id: str = "main",
 ) -> None:
     """写入不含内容分片的最小合法测试包。"""
 
@@ -27,7 +28,12 @@ def _write_empty_package(
         package_version=version,
         display_name=package_id,
         package_type="season",
-        timeline_id="main",
+        timeline_id=timeline_id,
+        conversation_context={
+            "series_id": "its_mygo",
+            "canon_branch": "main",
+            "story_year": None,
+        },
         dependencies=dependencies or [],
     )
     (package_dir / "manifest.json").write_text(
@@ -96,6 +102,26 @@ class WorldbookDependencyTest(unittest.TestCase):
         self.assertEqual(results["base"].readiness.value, "unavailable")
         self.assertEqual(results["middle"].readiness.value, "unavailable")
         self.assertEqual(results["root"].readiness.value, "unavailable")
+
+    def test_timeline_mismatch_makes_dependent_unavailable(self) -> None:
+        """依赖包与根包时间轴不同时应阻断根包。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_empty_package(root, "mygo", "1.0.0", timeline_id="bang_dream_original")
+            _write_empty_package(
+                root,
+                "mujica",
+                "1.0.0",
+                [PackageDependency(package_id="mygo")],
+                timeline_id="another_timeline",
+            )
+
+            results = WorldbookPackageLoader(root).discover()
+
+        self.assertEqual(results["mygo"].readiness.value, "ready")
+        self.assertEqual(results["mujica"].readiness.value, "unavailable")
+        self.assertIn("dependency_timeline_mismatch", {issue.code for issue in results["mujica"].issues})
 
     def test_cycle_makes_all_cycle_dependents_unavailable(self) -> None:
         """依赖循环及其上游根包都不得参与检索。"""

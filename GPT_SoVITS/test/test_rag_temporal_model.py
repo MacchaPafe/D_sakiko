@@ -50,7 +50,7 @@ class TemporalModelTest(unittest.TestCase):
         """受学年限制的 Lore 在当前学年未知时默认不可用。"""
 
         lore = LoreEntryDocument(
-            scope_type=ScopeType.GLOBAL,
+            scope_type=ScopeType.PACKAGE,
             series_ids=None,
             timeline_id="bang_dream_original",
             applicable_story_years=[3],
