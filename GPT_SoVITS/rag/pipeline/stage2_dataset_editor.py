@@ -8,24 +8,65 @@ import json
 import re
 import sys
 from datetime import datetime
+from multiprocessing import freeze_support
 from pathlib import Path
-from typing import Any
-
-PIPELINE_ROOT = Path(__file__).resolve().parent
-PROJECT_PACKAGE_ROOT = PIPELINE_ROOT.parents[1]
-if str(PROJECT_PACKAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_PACKAGE_ROOT))
+from typing import TypeAlias
 
 try:
-    from nicegui import ui
+    from nicegui import native, ui
 except ImportError as exc:  # pragma: no cover - 运行期依赖提示
     raise SystemExit(
-        "缺少 nicegui 依赖。请先安装项目依赖后再运行：`uv sync` 或 `pip install nicegui`。"
+        "缺少 nicegui 依赖。请运行 publish_pipeline 中的安装步骤，或执行 `pip install nicegui`。"
     ) from exc
 
-from rag.pipeline.schemas import Stage2InputArtifact
+try:
+    from .stage2_editor_schema import Stage2InputArtifact
+except ImportError:
+    from stage2_editor_schema import Stage2InputArtifact
 
-DEFAULT_INPUT_PATH = PIPELINE_ROOT / "data" / "annotations_stage2" / "ep01_stage2_input.json"
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
+
+PIPELINE_ROOT = Path(__file__).resolve().parent
+SOURCE_DATA_DIR = PIPELINE_ROOT / "data" / "annotations_stage2"
+
+
+def runtime_data_dir() -> Path:
+    """返回源码或冻结程序应使用的可写数据目录。"""
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "data"
+    return SOURCE_DATA_DIR
+
+
+def discover_input_path(data_dir: Path) -> Path:
+    """在数据目录中选择首个可供复核的 Stage2 JSON。"""
+
+    preferred_paths = sorted(data_dir.glob("*_stage2_input.json"))
+    json_paths = preferred_paths or sorted(data_dir.glob("*.json"))
+    if json_paths:
+        return json_paths[0].resolve()
+    raise FileNotFoundError(
+        f"没有找到可复核的 JSON。请把 epXX_stage2_input.json 放入：{data_dir.resolve()}"
+    )
+
+
+def resolve_input_path(input_value: str | None, data_dir_value: str | None) -> Path:
+    """根据命令行参数解析启动时应加载的数据文件。"""
+
+    if input_value:
+        input_path = Path(input_value).expanduser().resolve()
+        if not input_path.is_file():
+            raise FileNotFoundError(f"输入文件不存在：{input_path}")
+        return input_path
+
+    data_dir = (
+        Path(data_dir_value).expanduser().resolve()
+        if data_dir_value
+        else runtime_data_dir()
+    )
+    return discover_input_path(data_dir)
 
 
 def dedupe_texts(values: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -68,12 +109,12 @@ class Stage2DatasetEditor:
     """Stage2 utterance 级别标注编辑器。"""
 
     def __init__(self, input_path: Path) -> None:
-        self.annotations_dir = DEFAULT_INPUT_PATH.parent.resolve()
+        self.annotations_dir = input_path.resolve().parent
         self.available_file_options: dict[str, str] = {}
         self.input_path = input_path.resolve()
         self.backup_path = self.input_path.with_suffix(f"{self.input_path.suffix}.bak")
-        self.data: dict[str, Any] = {}
-        self.scenes: list[dict[str, Any]] = []
+        self.data: JsonObject = {}
+        self.scenes: list[JsonObject] = []
         self.flat_index_map: list[tuple[int, int]] = []
 
         self.current_scene_index = 0
@@ -81,7 +122,7 @@ class Stage2DatasetEditor:
         self.dirty = False
         self.last_saved_at: str | None = None
         self._syncing_form = False
-        self.last_structure_snapshot: dict[str, Any] | None = None
+        self.last_structure_snapshot: JsonObject | None = None
 
         self.scene_column: ui.column | None = None
         self.utterance_column: ui.column | None = None
@@ -97,6 +138,8 @@ class Stage2DatasetEditor:
         self.load_file_button: ui.button | None = None
 
         self.speaker_select: ui.select | None = None
+        self.speaker_confidence_input: ui.number | None = None
+        self.inner_monologue_switch: ui.switch | None = None
         self.addressee_select: ui.select | None = None
         self.mentioned_select: ui.select | None = None
         self.emotion_select: ui.select | None = None
@@ -116,9 +159,11 @@ class Stage2DatasetEditor:
         self._load_dataset(self.input_path)
 
     @staticmethod
-    def _load_file(path: Path) -> dict[str, Any]:
+    def _load_file(path: Path) -> JsonObject:
         raw = json.loads(path.read_text(encoding="utf-8"))
         Stage2InputArtifact.model_validate(raw)
+        if not isinstance(raw, dict):
+            raise ValueError("Stage2 输入 JSON 的顶层必须是对象。")
         return raw
 
     def refresh_available_file_options(self) -> None:
@@ -134,6 +179,7 @@ class Stage2DatasetEditor:
 
     def _load_dataset(self, path: Path) -> None:
         self.input_path = path.resolve()
+        self.annotations_dir = self.input_path.parent
         self.backup_path = self.input_path.with_suffix(f"{self.input_path.suffix}.bak")
         self.data = self._load_file(self.input_path)
         self.scenes = self.data["scenes"]
@@ -235,10 +281,10 @@ class Stage2DatasetEditor:
         ]
         return dedupe_texts(emotions)
 
-    def current_scene(self) -> dict[str, Any]:
+    def current_scene(self) -> JsonObject:
         return self.scenes[self.current_scene_index]
 
-    def current_utterance(self) -> dict[str, Any]:
+    def current_utterance(self) -> JsonObject:
         return self.current_scene()["utterances"][self.current_utterance_index]
 
     def rebuild_flat_index_map(self) -> None:
@@ -292,15 +338,15 @@ class Stage2DatasetEditor:
         return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
     @staticmethod
-    def _describe_character_set(scene: dict[str, Any]) -> str:
+    def _describe_character_set(scene: JsonObject) -> str:
         names = scene.get("present_characters", [])
         return "、".join(names) if names else "无"
 
     @staticmethod
-    def _scene_span(scene: dict[str, Any]) -> str:
+    def _scene_span(scene: JsonObject) -> str:
         return f"{scene['scene_start_text']} - {scene['scene_end_text']}"
 
-    def _derive_present_characters(self, scene: dict[str, Any]) -> list[str]:
+    def _derive_present_characters(self, scene: JsonObject) -> list[str]:
         speakers = [
             utterance.get("speaker_name", "")
             for utterance in scene.get("utterances", [])
@@ -312,7 +358,7 @@ class Stage2DatasetEditor:
         ]
         return ordered_union(dedupe_texts(speakers), dedupe_texts(addressees))
 
-    def _recompute_scene_fields(self, scene: dict[str, Any]) -> None:
+    def _recompute_scene_fields(self, scene: JsonObject) -> None:
         time_sources: list[tuple[int, int]] = [
             (utterance["start_ms"], utterance["end_ms"])
             for utterance in scene.get("utterances", [])
@@ -376,7 +422,7 @@ class Stage2DatasetEditor:
         self.refresh_ui()
         ui.notify("已撤销上一次结构操作。", color="positive", position="top")
 
-    def _build_split_preview(self, split_index: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _build_split_preview(self, split_index: int) -> tuple[JsonObject, JsonObject]:
         scene = self.current_scene()
         left_scene = copy.deepcopy(scene)
         right_scene = copy.deepcopy(scene)
@@ -390,8 +436,8 @@ class Stage2DatasetEditor:
             left_scene["utterances"][-1]["end_ms"] + right_scene["utterances"][0]["start_ms"]
         ) // 2
 
-        left_screen_texts: list[dict[str, Any]] = []
-        right_screen_texts: list[dict[str, Any]] = []
+        left_screen_texts: list[JsonObject] = []
+        right_screen_texts: list[JsonObject] = []
         for screen_text in scene.get("screen_texts", []):
             center_ms = (screen_text["start_ms"] + screen_text["end_ms"]) // 2
             if center_ms <= boundary_ms:
@@ -431,26 +477,26 @@ class Stage2DatasetEditor:
         return self.current_scene_index + 1 if self.current_scene_index < len(self.scenes) - 1 else None
 
     @staticmethod
-    def _sort_utterances(utterances: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _sort_utterances(utterances: list[JsonObject]) -> list[JsonObject]:
         return sorted(utterances, key=lambda item: (item["start_ms"], item["end_ms"], item["u_id"]))
 
     @staticmethod
-    def _sort_screen_texts(screen_texts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _sort_screen_texts(screen_texts: list[JsonObject]) -> list[JsonObject]:
         return sorted(screen_texts, key=lambda item: (item["start_ms"], item["end_ms"], item["s_id"]))
 
     @staticmethod
-    def _merged_summary(left_scene: dict[str, Any], right_scene: dict[str, Any]) -> str | None:
+    def _merged_summary(left_scene: JsonObject, right_scene: JsonObject) -> str | None:
         left_summary = str(left_scene.get("scene_summary_hint") or "").strip()
         right_summary = str(right_scene.get("scene_summary_hint") or "").strip()
         merged_summaries = dedupe_texts([left_summary, right_summary])
         return "；".join(merged_summaries) if merged_summaries else None
 
-    def _validate_merge_pair(self, left_scene: dict[str, Any], right_scene: dict[str, Any]) -> None:
+    def _validate_merge_pair(self, left_scene: JsonObject, right_scene: JsonObject) -> None:
         for field_name in ("anime_title", "series_id", "timeline_id", "story_year", "episode"):
             if left_scene.get(field_name) != right_scene.get(field_name):
                 raise ValueError(f"相邻场景的 {field_name} 不一致，无法自动合并。")
 
-    def _build_merged_scene(self, left_scene: dict[str, Any], right_scene: dict[str, Any]) -> dict[str, Any]:
+    def _build_merged_scene(self, left_scene: JsonObject, right_scene: JsonObject) -> JsonObject:
         self._validate_merge_pair(left_scene, right_scene)
 
         merged_scene = copy.deepcopy(left_scene)
@@ -703,7 +749,7 @@ class Stage2DatasetEditor:
             self.emotion_pool,
         )
 
-    def _update_string_field(self, field_name: str, value: Any) -> None:
+    def _update_string_field(self, field_name: str, value: object) -> None:
         if self._syncing_form:
             return
         text = str(value or "").strip() or None
@@ -715,7 +761,7 @@ class Stage2DatasetEditor:
         self.emotion_pool = self._build_emotion_pool()
         self.mark_dirty()
 
-    def _update_list_field(self, field_name: str, value: Any) -> None:
+    def _update_list_field(self, field_name: str, value: object) -> None:
         if self._syncing_form:
             return
         if value is None:
@@ -730,6 +776,33 @@ class Stage2DatasetEditor:
             return
         utterance[field_name] = normalized
         self.character_pool = self._build_character_pool()
+        self.mark_dirty()
+
+    def _update_bool_field(self, field_name: str, value: object) -> None:
+        """把界面开关值写入当前台词。"""
+
+        if self._syncing_form:
+            return
+        normalized = bool(value)
+        utterance = self.current_utterance()
+        if utterance.get(field_name) == normalized:
+            return
+        utterance[field_name] = normalized
+        self.mark_dirty()
+
+    def _update_confidence(self, value: object) -> None:
+        """把说话人置信度限制在零到一并写入当前台词。"""
+
+        if self._syncing_form:
+            return
+        try:
+            normalized = min(1.0, max(0.0, float(value)))
+        except (TypeError, ValueError):
+            normalized = 0.0
+        utterance = self.current_utterance()
+        if utterance.get("speaker_confidence") == normalized:
+            return
+        utterance["speaker_confidence"] = normalized
         self.mark_dirty()
 
     def refresh_scene_list(self) -> None:
@@ -857,6 +930,18 @@ class Stage2DatasetEditor:
                 self.speaker_select.options = self._speaker_options()
                 self.speaker_select.set_value(utterance.get("speaker_name"))
                 self.speaker_select.update()
+
+            if self.speaker_confidence_input is not None:
+                self.speaker_confidence_input.set_value(
+                    float(utterance.get("speaker_confidence") or 0.0)
+                )
+                self.speaker_confidence_input.update()
+
+            if self.inner_monologue_switch is not None:
+                self.inner_monologue_switch.set_value(
+                    bool(utterance.get("is_inner_monologue", False))
+                )
+                self.inner_monologue_switch.update()
 
             if self.addressee_select is not None:
                 self.addressee_select.options = self._list_options("addressee_candidates")
@@ -1111,6 +1196,24 @@ class Stage2DatasetEditor:
                             "input-debounce=0 new-value-mode=add-unique"
                         )
 
+                        self.speaker_confidence_input = ui.number(
+                            label="speaker_confidence",
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            precision=2,
+                            on_change=lambda e: self._update_confidence(e.value),
+                        ).classes("w-full").style("flex: 1 1 280px;")
+                        self.speaker_confidence_input.props("standout dense")
+
+                        self.inner_monologue_switch = ui.switch(
+                            "is_inner_monologue（内心独白）",
+                            on_change=lambda e: self._update_bool_field(
+                                "is_inner_monologue",
+                                e.value,
+                            ),
+                        ).classes("w-full").style("flex: 1 1 280px;")
+
                         self.addressee_select = ui.select(
                             options=[],
                             value=[],
@@ -1160,35 +1263,60 @@ class Stage2DatasetEditor:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="启动 Stage2 数据集 NiceGUI 编辑器")
+    """解析独立编辑器的命令行参数。"""
+
+    parser = argparse.ArgumentParser(description="启动 Stage2 数据集复核编辑器")
     parser.add_argument(
         "--input",
-        default=str(DEFAULT_INPUT_PATH),
+        default=None,
         help="待编辑的 stage2_input JSON 路径",
     )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="未指定 --input 时扫描 JSON 的目录；冻结程序默认使用可执行文件旁的 data",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="NiceGUI 绑定 host")
-    parser.add_argument("--port", type=int, default=8186, help="NiceGUI 端口")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="NiceGUI 端口；0 表示自动选择可用端口",
+    )
     parser.add_argument(
         "--native",
         action="store_true",
         help="使用 NiceGUI native 模式启动桌面窗口",
     )
+    parser.add_argument(
+        "--no-open-browser",
+        action="store_true",
+        help="启动服务但不自动打开浏览器，供测试或远程访问使用",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
+    """启动 Stage2 数据集复核网页。"""
+
     args = parse_args(argv)
-    editor = Stage2DatasetEditor(Path(args.input))
-    editor.build_ui()
-    ui.run(
-        host=args.host,
-        port=args.port,
-        native=args.native,
-        reload=False,
-        title="Stage2 数据集编辑器",
-        favicon="📝",
-    )
+    input_path = resolve_input_path(args.input, args.data_dir)
+    editor = Stage2DatasetEditor(input_path)
+    try:
+        ui.run(
+            root=editor.build_ui,
+            host=args.host,
+            port=args.port or native.find_open_port(),
+            native=args.native,
+            show=not args.no_open_browser,
+            reload=False,
+            title="Stage2 数据集编辑器",
+            favicon="📝",
+        )
+    except KeyboardInterrupt:
+        return
 
 
-if __name__ in {"__main__", "__mp_main__"}:
+if __name__ == "__main__":
+    freeze_support()
     main()

@@ -73,6 +73,28 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline assemble-stage2b-responses \
   --output GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2b_raw.json
 ```
 
+### 把 Stage 1 说话人复核交给外部标注者
+
+外部复核使用 `build-stage2-input` 生成的 `epXX_stage2_input.json`，不是
+`epXX_prepared.json`。独立编辑器会把字幕文本、LLM 初始说话人结果及人工修改保存在同一个 Stage2 输入文件中，
+复核完成的文件可直接继续用于 `render-stage2-prompts`。
+
+构建者在 macOS 或 Windows 的 Python 3.11 环境中运行：
+
+```bash
+cd publish_pipeline
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python build.py \
+  --data ../GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_stage2_input.json
+```
+
+Windows 对应解释器路径为 `.venv\Scripts\python.exe`。PyInstaller 产物不能跨操作系统生成，因此 Windows
+发布包必须在 Windows 上重新运行相同的 `build.py`。把整个
+`publish_pipeline/dist/Stage2DatasetEditor/` 目录压缩发送；复核者解压并运行可执行文件，在浏览器中逐句检查
+`speaker_name`、`speaker_confidence`、`is_inner_monologue`、说话对象、提及角色和情绪，保存后回传
+`data/epXX_stage2_input.json`。详细说明见 `publish_pipeline/README.md`。
+
 全部 01–13 集完成后，再进入跨集阶段。这样 Relation 与 Thought 能在完整时间范围内统一归一化和判断状态变化。
 
 ## 二、逐集生成并审核 Story Event / Lore
