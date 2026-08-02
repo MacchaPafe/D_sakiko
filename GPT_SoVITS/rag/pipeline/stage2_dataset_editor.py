@@ -646,9 +646,9 @@ class Stage2DatasetEditor:
         current = self.current_global_index() + 1
         scene = self.current_scene()
         progress = (
-            f"Scene {self.current_scene_index + 1}/{len(self.scenes)}"
-            f" · Utterance {self.current_utterance_index + 1}/{len(scene['utterances'])}"
-            f" · Global {current}/{self.total_utterances()}"
+            f"场景 {self.current_scene_index + 1}/{len(self.scenes)}"
+            f" · 语句 {self.current_utterance_index + 1}/{len(scene['utterances'])}"
+            f" · 总计 {current}/{self.total_utterances()}"
         )
         if self.progress_label is not None:
             self.progress_label.text = progress
@@ -1132,12 +1132,12 @@ class Stage2DatasetEditor:
             with ui.column().classes("gap-5").style("flex: 0 0 360px; max-width: 360px; min-width: 300px;"):
                 with ui.card().classes("glass-card w-full gap-3 p-4"):
                     ui.label("场景导航").classes("text-lg font-semibold text-slate-800")
-                    ui.label("按 scene 切换，再在当前 scene 内选择 utterance。").classes("editor-label")
+                    ui.label("按场景切换，再在当前场景内选择具体对话。").classes("editor-label")
                     with ui.scroll_area().classes("w-full").style("height: 280px;"):
                         self.scene_column = ui.column().classes("w-full gap-2")
 
                 with ui.card().classes("glass-card w-full gap-3 p-4"):
-                    ui.label("当前 Scene 的 Utterances").classes("text-lg font-semibold text-slate-800")
+                    ui.label("当前场景的对话").classes("text-lg font-semibold text-slate-800")
                     ui.label("左侧列表保持紧凑，只展示当前 scene，右侧负责深度编辑。").classes("editor-label")
                     with ui.scroll_area().classes("w-full").style("height: 540px;"):
                         self.utterance_column = ui.column().classes("w-full gap-2")
@@ -1147,7 +1147,7 @@ class Stage2DatasetEditor:
                     self.scene_meta_container = ui.column().classes("w-full gap-3")
 
                 with ui.card().classes("glass-card w-full gap-5 p-5"):
-                    ui.label("Utterance 标注").classes("text-lg font-semibold text-slate-800")
+                    ui.label("对话标注").classes("text-lg font-semibold text-slate-800")
                     self.utterance_meta_label = ui.label().classes("text-sm text-slate-500")
 
                     with ui.row().classes("w-full items-center gap-3").style("flex-wrap: wrap;"):
@@ -1239,6 +1239,9 @@ class Stage2DatasetEditor:
                             "use-chips clearable standout dense use-input input-debounce=0 "
                             "new-value-mode=add-unique"
                         )
+
+                    with ui.column().classes("w-full gap-3"):
+                        ui.label("addressee_candidates: 该句话是对哪个人说的\t mentioned_characters: 这句话中提到的角色\n二者可以不同，比如 A 完全可以在和 B 说话时全程提到 C。").classes("editor-label")
 
                     with ui.column().classes("w-full gap-3"):
                         ui.label("双语文本参考").classes("editor-label")
