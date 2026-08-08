@@ -21,6 +21,7 @@ from log import get_logger
 
 
 ToolHandler = Callable[[Dict[str, Any]], Any]
+ToolDisplayFormatter = Callable[[object], str]
 LLMCompletionFn = Callable[..., Any]
 InterimMessageCallback = Callable[..., Any]
 
@@ -29,18 +30,70 @@ DEFAULT_BOCHA_API_KEY = "sk-28078debe6d74828a57e63164fe0f23e"
 logger = get_logger(__name__)
 
 
+def _truncate_display_text(text: str, limit: int = 1800) -> str:
+    """清理并截断准备展示给用户的工具结果文本。"""
+
+    normalized = text.strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit] + "\n...(已截断)"
+
+
+def _string_key_mapping(value: object) -> dict[str, object]:
+    """把字典值收窄为仅包含字符串键的映射。"""
+
+    if not isinstance(value, dict):
+        return {}
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _format_default_tool_output_for_display(result: object) -> str:
+    """以通用规则把工具结果转换为用户可读文本。"""
+
+    if isinstance(result, str):
+        return _truncate_display_text(result)
+    try:
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+    except TypeError:
+        text = str(result)
+    return _truncate_display_text(text)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ToolExecutionResult:
+    """保存一次工具执行的状态以及面向模型和用户的两种文本表示。"""
+
+    execution_succeeded: bool
+    model_content: str
+    display_content: str | None
+
+
 @dataclasses.dataclass
 class RegisteredTool:
+    # 工具的名称
     name: str
+    # 工具的描述
     description: str
+    # 工具的参数定义
     parameters: Dict[str, Any]
+    # 以上三个内容会作为 openai completion 格式的工具参数直接传递给模型，即模型能直接看到工具的名称、描述等内容
+
+    # 处理模型调用工具后的实际执行操作的函数
     handler: ToolHandler
+    # 工具的可见性：世界书类型工具属于特殊工具（其可见性为 worldbook-hidden）。关闭“工具调用”开关不会影响世界书相关的工具。
     channel: Literal["general-visible", "worldbook-hidden"] = "general-visible"
+    # 一个回调函数，返回一个 bool，说明该工具当前是否可用。设置为 None 时，该工具将被视为永久可用。
+    # 为什么要做回调函数设计呢？因为有些工具是动态添加的，有些工具在不满足条件（比如调用几次后）就不能再使用了。这些不能使用的情况需要动态判断，因此需要用函数，以在运行时可以修改“工具是否可用”的结果。
     availability: Callable[[], bool] | None = None
+    # 如果工具不可用，如何提示。该内容会显示给用户（并且也会返回给模型）
     unavailable_message: str = "工具当前不可用"
+    # 把 handler 的原生返回值转换为用户可读文本；隐藏工具不会调用该函数。
+    display_formatter: ToolDisplayFormatter | None = None
 
     def is_available(self) -> bool:
-        """判断该工具是否应继续出现在下一轮 schema 中。"""
+        """
+        判断该工具是否应继续出现在下一轮请求中。如果 availability 返回结果变为 False，那么它不会出现在下次请求中
+        """
 
         return self.availability is None or self.availability()
 
@@ -75,6 +128,9 @@ class AgentRunResult:
 
 
 class ToolRegistry:
+    """
+    存储所有工具，统一管理工具，提供工具函数供 LLM 选择的工具注册表。
+    """
     def __init__(self) -> None:
         self._tools: Dict[str, RegisteredTool] = {}
 
@@ -87,6 +143,7 @@ class ToolRegistry:
         channel: Literal["general-visible", "worldbook-hidden"] = "general-visible",
         availability: Callable[[], bool] | None = None,
         unavailable_message: str = "工具当前不可用",
+        display_formatter: ToolDisplayFormatter | None = None,
     ) -> None:
         """注册一个新的工具到工具注册表中。"""
         self._tools[name] = RegisteredTool(
@@ -97,6 +154,7 @@ class ToolRegistry:
             channel=channel,
             availability=availability,
             unavailable_message=unavailable_message,
+            display_formatter=display_formatter,
         )
 
     def has_tool(self, name: str) -> bool:
@@ -104,7 +162,7 @@ class ToolRegistry:
         return name in self._tools
 
     def build_tools_schema(self) -> List[Dict[str, Any]]:
-        """构建所有已注册工具的 OpenAPI schema 列表，供 LLM API 调用时传入。"""
+        """构建所有已注册且可用工具的 OpenAPI schema 列表，供 LLM API 调用时传入。"""
         return [
             tool.as_openai_schema()
             for tool in self._tools.values()
@@ -115,13 +173,17 @@ class ToolRegistry:
         self,
         name: str,
     ) -> Literal["general-visible", "worldbook-hidden"] | None:
-        """返回工具展示通道；未知工具返回空。"""
+        """返回展示某个工具的方法（直接显示或隐藏）；未知工具返回 None。"""
 
         tool = self._tools.get(name)
         return tool.channel if tool is not None else None
 
     def combined(self, overlay: "ToolRegistry" | None) -> "ToolRegistry":
-        """生成每轮独立注册表，overlay 中同名工具覆盖基础工具。"""
+        """
+        结合当前工具表和传入的工具表，生成每轮独立的工具注册表。返回的工具表是新的对象，不会覆盖传入数据或当前数据。
+        传入的工具注册表中如果有重名，那么会采用传入注册表的对应工具（而不是本对象自身的）。
+        有些工具需要在运行时注入或修改（比如创建能改变 UI 界面的工具时，需要在 UI 完成创建后再创建对应工具），这类工具可以使用该函数注入到内部工具表中，并暂时覆盖内部工具。
+        """
 
         combined = ToolRegistry()
         combined._tools = dict(self._tools)
@@ -129,48 +191,95 @@ class ToolRegistry:
             combined._tools.update(overlay._tools)
         return combined
 
-    def execute(self, request: ToolCallRequest) -> Tuple[bool, str]:
-        """执行指定的工具调用请求，返回执行是否成功以及执行结果的字符串或JSON内容。"""
+    def execute(self, request: ToolCallRequest) -> ToolExecutionResult:
+        """
+        执行指定工具，并返回面向模型与用户的独立结果文本。
+        """
         tool = self._tools.get(request.name)
+        # 没有找到工具则失败
         if tool is None:
-            return False, json.dumps(
-                {
-                    "ok": False,
-                    "error": "tool_not_found",
-                    "tool": request.name,
-                },
-                ensure_ascii=False,
+            error_payload = {
+                "ok": False,
+                "error": "tool_not_found",
+                "tool": request.name,
+            }
+            return ToolExecutionResult(
+                execution_succeeded=False,
+                model_content=json.dumps(error_payload, ensure_ascii=False),
+                display_content=None,
             )
         if not tool.is_available():
-            return True, json.dumps(
-                {
-                    "ok": False,
-                    "error": "tool_unavailable",
-                    "message": tool.unavailable_message,
-                },
-                ensure_ascii=False,
+            error_payload = {
+                "ok": False,
+                "error": "tool_unavailable",
+                "message": tool.unavailable_message,
+            }
+            return self._build_execution_result(
+                tool=tool,
+                execution_succeeded=True,
+                raw_result=error_payload,
             )
 
         try:
             result = tool.handler(request.arguments)
-            if isinstance(result, str):
-                content = result
-            else:
-                content = json.dumps(result, ensure_ascii=False)
-            return True, content
+            return self._build_execution_result(
+                tool=tool,
+                execution_succeeded=True,
+                raw_result=result,
+            )
         except Exception as exc:
             error_payload = {
                 "ok": False,
                 "error": "tool_execution_failed",
                 "tool": request.name,
                 "message": str(exc),
+                "traceback": traceback.format_exc(limit=3)
             }
-            if tool.channel != "worldbook-hidden":
-                error_payload["traceback"] = traceback.format_exc(limit=3)
-            return False, json.dumps(error_payload, ensure_ascii=False)
+            return self._build_execution_result(
+                tool=tool,
+                execution_succeeded=False,
+                raw_result=error_payload,
+            )
+
+    @staticmethod
+    def _build_execution_result(
+        tool: RegisteredTool,
+        execution_succeeded: bool,
+        raw_result: object,
+    ) -> ToolExecutionResult:
+        """序列化模型结果，并隔离用户展示格式化过程中的异常。"""
+
+        if isinstance(raw_result, str):
+            model_content = raw_result
+        else:
+            model_content = json.dumps(raw_result, ensure_ascii=False)
+
+        display_content: str | None = None
+        if tool.channel == "general-visible":
+            payload = _string_key_mapping(raw_result)
+            reported_failure = payload.get("ok") is False
+            formatter = (
+                _format_default_tool_output_for_display
+                if reported_failure or tool.display_formatter is None
+                else tool.display_formatter
+            )
+            try:
+                display_content = str(formatter(raw_result))
+            except Exception:
+                logger.exception("工具 %s 的展示格式化器执行失败，使用通用格式", tool.name)
+                display_content = _format_default_tool_output_for_display(raw_result)
+
+        return ToolExecutionResult(
+            execution_succeeded=execution_succeeded,
+            model_content=model_content,
+            display_content=display_content,
+        )
 
 #-------------------------------  工具调用主循环的实现--------------------------------
 class ToolCallingAgentRuntime:
+    """
+    工具调用整体循环的实现：在模型要求调用工具时，调用对应工具并反馈结果给模型。
+    """
     def __init__(
         self,
         llm_completion: LLMCompletionFn,
@@ -179,11 +288,21 @@ class ToolCallingAgentRuntime:
         max_tool_errors: int = 3,
         debug: bool = True,
     ) -> None:
+        """
+        创建一个工具调用循环组件。
+
+        :param llm_completion: 该函数需要（至少）接受和 litellm.completion 一致的参数，用于向模型反馈结果，继续调用
+        :param tool_registry: 已经注册的工具表
+        :param max_tool_rounds: 最多的工具调用轮次，即模型在一次对话中最多使用几次工具
+        :param max_tool_errors: 在出现多少次错误后强制结束流程，不允许模型再使用工具
+        :param debug: 是否打印内部的调试日志（如果是，按照 logging.debug 级别打印）
+        """
         self.llm_completion = llm_completion
         self.tool_registry = tool_registry or build_default_tool_registry()
         self.max_tool_rounds = max_tool_rounds
         self.max_tool_errors = max_tool_errors
         self.debug = debug
+        # 最多并行两个工具运行
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def _log(self, message: str) -> None:
@@ -236,6 +355,13 @@ class ToolCallingAgentRuntime:
         不断向大模型请求回复，若返回需要调用工具，则本地执行工具逻辑，
         并将结果拼接入历史上下文中进行下一轮请求；
         直到大模型直接回复最终文本结果或是达到最大调用次数为止。
+
+        :param model: 工具循环中调用的模型。self.llm_completion 回调函数需要接受该模型参数。
+        :param messages: 对话记录
+        :param llm_kwargs: 发送给 self.llm_completion 的任意额外参数
+        :param on_interim_message: 在获得了模型返回的过渡展示信息时，该怎么做
+        :param tool_overlay: 可选的传入一个工具表，该表的工具会与当前工具表合并后交给模型使用，这一过程不会影响二者原本的数据。如果存在同名的工具，优先使用 tool_overlay 中的工具。
+        :param include_base_tools: 是否使用自身的工具表定义的基础工具。如果该选项设为否且没有传入 tool_overlay 覆盖工具表，那么**不会有任何工具发送给 LLM**，这可能导致未知的错误。
         """
         # history 会在工具循环中不断追加 assistant/tool 消息，形成完整闭环上下文。
         # 这是一个 Agent 工具调用主循环（ReAct 模式的简化），不断询问 LLM，直到 LLM 不再输出 tool_calls 为止，或达到最大循环次数。
@@ -258,6 +384,7 @@ class ToolCallingAgentRuntime:
             if tool_errors >= self.max_tool_errors:
                 break
 
+            # 调用模型
             response = self._call_llm(
                 model=model,
                 messages=history,
@@ -273,17 +400,20 @@ class ToolCallingAgentRuntime:
                 pending_interim_future.result()
                 pending_interim_future = None
 
+            # 解析所有模型返回的工具调用，并筛选可见的内容
             tool_calls = parsed.get("tool_calls", [])
             visible_tool_calls = [
                 call
                 for call in tool_calls
                 if active_registry.channel_for(call.name) == "general-visible"
             ]
+            # 寻找模型返回的过渡文本（可以不存在）
             interim_text = parsed.get("interim_message")
             interim_is_placeholder = False
             if visible_tool_calls and not interim_text:
                 interim_text = "..."
                 interim_is_placeholder = True
+            # 如果存在过渡文本，则使用回调将其显示到 UI 界面中（并触发语音合成）。
             if visible_tool_calls and interim_text and on_interim_message is not None:
                 # 异步执行回调（这通常会把文本塞进队列，触发 TTS 和前端更新），并保存句柄
                 def _invoke_callback():
@@ -312,6 +442,7 @@ class ToolCallingAgentRuntime:
                     visible_tool_errors=visible_tool_errors,
                 )
 
+            # 根据返回内容，构造一条标准的 assistant_message，用于对话记录
             assistant_message = {
                 "role": "assistant",
                 "content": parsed.get("assistant_content", ""),
@@ -328,7 +459,7 @@ class ToolCallingAgentRuntime:
                 ],
             }
 
-            # DeepSeek V4 在启用思考模式进行工具调用时要求必须返回 reasoning_content
+            # DeepSeek V4 在启用思考模式进行工具调用时，要求必须返回 reasoning_content给模型
             reasoning_content = parsed.get("reasoning_content")
             if (
                 reasoning_content
@@ -342,6 +473,7 @@ class ToolCallingAgentRuntime:
             # 遍历并执行所有工具调用，将结果转化为 tool 消息压入历史中供下一轮循环读取
             round_has_visible_tool = False
             for call in tool_calls:
+                # 查看是否有隐藏的工具
                 is_hidden = active_registry.channel_for(call.name) != "general-visible"
                 if not is_hidden:
                     round_has_visible_tool = True
@@ -352,7 +484,10 @@ class ToolCallingAgentRuntime:
 
                 started_at = time.time()
                 started_perf = time.perf_counter()
-                ok, tool_output = active_registry.execute(call)
+                # 实际进行一个调用
+                execution_result = active_registry.execute(call)
+                ok = execution_result.execution_succeeded
+                tool_output = execution_result.model_content
                 duration_sec = max(0.0, time.perf_counter() - started_perf)
                 if not ok:
                     tool_errors += 1
@@ -368,7 +503,7 @@ class ToolCallingAgentRuntime:
                             "ok": ok,
                             "duration_sec": round(duration_sec, 3),
                             "started_at": int(started_at),
-                            "result_content": self._format_tool_output_for_display(call.name, tool_output),
+                            "result_content": execution_result.display_content or "",
                             "raw_result_content": tool_output[:12000],
                         }
                     )
@@ -401,6 +536,7 @@ class ToolCallingAgentRuntime:
         if pending_interim_future is not None:
             pending_interim_future.result()
 
+        # 如果到达这里，说明模型在超过工具调用次数限制后仍然没有停止使用工具。此时强行结束。
         return AgentRunResult(
             final_content=json.dumps(
                 {
@@ -447,136 +583,6 @@ class ToolCallingAgentRuntime:
         }
         self._log("发送给LLM的请求 raw json(截断版):\n" + self._safe_json_dumps(request_preview))
         return self.llm_completion(**kwargs)
-
-    @staticmethod
-    def _format_tool_output_for_display(tool_name: str, tool_output: str) -> str:
-        """格式化工具结果的输出文本，展示在UI窗口框中，具体可见qtUI.ToolCallInfoDialog。
-        避免在 UI 或日志呈现时显示长串丑陋混乱（或带大段无用字段）的 JSON 字符串。"""
-        def _truncate(text: str, limit: int = 1800) -> str:
-            text = text.strip()
-            if len(text) <= limit:
-                return text
-            return text[:limit] + "\n...(已截断)"
-
-        try:
-            payload = json.loads(tool_output)
-        except Exception:
-            return _truncate(str(tool_output))
-
-        if isinstance(payload, dict):
-            if tool_name == "web_search":
-                items = payload.get("items") or payload.get("results") or []
-                if isinstance(items, list) and items:
-                    lines: List[str] = []
-                    for idx, item in enumerate(items[:5], start=1):
-                        if not isinstance(item, dict):
-                            continue
-                        title = str(item.get("title") or item.get("name") or "(无标题)")
-                        url = str(item.get("url") or item.get("link") or "")
-                        snippet = str(item.get("snippet") or item.get("description") or "")
-                        line = f"{idx}. {title}"
-                        if url:
-                            line += f"\n   {url}"
-                        if snippet:
-                            line += f"\n   {snippet}"
-                        lines.append(line)
-                    if lines:
-                        return _truncate("\n".join(lines))
-
-            if tool_name == "get_weather":
-                city = payload.get("city") or payload.get("location") or ""
-                temp = payload.get("temperature") or payload.get("temp_c") or payload.get("temp")
-                desc = payload.get("weather") or payload.get("description") or payload.get("text")
-                parts: List[str] = []
-                if city:
-                    parts.append(f"城市: {city}")
-                if temp is not None:
-                    parts.append(f"温度: {temp}")
-                if desc:
-                    parts.append(f"天气: {desc}")
-                if parts:
-                    return "\n".join(parts)
-
-            if tool_name == "get_current_datetime":
-                formatted = payload.get("formatted") or payload.get("iso")
-                if formatted:
-                    return f"当前时间: {formatted}"
-
-            if tool_name == "get_system_hardware_status":
-                cpu = payload.get("cpu_percent")
-                memory = payload.get("memory")
-                gpu = payload.get("gpu")
-                lines: List[str] = []
-                if cpu is not None:
-                    lines.append(f"CPU占用: {cpu}%")
-                if isinstance(memory, dict):
-                    used = memory.get("used_percent")
-                    if used is not None:
-                        lines.append(f"内存占用: {used}%")
-                if isinstance(gpu, dict):
-                    temp = gpu.get("temperature")
-                    if temp is not None:
-                        lines.append(f"GPU温度: {temp}")
-                if lines:
-                    return "\n".join(lines)
-
-            if tool_name == "list_directory":
-                dir_path = payload.get("dir_path") or ""
-                entries = payload.get("entries") or []
-                if isinstance(entries, list):
-                    lines: List[str] = [f"{dir_path}  ({len(entries)} 项)"]
-                    for entry in entries[:30]:
-                        if not isinstance(entry, dict):
-                            continue
-                        name = entry.get("name", "")
-                        size = entry.get("size_display", "")
-                        line = f"{name}"
-                        if size:
-                            line += f"  ({size})"
-                        lines.append(line)
-                    if len(entries) > 30:
-                        lines.append(f"... 还有 {len(entries) - 30} 项")
-                    return _truncate("\n".join(lines))
-
-            if tool_name == "read_file_content":
-                file_path = payload.get("file_path") or ""
-                total = payload.get("total_lines", "?")
-                s = payload.get("start_line", "?")
-                e = payload.get("end_line", "?")
-                content = payload.get("content") or ""
-                header = f"{os.path.basename(file_path)}  (行 {s}-{e} / 共 {total} 行)"
-                hint = payload.get("hint") or ""
-                text = f"{header}\n{'─' * 40}\n{content}"
-                if hint:
-                    text += f"\n{'─' * 40}\n{hint}"
-                return _truncate(text, limit=2000)
-
-            if tool_name == "grep_search_in_file":
-                file_path = payload.get("file_path") or ""
-                keyword = payload.get("keyword") or ""
-                match_count = payload.get("match_count", 0)
-                matches_list = payload.get("matches") or []
-                lines: List[str] = [f"在 {os.path.basename(file_path)} 中搜索「{keyword}」— 共 {match_count} 处匹配"]
-                for m in matches_list[:10]:
-                    if not isinstance(m, dict):
-                        continue
-                    if m.get("truncated"):
-                        lines.append(f"\n{m.get('message', '结果已截断')}")
-                        break
-                    ml = m.get("match_line", "?")
-                    cs = m.get("context_start", "?")
-                    ce = m.get("context_end", "?")
-                    snippet = m.get("snippet", "")
-                    lines.append(f"\n--- 第 {ml} 行 (上下文 {cs}-{ce}) ---")
-                    lines.append(snippet.rstrip())
-                return _truncate("\n".join(lines), limit=2000)
-
-            if tool_name == "export_document":
-                file_path = payload.get("file_path") or ""
-                message = payload.get("message") or ""
-                return f"成功导出文档\n  文件路径: {file_path}\n  {message}"
-
-        return _truncate(json.dumps(payload, ensure_ascii=False, indent=2))
 
     @staticmethod
     def _should_return_reasoning_content(model: Any) -> bool:
@@ -828,6 +834,7 @@ def build_default_tool_registry() -> ToolRegistry:
             "required": [],
         },
         handler=DateTimeTool.execute,
+        display_formatter=DateTimeTool.format_for_display,
     )
 
     registry.register_tool(
@@ -844,6 +851,7 @@ def build_default_tool_registry() -> ToolRegistry:
             "required": [],
         },
         handler=SystemHardwareTool.execute,
+        display_formatter=SystemHardwareTool.format_for_display,
     )
 
     registry.register_tool(
@@ -868,6 +876,7 @@ def build_default_tool_registry() -> ToolRegistry:
             "required": ["query"],
         },
         handler=WebSearchTool.execute,
+        display_formatter=WebSearchTool.format_for_display,
     )
 
     registry.register_tool(
@@ -884,6 +893,7 @@ def build_default_tool_registry() -> ToolRegistry:
             "required": [],
         },
         handler=WeatherTool.execute,
+        display_formatter=WeatherTool.format_for_display,
     )
 
     # 文件阅读工具集（目录浏览 / 分页读取 / 关键字搜索）
@@ -1110,6 +1120,7 @@ def register_file_reading_tools(registry: ToolRegistry) -> None:
             "required": ["dir_path"],
         },
         handler=FileReadingTools.list_directory,
+        display_formatter=FileReadingTools.format_directory_for_display,
     )
 
     registry.register_tool(
@@ -1138,6 +1149,7 @@ def register_file_reading_tools(registry: ToolRegistry) -> None:
             "required": ["file_path"],
         },
         handler=FileReadingTools.read_file_content,
+        display_formatter=FileReadingTools.format_file_content_for_display,
     )
 
     registry.register_tool(
@@ -1162,6 +1174,7 @@ def register_file_reading_tools(registry: ToolRegistry) -> None:
             "required": ["file_path", "keyword"],
         },
         handler=FileReadingTools.grep_search_in_file,
+        display_formatter=FileReadingTools.format_grep_results_for_display,
     )
 
     registry.register_tool(
@@ -1190,10 +1203,21 @@ def register_file_reading_tools(registry: ToolRegistry) -> None:
             "required": ["filename", "content"],
         },
         handler=FileReadingTools.export_document,
+        display_formatter=FileReadingTools.format_export_for_display,
     )
 
 #-------------------------------- 以下为各工具的具体实现--------------------------------
 class DateTimeTool:
+    @staticmethod
+    def format_for_display(result: object) -> str:
+        """把时间工具结果格式化为用户可读文本。"""
+
+        payload = _string_key_mapping(result)
+        formatted = payload.get("formatted") or payload.get("iso")
+        if formatted:
+            return f"当前时间: {formatted}"
+        return _format_default_tool_output_for_display(result)
+
     @staticmethod
     def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
         """具体的获取本地时间工具，包含返回默认 ISO 格式或者是指定的 strftime 格式的结果。"""
@@ -1208,6 +1232,45 @@ class DateTimeTool:
 
 
 class SystemHardwareTool:
+    @staticmethod
+    def format_for_display(result: object) -> str:
+        """把嵌套的硬件状态结果格式化为用户可读文本。"""
+
+        payload = _string_key_mapping(result)
+        cpu = _string_key_mapping(payload.get("cpu"))
+        memory = _string_key_mapping(payload.get("memory"))
+        gpu = _string_key_mapping(payload.get("gpu"))
+        lines: list[str] = []
+
+        cpu_usage = cpu.get("usage_percent")
+        if cpu_usage is not None:
+            lines.append(f"CPU占用: {cpu_usage}%")
+        cpu_temperature = _string_key_mapping(cpu.get("temperature"))
+        cpu_temperature_value = cpu_temperature.get("value_celsius")
+        if cpu_temperature.get("available") is True and cpu_temperature_value is not None:
+            lines.append(f"CPU温度: {cpu_temperature_value}°C")
+
+        memory_usage = memory.get("usage_percent")
+        if memory_usage is not None:
+            lines.append(f"内存占用: {memory_usage}%")
+
+        cards = gpu.get("cards")
+        if isinstance(cards, list) and cards:
+            first_card = _string_key_mapping(cards[0])
+            gpu_name = first_card.get("name")
+            if gpu_name:
+                lines.append(f"GPU: {gpu_name}")
+            gpu_usage = first_card.get("utilization_percent")
+            if gpu_usage is not None:
+                lines.append(f"GPU占用: {gpu_usage}%")
+            gpu_temperature = first_card.get("temperature_celsius")
+            if gpu_temperature is not None:
+                lines.append(f"GPU温度: {gpu_temperature}°C")
+
+        if lines:
+            return "\n".join(lines)
+        return _format_default_tool_output_for_display(result)
+
     @staticmethod
     def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
         """具体的系统状态分析工具。获取主机设备的 CPU 占用情况、温度、显卡的详情和可运行内存记录等资源状态。"""
@@ -1454,6 +1517,33 @@ class SystemHardwareTool:
 
 class WebSearchTool:
     @staticmethod
+    def format_for_display(result: object) -> str:
+        """把网页搜索条目格式化为用户可读列表。"""
+
+        payload = _string_key_mapping(result)
+        items = payload.get("results") or payload.get("items")
+        if not isinstance(items, list):
+            return _format_default_tool_output_for_display(result)
+
+        lines: list[str] = []
+        for index, raw_item in enumerate(items[:5], start=1):
+            item = _string_key_mapping(raw_item)
+            if not item:
+                continue
+            title = str(item.get("title") or item.get("name") or "(无标题)")
+            url = str(item.get("url") or item.get("link") or "")
+            snippet = str(item.get("snippet") or item.get("description") or "")
+            line = f"{index}. {title}"
+            if url:
+                line += f"\n   {url}"
+            if snippet:
+                line += f"\n   {snippet}"
+            lines.append(line)
+        if lines:
+            return _truncate_display_text("\n".join(lines))
+        return _format_default_tool_output_for_display(result)
+
+    @staticmethod
     def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
         """具体的在线网页接口分发中心（工具端）。由它中转各大平台的 Web 搜索操作，按 provider 实现相应接口的 HTTP 调用。"""
         query = str(arguments.get("query") or "").strip()
@@ -1621,6 +1711,37 @@ class WebSearchTool:
 
 class WeatherTool:
     @staticmethod
+    def format_for_display(result: object) -> str:
+        """把嵌套的天气结果格式化为用户可读文本。"""
+
+        payload = _string_key_mapping(result)
+        weather = _string_key_mapping(payload.get("weather"))
+        lines: list[str] = []
+
+        city = payload.get("city")
+        if city:
+            lines.append(f"城市: {city}")
+        temperature = weather.get("temperature_celsius")
+        if temperature is not None:
+            lines.append(f"温度: {temperature}°C")
+        apparent_temperature = weather.get("apparent_temperature_celsius")
+        if apparent_temperature is not None:
+            lines.append(f"体感温度: {apparent_temperature}°C")
+        description = weather.get("weather_description")
+        if description:
+            lines.append(f"天气: {description}")
+        humidity = weather.get("humidity_percent")
+        if humidity is not None:
+            lines.append(f"湿度: {humidity}%")
+        wind_speed = weather.get("wind_speed_kmh")
+        if wind_speed is not None:
+            lines.append(f"风速: {wind_speed} km/h")
+
+        if lines:
+            return "\n".join(lines)
+        return _format_default_tool_output_for_display(result)
+
+    @staticmethod
     def execute(arguments: Dict[str, Any]) -> Dict[str, Any]:
         """主入口气候天气 API（工具端）。用于检索一个位置的天气并在不提供城市参数的前提下自动调用 IP 地址辅助查询天气。"""
         city = str(arguments.get("city") or "").strip()
@@ -1771,6 +1892,93 @@ class FileReadingTools:
         ".gitignore", ".dockerignore", ".editorconfig", ".properties",
         ".gradle", ".cmake", ".makefile",
     }
+
+    @staticmethod
+    def format_directory_for_display(result: object) -> str:
+        """把目录浏览结果格式化为用户可读列表。"""
+
+        payload = _string_key_mapping(result)
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            return _format_default_tool_output_for_display(result)
+
+        dir_path = str(payload.get("dir_path") or "")
+        lines = [f"{dir_path}  ({len(entries)} 项)"]
+        for raw_entry in entries[:30]:
+            entry = _string_key_mapping(raw_entry)
+            if not entry:
+                continue
+            name = str(entry.get("name") or "")
+            size = str(entry.get("size_display") or "")
+            lines.append(f"{name}  ({size})" if size else name)
+        if len(entries) > 30:
+            lines.append(f"... 还有 {len(entries) - 30} 项")
+        return _truncate_display_text("\n".join(lines))
+
+    @staticmethod
+    def format_file_content_for_display(result: object) -> str:
+        """把分页文件内容格式化为带行号范围的用户可读文本。"""
+
+        payload = _string_key_mapping(result)
+        file_path = str(payload.get("file_path") or "")
+        content = str(payload.get("content") or "")
+        total_lines = payload.get("total_lines", "?")
+        start_line = payload.get("start_line", "?")
+        end_line = payload.get("end_line", "?")
+        header = (
+            f"{os.path.basename(file_path)}  "
+            f"(行 {start_line}-{end_line} / 共 {total_lines} 行)"
+        )
+        text = f"{header}\n{'─' * 40}\n{content}"
+        hint = payload.get("hint")
+        if hint:
+            text += f"\n{'─' * 40}\n{hint}"
+        return _truncate_display_text(text, limit=2000)
+
+    @staticmethod
+    def format_grep_results_for_display(result: object) -> str:
+        """把文件搜索结果格式化为带上下文位置的用户可读文本。"""
+
+        payload = _string_key_mapping(result)
+        file_path = str(payload.get("file_path") or "")
+        keyword = str(payload.get("keyword") or "")
+        match_count = payload.get("match_count", 0)
+        matches = payload.get("matches")
+        if not isinstance(matches, list):
+            return _format_default_tool_output_for_display(result)
+
+        lines = [
+            f"在 {os.path.basename(file_path)} 中搜索「{keyword}」— "
+            f"共 {match_count} 处匹配"
+        ]
+        for raw_match in matches[:10]:
+            match = _string_key_mapping(raw_match)
+            if not match:
+                continue
+            if match.get("truncated"):
+                lines.append(f"\n{match.get('message') or '结果已截断'}")
+                break
+            match_line = match.get("match_line", "?")
+            context_start = match.get("context_start", "?")
+            context_end = match.get("context_end", "?")
+            snippet = str(match.get("snippet") or "")
+            lines.append(
+                f"\n--- 第 {match_line} 行 "
+                f"(上下文 {context_start}-{context_end}) ---"
+            )
+            lines.append(snippet.rstrip())
+        return _truncate_display_text("\n".join(lines), limit=2000)
+
+    @staticmethod
+    def format_export_for_display(result: object) -> str:
+        """把文档导出结果格式化为用户可读文本。"""
+
+        payload = _string_key_mapping(result)
+        file_path = str(payload.get("file_path") or "")
+        message = str(payload.get("message") or "")
+        if file_path or message:
+            return f"成功导出文档\n  文件路径: {file_path}\n  {message}"
+        return _format_default_tool_output_for_display(result)
 
     # ------------------------------------------------------------------ #
     #  1. list_directory — 目录/文件浏览

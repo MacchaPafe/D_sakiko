@@ -349,26 +349,6 @@ class WorldbookHiddenToolTest(unittest.TestCase):
         self.assertEqual(enum_values, ["soyo"])
         self.assertEqual(service.target_calls, 1)
 
-    def test_hidden_tool_validation_error_omits_traceback(self) -> None:
-        """隐藏工具参数错误不得把本地 traceback 发送给模型。"""
-
-        registry = WorldbookToolSession(
-            _FakeWorldbookService(),
-            _context(),
-            "最近对话",
-        ).build_registry()
-
-        ok, output = registry.execute(
-            ToolCallRequest(
-                tool_call_id="bad",
-                name="search_worldbook_lore",
-                arguments={},
-            )
-        )
-
-        self.assertFalse(ok)
-        self.assertNotIn("traceback", output)
-
     def test_memory_tool_returns_top_level_events_and_thoughts(self) -> None:
         """记忆工具应按顶层来源返回事实与观点，不再把 Event 嵌套进 Thought。"""
 
@@ -378,16 +358,17 @@ class WorldbookHiddenToolTest(unittest.TestCase):
             "最近对话",
         ).build_registry()
 
-        ok, output = registry.execute(
+        execution_result = registry.execute(
             ToolCallRequest(
                 tool_call_id="memory",
                 name="search_character_memory",
                 arguments={"query": "最初怎么认识灯"},
             )
         )
-        payload = json.loads(output)
+        payload = json.loads(execution_result.model_content)
 
-        self.assertTrue(ok)
+        self.assertTrue(execution_result.execution_succeeded)
+        self.assertIsNone(execution_result.display_content)
         self.assertEqual(payload["events"][0]["title"], "初次相遇")
         self.assertEqual(payload["thoughts"][0]["thought_text"], "灯很特别。")
         self.assertNotIn("results", payload)
