@@ -79,6 +79,7 @@ dependencies = [
     "requests>=2.32.5",
     "platformdirs>=4.5.1",
     "rapidfuzz>=3.14.3",
+    "coloraide>=8.11.1,<9",
 ]
 
 [project.optional-dependencies]

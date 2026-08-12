@@ -20,6 +20,7 @@ from character_creation import read_character_creation_order
 from qconfig import d_sakiko_config
 from log import get_logger
 from emotion_enum import EmotionEnum
+from ui_main.theme import DEFAULT_CHARACTER_THEME_SEED, resolve_character_theme_seed
 
 
 logger = get_logger(__name__)
@@ -58,8 +59,8 @@ class CharacterAttributes:
         self.gptsovits_ref_audio_text: str | dict[str, str] | None = ''
         # 角色语音模型参考音频的语言（例如‘日文’）
         self.gptsovits_ref_audio_lan: str | None = ''
-        # 角色的 qt css 样式表
-        self.qt_css: str | None = None
+        # 角色的规范化主题原色；界面会据此静态衍生完整语义色板。
+        self.theme_seed: str = DEFAULT_CHARACTER_THEME_SEED
 
         # 用户人设相关属性
         # 用户人设的稳定标识。系统角色没有 persona_id。
@@ -527,7 +528,7 @@ class GetCharacterAttributes:
 
                 if os.path.exists(os.path.join("../reference_audio",char, 'QT_style.json')):
                     with open(os.path.join("../reference_audio",char, 'QT_style.json'),'r',encoding="utf-8") as f:
-                        character.qt_css=f.read()
+                        character.theme_seed = resolve_character_theme_seed(f.read())
                         f.close()
 
                 if is_ready:

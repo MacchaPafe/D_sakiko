@@ -25,10 +25,16 @@ from PyQt5.QtWidgets import (
 
 from chat.chat import Chat
 from ui_main.components.character_avatar import build_initial_avatar
+from ui_main.theme import ThemePalette
 
 
 ChatSidebarMode = Literal["flat", "folded"]
 ChatSidebarRowType = Literal["character_header", "chat_flat", "chat_child"]
+
+_FOLDED_CHILD_TEXT_COLOR = QColor("#748294")
+_FOLDED_CHILD_BORDER_COLOR = QColor("#E9F1F6")
+_FOLDED_CHILD_BACKGROUND_COLOR = QColor("#FBFDFE")
+_FOLDED_CHILD_ACTIVE_BACKGROUND_COLOR = QColor("#EEF6FC")
 
 
 class ChatSidebarToolbar(QWidget):
@@ -136,7 +142,7 @@ class ChatSidebarRow:
     character_name: str
     chat_title: str
     preview_text: str
-    avatar_color: str
+    theme_palette: ThemePalette
     expanded: bool
     active: bool
 
@@ -158,7 +164,7 @@ class ChatSidebarModel(QAbstractListModel):
         self._mode: ChatSidebarMode = "flat"
         self._current_chat_id = ""
         self._expanded_character_names: set[str] = set()
-        self._character_theme_colors: dict[str, str] = {}
+        self._character_theme_palettes: dict[str, ThemePalette] = {}
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         """
@@ -292,12 +298,15 @@ class ChatSidebarModel(QAbstractListModel):
         self._rebuild_rows(reset_model=False)
         self.endResetModel()
 
-    def set_character_theme_colors(self, character_theme_colors: dict[str, str]) -> None:
+    def set_character_theme_palettes(
+        self,
+        character_theme_palettes: dict[str, ThemePalette],
+    ) -> None:
         """
-        设置角色名称到主题色的映射。
+        设置角色名称到完整语义色板的映射。
         """
         self.beginResetModel()
-        self._character_theme_colors = dict(character_theme_colors)
+        self._character_theme_palettes = dict(character_theme_palettes)
         self._rebuild_rows(reset_model=False)
         self.endResetModel()
 
@@ -363,7 +372,7 @@ class ChatSidebarModel(QAbstractListModel):
             character_name=character_name,
             chat_title=chat.name.strip() or "未命名对话",
             preview_text=self._preview_text(chat),
-            avatar_color=self._avatar_color(character_name),
+            theme_palette=self._palette(character_name),
             expanded=False,
             active=chat.chat_id == self._current_chat_id,
         )
@@ -393,7 +402,7 @@ class ChatSidebarModel(QAbstractListModel):
                     character_name=character_name,
                     chat_title=character_name,
                     preview_text="",
-                    avatar_color=self._avatar_color(character_name),
+                    theme_palette=self._palette(character_name),
                     expanded=expanded,
                     active=active,
                 )
@@ -413,7 +422,7 @@ class ChatSidebarModel(QAbstractListModel):
             character_name=character_name,
             chat_title=chat.name.strip() or "未命名对话",
             preview_text=self._preview_text(chat),
-            avatar_color=self._avatar_color(character_name),
+            theme_palette=self._palette(character_name),
             expanded=False,
             active=chat.chat_id == self._current_chat_id,
         )
@@ -424,11 +433,11 @@ class ChatSidebarModel(QAbstractListModel):
         """
         return chat.get_character_name() or "未知角色"
 
-    def _avatar_color(self, character_name: str) -> str:
+    def _palette(self, character_name: str) -> ThemePalette:
         """
-        获取指定角色用于头像绘制的主题色。
+        获取指定角色的完整语义色板。
         """
-        return self._character_theme_colors.get(character_name, "")
+        return self._character_theme_palettes[character_name]
 
     def _preview_text(self, chat: Chat) -> str:
         """
@@ -451,13 +460,6 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         初始化聊天侧栏委托。
         """
         super().__init__(parent)
-        self._text_color = QColor("#334155")
-        self._secondary_text_color = QColor("#748294")
-        self._border_color = QColor("#DCE8F0")
-        self._child_border_color = QColor("#E9F1F6")
-        self._hover_color = QColor("#F7FAFC")
-        self._active_color = QColor("#EEF6FC")
-        self._active_mark_color = QColor("#7799CC")
         self._ui_scale = self._screen_height_scale()
 
     def scaled(self, value: int) -> int:
@@ -514,7 +516,7 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         绘制折叠模式中的角色标题行。
         """
         rect = option.rect.adjusted(self.scaled(2), self.scaled(4), -self.scaled(2), -self.scaled(4))
-        self._paint_background(painter, rect, row.active, option)
+        self._paint_background(painter, rect, row, option)
         avatar_size = min(self.scaled(44), rect.height() - self.scaled(12))
         avatar_rect = QRect(
             rect.left() + self.scaled(10),
@@ -522,7 +524,7 @@ class ChatSidebarDelegate(QStyledItemDelegate):
             avatar_size,
             avatar_size,
         )
-        self._paint_avatar(painter, avatar_rect, row.character_name, row.avatar_color)
+        self._paint_avatar(painter, avatar_rect, row.character_name, row.theme_palette.accent)
 
         arrow_rect = QRect(rect.right() - self.scaled(32), rect.top(), self.scaled(26), rect.height())
         text_rect = QRect(
@@ -531,9 +533,25 @@ class ChatSidebarDelegate(QStyledItemDelegate):
             arrow_rect.left() - avatar_rect.right() - self.scaled(16),
             rect.height(),
         )
-        self._paint_single_line_text(painter, text_rect, row.character_name, 16, True, self._text_color, Qt.AlignVCenter)
+        self._paint_single_line_text(
+            painter,
+            text_rect,
+            row.character_name,
+            16,
+            True,
+            QColor(row.theme_palette.text_primary),
+            Qt.AlignVCenter,
+        )
         arrow = "⌃" if row.expanded else "⌄"
-        self._paint_single_line_text(painter, arrow_rect, arrow, 18, True, self._secondary_text_color, Qt.AlignCenter)
+        self._paint_single_line_text(
+            painter,
+            arrow_rect,
+            arrow,
+            18,
+            True,
+            QColor(row.theme_palette.text_secondary),
+            Qt.AlignCenter,
+        )
 
     def _paint_flat_chat_row(
         self,
@@ -545,7 +563,7 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         绘制平铺模式中的对话行。
         """
         rect = option.rect.adjusted(self.scaled(2), self.scaled(4), -self.scaled(2), -self.scaled(4))
-        self._paint_background(painter, rect, row.active, option)
+        self._paint_background(painter, rect, row, option)
         avatar_size = min(self.scaled(42), rect.height() - self.scaled(12))
         avatar_rect = QRect(
             rect.left() + self.scaled(10),
@@ -553,14 +571,30 @@ class ChatSidebarDelegate(QStyledItemDelegate):
             avatar_size,
             avatar_size,
         )
-        self._paint_avatar(painter, avatar_rect, row.character_name, row.avatar_color)
+        self._paint_avatar(painter, avatar_rect, row.character_name, row.theme_palette.accent)
 
         text_left = avatar_rect.right() + self.scaled(12)
         text_width = max(self.scaled(10), rect.right() - text_left - self.scaled(10))
         title_rect = QRect(text_left, rect.top() + self.scaled(9), text_width, self.scaled(20))
         preview_rect = QRect(text_left, title_rect.bottom() + self.scaled(3), text_width, self.scaled(20))
-        self._paint_single_line_text(painter, title_rect, row.chat_title, 14, True, self._text_color, Qt.AlignVCenter)
-        self._paint_single_line_text(painter, preview_rect, row.preview_text, 13, False, self._secondary_text_color, Qt.AlignVCenter)
+        self._paint_single_line_text(
+            painter,
+            title_rect,
+            row.chat_title,
+            14,
+            True,
+            QColor(row.theme_palette.text_primary),
+            Qt.AlignVCenter,
+        )
+        self._paint_single_line_text(
+            painter,
+            preview_rect,
+            row.preview_text,
+            13,
+            False,
+            _FOLDED_CHILD_TEXT_COLOR,
+            Qt.AlignVCenter,
+        )
 
     def _paint_child_chat_row(
         self,
@@ -572,35 +606,50 @@ class ChatSidebarDelegate(QStyledItemDelegate):
         绘制折叠模式中的子对话行。
         """
         rect = option.rect.adjusted(self.scaled(30), self.scaled(4), -self.scaled(2), -self.scaled(4))
-        self._paint_background(painter, rect, row.active, option, light=True)
+        self._paint_background(painter, rect, row, option, light=True)
         text_rect = rect.adjusted(self.scaled(14), 0, -self.scaled(12), 0)
-        self._paint_single_line_text(painter, text_rect, row.preview_text, 13, False, self._secondary_text_color, Qt.AlignVCenter)
+        self._paint_single_line_text(
+            painter,
+            text_rect,
+            row.preview_text,
+            13,
+            False,
+            QColor(row.theme_palette.text_secondary),
+            Qt.AlignVCenter,
+        )
 
     def _paint_background(
         self,
         painter: QPainter,
         rect: QRect,
-        active: bool,
+        row: ChatSidebarRow,
         option: QStyleOptionViewItem,
         light: bool = False,
     ) -> None:
         """
         绘制行背景和当前会话强调条。
         """
-        if active:
-            background = self._active_color
+        is_folded_child = row.row_type == "chat_child"
+        if row.active and is_folded_child:
+            background = _FOLDED_CHILD_ACTIVE_BACKGROUND_COLOR
+        elif row.active:
+            background = QColor(row.theme_palette.surface_selected)
         elif option.state & QStyle.State_MouseOver:
-            background = self._hover_color
+            background = QColor(row.theme_palette.surface_tint)
         elif light:
-            background = QColor("#FBFDFE")
+            background = _FOLDED_CHILD_BACKGROUND_COLOR
         else:
-            background = QColor("#FFFFFF")
+            background = QColor(row.theme_palette.surface)
 
-        border_color = self._child_border_color if light else self._border_color
+        border_color = (
+            _FOLDED_CHILD_BORDER_COLOR
+            if is_folded_child
+            else QColor(row.theme_palette.border_subtle)
+        )
         painter.setPen(QPen(border_color, 1))
         painter.setBrush(background)
         painter.drawRoundedRect(rect, self.scaled(7), self.scaled(7))
-        if active:
+        if row.active:
             mark_rect = QRect(
                 rect.left(),
                 rect.top() + self.scaled(8),
@@ -608,7 +657,7 @@ class ChatSidebarDelegate(QStyledItemDelegate):
                 rect.height() - self.scaled(16),
             )
             painter.setPen(Qt.NoPen)
-            painter.setBrush(self._active_mark_color)
+            painter.setBrush(QColor(row.theme_palette.accent))
             painter.drawRoundedRect(mark_rect, self.scaled(2), self.scaled(2))
 
     def _paint_avatar(self, painter: QPainter, rect: QRect, character_name: str, avatar_color: str) -> None:
@@ -766,11 +815,14 @@ class ChatSidebarView(QListView):
         """
         self._model.set_expanded_character_names(character_names)
 
-    def set_character_theme_colors(self, character_theme_colors: dict[str, str]) -> None:
+    def set_character_theme_palettes(
+        self,
+        character_theme_palettes: dict[str, ThemePalette],
+    ) -> None:
         """
-        设置角色名称到主题色的映射。
+        设置角色名称到完整语义色板的映射。
         """
-        self._model.set_character_theme_colors(character_theme_colors)
+        self._model.set_character_theme_palettes(character_theme_palettes)
 
     def expanded_character_names(self) -> list[str]:
         """
