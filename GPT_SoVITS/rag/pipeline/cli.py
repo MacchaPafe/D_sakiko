@@ -8,6 +8,7 @@ from pathlib import Path
 
 from rag.models import CanonBranch, SeriesId
 
+from .characters import SERIES_ANNOTATION_PROFILES
 from .llm_client import LiteLLMConfig
 from .prompt_package import load_prompt_package_manifest
 from .prompt_package_litellm import complete_prompt_package_with_litellm
@@ -142,17 +143,68 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_parser = subparsers.add_parser("prepare-stage1", help="解析字幕并导出第一阶段预处理结果")
     prepare_parser.add_argument("--subtitle", required=True, help="输入字幕文件路径")
     prepare_parser.add_argument("--output", required=True, help="输出 prepared JSON 路径")
-    prepare_parser.add_argument("--anime-title", default="It's MyGO!!!!!", help="动画标题")
-    prepare_parser.add_argument("--series-id", default=SeriesId.ITS_MYGO.value, help="系列 id")
-    prepare_parser.add_argument("--timeline-id", default="bang_dream_original", help="剧情时间线 id")
+    prepare_parser.add_argument("--anime-title", default=None, help="动画标题；默认从系列配置读取")
+    prepare_parser.add_argument(
+        "--series-id",
+        required=True,
+        choices=[series_id.value for series_id in SERIES_ANNOTATION_PROFILES],
+        help="系列 id；决定 Stage 1 默认候选角色",
+    )
+    prepare_parser.add_argument("--timeline-id", required=True, help="剧情时间线 id")
     prepare_parser.add_argument(
         "--story-year",
         type=int,
-        default=3,
+        default=0,
         help="剧情学年；0 或负数表示未知，内部保存为 null",
     )
     prepare_parser.add_argument("--canon-branch", default=CanonBranch.MAIN.value, help="剧情分支")
     prepare_parser.add_argument("--scene-gap-ms", type=int, default=12000, help="场景切分时间阈值")
+
+    extract_subtitles_parser = subparsers.add_parser(
+        "extract-video-subtitles",
+        help="从视频内嵌中文字幕生成 observations 和 review JSON",
+    )
+    extract_subtitles_parser.add_argument("--video", help="输入视频路径；非 aggregate-only 时必填")
+    extract_subtitles_parser.add_argument("--series-id", required=True, help="系列 id")
+    extract_subtitles_parser.add_argument("--episode", type=int, required=True, help="集数")
+    extract_subtitles_parser.add_argument("--output-dir", type=Path, required=True, help="OCR 工作产物目录")
+    extract_subtitles_parser.add_argument(
+        "--profile",
+        default="bilibili_1080p",
+        help="内置布局名称或布局 JSON 路径",
+    )
+    extract_subtitles_parser.add_argument("--resume", action="store_true", help="从现有扫描断点继续")
+    extract_subtitles_parser.add_argument(
+        "--aggregate-only",
+        action="store_true",
+        help="只使用已有 observations 重新聚合，不运行 OCR",
+    )
+    extract_subtitles_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="备份现有自动产物后重新生成",
+    )
+
+    review_subtitles_parser = subparsers.add_parser(
+        "review-ocr-subtitles",
+        help="启动视频字幕 OCR 独立复核工作台",
+    )
+    review_subtitles_parser.add_argument("--input", type=Path, required=True, help="review JSON 路径")
+    review_subtitles_parser.add_argument("--host", default="127.0.0.1", help="NiceGUI 绑定 host")
+    review_subtitles_parser.add_argument("--port", type=int, default=8190, help="NiceGUI 端口")
+    review_subtitles_parser.add_argument("--native", action="store_true", help="使用 NiceGUI native 模式")
+
+    publish_subtitles_parser = subparsers.add_parser(
+        "publish-ocr-subtitles",
+        help="校验 review JSON 并发布唯一的正式 ASS",
+    )
+    publish_subtitles_parser.add_argument("--input", type=Path, required=True, help="review JSON 路径")
+    publish_subtitles_parser.add_argument("--output", type=Path, help="正式 ASS 输出路径")
+    publish_subtitles_parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="覆盖现有 ASS 时不创建时间戳备份",
+    )
 
     validate_build_parser = subparsers.add_parser(
         "validate-worldbook-build",
@@ -702,6 +754,53 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "extract-video-subtitles":
+        from .subtitle_ocr.scanner import extract_video_subtitles
+
+        if not args.aggregate_only and not args.video:
+            parser.error("extract-video-subtitles 非 --aggregate-only 模式必须提供 --video")
+        observations_path, review_path = extract_video_subtitles(
+            video_path=args.video or "",
+            series_id=args.series_id,
+            episode=args.episode,
+            output_dir=args.output_dir,
+            profile_source=args.profile,
+            resume=args.resume,
+            aggregate_only=args.aggregate_only,
+            force=args.force,
+        )
+        print(f"observations: {observations_path.resolve()}")
+        print(f"review: {review_path.resolve()}")
+        print("未生成 ASS；请完成 review 后再运行 review-ocr-subtitles 或 publish-ocr-subtitles")
+        return 0
+
+    if args.command == "review-ocr-subtitles":
+        from .subtitle_ocr.editor import main as subtitle_editor_main
+
+        editor_arguments = [
+            "--input",
+            str(args.input),
+            "--host",
+            str(args.host),
+            "--port",
+            str(args.port),
+        ]
+        if args.native:
+            editor_arguments.append("--native")
+        subtitle_editor_main(editor_arguments)
+        return 0
+
+    if args.command == "publish-ocr-subtitles":
+        from .subtitle_ocr.publisher import publish_review_ass
+
+        ass_path = publish_review_ass(
+            args.input,
+            args.output,
+            backup_existing=not args.no_backup,
+        )
+        print(f"已发布正式 ASS: {ass_path.resolve()}")
+        return 0
 
     if args.command == "review-stage3-workbench":
         from .stage3_review_workbench import main as workbench_main

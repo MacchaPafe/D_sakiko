@@ -1,0 +1,17 @@
+{
+  "profile_id": "bilibili_1080p",
+  "subtitle_band": {"left": 0.18, "top": 0.75, "right": 0.85, "bottom": 0.97},
+  "single_line": {"left": 0.30, "top": 0.85, "right": 0.70, "bottom": 0.97},
+  "double_top": {"left": 0.22, "top": 0.79, "right": 0.78, "bottom": 0.89},
+  "double_bottom": {"left": 0.22, "top": 0.87, "right": 0.78, "bottom": 0.97},
+  "minimum_box_height_ratio": 0.18,
+  "minimum_chinese_characters": 2,
+  "fixed_region_minimum_confidence": 0.9,
+  "coarse_interval_ms": 500,
+  "boundary_step_ms": 100,
+  "boundary_window_ms": 500,
+  "empty_tolerance_ms": 1000,
+  "minimum_event_duration_ms": 300,
+  "boundary_seek_threshold_ms": 2000,
+  "checkpoint_interval_ms": 30000
+}

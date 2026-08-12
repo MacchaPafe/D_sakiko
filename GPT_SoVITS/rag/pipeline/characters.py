@@ -3,24 +3,51 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Iterable
 
+from rag.models import SeriesId
 from ui_constants import char_info_json
 
 from .schemas import CandidateCharacter
 
 
-ITS_MYGO_PRIMARY_CHARACTER_IDS = {
-    "tomori",
-    "anon",
-    "rana",
-    "soyo",
-    "taki",
-    "sakiko",
-    "mutsumi",
-    "uika",
-    "umiri",
-    "nyamu",
+@dataclass(frozen=True)
+class SeriesAnnotationProfile:
+    """定义一个动画系列在字幕标注阶段使用的稳定配置。"""
+
+    anime_title: str
+    primary_character_ids: frozenset[str]
+
+
+MYGO_MUJICA_PRIMARY_CHARACTER_IDS = frozenset(
+    {
+        "tomori",
+        "anon",
+        "rana",
+        "soyo",
+        "taki",
+        "sakiko",
+        "mutsumi",
+        "uika",
+        "umiri",
+        "nyamu",
+    }
+)
+
+SERIES_ANNOTATION_PROFILES: dict[SeriesId, SeriesAnnotationProfile] = {
+    SeriesId.ITS_MYGO: SeriesAnnotationProfile(
+        anime_title="It's MyGO!!!!!",
+        primary_character_ids=MYGO_MUJICA_PRIMARY_CHARACTER_IDS,
+    ),
+    SeriesId.AVE_MUJICA: SeriesAnnotationProfile(
+        anime_title="BanG Dream! Ave Mujica",
+        primary_character_ids=MYGO_MUJICA_PRIMARY_CHARACTER_IDS,
+    ),
+    SeriesId.YUME_MITA: SeriesAnnotationProfile(
+        anime_title="TV动画「BanG Dream! YUME∞MITA」",
+        primary_character_ids=frozenset({"arale", "nonoka", "ritsu", "miyako", "yuno"}),
+    ),
 }
 
 
@@ -98,13 +125,40 @@ def build_character_catalog() -> list[CandidateCharacter]:
     return catalog
 
 
-def default_episode_prior_candidates() -> set[str]:
-    """返回 ItsMyGO 第一阶段的默认高优先级候选角色集合。"""
+def get_series_annotation_profile(series_id: SeriesId | str) -> SeriesAnnotationProfile:
+    """返回指定动画系列的字幕标注配置。"""
 
+    normalized_series_id = SeriesId(series_id)
+    try:
+        profile = SERIES_ANNOTATION_PROFILES[normalized_series_id]
+    except KeyError as error:
+        raise ValueError(f"系列尚未配置字幕标注候选策略: {normalized_series_id.value}") from error
+
+    catalog_ids = {candidate.character_id for candidate in build_character_catalog()}
+    missing_ids = sorted(profile.primary_character_ids - catalog_ids)
+    if missing_ids:
+        raise ValueError(
+            f"系列 {normalized_series_id.value} 的候选角色未出现在角色目录中: {', '.join(missing_ids)}"
+        )
+    return profile
+
+
+def resolve_anime_title(series_id: SeriesId | str, override: str | None = None) -> str:
+    """返回显式标题，未提供时使用系列标注配置中的标题。"""
+
+    if override is not None and override.strip():
+        return override.strip()
+    return get_series_annotation_profile(series_id).anime_title
+
+
+def default_episode_prior_candidates(series_id: SeriesId | str) -> set[str]:
+    """返回指定动画系列第一阶段的默认高优先级候选角色集合。"""
+
+    profile = get_series_annotation_profile(series_id)
     return {
         candidate.display_name
         for candidate in build_character_catalog()
-        if candidate.character_id in ITS_MYGO_PRIMARY_CHARACTER_IDS
+        if candidate.character_id in profile.primary_character_ids
     }
 
 

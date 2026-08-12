@@ -14,6 +14,10 @@
 - Prompt Package：建议使用 `prompt_packages/epXX_stage1/`
 - 正式输出：`annotations_stage1/epXX_pass1_raw.json`
 
+如果视频没有字幕轨、只有画面内嵌中文字幕，请先完成可选的
+[Stage 0 字幕 OCR 与复核](subtitle_ocr.md)，并把编辑器发布的正式 ASS 作为本阶段原始输入。不要把
+`observations.json` 或 `review.json` 直接传给 `prepare-stage1`，也不要自行从未复核 OCR 观测生成 ASS。
+
 不要把另一集的 `prepared.json`、Package 或输出路径混进当前任务。Prompt Package 必须使用一个尚未包含
 `manifest.json` 的新目录；不要覆盖旧 Package，以免旧回复与新 Prompt 混用。
 
@@ -32,6 +36,7 @@
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
   --subtitle '该集字幕.ass' \
   --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/epXX_prepared.json \
+  --series-id its_mygo \
   --timeline-id bang_dream_original \
   --story-year 3
 ```
@@ -46,9 +51,12 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
   --subtitle '学年未知作品的字幕.ass' \
   --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/epXX_prepared.json \
-  --timeline-id independent_story_timeline \
-  --story-year 0
+  --series-id yume_mita \
+  --timeline-id yume_mita_anime
 ```
+
+`story_year` 默认就是未知，因此上例不需要传入该参数。为了兼容已有脚本，显式传入 `--story-year 0`
+仍会得到相同的 `null`。
 
 生成后确认：
 

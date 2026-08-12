@@ -5,6 +5,7 @@
 
 | 阶段 | 指南 | 主要输出 |
 | --- | --- | --- |
+| Stage 0（可选） | [subtitle_ocr.md](subtitle_ocr.md) | 从视频内嵌字幕生成并复核正式 ASS |
 | Stage 1 | [stage1_speaker.md](stage1_speaker.md) | 每句字幕的说话人、对象和提及角色 |
 | Stage 2A | [stage2a_document_extraction.md](stage2a_document_extraction.md) | Story Event、Relation Observation、Lore |
 | Stage 2B | [stage2b_thought_extraction.md](stage2b_thought_extraction.md) | Event Fact、Character Thought Update |

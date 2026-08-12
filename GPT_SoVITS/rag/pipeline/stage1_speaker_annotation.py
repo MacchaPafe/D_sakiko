@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from rag.models import CanonBranch, SeriesId
 
 from .llm_client import LiteLLMConfig, LiteLLMJsonClient
+from .characters import resolve_anime_title
 from .prompt_package import (
     PreparedPrompt,
     PromptPackageError,
@@ -61,16 +62,17 @@ class _Stage1SceneRequest:
 
 def prepare_stage1_scenes(
     subtitle_path: str | Path,
-    anime_title: str = "It's MyGO!!!!!",
-    series_id: SeriesId = SeriesId.ITS_MYGO,
-    timeline_id: str = "bang_dream_original",
-    story_year: int | None = 3,
+    series_id: SeriesId,
+    timeline_id: str,
+    anime_title: str | None = None,
+    story_year: int | None = None,
     canon_branch: CanonBranch = CanonBranch.MAIN,
     scene_gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> list[SceneChunk]:
     """从字幕文件准备第一阶段输入场景。"""
 
     _ = canon_branch  # 第一阶段当前不直接写入 prompt，但保留参数接口。
+    resolved_anime_title = resolve_anime_title(series_id, anime_title)
     episode = extract_episode_number(subtitle_path)
     lines = load_relevant_subtitle_lines(subtitle_path)
     utterances = build_utterance_units(lines, episode=episode)
@@ -79,7 +81,7 @@ def prepare_stage1_scenes(
         subtitle_path=subtitle_path,
         utterances=utterances,
         screen_texts=screen_texts,
-        anime_title=anime_title,
+        anime_title=resolved_anime_title,
         series_id=series_id.value,
         timeline_id=timeline_id,
         story_year=story_year,
@@ -89,19 +91,20 @@ def prepare_stage1_scenes(
 
 def prepare_stage1_artifact(
     subtitle_path: str | Path,
-    anime_title: str = "It's MyGO!!!!!",
-    series_id: SeriesId = SeriesId.ITS_MYGO,
-    timeline_id: str = "bang_dream_original",
-    story_year: int | None = 3,
+    series_id: SeriesId,
+    timeline_id: str,
+    anime_title: str | None = None,
+    story_year: int | None = None,
     canon_branch: CanonBranch = CanonBranch.MAIN,
     scene_gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> Stage1PreparedArtifact:
     """构建第一阶段预处理产物。"""
 
     subtitle_path = Path(subtitle_path)
+    resolved_anime_title = resolve_anime_title(series_id, anime_title)
     scenes = prepare_stage1_scenes(
         subtitle_path=subtitle_path,
-        anime_title=anime_title,
+        anime_title=resolved_anime_title,
         series_id=series_id,
         timeline_id=timeline_id,
         story_year=story_year,
@@ -112,7 +115,7 @@ def prepare_stage1_artifact(
     return Stage1PreparedArtifact(
         metadata=Stage1Metadata(
             subtitle_path=str(subtitle_path),
-            anime_title=anime_title,
+            anime_title=resolved_anime_title,
             series_id=series_id.value,
             timeline_id=timeline_id,
             story_year=story_year,

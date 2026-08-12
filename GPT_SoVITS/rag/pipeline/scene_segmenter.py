@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .characters import build_character_catalog, default_episode_prior_candidates, find_alias_hits
+from .characters import (
+    build_character_catalog,
+    default_episode_prior_candidates,
+    find_alias_hits,
+    get_series_annotation_profile,
+)
 from .schemas import CandidateCharacter, SceneChunk, ScreenTextUnit, UtteranceUnit
 from .subtitle_loader import extract_episode_number
 
@@ -12,6 +17,18 @@ from .subtitle_loader import extract_episode_number
 DEFAULT_SCENE_GAP_MS = 12_000
 DEFAULT_SCREEN_ATTACH_MARGIN_MS = 1_000
 DEFAULT_CANDIDATE_LIMIT = 12
+
+
+def _filter_cross_series_alias_hits(
+    alias_hits: list[str],
+    character_id: str,
+    primary_character_ids: frozenset[str],
+) -> list[str]:
+    """过滤会把单字普通词误识别成跨系列角色的弱别名命中。"""
+
+    if character_id in primary_character_ids:
+        return alias_hits
+    return [alias for alias in alias_hits if len(alias.strip()) >= 2]
 
 
 def _collect_scene_screen_texts(
@@ -42,13 +59,15 @@ def _build_scene_summary_hint(screen_texts: list[ScreenTextUnit]) -> str | None:
 def score_candidate_characters(
     utterances: list[UtteranceUnit],
     screen_texts: list[ScreenTextUnit],
+    series_id: str,
     previous_scene: SceneChunk | None = None,
     limit: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[CandidateCharacter]:
     """根据场景文本为候选角色打分。"""
 
     catalog = build_character_catalog()
-    prior_display_names = default_episode_prior_candidates()
+    profile = get_series_annotation_profile(series_id)
+    prior_display_names = default_episode_prior_candidates(series_id)
 
     utterance_texts = [text for utterance in utterances for text in (utterance.zh_text, utterance.jp_text) if text]
     screen_text_values = [item.text for item in screen_texts if item.text]
@@ -64,11 +83,21 @@ def score_candidate_characters(
             notes.append("命中剧集先验")
 
         utterance_hits = find_alias_hits(utterance_texts, candidate.aliases)
+        utterance_hits = _filter_cross_series_alias_hits(
+            utterance_hits,
+            candidate.character_id,
+            profile.primary_character_ids,
+        )
         if utterance_hits:
             score += 3
             notes.append(f"台词别名命中: {', '.join(utterance_hits[:3])}")
 
         screen_hits = find_alias_hits(screen_text_values, candidate.aliases)
+        screen_hits = _filter_cross_series_alias_hits(
+            screen_hits,
+            candidate.character_id,
+            profile.primary_character_ids,
+        )
         if screen_hits:
             score += 2
             notes.append(f"屏幕字命中: {', '.join(screen_hits[:3])}")
@@ -120,7 +149,12 @@ def segment_scenes(
         start_ms = current_group[0].start_ms
         end_ms = current_group[-1].end_ms
         attached_screen_texts = _collect_scene_screen_texts(screen_texts, start_ms, end_ms)
-        candidate_characters = score_candidate_characters(current_group, attached_screen_texts, previous_scene=previous_scene)
+        candidate_characters = score_candidate_characters(
+            current_group,
+            attached_screen_texts,
+            series_id=series_id,
+            previous_scene=previous_scene,
+        )
         scene = SceneChunk(
             anime_title=anime_title,
             series_id=series_id,

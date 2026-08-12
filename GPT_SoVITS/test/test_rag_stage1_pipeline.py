@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from rag.pipeline.cli import main as pipeline_cli_main
+from rag.models import SeriesId
 from rag.pipeline.llm_client import LiteLLMConfig, LiteLLMJsonClient
 from rag.pipeline.scene_segmenter import segment_scenes
 from rag.pipeline.stage1_speaker_annotation import (
@@ -31,7 +32,7 @@ from rag.pipeline.stage2_document_extraction import (
     load_stage2_annotation_artifact,
     render_stage2_prompt,
 )
-from rag.pipeline.schemas import StoryEventCandidate
+from rag.pipeline.schemas import StoryEventCandidate, UtteranceUnit
 from rag.pipeline.stage3_rag_import import (
     backfill_existing_stage3_character_relations,
     build_stage3_normalized_import_artifact,
@@ -104,8 +105,40 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertTrue({"素世", "祥子", "灯", "立希", "若叶睦"}.issubset(candidate_names))
         self.assertEqual(first_scene.utterances[0].zh_text, "小祥")
 
+    def test_yume_mita_scene_uses_series_primary_candidates(self):
+        utterance = UtteranceUnit(
+            u_id="ep01_u0001",
+            episode=1,
+            start_ms=1_000,
+            end_ms=2_000,
+            zh_text="把灯关掉，然后一起练习吧",
+        )
+        scenes = segment_scenes(
+            utterances=[utterance],
+            screen_texts=[],
+            anime_title="TV动画「BanG Dream! YUME∞MITA」",
+            series_id="yume_mita",
+            timeline_id="yume_mita_anime",
+            story_year=None,
+        )
+
+        candidate_names = {candidate.display_name for candidate in scenes[0].candidate_characters}
+        self.assertEqual(candidate_names, {"阿拉蕾", "野乃花", "律", "都子", "由乃"})
+        self.assertNotIn("灯", candidate_names)
+        self.assertNotIn("祥子", candidate_names)
+
+        prompt = render_stage1_prompt(scenes[0])
+        for candidate_name in candidate_names:
+            self.assertIn(f"- `{candidate_name}`", prompt)
+        self.assertNotIn("- `灯`", prompt)
+
     def test_prepare_stage1_scenes(self):
-        scenes = prepare_stage1_scenes(SAMPLE_SUBTITLE_PATH)
+        scenes = prepare_stage1_scenes(
+            SAMPLE_SUBTITLE_PATH,
+            series_id=SeriesId.ITS_MYGO,
+            timeline_id="bang_dream_original",
+            story_year=3,
+        )
         self.assertGreater(len(scenes), 5)
         first_scene = scenes[0]
         self.assertEqual(first_scene.scene_id, "ep01_s001")
@@ -114,7 +147,12 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertEqual(first_scene.story_year, 3)
 
     def test_render_stage1_prompt(self):
-        scenes = prepare_stage1_scenes(SAMPLE_SUBTITLE_PATH)
+        scenes = prepare_stage1_scenes(
+            SAMPLE_SUBTITLE_PATH,
+            series_id=SeriesId.ITS_MYGO,
+            timeline_id="bang_dream_original",
+            story_year=3,
+        )
         prompt = render_stage1_prompt(scenes[0])
         self.assertIn("scene_id", prompt)
         self.assertIn("候选角色列表", prompt)
@@ -124,7 +162,12 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertNotIn("备注：", prompt)
 
     def test_prepare_artifact_roundtrip_and_cli(self):
-        artifact = prepare_stage1_artifact(SAMPLE_SUBTITLE_PATH)
+        artifact = prepare_stage1_artifact(
+            SAMPLE_SUBTITLE_PATH,
+            series_id=SeriesId.ITS_MYGO,
+            timeline_id="bang_dream_original",
+            story_year=3,
+        )
         self.assertGreater(len(artifact.scenes), 5)
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -136,6 +179,10 @@ class RagStage1PipelineTest(unittest.TestCase):
                     str(SAMPLE_SUBTITLE_PATH),
                     "--output",
                     str(output_path),
+                    "--series-id",
+                    "its_mygo",
+                    "--timeline-id",
+                    "bang_dream_original",
                 ]
             )
             self.assertEqual(exit_code, 0)
@@ -144,7 +191,7 @@ class RagStage1PipelineTest(unittest.TestCase):
             loaded = load_stage1_prepared_artifact(output_path)
             self.assertEqual(loaded.metadata.series_id, "its_mygo")
             self.assertEqual(loaded.metadata.timeline_id, "bang_dream_original")
-            self.assertEqual(loaded.metadata.story_year, 3)
+            self.assertIsNone(loaded.metadata.story_year)
             self.assertGreater(len(loaded.scenes), 5)
 
     def test_build_stage2_input_artifact_from_real_pass1(self):
@@ -302,7 +349,12 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertIn('"episode":1,', "".join(streamed_chunks))
 
     def test_annotate_prepared_artifact_emits_status(self):
-        artifact = prepare_stage1_artifact(SAMPLE_SUBTITLE_PATH)
+        artifact = prepare_stage1_artifact(
+            SAMPLE_SUBTITLE_PATH,
+            series_id=SeriesId.ITS_MYGO,
+            timeline_id="bang_dream_original",
+            story_year=3,
+        )
         fake_raw = (
             '{"scene_id":"ep01_s001","episode":1,"present_characters":["素世"],'
             '"utterance_annotations":[],"global_notes":[]}'
@@ -368,7 +420,12 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertIn("第二阶段抽取成功", joined)
 
     def test_cli_annotate_stage1_writes_stage2_input(self):
-        artifact = prepare_stage1_artifact(SAMPLE_SUBTITLE_PATH)
+        artifact = prepare_stage1_artifact(
+            SAMPLE_SUBTITLE_PATH,
+            series_id=SeriesId.ITS_MYGO,
+            timeline_id="bang_dream_original",
+            story_year=3,
+        )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             prepared_path = Path(temp_dir) / "prepared.json"

@@ -7,6 +7,7 @@
 
 路径约定：
 
+- `GPT_SoVITS/rag/pipeline/data/subtitle_ocr/<系列>/`：Stage 0 OCR observations、review JSON 与有限截图缓存。
 - `GPT_SoVITS/rag/pipeline/data/annotations_stage1/`：Stage 1 逐集工作产物。
 - `GPT_SoVITS/rag/pipeline/data/annotations_stage2/`：Stage 2A/2B 逐集工作产物。
 - `GPT_SoVITS/rag/pipeline/data/annotations_stage3/`：旧流程产物或临时 Stage 3 工作文件。
@@ -30,6 +31,54 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline review-stage3-workbench \
 
 [toc]
 
+## 零、从无字幕轨视频生成并复核字幕（可选）
+
+已有可靠 ASS 时跳过本节，直接运行 Stage 1。只有视频没有字幕轨、但画面内嵌官方中文字幕时才使用
+Stage 0。OCR 阶段不会输出未审核 ASS；正式字幕只能从复核完成的 review JSON 发布。
+
+先扫描单集视频并聚合初始审核数据：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline extract-video-subtitles \
+  --video '/Volumes/Windows Bac/Downkyi/视频 - TV动画「BanG Dream! YUME∞MITA」 (2026-07-02_23-50-58)/(1) 视频 - #1/音视频 - #1.mp4' \
+  --series-id yume_mita \
+  --episode 1 \
+  --output-dir GPT_SoVITS/rag/pipeline/data/subtitle_ocr/yume_mita
+```
+
+默认使用 `bilibili_1080p` 布局档案。中断后增加 `--resume` 继续；只调整文本聚合规则或复核阈值时使用
+`--aggregate-only` 复用已有 observations。布局、裁剪区域、OCR 模型或采样间隔变化时必须重新扫描，不能复用旧缓存。
+
+命令只生成：
+
+```text
+yume_mita[01].observations.json
+yume_mita[01].review.json
+yume_mita[01].review-assets/
+```
+
+打开独立复核工作台：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline review-ocr-subtitles \
+  --input 'GPT_SoVITS/rag/pipeline/data/subtitle_ocr/yume_mita/yume_mita[01].review.json'
+```
+
+工作台支持修改正文和时间、新增、拆分、合并、软删除、恢复、批量删除、撤销/重做及静态帧证据查看。
+OP、ED 或插入歌歌词可以多选或按时间范围批量软删除。`pending` 数量必须为零才能发布；无风险的
+`auto_accepted` 字幕不要求逐条人工点击。
+
+正常情况下在工作台点击“发布 ASS”。无界面发布可运行：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline publish-ocr-subtitles \
+  --input 'GPT_SoVITS/rag/pipeline/data/subtitle_ocr/yume_mita/yume_mita[01].review.json'
+```
+
+发布结果是唯一的正式字幕 `yume_mita[01].ass`。它只包含 `Dial_CH` Dialogue，不包含审核状态、OCR
+置信度、删除记录或诊断字段。之后把该 ASS 传给下面的 `prepare-stage1`。详细操作和异常处理见
+[annotation_guides/subtitle_ocr.md](annotation_guides/subtitle_ocr.md)。
+
 ## 一、完成全部逐集输入
 
 每集依次运行 Stage 1、Stage 2A、Stage 2B。需要 Codex 直接填写时，使用 render → 填写
@@ -39,8 +88,26 @@ PYTHONPATH=GPT_SoVITS python -m rag.pipeline review-stage3-workbench \
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
   --subtitle ep01.ass \
   --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_prepared.json \
+  --series-id its_mygo \
   --timeline-id bang_dream_original \
   --story-year 3
+```
+
+梦限大没有确认剧情学年时不传 `--story-year`，其默认值会保存为 `null`：
+
+```bash
+PYTHONPATH=GPT_SoVITS python -m rag.pipeline prepare-stage1 \
+  --subtitle 'yume_mita[01].ass' \
+  --output GPT_SoVITS/rag/pipeline/data/annotations_stage1/yume_mita_ep01_prepared.json \
+  --series-id yume_mita \
+  --timeline-id yume_mita_anime
+```
+
+`series_id` 决定动画标题默认值和 Stage 1 候选角色；`timeline_id` 隔离不能直接比较先后或共享有效区间的
+剧情世界线。`yume_mita_anime` 表示暂按独立时间线标注，若之后确认它与现有
+`bang_dream_original` 属于同一连续剧情，应在开始正式标注前统一修改，不能在同一批产物中混用两个值。
+
+```bash
 
 PYTHONPATH=GPT_SoVITS python -m rag.pipeline render-stage1-prompts \
   --prepared GPT_SoVITS/rag/pipeline/data/annotations_stage1/ep01_prepared.json \
