@@ -14,6 +14,7 @@ from ui_main.components.context_usage_indicator import (
     ContextUsageSizing,
     resolve_context_usage_sizing,
 )
+from ui_main.theme import derive_theme_palette
 
 
 class ContextUsageSizingTestCase(unittest.TestCase):
@@ -43,19 +44,22 @@ class ContextUsageThresholdTestCase(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_threshold_slider_uses_five_percent_steps_and_dynamic_tooltip(self) -> None:
-        indicator = ContextUsageIndicator()
+    def test_threshold_slider_uses_twenty_to_eighty_percent_range(self) -> None:
+        """阈值滑块应保留当前分支的 20% 至 80% 产品范围。"""
+        indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))
         received: list[float] = []
         indicator.summaryThresholdChanged.connect(received.append)
 
-        indicator.set_summary_threshold_ratio(0.65)
+        indicator.set_summary_threshold_ratio(0.15)
         popup = indicator._popup
-        self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：65%")
-        self.assertIn("上下文上限的 65%", popup.summary_threshold_slider.toolTip())
+        self.assertEqual(popup.summary_threshold_slider.minimum(), 4)
+        self.assertEqual(popup.summary_threshold_slider.maximum(), 16)
+        self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：20%")
+        self.assertIn("上下文上限的 20%", popup.summary_threshold_slider.toolTip())
 
-        popup.summary_threshold_slider.setValue(14)
-        self.assertEqual(received[-1], 0.70)
-        self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：70%")
+        popup.summary_threshold_slider.setValue(13)
+        self.assertEqual(received[-1], 0.65)
+        self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：65%")
 
 
 if __name__ == "__main__":

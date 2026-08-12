@@ -85,6 +85,13 @@ from ui_main.components.context_usage_indicator import (
     resolve_context_usage_sizing,
 )
 from ui_main.components.message_input import MessageInput
+from ui_main.theme import (
+    DEFAULT_CHARACTER_THEME_SEED,
+    ThemePalette,
+    build_character_theme_stylesheet,
+    build_dialog_theme_stylesheet,
+    derive_theme_palette,
+)
 from ui_main.components.update_dialog import UpdateDialog
 from ui_main.components.repair_dialog import RepairDialog
 from ui_main.components.worldbook_conversation_control import (
@@ -208,191 +215,6 @@ SINGLE_CHAT_DIALOG_CSS = (
     + SINGLE_CHAT_COMBO_VIEW_CSS
 )
 
-class ThemeManager: #主题颜色设定
-    @staticmethod
-    def generate_stylesheet(base_hex_color):
-        """
-        根据主色调生成整套配色方案
-        :param base_hex_color: 用户选择的主题色 (例如 "#7FB2EB")
-        :return: 生成好的 QSS 字符串
-        """
-        base = QColor(base_hex_color)
-
-        # 获取 HSL (色相, 饱和度, 亮度)
-        h = base.hue()
-        s = base.saturation()
-        l = base.lightness()
-
-        # 定义辅助函数：生成不同亮度和饱和度的颜色
-        def get_color(hue, sat, light):
-            # 确保数值在合法范围内
-            sat = max(0, min(255, sat))
-            light = max(0, min(255, light))
-            # 如果原色是黑白灰(s=0)，保持s=0
-            final_h = hue if s > 0 else -1
-            return QColor.fromHsl(final_h, int(sat), int(light)).name()
-
-        # 辅助函数：限制数值范围
-        def clamp(val, min_v, max_v):
-            return max(min_v, min(val, max_v))
-
-        # --- 智能自适应调色算法 (活泼且护眼版) ---
-
-        # 1. 确定基准
-        # 如果用户选的颜色太亮（比如纯黄），文字会看不清，所以我们要计算一个“深色版”作为文字颜色
-        # 如果用户选的颜色太暗（比如深褐），做按钮会沉闷，我们要计算一个“鲜艳版”
-
-        # 这里的 primary 保持用户原色，用于某些高亮强调
-        primary = base.name()
-
-        # 计算适合做文字的颜色：保持色相，但亮度不能太高 (限制在 30-150 之间)，饱和度适中
-        # 这样即使用户选了荧光绿，文字也会自动变成深绿色，保证可读性
-        text_l = clamp(l, 30, 140)
-        text_s = clamp(s, 100, 240)
-        text_main = get_color(h, text_s, text_l)
-
-        # 2. 按钮/滑块颜色 (Key Color)
-        # 活泼的关键：饱和度要高(>140)，但亮度适中(>120 且 <210)，避免荧光感
-        btn_s = clamp(s , 140, 230)  # 哪怕选了灰灰的颜色，也会强制提鲜到 160
-        btn_l = clamp(l, 120, 190)  # 亮度控制在中间，最有质感
-        pushbtn_slider = get_color(h, btn_s, btn_l)
-
-        # 悬停色：比按钮亮一点，饱和度稍微降一点点防止溢出
-        pushbtn_slider_hover = get_color(h, btn_s * 0.9, min(btn_l + 20, 240))
-
-        # 3. 窗口背景色 (Background)
-        # 活泼又不刺眼的核心：高亮度(240-250)，低-中饱和度(30-60)
-        # 之前的 s*0.7 对于高饱和色来说太高了(会变成 170+ 的粉红背景，很累眼)
-        # 我们强制把背景饱和度锁定在 30~70 这个区间，这就是“马卡龙色”的秘密
-        bg_s = clamp(s * 0.5, 30, 70)
-        bg_main = get_color(h, bg_s, 248)  # 248 非常接近白，但有明显的色调
-
-        # 4. 边框色 (Border)
-        # 比背景深，比按钮浅。饱和度控制在 60-120
-        border_s = clamp(s * 0.8, 60, 120)
-        border_l = 215  # 固定一个较高的亮度，显得通透
-        border = get_color(h, border_s, border_l)
-
-        # 5. 滚动条背景
-        # 介于背景和边框之间
-        scrollbar_bg = get_color(h, bg_s + 10, 235)
-
-        # 6. 滑块划过区域 (Sub-page)
-        # 类似果冻的效果，高亮，中等饱和度
-        sub_s = clamp(s, 100, 180)
-        sub_page = get_color(h, sub_s, 225)
-
-        # 7. 纯白控件背景
-        bg_widget = "#FFFFFF"
-        # --- 套用模板 ---
-        qss_template = f"""
-        QWidget {{
-            background-color: {bg_main};
-            color: {text_main};
-        }}
-
-        QTextBrowser {{
-            text-decoration: none;
-            background-color: {bg_widget};
-            border: 3px solid {border};
-            border-radius: 9px;
-            padding: 5px;
-        }}
-
-        QLineEdit {{
-            background-color: {bg_widget};
-            border: 2px solid {border};
-            border-radius: 9px;
-            padding: 5px;
-            color: {text_main};
-        }}
-
-        QPushButton {{                
-            background-color: {pushbtn_slider};
-            color: #ffffff;
-            border-radius: 6px;
-            padding: 6px;
-            border: none;
-        }}
-
-        QPushButton:hover {{
-            background-color: {pushbtn_slider_hover};
-        }}
-
-        QScrollBar:vertical {{
-            border: none;
-            background: {scrollbar_bg};
-            width: 10px;
-            margin: 0px 0px 0px 0px;
-        }}
-
-        QScrollBar::handle:vertical {{
-            background: {border};
-            min-height: 20px;
-            border-radius: 3px;
-        }}
-
-        QScrollBar::handle:vertical:hover {{
-            background: {primary};
-        }}
-
-        QSlider::groove:horizontal {{
-            border: 1px solid {border};
-            height: {int(QDesktopWidget().screenGeometry().height() * 0.004)}px;
-            background: {scrollbar_bg};
-            margin: 2px 0;
-            border-radius: {int(QDesktopWidget().screenGeometry().height() * 0.004*0.5)}px;
-        }}
-
-        QSlider::handle:horizontal {{
-            background: {pushbtn_slider};
-            border: 1px solid {pushbtn_slider};
-            width: {int(QDesktopWidget().screenGeometry().height() * 0.004*2)}px;
-            margin: -4px 0;
-            border-radius: {int(QDesktopWidget().screenGeometry().height() * 0.004*0.5)}px;
-        }}
-
-        QSlider::handle:horizontal:hover {{
-            background: {pushbtn_slider_hover};
-        }}
-
-        QSlider::sub-page:horizontal {{
-            background: {sub_page};
-            border-radius: 4px;
-            margin: 2px 0;
-        }}
-
-        QToolButton {{
-            color: {text_main};
-            background-color: transparent;
-            border: none;
-            border-radius: 4px;
-        }}
-
-        QToolButton:hover {{
-            background-color: rgba(0, 0, 0, 0.05);
-        }}
-        """
-        return qss_template
-
-    @staticmethod
-    def get_QT_style_theme_color(qt_css):
-        try:
-            match = re.search(r"QWidget\s*\{[^}]*?(?<!-)color\s*:\s*([^;]+);", qt_css, re.DOTALL)
-
-            if match:
-                color_value = match.group(1).strip()
-                if not color_value.startswith('#'):
-                    logger.info("颜色值有误，使用祥子配色")
-                    return '#7799CC'
-                return color_value
-            else:
-                logger.info("使用默认祥子配色")
-                return '#7799CC'
-
-        except Exception:
-            logger.exception("QT_style.json 文件格式有误，使用默认祥子配色。")
-            return '#7799CC'
 
 class CommunicateThreadDP2QT(QThread):
     response_signal=pyqtSignal(object)
@@ -461,6 +283,7 @@ class MoreFunctionWindow(QDialog):
     def __init__(
         self,
         parent_window_close_fun: Callable[[], None],
+        theme_palette: ThemePalette,
         check_update_fun: Callable[[], None] | None = None,
         check_repair_fun: Callable[[], None] | None = None,
         has_update: bool = False,
@@ -468,44 +291,59 @@ class MoreFunctionWindow(QDialog):
         super().__init__()
         self.setWindowTitle("更多功能...")
         self.screen = QDesktopWidget().screenGeometry()
-        self.resize(int(0.2 * self.screen.width()), int(0.2 * self.screen.height()))
+        self.resize(int(0.20 * self.screen.width()), int(0.4 * self.screen.height()))
         layout = QVBoxLayout()
+
+        advanced_settings_group = QGroupBox("高级设置与编辑")
+        advanced_settings_layout = QVBoxLayout()
         self.open_motion_editor_button =QPushButton("运行动作组编辑程序")
         self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)  # noqa
-        layout.addWidget(self.open_motion_editor_button)
+        advanced_settings_layout.addWidget(self.open_motion_editor_button)
 
         self.open_persona_editor_button = QPushButton("编辑对话身份和角色信息")
         self.open_persona_editor_button.clicked.connect(self.on_click_open_persona_editor_button)
-        layout.addWidget(self.open_persona_editor_button)
+        advanced_settings_layout.addWidget(self.open_persona_editor_button)
 
         self.open_worldbook_button = QPushButton("世界书管理")
         self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
-        layout.addWidget(self.open_worldbook_button)
+        advanced_settings_layout.addWidget(self.open_worldbook_button)
 
         self.open_start_config_button=QPushButton("启动参数配置")
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
-        layout.addWidget(self.open_start_config_button)
+        advanced_settings_layout.addWidget(self.open_start_config_button)
+        advanced_settings_group.setLayout(advanced_settings_layout)
+        layout.addWidget(advanced_settings_group)
 
+        gameplay_group = QGroupBox("玩法")
+        gameplay_layout = QVBoxLayout()
         self.open_small_theater_btn=QPushButton("小剧场模式")
         self.open_small_theater_btn.clicked.connect(self.on_click_open_small_theater)  # noqa
-        layout.addWidget(self.open_small_theater_btn)
+        gameplay_layout.addWidget(self.open_small_theater_btn)
+        gameplay_group.setLayout(gameplay_layout)
+        layout.addWidget(gameplay_group)
 
+        tools_group = QGroupBox("工具")
+        tools_layout = QVBoxLayout()
         open_live2d_downloader_btn=QPushButton("Live2D模型下载器")
         open_live2d_downloader_btn.clicked.connect(self.on_click_open_live2d_downloader)  # noqa
-        layout.addWidget(open_live2d_downloader_btn)
+        tools_layout.addWidget(open_live2d_downloader_btn)
+        tools_group.setLayout(tools_layout)
+        layout.addWidget(tools_group)
 
+        maintenance_group = QGroupBox("程序维护")
+        maintenance_layout = QVBoxLayout()
         if check_update_fun is not None:
             check_update_text = "检查更新（有新版本）" if has_update else "检查更新"
             self.check_update_btn = QPushButton(check_update_text)
             self.check_update_btn.clicked.connect(check_update_fun)  # noqa
             self.check_update_btn.clicked.connect(self.close)  # noqa
-            layout.addWidget(self.check_update_btn)
+            maintenance_layout.addWidget(self.check_update_btn)
 
         if check_repair_fun is not None:
             self.check_repair_btn = QPushButton("检查并修复程序文件")
             self.check_repair_btn.clicked.connect(check_repair_fun)  # noqa
             self.check_repair_btn.clicked.connect(self.close)  # noqa
-            layout.addWidget(self.check_repair_btn)
+            maintenance_layout.addWidget(self.check_repair_btn)
 
         try:
             current_version = read_current_version(get_version_file(get_app_root()))
@@ -513,10 +351,14 @@ class MoreFunctionWindow(QDialog):
             current_version = "无法识别"
         self.version_label = QLabel(f"当前版本: {current_version}")
         self.version_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.version_label)
+        self.version_label.setProperty("dialogRole", "secondary")
+        maintenance_layout.addWidget(self.version_label)
+        maintenance_group.setLayout(maintenance_layout)
+        layout.addWidget(maintenance_group)
 
         self.text_label = QLabel("更多小功能还在开发中...")
         self.text_label.setAlignment(Qt.AlignCenter)
+        self.text_label.setProperty("dialogRole", "secondary")
         layout.addWidget(self.text_label)
 
         self.close_program_button=QPushButton("退出程序")
@@ -525,7 +367,7 @@ class MoreFunctionWindow(QDialog):
         layout.addWidget(self.close_program_button)
 
         self.setLayout(layout)
-        self.setStyleSheet(dialogWindowDefaultCss)
+        self.setStyleSheet(build_dialog_theme_stylesheet(theme_palette))
 
     @staticmethod
     def exec_bat(bat_name):
@@ -571,11 +413,11 @@ class MoreFunctionWindow(QDialog):
         self.close()
 
     def on_click_open_worldbook(self) -> None:
-        """在配置程序中直接打开世界书管理 interface。"""
-
+        """在配置程序中直接打开世界书管理界面。"""
         try:
             import subprocess
             import sys
+
             subprocess.Popen([sys.executable, "dsakiko_configuration.py", "WorldbookArea"])
         except Exception:
             logger.exception("启动世界书管理窗口失败")
@@ -636,7 +478,7 @@ class WarningWindow(QDialog):
         self.btn_layout.addWidget(self.cancel_btn)
         layout.addLayout(self.btn_layout)
         self.setLayout(layout)
-        self.setStyleSheet(dialogWindowDefaultCss)
+        self.setStyleSheet(css or dialogWindowDefaultCss)
         if parent_window_fun is not None:
             self.confirm_btn.clicked.connect(parent_window_fun)  # noqa
         self.confirm_btn.clicked.connect(self.close)  # noqa
@@ -670,7 +512,11 @@ class ToolCallInfoDialog(QDialog):
         layout.addWidget(close_btn)
 
         self.setLayout(layout)
-        self.setStyleSheet(dialogWindowDefaultCss)
+        parent_palette = getattr(parent, "_theme_palette", None)
+        if isinstance(parent_palette, ThemePalette):
+            self.setStyleSheet(build_character_theme_stylesheet(parent_palette))
+        else:
+            self.setStyleSheet(dialogWindowDefaultCss)
 
 
 class LotteryDialog(QDialog):
@@ -688,6 +534,12 @@ class LotteryDialog(QDialog):
         self.animation_step = 0
         self.total_animation_steps = 0
         self.animation_running = False
+        parent_palette = getattr(parent, "_theme_palette", None)
+        self._theme_palette = (
+            parent_palette
+            if isinstance(parent_palette, ThemePalette)
+            else derive_theme_palette(DEFAULT_CHARACTER_THEME_SEED)
+        )
 
         font_size = max(12, int(self.screen.height() * 0.014))
         
@@ -728,11 +580,7 @@ class LotteryDialog(QDialog):
 
         self.setLayout(layout)
         
-        # 继承父窗口(ChatGUI)的主题色设定
-        if parent and hasattr(parent, '_current_theme_color'):
-            self.setStyleSheet(ThemeManager.generate_stylesheet(parent._current_theme_color))
-        else:
-            self.setStyleSheet(dialogWindowDefaultCss)
+        self.setStyleSheet(build_character_theme_stylesheet(self._theme_palette))
         self.parent=parent
 
     def _render_options(self, highlight_index: int):
@@ -743,7 +591,7 @@ class LotteryDialog(QDialog):
             safe_text = one.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             if idx == highlight_index:
                 lines.append(
-                    f"<div style='padding: {pad_y-1}px {pad_x-1}px; margin: 8px 0; background-color: {self.parent._current_theme_color}; color: #FFF; border-radius: 8px; font-weight:bold; text-align: center; border: 2px solid #ffa940;'>"
+                    f"<div style='padding: {pad_y-1}px {pad_x-1}px; margin: 8px 0; background-color: {self._theme_palette.accent}; color: {self._theme_palette.on_accent}; border-radius: 8px; font-weight:bold; text-align: center; border: 2px solid #ffa940;'>"
                     + f"—>{safe_text}"
                     + "</div>"
                 )
@@ -809,7 +657,7 @@ class SettingWindow(QDialog):
         self.resize(int(desktop_size.width()*0.2),int(desktop_size.height()*0.4))
         self.change_lan_btn=QPushButton("切换语言")
         self.change_lan_btn.clicked.connect(self.change_lan)
-        self.switch_voice_btn=QPushButton("开启/关闭语音合成")
+        self.switch_voice_btn=QPushButton("开启/关闭语言合成")
         self.switch_voice_btn.clicked.connect(self.switch_voice)
         self.clear_history_btn=QPushButton("清空聊天记录")
         self.clear_history_btn.clicked.connect(self.clear_history_msg)
@@ -865,7 +713,7 @@ class SettingWindow(QDialog):
         layout.addWidget(sakiko_group)
         self.setLayout(layout)
         self.current_color=color
-        self.setStyleSheet(dialogWindowDefaultCss)
+        self.setStyleSheet(build_dialog_theme_stylesheet(derive_theme_palette(color)))
 
     def change_lan(self):
         self.parent_window.run_input_command_text('l', 'setting_button')
@@ -880,9 +728,12 @@ class SettingWindow(QDialog):
     def open_color_picker(self):
         color_picker = ColorPicker(self.parent_window_set_theme_color,self.current_color)
         color_picker.exec_()
-    def parent_window_set_theme_color(self,color):
-        self.parent_window.setStyleSheet(ThemeManager.generate_stylesheet(color))
-        self.parent_window.set_btn_color(color)
+    def parent_window_set_theme_color(self, color: str) -> None:
+        """应用新角色原色，并同步刷新仍在显示的设置窗口。"""
+        self.parent_window.set_character_theme_seed(color)
+        palette = derive_theme_palette(color)
+        self.current_color = palette.accent
+        self.setStyleSheet(build_dialog_theme_stylesheet(palette))
     def open_change_ref_audio_window(self):
         change_ref_audio_window=ChangeReferenceAudioWindow(self.parent_window,self.audio_gen_module,QDesktopWidget().screenGeometry())
         change_ref_audio_window.exec_()
@@ -1774,15 +1625,22 @@ class ChangeReferenceAudioWindow(QDialog):
 
 
 class ColorPicker(QDialog):
-    def __init__(self,parent_window_set_color_fun,current_color="#7799CC"):
+    def __init__(
+        self,
+        parent_window_set_color_fun: Callable[[str], None],
+        current_color: str = DEFAULT_CHARACTER_THEME_SEED,
+    ) -> None:
+        """创建只允许选择角色原色的静态衍生色选择窗口。"""
         super().__init__()
-        self.setStyleSheet(dialogWindowDefaultCss)
-        self.current_color:str=current_color
+        current_palette = derive_theme_palette(current_color)
+        self.setStyleSheet(build_character_theme_stylesheet(current_palette))
+        self.current_color = current_palette.accent
         self.screen = QDesktopWidget().screenGeometry()
         self.parent_window_set_theme_color=parent_window_set_color_fun
         self.initUI()
 
-    def initUI(self):
+    def initUI(self) -> None:
+        """创建预置角色原色按钮和系统调色盘入口。"""
         self.setWindowTitle('主题色选择')
 
         layout = QVBoxLayout()
@@ -1792,6 +1650,7 @@ class ColorPicker(QDialog):
         preset_layout.setHorizontalSpacing(int(self.screen.height() * 0.04 * 0.25))
         preset_layout.setVerticalSpacing(int(self.screen.height() * 0.05 * 0.25))
         for i,(char_name,info) in enumerate(char_info_json.items()):
+            preset_palette = derive_theme_palette(str(info["theme_color"]))
             btn=QToolButton()
             btn.setText(char_name)
             btn.setFixedSize(int(self.screen.height() * 0.06), int(self.screen.height() * 0.075))
@@ -1803,13 +1662,14 @@ class ColorPicker(QDialog):
                     QSize(int(self.screen.height() * 0.06 * 0.7), int(self.screen.height() * 0.075 * 0.7)))
             btn.setStyleSheet(f"""
                     QToolButton {{
-                        background-color: {info["theme_color"]}; 
-                        color: #FFFFFF;  /* 强制文字白色，防止和背景混色 */
+                        background-color: {preset_palette.accent};
+                        color: {preset_palette.on_accent};
                         font-weight: bold;
                         border-radius: 6px; /* 加点圆角更好看 */
                     }}
                     QToolButton:hover {{
-                        border: 2px solid white; /* 悬停加个边框 */
+                        background-color: {preset_palette.accent_hover};
+                        border: 2px solid {preset_palette.on_accent};
                     }}
                 """)
             preset_layout.addWidget(btn,i//10,i%10)
@@ -1817,7 +1677,9 @@ class ColorPicker(QDialog):
         layout.addWidget(preset_group)
 
         self.lbl_display = QLabel(f"当前主题色: {self.current_color}")
-        self.lbl_display.setStyleSheet(f"color: {self.current_color}")
+        self.lbl_display.setStyleSheet(
+            f"color: {derive_theme_palette(self.current_color).text_accent}"
+        )
         layout.addWidget(self.lbl_display)
         # 触发按钮
         self.btn_pick = QPushButton('打开调色盘')
@@ -1827,16 +1689,20 @@ class ColorPicker(QDialog):
 
         self.setLayout(layout)
 
-    def show_color_dialog(self):
+    def show_color_dialog(self) -> None:
+        """打开 Qt 调色盘并应用用户选择的不透明 sRGB 原色。"""
         col = QColorDialog.getColor(parent=self, title="选择颜色",initial=QColor(self.current_color),options=QColorDialog.DontUseNativeDialog)
         if col.isValid():
             hex_code = col.name()
             self.set_theme_color(hex_code)
 
-    def set_theme_color(self,color):
-        self.current_color=color
+    def set_theme_color(self, color: str) -> None:
+        """规范化角色原色，刷新标签并通知主窗口应用和保存。"""
+        palette = derive_theme_palette(color)
+        self.current_color = palette.accent
+        self.setStyleSheet(build_character_theme_stylesheet(palette))
         self.lbl_display.setText(f"当前主题色: {self.current_color}")
-        self.lbl_display.setStyleSheet(f"color: {self.current_color}")
+        self.lbl_display.setStyleSheet(f"color: {palette.text_accent}")
         self.parent_window_set_theme_color(self.current_color)
 
 class AudioRegenThread(QThread):
@@ -2359,6 +2225,10 @@ class ChatBackupMultiExportDialog(QDialog):
 
 
 class ChatGUI(QWidget):
+    """主聊天窗口，并统一协调角色语义色板的同步更新。"""
+
+    themePaletteChanged = pyqtSignal(object)
+
     def __init__(self,
                  dp2qt_queue,
                  qt2dp_queue,
@@ -2380,6 +2250,7 @@ class ChatGUI(QWidget):
         # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
         self.chat_manager: ChatManager = self.dp_chat.chat_manager
         self.current_chat_id = self.dp_chat.current_chat_id
+        self._theme_palette = derive_theme_palette(self.current_character.theme_seed)
         # 当前显示的对话的 id（保存于对话中）
         self.active_chat_id: str | None = None
         # 当前轮次对话的 id（在用户发送一条消息时生成，作为内部状态，不保存）
@@ -2409,7 +2280,8 @@ class ChatGUI(QWidget):
         self.screen = QDesktopWidget().screenGeometry()
         self.input_tool_button_height = int(self.screen.height()*0.027)
         self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
-        self.chat_display = ChatDisplay(self)
+        self.chat_display = ChatDisplay(self._theme_palette, self)
+        self.themePaletteChanged.connect(self.chat_display.set_theme_palette)  # noqa
         self.chat_display.audioLinkClicked.connect(self.play_history_audio)  # noqa
         self.chat_display.toolCallClicked.connect(self._open_tool_call_dialog)  # noqa
         self.chat_display.deleteMessageRequested.connect(self.delete_message)  # noqa
@@ -2436,7 +2308,8 @@ class ChatGUI(QWidget):
         self.messages_box.setMaximumHeight(int(0.05*self.screen.height()))
         self._set_message_box_idle()
         self.update_banner = self._create_update_banner()
-        self.user_input = MessageInput()
+        self.user_input = MessageInput(self._theme_palette)
+        self.themePaletteChanged.connect(self.user_input.set_theme_palette)  # noqa
         self.user_input.setObjectName("messageTextInput")
         self.user_input.setPlaceholderText("在这里输入内容")
         self.user_input.set_vision_support_checker(self._current_model_supports_vision)
@@ -2472,11 +2345,13 @@ class ChatGUI(QWidget):
 
         context_usage_sizing = resolve_context_usage_sizing(self.screen.height(), sys.platform)
         self.context_usage_indicator = ContextUsageIndicator(
+            self._theme_palette,
             self,
             size=context_usage_sizing.indicator_size,
             popup_width=context_usage_sizing.popup_width,
             popup_font_size=context_usage_sizing.popup_font_size,
         )
+        self.themePaletteChanged.connect(self.context_usage_indicator.set_theme_palette)  # noqa
         self.context_usage_indicator.set_summary_threshold_ratio(
             float(d_sakiko_config.rolling_summary_trigger_ratio.value)
         )
@@ -2546,22 +2421,12 @@ class ChatGUI(QWidget):
         self.repair_dialog: RepairDialog | None = None
         self.pending_repair_result: RepairCheckResult | None = None
         self.repair_workflow_active = False
-        #----------------------------------------------------------
-        # 获取当前主题色
-        self._current_theme_color = self._get_theme_color()
-
         self._load_tool_call_records_cache()
 
         if self.current_character.icon_path is not None:  # noqa
             self.setWindowIcon(QIcon(self.current_character.icon_path))  # noqa
 
-        if self.current_character.qt_css is not None:  # noqa
-            self.setStyleSheet(ThemeManager.generate_stylesheet(
-                ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
-                )
-            )  # noqa
-        else:
-            self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
+        self.setStyleSheet(build_character_theme_stylesheet(self._theme_palette))
         if not self.current_character.has_valid_voice_model():
             self.dp_chat.if_generate_audio=False
 
@@ -2627,10 +2492,7 @@ class ChatGUI(QWidget):
         layout.addWidget(self.chat_display)
         layout.addLayout(slider_layout)
         layout.addWidget(input_panel)
-        if self.current_character.qt_css is not None:
-            self.set_btn_color(ThemeManager.get_QT_style_theme_color(self.current_character.qt_css))
-        else:
-            self.set_btn_color('#7799CC')
+        self._apply_character_theme(self._theme_palette)
 
         self.talk_speed_reset()
 
@@ -3074,56 +2936,50 @@ class ChatGUI(QWidget):
         if hasattr(self, "update_banner"):
             self.update_banner.setVisible(False)
 
-    def _apply_update_banner_style(self, color: str) -> None:
-        """根据当前主题色刷新更新横幅样式。"""
+    def _apply_update_banner_style(self, palette: ThemePalette) -> None:
+        """根据角色语义色板刷新更新横幅样式。"""
 
         if not hasattr(self, "update_banner"):
             return
-        theme_color = QColor(color)
-        if not theme_color.isValid():
-            theme_color = QColor("#7799CC")
-        hover_color = theme_color.lighter(112).name()
-        pressed_color = theme_color.darker(108).name()
-        background_color = f"rgba({theme_color.red()}, {theme_color.green()}, {theme_color.blue()}, 0.10)"
         self.update_banner.setStyleSheet(f"""
             QFrame#updateBanner {{
-                background-color: {background_color};
-                border: 1px solid {theme_color.name()};
+                background-color: {palette.surface_selected};
+                border: 1px solid {palette.border_subtle};
                 border-radius: 9px;
             }}
             QLabel#updateBannerLabel {{
-                color: #272636;
+                color: {palette.text_primary};
                 background: transparent;
                 font-weight: bold;
             }}
             QPushButton#updateBannerViewButton {{
-                color: #FFFFFF;
-                background-color: {theme_color.name()};
-                border: 1px solid {theme_color.name()};
+                color: {palette.on_accent};
+                background-color: {palette.accent};
+                border: 1px solid {palette.accent};
                 border-radius: 7px;
                 padding: 4px 10px;
                 font-weight: bold;
             }}
             QPushButton#updateBannerViewButton:hover {{
-                background-color: {hover_color};
-                border: 1px solid {hover_color};
+                background-color: {palette.accent_hover};
+                border: 1px solid {palette.accent_hover};
             }}
             QPushButton#updateBannerViewButton:pressed {{
-                background-color: {pressed_color};
-                border: 1px solid {pressed_color};
+                background-color: {palette.accent_pressed};
+                border: 1px solid {palette.accent_pressed};
             }}
             QPushButton#updateBannerDismissButton {{
-                color: {theme_color.name()};
+                color: {palette.text_accent};
                 background-color: transparent;
-                border: 1px solid rgba(0, 0, 0, 0.08);
+                border: 1px solid {palette.border_subtle};
                 border-radius: 7px;
                 padding: 4px 10px;
             }}
             QPushButton#updateBannerDismissButton:hover {{
-                background-color: rgba(255, 255, 255, 0.50);
+                background-color: {palette.surface_tint};
             }}
             QPushButton#updateBannerDismissButton:pressed {{
-                background-color: rgba(0, 0, 0, 0.06);
+                background-color: {palette.surface_selected};
             }}
         """)
 
@@ -3266,7 +3122,7 @@ class ChatGUI(QWidget):
         self.chat_sidebar = ChatSidebarView()
         self.chat_sidebar.set_mode(self._chat_sidebar_mode())
         self.chat_sidebar.set_expanded_character_names(self._chat_sidebar_expanded_characters())
-        self.chat_sidebar.set_character_theme_colors(self._chat_sidebar_character_theme_colors())
+        self.chat_sidebar.set_character_theme_palettes(self._chat_sidebar_character_theme_palettes())
         self.chat_sidebar.chat_selected.connect(self.on_chat_item_clicked)  # noqa
         self.chat_sidebar.chat_menu_requested.connect(self.show_chat_list_menu)  # noqa
         self.chat_sidebar.chat_order_changed.connect(self.on_chat_list_order_changed)  # noqa
@@ -3287,7 +3143,7 @@ class ChatGUI(QWidget):
         if not hasattr(self, "chat_sidebar"):
             return
         chats = self.single_character_chats()
-        self.chat_sidebar.set_character_theme_colors(self._chat_sidebar_character_theme_colors())
+        self.chat_sidebar.set_character_theme_palettes(self._chat_sidebar_character_theme_palettes())
         self.chat_sidebar.set_chats(chats, self.current_chat_id)
 
     def _set_message_box_text(self, message: str) -> None:
@@ -3639,16 +3495,22 @@ class ChatGUI(QWidget):
             return []
         return [one for one in configured_value if isinstance(one, str)]
 
-    def _chat_sidebar_character_theme_colors(self) -> dict[str, str]:
+    def _chat_sidebar_character_theme_palettes(self) -> dict[str, ThemePalette]:
         """
-        获取侧栏中每个角色的主题色映射。
+        获取侧栏中每个角色的完整语义色板映射。
         """
-        character_theme_colors: dict[str, str] = {}
+        character_theme_palettes: dict[str, ThemePalette] = {}
         for one_character in self.character_list:
-            if one_character.qt_css is None:
-                continue
-            character_theme_colors[one_character.character_name] = ThemeManager.get_QT_style_theme_color(one_character.qt_css)
-        return character_theme_colors
+            character_theme_palettes[one_character.character_name] = derive_theme_palette(
+                one_character.theme_seed
+            )
+        for chat in self.single_character_chats():
+            character_name = chat.get_character_name()
+            if character_name is not None and character_name not in character_theme_palettes:
+                character_theme_palettes[character_name] = derive_theme_palette(
+                    DEFAULT_CHARACTER_THEME_SEED
+                )
+        return character_theme_palettes
 
     def set_chat_sidebar_mode(self, mode: ChatSidebarMode) -> None:
         """
@@ -3897,15 +3759,7 @@ class ChatGUI(QWidget):
         根据当前对话角色刷新主题、图标、聊天显示与语音设置。
         """
         self.chat_display.clear_chat()
-        self._current_theme_color = self._get_theme_color()
-        if self.current_character.qt_css is not None:
-            color = ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
-            self.setStyleSheet(ThemeManager.generate_stylesheet(color))
-            self.set_btn_color(color)
-        else:
-            self.setStyleSheet(ThemeManager.generate_stylesheet("#7799CC"))
-            self.set_btn_color("#7799CC")
-        self.refresh_current_chat_display()
+        self._apply_character_theme(derive_theme_palette(self.current_character.theme_seed))
         self._load_tool_call_records_cache()
         self._refresh_input_option_buttons()
         if self.current_character.icon_path is not None:
@@ -3919,11 +3773,15 @@ class ChatGUI(QWidget):
         """初始化输入框命令注册表、匹配器与命令栏控件。"""
         self.input_command_specs: tuple[CommandSpec, ...] = build_default_input_command_specs()
         self.input_command_matcher = InputCommandMatcher(self.input_command_specs)
-        self.input_command_palette = InputCommandPalette(self.input_command_matcher, self)
+        self.input_command_palette = InputCommandPalette(
+            self.input_command_matcher,
+            self._theme_palette,
+            self,
+        )
+        self.themePaletteChanged.connect(self.input_command_palette.set_theme_palette)  # noqa
         self.input_command_palette.set_screen_height(self.screen.height())
         self.input_command_palette.attach_to_input(self.user_input.text_edit, input_panel)
         self.input_command_palette.commandSelected.connect(self._on_input_command_selected)  # noqa
-        self.input_command_palette.set_theme_color(self._current_theme_color if hasattr(self, "_current_theme_color") else "#7799CC")
 
     def _create_input_panel(self) -> QFrame:
         """创建带底部工具行的 Codex 风格输入面板。"""
@@ -3966,7 +3824,7 @@ class ChatGUI(QWidget):
         panel_layout.addLayout(bottom_layout)
 
         self.input_panel.setLayout(panel_layout)
-        self._apply_input_panel_style("#7799CC")
+        self._apply_input_panel_style(self._theme_palette)
         return self.input_panel
 
     def _build_reasoning_menu(self) -> QMenu:
@@ -4089,66 +3947,62 @@ class ChatGUI(QWidget):
             logger.exception("保存推理设置失败")
             self.setWindowTitle("推理设置保存失败！")
 
-    def _apply_input_panel_style(self, color: str) -> None:
-        """根据主题色刷新输入面板局部样式。"""
-        self._set_voice_button_icon_color(color)
-        if hasattr(self, "input_command_palette"):
-            self.input_command_palette.set_theme_color(color)
-        send_color = QColor(color)
-        if not send_color.isValid():
-            send_color = QColor("#7799CC")
-        if hasattr(self, "context_usage_indicator"):
-            self.context_usage_indicator.set_theme_color(send_color.name())
-        self._apply_update_banner_style(send_color.name())
-        send_hover_color = send_color.lighter(112).name()
-        send_pressed_color = send_color.darker(108).name()
+    def _apply_input_panel_style(self, palette: ThemePalette) -> None:
+        """根据角色语义色板刷新输入面板局部样式。"""
+        self._set_voice_button_icon_color(palette.text_accent)
+        self._apply_update_banner_style(palette)
+        if hasattr(self, "worldbook_control"):
+            self.worldbook_control.set_theme_color(palette.accent)
         if hasattr(self, "tool_calling_toggle_button"):
             self.tool_calling_toggle_button.setStyleSheet(f"""
                 QToolButton#toolCallingToggleButton {{
-                    color: {color};
-                    background-color: rgba(0, 0, 0, 0.035);
-                    border: 1px solid rgba(0, 0, 0, 0.08);
+                    color: {palette.text_accent};
+                    background-color: {palette.surface_tint};
+                    border: 1px solid {palette.border_subtle};
                     border-radius: 9px;
                     padding: 0px 9px;
                 }}
                 QToolButton#toolCallingToggleButton:hover {{
-                    background-color: rgba(0, 0, 0, 0.07);
+                    background-color: {palette.surface_selected};
                 }}
                 QToolButton#toolCallingToggleButton:checked {{
-                    color: #FFFFFF;
-                    background-color: {send_color.name()};
-                    border: 1px solid {send_color.name()};
+                    color: {palette.on_accent};
+                    background-color: {palette.accent};
+                    border: 1px solid {palette.accent};
                 }}
                 QToolButton#toolCallingToggleButton:checked:hover {{
-                    background-color: {send_hover_color};
-                    border: 1px solid {send_hover_color};
+                    background-color: {palette.accent_hover};
+                    border: 1px solid {palette.accent_hover};
                 }}
                 QToolButton#toolCallingToggleButton:checked:pressed {{
-                    background-color: {send_pressed_color};
-                    border: 1px solid {send_pressed_color};
+                    background-color: {palette.accent_pressed};
+                    border: 1px solid {palette.accent_pressed};
+                }}
+                QToolButton#toolCallingToggleButton:focus {{
+                    border: 2px solid {palette.focus_ring};
                 }}
             """)
-        if hasattr(self, "worldbook_control"):
-            self.worldbook_control.set_theme_color(send_color.name())
         self.input_panel.setStyleSheet(f"""
             QFrame#messageInputPanel {{
-                background-color: #FFFFFF;
-                border: 2px solid {color};
+                background-color: {palette.surface};
+                border: 2px solid {palette.focus_ring};
                 border-radius: 13px;
             }}
         """)
-        self.user_input.set_theme_color(color)
         self.user_input.refresh_height()
         self.reasoning_menu_button.setStyleSheet(f"""
             QToolButton#reasoningMenuButton {{
-                color: {color};
-                background-color: rgba(0, 0, 0, 0.035);
-                border: 1px solid rgba(0, 0, 0, 0.08);
+                color: {palette.text_accent};
+                background-color: {palette.surface_tint};
+                border: 1px solid {palette.border_subtle};
                 border-radius: 9px;
                 padding: 0px 9px;
             }}
             QToolButton#reasoningMenuButton:hover {{
-                background-color: rgba(0, 0, 0, 0.07);
+                background-color: {palette.surface_selected};
+            }}
+            QToolButton#reasoningMenuButton:focus {{
+                border: 2px solid {palette.focus_ring};
             }}
             QToolButton#reasoningMenuButton::menu-indicator {{
                 image: none;
@@ -4157,17 +4011,17 @@ class ChatGUI(QWidget):
         """)
         self.voice_button.setStyleSheet(f"""
             QPushButton#voiceInputButton {{
-                color: {color};
-                background-color: rgba(0, 0, 0, 0.035);
-                border: 1px solid rgba(0, 0, 0, 0.08);
+                color: {palette.text_accent};
+                background-color: {palette.surface_tint};
+                border: 1px solid {palette.border_subtle};
                 border-radius: 9px;
                 padding: 0px;
             }}
             QPushButton#voiceInputButton:hover {{
-                background-color: rgba(0, 0, 0, 0.07);
+                background-color: {palette.surface_selected};
             }}
             QPushButton#voiceInputButton:pressed {{
-                background-color: rgba(0, 0, 0, 0.11);
+                background-color: {palette.border_subtle};
             }}
             QPushButton#voiceInputButton:disabled {{
                 background-color: rgba(0, 0, 0, 0.025);
@@ -4176,8 +4030,8 @@ class ChatGUI(QWidget):
         """)
         self.send_button.setStyleSheet(f"""
             QToolButton#sendMessageButton {{
-                color: #FFFFFF;
-                background-color: {send_color.name()};
+                color: {palette.on_accent};
+                background-color: {palette.accent};
                 border: none;
                 border-radius: {int(self.input_tool_button_height*0.5)}px;
                 padding: 0px;
@@ -4185,10 +4039,10 @@ class ChatGUI(QWidget):
                 font-weight: bold;
             }}
             QToolButton#sendMessageButton:hover {{
-                background-color: {send_hover_color};
+                background-color: {palette.accent_hover};
             }}
             QToolButton#sendMessageButton:pressed {{
-                background-color: {send_pressed_color};
+                background-color: {palette.accent_pressed};
             }}
         """)
 
@@ -4256,12 +4110,6 @@ class ChatGUI(QWidget):
             }
         dialog = ToolCallInfoDialog(self, record,win_size=(int(self.screen.width()*0.2), int(self.screen.height()*0.3)))
         dialog.exec_()
-
-    def _get_theme_color(self) -> str:
-        """获取当前角色的主题色"""
-        if self.current_character.qt_css is not None:
-            return ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
-        return '#7799CC'
 
     def schedule_context_usage_refresh(self, delay_ms: int = 100) -> None:
         """合并并延迟刷新上下文 token 用量组件。"""
@@ -4438,15 +4286,31 @@ class ChatGUI(QWidget):
         self.chat_display.render_chat(self.current_chat)
         self.schedule_context_usage_refresh()
 
-    def set_btn_color(self,color):
-        #更改按钮图标颜色-----------------------
+    def _apply_character_theme(self, palette: ThemePalette) -> None:
+        """应用角色色板，并协调所有同步界面更新和必要的显式刷新。"""
+        if not isinstance(palette, ThemePalette):
+            raise TypeError("palette 必须是 ThemePalette")
+        self._theme_palette = palette
+        self.setStyleSheet(build_character_theme_stylesheet(palette))
+        self.themePaletteChanged.emit(palette)
+        self._apply_input_panel_style(palette)
+        self._rebuild_toolbar_icons(palette.text_accent)
+        self._refresh_input_option_buttons()
+        if hasattr(self, "chat_sidebar"):
+            self.chat_sidebar.set_character_theme_palettes(
+                self._chat_sidebar_character_theme_palettes()
+            )
+        self.refresh_current_chat_display()
+
+    def _rebuild_toolbar_icons(self, color: str) -> None:
+        """将主工具栏 SVG 图标重绘为指定的可读强调色。"""
         icon_map = {
             self.setting_btn: './icons/setting.svg',
             self.change_character_button: './icons/chat_list.svg',
             self.save_dialog_btn: './icons/save.svg',
             self.more_function_button: './icons/more.svg'
         }
-        for btn,file in icon_map.items():
+        for btn, file in icon_map.items():
             try:
                 with open(file,'r',encoding='utf-8') as f:
                     orig_data=f.read()
@@ -4458,26 +4322,30 @@ class ChatGUI(QWidget):
                 image = QImage.fromData(svg_bytes)
                 pixmap = QPixmap.fromImage(image)
                 btn.setIcon(QIcon(pixmap))
-            except:
-                pass
-        # 更新主题色并从 Chat 数据重新生成 HTML（不再使用正则替换旧 HTML 中的颜色）
-        self._current_theme_color = color
-        self.chat_display.set_theme_color(color)
-        self._apply_input_panel_style(color)
-        self._refresh_input_option_buttons()
-        self.refresh_current_chat_display()
-        # 保存新颜色到本地以及修改内存中的颜色
+            except Exception:
+                logger.debug("重绘工具栏图标失败：%s", file, exc_info=True)
+
+    def set_character_theme_seed(self, seed: str) -> None:
+        """校验并应用用户选择的角色原色，然后尝试保存旧版兼容配置。"""
+        palette = derive_theme_palette(seed)
+        self.current_character.theme_seed = palette.accent
+        self._apply_character_theme(palette)
+        if not self._save_character_theme_seed(palette.accent):
+            QMessageBox.warning(
+                self,
+                "主题色保存失败",
+                "新配色已在本次运行中生效，但无法写入角色的 QT_style.json。",
+            )
+
+    def _save_character_theme_seed(self, seed: str) -> bool:
+        """以旧版 QSS 文件格式保存角色原色，返回保存是否成功。"""
         try:
             with open(f"../reference_audio/{self.current_character.character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
-                f.write(f'''QWidget {{
-                color: {color};
-                }}''')
-            self.current_character.qt_css=f'''
-                                                        QWidget {{
-                                                                color: {color};
-                                                                }}'''
+                f.write(f"QWidget {{\n    color: {seed};\n}}")
+            return True
         except Exception:
             logger.exception("保存主题色失败")
+            return False
 
 
 
@@ -4489,15 +4357,19 @@ class ChatGUI(QWidget):
 
 
     def open_setting_window(self):
-        color =ThemeManager.get_QT_style_theme_color(self.current_character.qt_css) if self.current_character.qt_css is not None else "#7799CC"
-
-        setting_window=SettingWindow(self,self.screen,color,self.audio_gen)
+        setting_window=SettingWindow(
+            self,
+            self.screen,
+            self.current_character.theme_seed,
+            self.audio_gen,
+        )
         setting_window.exec_()
         self.schedule_context_usage_refresh()
 
     def open_more_function_window(self):
         more_function_win=MoreFunctionWindow(
             self.close_program,
+            self._theme_palette,
             self.check_update_manual,
             self.check_repair_manual,
             has_update=self.pending_update_plan is not None,
@@ -5520,10 +5392,7 @@ class ChatGUI(QWidget):
 
     def _confirm_dangerous_command(self, spec: CommandSpec, callback: Callable[[], None]) -> None:
         """对危险命令弹出二次确认窗口。"""
-        css = ThemeManager.generate_stylesheet(
-            ThemeManager.get_QT_style_theme_color(self.current_character.qt_css)
-        ) if self.current_character.qt_css is not None else ThemeManager.generate_stylesheet(
-            '#7799CC')
+        css = build_character_theme_stylesheet(self._theme_palette)
         danger_text = spec.danger_text or f"确定要执行 {spec.display_command} 吗？"
         WarningWindow(danger_text, css, callback).exec_()
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, Sequence
 
 from PyQt5.QtCore import QEvent, QObject, QPoint, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QKeyEvent
+from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
@@ -17,6 +17,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ui_main.theme import ThemePalette
 
 
 # 命令是否可见于命令栏
@@ -299,6 +301,7 @@ class InputCommandRow(QFrame):
     def __init__(
         self,
         spec: CommandSpec,
+        palette: ThemePalette,
         parent: QWidget | None = None,
         font_size: int = 13,
         row_height: int = 38,
@@ -307,7 +310,7 @@ class InputCommandRow(QFrame):
         super().__init__(parent)
         self.spec = spec
         self._selected = False
-        self._theme_color = "#7799CC"
+        self._theme_palette = palette
         self._font_size = font_size
         self.setObjectName("inputCommandRow")
         self.setFixedHeight(row_height)
@@ -339,9 +342,11 @@ class InputCommandRow(QFrame):
         self.setLayout(layout)
         self.set_selected(False)
 
-    def set_theme_color(self, color: str) -> None:
-        """更新该行使用的主题色。"""
-        self._theme_color = color
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """更新该行使用的角色语义色板。"""
+        if not isinstance(palette, ThemePalette):
+            raise TypeError("palette 必须是 ThemePalette")
+        self._theme_palette = palette
         self._apply_style()
 
     def set_selected(self, selected: bool) -> None:
@@ -351,8 +356,8 @@ class InputCommandRow(QFrame):
 
     def _apply_style(self) -> None:
         """刷新该行的样式。"""
-        selected_bg = "#F1F2F4"
-        hover_bg = "#F6F7F8"
+        selected_bg = self._theme_palette.surface_selected
+        hover_bg = self._theme_palette.surface_tint
         background = selected_bg if self._selected else "transparent"
         self.setStyleSheet(f"""
             QFrame#inputCommandRow {{
@@ -367,12 +372,20 @@ class InputCommandRow(QFrame):
                 border: none;
             }}
         """)
-        self.icon_label.setStyleSheet(f"color: #5F6368; font-size: {self._font_size + 1}px;")
-        self.command_label.setStyleSheet(
-            f"color: {self._theme_color}; font-family: Menlo, Consolas, monospace; font-size: {self._font_size}px;"
+        self.icon_label.setStyleSheet(
+            f"color: {self._theme_palette.text_secondary}; font-size: {self._font_size + 1}px;"
         )
-        self.title_label.setStyleSheet(f"color: #202124; font-weight: 600; font-size: {self._font_size}px;")
-        self.description_label.setStyleSheet(f"color: #8B8F94; font-size: {self._font_size}px;")
+        self.command_label.setStyleSheet(
+            f"color: {self._theme_palette.text_accent}; "
+            f"font-family: Menlo, Consolas, monospace; font-size: {self._font_size}px;"
+        )
+        self.title_label.setStyleSheet(
+            f"color: {self._theme_palette.text_primary}; "
+            f"font-weight: 600; font-size: {self._font_size}px;"
+        )
+        self.description_label.setStyleSheet(
+            f"color: {self._theme_palette.text_secondary}; font-size: {self._font_size}px;"
+        )
 
 
 class InputCommandPalette(QFrame):
@@ -380,7 +393,12 @@ class InputCommandPalette(QFrame):
 
     commandSelected = pyqtSignal(object)
 
-    def __init__(self, matcher: InputCommandMatcher, parent: QWidget | None = None):
+    def __init__(
+        self,
+        matcher: InputCommandMatcher,
+        palette: ThemePalette,
+        parent: QWidget | None = None,
+    ) -> None:
         """创建命令栏控件并初始化内部状态。"""
         super().__init__(parent)
         self._matcher = matcher
@@ -389,7 +407,7 @@ class InputCommandPalette(QFrame):
         self._filtered_specs: tuple[CommandSpec, ...] = ()
         self._rows: list[InputCommandRow] = []
         self._selected_index = 0
-        self._theme_color = "#7799CC"
+        self._theme_palette = palette
         self._command_font_size = 13
         self._row_height = 38
 
@@ -414,7 +432,7 @@ class InputCommandPalette(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._scroll_area)
         self.setLayout(layout)
-        self.set_theme_color(self._theme_color)
+        self.set_theme_palette(self._theme_palette)
 
     def set_screen_height(self, screen_height: int) -> None:
         self._command_font_size = max(10, int(screen_height * 0.012))
@@ -435,16 +453,15 @@ class InputCommandPalette(QFrame):
         else:
             line_edit.textChanged.connect(self._on_plain_text_changed)
 
-    def set_theme_color(self, color: str) -> None:
-        """刷新命令栏主题色。"""
-        color_obj = QColor(color)
-        if not color_obj.isValid():
-            color = "#7799CC"
-        self._theme_color = color
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """刷新命令栏使用的角色语义色板。"""
+        if not isinstance(palette, ThemePalette):
+            raise TypeError("palette 必须是 ThemePalette")
+        self._theme_palette = palette
         self.setStyleSheet(f"""
             QFrame#inputCommandPalette {{
-                background-color: #FFFFFF;
-                border: 1px solid rgba(0, 0, 0, 0.10);
+                background-color: {palette.surface};
+                border: 1px solid {palette.border_subtle};
                 border-radius: 13px;
             }}
             QScrollArea#inputCommandPaletteScrollArea {{
@@ -457,7 +474,7 @@ class InputCommandPalette(QFrame):
                 margin: 6px 2px 6px 0px;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(0, 0, 0, 0.14);
+                background: {palette.border_subtle};
                 border-radius: 4px;
                 min-height: 24px;
             }}
@@ -467,7 +484,7 @@ class InputCommandPalette(QFrame):
             }}
         """)
         for row in self._rows:
-            row.set_theme_color(self._theme_color)
+            row.set_theme_palette(self._theme_palette)
 
     def show_for_query(self, query: str) -> None:
         """根据 query 过滤命令并显示命令栏。"""
@@ -602,11 +619,11 @@ class InputCommandPalette(QFrame):
         for index, spec in enumerate(self._filtered_specs):
             row = InputCommandRow(
                 spec,
+                self._theme_palette,
                 self._content_widget,
                 font_size=self._command_font_size,
                 row_height=self._row_height,
             )
-            row.set_theme_color(self._theme_color)
             row.set_selected(index == self._selected_index)
             row.installEventFilter(self)
             row.mousePressEvent = lambda event, row_index=index: self._handle_row_clicked(row_index)

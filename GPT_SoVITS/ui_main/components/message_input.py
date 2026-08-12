@@ -38,6 +38,7 @@ from PyQt5.QtWidgets import (
 
 from chat.attachments import SUPPORTED_IMAGE_MIME_TYPES, detect_image_mime_type
 from chat.chat import MessageAttachment
+from ui_main.theme import ThemePalette
 
 
 def trim_surrounding_blank_lines(text: str) -> str:
@@ -311,10 +312,10 @@ class MessageInput(QWidget):
 
     sendRequested = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, palette: ThemePalette, parent: QWidget | None = None) -> None:
         """初始化复合输入框。"""
         super().__init__(parent)
-        self._theme_color = "#7799CC"
+        self._theme_palette = palette
         self._vision_support_checker: Callable[[], bool] | None = None
         self._current_model_name_provider: Callable[[], str] | None = None
         self._image_upload_force_allowed_checker: Callable[[], bool] | None = None
@@ -379,7 +380,7 @@ class MessageInput(QWidget):
         self.setLayout(layout)
         self.setFocusProxy(self.text_edit)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.set_theme_color(self._theme_color)
+        self.set_theme_palette(self._theme_palette)
 
     def set_vision_support_checker(self, checker: Callable[[], bool]) -> None:
         """设置当前模型是否支持视觉输入的同步检查回调。"""
@@ -396,15 +397,19 @@ class MessageInput(QWidget):
         self._image_upload_force_allowed_checker = image_upload_force_allowed_checker
         self._force_image_upload_allow_callback = force_image_upload_allow_callback
 
-    def set_theme_color(self, color: str) -> None:
-        """根据主题色刷新输入框内部样式。"""
-        self._theme_color = color or "#7799CC"
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """根据角色语义色板刷新输入框内部样式。"""
+        if not isinstance(palette, ThemePalette):
+            raise TypeError("palette 必须是 ThemePalette")
+        self._theme_palette = palette
         self.text_edit.setStyleSheet(f"""
             QPlainTextEdit#messageTextInput {{
                 background-color: transparent;
                 border: none;
                 padding: 4px 2px;
-                color: {self._theme_color};
+                color: {palette.text_primary};
+                selection-background-color: {palette.surface_selected};
+                selection-color: {palette.text_primary};
             }}
         """)
         self.error_bar.setStyleSheet("""
@@ -453,7 +458,8 @@ class MessageInput(QWidget):
                 font-weight: bold;
             }}
             QToolButton#draftImageRemoveButton:hover {{
-                background-color: {self._theme_color};
+                background-color: {self._theme_palette.accent};
+                color: {self._theme_palette.on_accent};
             }}
         """)
 

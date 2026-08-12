@@ -13,6 +13,7 @@ from chat.chat import Chat, Message
 from emotion_enum import EmotionEnum
 from qtUI import ChatBackupExportOptionsDialog, ChatBackupMultiExportDialog, ChatGUI
 from ui_main.components.chat_display import ChatDisplay
+from ui_main.theme import derive_theme_palette
 
 
 class ChatBackupDialogTestCase(unittest.TestCase):
@@ -98,7 +99,7 @@ class ChatDisplayForkSignalTestCase(unittest.TestCase):
 
     def test_fork_chat_signal_emits_message_index(self) -> None:
         """分叉信号会携带消息索引。"""
-        display = ChatDisplay()
+        display = ChatDisplay(derive_theme_palette("#7799CC"))
         emitted_indices: list[int] = []
         display.forkChatRequested.connect(emitted_indices.append)
 
@@ -108,7 +109,7 @@ class ChatDisplayForkSignalTestCase(unittest.TestCase):
 
     def test_fork_chat_action_only_allowed_at_turn_boundaries(self) -> None:
         """分叉位置只允许在用户消息或连续角色回复末尾。"""
-        display = ChatDisplay()
+        display = ChatDisplay(derive_theme_palette("#7799CC"))
         messages = [
             self._message("User", "用户消息"),
             self._message("祥子", "角色回复第一段"),

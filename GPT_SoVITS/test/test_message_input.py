@@ -27,6 +27,10 @@ from emotion_enum import EmotionEnum
 from input_commands import InputCommandMatcher, InputCommandPalette, build_default_input_command_specs
 from qtUI import MessageEditDialog
 from ui_main.components.message_input import MessageInput, trim_surrounding_blank_lines
+from ui_main.theme import derive_theme_palette
+
+
+TEST_THEME_PALETTE = derive_theme_palette("#7799CC")
 
 
 class MessageInputTestCase(unittest.TestCase):
@@ -47,7 +51,7 @@ class MessageInputTestCase(unittest.TestCase):
     def setUp(self) -> None:
         """创建并展示固定宽度的消息输入框。"""
         self.temp_paths: list[str] = []
-        self.input = MessageInput()
+        self.input = MessageInput(TEST_THEME_PALETTE)
         self.input.resize(240, self.input.height())
         self.input.show()
         self.app.processEvents()
@@ -333,7 +337,7 @@ class MessageInputTestCase(unittest.TestCase):
         self.app.processEvents()
 
         dropped_image = self.input.grab().toImage()
-        reference_input = MessageInput()
+        reference_input = MessageInput(TEST_THEME_PALETTE)
         try:
             reference_input.resize(520, reference_input.height())
             reference_input.setStyleSheet(
@@ -531,10 +535,10 @@ class InputCommandPaletteMultilineTestCase(unittest.TestCase):
         """创建输入框、锚点和命令候选栏。"""
         self.window = QWidget()
         self.window.resize(360, 240)
-        self.input = MessageInput(self.window)
+        self.input = MessageInput(TEST_THEME_PALETTE, self.window)
         self.input.setGeometry(10, 180, 340, 52)
         matcher = InputCommandMatcher(build_default_input_command_specs())
-        self.palette = InputCommandPalette(matcher, self.window)
+        self.palette = InputCommandPalette(matcher, TEST_THEME_PALETTE, self.window)
         self.palette.attach_to_input(self.input.text_edit, self.input)
         self.window.show()
         self.input.setFocus()
