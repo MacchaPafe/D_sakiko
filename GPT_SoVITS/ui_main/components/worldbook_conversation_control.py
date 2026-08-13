@@ -8,9 +8,10 @@ from pathlib import Path
 import re
 from typing import Protocol
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QAction,
+    QActionGroup,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -122,6 +123,7 @@ class WorldbookConversationControl(QObject):
 
         self._chat = chat
         self._character = character
+        self._pending_enable_from_main = False
         supported = chat.type == ChatType.SINGLE_CHARACTER
         self._button.setEnabled(supported)
         self._button.setVisible(supported)
@@ -221,6 +223,12 @@ class WorldbookConversationControl(QObject):
             issues.append("选择该世界书包含的角色知识视角")
         return issues
 
+    def _has_valid_root_selection(self) -> bool:
+        """判断当前对话是否已经选择可用的世界书根包。"""
+
+        option = self._current_root_option()
+        return option is not None and option.enabled
+
     def _menu_summary_text(self) -> str:
         """生成菜单顶部的当前配置或待设置说明。"""
 
@@ -279,6 +287,11 @@ class WorldbookConversationControl(QObject):
         if self._configuration_issues():
             self._pending_enable_from_main = False
 
+    def _schedule_cancel_pending_enable(self) -> None:
+        """把取消操作延后到菜单项的 triggered 信号处理完毕之后。"""
+
+        QTimer.singleShot(0, self._cancel_pending_enable)
+
     def _current_root_option(self) -> WorldbookRootOption | None:
         """返回当前绑定对话选择的世界书根包。"""
 
@@ -321,6 +334,9 @@ class WorldbookConversationControl(QObject):
             unavailable_action.setEnabled(False)
             return menu
         settings = chat.meta.worldbook
+
+        if self._pending_enable_from_main and not self._has_valid_root_selection():
+            return self._build_initial_package_menu(menu)
 
         summary = QLabel(self._menu_summary_text(), menu)
         summary.setWordWrap(True)
@@ -390,7 +406,44 @@ class WorldbookConversationControl(QObject):
 
         export_action = menu.addAction("导出此对话的世界书诊断…")
         export_action.triggered.connect(self._export_current_chat_diagnostics)  # noqa
-        menu.aboutToHide.connect(self._cancel_pending_enable)  # noqa
+        menu.aboutToHide.connect(self._schedule_cancel_pending_enable)  # noqa
+        return menu
+
+    def _build_initial_package_menu(self, menu: QMenu) -> QMenu:
+        """构建首次启用时只要求选择世界书包的一级菜单。"""
+
+        prompt = QLabel("请选择世界书包", menu)
+        prompt.setContentsMargins(10, 7, 10, 7)
+        prompt.setMinimumWidth(280)
+        prompt.setAccessibleName("首次启用世界书")
+        prompt_action = QWidgetAction(menu)
+        prompt_action.setDefaultWidget(prompt)
+        menu.addAction(prompt_action)
+        menu.addSeparator()
+
+        package_group = QActionGroup(menu)
+        package_group.setExclusive(True)
+        root_options = self._root_options()
+        for option in root_options:
+            action = QAction(option.display_name, menu)
+            action.setCheckable(True)
+            action.setEnabled(option.enabled)
+            if option.unavailable_reasons:
+                reason = "\n".join(option.unavailable_reasons)
+                action.setToolTip(reason)
+                action.setStatusTip(reason)
+            action.triggered.connect(
+                lambda checked=False, package_id=option.package_id: self._set_root(
+                    package_id
+                )
+            )  # noqa
+            package_group.addAction(action)
+            menu.addAction(action)
+        if not root_options:
+            unavailable_action = menu.addAction("没有可用的季度世界书包")
+            unavailable_action.setEnabled(False)
+
+        menu.aboutToHide.connect(self._schedule_cancel_pending_enable)  # noqa
         return menu
 
     def _set_enabled(self, enabled: bool) -> None:
@@ -466,13 +519,19 @@ class WorldbookConversationControl(QObject):
             return
         settings = self._chat.meta.worldbook
         settings.root_package_id = package_id
-        if settings.episode is None:
+        episode_defaulted = settings.episode is None
+        if episode_defaulted:
             settings.episode = WORLDBOOK_EPISODE_COUNT
         if self._character_id() is None:
             self._choose_character_mapping(finish_pending=False)
         self._warn_if_character_missing(option)
-        self._try_finish_pending_enable()
-        self._save_and_refresh()
+        enabled_from_initial_menu = self._try_finish_pending_enable()
+        success_message = (
+            "已启用世界书，剧情进度默认为第 13 集，可在世界书菜单中修改"
+            if enabled_from_initial_menu and episode_defaulted
+            else "已更新世界书设置"
+        )
+        self._save_and_refresh(success_message)
 
     def _set_episode(self, episode: int) -> None:
         """修改剧情进度，回退时提醒历史对话可能泄露剧情。"""
@@ -648,12 +707,15 @@ class WorldbookConversationControl(QObject):
             f"已导出当前对话的 {count} 条世界书诊断记录。",
         )
 
-    def _save_and_refresh(self) -> None:
+    def _save_and_refresh(
+        self,
+        success_message: str = "已更新世界书设置",
+    ) -> None:
         """保存世界书配置并刷新按钮；保存失败时保持内存状态。"""
 
         try:
             self._chat_manager.save()
-            self.status_changed.emit("已更新世界书设置")
+            self.status_changed.emit(success_message)
         except Exception:
             logger.exception("保存世界书设置失败")
             self.status_changed.emit("世界书设置保存失败")

@@ -308,7 +308,7 @@ class WorldbookConversationControlTest(unittest.TestCase):
         )
 
     def test_incomplete_main_click_opens_configuration_without_enabling(self) -> None:
-        """主区启用缺少必要配置时应打开菜单，并保持关闭状态。"""
+        """首次启用应打开只要求选择世界书包的一级菜单。"""
 
         with mock.patch.object(self.control.button, "showMenu") as show_menu:
             self.control.button.click()
@@ -316,8 +316,14 @@ class WorldbookConversationControlTest(unittest.TestCase):
         self.assertFalse(self.chat.meta.worldbook.enabled)
         self.assertFalse(self.control.button.isChecked())
         show_menu.assert_called_once_with()
-        summary = self.control.button.menu().actions()[0].defaultWidget()
-        self.assertIn("启用前请完成", summary.text())
+        menu = self.control.button.menu()
+        prompt = menu.actions()[0].defaultWidget()
+        self.assertEqual(prompt.text(), "请选择世界书包")
+        action_texts = [action.text() for action in menu.actions()]
+        self.assertIn(_root_option().display_name, action_texts)
+        self.assertNotIn("世界书包", action_texts)
+        self.assertNotIn("剧情进度", action_texts)
+        self.assertNotIn("角色知识视角：爱音", action_texts)
 
     def test_complete_main_click_toggles_and_saves(self) -> None:
         """配置完整时主区应直接切换世界书，并保存一次。"""
@@ -335,20 +341,39 @@ class WorldbookConversationControlTest(unittest.TestCase):
     def test_main_enable_intent_auto_enables_after_configuration(self) -> None:
         """从主区发起配置并在同次操作补齐要求后应自动启用。"""
 
+        statuses: list[str] = []
+        self.control.status_changed.connect(statuses.append)
         with mock.patch.object(self.control.button, "showMenu"):
             self.control.button.click()
-        root_menu = _menu_action(
-            self.control.button.menu(),
-            "世界书包",
-        ).menu()
-        self.assertIsNotNone(root_menu)
 
-        root_menu.actions()[0].trigger()
+        initial_menu = self.control.button.menu()
+        package_action = _menu_action(
+            initial_menu,
+            _root_option().display_name,
+        )
+        initial_menu.aboutToHide.emit()
+        package_action.trigger()
+        self.app.processEvents()
 
         self.assertTrue(self.chat.meta.worldbook.enabled)
         self.assertTrue(self.control.button.isChecked())
         self.assertEqual(self.chat.meta.worldbook.episode, 13)
         self.manager.save.assert_called_once_with()
+        self.assertEqual(
+            statuses,
+            ["已启用世界书，剧情进度默认为第 13 集，可在世界书菜单中修改"],
+        )
+
+    def test_arrow_configuration_keeps_full_menu_before_first_enable(self) -> None:
+        """未配置时直接使用箭头仍应展示完整设置菜单。"""
+
+        action_texts = [
+            action.text() for action in self.control.button.menu().actions()
+        ]
+
+        self.assertIn("世界书包", action_texts)
+        self.assertIn("剧情进度", action_texts)
+        self.assertIn("角色知识视角：爱音", action_texts)
 
     def test_save_failure_keeps_state_and_emits_plain_status(self) -> None:
         """保存失败时应保留内存状态，并发出无重试入口的简短状态。"""

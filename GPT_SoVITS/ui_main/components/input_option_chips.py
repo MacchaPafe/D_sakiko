@@ -66,7 +66,7 @@ class ToggleChip(QToolButton):
             QToolButton {{
                 color: {palette.text_accent};
                 background-color: {palette.surface_tint};
-                border: 1px solid {palette.border_subtle};
+                border: none;
                 border-radius: 8px;
                 padding: 0px 9px 0px 6px;
             }}
@@ -79,18 +79,18 @@ class ToggleChip(QToolButton):
             QToolButton:checked {{
                 color: {palette.on_accent};
                 background-color: {palette.accent};
-                border-color: {palette.accent};
             }}
             QToolButton:checked:hover {{
                 background-color: {palette.accent_hover};
-                border-color: {palette.accent_hover};
             }}
             QToolButton:checked:pressed {{
                 background-color: {palette.accent_pressed};
-                border-color: {palette.accent_pressed};
             }}
             QToolButton:focus {{
-                border: 2px solid {palette.focus_ring};
+                background-color: {palette.surface_selected};
+            }}
+            QToolButton:checked:focus {{
+                background-color: {palette.accent_hover};
             }}
             QToolButton:disabled {{
                 color: {palette.text_secondary};
@@ -126,7 +126,7 @@ class ChoiceChip(QToolButton):
             QToolButton {{
                 color: {palette.text_accent};
                 background-color: {palette.surface_tint};
-                border: 1px solid {palette.border_subtle};
+                border: none;
                 border-radius: 8px;
                 padding: 0px 22px 0px 9px;
             }}
@@ -137,7 +137,7 @@ class ChoiceChip(QToolButton):
                 background-color: {palette.border_subtle};
             }}
             QToolButton:focus {{
-                border: 2px solid {palette.focus_ring};
+                background-color: {palette.surface_selected};
             }}
             QToolButton::menu-indicator {{
                 subcontrol-origin: padding;
@@ -183,6 +183,7 @@ class SplitToggleChip(ToggleChip):
             }}
             QToolButton::menu-button {{
                 width: 24px;
+                border: none;
                 border-left: 1px solid {palette.border_subtle};
                 border-top-right-radius: 8px;
                 border-bottom-right-radius: 8px;
