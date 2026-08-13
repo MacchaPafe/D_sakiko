@@ -14,6 +14,7 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 import numpy as np
 from PyQt5.QtWidgets import (
     QAction,
+    QActionGroup,
     QApplication,
     QCheckBox,
     QColorDialog,
@@ -85,6 +86,7 @@ from ui_main.components.context_usage_indicator import (
     resolve_context_usage_sizing,
 )
 from ui_main.components.message_input import MessageInput
+from ui_main.components.input_option_chips import ChoiceChip, ToggleChip
 from ui_main.theme import (
     DEFAULT_CHARACTER_THEME_SEED,
     ThemePalette,
@@ -2378,7 +2380,9 @@ class ChatGUI(QWidget):
             button_height=self.input_tool_button_height,
             parent=self,
         )
-        self.worldbook_control.status_changed.connect(self.setWindowTitle)  # noqa
+        self.worldbook_control.status_changed.connect(
+            self._show_input_option_status
+        )  # noqa
         self.worldbook_control.diagnostic_ready.connect(
             self.chat_display.append_worldbook_diagnostic
         )  # noqa
@@ -3799,19 +3803,22 @@ class ChatGUI(QWidget):
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(6)
 
-        self.tool_calling_toggle_button = QToolButton()
+        self.tool_calling_toggle_button = ToggleChip(
+            "工具",
+            accessible_name="工具调用",
+            height=self.input_tool_button_height,
+        )
         self.tool_calling_toggle_button.setObjectName("toolCallingToggleButton")
-        self.tool_calling_toggle_button.setCheckable(True)
-        self.tool_calling_toggle_button.setFixedHeight(self.input_tool_button_height)
         self.tool_calling_toggle_button.setMinimumWidth(max(46, int(self.input_tool_button_height * 1.8)))
         self.tool_calling_toggle_button.clicked.connect(self._set_tool_calling_enabled)  # noqa
 
-        self.reasoning_menu_button = QToolButton()
+        self.reasoning_menu_button = ChoiceChip(
+            accessible_name="思考模式",
+            height=self.input_tool_button_height,
+        )
         self.reasoning_menu_button.setObjectName("reasoningMenuButton")
-        self.reasoning_menu_button.setPopupMode(QToolButton.InstantPopup)
         self.reasoning_menu_button.setToolTip("设置当前对话的推理与推理强度")
         self.reasoning_menu_button.setMenu(self._build_reasoning_menu())
-        self.reasoning_menu_button.setFixedHeight(self.input_tool_button_height)
         self._refresh_input_option_buttons()
 
         bottom_layout.addWidget(self.tool_calling_toggle_button, 0)
@@ -3828,28 +3835,40 @@ class ChatGUI(QWidget):
         return self.input_panel
 
     def _build_reasoning_menu(self) -> QMenu:
-        """创建推理设置菜单。"""
+        """创建带互斥模式组和强度组的单层推理设置菜单。"""
         menu = QMenu(self)
-
-        enabled_menu = menu.addMenu("开启推理")
+        mode_heading = menu.addAction("推理模式")
+        mode_heading.setEnabled(False)
+        self.reasoning_enabled_action_group = QActionGroup(menu)
+        self.reasoning_enabled_action_group.setExclusive(True)
+        self.reasoning_enabled_actions: list[QAction] = []
         for enabled_value, label in self.reasoning_enabled_labels.items():
-            action = QAction(label, self)
+            action = QAction(label, menu)
             action.setCheckable(True)
             action.setData(f"enabled:{enabled_value}")
             action.triggered.connect(
                 lambda checked=False, value=enabled_value: self._set_reasoning_enabled(value)
             )  # noqa
-            enabled_menu.addAction(action)
+            self.reasoning_enabled_action_group.addAction(action)
+            self.reasoning_enabled_actions.append(action)
+            menu.addAction(action)
 
-        effort_menu = menu.addMenu("推理强度")
+        menu.addSeparator()
+        self.reasoning_effort_heading = menu.addAction("推理强度")
+        self.reasoning_effort_heading.setEnabled(False)
+        self.reasoning_effort_action_group = QActionGroup(menu)
+        self.reasoning_effort_action_group.setExclusive(True)
+        self.reasoning_effort_actions: list[QAction] = []
         for effort_value, label in self.reasoning_effort_labels.items():
-            action = QAction(label, self)
+            action = QAction(label, menu)
             action.setCheckable(True)
             action.setData(f"effort:{effort_value}")
             action.triggered.connect(
                 lambda checked=False, value=effort_value: self._set_reasoning_effort(value)
             )  # noqa
-            effort_menu.addAction(action)
+            self.reasoning_effort_action_group.addAction(action)
+            self.reasoning_effort_actions.append(action)
+            menu.addAction(action)
 
         return menu
 
@@ -3872,7 +3891,12 @@ class ChatGUI(QWidget):
             return
         enabled = bool(self.current_chat.meta.tool_calling_enabled)
         self.tool_calling_toggle_button.setChecked(enabled)
-        self.tool_calling_toggle_button.setText("工具 开" if enabled else "工具 关")
+        self.tool_calling_toggle_button.setText("工具")
+        self.tool_calling_toggle_button.setAccessibleDescription(
+            "已启用，当前对话允许模型调用工具"
+            if enabled
+            else "已关闭，当前对话不会调用工具"
+        )
         self.tool_calling_toggle_button.setToolTip(
             "当前对话允许模型调用工具"
             if enabled
@@ -3883,10 +3907,10 @@ class ChatGUI(QWidget):
         """保存当前对话的工具调用配置。"""
         try:
             self.chat_manager.save()
-            self.setWindowTitle("已更新工具调用设置")
+            self._show_input_option_status("已更新工具调用设置")
         except Exception:
             logger.exception("保存工具调用设置失败")
-            self.setWindowTitle("工具调用设置保存失败！")
+            self._show_input_option_status("工具调用设置保存失败")
 
     def _set_reasoning_enabled(self, enabled: str) -> None:
         """修改当前对话的推理开关配置。"""
@@ -3916,72 +3940,51 @@ class ChatGUI(QWidget):
         effort_label = self.reasoning_effort_labels[reasoning_meta.effort]
 
         if reasoning_meta.enabled == "off":
-            self.reasoning_menu_button.setText(f"{enabled_label}")
+            self.reasoning_menu_button.setText(enabled_label)
         else:
-            self.reasoning_menu_button.setText(f"{enabled_label} {effort_label}")
+            self.reasoning_menu_button.setText(f"{enabled_label} · {effort_label}")
+
+        self.reasoning_menu_button.setAccessibleDescription(
+            f"当前为{enabled_label}模式"
+            if reasoning_meta.enabled == "off"
+            else f"当前为{enabled_label}模式，推理强度{effort_label}"
+        )
 
         menu = self.reasoning_menu_button.menu()
         if menu is None:
             return
 
-        for action in menu.actions():
-            if action.text() == "推理强度":
-                action.setEnabled(reasoning_meta.enabled != "off")  #当推理关闭时，强度设置不可用
-
-            sub_menu = action.menu()
-            if sub_menu is None:
-                continue
-            for sub_action in sub_menu.actions():
-                data = sub_action.data()
-                sub_action.setChecked(
-                    data == f"enabled:{reasoning_meta.enabled}"
-                    or data == f"effort:{reasoning_meta.effort}"
-                )
+        for action in self.reasoning_enabled_actions:
+            action.setChecked(action.data() == f"enabled:{reasoning_meta.enabled}")
+        effort_enabled = reasoning_meta.enabled != "off"
+        for action in self.reasoning_effort_actions:
+            action.setEnabled(effort_enabled)
+            action.setChecked(action.data() == f"effort:{reasoning_meta.effort}")
 
     def _save_reasoning_config(self) -> None:
         """保存当前对话的推理配置。"""
         try:
             self.chat_manager.save()
-            self.setWindowTitle("已更新推理设置")
+            self._show_input_option_status("已更新推理设置")
         except Exception:
             logger.exception("保存推理设置失败")
-            self.setWindowTitle("推理设置保存失败！")
+            self._show_input_option_status("推理设置保存失败")
+
+    def _show_input_option_status(self, message: str) -> None:
+        """在顶部状态栏显示对话级选项的保存结果和生效时机。"""
+
+        if "保存失败" not in message and self.is_chat_busy():
+            message = f"{message}，将从下一轮对话生效"
+        self._set_message_box_text(message)
 
     def _apply_input_panel_style(self, palette: ThemePalette) -> None:
         """根据角色语义色板刷新输入面板局部样式。"""
         self._set_voice_button_icon_color(palette.text_accent)
         self._apply_update_banner_style(palette)
         if hasattr(self, "worldbook_control"):
-            self.worldbook_control.set_theme_color(palette.accent)
+            self.worldbook_control.set_theme_palette(palette)
         if hasattr(self, "tool_calling_toggle_button"):
-            self.tool_calling_toggle_button.setStyleSheet(f"""
-                QToolButton#toolCallingToggleButton {{
-                    color: {palette.text_accent};
-                    background-color: {palette.surface_tint};
-                    border: 1px solid {palette.border_subtle};
-                    border-radius: 9px;
-                    padding: 0px 9px;
-                }}
-                QToolButton#toolCallingToggleButton:hover {{
-                    background-color: {palette.surface_selected};
-                }}
-                QToolButton#toolCallingToggleButton:checked {{
-                    color: {palette.on_accent};
-                    background-color: {palette.accent};
-                    border: 1px solid {palette.accent};
-                }}
-                QToolButton#toolCallingToggleButton:checked:hover {{
-                    background-color: {palette.accent_hover};
-                    border: 1px solid {palette.accent_hover};
-                }}
-                QToolButton#toolCallingToggleButton:checked:pressed {{
-                    background-color: {palette.accent_pressed};
-                    border: 1px solid {palette.accent_pressed};
-                }}
-                QToolButton#toolCallingToggleButton:focus {{
-                    border: 2px solid {palette.focus_ring};
-                }}
-            """)
+            self.tool_calling_toggle_button.set_theme_palette(palette)
         self.input_panel.setStyleSheet(f"""
             QFrame#messageInputPanel {{
                 background-color: {palette.surface};
@@ -3990,25 +3993,7 @@ class ChatGUI(QWidget):
             }}
         """)
         self.user_input.refresh_height()
-        self.reasoning_menu_button.setStyleSheet(f"""
-            QToolButton#reasoningMenuButton {{
-                color: {palette.text_accent};
-                background-color: {palette.surface_tint};
-                border: 1px solid {palette.border_subtle};
-                border-radius: 9px;
-                padding: 0px 9px;
-            }}
-            QToolButton#reasoningMenuButton:hover {{
-                background-color: {palette.surface_selected};
-            }}
-            QToolButton#reasoningMenuButton:focus {{
-                border: 2px solid {palette.focus_ring};
-            }}
-            QToolButton#reasoningMenuButton::menu-indicator {{
-                image: none;
-                width: 0px;
-            }}
-        """)
+        self.reasoning_menu_button.set_theme_palette(palette)
         self.voice_button.setStyleSheet(f"""
             QPushButton#voiceInputButton {{
                 color: {palette.text_accent};

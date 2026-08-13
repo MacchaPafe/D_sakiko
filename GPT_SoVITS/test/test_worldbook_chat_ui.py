@@ -11,7 +11,15 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from PyQt5.QtWidgets import QAction, QApplication, QMenu, QMessageBox, QWidget
+from PyQt5.QtWidgets import (
+    QAction,
+    QApplication,
+    QMenu,
+    QMessageBox,
+    QToolButton,
+    QWidget,
+    QWidgetAction,
+)
 
 from character import CharacterAttributes
 from chat.chat import Chat, ChatManager, Message
@@ -138,8 +146,8 @@ class WorldbookConversationControlTest(unittest.TestCase):
         self.parent.deleteLater()
         self.app.processEvents()
 
-    def test_button_summarizes_configuration_and_exposes_expected_menu(self) -> None:
-        """完整配置应生成短按钮摘要和全部普通用户入口。"""
+    def test_button_uses_fixed_label_and_exposes_configuration_menu(self) -> None:
+        """完整配置应保持固定按钮文案，并在菜单说明当前配置。"""
 
         settings = self.chat.meta.worldbook
         settings.enabled = True
@@ -148,16 +156,25 @@ class WorldbookConversationControlTest(unittest.TestCase):
 
         self.control.bind(self.chat, self.character)
 
-        self.assertEqual(self.control.button.text(), "世界书 · MyGO · 第5集")
+        self.assertEqual(self.control.button.text(), "世界书")
         self.assertTrue(self.control.button.isChecked())
+        self.assertEqual(
+            self.control.button.popupMode(),
+            QToolButton.MenuButtonPopup,
+        )
         menu = self.control.button.menu()
         self.assertIsInstance(menu, QMenu)
         action_texts = [action.text() for action in menu.actions()]
-        self.assertIn("启用世界书", action_texts)
+        self.assertNotIn("启用世界书", action_texts)
         self.assertIn("世界书包", action_texts)
         self.assertIn("剧情进度", action_texts)
         self.assertIn("角色知识视角：爱音", action_texts)
         self.assertIn("导出此对话的世界书诊断…", action_texts)
+        summary_action = menu.actions()[0]
+        self.assertIsInstance(summary_action, QWidgetAction)
+        summary_widget = summary_action.defaultWidget()
+        self.assertIsNotNone(summary_widget)
+        self.assertIn("第 5 集结束后", summary_widget.text())
         episode_menu = _menu_action(menu, "剧情进度").menu()
         self.assertIsNotNone(episode_menu)
         self.assertEqual(len(episode_menu.actions()), 13)
@@ -227,6 +244,7 @@ class WorldbookConversationControlTest(unittest.TestCase):
         root_menu.actions()[0].trigger()
 
         self.assertEqual(self.chat.meta.worldbook.episode, 13)
+        self.assertFalse(self.chat.meta.worldbook.enabled)
         self.manager.save.assert_called_once_with()
 
         self.manager.save.reset_mock()
@@ -264,6 +282,9 @@ class WorldbookConversationControlTest(unittest.TestCase):
     def test_first_disclosure_can_disable_diagnostic_persistence(self) -> None:
         """首次启用世界书时应告知诊断内容并允许立即关闭落盘。"""
 
+        self.chat.meta.worldbook.root_package_id = _root_option().package_id
+        self.chat.meta.worldbook.episode = 5
+        self.control.bind(self.chat, self.character)
         self.config.worldbook_diagnostics_disclosure_seen.value = False
         message_box_class = mock.Mock()
         message_box_class.Information = 1
@@ -276,7 +297,7 @@ class WorldbookConversationControlTest(unittest.TestCase):
             "ui_main.components.worldbook_conversation_control.QMessageBox",
             message_box_class,
         ):
-            _menu_action(self.control.button.menu(), "启用世界书").trigger()
+            self.control.button.click()
 
         self.assertEqual(
             self.config.set_calls,
@@ -285,6 +306,78 @@ class WorldbookConversationControlTest(unittest.TestCase):
                 (self.config.worldbook_diagnostics_persistence, False),
             ],
         )
+
+    def test_incomplete_main_click_opens_configuration_without_enabling(self) -> None:
+        """主区启用缺少必要配置时应打开菜单，并保持关闭状态。"""
+
+        with mock.patch.object(self.control.button, "showMenu") as show_menu:
+            self.control.button.click()
+
+        self.assertFalse(self.chat.meta.worldbook.enabled)
+        self.assertFalse(self.control.button.isChecked())
+        show_menu.assert_called_once_with()
+        summary = self.control.button.menu().actions()[0].defaultWidget()
+        self.assertIn("启用前请完成", summary.text())
+
+    def test_complete_main_click_toggles_and_saves(self) -> None:
+        """配置完整时主区应直接切换世界书，并保存一次。"""
+
+        self.chat.meta.worldbook.root_package_id = _root_option().package_id
+        self.chat.meta.worldbook.episode = 5
+        self.control.bind(self.chat, self.character)
+
+        self.control.button.click()
+
+        self.assertTrue(self.chat.meta.worldbook.enabled)
+        self.assertTrue(self.control.button.isChecked())
+        self.manager.save.assert_called_once_with()
+
+    def test_main_enable_intent_auto_enables_after_configuration(self) -> None:
+        """从主区发起配置并在同次操作补齐要求后应自动启用。"""
+
+        with mock.patch.object(self.control.button, "showMenu"):
+            self.control.button.click()
+        root_menu = _menu_action(
+            self.control.button.menu(),
+            "世界书包",
+        ).menu()
+        self.assertIsNotNone(root_menu)
+
+        root_menu.actions()[0].trigger()
+
+        self.assertTrue(self.chat.meta.worldbook.enabled)
+        self.assertTrue(self.control.button.isChecked())
+        self.assertEqual(self.chat.meta.worldbook.episode, 13)
+        self.manager.save.assert_called_once_with()
+
+    def test_save_failure_keeps_state_and_emits_plain_status(self) -> None:
+        """保存失败时应保留内存状态，并发出无重试入口的简短状态。"""
+
+        self.chat.meta.worldbook.root_package_id = _root_option().package_id
+        self.chat.meta.worldbook.episode = 5
+        self.control.bind(self.chat, self.character)
+        self.manager.save.side_effect = OSError("disk unavailable")
+        statuses: list[str] = []
+        self.control.status_changed.connect(statuses.append)
+
+        self.control.button.click()
+
+        self.assertTrue(self.chat.meta.worldbook.enabled)
+        self.assertEqual(statuses, ["世界书设置保存失败"])
+
+    def test_button_has_stable_accessible_name_and_state_description(self) -> None:
+        """动态状态不应改变读屏名称，并应通过描述暴露状态。"""
+
+        self.assertEqual(self.control.button.accessibleName(), "世界书")
+        self.assertIn("已关闭", self.control.button.accessibleDescription())
+
+        self.chat.meta.worldbook.root_package_id = _root_option().package_id
+        self.chat.meta.worldbook.episode = 5
+        self.chat.meta.worldbook.enabled = True
+        self.control.bind(self.chat, self.character)
+
+        self.assertEqual(self.control.button.accessibleName(), "世界书")
+        self.assertIn("已启用", self.control.button.accessibleDescription())
 
     def test_existing_character_mapping_warns_before_confirmed_change(self) -> None:
         """修改已有映射时应前置说明风险并要求二次确认。"""

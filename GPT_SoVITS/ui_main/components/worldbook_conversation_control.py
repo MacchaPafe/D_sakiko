@@ -9,19 +9,19 @@ import re
 from typing import Protocol
 
 from PyQt5.QtCore import QObject, pyqtSignal
-from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAction,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QInputDialog,
+    QLabel,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
-    QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from character import CharacterAttributes
@@ -35,6 +35,8 @@ from rag.worldbook.runtime.conversation import (
 )
 from rag.worldbook.runtime.diagnostics import WorldbookDiagnosticStore
 from rag.worldbook.runtime.models import WorldbookRootOption
+from ui_main.components.input_option_chips import SplitToggleChip
+from ui_main.theme import ThemePalette
 
 
 WORLDBOOK_DIAGNOSTICS_UI_ENV = "D_SAKIKO_WORLDBOOK_DIAGNOSTICS_UI"
@@ -96,17 +98,21 @@ class WorldbookConversationControl(QObject):
         self._chat: Chat | None = None
         self._character: CharacterAttributes | None = None
         self._diagnostics_visible = False
+        self._pending_enable_from_main = False
 
-        self._button = QToolButton(parent)
+        self._button = SplitToggleChip(
+            "世界书",
+            accessible_name="世界书",
+            height=button_height,
+            parent=parent,
+        )
         self._button.setObjectName("worldbookMenuButton")
-        self._button.setCheckable(True)
-        self._button.setPopupMode(QToolButton.InstantPopup)
         self._button.setToolTip("设置当前对话的世界书、剧情进度和角色知识视角")
-        self._button.setFixedHeight(button_height)
         self._button.setEnabled(False)
+        self._button.clicked.connect(self._on_main_button_clicked)  # noqa
 
     @property
-    def button(self) -> QToolButton:
+    def button(self) -> SplitToggleChip:
         """返回可放入主窗口输入栏的世界书按钮。"""
 
         return self._button
@@ -116,43 +122,15 @@ class WorldbookConversationControl(QObject):
 
         self._chat = chat
         self._character = character
-        self._button.setEnabled(chat.type == ChatType.SINGLE_CHARACTER)
+        supported = chat.type == ChatType.SINGLE_CHARACTER
+        self._button.setEnabled(supported)
+        self._button.setVisible(supported)
         self._refresh()
 
-    def set_theme_color(self, color: str) -> None:
-        """根据主窗口主题色刷新世界书按钮样式。"""
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """根据主窗口语义色板刷新世界书分段按钮。"""
 
-        send_color = QColor(color)
-        if not send_color.isValid():
-            send_color = QColor("#7799CC")
-        send_hover_color = send_color.lighter(112).name()
-        self._button.setStyleSheet(
-            f"""
-            QToolButton#worldbookMenuButton {{
-                color: {send_color.name()};
-                background-color: rgba(0, 0, 0, 0.035);
-                border: 1px solid rgba(0, 0, 0, 0.08);
-                border-radius: 9px;
-                padding: 0px 9px;
-            }}
-            QToolButton#worldbookMenuButton:hover {{
-                background-color: rgba(0, 0, 0, 0.07);
-            }}
-            QToolButton#worldbookMenuButton:checked {{
-                color: #FFFFFF;
-                background-color: {send_color.name()};
-                border: 1px solid {send_color.name()};
-            }}
-            QToolButton#worldbookMenuButton:checked:hover {{
-                background-color: {send_hover_color};
-                border: 1px solid {send_hover_color};
-            }}
-            QToolButton#worldbookMenuButton::menu-indicator {{
-                image: none;
-                width: 0px;
-            }}
-            """
-        )
+        self._button.set_theme_palette(palette)
 
     def freeze_turn_snapshot(
         self,
@@ -224,6 +202,83 @@ class WorldbookConversationControl(QObject):
             logger.exception("读取世界书根包列表失败")
             return []
 
+    def _configuration_issues(self) -> list[str]:
+        """返回阻止世界书启用的必要配置缺失项。"""
+
+        if self._chat is None:
+            return ["尚未绑定对话"]
+        settings = self._chat.meta.worldbook
+        option = self._current_root_option()
+        issues: list[str] = []
+        if option is None or not option.enabled:
+            issues.append("选择可用的世界书包")
+        if settings.episode is None:
+            issues.append("选择剧情进度")
+        character_id = self._character_id()
+        if character_id is None:
+            issues.append("设置角色知识视角")
+        elif option is not None and character_id not in option.available_characters:
+            issues.append("选择该世界书包含的角色知识视角")
+        return issues
+
+    def _menu_summary_text(self) -> str:
+        """生成菜单顶部的当前配置或待设置说明。"""
+
+        issues = self._configuration_issues()
+        if issues:
+            return "启用前请完成：" + "、".join(issues)
+        if self._chat is None:
+            return "尚未绑定对话"
+        option = self._current_root_option()
+        episode = self._chat.meta.worldbook.episode
+        character_id = self._character_id()
+        if option is None or episode is None or character_id is None:
+            return "世界书配置尚未完成"
+        return (
+            f"当前：{option.display_name} · 第 {episode} 集结束后 · "
+            f"{character_id.common_name}视角"
+        )
+
+    def _on_main_button_clicked(self, checked: bool) -> None:
+        """处理分段按钮主区切换，缺配置时改为打开设置菜单。"""
+
+        if self._chat is None:
+            self._button.setChecked(False)
+            return
+        if not checked:
+            self._pending_enable_from_main = False
+            self._set_enabled(False)
+            return
+        if self._configuration_issues():
+            self._chat.meta.worldbook.enabled = False
+            self._button.setChecked(False)
+            self._pending_enable_from_main = True
+            self._refresh()
+            self._button.showMenu()
+            return
+        self._set_enabled(True)
+
+    def _try_finish_pending_enable(self) -> bool:
+        """在本次配置操作已满足要求时自动完成主区启用意图。"""
+
+        if (
+            not self._pending_enable_from_main
+            or self._chat is None
+            or self._configuration_issues()
+        ):
+            return False
+        self._pending_enable_from_main = False
+        self._chat.meta.worldbook.enabled = True
+        self._disclose_diagnostics_if_needed()
+        self._warn_if_character_missing()
+        return True
+
+    def _cancel_pending_enable(self) -> None:
+        """菜单关闭且配置仍不完整时取消本次临时启用意图。"""
+
+        if self._configuration_issues():
+            self._pending_enable_from_main = False
+
     def _current_root_option(self) -> WorldbookRootOption | None:
         """返回当前绑定对话选择的世界书根包。"""
 
@@ -256,17 +311,6 @@ class WorldbookConversationControl(QObject):
         except ValueError:
             return None
 
-    @staticmethod
-    def _root_short_name(option: WorldbookRootOption) -> str:
-        """生成适合输入栏按钮展示的世界书包短名称。"""
-
-        display_name = option.display_name
-        for marker in ("MyGO", "Mujica", "梦限大", "Mewtype"):
-            if marker.casefold() in display_name.casefold():
-                return marker
-        suffix = option.package_id.rsplit(".", 1)[-1].replace("_", " ").strip()
-        return suffix or display_name
-
     def _build_menu(self) -> QMenu:
         """根据绑定对话的最新状态创建世界书菜单。"""
 
@@ -278,11 +322,15 @@ class WorldbookConversationControl(QObject):
             return menu
         settings = chat.meta.worldbook
 
-        enabled_action = QAction("启用世界书", menu)
-        enabled_action.setCheckable(True)
-        enabled_action.setChecked(settings.enabled)
-        enabled_action.triggered.connect(self._set_enabled)  # noqa
-        menu.addAction(enabled_action)
+        summary = QLabel(self._menu_summary_text(), menu)
+        summary.setWordWrap(True)
+        summary.setContentsMargins(10, 7, 10, 7)
+        summary.setMinimumWidth(280)
+        summary.setAccessibleName("世界书配置状态")
+        summary_action = QWidgetAction(menu)
+        summary_action.setDefaultWidget(summary)
+        menu.addAction(summary_action)
+        menu.addSeparator()
 
         diagnostics_ui_enabled = _is_diagnostics_ui_enabled()
         if diagnostics_ui_enabled:
@@ -332,7 +380,9 @@ class WorldbookConversationControl(QObject):
             else "角色知识视角：尚未映射…"
         )
         mapping_action = menu.addAction(mapping_text)
-        mapping_action.triggered.connect(self._choose_character_mapping)  # noqa
+        mapping_action.triggered.connect(
+            lambda checked=False: self._choose_character_mapping()
+        )  # noqa
 
         if diagnostics_ui_enabled and self._diagnostics_visible:
             recent_action = menu.addAction("查看最近诊断…")
@@ -340,12 +390,17 @@ class WorldbookConversationControl(QObject):
 
         export_action = menu.addAction("导出此对话的世界书诊断…")
         export_action.triggered.connect(self._export_current_chat_diagnostics)  # noqa
+        menu.aboutToHide.connect(self._cancel_pending_enable)  # noqa
         return menu
 
     def _set_enabled(self, enabled: bool) -> None:
         """修改世界书开关，并在首次开启时完成必要告知和映射。"""
 
         if self._chat is None:
+            return
+        if enabled and self._configuration_issues():
+            self._chat.meta.worldbook.enabled = False
+            self._refresh()
             return
         self._chat.meta.worldbook.enabled = bool(enabled)
         if enabled:
@@ -414,8 +469,9 @@ class WorldbookConversationControl(QObject):
         if settings.episode is None:
             settings.episode = WORLDBOOK_EPISODE_COUNT
         if self._character_id() is None:
-            self._choose_character_mapping()
+            self._choose_character_mapping(finish_pending=False)
         self._warn_if_character_missing(option)
+        self._try_finish_pending_enable()
         self._save_and_refresh()
 
     def _set_episode(self, episode: int) -> None:
@@ -431,9 +487,10 @@ class WorldbookConversationControl(QObject):
                 "已成功回退剧情进度，不过，对话中可能已经包含之后剧情的信息。",
             )
         self._chat.meta.worldbook.episode = episode
+        self._try_finish_pending_enable()
         self._save_and_refresh()
 
-    def _choose_character_mapping(self) -> bool:
+    def _choose_character_mapping(self, *, finish_pending: bool = True) -> bool:
         """选择全局角色知识映射，修改已有映射前要求二次确认。"""
 
         if self._character is None:
@@ -494,7 +551,10 @@ class WorldbookConversationControl(QObject):
         mappings[self._character.character_folder_name] = selected.value
         self._config.set(self._config.worldbook_character_mappings, mappings)
         self._warn_if_character_missing(root_option)
-        self._refresh()
+        if finish_pending and self._try_finish_pending_enable():
+            self._save_and_refresh()
+        else:
+            self._refresh()
         return True
 
     def _warn_if_character_missing(
@@ -596,7 +656,7 @@ class WorldbookConversationControl(QObject):
             self.status_changed.emit("已更新世界书设置")
         except Exception:
             logger.exception("保存世界书设置失败")
-            self.status_changed.emit("世界书设置保存失败！")
+            self.status_changed.emit("世界书设置保存失败")
         self._refresh()
 
     def _refresh(self) -> None:
@@ -605,26 +665,19 @@ class WorldbookConversationControl(QObject):
         chat = self._chat
         if chat is None:
             self._button.setChecked(False)
-            self._button.setText("世界书 · 未绑定")
+            self._button.setText("世界书")
+            self._button.setAccessibleDescription("尚未绑定对话")
             self._button.setMenu(self._build_menu())
             return
         settings = chat.meta.worldbook
         self._button.setChecked(settings.enabled)
-        if not settings.enabled:
-            text = "世界书 关"
-        else:
-            option = self._current_root_option()
-            if option is None or settings.episode is None:
-                text = "世界书 · 待设置"
-            else:
-                text = (
-                    f"世界书 · {self._root_short_name(option)}"
-                    f" · 第{settings.episode}集"
-                )
-        self._button.setText(text)
+        self._button.setText("世界书")
         self._button.setMenu(self._build_menu())
+        summary = self._menu_summary_text()
+        state = "已启用" if settings.enabled else "已关闭"
+        self._button.setAccessibleDescription(f"{state}。{summary}")
         self._button.setToolTip(
-            "世界书会直接补充角色当前观点，并允许模型静默检索剧情知识"
+            f"世界书已启用；{summary}"
             if settings.enabled
-            else "世界书已关闭；点击设置世界书包、剧情进度和角色知识视角"
+            else f"世界书已关闭；{summary}"
         )
