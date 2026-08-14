@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 import sys
@@ -115,6 +115,18 @@ class ReviewListItem:
     risk_level: str
     identity_pending: bool
     human_edited: bool
+    time_order: int | None = None
+    published_lore_match_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedLoreMatchInfo:
+    """表示当前工作区内一条同名且已经审核收录的 Lore。"""
+
+    slot_key: str
+    candidate_id: str
+    episode: int
+    document: LoreEntryPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +174,67 @@ def story_thought_links(
                 )
             )
     return links
+
+
+def published_lore_match_index(
+    artifacts: list[tuple[str, Stage3DocumentReviewArtifact]],
+) -> dict[str, list[PublishedLoreMatchInfo]]:
+    """按标题与适用范围索引每条 Lore 可参考的已收录同名条目。"""
+
+    published_by_key: dict[
+        tuple[str, str, str, str, tuple[str, ...], tuple[int, ...]],
+        list[PublishedLoreMatchInfo],
+    ] = {}
+    for slot_key, artifact in artifacts:
+        for record in artifact.lore_entries:
+            if record.review_status != "completed" or record.disposition != "publish":
+                continue
+            document = record.effective_document()
+            published_by_key.setdefault(_lore_match_key(document), []).append(
+                PublishedLoreMatchInfo(
+                    slot_key=slot_key,
+                    candidate_id=record.candidate_id,
+                    episode=artifact.metadata.episode,
+                    document=document,
+                )
+            )
+
+    matches_by_candidate: dict[str, list[PublishedLoreMatchInfo]] = {}
+    for _, artifact in artifacts:
+        for record in artifact.lore_entries:
+            candidates = published_by_key.get(
+                _lore_match_key(record.effective_document()),
+                [],
+            )
+            matches = [
+                match
+                for match in candidates
+                if match.candidate_id != record.candidate_id
+            ]
+            if matches:
+                matches_by_candidate[record.candidate_id] = sorted(
+                    matches,
+                    key=lambda match: (match.episode, match.candidate_id),
+                )
+    return matches_by_candidate
+
+
+def _lore_match_key(
+    document: LoreEntryPayload,
+) -> tuple[str, str, str, str, tuple[str, ...], tuple[int, ...]]:
+    """生成同名 Lore 提示使用的保守匹配键。"""
+
+    normalized_title = "".join(document.title.casefold().split())
+    series_ids = tuple(sorted(item.value for item in (document.series_ids or [])))
+    story_years = tuple(sorted(document.applicable_story_years or []))
+    return (
+        normalized_title,
+        document.timeline_id,
+        document.canon_branch.value,
+        document.scope_type.value,
+        series_ids,
+        story_years,
+    )
 
 
 class Stage3ReviewWorkbench:
@@ -319,9 +392,11 @@ class Stage3ReviewWorkbench:
         """把工作区所有审核产物投影为统一队列项。"""
 
         items: list[ReviewListItem] = []
+        document_artifacts: list[tuple[str, Stage3DocumentReviewArtifact]] = []
         for slot in self.workspace.slots.values():
             artifact = slot.artifact
             if isinstance(artifact, Stage3DocumentReviewArtifact):
+                document_artifacts.append((slot.key, artifact))
                 items.extend(self._document_items(slot, artifact))
             elif isinstance(artifact, Stage3RelationReviewArtifact):
                 items.extend(self._relation_items(slot, artifact))
@@ -329,7 +404,18 @@ class Stage3ReviewWorkbench:
                 items.extend(self._thought_items(slot, artifact))
             elif isinstance(artifact, Stage3LoreDecisionsArtifact):
                 items.extend(self._lore_decision_items(slot, artifact))
-        return items
+        lore_matches = published_lore_match_index(document_artifacts)
+        return [
+            (
+                replace(
+                    item,
+                    published_lore_match_count=len(lore_matches.get(item.item_id, [])),
+                )
+                if item.kind == "lore"
+                else item
+            )
+            for item in items
+        ]
 
     @staticmethod
     def _document_items(
@@ -347,6 +433,7 @@ class Stage3ReviewWorkbench:
                 record,
                 record.reviewed_document is not None,
                 bool(record.identity_suggestions),
+                time_order=record.effective_document().time_order,
             )
             for record in artifact.story_events
         ]
@@ -477,15 +564,7 @@ class Stage3ReviewWorkbench:
                 for item in result
                 if self.search_text in f"{item.title} {item.item_id}".lower()
             ]
-        return sorted(
-            result,
-            key=lambda item: (
-                item.review_status == "completed",
-                item.risk_level != "high",
-                item.title,
-                item.item_id,
-            ),
-        )
+        return sorted(result, key=_review_list_sort_key)
 
     def refresh(self) -> None:
         """刷新顶部、导航、队列、详情和证据区。"""
@@ -587,6 +666,10 @@ class Stage3ReviewWorkbench:
                             ui.badge("身份待确认").props("color=warning")
                         if item.human_edited:
                             ui.badge("人工修改").props("color=secondary")
+                        if item.published_lore_match_count:
+                            ui.badge(
+                                f"同名已收录 {item.published_lore_match_count}"
+                            ).props("color=warning")
                 card.on("click", lambda _event=None, target=item: self.select_item(target))
 
     def refresh_summary(self) -> None:
@@ -823,6 +906,7 @@ class Stage3ReviewWorkbench:
         """构建 Lore Entry 完整文档表单。"""
 
         content = record.effective_document()
+        self._build_published_lore_matches(slot_key, record)
         fields: dict[str, object] = {}
         with ui.grid(columns=3).classes("w-full gap-3"):
             scope_field = ui.select(
@@ -880,6 +964,89 @@ class Stage3ReviewWorkbench:
             "应用内容修改",
             on_click=lambda: self._apply_lore_form(slot_key, record, fields),
         ).props("unelevated color=primary")
+
+    def _build_published_lore_matches(
+        self,
+        slot_key: str,
+        record: LoreEntryReviewRecord,
+    ) -> None:
+        """展示当前 Lore 在工作区内同名且已经收录的条目。"""
+
+        artifacts = [
+            (slot.key, slot.artifact)
+            for slot in self.workspace.slots.values()
+            if isinstance(slot.artifact, Stage3DocumentReviewArtifact)
+        ]
+        matches = published_lore_match_index(artifacts).get(record.candidate_id, [])
+        if not matches:
+            ui.badge("未发现同名且已收录的 Lore").props("outline color=positive")
+            return
+
+        with ui.card().classes("w-full gap-3 border border-amber-200 bg-amber-50 p-3"):
+            ui.badge(f"发现 {len(matches)} 条同名且已收录的 Lore").props(
+                "color=warning"
+            )
+            ui.label(
+                "请核对内容；确认完全重复后，可直接把当前候选标记为重复。"
+            ).classes("text-sm text-slate-700")
+            for match in matches:
+                with ui.expansion(
+                    f"第 {match.episode} 集 · {match.document.title}"
+                ).classes("w-full"):
+                    ui.label(match.document.content).classes(
+                        "text-sm whitespace-pre-wrap"
+                    )
+                    ui.label(match.candidate_id).classes(
+                        "text-xs text-slate-500 break-all"
+                    )
+                    with ui.row().classes("gap-2 flex-wrap"):
+                        ui.button(
+                            "查看已收录条目",
+                            on_click=lambda target=match: self._open_published_lore_match(
+                                target
+                            ),
+                        ).props("outline dense")
+                        ui.button(
+                            "将当前条目标记为重复",
+                            on_click=lambda target=match: self._reject_duplicate_lore(
+                                slot_key,
+                                record,
+                                target,
+                            ),
+                        ).props("unelevated dense color=negative")
+
+    def _open_published_lore_match(self, match: PublishedLoreMatchInfo) -> None:
+        """跳转到选中的已收录同名 Lore。"""
+
+        self.current_section = "lore"
+        self.workspace.select(match.slot_key)
+        self.current_item_id = match.candidate_id
+        self.refresh()
+
+    def _reject_duplicate_lore(
+        self,
+        slot_key: str,
+        record: LoreEntryReviewRecord,
+        match: PublishedLoreMatchInfo,
+    ) -> None:
+        """把当前 Lore 标记为由另一条已收录候选完整覆盖。"""
+
+        try:
+            self.workspace.apply(
+                slot_key,
+                CompleteItemReviewCommand(
+                    item_id=record.candidate_id,
+                    disposition="reject",
+                    reason_code="duplicate",
+                    reason_note=(
+                        f"与已收录 Lore {match.candidate_id}"
+                        f"（第 {match.episode} 集 · {match.document.title}）重复。"
+                    ),
+                ),
+            )
+            self._notify_success("已将当前 Lore 标记为重复；请保存全部")
+        except (TypeError, ValueError, KeyError) as exc:
+            self._notify_error(exc)
 
     def _apply_lore_form(
         self,
@@ -2666,6 +2833,8 @@ def _ordinary_list_item(
     record: ReviewFields,
     human_edited: bool,
     identity_pending: bool,
+    *,
+    time_order: int | None = None,
 ) -> ReviewListItem:
     """构造普通审核单位的统一队列项。"""
 
@@ -2679,6 +2848,28 @@ def _ordinary_list_item(
         risk_level=record.risk_level,
         identity_pending=identity_pending,
         human_edited=human_edited,
+        time_order=time_order,
+    )
+
+
+def _review_list_sort_key(
+    item: ReviewListItem,
+) -> tuple[bool, bool, int, str, str]:
+    """生成审核队列排序键，并让剧情事件优先按发生顺序排列。"""
+
+    is_story = item.kind == "story"
+    temporal_order = (
+        item.time_order
+        if is_story and item.time_order is not None
+        else (2**63 - 1 if is_story else 0)
+    )
+    title = "" if is_story else item.title
+    return (
+        item.review_status == "completed",
+        item.risk_level != "high",
+        temporal_order,
+        title,
+        item.item_id,
     )
 
 

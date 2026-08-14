@@ -7,6 +7,7 @@ import base64
 from pathlib import Path
 
 import cv2
+from nicegui.element import Element
 from nicegui import ui
 import numpy as np
 from numpy.typing import NDArray
@@ -72,6 +73,7 @@ class OCRSubtitleReviewEditor:
             else None
         )
         self.selected_event_ids: set[str] = set()
+        self.event_cards: dict[str, Element] = {}
         self.status_filter = "all"
         self.search_text = ""
         self.cache_root = review_path.parent / (
@@ -134,8 +136,14 @@ class OCRSubtitleReviewEditor:
     def select_event(self, event_id: str) -> None:
         """切换当前事件并刷新详情和证据。"""
 
+        previous_event_id = self.current_event_id
         self.current_event_id = event_id
-        self.queue_panel.refresh()
+        previous_card = self.event_cards.get(previous_event_id or "")
+        if previous_card is not None:
+            previous_card.classes(remove="bg-blue-50")
+        current_card = self.event_cards.get(event_id)
+        if current_card is not None:
+            current_card.classes(add="bg-blue-50")
         self.detail_panel.refresh()
         self.evidence_panel.refresh()
 
@@ -340,14 +348,40 @@ class OCRSubtitleReviewEditor:
         if confirmed:
             self.publish()
 
-    def _cache_frame(self, timestamp_ms: int, crop: bool) -> Path | None:
-        """按需提取一个时间点的完整帧或字幕裁剪缓存。"""
+    def _cache_current_evidence(
+        self,
+        timestamp_ms: int,
+    ) -> tuple[Path | None, Path | None]:
+        """用一次视频解码缓存当前完整帧及其字幕区域。"""
 
-        suffix = "crop" if crop else "full"
-        target = self.cache_root / f"frame_{timestamp_ms:010d}_{suffix}.jpg"
-        if target.exists():
-            target.touch()
-            return target
+        full_target = self.cache_root / f"frame_{timestamp_ms:010d}_full.jpg"
+        crop_target = self.cache_root / f"frame_{timestamp_ms:010d}_crop.jpg"
+        if full_target.exists() and crop_target.exists():
+            full_target.touch()
+            crop_target.touch()
+            return full_target, crop_target
+
+        frame = cv2.imread(str(full_target)) if full_target.exists() else None
+        if frame is None:
+            frame = self._read_video_frame(timestamp_ms)
+        if frame is None:
+            return (
+                full_target if full_target.exists() else None,
+                crop_target if crop_target.exists() else None,
+            )
+
+        self.cache_root.mkdir(parents=True, exist_ok=True)
+        if not full_target.exists():
+            self._write_cached_image(full_target, frame)
+        if not crop_target.exists():
+            crop = _crop_region(frame, self.workspace.artifact.profile.subtitle_band)
+            self._write_cached_image(crop_target, crop)
+        self._trim_cache()
+        return full_target, crop_target
+
+    def _read_video_frame(self, timestamp_ms: int) -> NDArray[np.uint8] | None:
+        """打开视频并读取指定时间点的一帧。"""
+
         capture = cv2.VideoCapture(self.workspace.artifact.video.path)
         if not capture.isOpened():
             return None
@@ -358,19 +392,17 @@ class OCRSubtitleReviewEditor:
             capture.release()
         if not succeeded:
             return None
-        image = (
-            _crop_region(frame, self.workspace.artifact.profile.subtitle_band)
-            if crop
-            else frame
-        )
-        self.cache_root.mkdir(parents=True, exist_ok=True)
+        return frame
+
+    @staticmethod
+    def _write_cached_image(target: Path, image: NDArray[np.uint8]) -> None:
+        """把缩放后的证据图写入 JPEG 缓存。"""
+
         cv2.imwrite(
             str(target),
             _resize_image(image),
             [int(cv2.IMWRITE_JPEG_QUALITY), 80],
         )
-        self._trim_cache()
-        return target
 
     def _trim_cache(self) -> None:
         """按文件数量和总字节限制淘汰最久未使用截图。"""
@@ -422,6 +454,7 @@ class OCRSubtitleReviewEditor:
     def queue_panel(self) -> None:
         """渲染可筛选和批量选择的字幕事件队列。"""
 
+        self.event_cards.clear()
         ui.select(
             {
                 "all": "全部",
@@ -453,7 +486,9 @@ class OCRSubtitleReviewEditor:
             ).props("outline color=negative")
         for event in self.filtered_events():
             active_class = " bg-blue-50" if event.event_id == self.current_event_id else ""
-            with ui.card().classes(f"w-full p-2 cursor-pointer{active_class}"):
+            card = ui.card().classes(f"w-full p-2 cursor-pointer{active_class}")
+            self.event_cards[event.event_id] = card
+            with card:
                 with ui.row().classes("w-full items-start no-wrap"):
                     ui.checkbox(
                         value=event.event_id in self.selected_event_ids,
@@ -528,26 +563,25 @@ class OCRSubtitleReviewEditor:
 
     @ui.refreshable
     def evidence_panel(self) -> None:
-        """渲染当前字幕的相邻静态帧和 OCR 候选证据。"""
+        """渲染当前字幕的完整帧、字幕区域和 OCR 候选证据。"""
 
         event = self.current_event()
         if event is None:
             ui.label("没有可显示证据")
             return
         ui.label("静态帧证据").classes("text-lg font-semibold")
-        for label, timestamp in (
-            ("前一帧", max(0, event.representative_timestamp_ms - 500)),
-            ("当前帧", event.representative_timestamp_ms),
-            ("后一帧", event.representative_timestamp_ms + 500),
-        ):
-            path = self._cache_frame(timestamp, crop=False)
-            ui.label(f"{label} · {milliseconds_text(timestamp)}").classes("text-xs text-slate-500")
-            if path is not None:
-                ui.image(_image_data_url(path)).classes("w-full rounded")
-        crop_path = self._cache_frame(event.representative_timestamp_ms, crop=True)
+        timestamp = event.representative_timestamp_ms
+        frame_path, crop_path = self._cache_current_evidence(timestamp)
+        ui.label(f"当前帧 · {milliseconds_text(timestamp)}").classes("text-xs text-slate-500")
+        if frame_path is not None:
+            ui.image(_image_data_url(frame_path)).classes(
+                "w-full max-w-3xl shrink-0 rounded"
+            ).props("fit=contain")
         ui.label("字幕区域").classes("text-xs text-slate-500")
         if crop_path is not None:
-            ui.image(_image_data_url(crop_path)).classes("w-full rounded")
+            ui.image(_image_data_url(crop_path)).classes(
+                "w-full max-w-3xl shrink-0 rounded"
+            ).props("fit=contain")
         ui.separator()
         ui.label("事件候选").classes("text-lg font-semibold")
         for candidate in event.candidates:
