@@ -35,7 +35,10 @@ export function ChatListView({ state, actions }) {
           <img src={chatListIcon} alt="" aria-hidden="true" />
           <div>
             <p className="eyebrow">D_SAKIKO</p>
-            <h1>会话</h1>
+            <div className="list-heading__title">
+              <h1>会话</h1>
+              <span aria-label={`${chats.length} 条会话`}>{chats.length}</span>
+            </div>
           </div>
         </div>
         <IconButton
@@ -61,6 +64,7 @@ export function ChatListView({ state, actions }) {
               type="button"
               role="listitem"
               className={`chat-list-item ${isCurrent ? 'is-current' : ''}`}
+              data-status={chat.status}
               style={{ '--item-accent': chat.character.accent }}
               disabled={disabled}
               aria-current={isCurrent ? 'true' : undefined}
@@ -73,7 +77,7 @@ export function ChatListView({ state, actions }) {
                   <time>{relativeTime(chat.last_active_at)}</time>
                 </span>
                 <span className="chat-list-item__meta">
-                  <span>{chat.character.name}</span>
+                  <span className="chat-list-item__character">{chat.character.name}</span>
                   {runningText && <span className="activity-label">{runningText}</span>}
                 </span>
                 <span className="chat-list-item__preview">
@@ -106,6 +110,8 @@ export function ChatListView({ state, actions }) {
       <CreateChatSheet
         open={createOpen}
         busy={busy}
+        characters={state.characters}
+        userPersonas={state.userPersonas}
         onClose={() => setCreateOpen(false)}
         onCreate={actions.createChat}
       />

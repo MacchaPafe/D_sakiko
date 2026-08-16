@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-const SILENCE_URL = '/mock-assets/audio/silence.wav'
+const SILENCE_DATA_URL = (
+  'data:audio/wav;base64,'
+  + 'UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA'
+)
 
 const idlePlayback = {
   messageId: null,
@@ -158,7 +161,7 @@ export function useAudioController() {
 
     const previousVolume = audio.volume
     audio.volume = 0
-    audio.src = SILENCE_URL
+    audio.src = SILENCE_DATA_URL
     try {
       await audio.play()
       audio.pause()

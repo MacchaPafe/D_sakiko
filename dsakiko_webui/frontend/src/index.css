@@ -1,9 +1,9 @@
 :root {
-  font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
-  color: #17201f;
-  background: #d8dedd;
+  color: #17231f;
+  background: #d9dfdc;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -34,7 +34,7 @@ body {
 
 body {
   min-height: 100dvh;
-  background: #d8dedd;
+  background: #d9dfdc;
 }
 
 button,
@@ -53,5 +53,5 @@ label {
 }
 
 ::selection {
-  background: rgba(22, 135, 121, 0.2);
+  background: rgba(22, 135, 121, 0.22);
 }

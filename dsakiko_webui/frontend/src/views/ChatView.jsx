@@ -74,10 +74,15 @@ export function ChatView({ state, actions, audio }) {
             && previous?.role === 'assistant'
             && previous.turn_id === message.turn_id
           )
+          const isPlaying = (
+            message.id === audio.playback.messageId
+            && audio.playback.status === 'playing'
+          )
           return (
             <div
               key={message.id}
-              className={`message-row message-row--${message.role} ${isContinuedSegment ? 'is-continued' : ''}`}
+              className={`message-row message-row--${message.role} ${isContinuedSegment ? 'is-continued' : ''} ${isPlaying ? 'is-playing' : ''}`}
+              data-emotion={message.emotion || undefined}
             >
               {message.role === 'assistant' && !isContinuedSegment && (
                 <Avatar character={state.character} size="tiny" />

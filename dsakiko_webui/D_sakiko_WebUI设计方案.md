@@ -358,123 +358,27 @@ WebUI Server 不等待浏览器报告音频播放完成：
 - 手机断网、锁屏或关闭页面不能阻塞服务端工作线程。
 - 后续如需统计播放状态，可以增加非阻塞 ACK，但 ACK 不参与核心推理流程。
 
-## 8. WebSocket 协议草案
+## 8. 前后端协议
 
-### 8.1 通用事件信封
+正式 V1 协议见 [`PROTOCOL.md`](./PROTOCOL.md)。该文件是接口、JSON 字段、时序、错误码和联调 fixture 的唯一来源，本设计文档不再复制完整协议。
 
-```json
-{
-  "protocol_version": 1,
-  "type": "assistant_segment_ready",
-  "event_id": "evt_xxx",
-  "timestamp": 1783900000,
-  "chat_id": "chat_xxx",
-  "turn_id": "turn_xxx",
-  "data": {}
-}
-```
+协议采用以下边界：
 
-### 8.2 MVP 客户端命令
+- 正式部署时前后端同源，基础路径为 `/api/v1`。
+- WebSocket 是命令和可变状态的唯一权威通道；HTTP 只提供健康检查、登录会话、静态文件和受控二进制资源。
+- 首次连接或断线重连后由前端发送 `sync`，服务端返回 `chat_list_snapshot` 和 `state_snapshot`；V1 不实现事件回放。
+- 服务端只发送稳定领域事件，不把 Python 队列、绝对文件路径和内部 emotion 标签暴露给浏览器。
+- 用户消息依靠 `client_message_id` 保证重试幂等；消息事件和快照依靠稳定 `message.id` 去重。
+- 切换或创建会话后，前端必须等待目标 `state_snapshot` 才提交新的 `current_chat_id`。
+- 一轮多段回复对应多个独立 `Message` 和多个 `assistant_segment_ready`，前端显示为多个气泡。
+- 思考动作由 `assistant_turn_phase(thinking)` 推导，回复动作由消息的正式 emotion 推导，完成后回到 idle，不再维护独立 `live2d_command` 动作流。
 
-- `get_state`：请求当前状态快照。
-- `get_chat_list`：请求普通 chat 的轻量摘要列表，不返回所有完整消息。
-- `send_message`：向指定 `chat_id` 发送消息；该 id 必须与服务端当前会话一致。
-- `cancel_turn`：取消当前生成。
-- `next_background`：按稳定顺序切换到下一张角色模式背景。
-- `switch_chat`：按稳定 `chat_id` 切换现有普通聊天；成功后返回新的 `state_snapshot`。
-- `create_chat`：选择角色并创建一条普通 chat，可附带名称和用户人设；创建成功后将其设为当前会话。
+前端保留两种 Runtime Client：
 
-客户端发送消息时必须生成稳定的 `client_message_id`。网络重试只能重复使用同一个 id，后端不得因此重复创建用户消息。
+- `MockRuntimeClient` 使用正式协议结构产生固定事件。
+- `WebSocketRuntimeClient` 负责真实连接、命令响应、重连和 `sync`。
 
-`switch_chat` 不是单纯修改前端指针。前端发送命令后必须等待服务端确认的新 `state_snapshot`，才能提交 `current_chat_id` 和进入目标界面。生成期间服务端以结构化 `CHAT_BUSY` 错误拒绝切换，不能静默切换或把后续事件写入另一条 chat。
-
-### 8.3 MVP 服务端事件
-
-- `runtime_ready`：服务端和模型初始化完成。
-- `chat_list_snapshot`：所有普通 chat 的轻量摘要、最近活跃时间和 `current_chat_id`。
-- `state_snapshot`：当前角色、当前 chat 的消息、当前轮次、模型资源、当前背景和可用背景列表。
-- `user_message_ack`：确认用户消息已被后端接受，返回服务端消息 id。
-- `assistant_turn_phase`：`thinking`、`tts`、`idle` 等阶段变化。
-- `assistant_segment_ready`：一个文本与音频段落可以播放。
-- `assistant_turn_complete`：一轮生成成功、取消或失败。
-- `live2d_command`：切换模型、动作或角色状态。
-- `runtime_status`：模型加载和服务状态提示。
-- `error`：可展示给用户的结构化错误。
-
-### 8.4 段落事件示例
-
-```json
-{
-  "protocol_version": 1,
-  "type": "assistant_segment_ready",
-  "event_id": "evt_001",
-  "timestamp": 1783900000,
-  "chat_id": "chat_001",
-  "turn_id": "turn_001",
-  "data": {
-    "sequence": 0,
-    "message_index": 12,
-    "character_name": "有咲",
-    "text": "你先别急，我来解释。",
-    "translation": "",
-    "emotion": "anger",
-    "motion_group": "anger",
-    "audio_url": "/api/media/audio_001",
-    "duration_ms": 3200
-  }
-}
-```
-
-### 8.5 MVP HTTP 与 WebSocket 边界
-
-| 接口 | 用途 |
-|---|---|
-| `GET /api/health` | 判断 Server 是否启动，不触发模型推理 |
-| `GET /api/state` | 获取首次加载所需的状态快照 |
-| `GET /api/chats` | 获取普通 chat 的轻量摘要列表 |
-| `WS /api/ws` | 发送客户端命令并接收服务端事件 |
-| `GET /api/media/{media_id}` | 获取受控的生成音频 |
-| `GET /api/live2d/{path}` | 获取已登记模型目录中的资源 |
-
-- 前端不拼接本地路径，只使用状态或事件中返回的 URL。
-- 正式发布时前端静态文件与 API 应尽量同源提供。
-- 开发环境可以由 Vite 代理 API，但不能把 Vite 的 `/@fs/` 路径带入生产协议。
-- `/api/state` 与 `state_snapshot` 表达同一种状态模型，避免 HTTP 和 WebSocket 各维护一套字段。
-
-### 8.6 前端 Runtime Client 与 Mock
-
-前端统一依赖以下抽象能力：
-
-```text
-connect(on_event)
-get_state()
-get_chat_list()
-send_message(chat_id, text, client_message_id)
-cancel_turn(turn_id)
-switch_chat(chat_id)
-create_chat(character_name, name, user_persona_id)
-next_background()
-disconnect()
-```
-
-实现分为：
-
-- `MockRuntimeClient`：使用固定角色、模型、文本和测试音频，按定时器产生协议事件。
-- `WebSocketRuntimeClient`：连接真实 FastAPI，处理鉴权、命令发送、重连和状态恢复。
-
-Mock 至少能够演示：
-
-- 单段和多段角色回复。
-- `thinking -> tts -> complete` 正常流程。
-- 用户取消、LLM 失败、TTS 失败和断线重连。
-- 生成期间切换两种 UI。
-- 同一角色多条 chat 的最近会话列表、新建和切换。
-- 角色模式与聊天模式打开同一个 `ChatListView`，选择后分别返回原模式。
-- 不同 chat 的输入草稿隔离，以及生成期间“列表可查看、其他 chat 不可切换”。
-- 背景顺序切换和背景加载失败回退。
-- 页面刷新后重新获取状态快照。
-
-Mock 事件必须复用正式协议数据结构，不能为演示另造一套前端专用格式。这样前端可以先独立完成约 85%～90%，真实后端完成后只替换 Runtime Client。
+两者必须向同一个 reducer 提供完全一致的事件形状。Mock、Pydantic 模型、协议测试 fixture 和联调录制若与 `PROTOCOL.md` 不一致，应视为实现缺陷。
 
 ## 9. 移动端会话主页、双 UI 与 Live2D 设计
 
@@ -614,23 +518,20 @@ ChatListView
 - 气泡顺序必须严格遵循 segment 的 `sequence`，不能按音频完成先后乱序插入。
 - 任一 segment 失败时，完成事件必须给出整轮状态，由前端决定展示可重试错误还是已完成的部分内容。
 
-建议的前端轮次结构：
+前端继续使用扁平 `Message[]`，通过 `turn_id` 关联轮次，通过 `sequence` 排列分段。例如同一轮中的一段：
 
 ```json
 {
+  "id": "msg_assistant_001",
   "turn_id": "turn_001",
   "role": "assistant",
-  "status": "ready",
-  "segments": [
-    {
-      "sequence": 0,
-      "text": "你先别急。",
-      "translation": "先别着急。",
-      "emotion": "anger",
-      "audio_url": "/api/media/audio_001",
-      "duration_ms": 1800
-    }
-  ]
+  "sequence": 0,
+  "text": "你先别急。",
+  "translation": "先别着急。",
+  "emotion": "anger",
+  "audio_url": "/api/v1/media/media_audio_001",
+  "audio_duration_ms": 1800,
+  "status": "ready"
 }
 ```
 
@@ -650,13 +551,14 @@ ChatListView
 
 | 服务端状态 | 浏览器行为 |
 |---|---|
-| `runtime_ready` | 加载当前角色并进入待机 |
-| `thinking` | 循环播放 `text_generating` |
+| `state_snapshot` | 加载 `character.model_url` 并进入待机 |
+| `assistant_turn_phase(thinking)` | 循环播放 `text_generating` |
 | `assistant_segment_ready` | 根据 emotion 选择动作组 |
 | 音频开始 | 播放说话动作并启动口型同步 |
 | 音频结束 | 结束说话动作并恢复待机 |
-| `cancel_turn` | 停止当前音频和动作，恢复待机 |
-| `live2d_command` | 切换角色、模型或背景 |
+| `assistant_turn_complete(cancelled)` | 停止当前轮演出并恢复待机 |
+| 新的 `state_snapshot` | 根据新的角色或服装模型 URL 切换模型 |
+| `background_changed` | 切换背景 |
 
 #### 9.9.2 动作语义
 
@@ -746,7 +648,7 @@ ChatListView
 ### 12.2 需要 Web 适配
 
 - 抽签：转换为 Web 弹窗事件。
-- Live2D 模型切换：转换为 `live2d_command`。
+- Live2D 模型切换：更新服务端当前模型，并发布新的 `state_snapshot`。
 - 文件导出：转换为下载 URL。
 - 图片或文件输入：转换为浏览器上传。
 
@@ -771,10 +673,12 @@ Server 在启动时应明确注册当前模式支持的工具，不能让 LLM �
 ### 13.2 配对与鉴权
 
 - Server 启动时生成短期配对码。
-- 手机通过二维码获得地址和一次性配对信息。
-- 配对成功后换取短期访问 Token。
+- MVP 先在电脑日志中显示访问地址和六位访问码，二维码在后续迭代补充。
+- 浏览器提交访问码后换取 HttpOnly 会话 Cookie，访问码不进入 URL。
 - HTTP 和 WebSocket 均需要鉴权。
-- Token 不应写入 URL 日志或聊天记录。
+- 同一时间只保留一个控制端；任何知道访问码的新设备都可以接管，旧 Cookie 立即失效，旧 WebSocket 以 `4409` 关闭。
+- 新控制端通过 `sync` 恢复仍在运行的对话轮次，接管本身不取消 LLM 或 TTS。
+- Cookie 和访问码不应写入 URL 日志或聊天记录。
 
 ### 13.3 基础安全要求
 
@@ -872,7 +776,7 @@ Windows 下必须确保 Server 进程已经退出，否则运行中的 Python �
 - 原文/译文切换不影响播放，背景可以按稳定顺序切换。
 - 软键盘弹出后仍能看到正在输入的 1～4 行文本，Live2D 不随键盘开合缩放。
 - `360px～430px` 竖屏范围无关键内容重叠。
-- Mock 事件完全符合正式协议草案。
+- Mock 事件完全符合 [`PROTOCOL.md`](./PROTOCOL.md) 的 V1 协议。
 
 ### Phase 1B：无 Qt 的 Headless Runtime
 
@@ -886,7 +790,7 @@ Windows 下必须确保 Server 进程已经退出，否则运行中的 Python �
 - 为 chat 提供兼容旧存档的 `last_active_at` 读写与统一更新时间入口。
 - 增加公共运行锁和路径解析。
 - 建立 WebUI 后端自己的 `turn_pipeline`，暂不要求桌面主程序接入。
-- 提供 `/api/health` 和基础状态接口。
+- 提供 `/api/v1/health`，并通过 WebSocket `sync` 提供基础状态快照。
 
 验收：
 
@@ -934,7 +838,7 @@ Windows 下必须确保 Server 进程已经退出，否则运行中的 Python �
 - 会话主页按最近活跃时间展示已有 chat，支持切换和简单新建普通 chat。
 - 支持思考、说话、待机和取消状态。
 - 将结果写回现有聊天记录。
-- 限制为一个活动客户端；可以保存和查看多条 chat，但任意时刻只有一个 `current_chat_id` 参与生成。
+- 限制为一个活动控制端；新设备可凭访问码接管。可以保存和查看多条 chat，但任意时刻只有一个 `current_chat_id` 参与生成。
 
 验收：
 
@@ -1120,7 +1024,7 @@ PC 浏览器只用于开发调试和自动化测试入口，不作为布局验�
 
 1. 修正 `dsakiko_webui/backend/` 的基础包结构。
 2. 实现可独立启动和关闭的 FastAPI 应用。
-3. 提供不加载模型的 `/api/health`。
+3. 提供不加载模型的 `/api/v1/health`。
 4. 用固定 JSON 实现 `chat_list_snapshot`、`switch_chat` 和最小 WebSocket 收发。
 5. 实现兼容旧存档的 `last_active_at` 与会话摘要构建。
 6. 按协议模拟 `user_message_ack -> thinking -> tts -> complete`，再逐步接入真实 LLM 和 TTS。

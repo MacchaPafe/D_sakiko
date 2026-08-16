@@ -1,20 +1,30 @@
 import { Check, X } from 'lucide-react'
 import { useState } from 'react'
-import { MOCK_CHARACTERS } from '../runtime/mockData'
 import { Avatar } from './Avatar'
 import { IconButton } from './IconButton'
 
-const CHARACTERS = Object.values(MOCK_CHARACTERS)
-
-export function CreateChatSheet({ open, busy, onClose, onCreate }) {
-  const [characterId, setCharacterId] = useState(CHARACTERS[0].id)
+export function CreateChatSheet({
+  open,
+  busy,
+  characters,
+  userPersonas,
+  onClose,
+  onCreate,
+}) {
+  const [characterId, setCharacterId] = useState('')
   const [name, setName] = useState('')
 
   if (!open) return null
 
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault()
-    const created = onCreate({ characterId, name })
+    const selectedCharacterId = characterId || characters[0]?.id
+    if (!selectedCharacterId) return
+    const created = await onCreate({
+      characterId: selectedCharacterId,
+      name,
+      userPersonaId: userPersonas[0]?.id || null,
+    })
     if (created) onClose()
   }
 
@@ -29,7 +39,7 @@ export function CreateChatSheet({ open, busy, onClose, onCreate }) {
       >
         <header>
           <div>
-            <p className="eyebrow">NEW CHAT</p>
+            <p className="eyebrow">会话</p>
             <h2 id="create-chat-title">新建会话</h2>
           </div>
           <IconButton label="关闭" onClick={onClose}>
@@ -41,24 +51,29 @@ export function CreateChatSheet({ open, busy, onClose, onCreate }) {
           <fieldset disabled={busy}>
             <legend>选择角色</legend>
             <div className="character-options">
-              {CHARACTERS.map((character) => (
-                <label
-                  key={character.id}
-                  className={characterId === character.id ? 'is-selected' : ''}
-                  style={{ '--option-accent': character.accent }}
-                >
-                  <input
-                    type="radio"
-                    name="character"
-                    value={character.id}
-                    checked={characterId === character.id}
-                    onChange={() => setCharacterId(character.id)}
-                  />
-                  <Avatar character={character} size="small" />
-                  <span>{character.name}</span>
-                  {characterId === character.id && <Check size={17} />}
-                </label>
-              ))}
+              {characters.map((character, index) => {
+                const selected = characterId
+                  ? characterId === character.id
+                  : index === 0
+                return (
+                  <label
+                    key={character.id}
+                    className={selected ? 'is-selected' : ''}
+                    style={{ '--option-accent': character.accent }}
+                  >
+                    <input
+                      type="radio"
+                      name="character"
+                      value={character.id}
+                      checked={selected}
+                      onChange={() => setCharacterId(character.id)}
+                    />
+                    <Avatar character={character} size="small" />
+                    <span>{character.name}</span>
+                    {selected && <Check size={17} />}
+                  </label>
+                )
+              })}
             </div>
           </fieldset>
 
@@ -72,7 +87,11 @@ export function CreateChatSheet({ open, busy, onClose, onCreate }) {
             />
           </label>
 
-          <button className="primary-command" type="submit" disabled={busy}>
+          <button
+            className="primary-command"
+            type="submit"
+            disabled={busy || characters.length === 0}
+          >
             创建并进入
           </button>
         </form>

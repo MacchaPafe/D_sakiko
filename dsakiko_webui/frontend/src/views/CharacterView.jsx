@@ -34,6 +34,10 @@ export function CharacterView({
   const busy = state.phase !== 'idle'
 
   const expanded = latestMessage?.id === expandedMessageId
+  const latestIsPlaying = (
+    latestMessage?.id === audio.playback.messageId
+    && audio.playback.status === 'playing'
+  )
 
   const backgroundStyle = {
     '--scene-background-color': state.background?.color || '#cbd8d4',
@@ -81,8 +85,9 @@ export function CharacterView({
       <div className="character-bottom">
         {(latestMessage || busy) && (
           <section
-            className={`dialogue-overlay ${expanded ? 'is-expanded' : ''}`}
+            className={`dialogue-overlay ${expanded ? 'is-expanded' : ''} ${latestIsPlaying ? 'is-playing' : ''}`}
             aria-live="polite"
+            aria-expanded={expanded}
             onClick={() => setExpandedMessageId(expanded ? null : latestMessage?.id)}
           >
             <header>

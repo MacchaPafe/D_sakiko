@@ -2,6 +2,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
 import { useAudioController } from './audio/useAudioController'
 import { IconButton } from './components/IconButton'
+import { AccessGate } from './components/AccessGate'
 import { useVisualViewport } from './hooks/useVisualViewport'
 import { RuntimeProvider } from './state/RuntimeProvider'
 import { useRuntime } from './state/runtimeContext'
@@ -73,25 +74,34 @@ function AppExperience() {
   const motionGroup = state.phase === 'thinking'
     ? 'text_generating'
     : (playingMessage?.emotion || latestAssistant?.emotion || 'idle_motion')
+  const experienceActions = useMemo(() => ({
+    ...actions,
+    cancelTurn: () => {
+      stop()
+      return actions.cancelTurn()
+    },
+  }), [actions, stop])
 
   return (
     <main
       className="app-frame"
+      data-phase={state.phase}
+      data-playback={playback.status}
       style={{ '--active-accent': state.character?.accent || '#168779' }}
     >
       <CharacterView
         state={state}
-        actions={actions}
+        actions={experienceActions}
         audio={audio}
         active={state.activeView === 'character'}
         motionGroup={motionGroup}
       />
 
       {state.activeView === 'chat_list' && (
-        <ChatListView state={state} actions={actions} />
+        <ChatListView state={state} actions={experienceActions} />
       )}
       {state.activeView === 'chat' && (
-        <ChatView state={state} actions={actions} audio={audio} />
+        <ChatView state={state} actions={experienceActions} audio={audio} />
       )}
 
       {state.error && (
@@ -112,9 +122,21 @@ function App() {
 
   return (
     <RuntimeProvider>
-      <AppExperience />
+      <AppContent />
     </RuntimeProvider>
   )
+}
+
+function AppContent() {
+  const { state, actions } = useRuntime()
+  const blocked = (
+    state.connection === 'needs_auth'
+    || state.connection === 'checking_auth'
+    || ((state.connection === 'connecting' || state.connection === 'offline')
+      && !state.currentChatId)
+  )
+
+  return blocked ? <AccessGate state={state} actions={actions} /> : <AppExperience />
 }
 
 export default App

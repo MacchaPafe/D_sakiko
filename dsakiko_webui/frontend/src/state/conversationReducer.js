@@ -1,7 +1,10 @@
 export const initialConversationState = {
-  connection: 'connecting',
-  runtimeMode: 'mock',
+  connection: 'checking_auth',
+  runtimeMode: 'web',
+  runtimeStatus: null,
   chatSummaries: [],
+  characters: [],
+  userPersonas: [],
   currentChatId: null,
   character: null,
   messages: [],
@@ -36,17 +39,36 @@ export function conversationReducer(state, action) {
     case 'runtime_event': {
       const event = action.event
       switch (event.type) {
+        case 'runtime_status':
+          return {
+            ...state,
+            runtimeStatus: event.data,
+            connection: event.data.state === 'error'
+              ? 'offline'
+              : state.connection,
+            error: event.data.state === 'error'
+              ? { code: 'RUNTIME_ERROR', message: event.data.message }
+              : state.error,
+          }
+
         case 'runtime_ready':
           return {
             ...state,
             connection: 'ready',
-            runtimeMode: event.data.mode || 'mock',
+            runtimeMode: event.data.mode || state.runtimeMode,
+            runtimeStatus: {
+              state: 'ready',
+              message: '角色已准备好。',
+              progress: 1,
+            },
           }
 
         case 'chat_list_snapshot':
           return {
             ...state,
             chatSummaries: event.data.chats,
+            characters: event.data.characters || state.characters,
+            userPersonas: event.data.user_personas || state.userPersonas,
             currentChatId: event.data.current_chat_id || state.currentChatId,
           }
 
@@ -114,10 +136,7 @@ export function conversationReducer(state, action) {
           return {
             ...state,
             pendingChatId: null,
-            error: {
-              code: event.data.code,
-              message: event.data.message,
-            },
+            error: event.data.error || event.data,
           }
 
         default:
@@ -125,10 +144,23 @@ export function conversationReducer(state, action) {
       }
     }
 
-    case 'connection_lost':
+    case 'connection_state':
       return {
         ...state,
-        connection: 'offline',
+        connection: action.connection,
+        error: action.message
+          ? { code: action.code || 'CONNECTION', message: action.message }
+          : state.error,
+      }
+
+    case 'command_error':
+      return {
+        ...state,
+        pendingChatId: null,
+        error: {
+          code: action.error.code || 'COMMAND_FAILED',
+          message: action.error.message,
+        },
       }
 
     case 'open_chat_list':
