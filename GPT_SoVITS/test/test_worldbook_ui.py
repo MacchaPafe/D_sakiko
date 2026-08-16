@@ -717,13 +717,17 @@ class WorldbookUiTest(unittest.TestCase):
         dialog.close()
         parent.close()
 
-    def test_role_bands_cover_every_supported_character_exactly_once(self) -> None:
-        """九支角色乐队应各含五人并完整覆盖受支持角色。"""
+    def test_role_bands_cover_every_band_member_exactly_once(self) -> None:
+        """九支角色乐队应各含五人，且不包含仅供标注使用的配角。"""
 
         members = [character for band in BandId for character in BAND_MEMBERS[band]]
         self.assertTrue(all(len(BAND_MEMBERS[band]) == 5 for band in BandId))
         self.assertEqual(len(members), len(set(members)))
-        self.assertEqual(set(members), set(CharacterId))
+        self.assertNotIn(CharacterId.RIRIKO, members)
+        self.assertEqual(
+            set(members),
+            set(CharacterId) - {CharacterId.RIRIKO},
+        )
 
     def test_clean_entry_cannot_create_empty_override(self) -> None:
         """未修改的条目应禁用保存，直接调用保存也不得写入 Override。"""

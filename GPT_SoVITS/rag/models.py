@@ -131,6 +131,7 @@ class CharacterId(str, Enum):
     LISA = "lisa"  # 莉莎 / 今井莉莎
     AKO = "ako"  # 亚子 / 宇田川亚子
     RINKO = "rinko"  # 燐子 / 白金燐子
+    RIRIKO = "ririko"  # 凛凛子
     MASHIRO = "mashiro"  # 真白 / 仓田真白
     TOKO = "toko"  # 透子 / 桐谷透子
     NANAMI = "nanami"  # 七深 / 广町七深
@@ -193,6 +194,7 @@ _ROMAJI_TO_COMMON_NAME: Dict[CharacterId, str] = {
     CharacterId.LISA: "莉莎",
     CharacterId.AKO: "亚子",
     CharacterId.RINKO: "燐子",
+    CharacterId.RIRIKO: "凛凛子",
     CharacterId.MASHIRO: "真白",
     CharacterId.TOKO: "透子",
     CharacterId.NANAMI: "七深",

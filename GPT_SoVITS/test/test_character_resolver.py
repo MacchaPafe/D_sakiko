@@ -9,8 +9,11 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from rag.character_resolver import resolve_character_id
-from rag.models import CharacterId
-from rag.pipeline.characters import build_character_catalog
+from rag.models import CharacterId, SeriesId
+from rag.pipeline.characters import (
+    build_character_catalog,
+    default_episode_prior_candidates,
+)
 from rag.pipeline.stage3_rag_import import (
     resolve_character_id as resolve_pipeline_character_id,
 )
@@ -81,6 +84,27 @@ class TestResolveCharacterId(unittest.TestCase):
         self.assertEqual(
             resolve_pipeline_character_id("宮永ののか"),
             CharacterId.NONOKA,
+        )
+
+    def test_ririko_is_annotation_only_and_distinct_from_rinko(self) -> None:
+        """凛凛子可供 RAG 解析，但不会进入可对话角色配置。"""
+
+        catalog = {
+            candidate.character_id: candidate
+            for candidate in build_character_catalog()
+        }
+
+        self.assertEqual(CharacterId.RIRIKO.common_name, "凛凛子")
+        self.assertEqual(resolve_character_id("凛凛子"), CharacterId.RIRIKO)
+        self.assertEqual(resolve_pipeline_character_id("凛凛子姐"), CharacterId.RIRIKO)
+        self.assertEqual(resolve_pipeline_character_id("凛々子"), CharacterId.RIRIKO)
+        self.assertEqual(resolve_pipeline_character_id("燐子"), CharacterId.RINKO)
+        self.assertIn("ririko", catalog)
+        self.assertNotIn("凛凛子", catalog["rinko"].aliases)
+        self.assertNotIn("凛凛子", char_info_json)
+        self.assertNotIn(
+            "凛凛子",
+            default_episode_prior_candidates(SeriesId.ITS_MYGO),
         )
 
 

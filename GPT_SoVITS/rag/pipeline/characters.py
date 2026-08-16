@@ -63,7 +63,7 @@ MANUAL_ALIAS_OVERRIDES = {
     "umiri": ["海铃", "八幡海铃", "八幡海鈴"],
     "nyamu": ["喵梦", "祐天寺喵梦", "祐天寺にゃむ"],
     "kasumi": ["香澄", "户山香澄", "戸山香澄"],
-    "rinko": ["燐子", "凛凛子", "凛凛子姐", "白金燐子", "白金燐子姐"],
+    "rinko": ["燐子", "白金燐子", "白金燐子姐"],
     "lock": ["六花", "LOCK", "Lock", "朝日六花", "罗克"],
     "ako": ["亚子", "宇田川亚子", "宇田川あこ"],
     "chuchu": ["知由", "珠手知由", "CHU2", "Chu2", "chu2"],
@@ -73,6 +73,24 @@ MANUAL_ALIAS_OVERRIDES = {
     "miyako": ["都子", "藤都子", "Fuji Miyako"],
     "yuno": ["由乃", "千石由乃", "千石ユノ", "Sengoku Yuno"],
 }
+
+
+ANNOTATION_ONLY_CHARACTERS: tuple[CandidateCharacter, ...] = (
+    CandidateCharacter(
+        display_name="凛凛子",
+        character_id="ririko",
+        aliases=[
+            "ririko",
+            "RIRIKO",
+            "凛凛子",
+            "凛凛子姐",
+            "凛々子",
+            "凛々子姐",
+        ],
+        notes="仅供字幕标注与 RAG 使用的配角",
+        score=0,
+    ),
+)
 
 
 def _parse_full_name(full_name: str) -> tuple[str, str | None, str | None]:
@@ -122,6 +140,7 @@ def build_character_catalog() -> list[CandidateCharacter]:
             )
         )
 
+    catalog.extend(ANNOTATION_ONLY_CHARACTERS)
     return catalog
 
 
