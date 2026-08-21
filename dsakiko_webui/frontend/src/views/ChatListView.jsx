@@ -1,111 +1,164 @@
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronDown, Search, Settings, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import chatListIcon from '../../../../GPT_SoVITS/icons/chat_list.svg?url'
+import editChatIcon from '../assets/edit-chat.svg?url'
 import { Avatar } from '../components/Avatar'
 import { CreateChatSheet } from '../components/CreateChatSheet'
 import { IconButton } from '../components/IconButton'
-import { RuntimeIndicator } from '../components/RuntimeIndicator'
-
-function relativeTime(timestamp) {
-  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - timestamp)
-  if (elapsed < 60) return '刚刚'
-  if (elapsed < 3600) return `${Math.floor(elapsed / 60)} 分钟前`
-  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)} 小时前`
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-  }).format(timestamp * 1000)
-}
-
-function activityText(status) {
-  if (status === 'thinking') return '正在思考'
-  if (status === 'tts') return '正在回复'
-  return ''
-}
+import { SettingsSheet } from '../components/SettingsSheet'
 
 export function ChatListView({ state, actions }) {
   const [createOpen, setCreateOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [expandedCharacters, setExpandedCharacters] = useState(null)
+  const [closing, setClosing] = useState(false)
   const busy = state.phase !== 'idle'
-  const chats = useMemo(() => state.chatSummaries, [state.chatSummaries])
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const chats = useMemo(() => {
+    if (!normalizedQuery) return state.chatSummaries
+    return state.chatSummaries.filter((chat) => (
+      chat.name.toLocaleLowerCase().includes(normalizedQuery)
+      || chat.character.name.toLocaleLowerCase().includes(normalizedQuery)
+    ))
+  }, [normalizedQuery, state.chatSummaries])
+  const characterGroups = useMemo(() => {
+    const groups = new Map()
+    chats.forEach((chat) => {
+      const characterId = chat.character.id || chat.character.name
+      if (!groups.has(characterId)) {
+        groups.set(characterId, { character: chat.character, chats: [] })
+      }
+      groups.get(characterId).chats.push(chat)
+    })
+    return [...groups.values()]
+  }, [chats])
+
+  const toggleCharacter = (characterId) => {
+    setExpandedCharacters((current) => {
+      const expanded = current || new Set(
+        characterGroups
+          .filter((group) => group.chats.some((chat) => chat.chat_id === state.currentChatId))
+          .map((group) => group.character.id || group.character.name),
+      )
+      const next = new Set(expanded)
+      if (next.has(characterId)) next.delete(characterId)
+      else next.add(characterId)
+      return next
+    })
+  }
+
+  const requestClose = () => setClosing(true)
 
   return (
-    <section className="screen chat-list-screen" aria-label="会话列表">
-      <header className="list-header">
-        <div className="list-heading">
-          <img src={chatListIcon} alt="" aria-hidden="true" />
-          <div>
-            <p className="eyebrow">D_SAKIKO</p>
-            <div className="list-heading__title">
-              <h1>会话</h1>
-              <span aria-label={`${chats.length} 条会话`}>{chats.length}</span>
+    <div className="session-drawer-layer" role="presentation">
+      <button
+        type="button"
+        className={`session-drawer-backdrop ${closing ? 'is-closing' : ''}`}
+        aria-label="关闭对话列表"
+        onClick={requestClose}
+      />
+
+      <aside
+        className={`session-drawer ${closing ? 'is-closing' : ''}`}
+        aria-label="对话列表"
+        onAnimationEnd={(event) => {
+          if (closing && event.animationName === 'drawer-out') actions.closeChatList()
+        }}
+      >
+        <header className="session-drawer__header">
+          <h1>所有消息</h1>
+          <IconButton
+            label="新建对话"
+            className="new-chat-button"
+            disabled={busy}
+            onClick={() => setCreateOpen(true)}
+          >
+            <img src={editChatIcon} alt="" />
+          </IconButton>
+        </header>
+
+        <label className="session-search">
+          <Search size={16} aria-hidden="true" />
+          <input
+            value={query}
+            type="search"
+            placeholder="搜索对话"
+            aria-label="搜索对话"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {query && (
+            <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}>
+              <X size={15} />
+            </button>
+          )}
+        </label>
+
+        <p className="session-drawer__section-label">最近</p>
+        <div className="session-list" role="list">
+          {characterGroups.map((group) => {
+            const characterId = group.character.id || group.character.name
+            const expanded = normalizedQuery
+              || (expandedCharacters
+                ? expandedCharacters.has(characterId)
+                : group.chats.some((chat) => chat.chat_id === state.currentChatId))
+            return (
+              <section className="character-chat-group" key={characterId}>
+                <button
+                  type="button"
+                  className="character-group-row"
+                  aria-expanded={expanded}
+                  onClick={() => toggleCharacter(characterId)}
+                >
+                  <Avatar character={group.character} size="list" />
+                  <span className="character-group-row__name">{group.character.name}</span>
+                  <ChevronDown className={expanded ? 'is-expanded' : ''} size={18} aria-hidden="true" />
+                </button>
+                {expanded && (
+                  <div className="character-group-chats" role="list">
+                    {group.chats.map((chat) => {
+                      const isCurrent = chat.chat_id === state.currentChatId
+                      const isPending = chat.chat_id === state.pendingChatId
+                      const disabled = Boolean(state.pendingChatId) || (busy && !isCurrent)
+                      return (
+                        <button
+                          key={chat.chat_id}
+                          type="button"
+                          role="listitem"
+                          className={`session-row ${isCurrent ? 'is-current' : ''}`}
+                          disabled={disabled}
+                          aria-current={isCurrent ? 'true' : undefined}
+                          onClick={() => actions.selectChat(chat.chat_id)}
+                        >
+                          <span className="session-row__title">{chat.name}</span>
+                          {isPending && <span className="loading-spinner" aria-label="正在切换" />}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </section>
+            )
+          })}
+
+          {characterGroups.length === 0 && (
+            <div className="session-empty">
+              <span>{normalizedQuery ? '没有匹配的对话' : '还没有对话'}</span>
+              {!normalizedQuery && (
+                <button type="button" disabled={busy} onClick={() => setCreateOpen(true)}>
+                  新建对话
+                </button>
+              )}
             </div>
-          </div>
+          )}
         </div>
-        <IconButton
-          label="新建会话"
-          variant="accent"
-          disabled={busy}
-          onClick={() => setCreateOpen(true)}
-        >
-          <Plus size={22} />
-        </IconButton>
-      </header>
 
-      <div className="chat-list" role="list">
-        {chats.map((chat) => {
-          const isCurrent = chat.chat_id === state.currentChatId
-          const isPending = chat.chat_id === state.pendingChatId
-          const disabled = Boolean(state.pendingChatId) || (busy && !isCurrent)
-          const runningText = activityText(chat.status)
-
-          return (
-            <button
-              key={chat.chat_id}
-              type="button"
-              role="listitem"
-              className={`chat-list-item ${isCurrent ? 'is-current' : ''}`}
-              data-status={chat.status}
-              style={{ '--item-accent': chat.character.accent }}
-              disabled={disabled}
-              aria-current={isCurrent ? 'true' : undefined}
-              onClick={() => actions.selectChat(chat.chat_id)}
-            >
-              <Avatar character={chat.character} size="large" />
-              <span className="chat-list-item__body">
-                <span className="chat-list-item__topline">
-                  <strong>{chat.name}</strong>
-                  <time>{relativeTime(chat.last_active_at)}</time>
-                </span>
-                <span className="chat-list-item__meta">
-                  <span className="chat-list-item__character">{chat.character.name}</span>
-                  {runningText && <span className="activity-label">{runningText}</span>}
-                </span>
-                <span className="chat-list-item__preview">
-                  {chat.last_message_preview}
-                </span>
-              </span>
-              <span className="chat-list-item__end" aria-hidden="true">
-                {isPending ? <span className="loading-spinner" /> : <ChevronRight size={19} />}
-              </span>
-            </button>
-          )
-        })}
-
-        {chats.length === 0 && (
-          <div className="empty-state">
-            <img src={chatListIcon} alt="" />
-            <strong>还没有会话</strong>
-            <button type="button" onClick={() => setCreateOpen(true)}>
-              新建会话
-            </button>
-          </div>
-        )}
-      </div>
-
-      <footer className="list-footer">
-        <RuntimeIndicator connection={state.connection} phase={state.phase} />
-        {busy && <span>当前回复完成后可切换</span>}
-      </footer>
+        <footer className="session-drawer__footer">
+          {busy && <p className="session-drawer__busy">回复完成前暂时不能切换对话</p>}
+          <IconButton label="打开设置" className="drawer-settings-button" onClick={() => setSettingsOpen(true)}>
+            <Settings size={21} />
+          </IconButton>
+        </footer>
+      </aside>
 
       <CreateChatSheet
         open={createOpen}
@@ -115,6 +168,13 @@ export function ChatListView({ state, actions }) {
         onClose={() => setCreateOpen(false)}
         onCreate={actions.createChat}
       />
-    </section>
+      <SettingsSheet
+        open={settingsOpen}
+        busy={busy}
+        onClose={() => setSettingsOpen(false)}
+        onLoad={actions.loadSettings}
+        onSave={actions.saveSettings}
+      />
+    </div>
   )
 }

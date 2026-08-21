@@ -7,7 +7,14 @@ import {
   useState,
 } from 'react'
 import { randomId } from '../runtime/ids'
-import { createSession, getHealth } from '../runtime/sessionApi'
+import {
+  createSession,
+  deleteUploadedImage,
+  getSettings,
+  getHealth,
+  updateSettings,
+  uploadImage,
+} from '../runtime/sessionApi'
 import { WebSocketRuntimeClient } from '../runtime/webSocketRuntimeClient'
 import {
   conversationReducer,
@@ -18,6 +25,7 @@ import { RuntimeContext } from './runtimeContext'
 const DRAFTS_STORAGE_KEY = 'dsakiko-webui-drafts'
 const VIEW_STORAGE_KEY = 'dsakiko-webui-preferred-view'
 const LANGUAGE_STORAGE_KEY = 'dsakiko-webui-display-language'
+const MAX_IMAGES_PER_MESSAGE = 4
 
 function readStoredJson(key, fallback) {
   try {
@@ -71,6 +79,7 @@ export function RuntimeProvider({ children }) {
   const stateRef = useRef(state)
   const [client] = useState(() => new WebSocketRuntimeClient())
   const connectedRef = useRef(false)
+  const removedImageIdsRef = useRef(new Set())
 
   useEffect(() => {
     stateRef.current = state
@@ -176,6 +185,10 @@ export function RuntimeProvider({ children }) {
     }
   }, [client])
 
+  const closeChatList = useCallback(() => {
+    dispatch({ type: 'close_chat_list' })
+  }, [])
+
   const createChat = useCallback(async (input) => {
     const current = stateRef.current
     if (current.phase !== 'idle') return false
@@ -198,15 +211,90 @@ export function RuntimeProvider({ children }) {
     dispatch({ type: 'set_draft', chatId, value })
   }, [])
 
+  const addImages = useCallback(async (files) => {
+    const current = stateRef.current
+    const chatId = current.currentChatId
+    if (!chatId || current.phase !== 'idle') return false
+    if (!current.capabilities.image_input) {
+      const error = new Error('当前模型不支持图片输入，请在电脑端切换支持视觉的模型。')
+      error.code = 'IMAGE_INPUT_UNSUPPORTED'
+      dispatch({ type: 'command_error', error })
+      return false
+    }
+
+    const existing = current.pendingImagesByChatId[chatId] || []
+    const selected = Array.from(files)
+      .filter((file) => file.type.startsWith('image/'))
+      .slice(0, Math.max(0, MAX_IMAGES_PER_MESSAGE - existing.length))
+    if (selected.length === 0) return false
+
+    const images = selected.map((file) => ({
+      localId: randomId('draft_image'),
+      name: file.name || '图片',
+      previewUrl: URL.createObjectURL(file),
+      status: 'uploading',
+      uploadId: null,
+      file,
+    }))
+    dispatch({ type: 'add_pending_images', chatId, images })
+
+    for (const image of images) {
+      try {
+        const result = await uploadImage(image.file)
+        if (removedImageIdsRef.current.delete(image.localId)) {
+          deleteUploadedImage(result.upload_id).catch(() => {})
+          continue
+        }
+        dispatch({
+          type: 'pending_image_uploaded',
+          chatId,
+          localId: image.localId,
+          uploadId: result.upload_id,
+        })
+      } catch (error) {
+        URL.revokeObjectURL(image.previewUrl)
+        dispatch({ type: 'remove_pending_image', chatId, localId: image.localId })
+        dispatch({ type: 'command_error', error })
+      }
+    }
+    return true
+  }, [])
+
+  const removePendingImage = useCallback((localId) => {
+    const current = stateRef.current
+    const chatId = current.currentChatId
+    const image = (current.pendingImagesByChatId[chatId] || []).find(
+      (item) => item.localId === localId,
+    )
+    if (!chatId || !image) return
+    URL.revokeObjectURL(image.previewUrl)
+    if (image.uploadId) deleteUploadedImage(image.uploadId).catch(() => {})
+    else removedImageIdsRef.current.add(localId)
+    dispatch({ type: 'remove_pending_image', chatId, localId })
+  }, [])
+
   const sendMessage = useCallback(async () => {
     const current = stateRef.current
     const chatId = current.currentChatId
     const text = (current.draftsByChatId[chatId] || '').trim()
-    if (!chatId || !text || current.phase !== 'idle') return false
+    const images = current.pendingImagesByChatId[chatId] || []
+    if (
+      !chatId
+      || (!text && images.length === 0)
+      || images.some((image) => image.status !== 'ready')
+      || current.phase !== 'idle'
+    ) return false
 
     try {
-      await client.sendMessage(chatId, text, randomId('client_msg'))
+      await client.sendMessage(
+        chatId,
+        text,
+        randomId('client_msg'),
+        images.map((image) => image.uploadId),
+      )
+      for (const image of images) URL.revokeObjectURL(image.previewUrl)
       dispatch({ type: 'clear_draft', chatId })
+      dispatch({ type: 'clear_pending_images', chatId })
       return true
     } catch (error) {
       dispatch({ type: 'command_error', error })
@@ -258,30 +346,60 @@ export function RuntimeProvider({ children }) {
     dispatch({ type: 'clear_error' })
   }, [])
 
+  const loadSettings = useCallback(async () => {
+    try {
+      return await getSettings()
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+      throw error
+    }
+  }, [])
+
+  const saveSettings = useCallback(async (settings) => {
+    try {
+      const result = await updateSettings(settings)
+      dispatch({ type: 'capabilities_updated', capabilities: result.capabilities })
+      return result
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+      throw error
+    }
+  }, [])
+
   const value = useMemo(() => ({
     state,
     actions: {
       openChatList,
+      closeChatList,
       selectChat,
       createChat,
       setView,
       updateDraft,
+      addImages,
+      removePendingImage,
       sendMessage,
       cancelTurn,
       nextBackground,
       setDisplayLanguage,
       clearError,
+      loadSettings,
+      saveSettings,
       authenticate,
       retryConnection: checkConnection,
     },
   }), [
     authenticate,
+    addImages,
     cancelTurn,
     checkConnection,
     clearError,
+    closeChatList,
     createChat,
     nextBackground,
     openChatList,
+    removePendingImage,
+    loadSettings,
+    saveSettings,
     selectChat,
     sendMessage,
     setDisplayLanguage,

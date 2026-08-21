@@ -3,24 +3,75 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import socket
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request, Response, WebSocket
+from fastapi import FastAPI, File, Request, Response, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .assets import PROJECT_ROOT, AssetRegistry
 from .auth import COOKIE_NAME, SingleControllerAuth
-from .protocol import PROTOCOL_VERSION, ProtocolError, SessionRequest, http_error
+from .protocol import (
+    PROTOCOL_VERSION,
+    ProtocolError,
+    SessionRequest,
+    SettingsUpdateRequest,
+    http_error,
+)
 from .runtime import HeadlessRuntime
+from .uploads import MAX_IMAGE_UPLOAD_BYTES, PendingImageStore
 from .ws import WebSocketManager
 from GPT_SoVITS.runtime.runtime_lock import acquire_runtime_lock
 
 
 logger = logging.getLogger(__name__)
 FRONTEND_DIST = PROJECT_ROOT / "dsakiko_webui" / "frontend" / "dist"
+WEBUI_PORT = 8000
+
+
+def print_startup_banner(access_code: str) -> None:
+    local_ip = None
+    try:
+        addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        local_ip = next(
+            (address[4][0] for address in addresses if not address[4][0].startswith("127.")),
+            None,
+        )
+    except OSError:
+        pass
+    if local_ip is None:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect(("192.0.2.1", 80))
+                local_ip = probe.getsockname()[0]
+        except OSError:
+            local_ip = "127.0.0.1"
+
+    lines = [
+        "数字小祥WebUI",
+        "",
+        "1. 请确保手机或其他控制端和本机连接在同一局域网",
+        f"2. 在控制端浏览器中输入 http://{local_ip}:{WEBUI_PORT}",
+        f"3. 在控制端输入访问码：{access_code}",
+    ]
+    def display_width(value: str) -> int:
+        return sum(
+            2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+            for character in value
+        )
+
+    content_width = max(display_width(line) for line in lines)
+    border = "#" * (content_width + 4)
+    banner = [border]
+    for line in lines:
+        padding = " " * (content_width - display_width(line))
+        banner.append(f"# {line}{padding} #")
+    banner.append(border)
+    print("\n" + "\n".join(banner) + "\n", flush=True)
 
 
 def create_app(
@@ -30,7 +81,11 @@ def create_app(
     initialize_runtime: bool = True,
 ) -> FastAPI:
     assets = runtime.assets if runtime is not None else AssetRegistry()
-    runtime = runtime or HeadlessRuntime(assets)
+    if runtime is None:
+        uploads = PendingImageStore()
+        runtime = HeadlessRuntime(assets, uploads)
+    else:
+        uploads = getattr(runtime, "uploads", None) or PendingImageStore()
     auth = auth or SingleControllerAuth()
     ws_manager = WebSocketManager(auth, runtime)
 
@@ -57,8 +112,9 @@ def create_app(
                 except Exception:
                     logger.exception("WebUI Runtime 初始化失败")
             initialize_task = asyncio.create_task(initialize())
-        logger.info("WebUI 访问码：%s", auth.access_code)
-        print(f"访问码：{auth.access_code}，请在控制端输入。", flush=True)
+        if initialize_runtime:
+            logger.info("WebUI 访问码：%s", auth.access_code)
+            print_startup_banner(auth.access_code)
         try:
             yield
         finally:
@@ -69,11 +125,13 @@ def create_app(
                 await asyncio.to_thread(runtime.shutdown)
             if runtime_lease is not None:
                 runtime_lease.release()
+            uploads.close()
 
     app = FastAPI(title="数字小祥 WebUI", version="1.0", lifespan=lifespan)
     app.state.runtime = runtime
     app.state.auth = auth
     app.state.ws_manager = ws_manager
+    app.state.uploads = uploads
     app.state.runtime_lease = None
 
     def authenticated(request: Request) -> bool:
@@ -127,6 +185,91 @@ def create_app(
     @app.websocket("/api/v1/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await ws_manager.serve(websocket)
+
+    @app.get("/api/v1/settings")
+    async def get_settings(request: Request) -> JSONResponse:
+        if not authenticated(request):
+            return JSONResponse(
+                http_error(ProtocolError("AUTH_REQUIRED", "登录会话已失效。", True)),
+                status_code=401,
+            )
+        try:
+            data = await asyncio.to_thread(runtime.settings_snapshot)
+            return JSONResponse(data, headers={"Cache-Control": "no-store"})
+        except ProtocolError as exc:
+            return JSONResponse(http_error(exc), status_code=503)
+
+    @app.patch("/api/v1/settings")
+    async def update_settings(body: SettingsUpdateRequest, request: Request) -> JSONResponse:
+        if not authenticated(request):
+            return JSONResponse(
+                http_error(ProtocolError("AUTH_REQUIRED", "登录会话已失效。", True)),
+                status_code=401,
+            )
+        try:
+            data = await asyncio.to_thread(
+                runtime.update_settings,
+                speech_speed=body.speech_speed,
+                sentence_pause_seconds=body.sentence_pause_seconds,
+                llm_choice_id=body.llm_choice_id,
+            )
+            return JSONResponse(data, headers={"Cache-Control": "no-store"})
+        except ProtocolError as exc:
+            status_code = 409 if exc.code == "CHAT_BUSY" else 400
+            return JSONResponse(http_error(exc), status_code=status_code)
+
+    @app.post("/api/v1/uploads/images")
+    async def upload_image(request: Request, file: UploadFile = File(...)) -> JSONResponse:
+        if not authenticated(request):
+            return JSONResponse(
+                http_error(ProtocolError("AUTH_REQUIRED", "需要登录后上传图片。", True)),
+                status_code=401,
+            )
+        if runtime.status != "ready":
+            return JSONResponse(
+                http_error(ProtocolError("RUNTIME_NOT_READY", "后端仍在初始化，请稍后重试。", True)),
+                status_code=503,
+            )
+        capabilities = runtime.capabilities() if hasattr(runtime, "capabilities") else {}
+        if not capabilities.get("image_input", False):
+            return JSONResponse(
+                http_error(ProtocolError(
+                    "IMAGE_INPUT_UNSUPPORTED",
+                    "当前模型不支持图片输入，请在电脑端切换支持视觉的模型。",
+                )),
+                status_code=409,
+            )
+
+        data = await file.read(MAX_IMAGE_UPLOAD_BYTES + 1)
+        await file.close()
+        if len(data) > MAX_IMAGE_UPLOAD_BYTES:
+            return JSONResponse(
+                http_error(ProtocolError("IMAGE_TOO_LARGE", "单张图片不能超过 12 MB。")),
+                status_code=413,
+            )
+        try:
+            item = uploads.add(data, file.filename or "image")
+        except (OSError, ValueError) as exc:
+            return JSONResponse(
+                http_error(ProtocolError("INVALID_IMAGE", str(exc))),
+                status_code=400,
+            )
+        return JSONResponse({
+            "upload_id": item.upload_id,
+            "original_name": item.original_name,
+            "mime_type": item.mime_type,
+            "size": item.size,
+        }, headers={"Cache-Control": "no-store"})
+
+    @app.delete("/api/v1/uploads/images/{upload_id}", status_code=204)
+    async def delete_uploaded_image(upload_id: str, request: Request) -> Response:
+        if not authenticated(request):
+            return JSONResponse(
+                http_error(ProtocolError("AUTH_REQUIRED", "登录会话已失效。", True)),
+                status_code=401,
+            )
+        uploads.discard([upload_id])
+        return Response(status_code=204)
 
     @app.get("/api/v1/media/{media_id}")
     async def media(media_id: str, request: Request) -> Response:

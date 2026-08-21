@@ -20,7 +20,6 @@ function AppExperience() {
     enqueue,
     playback,
     stop,
-    unlocked,
   } = audio
   const shouldAutoPlay = (
     state.activeView === 'character'
@@ -51,7 +50,6 @@ function AppExperience() {
       }
 
       if (shouldAutoPlay) {
-        if (!unlocked) continue
         enqueue(message)
       }
       knownAssistantMessagesRef.current.add(message.id)
@@ -60,7 +58,6 @@ function AppExperience() {
     enqueue,
     state.messages,
     shouldAutoPlay,
-    unlocked,
   ])
 
   const latestAssistant = useMemo(
@@ -81,6 +78,9 @@ function AppExperience() {
       return actions.cancelTurn()
     },
   }), [actions, stop])
+  const visibleView = state.activeView === 'chat_list'
+    ? (state.chatListReturnView || state.preferredSessionView)
+    : state.activeView
 
   return (
     <main
@@ -93,16 +93,18 @@ function AppExperience() {
         state={state}
         actions={experienceActions}
         audio={audio}
-        active={state.activeView === 'character'}
+        active={visibleView === 'character'}
         motionGroup={motionGroup}
       />
 
+      {visibleView === 'chat' && (
+        <ChatView state={state} actions={experienceActions} audio={audio} />
+      )}
       {state.activeView === 'chat_list' && (
         <ChatListView state={state} actions={experienceActions} />
       )}
-      {state.activeView === 'chat' && (
-        <ChatView state={state} actions={experienceActions} audio={audio} />
-      )}
+
+      <div key={visibleView} className="view-transition-wash" aria-hidden="true" />
 
       {state.error && (
         <div className="error-toast" role="alert">

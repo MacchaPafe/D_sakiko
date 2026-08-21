@@ -1,4 +1,4 @@
-import { Pause, Play, Volume2 } from 'lucide-react'
+import { Volume2 } from 'lucide-react'
 import { IconButton } from './IconButton'
 
 export function PlaybackButton({ message, playback, onToggle }) {
@@ -16,9 +16,7 @@ export function PlaybackButton({ message, playback, onToggle }) {
           onToggle(message)
         }}
       >
-        {isPlaying ? <Pause size={16} /> : (
-          isCurrent ? <Volume2 size={16} /> : <Play size={16} fill="currentColor" />
-        )}
+        <Volume2 size={18} aria-hidden="true" />
       </IconButton>
       {isCurrent && (
         <span className="playback-progress" aria-hidden="true">

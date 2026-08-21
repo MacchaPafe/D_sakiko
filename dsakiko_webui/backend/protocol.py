@@ -14,6 +14,12 @@ class SessionRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=128)
 
 
+class SettingsUpdateRequest(BaseModel):
+    speech_speed: float | None = Field(default=None, ge=0.6, le=1.4)
+    sentence_pause_seconds: float | None = Field(default=None, ge=0.1, le=0.8)
+    llm_choice_id: str | None = Field(default=None, min_length=1, max_length=256)
+
+
 class CommandEnvelope(BaseModel):
     protocol_version: int
     kind: str

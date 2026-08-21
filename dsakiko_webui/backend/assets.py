@@ -11,6 +11,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_ROOT = (PROJECT_ROOT / "live2d_related").resolve()
 REFERENCE_AUDIO_ROOT = (PROJECT_ROOT / "reference_audio").resolve()
+CHAR_HEADPROF_ROOT = (PROJECT_ROOT / "GPT_SoVITS" / "char_headprof").resolve()
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ class AssetRegistry:
         resolved = Path(path).expanduser().resolve()
         if not any(
             resolved == root or resolved.is_relative_to(root)
-            for root in (LIVE2D_ROOT, REFERENCE_AUDIO_ROOT)
+            for root in (LIVE2D_ROOT, REFERENCE_AUDIO_ROOT, CHAR_HEADPROF_ROOT)
         ):
             raise ValueError("媒体文件不在允许目录中")
         digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:24]
@@ -75,8 +76,22 @@ class AssetRegistry:
 
     def register_character(self, character: Any) -> dict[str, Any]:
         avatar_url = None
-        if character.icon_path and Path(character.icon_path).is_file():
-            media_id = self.register_media(character.icon_path, "avatar")
+        character_root = LIVE2D_ROOT / character.character_folder_name
+        preferred_icon = character_root / f"{character.character_folder_name}_icon.png"
+        root_icons = sorted(
+            path for path in character_root.glob("*.png")
+            if path.is_file()
+        )
+        if preferred_icon.is_file():
+            avatar_path = preferred_icon
+        elif root_icons:
+            avatar_path = root_icons[0]
+        else:
+            fallback_icon = CHAR_HEADPROF_ROOT / f"{character.character_name}.png"
+            avatar_path = fallback_icon if fallback_icon.is_file() else None
+
+        if avatar_path is not None:
+            media_id = self.register_media(avatar_path, "avatar")
             avatar_url = f"/api/v1/media/{media_id}"
 
         model_url = None

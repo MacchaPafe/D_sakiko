@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import base64
 import queue
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+import dsakiko_webui.backend.assets as assets_module
 from dsakiko_webui.backend.app import create_app
 from dsakiko_webui.backend.assets import AssetRegistry, Live2DEntry
 from dsakiko_webui.backend.auth import COOKIE_NAME, SingleControllerAuth
+from dsakiko_webui.backend.runtime import HeadlessRuntime
+from dsakiko_webui.backend.uploads import PendingImageStore
 from GPT_SoVITS.runtime.runtime_lock import RuntimeLockBusy, acquire_runtime_lock
 
 
@@ -39,6 +45,37 @@ class FakeRuntime:
             "data": {"mode": "web", "capabilities": {}},
         }
 
+    def capabilities(self) -> dict[str, bool]:
+        return {"image_input": True}
+
+    def settings_snapshot(self) -> dict:
+        return {
+            "voice": {
+                "character_id": "anon",
+                "character_name": "爱音",
+                "speech_speed": 1.0,
+                "sentence_pause_seconds": 0.5,
+            },
+            "llm": {
+                "selected_id": "default_deepseek",
+                "options": [{
+                    "id": "default_deepseek",
+                    "label": "DeepSeek 公共 API",
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                }],
+            },
+            "capabilities": self.capabilities(),
+        }
+
+    def update_settings(self, **values) -> dict:
+        result = self.settings_snapshot()
+        if values.get("speech_speed") is not None:
+            result["voice"]["speech_speed"] = values["speech_speed"]
+        if values.get("sentence_pause_seconds") is not None:
+            result["voice"]["sentence_pause_seconds"] = values["sentence_pause_seconds"]
+        return result
+
     def handle_command(self, command_type: str, payload: dict):
         if command_type == "ping":
             return {"accepted": True}, [{
@@ -51,11 +88,27 @@ class FakeRuntime:
         return {"accepted": True}, []
 
 
+class FakeChat:
+    def __init__(self, chat_id: str) -> None:
+        self.chat_id = chat_id
+        self.message_list = []
+        self.meta = SimpleNamespace(extra={})
+
+    def add_message(self, message) -> None:
+        self.message_list.append(message)
+
+    def delete_message_at(self, index: int) -> None:
+        self.message_list.pop(index)
+
+
 class BackendTest(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = FakeRuntime()
         self.auth = SingleControllerAuth("123456")
         self.app = create_app(self.runtime, self.auth, initialize_runtime=False)
+
+    def tearDown(self) -> None:
+        self.app.state.uploads.close()
 
     def test_new_login_takes_over_old_cookie(self) -> None:
         with TestClient(self.app) as first, TestClient(self.app) as second:
@@ -110,6 +163,64 @@ class BackendTest(unittest.TestCase):
             response = client.get("/api/v1/media/not-found")
             self.assertEqual(response.status_code, 401)
 
+    def test_image_upload_requires_login_and_accepts_valid_png(self) -> None:
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        with TestClient(self.app) as client:
+            unauthorized = client.post(
+                "/api/v1/uploads/images",
+                files={"file": ("photo.png", png, "image/png")},
+            )
+            self.assertEqual(unauthorized.status_code, 401)
+
+            client.post("/api/v1/session", json={"access_code": "123456"})
+            response = client.post(
+                "/api/v1/uploads/images",
+                files={"file": ("photo.png", png, "image/png")},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()["upload_id"].startswith("upload_"))
+            self.assertEqual(response.json()["mime_type"], "image/png")
+
+            deleted = client.delete(f"/api/v1/uploads/images/{response.json()['upload_id']}")
+            self.assertEqual(deleted.status_code, 204)
+
+    def test_settings_require_login_and_update_runtime_values(self) -> None:
+        with TestClient(self.app) as client:
+            self.assertEqual(client.get("/api/v1/settings").status_code, 401)
+            client.post("/api/v1/session", json={"access_code": "123456"})
+
+            snapshot = client.get("/api/v1/settings")
+            self.assertEqual(snapshot.status_code, 200)
+            self.assertEqual(snapshot.json()["voice"]["character_name"], "爱音")
+            self.assertNotIn("api_key", snapshot.text.lower())
+
+            updated = client.patch("/api/v1/settings", json={
+                "speech_speed": 1.12,
+                "sentence_pause_seconds": 0.36,
+                "llm_choice_id": "default_deepseek",
+            })
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(updated.json()["voice"]["speech_speed"], 1.12)
+
+    def test_settings_reject_out_of_range_voice_values(self) -> None:
+        with TestClient(self.app) as client:
+            client.post("/api/v1/session", json={"access_code": "123456"})
+            response = client.patch("/api/v1/settings", json={"speech_speed": 2.0})
+            self.assertEqual(response.status_code, 422)
+
+    def test_image_upload_rejects_model_without_vision_support(self) -> None:
+        self.runtime.capabilities = lambda: {"image_input": False}
+        with TestClient(self.app) as client:
+            client.post("/api/v1/session", json={"access_code": "123456"})
+            response = client.post(
+                "/api/v1/uploads/images",
+                files={"file": ("photo.png", b"not-read", "image/png")},
+            )
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["error"]["code"], "IMAGE_INPUT_UNSUPPORTED")
+
     def test_registered_media_supports_range_request(self) -> None:
         with TestClient(self.app) as client:
             client.post("/api/v1/session", json={"access_code": "123456"})
@@ -122,6 +233,40 @@ class BackendTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as temporary:
             with self.assertRaises(ValueError):
                 self.runtime.assets.register_media(temporary.name, "audio")
+
+    def test_character_avatar_uses_live2d_root_then_folder_name_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live2d_root = root / "live2d_related"
+            headprof_root = root / "char_headprof"
+            (live2d_root / "sakiko").mkdir(parents=True)
+            (live2d_root / "anon").mkdir(parents=True)
+            headprof_root.mkdir()
+            sakiko_icon = live2d_root / "sakiko" / "sakiko_icon.png"
+            anon_icon = headprof_root / "爱音.png"
+            sakiko_icon.write_bytes(b"sakiko")
+            anon_icon.write_bytes(b"anon")
+
+            with (
+                patch.object(assets_module, "LIVE2D_ROOT", live2d_root.resolve()),
+                patch.object(assets_module, "CHAR_HEADPROF_ROOT", headprof_root.resolve()),
+            ):
+                registry = AssetRegistry()
+                sakiko = registry.register_character(SimpleNamespace(
+                    character_folder_name="sakiko",
+                    character_name="祥子",
+                    live2d_json=None,
+                ))
+                anon = registry.register_character(SimpleNamespace(
+                    character_folder_name="anon",
+                    character_name="爱音",
+                    live2d_json=None,
+                ))
+
+                sakiko_media = registry.media(sakiko["avatar_url"].rsplit("/", 1)[-1])
+                anon_media = registry.media(anon["avatar_url"].rsplit("/", 1)[-1])
+                self.assertEqual(sakiko_media.path, sakiko_icon.resolve())
+                self.assertEqual(anon_media.path, anon_icon.resolve())
 
     def test_live2d_registry_rejects_path_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -147,6 +292,78 @@ class BackendTest(unittest.TestCase):
                     acquire_runtime_lock(directory, "desktop")
             finally:
                 first.release()
+
+    def test_runtime_send_imports_uploaded_image_with_desktop_attachment_logic(self) -> None:
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        uploads = PendingImageStore()
+        runtime = HeadlessRuntime(AssetRegistry(), uploads)
+        chat = FakeChat("webui_upload_test")
+        runtime.dp_chat = SimpleNamespace(
+            current_chat_id=chat.chat_id,
+            current_chat=chat,
+            _current_model_supports_vision=lambda: True,
+        )
+        saved_meta = []
+        runtime.chat_manager = SimpleNamespace(
+            save=lambda: saved_meta.append(list(chat.meta.extra.get("webui_messages", []))),
+        )
+        runtime.command_queue = queue.Queue()
+        runtime.chat_list_snapshot = lambda: {"chats": []}
+        runtime.status = "ready"
+        item = uploads.add(png, "camera.png")
+
+        try:
+            result, events = runtime._send_message({
+                "chat_id": chat.chat_id,
+                "client_message_id": "client_image",
+                "text": "看看这张图",
+                "image_upload_ids": [item.upload_id],
+            })
+            self.assertFalse(result["deduplicated"])
+            self.assertEqual(len(chat.message_list[0].attachments), 1)
+            self.assertEqual(chat.message_list[0].attachments[0].mime_type, "image/png")
+            self.assertEqual(events[0]["data"]["message"]["attachments"][0]["type"], "image")
+            self.assertEqual(saved_meta[-1][0]["client_message_id"], "client_image")
+            command = runtime.command_queue.get_nowait()
+            self.assertFalse(command["append_user_message"])
+        finally:
+            from chat.attachments import delete_chat_attachment_dir
+
+            delete_chat_attachment_dir(chat.chat_id)
+            uploads.close()
+
+    def test_runtime_rolls_back_persisted_user_message_after_llm_failure(self) -> None:
+        from chat.chat import Message
+        from emotion_enum import EmotionEnum
+
+        runtime = HeadlessRuntime(AssetRegistry(), PendingImageStore())
+        chat = FakeChat("webui_failed_turn")
+        chat.add_message(Message("User", "失败消息", "", EmotionEnum.HAPPINESS, ""))
+        chat.meta.extra["webui_messages"] = [{
+            "id": "msg_failed",
+            "created_at": 1,
+            "turn_id": "turn_failed",
+            "client_message_id": "client_failed",
+            "sequence": 0,
+            "role": "user",
+        }]
+        saves = []
+        runtime.chat_manager = SimpleNamespace(
+            get_chat_by_id=lambda chat_id: chat if chat_id == chat.chat_id else None,
+            save=lambda: saves.append(True),
+        )
+        runtime._client_message_turns[(chat.chat_id, "client_failed")] = "turn_failed"
+
+        try:
+            runtime._rollback_failed_user_message(chat.chat_id, "turn_failed")
+            self.assertEqual(chat.message_list, [])
+            self.assertEqual(chat.meta.extra["webui_messages"], [])
+            self.assertNotIn((chat.chat_id, "client_failed"), runtime._client_message_turns)
+            self.assertTrue(saves)
+        finally:
+            runtime.uploads.close()
 
 
 if __name__ == "__main__":

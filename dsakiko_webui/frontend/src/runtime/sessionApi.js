@@ -1,3 +1,5 @@
+import { randomId } from './ids'
+
 const CLIENT_ID_STORAGE_KEY = 'dsakiko-webui-client-id'
 
 function clientId() {
@@ -36,4 +38,52 @@ export async function createSession(accessCode) {
   }
   return body
 }
-import { randomId } from './ids'
+
+export async function uploadImage(file) {
+  const formData = new FormData()
+  formData.append('file', file, file.name)
+  const response = await fetch('/api/v1/uploads/images', {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: formData,
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(body.error?.message || '图片上传失败，请重试。')
+    error.code = body.error?.code || 'IMAGE_UPLOAD_FAILED'
+    throw error
+  }
+  return body
+}
+
+export async function deleteUploadedImage(uploadId) {
+  await fetch(`/api/v1/uploads/images/${encodeURIComponent(uploadId)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+  })
+}
+
+async function settingsRequest(method, body) {
+  const response = await fetch('/api/v1/settings', {
+    method,
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(result.error?.message || '设置读取失败，请稍后重试。')
+    error.code = result.error?.code || 'SETTINGS_FAILED'
+    throw error
+  }
+  return result
+}
+
+export function getSettings() {
+  return settingsRequest('GET')
+}
+
+export function updateSettings(settings) {
+  return settingsRequest('PATCH', settings)
+}

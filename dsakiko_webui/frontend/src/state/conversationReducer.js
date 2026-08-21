@@ -16,6 +16,8 @@ export const initialConversationState = {
   chatListReturnView: null,
   preferredSessionView: 'chat',
   draftsByChatId: {},
+  pendingImagesByChatId: {},
+  capabilities: {},
   displayLanguage: 'translation',
   pendingChatId: null,
   error: null,
@@ -28,6 +30,11 @@ function appendUniqueMessage(messages, message) {
 
 export function conversationReducer(state, action) {
   switch (action.type) {
+    case 'capabilities_updated':
+      return {
+        ...state,
+        capabilities: { ...state.capabilities, ...action.capabilities },
+      }
     case 'hydrate_local_preferences':
       return {
         ...state,
@@ -56,6 +63,7 @@ export function conversationReducer(state, action) {
             ...state,
             connection: 'ready',
             runtimeMode: event.data.mode || state.runtimeMode,
+            capabilities: event.data.capabilities || {},
             runtimeStatus: {
               state: 'ready',
               message: '角色已准备好。',
@@ -178,6 +186,13 @@ export function conversationReducer(state, action) {
         preferredSessionView: action.view,
       }
 
+    case 'close_chat_list':
+      return {
+        ...state,
+        activeView: state.chatListReturnView || state.preferredSessionView,
+        chatListReturnView: null,
+      }
+
     case 'switch_chat_requested':
       return {
         ...state,
@@ -207,6 +222,51 @@ export function conversationReducer(state, action) {
         draftsByChatId: {
           ...state.draftsByChatId,
           [action.chatId]: '',
+        },
+      }
+
+    case 'add_pending_images':
+      return {
+        ...state,
+        pendingImagesByChatId: {
+          ...state.pendingImagesByChatId,
+          [action.chatId]: [
+            ...(state.pendingImagesByChatId[action.chatId] || []),
+            ...action.images,
+          ],
+        },
+      }
+
+    case 'pending_image_uploaded':
+      return {
+        ...state,
+        pendingImagesByChatId: {
+          ...state.pendingImagesByChatId,
+          [action.chatId]: (state.pendingImagesByChatId[action.chatId] || []).map((image) => (
+            image.localId === action.localId
+              ? { ...image, status: 'ready', uploadId: action.uploadId }
+              : image
+          )),
+        },
+      }
+
+    case 'remove_pending_image':
+      return {
+        ...state,
+        pendingImagesByChatId: {
+          ...state.pendingImagesByChatId,
+          [action.chatId]: (state.pendingImagesByChatId[action.chatId] || []).filter(
+            (image) => image.localId !== action.localId,
+          ),
+        },
+      }
+
+    case 'clear_pending_images':
+      return {
+        ...state,
+        pendingImagesByChatId: {
+          ...state.pendingImagesByChatId,
+          [action.chatId]: [],
         },
       }
 

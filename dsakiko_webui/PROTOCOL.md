@@ -35,7 +35,7 @@ V1 暂不负责：
 
 1. 前端与后端正式部署时同源。
 2. WebSocket 是命令和可变状态的唯一权威通道。
-3. HTTP 只负责健康检查、登录会话、静态文件和二进制资源。
+3. HTTP 只负责健康检查、登录会话、图片上传、静态文件和二进制资源。
 4. 浏览器只消费领域事件，不接触 Python 队列名、绝对路径或 `LABEL_0` 等内部表示。
 5. 服务端拥有 `current_chat_id`、消息记录和生成状态的最终决定权。
 6. 所有 ID 都是不透明字符串，客户端不得从 ID 中解析角色、时间或文件路径。
@@ -51,6 +51,8 @@ V1 暂不负责：
 | `GET` | `/api/v1/health` | 否 | 检查 HTTP 服务和 Runtime 状态，不触发初始化 |
 | `POST` | `/api/v1/session` | 访问码 | 建立浏览器登录会话并写入 HttpOnly Cookie |
 | `DELETE` | `/api/v1/session` | 是 | 注销浏览器登录会话 |
+| `POST` | `/api/v1/uploads/images` | 是 | 上传一张待发送图片并换取临时 `upload_id` |
+| `DELETE` | `/api/v1/uploads/images/{upload_id}` | 是 | 删除尚未发送的临时图片 |
 | `WS` | `/api/v1/ws` | 是 | 发送命令并接收状态、消息和错误事件 |
 | `GET` | `/api/v1/media/{media_id}` | 是 | 获取头像、背景或生成音频等受控资源 |
 | `GET` | `/api/v1/live2d/{model_id}/{asset_path:path}` | 是 | 获取已登记 Live2D 模型目录中的资源 |
@@ -210,6 +212,7 @@ V1 只向浏览器暴露选择所需的 `id` 和 `name`。完整人设内容留�
   "emotion": "happiness",
   "audio_url": "/api/v1/media/media_audio_0002",
   "audio_duration_ms": 2840,
+  "attachments": [],
   "status": "ready"
 }
 ```
@@ -227,9 +230,23 @@ V1 只向浏览器暴露选择所需的 `id` 和 `name`。完整人设内容留�
 | `emotion` | `Emotion \| null` | 角色消息必填；用户消息为 `null` |
 | `audio_url` | `string \| null` | 无音频、语音关闭或 TTS 失败时为 `null` |
 | `audio_duration_ms` | `integer \| null` | 未知或无音频时为 `null` |
+| `attachments` | `Attachment[]` | 用户图片附件；没有附件时为 `[]` |
 | `status` | `"ready"` | V1 只传输已经可以展示的消息 |
 
 同一轮角色回复的每个分段都有独立 `id` 和 `sequence`，前端据此生成多个气泡。
+
+图片附件结构：
+
+```json
+{
+  "type": "image",
+  "mime_type": "image/jpeg",
+  "original_name": "camera.jpg",
+  "image_url": "/api/v1/media/media_attachment_01J2XYZ"
+}
+```
+
+`image_url` 只由服务端生成；历史文件缺失时可以为 `null`。
 
 ### 5.5 Background
 
@@ -408,7 +425,30 @@ ETag: "media-audio-0002-v1"
 Cache-Control: private, max-age=3600
 ```
 
-### 6.5 `GET /api/v1/live2d/{model_id}/{asset_path:path}`
+### 6.5 `POST /api/v1/uploads/images`
+
+请求使用 `multipart/form-data`，文件字段名为 `file`。成功响应：
+
+```json
+{
+  "upload_id": "upload_01J2XYZ",
+  "original_name": "camera.jpg",
+  "mime_type": "image/jpeg",
+  "size": 582341
+}
+```
+
+规则：
+
+- `upload_id` 是仅用于当前服务进程的临时不透明 ID，不是文件路径。
+- 单张图片最大 `12 MB`；支持格式与桌面端 `chat.attachments` 一致。
+- 服务端按实际图片内容验证格式，不信任文件扩展名和请求 `Content-Type`。
+- 当前模型不支持视觉输入时返回 `IMAGE_INPUT_UNSUPPORTED`。
+- 上传成功不代表消息已发送；图片在 `send_message` 成功接受时才导入正式聊天附件。
+- 未发送图片可通过 `DELETE /api/v1/uploads/images/{upload_id}` 清理，成功返回 `204`。
+- 服务退出时清理全部临时上传。
+
+### 6.6 `GET /api/v1/live2d/{model_id}/{asset_path:path}`
 
 要求：
 
@@ -419,7 +459,7 @@ Cache-Control: private, max-age=3600
 - `model_url` 由服务端完整返回，例如 `/api/v1/live2d/model_anon/3.model.json`。
 - 模型 JSON 内的相对纹理、动作和物理文件路径会自然落到同一个模型路由。
 
-### 6.6 HTTP 错误
+### 6.7 HTTP 错误
 
 HTTP 错误使用与 WebSocket 相同的 Error 实体：
 
@@ -591,7 +631,8 @@ HTTP 错误使用与 WebSocket 相同的 Error 实体：
   "payload": {
     "chat_id": "chat_anon_daily",
     "client_message_id": "client_msg_01J2XYZ",
-    "text": "今天练习怎么样？"
+    "text": "看看这张照片",
+    "image_upload_ids": ["upload_01J2XYZ"]
   }
 }
 ```
@@ -618,7 +659,10 @@ HTTP 错误使用与 WebSocket 相同的 Error 实体：
 规则：
 
 - `chat_id` 必须等于服务端当前 `current_chat_id`。
-- 去除首尾空白后的 `text` 长度必须为 `1..10000` 个 Unicode 字符。
+- 去除首尾空白后的 `text` 长度必须为 `0..10000` 个 Unicode 字符。
+- `text` 和 `image_upload_ids` 不能同时为空；每条消息最多包含 4 张图片。
+- `image_upload_ids` 必须全部属于仍有效的临时上传，成功接受后立即失效。
+- 图片能力判断和正式附件导入复用桌面端 `model_supports_image_upload()` 与 `import_image_attachment()`。
 - 服务端保存去除首尾空白后的文本。
 - 当前 `phase` 必须为 `idle`。
 - 成功响应后进入标准消息事件流。
@@ -800,7 +844,8 @@ Runtime 可接受业务命令时发送。已完成初始化的服务在新连接
     "tts": true,
     "translation": true,
     "backgrounds": true,
-    "cancel_turn": true
+    "cancel_turn": true,
+    "image_input": true
   }
 }
 ```
@@ -1117,6 +1162,12 @@ V1 不自动重放其他未确认命令。切换背景、切换会话等操作�
 | `CHARACTER_NOT_FOUND` | 新建会话的角色不存在 | 否 |
 | `USER_PERSONA_NOT_FOUND` | 用户人设不存在 | 否 |
 | `INVALID_MESSAGE` | 消息为空、过长或格式错误 | 否 |
+| `INVALID_IMAGE` | 上传内容不是支持的可读图片 | 否 |
+| `INVALID_IMAGE_UPLOAD` | 临时图片 ID 重复、失效或数量超限 | 否 |
+| `IMAGE_TOO_LARGE` | 单张图片超过 12 MB | 否 |
+| `IMAGE_INPUT_UNSUPPORTED` | 当前模型不支持视觉输入 | 否 |
+| `IMAGE_IMPORT_FAILED` | 图片无法导入正式聊天附件 | 否 |
+| `INVALID_SETTING` | 设置值或模型选项已经失效 | 否 |
 | `RUNTIME_NOT_READY` | Runtime 尚未初始化完成 | 是 |
 | `LLM_FAILED` | LLM 或 Agent 调用失败 | 是 |
 | `TTS_FAILED` | GPT-SoVITS 生成失败 | 是 |
@@ -1125,6 +1176,60 @@ V1 不自动重放其他未确认命令。切换背景、切换会话等操作�
 | `INTERNAL_ERROR` | 未分类服务端错误 | 视情况 |
 
 服务端日志可以记录 traceback，但发送给浏览器的错误不得包含 API Key、Cookie、访问码、系统提示词或绝对路径。
+
+### 13.1 WebUI 设置接口
+
+设置接口使用现有登录 Cookie 鉴权，不通过 WebSocket 传输。
+
+`GET /api/v1/settings` 返回当前角色的运行时语音参数和可以切换的已配置模型：
+
+```json
+{
+  "voice": {
+    "character_id": "anon",
+    "character_name": "爱音",
+    "speech_speed": 1.0,
+    "sentence_pause_seconds": 0.5
+  },
+  "llm": {
+    "selected_id": "provider:openai",
+    "options": [
+      {
+        "id": "provider:openai",
+        "label": "OpenAI",
+        "provider": "openai",
+        "model": "gpt-5"
+      }
+    ]
+  },
+  "capabilities": {
+    "image_input": true
+  }
+}
+```
+
+`PATCH /api/v1/settings` 支持一次提交部分或全部字段：
+
+```json
+{
+  "speech_speed": 1.08,
+  "sentence_pause_seconds": 0.42,
+  "llm_choice_id": "provider:openai"
+}
+```
+
+- 语速范围为 `0.6-1.4`，句间停顿范围为 `0.1-0.8` 秒。
+- 语音参数按角色保存在当前 WebUI Runtime 内，切换角色后恢复该角色本次运行期间的设置。
+- 模型切换写回主程序现有 `d_sakiko_config.json`，下一轮请求读取新的配置快照。
+- 响应只包含供应商显示名、模型名和不透明选项 ID；API Key、Base URL 和自定义地址不会发送到控制端。
+- 生成回复期间修改返回 `CHAT_BUSY`。
+
+### 13.2 失败消息持久化
+
+- 命令校验或图片上传在 ACK 前失败时，不创建聊天消息。
+- LLM 或 Agent 在尚未产生角色回复时失败，已 ACK 的用户消息只保留在当前前端内存中，后端从正式聊天记录移除。
+- TTS 失败时保留用户消息和已经生成的角色文本。
+- 用户主动中断时保留已经成立的消息，不按失败回滚。
 
 ## 14. WebSocket 关闭码
 
@@ -1154,6 +1259,8 @@ V1 不自动重放其他未确认命令。切换背景、切换会话等操作�
 - 所有资源 URL 都由服务端生成，前端不提交本地绝对路径。
 - Live2D 路由执行路径穿越和符号链接越界检查。
 - 媒体路由只读取登记文件，禁止任意文件下载。
+- 图片上传要求有效会话，限制单文件大小，并按实际内容验证格式。
+- 客户端永远只提交临时 `upload_id`，不得提交服务端本地路径。
 - WebSocket 限制帧大小、命令频率和同时连接数。
 - Cookie 使用 `HttpOnly; SameSite=Strict`；HTTPS 下增加 `Secure`。
 - API Key、模型供应商凭证和系统提示词永远不进入协议。
@@ -1166,6 +1273,7 @@ dsakiko_webui/backend/
 ├── app.py                          # FastAPI 生命周期、Runtime 启停、路由注册
 ├── auth.py                         # 访问码、会话 Cookie、Origin 校验
 ├── ws.py                           # WebSocket 连接、命令分发、广播和 sequence
+├── uploads.py                      # 临时图片上传、限制与生命周期
 ├── media_routes.py                 # media_id 注册、Range 与 MIME
 ├── live2d_routes.py                # model_id 注册和安全资源读取
 ├── protocol/
@@ -1219,6 +1327,8 @@ dsakiko_webui/frontend/src/runtime/
 - 同一轮两个分段显示为两个独立气泡。
 - 角色消息只出现七种正式 emotion，用户消息 emotion 为 `null`。
 - 音频 URL 不包含本地路径，支持 Range 播放。
+- 相册选择和拍照均能生成草稿预览，图片发送后写入正式聊天附件。
+- 不支持视觉的模型不会接受图片上传或图片消息。
 - Live2D 模型 JSON 的相对资源可以从同一模型路由加载。
 - 重复发送同一 `client_message_id` 不产生重复用户消息或第二轮回复。
 - 生成期间可打开会话列表，但切换、创建和再次发送得到 `CHAT_BUSY`。

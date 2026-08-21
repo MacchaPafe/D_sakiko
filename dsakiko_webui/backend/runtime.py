@@ -13,6 +13,7 @@ from typing import Any
 
 from .assets import AssetRegistry, PROJECT_ROOT
 from .protocol import ProtocolError
+from .uploads import PendingImageStore
 
 
 GPT_ROOT = PROJECT_ROOT / "GPT_SoVITS"
@@ -22,8 +23,13 @@ logger = logging.getLogger(__name__)
 class HeadlessRuntime:
     """把现有聊天与语音模块组合成不依赖 Qt 的 WebUI 运行时。"""
 
-    def __init__(self, assets: AssetRegistry | None = None) -> None:
+    def __init__(
+        self,
+        assets: AssetRegistry | None = None,
+        uploads: PendingImageStore | None = None,
+    ) -> None:
         self.assets = assets or AssetRegistry()
+        self.uploads = uploads or PendingImageStore()
         self.status = "starting"
         self.status_stage = "waiting"
         self.status_message = "等待初始化。"
@@ -47,6 +53,7 @@ class HeadlessRuntime:
         self.chat_manager: Any = None
         self.dp_chat: Any = None
         self.audio_gen: Any = None
+        self._voice_settings_by_character: dict[str, dict[str, float]] = {}
 
     def initialize(self) -> None:
         try:
@@ -97,6 +104,13 @@ class HeadlessRuntime:
             self._set_status("starting", "loading_tts", "正在启动语音模型进程。", 0.7)
             self.audio_gen = audio_generator.AudioGenerate()
             self.audio_gen.initialize(self.characters, self.message_queue)
+            self._voice_settings_by_character = {
+                item.character_name: {
+                    "speech_speed": float(self.audio_gen.speed),
+                    "sentence_pause_seconds": float(self.audio_gen.pause_second),
+                }
+                for item in self.characters
+            }
             try:
                 self.audio_gen.request_preload_character(self.dp_chat.get_current_character())
             except ValueError:
@@ -148,12 +162,7 @@ class HeadlessRuntime:
                 "request_id": None,
                 "data": {
                     "mode": "web",
-                    "capabilities": {
-                        "tts": True,
-                        "translation": True,
-                        "backgrounds": True,
-                        "cancel_turn": True,
-                    },
+                    "capabilities": self.capabilities(),
                 },
             })
 
@@ -171,6 +180,18 @@ class HeadlessRuntime:
             },
         }
 
+    def capabilities(self) -> dict[str, bool]:
+        return {
+            "tts": True,
+            "translation": True,
+            "backgrounds": True,
+            "cancel_turn": True,
+            "image_input": bool(
+                self.dp_chat is not None
+                and self.dp_chat._current_model_supports_vision()
+            ),
+        }
+
     def runtime_ready_event(self) -> dict[str, Any] | None:
         if self.status != "ready":
             return None
@@ -181,12 +202,7 @@ class HeadlessRuntime:
             "request_id": None,
             "data": {
                 "mode": "web",
-                "capabilities": {
-                    "tts": True,
-                    "translation": True,
-                    "backgrounds": True,
-                    "cancel_turn": True,
-                },
+                "capabilities": self.capabilities(),
             },
         }
 
@@ -233,6 +249,7 @@ class HeadlessRuntime:
         meta = self._message_meta(chat)[index]
         role = "user" if message.character_name == "User" else "assistant"
         audio_url = None
+        attachments = []
         if role == "assistant" and message.audio_path and message.audio_path != "NO_AUDIO":
             path = Path(message.audio_path)
             if path.is_file() and path.name != "silence.wav":
@@ -241,6 +258,26 @@ class HeadlessRuntime:
                     audio_url = f"/api/v1/media/{media_id}"
                 except ValueError:
                     logger.warning("WebUI 拒绝提供允许目录之外的历史音频。")
+        if message.attachments:
+            from chat.attachments import resolve_attachment_path
+
+            for attachment in message.attachments:
+                if not attachment.is_image():
+                    continue
+                image_url = None
+                image_path = resolve_attachment_path(attachment.path)
+                if image_path.is_file():
+                    try:
+                        media_id = self.assets.register_media(image_path, "attachment")
+                        image_url = f"/api/v1/media/{media_id}"
+                    except ValueError:
+                        logger.warning("WebUI 拒绝提供允许目录之外的图片附件。")
+                attachments.append({
+                    "type": "image",
+                    "mime_type": attachment.mime_type,
+                    "original_name": attachment.original_name,
+                    "image_url": image_url,
+                })
         return {
             "id": str(meta.get("id") or f"msg_{chat.chat_id}_{index}"),
             "role": role,
@@ -256,6 +293,7 @@ class HeadlessRuntime:
             "emotion": message.emotion.as_string() if role == "assistant" else None,
             "audio_url": audio_url,
             "audio_duration_ms": None,
+            "attachments": attachments,
             "status": "ready",
         }
 
@@ -293,6 +331,12 @@ class HeadlessRuntime:
                     {
                         "id": str(item.persona_id),
                         "name": "默认身份" if item.is_default_user else item.effective_character_name,
+                        "description": (
+                            "AI 不会知道任何关于你的信息。"
+                            if item.is_default_user
+                            else item.effective_character_description
+                        ),
+                        "is_default": bool(item.is_default_user),
                     }
                     for item in self.user_personas
                 ],
@@ -351,12 +395,19 @@ class HeadlessRuntime:
         chat_id = payload.get("chat_id")
         client_message_id = payload.get("client_message_id")
         text = payload.get("text")
+        raw_upload_ids = payload.get("image_upload_ids", [])
         if not isinstance(chat_id, str) or chat_id != self.dp_chat.current_chat_id:
             raise ProtocolError("CHAT_MISMATCH", "当前会话已经变化，请重新发送。", True)
         if not isinstance(client_message_id, str) or not client_message_id:
             raise ProtocolError("INVALID_MESSAGE", "消息缺少客户端编号。")
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 10_000:
-            raise ProtocolError("INVALID_MESSAGE", "消息内容应为 1 到 10000 个字符。")
+        if not isinstance(raw_upload_ids, list) or any(
+            not isinstance(upload_id, str) or not upload_id
+            for upload_id in raw_upload_ids
+        ):
+            raise ProtocolError("INVALID_MESSAGE", "图片附件编号无效。")
+        upload_ids = list(raw_upload_ids)
+        if not isinstance(text, str) or len(text.strip()) > 10_000 or (not text.strip() and not upload_ids):
+            raise ProtocolError("INVALID_MESSAGE", "消息需要包含文字或图片，文字最多 10000 个字符。")
         previous_turn = self._client_message_turns.get((chat_id, client_message_id))
         if previous_turn:
             return {
@@ -371,12 +422,43 @@ class HeadlessRuntime:
                 "active_turn_id": self.active_turn_id,
             })
 
+        if upload_ids and not self.dp_chat._current_model_supports_vision():
+            raise ProtocolError(
+                "IMAGE_INPUT_UNSUPPORTED",
+                "当前模型不支持图片输入，请在电脑端切换支持视觉的模型。",
+            )
+        try:
+            pending_images = self.uploads.resolve(upload_ids)
+        except ValueError as exc:
+            raise ProtocolError("INVALID_IMAGE_UPLOAD", str(exc)) from exc
+
+        from chat.attachments import import_image_attachment, resolve_attachment_path
         from chat.chat import Message
         from emotion_enum import EmotionEnum
 
         turn_id = f"turn_{uuid.uuid4().hex}"
         chat = self.dp_chat.current_chat
-        chat.add_message(Message("User", text.strip(), "", EmotionEnum.HAPPINESS, ""))
+        imported_attachments = []
+        try:
+            imported_attachments = [
+                import_image_attachment(chat_id, str(item.path))
+                for item in pending_images
+            ]
+        except Exception as exc:
+            for attachment in imported_attachments:
+                resolve_attachment_path(attachment.path).unlink(missing_ok=True)
+            logger.warning("WebUI 图片导入失败：%s", exc)
+            raise ProtocolError("IMAGE_IMPORT_FAILED", "图片导入失败，请重新选择。") from exc
+
+        user_message = Message(
+            "User",
+            text.strip(),
+            "",
+            EmotionEnum.HAPPINESS,
+            "",
+            attachments=imported_attachments,
+        )
+        chat.add_message(user_message)
         meta = self._message_meta(chat)
         meta[-1] = {
             "id": f"msg_{uuid.uuid4().hex}",
@@ -386,7 +468,17 @@ class HeadlessRuntime:
             "sequence": 0,
             "role": "user",
         }
-        self.chat_manager.save()
+        try:
+            self.chat_manager.save()
+        except Exception as exc:
+            chat.message_list.pop()
+            if len(meta) > len(chat.message_list):
+                meta.pop()
+            for attachment in imported_attachments:
+                resolve_attachment_path(attachment.path).unlink(missing_ok=True)
+            raise ProtocolError("INTERNAL_ERROR", "消息保存失败，请重试。", True) from exc
+
+        self.uploads.discard(upload_ids)
         self._client_message_turns[(chat_id, client_message_id)] = turn_id
         self.phase = "thinking"
         self.active_chat_id = chat_id
@@ -424,9 +516,17 @@ class HeadlessRuntime:
     def _switch_chat(self, payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if self.phase != "idle":
             raise ProtocolError("CHAT_BUSY", "当前回复完成后才能切换会话。", True)
+        current_character = self.dp_chat.get_current_character()
+        self._voice_settings_by_character[current_character.character_name] = {
+            "speech_speed": float(self.audio_gen.speed),
+            "sentence_pause_seconds": float(self.audio_gen.pause_second),
+        }
         chat_id = payload.get("chat_id")
         if not isinstance(chat_id, str) or not self.dp_chat.switch_chat(chat_id):
             raise ProtocolError("CHAT_NOT_FOUND", "这条会话已经不存在。")
+        voice = self._voice_settings_by_character[self.dp_chat.get_current_character().character_name]
+        self.audio_gen.speed = voice["speech_speed"]
+        self.audio_gen.pause_second = voice["sentence_pause_seconds"]
         self.audio_gen.request_preload_character(self.dp_chat.get_current_character())
         return {"current_chat_id": chat_id}, [
             self._local_event("chat_list_snapshot", self.chat_list_snapshot()),
@@ -449,6 +549,9 @@ class HeadlessRuntime:
         chat = self.chat_manager.create_single_character_chat(character, name=name, user_character=persona)
         self.chat_manager.save()
         self.dp_chat.switch_chat(chat.chat_id)
+        voice = self._voice_settings_by_character[character.character_name]
+        self.audio_gen.speed = voice["speech_speed"]
+        self.audio_gen.pause_second = voice["sentence_pause_seconds"]
         self.audio_gen.request_preload_character(character)
         return {"chat_id": chat.chat_id, "current_chat_id": chat.chat_id}, [
             self._local_event("chat_list_snapshot", self.chat_list_snapshot()),
@@ -485,6 +588,10 @@ class HeadlessRuntime:
                 self.phase = phase
                 self.events.put(self._local_event("assistant_turn_phase", {"phase": phase}, chat_id, turn_id))
             elif event_type == "assistant_turn_error":
+                try:
+                    self._rollback_failed_user_message(chat_id, turn_id)
+                except Exception:
+                    logger.exception("WebUI 推理失败消息回滚未完成")
                 self.events.put(self._local_event("error", {
                     "error": {
                         "code": "LLM_FAILED",
@@ -502,6 +609,141 @@ class HeadlessRuntime:
                     "error": None,
                 }, chat_id, turn_id))
                 self.events.put(self._local_event("chat_list_snapshot", self.chat_list_snapshot()))
+
+    def _rollback_failed_user_message(self, chat_id: str | None, turn_id: str | None) -> None:
+        """推理未产生角色回复时，仅从持久记录中撤回本轮 WebUI 用户消息。"""
+        if not chat_id or not turn_id or self._turn_segment_count(chat_id, turn_id):
+            return
+        with self._lock:
+            chat = self.chat_manager.get_chat_by_id(chat_id)
+            if chat is None:
+                return
+            meta = self._message_meta(chat)
+            index = next((
+                index
+                for index, item in enumerate(meta)
+                if item.get("turn_id") == turn_id and item.get("role") == "user"
+            ), None)
+            if index is None or index >= len(chat.message_list):
+                return
+
+            from chat.attachments import resolve_attachment_path
+
+            message = chat.message_list[index]
+            client_message_id = meta[index].get("client_message_id")
+            for attachment in message.attachments:
+                resolve_attachment_path(attachment.path).unlink(missing_ok=True)
+            chat.delete_message_at(index)
+            meta.pop(index)
+            if isinstance(client_message_id, str):
+                self._client_message_turns.pop((chat_id, client_message_id), None)
+            self.chat_manager.save()
+
+    def settings_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            if self.status != "ready":
+                raise ProtocolError("RUNTIME_NOT_READY", "后端仍在初始化，请稍后重试。", True)
+            character = self.dp_chat.get_current_character()
+            voice = self._voice_settings_by_character.setdefault(character.character_name, {
+                "speech_speed": float(self.audio_gen.speed),
+                "sentence_pause_seconds": float(self.audio_gen.pause_second),
+            })
+
+            from qconfig import PROVIDER_FRIENDLY_NAME_MAP, d_sakiko_config
+
+            d_sakiko_config.reload_from_disk()
+            models = d_sakiko_config.llm_api_model.value
+            keys = d_sakiko_config.llm_api_key.value
+            base_urls = d_sakiko_config.llm_api_base_url.value
+            current_provider = str(d_sakiko_config.llm_api_provider.value or "")
+            options = [{
+                "id": "default_deepseek",
+                "label": "DeepSeek 公共 API",
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+            }]
+            if isinstance(models, dict):
+                for provider, model in models.items():
+                    provider = str(provider or "").strip()
+                    model = str(model or "").strip()
+                    configured = (
+                        provider == current_provider
+                        or (isinstance(keys, dict) and provider in keys)
+                        or (isinstance(base_urls, dict) and provider in base_urls)
+                    )
+                    if provider and model and configured:
+                        friendly = PROVIDER_FRIENDLY_NAME_MAP.get(provider, provider)
+                        options.append({
+                            "id": f"provider:{provider}",
+                            "label": friendly,
+                            "provider": provider,
+                            "model": model,
+                        })
+            custom_model = str(d_sakiko_config.custom_llm_api_model.value or "").strip()
+            if custom_model and (
+                d_sakiko_config.enable_custom_llm_api_provider.value
+                or (
+                    str(d_sakiko_config.custom_llm_api_url.value or "").strip()
+                    and str(d_sakiko_config.custom_llm_api_key.value or "").strip()
+                )
+            ):
+                options.append({
+                    "id": "custom",
+                    "label": "自定义 API",
+                    "provider": "custom",
+                    "model": custom_model,
+                })
+
+            if d_sakiko_config.use_default_deepseek_api.value:
+                selected_id = "default_deepseek"
+            elif d_sakiko_config.enable_custom_llm_api_provider.value:
+                selected_id = "custom"
+            else:
+                selected_id = f"provider:{current_provider}"
+            return {
+                "voice": {
+                    "character_id": character.character_folder_name,
+                    "character_name": character.character_name,
+                    **voice,
+                },
+                "llm": {"selected_id": selected_id, "options": options},
+                "capabilities": self.capabilities(),
+            }
+
+    def update_settings(
+        self,
+        *,
+        speech_speed: float | None,
+        sentence_pause_seconds: float | None,
+        llm_choice_id: str | None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self.phase != "idle":
+                raise ProtocolError("CHAT_BUSY", "回复完成后才能修改设置。", True)
+            snapshot = self.settings_snapshot()
+            if speech_speed is not None:
+                self.audio_gen.speed = float(speech_speed)
+            if sentence_pause_seconds is not None:
+                self.audio_gen.pause_second = float(sentence_pause_seconds)
+            character = self.dp_chat.get_current_character()
+            self._voice_settings_by_character[character.character_name] = {
+                "speech_speed": float(self.audio_gen.speed),
+                "sentence_pause_seconds": float(self.audio_gen.pause_second),
+            }
+
+            if llm_choice_id is not None:
+                valid_ids = {item["id"] for item in snapshot["llm"]["options"]}
+                if llm_choice_id not in valid_ids:
+                    raise ProtocolError("INVALID_SETTING", "选择的大模型配置已不存在，请刷新后重试。")
+                from qconfig import create_d_sakiko_config_snapshot, d_sakiko_config
+
+                with d_sakiko_config as config:
+                    config.set(config.use_default_deepseek_api, llm_choice_id == "default_deepseek")
+                    config.set(config.enable_custom_llm_api_provider, llm_choice_id == "custom")
+                    if llm_choice_id.startswith("provider:"):
+                        config.set(config.llm_api_provider, llm_choice_id.removeprefix("provider:"))
+                self.dp_chat.d_sakiko_config = create_d_sakiko_config_snapshot()
+            return self.settings_snapshot()
 
     def _run_tts_pipeline(self) -> None:
         while not self._stopping.is_set():

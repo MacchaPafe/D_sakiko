@@ -37,11 +37,11 @@ export function Live2DStage({
 
       model.scale.set(1)
       const scale = Math.min(
-        (width * 0.92) / model.width,
-        (height * 0.92) / model.height,
+        (width * 1.2) / model.width,
+        (height * 1.3) / model.height,
       )
       model.scale.set(scale)
-      model.position.set(width / 2, height * 0.48)
+      model.position.set(width / 2, height * 0.5)
     }
 
     const resizeCanvas = () => {

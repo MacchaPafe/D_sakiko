@@ -147,11 +147,12 @@ export class WebSocketRuntimeClient {
     })
   }
 
-  sendMessage(chatId, text, clientMessageId) {
+  sendMessage(chatId, text, clientMessageId, imageUploadIds = []) {
     return this.command('send_message', {
       chat_id: chatId,
       text,
       client_message_id: clientMessageId,
+      image_upload_ids: imageUploadIds,
     })
   }
 
