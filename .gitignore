@@ -62,6 +62,7 @@ tools/release/update_patch.local.json
 **/node_modules/**
 .scratch/**
 dist/**
+publish_pipeline/**
 
 .idea/**
 .vscode/**

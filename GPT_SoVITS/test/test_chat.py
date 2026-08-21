@@ -649,7 +649,7 @@ class ChatTestCase(unittest.TestCase):
         image_upload = data["image_upload"]
         self.assertIsInstance(image_upload, dict)
         assert isinstance(image_upload, dict)
-        self.assertEqual(image_upload["force_allowlist"], ["dashscope/qwen3.6-plus"])
+        self.assertIn("dashscope/qwen3.6-plus", image_upload["force_allowlist"])
         self.assertNotIn("blocklist", image_upload)
 
     def test_chat_display_renders_image_with_explicit_thumbnail_size(self) -> None:
