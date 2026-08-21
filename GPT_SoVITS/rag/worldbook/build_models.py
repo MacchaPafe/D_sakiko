@@ -61,9 +61,6 @@ class WorldbookBuildSpec(BaseModel):
         if self.package_type == "season":
             if not episode_numbers:
                 raise ValueError("season 包必须提供 episodes")
-            ordered = sorted(episode_numbers)
-            if ordered != list(range(ordered[0], ordered[-1] + 1)):
-                raise ValueError("season 包的 episodes 必须连续")
         return self
 
 
