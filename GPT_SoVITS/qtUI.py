@@ -53,13 +53,13 @@ import sounddevice as sd
 from opencc import OpenCC
 import os,sys
 
-from ui_main.threads.get_model_limit_thread import GetModelLimitThread
-
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
-from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping
+
+from ui_main.threads.get_model_limit_thread import GetModelLimitThread
+from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping,SINGLE_CHAT_COMBO_CSS,SINGLE_CHAT_COMBO_VIEW_CSS,SINGLE_CHAT_DIALOG_CSS
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes, GetCharacterAttributes, EMOTION_REFERENCE_KEYS, ref_audio_language_list
@@ -115,11 +115,7 @@ from live2d_support.model_importer import Live2DModelImportError, import_live2d_
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 
 
-TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
-TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
-LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
-
 
 def append_generation_timing_log(message: str) -> None:
     """把语音生成耗时写入本地调试日志。"""
@@ -131,84 +127,6 @@ def append_generation_timing_log(message: str) -> None:
     except Exception:
         logger.exception("写入语音生成耗时日志失败")
 
-SINGLE_CHAT_COMBO_CSS = """
-QComboBox {
-    background-color: #FFFFFF;
-    border: 1px solid #E0E0E0;
-    border-bottom: 2px solid #D1D1D1;
-    border-radius: 4px;
-    color: #5F6368;
-    padding: 6px 28px 6px 10px;
-    min-height: 24px;
-}
-
-QComboBox:hover {
-    background-color: #FDFDFD;
-    border-bottom: 2px solid #7799CC;
-}
-
-QComboBox:focus {
-    background-color: #FFFFFF;
-    border: 2px solid #7799CC;
-}
-
-QComboBox::drop-down {
-    subcontrol-origin: padding;
-    subcontrol-position: top right;
-    width: 26px;
-    border: none;
-    background: transparent;
-}
-
-QComboBox::down-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid #6D7B8D;
-    margin-right: 8px;
-}
-"""
-
-SINGLE_CHAT_COMBO_VIEW_CSS = """
-QAbstractItemView,
-QListView#singleChatCharacterComboView {
-    background-color: #FFFFFF;
-    border: 1px solid #E0E0E0;
-    border-radius: 4px;
-    padding: 4px;
-    outline: none;
-    margin-top: 4px;
-    selection-background-color: #E9F1FB;
-    selection-color: #2E4A6B;
-}
-
-QAbstractItemView::item,
-QListView#singleChatCharacterComboView::item {
-    height: 32px;
-    border-radius: 4px;
-    padding-left: 8px;
-    color: #5F6368;
-    background-color: transparent;
-    border: none;
-}
-
-QAbstractItemView::item:hover,
-QAbstractItemView::item:selected,
-QListView#singleChatCharacterComboView::item:hover,
-QListView#singleChatCharacterComboView::item:selected {
-    background-color: #E9F1FB;
-    color: #2E4A6B;
-    border: none;
-}
-"""
-
-SINGLE_CHAT_DIALOG_CSS = (
-    dialogWindowDefaultCss
-    + SINGLE_CHAT_COMBO_CSS
-    + SINGLE_CHAT_COMBO_VIEW_CSS
-)
 
 
 class CommunicateThreadDP2QT(QThread):
@@ -926,158 +844,6 @@ class ChangeL2DModelWindow(QDialog):
                 if full_path is not None:
                     all_models.append(full_path)
         return all_models
-
-
-class LegacyChangeReferenceAudioWindow(QDialog):
-    def __init__(self,parent_window,audio_gen_module,desktop_size):
-        super().__init__()
-        self.parent_window: ChatGUI = parent_window
-        self.audio_gen_module=audio_gen_module
-        self.current_character: CharacterAttributes = self.parent_window.current_character
-        self.setWindowTitle('更改当前角色参考音频')
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.resize(int(desktop_size.width()*0.3),int(desktop_size.height()*0.4))
-        layout=QVBoxLayout()
-        self.audio_player = QMediaPlayer()
-        self.audio_playlist = QMediaPlaylist()
-
-        current_ref_audio_layout=QHBoxLayout()
-        current_ref_audio_name=self.current_character.gptsovits_ref_audio
-        if self.current_character.character_name == "祥子":
-            current_ref_audio_name=self.audio_gen_module.ref_audio_file_black_sakiko if self.parent_window.dp_chat.sakiko_state else self.audio_gen_module.ref_audio_file_white_sakiko
-        self.current_ref_audio_label=QLabel(f"当前参考音频:{os.path.basename(current_ref_audio_name or '')}")
-        self.play_current_ref_audio_btn=QToolButton()
-        self.play_current_ref_audio_btn.setIcon(QIcon("./icons/play.svg"))
-        self.play_current_ref_audio_btn.clicked.connect(self.play_current_ref_audio)
-        current_ref_audio_layout.addWidget(self.current_ref_audio_label)
-        current_ref_audio_layout.addWidget(self.play_current_ref_audio_btn)
-        layout.addLayout(current_ref_audio_layout)
-
-        all_ref_audio_files=[]
-        try:
-            for file in os.listdir(f'../reference_audio/{self.current_character.character_folder_name}'):
-                if file.endswith('.wav') or file.endswith('.mp3'):
-                    all_ref_audio_files.append(file)
-        except Exception:
-            logger.exception("参考音频文件夹读取错误")
-        select_new_ref_audio_group=QGroupBox("选择新的参考音频:")
-        select_new_ref_audio_layout=QVBoxLayout()
-        for ref_audio_file in all_ref_audio_files:
-            single_ref_audio_layout=QHBoxLayout()
-            name_label=QLabel(os.path.basename(ref_audio_file))
-            play_btn=QToolButton()
-            play_btn.setIcon(QIcon("./icons/play.svg"))
-            play_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.current_character.character_folder_name}',ref_audio_file): self.play_ref_audio(path))
-            select_btn=QToolButton()
-            select_btn.setText("选择")
-            select_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.current_character.character_folder_name}',ref_audio_file): self.replace_ref_audio(path))
-            single_ref_audio_layout.addWidget(name_label)
-            single_ref_audio_layout.addWidget(play_btn)
-            single_ref_audio_layout.addWidget(select_btn)
-            select_new_ref_audio_layout.addLayout(single_ref_audio_layout)
-        select_new_ref_audio_group.setLayout(select_new_ref_audio_layout)
-        layout.addWidget(select_new_ref_audio_group)
-
-        change_ref_text_group=QGroupBox("不要忘记修改新参考音频对应的文本 ↓")
-        new_ref_text_input_layout=QHBoxLayout()
-        self.new_ref_text_input=QLineEdit()
-        self.new_ref_text_input.setPlaceholderText("在此输入新参考音频对应的文本")
-        if self.current_character.character_name == "祥子":
-            if self.parent_window.dp_chat.sakiko_state:
-                with open(self.audio_gen_module.ref_text_file_black_sakiko,'r',encoding='utf-8') as f:
-                    current_ref_text=f.read().strip()
-            else:
-                with open(self.audio_gen_module.ref_text_file_white_sakiko,'r',encoding='utf-8') as f:
-                    current_ref_text=f.read().strip()
-        else:
-            ref_text_path = (
-                self.current_character.gptsovits_ref_audio_text
-                or os.path.join(
-                    "../reference_audio",
-                    self.current_character.character_folder_name,
-                    "reference_text.txt",
-                )
-            )
-            if os.path.exists(ref_text_path):
-                with open(ref_text_path, 'r', encoding='utf-8') as f:
-                    current_ref_text = f.read().strip()
-            else:
-                current_ref_text = ""
-        self.new_ref_text_input.setText(current_ref_text)
-        self.new_ref_text_input.returnPressed.connect(self.change_ref_text)
-        self.new_ref_text_input_confirm_btn=QPushButton("确认修改")
-        self.new_ref_text_input_confirm_btn.clicked.connect(self.change_ref_text)
-        self.change_ref_text_success_label=QLabel("")
-        new_ref_text_input_layout.addWidget(self.new_ref_text_input)
-        new_ref_text_input_layout.addWidget(self.new_ref_text_input_confirm_btn)
-        new_ref_text_input_layout.addWidget(self.change_ref_text_success_label)
-        change_ref_text_group.setLayout(new_ref_text_input_layout)
-        layout.addWidget(change_ref_text_group)
-
-        self.setLayout(layout)
-        self.setStyleSheet(dialogWindowDefaultCss)
-
-    def play_current_ref_audio(self):
-        current_ref_audio_path=self.current_character.gptsovits_ref_audio
-        if self.current_character.character_name == "祥子":
-            current_ref_audio_path=self.audio_gen_module.ref_audio_file_black_sakiko if self.parent_window.dp_chat.sakiko_state else self.audio_gen_module.ref_audio_file_white_sakiko
-        if current_ref_audio_path:
-            self.play_ref_audio(current_ref_audio_path)
-
-    def play_ref_audio(self,ref_audio_path):
-        audio_path=os.path.abspath(ref_audio_path)
-        url=QUrl.fromLocalFile(audio_path)
-        self.audio_playlist.clear()
-        self.audio_playlist.addMedia(QMediaContent(url))
-        self.audio_playlist.setCurrentIndex(0)
-        self.audio_player.setPlaylist(self.audio_playlist)
-        self.audio_player.play()
-
-    def replace_ref_audio(self,new_ref_audio_file):
-        try:
-            if self.current_character.character_name == "祥子":
-                if self.parent_window.dp_chat.sakiko_state:
-                    self.audio_gen_module.ref_audio_file_black_sakiko=new_ref_audio_file
-                    with open('../reference_audio/sakiko/default_ref_audio_black.txt','w',encoding='utf-8') as f:
-                        f.write(new_ref_audio_file)
-                else:
-                    self.audio_gen_module.ref_audio_file_white_sakiko=new_ref_audio_file
-                    with open('../reference_audio/sakiko/default_ref_audio_white.txt','w',encoding='utf-8') as f:
-                        f.write(new_ref_audio_file)
-            else:
-                self.current_character.gptsovits_ref_audio=new_ref_audio_file
-                with open(f'../reference_audio/{self.current_character.character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
-                    f.write(new_ref_audio_file)
-        except Exception:
-            logger.exception("更改参考音频出现错误")
-        self.current_ref_audio_label.setText(f"当前参考音频:{os.path.basename(new_ref_audio_file)}")
-
-    def change_ref_text(self):
-        new_ref_text=self.new_ref_text_input.text().strip()
-        if new_ref_text:
-            if self.current_character.character_name == "祥子":
-                if self.parent_window.dp_chat.sakiko_state:
-                    with open(self.audio_gen_module.ref_text_file_black_sakiko,'w',encoding='utf-8') as f:
-                        f.write(new_ref_text)
-                else:
-                    with open(self.audio_gen_module.ref_text_file_white_sakiko,'w',encoding='utf-8') as f:
-                        f.write(new_ref_text)
-            else:
-                ref_text_path = (
-                    self.current_character.gptsovits_ref_audio_text
-                    or os.path.join(
-                        "../reference_audio",
-                        self.current_character.character_folder_name,
-                        "reference_text.txt",
-                    )
-                )
-                with open(ref_text_path, 'w', encoding='utf-8') as f:
-                    f.write(new_ref_text)
-                self.current_character.gptsovits_ref_audio_text = ref_text_path
-            self.change_ref_text_success_label.setText("修改成功!")
-        else:
-            self.change_ref_text_success_label.setText("文本不能为空!")
-
 
 
 class ChangeReferenceAudioWindow(QDialog):
@@ -2366,7 +2132,7 @@ class ChatGUI(QWidget):
         #---------------------消息命令处理机制 从引入抽奖工具开始构建---------------------
         self._message_command_handlers: dict[str, Callable] = {}
         self._lottery_dialog_ref = None
-        self._register_message_command_handler(LOTTERY_UI_EVENT_PREFIX, self._handle_lottery_ui_command)
+        self._register_message_command_handler("__LOTTERY_UI_CMD__:", self._handle_lottery_ui_command)
         self.update_check_thread: UpdateCheckThread | None = None
         self.update_download_thread: UpdateDownloadThread | None = None
         self.update_notes_thread: ReleaseNotesThread | None = None
@@ -4869,8 +4635,8 @@ class ChatGUI(QWidget):
             self._handle_structured_response(response_text)
             return
 
-        if response_text.startswith(TOOL_CALL_START_EVENT_PREFIX):
-            payload_str = response_text[len(TOOL_CALL_START_EVENT_PREFIX):]
+        if response_text.startswith("__TOOL_CALL_START__:"):
+            payload_str = response_text[len("__TOOL_CALL_START__:"):]
             try:
                 payload = json.loads(payload_str)
             except json.JSONDecodeError:
@@ -4878,8 +4644,8 @@ class ChatGUI(QWidget):
             self._handle_tool_call_start_event(payload)
             return
 
-        if response_text.startswith(TOOL_CALL_UPDATE_EVENT_PREFIX):
-            payload_str = response_text[len(TOOL_CALL_UPDATE_EVENT_PREFIX):]
+        if response_text.startswith("__TOOL_CALL_UPDATE__:"):
+            payload_str = response_text[len("__TOOL_CALL_UPDATE__:"):]
             try:
                 payload = json.loads(payload_str)
             except json.JSONDecodeError:
