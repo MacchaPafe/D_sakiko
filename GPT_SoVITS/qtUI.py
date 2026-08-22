@@ -78,6 +78,7 @@ from chat.rolling_summary import (
 )
 from emotion_enum import EmotionEnum
 from gomoku_game import GomokuGamePanel
+from reversi_game import ReversiGamePanel
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarToolbar, ChatSidebarView
 from ui_main.components.context_usage_indicator import (
@@ -120,6 +121,7 @@ TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 GOMOKU_UI_EVENT_PREFIX = "__GOMOKU_UI_CMD__:"
+REVERSI_UI_EVENT_PREFIX = "__REVERSI_UI_CMD__:"
 logger = get_logger(__name__)
 
 
@@ -284,6 +286,7 @@ class MoreFunctionWindow(QDialog):
         check_update_fun: Callable[[], None] | None = None,
         check_repair_fun: Callable[[], None] | None = None,
         open_gomoku_fun: Callable[[], None] | None = None,
+        open_reversi_fun: Callable[[], None] | None = None,
         has_update: bool = False,
     ) -> None:
         super().__init__()
@@ -324,6 +327,17 @@ class MoreFunctionWindow(QDialog):
 
             self.open_gomoku_btn.clicked.connect(lambda: _run_open_gomoku())  # noqa
             gameplay_layout.addWidget(self.open_gomoku_btn)
+        if open_reversi_fun is not None:
+            self.open_reversi_btn = QPushButton("黑白棋小游戏")
+
+            def _run_open_reversi() -> None:
+                try:
+                    open_reversi_fun()
+                finally:
+                    self.close()
+
+            self.open_reversi_btn.clicked.connect(lambda: _run_open_reversi())  # noqa
+            gameplay_layout.addWidget(self.open_reversi_btn)
         gameplay_group.setLayout(gameplay_layout)
         layout.addWidget(gameplay_group)
 
@@ -2288,6 +2302,7 @@ class ChatGUI(QWidget):
         self.chat_display.forkChatRequested.connect(self.fork_chat_from_message)  # noqa
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
         self.chat_display.streamFinished.connect(self._flush_pending_gomoku_commentary)  # noqa
+        self.chat_display.streamFinished.connect(self._flush_pending_reversi_commentary)  # noqa
 
         self.messages_box = QTextBrowser()
         self.messages_box.setStyleSheet("""
@@ -2389,6 +2404,13 @@ class ChatGUI(QWidget):
         self.gomoku_panel.setVisible(False)
         self._pending_gomoku_commentary: list[str] = []
         self._register_message_command_handler(GOMOKU_UI_EVENT_PREFIX, self._handle_gomoku_ui_command)
+        # 标准黑白棋小游戏：与五子棋并列，但一次只展示一个棋类面板
+        self.reversi_panel = ReversiGamePanel(parent=self)
+        self.reversi_panel.on_game_event = self._on_reversi_game_event
+        self.reversi_panel.on_manual_end = self._on_reversi_manual_end
+        self.reversi_panel.setVisible(False)
+        self._pending_reversi_commentary: list[str] = []
+        self._register_message_command_handler(REVERSI_UI_EVENT_PREFIX, self._handle_reversi_ui_command)
         self.update_check_thread: UpdateCheckThread | None = None
         self.update_download_thread: UpdateDownloadThread | None = None
         self.update_notes_thread: ReleaseNotesThread | None = None
@@ -2470,6 +2492,7 @@ class ChatGUI(QWidget):
         layout.addLayout(top_layout)
         layout.addWidget(self.update_banner)
         layout.addWidget(self.gomoku_panel)
+        layout.addWidget(self.reversi_panel)
         layout.addWidget(self.chat_display)
         layout.addLayout(slider_layout)
         layout.addWidget(input_panel)
@@ -4342,6 +4365,7 @@ class ChatGUI(QWidget):
             self.check_update_manual,
             self.check_repair_manual,
             open_gomoku_fun=self.open_gomoku_game,
+            open_reversi_fun=self.open_reversi_game,
             has_update=self.pending_update_plan is not None,
         )
         more_function_win.exec_()
@@ -5026,6 +5050,7 @@ class ChatGUI(QWidget):
                 status = str(payload.get("status") or "ok")
                 self._clear_active_turn()
                 self._flush_pending_gomoku_commentary()
+                self._flush_pending_reversi_commentary()
                 if status == "ok":
                     self._set_message_box_idle()
                 else:
@@ -5463,6 +5488,7 @@ class ChatGUI(QWidget):
             return
         optimistic_attachments = self.user_input.optimistic_image_attachments()
         send_text = self._append_gomoku_board_context_if_needed(user_this_turn_input)
+        send_text = self._append_reversi_board_context_if_needed(send_text)
         self._send_user_message_payload(send_text, image_source_paths=image_source_paths)
         self.user_input.clear_after_send()
 
@@ -5581,6 +5607,8 @@ class ChatGUI(QWidget):
 
     def open_gomoku_game(self, board_size: Optional[int] = None, force_new: bool = False):
         """打开（或聚焦）内嵌五子棋面板；无对局时自动开新局。"""
+        if self.reversi_panel.isVisible():
+            self.reversi_panel.close_game()
         if force_new or not self.gomoku_panel.isVisible() or not self.gomoku_panel.game_active:
             self.gomoku_panel.start_new_game(board_size=board_size)
         self.gomoku_panel.show()
@@ -5664,6 +5692,85 @@ class ChatGUI(QWidget):
         if not record:
             return text
         return f"{text}\n\n[当前五子棋棋谱（黑先）：{record}]"
+
+    def _handle_reversi_ui_command(self, payload_text: str):
+        """处理黑白棋面板打开命令。"""
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            self.messages_box.clear()
+            self.messages_box.append("黑白棋命令解析失败：JSON 格式错误")
+            return
+        if not isinstance(payload, dict):
+            return
+        self.open_reversi_game(force_new=True)
+
+    def open_reversi_game(self, force_new: bool = False):
+        """打开标准 8×8 黑白棋面板，并收起正在进行的五子棋。"""
+        if self.gomoku_panel.isVisible():
+            self.gomoku_panel.close_game()
+        if force_new or not self.reversi_panel.isVisible() or not self.reversi_panel.game_active:
+            self.reversi_panel.start_new_game()
+        self.reversi_panel.show()
+        self.reversi_panel.raise_()
+
+    def _on_reversi_game_event(self, event: dict):
+        commentary = self._build_reversi_commentary(event)
+        if commentary:
+            self._queue_reversi_commentary(commentary)
+
+    def _build_reversi_commentary(self, event: dict) -> str:
+        event_type = str(event.get("type") or "")
+        character_name = self.current_character.character_name
+        record = str(event.get("record_text") or "")
+        if event_type == "game_started":
+            return (
+                f"【系统内部事件触发：黑白棋】你和{character_name}开始了标准 8×8 黑白棋对局，"
+                "用户执黑先行。请按角色性格简短说一两句开局话。"
+            )
+        if event_type == "corner_taken":
+            who = "用户" if event.get("player") == "user" else character_name
+            return f"【系统内部事件触发：黑白棋】{who}抢到了角位 {event.get('coord')}（{record}）。请简短点评这一关键手。"
+        if event_type == "score_swing":
+            leader = "用户" if event.get("leader") == "user" else character_name
+            return f"【系统内部事件触发：黑白棋】局面发生明显逆转，现在{leader}领先，黑 {event.get('black')} 比白 {event.get('white')}。请简短回应。"
+        if event_type == "turn_passed":
+            who = "用户" if event.get("player") == "user" else character_name
+            return f"【系统内部事件触发：黑白棋】{who}当前没有合法落点，被迫跳过一回合（{record}）。请简短点评。"
+        if event_type == "user_win":
+            return f"【系统内部事件触发：黑白棋】用户以黑 {event.get('black')} 比白 {event.get('white')} 获胜。请按{character_name}的性格祝贺用户。"
+        if event_type == "ai_win":
+            return f"【系统内部事件触发：黑白棋】{character_name}以白 {event.get('white')} 比黑 {event.get('black')} 获胜。请自然调侃或安慰用户。"
+        if event_type == "draw":
+            return f"【系统内部事件触发：黑白棋】对局以 {event.get('black')} 比 {event.get('white')} 平局。请简短评价。"
+        if event_type == "resigned":
+            return f"【系统内部事件触发：黑白棋】用户认输了（{record}）。请按{character_name}的性格回应。"
+        return ""
+
+    def _queue_reversi_commentary(self, text: str):
+        if self.is_chat_busy():
+            self._pending_reversi_commentary.append(text)
+            if len(self._pending_reversi_commentary) > 2:
+                del self._pending_reversi_commentary[0]
+            return
+        self.qt2dp_queue.put(text)
+
+    def _flush_pending_reversi_commentary(self):
+        if self.is_chat_busy() or not self._pending_reversi_commentary:
+            return
+        text = "\n".join(self._pending_reversi_commentary)
+        self._pending_reversi_commentary.clear()
+        self.qt2dp_queue.put(text)
+
+    def _on_reversi_manual_end(self):
+        self._pending_reversi_commentary.clear()
+
+    def _append_reversi_board_context_if_needed(self, text: str) -> str:
+        if not self.reversi_panel.isVisible() or not self.reversi_panel.game_active:
+            return text
+        if not any(keyword in text for keyword in ("棋", "黑白棋", "翻子", "合法步", "局面", "比分")):
+            return text
+        return f"{text}\n\n[当前黑白棋局面（用户执黑）：{self.reversi_panel.record_text()}]"
 
     def handle_messages(self,message):
         if message=='bye':

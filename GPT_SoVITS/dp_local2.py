@@ -50,6 +50,7 @@ TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 GOMOKU_UI_EVENT_PREFIX = "__GOMOKU_UI_CMD__:"
+REVERSI_UI_EVENT_PREFIX = "__REVERSI_UI_CMD__:"
 MODELSCOPE_MAX_RATE_LIMIT_RETRIES = 2
 MODELSCOPE_MAX_RETRY_DELAY_SECONDS = 5.0
 logger = get_logger(__name__)
@@ -1719,6 +1720,7 @@ class DSLocalAndVoiceGen:
 
         from chat.tool_calling import (
             register_gomoku_tool,
+            register_reversi_tool,
             register_live2d_tools,
             register_lottery_tool,
             register_reminder_tool,
@@ -1739,6 +1741,10 @@ class DSLocalAndVoiceGen:
             message_queue.put(GOMOKU_UI_EVENT_PREFIX + json.dumps(payload, ensure_ascii=False))
             return True
 
+        def _open_reversi_ui() -> bool:
+            message_queue.put(REVERSI_UI_EVENT_PREFIX + json.dumps({}, ensure_ascii=False))
+            return True
+
         register_live2d_tools(
             self.tool_runtime.tool_registry,
             get_char_folder_func=_get_char_folder,
@@ -1755,6 +1761,10 @@ class DSLocalAndVoiceGen:
         register_gomoku_tool(
             self.tool_runtime.tool_registry,
             open_gomoku_ui_func=_open_gomoku_ui,
+        )
+        register_reversi_tool(
+            self.tool_runtime.tool_registry,
+            open_reversi_ui_func=_open_reversi_ui,
         )
         # ---------------------------------
 
