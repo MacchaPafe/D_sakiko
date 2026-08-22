@@ -62,6 +62,45 @@ class ChatBackupImportResult:
 
 
 @dataclasses.dataclass
+class RemoteFileReference:
+    """记录一个附件在特定 DeepSeek 服务作用域中的远端文件引用。"""
+
+    api_base: str
+    api_key_digest: str
+    file_id: str
+    uploaded_at: str
+    expires_at: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "RemoteFileReference":
+        """从存储字典中加载远端文件引用。"""
+        return cls(
+            api_base=str(data.get("api_base") or ""),
+            api_key_digest=str(data.get("api_key_digest") or ""),
+            file_id=str(data.get("file_id") or ""),
+            uploaded_at=str(data.get("uploaded_at") or ""),
+            expires_at=str(data.get("expires_at") or ""),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """将远端文件引用转换为可存储字典。"""
+        return dataclasses.asdict(self)
+
+    def matches_scope(self, api_base: str, api_key_digest: str) -> bool:
+        """判断引用是否属于给定服务作用域。"""
+        return self.api_base == api_base and self.api_key_digest == api_key_digest
+
+
+@dataclasses.dataclass(frozen=True)
+class AttachmentSerializationContext:
+    """描述附件在本次 LLM 请求中的序列化方式。"""
+
+    mode: Literal["base64", "deepseek_file"] = "base64"
+    api_base: str = ""
+    api_key_digest: str = ""
+
+
+@dataclasses.dataclass
 class MessageAttachment:
     """对话消息中的附件元数据。"""
 
@@ -69,15 +108,30 @@ class MessageAttachment:
     path: str
     mime_type: str = ""
     original_name: str = ""
+    remote_refs: list[RemoteFileReference] = dataclasses.field(default_factory=list)
+    availability: Literal["available", "unavailable"] = "available"
+    unavailable_reason: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "MessageAttachment":
         """从存储字典中加载附件元数据。"""
+        raw_remote_refs = data.get("remote_refs")
+        remote_refs = [
+            RemoteFileReference.from_dict(item)
+            for item in raw_remote_refs
+            if isinstance(item, dict)
+        ] if isinstance(raw_remote_refs, list) else []
+        availability = str(data.get("availability") or "available")
+        if availability not in {"available", "unavailable"}:
+            availability = "available"
         return cls(
             type=str(data.get("type") or ""),
             path=str(data.get("path") or ""),
             mime_type=str(data.get("mime_type") or ""),
             original_name=str(data.get("original_name") or ""),
+            remote_refs=remote_refs,
+            availability="unavailable" if availability == "unavailable" else "available",
+            unavailable_reason=str(data.get("unavailable_reason") or ""),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -87,11 +141,25 @@ class MessageAttachment:
             "path": self.path,
             "mime_type": self.mime_type,
             "original_name": self.original_name,
+            "remote_refs": [reference.as_dict() for reference in self.remote_refs],
+            "availability": self.availability,
+            "unavailable_reason": self.unavailable_reason,
         }
 
     def is_image(self) -> bool:
         """判断附件是否为图片。"""
         return self.type == "image"
+
+    def remote_reference_for(
+            self,
+            api_base: str,
+            api_key_digest: str,
+    ) -> RemoteFileReference | None:
+        """返回给定服务作用域中的远端引用。"""
+        for reference in self.remote_refs:
+            if reference.matches_scope(api_base, api_key_digest):
+                return reference
+        return None
 
 
 @dataclasses.dataclass
@@ -215,34 +283,59 @@ class Message:
             self,
             role: str,
             llm_character_name: str | None = None,
+            attachment_context: AttachmentSerializationContext | None = None,
     ) -> str | list[dict[str, object]]:
         """
-        将此消息转换为 LiteLLM 可接收的文本或多模态 content。
+        将此消息转换为 LiteLLM 可接收的文本或多模态 content。相比 to_llm_query，该方法会额外处理并尝试发送消息中的图片（如有）
 
         :param role: 角色视角，可以是 "user" 或 "assistant"
         :param llm_character_name: 可选的发送者标签覆盖值，仅影响发送给 LLM 的文本。
         :returns: 纯文本字符串，或包含 text/image_url part 的多模态 content。
         """
         text_content = self.to_llm_query(role, llm_character_name)
-        image_parts = self._llm_image_parts()
+        if role != "user" and attachment_context is not None and attachment_context.mode == "deepseek_file":
+            return text_content
+        image_parts = self._llm_image_parts(attachment_context)
         if not image_parts:
             return text_content
         if role == "user" and not self.text.strip():
+            # 如果单独发送图片，那么补充一条默认的文本。万一有些服务端不支持空 user 消息呢……
             character_name = llm_character_name or self.character_name
             text_content = f"[{character_name}]: （发送了图片）"
         return [{"type": "text", "text": text_content}, *image_parts]
 
-    def _llm_image_parts(self) -> list[dict[str, object]]:
-        """把可读取的图片附件转换为 LiteLLM image_url parts。"""
+    def _llm_image_parts(
+            self,
+            attachment_context: AttachmentSerializationContext | None = None,
+    ) -> list[dict[str, object]]:
+        """按显式上下文把图片附件转换为 LLM content parts。"""
         if not self.attachments:
             return []
+
+        context = attachment_context or AttachmentSerializationContext()
+        if context.mode == "deepseek_file":
+            parts: list[dict[str, object]] = []
+            for attachment in self.attachments:
+                if not attachment.is_image() or attachment.availability == "unavailable":
+                    continue
+                reference = attachment.remote_reference_for(
+                    context.api_base,
+                    context.api_key_digest,
+                )
+                if reference is not None and reference.file_id:
+                    parts.append({"type": "file", "file_id": reference.file_id})
+            return parts
 
         from chat.attachments import resolve_attachment_path
         from chat.image_upload import encode_image_file_as_base64
 
-        parts: list[dict[str, object]] = []
+        parts = []
         for attachment in self.attachments:
-            if not attachment.is_image() or not attachment.path:
+            if (
+                    not attachment.is_image()
+                    or attachment.availability == "unavailable"
+                    or not attachment.path
+            ):
                 continue
             image_path = resolve_attachment_path(attachment.path)
             if not image_path.exists() or not image_path.is_file():
@@ -1103,6 +1196,7 @@ class Chat:
         perspective: str,
         is_simplify: bool = False,
         include_translation: bool = True,
+        attachment_context: AttachmentSerializationContext | None = None,
     ) -> List[Dict]:
         """
         根据当前对话内容，构建用于发送给 LLM 的对话历史列表
@@ -1137,7 +1231,11 @@ class Chat:
             llm_character_name = self._llm_character_name_for_message(msg, role)
             llm_history.append({
                 "role": role,
-                "content": msg.to_llm_content(role, llm_character_name),
+                "content": msg.to_llm_content(
+                    role,
+                    llm_character_name,
+                    attachment_context,
+                ),
             })
 
         if not has_start_message and llm_history and llm_history[0]["role"] == "assistant":
@@ -1308,7 +1406,7 @@ class Chat:
             for part in content:
                 if not isinstance(part, dict):
                     continue
-                if part.get("type") == "image_url":
+                if part.get("type") in {"image_url", "file"}:
                     return True
         return False
 
@@ -1435,6 +1533,8 @@ class _ChatBackupExportContext:
         for raw_attachment in raw_attachments:
             if not isinstance(raw_attachment, dict):
                 continue
+            # 远端 file_id 与服务作用域属于本机缓存，不进入可移植备份。
+            raw_attachment.pop("remote_refs", None)
             raw_path = raw_attachment.get("path")
             if not isinstance(raw_path, str) or not raw_path:
                 continue
@@ -2021,6 +2121,8 @@ class ChatManager:
 
             restored_attachments: list[MessageAttachment] = []
             for attachment in message.attachments:
+                # 即使导入了旧版或手工构造的备份，也不能信任其中的远端引用。
+                attachment.remote_refs = []
                 attachment_reference = _parse_backup_resource_reference(attachment.path)
                 if attachment_reference is None:
                     restored_attachments.append(attachment)

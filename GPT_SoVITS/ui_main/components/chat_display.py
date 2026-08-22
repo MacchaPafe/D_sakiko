@@ -433,6 +433,19 @@ class ChatDisplay(QTextBrowser):
         for attachment in message.attachments:
             if not attachment.is_image():
                 continue
+            if attachment.availability == "unavailable":
+                safe_reason = html.escape(
+                    attachment.unavailable_reason or "图片信息无法恢复",
+                    quote=True,
+                )
+                image_blocks.append(
+                    '<span style="display: inline-block; margin-top: 6px; '
+                    'padding: 4px 8px; color: #B00020; '
+                    'background-color: rgba(176, 0, 32, 0.08); '
+                    f'border-radius: 4px;" title="{safe_reason}">'
+                    '[图片缺失、未发送]</span>'
+                )
+                continue
             image_path = resolve_attachment_path(attachment.path)
             if not image_path.exists() or not image_path.is_file():
                 image_blocks.append(

@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from chat.chat import Chat
+    from chat.chat import AttachmentSerializationContext, Chat
 
 
 ROLLING_SUMMARY_META_KEY = "rolling_summary"
@@ -231,14 +231,22 @@ def build_llm_query_with_rolling_summary(
     perspective: str,
     is_simplify: bool = False,
     include_translation: bool = True,
+    attachment_context: AttachmentSerializationContext | None = None,
 ) -> list[dict[str, object]]:
     """构造“累计摘要 + 摘要边界后原始消息”的 LLM 请求视图。"""
     state = get_rolling_summary(chat)
     if state is None:
+        if attachment_context is None:
+            return chat.build_llm_query(
+                perspective=perspective,
+                is_simplify=is_simplify,
+                include_translation=include_translation,
+            )
         return chat.build_llm_query(
             perspective=perspective,
             is_simplify=is_simplify,
             include_translation=include_translation,
+            attachment_context=attachment_context,
         )
 
     request_chat = copy.copy(chat)
@@ -251,10 +259,17 @@ def build_llm_query_with_rolling_summary(
     else:
         request_chat.start_message = summary_block
 
+    if attachment_context is None:
+        return request_chat.build_llm_query(
+            perspective=perspective,
+            is_simplify=is_simplify,
+            include_translation=include_translation,
+        )
     return request_chat.build_llm_query(
         perspective=perspective,
         is_simplify=is_simplify,
         include_translation=include_translation,
+        attachment_context=attachment_context,
     )
 
 

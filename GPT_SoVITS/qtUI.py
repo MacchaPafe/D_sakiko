@@ -6,6 +6,7 @@ import time
 import json
 import random
 import uuid
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Callable, Optional, Sequence, cast
 
@@ -63,13 +64,31 @@ from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_map
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes, GetCharacterAttributes, EMOTION_REFERENCE_KEYS, ref_audio_language_list
-from chat.chat import ChatBackupImportResult, ChatManager, Chat, ChatType, DeleteMessagesResult, Message, get_chat_manager
+from chat.chat import (
+    ChatBackupImportResult,
+    ChatManager,
+    Chat,
+    ChatType,
+    DeleteMessagesResult,
+    Message,
+    MessageAttachment,
+    get_chat_manager,
+)
 from chat.attachments import (
     add_model_image_upload_force_allow,
     delete_chat_attachment_dir,
     model_can_force_allow_image_upload,
+    model_image_upload_is_blocked,
     model_supports_image_upload,
     resolve_attachment_path,
+)
+from chat.remote_attachments import (
+    DeepSeekFileServiceConfig,
+    DraftAttachmentRecord,
+    RemoteAttachmentManager,
+    RemoteAttachmentError,
+    build_deepseek_file_service_config,
+    remote_reference_is_fresh,
 )
 from chat.model_token_usage import count_message_tokens
 from chat.rolling_summary import (
@@ -2204,6 +2223,12 @@ class ChatBackupMultiExportDialog(QDialog):
         self.accept()
 
 
+class _AttachmentUploadSignalBridge(QObject):
+    """把附件 worker 的完成结果安全转发到 Qt 主线程。"""
+
+    uploadStateReady = pyqtSignal(object)
+
+
 class ChatGUI(QWidget):
     """主聊天窗口，并统一协调角色语义色板的同步更新。"""
 
@@ -2229,6 +2254,20 @@ class ChatGUI(QWidget):
         self.change_char_queue = change_char_queue
         # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
         self.chat_manager: ChatManager = self.dp_chat.chat_manager
+        existing_attachment_manager = getattr(
+            self.dp_chat,
+            "remote_attachment_manager",
+            None,
+        )
+        self.remote_attachment_manager = (
+            existing_attachment_manager
+            if isinstance(existing_attachment_manager, RemoteAttachmentManager)
+            else RemoteAttachmentManager()
+        )
+        self._attachment_upload_signals = _AttachmentUploadSignalBridge(self)
+        self._attachment_upload_signals.uploadStateReady.connect(
+            self._apply_attachment_upload_state
+        )  # noqa
         self.current_chat_id = self.dp_chat.current_chat_id
         self._theme_palette = derive_theme_palette(self.current_character.theme_seed)
         # 当前显示的对话的 id（保存于对话中）
@@ -2298,6 +2337,11 @@ class ChatGUI(QWidget):
             self._current_model_can_force_image_upload,
             self._force_allow_current_model_image_upload,
         )
+        self.user_input.set_managed_attachment_mode(True)
+        self.user_input.imageAddRequested.connect(self._add_managed_draft_image)  # noqa
+        self.user_input.imageRemoveRequested.connect(self._remove_managed_draft_image)  # noqa
+        self.user_input.imageRetryRequested.connect(self._retry_managed_draft_image)  # noqa
+        self.user_input.draftStateChanged.connect(self._refresh_send_button_state)  # noqa
 
         self.voice_button = QPushButton()
         self.voice_button.setObjectName("voiceInputButton")
@@ -2316,6 +2360,17 @@ class ChatGUI(QWidget):
         self.send_button.setIconSize(QSize(int(self.input_tool_button_height*0.42), int(self.input_tool_button_height*0.42)))
         self._send_stop_icon = self._create_stop_button_icon()
         self.send_button.clicked.connect(self.handle_send_button_clicked)  # noqa
+
+        self.add_image_button = QToolButton()
+        self.add_image_button.setObjectName("addImageButton")
+        self.add_image_button.setText("+")
+        self.add_image_button.setFixedSize(
+            self.input_tool_button_height,
+            self.input_tool_button_height,
+        )
+        self.add_image_button.clicked.connect(self._choose_image_files)  # noqa
+        self._refresh_add_image_button_state()
+        self._connect_image_upload_config_signals()
 
         self.save_dialog_btn=QToolButton()
         self.save_dialog_btn.setIcon(QIcon("./icons/save.svg"))
@@ -2380,6 +2435,7 @@ class ChatGUI(QWidget):
         self.pending_repair_result: RepairCheckResult | None = None
         self.repair_workflow_active = False
         self._load_tool_call_records_cache()
+        QTimer.singleShot(0, self._start_attachment_startup_cleanup)
 
         if self.current_character.icon_path is not None:  # noqa
             self.setWindowIcon(QIcon(self.current_character.icon_path))  # noqa
@@ -3555,6 +3611,7 @@ class ChatGUI(QWidget):
         except Exception:
             logger.exception("删除对话附件目录失败：chat_id=%s", deleted_chat.chat_id)
         self.chat_manager.save()
+        self._schedule_attachment_reachability_cleanup()
         self.refresh_chat_list()
         self._show_delete_success_message("已删除对话", audio_failed)
 
@@ -3765,6 +3822,7 @@ class ChatGUI(QWidget):
         self.reasoning_menu_button.setFixedHeight(self.input_tool_button_height)
         self._refresh_input_option_buttons()
 
+        bottom_layout.addWidget(self.add_image_button, 0)
         bottom_layout.addWidget(self.tool_calling_toggle_button, 0)
         bottom_layout.addStretch(1)
         bottom_layout.addWidget(self.context_usage_indicator, 0)
@@ -3926,6 +3984,23 @@ class ChatGUI(QWidget):
                 }}
                 QToolButton#toolCallingToggleButton:focus {{
                     border: 2px solid {palette.focus_ring};
+                }}
+            """)
+        if hasattr(self, "add_image_button"):
+            self.add_image_button.setStyleSheet(f"""
+                QToolButton#addImageButton {{
+                    color: {palette.text_accent};
+                    background-color: {palette.surface_tint};
+                    border: 1px solid {palette.border_subtle};
+                    border-radius: 9px;
+                    font-size: {max(16, int(self.input_tool_button_height * 0.68))}px;
+                }}
+                QToolButton#addImageButton:hover {{
+                    background-color: {palette.surface_selected};
+                }}
+                QToolButton#addImageButton:disabled {{
+                    color: rgba(0, 0, 0, 0.32);
+                    background-color: rgba(0, 0, 0, 0.025);
                 }}
             """)
         self.input_panel.setStyleSheet(f"""
@@ -4210,6 +4285,268 @@ class ChatGUI(QWidget):
             use_default_deepseek_api=bool(d_sakiko_config.use_default_deepseek_api.value),
         )
 
+    def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
+        """从当前 UI 配置解析 DeepSeek Files 服务作用域。"""
+        if d_sakiko_config.use_default_deepseek_api.value:
+            return None
+        if d_sakiko_config.enable_custom_llm_api_provider.value:
+            return build_deepseek_file_service_config(
+                provider_id="custom",
+                model=str(d_sakiko_config.custom_llm_api_model.value or ""),
+                api_base=str(d_sakiko_config.custom_llm_api_url.value or ""),
+                api_key=str(d_sakiko_config.custom_llm_api_key.value or ""),
+            )
+        provider = str(d_sakiko_config.llm_api_provider.value or "")
+        models = d_sakiko_config.llm_api_model.value
+        keys = d_sakiko_config.llm_api_key.value
+        bases = d_sakiko_config.llm_api_base_url.value
+        return build_deepseek_file_service_config(
+            provider_id=provider,
+            model=str(models.get(provider, "") if isinstance(models, dict) else ""),
+            api_base=str(bases.get(provider, "") if isinstance(bases, dict) else ""),
+            api_key=str(keys.get(provider, "") if isinstance(keys, dict) else ""),
+        )
+
+    def _refresh_add_image_button_state(self) -> None:
+        """根据当前模型黑名单刷新加号按钮和提示。"""
+        if not hasattr(self, "add_image_button"):
+            return
+        blocked = model_image_upload_is_blocked(self._current_litellm_model_name())
+        self.add_image_button.setEnabled(not blocked)
+        self.add_image_button.setToolTip(
+            "当前模型不支持上传图片" if blocked else "添加图片"
+        )
+
+    def _connect_image_upload_config_signals(self) -> None:
+        """监听会改变当前模型名称的配置项。"""
+        model_config_items = (
+            d_sakiko_config.use_default_deepseek_api,
+            d_sakiko_config.enable_custom_llm_api_provider,
+            d_sakiko_config.custom_llm_api_model,
+            d_sakiko_config.llm_api_provider,
+            d_sakiko_config.llm_api_model,
+        )
+        for config_item in model_config_items:
+            config_item.valueChanged.connect(
+                self._handle_image_upload_model_config_changed
+            )  # noqa
+
+    @pyqtSlot(object)
+    def _handle_image_upload_model_config_changed(self, _value: object) -> None:
+        """在运行中模型配置重载后立即刷新图片按钮。"""
+        self._refresh_add_image_button_state()
+
+    def _choose_image_files(self) -> None:
+        """打开支持多选的图片文件选择器。"""
+        paths, _selected_filter = QFileDialog.getOpenFileNames(
+            self,
+            "选择图片",
+            "",
+            "图片 (*.jpg *.jpeg *.png *.gif *.webp)",
+        )
+        if paths:
+            self.user_input.handle_dropped_paths(paths)
+
+    def _add_managed_draft_image(self, source_path: str) -> None:
+        """暂存图片，并按当前服务模式启动上传或直接标记就绪。"""
+        try:
+            record = self.remote_attachment_manager.stage_draft_image(source_path)
+            service = self._current_deepseek_file_service()
+            if service is None:
+                record = self.remote_attachment_manager.mark_draft_ready_without_upload(
+                    record.draft_attachment_id
+                )
+            else:
+                if not self.remote_attachment_manager.notice_shown:
+                    QMessageBox.information(
+                        self,
+                        "DeepSeek 图片上传",
+                        "插入的图片会立即上传至 DeepSeek 服务器存储，最多保存 30 天。",
+                    )
+                    self.remote_attachment_manager.mark_notice_shown()
+            self.user_input.add_managed_draft(record.as_payload())
+            if service is not None:
+                future = self.remote_attachment_manager.submit_upload(
+                    record.draft_attachment_id,
+                    service,
+                )
+                future.add_done_callback(
+                    lambda completed, draft_id=record.draft_attachment_id:
+                    self._handle_attachment_upload_future(draft_id, completed)
+                )
+        except Exception as exc:
+            logger.exception("添加图片草稿失败。")
+            self.user_input.show_error(str(exc))
+        self._refresh_send_button_state()
+
+    def _handle_attachment_upload_future(
+            self,
+            draft_attachment_id: str,
+            future: Future[DraftAttachmentRecord],
+    ) -> None:
+        """从 worker 回调中提取最新草稿状态并通过 Qt 信号转发。"""
+        try:
+            record = future.result()
+        except Exception:
+            record = self.remote_attachment_manager.get_draft(draft_attachment_id)
+        if record is not None:
+            try:
+                self._attachment_upload_signals.uploadStateReady.emit(record.as_payload())
+            except RuntimeError:
+                logger.debug("窗口已关闭，忽略迟到的图片上传 UI 回调。")
+
+    @pyqtSlot(object)
+    def _apply_attachment_upload_state(self, payload: object) -> None:
+        """在 Qt 主线程更新缩略图上传状态。"""
+        if not isinstance(payload, dict):
+            return
+        self.user_input.update_managed_draft(payload)
+        if str(payload.get("upload_state") or "") == "failed":
+            self.user_input.show_error(
+                str(payload.get("error_message") or "图片上传失败，请点击图片重试。")
+            )
+        self._refresh_send_button_state()
+
+    def _remove_managed_draft_image(self, draft_attachment_id: str) -> None:
+        """取消并清理用户从输入框删除的图片草稿。"""
+        service = self._current_deepseek_file_service()
+        services = [service] if service is not None else []
+        self.remote_attachment_manager.cancel_draft_attachment(
+            draft_attachment_id,
+            services,
+        )
+        self._schedule_attachment_reachability_cleanup()
+        self._refresh_send_button_state()
+
+    def _retry_managed_draft_image(self, draft_attachment_id: str) -> None:
+        """根据当前 DeepSeek 服务配置重试失败的图片上传。"""
+        service = self._current_deepseek_file_service()
+        if service is None:
+            try:
+                record = self.remote_attachment_manager.mark_draft_ready_without_upload(
+                    draft_attachment_id
+                )
+                self.user_input.update_managed_draft(record.as_payload())
+            except RemoteAttachmentError as exc:
+                self.user_input.show_error(str(exc))
+            return
+        future = self.remote_attachment_manager.submit_upload(
+            draft_attachment_id,
+            service,
+        )
+        record = self.remote_attachment_manager.get_draft(draft_attachment_id)
+        if record is not None:
+            self.user_input.update_managed_draft(record.as_payload())
+        future.add_done_callback(
+            lambda completed: self._handle_attachment_upload_future(
+                draft_attachment_id,
+                completed,
+            )
+        )
+        self._refresh_send_button_state()
+
+    def _prepare_draft_uploads_for_send(self) -> bool:
+        """二次核对当前服务作用域，并在需要时启动草稿重新上传。"""
+        service = self._current_deepseek_file_service()
+        started_upload = False
+        for payload in self.user_input.pending_draft_payloads():
+            draft_id = str(payload.get("draft_attachment_id") or "")
+            record = self.remote_attachment_manager.get_draft(draft_id)
+            if record is None:
+                self.user_input.show_error("图片草稿记录已丢失，请删除后重新添加。")
+                return False
+            if service is None:
+                if record.upload_state != "ready":
+                    updated = self.remote_attachment_manager.mark_draft_ready_without_upload(
+                        draft_id
+                    )
+                    self.user_input.update_managed_draft(updated.as_payload())
+                continue
+            reference = record.remote_reference_for(service)
+            if reference is not None and remote_reference_is_fresh(reference):
+                continue
+            if record.upload_state in {"pending", "uploading", "failed"}:
+                return False
+            future = self.remote_attachment_manager.submit_upload(draft_id, service)
+            uploading = self.remote_attachment_manager.get_draft(draft_id)
+            if uploading is not None:
+                self.user_input.update_managed_draft(uploading.as_payload())
+            future.add_done_callback(
+                lambda completed, current_id=draft_id:
+                self._handle_attachment_upload_future(current_id, completed)
+            )
+            started_upload = True
+        if started_upload:
+            self.user_input.show_error("API 配置已变化，正在为当前服务重新上传图片。")
+            self._refresh_send_button_state()
+            return False
+        return self.user_input.draft_images_ready()
+
+    def _confirm_and_mark_unrecoverable_attachments(self) -> bool:
+        """汇总提示无法恢复的历史图片，并按用户选择决定是否忽略。"""
+        service = self._current_deepseek_file_service()
+        if service is None:
+            return True
+        attachments = [
+            attachment
+            for message in self.current_chat.message_list
+            if message.character_name == "User"
+            for attachment in message.attachments
+        ]
+        missing = self.remote_attachment_manager.find_unrecoverable_attachments(
+            attachments,
+            service,
+        )
+        if not missing:
+            return True
+        names = "\n".join(
+            f"• {attachment.original_name or attachment.path}"
+            for attachment in missing
+        )
+        answer = QMessageBox.question(
+            self,
+            "图片信息缺失",
+            "以下图片的本地文件和远端引用均不可用，无法恢复：\n"
+            f"{names}\n\n是否忽略这些缺失图片并继续发送？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        self.remote_attachment_manager.mark_attachments_unavailable(
+            missing,
+            "图片本地文件缺失且远端引用不可用，用户确认忽略后继续发送。",
+        )
+        self.chat_manager.save()
+        self.refresh_current_chat_display()
+        return True
+
+    def _all_formal_attachments(self) -> list[MessageAttachment]:
+        """返回全部对话中的正式附件。"""
+        return [
+            attachment
+            for chat in self.chat_manager.chat_list
+            for message in chat.message_list
+            for attachment in message.attachments
+        ]
+
+    def _start_attachment_startup_cleanup(self) -> None:
+        """在 UI 启动后后台清理上次退出遗留的草稿和远端引用。"""
+        service = self._current_deepseek_file_service()
+        self.remote_attachment_manager.submit_reconcile_and_cleanup(
+            self._all_formal_attachments(),
+            [service] if service is not None else [],
+            abandon_drafts=True,
+        )
+
+    def _schedule_attachment_reachability_cleanup(self) -> None:
+        """在聊天删除或回滚后后台清理不可达的远端引用。"""
+        service = self._current_deepseek_file_service()
+        self.remote_attachment_manager.submit_reconcile_and_cleanup(
+            self._all_formal_attachments(),
+            [service] if service is not None else [],
+        )
+
     def _current_model_can_force_image_upload(self) -> bool:
         """判断当前模型是否允许用户手动强制开启图片上传。"""
         model = self._current_litellm_model_name()
@@ -4311,6 +4648,7 @@ class ChatGUI(QWidget):
         )
         setting_window.exec_()
         self.schedule_context_usage_refresh()
+        self._refresh_send_button_state()
 
     def open_more_function_window(self):
         more_function_win=MoreFunctionWindow(
@@ -4466,6 +4804,7 @@ class ChatGUI(QWidget):
             self.chat_manager.save()
             self.stop_input_stream()
         finally:
+            self.remote_attachment_manager.shutdown()
             a0.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
@@ -4607,8 +4946,8 @@ class ChatGUI(QWidget):
             return
 
         original_text = message.text
-        image_paths_to_restore = [
-            str(resolve_attachment_path(attachment.path))
+        image_attachments_to_restore = [
+            attachment
             for attachment in message.attachments
             if attachment.is_image()
         ]
@@ -4634,12 +4973,22 @@ class ChatGUI(QWidget):
             if not accepted:
                 return
 
+        self.user_input.replace_draft(original_text)
+        failed_image_names: list[str] = []
+        for attachment in image_attachments_to_restore:
+            try:
+                record = self.remote_attachment_manager.stage_existing_attachment(
+                    attachment
+                )
+                self.user_input.add_managed_draft(record.as_payload())
+            except Exception:
+                failed_image_names.append(attachment.original_name or attachment.path)
+
         audio_failed = self._apply_current_chat_message_range_delete(
             msg_index,
             end,
             should_delete_audio,
         )
-        failed_image_paths = self.user_input.replace_draft(original_text, image_paths=image_paths_to_restore)
 
         if had_input_draft:
             success_message = "已将消息移回输入框，原输入框内容已被替换。"
@@ -4647,7 +4996,7 @@ class ChatGUI(QWidget):
             success_message = "已清除后续消息，可编辑后重新发送。"
         else:
             success_message = "已将消息移回输入框，可编辑后重新发送。"
-        if failed_image_paths:
+        if failed_image_names:
             success_message += " 部分图片附件已丢失，无法恢复。"
         self._show_delete_success_message(success_message, audio_failed)
 
@@ -4776,6 +5125,7 @@ class ChatGUI(QWidget):
             should_delete_audio,
         )
         self.chat_manager.save()
+        self._schedule_attachment_reachability_cleanup()
         self._load_tool_call_records_cache()
         self.refresh_current_chat_display()
         self.refresh_chat_list()
@@ -4973,6 +5323,19 @@ class ChatGUI(QWidget):
             else:
                 self._handle_tool_call_update_event(payload)
             return
+        if event_type == "user_message_committed":
+            if self._is_active_turn_payload(payload):
+                raw_ids = payload.get("draft_attachment_ids")
+                draft_ids = (
+                    [item for item in raw_ids if isinstance(item, str)]
+                    if isinstance(raw_ids, list)
+                    else []
+                )
+                self.remote_attachment_manager.acknowledge_commit(draft_ids)
+                self.user_input.clear_after_commit()
+                self.refresh_current_chat_display()
+                self._refresh_send_button_state()
+            return
         # 事件：切换对话
         if event_type == "chat_switched":
             return
@@ -5118,14 +5481,18 @@ class ChatGUI(QWidget):
         """
         if not hasattr(self, "send_button"):
             return
+        self._refresh_add_image_button_state()
         if self.is_response_active():
+            self.send_button.setEnabled(True)
             self.send_button.setText("")
             self.send_button.setIcon(self._send_stop_icon)
             self.send_button.setToolTip("终止对话")
         else:
             self.send_button.setIcon(QIcon())
             self.send_button.setText("↑")
-            self.send_button.setToolTip("发送")
+            block_reason = self.user_input.draft_upload_block_reason()
+            self.send_button.setEnabled(not bool(block_reason))
+            self.send_button.setToolTip(block_reason or "发送")
 
     def _finish_current_stream_immediately(self) -> None:
         """
@@ -5429,6 +5796,13 @@ class ChatGUI(QWidget):
         if image_source_paths and not self._current_model_supports_vision():
             self.user_input.show_error("当前模型不支持图片输入，请切换支持视觉的模型或删除图片附件。")
             return
+        if image_source_paths and not self._prepare_draft_uploads_for_send():
+            block_reason = self.user_input.draft_upload_block_reason()
+            if block_reason:
+                self.user_input.show_error(block_reason)
+            return
+        if not self._confirm_and_mark_unrecoverable_attachments():
+            return
         failed_image_paths = self.user_input.validate_pending_images()
         if failed_image_paths:
             self.user_input.show_error(f"图片不存在或无法读取：{os.path.basename(failed_image_paths[0])}")
@@ -5437,8 +5811,13 @@ class ChatGUI(QWidget):
         if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
             return
         optimistic_attachments = self.user_input.optimistic_image_attachments()
-        self._send_user_message_payload(user_this_turn_input, image_source_paths=image_source_paths)
-        self.user_input.clear_after_send()
+        draft_attachments = self.user_input.pending_draft_payloads()
+        self._send_user_message_payload(
+            user_this_turn_input,
+            draft_attachments=draft_attachments,
+        )
+        if not draft_attachments:
+            self.user_input.clear_after_send()
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能
         if self.current_chat.message_list and self.current_chat.message_list[-1].text == user_this_turn_input:
@@ -5462,6 +5841,7 @@ class ChatGUI(QWidget):
         append_user_message: bool = True,
         context_usage_delay_ms: int = 1300,
         image_source_paths: Sequence[str] = (),
+        draft_attachments: Sequence[dict[str, object]] = (),
     ) -> None:
         """向后端发送用户消息请求，并启动当前 active turn。"""
         turn_id = uuid.uuid4().hex
@@ -5473,6 +5853,7 @@ class ChatGUI(QWidget):
             "text": text,
             "append_user_message": append_user_message,
             "image_source_paths": list(image_source_paths),
+            "draft_attachments": [dict(item) for item in draft_attachments],
         })
         self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
 
