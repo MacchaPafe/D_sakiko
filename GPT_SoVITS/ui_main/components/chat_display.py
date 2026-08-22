@@ -8,11 +8,12 @@ from urllib.parse import quote, unquote
 from dataclasses import dataclass
 
 from PyQt5.QtCore import QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QContextMenuEvent, QDesktopServices, QImageReader, QTextCursor
+from PyQt5.QtGui import QColor, QContextMenuEvent, QDesktopServices, QImageReader, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import QAction, QTextBrowser, QWidget
 
 from chat.attachments import resolve_attachment_path
 from chat.chat import Chat, Message, SingleCharacterPromptGenerator
+from ui_main.theme import ThemePalette
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,10 @@ class ChatDisplay(QTextBrowser):
     audioLinkClicked = pyqtSignal(QUrl)
     streamFinished = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, palette: ThemePalette, parent: QWidget | None = None) -> None:
         """初始化聊天显示控件及其内部流式渲染状态。"""
         super().__init__(parent)
-        self._theme_color = "#7799CC"
+        self._theme_palette = palette
         self._user_persona_name: str | None = None
         # 每条消息的缓存信息：用于记录这条消息是否是用户消息
         # 消息索引 -> 消息显示元数据
@@ -53,6 +54,7 @@ class ChatDisplay(QTextBrowser):
         self._message_meta_by_index: dict[int, _MessageDisplayMeta] = {}
         self._stream_text = ""
         self._stream_translation = ""
+        self._stream_anchor_href = ""
         self._stream_index = 0
         self._stream_timer = QTimer(self)
         self._stream_timer.timeout.connect(self._stream_next_character)  # noqa
@@ -62,9 +64,11 @@ class ChatDisplay(QTextBrowser):
         self.setOpenLinks(False)
         self.anchorClicked.connect(self._on_anchor_clicked)  # noqa
 
-    def set_theme_color(self, color: str) -> None:
-        """设置后续消息渲染使用的主题色。"""
-        self._theme_color = color or "#7799CC"
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """设置后续消息渲染使用的角色语义色板。"""
+        if not isinstance(palette, ThemePalette):
+            raise TypeError("palette 必须是 ThemePalette")
+        self._theme_palette = palette
 
     def render_chat(self, chat: Chat, preserve_scroll: bool = True) -> None:
         """根据完整 Chat 数据重新渲染聊天记录。"""
@@ -142,7 +146,7 @@ class ChatDisplay(QTextBrowser):
         self.finish_stream_now()
         safe_text = html.escape(text.strip() or "正在整理过往思绪...")
         self.append(
-            '<div style="color: #AAB8CC; font-size: small; text-align: center; '
+            f'<div style="color: {self._theme_palette.text_secondary}; font-size: small; text-align: center; '
             'margin-top: 8px; margin-bottom: 8px; white-space: nowrap;">'
             f'----------------&nbsp;{safe_text}&nbsp;----------------'
             '</div>'
@@ -160,7 +164,10 @@ class ChatDisplay(QTextBrowser):
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.End)
         if self._stream_index < len(self._stream_text):
-            cursor.insertText(self._stream_text[self._stream_index:])
+            cursor.insertText(
+                self._stream_text[self._stream_index:],
+                self._body_character_format(self._stream_anchor_href),
+            )
             self._stream_index = len(self._stream_text)
         self._insert_stream_translation(cursor)
         self.setTextCursor(cursor)
@@ -243,6 +250,7 @@ class ChatDisplay(QTextBrowser):
         self.append(self._render_message_header_html(message, msg_index))
         self._stream_text = f"{message.text}\n"
         self._stream_translation = message.translation or ""
+        self._stream_anchor_href = self._message_anchor_href(message, msg_index)
         self._stream_index = 0
         self._stream_timer.start(max(1, interval_ms))
 
@@ -252,7 +260,10 @@ class ChatDisplay(QTextBrowser):
         # 如果在打印外文原文：逐个字符打印
         if self._stream_index < len(self._stream_text):
             cursor.movePosition(QTextCursor.End)
-            cursor.insertText(self._stream_text[self._stream_index])
+            cursor.insertText(
+                self._stream_text[self._stream_index],
+                self._body_character_format(self._stream_anchor_href),
+            )
             self.setTextCursor(cursor)
             self._stream_index += 1
             return
@@ -270,9 +281,20 @@ class ChatDisplay(QTextBrowser):
         if not self._stream_translation:
             return
         safe_translation = html.escape(self._stream_translation)
+        safe_href = html.escape(self._stream_anchor_href, quote=True)
         cursor.insertHtml(
-            f'<span style="color: #B3D1F2; font-style: italic;">{safe_translation}</span><br>'
+            f'<a href="{safe_href}" style="text-decoration: none;">'
+            f'<span style="color: {self._theme_palette.text_secondary}; '
+            f'font-style: italic;">{safe_translation}</span></a><br>'
         )
+
+    def _body_character_format(self, anchor_href: str) -> QTextCharFormat:
+        """创建流式正文使用的高对比可交互字符格式。"""
+        character_format = QTextCharFormat()
+        character_format.setAnchor(True)
+        character_format.setAnchorHref(anchor_href)
+        character_format.setForeground(QColor(self._theme_palette.text_primary))
+        return character_format
 
     def _stop_stream(self, *, clear_buffer: bool) -> None:
         """停止当前流式打印，并按需清空缓冲区。"""
@@ -286,6 +308,7 @@ class ChatDisplay(QTextBrowser):
         """清空当前流式打印的内部缓冲。"""
         self._stream_text = ""
         self._stream_translation = ""
+        self._stream_anchor_href = ""
         self._stream_index = 0
 
     def _remember_message_meta(self, msg_index: int, message: Message) -> None:
@@ -341,40 +364,58 @@ class ChatDisplay(QTextBrowser):
         safe_text = html.escape(display_message.text)
         header = self._render_message_header_html(message, msg_index)
         attachments_html = self._render_attachments_html(display_message)
-        if self._is_user_message(display_message):
-            return header.replace("</a>", f"{safe_text}</a>{attachments_html}", 1)
-        body = f"{safe_text}</a>"
+        safe_href = html.escape(
+            self._message_anchor_href(message, msg_index),
+            quote=True,
+        )
+        body = (
+            f'<a href="{safe_href}" style="text-decoration: none;">'
+            f'<span style="color: {self._theme_palette.text_primary};">'
+            f"{safe_text}</span>"
+        )
         if display_message.translation:
             safe_translation = html.escape(display_message.translation)
-            body += f'<br><span style="color: #B3D1F2; font-style: italic;">{safe_translation}</span>'
-        body += attachments_html
-        return header.replace("</a>", body, 1)
+            body += (
+                f'<br><span style="color: {self._theme_palette.text_secondary}; '
+                f'font-style: italic;">{safe_translation}</span>'
+            )
+        body += "</a>"
+        return header + body + attachments_html
 
     def _render_message_header_html(self, message: Message, msg_index: int) -> str:
         """将一条消息的可点击标题渲染成 HTML。"""
-        msg_param = f"?msg={msg_index}"
+        safe_href = html.escape(self._message_anchor_href(message, msg_index), quote=True)
         if self._is_user_message(message):
             display_name = "你"
             if self._user_persona_name is not None:
                 display_name = f"你（{self._user_persona_name}）"
             return (
-                f'<a href="user:{msg_param}" '
-                f'style="text-decoration: none; color: {self._theme_color};">'
+                f'<a href="{safe_href}" '
+                f'style="text-decoration: none; color: {self._theme_palette.text_accent};">'
                 f'{html.escape(display_name)}：</a>'
             )
 
         if message.audio_path and message.audio_path != "NO_AUDIO":
-            abs_path = os.path.abspath(message.audio_path).replace("\\", "/")
             return (
-                f'<a href="{abs_path}[{message.emotion.as_label()}]{msg_param}" '
-                f'style="text-decoration: none; color: {self._theme_color};">'
+                f'<a href="{safe_href}" '
+                f'style="text-decoration: none; color: {self._theme_palette.text_accent};">'
                 f'★{html.escape(message.character_name)}：</a>'
             )
         return (
-            f'<a href="no_audio:{msg_param}" '
-            f'style="text-decoration: none; color: {self._theme_color};">'
+            f'<a href="{safe_href}" '
+            f'style="text-decoration: none; color: {self._theme_palette.text_accent};">'
             f'{html.escape(message.character_name)}：</a>'
         )
+
+    def _message_anchor_href(self, message: Message, msg_index: int) -> str:
+        """返回整条消息正文用于播放和右键操作的统一锚点地址。"""
+        msg_param = f"?msg={msg_index}"
+        if self._is_user_message(message):
+            return f"user:{msg_param}"
+        if message.audio_path and message.audio_path != "NO_AUDIO":
+            abs_path = os.path.abspath(message.audio_path).replace("\\", "/")
+            return f"{abs_path}[{message.emotion.as_label()}]{msg_param}"
+        return f"no_audio:{msg_param}"
 
     def _render_tool_record_html(self, record: dict[str, object]) -> str:
         """将持久化的工具调用记录渲染成 HTML。"""
@@ -433,11 +474,13 @@ class ChatDisplay(QTextBrowser):
         height = max(1, int(image_size.height() * scale))
         return f'width="{width}" height="{height}"'
 
-    @staticmethod
-    def _render_tool_status_html(tool_call_id: str, text: str) -> str:
+    def _render_tool_status_html(self, tool_call_id: str, text: str) -> str:
         """根据工具调用 ID 和展示文本生成状态行 HTML。"""
         safe_text = html.escape(text)
-        style = "color: #B3D1F2; font-size: normal; font-style: normal;"
+        style = (
+            f"color: {self._theme_palette.text_secondary}; "
+            "font-size: normal; font-style: normal;"
+        )
         safe_tool_call_id = html.escape(tool_call_id, quote=True)
         return (
             f'<div style="margin-top: 0px; margin-bottom: 0px;">'

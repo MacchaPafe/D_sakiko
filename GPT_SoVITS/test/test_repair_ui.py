@@ -6,7 +6,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication, QLabel
+from PyQt5.QtWidgets import QApplication, QGroupBox, QLabel
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from repair.repair_checker import FetchedManifest, RepairCandidate, RepairCheckResult
 from repair.repair_manifest import RepairFileEntry, RepairManifest
 from ui_main.components.repair_dialog import RepairDialog
+from ui_main.theme import derive_theme_palette
 
 
 class RepairDialogTest(unittest.TestCase):
@@ -95,6 +96,7 @@ class RepairDialogTest(unittest.TestCase):
         calls: list[str] = []
         dialog = MoreFunctionWindow(
             lambda: None,
+            derive_theme_palette("#7799CC"),
             check_update_fun=lambda: None,
             check_repair_fun=lambda: calls.append("repair"),
         )
@@ -102,6 +104,26 @@ class RepairDialogTest(unittest.TestCase):
         self.app.processEvents()
 
         self.assertEqual(calls, ["repair"])
+
+    def test_more_functions_groups_entries_by_purpose(self) -> None:
+        """更多功能窗口应按设置、玩法、工具和维护分组。"""
+
+        from qtUI import MoreFunctionWindow
+
+        dialog = MoreFunctionWindow(
+            lambda: None,
+            derive_theme_palette("#7799CC"),
+            check_update_fun=lambda: None,
+            check_repair_fun=lambda: None,
+        )
+
+        group_titles = [group.title() for group in dialog.findChildren(QGroupBox)]
+        self.assertEqual(
+            group_titles,
+            ["高级设置与编辑", "玩法", "工具", "程序维护"],
+        )
+        self.assertIs(dialog.text_label.parentWidget(), dialog)
+        self.assertIs(dialog.close_program_button.parentWidget(), dialog)
 
 
 if __name__ == "__main__":

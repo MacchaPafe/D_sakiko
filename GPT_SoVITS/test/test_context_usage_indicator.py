@@ -14,6 +14,7 @@ from ui_main.components.context_usage_indicator import (
     ContextUsageSizing,
     resolve_context_usage_sizing,
 )
+from ui_main.theme import derive_theme_palette
 
 
 class ContextUsageSizingTestCase(unittest.TestCase):
@@ -44,7 +45,7 @@ class ContextUsageThresholdTestCase(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_threshold_slider_uses_seventy_to_ninety_percent_range(self) -> None:
-        indicator = ContextUsageIndicator()
+        indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))
         received: list[float] = []
         indicator.summaryThresholdChanged.connect(received.append)
 

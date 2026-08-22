@@ -6,6 +6,8 @@ from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen
 from PyQt5.QtWidgets import QFrame, QLabel, QSlider, QVBoxLayout, QWidget
 
+from ui_main.theme import ThemePalette
+
 
 MIN_SUMMARY_THRESHOLD_PERCENT = 70
 MAX_SUMMARY_THRESHOLD_PERCENT = 90
@@ -58,7 +60,13 @@ class ContextUsagePopup(QFrame):
 
     summaryThresholdChanged = pyqtSignal(float)
 
-    def __init__(self, parent: QWidget | None = None, width: int = 188, font_size: int = 12) -> None:
+    def __init__(
+        self,
+        palette: ThemePalette,
+        parent: QWidget | None = None,
+        width: int = 188,
+        font_size: int = 12,
+    ) -> None:
         """初始化浮窗结构和样式。"""
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setObjectName("contextUsagePopup")
@@ -93,50 +101,51 @@ class ContextUsagePopup(QFrame):
         layout.addWidget(self.summary_threshold_label)
         layout.addWidget(self.summary_threshold_slider)
 
-        self._theme_color = QColor("#7799CC")
+        self._theme_palette = palette
         self._apply_style(font_size, line_height)
         self.set_summary_threshold_ratio(DEFAULT_SUMMARY_THRESHOLD_PERCENT / 100)
 
     def _apply_style(self, font_size: int, line_height: int) -> None:
         """应用浮窗与阈值滑块样式。"""
-        theme_color = self._theme_color.name()
+        palette = self._theme_palette
         self.setStyleSheet(
             f"""
             QFrame#contextUsagePopup {{
-                background-color: #FFFFFF;
-                border: 1px solid rgba(0, 0, 0, 0.10);
+                background-color: {palette.surface};
+                border: 1px solid {palette.border_subtle};
                 border-radius: 8px;
             }}
             QFrame#contextUsagePopup QLabel {{
                 background-color: transparent;
-                color: #4D5560;
+                color: {palette.text_primary};
                 font-size: {font_size}px;
                 line-height: {line_height}px;
             }}
             QSlider#summaryCompressionThresholdSlider::groove:horizontal {{
                 height: 4px;
-                background: #DDE4EA;
+                background: {palette.border_subtle};
                 border-radius: 2px;
             }}
             QSlider#summaryCompressionThresholdSlider::sub-page:horizontal {{
-                background: {theme_color};
+                background: {palette.accent};
                 border-radius: 2px;
             }}
             QSlider#summaryCompressionThresholdSlider::handle:horizontal {{
                 width: 12px;
                 margin: -4px 0;
-                background: {theme_color};
-                border: 1px solid {theme_color};
+                background: {palette.accent};
+                border: 1px solid {palette.accent};
                 border-radius: 6px;
             }}
             """
         )
 
-    def set_theme_color(self, color: QColor) -> None:
-        """同步角色主题色到阈值滑块。"""
-        if color.isValid():
-            self._theme_color = QColor(color)
-            self._apply_style(self._font_size, self._line_height)
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """同步角色语义色板到阈值滑块和浮窗文字。"""
+        if not isinstance(palette, ThemePalette):
+            raise TypeError("palette 必须是 ThemePalette")
+        self._theme_palette = palette
+        self._apply_style(self._font_size, self._line_height)
 
     def set_summary_threshold_ratio(self, ratio: float) -> None:
         """设置上下文压缩阈值，不触发用户修改信号。"""
@@ -192,6 +201,7 @@ class ContextUsageIndicator(QWidget):
 
     def __init__(
         self,
+        palette: ThemePalette,
         parent: QWidget | None = None,
         size: int = 26,
         popup_width: int = 188,
@@ -200,9 +210,9 @@ class ContextUsageIndicator(QWidget):
         """初始化圆环组件的默认状态。"""
         super().__init__(parent)
         self._snapshot = ContextUsageSnapshot(used_tokens=None, token_limit=None)
-        self._theme_color = QColor("#7799CC")
+        self._theme_palette = palette
         self._size = max(20, size)
-        self._popup = ContextUsagePopup(self, popup_width, popup_font_size)
+        self._popup = ContextUsagePopup(palette, self, popup_width, popup_font_size)
         self._popup.summaryThresholdChanged.connect(self.summaryThresholdChanged.emit)  # noqa
 
         self.setObjectName("contextUsageIndicator")
@@ -210,11 +220,12 @@ class ContextUsageIndicator(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("上下文用量：未知")
 
-    def set_theme_color(self, color: str) -> None:
-        """设置圆环已用部分的主题色。"""
-        theme_color = QColor(color)
-        self._theme_color = theme_color if theme_color.isValid() else QColor("#7799CC")
-        self._popup.set_theme_color(self._theme_color)
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """设置圆环和详情浮窗使用的角色语义色板。"""
+        if not isinstance(palette, ThemePalette):
+            raise TypeError("palette 必须是 ThemePalette")
+        self._theme_palette = palette
+        self._popup.set_theme_palette(palette)
         self.update()
 
     def set_summary_threshold_ratio(self, ratio: float) -> None:
@@ -260,7 +271,7 @@ class ContextUsageIndicator(QWidget):
             self.height() - max_width - 2,
         )
 
-        base_pen = QPen(QColor("#DDE4EA"))
+        base_pen = QPen(QColor(self._theme_palette.border_subtle))
         if self._snapshot.has_error:
             base_pen.setColor(QColor("#B8C0CA"))
         base_pen.setWidthF(base_width)
@@ -309,4 +320,4 @@ class ContextUsageIndicator(QWidget):
             return QColor("#E35D5B")
         if ratio >= 0.80:
             return QColor("#D99A2B")
-        return QColor(self._theme_color)
+        return QColor(self._theme_palette.accent)
