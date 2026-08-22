@@ -1,10 +1,14 @@
 import { RefreshCw } from 'lucide-react'
 import { useRef, useState } from 'react'
+import neutralMascot from '../assets/access-gate/neutral.png'
+import errorMascot from '../assets/access-gate/error.png'
+import successMascot from '../assets/access-gate/success.png'
 
 export function AccessGate({ state, actions }) {
   const [digits, setDigits] = useState(() => Array(6).fill(''))
   const inputRefs = useRef([])
   const submittingRef = useRef(false)
+  const [visualState, setVisualState] = useState('neutral')
   const waiting = state.connection === 'checking_auth' || state.connection === 'connecting'
   const offline = state.connection === 'offline'
   const accessCode = digits.join('')
@@ -15,13 +19,17 @@ export function AccessGate({ state, actions }) {
     const authenticated = await actions.authenticate(code)
     submittingRef.current = false
     if (!authenticated) {
+      setVisualState('error')
       setDigits(Array(6).fill(''))
       requestAnimationFrame(() => inputRefs.current[0]?.focus())
+    } else {
+      setVisualState('success')
     }
   }
 
   const updateDigit = (index, value) => {
     const digit = value.replace(/\D/g, '').slice(-1)
+    setVisualState('neutral')
     const next = [...digits]
     next[index] = digit
     const code = next.join('')
@@ -40,6 +48,7 @@ export function AccessGate({ state, actions }) {
     event.preventDefault()
     const pasted = event.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6)
     if (!pasted) return
+    setVisualState('neutral')
     const next = Array(6).fill('')
     pasted.split('').forEach((digit, index) => { next[index] = digit })
     setDigits(next)
@@ -56,7 +65,13 @@ export function AccessGate({ state, actions }) {
   return (
     <main className="app-frame access-frame">
       <section className="access-screen" aria-live="polite">
-        <header className="access-brand"><strong>数字小祥</strong></header>
+        <div className={`access-mascot access-mascot--${visualState}`} aria-hidden="true">
+          <img
+            key={visualState}
+            src={{ neutral: neutralMascot, error: errorMascot, success: successMascot }[visualState]}
+            alt=""
+          />
+        </div>
 
         <div className="access-content">
           <h1>{offline ? '电脑端尚未连接' : '连接电脑端'}</h1>
@@ -75,7 +90,7 @@ export function AccessGate({ state, actions }) {
           ) : (
             <form className="access-form" onSubmit={submit}>
               <fieldset className="access-code-field">
-                <div className="access-code-digits" role="group" aria-label="六位访问码">
+                <div className={`access-code-digits ${visualState === 'error' ? 'is-error' : ''}`} role="group" aria-label="六位访问码">
                   {Array.from({ length: 6 }, (_, index) => (
                     <input
                       key={index}

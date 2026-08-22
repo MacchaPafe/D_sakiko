@@ -66,7 +66,7 @@ export function SettingsSheet({ open, busy, onClose, onLoad, onSave }) {
       >
         <span className="sheet-handle" aria-hidden="true" />
         <header className="settings-sheet__header">
-          <div><h2>设置</h2><p>{settings?.voice.character_name || '当前角色'}</p></div>
+          <div><h2>设置</h2></div>
           <IconButton label="关闭设置" onClick={onClose}><X size={20} /></IconButton>
         </header>
 
@@ -75,7 +75,7 @@ export function SettingsSheet({ open, busy, onClose, onLoad, onSave }) {
         ) : (
           <div className="settings-sheet__content">
             <section className="settings-group">
-              <h3>角色语音</h3>
+              <h3>角色语音：{settings?.voice.character_name || '当前角色'}</h3>
               <label className="setting-slider">
                 <span><b>语速</b><output>{settings.voice.speech_speed.toFixed(2)}</output></span>
                 <input type="range" min="0.6" max="1.4" step="0.01" value={settings.voice.speech_speed} onChange={(event) => updateVoice('speech_speed', event.target.value)} />

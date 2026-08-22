@@ -241,6 +241,41 @@ select:focus-visible {
   left: 24px;
   width: 100%;
   max-width: calc(100% - 48px);
+  z-index: 1;
+}
+
+.access-mascot {
+  position: absolute;
+  z-index: 0;
+  right: -8%;
+  bottom: -2%;
+  width: min(78vw, 470px);
+  opacity: 0.22;
+  pointer-events: none;
+  transform: rotate(-2deg);
+}
+
+.access-mascot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: saturate(1) contrast(0.94);
+  animation: access-mascot-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.access-mascot--error {
+  opacity: 0.25;
+  transform: rotate(1deg);
+}
+
+.access-mascot--success {
+  opacity: 0.3;
+  transform: rotate(-1deg) translateY(-1%);
+}
+
+@keyframes access-mascot-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .access-content h1 {
@@ -293,7 +328,19 @@ select:focus-visible {
 
 .access-code-digits input:focus {
   background: #e9eaec;
-  box-shadow: 0 0 0 2px #c63c55;
+  box-shadow: 0 0 0 2px #f5abb9;
+}
+
+.access-code-digits.is-error {
+  animation: access-code-shake 360ms ease-in-out both;
+}
+
+@keyframes access-code-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(3px); }
 }
 
 .text-field {
@@ -306,6 +353,11 @@ select:focus-visible {
   color: #202226;
   font-size: 16px;
 }
+
+.access-screen  {
+  background-color:#ffffff;
+}
+
 
 .access-command {
   width: 100%;
@@ -1624,6 +1676,8 @@ select:focus-visible {
   .create-chat-sheet,
   .settings-sheet-layer,
   .settings-sheet,
+  .access-mascot img,
+  .access-code-digits.is-error,
   .view-transition-wash {
     animation: none !important;
   }

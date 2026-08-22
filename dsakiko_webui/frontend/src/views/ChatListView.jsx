@@ -93,7 +93,7 @@ export function ChatListView({ state, actions }) {
           )}
         </label>
 
-        <p className="session-drawer__section-label">最近</p>
+        <p className="session-drawer__section-label"></p>
         <div className="session-list" role="list">
           {characterGroups.map((group) => {
             const characterId = group.character.id || group.character.name
@@ -153,7 +153,7 @@ export function ChatListView({ state, actions }) {
         </div>
 
         <footer className="session-drawer__footer">
-          {busy && <p className="session-drawer__busy">回复完成前暂时不能切换对话</p>}
+          {busy && <p className="session-drawer__busy">回复完成前还不能切换对话</p>}
           <IconButton label="打开设置" className="drawer-settings-button" onClick={() => setSettingsOpen(true)}>
             <Settings size={21} />
           </IconButton>
