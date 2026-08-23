@@ -85,6 +85,10 @@ class DSakikoConfig(QConfig):
     # 采用字典形式存储。键为所有可能的 llm_api_provider，再加上一个“custom_llm_api_key“，值为对应的 API Key
     llm_api_key = ConfigItem("llm_setting", "llm_api_key", {})
 
+    # OpenAI Codex OAuth 令牌包。选择项目配置文件存储方案，因此与现有 API Key 一样
+    # 写入 d_sakiko_config.json；日志与界面不得输出其中的令牌字段。
+    codex_oauth = ConfigItem("llm_setting", "codex_oauth", {})
+
     # 可选的 API Base URL（用于第三方 OpenAI 兼容端点等场景）
     # 采用字典形式存储。键为 llm_api_provider（如 modelscope），值为对应的 base_url。
     # 对于 litellm 自带 provider（openai/deepseek/gemini 等），通常不需要填写。
@@ -403,6 +407,8 @@ class DSakikoConfigSnapshot:
 # 因此在 PROVIDER_FRIENDLY_NAME_MAP 中，后出现的显示名称会覆盖前面的显示名称。请确保将常用的显示名称放在后面。
 PROVIDER_DISPLAY_NAME_MAP = {
     "OpenAI": "openai",
+
+    "OpenAI Codex": "openai_codex",
 
     "Gemini": "gemini",
     # 兼容性问题：之前 API_Choice.json 里用的名字是 "Google"

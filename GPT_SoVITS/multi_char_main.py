@@ -1917,6 +1917,8 @@ class ViewerGUI(QWidget):
                 candidates.append(candidate_path)
 
         try:
+            if not BGM_DIRECTORY.is_dir():
+                return candidates
             bgm_files = sorted(
                 (
                     path.resolve()
@@ -1962,10 +1964,13 @@ class ViewerGUI(QWidget):
         self.bgm_player.stop()
 
         try:
+            failed_normalized = os.path.normcase(os.path.abspath(failed_path))
             for candidate_path in self._candidate_bgm_paths(
                 failed_path,
                 preferred_fallback,
             ):
+                if os.path.normcase(os.path.abspath(candidate_path)) == failed_normalized:
+                    continue
                 validation_error = validate_bgm_media_file(Path(candidate_path))
                 if validation_error is not None:
                     logger.error(

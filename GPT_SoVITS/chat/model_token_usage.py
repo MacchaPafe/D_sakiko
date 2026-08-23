@@ -16,7 +16,15 @@ def count_message_tokens(model: str, messages: list[dict[str, object]]) -> int:
     """使用 LiteLLM 计算一组消息在指定模型下消耗的 token 数。"""
     from litellm import token_counter
 
-    token_count = token_counter(model=model.strip(), messages=messages)
+    normalized_model = model.strip()
+    token_model = normalized_model.split("/", 1)[1] if normalized_model.lower().startswith("openai_codex/") else normalized_model
+    try:
+        token_count = token_counter(model=token_model, messages=messages)
+    except Exception:
+        if not normalized_model.lower().startswith("openai_codex/"):
+            raise
+        # LiteLLM 可能尚未收录最新 Codex 账号模型；使用同 tokenizer 家族的模型估算。
+        token_count = token_counter(model="gpt-4o", messages=messages)
     return max(0, int(token_count))
 
 

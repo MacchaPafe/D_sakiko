@@ -119,7 +119,7 @@ class PromptCacheUsageTestCase(unittest.TestCase):
         )
 
         with (
-            mock.patch.object(dp_local2.litellm, "completion", return_value=response) as mocked_completion,
+            mock.patch("litellm.completion", return_value=response) as mocked_completion,
             mock.patch.object(dp_local2, "_log_prompt_cache_usage") as mocked_log,
         ):
             result = dp_local2.completion(

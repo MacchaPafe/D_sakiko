@@ -293,11 +293,9 @@ class MessageTextEdit(QPlainTextEdit):
 
     def insert_file_paths(self, paths: Sequence[str]) -> None:
         """在当前光标处插入带引号的文件路径，并避免与相邻文字粘连。"""
-        normalized_paths = [
-            os.path.normpath(path)
-            for path in paths
-            if path
-        ]
+        # 保留调用方提供的路径形式。拖入的本地 URL 已由 Qt 转为平台路径，
+        # 而手动插入的 POSIX/WSL 路径不应在 Windows 上被改写成反斜杠。
+        normalized_paths = [str(path) for path in paths if path]
         if not normalized_paths:
             return
 

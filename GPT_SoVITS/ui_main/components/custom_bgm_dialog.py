@@ -154,20 +154,23 @@ class CustomBGMDialog(QDialog):
     def refresh_bgm_display(self) -> None:
         """重新扫描背景音乐目录并刷新可选项。"""
         self.set_error_message(None)
-        try:
-            all_bgm_files = sorted(
-                (
-                    path
-                    for path in BGM_DIRECTORY.iterdir()
-                    if path.is_file()
-                    and path.suffix.lower() in SUPPORTED_BGM_SUFFIXES
-                ),
-                key=lambda path: path.name.casefold(),
-            )
-        except OSError:
-            logger.exception("背景音乐文件夹读取失败：%s", BGM_DIRECTORY)
-            self.set_error_message("背景音乐文件夹读取失败")
+        if not BGM_DIRECTORY.is_dir():
             all_bgm_files = []
+        else:
+            try:
+                all_bgm_files = sorted(
+                    (
+                        path
+                        for path in BGM_DIRECTORY.iterdir()
+                        if path.is_file()
+                        and path.suffix.lower() in SUPPORTED_BGM_SUFFIXES
+                    ),
+                    key=lambda path: path.name.casefold(),
+                )
+            except OSError:
+                logger.exception("背景音乐文件夹读取失败：%s", BGM_DIRECTORY)
+                self.set_error_message("背景音乐文件夹读取失败")
+                all_bgm_files = []
 
         self._remove_all_widgets(self.select_new_bgm_layout)
         current_bgm_path = Path(

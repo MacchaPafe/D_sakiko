@@ -3,6 +3,15 @@ import time,os
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
+from llm_provider.codex import (
+	OPENAI_CODEX_PROVIDER_ID,
+	CodexAuthenticationError,
+	CodexBadRequestError,
+	CodexConnectionError,
+	CodexPermissionError,
+	CodexRateLimitError,
+	codex_completion,
+)
 
 
 class DSLocalAndVoiceGen:
@@ -68,6 +77,8 @@ class DSLocalAndVoiceGen:
 		- 第三方 OpenAI 兼容端点：强制走 openai/ 路由（若未带 openai/ 则自动补齐）。
 		- litellm 内置 provider：若用户未输入前缀，则尝试补全为 provider/model。
 		"""
+		if provider == OPENAI_CODEX_PROVIDER_ID:
+			return model if model.startswith(f"{OPENAI_CODEX_PROVIDER_ID}/") else f"{OPENAI_CODEX_PROVIDER_ID}/{model}"
 		if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
 			return ensure_openai_compatible_model(model)
 		return DSLocalAndVoiceGen.concat_provider_and_model(provider, model)
@@ -82,6 +93,21 @@ class DSLocalAndVoiceGen:
 		text_queue.put('error')
 		# 源代码如此，我也不知道为啥要休息一会
 		time.sleep(2)
+
+	@staticmethod
+	def _extract_response_content(response: object) -> str:
+		"""兼容 LiteLLM ModelResponse 与 Codex 归一化字典。"""
+		if isinstance(response, dict):
+			choices = response.get("choices") or []
+			if choices and isinstance(choices[0], dict):
+				message = choices[0].get("message") or {}
+				if isinstance(message, dict):
+					return str(message.get("content") or "")
+		choices = getattr(response, "choices", None) or []
+		if choices:
+			message = getattr(choices[0], "message", None)
+			return str(getattr(message, "content", "") or "")
+		return ""
 
 	def text_generator(self,
 					   text_queue,
@@ -178,7 +204,14 @@ class DSLocalAndVoiceGen:
 					api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
 					base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
 
-					if base_url:
+					if provider == OPENAI_CODEX_PROVIDER_ID:
+						response = codex_completion(
+							model=self.normalize_model_for_provider(provider, model),
+							messages=user_this_turn_msg,
+							stream=False,
+							timeout=100,
+						)
+					elif base_url:
 						response = completion(
 							model=self.normalize_model_for_provider(provider, model),
 							messages=user_this_turn_msg,
@@ -201,6 +234,21 @@ class DSLocalAndVoiceGen:
 							top_p = top_p,
 							drop_params = True
 						)
+			except CodexAuthenticationError:
+				self.report_message_to_main_ui(message_queue, text_queue, "OpenAI Codex 登录已失效，请重新登录。")
+				continue
+			except CodexRateLimitError:
+				self.report_message_to_main_ui(message_queue, text_queue, "OpenAI Codex 请求过于频繁或账号额度已用完。")
+				continue
+			except CodexPermissionError:
+				self.report_message_to_main_ui(message_queue, text_queue, "当前 OpenAI Codex 账号无权使用所选模型。")
+				continue
+			except CodexConnectionError:
+				self.report_message_to_main_ui(message_queue, text_queue, "与 OpenAI Codex 建立连接失败，请检查网络。")
+				continue
+			except CodexBadRequestError as e:
+				self.report_message_to_main_ui(message_queue, text_queue, f"OpenAI Codex 请求错误：{e}")
+				continue
 			except litellm.exceptions.Timeout:
 				self.report_message_to_main_ui(
 					message_queue,
@@ -264,7 +312,8 @@ class DSLocalAndVoiceGen:
 
 				continue
 
-			if not isinstance(response, ModelResponse) or response.choices[0].message.content is None:
+			response_content = self._extract_response_content(response)
+			if not response_content:
 				self.report_message_to_main_ui(
 					message_queue,
 					text_queue,
@@ -273,7 +322,7 @@ class DSLocalAndVoiceGen:
 				continue
 
 			# 去掉多余的字符，使用正则表达式
-			response_json=response.choices[0].message.content.strip()
+			response_json=response_content.strip()
 			text_queue.put(response_json)
 
 if __name__ == "__main__":

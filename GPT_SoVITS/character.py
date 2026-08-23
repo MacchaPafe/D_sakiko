@@ -403,10 +403,17 @@ class GetCharacterAttributes:
         l2d_json_paths_dict = d_sakiko_config.l2d_json_paths_dict.value
         loaded_character_names: set[str] = set()
 
-        for char in sorted(os.listdir("../live2d_related")):
+        live2d_related_dir = "../live2d_related"
+        if os.path.isdir(live2d_related_dir):
+            character_entries = sorted(os.listdir(live2d_related_dir))
+        else:
+            logger.warning("角色资源目录不存在，已按空角色列表启动：%s", live2d_related_dir)
+            character_entries = []
+
+        for char in character_entries:
             if char.startswith("."):
                 continue
-            full_path = os.path.join("../live2d_related", char)
+            full_path = os.path.join(live2d_related_dir, char)
             if  os.path.isdir(full_path):    #只遍历文件夹
                 self.character_num+=1
                 character=CharacterAttributes()

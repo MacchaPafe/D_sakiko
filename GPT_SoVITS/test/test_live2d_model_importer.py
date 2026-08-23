@@ -102,7 +102,8 @@ class Live2DModelImporterTestCase(unittest.TestCase):
         """验证导入 V2 模型会保留安全相对目录并避免覆盖既有模型。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            source_dir = temp_path / "source" / "Stage:Model"
+            # Windows 文件名不允许冒号；使用合法的空格名称验证跨平台导入。
+            source_dir = temp_path / "source" / "Stage Model"
             shared_dir = temp_path / "source" / "voice"
             live2d_related_dir = temp_path / "live2d_related"
             (live2d_related_dir / "tomori").mkdir(parents=True)
@@ -149,8 +150,8 @@ class Live2DModelImporterTestCase(unittest.TestCase):
             first_target_dir = Path(first_result.target_dir)
             second_target_dir = Path(second_result.target_dir)
             self.assertEqual(first_result.model_name, "默认")
-            self.assertEqual(second_result.model_name, "Stage_Model")
-            self.assertEqual(third_result.model_name, "Stage_Model_2")
+            self.assertEqual(second_result.model_name, "Stage Model")
+            self.assertEqual(third_result.model_name, "Stage Model_2")
             self.assertEqual(first_target_dir.parent.name, "live2D_model")
             self.assertEqual(second_target_dir.parent.name, "extra_model")
             self.assertTrue((first_target_dir / "moc" / "model.moc").is_file())

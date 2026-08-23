@@ -261,6 +261,12 @@ class ToolCallingAgentRuntime:
                 ],
             }
 
+            # Codex Responses 在工具调用的下一轮需要回传本轮加密 reasoning item。
+            # 该字段只存在于临时 runtime history，不会进入用户可见消息或持久聊天文本。
+            codex_reasoning_items = parsed.get("codex_reasoning_items")
+            if isinstance(codex_reasoning_items, list) and codex_reasoning_items:
+                assistant_message["_codex_reasoning_items"] = codex_reasoning_items
+
             # DeepSeek V4 在启用思考模式进行工具调用时要求必须返回 reasoning_content
             reasoning_content = parsed.get("reasoning_content")
             if (
@@ -532,15 +538,22 @@ class ToolCallingAgentRuntime:
         content = ""
         reasoning_content = ""
         raw_tool_calls: List[Any] = []
+        codex_reasoning_items: List[Dict[str, Any]] = []
 
         if isinstance(message, dict):
             content = message.get("content") or ""
             reasoning_content = message.get("reasoning_content") or ""
             raw_tool_calls = message.get("tool_calls") or []
+            raw_codex_reasoning = message.get("_codex_reasoning_items") or []
+            if isinstance(raw_codex_reasoning, list):
+                codex_reasoning_items = [dict(item) for item in raw_codex_reasoning if isinstance(item, dict)]
         elif message is not None:
             content = getattr(message, "content", "") or ""
             reasoning_content = getattr(message, "reasoning_content", "") or ""
             raw_tool_calls = getattr(message, "tool_calls", None) or []
+            raw_codex_reasoning = getattr(message, "_codex_reasoning_items", None) or []
+            if isinstance(raw_codex_reasoning, list):
+                codex_reasoning_items = [dict(item) for item in raw_codex_reasoning if isinstance(item, dict)]
 
         parsed_from_content = ToolCallingAgentRuntime._parse_content_json(content)
 
@@ -567,6 +580,7 @@ class ToolCallingAgentRuntime:
             "final_content": parsed_from_content.get("final_content", content),
             "finish_reason": finish_reason,
             "model": model,
+            "codex_reasoning_items": codex_reasoning_items,
         }
 
     @staticmethod

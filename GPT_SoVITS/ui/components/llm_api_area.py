@@ -1,12 +1,14 @@
 # 配置 LLM（大语言模型）API 相关的配置 UI
 import contextlib
 import os
+import threading
 
 from ..custom_widgets.custom_switch_setting_card import SwitchSettingCard
 
 # 设置这个变量来缩短 litellm 的加载时间，禁止其请求网络
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import litellm
+from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QVBoxLayout, QStackedWidget, QWidget, QHBoxLayout, QDialog
 
 from qconfig import (
@@ -19,15 +21,46 @@ from qconfig import (
     THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS,
 )
 from log import get_logger
+from llm_provider.codex import (
+    CODEX_MODELS,
+    DEFAULT_CODEX_MODEL,
+    OPENAI_CODEX_PROVIDER_ID,
+    CodexOAuthClient,
+    clear_codex_oauth_bundle,
+    codex_account_summary,
+    load_codex_oauth_bundle,
+)
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
-    ListWidget, ToolTipFilter, FluentIcon
+    ListWidget, ToolTipFilter, FluentIcon, PushButton, PrimaryPushButton
 
 from ..custom_widgets.float_range_setting_card import FloatRangeSettingCard
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 logger = get_logger(__name__)
+
+
+class CodexLoginThread(QThread):
+    """在后台执行浏览器 OAuth，避免阻塞配置窗口。"""
+
+    succeeded = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cancel_event = threading.Event()
+
+    def run(self):
+        try:
+            bundle = CodexOAuthClient().sign_in(cancel_event=self.cancel_event)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.succeeded.emit(dict(bundle))
+
+    def cancel(self):
+        self.cancel_event.set()
 
 
 class MoreProvidersDialog(MessageBoxBase):
@@ -110,6 +143,7 @@ class LLMAPIArea(TransparentScrollArea):
         super().__init__(parent)
 
         self.v_box_layout = QVBoxLayout(self.view)
+        self.codex_login_thread = None
 
         # LLM Provider Selection
         self.llm_provider_combobox = ComboBox()
@@ -256,6 +290,43 @@ class LLMAPIArea(TransparentScrollArea):
         self.page_third_party_api.setLayout(layout_third_party)
         self.llm_stack.addWidget(self.page_third_party_api)
 
+        # Page 4: OpenAI Codex OAuth（账号登录 + 可编辑模型列表）
+        self.page_codex_api = QWidget()
+        self.page_codex_api.setObjectName("page_codex_api")
+        layout_codex = QVBoxLayout()
+        layout_codex.setContentsMargins(0, 20, 0, 20)
+        layout_codex.setSpacing(10)
+
+        self.codex_status_label = BodyLabel("", self.page_codex_api)
+        layout_codex.addWidget(self.codex_status_label)
+
+        self.codex_model_combo = EditableComboBox()
+        self.codex_model_combo.setMinimumWidth(300)
+        for model in CODEX_MODELS:
+            self.codex_model_combo.addItem(model)
+        h_layout_c1 = QHBoxLayout()
+        label_c1 = BodyLabel(self.tr("模型名称:"), self.page_codex_api)
+        label_c1.setFixedWidth(110)
+        h_layout_c1.addWidget(label_c1)
+        h_layout_c1.addWidget(self.codex_model_combo)
+        layout_codex.addLayout(h_layout_c1)
+
+        codex_button_layout = QHBoxLayout()
+        self.codex_login_button = PrimaryPushButton(self.tr("登录 OpenAI Codex"), self.page_codex_api)
+        self.codex_cancel_button = PushButton(self.tr("取消登录"), self.page_codex_api)
+        self.codex_logout_button = PushButton(self.tr("退出登录"), self.page_codex_api)
+        self.codex_cancel_button.setEnabled(False)
+        self.codex_login_button.clicked.connect(self.start_codex_login)
+        self.codex_cancel_button.clicked.connect(self.cancel_codex_login)
+        self.codex_logout_button.clicked.connect(self.logout_codex)
+        codex_button_layout.addWidget(self.codex_login_button)
+        codex_button_layout.addWidget(self.codex_cancel_button)
+        codex_button_layout.addWidget(self.codex_logout_button)
+        layout_codex.addLayout(codex_button_layout)
+        layout_codex.addStretch(1)
+        self.page_codex_api.setLayout(layout_codex)
+        self.llm_stack.addWidget(self.page_codex_api)
+
         # 加载模型选择框的内容
         self.populate_llm_combobox()
         self.llm_provider_combobox.currentIndexChanged.connect(self.on_llm_provider_changed)
@@ -375,6 +446,10 @@ class LLMAPIArea(TransparentScrollArea):
             self.custom_url_input.setText(d_sakiko_config.custom_llm_api_url.value)
             self.custom_model_input.setText(d_sakiko_config.custom_llm_api_model.value)
             self.custom_key_input.setText(d_sakiko_config.custom_llm_api_key.value)
+        elif provider == OPENAI_CODEX_PROVIDER_ID:
+            current_model = str(models.get(provider) or DEFAULT_CODEX_MODEL)
+            self.codex_model_combo.setCurrentText(current_model)
+            self.refresh_codex_status()
         elif provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
             meta = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.get(provider, {})
             placeholder = meta.get("model_placeholder")
@@ -411,6 +486,8 @@ class LLMAPIArea(TransparentScrollArea):
         """
         self.llm_provider_combobox.clear()
         self.llm_provider_combobox.addItem("Up 的 DeepSeek API", userData="deepseek_up")
+
+        self.llm_provider_combobox.addItem("OpenAI Codex（账号登录）", userData=OPENAI_CODEX_PROVIDER_ID)
 
         # Add third-party OpenAI-compatible presets (fixed base_url)
         for endpoint in THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS:
@@ -474,6 +551,8 @@ class LLMAPIArea(TransparentScrollArea):
             self.llm_stack.setCurrentIndex(0)
         elif data == "custom":
             self.llm_stack.setCurrentIndex(1)
+        elif data == OPENAI_CODEX_PROVIDER_ID:
+            self.llm_stack.setCurrentWidget(self.page_codex_api)
         elif data in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
             self.llm_stack.setCurrentIndex(3)
         else:
@@ -514,6 +593,8 @@ class LLMAPIArea(TransparentScrollArea):
                 self.llm_stack.setCurrentIndex(0)
             elif target_data == "custom":
                 self.llm_stack.setCurrentIndex(1)
+            elif target_data == OPENAI_CODEX_PROVIDER_ID:
+                self.llm_stack.setCurrentWidget(self.page_codex_api)
             elif target_data in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
                 self.llm_stack.setCurrentIndex(3)
             else:
@@ -527,6 +608,52 @@ class LLMAPIArea(TransparentScrollArea):
         self.standard_key_input.setError(False)
         self.third_party_model_input.setError(False)
         self.third_party_key_input.setError(False)
+
+    def refresh_codex_status(self):
+        """从配置刷新 Codex 登录状态，不展示任何令牌。"""
+        bundle = load_codex_oauth_bundle()
+        account = codex_account_summary()
+        signed_in = bool(bundle.get("access_token"))
+        if signed_in:
+            identity = account.get("email") or account.get("account_id") or self.tr("已登录账号")
+            plan = account.get("plan_type")
+            plan_text = f"（{plan}）" if plan else ""
+            self.codex_status_label.setText(self.tr(f"已登录 OpenAI Codex：{identity}{plan_text}"))
+        else:
+            self.codex_status_label.setText(self.tr("尚未登录 OpenAI Codex。"))
+        self.codex_logout_button.setEnabled(signed_in)
+
+    def start_codex_login(self):
+        if self.codex_login_thread is not None and self.codex_login_thread.isRunning():
+            return
+        self.codex_status_label.setText(self.tr("正在浏览器中登录 OpenAI Codex…"))
+        self.codex_login_button.setEnabled(False)
+        self.codex_cancel_button.setEnabled(True)
+        thread = CodexLoginThread(self)
+        self.codex_login_thread = thread
+        thread.succeeded.connect(self.on_codex_login_succeeded)
+        thread.failed.connect(self.on_codex_login_failed)
+        thread.finished.connect(self.on_codex_login_finished)
+        thread.start()
+
+    def cancel_codex_login(self):
+        if self.codex_login_thread is not None:
+            self.codex_login_thread.cancel()
+        self.codex_status_label.setText(self.tr("正在取消登录…"))
+
+    def on_codex_login_succeeded(self, _bundle):
+        self.refresh_codex_status()
+
+    def on_codex_login_failed(self, message):
+        self.codex_status_label.setText(self.tr(f"Codex 登录失败：{message}"))
+
+    def on_codex_login_finished(self):
+        self.codex_login_button.setEnabled(True)
+        self.codex_cancel_button.setEnabled(False)
+
+    def logout_codex(self):
+        clear_codex_oauth_bundle()
+        self.refresh_codex_status()
 
     def save_ui_to_config(self) -> bool:
         """
@@ -548,6 +675,26 @@ class LLMAPIArea(TransparentScrollArea):
             d_sakiko_config.set(d_sakiko_config.use_default_deepseek_api, True)
 
             self.reset_error_indicators()
+            return True
+
+        elif provider_data == OPENAI_CODEX_PROVIDER_ID:
+            model = self.codex_model_combo.currentText().strip()
+            if not load_codex_oauth_bundle().get("access_token"):
+                self.codex_status_label.setText(self.tr("请先登录 OpenAI Codex。"))
+                return False
+            if not model:
+                self.codex_status_label.setText(self.tr("请输入 Codex 模型名称。"))
+                self.codex_model_combo.setFocus()
+                return False
+            with d_sakiko_config as cfg:
+                cfg.set(cfg.use_default_deepseek_api, False)
+                cfg.set(cfg.enable_custom_llm_api_provider, False)
+                cfg.set(cfg.llm_api_provider, OPENAI_CODEX_PROVIDER_ID)
+                models = dict(cfg.llm_api_model.value)
+                models[OPENAI_CODEX_PROVIDER_ID] = model
+                cfg.set(cfg.llm_api_model, models)
+            self.reset_error_indicators()
+            self.refresh_codex_status()
             return True
 
         elif provider_data == "custom":

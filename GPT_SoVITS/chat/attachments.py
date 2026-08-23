@@ -102,6 +102,8 @@ def model_supports_image_upload(model: str, *, use_default_deepseek_api: bool = 
         return False
     if model_image_upload_is_blocked(model):
         return False
+    if model.strip().lower().startswith("openai_codex/"):
+        return True
 
     if _litellm_supports_vision(model):
         return True
@@ -111,6 +113,8 @@ def model_supports_image_upload(model: str, *, use_default_deepseek_api: bool = 
 def model_can_force_allow_image_upload(model: str, *, use_default_deepseek_api: bool = False) -> bool:
     """判断当前模型是否允许用户手动加入图片上传白名单。"""
     if use_default_deepseek_api:
+        return False
+    if model.strip().lower().startswith("openai_codex/"):
         return False
     return bool(model.strip()) and not model_image_upload_is_blocked(model)
 

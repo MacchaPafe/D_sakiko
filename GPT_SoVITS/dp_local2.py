@@ -53,7 +53,11 @@ from chat.rolling_summary import (
 )
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
-from deepseek_prompt_cache_debug import CACHE_DEBUG_PHASE_KEY, log_prompt_cache_usage
+from deepseek_prompt_cache_debug import (
+    CACHE_DEBUG_PHASE_KEY,
+    extract_prompt_cache_usage,
+    log_prompt_cache_usage,
+)
 from llm_provider.modelscope import (
     ModelScopeQuotaExceededError,
     ModelScopeRateLimitKind,
@@ -61,6 +65,15 @@ from llm_provider.modelscope import (
     extract_error_headers,
     parse_quota_headers,
     parse_retry_after_seconds,
+)
+from llm_provider.codex import (
+    OPENAI_CODEX_PROVIDER_ID,
+    CodexAuthenticationError,
+    CodexBadRequestError,
+    CodexConnectionError,
+    CodexPermissionError,
+    CodexRateLimitError,
+    codex_completion,
 )
 
 TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
@@ -70,6 +83,34 @@ LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 MODELSCOPE_MAX_RATE_LIMIT_RETRIES = 2
 MODELSCOPE_MAX_RETRY_DELAY_SECONDS = 5.0
 logger = get_logger(__name__)
+
+
+def _extract_prompt_cache_usage(response: object) -> Optional[dict[str, object]]:
+    """兼容旧调用点，从 LiteLLM 响应中提取 DeepSeek prompt cache usage。"""
+    return extract_prompt_cache_usage(response)
+
+
+def _log_prompt_cache_usage(response: object, request_kwargs: dict[str, object]) -> None:
+    """记录 DeepSeek prompt cache 命中情况。"""
+    usage = _extract_prompt_cache_usage(response)
+    if usage is None:
+        return
+
+    hit_tokens = int(usage.get("prompt_cache_hit_tokens") or 0)
+    miss_tokens = int(usage.get("prompt_cache_miss_tokens") or 0)
+    total_cache_tokens = hit_tokens + miss_tokens
+    hit_rate = f"{hit_tokens / total_cache_tokens * 100:.2f}%" if total_cache_tokens else "0.00%"
+    model = str(request_kwargs.get("model") or getattr(response, "model", "") or "")
+    logger.info(
+        "deepseek_prompt_cache model=%s hit=%s miss=%s hit_rate=%s prompt=%s completion=%s total=%s",
+        model,
+        hit_tokens,
+        miss_tokens,
+        hit_rate,
+        usage.get("prompt_tokens"),
+        usage.get("completion_tokens"),
+        usage.get("total_tokens"),
+    )
 
 
 class _QueueWriter(Protocol):
@@ -145,7 +186,7 @@ def completion(**kwargs: object) -> object:
     request_kwargs_for_log = dict(kwargs)
     request_kwargs_for_log[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
     response = litellm.completion(**kwargs)
-    log_prompt_cache_usage(response, request_kwargs_for_log, logger)
+    _log_prompt_cache_usage(response, request_kwargs_for_log)
     return response
 
 
@@ -305,6 +346,8 @@ class DSLocalAndVoiceGen:
         - 第三方 OpenAI 兼容端点：强制走 openai/ 路由（若未带 openai/ 则自动补齐）。
         - litellm 内置 provider：若用户未输入前缀，则尝试补全为 provider/model。
         """
+        if provider == OPENAI_CODEX_PROVIDER_ID:
+            return model if model.startswith(f"{OPENAI_CODEX_PROVIDER_ID}/") else f"{OPENAI_CODEX_PROVIDER_ID}/{model}"
         if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
             return ensure_openai_compatible_model(model)
         return DSLocalAndVoiceGen.concat_provider_and_model(provider, model)
@@ -790,6 +833,8 @@ class DSLocalAndVoiceGen:
         """
         按内部 provider id 选择补全请求策略。
         """
+        if provider_id == OPENAI_CODEX_PROVIDER_ID:
+            return codex_completion(**completion_kwargs)
         if provider_id == "modelscope":
             return DSLocalAndVoiceGen._completion_with_modelscope_rate_limit_policy(
                 completion_kwargs
@@ -1043,7 +1088,7 @@ class DSLocalAndVoiceGen:
         else:
             logger.debug("正在使用预定义大模型 API")
             logger.debug("Provider: %s", self.d_sakiko_config.llm_api_provider.value)
-            logger.debug("Model: %s", self.d_sakiko_config.llm_api_model.value[self.d_sakiko_config.llm_api_provider.value])
+            logger.debug("Model: %s", self.d_sakiko_config.llm_api_model.value.get(self.d_sakiko_config.llm_api_provider.value, ""))
             provider = self.d_sakiko_config.llm_api_provider.value
             provider_id = str(provider)
             model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
@@ -1460,6 +1505,9 @@ class DSLocalAndVoiceGen:
         使用 LiteLLM 的模型参数表判断当前配置是否应尝试 JSON Mode。
         """
         import litellm
+
+        if self.d_sakiko_config.llm_api_provider.value == OPENAI_CODEX_PROVIDER_ID:
+            return False
 
         get_supported_params = getattr(litellm, "get_supported_openai_params", None)
         if not callable(get_supported_params):
@@ -2310,6 +2358,33 @@ class DSLocalAndVoiceGen:
                         )
                     )
 
+            except (
+                CodexAuthenticationError,
+                CodexRateLimitError,
+                CodexPermissionError,
+                CodexConnectionError,
+                CodexBadRequestError,
+            ) as e:
+                if isinstance(e, CodexAuthenticationError):
+                    user_message = "OpenAI Codex 登录已失效，请在配置中重新登录。"
+                elif isinstance(e, CodexRateLimitError):
+                    user_message = "OpenAI Codex 请求过于频繁或账号额度已用完，请稍后再试。"
+                elif isinstance(e, CodexPermissionError):
+                    user_message = "当前 OpenAI Codex 账号无权使用所选模型，请切换模型。"
+                elif isinstance(e, CodexConnectionError):
+                    user_message = "与 OpenAI Codex 建立连接失败，请检查网络。"
+                else:
+                    user_message = f"OpenAI Codex 请求错误：{e}"
+                self._report_model_exception(
+                    dp2qt_queue,
+                    active_chat_id,
+                    turn_id,
+                    is_text_generating_queue,
+                    user_message,
+                    e,
+                )
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
             except litellm.exceptions.Timeout as e:
                 self._report_model_exception(
                     dp2qt_queue,

@@ -4262,6 +4262,8 @@ class ChatGUI(QWidget):
         provider = str(d_sakiko_config.llm_api_provider.value or "")
         configured_models = d_sakiko_config.llm_api_model.value
         model_name = str(configured_models.get(provider, "") if isinstance(configured_models, dict) else "")
+        if provider == "openai_codex":
+            return self._concat_provider_and_model(provider, model_name)
         if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
             return ensure_openai_compatible_model(model_name)
         return self._concat_provider_and_model(provider, model_name)

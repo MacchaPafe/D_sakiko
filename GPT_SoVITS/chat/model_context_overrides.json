@@ -45,6 +45,16 @@
       "max_input_tokens": 1000000,
       "max_output_tokens": 384000,
       "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "aliases": [
+        "openai_codex/gpt-5.6-sol",
+        "openai_codex/gpt-5.6-terra",
+        "openai_codex/gpt-5.6-luna"
+      ],
+      "max_input_tokens": 372000,
+      "source": "Cherry Studio provider registry"
     }
   ]
 }
