@@ -25,13 +25,33 @@ def jwt(payload: dict[str, object]) -> str:
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload: dict[str, object]):
+    def __init__(self, status_code: int, payload: dict[str, object], headers=None):
         self.status_code = status_code
         self.payload = payload
         self.text = json.dumps(payload)
+        self.headers = dict(headers or {"Content-Type": "application/json"})
 
     def json(self):
         return self.payload
+
+
+class FakeSseResponse:
+    def __init__(self, events, *, status_code=200, headers=None):
+        self.status_code = status_code
+        self.events = list(events)
+        self.headers = (
+            {"Content-Type": "text/event-stream; charset=utf-8"}
+            if headers is None
+            else dict(headers)
+        )
+        self.text = ""
+
+    def iter_lines(self, decode_unicode=False):
+        del decode_unicode
+        for event in self.events:
+            yield f"event: {event.get('type', 'message')}".encode()
+            yield ("data: " + json.dumps(event, ensure_ascii=False)).encode("utf-8")
+            yield b""
 
 
 class FakeSession:
@@ -165,6 +185,7 @@ class CodexProviderTest(unittest.TestCase):
         )
         self.assertEqual(payload["model"], "gpt-5.6-sol")
         self.assertFalse(payload["store"])
+        self.assertTrue(payload["stream"])
         self.assertNotIn("temperature", payload)
         self.assertNotIn("max_output_tokens", payload)
         self.assertEqual(payload["reasoning"]["effort"], "high")
@@ -205,18 +226,25 @@ class CodexProviderTest(unittest.TestCase):
         session = FakeSession(
             [
                 FakeResponse(401, {"error": {"message": "expired"}}),
-                FakeResponse(
-                    200,
-                    {
-                        "id": "resp-2",
-                        "model": "gpt-5.6-sol",
-                        "output": [
-                            {
+                FakeSseResponse(
+                    [
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": 0,
+                            "item": {
                                 "type": "message",
                                 "content": [{"type": "output_text", "text": "ok"}],
-                            }
-                        ],
-                    },
+                            },
+                        },
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp-2",
+                                "model": "gpt-5.6-sol",
+                                "output": None,
+                            },
+                        },
+                    ]
                 ),
             ]
         )
@@ -242,6 +270,137 @@ class CodexProviderTest(unittest.TestCase):
         self.assertEqual(len(session.calls), 2)
         self.assertEqual(session.calls[0][1]["headers"]["Authorization"], "Bearer old")
         self.assertEqual(session.calls[1][1]["headers"]["Authorization"], "Bearer new")
+        self.assertEqual(session.calls[1][1]["headers"]["Accept"], "text/event-stream")
+        self.assertTrue(session.calls[1][1]["stream"])
+        self.assertTrue(session.calls[1][1]["json"]["stream"])
+
+    def test_sse_is_collected_when_completed_output_is_null(self):
+        response = FakeSseResponse(
+            [
+                {
+                    "type": "response.created",
+                    "response": {"id": "resp-stream", "model": "gpt-5.6-sol", "output": []},
+                },
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": {"type": "reasoning", "id": "r1", "encrypted_content": "secret"},
+                },
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 1,
+                    "item": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "stream-ok"}],
+                    },
+                },
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 2,
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-stream",
+                        "name": "weather",
+                        "arguments": '{"city":"上海"}',
+                    },
+                },
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp-stream",
+                        "model": "gpt-5.6-sol",
+                        "output": None,
+                        "usage": {"input_tokens": 9, "output_tokens": 4, "total_tokens": 13},
+                    },
+                },
+            ]
+        )
+        collected = codex.collect_codex_sse_response(response)
+        result = codex.responses_to_chat_completion(collected)
+        message = result["choices"][0]["message"]
+        self.assertEqual(message["content"], "stream-ok")
+        self.assertEqual(message["tool_calls"][0]["id"], "call-stream")
+        self.assertEqual(message["_codex_reasoning_items"][0]["encrypted_content"], "secret")
+        self.assertEqual(result["usage"]["total_tokens"], 13)
+
+    def test_sse_text_delta_fallback_and_interrupted_stream(self):
+        completed = FakeSseResponse(
+            [
+                {"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "A"},
+                {"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "B"},
+                {"type": "response.completed", "response": {"id": "r", "output": None}},
+            ]
+        )
+        payload = codex.collect_codex_sse_response(completed)
+        self.assertEqual(payload["output"][0]["content"][0]["text"], "AB")
+
+        interrupted = FakeSseResponse(
+            [{"type": "response.output_text.delta", "output_index": 0, "delta": "partial"}]
+        )
+        with self.assertRaises(codex.CodexConnectionError):
+            codex.collect_codex_sse_response(interrupted)
+
+    def test_sse_failed_event_surfaces_message(self):
+        response = FakeSseResponse(
+            [
+                {
+                    "type": "response.failed",
+                    "response": {"error": {"message": "model denied"}},
+                }
+            ]
+        )
+        with self.assertRaisesRegex(codex.CodexBadRequestError, "model denied"):
+            codex.collect_codex_sse_response(response)
+
+    def test_json_response_remains_compatible_for_relays(self):
+        response = FakeResponse(
+            200,
+            {
+                "id": "resp-json",
+                "model": "gpt-5.6-sol",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "json-ok"}],
+                    }
+                ],
+            },
+        )
+        session = FakeSession([response])
+        client = codex.CodexOAuthClient(session=session)
+        with mock.patch.object(client, "get_access_bundle", return_value={"access_token": "token"}):
+            result = codex.codex_completion(
+                model="gpt-5.6-sol",
+                messages=[{"role": "user", "content": "hello"}],
+                oauth_client=client,
+            )
+        self.assertEqual(result["choices"][0]["message"]["content"], "json-ok")
+
+    def test_chunked_sse_without_content_type_is_supported(self):
+        response = FakeSseResponse(
+            [
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "headerless-ok"}],
+                    },
+                },
+                {"type": "response.completed", "response": {"id": "r", "output": None}},
+            ],
+            headers={},
+        )
+        session = FakeSession([response])
+        client = codex.CodexOAuthClient(session=session)
+        with mock.patch.object(client, "get_access_bundle", return_value={"access_token": "token"}):
+            result = codex.codex_completion(
+                model="gpt-5.6-sol",
+                messages=[{"role": "user", "content": "hello"}],
+                oauth_client=client,
+            )
+        self.assertEqual(result["choices"][0]["message"]["content"], "headerless-ok")
 
     def test_expired_token_is_refreshed_and_persisted(self):
         session = FakeSession(
@@ -342,30 +501,49 @@ class CodexProviderTest(unittest.TestCase):
                         "refresh_token": "fresh-refresh",
                         "expires_in": 3600,
                     }
+                    encoded = json.dumps(payload).encode("utf-8")
+                    content_type = "application/json"
                 elif self.path == "/responses":
                     self.assertEqual(self.headers.get("Authorization"), "Bearer fresh-access")
                     self.assertEqual(self.headers.get("chatgpt-account-id"), "acct-local")
                     self.assertEqual(self.headers.get("OpenAI-Beta"), "responses=experimental")
+                    self.assertEqual(self.headers.get("Accept"), "text/event-stream")
                     request_json = json.loads(body)
                     self.assertEqual(request_json["store"], False)
+                    self.assertEqual(request_json["stream"], True)
                     if "reasoning.encrypted_content" not in request_json["include"]:
                         raise AssertionError("missing encrypted reasoning include")
-                    payload = {
-                        "id": "resp-local",
-                        "model": "gpt-5.6-sol",
-                        "output": [
-                            {
+                    events = [
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": 0,
+                            "item": {
                                 "type": "message",
                                 "content": [{"type": "output_text", "text": "local-ok"}],
-                            }
-                        ],
-                    }
+                            },
+                        },
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp-local",
+                                "model": "gpt-5.6-sol",
+                                "output": None,
+                            },
+                        },
+                    ]
+                    encoded = b"".join(
+                        (
+                            f"event: {event['type']}\n"
+                            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        ).encode("utf-8")
+                        for event in events
+                    )
+                    content_type = "text/event-stream; charset=utf-8"
                 else:
                     self.send_error(404)
                     return
-                encoded = json.dumps(payload).encode("utf-8")
                 self.send_response(200)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(encoded)))
                 self.end_headers()
                 self.wfile.write(encoded)

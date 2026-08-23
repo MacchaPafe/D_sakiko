@@ -514,7 +514,9 @@ def build_codex_request_payload(
         "model": model_id,
         "input": messages_to_responses_input(input_messages),
         "store": False,
-        "stream": False,
+        # ChatGPT 的 Codex backend 是 stream-only 接口。项目上层仍然使用
+        # 非流式调用；这里在 transport 层读取完整 SSE 后再返回统一结果。
+        "stream": True,
         "include": ["reasoning.encrypted_content"],
     }
     if system_instructions:
@@ -614,6 +616,180 @@ def responses_to_chat_completion(payload: Mapping[str, object]) -> dict[str, obj
     }
 
 
+def _decode_sse_line(raw_line: object) -> str:
+    if isinstance(raw_line, bytes):
+        return raw_line.decode("utf-8", errors="replace")
+    return str(raw_line or "")
+
+
+def _iter_sse_json_events(response: requests.Response):
+    """逐个解析 Responses SSE 事件，只向调用者暴露 JSON data。"""
+    data_lines: list[str] = []
+
+    def flush():
+        if not data_lines:
+            return None
+        raw_data = "\n".join(data_lines).strip()
+        data_lines.clear()
+        if not raw_data or raw_data == "[DONE]":
+            return None
+        try:
+            event = json.loads(raw_data)
+        except ValueError as exc:
+            raise CodexBadRequestError("Codex 返回了无效的 SSE JSON。") from exc
+        if not isinstance(event, Mapping):
+            raise CodexBadRequestError("Codex 返回了无效的 SSE 事件。")
+        return event
+
+    try:
+        lines = response.iter_lines(decode_unicode=False)
+    except (AttributeError, TypeError) as exc:
+        raise CodexBadRequestError("Codex 返回的 SSE 响应不可读取。") from exc
+
+    try:
+        for raw_line in lines:
+            line = _decode_sse_line(raw_line).rstrip("\r")
+            if not line:
+                event = flush()
+                if event is not None:
+                    yield event
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+    except requests.Timeout as exc:
+        raise CodexConnectionError("Codex SSE 读取超时。") from exc
+    except requests.RequestException as exc:
+        raise CodexConnectionError("Codex SSE 连接中断。") from exc
+
+    event = flush()
+    if event is not None:
+        yield event
+
+
+def _event_output_index(event: Mapping[str, object], fallback: int) -> int:
+    try:
+        return int(event.get("output_index", fallback))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _ensure_message_text_item(
+    output_items: dict[int, dict[str, object]],
+    output_index: int,
+    content_index: int,
+) -> dict[str, object]:
+    item = output_items.setdefault(
+        output_index,
+        {"type": "message", "role": "assistant", "content": []},
+    )
+    if item.get("type") != "message":
+        item = {"type": "message", "role": "assistant", "content": []}
+        output_items[output_index] = item
+    content = item.get("content")
+    if not isinstance(content, list):
+        content = []
+        item["content"] = content
+    while len(content) <= content_index:
+        content.append({"type": "output_text", "text": "", "annotations": []})
+    part = content[content_index]
+    if not isinstance(part, dict) or part.get("type") != "output_text":
+        part = {"type": "output_text", "text": "", "annotations": []}
+        content[content_index] = part
+    return part
+
+
+def _sse_failure_message(event: Mapping[str, object]) -> str:
+    response = event.get("response")
+    error = response.get("error") if isinstance(response, Mapping) else event.get("error")
+    if isinstance(error, Mapping):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return "Codex 流式响应失败。"
+
+
+def collect_codex_sse_response(response: requests.Response) -> dict[str, object]:
+    """把 Codex stream-only SSE 在 transport 层聚合为完整 Responses 对象。"""
+    response_meta: dict[str, object] = {}
+    completed_response: dict[str, object] | None = None
+    output_items: dict[int, dict[str, object]] = {}
+    saw_event = False
+    saw_completed = False
+
+    for event in _iter_sse_json_events(response):
+        saw_event = True
+        event_type = str(event.get("type") or "")
+        event_response = event.get("response")
+        if isinstance(event_response, Mapping):
+            for key, value in event_response.items():
+                if key != "output" and value is not None:
+                    response_meta[key] = value
+
+        if event_type in {"response.output_item.added", "response.output_item.done"}:
+            item = event.get("item")
+            if isinstance(item, Mapping):
+                index = _event_output_index(event, len(output_items))
+                # done 事件含有最终文本、函数参数和 encrypted reasoning，直接覆盖快照。
+                output_items[index] = dict(item)
+        elif event_type in {"response.output_text.delta", "response.output_text.done"}:
+            output_index = _event_output_index(event, 0)
+            try:
+                content_index = int(event.get("content_index", 0))
+            except (TypeError, ValueError):
+                content_index = 0
+            part = _ensure_message_text_item(output_items, output_index, content_index)
+            if event_type.endswith(".delta"):
+                part["text"] = str(part.get("text") or "") + str(event.get("delta") or "")
+            elif isinstance(event.get("text"), str):
+                part["text"] = event["text"]
+        elif event_type in {
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+        }:
+            output_index = _event_output_index(event, len(output_items))
+            item = output_items.setdefault(
+                output_index,
+                {
+                    "type": "function_call",
+                    "call_id": str(event.get("call_id") or event.get("item_id") or ""),
+                    "name": str(event.get("name") or ""),
+                    "arguments": "",
+                },
+            )
+            if event_type.endswith(".delta"):
+                item["arguments"] = str(item.get("arguments") or "") + str(event.get("delta") or "")
+            elif isinstance(event.get("arguments"), str):
+                item["arguments"] = event["arguments"]
+        elif event_type == "response.failed":
+            raise CodexBadRequestError(_sse_failure_message(event))
+        elif event_type == "response.incomplete":
+            raise CodexBadRequestError("Codex 响应未完整结束。")
+
+        if event_type == "response.completed":
+            saw_completed = True
+            if isinstance(event_response, Mapping):
+                completed_response = dict(event_response)
+
+    if not saw_event:
+        raise CodexBadRequestError("Codex 返回了空的 SSE 响应。")
+    if not saw_completed:
+        raise CodexConnectionError("Codex SSE 在 response.completed 前中断。")
+
+    final_response = dict(response_meta)
+    if completed_response is not None:
+        final_response.update({key: value for key, value in completed_response.items() if value is not None})
+    completed_output = final_response.get("output")
+    # Codex backend 有时在 response.completed 中返回 output:null；此时以此前的
+    # output_item.done 快照为准，避免丢失文本、工具调用和 encrypted reasoning。
+    if not isinstance(completed_output, list) or not completed_output:
+        final_response["output"] = [output_items[index] for index in sorted(output_items)]
+    return final_response
+
+
 def _raise_for_codex_response(response: requests.Response) -> None:
     if response.status_code < 400:
         return
@@ -653,7 +829,7 @@ def codex_completion(
         headers = {
             "Authorization": f"Bearer {bundle.get('access_token', '')}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream",
             "OpenAI-Beta": "responses=experimental",
             "originator": "d_sakiko",
         }
@@ -666,6 +842,7 @@ def codex_completion(
                 headers=headers,
                 json=request_payload,
                 timeout=timeout,
+                stream=True,
             )
         except requests.Timeout as exc:
             raise CodexConnectionError("Codex 请求超时。") from exc
@@ -681,6 +858,12 @@ def codex_completion(
         )
         response = send(bundle)
     _raise_for_codex_response(response)
+    content_type = str(getattr(response, "headers", {}).get("Content-Type", "") or "").lower()
+    # chatgpt.com 当前可能省略 Content-Type，只保留 chunked SSE；请求本身已经
+    # 明确 stream:true，因此无 Content-Type 时也按事件流读取。明确声明 JSON 的
+    # 兼容 relay 仍走下方 JSON 分支。
+    if "text/event-stream" in content_type or not content_type:
+        return responses_to_chat_completion(collect_codex_sse_response(response))
     try:
         response_payload = response.json()
     except ValueError as exc:
