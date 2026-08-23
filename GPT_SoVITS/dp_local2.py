@@ -189,6 +189,7 @@ class DSLocalAndVoiceGen:
         # 标记为取消的对话轮次。涉及这些轮次的对话不会被处理。
         self._cancelled_turns: set[tuple[str, str]] = set()
         self._cancelled_turns_lock = threading.Lock()
+        self._rollback_user_message_on_error = True
         self.initial()
 
     def initial(self):
@@ -422,7 +423,10 @@ class DSLocalAndVoiceGen:
         )
         ui_message = f"{user_message}"
         self._emit_turn_error(dp2qt_queue, chat_id, turn_id, ui_message)
-        self._clear_failed_turn_state(is_text_generating_queue, rollback_user_message=True)
+        self._clear_failed_turn_state(
+            is_text_generating_queue,
+            rollback_user_message=self._rollback_user_message_on_error,
+        )
 
     def _build_runtime_system_instruction(self) -> str:
         """
@@ -2171,6 +2175,7 @@ class DSLocalAndVoiceGen:
                     continue
 
             should_append_user_message = command.get("append_user_message") is not False
+            self._rollback_user_message_on_error = should_append_user_message
             did_append_real_user_message = False
             if should_append_user_message:
                 # 将原始用户输入（不含任何指令后缀）存入 Chat
