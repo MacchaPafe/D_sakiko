@@ -310,7 +310,7 @@ class MoreFunctionWindow(QDialog):
 
         advanced_settings_group = QGroupBox("高级设置与编辑")
         advanced_settings_layout = QVBoxLayout()
-        self.open_motion_editor_button =QPushButton("运行动作组编辑程序")
+        self.open_motion_editor_button =QPushButton("编辑角色的动作组")
         self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)  # noqa
         advanced_settings_layout.addWidget(self.open_motion_editor_button)
 
@@ -656,7 +656,7 @@ class SettingWindow(QDialog):
         self.resize(int(desktop_size.width()*0.2),int(desktop_size.height()*0.4))
         self.change_lan_btn=QPushButton("切换语言")
         self.change_lan_btn.clicked.connect(self.change_lan)
-        self.switch_voice_btn=QPushButton("开启/关闭语言合成")
+        self.switch_voice_btn=QPushButton("开启/关闭语音合成")
         self.switch_voice_btn.clicked.connect(self.switch_voice)
         self.clear_history_btn=QPushButton("清空聊天记录")
         self.clear_history_btn.clicked.connect(self.clear_history_msg)
@@ -2673,7 +2673,7 @@ class ChatGUI(QWidget):
             return
         self.repair_workflow_active = True
         self.pending_repair_result = None
-        progress = QProgressDialog("正在获取当前版本修复清单...", "取消", 0, 0, self)
+        progress = QProgressDialog("正在核对程序文件...", "取消", 0, 0, self)
         progress.setWindowTitle("检查程序文件")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)

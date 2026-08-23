@@ -39,8 +39,8 @@ class RepairDialog(QDialog):
         layout.addWidget(summary)
 
         warning = QLabel(
-            "将恢复为当前版本的官方内容。如果你手动修改过这些文件，修改内容将丢失。"
-            "修复前会把当前文件备份到本地。"
+            "如果你手动修改过下列文件，修改内容将丢失。"
+            "修复前，当前文件会被备份到程序目录下的 .updates/repair/backup 文件夹中。"
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #9B3A30; font-weight: 600;")
@@ -79,6 +79,8 @@ class RepairDialog(QDialog):
         buttons.addWidget(self.later_button)
         buttons.addWidget(self.cancel_button)
         layout.addLayout(buttons)
+
+        self._toggle_details()
 
     def _toggle_details(self) -> None:
         """展开或收起不分类的文件路径列表。"""
