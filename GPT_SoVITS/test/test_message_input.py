@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from typing import Callable
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -20,17 +22,69 @@ from PyQt5.QtGui import (
     QImage,
 )
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtWidgets import QApplication, QToolButton, QWidget
 
 from chat.chat import Message
 from emotion_enum import EmotionEnum
 from input_commands import InputCommandMatcher, InputCommandPalette, build_default_input_command_specs
-from qtUI import MessageEditDialog
+import qtUI
+from qtUI import ChatGUI, MessageEditDialog
 from ui_main.components.message_input import MessageInput, trim_surrounding_blank_lines
 from ui_main.theme import derive_theme_palette
 
 
 TEST_THEME_PALETTE = derive_theme_palette("#7799CC")
+
+
+class _FakeConfigSignal:
+    """记录配置信号连接并允许测试主动发送。"""
+
+    def __init__(self) -> None:
+        """初始化回调列表。"""
+        self.callbacks: list[Callable[[object], None]] = []
+
+    def connect(self, callback: Callable[[object], None]) -> None:
+        """记录一个配置变化回调。"""
+        self.callbacks.append(callback)
+
+
+class _FakeConfigItem:
+    """提供测试所需的 valueChanged 信号。"""
+
+    def __init__(self) -> None:
+        """初始化伪配置信号。"""
+        self.valueChanged = _FakeConfigSignal()
+
+
+class ImageUploadButtonConfigSignalTestCase(unittest.TestCase):
+    """验证模型配置变化会立即刷新图片按钮。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """创建供 ChatGUI 测试使用的 Qt 应用。"""
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_all_model_identity_changes_refresh_image_button(self) -> None:
+        """提供商、模型和自定义模式变化都应立即刷新。"""
+        config_items = [_FakeConfigItem() for _index in range(5)]
+        fake_config = SimpleNamespace(
+            use_default_deepseek_api=config_items[0],
+            enable_custom_llm_api_provider=config_items[1],
+            custom_llm_api_model=config_items[2],
+            llm_api_provider=config_items[3],
+            llm_api_model=config_items[4],
+        )
+        subject = ChatGUI.__new__(ChatGUI)
+        refresh = mock.Mock()
+        subject._refresh_add_image_button_state = refresh
+
+        with mock.patch.object(qtUI, "d_sakiko_config", fake_config):
+            subject._connect_image_upload_config_signals()
+
+        for config_item in config_items:
+            self.assertEqual(len(config_item.valueChanged.callbacks), 1)
+            config_item.valueChanged.callbacks[0]("changed")
+        self.assertEqual(refresh.call_count, len(config_items))
 
 
 class MessageInputTestCase(unittest.TestCase):
@@ -480,6 +534,62 @@ class MessageInputTestCase(unittest.TestCase):
 
         self.assertEqual(self.input.toPlainText(), "")
         self.assertEqual(self.input.pending_image_source_paths(), [])
+
+    def test_managed_mode_emits_add_request_before_showing_preview(self) -> None:
+        """管理模式应先把源路径交给外部控制器，而不是直接持有用户原图。"""
+        image_path = self._create_temp_png()
+        requested_paths: list[str] = []
+        self.input.set_managed_attachment_mode(True)
+        self.input.imageAddRequested.connect(requested_paths.append)
+
+        self.assertTrue(self.input.request_add_draft_image_path(image_path))
+
+        self.assertEqual(requested_paths, [image_path])
+        self.assertEqual(self.input.pending_image_source_paths(), [])
+
+    def test_failed_managed_draft_shows_clickable_retry_overlay(self) -> None:
+        """失败草稿应阻止发送，并通过整图遮罩发出重试请求。"""
+        image_path = self._create_temp_png()
+        retried_ids: list[str] = []
+        self.input.set_managed_attachment_mode(True)
+        self.input.imageRetryRequested.connect(retried_ids.append)
+        self.input.add_managed_draft({
+            "draft_attachment_id": "draft-one",
+            "staging_path": image_path,
+            "mime_type": "image/png",
+            "original_name": "tiny.png",
+            "upload_state": "failed",
+            "error_message": "network",
+        })
+        self.app.processEvents()
+
+        self.assertFalse(self.input.draft_images_ready())
+        self.assertIn("上传失败", self.input.draft_upload_block_reason())
+        overlay = self.input.findChild(QToolButton, "draftImageStatusOverlay")
+        self.assertIsNotNone(overlay)
+        assert overlay is not None
+        overlay.click()
+
+        self.assertEqual(retried_ids, ["draft-one"])
+
+    def test_commit_clear_does_not_cancel_remote_draft(self) -> None:
+        """后端确认提交后的 UI 清理不得再次发出远端取消信号。"""
+        image_path = self._create_temp_png()
+        removed_ids: list[str] = []
+        self.input.set_managed_attachment_mode(True)
+        self.input.imageRemoveRequested.connect(removed_ids.append)
+        self.input.add_managed_draft({
+            "draft_attachment_id": "draft-one",
+            "staging_path": image_path,
+            "mime_type": "image/png",
+            "original_name": "tiny.png",
+            "upload_state": "ready",
+        })
+
+        self.input.clear_after_commit()
+
+        self.assertEqual(removed_ids, [])
+        self.assertEqual(self.input.pending_draft_payloads(), [])
 
     def _create_temp_png(self) -> str:
         """创建测试用 PNG 图片并返回路径。"""

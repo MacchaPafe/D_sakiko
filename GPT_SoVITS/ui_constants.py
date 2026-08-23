@@ -420,7 +420,6 @@ char_info_json={
   }
 }
 
-
 def downloadable_character_names() -> list[str]:
     """返回具有有效 Bestdori 角色编号的可下载角色名称。"""
 
@@ -429,6 +428,84 @@ def downloadable_character_names() -> list[str]:
         for character_name, info in char_info_json.items()
         if isinstance(info.get("bestdori_index"), int)
     ]
+SINGLE_CHAT_COMBO_CSS = """
+QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-bottom: 2px solid #D1D1D1;
+    border-radius: 4px;
+    color: #5F6368;
+    padding: 6px 28px 6px 10px;
+    min-height: 24px;
+}
+
+QComboBox:hover {
+    background-color: #FDFDFD;
+    border-bottom: 2px solid #7799CC;
+}
+
+QComboBox:focus {
+    background-color: #FFFFFF;
+    border: 2px solid #7799CC;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 26px;
+    border: none;
+    background: transparent;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #6D7B8D;
+    margin-right: 8px;
+}
+"""
+
+SINGLE_CHAT_COMBO_VIEW_CSS = """
+QAbstractItemView,
+QListView#singleChatCharacterComboView {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-radius: 4px;
+    padding: 4px;
+    outline: none;
+    margin-top: 4px;
+    selection-background-color: #E9F1FB;
+    selection-color: #2E4A6B;
+}
+
+QAbstractItemView::item,
+QListView#singleChatCharacterComboView::item {
+    height: 32px;
+    border-radius: 4px;
+    padding-left: 8px;
+    color: #5F6368;
+    background-color: transparent;
+    border: none;
+}
+
+QAbstractItemView::item:hover,
+QAbstractItemView::item:selected,
+QListView#singleChatCharacterComboView::item:hover,
+QListView#singleChatCharacterComboView::item:selected {
+    background-color: #E9F1FB;
+    color: #2E4A6B;
+    border: none;
+}
+"""
+
+SINGLE_CHAT_DIALOG_CSS = (
+    dialogWindowDefaultCss
+    + SINGLE_CHAT_COMBO_CSS
+    + SINGLE_CHAT_COMBO_VIEW_CSS
+)
 
 
 class CurrentConfig:
@@ -569,6 +646,5 @@ class AddCostume:
 3''')
         with open(f"../reference_audio/{character_folder_name}/reference_text.txt",'w',encoding='utf-8') as f:
             f.write('')
-
 
 

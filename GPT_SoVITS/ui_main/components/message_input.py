@@ -55,13 +55,28 @@ def trim_surrounding_blank_lines(text: str) -> str:
     return "\n".join(lines[first_content_line:last_content_line])
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass
 class DraftImageAttachment:
     """输入框草稿中的图片附件。"""
 
+    draft_attachment_id: str
     source_path: str
     mime_type: str
     original_name: str
+    upload_state: str = "ready"
+    error_message: str = ""
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "DraftImageAttachment":
+        """从附件管理器描述符构造 UI 草稿状态。"""
+        return cls(
+            draft_attachment_id=str(payload.get("draft_attachment_id") or ""),
+            source_path=str(payload.get("staging_path") or ""),
+            mime_type=str(payload.get("mime_type") or ""),
+            original_name=str(payload.get("original_name") or ""),
+            upload_state=str(payload.get("upload_state") or "pending"),
+            error_message=str(payload.get("error_message") or ""),
+        )
 
 
 class _ClickableImageLabel(QLabel):
@@ -83,6 +98,7 @@ class _DraftImagePreviewItem(QFrame):
 
     removeRequested = pyqtSignal(str)
     openRequested = pyqtSignal(str)
+    retryRequested = pyqtSignal(str)
 
     def __init__(self, attachment: DraftImageAttachment, parent: QWidget | None = None) -> None:
         """创建草稿图片预览项。"""
@@ -105,13 +121,38 @@ class _DraftImagePreviewItem(QFrame):
         self.remove_button.setText("x")
         self.remove_button.setToolTip("删除图片")
         self.remove_button.setFixedSize(18, 18)
-        self.remove_button.clicked.connect(lambda: self.removeRequested.emit(self._attachment.source_path))  # noqa
+        self.remove_button.clicked.connect(lambda: self.removeRequested.emit(self._attachment.draft_attachment_id))  # noqa
+
+        self.status_overlay = QToolButton(self)
+        self.status_overlay.setObjectName("draftImageStatusOverlay")
+        self.status_overlay.setFixedSize(70, 70)
+        self.status_overlay.move(4, 4)
+        self.status_overlay.clicked.connect(
+            lambda: self.retryRequested.emit(self._attachment.draft_attachment_id)
+        )  # noqa
+        self._refresh_status_overlay()
 
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.image_label)
         self.setLayout(layout)
         self.remove_button.move(self.width() - self.remove_button.width(), 0)
+        self.remove_button.raise_()
+
+    def _refresh_status_overlay(self) -> None:
+        """根据上传状态刷新缩略图遮罩。"""
+        if self._attachment.upload_state in {"pending", "uploading"}:
+            self.status_overlay.setText("上传中")
+            self.status_overlay.setEnabled(False)
+            self.status_overlay.show()
+            return
+        if self._attachment.upload_state == "failed":
+            self.status_overlay.setText("点击重试")
+            self.status_overlay.setEnabled(True)
+            self.status_overlay.setToolTip(self._attachment.error_message or "图片上传失败")
+            self.status_overlay.show()
+            return
+        self.status_overlay.hide()
 
     def _set_thumbnail(self, path: str) -> None:
         """加载并设置缩略图。"""
@@ -311,6 +352,10 @@ class MessageInput(QWidget):
     """支持聊天发送、自动高度、图片预览和文件拖入的复合输入框。"""
 
     sendRequested = pyqtSignal()
+    imageAddRequested = pyqtSignal(str)
+    imageRemoveRequested = pyqtSignal(str)
+    imageRetryRequested = pyqtSignal(str)
+    draftStateChanged = pyqtSignal()
 
     def __init__(self, palette: ThemePalette, parent: QWidget | None = None) -> None:
         """初始化复合输入框。"""
@@ -322,6 +367,7 @@ class MessageInput(QWidget):
         self._force_image_upload_allow_callback: Callable[[str], bool] | None = None
         self._draft_images: list[DraftImageAttachment] = []
         self._pending_unsupported_image_paths: list[str] = []
+        self._managed_attachment_mode = False
 
         self.error_bar = QWidget(self)
         self.error_bar.setObjectName("messageInputErrorBar")
@@ -385,6 +431,10 @@ class MessageInput(QWidget):
     def set_vision_support_checker(self, checker: Callable[[], bool]) -> None:
         """设置当前模型是否支持视觉输入的同步检查回调。"""
         self._vision_support_checker = checker
+
+    def set_managed_attachment_mode(self, enabled: bool = True) -> None:
+        """启用由外部附件控制器负责暂存和上传的模式。"""
+        self._managed_attachment_mode = enabled
 
     def set_image_upload_override_handlers(
         self,
@@ -461,6 +511,16 @@ class MessageInput(QWidget):
                 background-color: {self._theme_palette.accent};
                 color: {self._theme_palette.on_accent};
             }}
+            QToolButton#draftImageStatusOverlay {{
+                color: #FFFFFF;
+                background-color: rgba(0, 0, 0, 0.58);
+                border: none;
+                border-radius: 5px;
+                font-weight: bold;
+            }}
+            QToolButton#draftImageStatusOverlay:enabled:hover {{
+                background-color: rgba(0, 0, 0, 0.72);
+            }}
         """)
 
     def _handle_text_changed(self) -> None:
@@ -487,7 +547,7 @@ class MessageInput(QWidget):
         self.clear_draft_images()
         failed_paths: list[str] = []
         for image_path in image_paths:
-            if not self.add_draft_image_path(image_path, show_error=False):
+            if not self.request_add_draft_image_path(image_path, show_error=False):
                 failed_paths.append(image_path)
         self.text_edit.moveCursor(QTextCursor.End)
         self.refresh_height()
@@ -512,7 +572,7 @@ class MessageInput(QWidget):
                 continue
             if self._is_supported_image_path(path):
                 if self._model_supports_vision():
-                    self.add_draft_image_path(path)
+                    self.request_add_draft_image_path(path)
                 else:
                     unsupported_image_paths.append(os.path.abspath(path))
                 continue
@@ -548,6 +608,7 @@ class MessageInput(QWidget):
                 self.show_error(f"图片不存在、无法读取或格式不受支持：{os.path.basename(path)}")
             return False
         self._draft_images.append(DraftImageAttachment(
+            draft_attachment_id=absolute_path,
             source_path=absolute_path,
             mime_type=mime_type,
             original_name=os.path.basename(path),
@@ -556,17 +617,90 @@ class MessageInput(QWidget):
         self._refresh_preview_bar()
         return True
 
-    def clear_draft_images(self) -> None:
+    def request_add_draft_image_path(self, path: str, *, show_error: bool = True) -> bool:
+        """请求外部控制器接管图片，未启用管理模式时沿用本地草稿。"""
+        absolute_path = os.path.abspath(path)
+        if detect_image_mime_type(absolute_path) is None:
+            if show_error:
+                self.show_error(f"图片不存在、无法读取或格式不受支持：{os.path.basename(path)}")
+            return False
+        if self._managed_attachment_mode:
+            self.imageAddRequested.emit(absolute_path)
+            return True
+        return self.add_draft_image_path(absolute_path, show_error=show_error)
+
+    def add_managed_draft(self, payload: dict[str, object]) -> None:
+        """把附件管理器返回的草稿描述符加入预览。"""
+        attachment = DraftImageAttachment.from_payload(payload)
+        if not attachment.draft_attachment_id or not attachment.source_path:
+            raise ValueError("草稿附件描述符缺少 ID 或暂存路径。")
+        self._draft_images.append(attachment)
+        self.hide_error()
+        self._refresh_preview_bar()
+        self.draftStateChanged.emit()
+
+    def update_managed_draft(self, payload: dict[str, object]) -> None:
+        """用附件管理器的最新状态更新已有草稿。"""
+        updated = DraftImageAttachment.from_payload(payload)
+        for index, attachment in enumerate(self._draft_images):
+            if attachment.draft_attachment_id == updated.draft_attachment_id:
+                self._draft_images[index] = updated
+                self._refresh_preview_bar()
+                self.draftStateChanged.emit()
+                return
+
+    def clear_draft_images(self, *, notify_manager: bool = True) -> None:
         """清空草稿图片。"""
         if not self._draft_images:
             self.preview_area.hide()
             return
+        draft_ids = [attachment.draft_attachment_id for attachment in self._draft_images]
         self._draft_images.clear()
         self._refresh_preview_bar()
+        if notify_manager and self._managed_attachment_mode:
+            for draft_id in draft_ids:
+                self.imageRemoveRequested.emit(draft_id)
+        self.draftStateChanged.emit()
+
+    def clear_after_commit(self) -> None:
+        """在后端确认提交后清空 UI，但不再取消已转正的草稿。"""
+        self.text_edit.clear()
+        self.text_edit.document().clearUndoRedoStacks()
+        self.clear_draft_images(notify_manager=False)
+        self.hide_error()
+        self.refresh_height()
 
     def pending_image_source_paths(self) -> list[str]:
         """返回当前草稿图片源路径列表。"""
         return [attachment.source_path for attachment in self._draft_images]
+
+    def pending_draft_payloads(self) -> list[dict[str, object]]:
+        """返回发送给后端的草稿附件描述符。"""
+        return [
+            {
+                "draft_attachment_id": attachment.draft_attachment_id,
+                "staging_path": attachment.source_path,
+                "mime_type": attachment.mime_type,
+                "original_name": attachment.original_name,
+                "upload_state": attachment.upload_state,
+            }
+            for attachment in self._draft_images
+        ]
+
+    def draft_images_ready(self) -> bool:
+        """判断全部草稿图片是否已经可以发送。"""
+        return all(attachment.upload_state == "ready" for attachment in self._draft_images)
+
+    def draft_upload_block_reason(self) -> str:
+        """返回阻止当前草稿发送的上传状态说明。"""
+        if any(attachment.upload_state == "failed" for attachment in self._draft_images):
+            return "存在上传失败的图片，请点击图片重试或删除。"
+        if any(
+            attachment.upload_state in {"pending", "uploading"}
+            for attachment in self._draft_images
+        ):
+            return "图片正在上传，请稍候。"
+        return ""
 
     def optimistic_image_attachments(self) -> list[MessageAttachment]:
         """返回仅用于前端乐观渲染的图片附件列表。"""
@@ -637,18 +771,22 @@ class MessageInput(QWidget):
             preview = _DraftImagePreviewItem(attachment, self.preview_content)
             preview.removeRequested.connect(self._remove_draft_image)  # noqa
             preview.openRequested.connect(self._open_image_path)  # noqa
+            preview.retryRequested.connect(self.imageRetryRequested.emit)  # noqa
             self.preview_layout.addWidget(preview)
         self.preview_layout.addStretch(1)
         self.preview_area.setVisible(bool(self._draft_images))
         self.refresh_height()
 
-    def _remove_draft_image(self, source_path: str) -> None:
+    def _remove_draft_image(self, draft_attachment_id: str) -> None:
         """从草稿中删除指定图片。"""
         for index, attachment in enumerate(self._draft_images):
-            if attachment.source_path == source_path:
+            if attachment.draft_attachment_id == draft_attachment_id:
                 del self._draft_images[index]
                 break
         self._refresh_preview_bar()
+        if self._managed_attachment_mode:
+            self.imageRemoveRequested.emit(draft_attachment_id)
+        self.draftStateChanged.emit()
 
     def _open_image_path(self, source_path: str) -> None:
         """使用系统默认程序打开图片。"""
@@ -674,7 +812,7 @@ class MessageInput(QWidget):
 
         failed_paths: list[str] = []
         for image_path in pending_paths:
-            if not self.add_draft_image_path(image_path, show_error=False):
+            if not self.request_add_draft_image_path(image_path, show_error=False):
                 failed_paths.append(image_path)
         if failed_paths:
             self.show_error(f"图片不存在、无法读取或格式不受支持：{os.path.basename(failed_paths[0])}")

@@ -472,6 +472,13 @@ if __name__=='__main__':
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+    from runtime.runtime_lock import RuntimeLockBusy, acquire_runtime_lock
+    try:
+        runtime_lease = acquire_runtime_lock(project_root, "desktop")
+    except RuntimeLockBusy as exc:
+        print(str(exc))
+        raise SystemExit(1)
+
     from qconfig import d_sakiko_config
 
     main_logger.info("数字小祥程序...")

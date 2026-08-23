@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import queue
+import signal
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -818,6 +819,7 @@ def build_audio_progress_message(
 
 def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, log_queue=None) -> None:
     """作为独立 worker 进程处理 GPT-SoVITS 语音生成命令。"""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     if log_queue is not None:
         setup_worker_logging(log_queue)
 

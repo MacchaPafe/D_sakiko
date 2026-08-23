@@ -497,7 +497,11 @@ class ViewerGUI(QWidget):
         # 如果角色 index 不存在于上述两个字典中，则表示该角色第一次加载模型，默认使用默认模型
 
         self.load_suitable_model()
-        self.message_box.append("当前角色："+self.character_list[self.current_char_index].character_name)
+        self.message_box.append(
+            f"当前角色：{self.character_list[self.current_char_index].character_name}\n"
+            "选择右侧动作即可删除\n"
+            "选择左侧动作和右侧动作组后，可以添加或替换动作到组中\n"
+        )
         self.update_button_states()
 
     def load_suitable_model(self):

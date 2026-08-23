@@ -23,6 +23,7 @@ from chat.chat import (
     ChatType,
     Message,
     MessageAttachment,
+    RemoteFileReference,
     SingleCharacterPromptGenerator,
     StaticPromptGenerator,
     UserPersonaSnapshot,
@@ -649,7 +650,7 @@ class ChatTestCase(unittest.TestCase):
         image_upload = data["image_upload"]
         self.assertIsInstance(image_upload, dict)
         assert isinstance(image_upload, dict)
-        self.assertEqual(image_upload["force_allowlist"], ["dashscope/qwen3.6-plus"])
+        self.assertIn("dashscope/qwen3.6-plus", image_upload["force_allowlist"])
         self.assertNotIn("blocklist", image_upload)
 
     def test_chat_display_renders_image_with_explicit_thumbnail_size(self) -> None:
@@ -706,6 +707,28 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(len(query), 2)
         self.assertEqual(query[0]["content"], "[User]: 前一句")
         self.assertIsInstance(query[1]["content"], list)
+
+    def test_chat_display_marks_confirmed_unavailable_image_as_not_sent(self) -> None:
+        """用户确认忽略的缺失图片应显示明确的未发送状态。"""
+        message = Message(
+            character_name="User",
+            text="继续发送",
+            translation="",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path="",
+            attachments=[MessageAttachment(
+                type="image",
+                path="missing.png",
+                original_name="missing.png",
+                availability="unavailable",
+                unavailable_reason="无法恢复",
+            )],
+        )
+
+        html_text = ChatDisplay._render_attachments_html(message)
+
+        self.assertIn("[图片缺失、未发送]", html_text)
+        self.assertIn("无法恢复", html_text)
 
     def test_create_multiple_single_chats_for_same_character(self):
         """
@@ -1135,6 +1158,13 @@ class ChatTestCase(unittest.TestCase):
                                 path=missing_attachment_path,
                                 mime_type="image/png",
                                 original_name="missing.png",
+                                remote_refs=[RemoteFileReference(
+                                    api_base="https://api.deepseek.com",
+                                    api_key_digest="digest",
+                                    file_id="file-api-test",
+                                    uploaded_at="2026-01-01T00:00:00+00:00",
+                                    expires_at="2026-01-02T00:00:00+00:00",
+                                )],
                             )
                         ],
                     )
@@ -1151,6 +1181,8 @@ class ChatTestCase(unittest.TestCase):
                 manifest = json.loads(backup_file.read("manifest.json").decode("utf-8"))
             exported_attachment_path = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]["path"]
             self.assertEqual(exported_attachment_path, missing_attachment_path)
+            exported_attachment = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]
+            self.assertNotIn("remote_refs", exported_attachment)
 
     @staticmethod
     def _character(name: str) -> CharacterAttributes:

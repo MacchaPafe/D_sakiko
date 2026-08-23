@@ -19,7 +19,6 @@ SUPPORTED_IMAGE_MIME_TYPES = {
     "image/jpeg",
     "image/webp",
     "image/gif",
-    "image/bmp",
 }
 
 _IMAGE_FORMAT_MIME_TYPES = {
@@ -28,7 +27,6 @@ _IMAGE_FORMAT_MIME_TYPES = {
     "jpeg": "image/jpeg",
     "webp": "image/webp",
     "gif": "image/gif",
-    "bmp": "image/bmp",
 }
 
 _MIME_TYPE_EXTENSIONS = {
@@ -36,7 +34,6 @@ _MIME_TYPE_EXTENSIONS = {
     "image/jpeg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
-    "image/bmp": ".bmp",
 }
 
 _MODEL_ATTACHMENT_CAPABILITIES_PATH = Path(__file__).with_name("model_attachment_capabilities.json")
@@ -219,7 +216,29 @@ def _load_model_attachment_capabilities() -> dict[str, object]:
     except (OSError, json.JSONDecodeError):
         return _default_model_attachment_capabilities()
     if isinstance(data, dict):
+        # 我们确保所有内置白名单的内容都在用户的文件中，没有则在运行时补充
+
+        # 我们的内置白名单模型
+        default_data = _default_model_attachment_capabilities()
+        default_image_upload = default_data.get("image_upload")
+
+        if isinstance(default_image_upload, dict):
+            image_upload = data.get("image_upload")
+            if not isinstance(image_upload, dict):
+                image_upload = {}
+                data["image_upload"] = image_upload
+
+            allowlist = _read_string_list(image_upload.get("force_allowlist"))
+
+            for model in _read_string_list(
+                    default_image_upload.get("force_allowlist")
+            ):
+                if not _model_matches(model, allowlist):
+                    allowlist.append(model)
+
+            image_upload["force_allowlist"] = allowlist
         return data
+
     return _default_model_attachment_capabilities()
 
 
@@ -254,6 +273,8 @@ def _default_model_attachment_capabilities() -> dict[str, object]:
     return {
         "version": 1,
         "image_upload": {
-            "force_allowlist": [],
+            "force_allowlist": [
+                "deepseek/deepseek-v4-flash-vision-exp"
+            ],
         },
     }

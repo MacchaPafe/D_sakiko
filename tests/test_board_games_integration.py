@@ -123,3 +123,13 @@ def test_both_menu_entries_are_wired():
     source = ast.unparse(more)
     assert "五子棋小游戏" in source and "黑白棋小游戏" in source
     assert "open_gomoku_fun()" in source and "open_reversi_fun()" in source
+
+
+def test_board_context_survives_remote_draft_attachment_flow():
+    """合并 WebUI 附件流程后，棋局上下文与远程草稿必须一起送入后端。"""
+    source = ast.unparse(_chat_gui_method("handle_user_input"))
+    gomoku_at = source.index("self._append_gomoku_board_context_if_needed")
+    reversi_at = source.index("self._append_reversi_board_context_if_needed")
+    drafts_at = source.index("self.user_input.pending_draft_payloads")
+    send_at = source.index("self._send_user_message_payload(send_text, draft_attachments=draft_attachments)")
+    assert gomoku_at < reversi_at < drafts_at < send_at

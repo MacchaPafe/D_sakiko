@@ -22,6 +22,13 @@ _MIN_ACCENT_TEXT_CONTRAST = 4.5
 _MIN_CONTROL_TEXT_CONTRAST = 4.0
 _CONTRAST_SEARCH_MARGIN = 0.03
 _SRGB_GAMUT_MAPPING_METHOD = "oklch-chroma"
+_DARK_ON_ACCENT_CHARACTER_SEEDS = frozenset({
+    "#FFEE88",  # 羽泽鸫
+    "#FFEE22",  # 弦卷心
+    "#FFEEAA",  # 千圣
+    "#FFDD88",  # 素世
+    "#FFEE55",  # 阿拉蕾
+})
 
 logger = logging.getLogger(__name__)
 
@@ -198,9 +205,21 @@ def _derive_normalized_theme_palette(normalized_seed: str) -> ThemePalette:
 
     black_contrast = _contrast(accent, "#000000")
     white_contrast = _contrast(accent, "#FFFFFF")
-    on_accent = "#000000" if black_contrast >= white_contrast else "#FFFFFF"
-    accent_hover = _state_color(seed_oklch, -0.035, on_accent)
-    accent_pressed = _state_color(seed_oklch, -0.075, on_accent)
+    on_accent = "#FFFFFF" if black_contrast >= white_contrast else "#FFFFFF"
+    if normalized_seed in _DARK_ON_ACCENT_CHARACTER_SEEDS:
+        on_accent = _tone_for_contrast(
+            seed_hue,
+            min(seed_chroma * 0.18, 0.035),
+            accent,
+            _MIN_ACCENT_TEXT_CONTRAST,
+        )
+        hover_lightness_delta = 0.025
+        pressed_lightness_delta = 0.05
+    else:
+        hover_lightness_delta = -0.035
+        pressed_lightness_delta = -0.075
+    accent_hover = _state_color(seed_oklch, hover_lightness_delta, on_accent)
+    accent_pressed = _state_color(seed_oklch, pressed_lightness_delta, on_accent)
 
     return ThemePalette(
         accent=accent,

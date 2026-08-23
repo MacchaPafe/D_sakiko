@@ -30,6 +30,21 @@
       "max_input_tokens": 1000000,
       "max_output_tokens": 384000,
       "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash"
+    },
+    {
+      "id": "deepseek-v4-flash-vision-exp",
+      "aliases": [
+        "deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "openai/deepseek-v4-flash-vision-exp",
+        "deepseek-ai/deepseek-v4-flash-vision-exp",
+        "openai/deepseek-ai/deepseek-v4-flash-vision-exp",
+        "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+        "openai/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp"
+      ],
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 384000,
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash"
     }
   ]
 }
