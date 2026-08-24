@@ -137,13 +137,6 @@ a:focus-visible {
   border-bottom: 1px solid var(--line-subtle);
 }
 
-.hero-brand {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  min-width: 0;
-}
-
 .hero-copy {
   min-width: 0;
 }
@@ -171,98 +164,6 @@ h1 {
   font-size: 13px;
   line-height: 1.4;
 }
-
-/* Device Pair Graphic from WebUI */
-.device-pair {
-  position: relative;
-  width: 120px;
-  height: 48px;
-  flex: 0 0 120px;
-}
-
-.device-pair__desktop,
-.device-pair__phone {
-  position: absolute;
-  border: 1.5px solid #aeb4bb;
-  background: #ffffff;
-}
-
-.device-pair__desktop {
-  left: 0;
-  top: 8px;
-  width: 52px;
-  height: 32px;
-  border-radius: 6px;
-}
-
-.device-pair__desktop::after {
-  position: absolute;
-  left: 19px;
-  bottom: -6px;
-  width: 14px;
-  height: 2px;
-  background: #aeb4bb;
-  content: "";
-}
-
-.device-pair__phone {
-  right: 0;
-  top: 4px;
-  width: 24px;
-  height: 40px;
-  border-radius: 6px;
-}
-
-.device-pair__phone::after {
-  position: absolute;
-  left: 7px;
-  bottom: 3px;
-  width: 10px;
-  height: 2px;
-  border-radius: 1px;
-  background: #202226;
-  content: "";
-}
-
-.device-pair__signal {
-  position: absolute;
-  left: 60px;
-  top: 17px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.device-pair__signal::before,
-.device-pair__signal::after {
-  position: absolute;
-  top: 6px;
-  height: 1px;
-  background: #c8cbd0;
-  content: "";
-}
-
-.device-pair__signal::before {
-  right: 14px;
-  width: 8px;
-}
-
-.device-pair__signal::after {
-  left: 14px;
-  width: 12px;
-}
-
-.device-pair__signal i {
-  z-index: 1;
-  width: 2.5px;
-  border-radius: 2px;
-  background: var(--accent);
-  display: block;
-}
-
-.device-pair__signal i:nth-child(1) { height: 6px; }
-.device-pair__signal i:nth-child(2) { height: 13px; }
-.device-pair__signal i:nth-child(3) { height: 9px; }
 
 /* Status Badge */
 .status-badge {
@@ -648,12 +549,6 @@ select:focus {
     align-items: flex-start;
     gap: 16px;
     padding-bottom: 18px;
-  }
-
-  .hero-brand {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
   }
 
   .content {
