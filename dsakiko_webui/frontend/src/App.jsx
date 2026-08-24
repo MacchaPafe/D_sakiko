@@ -1,4 +1,4 @@
-import { AlertTriangle, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
 import { useAudioController } from './audio/useAudioController'
 import { IconButton } from './components/IconButton'
@@ -113,6 +113,12 @@ function AppExperience() {
           <IconButton label="关闭" onClick={actions.clearError}>
             <X size={17} />
           </IconButton>
+        </div>
+      )}
+      {state.notice && (
+        <div className="connection-toast" role="status">
+          <CheckCircle2 size={18} />
+          <span>{state.notice}</span>
         </div>
       )}
     </main>

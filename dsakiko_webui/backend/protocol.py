@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +11,13 @@ PROTOCOL_VERSION = 1
 class SessionRequest(BaseModel):
     access_code: str = Field(min_length=1, max_length=128)
     session_id: str | None = Field(default=None, max_length=128)
+
+
+class PairingRequest(BaseModel):
+    """描述手机浏览器提交的一次配对凭证兑换。"""
+
+    pairing_token: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -25,7 +31,7 @@ class CommandEnvelope(BaseModel):
     kind: str
     type: str
     request_id: str = Field(min_length=1, max_length=128)
-    payload: dict[str, Any]
+    payload: dict[str, object]
 
 
 @dataclass
@@ -33,9 +39,9 @@ class ProtocolError(Exception):
     code: str
     message: str
     retryable: bool = False
-    details: dict[str, Any] = field(default_factory=dict)
+    details: dict[str, object] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "code": self.code,
             "message": self.message,
@@ -47,9 +53,9 @@ class ProtocolError(Exception):
 def command_result(
     request_id: str,
     *,
-    data: dict[str, Any] | None = None,
+    data: dict[str, object] | None = None,
     error: ProtocolError | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     return {
         "protocol_version": PROTOCOL_VERSION,
         "kind": "response",
@@ -61,5 +67,5 @@ def command_result(
     }
 
 
-def http_error(error: ProtocolError) -> dict[str, Any]:
+def http_error(error: ProtocolError) -> dict[str, object]:
     return {"error": error.as_dict()}

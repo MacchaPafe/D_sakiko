@@ -5,14 +5,13 @@ import json
 import logging
 import time
 import uuid
-from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import WebSocket
 from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
-from .auth import COOKIE_NAME, SingleControllerAuth
+from .auth import COOKIE_NAME, AccessController
 from .protocol import (
     PROTOCOL_VERSION,
     CommandEnvelope,
@@ -26,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class WebSocketManager:
-    def __init__(self, auth: SingleControllerAuth, runtime: Any) -> None:
+    """维护唯一活动 WebSocket，并通过统一访问控制校验会话。"""
+
+    def __init__(self, auth: AccessController, runtime: object) -> None:
+        """绑定统一访问控制与无界面运行时。"""
         self.auth = auth
         self.runtime = runtime
         self.websocket: WebSocket | None = None
@@ -49,7 +51,7 @@ class WebSocketManager:
         self.token = token
         self.sequence = 0
 
-    async def send_event(self, event: dict[str, Any], request_id: str | None = None) -> None:
+    async def send_event(self, event: dict[str, object], request_id: str | None = None) -> None:
         if self.websocket is None:
             return
         async with self._send_lock:
@@ -75,7 +77,7 @@ class WebSocketManager:
                 self.websocket = None
                 self.token = None
 
-    async def send_json(self, websocket: WebSocket, data: dict[str, Any]) -> None:
+    async def send_json(self, websocket: WebSocket, data: dict[str, object]) -> None:
         async with self._send_lock:
             await websocket.send_json(data)
 

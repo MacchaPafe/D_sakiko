@@ -21,6 +21,8 @@ export const initialConversationState = {
   displayLanguage: 'translation',
   pendingChatId: null,
   error: null,
+  notice: null,
+  authRetryUntil: null,
 }
 
 function appendUniqueMessage(messages, message) {
@@ -156,10 +158,19 @@ export function conversationReducer(state, action) {
       return {
         ...state,
         connection: action.connection,
+        authRetryUntil: Object.hasOwn(action, 'retryUntil')
+          ? action.retryUntil
+          : (action.connection === 'needs_auth' ? state.authRetryUntil : null),
         error: action.message
           ? { code: action.code || 'CONNECTION', message: action.message }
           : state.error,
       }
+
+    case 'set_notice':
+      return { ...state, notice: action.message }
+
+    case 'clear_notice':
+      return { ...state, notice: null }
 
     case 'command_error':
       return {

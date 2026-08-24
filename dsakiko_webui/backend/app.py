@@ -3,25 +3,32 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
-import socket
 import time
 import unicodedata
 from contextlib import asynccontextmanager
-from typing import Any
-
 from fastapi import FastAPI, File, Request, Response, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import RequestResponseEndpoint
 
 from .assets import PROJECT_ROOT, AssetRegistry
-from .auth import COOKIE_NAME, SingleControllerAuth
+from .auth import (
+    COOKIE_NAME,
+    AccessCodeRejected,
+    AccessController,
+    AccessRateLimited,
+    PairingRejected,
+    SessionReplacement,
+)
 from .protocol import (
     PROTOCOL_VERSION,
+    PairingRequest,
     ProtocolError,
     SessionRequest,
     SettingsUpdateRequest,
     http_error,
 )
+from .networking import discover_network_addresses
 from .runtime import HeadlessRuntime
 from .uploads import MAX_IMAGE_UPLOAD_BYTES, PendingImageStore
 from .ws import WebSocketManager
@@ -33,31 +40,24 @@ FRONTEND_DIST = PROJECT_ROOT / "dsakiko_webui" / "frontend" / "dist"
 WEBUI_PORT = 8000
 
 
-def print_startup_banner(access_code: str) -> None:
-    local_ip = None
-    try:
-        addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
-        local_ip = next(
-            (address[4][0] for address in addresses if not address[4][0].startswith("127.")),
-            None,
-        )
-    except OSError:
-        pass
-    if local_ip is None:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-                probe.connect(("192.0.2.1", 80))
-                local_ip = probe.getsockname()[0]
-        except OSError:
-            local_ip = "127.0.0.1"
-
+def print_startup_banner(access_code: str, pairing_ui_url: str | None = None) -> None:
+    addresses = discover_network_addresses()
+    local_ip = addresses[0].address if addresses else None
     lines = [
         "数字小祥WebUI",
         "",
-        "1. 请确保手机或其他控制端和本机连接在同一局域网",
-        f"2. 在控制端浏览器中输入 http://{local_ip}:{WEBUI_PORT}",
-        f"3. 在控制端输入访问码：{access_code}",
+        "首选：在电脑打开本机配对页，并使用手机扫描二维码",
     ]
+    if pairing_ui_url:
+        lines.append(f"本机配对页：{pairing_ui_url}")
+    else:
+        lines.append("本机配对页未启动，请使用下方备用方式")
+    lines.extend([
+        "",
+        "备用：手机与电脑连接同一可信局域网后手动登录",
+        f"手机访问地址：http://{local_ip}:{WEBUI_PORT}" if local_ip else "未检测到可用局域网地址",
+        f"六位访问码：{access_code}",
+    ])
     def display_width(value: str) -> int:
         return sum(
             2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
@@ -75,8 +75,8 @@ def print_startup_banner(access_code: str) -> None:
 
 
 def create_app(
-    runtime: Any | None = None,
-    auth: SingleControllerAuth | None = None,
+    runtime: object | None = None,
+    auth: AccessController | None = None,
     *,
     initialize_runtime: bool = True,
 ) -> FastAPI:
@@ -86,7 +86,7 @@ def create_app(
         runtime = HeadlessRuntime(assets, uploads)
     else:
         uploads = getattr(runtime, "uploads", None) or PendingImageStore()
-    auth = auth or SingleControllerAuth()
+    auth = auth or AccessController()
     ws_manager = WebSocketManager(auth, runtime)
 
     async def event_pump() -> None:
@@ -114,7 +114,7 @@ def create_app(
             initialize_task = asyncio.create_task(initialize())
         if initialize_runtime:
             logger.info("WebUI 访问码：%s", auth.access_code)
-            print_startup_banner(auth.access_code)
+            print_startup_banner(auth.access_code, app.state.pairing_ui_url)
         try:
             yield
         finally:
@@ -133,9 +133,47 @@ def create_app(
     app.state.ws_manager = ws_manager
     app.state.uploads = uploads
     app.state.runtime_lease = None
+    app.state.pairing_ui_url = None
+
+    @app.middleware("http")
+    async def browser_security_headers(
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """阻止入口和认证响应被缓存或把来源 URL 发送给其他站点。"""
+        response = await call_next(request)
+        protected_response = (
+            request.url.path == "/"
+            or request.url.path.startswith("/api/v1/session")
+            or request.url.path.startswith("/api/v1/pairing")
+        )
+        if protected_response:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     def authenticated(request: Request) -> bool:
         return auth.is_authenticated(request.cookies.get(COOKIE_NAME))
+
+    def session_response(replacement: SessionReplacement) -> JSONResponse:
+        """把访问控制结果转换为安全的浏览器会话响应。"""
+        response = JSONResponse({
+            "authenticated": True,
+            "replaced_existing_controller": replacement.replaced_existing_controller,
+        }, headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        })
+        response.set_cookie(
+            COOKIE_NAME,
+            replacement.token,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
+        return response
 
     @app.get("/api/v1/health")
     async def health(request: Request) -> JSONResponse:
@@ -150,24 +188,71 @@ def create_app(
         }, headers={"Cache-Control": "no-store"})
 
     @app.post("/api/v1/session")
-    async def login(body: SessionRequest) -> JSONResponse:
+    async def login(body: SessionRequest, request: Request) -> JSONResponse:
+        source_ip = request.client.host if request.client is not None else "unknown"
         try:
-            replacement = auth.login(body.access_code, body.session_id)
-        except ValueError:
+            replacement = auth.login_with_access_code(
+                body.access_code,
+                source_ip,
+                body.session_id,
+            )
+        except AccessRateLimited as exc:
+            error = ProtocolError(
+                "AUTH_RATE_LIMITED",
+                "尝试次数过多，请等待后再试。",
+                True,
+                {"retry_after_seconds": exc.retry_after_seconds},
+            )
+            return JSONResponse(
+                http_error(error),
+                status_code=429,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Referrer-Policy": "no-referrer",
+                    "Retry-After": str(exc.retry_after_seconds),
+                },
+            )
+        except AccessCodeRejected:
             error = ProtocolError("AUTH_REQUIRED", "访问码错误，请重新输入。", True)
-            return JSONResponse(http_error(error), status_code=401)
+            return JSONResponse(
+                http_error(error),
+                status_code=401,
+                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+            )
         if replacement.replaced_token:
             await ws_manager.close_token(replacement.replaced_token, 4409, "控制权已被新设备接管")
-        response = JSONResponse({"authenticated": True}, headers={"Cache-Control": "no-store"})
-        response.set_cookie(
-            COOKIE_NAME,
-            replacement.token,
-            httponly=True,
-            samesite="strict",
-            secure=False,
-            path="/",
-        )
-        return response
+        return session_response(replacement)
+
+    @app.post("/api/v1/pairing/redeem")
+    async def redeem_pairing(body: PairingRequest, request: Request) -> JSONResponse:
+        """兑换二维码中的一次性配对凭证并签发浏览器会话。"""
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > 4096:
+            return JSONResponse(
+                http_error(ProtocolError("PAIRING_INVALID", "二维码已失效。", True)),
+                status_code=413,
+                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+            )
+        try:
+            replacement = auth.login_with_pairing(body.pairing_token, body.session_id)
+        except PairingRejected:
+            error = ProtocolError(
+                "PAIRING_INVALID",
+                "二维码已失效，请在电脑端重新生成，或输入六位访问码。",
+                True,
+            )
+            return JSONResponse(
+                http_error(error),
+                status_code=401,
+                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+            )
+        if replacement.replaced_token:
+            await ws_manager.close_token(
+                replacement.replaced_token,
+                4409,
+                "控制权已被新设备接管",
+            )
+        return session_response(replacement)
 
     @app.delete("/api/v1/session", status_code=204)
     async def logout(request: Request) -> Response:

@@ -8,6 +8,7 @@ import {
 } from 'react'
 import { randomId } from '../runtime/ids'
 import {
+  createPairingSession,
   createSession,
   deleteUploadedImage,
   getSettings,
@@ -15,6 +16,10 @@ import {
   updateSettings,
   uploadImage,
 } from '../runtime/sessionApi'
+import {
+  nextAuthenticationStep,
+  readAndClearPairingToken,
+} from '../runtime/pairingBootstrap'
 import { WebSocketRuntimeClient } from '../runtime/webSocketRuntimeClient'
 import {
   conversationReducer,
@@ -26,6 +31,7 @@ const DRAFTS_STORAGE_KEY = 'dsakiko-webui-drafts'
 const VIEW_STORAGE_KEY = 'dsakiko-webui-preferred-view'
 const LANGUAGE_STORAGE_KEY = 'dsakiko-webui-display-language'
 const MAX_IMAGES_PER_MESSAGE = 4
+const SUPERSESSION_CONFIRM_DELAY_MS = 400
 
 function readStoredJson(key, fallback) {
   try {
@@ -77,13 +83,56 @@ export function RuntimeProvider({ children }) {
     createInitialState,
   )
   const stateRef = useRef(state)
+  const [initialPairingToken] = useState(() => readAndClearPairingToken())
+  const pairingTokenRef = useRef(initialPairingToken)
   const [client] = useState(() => new WebSocketRuntimeClient())
   const connectedRef = useRef(false)
+  const supersessionCheckRef = useRef(null)
+  const mountedRef = useRef(true)
   const removedImageIdsRef = useRef(new Set())
 
   useEffect(() => {
     stateRef.current = state
   }, [state])
+
+  const checkSupersededSession = useCallback(() => {
+    if (supersessionCheckRef.current) return supersessionCheckRef.current
+
+    const check = (async () => {
+      try {
+        let health = await getHealth()
+        if (!health.authenticated) {
+          await new Promise((resolve) => {
+            window.setTimeout(resolve, SUPERSESSION_CONFIRM_DELAY_MS)
+          })
+          health = await getHealth()
+        }
+        if (!mountedRef.current) return
+        if (health.authenticated) {
+          dispatch({ type: 'clear_error' })
+          dispatch({ type: 'connection_state', connection: 'superseded' })
+          return
+        }
+        dispatch({
+          type: 'connection_state',
+          connection: 'needs_auth',
+          code: 'AUTH_REQUIRED',
+          message: '控制权被其他设备接管，可重新输入访问码。',
+        })
+      } catch (error) {
+        if (!mountedRef.current) return
+        dispatch({
+          type: 'connection_state',
+          connection: 'offline',
+          message: error.message,
+        })
+      } finally {
+        supersessionCheckRef.current = null
+      }
+    })()
+    supersessionCheckRef.current = check
+    return check
+  }, [])
 
   const connectClient = useCallback(() => {
     if (connectedRef.current) return
@@ -91,6 +140,15 @@ export function RuntimeProvider({ children }) {
     client.connect(
       (event) => dispatch({ type: 'runtime_event', event }),
       (status) => {
+        if (status.type === 'session_superseded') {
+          connectedRef.current = false
+          void checkSupersededSession()
+          return
+        }
+        if (status.type === 'background_suspended') {
+          connectedRef.current = false
+          return
+        }
         if (status.type === 'auth_required') {
           connectedRef.current = false
           dispatch({
@@ -113,18 +171,43 @@ export function RuntimeProvider({ children }) {
         if (connection) dispatch({ type: 'connection_state', connection })
       },
     )
-  }, [client])
+  }, [checkSupersededSession, client])
 
   const checkConnection = useCallback(async () => {
     dispatch({ type: 'clear_error' })
     dispatch({ type: 'connection_state', connection: 'checking_auth' })
     try {
       const health = await getHealth()
-      if (health.authenticated) {
+      const pairingToken = pairingTokenRef.current
+      const nextStep = nextAuthenticationStep(health.authenticated, pairingToken)
+      if (nextStep === 'connect') {
         connectClient()
-      } else {
-        dispatch({ type: 'connection_state', connection: 'needs_auth' })
+        return
       }
+      pairingTokenRef.current = null
+      if (nextStep === 'redeem_pairing') {
+        try {
+          const result = await createPairingSession(pairingToken)
+          dispatch({
+            type: 'set_notice',
+            message: result.replaced_existing_controller
+              ? '已连接到电脑端，并接管控制权。'
+              : '已连接到电脑端。',
+          })
+          window.setTimeout(() => dispatch({ type: 'clear_notice' }), 3500)
+          connectClient()
+          return
+        } catch (error) {
+          dispatch({
+            type: 'connection_state',
+            connection: 'needs_auth',
+            code: error.code,
+            message: error.message,
+          })
+          return
+        }
+      }
+      dispatch({ type: 'connection_state', connection: 'needs_auth' })
     } catch (error) {
       dispatch({
         type: 'connection_state',
@@ -135,8 +218,10 @@ export function RuntimeProvider({ children }) {
   }, [connectClient])
 
   useEffect(() => {
+    mountedRef.current = true
     checkConnection()
     return () => {
+      mountedRef.current = false
       connectedRef.current = false
       client.disconnect()
     }
@@ -333,6 +418,9 @@ export function RuntimeProvider({ children }) {
         connection: error.code === 'AUTH_REQUIRED' ? 'needs_auth' : 'offline',
         code: error.code,
         message: error.message,
+        retryUntil: error.retryAfterSeconds
+          ? Date.now() + error.retryAfterSeconds * 1000
+          : null,
       })
       return false
     }

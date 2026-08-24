@@ -1,5 +1,5 @@
 import { RefreshCw } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import neutralMascot from '../assets/access-gate/neutral.png'
 import errorMascot from '../assets/access-gate/error.png'
 import successMascot from '../assets/access-gate/success.png'
@@ -12,9 +12,23 @@ export function AccessGate({ state, actions }) {
   const waiting = state.connection === 'checking_auth' || state.connection === 'connecting'
   const offline = state.connection === 'offline'
   const accessCode = digits.join('')
+  const [retrySeconds, setRetrySeconds] = useState(0)
+  const coolingDown = retrySeconds > 0
+
+  useEffect(() => {
+    const update = () => {
+      setRetrySeconds(state.authRetryUntil
+        ? Math.max(0, Math.ceil((state.authRetryUntil - Date.now()) / 1000))
+        : 0)
+    }
+    update()
+    if (!state.authRetryUntil) return undefined
+    const timer = window.setInterval(update, 250)
+    return () => window.clearInterval(timer)
+  }, [state.authRetryUntil])
 
   const submitCode = async (code) => {
-    if (code.length !== 6 || waiting || submittingRef.current) return
+    if (code.length !== 6 || waiting || coolingDown || submittingRef.current) return
     submittingRef.current = true
     const authenticated = await actions.authenticate(code)
     submittingRef.current = false
@@ -100,6 +114,7 @@ export function AccessGate({ state, actions }) {
                       inputMode="numeric"
                       autoComplete={index === 0 ? 'one-time-code' : 'off'}
                       maxLength={1}
+                      disabled={coolingDown}
                       aria-label={`访问码第${index + 1}位`}
                       onChange={(event) => updateDigit(index, event.target.value)}
                       onKeyDown={(event) => handleKeyDown(index, event)}
@@ -108,6 +123,13 @@ export function AccessGate({ state, actions }) {
                   ))}
                 </div>
               </fieldset>
+              {coolingDown && (
+                <p className="access-cooldown" role="status">
+                  请等待 {retrySeconds >= 60
+                    ? `${Math.floor(retrySeconds / 60)} 分 ${retrySeconds % 60} 秒`
+                    : `${retrySeconds} 秒`}后再试
+                </p>
+              )}
             </form>
           )}
 

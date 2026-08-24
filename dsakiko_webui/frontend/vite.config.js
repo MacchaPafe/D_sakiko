@@ -7,6 +7,9 @@ const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,

@@ -11,6 +11,19 @@ function clientId() {
   return value
 }
 
+async function responseError(response, fallbackMessage, fallbackCode) {
+  const body = await response.json().catch(() => ({}))
+  const error = new Error(body.error?.message || fallbackMessage)
+  error.code = body.error?.code || fallbackCode
+  const headerSeconds = Number.parseInt(response.headers.get('Retry-After') || '', 10)
+  const detailSeconds = Number.parseInt(body.error?.details?.retry_after_seconds, 10)
+  const retryAfterSeconds = Number.isFinite(detailSeconds) ? detailSeconds : headerSeconds
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    error.retryAfterSeconds = retryAfterSeconds
+  }
+  return error
+}
+
 export async function getHealth() {
   const response = await fetch('/api/v1/health', {
     credentials: 'same-origin',
@@ -30,13 +43,26 @@ export async function createSession(accessCode) {
       session_id: clientId(),
     }),
   })
-  const body = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const error = new Error(body.error?.message || '登录失败，请稍后重试。')
-    error.code = body.error?.code || 'AUTH_REQUIRED'
-    throw error
+    throw await responseError(response, '登录失败，请稍后重试。', 'AUTH_REQUIRED')
   }
-  return body
+  return response.json()
+}
+
+export async function createPairingSession(pairingToken) {
+  const response = await fetch('/api/v1/pairing/redeem', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      pairing_token: pairingToken,
+      session_id: clientId(),
+    }),
+  })
+  if (!response.ok) {
+    throw await responseError(response, '二维码已失效。', 'PAIRING_INVALID')
+  }
+  return response.json()
 }
 
 export async function uploadImage(file) {

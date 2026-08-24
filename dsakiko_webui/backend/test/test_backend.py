@@ -14,7 +14,7 @@ from starlette.websockets import WebSocketDisconnect
 import dsakiko_webui.backend.assets as assets_module
 from dsakiko_webui.backend.app import create_app
 from dsakiko_webui.backend.assets import AssetRegistry, Live2DEntry
-from dsakiko_webui.backend.auth import COOKIE_NAME, SingleControllerAuth
+from dsakiko_webui.backend.auth import COOKIE_NAME, AccessController
 from dsakiko_webui.backend.runtime import HeadlessRuntime
 from dsakiko_webui.backend.uploads import PendingImageStore
 from GPT_SoVITS.runtime.runtime_lock import RuntimeLockBusy, acquire_runtime_lock
@@ -104,7 +104,7 @@ class FakeChat:
 class BackendTest(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = FakeRuntime()
-        self.auth = SingleControllerAuth("123456")
+        self.auth = AccessController("123456")
         self.app = create_app(self.runtime, self.auth, initialize_runtime=False)
 
     def tearDown(self) -> None:
@@ -127,6 +127,48 @@ class BackendTest(unittest.TestCase):
             response = client.post("/api/v1/session", json={"access_code": "wrong"})
             self.assertEqual(response.status_code, 401)
             self.assertEqual(response.json()["error"]["code"], "AUTH_REQUIRED")
+
+    def test_pairing_redeem_sets_cookie_and_is_idempotent(self) -> None:
+        """配对兑换应签发 Cookie，并允许同一客户端短时重试。"""
+        grant = self.auth.regenerate_pairing()
+        with TestClient(self.app) as client:
+            first = client.post("/api/v1/pairing/redeem", json={
+                "pairing_token": grant.token,
+                "session_id": "phone-one",
+            })
+            retry = client.post("/api/v1/pairing/redeem", json={
+                "pairing_token": grant.token,
+                "session_id": "phone-one",
+            })
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(retry.status_code, 200)
+            self.assertTrue(client.get("/api/v1/health").json()["authenticated"])
+
+    def test_pairing_redeem_hides_specific_failure_reason(self) -> None:
+        """无效配对凭证应返回统一错误。"""
+        with TestClient(self.app) as client:
+            response = client.post("/api/v1/pairing/redeem", json={
+                "pairing_token": "x" * 43,
+                "session_id": "phone-one",
+            })
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.json()["error"]["code"], "PAIRING_INVALID")
+
+    def test_access_code_rate_limit_returns_retry_metadata(self) -> None:
+        """六位码入口被限速时应同时返回响应头和结构化等待秒数。"""
+        with TestClient(self.app) as client:
+            for _ in range(5):
+                self.assertEqual(
+                    client.post("/api/v1/session", json={"access_code": "000000"}).status_code,
+                    401,
+                )
+            response = client.post("/api/v1/session", json={"access_code": "000000"})
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(response.json()["error"]["code"], "AUTH_RATE_LIMITED")
+            self.assertEqual(
+                int(response.headers["Retry-After"]),
+                response.json()["error"]["details"]["retry_after_seconds"],
+            )
 
     def test_websocket_ping_uses_protocol_envelope(self) -> None:
         with TestClient(self.app) as client:

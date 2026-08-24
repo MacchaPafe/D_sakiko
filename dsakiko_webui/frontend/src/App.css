@@ -2,7 +2,7 @@
   position: relative;
   width: min(100vw, 430px);
   height: var(--app-height);
-  min-height: 520px;
+  min-height: 0;
   margin: var(--app-offset-top) auto 0;
   overflow: hidden;
   background: #fafafb;
@@ -377,6 +377,18 @@ select:focus-visible {
   margin: 14px 0 0 !important;
   color: #b52d49 !important;
   font-size: 13px !important;
+}
+
+.access-cooldown {
+  margin: 12px 0 0;
+  color: #8b6722;
+  font-size: 13px;
+  text-align: center;
+}
+
+.access-code-digits input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .access-device-block {
@@ -1642,6 +1654,25 @@ select:focus-visible {
   background: #fff7f9;
   color: #9e2f48;
   box-shadow: 0 12px 30px rgba(36, 28, 31, 0.14);
+  font-size: 13px;
+}
+
+.connection-toast {
+  position: absolute;
+  z-index: 99;
+  right: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: 12px;
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border: 1px solid #b9ded1;
+  border-radius: 8px;
+  background: #f1fbf7;
+  color: #15735f;
+  box-shadow: 0 12px 30px rgba(28, 72, 60, 0.13);
   font-size: 13px;
 }
 

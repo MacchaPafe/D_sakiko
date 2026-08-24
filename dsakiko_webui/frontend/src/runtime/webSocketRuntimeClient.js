@@ -83,13 +83,15 @@ export class WebSocketRuntimeClient {
       this.pending.clear()
 
       if (this.closedByClient) return
-      if (event.code === 4401 || event.code === 4409) {
+      if (event.code === 4401) {
         this.connectionListener?.({
           type: 'auth_required',
-          message: event.code === 4409
-            ? '控制权被其他设备接管，可重新输入访问码。'
-            : '登录失效，重新输入访问码～',
+          message: '登录失效，重新输入访问码～',
         })
+        return
+      }
+      if (event.code === 4409) {
+        this.connectionListener?.({ type: 'session_superseded' })
         return
       }
 
@@ -98,7 +100,14 @@ export class WebSocketRuntimeClient {
         Math.min(this.reconnectAttempt, RECONNECT_DELAYS.length - 1)
       ]
       this.reconnectAttempt += 1
-      this.reconnectTimer = window.setTimeout(() => this.open(), delay)
+      this.reconnectTimer = window.setTimeout(() => {
+        this.reconnectTimer = null
+        if (document.visibilityState === 'hidden') {
+          this.connectionListener?.({ type: 'background_suspended' })
+          return
+        }
+        this.open()
+      }, delay)
     })
   }
 
