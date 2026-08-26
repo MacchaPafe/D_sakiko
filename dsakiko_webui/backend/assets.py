@@ -74,6 +74,25 @@ class AssetRegistry:
     def media(self, media_id: str) -> MediaEntry | None:
         return self._media.get(media_id)
 
+    @staticmethod
+    def _web_live2d_model(character: Any) -> Path | None:
+        """返回 WebUI 当前 Cubism 2 加载器可以读取的模型。"""
+        if not character.live2d_json:
+            return None
+
+        configured = Path(character.live2d_json).resolve()
+        if configured.is_file() and configured.name.endswith(".model.json"):
+            return configured
+
+        character_root = LIVE2D_ROOT / character.character_folder_name
+        search_roots = [character_root / "live2D_model"]
+        search_roots.extend(sorted(character_root.glob("live2D_model_v2*")))
+        for root in search_roots:
+            candidates = sorted(root.glob("*.model.json")) if root.is_dir() else []
+            if candidates:
+                return candidates[0].resolve()
+        return None
+
     def register_character(self, character: Any) -> dict[str, Any]:
         avatar_url = None
         character_root = LIVE2D_ROOT / character.character_folder_name
@@ -95,8 +114,8 @@ class AssetRegistry:
             avatar_url = f"/api/v1/media/{media_id}"
 
         model_url = None
-        if character.live2d_json and Path(character.live2d_json).is_file():
-            model_path = Path(character.live2d_json).resolve()
+        model_path = self._web_live2d_model(character)
+        if model_path is not None:
             try:
                 model_path.relative_to(LIVE2D_ROOT)
             except ValueError:

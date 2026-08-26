@@ -142,6 +142,9 @@ def create_app(
     ) -> Response:
         """阻止入口和认证响应被缓存或把来源 URL 发送给其他站点。"""
         response = await call_next(request)
+        static_path = request.url.path.lower()
+        if static_path.endswith((".js", ".mjs")):
+            response.headers["Content-Type"] = "application/javascript"
         protected_response = (
             request.url.path == "/"
             or request.url.path.startswith("/api/v1/session")

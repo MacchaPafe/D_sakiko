@@ -4,12 +4,17 @@ import contextlib
 import os
 import queue
 import signal
+import sys
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast, Optional
 
-os.chdir(os.path.dirname(__file__))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir in sys.path:
+    sys.path.remove(script_dir)
+sys.path.insert(0, script_dir)
+os.chdir(script_dir)
 
 from character import CharacterAttributes
 from log import get_logger, setup_worker_logging

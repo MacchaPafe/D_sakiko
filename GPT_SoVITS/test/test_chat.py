@@ -1184,6 +1184,24 @@ class ChatTestCase(unittest.TestCase):
             exported_attachment = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]
             self.assertNotIn("remote_refs", exported_attachment)
 
+    def test_save_preserves_existing_file_when_serialization_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "all_conversation.json"
+            original = '{"existing": true}'
+            target.write_text(original, encoding="utf-8")
+            manager = ChatManager()
+
+            with mock.patch.object(
+                    chat_module.json,
+                    "dump",
+                    side_effect=RuntimeError("simulated interruption"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    manager.save(target)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(target.parent.glob("*.tmp")), [])
+
     @staticmethod
     def _character(name: str) -> CharacterAttributes:
         """

@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, List, Union, Any, Iterable, Literal, Sequence
 import json
+import threading
 
 import jinja2
 import sys
@@ -1751,6 +1752,7 @@ class ChatManager:
             self.chat_list = chat_list
         else:
             self.chat_list = []
+        self._save_lock = threading.RLock()
 
     def add_chat(self, chat: Chat) -> None:
         """
@@ -2418,8 +2420,19 @@ class ChatManager:
 
         :param file: 保存文件路径
         """
-        with open(file, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, ensure_ascii=False, indent=4)
+        target = Path(file)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+
+        with self._save_lock:
+            try:
+                with temporary.open("x", encoding="utf-8") as f:
+                    json.dump(self.to_dict(), f, ensure_ascii=False, indent=4)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     @classmethod
     def load(cls, file: Union[Path, str] = "../reference_audio/all_conversation.json") -> "ChatManager":

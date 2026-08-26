@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +11,7 @@ PROTOCOL_VERSION = 1
 
 class SessionRequest(BaseModel):
     access_code: str = Field(min_length=1, max_length=128)
-    session_id: str | None = Field(default=None, max_length=128)
+    session_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class PairingRequest(BaseModel):
@@ -21,9 +22,9 @@ class PairingRequest(BaseModel):
 
 
 class SettingsUpdateRequest(BaseModel):
-    speech_speed: float | None = Field(default=None, ge=0.6, le=1.4)
-    sentence_pause_seconds: float | None = Field(default=None, ge=0.1, le=0.8)
-    llm_choice_id: str | None = Field(default=None, min_length=1, max_length=256)
+    speech_speed: Optional[float] = Field(default=None, ge=0.6, le=1.4)
+    sentence_pause_seconds: Optional[float] = Field(default=None, ge=0.1, le=0.8)
+    llm_choice_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
 
 
 class CommandEnvelope(BaseModel):

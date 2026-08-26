@@ -326,6 +326,32 @@ class BackendTest(unittest.TestCase):
             finally:
                 outside.unlink(missing_ok=True)
 
+    def test_character_live2d_uses_v2_fallback_for_v3_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            live2d_root = (Path(directory) / "live2d_related").resolve()
+            model3_dir = live2d_root / "anon" / "live2D_model"
+            model2_dir = live2d_root / "anon" / "live2D_model_v2_ignore_this"
+            model3_dir.mkdir(parents=True)
+            model2_dir.mkdir(parents=True)
+            model3_path = model3_dir / "anon.model3.json"
+            model2_path = model2_dir / "anon.model.json"
+            model3_path.write_text("{}", encoding="utf-8")
+            model2_path.write_text("{}", encoding="utf-8")
+
+            with patch.object(assets_module, "LIVE2D_ROOT", live2d_root):
+                registry = AssetRegistry()
+                character = registry.register_character(SimpleNamespace(
+                    character_folder_name="anon",
+                    character_name="爱音",
+                    live2d_json=str(model3_path),
+                ))
+
+                self.assertTrue(character["model_url"].endswith("/anon.model.json"))
+                self.assertEqual(
+                    registry.live2d_file("model_anon", "anon.model.json"),
+                    model2_path,
+                )
+
     def test_runtime_lock_rejects_second_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             first = acquire_runtime_lock(directory, "web")
