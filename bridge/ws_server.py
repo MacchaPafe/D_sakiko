@@ -71,7 +71,9 @@ class WSServer:
             if line.lower().startswith("sec-websocket-key:"):
                 key = line.split(":", 1)[1].strip()
 
-        if headers.get("origin", "") not in self.allowed_origins:
+        origin = headers.get("origin", "")
+        local_origin = origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")
+        if origin not in self.allowed_origins and not local_origin:
             writer.close()
             return
         if self.auth_token is not None:
