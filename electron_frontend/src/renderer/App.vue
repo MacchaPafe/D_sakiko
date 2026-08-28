@@ -160,12 +160,6 @@ function connectWebSocket() {
         }
         if (command?.type) {
           const commandData = { ...(command.data || command) }
-          if (command.type === 'switch_live2d' && commandData.electron_model_url) {
-            commandData.model_url = commandData.electron_model_url
-          }
-          if (command.type === 'play_audio' && commandData.electron_audio_url) {
-            commandData.path = commandData.electron_audio_url
-          }
           if (command.type === 'switch_live2d' && commandData.model_url) {
             pendingModelToken.value = String(commandData.model_token || '')
             reloadCustomModel(String(commandData.model_url), String(commandData.character_folder ?? commandData.character_folder_name ?? currentCharKey.value))
@@ -177,13 +171,10 @@ function connectWebSocket() {
       }
       if (msg.type === 'renderer_snapshot' && Array.isArray(msg.data?.commands)) {
         const commands = msg.data.commands as Array<{ type: string; data?: Record<string, any> }>
-        const hasModelSwitch = commands.some((command) => command?.type === 'switch_live2d' && ((command.data || {}).model_url || (command.data || {}).electron_model_url))
+        const hasModelSwitch = commands.some((command) => command?.type === 'switch_live2d' && (command.data || {}).model_url)
         for (const command of commands) {
           if (!command?.type) continue
           const commandData = { ...(command.data || command) }
-          if (command.type === 'switch_live2d' && commandData.electron_model_url) {
-            commandData.model_url = commandData.electron_model_url
-          }
           if (command.type === 'switch_live2d' && commandData.model_url) {
             pendingModelToken.value = String(commandData.model_token || '')
             reloadCustomModel(String(commandData.model_url), String(commandData.character_folder ?? commandData.character_folder_name ?? currentCharKey.value))

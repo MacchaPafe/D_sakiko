@@ -30,14 +30,16 @@ class Live2DStartupTopologyTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_main_starts_one_owner_service_and_shared_electron_bridge(self):
+    def test_main_keeps_one_owner_and_selected_renderer_topology(self):
         source = (ROOT / "main2.py").read_text(encoding="utf-8")
         self.assertIn("project_root not in sys.path", source)
         self.assertEqual(source.count("authoritative_owner=AuthoritativeLive2DOwner()"), 1)
         self.assertIn("SharedRendererService(", source)
-        self.assertIn("renderer_command_fanout", source)
-        self.assertIn("FanoutQueue(electron_renderer_command_queue)", source)
-        self.assertIn("electron_bridge.start()", source)
+        self.assertNotIn("DSAKIKO_DUAL_RENDERER", source)
+        self.assertNotIn("FanoutQueue", source)
+        self.assertIn('renderer_command_queue = pygame_renderer_command_queue', source)
+        self.assertIn('renderer_command_queue = electron_renderer_command_queue', source)
+        self.assertIn("if electron_bridge is not None:", source)
         self.assertEqual(source.count("build_initial_live2d_intent(characters)"), 1)
         self.assertIn("owner_intent_queue.put(initial_live2d_intent)", source)
         self.assertIn("authoritative_owner, motion_complete_value", source)

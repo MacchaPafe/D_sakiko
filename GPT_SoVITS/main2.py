@@ -30,7 +30,6 @@ from live2d_support.authoritative_owner import AuthoritativeLive2DOwner
 from live2d_support.legacy_intent_fanout import LegacyEmotionAudioFanout, OrderedLegacyOwnerIngress
 from live2d_support.renderer_host import SharedRendererService
 from live2d_support.runtime_ingress import ThinkingStateQueue, LegacyControlIntentFanout
-from bridge.saki_bridge import Bridge
 
 from emotion_enum import EmotionEnum
 from log import setup_logging, get_logger, get_log_queue, setup_worker_logging, shutdown_logging
@@ -597,9 +596,9 @@ if __name__=='__main__':
         pygame_emotion_queue, pygame_audio_file_path_queue, owner_intent_queue,
         deliver_pygame_baseline=False,
     )
-    electron_ui_command_queue = Queue() if electron_enabled else None
     electron_bridge = None
     if electron_enabled:
+        from bridge.saki_bridge import Bridge
         electron_bridge_queue = Queue()
         electron_renderer_command_queue = Queue()
         electron_bridge = Bridge(
@@ -619,7 +618,6 @@ if __name__=='__main__':
         owner_intent_queue, renderer_fact_queue,
         renderer_command_queue, authoritative_owner, motion_complete_value,
         trace=build_live2d_trace_sink(),
-        ui_intent_queue=electron_ui_command_queue,
         conversion_state_callback=on_sakiko_conversion_committed,
     )
     initial_live2d_intent = build_initial_live2d_intent(characters)
@@ -742,8 +740,7 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          change_char_queue=change_char_queue,
-                          electron_ui_command_queue=electron_ui_command_queue)
+                          change_char_queue=change_char_queue)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。

@@ -15,6 +15,7 @@ import asyncio
 import threading
 import sys
 import os
+import copy
 from typing import Optional
 from urllib.parse import unquote
 
@@ -172,10 +173,55 @@ class Bridge:
             if command is None:
                 break
             if loop is not None and isinstance(command, dict):
-                self._cache_command(command)
+                electron_command = self._adapt_command_for_electron(command)
+                self._cache_command(electron_command)
                 asyncio.run_coroutine_threadsafe(
-                    self.ws.broadcast('live2d_command', {'command': command}), loop
+                    self.ws.broadcast('live2d_command', {'command': electron_command}), loop
                 )
+
+    def _adapt_command_for_electron(self, command):
+        """Translate local owner paths to Bridge URLs at the transport edge."""
+        adapted = copy.deepcopy(command)
+        data = adapted.get('data')
+        if not isinstance(data, dict):
+            return adapted
+        command_type = adapted.get('type')
+        if command_type == 'switch_live2d':
+            model_path = str(data.get('model_url') or data.get('model_json') or '')
+            model_url = self._model_url(model_path)
+            if model_url:
+                data['model_url'] = model_url
+        elif command_type in {'play_audio', 'audio'}:
+            audio_path = str(data.get('path') or data.get('audio_path') or '')
+            audio_url = self._audio_url(audio_path)
+            if audio_url:
+                data['path'] = audio_url
+        return adapted
+
+    def _model_url(self, model_path: str) -> str:
+        normalized = str(model_path or '').replace('\\', '/')
+        if normalized.startswith(('http://', 'https://')):
+            return normalized
+        marker = 'live2d_related/'
+        if marker not in normalized:
+            return normalized
+        relative = normalized.split(marker, 1)[1].lstrip('/')
+        return f'http://{self.audio_host}:{self.audio_port}/model/{relative}'
+
+    def _audio_url(self, audio_path: str) -> str:
+        normalized = str(audio_path or '').replace('\\', '/')
+        if normalized.startswith(('http://', 'https://')):
+            return normalized
+        if not normalized:
+            return ''
+        if self.audio_base:
+            try:
+                relative = os.path.relpath(os.path.abspath(audio_path), os.path.abspath(self.audio_base))
+            except ValueError:
+                relative = ''
+            if relative and not relative.startswith('..'):
+                return f'http://{self.audio_host}:{self.audio_port}/audio/{relative.replace(chr(92), "/")}'
+        return normalized
 
     async def _start_audio_server(self):
         """启动 HTTP 静态文件服务，供 Electron 加载音频文件"""

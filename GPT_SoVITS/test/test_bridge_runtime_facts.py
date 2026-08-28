@@ -16,8 +16,6 @@ if gpt_root not in sys.path:
     sys.path.insert(0, gpt_root)
 
 from bridge.saki_bridge import Bridge
-from live2d_support.authoritative_owner import AuthoritativeLive2DOwner
-from live2d_support.renderer_host import SharedRendererHost
 
 
 class BridgeRuntimeFactTest(unittest.TestCase):
@@ -86,46 +84,6 @@ class BridgeRuntimeFactTest(unittest.TestCase):
         self.assertEqual(sent[0][0:2], ("electron-ws", "renderer_snapshot"))
         self.assertEqual(sent[0][2]["commands"][0]["data"], {"active": True})
 
-    def test_pygame_first_dual_connect_executes_one_electron_model_switch(self):
-        emitted = []
-        host = SharedRendererHost(emitted.append, AuthoritativeLive2DOwner())
-        host.handle_runtime_control({
-            "type": "switch_live2d",
-            "initial_model": True,
-            "model_json": "C:/app/live2d_related/anon/live2D_model/3.model.json",
-            "model_token": "initial-token",
-        })
-        host.handle_renderer_fact({"type": "renderer_hello", "data": {
-            "renderer_id": "pygame-renderer", "renderer_role": "pygame",
-            "renderer_instance_id": "pygame-one",
-        }})
-        pygame_switch = emitted[-1]
-        self.assertEqual(pygame_switch["data"]["target_renderer_ids"], ["pygame-renderer"])
-
-        bridge = Bridge(Queue())
-        bridge._cache_command(pygame_switch)
-        snapshots = []
-
-        class SnapshotWS:
-            async def send_to(self, writer, message_type, data):
-                snapshots.append((message_type, data))
-
-        bridge.ws = SnapshotWS()
-        asyncio.run(bridge._on_renderer_connect("electron-ws"))
-        self.assertEqual(snapshots, [])
-
-        host.handle_renderer_fact({"type": "renderer_hello", "data": {
-            "renderer_id": "electron", "renderer_role": "electron",
-            "renderer_instance_id": "electron-one", "capabilities": ["snapshot"],
-        }})
-        electron_switches = [
-            command for command in emitted
-            if command.get("type") == "switch_live2d"
-            and command.get("data", {}).get("target_renderer_ids") == ["electron"]
-        ]
-        self.assertEqual(len(electron_switches), 1)
-        self.assertEqual(electron_switches[0]["data"]["model_token"], "initial-token")
-
     def test_snapshot_does_not_cache_motion_without_owner_lifecycle_fact(self):
         bridge = Bridge(Queue())
         bridge._cache_command({"type": "play_motion", "data": {"token": "stale"}})
@@ -149,6 +107,19 @@ class BridgeRuntimeFactTest(unittest.TestCase):
         commands = Queue()
         bridge = Bridge(Queue(), renderer_command_queue=commands)
         self.assertIs(bridge.renderer_command_queue, commands)
+
+    def test_renderer_command_paths_are_adapted_at_bridge_edge(self):
+        bridge = Bridge(Queue(), audio_base="C:/app", audio_host="127.0.0.1", audio_port=9877)
+        command = {
+            "type": "switch_live2d",
+            "data": {"model_url": "C:/app/live2d_related/anon/live2D_model/3.model.json"},
+        }
+        adapted = bridge._adapt_command_for_electron(command)
+        self.assertEqual(
+            adapted["data"]["model_url"],
+            "http://127.0.0.1:9877/model/anon/live2D_model/3.model.json",
+        )
+        self.assertEqual(command["data"]["model_url"], "C:/app/live2d_related/anon/live2D_model/3.model.json")
 
     def test_legacy_pygame_motion_queue_cannot_create_an_electron_executor(self):
         bridge = Bridge(Queue(), motion_queue=Queue())
