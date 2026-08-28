@@ -5,6 +5,7 @@ declare module '*.vue' {
 }
 
 interface ElectronAPI {
+  bridgeToken: string
   resizeWindow: (deltaX: number, deltaY: number, direction: string) => Promise<void>
   toggleDevTools: () => Promise<boolean>
   setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => Promise<void>

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const api = {
+  bridgeToken: process.env.DSAKIKO_BRIDGE_TOKEN || '',
   resizeWindow: (deltaX: number, deltaY: number, direction: string) =>
     ipcRenderer.invoke('resize-window', { deltaX, deltaY, direction }),
 

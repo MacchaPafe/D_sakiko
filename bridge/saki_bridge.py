@@ -16,6 +16,7 @@ import threading
 import sys
 import os
 import copy
+import secrets
 from typing import Optional
 from urllib.parse import unquote
 
@@ -32,13 +33,16 @@ class Bridge:
     """简化的 Bridge 类，替代旧的 saki_launcher.py"""
 
     def __init__(self, bridge_queue, motion_queue=None, audio_base=None, renderer_fact_queue=None, renderer_command_queue=None,
+                 model_base=None, audio_root=None,
                  ws_host="127.0.0.1", ws_port=9876, audio_host="127.0.0.1", audio_port=AUDIO_PORT):
         self.bridge_q = bridge_queue
         # Kept only for compatibility with callers that have not dropped the
         # parameter yet.  This bridge must never consume it: the old Pygame
         # events are renderer-local decisions, not authoritative commands.
         del motion_queue
-        self.audio_base = audio_base  # 音频文件根目录，用于 HTTP 静态服务
+        self.audio_base = audio_base
+        self.model_base = os.path.abspath(model_base or (os.path.join(audio_base, 'live2d_related') if audio_base else 'live2d_related'))
+        self.audio_root = os.path.abspath(audio_root or audio_base or 'reference_audio')
         self.renderer_fact_queue = renderer_fact_queue
         self.renderer_command_queue = renderer_command_queue
         self.ws_host = ws_host
@@ -53,6 +57,8 @@ class Bridge:
         self._snapshot_thinking = None
         self._renderer_ids_by_writer = {}
         self._audio_server = None
+        self.auth_token = os.environ.get('DSAKIKO_BRIDGE_TOKEN') or secrets.token_urlsafe(32)
+        self.ws.auth_token = self.auth_token
 
     async def _on_renderer_connect(self, writer):
         """Replay cached exact commands to one newly connected renderer."""
@@ -214,9 +220,9 @@ class Bridge:
             return normalized
         if not normalized:
             return ''
-        if self.audio_base:
+        if self.audio_root:
             try:
-                relative = os.path.relpath(os.path.abspath(audio_path), os.path.abspath(self.audio_base))
+                relative = os.path.relpath(os.path.abspath(audio_path), self.audio_root)
             except ValueError:
                 relative = ''
             if relative and not relative.startswith('..'):
@@ -225,8 +231,10 @@ class Bridge:
 
     async def _start_audio_server(self):
         """启动 HTTP 静态文件服务，供 Electron 加载音频文件"""
-        audio_base = os.path.abspath(self.audio_base)
-        print(f'[Audio HTTP] Base dir: {audio_base}', flush=True)
+        model_base = os.path.realpath(self.model_base)
+        audio_root = os.path.realpath(self.audio_root)
+        print(f'[Audio HTTP] Model dir: {model_base}', flush=True)
+        print(f'[Audio HTTP] Audio dir: {audio_root}', flush=True)
         print(f'[Audio HTTP] Starting on port {self.audio_port}...', flush=True)
         async def handle_audio(reader, writer):
             try:
@@ -243,21 +251,25 @@ class Bridge:
                     writer.write(b'HTTP/1.0 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\n\r\n')
                     writer.close()
                     return
-                # URL: /audio/xxx → audio_base/xxx, /model/xxx → audio_base/live2d_related/xxx
+                # Serve only explicit model and audio roots; never the project root.
                 if url_path.startswith('/model/'):
-                    rel = url_path.lstrip('/').replace('model/', 'live2d_related/', 1)
+                    root = model_base
+                    rel = url_path[len('/model/'):]
                 elif url_path.startswith('/audio/'):
-                    rel = url_path.lstrip('/').replace('audio/', '', 1)
+                    root = audio_root
+                    rel = url_path[len('/audio/'):]
                 else:
-                    rel = url_path.lstrip('/')
-                filepath = os.path.realpath(os.path.join(audio_base, rel))
+                    writer.write(b'HTTP/1.0 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\n\r\n')
+                    writer.close()
+                    return
+                filepath = os.path.realpath(os.path.join(root, rel))
                 # commonpath avoids the /base vs /base-other prefix trap.
                 try:
-                    inside_base = os.path.commonpath((audio_base, filepath)) == audio_base
+                    inside_base = os.path.commonpath((root, filepath)) == root
                 except ValueError:
                     inside_base = False
                 if not inside_base or not os.path.isfile(filepath):
-                    writer.write(b'HTTP/1.0 404 Not Found\r\n\r\n')
+                    writer.write(b'HTTP/1.0 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\n\r\n')
                     writer.close()
                     return
                 with open(filepath, 'rb') as f:

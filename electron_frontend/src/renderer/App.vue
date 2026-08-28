@@ -131,7 +131,10 @@ let pendingSnapshotCommands: Array<{ type: string; data?: Record<string, any> }>
 function connectWebSocket() {
   if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return
   if (ws) { try { ws.onopen=null; ws.onclose=null; ws.onerror=null; ws.onmessage=null; ws.close() } catch(_){}; ws=null }
-  try { ws = new WebSocket('ws://localhost:9876') } catch(e) { scheduleReconnect(); return }
+  try {
+    const token = encodeURIComponent(window.electronAPI.bridgeToken || '')
+    ws = new WebSocket(`ws://127.0.0.1:9876/?token=${token}`)
+  } catch(e) { scheduleReconnect(); return }
   ws.onopen = () => {
       wsConnected.value = true
       reconnectDelay = 1000
@@ -200,7 +203,11 @@ function connectWebSocket() {
 
 function onRendererFact(fact: { type: string; event_id?: string; data: Record<string, any> }) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
-  const message = createProtocolMessage(fact.type, { ...fact.data, renderer_instance_id: rendererInstanceId })
+  const message = createProtocolMessage(fact.type, {
+    ...fact.data,
+    renderer_id: rendererId,
+    renderer_instance_id: rendererInstanceId,
+  })
   ws.send(JSON.stringify(message))
 }
 

@@ -604,6 +604,8 @@ if __name__=='__main__':
         electron_bridge = Bridge(
             electron_bridge_queue,
             audio_base=project_root,
+            model_base=os.path.join(project_root, "live2d_related"),
+            audio_root=os.path.join(project_root, "reference_audio"),
             renderer_fact_queue=renderer_fact_queue,
             renderer_command_queue=electron_renderer_command_queue,
         )

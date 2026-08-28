@@ -57,6 +57,14 @@ class RendererSelectionTest(unittest.TestCase):
         with patch.object(launcher.os, "name", "posix"):
             self.assertEqual(launcher.electron_command(root).name, "electron")
 
+    def test_electron_command_candidates_have_cross_platform_fallbacks(self):
+        launcher = load_launcher()
+        root = Path("/tmp/electron")
+        with patch.object(launcher.os, "name", "nt"):
+            self.assertTrue(any(path.name == "electron.exe" for path in launcher.electron_command_candidates(root)))
+        with patch.object(launcher.os, "name", "posix"):
+            self.assertTrue(any(path.name == "Electron" for path in launcher.electron_command_candidates(root)))
+
     def test_main2_and_launcher_share_pygame_fallback(self):
         import main2
         with tempfile.TemporaryDirectory() as directory:

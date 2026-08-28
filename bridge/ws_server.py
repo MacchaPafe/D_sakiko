@@ -9,6 +9,8 @@ import json
 import sys
 import os
 import inspect
+import secrets
+from urllib.parse import urlsplit, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from protocol import create_message
@@ -17,7 +19,8 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 class WSServer:
-    def __init__(self, host="localhost", port=9876, on_message=None, on_connect=None, on_disconnect=None):
+    def __init__(self, host="localhost", port=9876, on_message=None, on_connect=None, on_disconnect=None,
+                 auth_token=None, allowed_origins=None, max_message_size=1024 * 1024):
         self.host = host
         self.port = port
         self.on_message = on_message
@@ -29,6 +32,10 @@ class WSServer:
             self._message_accepts_writer = False
         self._clients = set()
         self._server = None
+        self.auth_token = auth_token
+        self.allowed_origins = set(allowed_origins or {"", "null", "file://", "http://localhost", "http://127.0.0.1"})
+        self.max_message_size = int(max_message_size)
+        self._identities = {}
 
     async def _read_http_request(self, reader):
         """读取 HTTP 请求头（兼容 LF 和 CRLF）"""
@@ -50,10 +57,28 @@ class WSServer:
             return
 
         key = None
+        headers = {}
+        request_target = "/"
         for line in request.replace("\r\n", "\n").split("\n"):
+            if line.startswith("GET "):
+                parts = line.split(" ", 2)
+                if len(parts) >= 2:
+                    request_target = parts[1]
+                continue
+            if ":" in line:
+                name, value = line.split(":", 1)
+                headers[name.strip().lower()] = value.strip()
             if line.lower().startswith("sec-websocket-key:"):
                 key = line.split(":", 1)[1].strip()
 
+        if headers.get("origin", "") not in self.allowed_origins:
+            writer.close()
+            return
+        if self.auth_token is not None:
+            supplied = parse_qs(urlsplit(request_target).query).get("token", [""])[0]
+            if not supplied or not secrets.compare_digest(str(supplied), str(self.auth_token)):
+                writer.close()
+                return
         if not key:
             writer.close()
             return
@@ -95,7 +120,26 @@ class WSServer:
                     await self._send_frame(writer, 0xA, b"")
                 if opcode == 0x1 and self.on_message is not None:
                     try:
+                        if len(payload) > self.max_message_size:
+                            break
                         message = json.loads(payload.decode("utf-8"))
+                        if not isinstance(message, dict) or not isinstance(message.get("type"), str):
+                            break
+                        data = message.get("data")
+                        if not isinstance(data, dict):
+                            break
+                        identity = (str(data.get("renderer_id") or ""), str(data.get("renderer_instance_id") or ""))
+                        if message["type"] == "renderer_hello":
+                            if not all(identity):
+                                break
+                            previous = self._identities.get(writer)
+                            if previous is not None and previous != identity:
+                                break
+                            self._identities[writer] = identity
+                        elif writer not in self._identities:
+                            break
+                        elif identity != self._identities[writer]:
+                            break
                         result = (
                             self.on_message(message, writer)
                             if self._message_accepts_writer
@@ -104,11 +148,12 @@ class WSServer:
                         if inspect.isawaitable(result):
                             await result
                     except Exception:
-                        pass
+                        break
         except Exception:
             pass
         finally:
             self._clients.discard(writer)
+            self._identities.pop(writer, None)
             if self.on_disconnect is not None:
                 try:
                     result = self.on_disconnect(writer)
@@ -138,6 +183,8 @@ class WSServer:
             length = struct.unpack(">H", await reader.readexactly(2))[0]
         elif length == 127:
             length = struct.unpack(">Q", await reader.readexactly(8))[0]
+        if length > self.max_message_size:
+            return None
 
         if masked:
             mask = await reader.readexactly(4)

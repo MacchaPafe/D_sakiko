@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -48,11 +49,25 @@ def electron_command(electron_root: Path) -> Path:
     return electron_root / "node_modules" / ".bin" / name
 
 
+def electron_command_candidates(electron_root: Path) -> list[Path]:
+    """Return platform launchers in preference order, including packaged binaries."""
+    primary = electron_command(electron_root)
+    candidates = [primary]
+    if os.name == "nt":
+        candidates.extend((electron_root / "node_modules" / ".bin" / "electron.exe",
+                           electron_root / "node_modules" / "electron" / "dist" / "electron.exe"))
+    else:
+        candidates.append(electron_root / "node_modules" / "electron" / "dist" / "Electron")
+    return candidates
+
+
 def main() -> int:
     python_executable = Path(sys.executable)
     main_script = ROOT / "GPT_SoVITS" / "main2.py"
     electron_root = ROOT / "electron_frontend"
     mode = renderer_mode()
+    if mode == "electron":
+        os.environ.setdefault("DSAKIKO_BRIDGE_TOKEN", secrets.token_urlsafe(32))
     python_process = subprocess.Popen([str(python_executable), str(main_script)], cwd=main_script.parent)
     electron_process = None
     try:
@@ -60,9 +75,10 @@ def main() -> int:
             if not wait_for_bridge():
                 print("Bridge 在 30 秒内未就绪，未启动 Electron。", file=sys.stderr)
                 return 1
-            electron_executable = electron_command(electron_root)
-            if not electron_executable.is_file():
-                print(f"Electron 依赖不存在：{electron_executable}", file=sys.stderr)
+            electron_executable = next((candidate for candidate in electron_command_candidates(electron_root)
+                                        if candidate.is_file()), None)
+            if electron_executable is None:
+                print(f"Electron 依赖不存在：{electron_command(electron_root)}", file=sys.stderr)
                 return 1
             electron_process = subprocess.Popen([str(electron_executable), "."], cwd=electron_root)
         return python_process.wait()
