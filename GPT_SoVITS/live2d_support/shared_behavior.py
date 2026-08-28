@@ -144,10 +144,20 @@ class SharedLive2DBehavior:
         return command
 
     def start_named_motion(self, *, turn_id: str, segment_id: str, group: str, priority: int) -> PlaySegment | None:
-        capability = self._capabilities.get(group)
+        resolved_group = resolve_positioned_motion_group(group, "C", self._capabilities)
+        capability = self._capabilities.get(resolved_group)
         if capability is None:
             return None
-        command = PlaySegment(uuid4().hex, turn_id, segment_id, ExactMotion(group, self._rng.randrange(capability.count), priority), "", 0.0)
+        motion_index = self._rng.randrange(capability.count)
+        motion_files = getattr(self, "_motion_files_by_group", {})
+        motion_file = motion_files.get(resolved_group, (None,) * capability.count)[motion_index]
+        expression_ids = getattr(self, "_expression_ids", frozenset())
+        expression_id = select_expression_for_motion(resolved_group, motion_file, expression_ids)
+        command = PlaySegment(
+            uuid4().hex, turn_id, segment_id,
+            ExactMotion(resolved_group, motion_index, priority, expression_id=expression_id),
+            "", 0.0,
+        )
         self._active_command, self._motion_active, self._audio_active, self._audio_start_dispatched = command, False, False, False
         return command
 

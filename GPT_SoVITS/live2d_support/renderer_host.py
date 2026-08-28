@@ -122,6 +122,8 @@ class SharedRendererHost:
 
     def set_thinking(self, active: bool) -> bool:
         """Accept an upstream fact; only the shared scheduler owns its timer."""
+        if self._bye_requested:
+            return False
         self._scheduler.set_thinking(active)
         self._emit({"type": "thinking_changed", "data": {"active": active}})
         return True
@@ -129,6 +131,8 @@ class SharedRendererHost:
     def handle_runtime_control(self, data: Mapping[str, Any]) -> bool:
         """Route legacy UI controls through the owner, preserving mechanics-only renderers."""
         command_type = str(data.get("type") or "")
+        if self._bye_requested and command_type != "exit":
+            return False
         if command_type == "start_talking":
             return self._emit_scheduled(self._scheduler.request_motion("talking_motion", 4, "talking"))
         if command_type == "stop_talking":
@@ -201,17 +205,6 @@ class SharedRendererHost:
             self._conversion_replay_motion = None
             self._conversion_replay_renderers.clear()
             self._conversion_commit_by_token.clear()
-            model_key = str(
-                payload.get("character_folder_name")
-                or payload.get("character_folder")
-                or ""
-            ).lower()
-            character_name = str(payload.get("character_name") or "")
-            if (model_key == "sakiko" or character_name == "祥子") and self._sakiko_conversion.is_black:
-                # Master always returns to the black/costume model while the
-                # persistent Sakiko state is black. Resolve that variant once
-                # here so neither renderer repeats this business decision.
-                payload["model_json"] = "../live2d_related/sakiko/live2D_model_costume/3.model.json"
             self._current_model_switch = deepcopy(payload)
             self._pending_model_switch = payload
             self._pending_model_switch_renderers = set(self._connected_renderer_ids)
@@ -223,6 +216,8 @@ class SharedRendererHost:
         return False
 
     def start_emotion_segment(self, *, turn_id: str, segment_id: str, emotion: str, audio_path: str, audio_duration_seconds: float = 0.0) -> bool:
+        if self._bye_requested:
+            return False
         segment = self._behavior.start_emotion_segment(
             turn_id=turn_id, segment_id=segment_id, emotion=emotion, audio_path=audio_path, audio_duration_seconds=audio_duration_seconds,
         )
@@ -577,6 +572,8 @@ class SharedRendererHost:
 
     def start_sakiko_conversion(self, conversion, model_urls: Mapping[str, str]) -> bool:
         """Decide once; the renderer only reloads the requested model."""
+        if self._bye_requested:
+            return False
         # Upstream retires the previous segment repeat loop as soon as a
         # conversion intent is observed, even when the runtime gate rejects
         # that conversion.
@@ -596,10 +593,9 @@ class SharedRendererHost:
         if canonical_id is not None:
             canonical_key = self._renderer_model_keys.get(canonical_id, "").lower()
             runtime_version = self._renderer_runtime_versions.get(canonical_id, "").lower()
-            runtime_role = self._renderer_roles.get(canonical_id, "").lower()
             if canonical_key != "sakiko":
                 return False
-            if runtime_role == "pygame" and runtime_version != "v2":
+            if runtime_version != "v2":
                 return False
             # A renderer that only provides audio (or reports no motion
             # capability) cannot execute the conversion model/motion pair.
@@ -662,6 +658,8 @@ class SharedRendererHost:
         return self._emit_scheduled(command, replay_for_late_renderers=True)
 
     def tick(self, *, include_long_audio: bool = True) -> bool:
+        if self._bye_requested:
+            return False
         if self.model_switch_pending:
             return False
         if self._renderer_ids and not self._motion_renderer_ids():
@@ -669,6 +667,8 @@ class SharedRendererHost:
         return self._emit_scheduled(self._scheduler.tick(include_long_audio=include_long_audio))
 
     def tick_long_audio(self) -> bool:
+        if self._bye_requested:
+            return False
         if self.model_switch_pending:
             return False
         if self._renderer_ids and not self._motion_renderer_ids():

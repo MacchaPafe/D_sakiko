@@ -2052,6 +2052,9 @@ class DSLocalAndVoiceGen:
                 return
             change_char_queue.put({
                 "type": "switch_live2d",
+                "chat_id": str(self.current_chat_id or ""),
+                "turn_id": str(getattr(self, "_active_turn_id", "") or ""),
+                "character_folder_name": character.character_folder_name,
                 "character_name": character_name,
                 "model_json": new_model_json,
             })
@@ -2125,6 +2128,7 @@ class DSLocalAndVoiceGen:
             # 如果 qtUI 没有提供 turn_id，我们就自己生成一个，保证每轮对话都有唯一 id 供后续追踪和关联工具调用使用。
             raw_turn_id = command.get("turn_id")
             turn_id = raw_turn_id if isinstance(raw_turn_id, str) and raw_turn_id else uuid.uuid4().hex
+            self._active_turn_id = turn_id
             active_chat_id = chat.chat_id
             # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
             # 不过一般人手速没这么快吧（

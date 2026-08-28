@@ -132,6 +132,17 @@ class SharedLive2DBehaviorTraceTestCase(unittest.TestCase):
         self.assertIsNotNone(fallback)
         self.assertIsNone(self.behavior.motion_started(command.command_id))
 
+    def test_named_motion_prefers_center_variant(self) -> None:
+        self.behavior.set_model_catalog(
+            {"bye": ("bye.mtn",), "bye_C": ("bye_center.mtn",)},
+        )
+        command = self.behavior.start_named_motion(
+            turn_id="", segment_id="", group="bye", priority=3,
+        )
+        assert command is not None and command.motion is not None
+        self.assertEqual(command.motion.group, "bye_C")
+        self.assertEqual(command.motion.position, "C")
+
 
 if __name__ == "__main__":
     unittest.main()

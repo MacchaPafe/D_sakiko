@@ -5503,6 +5503,8 @@ class ChatGUI(QWidget):
             return
         self.change_char_queue.put({
             "type": "switch_live2d",
+            "chat_id": str(self.current_chat_id or ""),
+            "turn_id": str(self.active_turn_id or ""),
             "character_folder_name": self.current_character.character_folder_name,
             "character_name": character_name,
             "model_json": model_json,

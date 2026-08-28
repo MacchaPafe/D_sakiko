@@ -655,6 +655,61 @@ class RendererHostTest(unittest.TestCase):
         }}))
 
 
+    def test_switch_preserves_webui_turn_metadata(self):
+        host = SharedRendererHost(self.out.append, AuthoritativeLive2DOwner())
+        host.handle_renderer_fact({"type": "renderer_ready", "data": {
+            "renderer_id": "pygame", "renderer_instance_id": "one",
+            "motion_groups": {}, "model_token": "old",
+        }})
+        self.assertTrue(host.handle_runtime_control({
+            "type": "switch_live2d", "chat_id": "chat-1", "turn_id": "turn-2",
+            "character_folder_name": "anon", "character_name": "爱音",
+            "model_json": "anon.model.json",
+        }))
+        switch = self.out[-1]
+        self.assertEqual(switch["type"], "switch_live2d")
+        self.assertEqual(switch["data"]["chat_id"], "chat-1")
+        self.assertEqual(switch["data"]["turn_id"], "turn-2")
+        self.assertEqual(switch["data"]["character_folder_name"], "anon")
+
+    def test_black_sakiko_switch_keeps_selected_model_path(self):
+        host = SharedRendererHost(self.out.append, AuthoritativeLive2DOwner())
+        host._sakiko_conversion.is_black = True
+        host.handle_renderer_fact({"type": "renderer_ready", "data": {
+            "renderer_id": "pygame", "renderer_instance_id": "one",
+            "model_key": "sakiko", "runtime_version": "v2", "model_token": "old",
+            "motion_groups": {},
+        }})
+        self.assertTrue(host.handle_runtime_control({
+            "type": "switch_live2d", "character_folder_name": "sakiko",
+            "character_name": "祥子", "model_json": "custom.model.json",
+        }))
+        self.assertEqual(self.out[-1]["data"]["model_json"], "custom.model.json")
+
+    def test_bye_terminal_ignores_regular_business_intents(self):
+        host = SharedRendererHost(self.out.append, AuthoritativeLive2DOwner(rng=Random(0)))
+        host.handle_renderer_fact({"type": "renderer_ready", "data": {
+            "motion_groups": {"bye": 1, "happiness": 1, "text_generating": 1},
+        }})
+        self.assertTrue(host.start_bye())
+        command_count = len(self.out)
+        self.assertFalse(host.set_thinking(True))
+        self.assertFalse(host.start_emotion_segment(
+            turn_id="t", segment_id="s", emotion="LABEL_0", audio_path="a.wav",
+        ))
+        self.assertFalse(host.tick())
+        self.assertFalse(host.tick_long_audio())
+        self.assertFalse(host.handle_runtime_control({"type": "start_talking"}))
+        self.assertEqual(len(self.out), command_count)
+
+    def test_sakiko_conversion_requires_v2_even_for_non_pygame_runtime(self):
+        host = SharedRendererHost(self.out.append, AuthoritativeLive2DOwner())
+        host.handle_renderer_fact({"type": "renderer_ready", "data": {
+            "renderer_id": "electron", "renderer_role": "electron", "model_key": "sakiko",
+            "runtime_version": "", "motion_groups": {"change_character": 1},
+        }})
+        self.assertFalse(host.start_sakiko_conversion(True, {"black": "black.model.json"}))
+
 if __name__ == "__main__":
     unittest.main()
 
