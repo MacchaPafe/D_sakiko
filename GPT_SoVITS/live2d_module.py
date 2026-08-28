@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import contextlib
-import math
-import re
 import time
-import wave
-from random import random
 from live2d.utils.lipsync import WavHandler
 import glob, os, sys
+from uuid import uuid4
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
@@ -23,8 +20,8 @@ with open(os.devnull, 'w') as devnull:
 from OpenGL.GL import *
 import queue
 
-from multi_char_live2d_module import TextOverlay
-from qconfig import d_sakiko_config, qconfig
+from live2d_support.text_overlay import TextOverlay
+from qconfig import d_sakiko_config
 from log import setup_worker_logging, get_logger
 from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
@@ -35,11 +32,13 @@ from live2d_support.runtime_adapter import (
     load_live2d_runtime,
     release_live2d_runtime,
 )
-from live2d_support.motion_semantics import motion_group_for_emotion
+from live2d_support.shared_segment_executor import (
+    PygameRendererCommandAdapter,
+    renderer_command_is_frame_barrier,
+)
 from live2d_support.runtime_window import recreate_runtime_window
 from live2d_support.layout import (
     Live2DLayout,
-    format_live2d_layout_status,
     get_live2d_layout,
     reset_live2d_layout,
     save_live2d_layout,
@@ -79,22 +78,14 @@ class BackgroundRen(object):
         glTexCoord2f(0, 1);glVertex3f(*args[0])
         glEnd()
 
-idle_recover_timer=time.time()
-
 class Live2DModule:
     def __init__(self):
         self.PATH_JSON=None
         self.BACK_IMAGE=None
         self.BACKGROUND_POSITION=((-1.0, 1.0, 0), (1.0, -1.0, 0), (1.0, 1.0, 0), (-1.0, -1.0, 0))
-        self.motion_is_over=False
         self.wavHandler=WavHandler()
         self.lipSyncN:float=1.4
-        self.live2d_this_turn_motion_complete=True
-        self.think_motion_is_over=True
         self.run=True
-        self.sakiko_state=True
-        self.if_sakiko=False
-        self.if_mask=True
         self.character_list=[]
         self.character_by_name = {}
         self.character_by_folder = {}
@@ -110,20 +101,9 @@ class Live2DModule:
         self.eye_open_transition_duration = 0.1
         self.eye_open_param_ids = ("eye_l_open", "eye_r_open")
         self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
-        
-        # 长音频动作循环状态机
-        self.long_audio_motion_threshold_seconds = 6.0  #超过这个时长的音频才会触发
-        self.long_audio_motion_repeat_delay_seconds = 2.5   #每次动作结束后等待这么久才触发下一次，防止动作切换过快
-        self.long_audio_motion_max_repeats = 2  #最长音频动作循环的最大重复次数，防止某些极端长的音频导致动作一直循环，这也有点人机
-        self.long_audio_motion_repeat_count = 0
-        self.long_audio_motion_active = False
-        self.long_audio_motion_group = ""
-        self.long_audio_next_motion_at = 0.0
-        self.long_audio_duration_seconds = 0.0
 
     @property
     def current_character(self):
-        """获取当前 Live2D 显示角色对象。"""
         character = self.character_by_name.get(self.current_character_name)
         if character is not None:
             return character
@@ -132,7 +112,6 @@ class Live2DModule:
         raise ValueError("Live2D 角色列表为空。")
 
     def _default_model_json_for_character(self, character) -> str | None:
-        """获取角色默认模型路径，缺失时尝试从角色目录中恢复。"""
         if character.live2d_json and os.path.exists(character.live2d_json):
             return character.live2d_json
         default_path = f"../live2d_related/{character.character_folder_name}/live2D_model"
@@ -146,105 +125,34 @@ class Live2DModule:
         character.live2d_json = max(candidates, key=os.path.getmtime)
         return character.live2d_json
 
-    def switch_live2d_target(
-            self,
-            character_name: str,
-            model_json: str | None = None,
-            *,
-            character_folder_name: str = "",
-            use_default: bool = True,
-    ) -> str | None:
-        """切换当前 Live2D 目标角色和模型路径。"""
-        character = (
-            self.character_by_folder.get(character_folder_name)
-            if character_folder_name
-            else None
-        )
-        if character is None:
-            character = self.character_by_name.get(character_name)
+    def switch_live2d_target(self, character_name: str, model_json: str | None = None, *, character_folder_name: str = "", use_default: bool = True) -> str | None:
+        character = self.character_by_folder.get(character_folder_name) if character_folder_name else None
+        character = character or self.character_by_name.get(character_name)
         if character is None:
             raise ValueError(f"找不到 Live2D 角色：{character_name}")
-        target_model_json = model_json
-        if use_default:
-            target_model_json = self._default_model_json_for_character(character)
+        target = self._default_model_json_for_character(character) if use_default else model_json
         self.current_character_name = character.character_name
-        self.current_model_json = target_model_json
-        self.PATH_JSON = target_model_json
-        self.if_sakiko = character.character_name == "祥子"
-        return target_model_json
+        self.current_model_json = target
+        self.PATH_JSON = target
+        return target
 
-    def live2D_initialize(self,characters):
-        # self.PATH_JSON=glob.glob(os.path.join("../live2d_related/anon/live2D_model", f"*.model.json"))
-        # if not self.PATH_JSON:
-        #     raise FileNotFoundError("没有找到Live2D模型json文件(.model.json)")
-        # self.PATH_JSON=max(self.PATH_JSON,key=os.path.getmtime)
-        self.character_list=characters
-        self.character_by_name = {character.character_name: character for character in self.character_list}
-        self.character_by_folder = {
-            character.character_folder_name: character
-            for character in self.character_list
-        }
+    def live2D_initialize(self, characters):
+        self.character_list = characters
+        self.character_by_name = {character.character_name: character for character in characters}
+        self.character_by_folder = {character.character_folder_name: character for character in characters}
         if self.character_list:
-            self.switch_live2d_target(self.character_list[0].character_name)
-
-        back_img_png=glob.glob(os.path.join("../live2d_related",f"*.png"))
-        back_img_jpg = glob.glob(os.path.join("../live2d_related", f"*.jpg"))
-        if not (back_img_png+back_img_jpg):
+            # Metadata is needed to construct the window. The model itself is
+            # loaded only after the authoritative owner sends switch_live2d.
+            self.current_character_name = self.character_list[0].character_name
+        back_img_png = glob.glob(os.path.join("../live2d_related", "*.png"))
+        back_img_jpg = glob.glob(os.path.join("../live2d_related", "*.jpg"))
+        if not (back_img_png + back_img_jpg):
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
-        self.BACK_IMAGE=back_img_jpg+back_img_png
-        self.back_img_index=0
+        self.BACK_IMAGE = back_img_jpg + back_img_png
+        self.back_img_index = 0
         config_data = d_sakiko_config.background_image_path.value
         if config_data in self.BACK_IMAGE:
             self.back_img_index = self.BACK_IMAGE.index(config_data)
-
-
-    # 动作播放开始后调用
-    def onStartCallback(self,*args):
-        self.motion_is_over=False
-        self._reset_eye_open_transition()
-        #print(f"touched and motion [] is started")
-
-    def onStartCallback_think_motion_version(self,*args):
-        self.think_motion_is_over = False
-        self._reset_eye_open_transition()
-        if self.if_sakiko:
-            pygame.display.set_caption("小祥思考中")
-        else:
-            pygame.display.set_caption(f"{self.current_character.character_name}思考中")
-
-    def onStartCallback_emotion_version(self,audio_file_path,*args):
-        self.motion_is_over=False
-        self._reset_eye_open_transition()
-        #print(f"touched and motion [] is started")
-        logger = get_logger(__name__)
-        if not audio_file_path or not os.path.isfile(audio_file_path):
-            logger.warning("跳过无效音频路径：%s", audio_file_path)
-            return
-        try:
-            # 播放音频
-            pygame.mixer.music.load(audio_file_path)
-            pygame.mixer.music.play()
-        except pygame.error as exc:
-            logger.warning("播放音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
-            return
-        # 处理口型同步
-        if audio_file_path!='../reference_audio/silent_audio/silence.wav':  #该函数无法处理无声音频
-            try:
-                self.wavHandler.Start(audio_file_path)
-            except Exception as exc:
-                logger.warning("口型同步读取音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
-
-    # 动作播放结束后调用
-    def onFinishCallback(self, *args):
-        #print("motion finished")
-        self.motion_is_over=True
-        self._queue_eye_open_transition()
-        global idle_recover_timer
-        idle_recover_timer = time.time()
-
-    def onFinishCallback_think_motion_version(self, *args):
-        self.think_motion_is_over=True
-        self._queue_eye_open_transition()
 
     def _reset_eye_open_transition(self):
         self.force_eyes_open = False
@@ -252,16 +160,11 @@ class Live2DModule:
         self.eye_open_transition_start = 0.0
         self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
 
-    def _queue_eye_open_transition(self):
-        self.force_eyes_open = False
-        self.eye_open_pending = True
-        self.eye_open_transition_start = 0.0
-
     def _get_model_parameter_value(self, model, param_id: str, default: float = 1.0) -> float:
-        get_parameter_value = getattr(model, "get_parameter_value", None)
-        if callable(get_parameter_value):
+        getter = getattr(model, "get_parameter_value", None)
+        if callable(getter):
             try:
-                return float(get_parameter_value(param_id, default))
+                return float(getter(param_id, default))
             except Exception:
                 return default
         try:
@@ -273,120 +176,37 @@ class Live2DModule:
             pass
         return default
 
-    def _set_model_eye_open_values(self, model, value_by_param_id):
-        set_parameter_value = getattr(model, "set_parameter_value", None)
-        if callable(set_parameter_value):
-            for param_id, value in value_by_param_id.items():
+    def _set_model_eye_open_values(self, model, values):
+        setter = getattr(model, "set_parameter_value", None)
+        if callable(setter):
+            for param_id, value in values.items():
                 try:
-                    set_parameter_value(param_id, value)
+                    setter(param_id, value)
                 except Exception:
                     pass
             return
-        try:
-            for param_id, value in value_by_param_id.items():
+        for param_id, value in values.items():
+            try:
                 model.SetParameterValue(param_id, value)
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     def _update_eye_open_transition(self, model):
         if self.eye_open_pending:
-            self.eye_open_start_values = {
-                param_id: self._get_model_parameter_value(model, param_id)
-                for param_id in self.eye_open_param_ids
-            }
+            self.eye_open_start_values = {param_id: self._get_model_parameter_value(model, param_id) for param_id in self.eye_open_param_ids}
             if self.eye_open_start_values.get("eye_l_open", 1.0) > 0.5:
                 self._reset_eye_open_transition()
                 return
             self.eye_open_transition_start = time.time()
             self.eye_open_pending = False
-
         if self.eye_open_transition_start <= 0:
-            if self.force_eyes_open:
-                self._set_model_eye_open_values(model, {param_id: 1.0 for param_id in self.eye_open_param_ids})
-                self._reset_eye_open_transition()
             return
-
-        elapsed = time.time() - self.eye_open_transition_start
-        progress = max(0.0, min(1.0, elapsed / self.eye_open_transition_duration))
-        eye_values = {
-            param_id: start_value + (1.0 - start_value) * progress
-            for param_id, start_value in self.eye_open_start_values.items()
-        }
-        self._set_model_eye_open_values(model, eye_values)
+        progress = max(0.0, min(1.0, (time.time() - self.eye_open_transition_start) / self.eye_open_transition_duration))
+        values = {param_id: start + (1.0 - start) * progress for param_id, start in self.eye_open_start_values.items()}
+        self._set_model_eye_open_values(model, values)
         if progress >= 1.0:
             self._set_model_eye_open_values(model, {param_id: 1.0 for param_id in self.eye_open_param_ids})
             self._reset_eye_open_transition()
-
-    def _reset_long_audio_motion_loop(self):
-        self.long_audio_motion_active = False
-        self.long_audio_motion_group = ""
-        self.long_audio_next_motion_at = 0.0
-        self.long_audio_duration_seconds = 0.0
-        self.long_audio_motion_repeat_count = 0
-
-    def _get_audio_duration_seconds(self, audio_file_path: str) -> float:
-        if not audio_file_path or not os.path.isfile(audio_file_path):
-            return 0.0
-        try:
-            with wave.open(audio_file_path, "rb") as audio_file:
-                frame_rate = audio_file.getframerate()
-                if frame_rate <= 0:
-                    return 0.0
-                return audio_file.getnframes() / frame_rate
-        except Exception:
-            pass
-        try:
-            return float(pygame.mixer.Sound(audio_file_path).get_length())
-        except Exception:
-            return 0.0
-
-    def _prepare_long_audio_motion_loop(self, motion_group: str, audio_file_path: str):
-        duration = self._get_audio_duration_seconds(audio_file_path)
-        if duration < self.long_audio_motion_threshold_seconds:
-            self._reset_long_audio_motion_loop()
-            return
-        self.long_audio_motion_active = True
-        self.long_audio_motion_group = motion_group
-        self.long_audio_next_motion_at = 0.0
-        self.long_audio_duration_seconds = duration
-        self.long_audio_motion_repeat_count = 0
-
-    def _update_long_audio_motion_loop(self, model):
-        if not self.long_audio_motion_active:
-            return
-        if not pygame.mixer.music.get_busy():
-            self._reset_long_audio_motion_loop()
-            return
-        if not self.motion_is_over:
-            return
-        if not self.long_audio_motion_group:
-            self._reset_long_audio_motion_loop()
-            return
-        if self.long_audio_motion_repeat_count >= self.long_audio_motion_max_repeats:
-            return
-
-        now = time.time()
-        if self.long_audio_next_motion_at <= 0:
-            self.long_audio_next_motion_at = now + self.long_audio_motion_repeat_delay_seconds
-            return
-        if now < self.long_audio_next_motion_at:
-            return
-
-        self.motion_is_over = False
-        started = model.StartRandomMotion(
-            self.long_audio_motion_group,
-            3,
-            self.onStartCallback,
-            self.onFinishCallback,
-            position="C",
-        )
-        if not started:
-            self.motion_is_over = True
-            self._reset_long_audio_motion_loop()
-            return
-        self.long_audio_motion_repeat_count += 1
-        self.long_audio_next_motion_at = 0.0
-
 
     def save_l2d_json_paths_and_bg(self):
         l2d_json_paths_dict = {}
@@ -396,6 +216,25 @@ class Live2DModule:
         with d_sakiko_config as cfg:
             cfg.set(cfg.l2d_json_paths_dict, l2d_json_paths_dict)
             cfg.set(cfg.background_image_path, self.BACK_IMAGE[self.back_img_index])
+
+    def _start_audio_runtime(self, audio_file_path: str) -> bool:
+        """Play an owner-selected audio path and update only runtime lip-sync."""
+        logger = get_logger(__name__)
+        if not audio_file_path or not os.path.isfile(audio_file_path):
+            logger.warning("跳过无效音频路径：%s", audio_file_path)
+            return False
+        try:
+            pygame.mixer.music.load(audio_file_path)
+            pygame.mixer.music.play()
+        except pygame.error as exc:
+            logger.warning("播放音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
+            return False
+        if audio_file_path != '../reference_audio/silent_audio/silence.wav':
+            try:
+                self.wavHandler.Start(audio_file_path)
+            except Exception as exc:
+                logger.warning("口型同步读取音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
+        return True
 
     def play_live2d(self,
                     emotion_queue,
@@ -408,7 +247,11 @@ class Live2DModule:
                     motion_complete_value,
                     desktop_w,
                     desktop_h,
-                    log_queue):
+                    log_queue,
+                    renderer_fact_queue=None,
+                    renderer_command_queue=None,
+                    renderer_trace_queue=None,
+                    authoritative_emotion_audio=False):
         setup_worker_logging(log_queue)
         logger = get_logger(__name__)
 
@@ -473,9 +316,6 @@ class Live2DModule:
             initial_icon_path = "../live2d_related/sakiko/sakiko_icon.png"
         pygame.display.set_icon(pygame.image.load(initial_icon_path))
 
-        if self.if_sakiko and isinstance(model, Live2DModelAdapter):
-            model.SetSemanticExpression('serious')
-
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.current_character.character_name])
         glEnable(GL_TEXTURE_2D)
 
@@ -515,6 +355,164 @@ class Live2DModule:
         def restore_normal_overlay() -> None:
             """退出布局编辑后恢复普通对话文本。"""
             overlay.set_text(self.current_character.character_name, self.new_text or "...")
+
+        renderer_model_token = ""
+        renderer_instance_id = f"pygame-{uuid4().hex}"
+
+        def emit_renderer_ready() -> None:
+            """Publish runtime capability facts for the shared owner."""
+            if renderer_fact_queue is None:
+                return
+            motion_files = model.motion_files_by_group if isinstance(model, Live2DModelAdapter) else {}
+            expression_ids = list(model.expression_ids) if isinstance(model, Live2DModelAdapter) else []
+            runtime_version = model.version if isinstance(model, Live2DModelAdapter) else ""
+            renderer_fact_queue.put({
+                "type": "renderer_ready",
+                "data": {
+                    "renderer_id": "pygame-renderer",
+                    "renderer_instance_id": renderer_instance_id,
+                    "renderer_role": "pygame",
+                    "model_token": renderer_model_token,
+                    "model_key": self.current_character.character_folder_name,
+                    "runtime_version": runtime_version,
+                    "model_json": current_layout_model_path or self.PATH_JSON or "",
+                    "motion_files_by_group": motion_files,
+                    "expression_ids": expression_ids,
+                    "model_urls": {
+                        "model_json": current_layout_model_path or self.PATH_JSON or "",
+                        "white": "../live2d_related/sakiko/live2D_model/3.model.json",
+                        "black": "../live2d_related/sakiko/live2D_model_costume/3.model.json",
+                    },
+                    "capabilities": {
+                        "motion": isinstance(model, Live2DModelAdapter),
+                        "audio": True,
+                        "lipsync": isinstance(model, Live2DModelAdapter),
+                    },
+                },
+            })
+
+        if renderer_fact_queue is not None:
+            renderer_fact_queue.put({
+                "type": "renderer_hello",
+                "data": {
+                    "renderer_id": "pygame-renderer",
+                    "renderer_instance_id": renderer_instance_id,
+                    "renderer_role": "pygame",
+                    "model_token": "",
+                    "model_key": "",
+                },
+            })
+            # A missing model is still a healthy audio-capable renderer.  The
+            # owner needs this ready fact to preserve upstream audio fallback.
+            emit_renderer_ready()
+
+        def emit_renderer_fact(fact: dict) -> None:
+            if fact.get("type") == "motion_finished":
+                self.eye_open_pending = True
+            if renderer_fact_queue is not None:
+                payload = dict(fact)
+                data = dict(payload.get("data") or {})
+                data.setdefault("renderer_id", "pygame-renderer")
+                data.setdefault("renderer_instance_id", renderer_instance_id)
+                payload["data"] = data
+                renderer_fact_queue.put(payload)
+
+        def emit_renderer_trace(trace: dict) -> None:
+            if renderer_trace_queue is not None:
+                renderer_trace_queue.put(trace)
+
+        renderer_audio_token = ""
+        renderer_audio_was_busy = False
+        renderer_model_switch_pending = False
+        renderer_adapter = None
+        renderer_local_controls = queue.Queue()
+        renderer_thinking_active = False
+
+        def execute_renderer_commands() -> None:
+            nonlocal renderer_audio_token, renderer_audio_was_busy, renderer_thinking_active
+            nonlocal renderer_model_switch_pending, renderer_adapter
+            if renderer_command_queue is None:
+                return
+            # The switch control is consumed later in this frame.  Do not let
+            # the next frame drain following commands through the old model.
+            if renderer_model_switch_pending:
+                return
+            if renderer_adapter is None:
+                renderer_adapter = PygameRendererCommandAdapter(model, emit_renderer_fact, self._start_audio_runtime)
+            else:
+                renderer_adapter.bind_runtime(model)
+            while True:
+                try:
+                    command = renderer_command_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(command, dict):
+                    data = command.get("data", {})
+                    if isinstance(data, dict):
+                        target_ids = data.get("target_renderer_ids")
+                        if isinstance(target_ids, (list, tuple, set)) and target_ids and "pygame-renderer" not in target_ids:
+                            continue
+                        target_id = data.get("target_renderer_id")
+                        if target_id and str(target_id) != "pygame-renderer":
+                            continue
+                    if command.get("type") == "close_renderer":
+                        self.run = False
+                        continue
+                    if command.get("type") == "switch_live2d":
+                        switch_data = command.get("data", {})
+                        if isinstance(switch_data, dict):
+                            # Preserve the exact command envelope while the
+                            # local loop consumes its flattened runtime data.
+                            renderer_local_controls.put({"type": "switch_live2d", **switch_data})
+                        # A model switch is a runtime barrier.  Leave any
+                        # following exact commands in the renderer queue so
+                        # the next frame rebinds the adapter to the newly
+                        # loaded model instead of the disposed one.
+                        if renderer_command_is_frame_barrier(command):
+                            renderer_model_switch_pending = True
+                            break
+                    if command.get("type") in {"stop_audio", "reset"}:
+                        try:
+                            pygame.mixer.music.stop()
+                        except Exception:
+                            pass
+                        self.wavHandler = WavHandler()
+                    if command.get("type") in {"stop_motion", "reset"}:
+                        try:
+                            stop_all = getattr(getattr(model, "model", None), "StopAllMotions", None)
+                            if callable(stop_all):
+                                stop_all()
+                        except Exception:
+                            pass
+                    if command.get("type") in {"stop_audio", "stop_motion", "reset", "thinking_changed", "change_l2d_background", "switch_l2d_fps", "toggle_l2d_layout_edit"}:
+                        if command.get("type") == "thinking_changed":
+                            data = command.get("data", {})
+                            renderer_thinking_active = isinstance(data, dict) and data.get("active") is True
+                        elif command.get("type") == "change_l2d_background":
+                            change_char_queue.put(command.get("data", {}))
+                        elif command.get("type") == "switch_l2d_fps":
+                            change_char_queue.put(command.get("data", {}))
+                        elif command.get("type") == "toggle_l2d_layout_edit":
+                            change_char_queue.put(command.get("data", {}))
+                        continue
+                    if renderer_adapter.execute(command) and command.get("type") == "play_audio":
+                        data = command.get("data", {})
+                        if isinstance(data, dict):
+                            renderer_audio_token = str(data.get("token") or "")
+                            # A successful play call owns an active lifecycle
+                            # even if a zero-length/erroring stream is already
+                            # idle by the first backend poll.
+                            renderer_audio_was_busy = True
+
+        def emit_audio_idle_fact() -> None:
+            nonlocal renderer_audio_was_busy, renderer_audio_token
+            if not renderer_audio_token:
+                return
+            is_busy = pygame.mixer.music.get_busy()
+            if renderer_audio_was_busy and not is_busy:
+                emit_renderer_fact({"type": "audio_ended", "data": {"token": renderer_audio_token}})
+                renderer_audio_token = ""
+            renderer_audio_was_busy = is_busy
 
         def enter_layout_edit_mode() -> None:
             """进入 Live2D 布局编辑模式。"""
@@ -562,18 +560,14 @@ class Live2DModule:
         apply_current_layout()
 
         mouse_position_x = 0
-        last_saved_time=time.time()     #待机动作计时器
-        last_saved_time_think=time.time()
-        global idle_recover_timer
 
-        interval_think=1
-        if_bye = False
-        last_emotion = None
         logger.info("当前Live2D界面渲染硬件 %s", glGetString(GL_RENDERER).decode())
 
         is_update_mouth_sync = 0
         mouth_keep_open_value:float=0.0
         while self.run:
+            execute_renderer_commands()
+            emit_audio_idle_fact()
             for event in pygame.event.get():    #退出程序逻辑
                 if event.type == pygame.QUIT:
                     if layout_editing:
@@ -604,7 +598,10 @@ class Live2DModule:
                         layout_dragging = False
                         layout_last_mouse_pos = None
                     elif not layout_editing and event.button == 1:
-                        mouse_position_x, _= event.pos
+                        emit_renderer_fact({
+                            "type": "renderer_intent",
+                            "data": {"intent": "click", "renderer_id": "pygame-renderer"},
+                        })
                 elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
                     if layout_last_mouse_pos is not None:
                         last_x, last_y = layout_last_mouse_pos
@@ -627,48 +624,6 @@ class Live2DModule:
                 else:
                     pass
 
-            if if_bye:
-                # 退出动画期间不再处理残留的文本、音频和动作队列，避免对话框被普通渲染分支重新画出。
-                while True:
-                    try:
-                        live2d_text_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    except Exception:
-                        break
-                while True:
-                    try:
-                        emotion_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    except Exception:
-                        break
-                while True:
-                    try:
-                        audio_file_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    except Exception:
-                        break
-                while True:
-                    try:
-                        change_char_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    except Exception:
-                        break
-                glClear(GL_COLOR_BUFFER_BIT)
-                model.Update()
-                render_background(texture)
-                model.Draw()
-                glUseProgram(0)
-                pygame.display.flip()
-                frame_clock.tick(self.target_fps)
-                if self.motion_is_over:
-                    self.run=False
-                    self.save_l2d_json_paths_and_bg()
-                continue
-
             # 从队列中获取要显示的新文本（只取最新，避免积压导致延迟）
             latest_text = None
             while True:
@@ -683,8 +638,14 @@ class Live2DModule:
                 if not layout_editing:
                     overlay.set_text(self.current_character.character_name, self.new_text)
 
-            if not change_char_queue.empty():
-                x=change_char_queue.get()
+            control_command = None
+            try:
+                control_command = renderer_local_controls.get_nowait()
+            except queue.Empty:
+                if not change_char_queue.empty():
+                    control_command = change_char_queue.get()
+            if control_command is not None:
+                x = control_command
                 if isinstance(x, str):
                     if x.lower() == "exit":
                         self.run = False
@@ -696,36 +657,10 @@ class Live2DModule:
                     continue
 
                 command_type = str(x.get("type") or "")
-                if command_type =='start_talking':   #录音时
-                    self._reset_long_audio_motion_loop()
-                    model.StartRandomMotion("talking_motion", 4, self.onStartCallback, position="C")
-                elif command_type=='stop_talking':   #录音结束
-                    self._reset_long_audio_motion_loop()
-                    self.onFinishCallback()
-                elif command_type == "cancel_turn":
-                    self._reset_long_audio_motion_loop()
-                    pygame.mixer.music.stop()
-                    self.wavHandler = WavHandler()
-                    self.motion_is_over = True
-                    self.think_motion_is_over = True
-                    self.live2d_this_turn_motion_complete = True
-                    motion_complete_value.value = True
-                    overlay.set_text(self.current_character.character_name, '...')
-                    saw_bye = False
-                    while not emotion_queue.empty():
-                        try:
-                            queued_emotion = emotion_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                        if queued_emotion == "bye":
-                            saw_bye = True
-                    while not audio_file_queue.empty():
-                        try:
-                            audio_file_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                    if saw_bye:
-                        emotion_queue.put("bye")
+                if command_type in {"start_talking", "stop_talking", "cancel_turn"}:
+                    # These are owner decisions; Pygame only applies explicit
+                    # stop/reset mechanics when a command is emitted there.
+                    logger.debug("Ignoring legacy business control in renderer: %s", command_type)
                 elif command_type=='change_l2d_background':
                     glActiveTexture(GL_TEXTURE0)  # 必加，否则白屏
                     glDeleteTextures([texture])
@@ -738,19 +673,14 @@ class Live2DModule:
                 elif command_type == "switch_live2d":
                     if layout_editing:
                         exit_layout_edit_mode()
-                    self._reset_long_audio_motion_loop()
                     character_name = str(x.get("character_name") or "")
-                    character_folder_name = str(x.get("character_folder_name") or "")
-                    model_json = x.get("model_json")
-                    target_model_path = self.switch_live2d_target(
-                        character_name,
-                        model_json if isinstance(model_json, str) and model_json else None,
-                        character_folder_name=character_folder_name,
-                        use_default=False,
-                    )
-                    if self.if_sakiko and self.sakiko_state and target_model_path is not None:
-                        target_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
-
+                    renderer_model_token = str(x.get("model_token") or "")
+                    model_json = x.get("model_json") or x.get("model_url")
+                    # Model selection is authoritative upstream. Pygame only
+                    # loads the explicit path carried by the exact command.
+                    target_model_path = model_json if isinstance(model_json, str) and model_json else None
+                    if character_name and character_name in self.character_by_name:
+                        self.current_character_name = character_name
                     try:
                         model.dispose()
                     except Exception:
@@ -767,8 +697,6 @@ class Live2DModule:
                                 pass
                             self.wavHandler = WavHandler()
                             mouth_keep_open_value = 0.0
-                            self.motion_is_over = True
-                            self.think_motion_is_over = True
                             self._reset_eye_open_transition()
                             recreate_result = recreate_runtime_window(
                                 current_runtime=current_runtime,
@@ -816,18 +744,17 @@ class Live2DModule:
                         current_layout_model_path = target_model_path
                         current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
                         apply_current_layout()
-                        if self.if_sakiko and self.sakiko_state:
-                            model.SetSemanticExpression('serious')
-                        else:
-                            model.SetSemanticExpression('idle')
-                        model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback, position="C")
                         if self.current_character.icon_path is not None:
                             pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
                         logger.debug("Live2D模型切换成功：%s", self.PATH_JSON)
                     else:
                         current_layout_model_path = None
                         current_layout = Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
+                    emit_renderer_ready()
                     overlay.set_text(self.current_character.character_name, '...')
+                    if renderer_adapter is not None:
+                        renderer_adapter.bind_runtime(model)
+                    renderer_model_switch_pending = False
                 elif command_type == "switch_l2d_fps":
                     fps = int(x.get("fps"))
                     self.target_fps = fps
@@ -847,128 +774,12 @@ class Live2DModule:
                 else:
                     logger.warning("忽略未知 Live2D 命令：%s", x)
 
-            if not is_text_generating_queue.empty() and self.think_motion_is_over:  # 思考时
-                if time.time()-last_saved_time_think>interval_think:
-                    model.StartRandomMotion("text_generating",3,self.onStartCallback_think_motion_version, self.onFinishCallback_think_motion_version, position="C")
-
-                    last_saved_time_think=time.time()
-                    interval_think=15
-
             if layout_editing:
                 pygame.display.set_caption(f"{self.current_character.character_name}布局编辑中")
-            elif  is_text_generating_queue.empty():
-                if self.if_sakiko:
-                    pygame.display.set_caption("祥子") if not self.sakiko_state else pygame.display.set_caption("Oblivionis")
-                else:
-                    pygame.display.set_caption(f"{self.current_character.character_name}")
-
-            if self.motion_is_over and not pygame.mixer.music.get_busy():  #恢复idle动作
-                if is_text_generating_queue.empty() and time.time()-idle_recover_timer>2.5:
-                    model.StartRandomMotion("idle_motion", 1, self.onStartCallback, position="C")
-
-            if (time.time()-last_saved_time)>25 :   #待机动作
-                if self.live2d_this_turn_motion_complete and is_text_generating_queue.empty():
-                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
-                last_saved_time=time.time()
-
-            if not layout_editing and mouse_position_x != 0:  # 点击画面随机做动作
-                if self.if_sakiko:
-                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
-                mouse_position_x = 0
-                self.think_motion_is_over=True
-
-            self.live2d_this_turn_motion_complete=not pygame.mixer.music.get_busy()
-            # 更新到共享变量
-            motion_complete_value.value = self.live2d_this_turn_motion_complete
-
-            if not char_is_converted_queue.empty():
-                self._reset_long_audio_motion_loop()
-                if self.if_sakiko:
-                    conv_index=char_is_converted_queue.get()
-                    if not isinstance(model, Live2DModelAdapter) or model.version != "v2":
-                        logger.warning("当前没有可用的 Live2D V2 模型，跳过祥子黑白模型特殊切换。")
-                        continue
-                    if conv_index!='maskoff':
-                        if not conv_index:      #切换为白祥
-                            if self.PATH_JSON is None:
-                                logger.warning("祥子默认 Live2D 模型未配置，跳过特殊模型切换。")
-                                continue
-                            model.dispose()
-                            model = Live2DModelAdapter.create(self.PATH_JSON)
-                            model.Resize(win_w_and_h, win_w_and_h)
-                            model.SetAutoBlinkEnable(True)
-                            model.SetAutoBreathEnable(True)
-                            current_layout_model_path = self.PATH_JSON
-                            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
-                            apply_current_layout()
-                            model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback, position="C")
-                            model.SetSemanticExpression("idle")
-                            self.sakiko_state=False
-
-                        else:       #切换为黑祥
-                            model.dispose()
-                            model = Live2DModelAdapter.create('../live2d_related/sakiko/live2D_model_costume/3.model.json')
-                            model.Resize(win_w_and_h, win_w_and_h)
-                            model.SetAutoBlinkEnable(True)
-                            model.SetAutoBreathEnable(True)
-                            current_layout_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
-                            current_layout = get_live2d_layout(
-                                current_layout_model_path,
-                                model.version,
-                                layout_scene,
-                            )
-                            apply_current_layout()
-
-                            self.if_mask=random()<0.5
-                            model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback, position="C")
-                            model.SetSemanticExpression("serious")
-                            self.sakiko_state=True
-                    else:
-                        if self.sakiko_state:   #黑祥
-                            model.StartRandomMotion("change_character_maskoff" if self.if_mask else "maskon",3,self.onStartCallback,self.onFinishCallback, position="C")
-                            self.if_mask = not self.if_mask
-                        else:
-                            model.StartMotion("text_generating", 0, 3, self.onStartCallback, self.onFinishCallback, position="C")
-
-            if not emotion_queue.empty():
-                emotion = emotion_queue.get()
-                if emotion=='bye':
-                    self._reset_long_audio_motion_loop()
-                    if not if_bye:
-                        started = model.StartRandomMotion("bye",3,self.onStartCallback,self.onFinishCallback, position="C")
-                        if not started:
-                            self.motion_is_over = True
-                    if_bye=True
-                    glClear(GL_COLOR_BUFFER_BIT)
-                    model.Update()
-                    render_background(texture)
-                    model.Draw()
-                    glUseProgram(0)
-                    pygame.display.flip()
-                    frame_clock.tick(self.target_fps)
-                    if self.motion_is_over:
-                        self.run=False
-                        self.save_l2d_json_paths_and_bg()
-                    continue
-
-                this_turn_audio_file_path=audio_file_queue.get()
-                motion_group = motion_group_for_emotion(str(emotion), default="")
-                if not motion_group:
-                    logger.warning("忽略未知情感标签：%s", emotion)
-                    continue
-                self._prepare_long_audio_motion_loop(motion_group, this_turn_audio_file_path)
-                self.motion_is_over = False
-                started = model.StartRandomMotion(motion_group,3,lambda *args:self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path),self.onFinishCallback, position="C")
-                if not started:
-                    self.onStartCallback_emotion_version(audio_file_path=this_turn_audio_file_path)
-                    self.motion_is_over = True
-                    self._reset_long_audio_motion_loop()
-                self.think_motion_is_over=True  #放在这里就对了。。
-                overlay.set_text(self.current_character.character_name,self.new_text)  #有感情标签传入，说明角色肯定要说话，此时更新文本
-
-
-            # 清除缓冲区
-            self._update_long_audio_motion_loop(model)
+            elif renderer_thinking_active:
+                pygame.display.set_caption(f"{self.current_character.character_name}思考中")
+            else:
+                pygame.display.set_caption(f"{self.current_character.character_name}")
 
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
@@ -979,7 +790,6 @@ class Live2DModule:
             # 渲染live2d到屏幕
             if self.wavHandler.Update() and is_update_mouth_sync % 3==0:  # 控制说话时的嘴型
                 mouth_keep_open_value=self.wavHandler.GetRms() * self.lipSyncN
-                idle_recover_timer = time.time()
             model.set_parameter_value("mouth_open_y", mouth_keep_open_value)
             is_update_mouth_sync += 1
 
@@ -1008,6 +818,10 @@ class Live2DModule:
         except Exception:
             pass
         try:
+            self.save_l2d_json_paths_and_bg()
+        except Exception:
+            logger.exception("退出前保存 Live2D 配置失败")
+        try:
             glDeleteTextures([texture])
         except Exception:
             pass
@@ -1023,7 +837,8 @@ class Live2DModule:
 
 def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue,
                        change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w,
-                       desktop_h, log_queue):
+                       desktop_h, log_queue, renderer_fact_queue=None, renderer_command_queue=None,
+                       renderer_trace_queue=None, authoritative_emotion_audio=False):
     """
     Live2D 子进程入口函数
     不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
@@ -1054,7 +869,8 @@ def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_
     live2d_player.live2D_initialize(characters)
     live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue,
                                 char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value,
-                                motion_complete_value, desktop_w, desktop_h, log_queue)
+                                motion_complete_value, desktop_w, desktop_h, log_queue, renderer_fact_queue,
+                                renderer_command_queue, renderer_trace_queue, authoritative_emotion_audio)
 
 
 

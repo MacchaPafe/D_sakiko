@@ -144,6 +144,10 @@ class NullLive2DModel:
         """忽略表情设置并报告不支持。"""
         return False
 
+    def set_expression_if_supported(self, expression_id: str) -> bool:
+        """忽略 owner 已确定的表情并报告 runtime 不支持。"""
+        return False
+
     def StartRandomMotion(
             self,
             group_name: str | None = None,

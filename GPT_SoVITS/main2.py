@@ -4,6 +4,8 @@ import os,sys
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 sys.path.insert(0, script_dir)
 from ui_main.threads.update_config_thread import UpdateConfigThread
 
@@ -13,6 +15,7 @@ import multiprocessing
 import time
 import json
 import re
+import glob
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QFont, QFontDatabase
@@ -23,6 +26,10 @@ import audio_generator
 import live2d_module
 import qtUI
 from chat.chat import get_chat_manager
+from live2d_support.authoritative_owner import AuthoritativeLive2DOwner
+from live2d_support.legacy_intent_fanout import LegacyEmotionAudioFanout, OrderedLegacyOwnerIngress
+from live2d_support.renderer_host import SharedRendererService
+from live2d_support.runtime_ingress import ThinkingStateQueue, LegacyControlIntentFanout
 
 from emotion_enum import EmotionEnum
 from log import setup_logging, get_logger, get_log_queue, setup_worker_logging, shutdown_logging
@@ -35,6 +42,56 @@ faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 main_logger = get_logger(__name__)
 
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
+
+
+def build_live2d_trace_sink():
+    """Build an opt-in JSONL audit sink for exact commands and runtime facts."""
+    configured_path = os.environ.get("DSAKIKO_LIVE2D_TRACE_PATH", "").strip()
+    if not configured_path:
+        return None
+    trace_path = configured_path
+    if not os.path.isabs(trace_path):
+        trace_path = os.path.join(project_root, trace_path)
+    trace_path = os.path.abspath(trace_path)
+    trace_lock = threading.Lock()
+
+    def emit(event: dict[str, object]) -> None:
+        line = json.dumps(event, ensure_ascii=True, default=str)
+        with trace_lock:
+            os.makedirs(os.path.dirname(trace_path), exist_ok=True)
+            with open(trace_path, "a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+
+    return emit
+
+
+def build_initial_live2d_intent(character_list) -> dict[str, object] | None:
+    """Resolve the master-compatible initial model once at owner ingress."""
+    if not character_list:
+        return None
+    initial_character = character_list[0]
+    model_json = getattr(initial_character, "live2d_json", None)
+    if not isinstance(model_json, str) or not os.path.isfile(model_json):
+        folder = str(getattr(initial_character, "character_folder_name", "") or "")
+        model_root = os.path.join(project_root, "live2d_related", folder, "live2D_model")
+        candidates = [
+            *glob.glob(os.path.join(model_root, "**", "*.model.json"), recursive=True),
+            *glob.glob(os.path.join(model_root, "**", "*.model3.json"), recursive=True),
+        ]
+        model_json = max(candidates, key=os.path.getmtime) if candidates else ""
+    if not model_json:
+        return None
+    return {
+        "type": "runtime_control",
+        "data": {
+            "type": "switch_live2d",
+            "character_name": str(getattr(initial_character, "character_name", "") or ""),
+            "character_folder_name": str(getattr(initial_character, "character_folder_name", "") or ""),
+            "character_folder": str(getattr(initial_character, "character_folder_name", "") or ""),
+            "model_json": os.path.abspath(model_json),
+            "initial_model": True,
+        },
+    }
 
 
 def get_character_by_name(character_name: str) -> character.CharacterAttributes | None:
@@ -371,13 +428,20 @@ def main_thread():
                     this_turn_response = "bye"
 
             if this_turn_response=='bye':
-                emotion_queue.put('bye')    #退出live2D进程
+                owner_intent_queue.put({"type": "bye", "data": {}})
                 dp2qt_queue.put("（再见）")
                 audio_gen.shutdown_worker()
 
                 # tr1 是 live2d 进程变量，我们等待 live2d 进程结束，再向 Qt 窗口发送退出信息。
                 global tr1
-                tr1.join()
+                if tr1 is not None:
+                    tr1.join(timeout=3)
+                if tr1 is not None and tr1.is_alive():
+                    try:
+                        tr1.terminate()
+                        tr1.join(timeout=3)
+                    except Exception:
+                        pass
 
                 QT_message_queue.put('bye')
                 break
@@ -481,6 +545,8 @@ if __name__=='__main__':
 
     from qconfig import d_sakiko_config
 
+    pygame_enabled = True
+
     main_logger.info("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
     characters=get_all.character_class_list
@@ -493,17 +559,59 @@ if __name__=='__main__':
     text_queue=Queue()
     emotion_queue=multiprocessing.Queue()
     audio_file_path_queue=multiprocessing.Queue()
+    # First authoritative slice: all legacy writers keep using the ingress
+    # queues, while the parent owner consumes each emotion/audio pair once and
+    # Pygame receives only the resulting exact renderer commands.
+    pygame_emotion_queue=multiprocessing.Queue()
+    pygame_audio_file_path_queue=multiprocessing.Queue()
+    owner_intent_queue=multiprocessing.Queue()
+    renderer_fact_queue=multiprocessing.Queue()
+    pygame_renderer_command_queue=multiprocessing.Queue()
+    pygame_runtime_control_queue=multiprocessing.Queue()
+    pygame_legacy_conversion_queue=multiprocessing.Queue()
+    owner_stop_event=threading.Event()
+    motion_complete_value=multiprocessing.Value('b', True)  # 历史接口：authoritative owner 投影音频事实
+    authoritative_owner=AuthoritativeLive2DOwner()
+    legacy_intent_fanout=LegacyEmotionAudioFanout(
+        emotion_queue, audio_file_path_queue,
+        pygame_emotion_queue, pygame_audio_file_path_queue, owner_intent_queue,
+        deliver_pygame_baseline=False,
+    )
+    def on_sakiko_conversion_committed(is_black: bool, mask_on: bool) -> None:
+        dp_chat.sakiko_state = bool(is_black)
+        QT_message_queue.put("已切换为" + ("黑祥" if is_black else "白祥"))
+
+    shared_renderer_service=SharedRendererService(
+        owner_intent_queue, renderer_fact_queue,
+        pygame_renderer_command_queue, authoritative_owner, motion_complete_value,
+        trace=build_live2d_trace_sink(),
+        conversion_state_callback=on_sakiko_conversion_committed,
+    )
+    initial_live2d_intent = build_initial_live2d_intent(characters)
+    if initial_live2d_intent is not None:
+        owner_intent_queue.put(initial_live2d_intent)
     is_audio_play_complete=Queue()
-    is_text_generating_queue=multiprocessing.Queue()
+    thinking_item_count=multiprocessing.Value('i', 0)
+    thinking_intent_queue=multiprocessing.Queue()
+    is_text_generating_queue=ThinkingStateQueue(
+        multiprocessing.Queue(), owner_intent_queue, thinking_item_count,
+        ingress_queue=thinking_intent_queue,
+    )
     dp2qt_queue=Queue()
     qt2dp_queue=Queue()
     QT_message_queue=Queue()
     char_is_converted_queue=multiprocessing.Queue()
     change_char_queue=multiprocessing.Queue()
+    control_intent_fanout=LegacyControlIntentFanout(
+        change_char_queue, char_is_converted_queue, owner_intent_queue, pygame_runtime_control_queue,
+        cancel_callback=legacy_intent_fanout.discard_pending,
+    )
+    ordered_owner_ingress = OrderedLegacyOwnerIngress(
+        legacy_intent_fanout, control_intent_fanout, thinking_intent_queue,
+    )
     # Live2D 跨进程通信
     live2d_text_queue=multiprocessing.Queue()  # 用于传递要显示的文本
     is_display_text_value=multiprocessing.Value('b', True)  # 是否显示文本
-    motion_complete_value=multiprocessing.Value('b', True)  # 动作是否完成
 
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters, chat_manager)
 
@@ -563,8 +671,9 @@ if __name__=='__main__':
     # live2d 模块（该模块为不同进程）
     # 在 MacOS 下，所有的 NSWindow（Qt 窗口）只能在独立进程中创建，不可以在子线程中创建窗口。
     # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
+    main_logger.info("Live2D 渲染模式：pygame")
     main_logger.info("加载Live2D界面中...")
-    tr1=multiprocessing.Process(target=live2d_module.run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h, get_log_queue()))
+    tr1=multiprocessing.Process(target=live2d_module.run_live2d_process,args=(pygame_emotion_queue,pygame_audio_file_path_queue,is_text_generating_queue,pygame_legacy_conversion_queue,pygame_runtime_control_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h, get_log_queue(),renderer_fact_queue,pygame_renderer_command_queue,None,True)) if pygame_enabled else None
     # LLM 生成模块（该模块为不同线程）
     tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
                                                              is_audio_play_complete,
@@ -580,7 +689,10 @@ if __name__=='__main__':
     # 更新配置的线程
     tr4 = UpdateConfigThread("d_sakiko_config")
     tr4.reload_requested.connect(d_sakiko_config.reload_from_disk)
-    tr1.start()
+    if tr1 is not None:
+        tr1.start()
+    threading.Thread(target=ordered_owner_ingress.run, args=(owner_stop_event,), daemon=True).start()
+    threading.Thread(target=shared_renderer_service.run, args=(owner_stop_event,), daemon=True).start()
     tr2.start()
     tr3.start()
     tr4.start()
@@ -619,11 +731,18 @@ if __name__=='__main__':
     except Exception:
         pass
     try:
-        # live2d 播放进程
-        change_char_queue.put('exit')
-        emotion_queue.put('bye')
+        # live2d 播放进程 receives the authoritative bye through the shared
+        # command fan-out below; do not bypass the owner with a legacy exit.
+        owner_intent_queue.put({"type": "bye", "data": {}})
     except Exception:
         pass
+    # Let the authoritative service publish the exact bye/close command before
+    # its lifecycle event is stopped. This avoids a queue scheduling race.
+    try:
+        shared_renderer_service.wait_for_bye_completion(timeout_seconds=6.0)
+    except Exception:
+        pass
+    owner_stop_event.set()
     try:
         # 主窗口
         QT_message_queue.put('bye')
@@ -636,8 +755,9 @@ if __name__=='__main__':
         pass
 
     # 理论上讲 main_thread 函数中已经调用过 tr1.join，等待过 live2d 进程结束；这里再调用一次不是必要的，但也没有副作用。
-    tr1.join(timeout=3)
-    if tr1.is_alive():
+    if tr1 is not None:
+        tr1.join(timeout=3)
+    if tr1 is not None and tr1.is_alive():
         try:
             tr1.terminate()
             tr1.join(timeout=3)
