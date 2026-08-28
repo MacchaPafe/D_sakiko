@@ -491,6 +491,8 @@ class SharedRendererHost:
             current_instance = self._renderer_instances.get(fact_renderer_id)
             if fact_instance and current_instance and fact_instance != current_instance:
                 return False
+        if self._bye_requested and message.get("type") == "renderer_intent":
+            return False
         if message.get("type") == "renderer_intent" and data.get("intent") == "click":
             command = self._scheduler.click(is_sakiko=self._canonical_renderer_is_sakiko())
             return self._emit_scheduled(command)
