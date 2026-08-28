@@ -14,6 +14,7 @@ let app: Application | null = null
 let controller: Live2DRendererController | null = null
 let resizeObserver: ResizeObserver | null = null
 let resizeFrame: number | null = null
+let disposed = false
 
 function onCanvasClick(e: MouseEvent) {
   if (controller && canvasContainer.value) {
@@ -22,8 +23,11 @@ function onCanvasClick(e: MouseEvent) {
 }
 
 onMounted(async () => {
+  disposed = false
   const { Application, Ticker } = await import('pixi.js')
   const { Live2DModel } = await import('pixi-live2d-display')
+
+  if (disposed) return
 
   const canvas = canvasContainer.value?.querySelector('canvas') as HTMLCanvasElement
   if (!canvas) return
@@ -38,6 +42,12 @@ onMounted(async () => {
     autoDensity: true,
   })
 
+  if (disposed) {
+    app.destroy(true)
+    app = null
+    return
+  }
+
   try {
     // Model selection is authoritative Python state.  A cold Electron
     // renderer stays an inert runtime until the owner sends switch_live2d.
@@ -51,6 +61,11 @@ onMounted(async () => {
     // the correct loader from the model JSON, preserving V2 and V3/V4.
     Live2DModel.registerTicker(Ticker)
     const live2dModel = await Live2DModel.from(modelSrc, { autoInteract: false })
+
+    if (disposed) {
+      ;(live2dModel as any).destroy?.({ children: true })
+      return
+    }
 
     // Electron 默认窗口尺寸是 450x600。这个基准必须在换模时保持稳定；
     // 如果把当前窗口尺寸当作基准，窗口缩小后换模会把模型缩放重置回 0.3。
@@ -106,6 +121,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
   resizeObserver?.disconnect()
   resizeObserver = null
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)

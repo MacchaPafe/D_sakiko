@@ -172,8 +172,11 @@ class WSServer:
     async def _read_frame(self, reader):
         """读取 WebSocket 帧"""
         try:
-            header = await asyncio.wait_for(reader.readexactly(2), timeout=60)
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            # An established renderer connection may remain idle indefinitely.
+            # Liveness is governed by the peer's close/disconnect, not by an
+            # arbitrary application-level idle timeout.
+            header = await reader.readexactly(2)
+        except asyncio.IncompleteReadError:
             return None
 
         fin = header[0] & 0x80
