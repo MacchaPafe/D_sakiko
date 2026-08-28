@@ -1965,7 +1965,8 @@ class ChatGUI(QWidget):
                  dp_chat,
                  audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,
                  change_char_queue=None,
-                 is_motion_complete=None):
+                 is_motion_complete=None,
+                 live2d_text_intent_queue=None):
         super().__init__()
         self.is_motion_complete = is_motion_complete
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
@@ -2245,6 +2246,9 @@ class ChatGUI(QWidget):
 
         # 保存 Live2D 跨进程通信的共享变量和队列
         self.live2d_text_queue=live2d_text_queue
+        # Electron receives the same already-formatted display text through
+        # the authoritative owner; Pygame keeps consuming its legacy queue.
+        self.live2d_text_intent_queue = live2d_text_intent_queue
         self.is_display_text_value=is_display_text_value
         self.motion_complete_value=motion_complete_value
         self.emotion_queue=emotion_queue
@@ -4571,7 +4575,7 @@ class ChatGUI(QWidget):
                                 break
                     # 如果能找到对应的消息，那么添加翻译后一同发送给 live2d 模块，从而显示翻译。
                     if target_msg is not None:
-                        self.live2d_text_queue.put(
+                        self._queue_live2d_display_text(
                             self._format_live2d_display_text(target_msg.text, target_msg.translation)
                         )
 
@@ -4995,7 +4999,7 @@ class ChatGUI(QWidget):
                 emotion = target_msg.emotion.as_label()
 
             abs_path = os.path.abspath(self.audio_gen.audio_file_path).replace('\\', '/')
-            self.live2d_text_queue.put(
+            self._queue_live2d_display_text(
                 self._format_live2d_display_text(display_text, translation)
             )    #更新live2d文本框的内容显示
 
@@ -5124,7 +5128,7 @@ class ChatGUI(QWidget):
 
         if audio_path != "NO_AUDIO":
             abs_path = os.path.abspath(audio_path).replace('\\', '/')
-            self.live2d_text_queue.put(
+            self._queue_live2d_display_text(
                 self._format_live2d_display_text(display_text, translation)
             )
         else:
@@ -5299,6 +5303,15 @@ class ChatGUI(QWidget):
         if translation_content:
             return f"{text_content}\n{translation_content}" if text_content else translation_content
         return text_content
+
+    def _queue_live2d_display_text(self, text: str) -> None:
+        """Keep the Pygame text queue and optionally publish the same text to Electron."""
+        self.live2d_text_queue.put(text)
+        if self.live2d_text_intent_queue is not None:
+            self.live2d_text_intent_queue.put({
+                "type": "text",
+                "data": {"text": text},
+            })
 
     def is_response_active(self) -> bool:
         """

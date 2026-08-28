@@ -742,7 +742,8 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          change_char_queue=change_char_queue)
+                          change_char_queue=change_char_queue,
+                          live2d_text_intent_queue=owner_intent_queue if electron_enabled else None)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。

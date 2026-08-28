@@ -1150,6 +1150,14 @@ class SharedRendererService:
                 elif intent_type == "thinking_changed":
                     data = intent.get("data", {})
                     handled += int(isinstance(data, Mapping) and self._host.set_thinking(data.get("active") is True))
+                elif intent_type == "text":
+                    data = intent.get("data", {})
+                    if isinstance(data, Mapping):
+                        self._emit_command({
+                            "type": "text",
+                            "data": {"text": str(data.get("text") or "")},
+                        })
+                        handled += 1
                 elif intent_type == "sakiko_conversion":
                     data = intent.get("data", {})
                     handled += int(isinstance(data, Mapping) and self._host.start_sakiko_conversion(data.get("value"), data.get("model_urls", {})))
