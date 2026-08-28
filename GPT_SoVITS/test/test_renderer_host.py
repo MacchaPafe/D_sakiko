@@ -37,7 +37,7 @@ class RendererHostTest(unittest.TestCase):
         self.assertEqual(self.out[-1]["type"], "play_audio")
         self.assertEqual(self.out[-1]["data"]["path"], "a.wav")
 
-    def test_service_turns_queue_intent_and_fact_into_bridge_commands(self):
+    def test_service_turns_queue_intent_and_fact_into_renderer_commands(self):
         intents, facts, commands = Queue(), Queue(), Queue()
         service = SharedRendererService(intents, facts, commands, AuthoritativeLive2DOwner())
         facts.put({"type":"renderer_ready","data":{"motion_groups":{"happiness":1}}})
