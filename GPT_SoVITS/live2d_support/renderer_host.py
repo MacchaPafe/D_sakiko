@@ -242,9 +242,9 @@ class SharedRendererHost:
             if motion_targets:
                 command_payload.setdefault("data", {})["target_renderer_ids"] = sorted(motion_targets)
             self._track_motion_command(segment.command_id, motion_targets)
-            # Pygame remains the compatibility authority for audio-backed
-            # emotion timing. Electron receives the same motion, but its
-            # callback must not hold back or advance the master audio edge.
+            # The designated audio owner remains the compatibility authority
+            # for audio-backed emotion timing; other renderers cannot advance
+            # the master audio edge from their callbacks.
             self._audio_owner_by_command[segment.command_id] = self._audio_owner_renderer_id() or ""
             audio_owner = self._audio_owner_by_command[segment.command_id]
             self._emotion_lifecycle_expected[segment.command_id] = (
@@ -557,9 +557,9 @@ class SharedRendererHost:
             return handled
         if fact == "command_failed":
             phase = str(data.get("phase") or "unknown")
-            # Only the designated Pygame audio owner may resolve an emotion
-            # command failure. A faster Electron failure must not trigger the
-            # fallback audio path before Pygame has reported its own result.
+            # Only the designated audio owner may resolve an emotion command
+            # failure. A faster secondary failure must not trigger fallback
+            # audio before the owner has reported its own result.
             if active is not None and token == active.command_id:
                 owner = self._audio_owner_by_command.get(token)
                 if owner and fact_renderer_id and fact_renderer_id != owner:
@@ -604,8 +604,7 @@ class SharedRendererHost:
             # A renderer that only provides audio (or reports no motion
             # capability) cannot execute the conversion model/motion pair.
             # Keep the upstream Sakiko gate strict for Null/audio-only
-            # runtimes while allowing Electron's legacy ready schema, which
-            # does not include runtime_version, when it has motion support.
+            # runtimes; a renderer must advertise motion support.
             if not self._renderer_capabilities.get(canonical_id, {}).get("motion", False):
                 return False
         # A newer Sakiko conversion supersedes a normal model switch that has
@@ -802,7 +801,7 @@ class SharedRendererHost:
             return True
         if renderer_id:
             # A fact from another renderer is not an acknowledgement for this
-            # command. In particular, Electron must not satisfy the Pygame
+            # command. A secondary renderer must not satisfy the designated
             # audio owner's lifecycle edge merely by reporting first.
             if renderer_id not in expected:
                 return False
@@ -958,9 +957,9 @@ class SharedRendererHost:
         """Bring a newly connected secondary runtime to the canonical model.
 
         Renderer ``ready`` facts are capabilities, not business decisions. If
-        the canonical runtime already has a model and a secondary Electron
-        runtime reports a different token/key, issue one exact switch command
-        so both backends execute the same owner-selected model.
+        the canonical runtime already has a model and a secondary renderer
+        reports a different token/key, issue one exact switch command so all
+        connected backends execute the same owner-selected model.
         """
         if self._current_model_switch is not None:
             expected_token = str(self._current_model_switch.get("model_token") or "")

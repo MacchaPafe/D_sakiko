@@ -654,3 +654,7 @@ class RendererHostTest(unittest.TestCase):
             "renderer_id": "pygame", "renderer_instance_id": "one", "token": "stale",
         }}))
 
+
+if __name__ == "__main__":
+    unittest.main()
+
