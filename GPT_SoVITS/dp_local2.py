@@ -2021,13 +2021,18 @@ class DSLocalAndVoiceGen:
         from chat.reminder_manager import ReminderManager
         # 使用闭包回调直接将消息推入当前函数内的 qt2dp_queue，让下一次循环被读写
         reminder_mgr = ReminderManager(trigger_callback=lambda msg: qt2dp_queue.put(msg))
+        live2d_tool_context: dict[str, str | None] = {
+            "chat_id": None,
+            "turn_id": None,
+        }
         
         # --- 注册依赖前端环境的动态工具 ---
         def _get_char_folder() -> str:
             return self.get_current_character().character_folder_name
 
         def _change_live2d_model(new_model_json: str) -> None:
-            character_name = self.get_current_character().character_name
+            character = self.get_current_character()
+            character_name = character.character_name
             try:
                 self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
                 self.chat_manager.save()
@@ -2036,7 +2041,10 @@ class DSLocalAndVoiceGen:
                 return
             change_char_queue.put({
                 "type": "switch_live2d",
+                "chat_id": live2d_tool_context["chat_id"],
+                "turn_id": live2d_tool_context["turn_id"],
                 "character_name": character_name,
+                "character_folder_name": character.character_folder_name,
                 "model_json": new_model_json,
             })
 
@@ -2110,6 +2118,8 @@ class DSLocalAndVoiceGen:
             raw_turn_id = command.get("turn_id")
             turn_id = raw_turn_id if isinstance(raw_turn_id, str) and raw_turn_id else uuid.uuid4().hex
             active_chat_id = chat.chat_id
+            live2d_tool_context["chat_id"] = active_chat_id
+            live2d_tool_context["turn_id"] = turn_id
             # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
             # 不过一般人手速没这么快吧（
             if self.is_turn_cancelled(active_chat_id, turn_id):

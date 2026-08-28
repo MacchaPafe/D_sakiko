@@ -1,9 +1,10 @@
 import { AlertTriangle, CheckCircle2, X } from 'lucide-react'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAudioController } from './audio/useAudioController'
 import { IconButton } from './components/IconButton'
 import { AccessGate } from './components/AccessGate'
 import { useVisualViewport } from './hooks/useVisualViewport'
+import { live2dCueFromState } from './live2d/cuePolicy'
 import { RuntimeProvider } from './state/RuntimeProvider'
 import { useRuntime } from './state/runtimeContext'
 import { CharacterView } from './views/CharacterView'
@@ -14,6 +15,7 @@ import './App.css'
 function AppExperience() {
   const { state, actions } = useRuntime()
   const audio = useAudioController()
+  const [cancelledCueTurnId, setCancelledCueTurnId] = useState(null)
   const knownAssistantMessagesRef = useRef(new Set())
   const previousChatIdRef = useRef(null)
   const {
@@ -60,24 +62,38 @@ function AppExperience() {
     shouldAutoPlay,
   ])
 
-  const latestAssistant = useMemo(
-    () => state.messages.findLast((message) => message.role === 'assistant'),
-    [state.messages],
-  )
   const playingMessage = useMemo(
     () => state.messages.find((message) => message.id === playback.messageId),
     [playback.messageId, state.messages],
   )
-  const motionGroup = state.phase === 'thinking'
-    ? 'text_generating'
-    : (playingMessage?.emotion || latestAssistant?.emotion || 'idle_motion')
+  const live2dCue = useMemo(() => {
+    return live2dCueFromState({
+      phase: state.phase,
+      turnId: state.turnId,
+      currentChatId: state.currentChatId,
+      playback,
+      playingMessage,
+      cancelledTurnId: cancelledCueTurnId,
+    })
+  }, [
+    cancelledCueTurnId,
+    playback,
+    playingMessage,
+    state.currentChatId,
+    state.phase,
+    state.turnId,
+  ])
   const experienceActions = useMemo(() => ({
     ...actions,
-    cancelTurn: () => {
+    cancelTurn: async () => {
+      const cancelledTurnId = state.turnId
+      setCancelledCueTurnId(cancelledTurnId)
       stop()
-      return actions.cancelTurn()
+      const cancelled = await actions.cancelTurn()
+      if (!cancelled) setCancelledCueTurnId(null)
+      return cancelled
     },
-  }), [actions, stop])
+  }), [actions, state.turnId, stop])
   const visibleView = state.activeView === 'chat_list'
     ? (state.chatListReturnView || state.preferredSessionView)
     : state.activeView
@@ -94,7 +110,7 @@ function AppExperience() {
         actions={experienceActions}
         audio={audio}
         active={visibleView === 'character'}
-        motionGroup={motionGroup}
+        live2dCue={live2dCue}
       />
 
       {visibleView === 'chat' && (

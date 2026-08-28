@@ -11,7 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .assets import AssetRegistry, PROJECT_ROOT
+from .assets import AssetRegistry, LIVE2D_ROOT, PROJECT_ROOT
+from .live2d_presentation import Live2DPresentationResolver
 from .protocol import ProtocolError
 from .uploads import PendingImageStore
 
@@ -30,6 +31,12 @@ class HeadlessRuntime:
     ) -> None:
         self.assets = assets or AssetRegistry()
         self.uploads = uploads or PendingImageStore()
+        self.live2d_presentations = Live2DPresentationResolver(
+            self.assets,
+            PROJECT_ROOT,
+            LIVE2D_ROOT,
+            GPT_ROOT,
+        )
         self.status = "starting"
         self.status_stage = "waiting"
         self.status_message = "等待初始化。"
@@ -134,6 +141,11 @@ class HeadlessRuntime:
             ).start()
             threading.Thread(target=self._run_tts_pipeline, name="WebUITTS", daemon=True).start()
             threading.Thread(target=self._forward_dp_events, name="WebUIEvents", daemon=True).start()
+            threading.Thread(
+                target=self._forward_live2d_events,
+                name="WebUILive2DEvents",
+                daemon=True,
+            ).start()
 
             self._restore_client_message_index()
             self._set_status("ready", "ready", "WebUI 后端已就绪。", 1.0)
@@ -350,6 +362,7 @@ class HeadlessRuntime:
                 "current_chat_id": chat.chat_id,
                 "chat_name": chat.name,
                 "character": self.character_entities[character.character_folder_name],
+                "live2d": self.live2d_presentations.resolve(chat, character).to_dict(),
                 "user_persona": self._persona_entity(chat),
                 "messages": [self._serialize_message(chat, index) for index in range(len(chat.message_list))],
                 "phase": self.phase,
@@ -379,6 +392,8 @@ class HeadlessRuntime:
                 "background": background,
                 "backgrounds": self.assets.backgrounds,
             })]
+        if command_type == "retry_live2d":
+            return self._retry_live2d(payload)
 
         with self._lock:
             if command_type == "send_message":
@@ -390,6 +405,25 @@ class HeadlessRuntime:
             if command_type == "create_chat":
                 return self._create_chat(payload)
         raise ProtocolError("INVALID_COMMAND", "不支持这个命令。")
+
+    def _retry_live2d(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        """重新解析当前对话的 Live2D 目标，不修改持久化配置。"""
+        chat_id = payload.get("chat_id")
+        if not isinstance(chat_id, str) or chat_id != self.dp_chat.current_chat_id:
+            raise ProtocolError("CHAT_MISMATCH", "当前会话已经变化，请重新操作。", True)
+        with self._lock:
+            chat = self.dp_chat.current_chat
+            character = self._character_for_chat(chat)
+            presentation = self.live2d_presentations.resolve(chat, character).to_dict()
+        return {"accepted": True}, [self._local_event(
+            "live2d_presentation_changed",
+            {"presentation": presentation, "reason": "retry"},
+            chat_id,
+            self.active_turn_id,
+        )]
 
     def _send_message(self, payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         chat_id = payload.get("chat_id")
@@ -609,6 +643,46 @@ class HeadlessRuntime:
                     "error": None,
                 }, chat_id, turn_id))
                 self.events.put(self._local_event("chat_list_snapshot", self.chat_list_snapshot()))
+
+    def _forward_live2d_events(self) -> None:
+        """将对话线程产生的换装命令转换为 WebUI 呈现事件。"""
+        while not self._stopping.is_set():
+            try:
+                command = self.change_char_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            self._handle_live2d_command(command)
+
+    def _handle_live2d_command(self, command: object) -> None:
+        """验证并处理一条归属于当前对话的 Live2D 命令。"""
+        if not isinstance(command, dict) or command.get("type") != "switch_live2d":
+            return
+        chat_id = command.get("chat_id")
+        turn_id = command.get("turn_id")
+        if not isinstance(chat_id, str) or not isinstance(turn_id, str):
+            logger.warning("WebUI 忽略缺少对话归属的 Live2D 命令：%s", command)
+            return
+
+        with self._lock:
+            if chat_id != self.dp_chat.current_chat_id:
+                logger.warning("WebUI 忽略非当前对话的 Live2D 命令：chat_id=%s", chat_id)
+                return
+            chat = self.chat_manager.get_chat_by_id(chat_id)
+            if chat is None or not any(item.get("turn_id") == turn_id for item in self._message_meta(chat)):
+                logger.warning("WebUI 忽略未知轮次的 Live2D 命令：turn_id=%s", turn_id)
+                return
+            character = self._character_for_chat(chat)
+            presentation = self.live2d_presentations.resolve(chat, character).to_dict()
+
+        self.events.put(self._local_event(
+            "live2d_presentation_changed",
+            {
+                "presentation": presentation,
+                "reason": "semantic_target_change",
+            },
+            chat_id,
+            turn_id,
+        ))
 
     def _rollback_failed_user_message(self, chat_id: str | None, turn_id: str | None) -> None:
         """推理未产生角色回复时，仅从持久记录中撤回本轮 WebUI 用户消息。"""

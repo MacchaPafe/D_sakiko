@@ -1,158 +1,114 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Application, Ticker, UPDATE_PRIORITY } from 'pixi.js'
-import {
-  Live2DModel,
-  MotionPriority,
-} from 'pixi-live2d-display/cubism2'
+import { Live2DModel } from 'pixi-live2d-display'
+import { Live2DRuntimeController } from './Live2DRuntimeController'
 
 Live2DModel.registerTicker(Ticker)
 
 export function Live2DStage({
-  modelUrl,
+  presentation,
+  presentationReason,
   active,
-  motionGroup,
+  cue,
   mouthOpenRef,
+  onRetryPresentation,
 }) {
   const hostRef = useRef(null)
-  const appRef = useRef(null)
-  const modelRef = useRef(null)
-  const activeRef = useRef(active)
-  const [status, setStatus] = useState('loading')
-  const [error, setError] = useState('')
+  const controllerRef = useRef(null)
+  const initialActiveRef = useRef(active)
+  const [runtimeState, setRuntimeState] = useState({
+    status: presentation?.resolution === 'absent' ? 'absent' : 'loading',
+    error: '',
+    retryable: false,
+  })
 
   useEffect(() => {
     const host = hostRef.current
-    if (!host || !modelUrl) return undefined
+    if (!host) return undefined
 
-    let app
-    let model
-    let resizeObserver
-    let disposed = false
+    const app = new Application({
+      antialias: true,
+      autoDensity: true,
+      backgroundAlpha: 0,
+      resolution: Math.min(window.devicePixelRatio || 1, 2),
+    })
+    app.view.className = 'live2d-canvas'
+    host.replaceChildren(app.view)
 
-    const fitModel = () => {
-      if (!app || !model || disposed) return
-      const width = app.screen.width
-      const height = app.screen.height
-      if (width <= 0 || height <= 0) return
-
-      model.scale.set(1)
-      const scale = Math.min(
-        (width * 1.2) / model.width,
-        (height * 1.3) / model.height,
-      )
-      model.scale.set(scale)
-      model.position.set(width / 2, height * 0.5)
-    }
-
-    const resizeCanvas = () => {
-      if (!app || disposed) return
+    let controller
+    const fit = () => {
       app.renderer.resize(
         Math.max(host.clientWidth, 1),
         Math.max(host.clientHeight, 1),
       )
-      fitModel()
+      controller?.fit(app.screen.width, app.screen.height)
     }
-
-    const load = async () => {
-      setStatus('loading')
-      setError('')
-      try {
-        if (!window.Live2D) {
-          throw new Error('Cubism 2 Core 未加载')
-        }
-
-        app = new Application({
-          antialias: true,
-          autoDensity: true,
-          backgroundAlpha: 0,
-          resolution: Math.min(window.devicePixelRatio || 1, 2),
-        })
-        app.view.className = 'live2d-canvas'
-        host.replaceChildren(app.view)
-        appRef.current = app
-
-        resizeObserver = new ResizeObserver(resizeCanvas)
-        resizeObserver.observe(host)
-        resizeCanvas()
-
-        model = await Live2DModel.from(modelUrl, {
-          autoInteract: false,
-          idleMotionGroup: 'idle_motion',
-        })
-        if (disposed) {
-          model.destroy({ children: true })
-          return
-        }
-
-        model.anchor.set(0.5, 0.5)
-        modelRef.current = model
-        app.stage.addChild(model)
-        fitModel()
-
-        app.ticker.add(() => {
-          const coreModel = modelRef.current?.internalModel?.coreModel
-          if (!coreModel?.setParamFloat) return
-          coreModel.setParamFloat(
-            'PARAM_MOUTH_OPEN_Y',
-            Math.min(1, mouthOpenRef.current * 1.35),
-          )
-        }, undefined, UPDATE_PRIORITY.LOW)
-
-        setStatus('ready')
-        if (!activeRef.current) app.ticker.stop()
-      } catch (loadError) {
-        if (disposed) return
-        console.error('Live2D model loading failed:', loadError)
-        setStatus('error')
-        setError(loadError instanceof Error ? loadError.message : String(loadError))
-      }
-    }
-
-    load()
+    controller = new Live2DRuntimeController({
+      app,
+      onStatusChange: setRuntimeState,
+      onModelChange: fit,
+    })
+    controllerRef.current = controller
+    const resizeObserver = new ResizeObserver(fit)
+    resizeObserver.observe(host)
+    fit()
+    app.ticker.add(() => {
+      controller.setMouthOpen(Math.min(1, mouthOpenRef.current * 1.35))
+    }, undefined, UPDATE_PRIORITY.LOW)
+    controller.setActive(initialActiveRef.current)
 
     return () => {
-      disposed = true
-      resizeObserver?.disconnect()
-      modelRef.current = null
-      appRef.current = null
-      if (app) {
-        app.destroy(true, {
-          children: true,
-          texture: true,
-          baseTexture: true,
-        })
-      }
+      resizeObserver.disconnect()
+      controller.destroy()
+      controllerRef.current = null
+      app.destroy(true, {
+        children: true,
+        texture: true,
+        baseTexture: true,
+      })
     }
-  }, [modelUrl, mouthOpenRef])
+  }, [mouthOpenRef])
 
   useEffect(() => {
-    activeRef.current = active
-    const ticker = appRef.current?.ticker
-    if (!ticker) return
-    if (active) ticker.start()
-    else ticker.stop()
+    controllerRef.current?.setActive(active)
   }, [active])
 
   useEffect(() => {
-    const model = modelRef.current
-    if (!active || status !== 'ready' || !model || !motionGroup) return
-    if (motionGroup === 'idle_motion') return
-    model.motion(motionGroup, undefined, MotionPriority.FORCE).catch(() => {})
-  }, [active, motionGroup, status])
+    controllerRef.current?.setPresentation(presentation, {
+      reason: presentationReason || 'snapshot',
+    })
+  }, [presentation, presentationReason])
+
+  useEffect(() => {
+    controllerRef.current?.setCue(cue)
+  }, [cue])
+
+  const retry = useCallback(() => {
+    if (presentation?.resolution === 'configured_error') {
+      onRetryPresentation?.()
+      return
+    }
+    controllerRef.current?.retry()
+  }, [onRetryPresentation, presentation?.resolution])
 
   return (
     <div className="live2d-stage" aria-label="Live2D 角色">
       <div ref={hostRef} className="live2d-stage__canvas" />
-      {status === 'loading' && (
+      {runtimeState.status === 'loading' && (
         <div className="stage-status" role="status">
           <span className="loading-spinner" aria-hidden="true" />
-          <span>角色载入中</span>
+          <span>{runtimeState.error || '角色载入中'}</span>
         </div>
       )}
-      {status === 'error' && (
+      {runtimeState.status === 'error' && (
         <div className="stage-status stage-status--error" role="alert">
           <strong>角色加载失败</strong>
-          <span>{error}</span>
+          <span>{runtimeState.error}</span>
+          {runtimeState.retryable && (
+            <button type="button" className="stage-retry-button" onClick={retry}>
+              重试
+            </button>
+          )}
         </div>
       )}
     </div>

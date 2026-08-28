@@ -7,6 +7,8 @@ export const initialConversationState = {
   userPersonas: [],
   currentChatId: null,
   character: null,
+  live2d: { resolution: 'absent' },
+  live2dReason: 'snapshot',
   messages: [],
   phase: 'idle',
   turnId: null,
@@ -91,6 +93,8 @@ export function conversationReducer(state, action) {
             ...state,
             currentChatId: event.data.current_chat_id,
             character: event.data.character,
+            live2d: event.data.live2d || { resolution: 'absent' },
+            live2dReason: 'snapshot',
             messages: event.data.messages,
             phase: event.data.phase || 'idle',
             turnId: event.data.turn_id || null,
@@ -133,6 +137,14 @@ export function conversationReducer(state, action) {
             ...state,
             phase: 'idle',
             turnId: null,
+          }
+
+        case 'live2d_presentation_changed':
+          if (event.chat_id !== state.currentChatId) return state
+          return {
+            ...state,
+            live2d: event.data.presentation,
+            live2dReason: event.data.reason || 'semantic_target_change',
           }
 
         case 'background_changed':

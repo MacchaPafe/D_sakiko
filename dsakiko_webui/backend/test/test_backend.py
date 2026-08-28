@@ -326,7 +326,8 @@ class BackendTest(unittest.TestCase):
             finally:
                 outside.unlink(missing_ok=True)
 
-    def test_character_live2d_uses_v2_fallback_for_v3_model(self) -> None:
+    def test_character_entity_does_not_choose_a_renderer_specific_live2d_model(self) -> None:
+        """角色静态实体不应把 v3 配置悄然改写为 v2 模型。"""
         with tempfile.TemporaryDirectory() as directory:
             live2d_root = (Path(directory) / "live2d_related").resolve()
             model3_dir = live2d_root / "anon" / "live2D_model"
@@ -346,11 +347,8 @@ class BackendTest(unittest.TestCase):
                     live2d_json=str(model3_path),
                 ))
 
-                self.assertTrue(character["model_url"].endswith("/anon.model.json"))
-                self.assertEqual(
-                    registry.live2d_file("model_anon", "anon.model.json"),
-                    model2_path,
-                )
+                self.assertNotIn("model_url", character)
+                self.assertEqual(registry._models, {})
 
     def test_runtime_lock_rejects_second_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

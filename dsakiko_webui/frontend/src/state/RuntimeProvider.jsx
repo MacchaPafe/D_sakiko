@@ -405,6 +405,18 @@ export function RuntimeProvider({ children }) {
     })
   }, [client])
 
+  const retryLive2D = useCallback(async () => {
+    const chatId = stateRef.current.currentChatId
+    if (!chatId) return false
+    try {
+      await client.retryLive2D(chatId)
+      return true
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+      return false
+    }
+  }, [client])
+
   const authenticate = useCallback(async (accessCode) => {
     dispatch({ type: 'connection_state', connection: 'checking_auth' })
     try {
@@ -468,6 +480,7 @@ export function RuntimeProvider({ children }) {
       sendMessage,
       cancelTurn,
       nextBackground,
+      retryLive2D,
       setDisplayLanguage,
       clearError,
       loadSettings,
@@ -484,6 +497,7 @@ export function RuntimeProvider({ children }) {
     closeChatList,
     createChat,
     nextBackground,
+    retryLive2D,
     openChatList,
     removePendingImage,
     loadSettings,

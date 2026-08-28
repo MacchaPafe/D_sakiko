@@ -515,6 +515,17 @@ select:focus-visible {
   text-align: center;
 }
 
+.stage-retry-button {
+  justify-self: center;
+  padding: 7px 16px;
+  border: 1px solid rgba(159, 47, 70, 0.25);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #8e2940;
+  font: inherit;
+  cursor: pointer;
+}
+
 .character-header { justify-content: space-between; }
 
 .character-header__actions {

@@ -7,6 +7,7 @@ const SILENCE_DATA_URL = (
 
 const idlePlayback = {
   messageId: null,
+  instanceId: 0,
   status: 'idle',
   progress: 0,
   duration: 0,
@@ -21,6 +22,7 @@ export function useAudioController() {
   const currentMessageRef = useRef(null)
   const queueRef = useRef([])
   const volumeRef = useRef(0)
+  const playbackInstanceRef = useRef(0)
   const [unlocked, setUnlocked] = useState(false)
   const [playback, setPlayback] = useState(idlePlayback)
 
@@ -72,6 +74,7 @@ export function useAudioController() {
     audio.currentTime = 0
     setPlayback({
       messageId: message.id,
+      instanceId: playbackInstanceRef.current,
       status: 'loading',
       progress: 0,
       duration: 0,
@@ -82,8 +85,10 @@ export function useAudioController() {
       await audio.play()
       return true
     } catch (error) {
+      volumeRef.current = 0
       setPlayback({
         messageId: message.id,
+        instanceId: playbackInstanceRef.current,
         status: 'blocked',
         progress: 0,
         duration: 0,
@@ -99,10 +104,17 @@ export function useAudioController() {
     audioRef.current = audio
 
     const onPlay = () => {
-      setPlayback((current) => ({ ...current, status: 'playing', error: '' }))
+      playbackInstanceRef.current += 1
+      setPlayback((current) => ({
+        ...current,
+        instanceId: playbackInstanceRef.current,
+        status: 'playing',
+        error: '',
+      }))
     }
     const onPause = () => {
       if (audio.ended || !currentMessageRef.current) return
+      volumeRef.current = 0
       setPlayback((current) => ({ ...current, status: 'paused' }))
     }
     const onTimeUpdate = () => {

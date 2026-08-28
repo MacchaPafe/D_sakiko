@@ -74,25 +74,6 @@ class AssetRegistry:
     def media(self, media_id: str) -> MediaEntry | None:
         return self._media.get(media_id)
 
-    @staticmethod
-    def _web_live2d_model(character: Any) -> Path | None:
-        """返回 WebUI 当前 Cubism 2 加载器可以读取的模型。"""
-        if not character.live2d_json:
-            return None
-
-        configured = Path(character.live2d_json).resolve()
-        if configured.is_file() and configured.name.endswith(".model.json"):
-            return configured
-
-        character_root = LIVE2D_ROOT / character.character_folder_name
-        search_roots = [character_root / "live2D_model"]
-        search_roots.extend(sorted(character_root.glob("live2D_model_v2*")))
-        for root in search_roots:
-            candidates = sorted(root.glob("*.model.json")) if root.is_dir() else []
-            if candidates:
-                return candidates[0].resolve()
-        return None
-
     def register_character(self, character: Any) -> dict[str, Any]:
         avatar_url = None
         character_root = LIVE2D_ROOT / character.character_folder_name
@@ -113,18 +94,6 @@ class AssetRegistry:
             media_id = self.register_media(avatar_path, "avatar")
             avatar_url = f"/api/v1/media/{media_id}"
 
-        model_url = None
-        model_path = self._web_live2d_model(character)
-        if model_path is not None:
-            try:
-                model_path.relative_to(LIVE2D_ROOT)
-            except ValueError:
-                model_path = None
-            if model_path is not None:
-                model_id = f"model_{character.character_folder_name}"
-                self._models[model_id] = Live2DEntry(model_path.parent, model_path.name)
-                model_url = f"/api/v1/live2d/{model_id}/{model_path.name}"
-
         palettes = [
             ("#168779", "#DCEFEC"),
             ("#C24F67", "#F7E2E7"),
@@ -138,10 +107,25 @@ class AssetRegistry:
             "id": character.character_folder_name,
             "name": character.character_name,
             "avatar_url": avatar_url,
-            "model_url": model_url,
             "accent": accent,
             "accent_soft": accent_soft,
         }
+
+    def register_live2d_model(self, model_path: Path) -> str:
+        """注册已解析的 Live2D 模型，并返回不泄露主机路径的 URL。"""
+        resolved = model_path.expanduser().resolve()
+        try:
+            resolved.relative_to(LIVE2D_ROOT)
+        except ValueError as exc:
+            raise ValueError("Live2D 模型不在允许目录中") from exc
+        if not resolved.is_file():
+            raise ValueError("Live2D 模型文件不存在")
+
+        digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:24]
+        model_id = f"model_{digest}"
+        with self._lock:
+            self._models[model_id] = Live2DEntry(resolved.parent, resolved.name)
+        return f"/api/v1/live2d/{model_id}/{resolved.name}"
 
     def live2d_file(self, model_id: str, asset_path: str) -> Path | None:
         entry = self._models.get(model_id)

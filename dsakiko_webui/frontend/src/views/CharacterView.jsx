@@ -10,7 +10,7 @@ function visibleText(message, displayLanguage) {
   return message?.text || ''
 }
 
-export function CharacterView({ state, actions, audio, active, motionGroup }) {
+export function CharacterView({ state, actions, audio, active, live2dCue }) {
   const [expandedMessageId, setExpandedMessageId] = useState(null)
   const assistantMessages = useMemo(
     () => state.messages.filter((message) => message.role === 'assistant'),
@@ -38,10 +38,12 @@ export function CharacterView({ state, actions, audio, active, motionGroup }) {
     >
       <div className="character-stage">
         <Live2DStage
-          modelUrl={state.character?.model_url}
+          presentation={state.live2d}
+          presentationReason={state.live2dReason}
           active={active}
-          motionGroup={motionGroup}
+          cue={live2dCue}
           mouthOpenRef={audio.volumeRef}
+          onRetryPresentation={actions.retryLive2D}
         />
       </div>
 

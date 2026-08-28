@@ -175,4 +175,8 @@ export class WebSocketRuntimeClient {
   nextBackground() {
     return this.command('next_background', {})
   }
+
+  retryLive2D(chatId) {
+    return this.command('retry_live2d', { chat_id: chatId })
+  }
 }
