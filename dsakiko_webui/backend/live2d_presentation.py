@@ -257,7 +257,7 @@ class Live2DPresentationResolver:
             SEMANTIC_EXPRESSION_CANDIDATES,
             select_expression_for_motion,
         )
-        from live2d_support.runtime_adapter import detect_live2d_runtime_version
+        from live2d_support.model_version import detect_live2d_runtime_version
 
         with model_path.open("r", encoding="utf-8") as model_file:
             loaded = json.load(model_file)

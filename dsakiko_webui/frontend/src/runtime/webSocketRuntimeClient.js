@@ -176,6 +176,17 @@ export class WebSocketRuntimeClient {
     return this.command('next_background', {})
   }
 
+  getLive2DModelOptions(chatId) {
+    return this.command('get_live2d_model_options', { chat_id: chatId })
+  }
+
+  selectLive2DModel(chatId, optionId) {
+    return this.command('select_live2d_model', {
+      chat_id: chatId,
+      option_id: optionId,
+    })
+  }
+
   retryLive2D(chatId) {
     return this.command('retry_live2d', { chat_id: chatId })
   }

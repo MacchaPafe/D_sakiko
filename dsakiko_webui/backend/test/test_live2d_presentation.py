@@ -12,6 +12,7 @@ import dsakiko_webui.backend.assets as assets_module
 from dsakiko_webui.backend.assets import AssetRegistry
 from dsakiko_webui.backend.live2d_presentation import Live2DPresentationResolver
 from dsakiko_webui.backend.runtime import HeadlessRuntime
+from GPT_SoVITS.live2d_support.model_catalog import Live2DModelCatalog
 
 
 class Live2DPresentationResolverTest(unittest.TestCase):
@@ -272,6 +273,57 @@ class Live2DPresentationResolverTest(unittest.TestCase):
             "resolved",
         )
         self.assertEqual(chat.meta.live2d_models["爱音"], str(model))
+
+    def test_model_options_hide_paths_and_select_extra_then_default(self) -> None:
+        """WebUI 服装契约不应泄露路径，默认项应清除对话覆盖。"""
+        default_model = self._write_v2("live2D_model/default.model.json")
+        costume_model = self._write_v2("extra_model/winter/model.model.json")
+        self.character.live2d_json = str(default_model)
+        chat = SimpleNamespace(
+            chat_id="chat_anon",
+            meta=SimpleNamespace(live2d_models={}, extra={}),
+            message_list=[],
+            get_character_name=lambda: "爱音",
+        )
+        saved: list[bool] = []
+        runtime = HeadlessRuntime(self.assets)
+        runtime.live2d_presentations = self.resolver
+        runtime.live2d_model_catalog = Live2DModelCatalog(self.live2d_root, self.project_root)
+        runtime.dp_chat = SimpleNamespace(current_chat_id=chat.chat_id, current_chat=chat)
+        runtime.chat_manager = SimpleNamespace(save=lambda: saved.append(True))
+        runtime.character_by_name = {"爱音": self.character}
+
+        try:
+            options, _events = runtime._get_live2d_model_options({"chat_id": chat.chat_id})
+            serialized = json.dumps(options, ensure_ascii=False)
+            costume = next(
+                option
+                for option in options["options"]
+                if option["name"] == "winter"
+            )
+            default = next(
+                option
+                for option in options["options"]
+                if option["is_default"]
+            )
+            _result, costume_events = runtime._select_live2d_model({
+                "chat_id": chat.chat_id,
+                "option_id": costume["option_id"],
+            })
+            self.assertEqual(chat.meta.live2d_models["爱音"], str(costume_model))
+            _result, default_events = runtime._select_live2d_model({
+                "chat_id": chat.chat_id,
+                "option_id": default["option_id"],
+            })
+        finally:
+            runtime.uploads.close()
+
+        self.assertNotIn(str(self.project_root), serialized)
+        self.assertNotIn("model_json_path", serialized)
+        self.assertEqual(costume_events[0]["type"], "live2d_presentation_changed")
+        self.assertEqual(default_events[0]["data"]["presentation"]["resolution"], "resolved")
+        self.assertNotIn("爱音", chat.meta.live2d_models)
+        self.assertEqual(len(saved), 2)
 
 
 if __name__ == "__main__":

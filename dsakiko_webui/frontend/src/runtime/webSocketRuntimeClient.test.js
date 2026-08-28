@@ -82,4 +82,18 @@ describe('WebSocketRuntimeClient', () => {
     expect(statuses).toEqual(['connecting', 'offline', 'background_suspended'])
     expect(FakeWebSocket.instances).toHaveLength(1)
   })
+
+  it('sends opaque Live2D model option commands for the current chat', async () => {
+    const client = new WebSocketRuntimeClient()
+    const command = vi.spyOn(client, 'command').mockResolvedValue({ accepted: true })
+
+    await client.getLive2DModelOptions('chat-1')
+    await client.selectLive2DModel('chat-1', 'opaque-option')
+
+    expect(command).toHaveBeenNthCalledWith(1, 'get_live2d_model_options', { chat_id: 'chat-1' })
+    expect(command).toHaveBeenNthCalledWith(2, 'select_live2d_model', {
+      chat_id: 'chat-1',
+      option_id: 'opaque-option',
+    })
+  })
 })

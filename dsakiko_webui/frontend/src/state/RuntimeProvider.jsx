@@ -405,6 +405,28 @@ export function RuntimeProvider({ children }) {
     })
   }, [client])
 
+  const loadLive2DModelOptions = useCallback(async () => {
+    const chatId = stateRef.current.currentChatId
+    if (!chatId) throw new Error('当前没有可用的对话。')
+    try {
+      return await client.getLive2DModelOptions(chatId)
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+      throw error
+    }
+  }, [client])
+
+  const selectLive2DModel = useCallback(async (optionId) => {
+    const chatId = stateRef.current.currentChatId
+    if (!chatId) throw new Error('当前没有可用的对话。')
+    try {
+      return await client.selectLive2DModel(chatId, optionId)
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+      throw error
+    }
+  }, [client])
+
   const retryLive2D = useCallback(async () => {
     const chatId = stateRef.current.currentChatId
     if (!chatId) return false
@@ -480,6 +502,8 @@ export function RuntimeProvider({ children }) {
       sendMessage,
       cancelTurn,
       nextBackground,
+      loadLive2DModelOptions,
+      selectLive2DModel,
       retryLive2D,
       setDisplayLanguage,
       clearError,
@@ -496,12 +520,14 @@ export function RuntimeProvider({ children }) {
     clearError,
     closeChatList,
     createChat,
+    loadLive2DModelOptions,
     nextBackground,
     retryLive2D,
     openChatList,
     removePendingImage,
     loadSettings,
     saveSettings,
+    selectLive2DModel,
     selectChat,
     sendMessage,
     setDisplayLanguage,

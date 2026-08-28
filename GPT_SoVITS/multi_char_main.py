@@ -33,6 +33,7 @@ from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGe
 from chat.chat_meta import TheaterMeta
 from log import get_logger, setup_logging, get_log_queue, shutdown_logging
 from qtUI import ChangeL2DModelWindow
+from live2d_support.model_catalog import Live2DModelOption
 from live2d_support.motion_capabilities import get_live2d_motion_capabilities
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
@@ -1015,7 +1016,14 @@ class SettingsDialog(QDialog):
                 break
 
         if folder_path != "":
-            dialog = ChangeL2DModelWindow(folder_path, lambda path: self.parent_gui._on_live2d_model_changed(char_index, self.character_names[char_index], path))
+            dialog = ChangeL2DModelWindow(
+                folder_path,
+                lambda option: self.parent_gui._on_live2d_model_changed(
+                    char_index,
+                    self.character_names[char_index],
+                    option,
+                ),
+            )
             dialog.exec()
 
     def set_talk_speed(self):
@@ -1729,15 +1737,24 @@ class ViewerGUI(QWidget):
         }
         self.to_live2d_module_queue.put(payload)
 
-    def _on_live2d_model_changed(self, char_index: int, character_name: str, model_path: str) -> None:
+    def _on_live2d_model_changed(
+        self,
+        char_index: int,
+        character_name: str,
+        option: Live2DModelOption,
+    ) -> None:
         """
         接收 SettingsDialog 中角色模型更换的回调，并通知 Live2D 模块更新指定角色的模型。
         随后，将新的模型路径保存到对话信息中。
         """
+        model_path = str(option.model_json_path)
         if not self._prepare_live2d_model_for_switch(model_path, "切换小剧场 Live2D 模型"):
             return
         if self.current_chat is not None:
-            self.current_chat.update_custom_live2d_model_meta(character_name, model_path)
+            if option.is_default:
+                self.current_chat.clear_custom_live2d_model_meta(character_name)
+            else:
+                self.current_chat.update_custom_live2d_model_meta(character_name, model_path)
             self.chat_manager.save()
         # 设置面板中的“切同角色不同模型”不应中断正在播放的句子
         self.sync_live2d_active_slots(

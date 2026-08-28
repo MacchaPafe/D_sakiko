@@ -962,6 +962,10 @@ class Chat:
 
         self.meta.live2d_models[character_name] = model_path.strip()
 
+    def clear_custom_live2d_model_meta(self, character_name: str) -> None:
+        """清除指定角色的对话级 Live2D 覆盖，恢复跟随角色默认模型。"""
+        self.meta.live2d_models.pop(character_name, None)
+
     def get_tool_call_records(self) -> List[ToolCallRecordMeta]:
         """获取当前对话的工具调用展示记录。"""
         return self.meta.tool_call_records

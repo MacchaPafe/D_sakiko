@@ -5,6 +5,7 @@ import time,os
 import uuid
 import threading
 import textwrap
+from pathlib import Path
 
 import json
 from queue import Empty
@@ -2031,10 +2032,19 @@ class DSLocalAndVoiceGen:
             return self.get_current_character().character_folder_name
 
         def _change_live2d_model(new_model_json: str) -> None:
+            """保存 AI 选择的服装；默认模型恢复为跟随角色配置。"""
+            from live2d_support.model_catalog import Live2DModelCatalog
+
             character = self.get_current_character()
             character_name = character.character_name
+            project_root = Path(__file__).resolve().parents[1]
+            catalog = Live2DModelCatalog(project_root / "live2d_related", project_root)
+            option = catalog.find_by_path(character.character_folder_name, new_model_json)
             try:
-                self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
+                if option is not None and option.is_default:
+                    self.current_chat.clear_custom_live2d_model_meta(character_name)
+                else:
+                    self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
                 self.chat_manager.save()
             except Exception:
                 logger.exception("工具调用切换 Live2D 模型失败")

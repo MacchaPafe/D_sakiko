@@ -12,15 +12,21 @@ export function Live2DStage({
   cue,
   mouthOpenRef,
   onRetryPresentation,
+  onRuntimeStateChange,
 }) {
   const hostRef = useRef(null)
   const controllerRef = useRef(null)
   const initialActiveRef = useRef(active)
+  const runtimeStateChangeRef = useRef(onRuntimeStateChange)
   const [runtimeState, setRuntimeState] = useState({
     status: presentation?.resolution === 'absent' ? 'absent' : 'loading',
     error: '',
     retryable: false,
   })
+
+  useEffect(() => {
+    runtimeStateChangeRef.current = onRuntimeStateChange
+  }, [onRuntimeStateChange])
 
   useEffect(() => {
     const host = hostRef.current
@@ -45,7 +51,10 @@ export function Live2DStage({
     }
     controller = new Live2DRuntimeController({
       app,
-      onStatusChange: setRuntimeState,
+      onStatusChange: (nextState) => {
+        setRuntimeState(nextState)
+        runtimeStateChangeRef.current?.(nextState)
+      },
       onModelChange: fit,
     })
     controllerRef.current = controller

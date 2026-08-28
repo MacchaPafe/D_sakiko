@@ -17,6 +17,7 @@ if script_dir not in sys.path:
 import time
 
 from qtUI import ChangeL2DModelWindow
+from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
@@ -532,10 +533,15 @@ class ViewerGUI(QWidget):
         self.load_model(extra_model_name)
 
     def _find_model_json_in_folder(self, folder_path: pathlib.Path) -> pathlib.Path | None:
-        model_json = ChangeL2DModelWindow._find_preferred_model_json(str(folder_path))
-        if model_json is None:
-            return None
-        return pathlib.Path(model_json)
+        catalog = Live2DModelCatalog(
+            pathlib.Path(project_root) / "live2d_related",
+            pathlib.Path(project_root),
+        )
+        resolved_folder = folder_path.resolve()
+        for option in catalog.list_options(self.current_char_base_folder_name):
+            if option.available and option.model_directory.resolve() == resolved_folder:
+                return option.model_json_path
+        return None
 
     def _get_motion_groups(self) -> dict:
         if self.all_motion_data is None:
@@ -667,29 +673,20 @@ class ViewerGUI(QWidget):
         """
         弹出管理对话框，允许用户选择并切换切换角色的服装
         """
-        dialog = ChangeL2DModelWindow(self.current_char_base_folder_name, lambda path: self._on_change_costume_confirmed(path))
+        dialog = ChangeL2DModelWindow(
+            self.current_char_base_folder_name,
+            self._on_change_costume_confirmed,
+        )
         dialog.exec()
 
-    def _on_change_costume_confirmed(self, new_model_path):
-        """
-        在用户选择了一个新的服装模型后，执行切换动作。
-        由于这个参数是从 ChangeL2DModelWindow 窗口传回来的，不能修改原代码的实现，这个 new_model_path 参数直接指向了 3.model.json
-        我们需要解析上一层文件夹的路径，来确定这是个默认模型还是自定义模型；如果是自定义模型，它的文件夹名称（模型名称）是什么。
-        """
+    def _on_change_costume_confirmed(self, option: Live2DModelOption) -> None:
+        """根据共享目录选项切换 Viewer 当前角色的服装。"""
+        new_model_path = str(option.model_json_path)
         logger.info("用户选择了新的服装模型路径：%s", new_model_path)
-        parent_path = pathlib.Path(new_model_path).parent
-        extra_model_folder = pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "extra_model"
-        if parent_path == pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "live2D_model":
-            # 用户选择了默认模型
+        if option.is_default:
             self.use_default_model_for_current_character()
-        elif parent_path.parent == extra_model_folder:
-            # 用户选择了 extra_model 中的某个模型
-            extra_model_name = parent_path.name
-            self.use_extra_model_for_current_character(extra_model_name)
         else:
-            # 其他情况，理论上不应该发生
-            self.message_box.append("无法识别所选模型的类型，未进行切换。")
-            return
+            self.use_extra_model_for_current_character(option.model_directory.name)
 
         self.message_box.append(f"已切换到角色 {self.character_list[self.current_char_index].character_name} 的新服装模型。")
         self.change_char_queue.put(new_model_path)

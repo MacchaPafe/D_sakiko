@@ -131,6 +131,7 @@ from input_commands import (
     build_default_input_command_specs,
 )
 from live2d_support.model_importer import Live2DModelImportError, import_live2d_model
+from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 
 
@@ -668,13 +669,19 @@ class SettingWindow(QDialog):
         current_char_folder_name=self.parent_window.current_character.character_folder_name
         change_l2d_model_window=ChangeL2DModelWindow(current_char_folder_name,self.change_live2d_model_2)
         change_l2d_model_window.exec_()
-    def change_live2d_model_2(self,new_model_json):
-        self.parent_window._send_l2d_model_payload(new_model_json)
+    def change_live2d_model_2(self, option: Live2DModelOption) -> None:
+        """将用户选中的共享目录选项交给主窗口。"""
+        self.parent_window._send_l2d_model_payload(option)
 
 
 
 class ChangeL2DModelWindow(QDialog):
-    def __init__(self,current_char_folder_name,change_l2d_model_func):
+    def __init__(
+        self,
+        current_char_folder_name: str,
+        change_l2d_model_func: Callable[[Live2DModelOption], None],
+    ) -> None:
+        """创建一个使用共享 Catalog 的 Live2D 服装选择窗口。"""
         super().__init__()
         self.setWindowTitle('更改当前角色Live2D模型')
         screen=QDesktopWidget().screenGeometry()
@@ -682,6 +689,7 @@ class ChangeL2DModelWindow(QDialog):
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.current_char_folder_name=current_char_folder_name
         self.change_l2d_model_func=change_l2d_model_func
+        self.model_catalog = Live2DModelCatalog(Path(project_root) / "live2d_related", Path(project_root))
         self.refresh_ui()
         self.setStyleSheet(dialogWindowDefaultCss)
 
@@ -698,15 +706,9 @@ class ChangeL2DModelWindow(QDialog):
             # 移除旧布局本身（通过将其父对象设为新的临时 Widget 然后销毁）
             QWidget().setLayout(old_layout)
 
-        default_model_dir = os.path.join(f'../live2d_related/{self.current_char_folder_name}', 'live2D_model')
-        default_live2d_json = self._find_preferred_model_json(default_model_dir)
-        self.current_char_l2d_models = []
-        if default_live2d_json is not None:
-            self.current_char_l2d_models.append({
-                "model_name": "默认",
-                "model_json_path": default_live2d_json,
-            })
-        self.find_extra_models(self.current_char_folder_name)
+        self.current_char_l2d_models = list(
+            self.model_catalog.list_options(self.current_char_folder_name)
+        )
         layout = QVBoxLayout()
         title_layout=QHBoxLayout()
         title_label = QLabel("选择一个Live2D模型：")
@@ -744,18 +746,21 @@ class ChangeL2DModelWindow(QDialog):
                 display_layout.addWidget(QLabel("当前角色尚未配置 Live2D 模型，可点击“导入模型”添加。"))
             for model in self.current_char_l2d_models:
                 model_layout = QHBoxLayout()
-                name_label = QLabel(model["model_name"])
+                name_label = QLabel(model.display_name)
                 select_btn = QToolButton()
                 select_btn.setText("选择")
                 select_btn.clicked.connect(
-                    lambda checked, path=model["model_json_path"]: self.change_l2d_model_func(path))  # noqa
+                    lambda checked=False, option=model: self.change_l2d_model_func(option))  # noqa
+                select_btn.setEnabled(model.available)
+                if model.error_message:
+                    select_btn.setToolTip("模型 JSON 无法解析")
                 delete_btn = QToolButton()
                 delete_btn.setIcon(QIcon("./icons/delete.svg"))
-                delete_target_path = f'../live2d_related/{self.current_char_folder_name}/extra_model/{model["model_name"]}'
+                delete_target_path = str(model.model_directory)
                 delete_btn.clicked.connect(lambda checked=False, p=delete_target_path: delete_model_folder(p))
                 model_layout.addWidget(name_label)
                 model_layout.addWidget(select_btn)
-                if model["model_name"] != "默认": #默认模型不允许删除
+                if not model.is_default: #默认模型不允许删除
                     model_layout.addWidget(delete_btn)
                 display_layout.addLayout(model_layout)
         else:
@@ -796,7 +801,16 @@ class ChangeL2DModelWindow(QDialog):
                 if character.character_folder_name == self.current_char_folder_name:
                     character.live2d_json = result.model_json_path
                     break
-            self.change_l2d_model_func(result.model_json_path)
+            default_option = next(
+                (
+                    option
+                    for option in self.model_catalog.list_options(self.current_char_folder_name)
+                    if option.is_default
+                ),
+                None,
+            )
+            if default_option is not None:
+                self.change_l2d_model_func(default_option)
         self.refresh_ui()
         QMessageBox.information(
             self,
@@ -807,63 +821,6 @@ class ChangeL2DModelWindow(QDialog):
                 else f"已导入模型：{result.model_name}。"
             ),
         )
-
-    def find_extra_models(self,current_char_folder_name):
-        base_path = f"../live2d_related/{current_char_folder_name}/extra_model"
-        if not os.path.exists(base_path):
-            os.makedirs(base_path)
-            # print(f"\n提示：目录 {base_path} 不存在，已自动创建。加入更多live2D模型的方法为：在该文件夹中新建名为新模型名称的文件夹，然后在其中放入新模型的组成材料（.model.json结尾的配置文件、moc模型、.physics.json、mtn动作文件以及贴图文件）。\n")
-            return
-
-        model_dirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
-
-        for model_dir_name in model_dirs:
-            # 构建这个模型文件夹的完整路径，例如 ../live2d_related/miku/extra_model/Miku
-            model_dir_path = os.path.join(base_path, model_dir_name)
-            full_path = self._find_preferred_model_json(model_dir_path)
-            if full_path is not None:
-                self.current_char_l2d_models.append({"model_name":model_dir_name,"model_json_path":full_path})
-
-    @staticmethod
-    def _find_preferred_model_json(model_dir_path: str) -> str | None:
-        """查找目录中的 Live2D 模型 JSON，同目录同时存在 v2/v3 时优先 v3。"""
-        if not os.path.isdir(model_dir_path):
-            return None
-        model2_paths: list[str] = []
-        model3_paths: list[str] = []
-        for current_dir, _dir_names, file_names in os.walk(model_dir_path):
-            current_model2_paths: list[str] = []
-            current_model3_paths: list[str] = []
-            for file in sorted(file_names):
-                full_path = os.path.join(current_dir, file)
-                if file.endswith(".model3.json"):
-                    current_model3_paths.append(full_path)
-                elif file.endswith(".model.json"):
-                    current_model2_paths.append(full_path)
-            if current_model2_paths and current_model3_paths:
-                logger.warning(
-                    "Live2D 模型目录同时存在 .model.json 和 .model3.json，将优先使用 v3：%s",
-                    current_dir,
-                )
-            model2_paths.extend(current_model2_paths)
-            model3_paths.extend(current_model3_paths)
-        if model3_paths:
-            return model3_paths[0].replace("\\", "/")
-        if model2_paths:
-            return model2_paths[0].replace("\\", "/")
-        return None
-
-    @staticmethod
-    def find_all_models() -> list[str]:
-        all_models = []
-        for char_folder in os.listdir("../live2d_related"):
-            char_folder_path = os.path.join("../live2d_related", char_folder)
-            if os.path.isdir(char_folder_path):
-                full_path = ChangeL2DModelWindow._find_preferred_model_json(char_folder_path)
-                if full_path is not None:
-                    all_models.append(full_path)
-        return all_models
-
 
 class ChangeReferenceAudioWindow(QDialog):
     EMOTION_LABELS = {
@@ -5501,13 +5458,17 @@ class ChatGUI(QWidget):
             return self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
         return 60
 
-    def _send_l2d_model_payload(self, new_model_json: str) -> None:
+    def _send_l2d_model_payload(self, option: Live2DModelOption) -> None:
         """校验并发送 Live2D 模型切换 payload。"""
+        new_model_json = str(option.model_json_path)
         if not self._prepare_live2d_model_for_switch(new_model_json, "切换模型"):
             return
         character_name = self.current_character.character_name
         try:
-            self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
+            if option.is_default:
+                self.current_chat.clear_custom_live2d_model_meta(character_name)
+            else:
+                self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
             self.chat_manager.save()
         except Exception:
             self.QT_message_queue.put("切换模型失败，保存对话模型配置时出错。")

@@ -36,7 +36,7 @@ def acquire_runtime_lock(project_root: Path | str, mode: str) -> RuntimeLease:
     try:
         lock.acquire()
     except Timeout as exc:
-        raise RuntimeLockBusy("D_sakiko 已在另一个窗口或运行模式中启动。") from exc
+        raise RuntimeLockBusy("数字小祥已在另一个运行模式中启动。如果你已经开启了网页端或者桌面端，请将它们关闭后再试。") from exc
 
     owner_file = state_dir / "owner.json"
     owner_file.write_text(json.dumps({

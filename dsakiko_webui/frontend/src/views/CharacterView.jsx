@@ -1,9 +1,10 @@
-import { Image, List, MessageCircle } from 'lucide-react'
+import { Image, List, MessageCircle, Shirt } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { IconButton } from '../components/IconButton'
 import { MessageComposer } from '../components/MessageComposer'
 import { PlaybackButton } from '../components/PlaybackButton'
 import { Live2DStage } from '../live2d/Live2DStage'
+import { Live2DModelSheet } from '../live2d/Live2DModelSheet'
 
 function visibleText(message, displayLanguage) {
   if (displayLanguage === 'translation' && message?.translation) return message.translation
@@ -12,6 +13,8 @@ function visibleText(message, displayLanguage) {
 
 export function CharacterView({ state, actions, audio, active, live2dCue }) {
   const [expandedMessageId, setExpandedMessageId] = useState(null)
+  const [modelSheetOpen, setModelSheetOpen] = useState(false)
+  const [live2dRuntimeState, setLive2dRuntimeState] = useState(null)
   const assistantMessages = useMemo(
     () => state.messages.filter((message) => message.role === 'assistant'),
     [state.messages],
@@ -44,6 +47,7 @@ export function CharacterView({ state, actions, audio, active, live2dCue }) {
           cue={live2dCue}
           mouthOpenRef={audio.volumeRef}
           onRetryPresentation={actions.retryLive2D}
+          onRuntimeStateChange={setLive2dRuntimeState}
         />
       </div>
 
@@ -56,6 +60,9 @@ export function CharacterView({ state, actions, audio, active, live2dCue }) {
           <span className="online-state"><i />在线</span>
         </div>
         <div className="character-header__actions">
+          <IconButton label="切换角色服装" onClick={() => setModelSheetOpen(true)}>
+            <Shirt size={22} />
+          </IconButton>
           <IconButton label="切换背景" onClick={actions.nextBackground}>
             <Image size={22} />
           </IconButton>
@@ -104,6 +111,15 @@ export function CharacterView({ state, actions, audio, active, live2dCue }) {
           onCancel={actions.cancelTurn}
         />
       </div>
+
+      <Live2DModelSheet
+        open={modelSheetOpen}
+        presentationTargetId={state.live2d?.target_id}
+        runtimeState={live2dRuntimeState}
+        onClose={() => setModelSheetOpen(false)}
+        onLoad={actions.loadLive2DModelOptions}
+        onSelect={actions.selectLive2DModel}
+      />
 
     </section>
   )

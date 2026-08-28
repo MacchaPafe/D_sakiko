@@ -4,6 +4,7 @@ import datetime
 import glob
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -938,36 +939,18 @@ def register_live2d_tools(
                 "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
             }
 
-        import glob
-        import os
-        base_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '../../live2d_related', char_folder))
-        default_live2d_json_list = [
-            *glob.glob(
-                os.path.join(base_path, 'live2D_model', '**', '*.model3.json'),
-                recursive=True,
-            ),
-            *glob.glob(
-                os.path.join(base_path, 'live2D_model', '**', '*.model.json'),
-                recursive=True,
-            ),
+        from live2d_support.model_catalog import Live2DModelCatalog
+
+        project_root = Path(__file__).resolve().parents[2]
+        catalog = Live2DModelCatalog(project_root / "live2d_related", project_root)
+        models = [
+            {
+                "model_name": option.display_name,
+                "model_json_path": str(option.model_json_path),
+            }
+            for option in catalog.list_options(char_folder)
+            if option.available
         ]
-        default_live2d_json = default_live2d_json_list[0].replace("\\", "/") if default_live2d_json_list else None
-
-        models: list[dict[str, str]] = []
-        if default_live2d_json:
-            models.append({'model_name': '默认', 'model_json_path': default_live2d_json})
-
-        extra_path = os.path.join(base_path, 'extra_model')
-        if os.path.exists(extra_path):
-            for model_dir in os.listdir(extra_path):
-                dp = os.path.join(extra_path, model_dir)
-                if os.path.isdir(dp):
-                    jsons = [
-                        *glob.glob(os.path.join(dp, '**', '*.model3.json'), recursive=True),
-                        *glob.glob(os.path.join(dp, '**', '*.model.json'), recursive=True),
-                    ]
-                    if jsons:
-                        models.append({'model_name': model_dir, 'model_json_path': jsons[0].replace("\\", "/")})
 
         return {'ok': True, 'character_folder': char_folder, 'models': models}
 
