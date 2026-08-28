@@ -88,3 +88,5 @@ tools/hpatchz.exe
 *.command
 !run_webui.command
 install_brew.sh
+# Live2D Cubism Core is user-provided; see electron_frontend/src/renderer/public/sdk/README.md.
+/electron_frontend/src/renderer/public/sdk/live2dcubismcore.min.js
