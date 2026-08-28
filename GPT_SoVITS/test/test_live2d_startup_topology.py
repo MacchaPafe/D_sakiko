@@ -8,11 +8,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class Live2DStartupTopologyTest(unittest.TestCase):
-    def test_legacy_electron_business_wrappers_are_removed(self):
-        support = ROOT / "live2d_support"
-        self.assertFalse((support / "electron_renderer_runtime.py").exists())
-        self.assertFalse((support / "electron_intent_adapter.py").exists())
-
     def test_pygame_module_contains_no_business_scheduler_or_random_executor(self):
         source = (ROOT / "live2d_module.py").read_text(encoding="utf-8")
         for forbidden in (

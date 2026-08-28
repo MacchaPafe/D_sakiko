@@ -1,4 +1,4 @@
-"""Shared behavior host for non-Pygame renderers such as Electron."""
+"""Shared behavior host for the Pygame renderer."""
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -212,15 +212,6 @@ class SharedRendererHost:
                 # persistent Sakiko state is black. Resolve that variant once
                 # here so neither renderer repeats this business decision.
                 payload["model_json"] = "../live2d_related/sakiko/live2D_model_costume/3.model.json"
-                payload["electron_model_url"] = (
-                    "http://127.0.0.1:9877/model/sakiko/live2D_model_costume/3.model.json"
-                )
-            model_path = str(payload.get("model_json") or payload.get("model_url") or "")
-            if model_path and "electron_model_url" not in payload:
-                marker = "live2d_related"
-                if marker in model_path.replace("\\", "/"):
-                    relative = model_path.replace("\\", "/").split(marker, 1)[1].lstrip("/")
-                    payload["electron_model_url"] = f"http://127.0.0.1:9877/model/{relative}"
             self._current_model_switch = deepcopy(payload)
             self._pending_model_switch = payload
             self._pending_model_switch_renderers = set(self._connected_renderer_ids)
@@ -639,14 +630,8 @@ class SharedRendererHost:
         self._pending_conversion = decision
         self._pending_conversion_model_token = uuid4().hex
         self._pending_conversion_renderers = set(self._connected_renderer_ids)
-        electron_urls = next(
-            (urls for renderer_id, urls in self._model_urls_by_renderer.items()
-             if self._renderer_roles.get(renderer_id) == "electron"),
-            {},
-        )
         self._pending_conversion_switch = {
             "model_url": model_url,
-            "electron_model_url": electron_urls.get(decision.model_target, model_url),
             "character_folder": "sakiko",
             "character_folder_name": "sakiko",
             "model_token": self._pending_conversion_model_token,
@@ -772,9 +757,6 @@ class SharedRendererHost:
         if isinstance(command, StartAudio) and segment is not None:
             payload = audio_command(command, segment)
             audio_path = str(payload.get("data", {}).get("path") or "")
-            electron_audio_url = self._electron_audio_url(audio_path)
-            if electron_audio_url:
-                payload.setdefault("data", {})["electron_audio_url"] = electron_audio_url
             if self._renderer_ids:
                 payload.setdefault("data", {})["target_renderer_ids"] = sorted(self._audio_renderer_ids())
                 audio_owner = self._audio_owner_by_command.get(command.command_id) or self._audio_owner_renderer_id()
@@ -783,31 +765,9 @@ class SharedRendererHost:
             self._audio_dispatched_tokens.add(command.command_id)
             self._emit(payload)
 
-    @staticmethod
-    def _electron_audio_url(audio_path: str) -> str:
-        """Expose a local project audio path through Bridge's HTTP server."""
-        normalized = str(audio_path or "").replace("\\", "/")
-        if not normalized or normalized.startswith(("http://", "https://")):
-            return normalized if normalized.startswith(("http://", "https://")) else ""
-        marker = "reference_audio/"
-        if marker in normalized:
-            relative = normalized.split(marker, 1)[1]
-            return f"http://127.0.0.1:9877/audio/reference_audio/{relative}"
-        return ""
-
     def _audio_owner_renderer_id(self) -> str | None:
-        """Select one runtime for audible playback while motions fan out."""
-        # Preserve master Pygame backpressure whenever that runtime is alive.
-        # Electron is an explicit fallback for Electron-only sessions; motion
-        # fact arrival order must never select the audio owner.
+        """Select one connected runtime for audible playback."""
         audio_renderers = self._audio_renderer_ids()
-        for role in ("pygame", "electron"):
-            candidates = sorted(
-                renderer_id for renderer_id in audio_renderers
-                if self._renderer_roles.get(renderer_id) == role
-            )
-            if candidates:
-                return candidates[0]
         return sorted(audio_renderers)[0] if audio_renderers else None
 
     def _track_motion_command(self, token: str, expected: set[str] | None = None) -> None:
@@ -961,34 +921,16 @@ class SharedRendererHost:
 
     def _canonical_renderer_is_sakiko(self) -> bool:
         """Use one stable runtime role when multiple renderer facts disagree."""
-        for role in ("pygame", "electron"):
-            candidates = sorted(
-                renderer_id for renderer_id in self._renderer_ids
-                if self._renderer_roles.get(renderer_id) == role
-            )
-            if candidates:
-                return self._renderer_model_keys.get(candidates[0], "").lower() == "sakiko"
-        return self._renderer_is_sakiko
+        renderer_id = self._canonical_renderer_id()
+        if renderer_id is None:
+            return self._renderer_is_sakiko
+        return self._renderer_model_keys.get(renderer_id, "").lower() == "sakiko"
 
     def _canonical_renderer_id(self) -> str | None:
         motion_renderers = self._motion_renderer_ids()
-        for role in ("pygame", "electron"):
-            candidates = sorted(
-                renderer_id for renderer_id in motion_renderers
-                if self._renderer_roles.get(renderer_id) == role
-            )
-            if candidates:
-                return candidates[0]
         return sorted(motion_renderers)[0] if motion_renderers else None
 
     def _canonical_runtime_id(self) -> str | None:
-        for role in ("pygame", "electron"):
-            candidates = sorted(
-                renderer_id for renderer_id in self._renderer_ids
-                if self._renderer_roles.get(renderer_id) == role
-            )
-            if candidates:
-                return candidates[0]
         return sorted(self._renderer_ids)[0] if self._renderer_ids else None
 
     def _apply_canonical_catalog(self) -> None:
@@ -1041,27 +983,13 @@ class SharedRendererHost:
             model_url = str(urls.get("black") or urls.get("white") or "")
         if not model_url:
             return
-        model_url = self._electron_model_url(model_url)
         payload: dict[str, Any] = {
             "model_url": model_url,
-            "electron_model_url": model_url,
             "character_folder": canonical_key,
             "character_folder_name": canonical_key,
             "model_token": canonical_token,
         }
         self._emit_model_switch_payload(payload, {renderer_id})
-
-    @staticmethod
-    def _electron_model_url(model_url: str) -> str:
-        """Translate a Pygame/local model path to the bridge HTTP endpoint."""
-        normalized = str(model_url or "").replace("\\", "/")
-        if normalized.startswith(("http://", "https://")):
-            return normalized
-        marker = "live2d_related"
-        if marker in normalized:
-            relative = normalized.split(marker, 1)[1].lstrip("/")
-            return f"http://127.0.0.1:9877/model/{relative}"
-        return normalized
 
     def _renderer_model_token(self, renderer_id: str) -> str:
         # The token is kept separately by ``handle_renderer_fact`` so this
@@ -1112,25 +1040,16 @@ class SharedRendererHost:
 
 
 class SharedRendererService:
-    """Queue adapter for bridge deployments; its policy remains in the host."""
-
-    _UI_INTENTS = frozenset({
-        "open_python_settings",
-        "start_voice_input",
-        "stop_voice_input",
-    })
+    """Queue adapter for the Pygame renderer; policy remains in the host."""
 
     def __init__(self, intent_queue, renderer_fact_queue, command_queue,
                  owner: AuthoritativeLive2DOwner, legacy_motion_complete_value=None,
                  trace: CommandEmitter | None = None,
-                 ui_intent_queue=None, conversion_state_callback=None) -> None:
+                 conversion_state_callback=None) -> None:
         self._intents = intent_queue
         self._facts = renderer_fact_queue
         self._commands = command_queue
         self._trace = trace
-        # Electron controls that belong to the mature Qt UI are forwarded as
-        # UI requests. They are deliberately kept outside the Live2D owner.
-        self._ui_intent_queue = ui_intent_queue
         self._host = SharedRendererHost(
             self._emit_command, owner, legacy_motion_complete_value,
             conversion_state_callback=conversion_state_callback,
@@ -1167,15 +1086,6 @@ class SharedRendererService:
                 break
             if isinstance(fact, Mapping):
                 self._record_trace("fact", fact)
-                data = fact.get("data", {})
-                ui_intent = data.get("intent") if isinstance(data, Mapping) else None
-                if (fact.get("type") == "renderer_intent"
-                        and isinstance(ui_intent, str)
-                        and ui_intent in self._UI_INTENTS):
-                    if self._ui_intent_queue is not None:
-                        self._ui_intent_queue.put({"type": ui_intent})
-                    handled += 1
-                    continue
             handled += int(isinstance(fact, Mapping) and self._host.handle_renderer_fact(fact))
         while True:
             try:
