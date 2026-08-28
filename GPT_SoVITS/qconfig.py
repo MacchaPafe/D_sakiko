@@ -162,6 +162,13 @@ class DSakikoConfig(QConfig):
     # 普通聊天侧栏的展示模式：flat 为平铺模式，folded 为按角色折叠模式
     chat_sidebar_mode = OptionsConfigItem("ui_state", "chat_sidebar_mode", "flat",
                                           validator=OptionsValidator(["flat", "folded"]))
+    live2d_renderer = OptionsConfigItem(
+        "ui_state",
+        "live2d_renderer",
+        "pygame",
+        validator=OptionsValidator(["electron", "pygame"]),
+        restart=True,
+    )
     # 普通聊天侧栏中处于展开状态的角色名称列表
     chat_sidebar_expanded_characters = ConfigItem("ui_state", "chat_sidebar_expanded_characters", [])
     # 新建对话弹窗中的用户人设区域是否展开

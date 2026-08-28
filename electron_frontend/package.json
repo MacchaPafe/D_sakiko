@@ -1,0 +1,29 @@
+{
+  "name": "saki-electron-shell",
+  "version": "0.1.0",
+  "main": "./dist/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@vueuse/core": "^14.1.0",
+    "pixi-live2d-display": "0.4.0",
+    "pixi.js": "^6.5.10",
+    "reka-ui": "^2.10.0",
+    "vite-plugin-vue-devtools": "^7.7.9",
+    "vue": "^3.4.0"
+  },
+  "devDependencies": {
+    "@iconify/json": "^2.2.489",
+    "@unocss/preset-icons": "^66.7.2",
+    "@unocss/preset-wind3": "^66.7.2",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "electron": "^28.0.0",
+    "electron-vite": "^2.0.0",
+    "typescript": "^5.3.0",
+    "unocss": "^66.7.2",
+    "vite": "^5.0.0"
+  }
+}

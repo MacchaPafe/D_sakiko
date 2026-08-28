@@ -30,6 +30,7 @@ from live2d_support.authoritative_owner import AuthoritativeLive2DOwner
 from live2d_support.legacy_intent_fanout import LegacyEmotionAudioFanout, OrderedLegacyOwnerIngress
 from live2d_support.renderer_host import SharedRendererService
 from live2d_support.runtime_ingress import ThinkingStateQueue, LegacyControlIntentFanout
+from bridge.saki_bridge import Bridge
 
 from emotion_enum import EmotionEnum
 from log import setup_logging, get_logger, get_log_queue, setup_worker_logging, shutdown_logging
@@ -42,6 +43,23 @@ faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 main_logger = get_logger(__name__)
 
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
+
+
+def resolve_renderer_mode() -> str:
+    """Resolve the runtime topology without creating a second behavior owner."""
+    override = os.environ.get("DSAKIKO_RENDERER", "").strip().lower()
+    if override in {"pygame", "electron"}:
+        mode = override
+    else:
+        mode = "pygame"
+        try:
+            with open(os.path.join(project_root, "d_sakiko_config.json"), "r", encoding="utf-8") as stream:
+                configured = str(json.load(stream).get("ui_state", {}).get("live2d_renderer", "pygame")).lower()
+                if configured in {"pygame", "electron"}:
+                    mode = configured
+        except (OSError, ValueError, TypeError):
+            pass
+    return mode
 
 
 def build_live2d_trace_sink():
@@ -545,7 +563,9 @@ if __name__=='__main__':
 
     from qconfig import d_sakiko_config
 
-    pygame_enabled = True
+    renderer_mode = resolve_renderer_mode()
+    pygame_enabled = renderer_mode == "pygame"
+    electron_enabled = renderer_mode == "electron"
 
     main_logger.info("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
@@ -577,14 +597,29 @@ if __name__=='__main__':
         pygame_emotion_queue, pygame_audio_file_path_queue, owner_intent_queue,
         deliver_pygame_baseline=False,
     )
+    electron_ui_command_queue = Queue() if electron_enabled else None
+    electron_bridge = None
+    if electron_enabled:
+        electron_bridge_queue = Queue()
+        electron_renderer_command_queue = Queue()
+        electron_bridge = Bridge(
+            electron_bridge_queue,
+            audio_base=project_root,
+            renderer_fact_queue=renderer_fact_queue,
+            renderer_command_queue=electron_renderer_command_queue,
+        )
+        renderer_command_queue = electron_renderer_command_queue
+    else:
+        renderer_command_queue = pygame_renderer_command_queue
     def on_sakiko_conversion_committed(is_black: bool, mask_on: bool) -> None:
         dp_chat.sakiko_state = bool(is_black)
         QT_message_queue.put("已切换为" + ("黑祥" if is_black else "白祥"))
 
     shared_renderer_service=SharedRendererService(
         owner_intent_queue, renderer_fact_queue,
-        pygame_renderer_command_queue, authoritative_owner, motion_complete_value,
+        renderer_command_queue, authoritative_owner, motion_complete_value,
         trace=build_live2d_trace_sink(),
+        ui_intent_queue=electron_ui_command_queue,
         conversion_state_callback=on_sakiko_conversion_committed,
     )
     initial_live2d_intent = build_initial_live2d_intent(characters)
@@ -671,7 +706,7 @@ if __name__=='__main__':
     # live2d 模块（该模块为不同进程）
     # 在 MacOS 下，所有的 NSWindow（Qt 窗口）只能在独立进程中创建，不可以在子线程中创建窗口。
     # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
-    main_logger.info("Live2D 渲染模式：pygame")
+    main_logger.info("Live2D 渲染模式：%s", renderer_mode)
     main_logger.info("加载Live2D界面中...")
     tr1=multiprocessing.Process(target=live2d_module.run_live2d_process,args=(pygame_emotion_queue,pygame_audio_file_path_queue,is_text_generating_queue,pygame_legacy_conversion_queue,pygame_runtime_control_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h, get_log_queue(),renderer_fact_queue,pygame_renderer_command_queue,None,True)) if pygame_enabled else None
     # LLM 生成模块（该模块为不同线程）
@@ -691,6 +726,8 @@ if __name__=='__main__':
     tr4.reload_requested.connect(d_sakiko_config.reload_from_disk)
     if tr1 is not None:
         tr1.start()
+    if electron_bridge is not None:
+        electron_bridge.start()
     threading.Thread(target=ordered_owner_ingress.run, args=(owner_stop_event,), daemon=True).start()
     threading.Thread(target=shared_renderer_service.run, args=(owner_stop_event,), daemon=True).start()
     tr2.start()
@@ -705,7 +742,8 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          change_char_queue=change_char_queue)
+                          change_char_queue=change_char_queue,
+                          electron_ui_command_queue=electron_ui_command_queue)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
@@ -743,6 +781,8 @@ if __name__=='__main__':
     except Exception:
         pass
     owner_stop_event.set()
+    if electron_bridge is not None:
+        electron_bridge.shutdown()
     try:
         # 主窗口
         QT_message_queue.put('bye')

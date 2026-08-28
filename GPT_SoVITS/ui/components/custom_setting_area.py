@@ -65,6 +65,14 @@ class CustomSettingArea(TransparentScrollArea):
             self.tr('选择设置界面的主题色'),
             self.personal_group,
         )
+        self.live2d_renderer_card = ComboBoxSettingCard(
+            d_sakiko_config.live2d_renderer,
+            FluentIcon.BRUSH,
+            self.tr("Live2D 渲染器"),
+            self.tr("Pygame 为默认显示端，Electron 为可选渲染端"),
+            texts=[self.tr("Electron"), self.tr("Pygame")],
+            parent=self.personal_group,
+        )
 
         self.font_card.clicked.connect(self.user_select_font_file)
 
@@ -72,6 +80,7 @@ class CustomSettingArea(TransparentScrollArea):
         self.personal_group.addSettingCard(self.font_card)
         self.personal_group.addSettingCard(self.theme_card)
         self.personal_group.addSettingCard(self.theme_color_card)
+        self.personal_group.addSettingCard(self.live2d_renderer_card)
 
         self.v_box_layout.addWidget(self.personal_group)
 

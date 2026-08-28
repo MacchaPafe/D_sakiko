@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys, os,json,re,ast
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
