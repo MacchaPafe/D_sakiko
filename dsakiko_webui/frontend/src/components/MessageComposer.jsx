@@ -4,6 +4,8 @@ import cameraIcon from '../../相机.svg?url'
 import microphoneIcon from '../../麦克风.svg?url'
 import { IconButton } from './IconButton'
 
+const SUPPORTED_IMAGE_TYPES = 'image/png,image/jpeg,image/webp,image/gif'
+
 export function MessageComposer({
   value,
   onChange,
@@ -131,7 +133,7 @@ export function MessageComposer({
           ref={albumInputRef}
           className="visually-hidden"
           type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
+          accept={SUPPORTED_IMAGE_TYPES}
           multiple
           tabIndex={-1}
           onChange={selectImages}
@@ -140,7 +142,7 @@ export function MessageComposer({
           ref={cameraInputRef}
           className="visually-hidden"
           type="file"
-          accept="image/*"
+          accept={SUPPORTED_IMAGE_TYPES}
           capture="environment"
           tabIndex={-1}
           onChange={selectImages}

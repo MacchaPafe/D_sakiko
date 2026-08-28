@@ -115,7 +115,7 @@ def default_live2d_layout(runtime: Live2DLayoutRuntime, scene: Live2DLayoutScene
             return Live2DLayout(scale=2.0, offset_x=0.0, offset_y=-0.77)
         return Live2DLayout(scale=0.8, offset_x=0.0, offset_y=0.0)
     if runtime == "v3":
-        return Live2DLayout(scale=1.5, offset_x=0.0, offset_y=-0.35)
+        return Live2DLayout(scale=1.5, offset_x=0.0, offset_y=-0.53)
     return Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
 
 

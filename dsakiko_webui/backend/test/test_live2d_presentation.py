@@ -88,9 +88,9 @@ class Live2DPresentationResolverTest(unittest.TestCase):
         self.assertEqual(presentation.resolution, "resolved")
         self.assertEqual(presentation.version, "v3")
         self.assertTrue(str(presentation.model_url).endswith("/costume.model3.json"))
-        self.assertEqual(presentation.layout.scale, 2.3)
+        self.assertEqual(presentation.layout.scale, 1.5)
         self.assertEqual(presentation.layout.offset_x, 0.0)
-        self.assertEqual(presentation.layout.offset_y, -0.77)
+        self.assertEqual(presentation.layout.offset_y, -0.53)
 
     def test_character_default_is_used_without_explicit_target(self) -> None:
         """对话无显式目标时应使用角色默认模型。"""
