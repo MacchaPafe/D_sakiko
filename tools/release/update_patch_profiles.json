@@ -21,7 +21,8 @@
       "img_kasumi.png",
       "img_sakiko.png",
       "聊天记录注意事项！.txt",
-      "docs-site/*"
+      "docs-site/*",
+      "dsakiko_webui/frontend/**"
     ],
     "hard_exclude": [
       ".git/**",
@@ -39,9 +40,12 @@
       "**/__MACOSX/**",
       "__pycache__/**",
       "**/__pycache__/**",
-      "*.pyc"
+      "*.pyc",
+      "GPT_SoVITS/text/ja_userdic/userdict.md5"
     ],
-    "include": []
+    "include": [
+      "dsakiko_webui/frontend/dist/**"
+    ]
   },
   "profiles": {
     "macos-arm64": {

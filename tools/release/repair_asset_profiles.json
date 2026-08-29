@@ -17,6 +17,11 @@
       "tools/**/*.py",
       "tools/*.json",
       "tools/**/*.json",
+      "dsakiko_webui/*.py",
+      "dsakiko_webui/**/*.py",
+      "dsakiko_webui/backend/pairing_ui_static/*.html",
+      "dsakiko_webui/backend/pairing_ui_static/*.js",
+      "dsakiko_webui/backend/pairing_ui_static/*.css",
       "version.json",
       "pyproject.toml",
       "uv.lock"
@@ -25,7 +30,8 @@
       "GPT_SoVITS/text/cmudict*.rep",
       "GPT_SoVITS/text/g2pw/polyphonic*.rep",
       "GPT_SoVITS/text/opencpop-strict.txt",
-      "GPT_SoVITS/text/restr.rep"
+      "GPT_SoVITS/text/restr.rep",
+      "dsakiko_webui/frontend/dist/**"
     ],
     "exclude": [
       "README*",
@@ -33,7 +39,8 @@
       "docs/**",
       "docs-site/**",
       "tests/**",
-      "GPT_SoVITS/test/**"
+      "GPT_SoVITS/test/**",
+      "dsakiko_webui/backend/test/**"
     ],
     "hard_exclude": [
       ".git/**",
