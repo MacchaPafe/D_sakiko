@@ -92,7 +92,6 @@ from chat.remote_attachments import (
 )
 from chat.model_token_usage import count_message_tokens
 from chat.rolling_summary import (
-    build_llm_query_with_rolling_summary,
     invalidate_rolling_summary_from_message_index,
 )
 from emotion_enum import EmotionEnum
@@ -3905,57 +3904,14 @@ class ChatGUI(QWidget):
     def _build_context_usage_messages(self) -> list[dict[str, object]]:
         """生成用于 token 统计的消息列表，不包含输入框中尚未发送的文本。"""
         character_name = self.current_character.character_name
-        messages = self._normalize_llm_messages(
-            build_llm_query_with_rolling_summary(
-                self.current_chat,
-                perspective=character_name,
-                is_simplify=True,
-                include_translation=getattr(self.dp_chat, "audio_language_choice", "") == "日英混合",
-            )
-        )
-        runtime_system_instruction = self._context_runtime_system_instruction()
-        if runtime_system_instruction:
-            self._append_context_runtime_system_instruction(messages, runtime_system_instruction)
-        messages.append({"role": "user", "content": self._context_runtime_controls()})
-        return messages
-
-    def _context_runtime_system_instruction(self) -> str:
-        """获取 token 统计用的运行期系统提示词。"""
-        builder = getattr(self.dp_chat, "_build_runtime_system_instruction", None)
+        builder = getattr(self.dp_chat, "_build_llm_messages_for_chat_turn", None)
         if not callable(builder):
-            return ""
-        try:
-            return str(builder() or "")
-        except Exception:
-            logger.exception("生成 token 统计用运行期系统提示词失败。")
-            return ""
-
-    @staticmethod
-    def _append_context_runtime_system_instruction(messages: list[dict[str, object]], instruction: str) -> None:
-        """把运行期系统提示词追加到第一条 system 消息，或插入新的 system 消息。"""
-        for message in messages:
-            if message.get("role") == "system":
-                content = str(message.get("content") or "")
-                message["content"] = content + "\n" + instruction
-                return
-        messages.insert(0, {"role": "system", "content": instruction})
-
-    def _context_runtime_controls(self) -> str:
-        """根据 UI 当前对话状态构造 token 统计用运行时控制消息。"""
-        reply_language = (
-            "ja_with_zh_translation"
-            if getattr(self.dp_chat, "audio_language_choice", "") == "日英混合"
-            else "zh_only"
-        )
-        sakiko_tone = "none"
-        if self.current_character.character_name == "祥子":
-            sakiko_tone = "dark" if getattr(self.dp_chat, "sakiko_state", True) else "light"
-        return (
-            "<runtime_controls>\n"
-            f"reply_language: {reply_language}\n"
-            f"sakiko_tone: {sakiko_tone}\n"
-            "</runtime_controls>"
-        )
+            raise RuntimeError("当前对话运行时不支持构造完整 LLM 请求消息。")
+        messages = self._normalize_llm_messages(builder(character_name))
+        prepare_messages = getattr(self.dp_chat, "_prepare_runtime_messages", None)
+        if callable(prepare_messages):
+            messages = self._normalize_llm_messages(prepare_messages(messages))
+        return messages
 
     @staticmethod
     def _normalize_llm_messages(raw_messages: object) -> list[dict[str, object]]:

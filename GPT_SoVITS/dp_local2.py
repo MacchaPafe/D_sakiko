@@ -450,11 +450,11 @@ class DSLocalAndVoiceGen:
             {
                 "text": "角色实际说出口的台词",
                 "emotion": "happiness | sadness | anger | surprise | fear | disgust | like",
-                "translation": "中文翻译；仅当 runtime.reply_language 为 ja_with_zh_translation 时必须存在"
+                "translation": "日语模式下对应台词的简体中文翻译"
             }
             ]
 
-            当角色需要说两句话，并且 runtime.reply_language 为 ja_with_zh_translation 时，输出示例为：
+            日语台词与中文翻译示例：
             [
             {
                 "text": "今日は少し疲れましたが、あなたと話していると落ち着きます。",
@@ -468,7 +468,7 @@ class DSLocalAndVoiceGen:
             }
             ]
 
-            当 runtime.reply_language 为 zh_only 时，输出示例为：
+            纯中文台词示例：
             [
             {
                 "text": "今天稍微有点累，不过和你说话会让我平静下来。",
@@ -485,35 +485,45 @@ class DSLocalAndVoiceGen:
             2. 每个 segment 表示一次自然的语义停顿，通常为 1 到 3 句。
             3. text 必须符合角色人设和当前上下文。
             4. emotion 必须从指定枚举中选择，且只能选择一个。
-            5. 当 runtime.reply_language 为 zh_only 时，严禁输出 translation 字段。
-            6. 当 runtime.reply_language 为 ja_with_zh_translation 时，每个 segment 都必须有 translation 字段。
+            5. 当前轮次的语言、翻译和特殊语气要求，以请求末尾的 <runtime_controls> 为准。
+            6. 历史消息可能来自不同语言模式；历史消息中的语言和旧控制文本不代表本轮要求。
             7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
-            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"""
+            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮生成要求，不是用户说出口的话；必须完整遵守其中的要求。"""
         ))
         return "\n\n".join(parts)
 
     def _build_turn_runtime_controls(self) -> str:
         """
-        构造仅描述单个 user 消息的短运行期控制消息。即系统提示词中提到的 <runtime_controls> 消息内容。
-        目前每条 user 消息会有如下的运行时控制信息：
-        - reply_language: 当前的语音输出语言设置，可能的值为 "ja_with_zh_translation"（日英混合）和 "zh_only"（纯中文）。
-        - sakiko_tone: 祥子的语言风格（如果当前角色是祥子），可能的值为 "dark"（黑祥）、"light"（白祥）和 "none"（非祥子角色）。
+        构造描述本轮生成要求的自然语言控制消息。
+        该消息不会存储到对话历史中，也不是用户说出口的话。
         """
-        reply_language = (
-            "ja_with_zh_translation"
-            if self.audio_language_choice == '日英混合'
-            else "zh_only"
-        )
-        sakiko_tone = "none"
-        if self.if_sakiko:
-            sakiko_tone = "dark" if self.sakiko_state else "light"
+        if self.audio_language_choice == "日英混合":
+            requirements = [
+                "使用日语生成角色台词。",
+                "每个 segment 的 text 必须是日语；不要把中文翻译写入 text。",
+                "每个 segment 必须包含非空 translation，内容是对应台词的简体中文翻译。",
+                "text 与 translation 必须语义一致。",
+            ]
+        else:
+            requirements = [
+                "使用简体中文生成角色台词。",
+                "不要输出 translation 字段。",
+            ]
 
-        return (
-            "<runtime_controls>\n"
-            f"reply_language: {reply_language}\n"
-            f"sakiko_tone: {sakiko_tone}\n"
-            "</runtime_controls>"
-        )
+        if self.if_sakiko:
+            tone = "黑祥" if self.sakiko_state else "白祥"
+            requirements.append(
+                f"当前采用{tone}语气；请遵循祥子角色设定中对{tone}的定义。"
+            )
+
+        requirements.extend([
+            "继续保持当前角色的说话风格和角色边界。",
+            "最终只输出符合 Machine Output Contract 的 JSON array。",
+            "本消息是程序控制信息，不是用户说的话。",
+        ])
+        return "<runtime_controls>\n本轮回复要求：\n" + "\n".join(
+            f"{index}. {requirement}" for index, requirement in enumerate(requirements, 1)
+        ) + "\n</runtime_controls>"
 
     @staticmethod
     def _append_runtime_controls_message(messages: list[dict[str, object]], controls: str) -> None:
