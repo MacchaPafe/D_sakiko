@@ -87,6 +87,29 @@ class ImageUploadButtonConfigSignalTestCase(unittest.TestCase):
         self.assertEqual(refresh.call_count, len(config_items))
 
 
+class ContextUsageSnapshotTestCase(unittest.TestCase):
+    """验证上下文用量快照通过聊天运行时统一估算入口获取 token。"""
+
+    def test_snapshot_delegates_token_estimation_to_chat_runtime(self) -> None:
+        """Qt UI 不应绕过运行时自行调用 LiteLLM token counter。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        estimator = mock.Mock(return_value=393)
+        subject.dp_chat = SimpleNamespace(
+            estimate_current_context_tokens=estimator,
+        )
+        with mock.patch.object(
+            ChatGUI,
+            "current_character",
+            new_callable=mock.PropertyMock,
+            return_value=SimpleNamespace(character_name="角色"),
+        ):
+            snapshot = subject._build_context_usage_snapshot(1000)
+
+        self.assertEqual(snapshot.used_tokens, 393)
+        self.assertEqual(snapshot.token_limit, 1000)
+        estimator.assert_called_once_with("角色")
+
+
 class MessageInputTestCase(unittest.TestCase):
     """验证多行消息输入框的编辑、发送与布局行为。"""
 

@@ -364,6 +364,7 @@ def trim_messages_for_emergency(
     *,
     model: str,
     token_limit: int | None,
+    file_token_cost: int | None = None,
     reserved_recent_user_messages: int = RESERVED_RECENT_ROUNDS,
 ) -> list[dict[str, object]]:
     """仅裁剪请求副本，避免摘要失败时让主请求直接超过上下文上限。"""
@@ -381,7 +382,13 @@ def trim_messages_for_emergency(
                     max(1, int(token_limit * EMERGENCY_CONTEXT_RATIO)),
                     max(1, token_limit - summary_budget),
                 )
-                return count_message_tokens(model, candidate) > target
+                if file_token_cost is None:
+                    return count_message_tokens(model, candidate) > target
+                return count_message_tokens(
+                    model,
+                    candidate,
+                    file_token_cost=file_token_cost,
+                ) > target
             except Exception:
                 pass
         payload_size = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))

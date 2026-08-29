@@ -90,7 +90,6 @@ from chat.remote_attachments import (
     build_deepseek_file_service_config,
     remote_reference_is_fresh,
 )
-from chat.model_token_usage import count_message_tokens
 from chat.rolling_summary import (
     invalidate_rolling_summary_from_message_index,
 )
@@ -3884,10 +3883,11 @@ class ChatGUI(QWidget):
 
     def _build_context_usage_snapshot(self, token_limit: int | None) -> ContextUsageSnapshot:
         """构造当前普通聊天下一次请求会携带的上下文 token 快照。"""
-        model = self._current_litellm_model_name()
         try:
-            messages = self._build_context_usage_messages()
-            used_tokens = count_message_tokens(model=model, messages=messages)
+            estimator = getattr(self.dp_chat, "estimate_current_context_tokens", None)
+            if not callable(estimator):
+                raise RuntimeError("当前对话运行时不支持上下文 token 估算。")
+            used_tokens = estimator(self.current_character.character_name)
         except Exception as exc:
             logger.warning("上下文 token 统计失败：%s", exc)
             return ContextUsageSnapshot(
@@ -3900,35 +3900,6 @@ class ChatGUI(QWidget):
             used_tokens=max(0, used_tokens),
             token_limit=token_limit,
         )
-
-    def _build_context_usage_messages(self) -> list[dict[str, object]]:
-        """生成用于 token 统计的消息列表，不包含输入框中尚未发送的文本。"""
-        character_name = self.current_character.character_name
-        builder = getattr(self.dp_chat, "_build_llm_messages_for_chat_turn", None)
-        if not callable(builder):
-            raise RuntimeError("当前对话运行时不支持构造完整 LLM 请求消息。")
-        messages = self._normalize_llm_messages(builder(character_name))
-        prepare_messages = getattr(self.dp_chat, "_prepare_runtime_messages", None)
-        if callable(prepare_messages):
-            messages = self._normalize_llm_messages(prepare_messages(messages))
-        return messages
-
-    @staticmethod
-    def _normalize_llm_messages(raw_messages: object) -> list[dict[str, object]]:
-        """将未知来源的 messages 数据整理为 token_counter 可接收的字典列表。"""
-        if not isinstance(raw_messages, list):
-            return []
-        messages: list[dict[str, object]] = []
-        for raw_message in raw_messages:
-            if not isinstance(raw_message, dict):
-                continue
-            message: dict[str, object] = {}
-            for key, value in raw_message.items():
-                if isinstance(key, str):
-                    message[key] = value
-            if "role" in message and "content" in message:
-                messages.append(message)
-        return messages
 
     def _current_litellm_model_name(self) -> str:
         """按照当前配置解析 LiteLLM 实际使用的模型名称。"""

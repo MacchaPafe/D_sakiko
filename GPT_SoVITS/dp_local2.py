@@ -33,6 +33,7 @@ from chat.attachments import (
     resolve_attachment_path,
 )
 from chat.remote_attachments import (
+    DEEPSEEK_FILE_IMAGE_TOKEN_COST,
     DeepSeekFileServiceConfig,
     MissingLocalAttachmentError,
     RemoteAttachmentManager,
@@ -276,6 +277,7 @@ class DSLocalAndVoiceGen:
             messages,
             model=model,
             token_limit=token_limit,
+            file_token_cost=self._current_file_token_cost(),
         )
         if len(prepared) < len(messages):
             logger.warning(
@@ -575,6 +577,27 @@ class DSLocalAndVoiceGen:
         self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
         return messages
 
+    def _count_current_request_tokens(
+            self,
+            messages: list[dict[str, object]],
+    ) -> int:
+        """按本轮冻结配置统计请求 token，并应用 provider-specific file 策略。"""
+        model = self._current_litellm_model_name()
+        file_token_cost = self._current_file_token_cost()
+        if file_token_cost is None:
+            return count_message_tokens(model, messages)
+        return count_message_tokens(
+            model,
+            messages,
+            file_token_cost=file_token_cost,
+        )
+
+    def estimate_current_context_tokens(self, character_name: str) -> int:
+        """估算当前对话下一次实际请求携带的 token 数，供 UI 预览使用。"""
+        messages = self._build_llm_messages_for_chat_turn(character_name)
+        prepared_messages = self._prepare_runtime_messages(messages)
+        return self._count_current_request_tokens(prepared_messages)
+
     def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
         """从本轮冻结配置中解析 DeepSeek Files 服务作用域。"""
         config = getattr(self, "d_sakiko_config", None)
@@ -602,6 +625,25 @@ class DSLocalAndVoiceGen:
             api_base=api_base,
             api_key=api_key,
         )
+
+    def _current_file_token_cost(self) -> int | None:
+        """返回本轮请求所需的 provider-specific file token 估算成本。"""
+        config = getattr(self, "d_sakiko_config", None)
+        required_fields = (
+            "use_default_deepseek_api",
+            "enable_custom_llm_api_provider",
+            "llm_api_provider",
+            "llm_api_model",
+            "llm_api_key",
+            "llm_api_base_url",
+        )
+        if config is None or any(
+                not hasattr(config, field) for field in required_fields
+        ):
+            return None
+        if self._current_deepseek_file_service() is None:
+            return None
+        return DEEPSEEK_FILE_IMAGE_TOKEN_COST
 
     def _formal_attachments(self) -> list[MessageAttachment]:
         """返回全部聊天中的正式附件，供可达性扫描使用。"""
@@ -651,7 +693,7 @@ class DSLocalAndVoiceGen:
             return False
 
         try:
-            used_tokens = count_message_tokens(model, current_request_messages)
+            used_tokens = self._count_current_request_tokens(current_request_messages)
         except Exception:
             logger.exception("统计滚动摘要触发 token 数失败，继续使用当前上下文。")
             return False

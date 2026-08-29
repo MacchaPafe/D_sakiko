@@ -118,6 +118,63 @@ class RollingSummaryTestCase(unittest.TestCase):
             "message": "正在整理过往思绪...",
         })
 
+    def test_dp_passes_deepseek_file_cost_to_token_counter(self) -> None:
+        """DeepSeek Files 请求应使用图片 token 上限参与摘要触发统计。"""
+        chat = self._chat_with_turns(12)
+        subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
+        subject.chat_manager = mock.Mock()
+        subject.d_sakiko_config = SimpleNamespace(
+            use_default_deepseek_api=SimpleNamespace(value=False),
+            enable_custom_llm_api_provider=SimpleNamespace(value=False),
+            llm_api_provider=SimpleNamespace(value="deepseek"),
+            llm_api_model=SimpleNamespace(value={}),
+            llm_api_key=SimpleNamespace(value={}),
+            llm_api_base_url=SimpleNamespace(value={}),
+        )
+        completion_response = {
+            "choices": [{"message": {"content": "模型生成的累计摘要"}}],
+        }
+
+        with (
+            mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
+            mock.patch.object(subject, "_current_deepseek_file_service", return_value=object()),
+            mock.patch.object(subject, "_completion_with_current_config", return_value=completion_response),
+            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800) as count_mock,
+        ):
+            updated = subject._maybe_update_rolling_summary(
+                chat,
+                "角色",
+                [{"role": "user", "content": "current"}],
+            )
+
+        self.assertTrue(updated)
+        self.assertEqual(
+            count_mock.call_args.kwargs["file_token_cost"],
+            dp_local2.DEEPSEEK_FILE_IMAGE_TOKEN_COST,
+        )
+
+    def test_emergency_trim_passes_file_cost_to_token_counter(self) -> None:
+        """紧急裁剪应沿用与摘要触发相同的 file token 成本。"""
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": [{"type": "file", "file_id": "file-1"}]},
+        ]
+
+        with mock.patch(
+            "chat.model_token_usage.count_message_tokens",
+            return_value=1,
+        ) as count_mock:
+            trimmed = trim_messages_for_emergency(
+                messages,
+                model="test/model",
+                token_limit=1000,
+                file_token_cost=384,
+            )
+
+        self.assertEqual(trimmed, messages)
+        self.assertEqual(count_mock.call_args.kwargs["file_token_cost"], 384)
+
     def test_dp_skips_summary_below_threshold(self) -> None:
         chat = self._chat_with_turns(12)
         subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)

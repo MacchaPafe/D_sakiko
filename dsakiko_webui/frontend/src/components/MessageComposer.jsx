@@ -157,13 +157,13 @@ export function MessageComposer({
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={handleKeyDown}
       />
-      <IconButton
-        label="语音输入（暂未启用）"
-        className="composer-tool composer-mic"
-        onClick={() => undefined}
-      >
-        <img src={microphoneIcon} alt="" />
-      </IconButton>
+      {/*<IconButton*/}
+      {/*  label="语音输入（暂未启用）"*/}
+      {/*  className="composer-tool composer-mic"*/}
+      {/*  onClick={() => undefined}*/}
+      {/*>*/}
+      {/*  <img src={microphoneIcon} alt="" />*/}
+      {/*</IconButton>*/}
       {busy ? (
         <IconButton
           label="停止生成"
