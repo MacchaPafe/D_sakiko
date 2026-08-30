@@ -37,18 +37,23 @@
 ## Windows：
 开箱即用，双击run.bat即可运行程序，无需安装任何依赖。
 
-百度网盘：```https://pan.baidu.com/s/1kLJT0mZ_gGQ2yRUrMJU_Tw?pwd=7vsd``` 提取码: 7vsd
+百度网盘：https://pan.baidu.com/s/1kLJT0mZ_gGQ2yRUrMJU_Tw?pwd=7vsd 提取码: 7vsd
 
-天翼云盘（不限速）：```https://cloud.189.cn/t/b2EjU36Nj67b``` （访问码：0fe8）
+天翼云盘（不限速）：https://cloud.189.cn/t/b2EjU36Nj67b （访问码：0fe8）
 
-Google Drive:```https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing```
+Google Drive: https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing
 
 ## MacOS：
-百度网盘： ```https://pan.baidu.com/s/1UrOc8sdQd4DeYtjo0ISTuA?pwd=m49g``` 提取码: m49g 
 
-天翼云盘：```https://cloud.189.cn/t/Q7Z7r2nYNvyu``` （访问码：yf5b）
+3.5.0 新版：
 
-Google Drive：```https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing```
+百度网盘：https://pan.baidu.com/s/1cV3HbtjAnF-bBd7l83SOMg?pwd=1122 提取码: 1122
+
+天翼云盘：https://cloud.189.cn/t/vEZbAjbuiUze （访问码：sch3）
+
+2.6.5 旧版（尚未更新）：
+
+Google Drive：https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing
 
 
 MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md)  作者 [@yan-xiaoo](https://github.com/yan-xiaoo)
