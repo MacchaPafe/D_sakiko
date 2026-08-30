@@ -3,10 +3,16 @@ import react from '@vitejs/plugin-react'
 import { fileURLToPath } from 'node:url'
 
 const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
+const sharedAssets = fileURLToPath(new URL('../shared/assets', import.meta.url))
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      '@shared-assets': sharedAssets,
+    },
+  },
   test: {
     environment: 'jsdom',
   },

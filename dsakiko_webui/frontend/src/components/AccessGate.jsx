@@ -1,8 +1,8 @@
 import { RefreshCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import neutralMascot from '../assets/access-gate/neutral.png'
-import errorMascot from '../assets/access-gate/error.png'
-import successMascot from '../assets/access-gate/success.png'
+import neutralMascot from '@shared-assets/access-gate/neutral.png'
+import errorMascot from '@shared-assets/access-gate/error.png'
+import successMascot from '@shared-assets/access-gate/success.png'
 
 export function AccessGate({ state, actions }) {
   const [digits, setDigits] = useState(() => Array(6).fill(''))

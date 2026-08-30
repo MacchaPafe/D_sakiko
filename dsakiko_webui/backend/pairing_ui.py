@@ -20,14 +20,8 @@ from .networking import NetworkAddress, discover_network_addresses
 
 PAIRING_UI_HEADER = "X-Dsakiko-Pairing-UI"
 PAIRING_UI_ASSETS = Path(__file__).with_name("pairing_ui_static")
-PAIRING_MASCOT_ASSET = (
-    Path(__file__).parents[1]
-    / "frontend"
-    / "src"
-    / "assets"
-    / "access-gate"
-    / "neutral.png"
-)
+SHARED_ASSETS_ROOT = Path(__file__).parents[1] / "shared" / "assets"
+PAIRING_MASCOT_ASSET = SHARED_ASSETS_ROOT / "access-gate" / "neutral.png"
 
 
 class AddressSelectionRequest(BaseModel):

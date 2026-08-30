@@ -8,6 +8,7 @@ from dsakiko_webui.backend.auth import AccessController, PairingRejected
 from dsakiko_webui.backend.networking import NetworkAddress
 from dsakiko_webui.backend.pairing_ui import (
     PAIRING_UI_HEADER,
+    PAIRING_MASCOT_ASSET,
     PairingPresentation,
     PairingUiLocation,
     create_pairing_ui_app,
@@ -49,6 +50,8 @@ class PairingUiTest(unittest.TestCase):
 
     def test_shared_neutral_mascot_is_served_as_static_asset(self) -> None:
         """本机配对页应能加载与访问码页面共用的中性角色图。"""
+        self.assertTrue(PAIRING_MASCOT_ASSET.is_file())
+        self.assertNotIn("/frontend/", str(PAIRING_MASCOT_ASSET))
         with TestClient(self.app, base_url="http://127.0.0.1:8765") as client:
             response = client.get("/neutral.png")
             self.assertEqual(response.status_code, 200)
