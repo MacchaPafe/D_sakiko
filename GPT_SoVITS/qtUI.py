@@ -3021,11 +3021,11 @@ class ChatGUI(QWidget):
 
     def import_chat_backup(self) -> None:
         """从用户选择的 zip 对话备份包导入所有对话。"""
-        if not self._ensure_chat_history_operation_allowed("导入对话备份"):
+        if not self._ensure_chat_history_operation_allowed("导入对话"):
             return
         input_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "导入对话备份",
+            "导入对话",
             "",
             self._chat_backup_open_file_filter(),
         )
@@ -3035,8 +3035,8 @@ class ChatGUI(QWidget):
             result = self.chat_manager.import_chats_from_backup(input_path)
             self.chat_manager.save()
         except Exception:
-            logger.exception("导入对话备份失败：%s", input_path)
-            QMessageBox.warning(self, "导入失败", "这不是有效的 D_sakiko 对话备份文件。")
+            logger.exception("导入对话失败：%s", input_path)
+            QMessageBox.warning(self, "导入失败", "这不是有效的 D_sakiko 对话文件。")
             return
 
         self.refresh_chat_list()

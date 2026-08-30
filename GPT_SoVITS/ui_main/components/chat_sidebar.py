@@ -77,7 +77,7 @@ class ChatSidebarToolbar(QWidget):
         delete_action = more_menu.addAction("删除当前对话…")
         more_menu.addSeparator()
         more_menu.addSection("备份与迁移")
-        import_action = more_menu.addAction("导入对话备份…")
+        import_action = more_menu.addAction("导入对话…")
         export_action = more_menu.addAction("导出多个对话…")
         delete_action.triggered.connect(self.delete_current_chat_requested)
         import_action.triggered.connect(self.import_backup_requested)
