@@ -119,6 +119,7 @@ def run() -> int:
             host="0.0.0.0",
             port=WEBUI_PORT,
             reload=False,
+            access_log=False,
         )
         main_server = uvicorn.Server(main_config)
         if args.open_pairing and app.state.pairing_ui_url:

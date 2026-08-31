@@ -1382,15 +1382,14 @@ select:focus-visible {
   padding: 6px 0 18px;
 }
 
-/* Live2D wardrobe */
+/* Live2D model sheet */
 .live2d-model-sheet-layer {
   position: absolute;
   z-index: 96;
   inset: 0;
   display: flex;
   align-items: flex-end;
-  background: rgba(20, 23, 28, 0.46);
-  backdrop-filter: blur(2px);
+  background: rgba(21, 23, 28, 0.44);
   animation: sheet-backdrop-in 220ms ease-out both;
 }
 
@@ -1398,53 +1397,32 @@ select:focus-visible {
   position: relative;
   display: flex;
   width: 100%;
-  max-height: min(74%, 560px);
+  max-height: min(78%, 600px);
   flex-direction: column;
-  padding: 26px 18px max(16px, env(safe-area-inset-bottom));
+  padding: 28px 16px max(12px, env(safe-area-inset-bottom));
   overflow: hidden;
-  border-radius: 22px 22px 0 0;
-  background: #f9fafb;
-  box-shadow: 0 -18px 42px rgba(20, 23, 28, 0.22);
-  animation: sheet-rise-in 380ms cubic-bezier(0.22, 1.18, 0.36, 1) both;
-}
-
-.live2d-model-sheet::before {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  height: 3px;
-  background: linear-gradient(90deg, transparent 3%, var(--character-accent), transparent 82%);
-  content: '';
-  opacity: 0.75;
+  border-radius: 18px 18px 0 0;
+  background: #fcfcfd;
+  box-shadow: 0 -16px 34px rgba(25, 28, 32, 0.18);
+  animation: sheet-rise-in 420ms cubic-bezier(0.22, 1.18, 0.36, 1) both;
 }
 
 .live2d-model-sheet__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 3px 0 17px;
+  min-height: 45px;
+  gap: 12px;
+  padding: 0;
 }
 
 .live2d-model-sheet__header h2,
 .live2d-model-sheet__header p { margin: 0; }
-.live2d-model-sheet__header h2 { color: #262a2f; font-size: 23px; letter-spacing: -0.02em; }
-.live2d-model-sheet__header p { margin-top: 2px; color: #8a9098; font-size: 12px; }
-
-.live2d-model-sheet__eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 4px;
-  color: var(--character-accent);
-  font-size: 9px;
-  font-weight: 750;
-  letter-spacing: 0.12em;
-}
+.live2d-model-sheet__header h2 { color: #292c30; font-size: 22px; letter-spacing: 0; }
+.live2d-model-sheet__header p { margin-top: 2px; color: #92979e; font-size: 11px; }
 
 .live2d-model-sheet__tools { display: flex; gap: 2px; }
-.live2d-model-sheet__tools .icon-button { color: #5d636b; }
+.live2d-model-sheet__tools .icon-button { color: #62676e; }
 .live2d-model-sheet__tools .icon-button:disabled { opacity: 0.42; }
 
 .live2d-model-sheet__error {
@@ -1471,55 +1449,31 @@ select:focus-visible {
 .live2d-model-sheet__empty p { max-width: 260px; margin: 0; line-height: 1.65; }
 
 .live2d-model-list {
-  position: relative;
   display: grid;
   overflow-y: auto;
-  gap: 0;
-  padding: 3px 0 8px 18px;
-}
-
-.live2d-model-list::before {
-  position: absolute;
-  top: 7px;
-  bottom: 12px;
-  left: 5px;
-  width: 1px;
-  background: linear-gradient(var(--character-accent), rgba(120, 126, 134, 0.12));
-  content: '';
+  gap: 8px;
+  padding: 6px 0 8px;
 }
 
 .live2d-model-option {
-  position: relative;
   display: grid;
-  min-height: 54px;
+  min-height: 52px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px 7px 0;
-  border: 0;
-  border-bottom: 1px solid #e8eaed;
+  padding: 8px 12px;
+  border: 1px solid #d8dbdf;
+  border-radius: 8px;
   color: #34383e;
-  background: transparent;
+  background: #fff;
   text-align: left;
   cursor: pointer;
 }
 
-.live2d-model-option::before {
-  position: absolute;
-  left: -17px;
-  width: 7px;
-  height: 7px;
-  border: 2px solid #f9fafb;
-  border-radius: 50%;
-  background: #bbc0c6;
-  box-shadow: 0 0 0 1px #bbc0c6;
-  content: '';
-}
-
-.live2d-model-option:not(:disabled):hover { color: var(--character-accent); background: rgba(255, 255, 255, 0.72); }
+.live2d-model-option:not(:disabled):hover { border-color: #c6cacf; background: #f8f9fa; }
 .live2d-model-option:disabled { cursor: default; opacity: 0.58; }
-.live2d-model-option.is-current { color: var(--character-accent); opacity: 1; }
-.live2d-model-option.is-current::before { background: var(--character-accent); box-shadow: 0 0 0 1px var(--character-accent); }
+.live2d-model-option.is-current { border-color: #cfd2d6; background: #f5f6f7; color: #303237; opacity: 1; }
+.live2d-model-option.is-current svg { color: #747980; }
 .live2d-model-option__name { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .live2d-model-option small { grid-column: 1 / 3; margin-top: -8px; color: #90959c; font-size: 10px; }
 .live2d-model-option small.is-error { color: #b84452; }

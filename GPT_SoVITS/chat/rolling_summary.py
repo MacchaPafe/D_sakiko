@@ -21,7 +21,7 @@ EMERGENCY_CONTEXT_RATIO = 0.90
 UNKNOWN_MODEL_MAX_BYTES = 340 * 1024
 SUMMARY_FAILURE_COOLDOWN_SECONDS = 60
 
-_SUMMARY_SYSTEM_PROMPT = """你负责把一段角色对话压缩成可供后续对话继续使用的累计记忆。目标是在不延续闲聊措辞的前提下，让另一个模型能够自然、准确地继续这段对话。
+_SUMMARY_SYSTEM_PROMPT = """你是一位专业的聊天记录压缩、信息提取专家。接下来你将负责把一段角色对话压缩成可供后续对话继续使用的累计记忆，目标是在不延续闲聊措辞的前提下，让另一个模型能够自然、准确地继续这段对话。
 
 请遵守以下规则：
 1. 使用简体中文，必须仅输出更新后的累计摘要，不要解释压缩过程，不要使用 Markdown 代码块。

@@ -46,17 +46,17 @@ def print_startup_banner(access_code: str, pairing_ui_url: str | None = None) ->
     lines = [
         "数字小祥WebUI",
         "",
-        "首选：在电脑打开本机配对页，并使用手机扫描二维码",
+        ">>登录方法一：在弹出的二维码配对页里，手机扫描二维码",
     ]
     if pairing_ui_url:
-        lines.append(f"本机配对页：{pairing_ui_url}")
+        lines.append(f"  若没有弹出，在本机浏览器输入：{pairing_ui_url}")
     else:
-        lines.append("本机配对页未启动，请使用下方备用方式")
+        lines.append("  本机配对页不可用，请使用方法二")
     lines.extend([
         "",
-        "备用：手机与电脑连接同一可信局域网后手动登录",
-        f"手机访问地址：http://{local_ip}:{WEBUI_PORT}" if local_ip else "未检测到可用局域网地址",
-        f"六位访问码：{access_code}",
+        ">>登录方法二：手机与电脑连接同一局域网后手动登录",
+        f"  1. 手机浏览器输入地址：http://{local_ip}:{WEBUI_PORT}" if local_ip else "未检测到可用局域网地址",
+        f"  2. 然后填入六位访问码：{access_code}",
     ])
     def display_width(value: str) -> int:
         return sum(

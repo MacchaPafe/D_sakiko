@@ -123,9 +123,9 @@ function renderState(state) {
   } else if (state.status === 'active') {
     status.textContent = formatRemaining(state.remaining_seconds)
   } else if (state.status === 'used') {
-    status.textContent = '设备已连接，可以关闭该页面。'
+    status.textContent = '设备已连接，可以关闭此页面了。'
   } else {
-    status.textContent = '二维码已过期，请重新生成。'
+    status.textContent = '二维码已过期，需重新生成。'
   }
 }
 
@@ -158,7 +158,7 @@ async function copyAccessCodeToClipboard() {
 }
 
 regenerate.addEventListener('click', async () => {
-  if (latestState?.connected && !window.confirm('新设备成功连接后会中断当前连接，继续生成吗？')) return
+  if (latestState?.connected && !window.confirm('新设备成功连接后会中断当前设备的连接，继续吗？')) return
   await request('/api/regenerate', { method: 'POST' })
   lastRevision = -1
   await load()

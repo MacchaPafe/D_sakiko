@@ -16,8 +16,8 @@
 
         <header class="hero">
           <div class="hero-copy">
-            <span class="eyebrow">数字小祥 网页端</span>
-            <h1>扫描二维码 连接手机端</h1>
+            <span class="eyebrow">数字小祥</span>
+            <h1>扫码连接手机端</h1>
             <p class="hero-desc">手机与电脑需连接至同一 Wi-Fi 或局域网络</p>
           </div>
           <div class="status-badge" role="status">
@@ -40,7 +40,7 @@
                   <span>点击重新生成</span>
                 </button>
               </div>
-              <p class="qr-tip">打开手机相机或浏览器扫码直接连接</p>
+              <p class="qr-tip">打开手机扫码直接连接</p>
             </div>
           </div>
 
@@ -64,9 +64,9 @@
             <div class="fallback-card">
               <div class="fallback-header">
                 <div class="fallback-copy">
-                  <span class="fallback-label">备用 6 位访问码</span>
+                  <span class="fallback-label">还有一种方法</span>
                   <p class="fallback-desc">
-                    在手机打开 <a id="fallback-url" href="#" target="_blank" rel="noreferrer">普通访问地址</a> 并输入
+                    在手机打开 <a id="fallback-url" href="#" target="_blank" rel="noreferrer">普通访问地址</a> 然后输入
                   </p>
                 </div>
                 <button id="copy-code" class="btn-secondary btn-sm" type="button">复制访问码</button>
@@ -84,6 +84,26 @@
 
             <p id="message" class="message" role="status" aria-live="polite"></p>
           </div>
+        </div>
+
+        <div class="card-help">
+          <button class="card-help__trigger" type="button" aria-label="查看网页端说明" aria-describedby="card-help-tooltip">
+            <img src="/help.svg" alt="" />
+          </button>
+          <aside id="card-help-tooltip" class="card-help__tooltip" role="tooltip">
+            <section>
+              <h2>这是什么？</h2>
+              <p>这里是数字小祥 WebUI 形态，主要面向移动端。用手机/平板等设备扫码登录后，你就可以通过手机与角色互动了。资产（角色模型、聊天记录等）与桌面版主程序是共通的，无需重复配置～</p>
+            </section>
+            <section>
+              <h2>遇到问题了吗？</h2>
+              <p>可以先在群里 @野良猫答疑站 问一下，她能帮你定位以及解答一些常见问题。 <br>如果仍未解决， @群主 或 @迷途见灯火。</p>
+            </section>
+            <section>
+              <h2>还没加群</h2>
+              <p>数字小祥项目交流答疑闲聊QQ群：1026822753</p>
+            </section>
+          </aside>
         </div>
       </section>
     </main>

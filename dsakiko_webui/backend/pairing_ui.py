@@ -20,6 +20,7 @@ from .networking import NetworkAddress, discover_network_addresses
 
 PAIRING_UI_HEADER = "X-Dsakiko-Pairing-UI"
 PAIRING_UI_ASSETS = Path(__file__).with_name("pairing_ui_static")
+PAIRING_HELP_ASSET = PAIRING_UI_ASSETS / "help.svg"
 SHARED_ASSETS_ROOT = Path(__file__).parents[1] / "shared" / "assets"
 PAIRING_MASCOT_ASSET = SHARED_ASSETS_ROOT / "access-gate" / "neutral.png"
 
@@ -229,6 +230,11 @@ def create_pairing_ui_app(
     async def neutral_mascot() -> FileResponse:
         """返回与访问码页面共用的中性状态角色图。"""
         return FileResponse(PAIRING_MASCOT_ASSET, media_type="image/png")
+
+    @app.get("/help.svg")
+    async def help_icon() -> FileResponse:
+        """返回配对说明入口使用的问号图标。"""
+        return FileResponse(PAIRING_HELP_ASSET, media_type="image/svg+xml")
 
     @app.get("/api/state")
     async def state(request: Request) -> JSONResponse:

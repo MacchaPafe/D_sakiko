@@ -22,6 +22,7 @@
       "dsakiko_webui/backend/pairing_ui_static/*.html",
       "dsakiko_webui/backend/pairing_ui_static/*.js",
       "dsakiko_webui/backend/pairing_ui_static/*.css",
+      "dsakiko_webui/backend/pairing_ui_static/*.svg",
       "dsakiko_webui/shared/assets/access-gate/*.png",
       "version.json",
       "pyproject.toml",

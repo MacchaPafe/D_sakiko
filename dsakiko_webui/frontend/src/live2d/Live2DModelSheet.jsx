@@ -66,7 +66,6 @@ export function Live2DModelSheet({
         <span className="sheet-handle" aria-hidden="true" />
         <header className="live2d-model-sheet__header">
           <div>
-            <span className="live2d-model-sheet__eyebrow"><Shirt size={14} /> LIVE2D WARDROBE</span>
             <h2>选择服装</h2>
             <p>{catalog?.character_name || '当前角色'}</p>
           </div>

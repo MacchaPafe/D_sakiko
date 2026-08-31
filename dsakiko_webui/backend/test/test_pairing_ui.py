@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from dsakiko_webui.backend.auth import AccessController, PairingRejected
 from dsakiko_webui.backend.networking import NetworkAddress
 from dsakiko_webui.backend.pairing_ui import (
+    PAIRING_HELP_ASSET,
     PAIRING_UI_HEADER,
     PAIRING_MASCOT_ASSET,
     PairingPresentation,
@@ -57,6 +58,15 @@ class PairingUiTest(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["Content-Type"], "image/png")
             self.assertGreater(len(response.content), 0)
+
+    def test_help_icon_is_served_as_static_asset(self) -> None:
+        """本机配对页应能加载问号说明图标。"""
+        self.assertTrue(PAIRING_HELP_ASSET.is_file())
+        with TestClient(self.app, base_url="http://127.0.0.1:8765") as client:
+            response = client.get("/help.svg")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/svg+xml")
+            self.assertIn(b"<svg", response.content)
 
     def test_state_does_not_contain_pairing_token(self) -> None:
         """轮询状态只返回版本和状态，不泄漏配对凭证。"""

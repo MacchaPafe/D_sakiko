@@ -6,6 +6,7 @@ import {
 } from './cuePolicy'
 
 const THINKING_REPEAT_MS = 15_000
+const MODEL_LOAD_TIMEOUT_MS = 30_000
 
 function presentationKey(presentation) {
   if (!presentation?.target_id) return null
@@ -18,6 +19,32 @@ function errorMessage(error) {
 
 function isTransientLoadError(error) {
   return /network|fetch|load failed|http\s*5\d\d|status\s*5\d\d/i.test(errorMessage(error))
+}
+
+async function loadModelWithTimeout(modelUrl) {
+  let timedOut = false
+  let timeoutId
+  const modelPromise = Live2DModel.from(modelUrl, {
+    autoInteract: false,
+  })
+  modelPromise.then((model) => {
+    if (timedOut) {
+      model.destroy({ children: true, texture: true, baseTexture: true })
+    }
+  }).catch(() => {})
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      timedOut = true
+      reject(new Error(`Live2D 模型加载超过 ${MODEL_LOAD_TIMEOUT_MS / 1000} 秒`))
+    }, MODEL_LOAD_TIMEOUT_MS)
+  })
+
+  try {
+    return await Promise.race([modelPromise, timeoutPromise])
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
 }
 
 export class Live2DRuntimeController {
@@ -84,9 +111,12 @@ export class Live2DRuntimeController {
     this.onStatusChange({ status: 'loading', error: '', retryable: false })
 
     try {
-      const model = await Live2DModel.from(presentation.model_url, {
-        autoInteract: false,
+      console.info('Live2D model loading started', {
+        version: presentation.version,
+        targetId: presentation.target_id,
+        modelUrl: presentation.model_url,
       })
+      const model = await loadModelWithTimeout(presentation.model_url)
       if (this.destroyed || generation !== this.generation) {
         model.destroy({ children: true, texture: true, baseTexture: true })
         return
@@ -116,6 +146,12 @@ export class Live2DRuntimeController {
       }
     } catch (error) {
       if (this.destroyed || generation !== this.generation) return
+      console.error('Live2D model loading failed', {
+        version: presentation.version,
+        targetId: presentation.target_id,
+        modelUrl: presentation.model_url,
+        error,
+      })
       this.replaceAdapter(null)
       this.presentation = presentation
       if (!autoRetry && isTransientLoadError(error)) {
