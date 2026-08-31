@@ -5322,7 +5322,11 @@ class ChatGUI(QWidget):
             self.user_input.clear_after_send()
             return
 
-        self._send_internal_command_payload(payload, force=spec.visibility == "hidden")
+        # 退出命令必须始终入队；启动阶段队列中可能已有 switch_chat，不能因此丢失退出请求。
+        self._send_internal_command_payload(
+            payload,
+            force=spec.command == "bye" or spec.visibility == "hidden",
+        )
         self.user_input.clear_after_send()
 
         if spec.command == "l":
