@@ -2144,6 +2144,7 @@ class ChatGUI(QWidget):
         self._lottery_dialog_ref = None
         self._register_message_command_handler("__LOTTERY_UI_CMD__:", self._handle_lottery_ui_command)
         self.update_check_thread: UpdateCheckThread | None = None
+        self.update_check_progress: QProgressDialog | None = None
         self.update_download_thread: UpdateDownloadThread | None = None
         self.update_notes_thread: ReleaseNotesThread | None = None
         self.update_dialog: UpdateDialog | None = None
@@ -2541,6 +2542,20 @@ class ChatGUI(QWidget):
             return
         self._start_update_check(silent=False)
 
+    def _hide_update_check_progress(self) -> None:
+        """隐藏手动检查更新的等待窗口，但不取消后台检查。"""
+
+        if self.update_check_progress is not None:
+            self.update_check_progress.hide()
+
+    def _close_update_check_progress(self) -> None:
+        """关闭并释放检查更新等待窗口。"""
+
+        if self.update_check_progress is not None:
+            self.update_check_progress.close()
+            self.update_check_progress.deleteLater()
+            self.update_check_progress = None
+
     def _start_update_check(self, silent: bool) -> None:
         """创建后台线程检查更新。"""
 
@@ -2556,6 +2571,17 @@ class ChatGUI(QWidget):
         if not index_urls and not silent:
             QMessageBox.information(self, "检查更新", "尚未配置更新索引 URL。")
             return
+        if not silent:
+            progress = QProgressDialog("正在检查更新...", "隐藏", 0, 0, self)
+            progress.setWindowTitle("检查更新")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            self.update_check_progress = progress
+            progress.canceled.connect(self._hide_update_check_progress)  # noqa
+            progress.show()
+            progress.raise_()
+            progress.activateWindow()
+            QApplication.processEvents()
         self.update_check_thread = UpdateCheckThread(index_urls, self)
         self.update_check_thread.updateAvailable.connect(lambda plan: self._on_update_available(plan, silent))  # noqa
         self.update_check_thread.noUpdate.connect(lambda: self._on_no_update(silent))  # noqa
@@ -2567,6 +2593,7 @@ class ChatGUI(QWidget):
     def _on_update_available(self, update_plan: UpdatePlan, silent: bool) -> None:
         """处理发现新版本的结果。"""
 
+        self._close_update_check_progress()
         self.pending_update_plan = update_plan
         if silent and not update_plan.critical:
             self._show_update_banner(update_plan)
@@ -2576,6 +2603,7 @@ class ChatGUI(QWidget):
     def _on_no_update(self, silent: bool) -> None:
         """处理没有新版本的结果。"""
 
+        self._close_update_check_progress()
         self._hide_update_banner()
         if not silent:
             self.setWindowTitle("数字小祥")
@@ -2584,6 +2612,7 @@ class ChatGUI(QWidget):
     def _on_update_check_failed(self, message: str, silent: bool) -> None:
         """处理更新检查失败。"""
 
+        self._close_update_check_progress()
         logger.warning("检查更新失败：%s", message)
         if not silent:
             self.setWindowTitle("数字小祥")
