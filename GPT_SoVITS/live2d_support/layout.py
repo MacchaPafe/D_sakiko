@@ -10,6 +10,7 @@ from qconfig import PROJECT_ROOT, d_sakiko_config
 
 Live2DLayoutScene = Literal["single", "theater"]
 Live2DLayoutRuntime = Literal["v2", "v3"]
+Live2DClient = Literal["desktop", "web"]
 
 MIN_LIVE2D_SCALE = 0.2
 MAX_LIVE2D_SCALE = 5.0
@@ -108,15 +109,43 @@ def normalize_model_layout_key(model_json_path: str) -> str:
         return resolved_path.as_posix()
 
 
-def default_live2d_layout(runtime: Live2DLayoutRuntime, scene: Live2DLayoutScene) -> Live2DLayout:
+DEFAULT_LIVE2D_LAYOUT: dict[
+    Live2DLayoutScene,
+    dict[Live2DClient, dict[Live2DLayoutRuntime, Live2DLayout]],
+] = {
+    "theater": {
+        "desktop": {
+            "v2": Live2DLayout(scale=0.8, offset_x=0.0, offset_y=0.0),
+            "v3": Live2DLayout(scale=2.0, offset_x=0.0, offset_y=-0.77),
+        },
+        "web": {
+            "v2": Live2DLayout(scale=0.8, offset_x=0.0, offset_y=0.0),
+            "v3": Live2DLayout(scale=2.0, offset_x=0.0, offset_y=-0.77),
+        },
+    },
+    "single": {
+        "desktop": {
+            "v2": Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0),
+            "v3": Live2DLayout(scale=2.3, offset_x=0.0, offset_y=-0.75),
+        },
+        "web": {
+            "v2": Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0),
+            "v3": Live2DLayout(scale=1.5, offset_x=0.0, offset_y=-0.53),
+        },
+    },
+}
+
+
+def default_live2d_layout(
+    runtime: Live2DLayoutRuntime,
+    scene: Live2DLayoutScene,
+    client: Live2DClient = "desktop",
+) -> Live2DLayout:
     """返回指定 runtime 与场景的默认布局。"""
-    if scene == "theater":
-        if runtime == "v3":
-            return Live2DLayout(scale=2.0, offset_x=0.0, offset_y=-0.77)
-        return Live2DLayout(scale=0.8, offset_x=0.0, offset_y=0.0)
-    if runtime == "v3":
-        return Live2DLayout(scale=1.5, offset_x=0.0, offset_y=-0.53)
-    return Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
+    try:
+        return DEFAULT_LIVE2D_LAYOUT[scene][client][runtime]
+    except KeyError:
+        raise ValueError(f"Invalid combination of runtime={runtime}, scene={scene}, client={client}")
 
 
 def layout_from_mapping(mapping: Mapping[str, object], default_layout: Live2DLayout) -> Live2DLayout:
@@ -128,9 +157,14 @@ def layout_from_mapping(mapping: Mapping[str, object], default_layout: Live2DLay
     ).clamped()
 
 
-def get_live2d_layout(model_json_path: str, runtime: Live2DLayoutRuntime, scene: Live2DLayoutScene) -> Live2DLayout:
+def get_live2d_layout(
+    model_json_path: str,
+    runtime: Live2DLayoutRuntime,
+    scene: Live2DLayoutScene,
+    client: Live2DClient = "desktop",
+) -> Live2DLayout:
     """读取模型在指定场景下的布局配置。"""
-    default_layout = default_live2d_layout(runtime, scene)
+    default_layout = default_live2d_layout(runtime, scene, client)
     model_key = normalize_model_layout_key(model_json_path)
     raw_layouts = d_sakiko_config.live2d_model_layouts.value
     if not isinstance(raw_layouts, Mapping):
@@ -138,25 +172,40 @@ def get_live2d_layout(model_json_path: str, runtime: Live2DLayoutRuntime, scene:
     raw_model_layout = raw_layouts.get(model_key)
     if not isinstance(raw_model_layout, Mapping):
         return default_layout
-    raw_scene_layout = raw_model_layout.get(scene)
-    if not isinstance(raw_scene_layout, Mapping):
+    raw_scene_layouts = raw_model_layout.get(scene)
+    if not isinstance(raw_scene_layouts, Mapping):
         return default_layout
-    return layout_from_mapping(raw_scene_layout, default_layout)
+    raw_client_layout = raw_scene_layouts.get(client)
+    if not isinstance(raw_client_layout, Mapping):
+        return default_layout
+    return layout_from_mapping(raw_client_layout, default_layout)
 
 
-def save_live2d_layout(model_json_path: str, scene: Live2DLayoutScene, layout: Live2DLayout) -> None:
+def save_live2d_layout(
+    model_json_path: str,
+    scene: Live2DLayoutScene,
+    layout: Live2DLayout,
+    client: Live2DClient = "desktop",
+) -> None:
     """保存模型在指定场景下的自定义布局。"""
     model_key = normalize_model_layout_key(model_json_path)
     raw_layouts = d_sakiko_config.live2d_model_layouts.value
     layout_data: dict[str, object] = dict(raw_layouts) if isinstance(raw_layouts, Mapping) else {}
     raw_model_layout = layout_data.get(model_key)
     model_layout: dict[str, object] = dict(raw_model_layout) if isinstance(raw_model_layout, Mapping) else {}
-    model_layout[scene] = layout.to_config_dict()
+    raw_scene_layout = model_layout.get(scene)
+    scene_layout: dict[str, object] = dict(raw_scene_layout) if isinstance(raw_scene_layout, Mapping) else {}
+    scene_layout[client] = layout.to_config_dict()
+    model_layout[scene] = scene_layout
     layout_data[model_key] = model_layout
     d_sakiko_config.set(d_sakiko_config.live2d_model_layouts, layout_data)
 
 
-def reset_live2d_layout(model_json_path: str, scene: Live2DLayoutScene) -> None:
+def reset_live2d_layout(
+    model_json_path: str,
+    scene: Live2DLayoutScene,
+    client: Live2DClient = "desktop",
+) -> None:
     """删除模型在指定场景下的自定义布局，使其回到默认值。"""
     model_key = normalize_model_layout_key(model_json_path)
     raw_layouts = d_sakiko_config.live2d_model_layouts.value
@@ -169,7 +218,15 @@ def reset_live2d_layout(model_json_path: str, scene: Live2DLayoutScene) -> None:
         return
 
     model_layout: dict[str, object] = dict(raw_model_layout)
-    model_layout.pop(scene, None)
+    raw_scene_layout = model_layout.get(scene)
+    if not isinstance(raw_scene_layout, Mapping):
+        return
+    scene_layout: dict[str, object] = dict(raw_scene_layout)
+    scene_layout.pop(client, None)
+    if scene_layout:
+        model_layout[scene] = scene_layout
+    else:
+        model_layout.pop(scene, None)
     if model_layout:
         layout_data[model_key] = model_layout
     else:

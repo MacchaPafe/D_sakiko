@@ -491,7 +491,7 @@ class Live2DModule:
         layout_scene = "single"
         current_layout_model_path = self.PATH_JSON
         current_layout = (
-            get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+            get_live2d_layout(current_layout_model_path, model.version, layout_scene, "desktop")
             if current_layout_model_path is not None and isinstance(model, Live2DModelAdapter)
             else Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
         )
@@ -536,7 +536,7 @@ class Live2DModule:
             nonlocal layout_editing, layout_dirty, layout_dragging, layout_last_mouse_pos
             if layout_dirty and current_layout_model_path is not None:
                 try:
-                    save_live2d_layout(current_layout_model_path, layout_scene, current_layout)
+                    save_live2d_layout(current_layout_model_path, layout_scene, current_layout, "desktop")
                 except Exception:
                     logger.exception("保存 Live2D 布局配置失败")
                 layout_dirty = False
@@ -551,10 +551,10 @@ class Live2DModule:
             if current_layout_model_path is None or not isinstance(model, Live2DModelAdapter):
                 return
             try:
-                reset_live2d_layout(current_layout_model_path, layout_scene)
+                reset_live2d_layout(current_layout_model_path, layout_scene, "desktop")
             except Exception:
                 logger.exception("重置 Live2D 布局配置失败")
-            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene, "desktop")
             apply_current_layout()
             layout_dirty = False
             show_layout_edit_overlay()
@@ -814,7 +814,7 @@ class Live2DModule:
 
                     if isinstance(model, Live2DModelAdapter) and target_model_path is not None:
                         current_layout_model_path = target_model_path
-                        current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+                        current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene, "desktop")
                         apply_current_layout()
                         if self.if_sakiko and self.sakiko_state:
                             model.SetSemanticExpression('serious')
@@ -899,7 +899,7 @@ class Live2DModule:
                             model.SetAutoBlinkEnable(True)
                             model.SetAutoBreathEnable(True)
                             current_layout_model_path = self.PATH_JSON
-                            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene)
+                            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene, "desktop")
                             apply_current_layout()
                             model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback, position="C")
                             model.SetSemanticExpression("idle")
@@ -916,6 +916,7 @@ class Live2DModule:
                                 current_layout_model_path,
                                 model.version,
                                 layout_scene,
+                                "desktop",
                             )
                             apply_current_layout()
 

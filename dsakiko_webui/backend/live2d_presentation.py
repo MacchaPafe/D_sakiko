@@ -305,7 +305,7 @@ class Live2DPresentationResolver:
         self._ensure_gpt_import_path()
         from live2d_support.layout import get_live2d_layout
 
-        layout = get_live2d_layout(str(model_path), version, "single")
+        layout = get_live2d_layout(str(model_path), version, "single", "web")
         return Live2DLayoutPresentation(
             scale=layout.scale,
             offset_x=layout.offset_x,

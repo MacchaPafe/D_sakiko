@@ -921,7 +921,7 @@ class Live2DModule:
                 continue
             try:
                 model = Live2DModelAdapter.create(model_path)
-                model_layouts[slot] = get_live2d_layout(model_path, model.version, "theater")
+                model_layouts[slot] = get_live2d_layout(model_path, model.version, "theater", "desktop")
                 self._apply_model_common_setup(model, win_w_and_h, slot, model_layouts[slot])
                 model_group[slot] = model
             except Exception:
@@ -967,7 +967,7 @@ class Live2DModule:
 
         model_group[sakiko_slot].dispose()
         model_group[sakiko_slot] = Live2DModelAdapter.create(new_model_path)
-        model_layouts[sakiko_slot] = get_live2d_layout(new_model_path, "v2", "theater")
+        model_layouts[sakiko_slot] = get_live2d_layout(new_model_path, "v2", "theater", "desktop")
         self._apply_model_common_setup(model_group[sakiko_slot], win_w_and_h, sakiko_slot, model_layouts[sakiko_slot])
         if "live2D_model_costume" in new_model_path:
             model_group[sakiko_slot].StartRandomMotion('IDLE', 3, position="C")
@@ -1327,7 +1327,7 @@ class Live2DModule:
                 if not isinstance(model_path, str):
                     continue
                 try:
-                    save_live2d_layout(model_path, "theater", model_layouts[slot])
+                    save_live2d_layout(model_path, "theater", model_layouts[slot], "desktop")
                 except Exception:
                     logger.exception("保存小剧场 Live2D 布局配置失败")
             layout_dirty_slots.clear()
@@ -1365,13 +1365,14 @@ class Live2DModule:
             if not isinstance(model_path, str) or selected_model is None:
                 return
             try:
-                reset_live2d_layout(model_path, "theater")
+                reset_live2d_layout(model_path, "theater", "desktop")
             except Exception:
                 logger.exception("重置小剧场 Live2D 布局配置失败")
             model_layouts[layout_selected_slot] = get_live2d_layout(
                 model_path,
                 selected_model.version,
                 "theater",
+                "desktop",
             )
             apply_slot_layout(layout_selected_slot)
             layout_dirty_slots.discard(layout_selected_slot)
