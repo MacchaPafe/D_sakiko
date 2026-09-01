@@ -165,6 +165,8 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="最终排除哪些文件（支持 glob），不能被 include 覆盖，可多次传入。",
     )
+    parser.add_argument("--replace", action="append", default=[], help="以完整文件替换方式发布的路径，可重复传入。")
+    parser.add_argument("--restart-updater-before-next-patch", action="store_true", help="应用成功后由新版更新器接力剩余补丁。")
     parser.add_argument(
         "--no-platform-includes",
         action="store_true",
@@ -325,6 +327,8 @@ def build_file_records(
     remove_files: list[str],
     added_files: list[str],
     changed_files: list[str],
+    replace_files: list[str] | None = None,
+    restart_updater_before_next_patch: bool = False,
 ) -> list[FileRecord]:
     """将差异结果转换为清单记录，供 manifest 和应用端使用。"""
 
@@ -340,6 +344,9 @@ def build_file_records(
     for rel in remove_files:
         old_path = old_root / rel
         records.append(FileRecord(path=rel, action="remove", sha256="", size=0, old_file_sha256=sha256_file(old_path)))
+    for rel in sorted(set(replace_files or [])):
+        path = current_root / rel
+        records.append(FileRecord(path=rel, action="replace", sha256=sha256_file(path), size=path.stat().st_size))
     return records
 
 
@@ -414,6 +421,8 @@ def write_manifest(
     remove_files: list[str],
     added_files: list[str],
     changed_files: list[str],
+    replace_files: list[str] | None = None,
+    restart_updater_before_next_patch: bool = False,
 ) -> Path:
     """生成更新清单 manifest.json，记录版本、文件动作和统计信息。"""
 
@@ -424,7 +433,7 @@ def write_manifest(
         for item in records
     )
     manifest = {
-        "format_version": 3,
+        "format_version": 4 if replace_files else 3,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "hdiff",
         "app_id": app_id,
@@ -437,9 +446,7 @@ def write_manifest(
         "patch_file": patch_file_name,
         "ignore_patterns": ignore_patterns,
         "include_patterns": include_patterns,
-        "post_update": {
-            "macos_uv_sync": should_run_macos_uv_sync,
-        },
+        "post_update": {"macos_uv_sync": should_run_macos_uv_sync},
         "files": [
             {
                 "path": item.path,
@@ -447,6 +454,7 @@ def write_manifest(
                 "sha256": item.sha256,
                 "old_file_sha256": item.old_file_sha256,
                 "size": item.size,
+                **({"payload": f"payload/{item.path}"} if item.action == "replace" else {}),
             }
             for item in records
         ],
@@ -458,6 +466,10 @@ def write_manifest(
             "file_count": len(records),
         },
     }
+    if restart_updater_before_next_patch:
+        post_update = manifest["post_update"]
+        if isinstance(post_update, dict):
+            post_update["restart_updater_before_next_patch"] = True
     manifest_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest_file
 
@@ -561,6 +573,12 @@ def main() -> int:
         use_git_tracked=args.use_git_tracked,
         hard_exclude_patterns=hard_exclude_patterns,
     )
+    replace_files = sorted(set(args.replace))
+    for relative_path in replace_files:
+        if not (current_root / relative_path).is_file():
+            raise RuntimeError(f"replace 文件不存在或不是普通文件：{relative_path}")
+        current_files.discard(relative_path)
+        old_files.discard(relative_path)
     # 计算差异，得到删除/新增/修改三类文件列表
     remove_files, added_files, changed_files = calculate_changes(
         current_root=current_root,
@@ -575,6 +593,8 @@ def main() -> int:
         remove_files=remove_files,
         added_files=added_files,
         changed_files=changed_files,
+        replace_files=replace_files,
+        restart_updater_before_next_patch=args.restart_updater_before_next_patch,
     )
 
     patch_path = output_root / args.patch_file
@@ -591,6 +611,11 @@ def main() -> int:
         hdiff_options = normalize_hdiff_options(args.hdiff_option)
         print(f"[信息] hdiffz 参数：{' '.join(hdiff_options) if hdiff_options else '<默认>'}")
         run_hdiff(hdiff_bin=hdiff_bin, old_stage=old_stage, new_stage=new_stage, out_diff_file=patch_path, options=hdiff_options)
+
+    for relative_path in replace_files:
+        payload = output_root / "payload" / relative_path
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(current_root / relative_path, payload)
 
     warning_file = write_remove_warning_file(output_root, args.warn_remove_file, remove_files)
     manifest_file = write_manifest(
@@ -610,6 +635,8 @@ def main() -> int:
         remove_files=remove_files,
         added_files=added_files,
         changed_files=changed_files,
+        replace_files=replace_files,
+        restart_updater_before_next_patch=args.restart_updater_before_next_patch,
     )
 
     if remove_files:

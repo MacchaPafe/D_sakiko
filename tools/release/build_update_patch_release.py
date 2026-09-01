@@ -84,6 +84,8 @@ class BuildConfig:
     ignore: list[str]
     include: list[str]
     hard_exclude: list[str]
+    replace: list[str]
+    restart_updater_before_next_patch: bool
     zip_output: Path
 
 
@@ -104,6 +106,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ignore", action="append", default=[], help="追加忽略规则，可重复。")
     parser.add_argument("--include", action="append", default=[], help="追加强制包含规则，可重复。")
     parser.add_argument("--hard-exclude", action="append", default=[], help="追加不可被 include 覆盖的最终排除规则。")
+    parser.add_argument("--replace", action="append", default=[], help="以完整文件替换方式发布的路径，可重复传入。")
+    parser.add_argument("--restart-updater-before-next-patch", action="store_true", help="应用成功后由新版更新器接力剩余补丁。")
     parser.add_argument("--zip-output", default="", help="patch zip 输出路径；默认使用规范文件名。")
     parser.add_argument("--app-id", default="", help="覆盖 app_id。")
     parser.add_argument("--channel", default="", help="覆盖 channel。")
@@ -384,6 +388,7 @@ def build_config(args: argparse.Namespace, repo_root: Path) -> BuildConfig:
         *string_list_field(local_override, "hard_exclude"),
         *args.hard_exclude,
     ]
+    replace = [normalize_manifest_path(item, "--replace") for item in args.replace]
 
     current = resolve_relative_to_root(repo_root, current_text)
     old = find_old_directory(
@@ -422,6 +427,8 @@ def build_config(args: argparse.Namespace, repo_root: Path) -> BuildConfig:
         ignore=ignore,
         include=include,
         hard_exclude=hard_exclude,
+        replace=replace,
+        restart_updater_before_next_patch=bool(args.restart_updater_before_next_patch),
         zip_output=zip_output,
     )
 
@@ -636,6 +643,10 @@ def build_command(config: BuildConfig, no_zip: bool) -> list[str]:
         command.extend(["--include", pattern])
     for pattern in config.hard_exclude:
         command.extend(["--hard-exclude", pattern])
+    for path in config.replace:
+        command.extend(["--replace", path])
+    if config.restart_updater_before_next_patch:
+        command.append("--restart-updater-before-next-patch")
     if not no_zip:
         command.extend(["--zip-output", str(config.zip_output)])
     return command
@@ -682,12 +693,12 @@ def check_manifest_file_record(item: JsonValue) -> tuple[str, str]:
     record = {str(key): value for key, value in item.items()}
     relative_path = normalize_manifest_path(record.get("path"), "files[].path")
     action = record.get("action")
-    if action not in {"add", "modify", "remove"}:
+    if action not in {"add", "modify", "remove", "replace"}:
         raise BuildError(f"不支持的文件动作：{action!r}")
     sha256 = record.get("sha256")
     old_sha256 = record.get("old_file_sha256")
     size = record.get("size")
-    if action in {"add", "modify"}:
+    if action in {"add", "modify", "replace"}:
         if not isinstance(sha256, str) or not sha256.strip():
             raise BuildError(f"{relative_path} 缺少 sha256")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
@@ -695,6 +706,10 @@ def check_manifest_file_record(item: JsonValue) -> tuple[str, str]:
     if action in {"modify", "remove"}:
         if not isinstance(old_sha256, str) or not old_sha256.strip():
             raise BuildError(f"{relative_path} 缺少 old_file_sha256")
+    if action == "replace":
+        payload = record.get("payload")
+        if not isinstance(payload, str) or not payload.strip():
+            raise BuildError(f"{relative_path} 缺少 payload")
     return relative_path, str(action)
 
 

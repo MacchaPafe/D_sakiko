@@ -28,7 +28,7 @@ from update.operation_lock import OperationLockBusy, acquire_operation_lock
 
 APP_ID = "D_sakiko"
 CHANNEL = "stable"
-UPDATER_VERSION = "1.0.0"
+UPDATER_VERSION = "1.1.0"
 
 
 @dataclass
@@ -175,6 +175,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-file", default="", help="更新日志文件路径。")
     parser.add_argument("--status-file", default="", help="写入给主程序读取的更新结果记录路径。")
     parser.add_argument("--no-remove-package", action="store_true", help="更新成功后保留补丁包目录。")
+    parser.add_argument("--after-updater-restart", action="store_true", help="标记本次已尝试过更新器接力，禁止再次循环重启。")
     return parser.parse_args()
 
 
@@ -551,7 +552,7 @@ def verify_modified_file(manifest: dict[str, object], app_root: Path):
         if not isinstance(item, dict):
             raise RuntimeError("manifest 格式错误：files 字段内必须为字典")
         action = item.get("action")
-        if action not in {"add", "modify", "remove"}:
+        if action not in {"add", "modify", "remove", "replace"}:
             raise RuntimeError(f"不支持的文件动作：{action!r}")
         if action == "modify" or action == "remove":
             relative_path = normalize_manifest_path(item.get("path"), "files[].path")
@@ -638,8 +639,10 @@ def apply_hdiff(
             if not isinstance(item, dict):
                 raise RuntimeError("manifest.files[] 必须是对象")
             action = item.get("action")
-            if action not in {"add", "modify", "remove"}:
+            if action not in {"add", "modify", "remove", "replace"}:
                 raise RuntimeError(f"不支持的文件动作：{action!r}")
+            if action == "replace":
+                continue
             relative_path = normalize_manifest_path(item.get("path"), "files[].path")
 
             target = resolve_under_root(app_root, relative_path, "files[].path")
@@ -668,6 +671,46 @@ def apply_hdiff(
                 print(f"[文件] remove: {relative_path}")
 
     return processed_paths
+
+
+def apply_replace_files(
+    app_root: Path,
+    package_root: Path,
+    manifest: dict[str, object],
+    backup_root: Path,
+    touch_records: list[TouchRecord],
+) -> list[str]:
+    """从 payload 原子替换 replace 文件，并校验完整文件内容。"""
+
+    processed: list[str] = []
+    files = manifest.get("files", [])
+    if not isinstance(files, list):
+        raise RuntimeError("manifest.files 必须是数组")
+    for item in files:
+        if not isinstance(item, dict) or item.get("action") != "replace":
+            continue
+        relative_path = normalize_manifest_path(item.get("path"), "files[].path")
+        payload_path = normalize_manifest_path(item.get("payload"), "files[].payload")
+        source = resolve_under_root(package_root, payload_path, "files[].payload")
+        target = resolve_under_root(app_root, relative_path, "files[].path")
+        if not source.is_file() or source.is_symlink():
+            raise RuntimeError(f"replace payload 不是普通文件：{relative_path}")
+        expected_size = item.get("size")
+        expected_sha = str(item.get("sha256") or "").strip().lower()
+        if not isinstance(expected_size, int) or source.stat().st_size != expected_size:
+            raise RuntimeError(f"replace payload 大小校验失败：{relative_path}")
+        if not expected_sha or sha256_file(source) != expected_sha:
+            raise RuntimeError(f"replace payload SHA256 校验失败：{relative_path}")
+        existed_before = backup_if_exists(app_root, backup_root, relative_path)
+        touch_records.append(TouchRecord(path=relative_path, existed_before=existed_before))
+        ensure_parent(target)
+        temporary = target.with_name(f".{target.name}.replace.tmp")
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+        if sha256_file(target) != expected_sha:
+            raise RuntimeError(f"replace 后 SHA256 校验失败：{relative_path}")
+        processed.append(relative_path)
+    return processed
 
 
 def apply_post_process(app_root: Path, relative_paths: list[str]) -> None:
@@ -805,6 +848,10 @@ def apply_package_chain(
             print(f"[信息] 版本校验通过：{base_version} -> {target_version}")
             print(f"[信息] 更新包：{package_root}")
         except Exception as exc:
+            min_version = str(manifest.get("min_updater_version", "")).strip()
+            if min_version and version_key(UPDATER_VERSION) < version_key(min_version) and not args.after_updater_restart:
+                print(f"[接力] 当前更新器 {UPDATER_VERSION} 低于要求 {min_version}，准备重启更新器。")
+                return 2
             print(f"错误：{exc}", file=sys.stderr)
             recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
@@ -830,6 +877,7 @@ def apply_package_chain(
                 touch_records=touch_records,
                 hpatch_bin=hpatch_bin,
             )
+            processed_paths.extend(apply_replace_files(app_root, package_root, manifest, backup_root, touch_records))
             apply_post_process(app_root, processed_paths)
             run_macos_uv_sync_if_needed(app_root, manifest)
 
@@ -848,6 +896,10 @@ def apply_package_chain(
             print(f"[输出] 备份目录：{backup_root}")
             pending.remove((package_root, manifest))
             applied_count += 1
+            post_update = manifest.get("post_update")
+            if isinstance(post_update, dict) and post_update.get("restart_updater_before_next_patch") is True and pending:
+                print("[接力] 当前补丁已完成，停止当前更新器并交给新版更新器继续。")
+                return 2
         except Exception as exc:
             print(f"[错误] 更新失败，开始回滚：{exc}", file=sys.stderr)
             try:
@@ -919,6 +971,14 @@ def main() -> int:
             with acquire_operation_lock(app_root, "update"):
                 exit_code = apply_package_chain(app_root, version_file, package_roots, hpatch_bin, args, recorder)
                 print(f"[退出码] {exit_code}")
+                if exit_code == 2:
+                    command = [sys.executable, str(app_root / "tools" / "apply_update_patch.py"), "--app-root", str(app_root), "--after-updater-restart"]
+                    if args.restart_command:
+                        command.extend(["--restart-command", args.restart_command])
+                    if args.status_file:
+                        command.extend(["--status-file", args.status_file])
+                    subprocess.Popen(command, cwd=str(app_root), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+                    return 0
                 if exit_code == 0:
                     restart_app(parse_restart_command(args.restart_command))
                 return exit_code
