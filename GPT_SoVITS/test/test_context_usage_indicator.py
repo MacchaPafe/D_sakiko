@@ -3,11 +3,12 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QDialog
 
 from ui_main.components.context_usage_indicator import (
     ContextUsageIndicator,
@@ -68,10 +69,34 @@ class ContextUsageThresholdTestCase(unittest.TestCase):
         indicator.set_summary_enabled(False)
         popup = indicator._popup
         self.assertFalse(popup.summary_threshold_slider.isEnabled())
+        self.assertFalse(popup.edit_summary_prompt_button.isEnabled())
 
         popup.summary_enabled_checkbox.setChecked(True)
         self.assertEqual(received, [True])
         self.assertTrue(popup.summary_threshold_slider.isEnabled())
+        self.assertTrue(popup.edit_summary_prompt_button.isEnabled())
+
+    def test_prompt_edit_button_is_available(self) -> None:
+        indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))
+
+        self.assertEqual(indicator._popup.edit_summary_prompt_button.text(), "修改压缩提示词")
+
+    def test_prompt_editor_saves_when_accepted(self) -> None:
+        indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))
+        with (
+            mock.patch(
+                "ui_main.components.context_usage_indicator.RollingSummaryPromptDialog"
+            ) as dialog_class,
+            mock.patch(
+                "ui_main.components.context_usage_indicator.save_rolling_summary_prompt"
+            ) as save_prompt,
+        ):
+            dialog = dialog_class.return_value
+            dialog.exec_.return_value = QDialog.Accepted
+            dialog.prompt_text.return_value = "保留重要情绪变化"
+            indicator._popup._edit_summary_prompt()
+
+        save_prompt.assert_called_once_with("保留重要情绪变化")
 
 
 if __name__ == "__main__":

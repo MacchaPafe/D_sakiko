@@ -4,15 +4,163 @@ from dataclasses import dataclass
 
 from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen
-from PyQt5.QtWidgets import QCheckBox, QFrame, QLabel, QSlider, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QSlider,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ui_main.theme import ThemePalette
+from chat.rolling_summary import load_rolling_summary_prompt, save_rolling_summary_prompt
+from ui_main.theme import ThemePalette, build_dialog_theme_stylesheet
 
 
 MIN_SUMMARY_THRESHOLD_PERCENT = 70
 MAX_SUMMARY_THRESHOLD_PERCENT = 90
 SUMMARY_THRESHOLD_STEP_PERCENT = 5
 DEFAULT_SUMMARY_THRESHOLD_PERCENT = 80
+
+
+class RollingSummaryPromptDialog(QDialog):
+    """编辑滚动摘要的用户自定义提示词。"""
+
+    def __init__(self, palette: ThemePalette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("编辑压缩提示词")
+        self.setMinimumSize(560, 440)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(10)
+
+        editor_title = QLabel("个性化压缩要求", self)
+        title_font = editor_title.font()
+        title_font.setBold(True)
+        editor_title.setFont(title_font)
+        layout.addWidget(editor_title)
+
+        intro = QLabel(
+            "触发上下文压缩时，以下提示词将发送给执行压缩任务的大模型。"
+            "一些硬性约束已写好，你只需加入你的个性化需求即可",
+            self,
+        )
+        intro.setWordWrap(True)
+        intro.setProperty("dialogRole", "secondary")
+        layout.addWidget(intro)
+
+        self.prompt_edit = QPlainTextEdit(self)
+        self.prompt_edit.setObjectName("summaryPromptEditor")
+        self.prompt_edit.setPlainText(load_rolling_summary_prompt())
+        self.prompt_edit.setPlaceholderText("例如：重点保留人物之间的情绪变化和重要约定……")
+        layout.addWidget(self.prompt_edit, 1)
+
+        divider = QFrame(self)
+        divider.setObjectName("summaryPromptDivider")
+        divider.setFrameShape(QFrame.HLine)
+        layout.addWidget(divider)
+
+        info_title = QLabel("什么是上下文压缩", self)
+        info_font = info_title.font()
+        info_font.setItalic(True)
+        info_font.setBold(True)
+        info_title.setFont(info_font)
+        layout.addWidget(info_title)
+        self.expand_button = QToolButton(self)
+        self.expand_button.setObjectName("summaryInfoExpandButton")
+        self.expand_button.setText("点击展开")
+        self.expand_button.setArrowType(Qt.RightArrow)
+        self.expand_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.expand_button.setAutoRaise(True)
+        self.expand_button.setCheckable(True)
+        small_font = self.expand_button.font()
+        if small_font.pointSizeF() > 0:
+            small_font.setPointSizeF(small_font.pointSizeF() * 0.88)
+        self.expand_button.setFont(small_font)
+        layout.addWidget(self.expand_button)
+        self.detail_label = QLabel(
+            "随着对话变长，完整历史会占用越来越多 token，也可能分散大模型对当前内容的注意力。"
+            "当上下文用量达到设定阈值时，程序会调用当前大模型，把较早的对话整理成累计摘要，"
+            "同时保留最近 10 轮原文。之后的请求会携带摘要和最近消息，原始聊天记录不会被删除。",
+            self,
+        )
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setProperty("dialogRole", "secondary")
+        self.detail_label.setContentsMargins(18, 0, 0, 4)
+        self.detail_label.setVisible(False)
+        layout.addWidget(self.detail_label)
+        self.expand_button.toggled.connect(self._toggle_details)  # noqa
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton("取消", self)
+        save_button = QPushButton("保存", self)
+        save_button.setObjectName("summaryPromptSaveButton")
+        save_button.setDefault(True)
+        cancel_button.clicked.connect(self.reject)  # noqa
+        save_button.clicked.connect(self.accept)  # noqa
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(save_button)
+        layout.addLayout(buttons)
+
+        self.setStyleSheet(
+            build_dialog_theme_stylesheet(palette)
+            + f"""
+            QPlainTextEdit#summaryPromptEditor {{
+                background-color: {palette.surface};
+                color: {palette.text_primary};
+                border: 1px solid {palette.border_subtle};
+                border-radius: 7px;
+                padding: 10px;
+                selection-background-color: {palette.surface_selected};
+            }}
+            QPlainTextEdit#summaryPromptEditor:focus {{
+                border: 2px solid {palette.focus_ring};
+            }}
+            QFrame#summaryPromptDivider {{
+                color: {palette.border_subtle};
+                background-color: {palette.border_subtle};
+                max-height: 1px;
+                border: none;
+            }}
+            QToolButton#summaryInfoExpandButton {{
+                background-color: transparent;
+                color: {palette.text_secondary};
+                border: none;
+                padding: 2px 0;
+            }}
+            QToolButton#summaryInfoExpandButton:hover {{
+                color: {palette.text_accent};
+                background-color: transparent;
+                border: none;
+            }}
+            QPushButton#summaryPromptSaveButton {{
+                background-color: {palette.accent};
+                color: {palette.on_accent};
+                border-color: {palette.accent};
+            }}
+            QPushButton#summaryPromptSaveButton:hover {{
+                background-color: {palette.accent_hover};
+                color: {palette.on_accent};
+                border-color: {palette.accent_hover};
+            }}
+            """
+        )
+
+    def _toggle_details(self, expanded: bool) -> None:
+        self.expand_button.setText("收起" if expanded else "点击展开")
+        self.expand_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.detail_label.setVisible(expanded)
+
+    def prompt_text(self) -> str:
+        return self.prompt_edit.toPlainText()
 
 
 @dataclass(frozen=True)
@@ -84,6 +232,7 @@ class ContextUsagePopup(QFrame):
         self.summary_enabled_checkbox = QCheckBox("启用上下文压缩", self)
         self.summary_threshold_label = QLabel(self)
         self.summary_threshold_slider = QSlider(Qt.Horizontal, self)
+        self.edit_summary_prompt_button = QPushButton("修改压缩提示词", self)
         self.summary_threshold_slider.setObjectName("summaryCompressionThresholdSlider")
         self.summary_threshold_slider.setRange(
             MIN_SUMMARY_THRESHOLD_PERCENT // SUMMARY_THRESHOLD_STEP_PERCENT,
@@ -93,6 +242,7 @@ class ContextUsagePopup(QFrame):
         self.summary_threshold_slider.setPageStep(1)
         self.summary_threshold_slider.valueChanged.connect(self._on_summary_threshold_changed)  # noqa
         self.summary_enabled_checkbox.toggled.connect(self._on_summary_enabled_changed)  # noqa
+        self.edit_summary_prompt_button.clicked.connect(self._edit_summary_prompt)  # noqa
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -104,6 +254,7 @@ class ContextUsagePopup(QFrame):
         layout.addWidget(self.summary_enabled_checkbox)
         layout.addWidget(self.summary_threshold_label)
         layout.addWidget(self.summary_threshold_slider)
+        layout.addWidget(self.edit_summary_prompt_button)
 
         self._theme_palette = palette
         self._apply_style(font_size, line_height)
@@ -126,6 +277,22 @@ class ContextUsagePopup(QFrame):
                 color: {palette.text_primary};
                 font-size: {font_size}px;
                 line-height: {line_height}px;
+            }}
+            QFrame#contextUsagePopup QPushButton {{
+                background-color: transparent;
+                color: {palette.text_accent};
+                border: 1px solid {palette.border_subtle};
+                border-radius: 5px;
+                padding: 5px;
+                font-size: {font_size}px;
+            }}
+            QFrame#contextUsagePopup QPushButton:hover {{
+                background-color: {palette.surface_selected};
+            }}
+            QFrame#contextUsagePopup QPushButton:disabled {{
+                background-color: transparent;
+                color: {palette.text_secondary};
+                border-color: {palette.border_subtle};
             }}
             QSlider#summaryCompressionThresholdSlider::groove:horizontal {{
                 height: 4px;
@@ -172,11 +339,20 @@ class ContextUsagePopup(QFrame):
         self.summary_enabled_checkbox.blockSignals(False)
         self.summary_threshold_label.setEnabled(bool(enabled))
         self.summary_threshold_slider.setEnabled(bool(enabled))
+        self.edit_summary_prompt_button.setEnabled(bool(enabled))
 
     def _on_summary_enabled_changed(self, enabled: bool) -> None:
         self.summary_threshold_label.setEnabled(enabled)
         self.summary_threshold_slider.setEnabled(enabled)
+        self.edit_summary_prompt_button.setEnabled(enabled)
         self.summaryEnabledChanged.emit(enabled)
+
+    def _edit_summary_prompt(self) -> None:
+        self.hide()
+        parent = self.parentWidget().window() if self.parentWidget() is not None else None
+        dialog = RollingSummaryPromptDialog(self._theme_palette, parent)
+        if dialog.exec_() == QDialog.Accepted:
+            save_rolling_summary_prompt(dialog.prompt_text())
 
     def _on_summary_threshold_changed(self, slider_value: int) -> None:
         percent = slider_value * SUMMARY_THRESHOLD_STEP_PERCENT

@@ -12,6 +12,7 @@ import dp_local2
 from chat.chat import Chat, ChatManager, Message, MessageAttachment, StaticPromptGenerator
 from chat.chat_meta import ToolCallRecordMeta
 from chat.rolling_summary import (
+    DEFAULT_ROLLING_SUMMARY_PROMPT,
     ROLLING_SUMMARY_META_KEY,
     build_llm_query_with_rolling_summary,
     build_rolling_summary_update,
@@ -20,6 +21,7 @@ from chat.rolling_summary import (
     find_recent_window_start,
     get_rolling_summary,
     invalidate_rolling_summary_from_message_index,
+    load_rolling_summary_prompt,
     rolling_summary_token_budget,
     rolling_summary_validation_error,
     set_rolling_summary,
@@ -68,6 +70,28 @@ class RollingSummaryTestCase(unittest.TestCase):
 
     def test_rolling_summary_is_disabled_by_default(self) -> None:
         self.assertFalse(DSakikoConfig.enable_rolling_summary.defaultValue)
+
+    def test_summary_prompt_falls_back_when_file_is_missing(self) -> None:
+        missing_path = mock.Mock()
+        missing_path.is_file.return_value = False
+        with mock.patch("chat.rolling_summary.ROLLING_SUMMARY_PROMPT_PATH", missing_path):
+            self.assertEqual(
+                load_rolling_summary_prompt(),
+                DEFAULT_ROLLING_SUMMARY_PROMPT,
+            )
+
+    def test_summary_request_combines_custom_prompt_and_hard_rules(self) -> None:
+        with mock.patch(
+            "chat.rolling_summary.load_rolling_summary_prompt",
+            return_value="请特别保留用户喜欢的音乐。",
+        ):
+            update = build_rolling_summary_update(self._chat_with_turns(12), perspective="角色")
+
+        self.assertIsNotNone(update)
+        assert update is not None
+        system_prompt = str(update.messages[0]["content"])
+        self.assertIn("请特别保留用户喜欢的音乐。", system_prompt)
+        self.assertIn("不可被个性化提示覆盖的硬性约束", system_prompt)
 
     def test_sliding_window_removes_oldest_non_system_messages(self) -> None:
         messages = [
