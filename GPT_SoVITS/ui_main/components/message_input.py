@@ -355,6 +355,7 @@ class MessageInput(QWidget):
     imageAddRequested = pyqtSignal(str)
     imageRemoveRequested = pyqtSignal(str)
     imageRetryRequested = pyqtSignal(str)
+    visionSwitchRequested = pyqtSignal()
     draftStateChanged = pyqtSignal()
 
     def __init__(self, palette: ThemePalette, parent: QWidget | None = None) -> None:
@@ -365,6 +366,7 @@ class MessageInput(QWidget):
         self._current_model_name_provider: Callable[[], str] | None = None
         self._image_upload_force_allowed_checker: Callable[[], bool] | None = None
         self._force_image_upload_allow_callback: Callable[[str], bool] | None = None
+        self._vision_switch_available_checker: Callable[[], bool] | None = None
         self._draft_images: list[DraftImageAttachment] = []
         self._pending_unsupported_image_paths: list[str] = []
         self._managed_attachment_mode = False
@@ -381,6 +383,12 @@ class MessageInput(QWidget):
         self.force_send_button.setToolTip("确认当前模型支持图片后仍然作为图片附件发送")
         self.force_send_button.clicked.connect(self._handle_force_image_upload_requested)  # noqa
         self.force_send_button.hide()
+        self.switch_to_vision_button = QToolButton(self)
+        self.switch_to_vision_button.setObjectName("messageInputVisionActionButton")
+        self.switch_to_vision_button.setText("切换到视觉模型")
+        self.switch_to_vision_button.setToolTip("切换到 DeepSeek V4 Flash Vision")
+        self.switch_to_vision_button.clicked.connect(self._handle_vision_switch_requested)  # noqa
+        self.switch_to_vision_button.hide()
         self.insert_filename_button = QToolButton(self)
         self.insert_filename_button.setObjectName("messageInputErrorActionButton")
         self.insert_filename_button.setText("插入文件名")
@@ -392,6 +400,7 @@ class MessageInput(QWidget):
         error_layout.setContentsMargins(0, 0, 0, 0)
         error_layout.setSpacing(6)
         error_layout.addWidget(self.error_label, 1)
+        error_layout.addWidget(self.switch_to_vision_button, 0)
         error_layout.addWidget(self.force_send_button, 0)
         error_layout.addWidget(self.insert_filename_button, 0)
         self.error_bar.setLayout(error_layout)
@@ -447,6 +456,10 @@ class MessageInput(QWidget):
         self._image_upload_force_allowed_checker = image_upload_force_allowed_checker
         self._force_image_upload_allow_callback = force_image_upload_allow_callback
 
+    def set_vision_switch_available_checker(self, checker: Callable[[], bool]) -> None:
+        """设置 DeepSeek 视觉模型快捷切换可用性检查回调。"""
+        self._vision_switch_available_checker = checker
+
     def set_theme_palette(self, palette: ThemePalette) -> None:
         """根据角色语义色板刷新输入框内部样式。"""
         if not isinstance(palette, ThemePalette):
@@ -462,22 +475,34 @@ class MessageInput(QWidget):
                 selection-color: {palette.text_primary};
             }}
         """)
-        self.error_bar.setStyleSheet("""
-            QLabel#messageInputErrorLabel {
+        self.error_bar.setStyleSheet(f"""
+            QLabel#messageInputErrorLabel {{
                 color: #B00020;
                 font-weight: bold;
-            }
-            QToolButton#messageInputErrorActionButton {
+            }}
+            QToolButton#messageInputErrorActionButton {{
                 color: #B00020;
                 background-color: transparent;
                 border: 1px solid rgba(176, 0, 32, 0.55);
                 border-radius: 4px;
                 padding: 2px 6px;
                 font-weight: bold;
-            }
-            QToolButton#messageInputErrorActionButton:hover {
+            }}
+            QToolButton#messageInputErrorActionButton:hover {{
                 background-color: rgba(176, 0, 32, 0.08);
-            }
+            }}
+            QToolButton#messageInputVisionActionButton {{
+                color: {self._theme_palette.accent};
+                background-color: transparent;
+                border: 1px solid {self._theme_palette.accent};
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-weight: bold;
+            }}
+            QToolButton#messageInputVisionActionButton:hover {{
+                background-color: {self._theme_palette.surface_selected};
+                color: {self._theme_palette.accent_hover};
+            }}
         """)
         self.preview_area.setStyleSheet("""
             QScrollArea#messageInputPreviewArea {
@@ -584,15 +609,19 @@ class MessageInput(QWidget):
             self.insert_file_paths(paths_to_insert)
         if unsupported_image_paths:
             self._pending_unsupported_image_paths = unsupported_image_paths
+            model_name = self._current_model_name() or "当前模型"
+            unsupported_message = f"当前模型 {model_name} 不支持图片输入。"
             if self._can_force_image_upload():
                 self.show_error(
-                    "当前模型不支持图片输入。",
+                    unsupported_message,
+                    show_switch_to_vision=self._can_switch_to_vision(),
                     show_force_send=True,
                     show_insert_filename=True,
                 )
             else:
                 self.show_error(
-                    "当前模型不支持图片输入。",
+                    unsupported_message,
+                    show_switch_to_vision=self._can_switch_to_vision(),
                     show_insert_filename=True,
                 )
             return
@@ -670,6 +699,23 @@ class MessageInput(QWidget):
         self.hide_error()
         self.refresh_height()
 
+    def accept_pending_images_after_vision_switch(self) -> None:
+        """在视觉模型切换成功后恢复此前暂存的不支持图片。"""
+        pending_paths = list(self._pending_unsupported_image_paths)
+        if not pending_paths:
+            self.hide_error()
+            return
+        failed_paths: list[str] = []
+        for image_path in pending_paths:
+            if not self.request_add_draft_image_path(image_path, show_error=False):
+                failed_paths.append(image_path)
+        if failed_paths:
+            self.show_error(
+                f"图片不存在、无法读取或格式不受支持：{os.path.basename(failed_paths[0])}"
+            )
+            return
+        self.hide_error()
+
     def pending_image_source_paths(self) -> list[str]:
         """返回当前草稿图片源路径列表。"""
         return [attachment.source_path for attachment in self._draft_images]
@@ -737,11 +783,13 @@ class MessageInput(QWidget):
         self,
         message: str,
         *,
+        show_switch_to_vision: bool = False,
         show_force_send: bool = False,
         show_insert_filename: bool = False,
     ) -> None:
         """显示输入框错误提示。"""
         self.error_label.setText(message)
+        self.switch_to_vision_button.setVisible(show_switch_to_vision)
         self.force_send_button.setVisible(show_force_send)
         self.insert_filename_button.setVisible(show_insert_filename)
         self.error_bar.show()
@@ -750,6 +798,7 @@ class MessageInput(QWidget):
         """隐藏输入框错误提示。"""
         if self.error_bar.isVisible():
             self.error_label.clear()
+            self.switch_to_vision_button.hide()
             self.force_send_button.hide()
             self.insert_filename_button.hide()
             self.error_bar.hide()
@@ -819,6 +868,10 @@ class MessageInput(QWidget):
             return
         self.hide_error()
 
+    def _handle_vision_switch_requested(self) -> None:
+        """转发 DeepSeek 视觉模型快捷切换请求。"""
+        self.visionSwitchRequested.emit()
+
     def _insert_pending_unsupported_image_paths(self) -> None:
         """把暂存的不支持图片路径按普通文件路径插入输入框。"""
         pending_paths = list(self._pending_unsupported_image_paths)
@@ -844,6 +897,15 @@ class MessageInput(QWidget):
             return False
         try:
             return bool(self._image_upload_force_allowed_checker())
+        except Exception:
+            return False
+
+    def _can_switch_to_vision(self) -> bool:
+        """调用外部 checker 判断 DeepSeek 视觉模型快捷切换是否可用。"""
+        if self._vision_switch_available_checker is None:
+            return False
+        try:
+            return bool(self._vision_switch_available_checker())
         except Exception:
             return False
 

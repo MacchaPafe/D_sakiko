@@ -78,7 +78,6 @@ from chat.attachments import (
     add_model_image_upload_force_allow,
     delete_chat_attachment_dir,
     model_can_force_allow_image_upload,
-    model_image_upload_is_blocked,
     model_supports_image_upload,
     resolve_attachment_path,
 )
@@ -113,6 +112,7 @@ from ui_main.components.update_dialog import UpdateDialog
 from ui_main.components.repair_dialog import RepairDialog
 from ui_main.threads.repair_controller import RepairCheckThread, RepairPrepareThread
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
+from ui_main.threads.update_config_thread import notify_config_reload
 from ui.file_manager import show_file_in_manager
 from update.update_checker import get_configured_index_urls, read_current_version
 from update.update_launcher import build_restart_command, launch_update_process
@@ -2058,10 +2058,16 @@ class ChatGUI(QWidget):
             self._current_model_can_force_image_upload,
             self._force_allow_current_model_image_upload,
         )
+        self.user_input.set_vision_switch_available_checker(
+            self._deepseek_vision_switch_available
+        )
         self.user_input.set_managed_attachment_mode(True)
         self.user_input.imageAddRequested.connect(self._add_managed_draft_image)  # noqa
         self.user_input.imageRemoveRequested.connect(self._remove_managed_draft_image)  # noqa
         self.user_input.imageRetryRequested.connect(self._retry_managed_draft_image)  # noqa
+        self.user_input.visionSwitchRequested.connect(
+            self._handle_deepseek_vision_switch_requested
+        )  # noqa
         self.user_input.draftStateChanged.connect(self._refresh_send_button_state)  # noqa
 
         self.voice_button = QPushButton()
@@ -2089,7 +2095,7 @@ class ChatGUI(QWidget):
             self.input_tool_button_height,
             self.input_tool_button_height,
         )
-        self.add_image_button.clicked.connect(self._choose_image_files)  # noqa
+        self.add_image_button.clicked.connect(self._handle_add_image_button_clicked)  # noqa
         self._refresh_add_image_button_state()
         self._connect_image_upload_config_signals()
 
@@ -3987,14 +3993,22 @@ class ChatGUI(QWidget):
         )
 
     def _refresh_add_image_button_state(self) -> None:
-        """根据当前模型黑名单刷新加号按钮和提示。"""
+        """根据当前模型能力刷新加号按钮提示，但保留不可用时的可操作入口。"""
         if not hasattr(self, "add_image_button"):
             return
-        blocked = model_image_upload_is_blocked(self._current_litellm_model_name())
-        self.add_image_button.setEnabled(not blocked)
-        self.add_image_button.setToolTip(
-            "当前模型不支持上传图片" if blocked else "添加图片"
-        )
+        self.add_image_button.setEnabled(True)
+        if hasattr(self, "user_input") and hasattr(
+            self.user_input, "switch_to_vision_button"
+        ):
+            self.user_input.switch_to_vision_button.setEnabled(
+                not self.is_response_active()
+            )
+        if self._current_model_supports_vision():
+            self.add_image_button.setToolTip("添加图片")
+        elif self._deepseek_vision_switch_available():
+            self.add_image_button.setToolTip("当前模型不支持图片，点击切换到视觉模型")
+        else:
+            self.add_image_button.setToolTip("当前模型不支持图片，点击查看说明")
 
     def _connect_image_upload_config_signals(self) -> None:
         """监听会改变当前模型名称的配置项。"""
@@ -4014,6 +4028,132 @@ class ChatGUI(QWidget):
     def _handle_image_upload_model_config_changed(self, _value: object) -> None:
         """在运行中模型配置重载后立即刷新图片按钮。"""
         self._refresh_add_image_button_state()
+
+    def _deepseek_vision_switch_available(self) -> bool:
+        """判断当前配置是否允许一键切换到 DeepSeek V4 Flash Vision。"""
+        if bool(d_sakiko_config.use_default_deepseek_api.value):
+            return False
+        provider = str(d_sakiko_config.llm_api_provider.value or "").strip()
+        if provider != "deepseek":
+            return False
+        models = d_sakiko_config.llm_api_model.value
+        if not isinstance(models, dict):
+            return False
+        current_model = str(models.get("deepseek", "") or "").strip().lower()
+        if current_model != "deepseek-v4-flash":
+            return False
+        keys = d_sakiko_config.llm_api_key.value
+        if not isinstance(keys, dict):
+            return False
+        api_key = str(keys.get("deepseek", "") or "").strip()
+        return bool(api_key) and api_key not in {"sk-xxx...xxx", "sk-24xxx", "...."}
+
+    def _handle_add_image_button_clicked(self) -> None:
+        """处理图片按钮点击，并在模型不支持时提供可执行的修复入口。"""
+        if self.is_chat_busy():
+            self._set_message_box_text("请等待当前回复完成后再添加图片。")
+            return
+        if self._current_model_supports_vision():
+            self._choose_image_files()
+            return
+        self._prompt_image_upload_unavailable()
+
+    def _prompt_image_upload_unavailable(self) -> None:
+        """说明当前模型的图片能力，并提供 DeepSeek Vision 快捷切换。"""
+        current_model = self._current_litellm_model_name() or "当前模型"
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Information)
+        message_box.setWindowTitle("图片输入不可用")
+        message_box.setText(f"当前模型 {current_model} 不支持图片输入。")
+
+        if self._deepseek_vision_switch_available():
+            message_box.setInformativeText(
+                "可以切换到 DeepSeek V4 Flash Vision 模型以上传图片"
+            )
+            switch_button = message_box.addButton(
+                "切换到 V4 Flash Vision", QMessageBox.AcceptRole
+            )
+            message_box.addButton("打开模型配置", QMessageBox.ActionRole)
+            message_box.addButton("取消", QMessageBox.RejectRole)
+            message_box.exec_()
+            if message_box.clickedButton() is switch_button:
+                self._confirm_and_switch_to_deepseek_vision()
+            elif message_box.clickedButton() is not None and message_box.clickedButton().text() == "打开模型配置":
+                self._open_llm_configuration()
+            return
+
+        message_box.setInformativeText(
+            "请切换到支持视觉输入的模型；如果使用 DeepSeek 图片对话，"
+            "需要配置官方 DeepSeek API Key。"
+        )
+        config_button = message_box.addButton("打开模型配置", QMessageBox.AcceptRole)
+        message_box.addButton("取消", QMessageBox.RejectRole)
+        message_box.exec_()
+        if message_box.clickedButton() is config_button:
+            self._open_llm_configuration()
+
+    def _handle_deepseek_vision_switch_requested(self) -> None:
+        """响应消息输入错误条中的 DeepSeek Vision 快捷切换请求。"""
+        if self.is_chat_busy():
+            self._set_message_box_text("请等待当前回复完成后再切换模型。")
+            return
+        self._confirm_and_switch_to_deepseek_vision()
+
+    def _confirm_and_switch_to_deepseek_vision(self) -> None:
+        """确认并原子切换到 DeepSeek V4 Flash Vision，成功后恢复待处理图片。"""
+        if not self._deepseek_vision_switch_available():
+            self._prompt_image_upload_unavailable()
+            return
+
+        confirm_box = QMessageBox(self)
+        confirm_box.setIcon(QMessageBox.Information)
+        confirm_box.setWindowTitle("切换到视觉模型")
+        confirm_box.setText("将全局模型切换为 DeepSeek V4 Flash Vision。")
+        confirm_box.setInformativeText(
+            "图片附件会上传至 DeepSeek 服务器，最多保存 30 天。"
+        )
+        confirm_button = confirm_box.addButton("确认切换", QMessageBox.AcceptRole)
+        confirm_box.addButton("取消", QMessageBox.RejectRole)
+        confirm_box.exec_()
+        if confirm_box.clickedButton() is not confirm_button:
+            return
+
+        if not self._switch_to_deepseek_vision_model():
+            return
+        self.user_input.accept_pending_images_after_vision_switch()
+
+    def _switch_to_deepseek_vision_model(self) -> bool:
+        """原子写入 DeepSeek Vision 模型配置并通知主程序重载。"""
+        models = d_sakiko_config.llm_api_model.value
+        old_models = dict(models) if isinstance(models, dict) else {}
+        if not self._deepseek_vision_switch_available():
+            self._set_message_box_text("当前配置无法切换到 DeepSeek V4 Flash Vision。")
+            return False
+
+        try:
+            updated_models = dict(old_models)
+            updated_models["deepseek"] = "deepseek-v4-flash-vision-exp"
+            with d_sakiko_config as cfg:
+                cfg.set(cfg.llm_api_model, updated_models)
+            if not notify_config_reload():
+                raise RuntimeError("主程序未能重新加载配置")
+        except Exception as exc:
+            logger.exception("切换到 DeepSeek V4 Flash Vision 失败")
+            try:
+                with d_sakiko_config as cfg:
+                    cfg.set(cfg.llm_api_model, old_models)
+            except Exception:
+                logger.exception("回滚 DeepSeek Vision 模型配置失败")
+            self._refresh_add_image_button_state()
+            self._set_message_box_text(f"切换视觉模型失败：{exc}")
+            return False
+
+        self._refresh_add_image_button_state()
+        self.schedule_context_usage_refresh()
+        self._set_message_box_text(
+            "已切换到 DeepSeek V4 Flash Vision，下一条消息生效"
+        )
+        return True
 
     def _choose_image_files(self) -> None:
         """打开支持多选的图片文件选择器。"""
@@ -4328,6 +4468,19 @@ class ChatGUI(QWidget):
         setting_window.exec_()
         self.schedule_context_usage_refresh()
         self._refresh_send_button_state()
+
+    def _open_llm_configuration(self) -> None:
+        """打开独立的大模型 API 配置窗口。"""
+        try:
+            import subprocess
+
+            subprocess.Popen(
+                [sys.executable, os.path.join(script_dir, "dsakiko_configuration.py"), "DSakikoConfigArea"],
+                cwd=script_dir,
+            )
+        except Exception:
+            logger.exception("打开大模型 API 配置窗口失败")
+            self._set_message_box_text("打开大模型 API 配置窗口失败")
 
     def open_more_function_window(self):
         more_function_win=MoreFunctionWindow(

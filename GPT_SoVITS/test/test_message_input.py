@@ -87,6 +87,111 @@ class ImageUploadButtonConfigSignalTestCase(unittest.TestCase):
         self.assertEqual(refresh.call_count, len(config_items))
 
 
+class DeepSeekVisionShortcutTestCase(unittest.TestCase):
+    """验证 DeepSeek Vision 快捷切换的严格配置边界。"""
+
+    class _MutableConfig:
+        """提供快捷切换测试所需的最小配置事务接口。"""
+
+        def __init__(self) -> None:
+            """初始化 DeepSeek 文本模型配置。"""
+            self.use_default_deepseek_api = SimpleNamespace(value=False)
+            self.llm_api_provider = SimpleNamespace(value="deepseek")
+            self.llm_api_model = SimpleNamespace(value={"deepseek": "deepseek-v4-flash"})
+            self.llm_api_key = SimpleNamespace(value={"deepseek": "sk-real"})
+
+        def __enter__(self) -> "DeepSeekVisionShortcutTestCase._MutableConfig":
+            """进入配置事务。"""
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            """退出配置事务。"""
+
+        def set(self, item: SimpleNamespace, value: object) -> None:
+            """更新伪配置项的值。"""
+            item.value = value
+
+    def test_shortcut_requires_official_provider_and_real_api_key(self) -> None:
+        """只有官方 DeepSeek provider 和有效 API Key 才允许快捷切换。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        config = SimpleNamespace(
+            use_default_deepseek_api=SimpleNamespace(value=False),
+            llm_api_provider=SimpleNamespace(value="deepseek"),
+            llm_api_model=SimpleNamespace(value={"deepseek": "deepseek-v4-flash"}),
+            llm_api_key=SimpleNamespace(value={"deepseek": "sk-real"}),
+        )
+
+        with mock.patch.object(qtUI, "d_sakiko_config", config):
+            self.assertTrue(subject._deepseek_vision_switch_available())
+
+            config.use_default_deepseek_api.value = True
+            self.assertFalse(subject._deepseek_vision_switch_available())
+            config.use_default_deepseek_api.value = False
+
+            config.llm_api_provider.value = "modelscope"
+            self.assertFalse(subject._deepseek_vision_switch_available())
+            config.llm_api_provider.value = "deepseek"
+
+            config.llm_api_key.value["deepseek"] = "sk-xxx...xxx"
+            self.assertFalse(subject._deepseek_vision_switch_available())
+
+    def test_switch_button_signal_is_emitted(self) -> None:
+        """点击错误条中的视觉切换按钮应发出专用信号。"""
+        app = QApplication.instance() or QApplication([])
+        input_widget = MessageInput(TEST_THEME_PALETTE)
+        requested: list[bool] = []
+        input_widget.visionSwitchRequested.connect(lambda: requested.append(True))
+        input_widget.show_error(
+            "当前模型不支持图片输入。",
+            show_switch_to_vision=True,
+        )
+        input_widget.switch_to_vision_button.click()
+        app.processEvents()
+        self.assertEqual(requested, [True])
+        input_widget.close()
+        input_widget.deleteLater()
+
+    def test_switch_updates_only_deepseek_model_after_reload(self) -> None:
+        """配置重载成功后应只替换 DeepSeek 模型名称。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        config = self._MutableConfig()
+        subject._refresh_add_image_button_state = mock.Mock()
+        subject.schedule_context_usage_refresh = mock.Mock()
+        subject._set_message_box_text = mock.Mock()
+
+        with (
+            mock.patch.object(qtUI, "d_sakiko_config", config),
+            mock.patch.object(qtUI, "notify_config_reload", return_value=True),
+        ):
+            self.assertTrue(subject._switch_to_deepseek_vision_model())
+
+        self.assertEqual(
+            config.llm_api_model.value,
+            {"deepseek": "deepseek-v4-flash-vision-exp"},
+        )
+        subject._refresh_add_image_button_state.assert_called_once()
+        subject.schedule_context_usage_refresh.assert_called_once()
+
+    def test_switch_rolls_back_when_reload_fails(self) -> None:
+        """主程序重载失败时应恢复原始 DeepSeek 模型。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        config = self._MutableConfig()
+        subject._refresh_add_image_button_state = mock.Mock()
+        subject._set_message_box_text = mock.Mock()
+
+        with (
+            mock.patch.object(qtUI, "d_sakiko_config", config),
+            mock.patch.object(qtUI, "notify_config_reload", return_value=False),
+        ):
+            self.assertFalse(subject._switch_to_deepseek_vision_model())
+
+        self.assertEqual(
+            config.llm_api_model.value,
+            {"deepseek": "deepseek-v4-flash"},
+        )
+        subject._set_message_box_text.assert_called_once()
+
+
 class ContextUsageSnapshotTestCase(unittest.TestCase):
     """验证上下文用量快照通过聊天运行时统一估算入口获取 token。"""
 
