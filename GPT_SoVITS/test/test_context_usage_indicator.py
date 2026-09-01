@@ -60,6 +60,19 @@ class ContextUsageThresholdTestCase(unittest.TestCase):
         self.assertEqual(received[-1], 0.85)
         self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：85%")
 
+    def test_summary_switch_controls_threshold_slider(self) -> None:
+        indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))
+        received: list[bool] = []
+        indicator.summaryEnabledChanged.connect(received.append)
+
+        indicator.set_summary_enabled(False)
+        popup = indicator._popup
+        self.assertFalse(popup.summary_threshold_slider.isEnabled())
+
+        popup.summary_enabled_checkbox.setChecked(True)
+        self.assertEqual(received, [True])
+        self.assertTrue(popup.summary_threshold_slider.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main()

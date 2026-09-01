@@ -2117,8 +2117,14 @@ class ChatGUI(QWidget):
         self.context_usage_indicator.set_summary_threshold_ratio(
             float(d_sakiko_config.rolling_summary_trigger_ratio.value)
         )
+        self.context_usage_indicator.set_summary_enabled(
+            bool(d_sakiko_config.enable_rolling_summary.value)
+        )
         self.context_usage_indicator.summaryThresholdChanged.connect(
             self._set_summary_compression_threshold
+        )  # noqa
+        self.context_usage_indicator.summaryEnabledChanged.connect(
+            self._set_summary_compression_enabled
         )  # noqa
         self._context_usage_refresh_timer = QTimer(self)
         self._context_usage_refresh_timer.setSingleShot(True)
@@ -3903,6 +3909,24 @@ class ChatGUI(QWidget):
             normalized_ratio,
         )
         self.context_usage_indicator.set_summary_threshold_ratio(normalized_ratio)
+
+    @pyqtSlot(bool)
+    def _set_summary_compression_enabled(self, enabled: bool) -> None:
+        """保存上下文压缩开关，并在首次开启前提示实验性风险。"""
+        if enabled:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("实验性功能")
+            box.setText("上下文压缩为实验性功能，还没有做过多测试。开启后如发现问题请联系UP反馈:)")
+            confirm_button = box.addButton("确认开启", QMessageBox.AcceptRole)
+            cancel_button = box.addButton("不开启", QMessageBox.RejectRole)
+            box.setDefaultButton(cancel_button)
+            box.setEscapeButton(cancel_button)
+            box.exec_()
+            enabled = box.clickedButton() is confirm_button
+
+        d_sakiko_config.set(d_sakiko_config.enable_rolling_summary, enabled)
+        self.context_usage_indicator.set_summary_enabled(enabled)
 
     def refresh_context_usage_indicator(self) -> None:
         """重新计算当前对话上下文 token 用量并刷新圆环组件。"""

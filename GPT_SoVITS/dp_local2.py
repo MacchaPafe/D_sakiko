@@ -52,6 +52,7 @@ from chat.rolling_summary import (
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
+    trim_messages_with_sliding_window,
 )
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
@@ -270,10 +271,15 @@ class DSLocalAndVoiceGen:
             self._cancelled_turns.discard((chat_id, turn_id))
 
     def _prepare_runtime_messages(self, messages: list[dict[str, object]]) -> list[dict[str, object]]:
-        """为主请求构造只读副本，并在逼近上限时执行最后一道紧急裁剪。"""
+        """根据上下文管理模式为主请求构造只读副本。"""
         model = self._current_litellm_model_name()
         token_limit = get_model_input_token_limit(model)
-        prepared = trim_messages_for_emergency(
+        trim_func = (
+            trim_messages_for_emergency
+            if self._rolling_summary_enabled()
+            else trim_messages_with_sliding_window
+        )
+        prepared = trim_func(
             messages,
             model=model,
             token_limit=token_limit,
@@ -281,11 +287,19 @@ class DSLocalAndVoiceGen:
         )
         if len(prepared) < len(messages):
             logger.warning(
-                "主请求上下文逼近模型上限，已仅对本次请求执行紧急裁剪：%d -> %d 条消息。",
+                "主请求上下文超过当前模式限制，已仅对本次请求执行裁剪：%d -> %d 条消息。",
                 len(messages),
                 len(prepared),
             )
         return prepared
+
+    def _rolling_summary_enabled(self) -> bool:
+        """返回当前轮次是否启用实验性的滚动上下文压缩。"""
+        config = getattr(self, "d_sakiko_config", None)
+        if config is None:
+            return True  # 兼容未经过完整初始化的旧调用与测试替身
+        item = getattr(config, "enable_rolling_summary", None)
+        return bool(getattr(item, "value", False))
 
     @staticmethod
     def concat_provider_and_model(provider: str, model: str) -> str:
@@ -548,16 +562,25 @@ class DSLocalAndVoiceGen:
             if service is not None
             else None
         )
-        messages = [
-            dict(one)
-            # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
-            for one in build_llm_query_with_rolling_summary(
+        if self._rolling_summary_enabled():
+            query_messages = build_llm_query_with_rolling_summary(
                 self.current_chat,
                 perspective=character_name,
                 is_simplify=True,
                 include_translation=self.audio_language_choice == '日英混合',
                 attachment_context=attachment_context,
             )
+        else:
+            query_messages = self.current_chat.build_llm_query(
+                perspective=character_name,
+                is_simplify=True,
+                include_translation=self.audio_language_choice == '日英混合',
+                attachment_context=attachment_context,
+            )
+        messages = [
+            dict(one)
+            # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
+            for one in query_messages
         ]
         runtime_system_instruction = self._build_runtime_system_instruction()
         system_idx = -1
@@ -686,6 +709,8 @@ class DSLocalAndVoiceGen:
         turn_id: str = "",
     ) -> bool:
         """在当前请求达到用户设置的阈值时，同步生成并保存累计摘要。"""
+        if not self._rolling_summary_enabled():
+            return False
         model = self._current_litellm_model_name()
         token_limit = get_model_input_token_limit(model)
         if token_limit is None:

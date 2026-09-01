@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen
-from PyQt5.QtWidgets import QFrame, QLabel, QSlider, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QCheckBox, QFrame, QLabel, QSlider, QVBoxLayout, QWidget
 
 from ui_main.theme import ThemePalette
 
@@ -59,6 +59,7 @@ class ContextUsagePopup(QFrame):
     """显示上下文 token 详情的轻量悬浮窗口。"""
 
     summaryThresholdChanged = pyqtSignal(float)
+    summaryEnabledChanged = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -80,6 +81,7 @@ class ContextUsagePopup(QFrame):
         self.used_label = QLabel(self)
         self.limit_label = QLabel(self)
         self.percent_label = QLabel(self)
+        self.summary_enabled_checkbox = QCheckBox("启用上下文压缩", self)
         self.summary_threshold_label = QLabel(self)
         self.summary_threshold_slider = QSlider(Qt.Horizontal, self)
         self.summary_threshold_slider.setObjectName("summaryCompressionThresholdSlider")
@@ -90,6 +92,7 @@ class ContextUsagePopup(QFrame):
         self.summary_threshold_slider.setSingleStep(1)
         self.summary_threshold_slider.setPageStep(1)
         self.summary_threshold_slider.valueChanged.connect(self._on_summary_threshold_changed)  # noqa
+        self.summary_enabled_checkbox.toggled.connect(self._on_summary_enabled_changed)  # noqa
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -98,12 +101,14 @@ class ContextUsagePopup(QFrame):
         layout.addWidget(self.limit_label)
         layout.addWidget(self.percent_label)
         layout.addSpacing(4)
+        layout.addWidget(self.summary_enabled_checkbox)
         layout.addWidget(self.summary_threshold_label)
         layout.addWidget(self.summary_threshold_slider)
 
         self._theme_palette = palette
         self._apply_style(font_size, line_height)
         self.set_summary_threshold_ratio(DEFAULT_SUMMARY_THRESHOLD_PERCENT / 100)
+        self.set_summary_enabled(False)
 
     def _apply_style(self, font_size: int, line_height: int) -> None:
         """应用浮窗与阈值滑块样式。"""
@@ -115,7 +120,8 @@ class ContextUsagePopup(QFrame):
                 border: 1px solid {palette.border_subtle};
                 border-radius: 8px;
             }}
-            QFrame#contextUsagePopup QLabel {{
+            QFrame#contextUsagePopup QLabel,
+            QFrame#contextUsagePopup QCheckBox {{
                 background-color: transparent;
                 color: {palette.text_primary};
                 font-size: {font_size}px;
@@ -159,6 +165,19 @@ class ContextUsagePopup(QFrame):
         self.summary_threshold_slider.blockSignals(False)
         self._update_summary_threshold_text(slider_value * SUMMARY_THRESHOLD_STEP_PERCENT)
 
+    def set_summary_enabled(self, enabled: bool) -> None:
+        """同步上下文压缩开关，不触发用户修改信号。"""
+        self.summary_enabled_checkbox.blockSignals(True)
+        self.summary_enabled_checkbox.setChecked(bool(enabled))
+        self.summary_enabled_checkbox.blockSignals(False)
+        self.summary_threshold_label.setEnabled(bool(enabled))
+        self.summary_threshold_slider.setEnabled(bool(enabled))
+
+    def _on_summary_enabled_changed(self, enabled: bool) -> None:
+        self.summary_threshold_label.setEnabled(enabled)
+        self.summary_threshold_slider.setEnabled(enabled)
+        self.summaryEnabledChanged.emit(enabled)
+
     def _on_summary_threshold_changed(self, slider_value: int) -> None:
         percent = slider_value * SUMMARY_THRESHOLD_STEP_PERCENT
         self._update_summary_threshold_text(percent)
@@ -198,6 +217,7 @@ class ContextUsageIndicator(QWidget):
     """绘制上下文 token 用量圆环，并在点击时展示详情浮窗。"""
 
     summaryThresholdChanged = pyqtSignal(float)
+    summaryEnabledChanged = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -214,6 +234,7 @@ class ContextUsageIndicator(QWidget):
         self._size = max(20, size)
         self._popup = ContextUsagePopup(palette, self, popup_width, popup_font_size)
         self._popup.summaryThresholdChanged.connect(self.summaryThresholdChanged.emit)  # noqa
+        self._popup.summaryEnabledChanged.connect(self.summaryEnabledChanged.emit)  # noqa
 
         self.setObjectName("contextUsageIndicator")
         self.setFixedSize(self._size, self._size)
@@ -231,6 +252,10 @@ class ContextUsageIndicator(QWidget):
     def set_summary_threshold_ratio(self, ratio: float) -> None:
         """同步上下文压缩阈值到详情浮窗。"""
         self._popup.set_summary_threshold_ratio(ratio)
+
+    def set_summary_enabled(self, enabled: bool) -> None:
+        """同步上下文压缩开关到详情浮窗。"""
+        self._popup.set_summary_enabled(enabled)
 
     def set_snapshot(self, snapshot: ContextUsageSnapshot) -> None:
         """设置新的上下文 token 用量快照并刷新展示。"""

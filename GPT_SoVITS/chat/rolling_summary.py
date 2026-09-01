@@ -419,6 +419,39 @@ def trim_messages_for_emergency(
     return working
 
 
+def trim_messages_with_sliding_window(
+    messages: list[dict[str, object]],
+    *,
+    model: str,
+    token_limit: int | None,
+    file_token_cost: int | None = None,
+) -> list[dict[str, object]]:
+    """保留 system 消息，并从最旧的非 system 消息开始裁剪请求副本。"""
+    working = copy.deepcopy(messages)
+
+    def over_limit(candidate: list[dict[str, object]]) -> bool:
+        if token_limit is not None and token_limit > 0:
+            try:
+                from chat.model_token_usage import count_message_tokens
+
+                kwargs = {} if file_token_cost is None else {"file_token_cost": file_token_cost}
+                return count_message_tokens(model, candidate, **kwargs) > token_limit
+            except Exception:
+                pass
+        payload_size = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
+        return payload_size > UNKNOWN_MODEL_MAX_BYTES
+
+    while len(working) > 1 and over_limit(working):
+        removable_index = next(
+            (index for index, message in enumerate(working) if message.get("role") != "system"),
+            None,
+        )
+        if removable_index is None:
+            break
+        del working[removable_index]
+    return working
+
+
 def _hard_protected_message_indices(messages: list[dict[str, object]]) -> set[int]:
     protected: set[int] = set()
     latest_user_index = -1

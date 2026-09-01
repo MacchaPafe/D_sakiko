@@ -24,6 +24,7 @@ from chat.rolling_summary import (
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
+    trim_messages_with_sliding_window,
 )
 from emotion_enum import EmotionEnum
 from qconfig import DSakikoConfig
@@ -64,6 +65,46 @@ class RollingSummaryTestCase(unittest.TestCase):
         self.assertEqual(item.range, (0.70, 0.90))
         self.assertEqual(item.validator.correct(0.20), 0.70)
         self.assertEqual(item.validator.correct(0.95), 0.90)
+
+    def test_rolling_summary_is_disabled_by_default(self) -> None:
+        self.assertFalse(DSakikoConfig.enable_rolling_summary.defaultValue)
+
+    def test_sliding_window_removes_oldest_non_system_messages(self) -> None:
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "old-user"},
+            {"role": "assistant", "content": "old-assistant"},
+            {"role": "user", "content": "latest-user"},
+        ]
+
+        with mock.patch(
+            "chat.model_token_usage.count_message_tokens",
+            side_effect=lambda _model, candidate, **_kwargs: len(candidate) * 100,
+        ):
+            trimmed = trim_messages_with_sliding_window(
+                messages,
+                model="test/model",
+                token_limit=200,
+            )
+
+        self.assertEqual(trimmed, [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "latest-user"},
+        ])
+
+    def test_disabled_summary_skips_background_compaction(self) -> None:
+        subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
+        subject.d_sakiko_config = SimpleNamespace(
+            enable_rolling_summary=SimpleNamespace(value=False),
+        )
+
+        updated = subject._maybe_update_rolling_summary(
+            self._chat_with_turns(12),
+            "角色",
+            [{"role": "user", "content": "current"}],
+        )
+
+        self.assertFalse(updated)
 
     def test_summary_budget_is_ten_percent_without_a_fixed_upper_cap(self) -> None:
         self.assertEqual(rolling_summary_token_budget(1000), 100)
@@ -124,6 +165,7 @@ class RollingSummaryTestCase(unittest.TestCase):
         subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
         subject.chat_manager = mock.Mock()
         subject.d_sakiko_config = SimpleNamespace(
+            enable_rolling_summary=SimpleNamespace(value=True),
             use_default_deepseek_api=SimpleNamespace(value=False),
             enable_custom_llm_api_provider=SimpleNamespace(value=False),
             llm_api_provider=SimpleNamespace(value="deepseek"),

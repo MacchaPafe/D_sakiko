@@ -103,6 +103,13 @@ class DSakikoConfig(QConfig):
     llm_temperature = RangeConfigItem("llm_setting", "llm_temperature", 1.0, validator=RangeValidator(0.0, 2.0))
     # 模型的 top-p
     llm_top_p = RangeConfigItem("llm_setting", "llm_top_p", 1.0, validator=RangeValidator(0.0, 1.0))
+    # 是否启用实验性的滚动上下文压缩；关闭时使用传统滑动窗口
+    enable_rolling_summary = OptionsConfigItem(
+        "llm_setting",
+        "enable_rolling_summary",
+        False,
+        validator=BoolValidator(),
+    )
     # 上下文达到模型输入上限的指定比例后触发历史记录压缩
     rolling_summary_trigger_ratio = RangeConfigItem(
         "llm_setting",
