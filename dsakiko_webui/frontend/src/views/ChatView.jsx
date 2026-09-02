@@ -1,5 +1,5 @@
 import { List, UserRound } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Avatar } from '../components/Avatar'
 import { IconButton } from '../components/IconButton'
 import { LanguageSwitcher } from '../components/LanguageSwitcher'
@@ -20,6 +20,18 @@ export function ChatView({ state, actions, audio }) {
   const draft = state.draftsByChatId[state.currentChatId] || ''
   const pendingImages = state.pendingImagesByChatId[state.currentChatId] || []
   const busy = state.phase !== 'idle'
+  const [typingTurnId, setTypingTurnId] = useState(null)
+
+  useEffect(() => {
+    if (!busy || !state.turnId) return undefined
+    const timer = window.setTimeout(
+      () => setTypingTurnId(state.turnId),
+      1_000 + Math.random() * 4_000,
+    )
+    return () => window.clearTimeout(timer)
+  }, [busy, state.turnId])
+
+  const showTypingStatus = busy && typingTurnId === state.turnId
 
   // Position a newly opened/switched chat at the end before the first paint.
   useLayoutEffect(() => {
@@ -46,7 +58,9 @@ export function ChatView({ state, actions, audio }) {
         </IconButton>
         <div className="chat-header__identity">
           <strong>{state.character?.name || '加载中'}</strong>
-          <span className="online-state"><i />在线</span>
+          <span className="online-state">
+            <i />{showTypingStatus ? '对方正在输入...' : '在线'}
+          </span>
         </div>
         <div className="chat-header__actions">
           <LanguageSwitcher
@@ -106,13 +120,6 @@ export function ChatView({ state, actions, audio }) {
             </div>
           )
         })}
-
-        {busy && (
-          <div className="typing-row" role="status">
-            <Avatar character={state.character} size="message" />
-            <span className="typing-bubble"><i /><i /><i /></span>
-          </div>
-        )}
       </div>
 
       <MessageComposer

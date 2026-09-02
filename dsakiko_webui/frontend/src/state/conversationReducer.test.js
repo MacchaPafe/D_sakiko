@@ -62,4 +62,44 @@ describe('conversationReducer Live2D presentation', () => {
 
     expect(state).toBe(current)
   })
+
+  it('waits for the state snapshot before changing to a pending chat', () => {
+    const current = {
+      ...initialConversationState,
+      currentChatId: 'chat_one',
+      pendingChatId: 'chat_two',
+      messages: [{ id: 'old_message' }],
+    }
+    const state = conversationReducer(current, {
+      type: 'runtime_event',
+      event: {
+        type: 'chat_list_snapshot',
+        data: { current_chat_id: 'chat_two', chats: [] },
+      },
+    })
+
+    expect(state.currentChatId).toBe('chat_one')
+    expect(state.messages).toBe(current.messages)
+  })
+
+  it('ends the current thinking state as soon as the turn reports an error', () => {
+    const current = {
+      ...initialConversationState,
+      currentChatId: 'chat_one',
+      phase: 'thinking',
+      turnId: 'turn_one',
+    }
+    const state = conversationReducer(current, {
+      type: 'runtime_event',
+      event: {
+        type: 'error',
+        chat_id: 'chat_one',
+        turn_id: 'turn_one',
+        data: { error: { code: 'LLM_FAILED', message: '请求失败' } },
+      },
+    })
+
+    expect(state.phase).toBe('idle')
+    expect(state.turnId).toBeNull()
+  })
 })

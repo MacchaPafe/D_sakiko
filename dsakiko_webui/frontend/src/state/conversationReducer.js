@@ -81,7 +81,9 @@ export function conversationReducer(state, action) {
             chatSummaries: event.data.chats,
             characters: event.data.characters || state.characters,
             userPersonas: event.data.user_personas || state.userPersonas,
-            currentChatId: event.data.current_chat_id || state.currentChatId,
+            currentChatId: state.pendingChatId
+              ? state.currentChatId
+              : (event.data.current_chat_id || state.currentChatId),
           }
 
         case 'state_snapshot': {
@@ -154,12 +156,19 @@ export function conversationReducer(state, action) {
             backgrounds: event.data.backgrounds || state.backgrounds,
           }
 
-        case 'error':
+        case 'error': {
+          const endsCurrentTurn = (
+            event.chat_id === state.currentChatId
+            && (!event.turn_id || !state.turnId || event.turn_id === state.turnId)
+          )
           return {
             ...state,
             pendingChatId: null,
+            phase: endsCurrentTurn ? 'idle' : state.phase,
+            turnId: endsCurrentTurn ? null : state.turnId,
             error: event.data.error || event.data,
           }
+        }
 
         default:
           return state

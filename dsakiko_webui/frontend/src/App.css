@@ -556,7 +556,7 @@ select:focus-visible {
     rgba(249, 245, 245, 0.98) 0%,
     rgba(255, 252, 253, 0.92) 100%
   );
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.8);
   /* 细致边框替代原本的粗灰边框，融入角色主题色微光 */
   border: 1.5px solid rgba(255, 255, 255, 0.9);
   /* 柔和的双层弥散投影 + 角色专属氛围光晕 */
@@ -903,7 +903,7 @@ select:focus-visible {
   text-align: center;
 }
 
-.message-row, .typing-row {
+.message-row {
   display: flex;
   width: 100%;
   align-items: flex-end; /* 底部对齐，更有聊天感 */
@@ -1021,33 +1021,6 @@ select:focus-visible {
   background: #a77a68;
 }
 
-.typing-bubble {
-  display: inline-flex;
-  height: 36px;
-  align-items: center;
-  gap: 4px;
-  padding: 0 13px;
-  border: 1px solid #e1e3e7;
-  border-radius: 12px;
-  background: #fff;
-}
-
-.typing-bubble i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #8d9298;
-  animation: typing 1s ease-in-out infinite;
-}
-
-.typing-bubble i:nth-child(2) { animation-delay: 0.16s; }
-.typing-bubble i:nth-child(3) { animation-delay: 0.32s; }
-
-@keyframes typing {
-  0%, 100% { transform: translateY(0); opacity: 0.45; }
-  50% { transform: translateY(-3px); opacity: 1; }
-}
-
 .chat-screen > .message-composer {
   grid-row: 3;
   width: calc(100% - 24px);
@@ -1106,28 +1079,23 @@ select:focus-visible {
   display: flex;
   height: 54px;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 6px 0 10px;
-}
-
-.session-drawer__header h1 {
-  margin: 0;
-  font-size: 24px;
-  letter-spacing: 0;
+  gap: 8px;
+  padding: 0 6px;
 }
 
 .new-chat-button {
   background: transparent;
 }
 
-.new-chat-button img { width: 25px; height: 25px; }
+.new-chat-button img { width: 25px; height: 25px; background: transparent; }
 
 .session-search {
   display: flex;
+  min-width: 0;
   height: 42px;
+  flex: 1;
   align-items: center;
   gap: 8px;
-  margin: 4px 6px 0;
   padding: 0 11px;
   border-radius: 8px;
   background: #f0f1f3;
@@ -1157,10 +1125,42 @@ select:focus-visible {
   color: #858a91;
 }
 
-.session-drawer__section-label {
-  margin: 18px 10px 6px;
-  color: #92979e;
-  font-size: 12px;
+.theater-mode-row {
+  display: flex;
+  width: calc(100% - 12px);
+  min-height: 55px;
+  align-items: center;
+  gap: 12px;
+  margin: 7px 6px 0;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #303237;
+  font-size: 15px;
+  font-weight: 900;
+  text-align: left;
+  cursor: pointer;
+}
+
+.theater-mode-row:hover {
+  background: #f4f5f6;
+}
+
+.theater-mode-row:active {
+  background: #eef0f2;
+}
+
+.theater-mode-row img {
+  width: 21px;
+  height: 21px;
+  opacity: 0.7;
+}
+
+.session-divider {
+  height: 1px;
+  margin: 2px 10px 8px;
+  background: #e8e9eb;
 }
 
 .session-list {
@@ -1211,7 +1211,7 @@ select:focus-visible {
 .character-group-row__name {
   overflow: hidden;
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 540;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1219,7 +1219,7 @@ select:focus-visible {
 .character-group-chats {
   display: grid;
   gap: 2px;
-  margin: 0 0 6px 50px;
+  margin: 0 0 6px 30px;
   padding-left: 10px;
   border-left: 3px solid #d8dade;
   border-radius: 0 0 0 8px;

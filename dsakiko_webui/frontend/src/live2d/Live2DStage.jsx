@@ -17,6 +17,8 @@ export function Live2DStage({
   const hostRef = useRef(null)
   const controllerRef = useRef(null)
   const initialActiveRef = useRef(active)
+  const mouthSyncFrameRef = useRef(0)
+  const mouthOpenValueRef = useRef(0)
   const runtimeStateChangeRef = useRef(onRuntimeStateChange)
   const [runtimeState, setRuntimeState] = useState({
     status: presentation?.resolution === 'absent' ? 'absent' : 'loading',
@@ -62,7 +64,11 @@ export function Live2DStage({
     resizeObserver.observe(host)
     fit()
     app.ticker.add(() => {
-      controller.setMouthOpen(Math.min(1, mouthOpenRef.current * 1.35))
+      if (mouthSyncFrameRef.current % 3 === 0) {
+        mouthOpenValueRef.current = Math.min(1, mouthOpenRef.current * 1.4)
+      }
+      controller.updateFrame(mouthOpenValueRef.current)
+      mouthSyncFrameRef.current += 1
     }, undefined, UPDATE_PRIORITY.LOW)
     controller.setActive(initialActiveRef.current)
 

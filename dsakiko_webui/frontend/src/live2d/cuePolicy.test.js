@@ -54,7 +54,12 @@ describe('Live2D cue policy', () => {
       phase: 'tts',
       turnId: 'turn_one',
       currentChatId: 'chat_one',
-      playback: { status: 'playing', instanceId: 2, messageId: 'message_one' },
+      playback: {
+        status: 'playing',
+        instanceId: 2,
+        messageId: 'message_one',
+        duration: 8.4,
+      },
       playingMessage: { id: 'message_one', emotion: 'sadness' },
       cancelledTurnId: null,
     })
@@ -62,6 +67,7 @@ describe('Live2D cue policy', () => {
       kind: 'speaking',
       key: 'speaking:message_one:2',
       emotion: 'sadness',
+      duration: 8.4,
     })
   })
 

@@ -3,6 +3,7 @@ const FALLBACKS = {
   thinking: ['text_generating', 'idle_motion', 'IDLE'],
   change_character: ['change_character', 'idle_motion', 'IDLE'],
   idle: ['idle_motion', 'IDLE'],
+  idle_random: ['IDLE', 'idle_motion'],
 }
 
 export function live2dCueFromState({
@@ -24,6 +25,7 @@ export function live2dCueFromState({
       kind: 'speaking',
       key: `speaking:${playingMessage.id}:${playback.instanceId}`,
       emotion: playingMessage.emotion || 'happiness',
+      duration: Number.isFinite(playback.duration) ? playback.duration : 0,
     }
   }
   if (['paused', 'blocked', 'error'].includes(playback.status)) {

@@ -488,6 +488,11 @@ export function RuntimeProvider({ children }) {
     }
   }, [])
 
+  const showNotice = useCallback((message) => {
+    dispatch({ type: 'set_notice', message })
+    window.setTimeout(() => dispatch({ type: 'clear_notice' }), 3500)
+  }, [])
+
   const value = useMemo(() => ({
     state,
     actions: {
@@ -509,6 +514,7 @@ export function RuntimeProvider({ children }) {
       clearError,
       loadSettings,
       saveSettings,
+      showNotice,
       authenticate,
       retryConnection: checkConnection,
     },
@@ -527,6 +533,7 @@ export function RuntimeProvider({ children }) {
     removePendingImage,
     loadSettings,
     saveSettings,
+    showNotice,
     selectLive2DModel,
     selectChat,
     sendMessage,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }))
 
@@ -21,7 +21,7 @@ function deferred() {
 
 function fakeModel(name) {
   const listeners = new Map()
-  return {
+  const model = {
     name,
     width: 100,
     height: 200,
@@ -32,15 +32,23 @@ function fakeModel(name) {
     expression: vi.fn().mockResolvedValue(true),
     destroy: vi.fn(),
     internalModel: {
-      coreModel: { setParamFloat: vi.fn(), setParameterValueById: vi.fn() },
+      coreModel: {
+        setParamFloat: vi.fn(),
+        setParameterValueById: vi.fn(),
+        getParamFloat: vi.fn(() => 1),
+        getParameterValueById: vi.fn(() => 1),
+      },
       motionManager: {
         stopAllMotions: vi.fn(),
+        loadMotion: vi.fn(),
         expressionManager: { resetExpression: vi.fn() },
         once: vi.fn((event, callback) => listeners.set(event, callback)),
         off: vi.fn((event) => listeners.delete(event)),
       },
     },
   }
+  model.finishMotion = () => listeners.get('motionFinish')?.()
+  return model
 }
 
 function presentation(targetId, version = 'v2', revision = 'one') {
@@ -84,6 +92,10 @@ function createController() {
 describe('Live2DRuntimeController', () => {
   beforeEach(() => {
     fromMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('keeps only the latest asynchronously loaded model', async () => {
@@ -184,5 +196,97 @@ describe('Live2DRuntimeController', () => {
 
     expect(model.scale.set.mock.lastCall[0]).toBeCloseTo(1.495)
     expect(model.position.set).toHaveBeenLastCalledWith(50, 88.5)
+  })
+
+  it('repeats a long speaking motion at most twice', async () => {
+    vi.useFakeTimers()
+    const model = fakeModel('long speech')
+    fromMock.mockResolvedValue(model)
+    const { controller } = createController()
+    await controller.setPresentation(presentation('long-speech'))
+    await controller.setCue({
+      kind: 'speaking',
+      key: 'speaking:one',
+      emotion: 'happiness',
+      duration: 8,
+    })
+
+    model.finishMotion()
+    await vi.advanceTimersByTimeAsync(2_500)
+    model.finishMotion()
+    await vi.advanceTimersByTimeAsync(2_500)
+    model.finishMotion()
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    const speakingCalls = model.motion.mock.calls.filter(([group]) => group === 'happiness')
+    expect(speakingCalls).toHaveLength(3)
+  })
+
+  it('waits for a speaking motion and recovery delay before idle', async () => {
+    vi.useFakeTimers()
+    const model = fakeModel('deferred idle')
+    fromMock.mockResolvedValue(model)
+    const { controller } = createController()
+    await controller.setPresentation(presentation('deferred-idle'))
+    await controller.setCue({
+      kind: 'speaking',
+      key: 'speaking:one',
+      emotion: 'happiness',
+      duration: 3,
+    })
+    const callsBeforeIdle = model.motion.mock.calls.length
+
+    await controller.setCue({ kind: 'idle', key: 'idle:chat' })
+    expect(model.motion).toHaveBeenCalledTimes(callsBeforeIdle)
+    model.finishMotion()
+    await vi.advanceTimersByTimeAsync(2_499)
+    expect(model.motion).toHaveBeenCalledTimes(callsBeforeIdle)
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(model.motion).toHaveBeenLastCalledWith('idle_motion', 0, 3)
+  })
+
+  it('returns to idle after a random idle motion finishes', async () => {
+    vi.useFakeTimers()
+    const model = fakeModel('random idle recovery')
+    fromMock.mockResolvedValue(model)
+    const { controller } = createController()
+    await controller.setPresentation(presentation('random-idle-recovery'))
+
+    await controller.applyCue({ kind: 'idle_random', key: 'idle-random:test' }, true)
+    model.finishMotion()
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    expect(model.motion).toHaveBeenLastCalledWith('idle_motion', 0, 3)
+  })
+
+  it('opens closed eyes smoothly after a motion finishes', async () => {
+    vi.useFakeTimers()
+    const model = fakeModel('eye transition')
+    model.internalModel.coreModel.getParamFloat.mockImplementation((id) => (
+      id === 'PARAM_EYE_L_OPEN' ? 0 : 0.2
+    ))
+    fromMock.mockResolvedValue(model)
+    const { controller } = createController()
+    await controller.setPresentation(presentation('eye-transition'))
+    await controller.setCue({
+      kind: 'speaking',
+      key: 'speaking:one',
+      emotion: 'happiness',
+      duration: 3,
+    })
+    model.finishMotion()
+    const startedAt = controller.eyeTransition.startedAt
+
+    controller.updateFrame(0, startedAt + 50)
+
+    expect(model.internalModel.coreModel.setParamFloat).toHaveBeenCalledWith(
+      'PARAM_EYE_L_OPEN',
+      0.5,
+    )
+    const rightEyeCall = model.internalModel.coreModel.setParamFloat.mock.calls.find(
+      ([id]) => id === 'PARAM_EYE_R_OPEN',
+    )
+    expect(rightEyeCall[1]).toBeCloseTo(0.6)
   })
 })

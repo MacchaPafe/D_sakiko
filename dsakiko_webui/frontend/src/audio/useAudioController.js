@@ -14,6 +14,16 @@ const idlePlayback = {
   error: '',
 }
 
+export function timeDomainRms(samples, byteEncoded = false) {
+  if (!samples.length) return 0
+  let sum = 0
+  for (const sample of samples) {
+    const amplitude = byteEncoded ? (sample - 128) / 128 : sample
+    sum += amplitude * amplitude
+  }
+  return Math.sqrt(sum / samples.length)
+}
+
 export function useAudioController() {
   const audioRef = useRef(null)
   const audioContextRef = useRef(null)
@@ -36,8 +46,7 @@ export function useAudioController() {
 
     const context = new AudioContextClass()
     const analyser = context.createAnalyser()
-    analyser.fftSize = 256
-    analyser.smoothingTimeConstant = 0.7
+    analyser.fftSize = 1024
     const source = context.createMediaElementSource(audio)
     source.connect(analyser)
     analyser.connect(context.destination)
@@ -45,13 +54,15 @@ export function useAudioController() {
     audioContextRef.current = context
     analyserRef.current = analyser
 
-    const samples = new Uint8Array(analyser.fftSize)
+    const supportsFloatSamples = typeof analyser.getFloatTimeDomainData === 'function'
+    const samples = supportsFloatSamples
+      ? new Float32Array(analyser.fftSize)
+      : new Uint8Array(analyser.fftSize)
     const updateVolume = () => {
-      analyser.getByteTimeDomainData(samples)
-      let sum = 0
-      for (const sample of samples) sum += Math.abs(sample - 128)
-      const normalized = Math.min(1, (sum / samples.length / 22) * 1.7)
-      volumeRef.current = audio.paused ? 0 : normalized
+      if (supportsFloatSamples) analyser.getFloatTimeDomainData(samples)
+      else analyser.getByteTimeDomainData(samples)
+      const rms = timeDomainRms(samples, !supportsFloatSamples)
+      volumeRef.current = audio.paused || rms < 0.008 ? 0 : rms
       animationFrameRef.current = requestAnimationFrame(updateVolume)
     }
     updateVolume()
