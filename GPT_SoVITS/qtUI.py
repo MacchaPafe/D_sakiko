@@ -8,6 +8,7 @@ import random
 import uuid
 from concurrent.futures import Future
 from pathlib import Path
+from queue import Empty as QueueEmpty
 from typing import Callable, Optional, Sequence, cast
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
@@ -130,7 +131,9 @@ from input_commands import (
 )
 from live2d_support.model_importer import Live2DModelImportError, import_live2d_model
 from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
+from live2d_support.layout import get_live2d_layout
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
+from live2d_support.model_version import detect_live2d_runtime_version
 
 
 logger = get_logger(__name__)
@@ -1963,9 +1966,20 @@ class ChatGUI(QWidget):
                  dp_chat,
                  audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,
                  change_char_queue=None,
-                 is_motion_complete=None):
+                 is_motion_complete=None,
+                 electron_publish=None,
+                 electron_intent_queue=None):
         super().__init__()
         self.is_motion_complete = is_motion_complete
+        self.electron_publish = electron_publish if callable(electron_publish) else (lambda *_args, **_kwargs: None)
+        self.electron_intent_queue = electron_intent_queue
+        self.electron_mode = electron_intent_queue is not None
+        self.electron_intent_timer = None
+        if electron_intent_queue is not None:
+            self.electron_intent_timer = QTimer(self)
+            self.electron_intent_timer.setInterval(100)
+            self.electron_intent_timer.timeout.connect(self._consume_electron_intents)
+            self.electron_intent_timer.start()
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
         self.character_list:list[CharacterAttributes] = characters
         self.character_by_name: dict[str, CharacterAttributes] = {
@@ -4709,8 +4723,9 @@ class ChatGUI(QWidget):
                         )
 
                     # ----------------------------
-                    self.audio_file_path_queue.put(audio_path)
-                    self.emotion_queue.put(emotion)
+                    if not self.electron_mode:
+                        self.audio_file_path_queue.put(audio_path)
+                        self.emotion_queue.put(emotion)
                     logger.info("音频文件路径：%s", audio_path)
                     #print("注意：若你已经设置了if_delete_audio_cache.txt中的数字不为0，并且觉得这句生成的还不错，请复制该音频文件到别处，因为设置数字不为0的情况下关闭程序会自动删除该文件，以释放空间。设置数字不为0的情况下如果希望下次打开程序还能听到，再把这个文件复制回这个路径即可。\n")
                 else:
@@ -5284,6 +5299,112 @@ class ChatGUI(QWidget):
         # 一轮对话中可能涉及多条消息，active_turn_message_indices 用于记录这些消息的索引，以便在需要时进行统一处理（如标记无语音等）
         self.active_turn_message_indices = set()
         self._refresh_send_button_state()
+        self.electron_publish("text_generating", {"active": True, "chat_id": chat_id, "turn_id": turn_id})
+
+    def _consume_electron_intents(self) -> None:
+        """Run Electron UI intents on the Qt thread using existing handlers."""
+        if self.electron_intent_queue is None:
+            return
+        while True:
+            try:
+                payload = self.electron_intent_queue.get_nowait()
+            except QueueEmpty:
+                return
+            except Exception:
+                logger.exception("读取 Electron UI intent 失败")
+                return
+            if not isinstance(payload, dict):
+                continue
+            intent = str(payload.get("intent") or "")
+            try:
+                if intent == "start_voice_input":
+                    self.voice_dectect()
+                elif intent == "stop_voice_input":
+                    self.voice_decect_end()
+                elif intent == "open_python_settings":
+                    import subprocess
+                    import sys
+                    subprocess.Popen(
+                        [sys.executable, os.path.join(script_dir, "dsakiko_configuration.py"), "DSakikoConfigArea"],
+                        cwd=script_dir,
+                    )
+                elif intent == "recover_renderer":
+                    # A refreshed Electron page cannot safely continue a
+                    # local FIFO/audio presentation it no longer owns. Reuse
+                    # the normal Qt cancellation path so backend work, text,
+                    # and the replacement renderer all converge explicitly.
+                    recovery = payload.get("data")
+                    if not isinstance(recovery, dict) or not self._is_active_turn_payload(recovery):
+                        logger.info("忽略过期的 Electron renderer recovery：%s", recovery)
+                        continue
+                    self.cancel_active_turn()
+            except Exception:
+                logger.exception("处理 Electron UI intent 失败：%s", intent)
+
+    def publish_electron_initial_state(self) -> None:
+        """Publish the current backend-selected model as a business fact."""
+        if not self.electron_mode:
+            return
+        current = self.current_character
+        sakiko_state = None
+        # The current chat may carry a persisted custom V2/V3 selection. A
+        # cold start must publish that current business fact, not merely the
+        # character's default model, or Electron would visibly fall back on
+        # each restart before the next explicit switch event.
+        selected_model = self.current_chat.get_custom_live2d_model_meta(current.character_name) or current.live2d_json or ""
+        if current.is_sakiko:
+            sakiko_state = "black" if bool(getattr(self.dp_chat, "sakiko_state", True)) else "white"
+            selected_model = self._electron_sakiko_model_for_state(selected_model, sakiko_state)
+        self.electron_publish("initial_model", {
+            "character_name": current.character_name,
+            "character_folder": current.character_folder_name,
+            "model_path": selected_model,
+            "theme_color": current.theme_seed,
+            # A model path alone is not a reliable presentation fact: the
+            # Electron-local policy needs the configured black/white state.
+            "sakiko_state": sakiko_state,
+            # A conservative base fallback for models that do not expose a
+            # Sakiko state.  Expression and motion selection stays local to
+            # Electron and is still filtered by the loaded manifest.
+            "presentation_base": "serious" if sakiko_state == "black" else "idle",
+            **self._electron_desktop_layout_payload(selected_model),
+        })
+        self.electron_publish("theme", {"color": current.theme_seed})
+
+    @staticmethod
+    def _electron_desktop_layout_payload(model_path: str) -> dict[str, object]:
+        """Expose upstream desktop layout data without sharing renderer state."""
+        if not model_path:
+            return {}
+        try:
+            runtime = detect_live2d_runtime_version(model_path)
+            layout = get_live2d_layout(model_path, runtime, "single", "desktop")
+        except Exception:
+            logger.warning("读取 Electron Live2D desktop layout 失败：%s", model_path, exc_info=True)
+            return {}
+        return {
+            "layout": layout.to_config_dict(),
+            "layout_scene": "single",
+            "layout_client": "desktop",
+            "live2d_runtime": runtime,
+        }
+
+    @staticmethod
+    def _electron_model_is_v3(model_path: str) -> bool:
+        """Keep custom V3 Sakiko models outside the V2 costume path."""
+        if not model_path:
+            return False
+        try:
+            return detect_live2d_runtime_version(model_path) == "v3"
+        except Exception:
+            return False
+
+    def _electron_sakiko_model_for_state(self, selected_model: str, sakiko_state: str) -> str:
+        """Resolve the legacy V2 costume only when the selected model is V2."""
+        if sakiko_state != "black" or self._electron_model_is_v3(selected_model):
+            return selected_model
+        model_root = Path(__file__).resolve().parents[1] / "live2d_related" / "sakiko"
+        return str(model_root / "live2D_model_costume" / "3.model.json")
 
     def _clear_active_turn(self) -> None:
         """
@@ -5398,13 +5519,14 @@ class ChatGUI(QWidget):
             except Exception:
                 logger.exception("登记对话终止请求失败。")
 
-        if self.change_char_queue is not None:
+        if self.change_char_queue is not None and not self.electron_mode:
             # 要求 live2d 终止对话播放
             self.change_char_queue.put({
                 "type": "cancel_turn",
                 "chat_id": chat_id,
                 "turn_id": turn_id,
             })
+        self.electron_publish("cancel", {"chat_id": chat_id, "turn_id": turn_id})
 
         if phase == "tts":
             # 设置尚未生成的语音为无语音
@@ -5555,6 +5677,37 @@ class ChatGUI(QWidget):
                     "bye": {"type": "exit"},
                 }
                 payload = command_map.get(payload, {"type": "legacy_command", "command": payload, "chat_id": self.current_chat_id})
+            if isinstance(payload, dict):
+                command = str(payload.get("command") or payload.get("type") or "")
+                if command == "conv" and self.current_character.is_sakiko:
+                    next_state = not bool(getattr(self.dp_chat, "sakiko_state", True))
+                    selected_model = self.current_chat.get_custom_live2d_model_meta(self.current_character.character_name) or self.current_character.live2d_json or ""
+                    sakiko_state = "black" if next_state else "white"
+                    electron_payload: dict[str, object] = {
+                        "value": "black" if next_state else "white",
+                        # Reconnect is allowed to recover current backend facts
+                        # only; Electron still owns all presentation decisions.
+                        "character_name": self.current_character.character_name,
+                        "character_folder": self.current_character.character_folder_name,
+                        "sakiko_state": sakiko_state,
+                        "presentation_base": "serious" if sakiko_state == "black" else "idle",
+                        "theme_color": self.current_character.theme_seed,
+                    }
+                    # conv is a V2 costume operation. For custom/V3 Sakiko,
+                    # publish only the business fact and keep the loaded model.
+                    if not self._electron_model_is_v3(selected_model):
+                        model_root = Path(__file__).resolve().parents[1] / "live2d_related" / "sakiko"
+                        model_dir = "live2D_model_costume" if next_state else "live2D_model"
+                        model_path = str(model_root / model_dir / "3.model.json")
+                        electron_payload["model_path"] = model_path
+                        electron_payload.update(self._electron_desktop_layout_payload(model_path))
+                    self.electron_publish("sakiko_state", electron_payload)
+                elif command == "mask" and self.current_character.is_sakiko:
+                    self.electron_publish("sakiko_state", {"value": "maskoff"})
+                elif command == "start_talking":
+                    self.electron_publish("talking", {"active": True})
+                elif command == "stop_talking":
+                    self.electron_publish("talking", {"active": False})
             self.qt2dp_queue.put(payload)
 
     def _confirm_dangerous_command(self, spec: CommandSpec, callback: Callable[[], None]) -> None:
@@ -5570,6 +5723,9 @@ class ChatGUI(QWidget):
         change_l2d_model_window.exec_()
     
     def switch_l2d_fps(self):
+        if self.electron_mode:
+            self.QT_message_queue.put("Electron frontend 不支持切换 Live2D 渲染帧率。")
+            return
         if not hasattr(self, 'l2d_fps_dict'):
             self.l2d_fps_dict = {"current_fps":1,
                                  "all_fps":[30, 60, 120]}
@@ -5583,6 +5739,9 @@ class ChatGUI(QWidget):
 
     def toggle_live2d_layout_edit(self) -> None:
         """通知 Live2D 窗口切换模型布局编辑模式。"""
+        if self.electron_mode:
+            self.QT_message_queue.put("Electron frontend 不支持 Live2D 布局编辑。")
+            return
         if self.change_char_queue is None:
             return
         self.change_char_queue.put({
@@ -5638,11 +5797,27 @@ class ChatGUI(QWidget):
         """
         if self.change_char_queue is None:
             return
-        self.change_char_queue.put({
-            "type": "switch_live2d",
-            "character_folder_name": self.current_character.character_folder_name,
+        if not self.electron_mode:
+            self.change_char_queue.put({
+                "type": "switch_live2d",
+                "character_folder_name": self.current_character.character_folder_name,
+                "character_name": character_name,
+                "model_json": model_json,
+            })
+        current = self.current_character
+        sakiko_state = None
+        selected_model = model_json or current.live2d_json or ""
+        if current.is_sakiko:
+            sakiko_state = "black" if bool(getattr(self.dp_chat, "sakiko_state", True)) else "white"
+            selected_model = self._electron_sakiko_model_for_state(selected_model, sakiko_state)
+        self.electron_publish("switch_character", {
             "character_name": character_name,
-            "model_json": model_json,
+            "character_folder": current.character_folder_name,
+            "model_path": selected_model,
+            "theme_color": current.theme_seed,
+            "sakiko_state": sakiko_state,
+            "presentation_base": "serious" if sakiko_state == "black" else "idle",
+            **self._electron_desktop_layout_payload(selected_model),
         })
 
     def handle_user_input(self) -> None:
@@ -5719,6 +5894,7 @@ class ChatGUI(QWidget):
             "image_source_paths": list(image_source_paths),
             "draft_attachments": [dict(item) for item in draft_attachments],
         })
+        self.electron_publish("user_text", {"text": text, "chat_id": self.current_chat_id, "turn_id": turn_id})
         self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
 
     def save_data(self):
