@@ -4,6 +4,24 @@
 ## 简介
 **数字小祥** 是一款桌面级多模态 AI Agent 客户端。项目底层从零构建 ReAct 引擎，集成基于混合检索的RAG知识库、具备反思机制的长短期记忆系统以及多个周边功能模块。
 
+## Electron frontend（Windows 可选）
+
+默认 frontend 仍是 Pygame。Electron 是仅面向 Windows 的可选 standalone renderer，不替代默认启动路径；当前不提供 macOS Electron launcher。
+
+Electron 需要已安装的 Node.js LTS 和 npm，并支持 Live2D V2/V3。生产构建和启动：
+
+```bat
+cd electron_frontend
+npm ci
+npm run build
+cd ..
+run_electron.bat
+```
+
+开发启动使用 `run_electron.bat --dev`。Electron 启动后会在 Windows 通知区域提供系统托盘；隐藏窗口不会关闭 backend 或销毁角色运行时。关闭 Electron frontend 后 backend 可能继续运行，再次执行 `run_electron.bat` 会先探测并复用健康的已有 backend，避免启动第二份进程。需要同时退出 backend 时，使用默认 Qt 界面的正常退出操作。
+
+后端只提供聊天和模型等 business facts；Electron 在本地拥有 Live2D FSM 和 presentation。
+
 ### 🌟 核心技术架构
 * **【全链路多模态】** ASR(语音识别) → LLM(理解思考) → ToolCalling&RAG(工具调用与检索增强) → TTS(异步生成) → Live2D(动作渲染) 的完整多模态数据流。
 * **【世界书构建】** 项目知识库以 BangDream 时间线为基准，将故事中所有主要事件以及角色在不同时期的心理状态整理为切片文本并向量化入库，在需要时调用并插入Prompt，有效解决了角色OOC的问题。

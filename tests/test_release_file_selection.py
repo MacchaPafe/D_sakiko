@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from tools.release.build_repair_manifest import load_profile
 from tools.release.file_selection import FileSelectionRules, collect_selected_files, select_files
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseFileSelectionTest(unittest.TestCase):
@@ -78,6 +83,38 @@ class ReleaseFileSelectionTest(unittest.TestCase):
             result = collect_selected_files(root, rules, use_git_tracked=False)
 
         self.assertEqual(result.selected, frozenset({"GPT_SoVITS/main.py"}))
+
+    def test_windows_only_electron_release_selection_keeps_required_runtime_assets(self) -> None:
+        """Electron runtime assets only ship in the Windows repair/update profiles."""
+
+        repair_profiles = ROOT / "tools" / "release" / "repair_asset_profiles.json"
+        windows = load_profile(repair_profiles, "windows-x64")
+        macos = load_profile(repair_profiles, "macos-arm64")
+        paths = {
+            "dsakiko_webui/frontend/public/live2d.min.js",
+            "electron_frontend/src/main/index.ts",
+            "electron_frontend/dist/main/index.js",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for relative in paths:
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("fixture", encoding="utf-8")
+            windows_selected = select_files(
+                root, paths, windows.rules,
+                include_candidates={"electron_frontend/dist/main/index.js"},
+            )
+            macos_selected = select_files(root, paths, macos.rules)
+
+        self.assertEqual(windows_selected.selected, frozenset(paths))
+        self.assertEqual(macos_selected.selected, frozenset())
+        update_profiles = json.loads((ROOT / "tools" / "release" / "update_patch_profiles.json").read_text(encoding="utf-8"))
+        self.assertIn("electron_frontend/**", update_profiles["profiles"]["macos-arm64"]["ignore"])
+        self.assertNotIn("electron_frontend/.npmrc", update_profiles["profiles"]["windows-x64"]["include"])
+        self.assertIn("electron_frontend/dist/**", update_profiles["profiles"]["windows-x64"]["include"])
+        self.assertNotIn("electron_frontend/.npmrc", windows.rules.allow)
+        self.assertIn("dsakiko_webui/frontend/public/live2d.min.js", windows.rules.allow)
 
 
 if __name__ == "__main__":

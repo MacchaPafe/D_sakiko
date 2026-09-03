@@ -94,7 +94,6 @@ tools/hpatchz.exe
 *.command
 !数字小祥启动器.command
 install_brew.sh
-
 # 启动器本地回归测试，不随项目分发。
 /launcher/test_launcher_macos.py
 /launcher/test_launcher_repair.py
@@ -103,3 +102,4 @@ install_brew.sh
 # 独立修复入口与维护说明
 !修复程序.command
 !docs/maintenance-recovery.md
+.electron-bridge-session.json

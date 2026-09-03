@@ -4,6 +4,8 @@ import os,sys
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 sys.path.insert(0, script_dir)
 if __name__ == "__main__":
     from pathlib import Path
@@ -25,9 +27,9 @@ from PyQt5.QtGui import QFont, QFontDatabase
 import character
 import dp_local2
 import audio_generator
-import live2d_module
 import qtUI
 from chat.chat import ChatType, get_chat_manager
+from bridge.electron_bridge import ElectronBridge
 
 from emotion_enum import EmotionEnum
 from log import setup_logging, get_logger, get_log_queue, setup_worker_logging, shutdown_logging
@@ -40,6 +42,87 @@ faulthandler.enable(file=open("faulthandler_log.txt", "a"), all_threads=True)
 main_logger = get_logger(__name__)
 
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
+
+# Optional business-event transport. It is deliberately separate from every
+# queue used by the Pygame process, so enabling Electron cannot change the
+# legacy renderer's scheduling or lifecycle.
+electron_bridge: ElectronBridge | None = None
+
+
+def publish_electron_event(message_type: str, data: dict[str, object] | None = None) -> None:
+    bridge = electron_bridge
+    if bridge is None:
+        return
+    try:
+        payload = dict(data or {})
+        model_path = payload.pop("model_path", None)
+        if isinstance(model_path, str) and model_path:
+            model_url = bridge.url_for_path(model_path)
+            if model_url:
+                payload["model_url"] = model_url
+        bridge.publish(message_type, payload)
+    except Exception:
+        main_logger.exception("Electron event publish failed: %s", message_type)
+
+
+def put_legacy_live2d(queue, value) -> None:
+    """Send renderer data only to the legacy Pygame frontend.
+
+    Electron consumes business events from ``electron_bridge`` and must not
+    accumulate unread values in the Pygame multiprocessing queues.
+    """
+    if electron_bridge is None:
+        queue.put(value)
+
+
+class ElectronRuntimeEvents:
+    """Forward completed runtime turns to Electron while retaining Qt events."""
+
+    def __init__(self, target) -> None:
+        self.target = target
+
+    def put(self, event) -> None:
+        self.target.put(event)
+        if isinstance(event, dict) and event.get("type") == "assistant_turn_complete":
+            publish_electron_event(
+                "assistant_turn_complete",
+                {
+                    "chat_id": str(event.get("chat_id") or ""),
+                    "turn_id": str(event.get("turn_id") or ""),
+                    "status": str(event.get("status") or "ok"),
+                },
+            )
+
+
+class ElectronRuntimePresentation:
+    """Send runtime segments to Electron and release its backend FIFO."""
+
+    def __init__(self) -> None:
+        self.runtime = None
+
+    def put(self, event) -> None:
+        if not isinstance(event, dict) or event.get("type") != "play_segment":
+            return
+        audio_path = str(event.get("audio_path") or "")
+        bridge = electron_bridge
+        audio_url = (
+            bridge.url_for_path(audio_path, "audio")
+            if bridge is not None and audio_path and audio_path != "NO_AUDIO"
+            else ""
+        )
+        publish_electron_event(
+            "assistant_segment",
+            {
+                "text": str(event.get("text") or ""),
+                "translation": str(event.get("translation") or ""),
+                "emotion": str(event.get("emotion") or "LABEL_0"),
+                "audio_url": audio_url,
+                "chat_id": str(event.get("chat_id") or ""),
+                "turn_id": str(event.get("turn_id") or ""),
+            },
+        )
+        if self.runtime is not None:
+            self.runtime.playback_event(dict(event, type="playback_complete"))
 
 
 def clear_text_generating_flag_if_needed() -> None:
@@ -62,7 +145,6 @@ def handle_model_response_payload(payload: dict[str, object]) -> None:
     finally:
         clear_text_generating_flag_if_needed()
         is_audio_play_complete.put('yes')
-
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []
@@ -228,26 +310,32 @@ def main_thread():
 
                     # 将全部剩余文本和翻译逐段传给 qtUI 展示，必须逐段传以保证和 message_list 数量一一对应消耗
                     for rem_text, rem_trans, rem_emotion in segments[i:]:
-                        audio_file_path_queue.put('../reference_audio/silent_audio/silence.wav')
+                        put_legacy_live2d(audio_file_path_queue, '../reference_audio/silent_audio/silence.wav')
                         if rem_trans:
                             dp2qt_queue.put(rem_text + '\n[翻译]' + rem_trans + '[翻译结束]')
                         else:
                             dp2qt_queue.put(rem_text)
-                        emotion_queue.put(rem_emotion)
+                        put_legacy_live2d(emotion_queue, rem_emotion)
+                        publish_electron_event("assistant_segment", {
+                            "text": rem_text,
+                            "translation": rem_trans,
+                            "emotion": rem_emotion or "LABEL_0",
+                            "audio_url": "",
+                        })
                         time.sleep(0.05)  # 稍微让出排队时间
                     break
 
                 # 语音合成成功 —— 等待上一段播放完毕（避免打断）
-                while not motion_complete_value.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                while electron_bridge is None and not motion_complete_value.value:      # Electron 本地 FIFO 不等待 Pygame 完成标记
                     time.sleep(0.2)
 
-                audio_file_path_queue.put(audio_gen.audio_file_path)
+                put_legacy_live2d(audio_file_path_queue, audio_gen.audio_file_path)
 
                 if i == 0:
                     is_text_generating_queue.get()  # 第一段合成完后让模型停止思考动作
 
                 # 等待当前播放完毕后再送文本到 qtUI（保持顺序）
-                while not motion_complete_value.value:
+                while electron_bridge is None and not motion_complete_value.value:
                     time.sleep(0.5)
 
                 # 将本段文本和翻译传给 qtUI 显示
@@ -255,7 +343,13 @@ def main_thread():
                     dp2qt_queue.put(text + '\n[翻译]' + translation + '[翻译结束]')
                 else:
                     dp2qt_queue.put(text)
-                emotion_queue.put(emotion_label)
+                put_legacy_live2d(emotion_queue, emotion_label)
+                publish_electron_event("assistant_segment", {
+                    "text": text,
+                    "translation": translation,
+                    "emotion": emotion_label or "LABEL_0",
+                    "audio_url": electron_bridge.url_for_path(audio_gen.audio_file_path, "audio") if electron_bridge else "",
+                })
 
             is_audio_play_complete.put('yes')  # 本轮全部段落处理完毕
 
@@ -277,6 +371,10 @@ if __name__=='__main__':
         raise SystemExit(1)
 
     from qconfig import d_sakiko_config
+
+    electron_enabled = os.environ.get("DSAKIKO_ELECTRON_MODE", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
     main_logger.info("数字小祥程序...")
     get_all=character.GetCharacterAttributes()
@@ -310,6 +408,10 @@ if __name__=='__main__':
     live2d_text_queue=multiprocessing.Queue()  # 用于传递要显示的文本
     is_display_text_value=multiprocessing.Value('b', True)  # 是否显示文本
     motion_complete_value=multiprocessing.Value('b', True)  # 动作是否完成
+
+    if electron_enabled:
+        electron_bridge = ElectronBridge(Queue(), project_root)
+        electron_bridge.start()
 
     dp_chat=dp_local2.DSLocalAndVoiceGen(characters, chat_manager)
 
@@ -365,7 +467,7 @@ if __name__=='__main__':
     gl_format.setStencilBufferSize(8)
     QSurfaceFormat.setDefaultFormat(gl_format)
     qt_app = QApplication(sys.argv)
-    qt_app.setQuitOnLastWindowClosed(False)
+    qt_app.setQuitOnLastWindowClosed(electron_enabled)
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     desktop_w = QDesktopWidget().screenGeometry().width()
@@ -379,6 +481,8 @@ if __name__=='__main__':
     # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
     main_logger.info("加载Live2D界面中...")
     def create_normal_presentation():
+        import live2d_module
+
         ready_event = multiprocessing.Event()
         process = multiprocessing.Process(target=live2d_module.run_live2d_process,
             args=(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue,
@@ -388,7 +492,18 @@ if __name__=='__main__':
         return process
     presentation_router.factory = create_normal_presentation
     from runtime.conversation import ConversationRuntime
-    conversation_runtime = ConversationRuntime(dp_chat, audio_gen, characters, qt2dp_queue, dp2qt_queue, presentation_router)
+    electron_presentation = ElectronRuntimePresentation() if electron_enabled else None
+    runtime_events = ElectronRuntimeEvents(dp2qt_queue) if electron_enabled else dp2qt_queue
+    conversation_runtime = ConversationRuntime(
+        dp_chat,
+        audio_gen,
+        characters,
+        qt2dp_queue,
+        runtime_events,
+        electron_presentation or presentation_router,
+    )
+    if electron_presentation is not None:
+        electron_presentation.runtime = conversation_runtime
     # LLM 生成模块（该模块为不同线程）
     tr2=threading.Thread(target=dp_chat.text_generator, daemon=True, args=(text_queue,
                                                              is_audio_play_complete,
@@ -416,13 +531,20 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          change_char_queue=change_char_queue, conversation_runtime=conversation_runtime)
-
-    from desktop_pet.controller import DesktopController
-    desktop_controller = DesktopController(qt_win, presentation_router, playback_events,
-        char_is_converted_queue, conversation_runtime, motion_complete_value)
-    qt_win.desktop_controller = desktop_controller
-    qt_app.aboutToQuit.connect(desktop_controller.cleanup)
+                          change_char_queue=change_char_queue,
+                          conversation_runtime=conversation_runtime,
+                          electron_publish=publish_electron_event,
+                          electron_intent_queue=electron_bridge.intent_queue if electron_bridge else None)
+    if electron_enabled:
+        qt_win.publish_electron_initial_state()
+        desktop_controller = None
+        qt_win.show()
+    else:
+        from desktop_pet.controller import DesktopController
+        desktop_controller = DesktopController(qt_win, presentation_router, playback_events,
+            char_is_converted_queue, conversation_runtime, motion_complete_value)
+        qt_win.desktop_controller = desktop_controller
+        qt_app.aboutToQuit.connect(desktop_controller.cleanup)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
@@ -433,8 +555,11 @@ if __name__=='__main__':
 
     qt_win.move(screen_w_mid, int(screen_h_mid - 0.35 * desktop_h))  # 因为窗口高度设置的是0.7倍桌面宽
 
-    desktop_controller.start()
+    if desktop_controller is not None:
+        desktop_controller.start()
     qt_app.exec_()
+    if electron_enabled:
+        conversation_runtime.close()
 
     # 尝试退出所有子程序。
     # 由于有些程序可能已经退出，所以使用 try-except 来捕获异常，防止程序崩溃。
@@ -447,12 +572,7 @@ if __name__=='__main__':
         qt2dp_queue.put('bye')
     except Exception:
         pass
-    try:
-        # live2d 播放进程
-        change_char_queue.put('exit')
-        emotion_queue.put('bye')
-    except Exception:
-        pass
+    publish_electron_event("bye", {})
     try:
         # 主窗口
         QT_message_queue.put('bye')
@@ -470,6 +590,9 @@ if __name__=='__main__':
     tr3.join(timeout=3)
     tr4.quit()
     tr4.wait(3000)
+
+    if electron_bridge is not None:
+        electron_bridge.shutdown()
 
     shutdown_logging()
 
