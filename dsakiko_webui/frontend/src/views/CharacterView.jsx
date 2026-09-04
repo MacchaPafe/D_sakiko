@@ -20,10 +20,14 @@ export function CharacterView({ state, actions, audio, active, live2dCue }) {
     [state.messages],
   )
   const latestMessage = assistantMessages.at(-1)
+  const playingMessage = state.messages.find(
+    (message) => message.id === audio.playback.messageId,
+  )
+  const displayedMessage = playingMessage || latestMessage
   const draft = state.draftsByChatId[state.currentChatId] || ''
   const pendingImages = state.pendingImagesByChatId[state.currentChatId] || []
   const busy = state.phase !== 'idle'
-  const expanded = latestMessage?.id === expandedMessageId
+  const expanded = displayedMessage?.id === expandedMessageId
 
   const backgroundStyle = {
     '--scene-background-color': state.background?.color || '#d7dde0',
@@ -73,27 +77,27 @@ export function CharacterView({ state, actions, audio, active, live2dCue }) {
       </header>
 
       <div className="character-bottom">
-        {(latestMessage || busy) && (
+        {(displayedMessage || busy) && (
           <section
             className={`dialogue-overlay ${expanded ? 'is-expanded' : ''}`}
             aria-live="polite"
             aria-expanded={expanded}
-            onClick={() => setExpandedMessageId(expanded ? null : latestMessage?.id)}
+            onClick={() => setExpandedMessageId(expanded ? null : displayedMessage?.id)}
           >
             <span className="dialogue-speaker">{state.character?.name}</span>
-            {latestMessage && (
+            {displayedMessage && (
               <span className="dialogue-playback">
                 <PlaybackButton
-                  message={latestMessage}
+                  message={displayedMessage}
                   playback={audio.playback}
                   onToggle={audio.toggleMessage}
                 />
               </span>
             )}
-            {busy && !latestMessage ? (
+            {busy && !displayedMessage ? (
               <p className="thinking-text">正在思考</p>
             ) : (
-              <p>{visibleText(latestMessage, state.displayLanguage)}</p>
+              <p>{visibleText(displayedMessage, state.displayLanguage)}</p>
             )}
           </section>
         )}
