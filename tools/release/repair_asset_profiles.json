@@ -96,8 +96,29 @@
       "platform": "windows",
       "arch": "x64",
       "include": [
-        "*.bat",
+        "run.bat",
+        "run_webui.bat",
+        "启动参数配置.bat",
+        "运行Live2D模型下载器.bat",
+        "运行动作组编辑程序.bat",
+        "运行小剧场模式.bat",
         "双击run.bat即可运行程序，注意不要有中文路径！"
+      ],
+      "hard_exclude": [
+        "GPT_SoVITS/BigVGAN/**",
+        "GPT_SoVITS/configs/**",
+        "GPT_SoVITS/text/**",
+        "GPT_SoVITS/tools/**",
+        "GPT_SoVITS/module/**",
+        "GPT_SoVITS/eres2net/**",
+        "GPT_SoVITS/AR/data/**",
+        "GPT_SoVITS/AR/modules/**",
+        "GPT_SoVITS/AR/text_processing/**",
+        "GPT_SoVITS/AR/utils/**",
+        "GPT_SoVITS/f5_tts/**",
+        "GPT_SoVITS/feature_extractor/**",
+        "pyproject.toml",
+        "uv.lock"
       ],
       "exclude": [
         "*.command",
