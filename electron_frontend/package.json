@@ -1,0 +1,37 @@
+{
+  "name": "saki-electron-shell",
+  "version": "0.1.0",
+  "main": "./dist/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "start": "electron .",
+    "test:cold-start": "node scripts/test-cold-start.mjs",
+    "test:parameter-adapter": "node scripts/test-parameter-adapter.mjs",
+    "test:presentation-policy": "node scripts/test-presentation-policy.mjs",
+    "test:live2d-fsm-lifecycle": "node scripts/test-live2d-fsm-lifecycle.mjs",
+    "test:main-process": "node scripts/test-main-process.mjs",
+    "test:real-sakiko-v2-integration": "node scripts/test-real-sakiko-v2-integration.mjs"
+  },
+  "dependencies": {
+    "@vueuse/core": "^14.1.0",
+    "pixi-live2d-display": "0.4.0",
+    "pixi.js": "^6.5.10",
+    "reka-ui": "^2.10.0",
+    "vue": "^3.4.0"
+  },
+  "devDependencies": {
+    "@iconify/json": "^2.2.489",
+    "@unocss/preset-icons": "^66.7.2",
+    "@unocss/preset-wind3": "^66.7.2",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "electron": "^44.1.0",
+    "electron-vite": "^2.0.0",
+    "typescript": "^5.3.0",
+    "unocss": "^66.7.2",
+    "vite-plugin-vue-devtools": "^7.7.9",
+    "vite": "^5.0.0",
+    "vue-tsc": "^2.2.12"
+  }
+}
