@@ -17,6 +17,7 @@
       "tools/**/*.py",
       "tools/*.json",
       "tools/**/*.json",
+      "bridge/*.py",
       "dsakiko_webui/*.py",
       "dsakiko_webui/**/*.py",
       "dsakiko_webui/backend/pairing_ui_static/*.html",
@@ -77,7 +78,12 @@
       "__pycache__/**",
       "*.pyc",
       "d_sakiko_config.json",
-      "dsakiko_config.json"
+      "dsakiko_config.json",
+      "electron_frontend/node_modules/**",
+      "electron_frontend/.vite/**",
+      "electron_frontend/scripts/test-*.mjs",
+      "electron_frontend/test/**",
+      "electron_frontend/dist/**/*.map"
     ]
   },
   "profiles": {
@@ -89,7 +95,8 @@
         "install_brew.sh"
       ],
       "exclude": [
-        "*.bat"
+        "*.bat",
+        "electron_frontend/**"
       ]
     },
     "windows-x64": {
@@ -102,7 +109,18 @@
         "运行Live2D模型下载器.bat",
         "运行动作组编辑程序.bat",
         "运行小剧场模式.bat",
-        "双击run.bat即可运行程序，注意不要有中文路径！"
+        "双击run.bat即可运行程序，注意不要有中文路径！",
+        "electron_frontend/dist/**"
+      ],
+      "allow": [
+        "run_electron.bat",
+        "electron_frontend/package*.json",
+        "electron_frontend/electron.vite.config.ts",
+        "electron_frontend/tsconfig*.json",
+        "electron_frontend/uno.config.ts",
+        "electron_frontend/src/**",
+        "dsakiko_webui/frontend/public/live2d.min.js",
+        "electron_frontend/scripts/ensure-production-runtime.mjs"
       ],
       "hard_exclude": [
         "GPT_SoVITS/BigVGAN/**",

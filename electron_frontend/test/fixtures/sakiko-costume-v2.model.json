@@ -1,0 +1,37 @@
+{
+  "version": "3.1",
+  "conf_ver": 0,
+  "type": 0,
+  "bounds": {
+    "width": 11.198822,
+    "height": 22.4484119,
+    "center_x": 0.0121831894,
+    "center_y": -3.85074234
+  },
+  "model": "sakiko_other-25.moc",
+  "textures": ["texture_00.png", "texture_01.png"],
+  "motions": {
+    "happiness": [{"name": "happiness_00", "file": "nnf02.mtn"}, {"name": "happiness_01", "file": "smile01.mtn"}, {"name": "happiness_02", "file": "nnf03.mtn"}, {"name": "happiness_03", "file": "kime01.mtn"}, {"name": "happiness_04", "file": "smile02.mtn"}, {"name": "happiness_05", "file": "smile04.mtn"}],
+    "sadness": [{"name": "sadness_06", "file": "cry01.mtn"}, {"name": "sadness_07", "file": "sad01.mtn"}, {"name": "sadness_08", "file": "sad02.mtn"}, {"name": "sadness_09", "file": "sad01.mtn"}],
+    "anger": [{"name": "anger_10", "file": "angry01.mtn"}, {"name": "anger_11", "file": "angry02.mtn"}, {"name": "anger_12", "file": "angry03.mtn"}, {"name": "anger_13", "file": "angry04.mtn"}, {"name": "anger_14", "file": "angry03.mtn"}, {"name": "anger_15", "file": "angry06.mtn"}, {"name": "anger_16", "file": "angry06.mtn"}],
+    "disgust": [{"name": "disgust_17", "file": "angry03.mtn"}, {"name": "disgust_18", "file": "surprised02.mtn"}],
+    "like": [{"name": "like_19", "file": "smile06.mtn"}, {"name": "like_20", "file": "nnf05.mtn"}, {"name": "like_21", "file": "nod01.mtn"}, {"name": "like_22", "file": "kime01.mtn"}],
+    "surprise": [{"name": "surprise_23", "file": "shame02.mtn"}, {"name": "surprise_24", "file": "shame02.mtn"}, {"name": "surprise_25", "file": "surprised01.mtn"}, {"name": "surprise_26", "file": "nnf04.mtn"}],
+    "fear": [{"name": "fear_27", "file": "odoodo01.mtn"}, {"name": "fear_28", "file": "angry03.mtn"}],
+    "IDLE": [{"name": "IDLE_29", "file": "bye01.mtn"}, {"name": "IDLE_30", "file": "cry02.mtn"}, {"name": "IDLE_31", "file": "kime01.mtn"}, {"name": "IDLE_32", "file": "odoodo01.mtn"}, {"name": "IDLE_33", "file": "thinking02.mtn"}, {"name": "IDLE_34", "file": "serious02.mtn"}, {"name": "IDLE_35", "file": "serious01.mtn"}],
+    "text_generating": [{"name": "text_generating_36", "file": "thinking01.mtn"}, {"name": "text_generating_37", "file": "thinking02.mtn"}, {"name": "text_generating_38", "file": "smile06.mtn"}, {"name": "text_generating_39", "file": "sigh01.mtn"}],
+    "bye": [{"name": "bye_40", "file": "bye01.mtn"}],
+    "change_character": [{"name": "convert_char_40", "file": "maskon_angry06.mtn"}, {"name": "convert_char_41", "file": "maskon_sigh02.mtn"}],
+    "change_character_maskoff": [{"name": "special_42", "file": "maskoff.mtn"}, {"name": "special_43", "file": "maskoff2.mtn"}],
+    "maskon": [{"name": "special_44", "file": "maskon_bow.mtn"}],
+    "idle_motion": [{"name": "idle_motion_45", "file": "idle01.mtn"}],
+    "talking_motion": [{"name": "talking_motion_46", "file": "maskon_sigh02.mtn"}]
+  },
+  "expressions": [
+    {"name": "serious", "file": "serious01.exp.json"},
+    {"name": "idle", "file": "idle01.exp.json"}
+  ],
+  "physics": "sakiko_other-25.physics.json",
+  "physics_v2": {"file": "sakiko_other-25.physics.json"},
+  "options": {"aniso_level": 9, "tex_type": 0}
+}

@@ -88,3 +88,4 @@ tools/hpatchz.exe
 *.command
 !run_webui.command
 install_brew.sh
+.electron-bridge-session.json
