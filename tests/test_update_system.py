@@ -279,6 +279,7 @@ class UpdateSystemTest(unittest.TestCase):
         self.assertIn("--status-file", command)
         self.assertIn(str(status_file), command)
 
+    @unittest.skipIf(os.name == "nt", "仅验证 Unix 的 start_new_session 分支")
     @patch("update.update_launcher.subprocess.Popen")
     def test_detached_launcher_uses_new_session_on_unix(self, popen: object) -> None:
         """Unix detached 进程必须脱离主程序所在会话。"""

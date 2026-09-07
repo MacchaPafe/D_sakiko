@@ -70,6 +70,8 @@ TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
 TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
+GOMOKU_UI_EVENT_PREFIX = "__GOMOKU_UI_CMD__:"
+REVERSI_UI_EVENT_PREFIX = "__REVERSI_UI_CMD__:"
 MODELSCOPE_MAX_RATE_LIMIT_RETRIES = 2
 MODELSCOPE_MAX_RETRY_DELAY_SECONDS = 5.0
 logger = get_logger(__name__)
@@ -2135,7 +2137,13 @@ class DSLocalAndVoiceGen:
                 "model_json": new_model_json,
             })
 
-        from chat.tool_calling import register_live2d_tools, register_reminder_tool, register_lottery_tool
+        from chat.tool_calling import (
+            register_gomoku_tool,
+            register_reversi_tool,
+            register_live2d_tools,
+            register_lottery_tool,
+            register_reminder_tool,
+        )
 
         def _show_lottery_ui(title: str, options: list[str]) -> bool:
             payload = {
@@ -2143,6 +2151,17 @@ class DSLocalAndVoiceGen:
                 "options": options,
             }
             message_queue.put(LOTTERY_UI_EVENT_PREFIX + json.dumps(payload, ensure_ascii=False))
+            return True
+
+        def _open_gomoku_ui(board_size: int) -> bool:
+            payload = {
+                "board_size": board_size,
+            }
+            message_queue.put(GOMOKU_UI_EVENT_PREFIX + json.dumps(payload, ensure_ascii=False))
+            return True
+
+        def _open_reversi_ui() -> bool:
+            message_queue.put(REVERSI_UI_EVENT_PREFIX + json.dumps({}, ensure_ascii=False))
             return True
 
         register_live2d_tools(
@@ -2157,6 +2176,14 @@ class DSLocalAndVoiceGen:
         register_lottery_tool(
             self.tool_runtime.tool_registry,
             show_lottery_ui_func=_show_lottery_ui
+        )
+        register_gomoku_tool(
+            self.tool_runtime.tool_registry,
+            open_gomoku_ui_func=_open_gomoku_ui,
+        )
+        register_reversi_tool(
+            self.tool_runtime.tool_registry,
+            open_reversi_ui_func=_open_reversi_ui,
         )
         # ---------------------------------
 
