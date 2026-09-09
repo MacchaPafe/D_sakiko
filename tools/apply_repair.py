@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import traceback
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,17 +26,19 @@ from repair.repair_manifest import (
     normalize_manifest_path,
     resolve_under_root,
     sha256_file,
+    version_key,
 )
 from repair.repair_paths import (
-    get_repair_backup_root,
     get_repair_log_dir,
     get_repair_plan_dir,
     get_repair_result_file,
     get_repair_staging_root,
 )
-from tools.apply_update_patch import parse_restart_command, restart_app, setup_logging, wait_for_process_exit
+from maintenance.process import parse_restart_command, restart_app, setup_logging, wait_for_process_exit
+from filelock import FileLock
 from update.operation_lock import OperationLockBusy, acquire_operation_lock
-from update.update_checker import detect_arch, detect_platform, read_current_version
+from maintenance.identity import detect_arch, detect_platform, read_current_version
+from maintenance.transactions import Transaction, reconcile_recovery
 from update.update_paths import get_version_file
 
 
@@ -181,6 +184,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="应用已经完整下载并校验的 D_sakiko repair plan。")
     parser.add_argument("--app-root", required=True, help="程序根目录。")
     parser.add_argument("--plan", required=True, help="客户端生成的 repair plan。")
+    parser.add_argument("--target-version", help="用户或恢复事务明确选定的修复版本。")
     parser.add_argument("--wait-pid", type=int, default=0, help="开始事务前等待退出的主程序 PID。")
     parser.add_argument("--restart-command", default="", help="成功后的 JSON 重启命令数组。")
     parser.add_argument("--log-file", default="", help="修复日志路径。")
@@ -297,12 +301,13 @@ def _require_within(path: Path, root: Path, field_name: str) -> None:
         raise RuntimeError(f"{field_name} 超出允许目录：{path}")
 
 
-def validate_repair_plan(app_root: Path, plan: RepairPlan) -> Path:
+def validate_repair_plan(app_root: Path, plan: RepairPlan, target_version: str | None = None) -> Path:
     """在独立进程内重新校验计划身份与全部 staging 文件。"""
 
     if plan.app_id != APP_ID:
         raise RuntimeError(f"plan.app_id 不匹配：{plan.app_id}")
-    current_version = read_current_version(get_version_file(app_root))
+    version_key(plan.version)
+    current_version = target_version or read_current_version(get_version_file(app_root))
     if plan.version != current_version:
         raise RuntimeError(f"plan 版本不匹配：当前 {current_version}，计划 {plan.version}")
     current_platform = detect_platform()
@@ -327,24 +332,12 @@ def precheck_targets(app_root: Path, plan: RepairPlan) -> tuple[RepairPlanEntry,
     """整批检查目标现场，并返回仍需替换的条目。"""
 
     pending: list[RepairPlanEntry] = []
-    conflicts: list[str] = []
     for entry in plan.files:
         target = resolve_under_root(app_root, entry.path)
-        if target.is_file():
-            actual_sha = sha256_file(target)
-            if actual_sha == entry.sha256:
-                continue
-            if entry.original_state == "modified" and actual_sha == entry.original_sha256:
-                pending.append(entry)
-                continue
-            conflicts.append(f"{entry.path}：检查后内容发生变化")
-            continue
-        if entry.original_state == "missing" and not target.exists():
+        if target.exists() and not target.is_file():
+            raise RuntimeError(f"修复目标不是普通文件：{entry.path}")
+        if not target.is_file() or sha256_file(target) != entry.sha256:
             pending.append(entry)
-        else:
-            conflicts.append(f"{entry.path}：检查后存在状态发生变化")
-    if conflicts:
-        raise RuntimeError("修复前现场预检失败，未修改任何文件：\n" + "\n".join(conflicts))
     return tuple(pending)
 
 
@@ -365,33 +358,44 @@ def _backup_target(app_root: Path, backup_root: Path, entry: RepairPlanEntry) ->
 def rollback_repair(app_root: Path, backup_root: Path, records: list[TouchRecord]) -> None:
     """按触达顺序逆序恢复修复前状态。"""
 
+    errors: list[str] = []
     for record in reversed(records):
-        target = resolve_under_root(app_root, record.path)
-        if record.existed_before:
-            backup = backup_root / "files" / record.path
-            if not backup.is_file():
-                raise RuntimeError(f"回滚备份不存在：{record.path}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_name(f".{target.name}.repair_rollback.tmp")
-            shutil.copy2(backup, temporary)
-            os.replace(temporary, target)
-        else:
-            if target.is_file() or target.is_symlink():
-                target.unlink(missing_ok=True)
+        try:
+            target = resolve_under_root(app_root, record.path)
+            if record.existed_before:
+                backup = backup_root / "files" / record.path
+                if not backup.is_file():
+                    raise RuntimeError(f"回滚备份不存在：{record.path}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_name(f".{target.name}.repair_rollback.tmp")
+                shutil.copy2(backup, temporary)
+                os.replace(temporary, target)
+            else:
+                if target.is_file() or target.is_symlink():
+                    target.unlink(missing_ok=True)
+        except Exception as exc:
+            traceback.print_exc()
+            errors.append(f"{record.path}: {exc}")
+    if errors:
+        raise RuntimeError("部分文件回滚失败：\n" + "\n".join(errors))
 
 
-def apply_repair_plan(app_root: Path, plan: RepairPlan, backup_root: Path) -> int:
+def apply_repair_plan(app_root: Path, plan: RepairPlan, backup_root: Path, *, target_version: str | None = None, transaction: Transaction | None = None) -> int:
     """执行整批修复，并在任一步骤失败后自动回滚。"""
 
-    validate_repair_plan(app_root, plan)
+    validate_repair_plan(app_root, plan, target_version)
     pending = precheck_targets(app_root, plan)
     records: list[TouchRecord] = []
+    transaction = transaction or Transaction.create(app_root, "repair", plan.version, plan.version)
     repaired_count = 0
     try:
         for entry in pending:
             target = resolve_under_root(app_root, entry.path)
             staged_file = resolve_under_root(app_root, entry.staged_file, "plan.files[].staged_file")
-            existed_before = _backup_target(app_root, backup_root, entry)
+            transaction.prepare(entry.path, entry.sha256)
+            existed_before = target.exists()
+            if backup_root != transaction.directory:
+                _backup_target(app_root, backup_root, entry)
             records.append(TouchRecord(path=entry.path, existed_before=existed_before))
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary = target.with_name(f".{target.name}.{backup_root.name}.tmp")
@@ -406,14 +410,21 @@ def apply_repair_plan(app_root: Path, plan: RepairPlan, backup_root: Path) -> in
                 raise RuntimeError(f"替换后 SHA256 校验失败：{entry.path}")
             repaired_count += 1
             print(f"[修复] {entry.path}")
+        transaction.complete()
+        try:
+            reconcile_recovery(app_root)
+        except Exception:
+            transaction.log_exception('[恢复] 修复完成，但历史事务状态核对失败')
         return repaired_count
     except Exception as exc:
+        transaction.log_exception("[错误] 修复失败")
         rollback_performed = bool(records)
         rollback_succeeded: bool | None = None
         if rollback_performed:
             try:
-                rollback_repair(app_root, backup_root, records)
-                rollback_succeeded = True
+                rollback_succeeded = transaction.rollback()
+                if not rollback_succeeded:
+                    raise RuntimeError("部分文件未能恢复，详见事务日志")
                 print("[回滚] 已恢复本次触达的全部文件", file=sys.stderr)
             except Exception as rollback_error:
                 rollback_succeeded = False
@@ -463,21 +474,25 @@ def main() -> int:
             wait_for_process_exit(args.wait_pid)
         plan_file = _resolve_plan_file(app_root, args.plan)
         try:
-            with acquire_operation_lock(app_root, "repair"):
+            runtime_lock = app_root / "reference_audio" / ".runtime" / "runtime.lock"
+            runtime_lock.parent.mkdir(parents=True, exist_ok=True)
+            with acquire_operation_lock(app_root, "repair"), FileLock(runtime_lock, timeout=0):
                 plan = load_repair_plan(plan_file)
                 recorder.set_identity(plan)
-                backup_root = get_repair_backup_root(app_root) / plan_file.stem
-                backup_root.mkdir(parents=True, exist_ok=False)
+                validate_repair_plan(app_root, plan, args.target_version)
+                transaction = Transaction.create(app_root, "repair", plan.version, plan.version)
+                backup_root = transaction.directory
                 recorder.set_backup_dir(backup_root)
                 recorder.write("running")
-                repaired_count = apply_repair_plan(app_root, plan, backup_root)
+                repaired_count = apply_repair_plan(app_root, plan, backup_root, target_version=args.target_version, transaction=transaction)
                 recorder.write("success", repaired_count=repaired_count)
-                restart_app(parse_restart_command(args.restart_command))
                 print(f"[完成] 已修复 {repaired_count} 个文件，备份目录：{backup_root}")
-                return 0
+            restart_app(parse_restart_command(args.restart_command))
+            return 0
         except OperationLockBusy as exc:
             raise RuntimeError(str(exc)) from exc
     except RepairExecutionFailure as exc:
+        traceback.print_exc()
         print(f"[错误] 修复失败：{exc}", file=sys.stderr)
         recorder.write(
             "failed",
@@ -488,6 +503,7 @@ def main() -> int:
         )
         return 1
     except Exception as exc:
+        traceback.print_exc()
         print(f"[错误] 修复失败：{exc}", file=sys.stderr)
         recorder.write("failed", failed_count=1)
         return 1

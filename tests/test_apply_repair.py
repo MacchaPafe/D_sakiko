@@ -117,8 +117,8 @@ class ApplyRepairTest(unittest.TestCase):
             self.assertEqual((app_root / "missing.py").read_bytes(), b"missing official")
             self.assertEqual((backup / "files" / "main.py").read_bytes(), old)
 
-    def test_precheck_aborts_whole_batch_after_local_change(self) -> None:
-        """检查后再次变化的目标应在任何备份替换前中止整批。"""
+    def test_repair_backs_up_changes_after_scan(self) -> None:
+        """主动修复应备份扫描后的变化，再覆盖为官方内容。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             app_root = Path(temp_dir)
@@ -141,10 +141,37 @@ class ApplyRepairTest(unittest.TestCase):
             )
             plan = load_repair_plan(plan_file)
 
-            with self.assertRaises(RuntimeError):
-                precheck_targets(app_root, plan)
+            self.assertEqual(precheck_targets(app_root, plan), plan.files)
+            (app_root / "version.json").write_text('{"version":"3.2.0"}')
+            backup = app_root / "backup"
+            with patch("tools.apply_repair.detect_platform", return_value="macos"), patch(
+                "tools.apply_repair.detect_arch", return_value="arm64"
+            ):
+                self.assertEqual(apply_repair_plan(app_root, plan, backup), 1)
+            self.assertEqual(current.read_bytes(), b"official")
+            self.assertEqual((backup / "files" / "main.py").read_bytes(), b"changed after scan")
 
-            self.assertEqual(current.read_bytes(), b"changed after scan")
+    def test_explicit_target_repairs_broken_version_file(self) -> None:
+        """明确目标后，损坏的版本文件不应阻止独立执行器修复。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            version_file = root / "version.json"
+            version_file.write_bytes(b"broken json")
+            official = b'{"version":"3.2.0"}'
+            staged, target_sha = stage_file(root, "repair_explicit", official)
+            plan_file = write_plan(root, [{
+                "path": "version.json", "original_state": "modified",
+                "original_sha256": sha256(b"broken json"), "sha256": target_sha,
+                "size": len(official), "mode": "0644", "staged_file": staged,
+            }], name="repair_explicit")
+            plan = load_repair_plan(plan_file)
+            with patch("tools.apply_repair.detect_platform", return_value="macos"), patch(
+                "tools.apply_repair.detect_arch", return_value="arm64"
+            ):
+                with self.assertRaises(Exception):
+                    apply_repair_plan(root, plan, root / "backup")
+                self.assertEqual(apply_repair_plan(root, plan, root / "backup", target_version="3.2.0"), 1)
+            self.assertEqual(version_file.read_bytes(), official)
 
     def test_failure_rolls_back_already_replaced_file(self) -> None:
         """后续文件写入失败时应恢复此前已替换目标。"""

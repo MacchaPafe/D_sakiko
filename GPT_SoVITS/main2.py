@@ -5,6 +5,11 @@ import os,sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, script_dir)
+if __name__ == "__main__":
+    from pathlib import Path
+    from maintenance.bootstrap import recover_before_startup
+    recover_before_startup(Path(project_root))
+
 from ui_main.threads.update_config_thread import UpdateConfigThread
 
 from queue import Queue, Empty

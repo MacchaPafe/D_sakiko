@@ -88,3 +88,7 @@ tools/hpatchz.exe
 *.command
 !run_webui.command
 install_brew.sh
+
+# 独立修复入口与维护说明
+!修复程序.command
+!docs/maintenance-recovery.md

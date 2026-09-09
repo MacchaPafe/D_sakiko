@@ -1,6 +1,12 @@
+from __future__ import annotations
+
 import sys, os,json,re,ast
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+if __name__ == "__main__":
+    from maintenance.bootstrap import recover_before_startup
+    recover_before_startup(Path(__file__).resolve().parents[1])
 
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent

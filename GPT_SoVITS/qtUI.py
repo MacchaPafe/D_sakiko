@@ -118,6 +118,7 @@ from update.update_checker import get_configured_index_urls, read_current_versio
 from update.update_launcher import build_restart_command, launch_update_process
 from update.update_models import DownloadedPatch, UpdatePlan
 from update.update_paths import get_app_root, get_update_result_file, get_version_file
+from maintenance.transactions import pending_transactions, recommended_version
 from repair.repair_checker import PreparedRepair, RepairCheckResult, get_configured_repair_base_urls
 from repair.repair_launcher import launch_repair_process
 from repair.repair_paths import get_repair_result_file
@@ -2237,6 +2238,19 @@ class ChatGUI(QWidget):
 
         layout.addLayout(top_layout)
         layout.addWidget(self.update_banner)
+        self.recovery_banner = QFrame(self)
+        self.recovery_banner.setObjectName("recoveryBanner")
+        self.recovery_banner.setStyleSheet("QFrame#recoveryBanner { border: 1px solid #c75b39; border-radius: 6px; }")
+        recovery_layout = QHBoxLayout(self.recovery_banner)
+        recovery_layout.addWidget(QLabel("部分文件未能恢复，建议修复程序。", self.recovery_banner), 1)
+        recovery_button = QPushButton("修复程序", self.recovery_banner)
+        recovery_button.clicked.connect(self.check_repair_manual)
+        recovery_layout.addWidget(recovery_button)
+        recovery_log = QPushButton("查看日志", self.recovery_banner)
+        recovery_log.clicked.connect(lambda: show_file_in_manager(get_app_root() / ".updates" / "transactions"))
+        recovery_layout.addWidget(recovery_log)
+        self.recovery_banner.setVisible(bool(pending_transactions(get_app_root())))
+        layout.addWidget(self.recovery_banner)
         layout.addWidget(self.chat_display)
         layout.addLayout(slider_layout)
         layout.addWidget(input_panel)
@@ -2276,6 +2290,8 @@ class ChatGUI(QWidget):
     def show_last_update_failure_if_needed(self) -> None:
         """在主窗口启动后提示上次 detached 更新器失败结果。"""
 
+        if pending_transactions(get_app_root()):
+            return
         result_file = get_update_result_file(get_app_root())
         if not result_file.exists():
             return
@@ -2412,7 +2428,7 @@ class ChatGUI(QWidget):
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         self.repair_check_progress = progress
-        self.repair_check_thread = RepairCheckThread(base_urls, self)
+        self.repair_check_thread = RepairCheckThread(base_urls, self, version=recommended_version(get_app_root()))
         progress.canceled.connect(self.repair_check_thread.cancel)  # noqa
         self.repair_check_thread.progressChanged.connect(self._on_repair_check_progress)  # noqa
         self.repair_check_thread.checkFinished.connect(self._on_repair_check_finished)  # noqa
