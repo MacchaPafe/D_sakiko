@@ -31,10 +31,8 @@ import character
 from log import get_logger, setup_logging, shutdown_logging, setup_worker_logging, get_log_queue
 from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
+    NullLive2DModel,
     detect_live2d_runtime_version,
-    initialize_live2d_runtime,
-    load_live2d_runtime,
-    release_live2d_runtime,
 )
 from live2d_support.layout import (
     Live2DLayout,
@@ -43,7 +41,8 @@ from live2d_support.layout import (
     format_live2d_layout_status,
 )
 from live2d_support.motion_semantics import motion_group_display_title
-from live2d_support.runtime_window import recreate_runtime_window
+from live2d_support.runtime_session import Live2DRuntimeSession
+from multi_char_live2d_module import ModelLoadNoticeOverlay
 
 logger = get_logger(__name__)
 
@@ -163,11 +162,11 @@ class Live2DModule:
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         glViewport(0, 0, *display)
-        current_runtime = load_live2d_runtime(detect_live2d_runtime_version(self.PATH_JSON))
-        initialize_live2d_runtime(current_runtime)
+        session = Live2DRuntimeSession()
+        model_notice = ModelLoadNoticeOverlay(display, slot_count=1)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
 
-        viewer_layout: Live2DLayout = default_live2d_layout(detect_live2d_runtime_version(self.PATH_JSON), "single")
+        viewer_layout: Live2DLayout = Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
         layout_editing = False
         layout_dragging = False
         layout_last_mouse_pos: tuple[int, int] | None = None
@@ -198,6 +197,8 @@ class Live2DModule:
         def enter_layout_edit_mode() -> None:
             """进入动作预览窗口的临时布局编辑模式。"""
             nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
+            if not isinstance(model, Live2DModelAdapter):
+                return
             layout_editing = True
             layout_dragging = False
             layout_last_mouse_pos = None
@@ -212,6 +213,7 @@ class Live2DModule:
             update_viewer_caption()
 
         def setup_model(model_adapter: Live2DModelAdapter) -> Live2DModelAdapter:
+            """配置预览模型的尺寸、布局及自动动作。"""
             model_adapter.Resize(win_w_and_h, win_w_and_h)
             apply_viewer_layout(model_adapter)
             model_adapter.SetAutoBlinkEnable(True)
@@ -221,9 +223,10 @@ class Live2DModule:
             return model_adapter
 
         def create_viewer_model(model_json_path: str) -> Live2DModelAdapter:
-            return Live2DModelAdapter.create(model_json_path)
+            """从窗口会话加载预览模型。"""
+            return session.create_model(model_json_path)
 
-        model = setup_model(create_viewer_model(self.PATH_JSON))
+        model: Live2DModelAdapter | NullLive2DModel = NullLive2DModel()
         update_viewer_caption()
         glEnable(GL_TEXTURE_2D)
 
@@ -231,37 +234,40 @@ class Live2DModule:
         texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
 
         def render_background(texture_id: object) -> None:
+            """恢复固定管线后绘制窗口背景。"""
             glUseProgram(0)
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, texture_id)
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
 
-        def switch_model_runtime(model_adapter: Live2DModelAdapter, model_json_path: str) -> Live2DModelAdapter:
-            nonlocal current_runtime, texture, layout_editing, layout_dragging, layout_last_mouse_pos
-            target_version = detect_live2d_runtime_version(model_json_path)
+        def switch_model_runtime(
+                model_adapter: Live2DModelAdapter | NullLive2DModel,
+                model_json_path: str,
+        ) -> Live2DModelAdapter | NullLive2DModel:
+            """立即清空旧模型，在常驻运行时中加载目标模型，失败保留空白。"""
+            nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
             layout_editing = False
             layout_dragging = False
             layout_last_mouse_pos = None
-            if target_version != model_adapter.version:
-                model_adapter.dispose()
-                recreate_result = recreate_runtime_window(
-                    current_runtime=current_runtime,
-                    current_texture=texture,
-                    target_version=target_version,
-                    display=display,
-                    window_position=f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}",
-                    background_path=self.BACK_IMAGE,
-                    render_texture=BackgroundRen.render,
-                )
-                current_runtime = recreate_result.runtime
-                texture = recreate_result.texture
-                reset_transient_viewer_layout(target_version)
-                return setup_model(create_viewer_model(model_json_path))
-
-            reset_transient_viewer_layout(target_version)
-            new_model = setup_model(create_viewer_model(model_json_path))
             model_adapter.dispose()
-            return new_model
+            model_notice.clear()
+            glClear(GL_COLOR_BUFFER_BIT)
+            render_background(texture)
+            pygame.display.flip()
+            candidate: Live2DModelAdapter | None = None
+            try:
+                target_version = detect_live2d_runtime_version(model_json_path)
+                reset_transient_viewer_layout(target_version)
+                candidate = create_viewer_model(model_json_path)
+                return setup_model(candidate)
+            except Exception:
+                if candidate is not None:
+                    candidate.dispose()
+                logger.exception("动作预览模型加载失败：%s", model_json_path)
+                model_notice.set_failed_slots({0})
+                return NullLive2DModel()
+
+        model = switch_model_runtime(model, self.PATH_JSON)
 
         logger.info("当前 Live2D 界面渲染硬件：%s", glGetString(GL_RENDERER).decode())
         while self.run:
@@ -274,7 +280,7 @@ class Live2DModule:
                     if event.key in (pygame.K_ESCAPE, pygame.K_q):
                         exit_layout_edit_mode()
                     elif event.key == pygame.K_r:
-                        reset_transient_viewer_layout(model.version, model)
+                        reset_transient_viewer_layout(model.version, model) if isinstance(model, Live2DModelAdapter) else None
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 3:
                         if layout_editing:
@@ -328,12 +334,13 @@ class Live2DModule:
                     if self.character_list[self.current_character_num].icon_path is not None:
                         pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
                 # 传入一个路径，表示要求加载同角色一个新的 live2d 模型
-                elif os.path.exists(x):
+                elif isinstance(x, str):
                     model = switch_model_runtime(model, x)
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
-                model.StartMotionFile(str(motion_name))
+                if isinstance(model, Live2DModelAdapter):
+                    model.StartMotionFile(str(motion_name))
 
             # 清除缓冲区
             #live2d.clearBuffer()
@@ -344,6 +351,7 @@ class Live2DModule:
             render_background(texture)
 
             model.Draw()
+            model_notice.draw()
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()
@@ -353,7 +361,8 @@ class Live2DModule:
             model.dispose()
         except Exception:
             logger.debug("释放 Live2D 模型失败", exc_info=True)
-        release_live2d_runtime(current_runtime)
+        model_notice.dispose()
+        session.close()
         #结束pygame
         pygame.quit()
 

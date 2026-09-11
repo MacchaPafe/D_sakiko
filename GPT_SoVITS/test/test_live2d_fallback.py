@@ -97,8 +97,6 @@ class TheaterLive2DFallbackPolicyTestCase(unittest.TestCase):
         self.assertIsNone(normalized[0]["model_json_path"])
         self.assertIsNone(normalized[0]["model_version"])
         self.assertEqual(normalized[1]["model_version"], "v3")
-        self.assertEqual(self.module._select_runtime_version([None, None], None), None)
-        self.assertEqual(self.module._select_runtime_version([None, "v3"], None), "v3")
 
     def test_broken_slot_does_not_reject_other_slot(self) -> None:
         """验证一个槽位模型损坏时，另一槽位仍保留可加载版本。"""
