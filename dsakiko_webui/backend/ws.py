@@ -131,7 +131,12 @@ class WebSocketManager:
                     await self.send_json(websocket, command_result(request_id, error=error))
                 except Exception:
                     logger.exception("WebSocket 命令处理失败")
-                    error = ProtocolError("INTERNAL_ERROR", "后端处理命令时出现错误。", True)
+                    storage_error = getattr(getattr(self.runtime, "chat_manager", None), "storage_error", None)
+                    error = (
+                        ProtocolError("CHAT_SAVE_FAILED", storage_error, True)
+                        if storage_error else
+                        ProtocolError("INTERNAL_ERROR", "后端处理命令时出现错误。", True)
+                    )
                     await self.send_json(websocket, command_result(request_id, error=error))
         except WebSocketDisconnect:
             pass

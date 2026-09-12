@@ -48,7 +48,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
+from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
 import sounddevice as sd
 from opencc import OpenCC
@@ -2148,6 +2148,9 @@ class ChatGUI(QWidget):
         self.user_input.sendRequested.connect(self.handle_user_input)  # noqa
         #处理各种消息
         self.QT_message_queue=QT_message_queue
+        self.chat_manager.storage_notice = self.QT_message_queue.put
+        for notice in self.chat_manager.storage_notices:
+            self.QT_message_queue.put(notice)
         self.get_message_thread=CommunicateThreadMessages(self.QT_message_queue)
         self.get_message_thread.message_signal.connect(self.handle_messages)  # noqa
         self.get_message_thread.start()
@@ -2969,7 +2972,8 @@ class ChatGUI(QWidget):
         拖拽侧栏后保存普通对话类型内顺序。
         """
         self.chat_manager.reorder_chats_by_type(ChatType.SINGLE_CHARACTER, ordered_chat_ids)
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
 
     def show_chat_list_menu(self, chat_id: str, global_pos: QPoint) -> None:
         """
@@ -3000,7 +3004,8 @@ class ChatGUI(QWidget):
             return
         try:
             cloned_chat = self.chat_manager.clone_chat(chat_id)
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
         except Exception:
             logger.exception("复制对话失败：chat_id=%s", chat_id)
             QMessageBox.warning(self, "复制失败", "复制对话失败，请稍后重试。")
@@ -3021,7 +3026,8 @@ class ChatGUI(QWidget):
                 self.current_chat_id,
                 fork_after_message_index=msg_index,
             )
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
         except Exception:
             logger.exception("分叉对话失败：chat_id=%s, msg_index=%s", self.current_chat_id, msg_index)
             QMessageBox.warning(self, "分叉失败", "分叉对话失败，请稍后重试。")
@@ -3090,7 +3096,8 @@ class ChatGUI(QWidget):
             return
         try:
             result = self.chat_manager.import_chats_from_backup(input_path)
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
         except Exception:
             logger.exception("导入对话失败：%s", input_path)
             QMessageBox.warning(self, "导入失败", "这不是有效的 D_sakiko 对话文件。")
@@ -3259,7 +3266,8 @@ class ChatGUI(QWidget):
             QMessageBox.warning(self, "提示", "对话名称不能为空")
             return
         chat.name = new_name
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self.refresh_chat_list()
 
     def _chat_sidebar_mode(self) -> ChatSidebarMode:
@@ -3339,7 +3347,8 @@ class ChatGUI(QWidget):
             dialog.chat_name(),
             user_character=dialog.selected_user_persona(),
         )
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self.refresh_chat_list()
         self.switch_chat_by_id(new_chat.chat_id)
 
@@ -3388,7 +3397,8 @@ class ChatGUI(QWidget):
             delete_chat_attachment_dir(deleted_chat.chat_id)
         except Exception:
             logger.exception("删除对话附件目录失败：chat_id=%s", deleted_chat.chat_id)
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self._schedule_attachment_reachability_cleanup()
         self.refresh_chat_list()
         self._show_delete_success_message("已删除对话", audio_failed)
@@ -3666,7 +3676,8 @@ class ChatGUI(QWidget):
     def _save_tool_calling_config(self) -> None:
         """保存当前对话的工具调用配置。"""
         try:
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
             self.setWindowTitle("已更新工具调用设置")
         except Exception:
             logger.exception("保存工具调用设置失败")
@@ -3725,7 +3736,8 @@ class ChatGUI(QWidget):
     def _save_reasoning_config(self) -> None:
         """保存当前对话的推理配置。"""
         try:
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
             self.setWindowTitle("已更新推理设置")
         except Exception:
             logger.exception("保存推理设置失败")
@@ -4376,7 +4388,8 @@ class ChatGUI(QWidget):
             missing,
             "图片本地文件缺失且远端引用不可用，用户确认忽略后继续发送。",
         )
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self.refresh_current_chat_display()
         return True
 
@@ -4671,13 +4684,15 @@ class ChatGUI(QWidget):
             self.voice_button.setEnabled(True)
             self.setWindowTitle("数字小祥")
 
-    def closeEvent(self, a0):
-        try:
-            self.chat_manager.save()
-            self.stop_input_stream()
-        finally:
-            self.remote_attachment_manager.shutdown()
-            a0.accept()
+    def closeEvent(self, a0: QCloseEvent) -> None:
+        """保存失败时暂停关闭，只有保存或明确放弃后才释放资源。"""
+        from runtime.storage_ui import save_before_close
+        if not save_before_close(self.chat_manager, self):
+            a0.ignore()
+            return
+        self.stop_input_stream()
+        self.remote_attachment_manager.shutdown()
+        a0.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
         if self.motion_complete_value.value:
@@ -4996,7 +5011,8 @@ class ChatGUI(QWidget):
             result.deleted_messages,
             should_delete_audio,
         )
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self._schedule_attachment_reachability_cleanup()
         self._load_tool_call_records_cache()
         self.refresh_current_chat_display()
@@ -5007,7 +5023,8 @@ class ChatGUI(QWidget):
     def _save_after_message_content_edit(self, msg_index: int) -> None:
         """保存消息内容编辑结果，并刷新相关界面状态。"""
         invalidate_rolling_summary_from_message_index(self.current_chat, msg_index)
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self._load_tool_call_records_cache()
         self.refresh_current_chat_display()
         self.refresh_chat_list()
@@ -5242,7 +5259,8 @@ class ChatGUI(QWidget):
                     self.refresh_current_chat_display()
                 self.refresh_chat_list()
                 self.schedule_context_usage_refresh()
-                self.chat_manager.save()
+                if not self._save_chat():
+                    return
             return
         if event_type != "assistant_segment_ready":
             return
@@ -5439,7 +5457,8 @@ class ChatGUI(QWidget):
         self.messages_box.append("已终止当前回复")
         self.refresh_chat_list()
         self.schedule_context_usage_refresh()
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
 
     @staticmethod
     def _format_live2d_display_text(text: str, translation: str = "") -> str:
@@ -5511,6 +5530,11 @@ class ChatGUI(QWidget):
     def _execute_confirmed_input_command(self, spec: CommandSpec, source: str, payload: str) -> None:
         """执行已经通过确认的输入框命令。"""
         self.setWindowTitle("数字小祥")
+
+        if spec.command == "bye":
+            if self.close():
+                self._send_internal_command_payload({"type": "exit"}, force=True)
+            return
 
         if spec.command == "save":
             self.save_data()
@@ -5622,7 +5646,8 @@ class ChatGUI(QWidget):
                 self.current_chat.clear_custom_live2d_model_meta(character_name)
             else:
                 self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
         except Exception:
             self.QT_message_queue.put("切换模型失败，保存对话模型配置时出错。")
             logger.exception("保存对话级 Live2D 模型配置失败。")
@@ -5737,10 +5762,20 @@ class ChatGUI(QWidget):
         })
         self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
 
+    def _save_chat(self) -> bool:
+        """保存失败时提示用户，并让调用者停止后续成功流程。"""
+        try:
+            self.chat_manager.save()
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", f"未保存内容仍在内存中，请重试。\n{exc}")
+            return False
+
     def save_data(self):
         # 使用 ChatManager 统一保存到 all_conversation.json
         try:
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
             self.setWindowTitle("已保存最新的聊天记录！")
         except Exception:
             logger.exception("保存聊天记录失败")
@@ -5798,7 +5833,8 @@ class ChatGUI(QWidget):
 
     def handle_messages(self,message):
         if message=='bye':
-            self.save_data()
+            if not self.isVisible():
+                return
             self.close()
             return
 

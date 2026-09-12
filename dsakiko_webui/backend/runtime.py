@@ -45,6 +45,7 @@ class HeadlessRuntime:
         self.status_message = "等待初始化。"
         self.status_progress: float | None = 0.0
         self.error_message: str | None = None
+        self._last_storage_notice: dict[str, object] | None = None
         self.session_id = f"session_{uuid.uuid4().hex}"
         self.phase = "idle"
         self.active_chat_id: str | None = None
@@ -76,7 +77,7 @@ class HeadlessRuntime:
             import audio_generator
             import character
             import dp_local2
-            from chat.chat import get_chat_manager
+            from chat.chat import ChatType, get_chat_manager
 
             character_manager = character.GetCharacterAttributes()
             self.characters = list(character_manager.character_class_list)
@@ -87,7 +88,10 @@ class HeadlessRuntime:
                 item.character_folder_name: self.assets.register_character(item)
                 for item in self.characters
             }
-            self.chat_manager = get_chat_manager()
+            self.chat_manager = get_chat_manager(write_scope=ChatType.SINGLE_CHARACTER)
+            self.chat_manager.storage_notice = self._storage_notice
+            for notice in self.chat_manager.storage_notices:
+                self._storage_notice(notice)
 
             self._set_status("starting", "loading_llm", "正在初始化聊天运行时。", 0.45)
             self.dp_chat = dp_local2.DSLocalAndVoiceGen(self.characters, self.chat_manager)
@@ -154,7 +158,7 @@ class HeadlessRuntime:
             self._set_status("ready", "ready", "WebUI 后端已就绪。", 1.0)
         except Exception as exc:
             self.error_message = str(exc)
-            self._set_status("error", "initialization_failed", "后端初始化失败，请查看电脑端日志。", None)
+            self._set_status("error", "initialization_failed", f"后端初始化失败：{exc}", None)
             raise
 
     def _set_status(self, state: str, stage: str, message: str, progress: float | None) -> None:
@@ -381,7 +385,18 @@ class HeadlessRuntime:
             events = [self._local_event("chat_list_snapshot", self.chat_list_snapshot())]
             if self.chat_manager.single_character_chats():
                 events.append(self._local_event("state_snapshot", self.state_snapshot(), self.dp_chat.current_chat_id))
+            if self._last_storage_notice is not None:
+                if self._last_storage_notice["code"] != "CHAT_SAVE_FAILED" or self.chat_manager.storage_error:
+                    events.append(self._local_event("error", {"error": self._last_storage_notice}))
             return {"accepted": True}, events
+        if command_type == "save_chats":
+            with self._lock:
+                try:
+                    self.chat_manager.save()
+                except Exception as exc:
+                    raise ProtocolError("CHAT_SAVE_FAILED", str(exc), True) from exc
+                self._last_storage_notice = None
+            return {"saved": True}, []
         if command_type == "get_chat_list":
             return {"accepted": True}, [self._local_event("chat_list_snapshot", self.chat_list_snapshot())]
         if command_type == "ping":
@@ -1099,12 +1114,23 @@ class HeadlessRuntime:
                 self.dp_chat.clear_cancelled_turn(chat_id, turn_id)
             self.chat_manager.save()
 
+    def _storage_notice(self, message: str) -> None:
+        """通过网页现有错误提示通道传递保存失败或损坏恢复通知。"""
+        failed = message.startswith("聊天记录保存失败")
+        self._last_storage_notice = {
+            "code": "CHAT_SAVE_FAILED" if failed else "CHAT_STORAGE_RECOVERED",
+            "message": message, "retryable": failed, "details": {},
+        }
+        self.events.put(self._local_event("error", {"error": self._last_storage_notice}))
+
     def shutdown(self) -> None:
+        # 正常终端退出时，先处理保存结果，再销毁运行实例。
+        if self.chat_manager is not None:
+            from runtime.conversation_storage import save_before_terminal_close
+            save_before_terminal_close(self.chat_manager.save)
         self.status = "stopping"
         self._stopping.set()
         if self.dp_chat is not None:
             self.command_queue.put({"type": "exit"})
         if self.audio_gen is not None:
             self.audio_gen.shutdown_worker()
-        if self.chat_manager is not None:
-            self.chat_manager.save()

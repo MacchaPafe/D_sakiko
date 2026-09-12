@@ -27,7 +27,7 @@ import dp_local2
 import audio_generator
 import live2d_module
 import qtUI
-from chat.chat import get_chat_manager
+from chat.chat import ChatType, get_chat_manager
 
 from emotion_enum import EmotionEnum
 from log import setup_logging, get_logger, get_log_queue, setup_worker_logging, shutdown_logging
@@ -491,7 +491,12 @@ if __name__=='__main__':
     characters=get_all.character_class_list
 
     # 初始化全局 ChatManager（自动处理旧版聊天记录迁移）
-    chat_manager = get_chat_manager()
+    try:
+        chat_manager = get_chat_manager(write_scope=ChatType.SINGLE_CHARACTER)
+    except Exception as exc:
+        runtime_lease.release()
+        print(f"聊天记录初始化失败：{exc}")
+        raise SystemExit(1)
     chat_manager.ensure_default_single_character_chat(characters)
 
     #模块间传参队列

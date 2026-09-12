@@ -126,6 +126,9 @@ function AppExperience() {
         <div className="error-toast" role="alert">
           <AlertTriangle size={18} />
           <span>{state.error.message}</span>
+          {state.error.code === 'CHAT_SAVE_FAILED' && (
+            <button type="button" onClick={actions.retryChatSave}>重试保存</button>
+          )}
           <IconButton label="关闭" onClick={actions.clearError}>
             <X size={17} />
           </IconButton>

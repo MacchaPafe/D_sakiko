@@ -18,6 +18,7 @@ os.chdir(script_dir)
 
 from character import CharacterAttributes
 from log import get_logger, setup_worker_logging
+from runtime.audio_files import allocate_output_wav_path
 from qconfig import d_sakiko_config
 
 logger = get_logger(__name__)
@@ -703,21 +704,6 @@ def build_language_mapping(i18n_translator) -> dict[str, str]:
     }
 
 
-def allocate_output_wav_path(output_dir: str) -> str:
-    """为本次生成分配一个新的输出音频路径。"""
-    count_file = '../reference_audio/audio_generate_count.txt'
-    try:
-        with open(count_file, 'r', encoding='utf-8') as file:
-            generate_count = int(file.read())
-    except (FileNotFoundError, ValueError):
-        generate_count = 0
-    output_wav_path = os.path.join(output_dir, f"output{generate_count}.wav")
-    generate_count += 1
-    with open(count_file, 'w', encoding='utf-8') as file:
-        file.write(str(generate_count))
-    return output_wav_path
-
-
 def put_ack(result_queue, command: str, character_name: str, ok: bool, request_id: str = '') -> None:
     """向主进程返回一条命令确认结果。"""
     result_queue.put(
@@ -959,10 +945,12 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
                 progress_callback=report_tts_progress,
             )
             output_dir = cast(str, payload.get("output_dir", "../reference_audio/generated_audios_temp"))
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
             output_wav_path = allocate_output_wav_path(output_dir)
-            sf.write(output_wav_path, last_audio_data, last_sampling_rate)
+            try:
+                sf.write(output_wav_path, last_audio_data, last_sampling_rate)
+            except BaseException:
+                os.unlink(output_wav_path)
+                raise
             from_gptsovits_queue.put(
                 {
                     "type": "synthesize_result",

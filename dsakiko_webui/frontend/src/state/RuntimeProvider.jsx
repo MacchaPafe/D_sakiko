@@ -468,6 +468,15 @@ export function RuntimeProvider({ children }) {
     dispatch({ type: 'clear_error' })
   }, [])
 
+  const retryChatSave = useCallback(async () => {
+    try {
+      await client.command('save_chats', {})
+      dispatch({ type: 'clear_error' })
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+    }
+  }, [client])
+
   const loadSettings = useCallback(async () => {
     try {
       return await getSettings()
@@ -512,6 +521,7 @@ export function RuntimeProvider({ children }) {
       retryLive2D,
       setDisplayLanguage,
       clearError,
+      retryChatSave,
       loadSettings,
       saveSettings,
       showNotice,
@@ -524,6 +534,7 @@ export function RuntimeProvider({ children }) {
     cancelTurn,
     checkConnection,
     clearError,
+    retryChatSave,
     closeChatList,
     createChat,
     loadLive2DModelOptions,
