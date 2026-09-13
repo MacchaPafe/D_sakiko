@@ -154,8 +154,7 @@ class LauncherWindow(QDialog):
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, "启动失败", str(exc))
             return
-        self.buttons[key].setEnabled(False)
-        self.status_labels[key].setText("已启动，正在运行。")
+        self.refresh_buttons()
         self.notice.setText(f"已启动{ENTRY_BY_KEY[key].title}。首次加载可能需要一些时间。")
         if key == "update":
             self.close()
@@ -165,10 +164,24 @@ class LauncherWindow(QDialog):
             self.buttons[key].setEnabled(True)
             self.status_labels[key].setText(ENTRY_BY_KEY[key].description)
             if code:
-                self.notice.setText(f"{ENTRY_BY_KEY[key].title}异常退出（{code}），请查看启动日志。")
-                QMessageBox.warning(self, "程序已退出", f"{ENTRY_BY_KEY[key].title}运行时出现错误（{code}）。\n启动日志：{log_path}")
+                self.notice.setText(f"{ENTRY_BY_KEY[key].title}已结束（非零退出码：{code} / "
+                                    f"0x{code & 0xFFFFFFFF:08X}），可以再次启动。"
+                                    "若非主动结束，请检查程序日志；退出码已记录在启动日志中。")
             else:
                 self.notice.setText(f"{ENTRY_BY_KEY[key].title}已关闭，可以再次启动。")
+        self.refresh_buttons()
+
+    def refresh_buttons(self) -> None:
+        for key in self.buttons:
+            reason = self.processes.blocked_reason(key)
+            self.buttons[key].setEnabled(reason is None)
+            self.buttons[key].setToolTip(reason or "")
+            item = self.processes.running.get(key)
+            if item and item.process.poll() is None:
+                text = "已启动，在独立终端中运行。"
+            else:
+                text = reason or ENTRY_BY_KEY[key].description
+            self.status_labels[key].setText(text)
 
     def open_logs(self) -> None:
         path = self.root / "logs/launcher"

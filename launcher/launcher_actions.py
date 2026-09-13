@@ -86,22 +86,34 @@ class LauncherProcesses:
         self.executable = executable or sys.executable
         self.running: dict[str, RunningEntry] = {}
 
-    def start(self, key: str, *, package: Path | None = None) -> Path:
+    def blocked_reason(self, key: str) -> str | None:
         previous = self.running.get(key)
         if previous and previous.process.poll() is None:
-            raise RuntimeError("这个程序已从当前启动器打开，请先关闭它的窗口。")
+            return "这个程序已从当前启动器打开，请先关闭它的窗口。"
+        other_key = {"desktop": "webui", "webui": "desktop"}.get(key)
+        other = self.running.get(other_key)
+        if other and other.process.poll() is None:
+            return f"请先关闭{ENTRY_BY_KEY[other_key].title}，桌面端与 WebUI 不能同时运行。"
+        return None
+
+    def start(self, key: str, *, package: Path | None = None) -> Path:
+        reason = self.blocked_reason(key)
+        if reason:
+            raise RuntimeError(reason)
         if key == "update" and any(item.process.poll() is None for item in self.running.values()):
             raise RuntimeError("请先关闭当前启动器打开的程序，再执行更新。")
         command, cwd = build_command(key, self.root, self.executable, package=package, wait_pid=os.getpid())
         log_dir = self.root / "logs/launcher"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{key}_{datetime.now():%Y%m%d_%H%M%S_%f}.log"
-        options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS} if os.name == "nt" else {"start_new_session": True}
+        # 独立控制台直接接收输入、输出；启动器退出不会关闭子程序。
+        options = {"creationflags": subprocess.CREATE_NEW_CONSOLE} if os.name == "nt" else {"start_new_session": True}
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
-        with log_path.open("ab") as output:
-            process = subprocess.Popen(command, cwd=str(cwd), stdin=subprocess.DEVNULL,
-                                       stdout=output, stderr=output, close_fds=True, env=env, **options)
+        # 日志只记录启动信息，运行输出交给程序自己的控制台。
+        log_path.write_text(f"工作目录：{cwd}\n命令：{subprocess.list2cmdline(command)}\n"
+                            "运行输出显示在独立终端中。\n", encoding="utf-8")
+        process = subprocess.Popen(command, cwd=str(cwd), close_fds=True, env=env, **options)
         self.running[key] = RunningEntry(process, log_path)
         return log_path
 
@@ -110,6 +122,13 @@ class LauncherProcesses:
         for key, item in list(self.running.items()):
             code = item.process.poll()
             if code is not None:
+                try:
+                    with item.log_path.open("a", encoding="utf-8") as output:
+                        output.write(f"退出时间：{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                                     f"退出码：{code}（0x{code & 0xFFFFFFFF:08X}）\n")
+                except OSError:
+                    # 日志不可写不能阻止释放入口。
+                    pass
                 results.append((key, code, item.log_path))
                 del self.running[key]
         return results

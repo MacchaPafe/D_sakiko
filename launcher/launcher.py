@@ -9,7 +9,7 @@ import traceback
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(root / "GPT_SoVITS"))
+    sys.path.insert(0, str(root / "launcher"))
     try:
         from launcher_ui import run
         return run(root)
