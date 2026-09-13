@@ -103,12 +103,19 @@ class DSakikoConfig(QConfig):
     llm_temperature = RangeConfigItem("llm_setting", "llm_temperature", 1.0, validator=RangeValidator(0.0, 2.0))
     # 模型的 top-p
     llm_top_p = RangeConfigItem("llm_setting", "llm_top_p", 1.0, validator=RangeValidator(0.0, 1.0))
+    # 是否启用实验性的滚动上下文压缩；关闭时使用传统滑动窗口
+    enable_rolling_summary = OptionsConfigItem(
+        "llm_setting",
+        "enable_rolling_summary",
+        False,
+        validator=BoolValidator(),
+    )
     # 上下文达到模型输入上限的指定比例后触发历史记录压缩
     rolling_summary_trigger_ratio = RangeConfigItem(
         "llm_setting",
         "rolling_summary_trigger_ratio",
-        0.60,
-        validator=RangeValidator(0.20, 0.80),
+        0.80,
+        validator=RangeValidator(0.70, 0.90),
     )
     # 是否仍然展示不符合格式要求的模型回复
     display_unformatted_llm_response = OptionsConfigItem("llm_setting", "display_unformatted_llm_response", False,
@@ -176,8 +183,10 @@ class DSakikoConfig(QConfig):
     l2d_json_paths_dict = ConfigItem("character_setting", "l2d_json_paths_dict", {})
     # 默认的 live2d 背景图片选择
     background_image_path = ConfigItem("character_setting", "background_image_path", "")
-    # Live2D 模型布局配置，key 为模型 json 的项目相对路径，value 按 single/theater 场景保存缩放和平移。
+    # Live2D 模型布局配置，key 为模型 json 的项目相对路径，value 按场景和客户端保存缩放和平移。
     live2d_model_layouts = ConfigItem("character_setting", "live2d_model_layouts", {})
+    # Live2D 模型布局配置结构版本，用于启动时执行一次性迁移。
+    live2d_layout_schema_version = ConfigItem("character_setting", "live2d_layout_schema_version", 1)
 
     # 普通聊天侧栏的展示模式：flat 为平铺模式，folded 为按角色折叠模式
     chat_sidebar_mode = OptionsConfigItem("ui_state", "chat_sidebar_mode", "flat",
@@ -894,6 +903,27 @@ def normalize_deepseek_model_config(cfg: DSakikoConfig):
             cfg.set(cfg.llm_api_model, models)
 
 
+def migrate_live2d_layouts(raw_layouts: object) -> dict[str, object]:
+    """将旧版按场景保存的布局迁移为按场景和客户端保存。"""
+    if not isinstance(raw_layouts, dict):
+        return {}
+    migrated: dict[str, object] = {}
+    for model_key, raw_model_layout in raw_layouts.items():
+        if not isinstance(model_key, str) or not isinstance(raw_model_layout, dict):
+            continue
+        model_layout: dict[str, object] = {}
+        for scene, raw_scene_layout in raw_model_layout.items():
+            if scene not in ("single", "theater") or not isinstance(raw_scene_layout, dict):
+                model_layout[scene] = raw_scene_layout
+                continue
+            if any(client in raw_scene_layout for client in ("desktop", "web")):
+                model_layout[scene] = dict(raw_scene_layout)
+            else:
+                model_layout[scene] = {"desktop": dict(raw_scene_layout)}
+        migrated[model_key] = model_layout
+    return migrated
+
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # 全局唯一配置实例
@@ -911,6 +941,14 @@ with d_sakiko_config:
     migrate_from_old_config(d_sakiko_config)
     # 尝试从另一套旧版统一配置文件迁移配置
     migrate_from_legacy_d_sakiko_config(d_sakiko_config, enable_warning=True)
+    schema_version = d_sakiko_config.live2d_layout_schema_version.value
+    if not isinstance(schema_version, int) or schema_version < 2:
+        try:
+            migrated_layouts = migrate_live2d_layouts(d_sakiko_config.live2d_model_layouts.value)
+            d_sakiko_config.set(d_sakiko_config.live2d_model_layouts, migrated_layouts)
+            d_sakiko_config.set(d_sakiko_config.live2d_layout_schema_version, 2)
+        except Exception as exc:
+            warnings.warn(f"[Warning]Live2D 布局配置迁移失败，将在下次启动时重试：{exc}")
     normalize_deepseek_model_config(d_sakiko_config)
 
 

@@ -31,7 +31,8 @@ from repair.repair_paths import (
     make_repair_run_id,
 )
 from repair.repair_security import verify_manifest_signature
-from update.update_checker import detect_arch, detect_platform, read_current_version
+from maintenance.identity import detect_arch, detect_platform, read_current_version
+from repair.repair_manifest import version_key
 from update.update_paths import get_version_file
 
 
@@ -204,6 +205,7 @@ def fetch_manifest(
         raise RepairServiceUnavailable("尚未配置程序文件修复资源地址")
     own_session = session is None
     http = session or _new_session()
+    version_key(version)
     relative = manifest_relative_url(version, platform_name, arch)
     errors: list[str] = []
     not_found_count = 0
@@ -275,6 +277,7 @@ def check_integrity(
     app_root: Path,
     base_urls: tuple[str, ...],
     *,
+    version: str | None = None,
     session: HttpSession | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -282,7 +285,8 @@ def check_integrity(
     """获取当前版本 manifest 并扫描本地完整性。"""
 
     try:
-        version = read_current_version(get_version_file(app_root))
+        version = version or read_current_version(get_version_file(app_root))
+        version_key(version)
     except Exception as exc:
         raise RepairError("无法识别当前版本，请重新安装或升级到新版本") from exc
     platform_name = detect_platform()

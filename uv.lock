@@ -209,11 +209,14 @@ wheels = [
 
 [[package]]
 name = "bidict"
-version = "0.23.1"
+version = "0.24.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9a/6e/026678aa5a830e07cd9498a05d3e7e650a4f56a42f267a53d22bcda1bdc9/bidict-0.23.1.tar.gz", hash = "sha256:03069d763bc387bbd20e7d49914e75fc4132a41937fa3405417e1a5a2d006d71", size = 29093, upload-time = "2024-02-18T19:09:05.748Z" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/f2/8d2dd8276ca05e1f5157b6a0d34efb2f585f47a0fbed61e8aad04b221f0b/bidict-0.24.1.tar.gz", hash = "sha256:4dca6c17f0b01700e9f24359daa5ebabf7be022d99f4cb2a257b6af2a5076c88", size = 30818, upload-time = "2026-08-25T23:45:52.214Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/37/e8730c3587a65eb5645d4aba2d27aae48e8003614d6aaf15dda67f702f1f/bidict-0.23.1-py3-none-any.whl", hash = "sha256:5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5", size = 32764, upload-time = "2024-02-18T19:09:04.156Z" },
+    { url = "https://files.pythonhosted.org/packages/97/53/2a3c7d562271ec6b6e38e7216b3104899f8aa4180c0713cb8aaf69e29cd5/bidict-0.24.1-py3-none-any.whl", hash = "sha256:fd3eaa737917d8a14f4baa391670c433c4e3f6f5fd2cd99d4bf436437f432364", size = 36175, upload-time = "2026-08-25T23:45:51.096Z" },
 ]
 
 [[package]]
@@ -463,7 +466,7 @@ wheels = [
 
 [[package]]
 name = "d-sakiko"
-version = "3.2.0"
+version = "3.5.0"
 source = { virtual = "." }
 dependencies = [
     { name = "av" },
@@ -486,9 +489,9 @@ dependencies = [
     { name = "ko-pron" },
     { name = "librosa" },
     { name = "litellm" },
-    { name = "live2d-py", version = "0.7.0.4+d.sakiko.2", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "live2d-py", version = "0.7.0.4+d.sakiko.2", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "sys_platform == 'linux' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
-    { name = "live2d-py", version = "0.7.0.4+d.sakiko.2", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl" }, marker = "sys_platform == 'win32' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "live2d-py", version = "0.7.0.4+d.sakiko.4", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-macosx_14_0_universal2.whl" }, marker = "(sys_platform != 'linux' and sys_platform != 'win32') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "live2d-py", version = "0.7.0.4+d.sakiko.4", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "sys_platform == 'linux' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "live2d-py", version = "0.7.0.4+d.sakiko.4", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-win_amd64.whl" }, marker = "sys_platform == 'win32' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "modelscope" },
     { name = "numba" },
     { name = "numpy" },
@@ -507,6 +510,7 @@ dependencies = [
     { name = "pyqt-fluent-widgets" },
     { name = "pyqt5" },
     { name = "pyqt5-qt5", version = "5.15.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "pytest" },
     { name = "python-mecab-ko", marker = "sys_platform != 'win32' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
     { name = "pytorch-lightning" },
     { name = "pyyaml" },
@@ -515,6 +519,7 @@ dependencies = [
     { name = "requests" },
     { name = "rotary-embedding-torch" },
     { name = "scipy" },
+    { name = "segno" },
     { name = "sentence-transformers" },
     { name = "sentencepiece" },
     { name = "sounddevice" },
@@ -596,11 +601,11 @@ requires-dist = [
     { name = "ko-pron", specifier = ">=1.3" },
     { name = "librosa", specifier = "==0.10.2" },
     { name = "litellm", specifier = ">=1.83" },
-    { name = "live2d-py", marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and sys_platform == 'linux') or (platform_machine != 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')", specifier = "==0.7.0.4+d.sakiko.2" },
-    { name = "live2d-py", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" },
-    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" },
-    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { name = "live2d-py", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl" },
+    { name = "live2d-py", marker = "(platform_machine != 'arm64' and platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'x86_64' and sys_platform == 'linux') or (platform_machine != 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')", specifier = "==0.7.0.4+d.sakiko.4" },
+    { name = "live2d-py", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-macosx_14_0_universal2.whl" },
+    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-macosx_14_0_universal2.whl" },
+    { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { name = "live2d-py", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-win_amd64.whl" },
     { name = "modelscope", specifier = ">=1.32.0" },
     { name = "nicegui", marker = "extra == 'rag'", specifier = ">=2.12.1" },
     { name = "numba", specifier = ">=0.62.1,<0.63" },
@@ -623,6 +628,7 @@ requires-dist = [
     { name = "pyqt5", marker = "sys_platform == 'win32'", specifier = ">=5.15.11" },
     { name = "pyqt5-qt5", marker = "sys_platform == 'win32'", specifier = ">=5.15,<=5.15.2" },
     { name = "pysubs2", marker = "extra == 'rag'", specifier = ">=1.8.1" },
+    { name = "pytest", specifier = ">=9.1.1" },
     { name = "python-mecab-ko", marker = "sys_platform != 'win32'", specifier = ">=1.3.7" },
     { name = "pytorch-lightning", specifier = ">=2.4" },
     { name = "pyyaml", specifier = ">=6.0.3" },
@@ -632,6 +638,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.32.5" },
     { name = "rotary-embedding-torch", specifier = ">=0.8.9" },
     { name = "scipy", specifier = ">=1.16.3" },
+    { name = "segno", specifier = ">=1.6.6,<2" },
     { name = "sentence-transformers", specifier = ">=5.3.0" },
     { name = "sentencepiece", specifier = ">=0.2.1" },
     { name = "sounddevice", specifier = ">=0.5.3" },
@@ -1330,6 +1337,15 @@ wheels = [
 ]
 
 [[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
 name = "itsdangerous"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1554,8 +1570,8 @@ wheels = [
 
 [[package]]
 name = "live2d-py"
-version = "0.7.0.4+d.sakiko.2"
-source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl" }
+version = "0.7.0.4+d.sakiko.4"
+source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-macosx_14_0_universal2.whl" }
 resolution-markers = [
     "platform_machine == 'arm64' and sys_platform == 'darwin'",
     "platform_machine == 'x86_64' and sys_platform == 'darwin'",
@@ -1566,7 +1582,7 @@ dependencies = [
     { name = "pyopengl", marker = "(sys_platform != 'linux' and sys_platform != 'win32') or (sys_platform == 'linux' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128') or (sys_platform == 'win32' and extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
 wheels = [
-    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-macosx_14_0_universal2.whl", hash = "sha256:b1e4f99be74bd282d6672d301aee9da455ceda0c51b6b33a585bcbf5dcddddec" },
+    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-macosx_14_0_universal2.whl", hash = "sha256:fd9fb67b287921dceba90423db6c9b38d24a0d3125d1a788cb38b4fad432154c" },
 ]
 
 [package.metadata]
@@ -1578,8 +1594,8 @@ requires-dist = [
 
 [[package]]
 name = "live2d-py"
-version = "0.7.0.4+d.sakiko.2"
-source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+version = "0.7.0.4+d.sakiko.4"
+source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -1589,7 +1605,7 @@ dependencies = [
     { name = "pyopengl", marker = "sys_platform == 'linux' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
 wheels = [
-    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:43567399011bcc767a8b6878fab8abf0d1da8511a19b4cd62ad960b1b169b9f9" },
+    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9fe78e986dff10849cefb534306b7b5c4df1b3d99f9130152a7860d352e858c5" },
 ]
 
 [package.metadata]
@@ -1601,8 +1617,8 @@ requires-dist = [
 
 [[package]]
 name = "live2d-py"
-version = "0.7.0.4+d.sakiko.2"
-source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl" }
+version = "0.7.0.4+d.sakiko.4"
+source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-win_amd64.whl" }
 resolution-markers = [
     "platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
@@ -1612,7 +1628,7 @@ dependencies = [
     { name = "pyopengl", marker = "sys_platform == 'win32' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
 ]
 wheels = [
-    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.2/live2d_py-0.7.0.4%2Bd.sakiko.2-cp38-abi3-win_amd64.whl", hash = "sha256:2584ebbdf59fecdbae7f98a6d254b7c4dddc7b02819e0b1dd47ebceeec669658" },
+    { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v0.7.0.4%2Bd_sakiko.4/live2d_py-0.7.0.4%2Bd.sakiko.4-cp38-abi3-win_amd64.whl", hash = "sha256:0b3c408b62f18294d619317d14cce3edd06fb82e4bbe56ca3372804c84a94bd6" },
 ]
 
 [package.metadata]
@@ -2455,6 +2471,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cf/86/0248f086a84f01b37aaec0fa567b397df1a119f73c16f6c7a9aac73ea309/platformdirs-4.5.1.tar.gz", hash = "sha256:61d5cdcc6065745cdd94f0f878977f8de9437be93de97c1c12f853c9c0cdcbda", size = 21715, upload-time = "2025-12-05T13:52:58.638Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/28/3bfe2fa5a7b9c46fe7e13c97bda14c895fb10fa2ebf1d0abb90e0cea7ee1/platformdirs-4.5.1-py3-none-any.whl", hash = "sha256:d03afa3963c806a9bed9d5125c8f4cb2fdaf74a55ab60e5d59b3fde758104d31", size = 18731, upload-time = "2025-12-05T13:52:56.823Z" },
+]
+
+[[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
 ]
 
 [[package]]
@@ -5152,6 +5177,22 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-d-sakiko-cpu' and extra == 'extra-8-d-sakiko-cu128')" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -5174,14 +5215,14 @@ wheels = [
 
 [[package]]
 name = "python-engineio"
-version = "4.13.5"
+version = "4.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "simple-websocket" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/d8/65cc479ab697a2e7fdee83a9bd8a06b61ec68bf763a58a302cf161bf38bb/python_engineio-4.13.5.tar.gz", hash = "sha256:b5764d62243e3ffbc4c76dda3d7897c329dc52294c80c27105f9faa054e76897", size = 80035, upload-time = "2026-08-12T22:52:23.78Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/65/f8bae11b228647e2e2f45b63dec7448efaddb7cb51f529de1fdba69e63b5/python_engineio-4.14.0.tar.gz", hash = "sha256:eaa1e386baf9c2c7959eef7f9d9165c5ea910c5b392f5316e78d29ed073cb43d", size = 80863, upload-time = "2026-08-30T19:52:01.32Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/01/f804208061b504894546fddc479f6075e0f00dfe88cb1703dafaa8c3c67e/python_engineio-4.13.5-py3-none-any.whl", hash = "sha256:05c9f4951d242ad33d613b4245299562e5f64e4199f00e5390f9888505831704", size = 59963, upload-time = "2026-08-12T22:52:22.5Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/de/07cfd386974c2a26a7bde41f2111be29bbfc92b9ea0bb76694415a4a1a78/python_engineio-4.14.0-py3-none-any.whl", hash = "sha256:9f0fe275fb7d67bfc1a632421adf22949fd4843bd9c458c004b0a89cede302a2", size = 60291, upload-time = "2026-08-30T19:51:59.776Z" },
 ]
 
 [[package]]
@@ -5280,10 +5321,10 @@ wheels = [
 
 [[package]]
 name = "pywin32"
-version = "311"
+version = "312"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/8f/9bb81dd5bb77d22243d33c8397f09377056d5c687aa6d4042bea7fbf8364/pywin32-311-cp311-cp311-win_amd64.whl", hash = "sha256:3ce80b34b22b17ccbd937a6e78e7225d80c52f5ab9940fe0506a1a16f3dab503", size = 9508308, upload-time = "2025-07-14T20:13:15.147Z" },
+    { url = "https://files.pythonhosted.org/packages/35/c4/dcd2d62b5944b6d5db53413a5899016ccd57ffcb7278f3f81655d25d2027/pywin32-312-cp311-cp311-win_amd64.whl", hash = "sha256:d11417d84412f859b722fad0841b3614459ed0047f7542d8362e77884f6b6e8a", size = 6928825, upload-time = "2026-06-04T07:49:23.934Z" },
 ]
 
 [[package]]
@@ -5570,6 +5611,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ca/6e/8942461cf2636cdae083e3eb72622a7fbbfa5cf559c7d13ab250a5dbdc01/scipy-1.16.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0151a0749efeaaab78711c78422d413c583b8cdd2011a3c1d6c794938ee9fdb2", size = 35899798, upload-time = "2025-10-28T17:32:12.665Z" },
     { url = "https://files.pythonhosted.org/packages/39/c1/1903de608c0c924a1749c590064e65810f8046e437aba6be365abc4f7557/scipy-1.16.3-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:deb3841c925eeddb6afc1e4e4a45e418d19ec7b87c5df177695224078e8ec733", size = 38878540, upload-time = "2025-10-28T17:32:23.907Z" },
     { url = "https://files.pythonhosted.org/packages/f1/d0/22ec7036ba0b0a35bccb7f25ab407382ed34af0b111475eb301c16f8a2e5/scipy-1.16.3-cp311-cp311-win_amd64.whl", hash = "sha256:53c3844d527213631e886621df5695d35e4f6a75f620dca412bcd292f6b87d78", size = 38722107, upload-time = "2025-10-28T17:32:29.921Z" },
+]
+
+[[package]]
+name = "segno"
+version = "1.6.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/2e/b396f750c53f570055bf5a9fc1ace09bed2dff013c73b7afec5702a581ba/segno-1.6.6.tar.gz", hash = "sha256:e60933afc4b52137d323a4434c8340e0ce1e58cec71439e46680d4db188f11b3", size = 1628586, upload-time = "2025-03-12T22:12:53.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/02/12c73fd423eb9577b97fc1924966b929eff7074ae6b2e15dd3d30cb9e4ae/segno-1.6.6-py3-none-any.whl", hash = "sha256:28c7d081ed0cf935e0411293a465efd4d500704072cdb039778a2ab8736190c7", size = 76503, upload-time = "2025-03-12T22:12:48.106Z" },
 ]
 
 [[package]]

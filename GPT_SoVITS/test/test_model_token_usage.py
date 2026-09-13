@@ -101,6 +101,65 @@ class ModelTokenUsageTestCase(unittest.TestCase):
             runtime_error,
         )
 
+    def test_count_message_tokens_adds_file_cost_without_mutating_messages(self) -> None:
+        """统计 file 内容块时应移除副本中的块并按出现次数补回成本。"""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "看图"},
+                    {"type": "file", "file_id": "file-1"},
+                    {
+                        "type": "tool_result",
+                        "content": [{"type": "file", "file_id": "file-1"}],
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "file", "file_id": "file-2"}],
+            },
+        ]
+        original_messages = repr(messages)
+
+        with mock.patch("litellm.token_counter", return_value=17) as token_counter:
+            token_count = model_token_usage.count_message_tokens(
+                "test/model",
+                messages,
+                file_token_cost=384,
+            )
+
+        self.assertEqual(token_count, 17 + 3 * 384)
+        self.assertEqual(repr(messages), original_messages)
+        sanitized_messages = token_counter.call_args.kwargs["messages"]
+        self.assertNotIn('"type": "file"', repr(sanitized_messages))
+        self.assertEqual(sanitized_messages[1]["content"], [])
+
+    def test_count_message_tokens_keeps_legacy_file_behavior_without_policy(self) -> None:
+        """未传入文件策略时应原样交给 LiteLLM。"""
+        messages = [{
+            "role": "user",
+            "content": [{"type": "file", "file_id": "file-1"}],
+        }]
+
+        with mock.patch("litellm.token_counter", return_value=9) as token_counter:
+            token_count = model_token_usage.count_message_tokens("test/model", messages)
+
+        self.assertEqual(token_count, 9)
+        token_counter.assert_called_once_with(model="test/model", messages=messages)
+
+    def test_count_message_tokens_rejects_invalid_file_cost(self) -> None:
+        """文件 token 成本必须是正整数。"""
+        messages = [{"role": "user", "content": "hello"}]
+        for invalid_cost in (True, 0, -1, 1.5):
+            with self.subTest(invalid_cost=invalid_cost):
+                with self.assertRaises(ValueError):
+                    model_token_usage.count_message_tokens(
+                        "test/model",
+                        messages,
+                        file_token_cost=invalid_cost,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

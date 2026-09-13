@@ -20,20 +20,40 @@ from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
 from log import get_logger
 
-from chat.chat import Chat, Message, ChatManager, MessageAttachment
-from chat.attachments import import_image_attachment, model_supports_image_upload
+from chat.chat import (
+    AttachmentSerializationContext,
+    Chat,
+    Message,
+    ChatManager,
+    MessageAttachment,
+)
+from chat.attachments import (
+    chat_attachment_dir,
+    import_image_attachment,
+    model_supports_image_upload,
+    resolve_attachment_path,
+)
+from chat.remote_attachments import (
+    DEEPSEEK_FILE_IMAGE_TOKEN_COST,
+    DeepSeekFileServiceConfig,
+    MissingLocalAttachmentError,
+    RemoteAttachmentManager,
+    RemoteAttachmentError,
+    build_deepseek_file_service_config,
+)
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from chat.model_token_usage import count_message_tokens, get_model_input_token_limit
 from chat.rolling_summary import (
     DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO,
-    ROLLING_SUMMARY_MAX_TOKENS,
     SUMMARY_FAILURE_COOLDOWN_SECONDS,
     build_llm_query_with_rolling_summary,
     build_rolling_summary_update,
     context_reaches_summary_threshold,
+    rolling_summary_token_budget,
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
+    trim_messages_with_sliding_window,
 )
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
@@ -157,6 +177,7 @@ class DSLocalAndVoiceGen:
         self.audio_language_choice = self.audio_language[1]
         # 缓存的配置，只在每次开始请求时更新，避免中途配置被修改导致问题
         self.d_sakiko_config = create_d_sakiko_config_snapshot()
+        self.remote_attachment_manager = RemoteAttachmentManager()
 
         try:
             self.model = __import__('live2d_1').get_live2d()
@@ -194,6 +215,7 @@ class DSLocalAndVoiceGen:
         # 标记为取消的对话轮次。涉及这些轮次的对话不会被处理。
         self._cancelled_turns: set[tuple[str, str]] = set()
         self._cancelled_turns_lock = threading.Lock()
+        self._rollback_user_message_on_error = True
         self.initial()
 
     def initial(self):
@@ -272,21 +294,35 @@ class DSLocalAndVoiceGen:
             self._cancelled_turns.discard((chat_id, turn_id))
 
     def _prepare_runtime_messages(self, messages: list[dict[str, object]]) -> list[dict[str, object]]:
-        """为主请求构造只读副本，并在逼近上限时执行最后一道紧急裁剪。"""
+        """根据上下文管理模式为主请求构造只读副本。"""
         model = self._current_litellm_model_name()
         token_limit = get_model_input_token_limit(model)
-        prepared = trim_messages_for_emergency(
+        trim_func = (
+            trim_messages_for_emergency
+            if self._rolling_summary_enabled()
+            else trim_messages_with_sliding_window
+        )
+        prepared = trim_func(
             messages,
             model=model,
             token_limit=token_limit,
+            file_token_cost=self._current_file_token_cost(),
         )
         if len(prepared) < len(messages):
             logger.warning(
-                "主请求上下文逼近模型上限，已仅对本次请求执行紧急裁剪：%d -> %d 条消息。",
+                "主请求上下文超过当前模式限制，已仅对本次请求执行裁剪：%d -> %d 条消息。",
                 len(messages),
                 len(prepared),
             )
         return prepared
+
+    def _rolling_summary_enabled(self) -> bool:
+        """返回当前轮次是否启用实验性的滚动上下文压缩。"""
+        config = getattr(self, "d_sakiko_config", None)
+        if config is None:
+            return True  # 兼容未经过完整初始化的旧调用与测试替身
+        item = getattr(config, "enable_rolling_summary", None)
+        return bool(getattr(item, "value", False))
 
     @staticmethod
     def concat_provider_and_model(provider: str, model: str) -> str:
@@ -324,7 +360,20 @@ class DSLocalAndVoiceGen:
         """
         self._clear_text_generating_flag_if_needed(is_text_generating_queue)
         if rollback_user_message and self.current_chat.message_list:
-            self.current_chat.message_list.pop()
+            removed_message = self.current_chat.message_list.pop()
+            for attachment in removed_message.attachments:
+                try:
+                    attachment_path = resolve_attachment_path(attachment.path)
+                    expected_root = chat_attachment_dir(self.current_chat.chat_id).resolve()
+                    attachment_path.resolve().relative_to(expected_root)
+                    attachment_path.unlink(missing_ok=True)
+                except (OSError, ValueError):
+                    logger.warning("回滚消息时未能删除本地附件：%s", attachment.path)
+            service = self._current_deepseek_file_service()
+            self.remote_attachment_manager.submit_reconcile_and_cleanup(
+                self._formal_attachments(),
+                [service] if service is not None else [],
+            )
 
     @staticmethod
     def _truncate_error_detail(text: str, limit: int = 1800) -> str:
@@ -414,7 +463,10 @@ class DSLocalAndVoiceGen:
         )
         ui_message = f"{user_message}"
         self._emit_turn_error(dp2qt_queue, chat_id, turn_id, ui_message)
-        self._clear_failed_turn_state(is_text_generating_queue, rollback_user_message=True)
+        self._clear_failed_turn_state(
+            is_text_generating_queue,
+            rollback_user_message=self._rollback_user_message_on_error,
+        )
 
     def _build_runtime_system_instruction(self) -> str:
         """
@@ -437,11 +489,11 @@ class DSLocalAndVoiceGen:
             {
                 "text": "角色实际说出口的台词",
                 "emotion": "happiness | sadness | anger | surprise | fear | disgust | like",
-                "translation": "中文翻译；仅当 runtime.reply_language 为 ja_with_zh_translation 时必须存在"
+                "translation": "日语模式下对应台词的简体中文翻译"
             }
             ]
 
-            当角色需要说两句话，并且 runtime.reply_language 为 ja_with_zh_translation 时，输出示例为：
+            日语台词与中文翻译示例：
             [
             {
                 "text": "今日は少し疲れましたが、あなたと話していると落ち着きます。",
@@ -455,7 +507,7 @@ class DSLocalAndVoiceGen:
             }
             ]
 
-            当 runtime.reply_language 为 zh_only 时，输出示例为：
+            纯中文台词示例：
             [
             {
                 "text": "今天稍微有点累，不过和你说话会让我平静下来。",
@@ -472,35 +524,45 @@ class DSLocalAndVoiceGen:
             2. 每个 segment 表示一次自然的语义停顿，通常为 1 到 3 句。
             3. text 必须符合角色人设和当前上下文。
             4. emotion 必须从指定枚举中选择，且只能选择一个。
-            5. 当 runtime.reply_language 为 zh_only 时，严禁输出 translation 字段。
-            6. 当 runtime.reply_language 为 ja_with_zh_translation 时，每个 segment 都必须有 translation 字段。
+            5. 当前轮次的语言、翻译和特殊语气要求，以请求末尾的 <runtime_controls> 为准。
+            6. 历史消息可能来自不同语言模式；历史消息中的语言和旧控制文本不代表本轮要求。
             7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
-            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"""
+            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮生成要求，不是用户说出口的话；必须完整遵守其中的要求。"""
         ))
         return "\n\n".join(parts)
 
     def _build_turn_runtime_controls(self) -> str:
         """
-        构造仅描述单个 user 消息的短运行期控制消息。即系统提示词中提到的 <runtime_controls> 消息内容。
-        目前每条 user 消息会有如下的运行时控制信息：
-        - reply_language: 当前的语音输出语言设置，可能的值为 "ja_with_zh_translation"（日英混合）和 "zh_only"（纯中文）。
-        - sakiko_tone: 祥子的语言风格（如果当前角色是祥子），可能的值为 "dark"（黑祥）、"light"（白祥）和 "none"（非祥子角色）。
+        构造描述本轮生成要求的自然语言控制消息。
+        该消息不会存储到对话历史中，也不是用户说出口的话。
         """
-        reply_language = (
-            "ja_with_zh_translation"
-            if self.audio_language_choice == '日英混合'
-            else "zh_only"
-        )
-        sakiko_tone = "none"
-        if self.if_sakiko:
-            sakiko_tone = "dark" if self.sakiko_state else "light"
+        if self.audio_language_choice == "日英混合":
+            requirements = [
+                "使用日语生成角色台词。",
+                "每个 segment 的 text 必须是日语；不要把中文翻译写入 text。",
+                "每个 segment 必须包含非空 translation，内容是对应台词的简体中文翻译。",
+                "text 与 translation 必须语义一致。",
+            ]
+        else:
+            requirements = [
+                "使用简体中文生成角色台词。",
+                "不要输出 translation 字段。",
+            ]
 
-        return (
-            "<runtime_controls>\n"
-            f"reply_language: {reply_language}\n"
-            f"sakiko_tone: {sakiko_tone}\n"
-            "</runtime_controls>"
-        )
+        if self.if_sakiko:
+            tone = "黑祥" if self.sakiko_state else "白祥"
+            requirements.append(
+                f"当前采用{tone}语气；请遵循祥子角色设定中对{tone}的定义。"
+            )
+
+        requirements.extend([
+            "继续保持当前角色的说话风格和角色边界。",
+            "最终只输出符合 Machine Output Contract 的 JSON array。",
+            "本消息是程序控制信息，不是用户说的话。",
+        ])
+        return "<runtime_controls>\n本轮回复要求：\n" + "\n".join(
+            f"{index}. {requirement}" for index, requirement in enumerate(requirements, 1)
+        ) + "\n</runtime_controls>"
 
     @staticmethod
     def _append_runtime_controls_message(messages: list[dict[str, object]], controls: str) -> None:
@@ -702,15 +764,35 @@ class DSLocalAndVoiceGen:
         """
         基于当前对话构造发送给 LLM 的请求副本。
         """
-        messages = [
-            dict(one)
-            # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
-            for one in build_llm_query_with_rolling_summary(
+        service = self._current_deepseek_file_service()
+        attachment_context = (
+            AttachmentSerializationContext(
+                mode="deepseek_file",
+                api_base=service.api_base,
+                api_key_digest=service.api_key_digest,
+            )
+            if service is not None
+            else None
+        )
+        if self._rolling_summary_enabled():
+            query_messages = build_llm_query_with_rolling_summary(
                 self.current_chat,
                 perspective=character_name,
                 is_simplify=True,
                 include_translation=self.audio_language_choice == '日英混合',
+                attachment_context=attachment_context,
             )
+        else:
+            query_messages = self.current_chat.build_llm_query(
+                perspective=character_name,
+                is_simplify=True,
+                include_translation=self.audio_language_choice == '日英混合',
+                attachment_context=attachment_context,
+            )
+        messages = [
+            dict(one)
+            # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
+            for one in query_messages
         ]
         runtime_system_instruction = self._build_runtime_system_instruction()
         system_idx = -1
@@ -730,6 +812,106 @@ class DSLocalAndVoiceGen:
         self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
         return messages
 
+    def _count_current_request_tokens(
+            self,
+            messages: list[dict[str, object]],
+    ) -> int:
+        """按本轮冻结配置统计请求 token，并应用 provider-specific file 策略。"""
+        model = self._current_litellm_model_name()
+        file_token_cost = self._current_file_token_cost()
+        if file_token_cost is None:
+            return count_message_tokens(model, messages)
+        return count_message_tokens(
+            model,
+            messages,
+            file_token_cost=file_token_cost,
+        )
+
+    def estimate_current_context_tokens(self, character_name: str) -> int:
+        """估算当前对话下一次实际请求携带的 token 数，供 UI 预览使用。"""
+        messages = self._build_llm_messages_for_chat_turn(character_name)
+        prepared_messages = self._prepare_runtime_messages(messages)
+        return self._count_current_request_tokens(prepared_messages)
+
+    def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
+        """从本轮冻结配置中解析 DeepSeek Files 服务作用域。"""
+        config = getattr(self, "d_sakiko_config", None)
+        if config is None:
+            return None
+        if config.use_default_deepseek_api.value:
+            return None
+        if config.enable_custom_llm_api_provider.value:
+            return build_deepseek_file_service_config(
+                provider_id="custom",
+                model=str(config.custom_llm_api_model.value or ""),
+                api_base=str(config.custom_llm_api_url.value or ""),
+                api_key=str(config.custom_llm_api_key.value or ""),
+            )
+        provider = str(config.llm_api_provider.value or "")
+        models = config.llm_api_model.value
+        keys = config.llm_api_key.value
+        bases = config.llm_api_base_url.value
+        model = str(models.get(provider, "") if isinstance(models, dict) else "")
+        api_key = str(keys.get(provider, "") if isinstance(keys, dict) else "")
+        api_base = str(bases.get(provider, "") if isinstance(bases, dict) else "")
+        return build_deepseek_file_service_config(
+            provider_id=provider,
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+        )
+
+    def _current_file_token_cost(self) -> int | None:
+        """返回本轮请求所需的 provider-specific file token 估算成本。"""
+        config = getattr(self, "d_sakiko_config", None)
+        required_fields = (
+            "use_default_deepseek_api",
+            "enable_custom_llm_api_provider",
+            "llm_api_provider",
+            "llm_api_model",
+            "llm_api_key",
+            "llm_api_base_url",
+        )
+        if config is None or any(
+                not hasattr(config, field) for field in required_fields
+        ):
+            return None
+        if self._current_deepseek_file_service() is None:
+            return None
+        return DEEPSEEK_FILE_IMAGE_TOKEN_COST
+
+    def _formal_attachments(self) -> list[MessageAttachment]:
+        """返回全部聊天中的正式附件，供可达性扫描使用。"""
+        return [
+            attachment
+            for chat in self.chat_manager.chat_list
+            for message in chat.message_list
+            for attachment in message.attachments
+        ]
+
+    def _ensure_current_deepseek_file_references(
+            self,
+            service: DeepSeekFileServiceConfig,
+    ) -> None:
+        """为当前会话视图中的用户图片确保可用远端引用。"""
+        changed = False
+        for message in self.current_chat.message_list:
+            if message.character_name != "User":
+                continue
+            for attachment in message.attachments:
+                if not attachment.is_image() or attachment.availability == "unavailable":
+                    continue
+                before = [reference.as_dict() for reference in attachment.remote_refs]
+                self.remote_attachment_manager.ensure_remote_reference(attachment, service)
+                if before != [reference.as_dict() for reference in attachment.remote_refs]:
+                    changed = True
+        if changed:
+            self.chat_manager.save()
+            self.remote_attachment_manager.submit_reconcile_and_cleanup(
+                self._formal_attachments(),
+                [service],
+            )
+
     def _maybe_update_rolling_summary(
         self,
         chat: Chat,
@@ -739,6 +921,8 @@ class DSLocalAndVoiceGen:
         turn_id: str = "",
     ) -> bool:
         """在当前请求达到用户设置的阈值时，同步生成并保存累计摘要。"""
+        if not self._rolling_summary_enabled():
+            return False
         model = self._current_litellm_model_name()
         token_limit = get_model_input_token_limit(model)
         if token_limit is None:
@@ -746,7 +930,7 @@ class DSLocalAndVoiceGen:
             return False
 
         try:
-            used_tokens = count_message_tokens(model, current_request_messages)
+            used_tokens = self._count_current_request_tokens(current_request_messages)
         except Exception:
             logger.exception("统计滚动摘要触发 token 数失败，继续使用当前上下文。")
             return False
@@ -799,7 +983,7 @@ class DSLocalAndVoiceGen:
                 tool_choice="none",
                 stream=False,
                 timeout=30,
-                max_tokens=ROLLING_SUMMARY_MAX_TOKENS,
+                max_tokens=rolling_summary_token_budget(token_limit),
                 _reasoning_snapshot_locked=True,
             )
             summary_text = self._extract_response_content(response).strip()
@@ -928,6 +1112,175 @@ class DSLocalAndVoiceGen:
             "可切换其他模型、明日再试或更换 API 提供商。"
         )
 
+    def _execute_deepseek_multimodal_completion(
+            self,
+            completion_kwargs: dict[str, object],
+            service: DeepSeekFileServiceConfig,
+    ) -> object:
+        """通过 OpenAI SDK 发送 DeepSeek 多模态请求并修复一次失效引用。"""
+        request_kwargs = dict(completion_kwargs)
+        messages = request_kwargs.get("messages")
+        if not isinstance(messages, list):
+            raise ValueError("DeepSeek 多模态请求缺少 messages。")
+        for attempt in range(2):
+            try:
+                return self._openai_deepseek_chat_completion(request_kwargs, service)
+            except Exception as exc:
+                if attempt == 0 and self._is_invalid_deepseek_file_error(exc):
+                    repaired_messages = self._repair_deepseek_file_references(messages, service)
+                    request_kwargs["messages"] = repaired_messages
+                    messages = repaired_messages
+                    continue
+                raise self._map_openai_bad_request_for_existing_handlers(exc, service) from exc
+        raise RuntimeError("DeepSeek 文件引用修复重试意外结束。")
+
+    @staticmethod
+    def _openai_deepseek_chat_completion(
+            completion_kwargs: dict[str, object],
+            service: DeepSeekFileServiceConfig,
+    ) -> object:
+        """把统一补全参数转换为 OpenAI SDK 的 DeepSeek 请求。"""
+        from openai import OpenAI
+
+        request_kwargs = dict(completion_kwargs)
+        request_kwargs.pop("api_key", None)
+        request_kwargs.pop("base_url", None)
+        request_kwargs.pop(CACHE_DEBUG_PHASE_KEY, None)
+        timeout = request_kwargs.pop("timeout", 30)
+        request_kwargs.pop("max_retries", None)
+        request_kwargs["model"] = service.model
+
+        extra_body = request_kwargs.get("extra_body")
+        normalized_extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
+        thinking = request_kwargs.pop("thinking", None)
+        if isinstance(thinking, dict):
+            thinking_type = str(thinking.get("type") or "disabled")
+            normalized_extra_body["thinking"] = {
+                "type": "enabled" if thinking_type == "enabled" else "disabled"
+            }
+        reasoning_effort = request_kwargs.pop("reasoning_effort", None)
+        thinking_body = normalized_extra_body.get("thinking")
+        thinking_disabled = (
+            isinstance(thinking_body, dict)
+            and thinking_body.get("type") == "disabled"
+        )
+        if reasoning_effort is not None and not thinking_disabled:
+            normalized_extra_body["reasoning_effort"] = (
+                "max" if reasoning_effort == "xhigh" else reasoning_effort
+            )
+        if thinking_disabled:
+            normalized_extra_body.pop("reasoning_effort", None)
+        if normalized_extra_body:
+            request_kwargs["extra_body"] = normalized_extra_body
+        else:
+            request_kwargs.pop("extra_body", None)
+
+        client = OpenAI(
+            api_key=service.api_key,
+            base_url=service.api_base,
+            timeout=timeout,
+            max_retries=0,
+        )
+        response = client.chat.completions.create(**request_kwargs)
+        request_for_log = dict(request_kwargs)
+        request_for_log["api_base"] = service.api_base
+        log_prompt_cache_usage(response, request_for_log, logger)
+        return response
+
+    @staticmethod
+    def _is_invalid_deepseek_file_error(exc: BaseException) -> bool:
+        """保守识别 DeepSeek 返回的无效或跨账号 file ID 错误。"""
+        status_code = getattr(exc, "status_code", None)
+        if status_code != 400:
+            return False
+        text = DSLocalAndVoiceGen._format_exception_details(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "invalid file_id",
+                "file_ids do not exist",
+                "not created under your account",
+            )
+        )
+
+    def _repair_deepseek_file_references(
+            self,
+            messages: list[object],
+            service: DeepSeekFileServiceConfig,
+    ) -> list[dict[str, object]]:
+        """重新上传请求中使用的附件，并替换 messages 内的 file ID。"""
+        requested_file_ids = {
+            str(part.get("file_id") or "")
+            for message in messages
+            if isinstance(message, dict)
+            for content in [message.get("content")]
+            if isinstance(content, list)
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "file"
+        }
+        replacements: dict[str, str] = {}
+        for message in self.current_chat.message_list:
+            for attachment in message.attachments:
+                current = attachment.remote_reference_for(*service.scope_key)
+                if current is None or current.file_id not in requested_file_ids:
+                    continue
+                old_file_id = current.file_id
+                self.remote_attachment_manager.invalidate_remote_reference(attachment, service)
+                replacement = self.remote_attachment_manager.ensure_remote_reference(
+                    attachment,
+                    service,
+                )
+                replacements[old_file_id] = replacement.file_id
+        if not replacements:
+            raise RemoteAttachmentError("DeepSeek 拒绝了 file_id，但本地找不到对应附件。")
+        self.chat_manager.save()
+        repaired: list[dict[str, object]] = []
+        for raw_message in messages:
+            if not isinstance(raw_message, dict):
+                continue
+            message = dict(raw_message)
+            content = message.get("content")
+            if isinstance(content, list):
+                repaired_content: list[object] = []
+                for raw_part in content:
+                    if not isinstance(raw_part, dict):
+                        repaired_content.append(raw_part)
+                        continue
+                    part = dict(raw_part)
+                    file_id = str(part.get("file_id") or "")
+                    if part.get("type") == "file" and file_id in replacements:
+                        part["file_id"] = replacements[file_id]
+                    repaired_content.append(part)
+                message["content"] = repaired_content
+            repaired.append(message)
+        self.remote_attachment_manager.submit_reconcile_and_cleanup(
+            self._formal_attachments(),
+            [service],
+        )
+        return repaired
+
+    @staticmethod
+    def _map_openai_bad_request_for_existing_handlers(
+            exc: BaseException,
+            service: DeepSeekFileServiceConfig,
+    ) -> BaseException:
+        """把 OpenAI SDK 的 400 错误映射为现有 LiteLLM 兼容异常。"""
+        try:
+            from openai import BadRequestError as OpenAIBadRequestError
+        except ImportError:
+            return exc
+        if not isinstance(exc, OpenAIBadRequestError):
+            return exc
+        import litellm
+
+        return litellm.exceptions.BadRequestError(
+            message=str(exc),
+            model=service.model,
+            llm_provider="deepseek",
+            response=getattr(exc, "response", None),
+            body=getattr(exc, "body", None),
+        )
+
     def _completion_with_current_config(
         self,
         model: object,
@@ -1035,6 +1388,15 @@ class DSLocalAndVoiceGen:
         # 合并运行时参数并发起请求。runtime_kwargs 不允许覆盖上面确定的核心请求字段。
         completion_kwargs.update(runtime_kwargs)
         completion_kwargs[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
+        deepseek_file_service = self._current_deepseek_file_service()
+        if (
+                deepseek_file_service is not None
+                and Chat.messages_contain_image_content(messages)
+        ):
+            return self._execute_deepseek_multimodal_completion(
+                completion_kwargs,
+                deepseek_file_service,
+            )
         return self._execute_completion_with_provider_policy(
             provider_id,
             completion_kwargs,
@@ -1440,6 +1802,40 @@ class DSLocalAndVoiceGen:
         if not isinstance(raw_paths, list):
             return []
         return [path for path in raw_paths if isinstance(path, str) and path]
+
+    @staticmethod
+    def _draft_attachment_ids_from_command(command: dict[str, object]) -> list[str]:
+        """从前端命令中提取由附件管理器登记的草稿 ID。"""
+        raw_attachments = command.get("draft_attachments")
+        if not isinstance(raw_attachments, list):
+            return []
+        result: list[str] = []
+        for raw_attachment in raw_attachments:
+            if not isinstance(raw_attachment, dict):
+                continue
+            draft_id = raw_attachment.get("draft_attachment_id")
+            if isinstance(draft_id, str) and draft_id:
+                result.append(draft_id)
+        return result
+
+    def _commit_draft_attachments(
+            self,
+            chat_id: str,
+            draft_attachment_ids: Sequence[str],
+            service: DeepSeekFileServiceConfig | None,
+    ) -> list[MessageAttachment]:
+        """二次核对服务作用域，并把图片草稿转为正式附件。"""
+        attachments: list[MessageAttachment] = []
+        for draft_id in draft_attachment_ids:
+            if service is not None:
+                self.remote_attachment_manager.ensure_draft_remote_reference(
+                    draft_id,
+                    service,
+                )
+            attachments.append(
+                self.remote_attachment_manager.commit_draft_attachment(draft_id, chat_id)
+            )
+        return attachments
 
     def _import_image_source_attachments(
         self,
@@ -1878,6 +2274,11 @@ class DSLocalAndVoiceGen:
         if legacy_command == "clr":
             self.current_chat.clear_message_list()
             self._session_tool_call_records.clear()
+            service = self._current_deepseek_file_service()
+            self.remote_attachment_manager.submit_reconcile_and_cleanup(
+                self._formal_attachments(),
+                [service] if service is not None else [],
+            )
             message_queue.put("已清空当前对话的聊天记录")
             time.sleep(2)
             return True
@@ -1916,22 +2317,39 @@ class DSLocalAndVoiceGen:
         from chat.reminder_manager import ReminderManager
         # 使用闭包回调直接将消息推入当前函数内的 qt2dp_queue，让下一次循环被读写
         reminder_mgr = ReminderManager(trigger_callback=lambda msg: qt2dp_queue.put(msg))
+        live2d_tool_context: dict[str, str | None] = {
+            "chat_id": None,
+            "turn_id": None,
+        }
         
         # --- 注册依赖前端环境的动态工具 ---
         def _get_char_folder() -> str:
             return self.get_current_character().character_folder_name
 
         def _change_live2d_model(new_model_json: str) -> None:
-            character_name = self.get_current_character().character_name
+            """保存 AI 选择的服装；默认模型恢复为跟随角色配置。"""
+            from live2d_support.model_catalog import Live2DModelCatalog
+
+            character = self.get_current_character()
+            character_name = character.character_name
+            project_root = Path(__file__).resolve().parents[1]
+            catalog = Live2DModelCatalog(project_root / "live2d_related", project_root)
+            option = catalog.find_by_path(character.character_folder_name, new_model_json)
             try:
-                self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
+                if option is not None and option.is_default:
+                    self.current_chat.clear_custom_live2d_model_meta(character_name)
+                else:
+                    self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
                 self.chat_manager.save()
             except Exception:
                 logger.exception("工具调用切换 Live2D 模型失败")
                 return
             change_char_queue.put({
                 "type": "switch_live2d",
+                "chat_id": live2d_tool_context["chat_id"],
+                "turn_id": live2d_tool_context["turn_id"],
                 "character_name": character_name,
+                "character_folder_name": character.character_folder_name,
                 "model_json": new_model_json,
             })
 
@@ -1998,13 +2416,16 @@ class DSLocalAndVoiceGen:
             command_text = command.get("text")
             raw_user_input = str(command_text if command_text is not None else "")
             image_source_paths = self._image_source_paths_from_command(command)
-            if not raw_user_input and not image_source_paths:
+            draft_attachment_ids = self._draft_attachment_ids_from_command(command)
+            if not raw_user_input and not image_source_paths and not draft_attachment_ids:
                 raw_user_input = "（什么也没说）"
             # 获得 qtUI 给我们的 turn id
             # 如果 qtUI 没有提供 turn_id，我们就自己生成一个，保证每轮对话都有唯一 id 供后续追踪和关联工具调用使用。
             raw_turn_id = command.get("turn_id")
             turn_id = raw_turn_id if isinstance(raw_turn_id, str) and raw_turn_id else uuid.uuid4().hex
             active_chat_id = chat.chat_id
+            live2d_tool_context["chat_id"] = active_chat_id
+            live2d_tool_context["turn_id"] = turn_id
             # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
             # 不过一般人手速没这么快吧（
             if self.is_turn_cancelled(active_chat_id, turn_id):
@@ -2014,8 +2435,9 @@ class DSLocalAndVoiceGen:
             # 复制一份模型配置，防止一轮对话中间配置修改导致出错。
             # 图片导入前也需要使用本轮锁定的模型配置判断视觉能力。
             self.d_sakiko_config = create_d_sakiko_config_snapshot()
+            deepseek_file_service = self._current_deepseek_file_service()
 
-            if image_source_paths and not self._current_model_supports_vision():
+            if (image_source_paths or draft_attachment_ids) and not self._current_model_supports_vision():
                 self._emit_business_turn_error(
                     dp2qt_queue,
                     active_chat_id,
@@ -2025,14 +2447,40 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
 
-            imported_attachments: list[MessageAttachment] = []
-            if image_source_paths:
+            if deepseek_file_service is not None:
                 try:
-                    imported_attachments = self._import_image_source_attachments(
+                    self._ensure_current_deepseek_file_references(deepseek_file_service)
+                except MissingLocalAttachmentError as exc:
+                    self._emit_business_turn_error(
+                        dp2qt_queue,
                         active_chat_id,
-                        image_source_paths,
+                        turn_id,
+                        str(exc),
                     )
+                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                    continue
+
+            imported_attachments: list[MessageAttachment] = []
+            if image_source_paths or draft_attachment_ids:
+                try:
+                    if draft_attachment_ids:
+                        imported_attachments.extend(
+                            self._commit_draft_attachments(
+                                active_chat_id,
+                                draft_attachment_ids,
+                                deepseek_file_service,
+                            )
+                        )
+                    if image_source_paths:
+                        imported_attachments.extend(
+                            self._import_image_source_attachments(
+                                active_chat_id,
+                                image_source_paths,
+                            )
+                        )
                 except Exception as exc:
+                    for draft_id in draft_attachment_ids:
+                        self.remote_attachment_manager.rollback_commit(draft_id)
                     self._emit_business_turn_error(
                         dp2qt_queue,
                         active_chat_id,
@@ -2043,6 +2491,7 @@ class DSLocalAndVoiceGen:
                     continue
 
             should_append_user_message = command.get("append_user_message") is not False
+            self._rollback_user_message_on_error = should_append_user_message
             did_append_real_user_message = False
             turn_worldbook_snapshot: WorldbookTurnSnapshot | None = None
             raw_worldbook_snapshot = command.get("worldbook_snapshot")
@@ -2074,9 +2523,15 @@ class DSLocalAndVoiceGen:
                 did_append_real_user_message = Chat.is_real_user_message(user_msg)
                 if imported_attachments:
                     try:
+                        if deepseek_file_service is not None:
+                            self._ensure_current_deepseek_file_references(
+                                deepseek_file_service
+                            )
                         self.chat_manager.save()
                     except Exception as exc:
                         self.current_chat.message_list.pop()
+                        for draft_id in draft_attachment_ids:
+                            self.remote_attachment_manager.rollback_commit(draft_id)
                         self._emit_business_turn_error(
                             dp2qt_queue,
                             active_chat_id,
@@ -2085,6 +2540,13 @@ class DSLocalAndVoiceGen:
                         )
                         self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                         continue
+                    if draft_attachment_ids:
+                        dp2qt_queue.put({
+                            "type": "user_message_committed",
+                            "chat_id": active_chat_id,
+                            "turn_id": turn_id,
+                            "draft_attachment_ids": list(draft_attachment_ids),
+                        })
 
             worldbook_diagnostic = self._start_worldbook_diagnostic(
                 active_chat_id,

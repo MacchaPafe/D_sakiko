@@ -23,6 +23,7 @@ from chat.chat import (
     ChatType,
     Message,
     MessageAttachment,
+    RemoteFileReference,
     SingleCharacterPromptGenerator,
     StaticPromptGenerator,
     UserPersonaSnapshot,
@@ -223,6 +224,14 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(chat.meta.theater.situation, "保留的小剧场设定")
         self.assertEqual(chat.meta.live2d_models["爱音"], "/tmp/anon.model3.json")
         self.assertFalse(chat.meta.tool_calling_enabled)
+
+    def test_clear_custom_live2d_model_restores_default_resolution(self) -> None:
+        """清除对话级模型后应删除对应角色的显式覆盖。"""
+        chat = Chat(meta={"live2d_models": {"爱音": "/tmp/costume.model3.json"}})
+
+        chat.clear_custom_live2d_model_meta("爱音")
+
+        self.assertNotIn("爱音", chat.meta.live2d_models)
 
     def test_find_turn_range_for_user_and_assistant_messages(self):
         """
@@ -649,7 +658,7 @@ class ChatTestCase(unittest.TestCase):
         image_upload = data["image_upload"]
         self.assertIsInstance(image_upload, dict)
         assert isinstance(image_upload, dict)
-        self.assertEqual(image_upload["force_allowlist"], ["dashscope/qwen3.6-plus"])
+        self.assertIn("dashscope/qwen3.6-plus", image_upload["force_allowlist"])
         self.assertNotIn("blocklist", image_upload)
 
     def test_chat_display_renders_image_with_explicit_thumbnail_size(self) -> None:
@@ -706,6 +715,28 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(len(query), 2)
         self.assertEqual(query[0]["content"], "[User]: 前一句")
         self.assertIsInstance(query[1]["content"], list)
+
+    def test_chat_display_marks_confirmed_unavailable_image_as_not_sent(self) -> None:
+        """用户确认忽略的缺失图片应显示明确的未发送状态。"""
+        message = Message(
+            character_name="User",
+            text="继续发送",
+            translation="",
+            emotion=EmotionEnum.HAPPINESS,
+            audio_path="",
+            attachments=[MessageAttachment(
+                type="image",
+                path="missing.png",
+                original_name="missing.png",
+                availability="unavailable",
+                unavailable_reason="无法恢复",
+            )],
+        )
+
+        html_text = ChatDisplay._render_attachments_html(message)
+
+        self.assertIn("[图片缺失、未发送]", html_text)
+        self.assertIn("无法恢复", html_text)
 
     def test_create_multiple_single_chats_for_same_character(self):
         """
@@ -1135,6 +1166,13 @@ class ChatTestCase(unittest.TestCase):
                                 path=missing_attachment_path,
                                 mime_type="image/png",
                                 original_name="missing.png",
+                                remote_refs=[RemoteFileReference(
+                                    api_base="https://api.deepseek.com",
+                                    api_key_digest="digest",
+                                    file_id="file-api-test",
+                                    uploaded_at="2026-01-01T00:00:00+00:00",
+                                    expires_at="2026-01-02T00:00:00+00:00",
+                                )],
                             )
                         ],
                     )
@@ -1151,6 +1189,26 @@ class ChatTestCase(unittest.TestCase):
                 manifest = json.loads(backup_file.read("manifest.json").decode("utf-8"))
             exported_attachment_path = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]["path"]
             self.assertEqual(exported_attachment_path, missing_attachment_path)
+            exported_attachment = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]
+            self.assertNotIn("remote_refs", exported_attachment)
+
+    def test_save_preserves_existing_file_when_serialization_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "all_conversation.json"
+            original = '{"existing": true}'
+            target.write_text(original, encoding="utf-8")
+            manager = ChatManager()
+
+            with mock.patch.object(
+                    chat_module.json,
+                    "dump",
+                    side_effect=RuntimeError("simulated interruption"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    manager.save(target)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(target.parent.glob("*.tmp")), [])
 
     @staticmethod
     def _character(name: str) -> CharacterAttributes:

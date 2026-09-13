@@ -20,11 +20,12 @@ class RepairCheckThread(QThread):
     checkFinished = pyqtSignal(object)
     checkFailed = pyqtSignal(str, str)
 
-    def __init__(self, base_urls: tuple[str, ...], parent: object | None = None) -> None:
+    def __init__(self, base_urls: tuple[str, ...], parent: object | None = None, *, version: str | None = None) -> None:
         """保存修复资源源列表。"""
 
         super().__init__(parent)
         self.base_urls = base_urls
+        self.version = version
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -39,6 +40,7 @@ class RepairCheckThread(QThread):
             result = check_integrity(
                 get_app_root(),
                 self.base_urls,
+                version=self.version,
                 progress_callback=self.progressChanged.emit,
                 cancelled=lambda: self._cancelled,
             )

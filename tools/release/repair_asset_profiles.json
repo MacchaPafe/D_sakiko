@@ -17,6 +17,13 @@
       "tools/**/*.py",
       "tools/*.json",
       "tools/**/*.json",
+      "dsakiko_webui/*.py",
+      "dsakiko_webui/**/*.py",
+      "dsakiko_webui/backend/pairing_ui_static/*.html",
+      "dsakiko_webui/backend/pairing_ui_static/*.js",
+      "dsakiko_webui/backend/pairing_ui_static/*.css",
+      "dsakiko_webui/backend/pairing_ui_static/*.svg",
+      "dsakiko_webui/shared/assets/access-gate/*.png",
       "version.json",
       "pyproject.toml",
       "uv.lock"
@@ -25,7 +32,8 @@
       "GPT_SoVITS/text/cmudict*.rep",
       "GPT_SoVITS/text/g2pw/polyphonic*.rep",
       "GPT_SoVITS/text/opencpop-strict.txt",
-      "GPT_SoVITS/text/restr.rep"
+      "GPT_SoVITS/text/restr.rep",
+      "dsakiko_webui/frontend/dist/**"
     ],
     "exclude": [
       "README*",
@@ -33,7 +41,8 @@
       "docs/**",
       "docs-site/**",
       "tests/**",
-      "GPT_SoVITS/test/**"
+      "GPT_SoVITS/test/**",
+      "dsakiko_webui/backend/test/**"
     ],
     "hard_exclude": [
       ".git/**",
@@ -87,8 +96,30 @@
       "platform": "windows",
       "arch": "x64",
       "include": [
-        "*.bat",
+        "run.bat",
+        "修复程序.bat",
+        "run_webui.bat",
+        "启动参数配置.bat",
+        "运行Live2D模型下载器.bat",
+        "运行动作组编辑程序.bat",
+        "运行小剧场模式.bat",
         "双击run.bat即可运行程序，注意不要有中文路径！"
+      ],
+      "hard_exclude": [
+        "GPT_SoVITS/BigVGAN/**",
+        "GPT_SoVITS/configs/**",
+        "GPT_SoVITS/text/**",
+        "GPT_SoVITS/tools/**",
+        "GPT_SoVITS/module/**",
+        "GPT_SoVITS/eres2net/**",
+        "GPT_SoVITS/AR/data/**",
+        "GPT_SoVITS/AR/modules/**",
+        "GPT_SoVITS/AR/text_processing/**",
+        "GPT_SoVITS/AR/utils/**",
+        "GPT_SoVITS/f5_tts/**",
+        "GPT_SoVITS/feature_extractor/**",
+        "pyproject.toml",
+        "uv.lock"
       ],
       "exclude": [
         "*.command",

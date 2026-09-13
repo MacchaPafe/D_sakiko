@@ -6,6 +6,7 @@ import time
 import json
 import random
 import uuid
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Callable, Optional, Sequence, cast
 
@@ -48,23 +49,32 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
+from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
 import sounddevice as sd
 from opencc import OpenCC
 import os,sys
 
-from ui_main.threads.get_model_limit_thread import GetModelLimitThread
-
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
-from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping
+
+from ui_main.threads.get_model_limit_thread import GetModelLimitThread
+from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping,SINGLE_CHAT_COMBO_CSS,SINGLE_CHAT_COMBO_VIEW_CSS,SINGLE_CHAT_DIALOG_CSS
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
 from character import CharacterAttributes, GetCharacterAttributes, EMOTION_REFERENCE_KEYS, ref_audio_language_list
-from chat.chat import ChatBackupImportResult, ChatManager, Chat, ChatType, DeleteMessagesResult, Message, get_chat_manager
+from chat.chat import (
+    ChatBackupImportResult,
+    ChatManager,
+    Chat,
+    ChatType,
+    DeleteMessagesResult,
+    Message,
+    MessageAttachment,
+    get_chat_manager,
+)
 from chat.attachments import (
     add_model_image_upload_force_allow,
     delete_chat_attachment_dir,
@@ -72,9 +82,15 @@ from chat.attachments import (
     model_supports_image_upload,
     resolve_attachment_path,
 )
-from chat.model_token_usage import count_message_tokens
+from chat.remote_attachments import (
+    DeepSeekFileServiceConfig,
+    DraftAttachmentRecord,
+    RemoteAttachmentManager,
+    RemoteAttachmentError,
+    build_deepseek_file_service_config,
+    remote_reference_is_fresh,
+)
 from chat.rolling_summary import (
-    build_llm_query_with_rolling_summary,
     invalidate_rolling_summary_from_message_index,
 )
 from emotion_enum import EmotionEnum
@@ -101,11 +117,13 @@ from ui_main.components.worldbook_conversation_control import (
 )
 from ui_main.threads.repair_controller import RepairCheckThread, RepairPrepareThread
 from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
+from ui_main.threads.update_config_thread import notify_config_reload
 from ui.file_manager import show_file_in_manager
 from update.update_checker import get_configured_index_urls, read_current_version
 from update.update_launcher import build_restart_command, launch_update_process
 from update.update_models import DownloadedPatch, UpdatePlan
 from update.update_paths import get_app_root, get_update_result_file, get_version_file
+from maintenance.transactions import pending_transactions, recommended_version
 from repair.repair_checker import PreparedRepair, RepairCheckResult, get_configured_repair_base_urls
 from repair.repair_launcher import launch_repair_process
 from repair.repair_paths import get_repair_result_file
@@ -117,16 +135,13 @@ from input_commands import (
     build_default_input_command_specs,
 )
 from live2d_support.model_importer import Live2DModelImportError, import_live2d_model
+from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from rag.worldbook.paths import WorldbookPaths
 from rag.worldbook.runtime.catalog import WorldbookRootCatalog
 
 
-TOOL_CALL_START_EVENT_PREFIX = "__TOOL_CALL_START__:"
-TOOL_CALL_UPDATE_EVENT_PREFIX = "__TOOL_CALL_UPDATE__:"
-LOTTERY_UI_EVENT_PREFIX = "__LOTTERY_UI_CMD__:"
 logger = get_logger(__name__)
-
 
 def append_generation_timing_log(message: str) -> None:
     """把语音生成耗时写入本地调试日志。"""
@@ -137,85 +152,6 @@ def append_generation_timing_log(message: str) -> None:
             log_file.write(f"[{timestamp}] {message}\n")
     except Exception:
         logger.exception("写入语音生成耗时日志失败")
-
-SINGLE_CHAT_COMBO_CSS = """
-QComboBox {
-    background-color: #FFFFFF;
-    border: 1px solid #E0E0E0;
-    border-bottom: 2px solid #D1D1D1;
-    border-radius: 4px;
-    color: #5F6368;
-    padding: 6px 28px 6px 10px;
-    min-height: 24px;
-}
-
-QComboBox:hover {
-    background-color: #FDFDFD;
-    border-bottom: 2px solid #7799CC;
-}
-
-QComboBox:focus {
-    background-color: #FFFFFF;
-    border: 2px solid #7799CC;
-}
-
-QComboBox::drop-down {
-    subcontrol-origin: padding;
-    subcontrol-position: top right;
-    width: 26px;
-    border: none;
-    background: transparent;
-}
-
-QComboBox::down-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid #6D7B8D;
-    margin-right: 8px;
-}
-"""
-
-SINGLE_CHAT_COMBO_VIEW_CSS = """
-QAbstractItemView,
-QListView#singleChatCharacterComboView {
-    background-color: #FFFFFF;
-    border: 1px solid #E0E0E0;
-    border-radius: 4px;
-    padding: 4px;
-    outline: none;
-    margin-top: 4px;
-    selection-background-color: #E9F1FB;
-    selection-color: #2E4A6B;
-}
-
-QAbstractItemView::item,
-QListView#singleChatCharacterComboView::item {
-    height: 32px;
-    border-radius: 4px;
-    padding-left: 8px;
-    color: #5F6368;
-    background-color: transparent;
-    border: none;
-}
-
-QAbstractItemView::item:hover,
-QAbstractItemView::item:selected,
-QListView#singleChatCharacterComboView::item:hover,
-QListView#singleChatCharacterComboView::item:selected {
-    background-color: #E9F1FB;
-    color: #2E4A6B;
-    border: none;
-}
-"""
-
-SINGLE_CHAT_DIALOG_CSS = (
-    dialogWindowDefaultCss
-    + SINGLE_CHAT_COMBO_CSS
-    + SINGLE_CHAT_COMBO_VIEW_CSS
-)
 
 
 class CommunicateThreadDP2QT(QThread):
@@ -298,14 +234,13 @@ class MoreFunctionWindow(QDialog):
 
         advanced_settings_group = QGroupBox("高级设置与编辑")
         advanced_settings_layout = QVBoxLayout()
-        self.open_motion_editor_button =QPushButton("运行动作组编辑程序")
+        self.open_motion_editor_button =QPushButton("编辑角色的动作组")
         self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)  # noqa
         advanced_settings_layout.addWidget(self.open_motion_editor_button)
 
         self.open_persona_editor_button = QPushButton("编辑对话身份和角色信息")
         self.open_persona_editor_button.clicked.connect(self.on_click_open_persona_editor_button)
         advanced_settings_layout.addWidget(self.open_persona_editor_button)
-
         self.open_worldbook_button = QPushButton("世界书管理")
         self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
         advanced_settings_layout.addWidget(self.open_worldbook_button)
@@ -659,7 +594,7 @@ class SettingWindow(QDialog):
         self.resize(int(desktop_size.width()*0.2),int(desktop_size.height()*0.4))
         self.change_lan_btn=QPushButton("切换语言")
         self.change_lan_btn.clicked.connect(self.change_lan)
-        self.switch_voice_btn=QPushButton("开启/关闭语言合成")
+        self.switch_voice_btn=QPushButton("开启/关闭语音合成")
         self.switch_voice_btn.clicked.connect(self.switch_voice)
         self.clear_history_btn=QPushButton("清空聊天记录")
         self.clear_history_btn.clicked.connect(self.clear_history_msg)
@@ -753,13 +688,19 @@ class SettingWindow(QDialog):
         current_char_folder_name=self.parent_window.current_character.character_folder_name
         change_l2d_model_window=ChangeL2DModelWindow(current_char_folder_name,self.change_live2d_model_2)
         change_l2d_model_window.exec_()
-    def change_live2d_model_2(self,new_model_json):
-        self.parent_window._send_l2d_model_payload(new_model_json)
+    def change_live2d_model_2(self, option: Live2DModelOption) -> None:
+        """将用户选中的共享目录选项交给主窗口。"""
+        self.parent_window._send_l2d_model_payload(option)
 
 
 
 class ChangeL2DModelWindow(QDialog):
-    def __init__(self,current_char_folder_name,change_l2d_model_func):
+    def __init__(
+        self,
+        current_char_folder_name: str,
+        change_l2d_model_func: Callable[[Live2DModelOption], None],
+    ) -> None:
+        """创建一个使用共享 Catalog 的 Live2D 服装选择窗口。"""
         super().__init__()
         self.setWindowTitle('更改当前角色Live2D模型')
         screen=QDesktopWidget().screenGeometry()
@@ -767,6 +708,7 @@ class ChangeL2DModelWindow(QDialog):
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.current_char_folder_name=current_char_folder_name
         self.change_l2d_model_func=change_l2d_model_func
+        self.model_catalog = Live2DModelCatalog(Path(project_root) / "live2d_related", Path(project_root))
         self.refresh_ui()
         self.setStyleSheet(dialogWindowDefaultCss)
 
@@ -783,15 +725,9 @@ class ChangeL2DModelWindow(QDialog):
             # 移除旧布局本身（通过将其父对象设为新的临时 Widget 然后销毁）
             QWidget().setLayout(old_layout)
 
-        default_model_dir = os.path.join(f'../live2d_related/{self.current_char_folder_name}', 'live2D_model')
-        default_live2d_json = self._find_preferred_model_json(default_model_dir)
-        self.current_char_l2d_models = []
-        if default_live2d_json is not None:
-            self.current_char_l2d_models.append({
-                "model_name": "默认",
-                "model_json_path": default_live2d_json,
-            })
-        self.find_extra_models(self.current_char_folder_name)
+        self.current_char_l2d_models = list(
+            self.model_catalog.list_options(self.current_char_folder_name)
+        )
         layout = QVBoxLayout()
         title_layout=QHBoxLayout()
         title_label = QLabel("选择一个Live2D模型：")
@@ -829,18 +765,21 @@ class ChangeL2DModelWindow(QDialog):
                 display_layout.addWidget(QLabel("当前角色尚未配置 Live2D 模型，可点击“导入模型”添加。"))
             for model in self.current_char_l2d_models:
                 model_layout = QHBoxLayout()
-                name_label = QLabel(model["model_name"])
+                name_label = QLabel(model.display_name)
                 select_btn = QToolButton()
                 select_btn.setText("选择")
                 select_btn.clicked.connect(
-                    lambda checked, path=model["model_json_path"]: self.change_l2d_model_func(path))  # noqa
+                    lambda checked=False, option=model: self.change_l2d_model_func(option))  # noqa
+                select_btn.setEnabled(model.available)
+                if model.error_message:
+                    select_btn.setToolTip("模型 JSON 无法解析")
                 delete_btn = QToolButton()
                 delete_btn.setIcon(QIcon("./icons/delete.svg"))
-                delete_target_path = f'../live2d_related/{self.current_char_folder_name}/extra_model/{model["model_name"]}'
+                delete_target_path = str(model.model_directory)
                 delete_btn.clicked.connect(lambda checked=False, p=delete_target_path: delete_model_folder(p))
                 model_layout.addWidget(name_label)
                 model_layout.addWidget(select_btn)
-                if model["model_name"] != "默认": #默认模型不允许删除
+                if not model.is_default: #默认模型不允许删除
                     model_layout.addWidget(delete_btn)
                 display_layout.addLayout(model_layout)
         else:
@@ -881,7 +820,16 @@ class ChangeL2DModelWindow(QDialog):
                 if character.character_folder_name == self.current_char_folder_name:
                     character.live2d_json = result.model_json_path
                     break
-            self.change_l2d_model_func(result.model_json_path)
+            default_option = next(
+                (
+                    option
+                    for option in self.model_catalog.list_options(self.current_char_folder_name)
+                    if option.is_default
+                ),
+                None,
+            )
+            if default_option is not None:
+                self.change_l2d_model_func(default_option)
         self.refresh_ui()
         QMessageBox.information(
             self,
@@ -892,215 +840,6 @@ class ChangeL2DModelWindow(QDialog):
                 else f"已导入模型：{result.model_name}。"
             ),
         )
-
-    def find_extra_models(self,current_char_folder_name):
-        base_path = f"../live2d_related/{current_char_folder_name}/extra_model"
-        if not os.path.exists(base_path):
-            os.makedirs(base_path)
-            # print(f"\n提示：目录 {base_path} 不存在，已自动创建。加入更多live2D模型的方法为：在该文件夹中新建名为新模型名称的文件夹，然后在其中放入新模型的组成材料（.model.json结尾的配置文件、moc模型、.physics.json、mtn动作文件以及贴图文件）。\n")
-            return
-
-        model_dirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
-
-        for model_dir_name in model_dirs:
-            # 构建这个模型文件夹的完整路径，例如 ../live2d_related/miku/extra_model/Miku
-            model_dir_path = os.path.join(base_path, model_dir_name)
-            full_path = self._find_preferred_model_json(model_dir_path)
-            if full_path is not None:
-                self.current_char_l2d_models.append({"model_name":model_dir_name,"model_json_path":full_path})
-
-    @staticmethod
-    def _find_preferred_model_json(model_dir_path: str) -> str | None:
-        """查找目录中的 Live2D 模型 JSON，同目录同时存在 v2/v3 时优先 v3。"""
-        if not os.path.isdir(model_dir_path):
-            return None
-        model2_paths: list[str] = []
-        model3_paths: list[str] = []
-        for current_dir, _dir_names, file_names in os.walk(model_dir_path):
-            current_model2_paths: list[str] = []
-            current_model3_paths: list[str] = []
-            for file in sorted(file_names):
-                full_path = os.path.join(current_dir, file)
-                if file.endswith(".model3.json"):
-                    current_model3_paths.append(full_path)
-                elif file.endswith(".model.json"):
-                    current_model2_paths.append(full_path)
-            if current_model2_paths and current_model3_paths:
-                logger.warning(
-                    "Live2D 模型目录同时存在 .model.json 和 .model3.json，将优先使用 v3：%s",
-                    current_dir,
-                )
-            model2_paths.extend(current_model2_paths)
-            model3_paths.extend(current_model3_paths)
-        if model3_paths:
-            return model3_paths[0].replace("\\", "/")
-        if model2_paths:
-            return model2_paths[0].replace("\\", "/")
-        return None
-
-    @staticmethod
-    def find_all_models() -> list[str]:
-        all_models = []
-        for char_folder in os.listdir("../live2d_related"):
-            char_folder_path = os.path.join("../live2d_related", char_folder)
-            if os.path.isdir(char_folder_path):
-                full_path = ChangeL2DModelWindow._find_preferred_model_json(char_folder_path)
-                if full_path is not None:
-                    all_models.append(full_path)
-        return all_models
-
-
-class LegacyChangeReferenceAudioWindow(QDialog):
-    def __init__(self,parent_window,audio_gen_module,desktop_size):
-        super().__init__()
-        self.parent_window: ChatGUI = parent_window
-        self.audio_gen_module=audio_gen_module
-        self.current_character: CharacterAttributes = self.parent_window.current_character
-        self.setWindowTitle('更改当前角色参考音频')
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.resize(int(desktop_size.width()*0.3),int(desktop_size.height()*0.4))
-        layout=QVBoxLayout()
-        self.audio_player = QMediaPlayer()
-        self.audio_playlist = QMediaPlaylist()
-
-        current_ref_audio_layout=QHBoxLayout()
-        current_ref_audio_name=self.current_character.gptsovits_ref_audio
-        if self.current_character.character_name == "祥子":
-            current_ref_audio_name=self.audio_gen_module.ref_audio_file_black_sakiko if self.parent_window.dp_chat.sakiko_state else self.audio_gen_module.ref_audio_file_white_sakiko
-        self.current_ref_audio_label=QLabel(f"当前参考音频:{os.path.basename(current_ref_audio_name or '')}")
-        self.play_current_ref_audio_btn=QToolButton()
-        self.play_current_ref_audio_btn.setIcon(QIcon("./icons/play.svg"))
-        self.play_current_ref_audio_btn.clicked.connect(self.play_current_ref_audio)
-        current_ref_audio_layout.addWidget(self.current_ref_audio_label)
-        current_ref_audio_layout.addWidget(self.play_current_ref_audio_btn)
-        layout.addLayout(current_ref_audio_layout)
-
-        all_ref_audio_files=[]
-        try:
-            for file in os.listdir(f'../reference_audio/{self.current_character.character_folder_name}'):
-                if file.endswith('.wav') or file.endswith('.mp3'):
-                    all_ref_audio_files.append(file)
-        except Exception:
-            logger.exception("参考音频文件夹读取错误")
-        select_new_ref_audio_group=QGroupBox("选择新的参考音频:")
-        select_new_ref_audio_layout=QVBoxLayout()
-        for ref_audio_file in all_ref_audio_files:
-            single_ref_audio_layout=QHBoxLayout()
-            name_label=QLabel(os.path.basename(ref_audio_file))
-            play_btn=QToolButton()
-            play_btn.setIcon(QIcon("./icons/play.svg"))
-            play_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.current_character.character_folder_name}',ref_audio_file): self.play_ref_audio(path))
-            select_btn=QToolButton()
-            select_btn.setText("选择")
-            select_btn.clicked.connect(lambda checked, path=os.path.join(f'../reference_audio/{self.current_character.character_folder_name}',ref_audio_file): self.replace_ref_audio(path))
-            single_ref_audio_layout.addWidget(name_label)
-            single_ref_audio_layout.addWidget(play_btn)
-            single_ref_audio_layout.addWidget(select_btn)
-            select_new_ref_audio_layout.addLayout(single_ref_audio_layout)
-        select_new_ref_audio_group.setLayout(select_new_ref_audio_layout)
-        layout.addWidget(select_new_ref_audio_group)
-
-        change_ref_text_group=QGroupBox("不要忘记修改新参考音频对应的文本 ↓")
-        new_ref_text_input_layout=QHBoxLayout()
-        self.new_ref_text_input=QLineEdit()
-        self.new_ref_text_input.setPlaceholderText("在此输入新参考音频对应的文本")
-        if self.current_character.character_name == "祥子":
-            if self.parent_window.dp_chat.sakiko_state:
-                with open(self.audio_gen_module.ref_text_file_black_sakiko,'r',encoding='utf-8') as f:
-                    current_ref_text=f.read().strip()
-            else:
-                with open(self.audio_gen_module.ref_text_file_white_sakiko,'r',encoding='utf-8') as f:
-                    current_ref_text=f.read().strip()
-        else:
-            ref_text_path = (
-                self.current_character.gptsovits_ref_audio_text
-                or os.path.join(
-                    "../reference_audio",
-                    self.current_character.character_folder_name,
-                    "reference_text.txt",
-                )
-            )
-            if os.path.exists(ref_text_path):
-                with open(ref_text_path, 'r', encoding='utf-8') as f:
-                    current_ref_text = f.read().strip()
-            else:
-                current_ref_text = ""
-        self.new_ref_text_input.setText(current_ref_text)
-        self.new_ref_text_input.returnPressed.connect(self.change_ref_text)
-        self.new_ref_text_input_confirm_btn=QPushButton("确认修改")
-        self.new_ref_text_input_confirm_btn.clicked.connect(self.change_ref_text)
-        self.change_ref_text_success_label=QLabel("")
-        new_ref_text_input_layout.addWidget(self.new_ref_text_input)
-        new_ref_text_input_layout.addWidget(self.new_ref_text_input_confirm_btn)
-        new_ref_text_input_layout.addWidget(self.change_ref_text_success_label)
-        change_ref_text_group.setLayout(new_ref_text_input_layout)
-        layout.addWidget(change_ref_text_group)
-
-        self.setLayout(layout)
-        self.setStyleSheet(dialogWindowDefaultCss)
-
-    def play_current_ref_audio(self):
-        current_ref_audio_path=self.current_character.gptsovits_ref_audio
-        if self.current_character.character_name == "祥子":
-            current_ref_audio_path=self.audio_gen_module.ref_audio_file_black_sakiko if self.parent_window.dp_chat.sakiko_state else self.audio_gen_module.ref_audio_file_white_sakiko
-        if current_ref_audio_path:
-            self.play_ref_audio(current_ref_audio_path)
-
-    def play_ref_audio(self,ref_audio_path):
-        audio_path=os.path.abspath(ref_audio_path)
-        url=QUrl.fromLocalFile(audio_path)
-        self.audio_playlist.clear()
-        self.audio_playlist.addMedia(QMediaContent(url))
-        self.audio_playlist.setCurrentIndex(0)
-        self.audio_player.setPlaylist(self.audio_playlist)
-        self.audio_player.play()
-
-    def replace_ref_audio(self,new_ref_audio_file):
-        try:
-            if self.current_character.character_name == "祥子":
-                if self.parent_window.dp_chat.sakiko_state:
-                    self.audio_gen_module.ref_audio_file_black_sakiko=new_ref_audio_file
-                    with open('../reference_audio/sakiko/default_ref_audio_black.txt','w',encoding='utf-8') as f:
-                        f.write(new_ref_audio_file)
-                else:
-                    self.audio_gen_module.ref_audio_file_white_sakiko=new_ref_audio_file
-                    with open('../reference_audio/sakiko/default_ref_audio_white.txt','w',encoding='utf-8') as f:
-                        f.write(new_ref_audio_file)
-            else:
-                self.current_character.gptsovits_ref_audio=new_ref_audio_file
-                with open(f'../reference_audio/{self.current_character.character_folder_name}/default_ref_audio.txt','w',encoding='utf-8') as f:
-                    f.write(new_ref_audio_file)
-        except Exception:
-            logger.exception("更改参考音频出现错误")
-        self.current_ref_audio_label.setText(f"当前参考音频:{os.path.basename(new_ref_audio_file)}")
-
-    def change_ref_text(self):
-        new_ref_text=self.new_ref_text_input.text().strip()
-        if new_ref_text:
-            if self.current_character.character_name == "祥子":
-                if self.parent_window.dp_chat.sakiko_state:
-                    with open(self.audio_gen_module.ref_text_file_black_sakiko,'w',encoding='utf-8') as f:
-                        f.write(new_ref_text)
-                else:
-                    with open(self.audio_gen_module.ref_text_file_white_sakiko,'w',encoding='utf-8') as f:
-                        f.write(new_ref_text)
-            else:
-                ref_text_path = (
-                    self.current_character.gptsovits_ref_audio_text
-                    or os.path.join(
-                        "../reference_audio",
-                        self.current_character.character_folder_name,
-                        "reference_text.txt",
-                    )
-                )
-                with open(ref_text_path, 'w', encoding='utf-8') as f:
-                    f.write(new_ref_text)
-                self.current_character.gptsovits_ref_audio_text = ref_text_path
-            self.change_ref_text_success_label.setText("修改成功!")
-        else:
-            self.change_ref_text_success_label.setText("文本不能为空!")
-
-
 
 class ChangeReferenceAudioWindow(QDialog):
     EMOTION_LABELS = {
@@ -2226,6 +1965,12 @@ class ChatBackupMultiExportDialog(QDialog):
         self.accept()
 
 
+class _AttachmentUploadSignalBridge(QObject):
+    """把附件 worker 的完成结果安全转发到 Qt 主线程。"""
+
+    uploadStateReady = pyqtSignal(object)
+
+
 class ChatGUI(QWidget):
     """主聊天窗口，并统一协调角色语义色板的同步更新。"""
 
@@ -2251,6 +1996,20 @@ class ChatGUI(QWidget):
         self.change_char_queue = change_char_queue
         # 使用 ChatManager 管理所有聊天记录（与 dp_local2 共享同一个实例）
         self.chat_manager: ChatManager = self.dp_chat.chat_manager
+        existing_attachment_manager = getattr(
+            self.dp_chat,
+            "remote_attachment_manager",
+            None,
+        )
+        self.remote_attachment_manager = (
+            existing_attachment_manager
+            if isinstance(existing_attachment_manager, RemoteAttachmentManager)
+            else RemoteAttachmentManager()
+        )
+        self._attachment_upload_signals = _AttachmentUploadSignalBridge(self)
+        self._attachment_upload_signals.uploadStateReady.connect(
+            self._apply_attachment_upload_state
+        )  # noqa
         self.current_chat_id = self.dp_chat.current_chat_id
         self._theme_palette = derive_theme_palette(self.current_character.theme_seed)
         # 当前显示的对话的 id（保存于对话中）
@@ -2320,6 +2079,17 @@ class ChatGUI(QWidget):
             self._current_model_can_force_image_upload,
             self._force_allow_current_model_image_upload,
         )
+        self.user_input.set_vision_switch_available_checker(
+            self._deepseek_vision_switch_available
+        )
+        self.user_input.set_managed_attachment_mode(True)
+        self.user_input.imageAddRequested.connect(self._add_managed_draft_image)  # noqa
+        self.user_input.imageRemoveRequested.connect(self._remove_managed_draft_image)  # noqa
+        self.user_input.imageRetryRequested.connect(self._retry_managed_draft_image)  # noqa
+        self.user_input.visionSwitchRequested.connect(
+            self._handle_deepseek_vision_switch_requested
+        )  # noqa
+        self.user_input.draftStateChanged.connect(self._refresh_send_button_state)  # noqa
 
         self.voice_button = QPushButton()
         self.voice_button.setObjectName("voiceInputButton")
@@ -2339,6 +2109,17 @@ class ChatGUI(QWidget):
         self._send_stop_icon = self._create_stop_button_icon()
         self.send_button.clicked.connect(self.handle_send_button_clicked)  # noqa
 
+        self.add_image_button = QToolButton()
+        self.add_image_button.setObjectName("addImageButton")
+        self.add_image_button.setText("+")
+        self.add_image_button.setFixedSize(
+            self.input_tool_button_height,
+            self.input_tool_button_height,
+        )
+        self.add_image_button.clicked.connect(self._handle_add_image_button_clicked)  # noqa
+        self._refresh_add_image_button_state()
+        self._connect_image_upload_config_signals()
+
         self.save_dialog_btn=QToolButton()
         self.save_dialog_btn.setIcon(QIcon("./icons/save.svg"))
         self.save_dialog_btn.setFixedSize(int(self.screen.height()*0.04),int(self.screen.height()*0.04))
@@ -2357,8 +2138,14 @@ class ChatGUI(QWidget):
         self.context_usage_indicator.set_summary_threshold_ratio(
             float(d_sakiko_config.rolling_summary_trigger_ratio.value)
         )
+        self.context_usage_indicator.set_summary_enabled(
+            bool(d_sakiko_config.enable_rolling_summary.value)
+        )
         self.context_usage_indicator.summaryThresholdChanged.connect(
             self._set_summary_compression_threshold
+        )  # noqa
+        self.context_usage_indicator.summaryEnabledChanged.connect(
+            self._set_summary_compression_enabled
         )  # noqa
         self._context_usage_refresh_timer = QTimer(self)
         self._context_usage_refresh_timer.setSingleShot(True)
@@ -2405,6 +2192,9 @@ class ChatGUI(QWidget):
         self.user_input.sendRequested.connect(self.handle_user_input)  # noqa
         #处理各种消息
         self.QT_message_queue=QT_message_queue
+        self.chat_manager.storage_notice = self.QT_message_queue.put
+        for notice in self.chat_manager.storage_notices:
+            self.QT_message_queue.put(notice)
         self.get_message_thread=CommunicateThreadMessages(self.QT_message_queue)
         self.get_message_thread.message_signal.connect(self.handle_messages)  # noqa
         self.get_message_thread.start()
@@ -2412,8 +2202,9 @@ class ChatGUI(QWidget):
         #---------------------消息命令处理机制 从引入抽奖工具开始构建---------------------
         self._message_command_handlers: dict[str, Callable] = {}
         self._lottery_dialog_ref = None
-        self._register_message_command_handler(LOTTERY_UI_EVENT_PREFIX, self._handle_lottery_ui_command)
+        self._register_message_command_handler("__LOTTERY_UI_CMD__:", self._handle_lottery_ui_command)
         self.update_check_thread: UpdateCheckThread | None = None
+        self.update_check_progress: QProgressDialog | None = None
         self.update_download_thread: UpdateDownloadThread | None = None
         self.update_notes_thread: ReleaseNotesThread | None = None
         self.update_dialog: UpdateDialog | None = None
@@ -2426,6 +2217,7 @@ class ChatGUI(QWidget):
         self.pending_repair_result: RepairCheckResult | None = None
         self.repair_workflow_active = False
         self._load_tool_call_records_cache()
+        QTimer.singleShot(0, self._start_attachment_startup_cleanup)
 
         if self.current_character.icon_path is not None:  # noqa
             self.setWindowIcon(QIcon(self.current_character.icon_path))  # noqa
@@ -2493,6 +2285,19 @@ class ChatGUI(QWidget):
 
         layout.addLayout(top_layout)
         layout.addWidget(self.update_banner)
+        self.recovery_banner = QFrame(self)
+        self.recovery_banner.setObjectName("recoveryBanner")
+        self.recovery_banner.setStyleSheet("QFrame#recoveryBanner { border: 1px solid #c75b39; border-radius: 6px; }")
+        recovery_layout = QHBoxLayout(self.recovery_banner)
+        recovery_layout.addWidget(QLabel("部分文件未能恢复，建议修复程序。", self.recovery_banner), 1)
+        recovery_button = QPushButton("修复程序", self.recovery_banner)
+        recovery_button.clicked.connect(self.check_repair_manual)
+        recovery_layout.addWidget(recovery_button)
+        recovery_log = QPushButton("查看日志", self.recovery_banner)
+        recovery_log.clicked.connect(lambda: show_file_in_manager(get_app_root() / ".updates" / "transactions"))
+        recovery_layout.addWidget(recovery_log)
+        self.recovery_banner.setVisible(bool(pending_transactions(get_app_root())))
+        layout.addWidget(self.recovery_banner)
         layout.addWidget(self.chat_display)
         layout.addLayout(slider_layout)
         layout.addWidget(input_panel)
@@ -2539,6 +2344,8 @@ class ChatGUI(QWidget):
     def show_last_update_failure_if_needed(self) -> None:
         """在主窗口启动后提示上次 detached 更新器失败结果。"""
 
+        if pending_transactions(get_app_root()):
+            return
         result_file = get_update_result_file(get_app_root())
         if not result_file.exists():
             return
@@ -2670,12 +2477,12 @@ class ChatGUI(QWidget):
             return
         self.repair_workflow_active = True
         self.pending_repair_result = None
-        progress = QProgressDialog("正在获取当前版本修复清单...", "取消", 0, 0, self)
+        progress = QProgressDialog("正在核对程序文件...", "取消", 0, 0, self)
         progress.setWindowTitle("检查程序文件")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         self.repair_check_progress = progress
-        self.repair_check_thread = RepairCheckThread(base_urls, self)
+        self.repair_check_thread = RepairCheckThread(base_urls, self, version=recommended_version(get_app_root()))
         progress.canceled.connect(self.repair_check_thread.cancel)  # noqa
         self.repair_check_thread.progressChanged.connect(self._on_repair_check_progress)  # noqa
         self.repair_check_thread.checkFinished.connect(self._on_repair_check_finished)  # noqa
@@ -2817,6 +2624,20 @@ class ChatGUI(QWidget):
             return
         self._start_update_check(silent=False)
 
+    def _hide_update_check_progress(self) -> None:
+        """隐藏手动检查更新的等待窗口，但不取消后台检查。"""
+
+        if self.update_check_progress is not None:
+            self.update_check_progress.hide()
+
+    def _close_update_check_progress(self) -> None:
+        """关闭并释放检查更新等待窗口。"""
+
+        if self.update_check_progress is not None:
+            self.update_check_progress.close()
+            self.update_check_progress.deleteLater()
+            self.update_check_progress = None
+
     def _start_update_check(self, silent: bool) -> None:
         """创建后台线程检查更新。"""
 
@@ -2832,6 +2653,17 @@ class ChatGUI(QWidget):
         if not index_urls and not silent:
             QMessageBox.information(self, "检查更新", "尚未配置更新索引 URL。")
             return
+        if not silent:
+            progress = QProgressDialog("正在检查更新...", "隐藏", 0, 0, self)
+            progress.setWindowTitle("检查更新")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            self.update_check_progress = progress
+            progress.canceled.connect(self._hide_update_check_progress)  # noqa
+            progress.show()
+            progress.raise_()
+            progress.activateWindow()
+            QApplication.processEvents()
         self.update_check_thread = UpdateCheckThread(index_urls, self)
         self.update_check_thread.updateAvailable.connect(lambda plan: self._on_update_available(plan, silent))  # noqa
         self.update_check_thread.noUpdate.connect(lambda: self._on_no_update(silent))  # noqa
@@ -2843,6 +2675,7 @@ class ChatGUI(QWidget):
     def _on_update_available(self, update_plan: UpdatePlan, silent: bool) -> None:
         """处理发现新版本的结果。"""
 
+        self._close_update_check_progress()
         self.pending_update_plan = update_plan
         if silent and not update_plan.critical:
             self._show_update_banner(update_plan)
@@ -2852,6 +2685,7 @@ class ChatGUI(QWidget):
     def _on_no_update(self, silent: bool) -> None:
         """处理没有新版本的结果。"""
 
+        self._close_update_check_progress()
         self._hide_update_banner()
         if not silent:
             self.setWindowTitle("数字小祥")
@@ -2860,6 +2694,7 @@ class ChatGUI(QWidget):
     def _on_update_check_failed(self, message: str, silent: bool) -> None:
         """处理更新检查失败。"""
 
+        self._close_update_check_progress()
         logger.warning("检查更新失败：%s", message)
         if not silent:
             self.setWindowTitle("数字小祥")
@@ -3188,7 +3023,8 @@ class ChatGUI(QWidget):
         拖拽侧栏后保存普通对话类型内顺序。
         """
         self.chat_manager.reorder_chats_by_type(ChatType.SINGLE_CHARACTER, ordered_chat_ids)
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
 
     def show_chat_list_menu(self, chat_id: str, global_pos: QPoint) -> None:
         """
@@ -3219,7 +3055,8 @@ class ChatGUI(QWidget):
             return
         try:
             cloned_chat = self.chat_manager.clone_chat(chat_id)
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
         except Exception:
             logger.exception("复制对话失败：chat_id=%s", chat_id)
             QMessageBox.warning(self, "复制失败", "复制对话失败，请稍后重试。")
@@ -3240,7 +3077,8 @@ class ChatGUI(QWidget):
                 self.current_chat_id,
                 fork_after_message_index=msg_index,
             )
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
         except Exception:
             logger.exception("分叉对话失败：chat_id=%s, msg_index=%s", self.current_chat_id, msg_index)
             QMessageBox.warning(self, "分叉失败", "分叉对话失败，请稍后重试。")
@@ -3297,11 +3135,11 @@ class ChatGUI(QWidget):
 
     def import_chat_backup(self) -> None:
         """从用户选择的 zip 对话备份包导入所有对话。"""
-        if not self._ensure_chat_history_operation_allowed("导入对话备份"):
+        if not self._ensure_chat_history_operation_allowed("导入对话"):
             return
         input_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "导入对话备份",
+            "导入对话",
             "",
             self._chat_backup_open_file_filter(),
         )
@@ -3309,10 +3147,11 @@ class ChatGUI(QWidget):
             return
         try:
             result = self.chat_manager.import_chats_from_backup(input_path)
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
         except Exception:
-            logger.exception("导入对话备份失败：%s", input_path)
-            QMessageBox.warning(self, "导入失败", "这不是有效的 D_sakiko 对话备份文件。")
+            logger.exception("导入对话失败：%s", input_path)
+            QMessageBox.warning(self, "导入失败", "这不是有效的 D_sakiko 对话文件。")
             return
 
         self.refresh_chat_list()
@@ -3478,7 +3317,8 @@ class ChatGUI(QWidget):
             QMessageBox.warning(self, "提示", "对话名称不能为空")
             return
         chat.name = new_name
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self.refresh_chat_list()
 
     def _chat_sidebar_mode(self) -> ChatSidebarMode:
@@ -3558,7 +3398,8 @@ class ChatGUI(QWidget):
             dialog.chat_name(),
             user_character=dialog.selected_user_persona(),
         )
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self.refresh_chat_list()
         self.switch_chat_by_id(new_chat.chat_id)
 
@@ -3607,7 +3448,9 @@ class ChatGUI(QWidget):
             delete_chat_attachment_dir(deleted_chat.chat_id)
         except Exception:
             logger.exception("删除对话附件目录失败：chat_id=%s", deleted_chat.chat_id)
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
+        self._schedule_attachment_reachability_cleanup()
         self.refresh_chat_list()
         self._show_delete_success_message("已删除对话", audio_failed)
 
@@ -3821,6 +3664,7 @@ class ChatGUI(QWidget):
         self.reasoning_menu_button.setMenu(self._build_reasoning_menu())
         self._refresh_input_option_buttons()
 
+        bottom_layout.addWidget(self.add_image_button, 0)
         bottom_layout.addWidget(self.tool_calling_toggle_button, 0)
         bottom_layout.addWidget(self.worldbook_control.button, 0)
         bottom_layout.addStretch(1)
@@ -3906,7 +3750,8 @@ class ChatGUI(QWidget):
     def _save_tool_calling_config(self) -> None:
         """保存当前对话的工具调用配置。"""
         try:
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
             self._show_input_option_status("已更新工具调用设置")
         except Exception:
             logger.exception("保存工具调用设置失败")
@@ -3964,7 +3809,8 @@ class ChatGUI(QWidget):
     def _save_reasoning_config(self) -> None:
         """保存当前对话的推理配置。"""
         try:
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
             self._show_input_option_status("已更新推理设置")
         except Exception:
             logger.exception("保存推理设置失败")
@@ -3985,6 +3831,23 @@ class ChatGUI(QWidget):
             self.worldbook_control.set_theme_palette(palette)
         if hasattr(self, "tool_calling_toggle_button"):
             self.tool_calling_toggle_button.set_theme_palette(palette)
+        if hasattr(self, "add_image_button"):
+            self.add_image_button.setStyleSheet(f"""
+                QToolButton#addImageButton {{
+                    color: {palette.text_accent};
+                    background-color: {palette.surface_tint};
+                    border: 1px solid {palette.border_subtle};
+                    border-radius: 9px;
+                    font-size: {max(16, int(self.input_tool_button_height * 0.68))}px;
+                }}
+                QToolButton#addImageButton:hover {{
+                    background-color: {palette.surface_selected};
+                }}
+                QToolButton#addImageButton:disabled {{
+                    color: rgba(0, 0, 0, 0.32);
+                    background-color: rgba(0, 0, 0, 0.025);
+                }}
+            """)
         self.input_panel.setStyleSheet(f"""
             QFrame#messageInputPanel {{
                 background-color: {palette.surface};
@@ -4105,12 +3968,30 @@ class ChatGUI(QWidget):
     @pyqtSlot(float)
     def _set_summary_compression_threshold(self, ratio: float) -> None:
         """保存用户在上下文用量浮窗中设置的压缩阈值。"""
-        normalized_ratio = max(0.20, min(0.80, round(float(ratio) * 20) / 20))
+        normalized_ratio = max(0.70, min(0.90, round(float(ratio) * 20) / 20))
         d_sakiko_config.set(
             d_sakiko_config.rolling_summary_trigger_ratio,
             normalized_ratio,
         )
         self.context_usage_indicator.set_summary_threshold_ratio(normalized_ratio)
+
+    @pyqtSlot(bool)
+    def _set_summary_compression_enabled(self, enabled: bool) -> None:
+        """保存上下文压缩开关，并在首次开启前提示实验性风险。"""
+        if enabled:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("实验性功能")
+            box.setText("上下文压缩为实验性功能，还没有做过多测试。开启后如发现问题请联系UP反馈:)")
+            confirm_button = box.addButton("确认开启", QMessageBox.AcceptRole)
+            cancel_button = box.addButton("不开启", QMessageBox.RejectRole)
+            box.setDefaultButton(cancel_button)
+            box.setEscapeButton(cancel_button)
+            box.exec_()
+            enabled = box.clickedButton() is confirm_button
+
+        d_sakiko_config.set(d_sakiko_config.enable_rolling_summary, enabled)
+        self.context_usage_indicator.set_summary_enabled(enabled)
 
     def refresh_context_usage_indicator(self) -> None:
         """重新计算当前对话上下文 token 用量并刷新圆环组件。"""
@@ -4126,10 +4007,11 @@ class ChatGUI(QWidget):
 
     def _build_context_usage_snapshot(self, token_limit: int | None) -> ContextUsageSnapshot:
         """构造当前普通聊天下一次请求会携带的上下文 token 快照。"""
-        model = self._current_litellm_model_name()
         try:
-            messages = self._build_context_usage_messages()
-            used_tokens = count_message_tokens(model=model, messages=messages)
+            estimator = getattr(self.dp_chat, "estimate_current_context_tokens", None)
+            if not callable(estimator):
+                raise RuntimeError("当前对话运行时不支持上下文 token 估算。")
+            used_tokens = estimator(self.current_character.character_name)
         except Exception as exc:
             logger.warning("上下文 token 统计失败：%s", exc)
             return ContextUsageSnapshot(
@@ -4142,78 +4024,6 @@ class ChatGUI(QWidget):
             used_tokens=max(0, used_tokens),
             token_limit=token_limit,
         )
-
-    def _build_context_usage_messages(self) -> list[dict[str, object]]:
-        """生成用于 token 统计的消息列表，不包含输入框中尚未发送的文本。"""
-        character_name = self.current_character.character_name
-        messages = self._normalize_llm_messages(
-            build_llm_query_with_rolling_summary(
-                self.current_chat,
-                perspective=character_name,
-                is_simplify=True,
-                include_translation=getattr(self.dp_chat, "audio_language_choice", "") == "日英混合",
-            )
-        )
-        runtime_system_instruction = self._context_runtime_system_instruction()
-        if runtime_system_instruction:
-            self._append_context_runtime_system_instruction(messages, runtime_system_instruction)
-        messages.append({"role": "user", "content": self._context_runtime_controls()})
-        return messages
-
-    def _context_runtime_system_instruction(self) -> str:
-        """获取 token 统计用的运行期系统提示词。"""
-        builder = getattr(self.dp_chat, "_build_runtime_system_instruction", None)
-        if not callable(builder):
-            return ""
-        try:
-            return str(builder() or "")
-        except Exception:
-            logger.exception("生成 token 统计用运行期系统提示词失败。")
-            return ""
-
-    @staticmethod
-    def _append_context_runtime_system_instruction(messages: list[dict[str, object]], instruction: str) -> None:
-        """把运行期系统提示词追加到第一条 system 消息，或插入新的 system 消息。"""
-        for message in messages:
-            if message.get("role") == "system":
-                content = str(message.get("content") or "")
-                message["content"] = content + "\n" + instruction
-                return
-        messages.insert(0, {"role": "system", "content": instruction})
-
-    def _context_runtime_controls(self) -> str:
-        """根据 UI 当前对话状态构造 token 统计用运行时控制消息。"""
-        reply_language = (
-            "ja_with_zh_translation"
-            if getattr(self.dp_chat, "audio_language_choice", "") == "日英混合"
-            else "zh_only"
-        )
-        sakiko_tone = "none"
-        if self.current_character.character_name == "祥子":
-            sakiko_tone = "dark" if getattr(self.dp_chat, "sakiko_state", True) else "light"
-        return (
-            "<runtime_controls>\n"
-            f"reply_language: {reply_language}\n"
-            f"sakiko_tone: {sakiko_tone}\n"
-            "</runtime_controls>"
-        )
-
-    @staticmethod
-    def _normalize_llm_messages(raw_messages: object) -> list[dict[str, object]]:
-        """将未知来源的 messages 数据整理为 token_counter 可接收的字典列表。"""
-        if not isinstance(raw_messages, list):
-            return []
-        messages: list[dict[str, object]] = []
-        for raw_message in raw_messages:
-            if not isinstance(raw_message, dict):
-                continue
-            message: dict[str, object] = {}
-            for key, value in raw_message.items():
-                if isinstance(key, str):
-                    message[key] = value
-            if "role" in message and "content" in message:
-                messages.append(message)
-        return messages
 
     def _current_litellm_model_name(self) -> str:
         """按照当前配置解析 LiteLLM 实际使用的模型名称。"""
@@ -4247,6 +4057,403 @@ class ChatGUI(QWidget):
         return model_supports_image_upload(
             model,
             use_default_deepseek_api=bool(d_sakiko_config.use_default_deepseek_api.value),
+        )
+
+    def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
+        """从当前 UI 配置解析 DeepSeek Files 服务作用域。"""
+        if d_sakiko_config.use_default_deepseek_api.value:
+            return None
+        if d_sakiko_config.enable_custom_llm_api_provider.value:
+            return build_deepseek_file_service_config(
+                provider_id="custom",
+                model=str(d_sakiko_config.custom_llm_api_model.value or ""),
+                api_base=str(d_sakiko_config.custom_llm_api_url.value or ""),
+                api_key=str(d_sakiko_config.custom_llm_api_key.value or ""),
+            )
+        provider = str(d_sakiko_config.llm_api_provider.value or "")
+        models = d_sakiko_config.llm_api_model.value
+        keys = d_sakiko_config.llm_api_key.value
+        bases = d_sakiko_config.llm_api_base_url.value
+        return build_deepseek_file_service_config(
+            provider_id=provider,
+            model=str(models.get(provider, "") if isinstance(models, dict) else ""),
+            api_base=str(bases.get(provider, "") if isinstance(bases, dict) else ""),
+            api_key=str(keys.get(provider, "") if isinstance(keys, dict) else ""),
+        )
+
+    def _refresh_add_image_button_state(self) -> None:
+        """根据当前模型能力刷新加号按钮提示，但保留不可用时的可操作入口。"""
+        if not hasattr(self, "add_image_button"):
+            return
+        self.add_image_button.setEnabled(True)
+        if hasattr(self, "user_input") and hasattr(
+            self.user_input, "switch_to_vision_button"
+        ):
+            self.user_input.switch_to_vision_button.setEnabled(
+                not self.is_response_active()
+            )
+        if self._current_model_supports_vision():
+            self.add_image_button.setToolTip("添加图片")
+        elif self._deepseek_vision_switch_available():
+            self.add_image_button.setToolTip("当前模型不支持图片，点击切换到视觉模型")
+        else:
+            self.add_image_button.setToolTip("当前模型不支持图片，点击查看说明")
+
+    def _connect_image_upload_config_signals(self) -> None:
+        """监听会改变当前模型名称的配置项。"""
+        model_config_items = (
+            d_sakiko_config.use_default_deepseek_api,
+            d_sakiko_config.enable_custom_llm_api_provider,
+            d_sakiko_config.custom_llm_api_model,
+            d_sakiko_config.llm_api_provider,
+            d_sakiko_config.llm_api_model,
+        )
+        for config_item in model_config_items:
+            config_item.valueChanged.connect(
+                self._handle_image_upload_model_config_changed
+            )  # noqa
+
+    @pyqtSlot(object)
+    def _handle_image_upload_model_config_changed(self, _value: object) -> None:
+        """在运行中模型配置重载后立即刷新图片按钮。"""
+        self._refresh_add_image_button_state()
+
+    def _deepseek_vision_switch_available(self) -> bool:
+        """判断当前配置是否允许一键切换到 DeepSeek V4 Flash Vision。"""
+        if bool(d_sakiko_config.use_default_deepseek_api.value):
+            return False
+        provider = str(d_sakiko_config.llm_api_provider.value or "").strip()
+        if provider != "deepseek":
+            return False
+        models = d_sakiko_config.llm_api_model.value
+        if not isinstance(models, dict):
+            return False
+        current_model = str(models.get("deepseek", "") or "").strip().lower()
+        if current_model != "deepseek-v4-flash":
+            return False
+        keys = d_sakiko_config.llm_api_key.value
+        if not isinstance(keys, dict):
+            return False
+        api_key = str(keys.get("deepseek", "") or "").strip()
+        return bool(api_key) and api_key not in {"sk-xxx...xxx", "sk-24xxx", "...."}
+
+    def _handle_add_image_button_clicked(self) -> None:
+        """处理图片按钮点击，并在模型不支持时提供可执行的修复入口。"""
+        if self.is_chat_busy():
+            self._set_message_box_text("请等待当前回复完成后再添加图片。")
+            return
+        if self._current_model_supports_vision():
+            self._choose_image_files()
+            return
+        self._prompt_image_upload_unavailable()
+
+    def _prompt_image_upload_unavailable(self) -> None:
+        """说明当前模型的图片能力，并提供 DeepSeek Vision 快捷切换。"""
+        current_model = self._current_litellm_model_name() or "当前模型"
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Information)
+        message_box.setWindowTitle("图片输入不可用")
+        message_box.setText(f"当前模型 {current_model} 不支持图片输入。")
+
+        if self._deepseek_vision_switch_available():
+            message_box.setInformativeText(
+                "可以切换到 DeepSeek V4 Flash Vision 模型以上传图片"
+            )
+            switch_button = message_box.addButton(
+                "切换到 V4 Flash Vision", QMessageBox.AcceptRole
+            )
+            message_box.addButton("打开模型配置", QMessageBox.ActionRole)
+            message_box.addButton("取消", QMessageBox.RejectRole)
+            message_box.exec_()
+            if message_box.clickedButton() is switch_button:
+                self._confirm_and_switch_to_deepseek_vision()
+            elif message_box.clickedButton() is not None and message_box.clickedButton().text() == "打开模型配置":
+                self._open_llm_configuration()
+            return
+
+        message_box.setInformativeText(
+            "请切换到支持视觉输入的模型；如果使用 DeepSeek 图片对话，"
+            "需要配置官方 DeepSeek API Key。"
+        )
+        config_button = message_box.addButton("打开模型配置", QMessageBox.AcceptRole)
+        message_box.addButton("取消", QMessageBox.RejectRole)
+        message_box.exec_()
+        if message_box.clickedButton() is config_button:
+            self._open_llm_configuration()
+
+    def _handle_deepseek_vision_switch_requested(self) -> None:
+        """响应消息输入错误条中的 DeepSeek Vision 快捷切换请求。"""
+        if self.is_chat_busy():
+            self._set_message_box_text("请等待当前回复完成后再切换模型。")
+            return
+        self._confirm_and_switch_to_deepseek_vision()
+
+    def _confirm_and_switch_to_deepseek_vision(self) -> None:
+        """确认并原子切换到 DeepSeek V4 Flash Vision，成功后恢复待处理图片。"""
+        if not self._deepseek_vision_switch_available():
+            self._prompt_image_upload_unavailable()
+            return
+
+        confirm_box = QMessageBox(self)
+        confirm_box.setIcon(QMessageBox.Information)
+        confirm_box.setWindowTitle("切换到视觉模型")
+        confirm_box.setText("将全局模型切换为 DeepSeek V4 Flash Vision。")
+        confirm_box.setInformativeText(
+            "图片附件会上传至 DeepSeek 服务器，最多保存 30 天。"
+        )
+        confirm_button = confirm_box.addButton("确认切换", QMessageBox.AcceptRole)
+        confirm_box.addButton("取消", QMessageBox.RejectRole)
+        confirm_box.exec_()
+        if confirm_box.clickedButton() is not confirm_button:
+            return
+
+        if not self._switch_to_deepseek_vision_model():
+            return
+        self.user_input.accept_pending_images_after_vision_switch()
+
+    def _switch_to_deepseek_vision_model(self) -> bool:
+        """原子写入 DeepSeek Vision 模型配置并通知主程序重载。"""
+        models = d_sakiko_config.llm_api_model.value
+        old_models = dict(models) if isinstance(models, dict) else {}
+        if not self._deepseek_vision_switch_available():
+            self._set_message_box_text("当前配置无法切换到 DeepSeek V4 Flash Vision。")
+            return False
+
+        try:
+            updated_models = dict(old_models)
+            updated_models["deepseek"] = "deepseek-v4-flash-vision-exp"
+            with d_sakiko_config as cfg:
+                cfg.set(cfg.llm_api_model, updated_models)
+            if not notify_config_reload():
+                raise RuntimeError("主程序未能重新加载配置")
+        except Exception as exc:
+            logger.exception("切换到 DeepSeek V4 Flash Vision 失败")
+            try:
+                with d_sakiko_config as cfg:
+                    cfg.set(cfg.llm_api_model, old_models)
+            except Exception:
+                logger.exception("回滚 DeepSeek Vision 模型配置失败")
+            self._refresh_add_image_button_state()
+            self._set_message_box_text(f"切换视觉模型失败：{exc}")
+            return False
+
+        self._refresh_add_image_button_state()
+        self.schedule_context_usage_refresh()
+        self._set_message_box_text(
+            "已切换到 DeepSeek V4 Flash Vision，下一条消息生效"
+        )
+        return True
+
+    def _choose_image_files(self) -> None:
+        """打开支持多选的图片文件选择器。"""
+        paths, _selected_filter = QFileDialog.getOpenFileNames(
+            self,
+            "选择图片",
+            "",
+            "图片 (*.jpg *.jpeg *.png *.gif *.webp)",
+        )
+        if paths:
+            self.user_input.handle_dropped_paths(paths)
+
+    def _add_managed_draft_image(self, source_path: str) -> None:
+        """暂存图片，并按当前服务模式启动上传或直接标记就绪。"""
+        try:
+            record = self.remote_attachment_manager.stage_draft_image(source_path)
+            service = self._current_deepseek_file_service()
+            if service is None:
+                record = self.remote_attachment_manager.mark_draft_ready_without_upload(
+                    record.draft_attachment_id
+                )
+            else:
+                if not self.remote_attachment_manager.notice_shown:
+                    QMessageBox.information(
+                        self,
+                        "DeepSeek 图片上传",
+                        "插入的图片会立即上传至 DeepSeek 服务器存储，最多保存 30 天。",
+                    )
+                    self.remote_attachment_manager.mark_notice_shown()
+            self.user_input.add_managed_draft(record.as_payload())
+            if service is not None:
+                future = self.remote_attachment_manager.submit_upload(
+                    record.draft_attachment_id,
+                    service,
+                )
+                future.add_done_callback(
+                    lambda completed, draft_id=record.draft_attachment_id:
+                    self._handle_attachment_upload_future(draft_id, completed)
+                )
+        except Exception as exc:
+            logger.exception("添加图片草稿失败。")
+            self.user_input.show_error(str(exc))
+        self._refresh_send_button_state()
+
+    def _handle_attachment_upload_future(
+            self,
+            draft_attachment_id: str,
+            future: Future[DraftAttachmentRecord],
+    ) -> None:
+        """从 worker 回调中提取最新草稿状态并通过 Qt 信号转发。"""
+        try:
+            record = future.result()
+        except Exception:
+            record = self.remote_attachment_manager.get_draft(draft_attachment_id)
+        if record is not None:
+            try:
+                self._attachment_upload_signals.uploadStateReady.emit(record.as_payload())
+            except RuntimeError:
+                logger.debug("窗口已关闭，忽略迟到的图片上传 UI 回调。")
+
+    @pyqtSlot(object)
+    def _apply_attachment_upload_state(self, payload: object) -> None:
+        """在 Qt 主线程更新缩略图上传状态。"""
+        if not isinstance(payload, dict):
+            return
+        self.user_input.update_managed_draft(payload)
+        if str(payload.get("upload_state") or "") == "failed":
+            self.user_input.show_error(
+                str(payload.get("error_message") or "图片上传失败，请点击图片重试。")
+            )
+        self._refresh_send_button_state()
+
+    def _remove_managed_draft_image(self, draft_attachment_id: str) -> None:
+        """取消并清理用户从输入框删除的图片草稿。"""
+        service = self._current_deepseek_file_service()
+        services = [service] if service is not None else []
+        self.remote_attachment_manager.cancel_draft_attachment(
+            draft_attachment_id,
+            services,
+        )
+        self._schedule_attachment_reachability_cleanup()
+        self._refresh_send_button_state()
+
+    def _retry_managed_draft_image(self, draft_attachment_id: str) -> None:
+        """根据当前 DeepSeek 服务配置重试失败的图片上传。"""
+        service = self._current_deepseek_file_service()
+        if service is None:
+            try:
+                record = self.remote_attachment_manager.mark_draft_ready_without_upload(
+                    draft_attachment_id
+                )
+                self.user_input.update_managed_draft(record.as_payload())
+            except RemoteAttachmentError as exc:
+                self.user_input.show_error(str(exc))
+            return
+        future = self.remote_attachment_manager.submit_upload(
+            draft_attachment_id,
+            service,
+        )
+        record = self.remote_attachment_manager.get_draft(draft_attachment_id)
+        if record is not None:
+            self.user_input.update_managed_draft(record.as_payload())
+        future.add_done_callback(
+            lambda completed: self._handle_attachment_upload_future(
+                draft_attachment_id,
+                completed,
+            )
+        )
+        self._refresh_send_button_state()
+
+    def _prepare_draft_uploads_for_send(self) -> bool:
+        """二次核对当前服务作用域，并在需要时启动草稿重新上传。"""
+        service = self._current_deepseek_file_service()
+        started_upload = False
+        for payload in self.user_input.pending_draft_payloads():
+            draft_id = str(payload.get("draft_attachment_id") or "")
+            record = self.remote_attachment_manager.get_draft(draft_id)
+            if record is None:
+                self.user_input.show_error("图片草稿记录已丢失，请删除后重新添加。")
+                return False
+            if service is None:
+                if record.upload_state != "ready":
+                    updated = self.remote_attachment_manager.mark_draft_ready_without_upload(
+                        draft_id
+                    )
+                    self.user_input.update_managed_draft(updated.as_payload())
+                continue
+            reference = record.remote_reference_for(service)
+            if reference is not None and remote_reference_is_fresh(reference):
+                continue
+            if record.upload_state in {"pending", "uploading", "failed"}:
+                return False
+            future = self.remote_attachment_manager.submit_upload(draft_id, service)
+            uploading = self.remote_attachment_manager.get_draft(draft_id)
+            if uploading is not None:
+                self.user_input.update_managed_draft(uploading.as_payload())
+            future.add_done_callback(
+                lambda completed, current_id=draft_id:
+                self._handle_attachment_upload_future(current_id, completed)
+            )
+            started_upload = True
+        if started_upload:
+            self.user_input.show_error("API 配置已变化，正在为当前服务重新上传图片。")
+            self._refresh_send_button_state()
+            return False
+        return self.user_input.draft_images_ready()
+
+    def _confirm_and_mark_unrecoverable_attachments(self) -> bool:
+        """汇总提示无法恢复的历史图片，并按用户选择决定是否忽略。"""
+        service = self._current_deepseek_file_service()
+        if service is None:
+            return True
+        attachments = [
+            attachment
+            for message in self.current_chat.message_list
+            if message.character_name == "User"
+            for attachment in message.attachments
+        ]
+        missing = self.remote_attachment_manager.find_unrecoverable_attachments(
+            attachments,
+            service,
+        )
+        if not missing:
+            return True
+        names = "\n".join(
+            f"• {attachment.original_name or attachment.path}"
+            for attachment in missing
+        )
+        answer = QMessageBox.question(
+            self,
+            "图片信息缺失",
+            "以下图片的本地文件和远端引用均不可用，无法恢复：\n"
+            f"{names}\n\n是否忽略这些缺失图片并继续发送？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        self.remote_attachment_manager.mark_attachments_unavailable(
+            missing,
+            "图片本地文件缺失且远端引用不可用，用户确认忽略后继续发送。",
+        )
+        if not self._save_chat():
+            return
+        self.refresh_current_chat_display()
+        return True
+
+    def _all_formal_attachments(self) -> list[MessageAttachment]:
+        """返回全部对话中的正式附件。"""
+        return [
+            attachment
+            for chat in self.chat_manager.chat_list
+            for message in chat.message_list
+            for attachment in message.attachments
+        ]
+
+    def _start_attachment_startup_cleanup(self) -> None:
+        """在 UI 启动后后台清理上次退出遗留的草稿和远端引用。"""
+        service = self._current_deepseek_file_service()
+        self.remote_attachment_manager.submit_reconcile_and_cleanup(
+            self._all_formal_attachments(),
+            [service] if service is not None else [],
+            abandon_drafts=True,
+        )
+
+    def _schedule_attachment_reachability_cleanup(self) -> None:
+        """在聊天删除或回滚后后台清理不可达的远端引用。"""
+        service = self._current_deepseek_file_service()
+        self.remote_attachment_manager.submit_reconcile_and_cleanup(
+            self._all_formal_attachments(),
+            [service] if service is not None else [],
         )
 
     def _current_model_can_force_image_upload(self) -> bool:
@@ -4350,6 +4557,20 @@ class ChatGUI(QWidget):
         )
         setting_window.exec_()
         self.schedule_context_usage_refresh()
+        self._refresh_send_button_state()
+
+    def _open_llm_configuration(self) -> None:
+        """打开独立的大模型 API 配置窗口。"""
+        try:
+            import subprocess
+
+            subprocess.Popen(
+                [sys.executable, os.path.join(script_dir, "dsakiko_configuration.py"), "DSakikoConfigArea"],
+                cwd=script_dir,
+            )
+        except Exception:
+            logger.exception("打开大模型 API 配置窗口失败")
+            self._set_message_box_text("打开大模型 API 配置窗口失败")
 
     def open_more_function_window(self):
         more_function_win=MoreFunctionWindow(
@@ -4500,12 +4721,15 @@ class ChatGUI(QWidget):
             self.voice_button.setEnabled(True)
             self.setWindowTitle("数字小祥")
 
-    def closeEvent(self, a0):
-        try:
-            self.chat_manager.save()
-            self.stop_input_stream()
-        finally:
-            a0.accept()
+    def closeEvent(self, a0: QCloseEvent) -> None:
+        """保存失败时暂停关闭，只有保存或明确放弃后才释放资源。"""
+        from runtime.storage_ui import save_before_close
+        if not save_before_close(self.chat_manager, self):
+            a0.ignore()
+            return
+        self.stop_input_stream()
+        self.remote_attachment_manager.shutdown()
+        a0.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
         if self.motion_complete_value.value:
@@ -4646,8 +4870,8 @@ class ChatGUI(QWidget):
             return
 
         original_text = message.text
-        image_paths_to_restore = [
-            str(resolve_attachment_path(attachment.path))
+        image_attachments_to_restore = [
+            attachment
             for attachment in message.attachments
             if attachment.is_image()
         ]
@@ -4673,12 +4897,22 @@ class ChatGUI(QWidget):
             if not accepted:
                 return
 
+        self.user_input.replace_draft(original_text)
+        failed_image_names: list[str] = []
+        for attachment in image_attachments_to_restore:
+            try:
+                record = self.remote_attachment_manager.stage_existing_attachment(
+                    attachment
+                )
+                self.user_input.add_managed_draft(record.as_payload())
+            except Exception:
+                failed_image_names.append(attachment.original_name or attachment.path)
+
         audio_failed = self._apply_current_chat_message_range_delete(
             msg_index,
             end,
             should_delete_audio,
         )
-        failed_image_paths = self.user_input.replace_draft(original_text, image_paths=image_paths_to_restore)
 
         if had_input_draft:
             success_message = "已将消息移回输入框，原输入框内容已被替换。"
@@ -4686,7 +4920,7 @@ class ChatGUI(QWidget):
             success_message = "已清除后续消息，可编辑后重新发送。"
         else:
             success_message = "已将消息移回输入框，可编辑后重新发送。"
-        if failed_image_paths:
+        if failed_image_names:
             success_message += " 部分图片附件已丢失，无法恢复。"
         self._show_delete_success_message(success_message, audio_failed)
 
@@ -4814,7 +5048,9 @@ class ChatGUI(QWidget):
             result.deleted_messages,
             should_delete_audio,
         )
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
+        self._schedule_attachment_reachability_cleanup()
         self._load_tool_call_records_cache()
         self.refresh_current_chat_display()
         self.refresh_chat_list()
@@ -4824,7 +5060,8 @@ class ChatGUI(QWidget):
     def _save_after_message_content_edit(self, msg_index: int) -> None:
         """保存消息内容编辑结果，并刷新相关界面状态。"""
         invalidate_rolling_summary_from_message_index(self.current_chat, msg_index)
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self._load_tool_call_records_cache()
         self.refresh_current_chat_display()
         self.refresh_chat_list()
@@ -4908,8 +5145,8 @@ class ChatGUI(QWidget):
             self._handle_structured_response(response_text)
             return
 
-        if response_text.startswith(TOOL_CALL_START_EVENT_PREFIX):
-            payload_str = response_text[len(TOOL_CALL_START_EVENT_PREFIX):]
+        if response_text.startswith("__TOOL_CALL_START__:"):
+            payload_str = response_text[len("__TOOL_CALL_START__:"):]
             try:
                 payload = json.loads(payload_str)
             except json.JSONDecodeError:
@@ -4917,8 +5154,8 @@ class ChatGUI(QWidget):
             self._handle_tool_call_start_event(payload)
             return
 
-        if response_text.startswith(TOOL_CALL_UPDATE_EVENT_PREFIX):
-            payload_str = response_text[len(TOOL_CALL_UPDATE_EVENT_PREFIX):]
+        if response_text.startswith("__TOOL_CALL_UPDATE__:"):
+            payload_str = response_text[len("__TOOL_CALL_UPDATE__:"):]
             try:
                 payload = json.loads(payload_str)
             except json.JSONDecodeError:
@@ -5018,6 +5255,19 @@ class ChatGUI(QWidget):
             else:
                 self._handle_tool_call_update_event(payload)
             return
+        if event_type == "user_message_committed":
+            if self._is_active_turn_payload(payload):
+                raw_ids = payload.get("draft_attachment_ids")
+                draft_ids = (
+                    [item for item in raw_ids if isinstance(item, str)]
+                    if isinstance(raw_ids, list)
+                    else []
+                )
+                self.remote_attachment_manager.acknowledge_commit(draft_ids)
+                self.user_input.clear_after_commit()
+                self.refresh_current_chat_display()
+                self._refresh_send_button_state()
+            return
         # 事件：切换对话
         if event_type == "chat_switched":
             return
@@ -5052,7 +5302,8 @@ class ChatGUI(QWidget):
                     self.refresh_current_chat_display()
                 self.refresh_chat_list()
                 self.schedule_context_usage_refresh()
-                self.chat_manager.save()
+                if not self._save_chat():
+                    return
             return
         if event_type != "assistant_segment_ready":
             return
@@ -5163,14 +5414,18 @@ class ChatGUI(QWidget):
         """
         if not hasattr(self, "send_button"):
             return
+        self._refresh_add_image_button_state()
         if self.is_response_active():
+            self.send_button.setEnabled(True)
             self.send_button.setText("")
             self.send_button.setIcon(self._send_stop_icon)
             self.send_button.setToolTip("终止对话")
         else:
             self.send_button.setIcon(QIcon())
             self.send_button.setText("↑")
-            self.send_button.setToolTip("发送")
+            block_reason = self.user_input.draft_upload_block_reason()
+            self.send_button.setEnabled(not bool(block_reason))
+            self.send_button.setToolTip(block_reason or "发送")
 
     def _finish_current_stream_immediately(self) -> None:
         """
@@ -5245,7 +5500,8 @@ class ChatGUI(QWidget):
         self.messages_box.append("已终止当前回复")
         self.refresh_chat_list()
         self.schedule_context_usage_refresh()
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
 
     @staticmethod
     def _format_live2d_display_text(text: str, translation: str = "") -> str:
@@ -5318,6 +5574,11 @@ class ChatGUI(QWidget):
         """执行已经通过确认的输入框命令。"""
         self.setWindowTitle("数字小祥")
 
+        if spec.command == "bye":
+            if self.close():
+                self._send_internal_command_payload({"type": "exit"}, force=True)
+            return
+
         if spec.command == "save":
             self.save_data()
             self.user_input.clear_after_send()
@@ -5350,7 +5611,11 @@ class ChatGUI(QWidget):
             self.user_input.clear_after_send()
             return
 
-        self._send_internal_command_payload(payload, force=spec.visibility == "hidden")
+        # 退出命令必须始终入队；启动阶段队列中可能已有 switch_chat，不能因此丢失退出请求。
+        self._send_internal_command_payload(
+            payload,
+            force=spec.command == "bye" or spec.visibility == "hidden",
+        )
         self.user_input.clear_after_send()
 
         if spec.command == "l":
@@ -5413,14 +5678,19 @@ class ChatGUI(QWidget):
             return self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
         return 60
 
-    def _send_l2d_model_payload(self, new_model_json: str) -> None:
+    def _send_l2d_model_payload(self, option: Live2DModelOption) -> None:
         """校验并发送 Live2D 模型切换 payload。"""
+        new_model_json = str(option.model_json_path)
         if not self._prepare_live2d_model_for_switch(new_model_json, "切换模型"):
             return
         character_name = self.current_character.character_name
         try:
-            self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
-            self.chat_manager.save()
+            if option.is_default:
+                self.current_chat.clear_custom_live2d_model_meta(character_name)
+            else:
+                self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
+            if not self._save_chat():
+                return
         except Exception:
             self.QT_message_queue.put("切换模型失败，保存对话模型配置时出错。")
             logger.exception("保存对话级 Live2D 模型配置失败。")
@@ -5474,6 +5744,13 @@ class ChatGUI(QWidget):
         if image_source_paths and not self._current_model_supports_vision():
             self.user_input.show_error("当前模型不支持图片输入，请切换支持视觉的模型或删除图片附件。")
             return
+        if image_source_paths and not self._prepare_draft_uploads_for_send():
+            block_reason = self.user_input.draft_upload_block_reason()
+            if block_reason:
+                self.user_input.show_error(block_reason)
+            return
+        if not self._confirm_and_mark_unrecoverable_attachments():
+            return
         failed_image_paths = self.user_input.validate_pending_images()
         if failed_image_paths:
             self.user_input.show_error(f"图片不存在或无法读取：{os.path.basename(failed_image_paths[0])}")
@@ -5482,8 +5759,13 @@ class ChatGUI(QWidget):
         if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
             return
         optimistic_attachments = self.user_input.optimistic_image_attachments()
-        self._send_user_message_payload(user_this_turn_input, image_source_paths=image_source_paths)
-        self.user_input.clear_after_send()
+        draft_attachments = self.user_input.pending_draft_payloads()
+        self._send_user_message_payload(
+            user_this_turn_input,
+            draft_attachments=draft_attachments,
+        )
+        if not draft_attachments:
+            self.user_input.clear_after_send()
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能
         if self.current_chat.message_list and self.current_chat.message_list[-1].text == user_this_turn_input:
@@ -5507,6 +5789,7 @@ class ChatGUI(QWidget):
         append_user_message: bool = True,
         context_usage_delay_ms: int = 1300,
         image_source_paths: Sequence[str] = (),
+        draft_attachments: Sequence[dict[str, object]] = (),
     ) -> None:
         """向后端发送用户消息请求，并启动当前 active turn。"""
         turn_id = uuid.uuid4().hex
@@ -5522,13 +5805,24 @@ class ChatGUI(QWidget):
             "append_user_message": append_user_message,
             "image_source_paths": list(image_source_paths),
             "worldbook_snapshot": worldbook_snapshot,
+            "draft_attachments": [dict(item) for item in draft_attachments],
         })
         self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
+
+    def _save_chat(self) -> bool:
+        """保存失败时提示用户，并让调用者停止后续成功流程。"""
+        try:
+            self.chat_manager.save()
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", f"未保存内容仍在内存中，请重试。\n{exc}")
+            return False
 
     def save_data(self):
         # 使用 ChatManager 统一保存到 all_conversation.json
         try:
-            self.chat_manager.save()
+            if not self._save_chat():
+                return
             self.setWindowTitle("已保存最新的聊天记录！")
         except Exception:
             logger.exception("保存聊天记录失败")
@@ -5586,7 +5880,8 @@ class ChatGUI(QWidget):
 
     def handle_messages(self,message):
         if message=='bye':
-            self.save_data()
+            if not self.isVisible():
+                return
             self.close()
             return
 

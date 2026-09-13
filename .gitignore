@@ -64,6 +64,7 @@ tools/release/update_patch.local.json
 **/node_modules/**
 .scratch/**
 dist/**
+publish_pipeline/**
 
 .idea/**
 .vscode/**
@@ -90,4 +91,9 @@ tools/hpatchz.exe
 双击run.bat即可运行程序，注意不要有中文路径！
 
 *.command
+!run_webui.command
 install_brew.sh
+
+# 独立修复入口与维护说明
+!修复程序.command
+!docs/maintenance-recovery.md

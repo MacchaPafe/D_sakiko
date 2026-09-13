@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from typing import Callable
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -20,17 +22,195 @@ from PyQt5.QtGui import (
     QImage,
 )
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtWidgets import QApplication, QToolButton, QWidget
 
 from chat.chat import Message
 from emotion_enum import EmotionEnum
 from input_commands import InputCommandMatcher, InputCommandPalette, build_default_input_command_specs
-from qtUI import MessageEditDialog
+import qtUI
+from qtUI import ChatGUI, MessageEditDialog
 from ui_main.components.message_input import MessageInput, trim_surrounding_blank_lines
 from ui_main.theme import derive_theme_palette
 
 
 TEST_THEME_PALETTE = derive_theme_palette("#7799CC")
+class _FakeConfigSignal:
+    """记录配置信号连接并允许测试主动发送。"""
+
+    def __init__(self) -> None:
+        """初始化回调列表。"""
+        self.callbacks: list[Callable[[object], None]] = []
+
+    def connect(self, callback: Callable[[object], None]) -> None:
+        """记录一个配置变化回调。"""
+        self.callbacks.append(callback)
+
+
+class _FakeConfigItem:
+    """提供测试所需的 valueChanged 信号。"""
+
+    def __init__(self) -> None:
+        """初始化伪配置信号。"""
+        self.valueChanged = _FakeConfigSignal()
+
+
+class ImageUploadButtonConfigSignalTestCase(unittest.TestCase):
+    """验证模型配置变化会立即刷新图片按钮。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """创建供 ChatGUI 测试使用的 Qt 应用。"""
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_all_model_identity_changes_refresh_image_button(self) -> None:
+        """提供商、模型和自定义模式变化都应立即刷新。"""
+        config_items = [_FakeConfigItem() for _index in range(5)]
+        fake_config = SimpleNamespace(
+            use_default_deepseek_api=config_items[0],
+            enable_custom_llm_api_provider=config_items[1],
+            custom_llm_api_model=config_items[2],
+            llm_api_provider=config_items[3],
+            llm_api_model=config_items[4],
+        )
+        subject = ChatGUI.__new__(ChatGUI)
+        refresh = mock.Mock()
+        subject._refresh_add_image_button_state = refresh
+
+        with mock.patch.object(qtUI, "d_sakiko_config", fake_config):
+            subject._connect_image_upload_config_signals()
+
+        for config_item in config_items:
+            self.assertEqual(len(config_item.valueChanged.callbacks), 1)
+            config_item.valueChanged.callbacks[0]("changed")
+        self.assertEqual(refresh.call_count, len(config_items))
+
+
+class DeepSeekVisionShortcutTestCase(unittest.TestCase):
+    """验证 DeepSeek Vision 快捷切换的严格配置边界。"""
+
+    class _MutableConfig:
+        """提供快捷切换测试所需的最小配置事务接口。"""
+
+        def __init__(self) -> None:
+            """初始化 DeepSeek 文本模型配置。"""
+            self.use_default_deepseek_api = SimpleNamespace(value=False)
+            self.llm_api_provider = SimpleNamespace(value="deepseek")
+            self.llm_api_model = SimpleNamespace(value={"deepseek": "deepseek-v4-flash"})
+            self.llm_api_key = SimpleNamespace(value={"deepseek": "sk-real"})
+
+        def __enter__(self) -> "DeepSeekVisionShortcutTestCase._MutableConfig":
+            """进入配置事务。"""
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            """退出配置事务。"""
+
+        def set(self, item: SimpleNamespace, value: object) -> None:
+            """更新伪配置项的值。"""
+            item.value = value
+
+    def test_shortcut_requires_official_provider_and_real_api_key(self) -> None:
+        """只有官方 DeepSeek provider 和有效 API Key 才允许快捷切换。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        config = SimpleNamespace(
+            use_default_deepseek_api=SimpleNamespace(value=False),
+            llm_api_provider=SimpleNamespace(value="deepseek"),
+            llm_api_model=SimpleNamespace(value={"deepseek": "deepseek-v4-flash"}),
+            llm_api_key=SimpleNamespace(value={"deepseek": "sk-real"}),
+        )
+
+        with mock.patch.object(qtUI, "d_sakiko_config", config):
+            self.assertTrue(subject._deepseek_vision_switch_available())
+
+            config.use_default_deepseek_api.value = True
+            self.assertFalse(subject._deepseek_vision_switch_available())
+            config.use_default_deepseek_api.value = False
+
+            config.llm_api_provider.value = "modelscope"
+            self.assertFalse(subject._deepseek_vision_switch_available())
+            config.llm_api_provider.value = "deepseek"
+
+            config.llm_api_key.value["deepseek"] = "sk-xxx...xxx"
+            self.assertFalse(subject._deepseek_vision_switch_available())
+
+    def test_switch_button_signal_is_emitted(self) -> None:
+        """点击错误条中的视觉切换按钮应发出专用信号。"""
+        app = QApplication.instance() or QApplication([])
+        input_widget = MessageInput(TEST_THEME_PALETTE)
+        requested: list[bool] = []
+        input_widget.visionSwitchRequested.connect(lambda: requested.append(True))
+        input_widget.show_error(
+            "当前模型不支持图片输入。",
+            show_switch_to_vision=True,
+        )
+        input_widget.switch_to_vision_button.click()
+        app.processEvents()
+        self.assertEqual(requested, [True])
+        input_widget.close()
+        input_widget.deleteLater()
+
+    def test_switch_updates_only_deepseek_model_after_reload(self) -> None:
+        """配置重载成功后应只替换 DeepSeek 模型名称。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        config = self._MutableConfig()
+        subject._refresh_add_image_button_state = mock.Mock()
+        subject.schedule_context_usage_refresh = mock.Mock()
+        subject._set_message_box_text = mock.Mock()
+
+        with (
+            mock.patch.object(qtUI, "d_sakiko_config", config),
+            mock.patch.object(qtUI, "notify_config_reload", return_value=True),
+        ):
+            self.assertTrue(subject._switch_to_deepseek_vision_model())
+
+        self.assertEqual(
+            config.llm_api_model.value,
+            {"deepseek": "deepseek-v4-flash-vision-exp"},
+        )
+        subject._refresh_add_image_button_state.assert_called_once()
+        subject.schedule_context_usage_refresh.assert_called_once()
+
+    def test_switch_rolls_back_when_reload_fails(self) -> None:
+        """主程序重载失败时应恢复原始 DeepSeek 模型。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        config = self._MutableConfig()
+        subject._refresh_add_image_button_state = mock.Mock()
+        subject._set_message_box_text = mock.Mock()
+
+        with (
+            mock.patch.object(qtUI, "d_sakiko_config", config),
+            mock.patch.object(qtUI, "notify_config_reload", return_value=False),
+        ):
+            self.assertFalse(subject._switch_to_deepseek_vision_model())
+
+        self.assertEqual(
+            config.llm_api_model.value,
+            {"deepseek": "deepseek-v4-flash"},
+        )
+        subject._set_message_box_text.assert_called_once()
+
+
+class ContextUsageSnapshotTestCase(unittest.TestCase):
+    """验证上下文用量快照通过聊天运行时统一估算入口获取 token。"""
+
+    def test_snapshot_delegates_token_estimation_to_chat_runtime(self) -> None:
+        """Qt UI 不应绕过运行时自行调用 LiteLLM token counter。"""
+        subject = ChatGUI.__new__(ChatGUI)
+        estimator = mock.Mock(return_value=393)
+        subject.dp_chat = SimpleNamespace(
+            estimate_current_context_tokens=estimator,
+        )
+        with mock.patch.object(
+            ChatGUI,
+            "current_character",
+            new_callable=mock.PropertyMock,
+            return_value=SimpleNamespace(character_name="角色"),
+        ):
+            snapshot = subject._build_context_usage_snapshot(1000)
+
+        self.assertEqual(snapshot.used_tokens, 393)
+        self.assertEqual(snapshot.token_limit, 1000)
+        estimator.assert_called_once_with("角色")
 
 
 class MessageInputTestCase(unittest.TestCase):
@@ -480,6 +660,62 @@ class MessageInputTestCase(unittest.TestCase):
 
         self.assertEqual(self.input.toPlainText(), "")
         self.assertEqual(self.input.pending_image_source_paths(), [])
+
+    def test_managed_mode_emits_add_request_before_showing_preview(self) -> None:
+        """管理模式应先把源路径交给外部控制器，而不是直接持有用户原图。"""
+        image_path = self._create_temp_png()
+        requested_paths: list[str] = []
+        self.input.set_managed_attachment_mode(True)
+        self.input.imageAddRequested.connect(requested_paths.append)
+
+        self.assertTrue(self.input.request_add_draft_image_path(image_path))
+
+        self.assertEqual(requested_paths, [image_path])
+        self.assertEqual(self.input.pending_image_source_paths(), [])
+
+    def test_failed_managed_draft_shows_clickable_retry_overlay(self) -> None:
+        """失败草稿应阻止发送，并通过整图遮罩发出重试请求。"""
+        image_path = self._create_temp_png()
+        retried_ids: list[str] = []
+        self.input.set_managed_attachment_mode(True)
+        self.input.imageRetryRequested.connect(retried_ids.append)
+        self.input.add_managed_draft({
+            "draft_attachment_id": "draft-one",
+            "staging_path": image_path,
+            "mime_type": "image/png",
+            "original_name": "tiny.png",
+            "upload_state": "failed",
+            "error_message": "network",
+        })
+        self.app.processEvents()
+
+        self.assertFalse(self.input.draft_images_ready())
+        self.assertIn("上传失败", self.input.draft_upload_block_reason())
+        overlay = self.input.findChild(QToolButton, "draftImageStatusOverlay")
+        self.assertIsNotNone(overlay)
+        assert overlay is not None
+        overlay.click()
+
+        self.assertEqual(retried_ids, ["draft-one"])
+
+    def test_commit_clear_does_not_cancel_remote_draft(self) -> None:
+        """后端确认提交后的 UI 清理不得再次发出远端取消信号。"""
+        image_path = self._create_temp_png()
+        removed_ids: list[str] = []
+        self.input.set_managed_attachment_mode(True)
+        self.input.imageRemoveRequested.connect(removed_ids.append)
+        self.input.add_managed_draft({
+            "draft_attachment_id": "draft-one",
+            "staging_path": image_path,
+            "mime_type": "image/png",
+            "original_name": "tiny.png",
+            "upload_state": "ready",
+        })
+
+        self.input.clear_after_commit()
+
+        self.assertEqual(removed_ids, [])
+        self.assertEqual(self.input.pending_draft_payloads(), [])
 
     def _create_temp_png(self) -> str:
         """创建测试用 PNG 图片并返回路径。"""

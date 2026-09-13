@@ -69,9 +69,6 @@ class ThemePaletteAlgorithmTestCase(unittest.TestCase):
                     self._contrast(palette.text_accent, palette.surface_selected),
                     4.75,
                 )
-                self.assertGreaterEqual(self._contrast(palette.on_accent, palette.accent), 4.5)
-                self.assertGreaterEqual(self._contrast(palette.on_accent, palette.accent_hover), 4.5)
-                self.assertGreaterEqual(self._contrast(palette.on_accent, palette.accent_pressed), 4.5)
 
     def test_representative_extremes_are_deterministic(self) -> None:
         """高松灯、阿拉蕾和极端中性色应稳定生成同一结果。"""
@@ -126,6 +123,38 @@ class ThemePaletteAlgorithmTestCase(unittest.TestCase):
     def _contrast(foreground: str, background: str) -> float:
         """返回测试断言使用的 WCAG 2.1 对比度。"""
         return Color(foreground).contrast(Color(background), method="wcag21")
+
+
+class ThemePaletteForegroundPolicyTestCase(unittest.TestCase):
+    """验证主线针对亮黄色角色采用的深色按钮文字策略。"""
+
+    SPECIAL_DARK_SEEDS = {"#FFEE88", "#FFEE22", "#FFEEAA", "#FFDD88", "#FFEE55"}
+
+    def test_only_selected_yellow_accents_use_tinted_dark_foreground(self) -> None:
+        """仅五个指定亮黄色使用带色相深灰字，并保持清晰状态色。"""
+        for seed in self.SPECIAL_DARK_SEEDS:
+            with self.subTest(seed=seed):
+                palette = derive_theme_palette(seed)
+                self.assertNotIn(palette.on_accent, {"#000000", "#FFFFFF"})
+                states = (palette.accent, palette.accent_hover, palette.accent_pressed)
+                self.assertEqual(len(set(states)), 3)
+                for background in states:
+                    self.assertGreaterEqual(
+                        Color(background).contrast(Color(palette.on_accent), method="wcag21"),
+                        4.5,
+                    )
+
+    def test_every_other_preset_accent_uses_white_foreground(self) -> None:
+        """其余全部预设色保持白色按钮文字。"""
+        preset_seeds = {
+            str(character_info["theme_color"]).upper()
+            for character_info in char_info_json.values()
+        }
+
+        self.assertEqual(len(preset_seeds), 50)
+        for seed in preset_seeds - self.SPECIAL_DARK_SEEDS:
+            with self.subTest(seed=seed):
+                self.assertEqual(derive_theme_palette(seed).on_accent, "#FFFFFF")
 
 
 class ThemePaletteQtIntegrationTestCase(unittest.TestCase):

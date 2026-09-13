@@ -12,7 +12,7 @@ import dp_local2
 from chat.chat import Chat, ChatManager, Message, MessageAttachment, StaticPromptGenerator
 from chat.chat_meta import ToolCallRecordMeta
 from chat.rolling_summary import (
-    ROLLING_SUMMARY_MAX_TOKENS,
+    DEFAULT_ROLLING_SUMMARY_PROMPT,
     ROLLING_SUMMARY_META_KEY,
     build_llm_query_with_rolling_summary,
     build_rolling_summary_update,
@@ -21,11 +21,15 @@ from chat.rolling_summary import (
     find_recent_window_start,
     get_rolling_summary,
     invalidate_rolling_summary_from_message_index,
+    load_rolling_summary_prompt,
+    rolling_summary_token_budget,
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
+    trim_messages_with_sliding_window,
 )
 from emotion_enum import EmotionEnum
+from qconfig import DSakikoConfig
 
 
 class RollingSummaryTestCase(unittest.TestCase):
@@ -49,12 +53,89 @@ class RollingSummaryTestCase(unittest.TestCase):
             message_list=messages,
         )
 
-    def test_threshold_uses_configurable_ratio_with_sixty_percent_default(self) -> None:
-        self.assertFalse(context_reaches_summary_threshold(599, 1000))
-        self.assertTrue(context_reaches_summary_threshold(600, 1000))
-        self.assertFalse(context_reaches_summary_threshold(600, None))
-        self.assertFalse(context_reaches_summary_threshold(349, 1000, 0.35))
-        self.assertTrue(context_reaches_summary_threshold(350, 1000, 0.35))
+    def test_threshold_uses_configurable_ratio_with_eighty_percent_default(self) -> None:
+        self.assertFalse(context_reaches_summary_threshold(799, 1000))
+        self.assertTrue(context_reaches_summary_threshold(800, 1000))
+        self.assertFalse(context_reaches_summary_threshold(800, None))
+        self.assertFalse(context_reaches_summary_threshold(749, 1000, 0.75))
+        self.assertTrue(context_reaches_summary_threshold(750, 1000, 0.75))
+
+    def test_threshold_config_is_limited_to_seventy_through_ninety_percent(self) -> None:
+        item = DSakikoConfig.rolling_summary_trigger_ratio
+
+        self.assertEqual(item.defaultValue, 0.80)
+        self.assertEqual(item.range, (0.70, 0.90))
+        self.assertEqual(item.validator.correct(0.20), 0.70)
+        self.assertEqual(item.validator.correct(0.95), 0.90)
+
+    def test_rolling_summary_is_disabled_by_default(self) -> None:
+        self.assertFalse(DSakikoConfig.enable_rolling_summary.defaultValue)
+
+    def test_summary_prompt_falls_back_when_file_is_missing(self) -> None:
+        missing_path = mock.Mock()
+        missing_path.is_file.return_value = False
+        with mock.patch("chat.rolling_summary.ROLLING_SUMMARY_PROMPT_PATH", missing_path):
+            self.assertEqual(
+                load_rolling_summary_prompt(),
+                DEFAULT_ROLLING_SUMMARY_PROMPT,
+            )
+
+    def test_summary_request_combines_custom_prompt_and_hard_rules(self) -> None:
+        with mock.patch(
+            "chat.rolling_summary.load_rolling_summary_prompt",
+            return_value="请特别保留用户喜欢的音乐。",
+        ):
+            update = build_rolling_summary_update(self._chat_with_turns(12), perspective="角色")
+
+        self.assertIsNotNone(update)
+        assert update is not None
+        system_prompt = str(update.messages[0]["content"])
+        self.assertIn("请特别保留用户喜欢的音乐。", system_prompt)
+        self.assertIn("不可被个性化提示覆盖的硬性约束", system_prompt)
+
+    def test_sliding_window_removes_oldest_non_system_messages(self) -> None:
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "old-user"},
+            {"role": "assistant", "content": "old-assistant"},
+            {"role": "user", "content": "latest-user"},
+        ]
+
+        with mock.patch(
+            "chat.model_token_usage.count_message_tokens",
+            side_effect=lambda _model, candidate, **_kwargs: len(candidate) * 100,
+        ):
+            trimmed = trim_messages_with_sliding_window(
+                messages,
+                model="test/model",
+                token_limit=200,
+            )
+
+        self.assertEqual(trimmed, [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "latest-user"},
+        ])
+
+    def test_disabled_summary_skips_background_compaction(self) -> None:
+        subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
+        subject.d_sakiko_config = SimpleNamespace(
+            enable_rolling_summary=SimpleNamespace(value=False),
+        )
+
+        updated = subject._maybe_update_rolling_summary(
+            self._chat_with_turns(12),
+            "角色",
+            [{"role": "user", "content": "current"}],
+        )
+
+        self.assertFalse(updated)
+
+    def test_summary_budget_is_ten_percent_without_a_fixed_upper_cap(self) -> None:
+        self.assertEqual(rolling_summary_token_budget(1000), 100)
+        self.assertEqual(rolling_summary_token_budget(128_000), 12_800)
+        self.assertEqual(rolling_summary_token_budget(1_000_000), 100_000)
+        with self.assertRaises(ValueError):
+            rolling_summary_token_budget(0)
 
     def test_dp_updates_summary_at_threshold_and_saves_it(self) -> None:
         chat = self._chat_with_turns(12)
@@ -73,7 +154,7 @@ class RollingSummaryTestCase(unittest.TestCase):
                 return_value=completion_response,
             ) as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=600),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,
@@ -93,7 +174,7 @@ class RollingSummaryTestCase(unittest.TestCase):
         completion_mock.assert_called_once()
         self.assertEqual(
             completion_mock.call_args.kwargs["max_tokens"],
-            ROLLING_SUMMARY_MAX_TOKENS,
+            100,
         )
         event_queue.put.assert_called_once_with({
             "type": "context_compaction_started",
@@ -101,6 +182,64 @@ class RollingSummaryTestCase(unittest.TestCase):
             "turn_id": "turn-1",
             "message": "正在整理过往思绪...",
         })
+
+    def test_dp_passes_deepseek_file_cost_to_token_counter(self) -> None:
+        """DeepSeek Files 请求应使用图片 token 上限参与摘要触发统计。"""
+        chat = self._chat_with_turns(12)
+        subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
+        subject.chat_manager = mock.Mock()
+        subject.d_sakiko_config = SimpleNamespace(
+            enable_rolling_summary=SimpleNamespace(value=True),
+            use_default_deepseek_api=SimpleNamespace(value=False),
+            enable_custom_llm_api_provider=SimpleNamespace(value=False),
+            llm_api_provider=SimpleNamespace(value="deepseek"),
+            llm_api_model=SimpleNamespace(value={}),
+            llm_api_key=SimpleNamespace(value={}),
+            llm_api_base_url=SimpleNamespace(value={}),
+        )
+        completion_response = {
+            "choices": [{"message": {"content": "模型生成的累计摘要"}}],
+        }
+
+        with (
+            mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
+            mock.patch.object(subject, "_current_deepseek_file_service", return_value=object()),
+            mock.patch.object(subject, "_completion_with_current_config", return_value=completion_response),
+            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800) as count_mock,
+        ):
+            updated = subject._maybe_update_rolling_summary(
+                chat,
+                "角色",
+                [{"role": "user", "content": "current"}],
+            )
+
+        self.assertTrue(updated)
+        self.assertEqual(
+            count_mock.call_args.kwargs["file_token_cost"],
+            dp_local2.DEEPSEEK_FILE_IMAGE_TOKEN_COST,
+        )
+
+    def test_emergency_trim_passes_file_cost_to_token_counter(self) -> None:
+        """紧急裁剪应沿用与摘要触发相同的 file token 成本。"""
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": [{"type": "file", "file_id": "file-1"}]},
+        ]
+
+        with mock.patch(
+            "chat.model_token_usage.count_message_tokens",
+            return_value=1,
+        ) as count_mock:
+            trimmed = trim_messages_for_emergency(
+                messages,
+                model="test/model",
+                token_limit=1000,
+                file_token_cost=384,
+            )
+
+        self.assertEqual(trimmed, messages)
+        self.assertEqual(count_mock.call_args.kwargs["file_token_cost"], 384)
 
     def test_dp_skips_summary_below_threshold(self) -> None:
         chat = self._chat_with_turns(12)
@@ -111,7 +250,7 @@ class RollingSummaryTestCase(unittest.TestCase):
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config") as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=599),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=799),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,
@@ -136,7 +275,7 @@ class RollingSummaryTestCase(unittest.TestCase):
                 side_effect=TimeoutError("summary timeout"),
             ) as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=600),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             first = subject._maybe_update_rolling_summary(
                 chat,
@@ -158,14 +297,14 @@ class RollingSummaryTestCase(unittest.TestCase):
         subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
         subject.chat_manager = mock.Mock()
         subject.d_sakiko_config = SimpleNamespace(
-            rolling_summary_trigger_ratio=SimpleNamespace(value=0.35),
+            rolling_summary_trigger_ratio=SimpleNamespace(value=0.75),
         )
 
         with (
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config") as completion_mock,
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=349),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=749),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,
@@ -176,10 +315,10 @@ class RollingSummaryTestCase(unittest.TestCase):
         self.assertFalse(updated)
         completion_mock.assert_not_called()
 
-    def test_summary_validation_rejects_short_error_and_oversized_results(self) -> None:
+    def test_summary_validation_rejects_short_and_error_results_without_length_cap(self) -> None:
         self.assertIsNotNone(rolling_summary_validation_error("无"))
         self.assertIsNotNone(rolling_summary_validation_error("Internal Server Error"))
-        self.assertIsNotNone(rolling_summary_validation_error("摘" * 12001))
+        self.assertIsNone(rolling_summary_validation_error("摘" * 12001))
         self.assertIsNone(rolling_summary_validation_error("用户希望以后继续讨论 Live2D 性能优化。"))
 
     def test_dp_rejects_invalid_summary_without_advancing_boundary(self) -> None:
@@ -192,7 +331,7 @@ class RollingSummaryTestCase(unittest.TestCase):
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config", return_value=response),
             mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
-            mock.patch.object(dp_local2, "count_message_tokens", return_value=600),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             updated = subject._maybe_update_rolling_summary(
                 chat,

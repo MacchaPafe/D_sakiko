@@ -1,6 +1,12 @@
+from __future__ import annotations
+
 import sys, os,json,re,ast
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+if __name__ == "__main__":
+    from maintenance.bootstrap import recover_before_startup
+    recover_before_startup(Path(__file__).resolve().parents[1])
 
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
@@ -25,7 +31,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPush
     QGridLayout, QApplication, QLabel, QGroupBox, QDialog, QMessageBox, QMenu, QFormLayout, QDialogButtonBox, \
     QToolButton, QStyle, QSlider, QListWidget, QListWidgetItem, QInputDialog, QComboBox, QTextEdit, QListView, QStyledItemDelegate
 
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QTextCursor, QPalette
+from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
 import faulthandler
 import character
@@ -33,6 +39,7 @@ from chat.chat import ChatManager, Chat, ChatType, Message, SmallTheaterPromptGe
 from chat.chat_meta import TheaterMeta
 from log import get_logger, setup_logging, get_log_queue, shutdown_logging
 from qtUI import ChangeL2DModelWindow
+from live2d_support.model_catalog import Live2DModelOption
 from live2d_support.motion_capabilities import get_live2d_motion_capabilities
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
@@ -1015,7 +1022,14 @@ class SettingsDialog(QDialog):
                 break
 
         if folder_path != "":
-            dialog = ChangeL2DModelWindow(folder_path, lambda path: self.parent_gui._on_live2d_model_changed(char_index, self.character_names[char_index], path))
+            dialog = ChangeL2DModelWindow(
+                folder_path,
+                lambda option: self.parent_gui._on_live2d_model_changed(
+                    char_index,
+                    self.character_names[char_index],
+                    option,
+                ),
+            )
             dialog.exec()
 
     def set_talk_speed(self):
@@ -1235,7 +1249,10 @@ class ViewerGUI(QWidget):
         self.char_talk_texts_match_original_response_indices = []
         self.char_1_talk_texts = []
         self.char_1_audio_path_list = []
-        self.chat_manager: ChatManager = get_chat_manager()
+        self.chat_manager: ChatManager = get_chat_manager(write_scope=ChatType.SMALL_THEATER)
+        self.chat_manager.storage_notice = self.message_queue.put
+        for notice in self.chat_manager.storage_notices:
+            self.message_queue.put(notice)
         self.current_chat: Optional[Chat] = None
         self.sakiko_state=True  #黑祥
         # 当前对话是否可以生成音频（即当前对话中，两个角色是否都有语音模型）
@@ -1382,7 +1399,8 @@ class ViewerGUI(QWidget):
                     ordered_chat_ids.append(chat.chat_id)
 
         self.chat_manager.reorder_chats_by_type(ChatType.SMALL_THEATER, ordered_chat_ids)
-        self.chat_manager.save()  # 立即保存新的顺序
+        if not self._save_chat():
+            return
 
     def show_chat_list_menu(self, pos) -> None:
         """
@@ -1444,7 +1462,8 @@ class ViewerGUI(QWidget):
         self.refresh_chat_list()
         self.messages_box.setText(f"已创建新对话：{payload['name']}")
         # 在创建/删除/改变对话顺序后，都自动保存一次
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
 
     def delete_current_chat(self) -> None:
         if self.current_chat is None:
@@ -1472,7 +1491,8 @@ class ViewerGUI(QWidget):
 
         self.refresh_chat_list()
         self.messages_box.setText("已删除对话")
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
 
     @staticmethod
     def _turn_dict_from_message(msg: Message) -> Dict[str, Any]:
@@ -1729,16 +1749,26 @@ class ViewerGUI(QWidget):
         }
         self.to_live2d_module_queue.put(payload)
 
-    def _on_live2d_model_changed(self, char_index: int, character_name: str, model_path: str) -> None:
+    def _on_live2d_model_changed(
+        self,
+        char_index: int,
+        character_name: str,
+        option: Live2DModelOption,
+    ) -> None:
         """
         接收 SettingsDialog 中角色模型更换的回调，并通知 Live2D 模块更新指定角色的模型。
         随后，将新的模型路径保存到对话信息中。
         """
+        model_path = str(option.model_json_path)
         if not self._prepare_live2d_model_for_switch(model_path, "切换小剧场 Live2D 模型"):
             return
         if self.current_chat is not None:
-            self.current_chat.update_custom_live2d_model_meta(character_name, model_path)
-            self.chat_manager.save()
+            if option.is_default:
+                self.current_chat.clear_custom_live2d_model_meta(character_name)
+            else:
+                self.current_chat.update_custom_live2d_model_meta(character_name, model_path)
+            if not self._save_chat():
+                return
         # 设置面板中的“切同角色不同模型”不应中断正在播放的句子
         self.sync_live2d_active_slots(
             override_paths={char_index: model_path},
@@ -2423,21 +2453,37 @@ class ViewerGUI(QWidget):
         self.sync_live2d_active_slots()
         self.display_live2d_message([replay_payload], preserve_playback=False)
 
+    def _save_chat(self) -> bool:
+        """保存失败时提示用户，并让调用者停止后续成功流程。"""
+        try:
+            self.chat_manager.save()
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", f"未保存内容仍在内存中，请重试。\n{exc}")
+            return False
+
     def save_history_data(self):
-        self.chat_manager.save()
+        if not self._save_chat():
+            return
         self.message_queue.put("已保存最新记录")
 
 
-    def close_program(self):
-        self.save_history_data()
+    def close_program(self) -> None:
+        """退出按钮统一走窗口关闭时的保存确认。"""
+        self.close()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """关闭前保存，失败时允许重试、放弃或继续留在程序中。"""
+        from runtime.storage_ui import save_before_close
+        if not save_before_close(self.chat_manager, self):
+            event.ignore()
+            return
         self.to_live2d_change_character_queue.put('EXIT')
         self.audio_gen_module.shutdown_worker()
         self.dp2qt_queue.put('EXIT')
         self.message_queue.put('EXIT')
         self.qt2dp_queue.put('EXIT')
-        self.close()
-
-
+        event.accept()
 
     def match_speaker_index(self, llm_name, candidate_indices):
         """
@@ -2550,6 +2596,14 @@ if __name__ == "__main__":
     setup_logging()
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+    from runtime.runtime_lock import RuntimeLockBusy, acquire_runtime_lock
+    try:
+        runtime_lease = acquire_runtime_lock(project_root, "theater")
+        get_chat_manager(write_scope=ChatType.SMALL_THEATER)
+    except (RuntimeLockBusy, RuntimeError, OSError) as exc:
+        print(str(exc))
+        raise SystemExit(1)
 
     get_char_attr = character.GetCharacterAttributes()
 
