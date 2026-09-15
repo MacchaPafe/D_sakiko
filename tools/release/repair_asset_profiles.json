@@ -6,6 +6,7 @@
     "allow": [
       "GPT_SoVITS/*.py",
       "GPT_SoVITS/**/*.py",
+      "launcher/*.py",
       "GPT_SoVITS/*.json",
       "GPT_SoVITS/**/*.json",
       "GPT_SoVITS/*.jinja",
@@ -99,6 +100,7 @@
         "run.bat",
         "修复程序.bat",
         "run_webui.bat",
+        "数字小祥启动器.bat",
         "启动参数配置.bat",
         "运行Live2D模型下载器.bat",
         "运行动作组编辑程序.bat",
