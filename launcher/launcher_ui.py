@@ -82,9 +82,21 @@ class LauncherWindow(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background: #F7F8FC;
+                color: #000000;
             }
             QLabel {
                 background: transparent;
+                color: #000000;
+            }
+            QTextBrowser, QListWidget {
+                background: #FFFFFF;
+                color: #000000;
+                selection-background-color: #DCE5F5;
+                selection-color: #000000;
+            }
+            QProgressBar {
+                background: #EEF1F7;
+                color: #000000;
             }
 
             QLabel#heading {
