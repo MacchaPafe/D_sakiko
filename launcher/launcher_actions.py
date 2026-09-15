@@ -69,7 +69,7 @@ def build_command(
                     "--status-file", str(root / "logs/update/last_update_result.json"),
                     "--restart-command", json.dumps([executable, str(root / "launcher/launcher.py")])]
         return command, root
-    return command, root / "GPT_SoVITS"
+    return command, root if sys.platform == "darwin" else root / "GPT_SoVITS"
 
 
 @dataclass
@@ -83,7 +83,7 @@ class LauncherProcesses:
 
     def __init__(self, root: Path, executable: str | None = None):
         self.root = root.resolve()
-        self.executable = executable or sys.executable
+        self.executable = executable or (str(self.root / ".venv/bin/python") if sys.platform == "darwin" else sys.executable)
         self.running: dict[str, RunningEntry] = {}
 
     def blocked_reason(self, key: str) -> str | None:
@@ -113,7 +113,11 @@ class LauncherProcesses:
         # 日志只记录启动信息，运行输出交给程序自己的控制台。
         log_path.write_text(f"工作目录：{cwd}\n命令：{subprocess.list2cmdline(command)}\n"
                             "运行输出显示在独立终端中。\n", encoding="utf-8")
-        process = subprocess.Popen(command, cwd=str(cwd), close_fds=True, env=env, **options)
+        if sys.platform == "darwin":
+            from launcher_macos import start_in_terminal
+            process = start_in_terminal(command, cwd, self.root, log_path)
+        else:
+            process = subprocess.Popen(command, cwd=str(cwd), close_fds=True, env=env, **options)
         self.running[key] = RunningEntry(process, log_path)
         return log_path
 
