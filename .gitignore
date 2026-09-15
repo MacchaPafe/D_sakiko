@@ -86,7 +86,7 @@ tools/hpatchz.exe
 双击run.bat即可运行程序，注意不要有中文路径！
 
 *.command
-!run_webui.command
+!数字小祥启动器.command
 install_brew.sh
 
 # 启动器本地回归测试，不随项目分发。

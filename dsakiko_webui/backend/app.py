@@ -29,6 +29,7 @@ from .protocol import (
     http_error,
 )
 from .networking import discover_network_addresses
+from .ports import WEBUI_PORT
 from .runtime import HeadlessRuntime
 from .uploads import MAX_IMAGE_UPLOAD_BYTES, PendingImageStore
 from .ws import WebSocketManager
@@ -37,10 +38,9 @@ from GPT_SoVITS.runtime.runtime_lock import acquire_runtime_lock
 
 logger = logging.getLogger(__name__)
 FRONTEND_DIST = PROJECT_ROOT / "dsakiko_webui" / "frontend" / "dist"
-WEBUI_PORT = 8000
 
 
-def print_startup_banner(access_code: str, pairing_ui_url: str | None = None) -> None:
+def print_startup_banner(access_code: str, pairing_ui_url: str | None = None, webui_port: int = WEBUI_PORT) -> None:
     addresses = discover_network_addresses()
     local_ip = addresses[0].address if addresses else None
     lines = [
@@ -55,7 +55,7 @@ def print_startup_banner(access_code: str, pairing_ui_url: str | None = None) ->
     lines.extend([
         "",
         ">>登录方法二：手机与电脑连接同一局域网后手动登录",
-        f"  1. 手机浏览器输入地址：http://{local_ip}:{WEBUI_PORT}" if local_ip else "未检测到可用局域网地址",
+        f"  1. 手机浏览器输入地址：http://{local_ip}:{webui_port}" if local_ip else "未检测到可用局域网地址",
         f"  2. 然后填入六位访问码：{access_code}",
     ])
     def display_width(value: str) -> int:
@@ -114,7 +114,7 @@ def create_app(
             initialize_task = asyncio.create_task(initialize())
         if initialize_runtime:
             logger.info("WebUI 访问码：%s", auth.access_code)
-            print_startup_banner(auth.access_code, app.state.pairing_ui_url)
+            print_startup_banner(auth.access_code, app.state.pairing_ui_url, app.state.webui_port)
         try:
             yield
         finally:
@@ -134,6 +134,7 @@ def create_app(
     app.state.uploads = uploads
     app.state.runtime_lease = None
     app.state.pairing_ui_url = None
+    app.state.webui_port = WEBUI_PORT
 
     @app.middleware("http")
     async def browser_security_headers(

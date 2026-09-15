@@ -11,7 +11,7 @@ npm install
 npm run dev -- --host 0.0.0.0
 ```
 
-先在项目根目录启动 WebUI 后端。Vite 会把 `/api` 和 WebSocket 代理到本机 `8000` 端口，并同时输出本机地址和局域网地址。手机与电脑处于同一局域网时，可在 Android Chrome 中打开对应的 Network 地址。
+先在项目根目录启动 WebUI 后端。Vite 默认把 `/api` 和 WebSocket 代理到本机 `7799` 端口，并同时输出本机地址和局域网地址。如果后端因端口占用自动递增，请在启动 Vite 前将环境变量 `DSAKIKO_WEBUI_PORT` 设为后端终端显示的实际端口。手机与电脑处于同一局域网时，可在 Android Chrome 中打开对应的 Network 地址。正式打包前端使用同源连接，不受此开发代理设置影响。
 
 ## 验证与构建
 

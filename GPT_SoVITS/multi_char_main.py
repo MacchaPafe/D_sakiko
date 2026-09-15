@@ -1572,7 +1572,7 @@ class ViewerGUI(QWidget):
                 return False
         return True
 
-    def _default_model_path_from_index(self, char_index: int) -> str | None:
+    def _default_model_path_from_index(self, char_index: int) -> Optional[str]:
         """根据角色索引获取可选默认 Live2D 模型路径。"""
         if 0 <= char_index < len(self.character_list):
             return self.character_list[char_index].live2d_json

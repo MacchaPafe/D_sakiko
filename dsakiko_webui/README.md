@@ -6,19 +6,19 @@ WebUI 是一个不启动 Qt 与本地 Live2D 窗口的独立运行模式。电�
 
 ## 启动
 
-macOS / Linux：
+macOS：打开启动器后选择 WebUI 模式。
 
 ```bash
-./run_webui.command
+./数字小祥启动器.command
 ```
 
-也可以从项目根目录直接运行：
+macOS / Linux 也可以从项目根目录直接运行：
 
 ```bash
 .venv/bin/python -m dsakiko_webui.backend.main
 ```
 
-Windows 可以双击 `run_webui.bat`。服务默认监听 `0.0.0.0:8000`。两个启动脚本都会在电脑浏览器中打开仅本机可访问的配对页；使用手机扫描二维码即可连接。终端同时保留普通局域网地址和本次启动的六位访问码作为备用方式。
+Windows 可以双击 `数字小祥启动器.bat`，选择 WebUI 模式。服务默认监听 `0.0.0.0:7799`；端口被占用或不可绑定时，依次尝试 7800、7801 等后续端口。通过启动器启动时会在电脑浏览器中打开仅本机可访问的配对页；使用手机扫描二维码即可连接。二维码和终端地址会使用本次实际端口，终端同时保留本次启动的六位访问码作为备用方式。
 
 直接运行 Python 模块时默认不打开浏览器。需要自动打开配对页时使用：
 
@@ -26,9 +26,9 @@ Windows 可以双击 `run_webui.bat`。服务默认监听 `0.0.0.0:8000`。两�
 .venv/bin/python -m dsakiko_webui.backend.main --open-pairing
 ```
 
-扫码链接携带五分钟有效的一次性随机配对凭证。前端会立即从地址栏清除凭证并兑换 HttpOnly Cookie，然后建立 WebSocket。二维码过期或使用后，可以在电脑配对页重新生成。普通 `http://电脑IP:8000/` 加六位访问码的旧流程继续可用。
+扫码链接携带五分钟有效的一次性随机配对凭证。前端会立即从地址栏清除凭证并兑换 HttpOnly Cookie，然后建立 WebSocket。二维码过期或使用后，可以在电脑配对页重新生成。普通 `http://电脑IP:实际端口/`（默认 7799）加六位访问码的旧流程继续可用。
 
-前后端分开开发时，先在项目根目录启动后端，再在 `dsakiko_webui/frontend` 运行 `npm run dev`。Vite 会把 `/api` 和 WebSocket 代理到本机 `8000` 端口。
+前后端分开开发时，先在项目根目录启动后端，再在 `dsakiko_webui/frontend` 运行 `npm run dev`。Vite 默认把 `/api` 和 WebSocket 代理到本机 `7799` 端口。如果后端自动切换了端口，请按终端显示的实际端口设置环境变量后启动 Vite，例如 PowerShell 中 `$env:DSAKIKO_WEBUI_PORT='7800'; npm run dev`。正式打包前端使用同源连接，无需手动设置。
 
 ## 后端结构
 

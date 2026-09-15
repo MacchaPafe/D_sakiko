@@ -9,7 +9,8 @@ import webbrowser
 
 import uvicorn
 
-from .app import WEBUI_PORT, create_app
+from .app import create_app
+from .ports import WEBUI_PORT, bind_webui_socket
 from .assets import PROJECT_ROOT
 from .pairing_ui import (
     PairingPresentation,
@@ -66,10 +67,13 @@ def open_pairing_when_ready(main_server: uvicorn.Server, url: str) -> None:
         time.sleep(0.05)
 
 
-def run_server_until_stopped(server: uvicorn.Server) -> None:
+def run_server_until_stopped(server: uvicorn.Server, listener: socket.socket | None = None) -> None:
     """运行主服务器，并吞掉优雅关闭后重新抛出的预期中断。"""
     try:
-        server.run()
+        if listener is None:
+            server.run()
+        else:
+            server.run(sockets=[listener])
     except KeyboardInterrupt:
         logger.info("数字小祥 WebUI 已停止")
 
@@ -84,14 +88,24 @@ def run() -> int:
         return 1
 
     local_socket: socket.socket | None = None
+    main_socket: socket.socket | None = None
     local_server: uvicorn.Server | None = None
     local_thread: threading.Thread | None = None
     try:
         try:
+            main_socket = bind_webui_socket()
+        except OSError as exc:
+            logger.error("WebUI 端口绑定失败：%s", exc)
+            return 1
+        port = int(main_socket.getsockname()[1])
+        app.state.webui_port = port
+        if port != WEBUI_PORT:
+            logger.warning("WebUI 默认端口 %s 不可用，已切换到 %s", WEBUI_PORT, port)
+        try:
             local_socket = bind_loopback_socket()
             local_port = int(local_socket.getsockname()[1])
             location = PairingUiLocation(local_port, generate_ui_nonce())
-            presentation = PairingPresentation(app.state.auth, webui_port=WEBUI_PORT)
+            presentation = PairingPresentation(app.state.auth, webui_port=port)
             local_config = uvicorn.Config(
                 create_pairing_ui_app(presentation, location),
                 log_level="warning",
@@ -117,7 +131,7 @@ def run() -> int:
         main_config = uvicorn.Config(
             app,
             host="0.0.0.0",
-            port=WEBUI_PORT,
+            port=port,
             reload=False,
             access_log=False,
         )
@@ -129,7 +143,7 @@ def run() -> int:
                 name="dsakiko-pairing-browser",
                 daemon=True,
             ).start()
-        run_server_until_stopped(main_server)
+        run_server_until_stopped(main_server, main_socket)
         return 0
     finally:
         if local_server is not None:
@@ -138,6 +152,8 @@ def run() -> int:
             local_thread.join(timeout=5.0)
         if local_socket is not None:
             local_socket.close()
+        if main_socket is not None:
+            main_socket.close()
         if app.state.runtime_lease is not None:
             app.state.runtime_lease.release()
 
