@@ -135,11 +135,5 @@ class LauncherProcesses:
 
 
 def preferred_font(root: Path) -> Path:
-    """与主程序相同：优先选择文件名时间戳最新的自定义字体。"""
-    fonts = list((root / "font").glob("custom_font_*.*"))
-    def timestamp(path: Path) -> int:
-        try:
-            return int(path.stem.rsplit("_", 1)[-1])
-        except ValueError:
-            return 0
-    return max(fonts, key=timestamp) if fonts else root / "font/msyh.ttc"
+    """固定使用随项目分发的字体，不受本机自定义字体设置影响。"""
+    return root / "font" / "ft.ttf"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import random
 
 from PyQt5.QtCore import Qt, QTimer, QUrl, QVariantAnimation, QEasingCurve, QRectF, QSettings
 from PyQt5.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QColor
@@ -11,11 +12,10 @@ from PyQt5.QtWidgets import (
 )
 
 from launcher_actions import ENTRY_BY_KEY, LauncherProcesses, preferred_font
-import random
 
 MODES = {
-    "desktop": ("桌面端", "桌面日常小助手", "启动桌面端"),
-    "webui": ("WebUI", "通过局域网在手机或平板上运行数字小祥", "启动 WebUI"),
+    "desktop": ("桌面端", "日常小助手", "启动桌面端"),
+    "webui": ("WebUI", "全新界面 · 通过局域网在手机或平板上运行数字小祥", "启动 WebUI"),
     "theater": ("小剧场模式", "自由编排两名角色的互动剧情", "启动小剧场"),
 }
 
@@ -42,7 +42,7 @@ class WatermarkOverlay(QWidget):
             height = min(self.height() * 0.53, 390)
             width = height * pixmap.width() / pixmap.height()
             target = QRectF(self.width() - width - 22, self.height() - height + 24, width, height)
-            painter.setOpacity(0.25 * weight)
+            painter.setOpacity(0.28 * weight)
             painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
         painter.end()
 
@@ -56,9 +56,15 @@ class LauncherWindow(QDialog):
         self.settings = QSettings("DSakiko", "Launcher")
         saved_mode = self.settings.value("lastMode", "desktop")
         self.selected_mode = saved_mode if saved_mode in MODES else "desktop"
-        self.watermark_files = {"desktop": ["desktop.png"], "webui": ["webui-phone-skirt.png"], "theater": ["theater_1.png","theater_2.png","theater_3.png","theater_4.png"]}
-        self.watermarks = {key: QPixmap(str(self.root / "launcher/assets" / random.choice(filename_list)))
-                           for key, filename_list in self.watermark_files.items()}
+        self.watermark_files = {
+            "desktop": ["desktop.png"],
+            "webui": ["webui-phone-skirt.png"],
+            "theater": ["theater_1.png", "theater_2.png", "theater_3.png", "theater_4.png"]
+        }
+        self.watermarks = {
+            key: QPixmap(str(self.root / "launcher/assets" / random.choice(filename_list)))
+            for key, filename_list in self.watermark_files.items()
+        }
         self.previous_mode = self.selected_mode
         self.fade = 1.0
         self.transition = QVariantAnimation(self)
@@ -69,45 +75,152 @@ class LauncherWindow(QDialog):
         self.transition.valueChanged.connect(self.animate_watermark)
         self.buttons = {}
         self.mode_buttons = {}
+
         self.setWindowTitle("数字小祥启动器")
         self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
         self.setMinimumSize(680, 520)
         self.resize(760, 560)
         self.setWindowIcon(QIcon(str(self.root / "live2d_related/sakiko/sakiko_icon.png")))
+
+        # 二次元客户端专属质感 QSS
         self.setStyleSheet("""
-            QDialog { background: #FAFBFE; }
-            QLabel { background: transparent; color: #43516A; }
-            QLabel#heading { font-family: 'Microsoft YaHei'; font-size: 32px; font-weight: 600; color: #6687B8; }
-            QLabel#latin { font-size: 16px; color: #8B98AE; }
-            QLabel#modeTitle { font-size: 26px; font-weight: 600; color: #405474; }
-            QLabel#description { font-size: 14px; color: #78859B; }
-            QLabel#status { font-size: 12px; color: #6C7F99; }
-            QLabel#notice { font-size: 11px; color: #7E899C; }
-            QPushButton { background: transparent; border: 1px solid transparent; border-radius: 10px;
-                          color: #687992; padding: 10px 16px; font-size: 13px; }
-            QPushButton:hover { background: #EDF2FA; color: #476897; }
-            QPushButton:pressed { background: #DFE8F6; }
-            QPushButton:focus { border: 1px solid #7799CC; }
-            QPushButton:disabled { color: #A0A9B7; }
-            QPushButton[mode="true"] { min-width: 110px; }
-            QPushButton[mode="true"]:checked { background: #E7EEF9; color: #4D70A3; font-weight: 600; }
-            QPushButton#launch { background: #7799CC; color: white; border-radius: 14px;
-                                 font-size: 17px; font-weight: 600; padding: 16px 34px; }
-            QPushButton#launch:hover { background: #688ABE; }
-            QPushButton#launch:pressed { background: #577AAF; }
-            QPushButton#launch:disabled { background: #E4EAF3; color: #919EB1; }
-            QPushButton[tool="true"] { background: rgba(255,255,255,210);
-                                     border: 1px solid #E3E9F2; padding: 12px 18px; }
-            QPushButton[tool="true"]:hover { background: #EDF2FA; border-color: #B9CCE7; }
-            QPushButton[quiet="true"] { font-size: 11px; padding: 5px 10px; }
+            QDialog {
+                background: #F7F8FC;
+            }
+            QLabel {
+                background: transparent;
+            }
+
+            /* 主标题：精致日系衬线体风韵，深冷紫星夜色彩 */
+            QLabel#heading {
+                font-size: 30px;
+                font-weight: 700;
+                color: #384260;
+                letter-spacing: 2px;
+            }
+            QLabel#latin {
+                font-size: 13px;
+                font-weight: 600;
+                letter-spacing: 4px;
+                color: #8C96AE;
+            }
+
+            /* 当前选中的模式标题与描述 */
+            QLabel#modeTitle {
+                font-size: 24px;
+                font-weight: 700;
+                color: #2F374E;
+                letter-spacing: 1px;
+            }
+            QLabel#description {
+                font-size: 13.5px;
+                color: #7A859E;
+            }
+            QLabel#status {
+                font-size: 12px;
+                color: #6C789E;
+                font-weight: 500;
+            }
+
+            /* 顶部模式切换按钮：日系微光胶囊 */
+            QPushButton[mode="true"] {
+                min-width: 105px;
+                padding: 8px 18px;
+                font-size: 13.5px;
+                font-weight: 500;
+                color: #75819B;
+                background: rgba(235, 240, 248, 0.7);
+                border: 1px solid rgba(220, 228, 240, 0.8);
+                border-radius: 12px;
+            }
+            QPushButton[mode="true"]:hover {
+                background: #FFFFFF;
+                color: #4C567A;
+                border-color: #CBD7E8;
+            }
+            QPushButton[mode="true"]:checked {
+                background: #FFFFFF;
+                color: #434F78;
+                font-weight: 700;
+                border: 1.5px solid #5B6B9E;
+            }
+
+            /* 核心启动大按钮：冷夜紫金微光 */
+            QPushButton#launch {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #6775A8, stop:1 #525E8C);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                border-radius: 16px;
+                font-size: 16.5px;
+                font-weight: 700;
+                letter-spacing: 1.5px;
+                padding: 15px 36px;
+            }
+            QPushButton#launch:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7483BA, stop:1 #5C699C);
+                border: 1px solid rgba(255, 255, 255, 0.8);
+            }
+            QPushButton#launch:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4A5580, stop:1 #3F486E);
+                padding-top: 17px;
+                padding-bottom: 13px;
+            }
+            QPushButton#launch:disabled {
+                background: #E2E6EF;
+                color: #9BA4B8;
+                border: none;
+            }
+
+            /* 底部工具操作按钮：轻质感亚克力卡片 */
+            QPushButton[tool="true"] {
+                background: rgba(255, 255, 255, 0.9);
+                border: 1.5px solid #E2E7F0;
+                border-radius: 12px;
+                color: #4F5A76;
+                font-size: 13px;
+                font-weight: 500;
+                padding: 10px 18px;
+            }
+            QPushButton[tool="true"]:hover {
+                background: #FFFFFF;
+                border-color: #6775A8;
+                color: #525E8C;
+            }
+            QPushButton[tool="true"]:pressed {
+                background: #F1F4FA;
+            }
+
+            /* 彩蛋与状态通知 */
+            QLabel#notice {
+                font-size: 11.5px;
+                color: #8C96AC;
+            }
+
+            /* 最下方安静操作按钮 */
+            QPushButton[quiet="true"] {
+                background: transparent;
+                border: none;
+                font-size: 11.5px;
+                color: #8C96AC;
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+            QPushButton[quiet="true"]:hover {
+                background: rgba(0, 0, 0, 0.04);
+                color: #525E8C;
+            }
         """)
+
+        # 完全保留原本的布局顺序与间距参数
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 22, 32, 12)
         layout.setSpacing(8)
+
         title = QLabel("数字小祥启动器")
         title.setObjectName("heading")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
+
         latin = QLabel("DSakiko")
         latin.setObjectName("latin")
         latin.setAlignment(Qt.AlignCenter)
@@ -115,7 +228,7 @@ class LauncherWindow(QDialog):
         layout.addSpacing(24)
 
         mode_row = QHBoxLayout()
-        mode_row.setSpacing(8)
+        mode_row.setSpacing(10)
         mode_row.addStretch()
         for key, (name, _, _) in MODES.items():
             button = QPushButton(name)
@@ -128,21 +241,25 @@ class LauncherWindow(QDialog):
         mode_row.addStretch()
         layout.addLayout(mode_row)
         layout.addSpacing(6)
+
         self.mode_title = QLabel()
         self.mode_title.setObjectName("modeTitle")
         self.mode_title.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.mode_title)
+
         self.description = QLabel()
         self.description.setObjectName("description")
         self.description.setAlignment(Qt.AlignCenter)
         self.description.setWordWrap(True)
         layout.addWidget(self.description)
         layout.addSpacing(8)
+
         self.launch_button = QPushButton()
         self.launch_button.setObjectName("launch")
         self.launch_button.setMinimumWidth(260)
         self.launch_button.clicked.connect(lambda: self.launch(self.selected_mode))
         layout.addWidget(self.launch_button, 0, Qt.AlignHCenter)
+
         self.status = QLabel()
         self.status.setObjectName("status")
         self.status.setAlignment(Qt.AlignCenter)
@@ -163,7 +280,8 @@ class LauncherWindow(QDialog):
             tools.addWidget(button)
         tools.addStretch()
         layout.addLayout(tools)
-        bottom_notice:str="" if random.random() < 0.6 else EASTER_EGG_NOTICE
+
+        bottom_notice: str = "" if random.random() < 0.6 else EASTER_EGG_NOTICE
         self.notice = self.secondary(bottom_notice)
         self.notice.setObjectName("notice")
         self.notice.setAlignment(Qt.AlignCenter)
@@ -172,20 +290,23 @@ class LauncherWindow(QDialog):
         self.notice.setOpenExternalLinks(False)
         self.notice.linkActivated.connect(self.play_easter_egg)
         self.set_notice(bottom_notice)
-
         layout.addWidget(self.notice)
+
         footer = QHBoxLayout()
         footer.addStretch()
-        for text, action in (("检查更新", lambda: self.launch("update")), ("查看日志", self.open_logs)):
+        for text, action in (("检查更新", lambda: self.launch("update")),
+                             ("修复程序", lambda: self.launch("repair")), ("查看日志", self.open_logs)):
             button = QPushButton(text)
             button.setProperty("quiet", True)
             button.clicked.connect(action)
             footer.addWidget(button)
         layout.addLayout(footer)
+
         self.refresh_buttons()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_processes)
         self.timer.start(750)
+
         self.watermark_overlay = WatermarkOverlay(self)
         self.watermark_overlay.setGeometry(self.rect())
         self.watermark_overlay.raise_()
@@ -199,8 +320,6 @@ class LauncherWindow(QDialog):
         if key != self.selected_mode:
             self.transition.stop()
             self.watermarks[key] = QPixmap(str(self.root / "launcher/assets" / random.choice(self.watermark_files[key])))
-            # self.watermarks = {_key: QPixmap(str(self.root / "launcher/assets" / random.choice(filename_list) if _key==key else self.watermark_files[_key][0]))
-            #                for _key, filename_list in self.watermark_files.items()}
             self.previous_mode = self.selected_mode
             self.selected_mode = key
             self.settings.setValue("lastMode", key)
@@ -211,7 +330,7 @@ class LauncherWindow(QDialog):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor("#FAFBFE"))
+        painter.fillRect(self.rect(), QColor("#F7F8FC"))
         painter.end()
 
     def resizeEvent(self, event) -> None:
@@ -237,7 +356,7 @@ class LauncherWindow(QDialog):
         self.notice.setCursor(Qt.PointingHandCursor if self.notice_is_easter_egg else Qt.ArrowCursor)
         self.notice.setToolTip("点击播放彩蛋音频" if self.notice_is_easter_egg else "")
         self.notice.setText(
-            f'<a href="easter-egg" style="color: #7E899C; text-decoration: none;">{text}</a>'
+            f'<a href="easter-egg" style="color: #8C96AC; text-decoration: none;">{text}</a>'
             if self.notice_is_easter_egg else text
         )
 
@@ -260,7 +379,6 @@ class LauncherWindow(QDialog):
             QMessageBox.warning(self, "彩蛋播放失败", f"找不到音频文件：{audio_path}")
             return
         try:
-            # 延迟加载，普通启动不需要初始化多媒体后端。
             from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
 
             if self.easter_egg_player is None:
@@ -278,16 +396,20 @@ class LauncherWindow(QDialog):
             QMessageBox.warning(self, "彩蛋播放失败", self.easter_egg_player.errorString() or "音频无法播放。")
 
     def launch(self, key: str) -> None:
-        if key == "update":
+        if key in ("update", "repair"):
             import sys
             path = str(self.root / "GPT_SoVITS")
             if path not in sys.path:
                 sys.path.insert(0, path)
             try:
-                from launcher_update import LauncherUpdateDialog
-                dialog = LauncherUpdateDialog(self.root, self.processes, self)
+                if key == "repair":
+                    from launcher_repair import LauncherRepairDialog
+                    dialog = LauncherRepairDialog(self.root, self.processes, self)
+                else:
+                    from launcher_update import LauncherUpdateDialog
+                    dialog = LauncherUpdateDialog(self.root, self.processes, self)
             except Exception as exc:
-                QMessageBox.warning(self, "更新模块无法打开", str(exc))
+                QMessageBox.warning(self, "修复模块无法打开" if key == "repair" else "更新模块无法打开", str(exc))
                 return
             dialog.exec_()
             return
@@ -305,8 +427,8 @@ class LauncherWindow(QDialog):
         for key, code, log_path in finished:
             if code:
                 self.set_notice(f"{ENTRY_BY_KEY[key].title}已结束（非零退出码：{code} / "
-                                    f"0x{code & 0xFFFFFFFF:08X}），可以再次启动。"
-                                    "若非主动结束，请检查程序日志；退出码已记录在启动日志中。")
+                                f"0x{code & 0xFFFFFFFF:08X}），可以再次启动。"
+                                "若非主动结束，请检查程序日志；退出码已记录在启动日志中。")
             else:
                 self.set_notice(f"{ENTRY_BY_KEY[key].title}已关闭")
         self.refresh_buttons()
@@ -319,7 +441,7 @@ class LauncherWindow(QDialog):
         for key, button in self.mode_buttons.items():
             item = self.processes.running.get(key)
             running = item is not None and item.process.poll() is None
-            button.setText(MODES[key][0] + (" · 运行中..." if running else ""))
+            button.setText(MODES[key][0] + (" · 运行中" if running else ""))
             button.setChecked(key == self.selected_mode)
             button.setToolTip(self.processes.blocked_reason(key) or MODES[key][1])
         name, description, launch_text = MODES[self.selected_mode]
