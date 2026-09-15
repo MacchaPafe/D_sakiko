@@ -31,6 +31,8 @@ def build_apply_repair_command(
         "--status-file",
         str(status_file),
     ]
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    command.extend(["--target-version", str(plan["version"])])
     if wait_pid is not None:
         command.extend(["--wait-pid", str(wait_pid)])
     if restart_command:

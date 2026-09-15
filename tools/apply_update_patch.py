@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -23,6 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "GPT_SoVITS") not in sys.path:
     sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 
+from maintenance.process import TeeWriter, parse_restart_command, restart_app, setup_logging, wait_for_process_exit
+
+from maintenance.transactions import Transaction, pending_transactions
 from update.operation_lock import OperationLockBusy, acquire_operation_lock
 
 
@@ -46,29 +50,6 @@ def default_hpatch_bin(platform_name: str | None = None) -> str:
     if current_platform == "win32":
         return "tools/hpatchz.exe"
     return "tools/hpatchz"
-
-
-class TeeWriter:
-    """将输出同时写入原始终端和日志文件。"""
-
-    def __init__(self, primary: TextIO, log_file: TextIO) -> None:
-        """保存终端输出流和日志输出流。"""
-
-        self.primary = primary
-        self.log_file = log_file
-
-    def write(self, text: str) -> int:
-        """写入一段文本到两个输出目标。"""
-
-        self.primary.write(text)
-        self.log_file.write(text)
-        return len(text)
-
-    def flush(self) -> None:
-        """刷新两个输出目标。"""
-
-        self.primary.flush()
-        self.log_file.flush()
 
 
 UpdateStatus = Literal["running", "success", "failed"]
@@ -179,45 +160,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def wait_for_process_exit(pid: int, timeout: float = 60.0) -> None:
-    """等待主程序进程退出，超时后抛出 RuntimeError。"""
-
-    if pid <= 0:
-        return
-    try:
-        import psutil
-    except Exception:
-        psutil = None
-
-    import time
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if psutil is not None:
-            if not psutil.pid_exists(pid):
-                return
-        else:
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                return
-        time.sleep(0.5)
-    raise RuntimeError(f"等待进程退出超时：PID={pid}")
-
-
-def setup_logging(log_file: Path | None) -> TextIO | None:
-    """将更新过程输出同时写入终端和日志文件。"""
-
-    if log_file is None:
-        return None
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    handle = log_file.open("a", encoding="utf-8")
-    sys.stdout = TeeWriter(sys.stdout, handle)
-    sys.stderr = TeeWriter(sys.stderr, handle)
-    print(f"[日志] 更新日志：{log_file}")
-    return handle
-
-
 def build_default_log_file(app_root: Path, timestamp: str | None = None) -> Path:
     """返回手动更新默认日志文件路径。"""
 
@@ -246,32 +188,6 @@ def resolve_optional_status_file(app_root: Path, status_file_arg: str) -> Path |
     if status_file.is_absolute():
         return status_file.resolve(strict=False)
     return (app_root / status_file).resolve(strict=False)
-
-
-def parse_restart_command(command_text: str) -> list[str]:
-    """解析重启命令，支持 JSON list 或普通字符串。"""
-
-    text = command_text.strip()
-    if not text:
-        return []
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return [text]
-    if isinstance(data, list):
-        return [str(item) for item in data if str(item).strip()]
-    if isinstance(data, str) and data.strip():
-        return [data.strip()]
-    raise RuntimeError("--restart-command 必须是 JSON list 或非空字符串")
-
-
-def restart_app(command: list[str]) -> None:
-    """更新成功后重启主程序。"""
-
-    if not command:
-        return
-    subprocess.Popen(command, close_fds=os.name != "nt")
-    print(f"[重启] 已启动：{command}")
 
 
 def sha256_file(file_path: Path, block_size: int = 1024 * 1024) -> str:
@@ -435,24 +351,31 @@ def backup_if_exists(app_root: Path, backup_root: Path, relative_path: str) -> b
 def restore_backup(app_root: Path, backup_root: Path, touch_records: list[TouchRecord]) -> None:
     """按触达记录逆序回滚，恢复更新前文件状态。"""
 
+    errors: list[str] = []
     for item in reversed(touch_records):
-        # 逆序恢复可避免父子路径相互覆盖导致的数据错位。
-        target = resolve_under_root(app_root, item.path, "files[].path")
-        backup_path = backup_root / "files" / item.path
-        if item.existed_before:
-            if backup_path.exists():
-                if backup_path.is_dir():
-                    if target.exists() and target.is_file():
-                        target.unlink()
-                    shutil.copytree(backup_path, target, dirs_exist_ok=True)
-                else:
-                    ensure_parent(target)
-                    shutil.copy2(backup_path, target)
-        else:
-            if target.is_file() or target.is_symlink():
-                target.unlink()
-            elif target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
+        try:
+            # 逆序恢复可避免父子路径相互覆盖导致的数据错位。
+            target = resolve_under_root(app_root, item.path, "files[].path")
+            backup_path = backup_root / "files" / item.path
+            if item.existed_before:
+                if backup_path.exists():
+                    if backup_path.is_dir():
+                        if target.exists() and target.is_file():
+                            target.unlink()
+                        shutil.copytree(backup_path, target, dirs_exist_ok=True)
+                    else:
+                        ensure_parent(target)
+                        shutil.copy2(backup_path, target)
+            else:
+                if target.is_file() or target.is_symlink():
+                    target.unlink()
+                elif target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+        except Exception as exc:
+            traceback.print_exc()
+            errors.append(f"{item.path}: {exc}")
+    if errors:
+        raise RuntimeError("部分文件回滚失败：\n" + "\n".join(errors))
 
 
 def remove_path(path: Path) -> None:
@@ -604,6 +527,7 @@ def apply_hdiff(
     backup_root: Path,
     touch_records: list[TouchRecord],
     hpatch_bin: Path,
+    transaction: Transaction | None = None,
 ) -> list[str]:
     """调用 hpatchz 应用目录差分，并按清单落地文件与删除动作。"""
 
@@ -646,7 +570,9 @@ def apply_hdiff(
             relative_path = normalize_manifest_path(item.get("path"), "files[].path")
 
             target = resolve_under_root(app_root, relative_path, "files[].path")
-            existed_before = backup_if_exists(app_root, backup_root, relative_path)
+            if transaction is not None:
+                transaction.prepare(relative_path, str(item.get("sha256") or "") or None)
+            existed_before = target.exists() if transaction is not None else backup_if_exists(app_root, backup_root, relative_path)
             touch_records.append(TouchRecord(path=relative_path, existed_before=existed_before))
 
             if action in {"add", "modify"}:
@@ -679,6 +605,7 @@ def apply_replace_files(
     manifest: dict[str, object],
     backup_root: Path,
     touch_records: list[TouchRecord],
+    transaction: Transaction | None = None,
 ) -> list[str]:
     """从 payload 原子替换 replace 文件，并校验完整文件内容。"""
 
@@ -701,7 +628,9 @@ def apply_replace_files(
             raise RuntimeError(f"replace payload 大小校验失败：{relative_path}")
         if not expected_sha or sha256_file(source) != expected_sha:
             raise RuntimeError(f"replace payload SHA256 校验失败：{relative_path}")
-        existed_before = backup_if_exists(app_root, backup_root, relative_path)
+        if transaction is not None:
+            transaction.prepare(relative_path, expected_sha)
+        existed_before = target.exists() if transaction is not None else backup_if_exists(app_root, backup_root, relative_path)
         touch_records.append(TouchRecord(path=relative_path, existed_before=existed_before))
         ensure_parent(target)
         temporary = target.with_name(f".{target.name}.replace.tmp")
@@ -864,11 +793,16 @@ def apply_package_chain(
             recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
             return 1
 
-        backup_root = app_root / args.backup_dir / f"{target_version}"
-        backup_root.mkdir(parents=True, exist_ok=True)
+        if pending_transactions(app_root):
+            print("错误：存在尚未恢复的事务，请先使用修复入口恢复。", file=sys.stderr)
+            recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
+            return 1
+        transaction = Transaction.create(app_root, "update", base_version, target_version)
+        backup_root = transaction.directory
         touch_records: list[TouchRecord] = []
 
         try:
+            transaction.prepare(args.version_file, None)
             processed_paths = apply_hdiff(
                 app_root=app_root,
                 package_root=package_root,
@@ -876,14 +810,17 @@ def apply_package_chain(
                 backup_root=backup_root,
                 touch_records=touch_records,
                 hpatch_bin=hpatch_bin,
+                transaction=transaction,
             )
-            processed_paths.extend(apply_replace_files(app_root, package_root, manifest, backup_root, touch_records))
+            processed_paths.extend(apply_replace_files(app_root, package_root, manifest, backup_root, touch_records, transaction))
             apply_post_process(app_root, processed_paths)
             run_macos_uv_sync_if_needed(app_root, manifest)
 
             version_data = load_json(version_file)
             version_data["version"] = target_version
             write_json(version_file, version_data)
+
+            transaction.complete()
 
             if not args.no_remove_package:
                 try:
@@ -901,12 +838,14 @@ def apply_package_chain(
                 print("[接力] 当前补丁已完成，停止当前更新器并交给新版更新器继续。")
                 return 2
         except Exception as exc:
-            print(f"[错误] 更新失败，开始回滚：{exc}", file=sys.stderr)
+            transaction.log_exception(f"[错误] 更新失败，开始回滚：{exc}")
             try:
-                restore_backup(app_root, backup_root, touch_records)
+                if not transaction.rollback():
+                    raise RuntimeError("部分文件未能恢复，详见事务 recovery.log")
                 print(f"[回滚] 已恢复到更新前状态。备份目录：{backup_root}", file=sys.stderr)
                 recorder.write_failed(rollback_performed=True, rollback_succeeded=True)
             except Exception as rollback_error:
+                traceback.print_exc()
                 print(f"[回滚] 自动回滚失败：{rollback_error}", file=sys.stderr)
                 recorder.write_failed(rollback_performed=True, rollback_succeeded=False)
             return 1

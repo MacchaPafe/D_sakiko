@@ -23,20 +23,16 @@ with open(os.devnull, 'w') as devnull:
 from OpenGL.GL import *
 import queue
 
-from multi_char_live2d_module import TextOverlay
+from multi_char_live2d_module import TextOverlay, ModelLoadNoticeOverlay
 from qconfig import d_sakiko_config, qconfig
 from log import setup_worker_logging, get_logger
 from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
     Live2DModelProtocol,
     NullLive2DModel,
-    detect_live2d_runtime_version,
-    initialize_live2d_runtime,
-    load_live2d_runtime,
-    release_live2d_runtime,
 )
 from live2d_support.motion_semantics import motion_group_for_emotion
-from live2d_support.runtime_window import recreate_runtime_window
+from live2d_support.runtime_session import Live2DRuntimeSession
 from live2d_support.layout import (
     Live2DLayout,
     format_live2d_layout_status,
@@ -442,15 +438,13 @@ class Live2DModule:
         display = (win_w_and_h, win_w_and_h)
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         glViewport(0, 0, *display)
-        current_runtime = None
-        current_runtime_version = None
+        session = Live2DRuntimeSession()
+        model_notice = ModelLoadNoticeOverlay(display, slot_count=1)
         model: Live2DModelProtocol = NullLive2DModel()
         if self.PATH_JSON is not None:
             try:
-                current_runtime_version = detect_live2d_runtime_version(self.PATH_JSON)
-                current_runtime = load_live2d_runtime(current_runtime_version)
-                initialize_live2d_runtime(current_runtime)
-                loaded_model = Live2DModelAdapter.create(self.PATH_JSON)
+                loaded_model = session.create_model(self.PATH_JSON)
+                model = loaded_model
                 loaded_model.Resize(win_w_and_h, win_w_and_h)
                 loaded_model.SetAutoBlinkEnable(True)
                 loaded_model.SetAutoBreathEnable(True)
@@ -460,9 +454,8 @@ class Live2DModule:
                     "Live2D 模型加载失败，将使用无模型展示：%s",
                     self.PATH_JSON,
                 )
-                release_live2d_runtime(current_runtime)
-                current_runtime = None
-                current_runtime_version = None
+                model_notice.set_failed_slots({0})
+                model.dispose()
                 model = NullLive2DModel()
 
         frame_clock = pygame.time.Clock()
@@ -487,6 +480,34 @@ class Live2DModule:
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, texture_id)
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
+
+        def replace_model(
+                previous: Live2DModelProtocol,
+                model_path: str | None,
+        ) -> Live2DModelProtocol:
+            """立即清空旧模型并独立加载目标，失败时持续显示错误提示。"""
+            previous.dispose()
+            model_notice.clear()
+            self._reset_eye_open_transition()
+            self.wavHandler = WavHandler()
+            glClear(GL_COLOR_BUFFER_BIT)
+            render_background(texture)
+            pygame.display.flip()
+            candidate: Live2DModelAdapter | None = None
+            try:
+                if model_path is None:
+                    return NullLive2DModel()
+                candidate = session.create_model(model_path)
+                candidate.Resize(win_w_and_h, win_w_and_h)
+                candidate.SetAutoBlinkEnable(True)
+                candidate.SetAutoBreathEnable(True)
+                return candidate
+            except Exception:
+                if candidate is not None:
+                    candidate.dispose()
+                logger.exception("Live2D 模型切换失败：%s", model_path)
+                model_notice.set_failed_slots({0})
+                return NullLive2DModel()
 
         layout_scene = "single"
         current_layout_model_path = self.PATH_JSON
@@ -661,6 +682,7 @@ class Live2DModule:
                 model.Update()
                 render_background(texture)
                 model.Draw()
+                model_notice.draw()
                 glUseProgram(0)
                 pygame.display.flip()
                 frame_clock.tick(self.target_fps)
@@ -751,66 +773,10 @@ class Live2DModule:
                     if self.if_sakiko and self.sakiko_state and target_model_path is not None:
                         target_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
 
-                    try:
-                        model.dispose()
-                    except Exception:
-                        logger.debug("释放旧 Live2D 模型失败", exc_info=True)
-                    model = NullLive2DModel()
-                    target_version = None
-                    try:
-                        if target_model_path is not None:
-                            target_version = detect_live2d_runtime_version(target_model_path)
-                        if target_version != current_runtime_version:
-                            try:
-                                pygame.mixer.music.stop()
-                            except Exception:
-                                pass
-                            self.wavHandler = WavHandler()
-                            mouth_keep_open_value = 0.0
-                            self.motion_is_over = True
-                            self.think_motion_is_over = True
-                            self._reset_eye_open_transition()
-                            recreate_result = recreate_runtime_window(
-                                current_runtime=current_runtime,
-                                current_texture=texture,
-                                target_version=target_version,
-                                display=display,
-                                window_position=f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}",
-                                background_path=self.BACK_IMAGE[self.back_img_index],
-                                render_texture=BackgroundRen.render,
-                            )
-                            current_runtime = recreate_result.runtime
-                            current_runtime_version = target_version
-                            texture = recreate_result.texture
-                            frame_clock = pygame.time.Clock()
-                            overlay = TextOverlay((win_w_and_h, win_w_and_h), [self.current_character.character_name])
-                            overlay.set_text(self.current_character.character_name, self.new_text or "...")
-                        if target_model_path is not None:
-                            loaded_model = Live2DModelAdapter.create(target_model_path)
-                            loaded_model.Resize(win_w_and_h, win_w_and_h)
-                            loaded_model.SetAutoBlinkEnable(True)
-                            loaded_model.SetAutoBreathEnable(True)
-                            model = loaded_model
-                    except Exception:
-                        logger.exception(
-                            "Live2D 模型切换失败，将使用无模型展示：%s",
-                            target_model_path,
-                        )
-                        recreate_result = recreate_runtime_window(
-                            current_runtime=current_runtime,
-                            current_texture=texture,
-                            target_version=None,
-                            display=display,
-                            window_position=f"{pygame_win_pos_w},{pygame_win_pos_h+caption_height}",
-                            background_path=self.BACK_IMAGE[self.back_img_index],
-                            render_texture=BackgroundRen.render,
-                        )
-                        current_runtime = recreate_result.runtime
-                        current_runtime_version = None
-                        texture = recreate_result.texture
-                        frame_clock = pygame.time.Clock()
-                        overlay = TextOverlay((win_w_and_h, win_w_and_h), [self.current_character.character_name])
-                        model = NullLive2DModel()
+                    mouth_keep_open_value = 0.0
+                    self.motion_is_over = True
+                    self.think_motion_is_over = True
+                    model = replace_model(model, target_model_path)
 
                     if isinstance(model, Live2DModelAdapter) and target_model_path is not None:
                         current_layout_model_path = target_model_path
@@ -893,8 +859,9 @@ class Live2DModule:
                             if self.PATH_JSON is None:
                                 logger.warning("祥子默认 Live2D 模型未配置，跳过特殊模型切换。")
                                 continue
-                            model.dispose()
-                            model = Live2DModelAdapter.create(self.PATH_JSON)
+                            model = replace_model(model, self.PATH_JSON)
+                            if not isinstance(model, Live2DModelAdapter):
+                                continue
                             model.Resize(win_w_and_h, win_w_and_h)
                             model.SetAutoBlinkEnable(True)
                             model.SetAutoBreathEnable(True)
@@ -906,8 +873,9 @@ class Live2DModule:
                             self.sakiko_state=False
 
                         else:       #切换为黑祥
-                            model.dispose()
-                            model = Live2DModelAdapter.create('../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                            model = replace_model(model, '../live2d_related/sakiko/live2D_model_costume/3.model.json')
+                            if not isinstance(model, Live2DModelAdapter):
+                                continue
                             model.Resize(win_w_and_h, win_w_and_h)
                             model.SetAutoBlinkEnable(True)
                             model.SetAutoBreathEnable(True)
@@ -944,6 +912,7 @@ class Live2DModule:
                     model.Update()
                     render_background(texture)
                     model.Draw()
+                    model_notice.draw()
                     glUseProgram(0)
                     pygame.display.flip()
                     frame_clock.tick(self.target_fps)
@@ -985,6 +954,7 @@ class Live2DModule:
             is_update_mouth_sync += 1
 
             model.Draw()
+            model_notice.draw()
             overlay.update()
             # 从共享变量读取是否显示文本
             if layout_editing or is_display_text_value.value:
@@ -1013,7 +983,8 @@ class Live2DModule:
         except Exception:
             pass
 
-        release_live2d_runtime(current_runtime)
+        model_notice.dispose()
+        session.close()
         #结束pygame
         try:
             pygame.mixer.quit()

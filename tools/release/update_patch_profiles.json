@@ -60,6 +60,7 @@
       ]
     },
     "windows-x64": {
+      "include": ["修复程序.bat"],
       "platform": "windows",
       "arch": "x64"
     }

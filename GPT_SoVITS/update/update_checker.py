@@ -9,6 +9,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from maintenance.identity import detect_arch, detect_platform, read_current_version
+
 from .update_models import (
     ReleaseInfo,
     ReleaseNoteUrl,
@@ -40,39 +42,6 @@ def get_configured_index_urls() -> tuple[str, ...]:
     if env_urls:
         return env_urls
     return tuple(url for url in DEFAULT_INDEX_URLS if "<" not in url and ">" not in url)
-
-
-def read_current_version(version_file: Path) -> str:
-    """读取本地 version.json 中的 version。"""
-
-    data = json.loads(version_file.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise RuntimeError("version.json 顶层结构必须是对象")
-    version = data.get("version")
-    if not isinstance(version, str) or not version.strip():
-        raise RuntimeError("version.json 缺少 version 字段")
-    return version.strip()
-
-
-def detect_platform() -> UpdatePlatform:
-    """返回 windows 或 macos。"""
-
-    if sys.platform == "darwin":
-        return "macos"
-    if sys.platform == "win32":
-        return "windows"
-    raise RuntimeError(f"暂不支持当前平台自动更新：{sys.platform}")
-
-
-def detect_arch() -> UpdateArch:
-    """返回 x64、arm64 或 universal。"""
-
-    machine = platform.machine().lower()
-    if machine in {"arm64", "aarch64"}:
-        return "arm64"
-    if machine in {"x86_64", "amd64", "x64"}:
-        return "x64"
-    raise RuntimeError(f"暂不支持当前架构自动更新：{machine}")
 
 
 def fetch_update_index(url: str, timeout: float = 8.0) -> UpdateIndex:

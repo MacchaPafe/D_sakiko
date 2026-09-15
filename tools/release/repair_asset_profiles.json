@@ -98,6 +98,7 @@
       "arch": "x64",
       "include": [
         "run.bat",
+        "修复程序.bat",
         "run_webui.bat",
         "数字小祥启动器.bat",
         "启动参数配置.bat",

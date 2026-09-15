@@ -14,7 +14,7 @@ import zipfile
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, List, Union, Any, Iterable, Literal, Sequence
+from typing import Callable, Dict, Optional, List, Union, Any, Iterable, Literal, Sequence
 import json
 import threading
 
@@ -27,6 +27,11 @@ from emotion_enum import EmotionEnum
 from log import get_logger
 from chat.chat_meta import ChatMeta, TheaterMeta, ToolCallHistoryRecordMeta, ToolCallRecordMeta
 
+
+from runtime.conversation_storage import (
+    CorruptConversation, backup_corrupt, conversation_lock, read_document, write_document,
+)
+from runtime.runtime_lock import other_mode_running
 
 logger = get_logger(__name__)
 
@@ -1746,7 +1751,7 @@ class ChatManager:
     """
     管理所有对话
     """
-    def __init__(self, chat_list: Optional[List[Chat]] = None):
+    def __init__(self, chat_list: Optional[List[Chat]] = None, *, write_scope: ChatType | None = None) -> None:
         """
         创建一个新的对话管理器
 
@@ -1757,6 +1762,11 @@ class ChatManager:
         else:
             self.chat_list = []
         self._save_lock = threading.RLock()
+        self.write_scope = write_scope
+        self.storage_notice: Callable[[str], None] | None = None
+        self.storage_notices: list[str] = []
+        self.storage_error: str | None = None
+        self._storage_metadata: dict[str, object] = {}
 
     def add_chat(self, chat: Chat) -> None:
         """
@@ -1945,6 +1955,9 @@ class ChatManager:
                     warnings_list.append(f"跳过无法加载的对话：{exc}")
                     continue
 
+                if self.write_scope is not None and chat.type != self.write_scope:
+                    warnings_list.append(f"跳过对话“{chat.name}”：请在对应模式导入此类型的会话。")
+                    continue
                 chat.chat_id = uuid.uuid4().hex
                 chat.name = self._unique_chat_name(f"{chat.name}（导入）")
                 restore_result = self._restore_backup_resources_for_chat(backup_file, resources, chat)
@@ -2384,6 +2397,7 @@ class ChatManager:
         将此 ChatManager 实例转换为存储字典
         """
         return {
+            **self._storage_metadata,
             "chat_list": [chat.to_dict() for chat in self.chat_list]
         }
 
@@ -2392,9 +2406,9 @@ class ChatManager:
         """
         从存储字典中加载一个 ChatManager 实例
         """
-        return cls(
-            chat_list=[Chat.from_dict(chat_data) for chat_data in data["chat_list"]]
-        )
+        manager = cls(chat_list=[Chat.from_dict(chat_data) for chat_data in data["chat_list"]])
+        manager._storage_metadata = {key: value for key, value in data.items() if key != "chat_list"}
+        return manager
 
     def get_or_create_chat_for_character(self, character: "CharacterAttributes") -> Chat:
         """
@@ -2418,25 +2432,51 @@ class ChatManager:
         self.chat_list.append(new_chat)
         return new_chat
 
-    def save(self, file: Union[Path, str] = "../reference_audio/all_conversation.json") -> None:
-        """
-        将当前的对话列表保存到指定文件中。
-
-        :param file: 保存文件路径
-        """
-        target = Path(file)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-
-        with self._save_lock:
+    def _storage_notice(self, message: str) -> None:
+        """记录存储提示，并通过前端提供的线程安全通道通知用户。"""
+        logger.warning(message)
+        self.storage_notices.append(message)
+        self.storage_notices[:] = self.storage_notices[-20:]
+        if self.storage_notice is not None:
             try:
-                with temporary.open("x", encoding="utf-8") as f:
-                    json.dump(self.to_dict(), f, ensure_ascii=False, indent=4)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temporary, target)
-            finally:
-                temporary.unlink(missing_ok=True)
+                self.storage_notice(message)
+            except Exception:
+                logger.exception("发送存储通知失败")
+
+    def save(self, file: Union[Path, str] = "../reference_audio/all_conversation.json") -> None:
+        """锁内读取最新存档，仅替换本模式负责的类型并原子写回。"""
+        target = Path(file).resolve()
+        try:
+            with self._save_lock, conversation_lock(target):
+                snapshot = self.to_dict()
+                try:
+                    latest = read_document(target)
+                    # 同时校验内部会话结构，不能把结构损坏当成正常存档合并。
+                    ChatManager.from_dict(latest)
+                except (CorruptConversation, KeyError, ValueError, TypeError, AttributeError):
+                    backup = backup_corrupt(target)
+                    write_document(target, snapshot)
+                    self.storage_error = None
+                    self._storage_notice(
+                        f"已备份损坏存档至 {backup}，并从当前内存恢复保存；另一类会话可能不是最新版本。"
+                    )
+                    return
+                if self.write_scope is None:
+                    latest = snapshot
+                else:
+                    latest["chat_list"] = [
+                        chat for chat in latest["chat_list"]
+                        if chat.get("type") != self.write_scope.value
+                    ] + [
+                        chat for chat in snapshot["chat_list"]
+                        if chat.get("type") == self.write_scope.value
+                    ]
+                write_document(target, latest)
+                self.storage_error = None
+        except Exception as exc:
+            self.storage_error = f"聊天记录保存失败，未保存内容仍在内存中，请重试：{exc}"
+            self._storage_notice(self.storage_error)
+            raise
 
     @classmethod
     def load(cls, file: Union[Path, str] = "../reference_audio/all_conversation.json") -> "ChatManager":
@@ -2511,102 +2551,71 @@ def backup_file(files: Iterable[Union[str, Path]], destination_folder = "../refe
         shutil.copyfile(file, os.path.join(destination_folder, _generate_filename_with_timestamp(file)))
 
 
-def get_chat_manager() -> ChatManager:
-    """
-    获取全局的 ChatManager 实例。如果尚未创建，则创建一个新的实例。
-    创建新的实例时，尝试从默认存储文件加载对话记录；如果加载失败，则尝试从主程序的对话记录中转换数据。
-    成功从旧格式迁移后，会将旧文件移动到 old_history_messages 文件夹中。
-
-    :returns: 全局的 ChatManager 实例
-    """
+def get_chat_manager(write_scope: ChatType | None = None) -> ChatManager:
+    """在存档锁内加载和迁移；运行模式显式声明唯一负责的会话类型。"""
     global _global_chat_manager
+    if _global_chat_manager is not None:
+        if write_scope is not None and _global_chat_manager.write_scope != write_scope:
+            raise RuntimeError("当前进程已经加载其他写入范围的聊天管理器")
+        return _global_chat_manager
 
-    # 我们可能遇到如下几种情况（取决于用户多久没更新程序）
-    # 1. 用户已经有了 all_conversation.json ，存放了普通对话和小剧场对话，直接加载它。
-    # 2. 用户已经有了 all_conversation.json ，但其中只包含小剧场记录。先加载存档，再补充（迁移）旧版本的普通对话。
-    # 如何区分 1/2 两种情况呢？如果说 reference_audio/history_messages_dp.json 和 history_messages_qt.json 存在的话，我们就认为是情况 2
-    # （普通对话没有转换）；如果说它们不存在，我们就认为是情况 1。
-    # 3. 用户没有 all_conversation.json。此时，需要同时迁移小剧场记录和普通对话记录。如果用户同时也没有旧的对话记录，那么就新建一个空白存档。
-
-    # 这对应了三个存档时期：
-    # 1. 最新版本：all_conversation.json 同时存储普通对话和小剧场对话
-    # 2. 过渡版本：引入了 all_conversation.json，但只用于存储小剧场对话，普通对话仍然存储在 histroy_messages_dp.json 和 history_messages_qt.json 中
-    # 3. 最旧版本：没有引入 all_conversation.json，普通对话存储在 histroy_messages_dp.json 和 history_messages_qt.json 中。
-    # 小剧场对话存储在 small_theater_history.json
-    # 可以看到，只要 all_conversation.json 存在，那么它一定包含小剧场对话（排除版本 3，此时不用加载旧版本小剧场对话），但不确定是否包含普通对话（无法区分版本 1/2）
-    # 区分版本 1/2 需要检查文件夹下是否存在 histroy_messages_dp.json 和 history_messages_qt.json。
-
-    if _global_chat_manager is None:
+    target = Path("../reference_audio/all_conversation.json").resolve()
+    with conversation_lock(target):
+        if _global_chat_manager is not None:
+            if write_scope is not None and _global_chat_manager.write_scope != write_scope:
+                raise RuntimeError("当前进程已经加载其他写入范围的聊天管理器")
+            return _global_chat_manager
+        existed = target.exists()
+        recovered = False
+        notice = ""
         try:
-            all_conversation_file = "../reference_audio/all_conversation.json"
-            legacy_llm_file = "../reference_audio/history_messages_dp.json"
-            legacy_qt_file = "../reference_audio/history_messages_qt.json"
-            legacy_theater_file = "../reference_audio/small_theater_history.json"
+            manager = ChatManager.from_dict(read_document(target))
+        except (CorruptConversation, KeyError, ValueError, TypeError, AttributeError) as exc:
+            if write_scope is not None and other_mode_running(
+                target.parent, write_scope == ChatType.SMALL_THEATER,
+            ):
+                raise RuntimeError(
+                    "聊天存档损坏，另一模式正在运行。请先在该模式保存并正常退出，再重新启动。"
+                ) from exc
+            backup = backup_corrupt(target)
+            manager = ChatManager()
+            recovered = True
+            notice = f"损坏存档已备份至 {backup}，已创建新的空白存档。"
 
-            # 理论上 all_conversation.json 不该是空的，但似乎有用户手动删了内容而留下一个空的文件
-            # 因此，在这个文件为空时，同样认为它不存在。
-            has_new_record = os.path.exists(all_conversation_file) and not os.path.getsize(all_conversation_file) == 0
-            # 旧的主对话记录和小剧场记录默认都是空白文件，
-            # 空白文件会在 json.load 时被判定为加载失败；但我们不希望将其按照加载失败处理（打印错误消息），因为本来就没东西
-            # 因此，只在这两个文件不为空时认为它可能存在。
-            has_legacy_main_record = os.path.exists(legacy_llm_file) and not os.path.getsize(legacy_llm_file) == 0
-            has_legacy_theater_record = os.path.exists(legacy_theater_file) and not os.path.getsize(legacy_theater_file) == 0
-            migrated_legacy_files: List[str] = []
-
-            # 优先级 1->2->3：只要有 all_conversation.json，就一定要加载并读取数据，避免情况 1/2 下的数据丢失。
-            if has_new_record:
-                try:
-                    _global_chat_manager = ChatManager.load(all_conversation_file)
-                # 如果这个文件因为自身格式错误无法加载，尝试备份一份。
-                except (json.JSONDecodeError, KeyError, ValueError):
-                    logger.exception("all_conversation.json 已损坏，未能加载其中的对话记录。")
-                    try:
-                        backup_file(files=[all_conversation_file])
-                        logger.info("已将损坏的 all_conversation.json 备份到 ../reference_audio/backup 文件夹中。")
-                    except OSError:
-                        logger.exception("备份损坏的 all_conversation.json 失败")
-
-                    _global_chat_manager = ChatManager()
-            else:
-                _global_chat_manager = ChatManager()
-
-            # 有旧的普通对话记录时，将其补充到当前存档中。
-            if has_legacy_main_record:
-                try:
-                    old_chat_manager = ChatManager.load_from_main_record(
-                        llm_file=legacy_llm_file,
-                        qt_file=legacy_qt_file,
-                    )
-                    _global_chat_manager.add_chats(old_chat_manager.chat_list)
-                    migrated_legacy_files.append(legacy_llm_file)
-                    if os.path.exists(legacy_qt_file):
-                        migrated_legacy_files.append(legacy_qt_file)
-                except Exception:
-                    logger.exception("未能成功加载旧格式的普通对话记录。若确认旧记录仍需保留，请备份 ../reference_audio/history_messages_dp.json 后再重启程序排查。")
-
-            # 如果有旧的小剧场对话（且不存在 all_conversation.json），那么加载旧版本小剧场对话。
-            if not has_new_record and has_legacy_theater_record:
-                try:
-                    _global_chat_manager.add_theater_mode_history(file=legacy_theater_file)
-                    migrated_legacy_files.append(legacy_theater_file)
-                except Exception:
-                    logger.exception("未能成功加载旧格式的小剧场对话记录。若确认旧记录仍需保留，请备份 ../reference_audio/small_theater_history.json 后再重启程序排查。")
-
-            # 如果什么都不存在，那么新建存档。
-            if not has_new_record and not has_legacy_main_record and not has_legacy_theater_record:
-                logger.warning("未找到任何存在的对话记录文件，将新建。")
-
-            # 迁移那些已经不需要的文件到另一个文件夹，避免每次启动都触发迁移流程。
-            if migrated_legacy_files:
-                _global_chat_manager.save(all_conversation_file)
-                _move_legacy_files_to_backup(migrated_legacy_files)
-                logger.info("已成功将旧版聊天记录迁移到新格式。旧记录文件备份位置：../reference_audio/old_history_messages")
-        except Exception:
-            logger.exception("加载对话记录时出错，将新建空白存档。如果确定已有对话文件（../reference_audio/all_conversation.json），请务必先备份文件！")
-            input("按回车确认继续运行，但可能导致本次对话所产生的聊天记录内容丢失！")
-            _global_chat_manager = ChatManager()
-
-    return _global_chat_manager
+        legacy_llm = target.parent / "history_messages_dp.json"
+        legacy_qt = target.parent / "history_messages_qt.json"
+        legacy_theater = target.parent / "small_theater_history.json"
+        migrated: list[Path] = []
+        raw_migrations = manager._storage_metadata.get("legacy_migrations", {})
+        migrations = dict(raw_migrations) if isinstance(raw_migrations, dict) else {}
+        # 迁移属于全局初始化，写入范围在迁移完成之后设置。
+        if not recovered:
+            if legacy_llm.exists() and legacy_llm.stat().st_size:
+                digest = hashlib.sha256(legacy_llm.read_bytes()).hexdigest()
+                if migrations.get(legacy_llm.name) != digest:
+                    old = ChatManager.load_from_main_record(legacy_llm, legacy_qt)
+                    manager.add_chats(old.chat_list)
+                    migrations[legacy_llm.name] = digest
+                migrated.append(legacy_llm)
+                if legacy_qt.exists():
+                    migrated.append(legacy_qt)
+            if not existed and legacy_theater.exists() and legacy_theater.stat().st_size:
+                digest = hashlib.sha256(legacy_theater.read_bytes()).hexdigest()
+                if migrations.get(legacy_theater.name) != digest:
+                    manager.add_theater_mode_history(file=legacy_theater)
+                    migrations[legacy_theater.name] = digest
+                migrated.append(legacy_theater)
+        if migrations:
+            manager._storage_metadata["legacy_migrations"] = migrations
+        if recovered or migrated or not existed:
+            write_document(target, manager.to_dict())
+        if migrated:
+            _move_legacy_files_to_backup([str(path) for path in migrated])
+        manager.write_scope = write_scope
+        if notice:
+            manager._storage_notice(notice)
+        _global_chat_manager = manager
+        return manager
 
 
 if __name__ == "__main__":

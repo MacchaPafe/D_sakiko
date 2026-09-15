@@ -93,3 +93,7 @@ install_brew.sh
 /launcher/test_launcher_macos.py
 /launcher/test_launcher_repair.py
 /launcher/test_notice_easter_egg.py
+
+# 独立修复入口与维护说明
+!修复程序.command
+!docs/maintenance-recovery.md
