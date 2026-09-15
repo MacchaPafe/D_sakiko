@@ -5,7 +5,7 @@ from pathlib import Path
 import random
 
 from PyQt5.QtCore import Qt, QTimer, QUrl, QVariantAnimation, QEasingCurve, QRectF, QSettings
-from PyQt5.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QColor
+from PyQt5.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QColor, QPalette
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel,
     QMessageBox, QPushButton, QVBoxLayout, QWidget,
@@ -79,6 +79,23 @@ class LauncherWindow(QDialog):
         self.resize(760, 560)
         self.setWindowIcon(QIcon(str(self.root / "live2d_related/sakiko/sakiko_icon.png")))
 
+        # 固定启动器的浅色调色板，包括禁用和失焦状态；不改变主程序主题。
+        palette = self.palette()
+        for group in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+            for role, color in (
+                (QPalette.Window, "#F7F8FC"), (QPalette.Base, "#FFFFFF"),
+                (QPalette.AlternateBase, "#EEF1F7"), (QPalette.Button, "#F0F3F9"),
+                (QPalette.WindowText, "#000000"), (QPalette.Text, "#000000"),
+                (QPalette.ButtonText, "#26324A"), (QPalette.Highlight, "#DCE5F5"),
+                (QPalette.HighlightedText, "#000000"), (QPalette.Link, "#365A91"),
+                (QPalette.LinkVisited, "#64518A"), (QPalette.ToolTipBase, "#F7F8FC"),
+                (QPalette.ToolTipText, "#26324A"),
+            ):
+                palette.setColor(group, role, QColor(color))
+        for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+            palette.setColor(QPalette.Disabled, role, QColor("#667085"))
+        self.setPalette(palette)
+
         self.setStyleSheet("""
             QDialog {
                 background: #F7F8FC;
@@ -97,6 +114,35 @@ class LauncherWindow(QDialog):
             QProgressBar {
                 background: #EEF1F7;
                 color: #000000;
+                border: 1px solid #CBD3E1;
+                border-radius: 4px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background: #BCCAE3;
+            }
+            QToolTip {
+                background: #F7F8FC;
+                color: #26324A;
+                border: 1px solid #CBD3E1;
+            }
+            QPushButton {
+                background: #F0F3F9;
+                color: #26324A;
+                border: 1px solid #CBD3E1;
+                border-radius: 6px;
+                padding: 7px 14px;
+            }
+            QPushButton:hover {
+                background: #E5EBF5;
+                color: #26324A;
+            }
+            QPushButton:pressed {
+                background: #D9E2F1;
+                color: #26324A;
+            }
+            QPushButton:default, QPushButton:focus {
+                border-color: #6775A8;
             }
 
             QLabel#heading {
@@ -172,7 +218,7 @@ class LauncherWindow(QDialog):
             }
             QPushButton#launch:disabled {
                 background: #E2E6EF;
-                color: #9BA4B8;
+                color: #596579;
                 border: none;
             }
 
@@ -212,6 +258,14 @@ class LauncherWindow(QDialog):
             QPushButton[quiet="true"]:hover {
                 background: rgba(0, 0, 0, 0.04);
                 color: #525E8C;
+            }
+            QPushButton:disabled,
+            QPushButton[mode="true"]:disabled,
+            QPushButton[tool="true"]:disabled,
+            QPushButton[quiet="true"]:disabled {
+                background: #E7EBF2;
+                color: #667085;
+                border-color: #D1D8E3;
             }
         """)
 
