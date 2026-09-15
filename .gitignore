@@ -88,3 +88,8 @@ tools/hpatchz.exe
 *.command
 !run_webui.command
 install_brew.sh
+
+# 启动器本地回归测试，不随项目分发。
+/launcher/test_launcher_macos.py
+/launcher/test_launcher_repair.py
+/launcher/test_notice_easter_egg.py
