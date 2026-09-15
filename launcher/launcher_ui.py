@@ -19,9 +19,6 @@ MODES = {
     "theater": ("小剧场模式", "自由编排两名角色的互动剧情", "启动小剧场"),
 }
 
-EASTER_EGG_NOTICE = "夢はパワー (≧▽≦)"
-
-
 class WatermarkOverlay(QWidget):
     """位于按钮之上的水印层；不接收鼠标、键盘焦点。"""
 
@@ -82,7 +79,6 @@ class LauncherWindow(QDialog):
         self.resize(760, 560)
         self.setWindowIcon(QIcon(str(self.root / "live2d_related/sakiko/sakiko_icon.png")))
 
-        # 二次元客户端专属质感 QSS
         self.setStyleSheet("""
             QDialog {
                 background: #F7F8FC;
@@ -91,7 +87,6 @@ class LauncherWindow(QDialog):
                 background: transparent;
             }
 
-            /* 主标题：精致日系衬线体风韵，深冷紫星夜色彩 */
             QLabel#heading {
                 font-size: 30px;
                 font-weight: 700;
@@ -122,7 +117,6 @@ class LauncherWindow(QDialog):
                 font-weight: 500;
             }
 
-            /* 顶部模式切换按钮：日系微光胶囊 */
             QPushButton[mode="true"] {
                 min-width: 105px;
                 padding: 8px 18px;
@@ -145,7 +139,6 @@ class LauncherWindow(QDialog):
                 border: 1.5px solid #5B6B9E;
             }
 
-            /* 核心启动大按钮：冷夜紫金微光 */
             QPushButton#launch {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #6775A8, stop:1 #525E8C);
                 color: #FFFFFF;
@@ -171,7 +164,6 @@ class LauncherWindow(QDialog):
                 border: none;
             }
 
-            /* 底部工具操作按钮：轻质感亚克力卡片 */
             QPushButton[tool="true"] {
                 background: rgba(255, 255, 255, 0.9);
                 border: 1.5px solid #E2E7F0;
@@ -211,7 +203,6 @@ class LauncherWindow(QDialog):
             }
         """)
 
-        # 完全保留原本的布局顺序与间距参数
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 22, 32, 12)
         layout.setSpacing(8)
@@ -281,7 +272,7 @@ class LauncherWindow(QDialog):
         tools.addStretch()
         layout.addLayout(tools)
 
-        bottom_notice: str = "" if random.random() < 0.6 else EASTER_EGG_NOTICE
+        bottom_notice: str = "" if random.random() < 0.6 else "夢はパワー (≧▽≦)"
         self.notice = self.secondary(bottom_notice)
         self.notice.setObjectName("notice")
         self.notice.setAlignment(Qt.AlignCenter)
@@ -347,14 +338,14 @@ class LauncherWindow(QDialog):
 
     def set_notice(self, text: str) -> None:
         """只有彩蛋提示是链接，进程状态等普通提示不可点击。"""
-        self.notice_is_easter_egg = text == EASTER_EGG_NOTICE
+        self.notice_is_easter_egg = text == "夢はパワー (≧▽≦)"
         self.notice.setTextFormat(Qt.RichText if self.notice_is_easter_egg else Qt.PlainText)
         self.notice.setTextInteractionFlags(
             Qt.LinksAccessibleByMouse | Qt.LinksAccessibleByKeyboard
             if self.notice_is_easter_egg else Qt.NoTextInteraction
         )
         self.notice.setCursor(Qt.PointingHandCursor if self.notice_is_easter_egg else Qt.ArrowCursor)
-        self.notice.setToolTip("点击播放彩蛋音频" if self.notice_is_easter_egg else "")
+        self.notice.setToolTip("播放阿拉蕾音频" if self.notice_is_easter_egg else "")
         self.notice.setText(
             f'<a href="easter-egg" style="color: #8C96AC; text-decoration: none;">{text}</a>'
             if self.notice_is_easter_egg else text
