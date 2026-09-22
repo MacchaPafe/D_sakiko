@@ -10,13 +10,14 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QPoint, QPointF, QRect, Qt
-from PyQt5.QtGui import QWheelEvent
+from PyQt5.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+from PyQt5.QtGui import QMouseEvent, QWheelEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
 from desktop_pet.window import PetWindow
 from desktop_pet.controller import DesktopController
+from desktop_pet.focus import PetFocus
 from runtime.drafts import DraftStore
 from runtime.single_character_performance import SingleCharacterPerformance
 from runtime.voice_input import VoiceInputService
@@ -65,11 +66,87 @@ class PetInteractionTests(TestCase):
         self.assertEqual(self.pet.input.font(), font)
         self.pet.set_zoom(10.0)
         self.assertLessEqual(self.pet.zoom, 1.6)
-        self.assertTrue(
-            self.pet.screen().availableGeometry().contains(self.pet.geometry())
+        self.assertEqual(
+            self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor)), foot
         )
         self.pet.reset_zoom()
         self.assertLessEqual(self.pet.zoom, 1.0)
+
+    def test_drag_to_edge_is_not_clamped_by_release_input_zoom_or_tray(self) -> None:
+        """透明窗口可跨越屏幕边缘，松手、输入和托盘恢复均不回弹。"""
+        renderer = self.pet.renderer
+        self.pet.move(30, 30)
+        center = renderer.hit_bounds.center()
+        global_center = renderer.mapToGlobal(center)
+        delta = QPoint(-140, 0)
+        renderer.mousePressEvent(
+            QMouseEvent(
+                QEvent.MouseButtonPress,
+                QPointF(center),
+                QPointF(global_center),
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        renderer.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.MouseMove,
+                QPointF(center + delta),
+                QPointF(global_center + delta),
+                Qt.NoButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        moved = self.pet.pos()
+        self.assertEqual(moved.x(), -110)
+        renderer.mouseReleaseEvent(
+            QMouseEvent(
+                QEvent.MouseButtonRelease,
+                QPointF(center),
+                QPointF(global_center + delta),
+                Qt.LeftButton,
+                Qt.NoButton,
+                Qt.NoModifier,
+            )
+        )
+        self.assertEqual(self.pet.pos(), moved)
+        self.pet.expand()
+        self.assertEqual(self.pet.pos(), moved)
+        foot = self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor))
+        self.pet.set_zoom(0.8)
+        self.assertEqual(
+            self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor)), foot
+        )
+        before_show = self.pet.pos()
+        self.pet.hide()
+        controller = Mock(pet_mode=True, pet=self.pet)
+        DesktopController.show_pet(controller)
+        self.assertEqual(self.pet.pos(), before_show)
+
+    def test_native_focus_loss_collapses_without_losing_draft(self) -> None:
+        """原生非激活面板不调用应用激活，失去键盘焦点时保留草稿。"""
+        focus = Mock(spec=PetFocus, nonactivating=True)
+        focus.has_input_focus.return_value = True
+        self.pet._focus = focus
+        with patch.object(self.pet, "activateWindow") as activate:
+            self.pet.expand()
+            focus.request_input.assert_called_once()
+            activate.assert_not_called()
+        self.pet.input.text_edit.setPlainText("保留中文草稿")
+        focus.has_input_focus.return_value = False
+        self.pet.popup_open = True
+        self.pet.refresh_state()
+        self.assertTrue(self.pet.expanded)
+        self.pet.popup_open = False
+        self.pet.refresh_state()
+        self.assertFalse(self.pet.expanded)
+        focus.release_input.assert_called_once()
+        self.assertEqual(self.drafts.get("test").text, "保留中文草稿")
+        focus.has_input_focus.return_value = True
+        self.pet.expand()
+        self.assertEqual(self.pet.input.toPlainText(), "保留中文草稿")
 
     def test_wheel_and_click_only_apply_to_character_and_busy_click_is_ignored(
         self,

@@ -4,8 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-from PyQt5.QtCore import Qt, QEvent, QTimer, QPoint, QRect, QSize, QObject, pyqtSignal
-from PyQt5.QtGui import QColor, QContextMenuEvent, QIcon, QPainter
+from PyQt5 import sip
+from PyQt5.QtCore import (
+    QByteArray,
+    Qt,
+    QEvent,
+    QTimer,
+    QPoint,
+    QRect,
+    QSize,
+    QObject,
+    pyqtSignal,
+)
+from PyQt5.QtGui import QColor, QContextMenuEvent, QIcon, QPainter, QShowEvent
 from PyQt5.QtWidgets import (
     QWidget,
     QFrame,
@@ -22,6 +33,7 @@ from ui_main.components.message_input import MessageInput
 from ui_main.theme import ThemePalette
 from runtime.drafts import DraftBinding
 from desktop_pet.renderer import PetRenderer
+from desktop_pet.focus import create_pet_focus
 
 if TYPE_CHECKING:
     from multiprocessing.queues import Queue as ProcessQueue
@@ -55,11 +67,11 @@ class PetWindow(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setWindowTitle("桌宠")
         self.resize(380, 610)
+        self._focus = create_pet_focus(self)
         self.renderer = PetRenderer(commands, playback_events, motion_complete, self)
         self.renderer.setGeometry(0, 0, 380, 500)
         self.renderer.clicked.connect(self.play_interaction)
         self.renderer.zoomRequested.connect(self.zoom_by)
-        self.renderer.dragFinished.connect(self.ensure_on_screen)
         self.renderer.modelReady.connect(self._model_ready)
         self.renderer.failed.connect(self._model_failed)
         self.renderer.subtitleChanged.connect(self._subtitle)
@@ -183,6 +195,16 @@ class PetWindow(QWidget):
         self.record_button.clicked.connect(self.toggle_voice)
         self.send_button.clicked.connect(self.send)
         self.panel.hide()
+        if self._focus.passive_mouse:
+            for button in (
+                self.text_button,
+                self.voice_button,
+                self.record_button,
+                self.send_button,
+                self.add_button,
+                self.dismiss_error_button,
+            ):
+                button.setFocusPolicy(Qt.NoFocus)
         self.host.voice_input.stateChanged.connect(self.refresh_state)
         self.host.voice_input.recognized.connect(self.recognized)
         self.host.voice_input.error.connect(self.show_input_error)
@@ -196,6 +218,22 @@ class PetWindow(QWidget):
         area = QApplication.primaryScreen().availableGeometry()
         self.move(area.right() - self.width() - 36, area.bottom() - self.height() - 24)
         self.layout_controls()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """恢复显示时刷新原生悬浮追踪，不激活应用或修正拖动位置。"""
+        super().showEvent(event)
+        self._focus.refresh_native()
+
+    def nativeEvent(
+        self, event_type: QByteArray, message: sip.voidptr
+    ) -> tuple[bool, int]:
+        """将平台焦点消息交给对应适配，不影响其他原生事件。"""
+        focus = getattr(self, "_focus", None)
+        if focus is not None:
+            handled, result = focus.native_event(event_type, message)
+            if handled:
+                return True, result
+        return super().nativeEvent(event_type, message)
 
     @staticmethod
     def _tinted_icon(filename: str, color: str) -> QIcon:
@@ -317,7 +355,6 @@ class PetWindow(QWidget):
         )
         self.layout_controls()
         self.move(foot - QPoint(self.width() // 2, self.anchor))
-        self.ensure_on_screen()
         self.renderer.update()
 
     def _model_failed(self, message: str) -> None:
@@ -374,15 +411,16 @@ class PetWindow(QWidget):
         self.subtitle.hide()
         self.panel.show()
         self.panel.raise_()
-        self.activateWindow()
-        self.input.setFocus()
+        self._focus.request_input()
+        self.input.setFocus(Qt.MouseFocusReason)
         self.layout_controls()
-        self.ensure_on_screen()
 
     def collapse(self) -> None:
+        """收起输入卡片并释放非激活面板的键盘焦点，保留草稿。"""
         self.expanded = False
         self.panel.hide()
         self.subtitle.setVisible(bool(self.subtitle.text()))
+        self._focus.release_input()
         self.refresh_state()
 
     def focus_changed(self, old: QWidget | None, new: QWidget | None) -> None:
@@ -407,12 +445,26 @@ class PetWindow(QWidget):
         if obj is self.renderer and event.type() == QEvent.MouseMove:
             self.hovered = self.bounds.contains(event.pos())
             self.refresh_state()
-        if event.type() == QEvent.ApplicationDeactivate and not self.popup_open:
+        if (
+            event.type() == QEvent.ApplicationDeactivate
+            and not self._focus.nonactivating
+            and not self.popup_open
+        ):
             self.collapse()
         return False
 
     def refresh_state(self, *args: object) -> None:
         """刷新回复、录音和输入错误状态，保持面板布局稳定。"""
+        if (
+            self._focus.nonactivating
+            and self.expanded
+            and not self.popup_open
+            and QApplication.activePopupWidget() is None
+            and QApplication.activeModalWidget() is None
+            and not self._focus.has_input_focus()
+        ):
+            self.collapse()
+            return
         voice = self.host.voice_input.state
         recording = voice == "recording"
         busy = self.host.is_response_active()
@@ -469,8 +521,7 @@ class PetWindow(QWidget):
     def recognized(self, chat_id: str) -> None:
         if (
             chat_id == self.host.current_chat_id
-            and QApplication.applicationState() == Qt.ApplicationActive
-            and self.isActiveWindow()
+            and self._focus.has_input_focus()
             and self.isVisible()
         ):
             self.expand()
@@ -494,13 +545,6 @@ class PetWindow(QWidget):
         else:
             self.host.handle_user_input(self.input)
         self.refresh_state()
-
-    def ensure_on_screen(self) -> None:
-        area = self.screen().availableGeometry()
-        self.move(
-            max(area.left(), min(self.x(), area.right() - self.width() + 1)),
-            max(area.top(), min(self.y(), area.bottom() - self.height() + 1)),
-        )
 
     def create_context_menu(self) -> QMenu:
         """创建明确区分临时打开窗口与退出桌宠形态的菜单。"""

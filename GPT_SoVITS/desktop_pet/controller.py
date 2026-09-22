@@ -85,12 +85,12 @@ class DesktopController(QObject):
         self.window.raise_()
         self.window.activateWindow()
 
-    def show_pet(self):
+    def show_pet(self) -> None:
+        """恢复桌宠显示，保留用户拖动后的位置。"""
         if not self.pet_mode:
             self.toggle_mode()
         elif self.pet is not None:
             self.pet.show()
-            self.pet.ensure_on_screen()
 
     def can_switch_mode(self) -> bool:
         """统一菜单与实际切换的忙碌判断，避免录音途中销毁输入宿主。"""
