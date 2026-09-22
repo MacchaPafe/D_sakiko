@@ -1,0 +1,9 @@
+{
+  "name": "dsakiko-feedback",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22.16"},
+  "scripts": {"generate": "node generate-schema.js", "pretest": "npm run generate", "test": "node --test test/*.test.js", "dev": "wrangler dev", "precheck": "npm run generate", "check": "wrangler deploy --dry-run && wrangler deploy --config wrangler.admin.jsonc --dry-run"},
+  "dependencies": {"ajv": "^8.17.1", "jose": "^6.1.0"},
+  "devDependencies": {"wrangler": "4.136.0", "esbuild": "0.28.1", "miniflare": "5.20260921.0-alpha"}
+}

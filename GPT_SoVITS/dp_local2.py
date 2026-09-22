@@ -760,6 +760,16 @@ class DSLocalAndVoiceGen:
         prepared.insert(insert_index, {"role": "user", "content": content})
         return prepared
 
+    def render_feedback_system_prompt(self, chat: Chat, character_name: str) -> str:
+        """使用当前设定渲染反馈用系统提示词，不调用检索、模型或附件服务。"""
+        content = chat.prompt_generator.generate(perspective=character_name)
+        messages: list[dict[str, object]] = [
+            {"role": "system", "content": content + "\n" + self._build_runtime_system_instruction()}
+        ]
+        if chat.meta.worldbook.enabled:
+            self._append_worldbook_runtime_instruction(messages)
+        return str(messages[0]["content"])
+
     def _build_llm_messages_for_chat_turn(self, character_name: str) -> list[dict[str, object]]:
         """
         基于当前对话构造发送给 LLM 的请求副本。

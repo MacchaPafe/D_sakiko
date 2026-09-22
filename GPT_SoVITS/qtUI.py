@@ -225,6 +225,9 @@ class MoreFunctionWindow(QDialog):
         check_update_fun: Callable[[], None] | None = None,
         check_repair_fun: Callable[[], None] | None = None,
         has_update: bool = False,
+        feedback_fun: Callable[[], None] | None = None,
+        feedback_history_fun: Callable[[], None] | None = None,
+        feedback_admin_fun: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("更多功能...")
@@ -266,6 +269,23 @@ class MoreFunctionWindow(QDialog):
         tools_layout.addWidget(open_live2d_downloader_btn)
         tools_group.setLayout(tools_layout)
         layout.addWidget(tools_group)
+
+        feedback_group = QGroupBox("反馈")
+        feedback_layout = QVBoxLayout(feedback_group)
+        feedback_buttons_layout = QHBoxLayout()
+        for label, callback in (("意见建议", feedback_fun), ("已提交反馈", feedback_history_fun)):
+            if callback is not None:
+                button = QPushButton(label)
+                button.clicked.connect(callback)
+                feedback_buttons_layout.addWidget(button, 1)
+        if feedback_buttons_layout.count():
+            feedback_layout.addLayout(feedback_buttons_layout)
+        if feedback_admin_fun is not None:
+            admin_button = QPushButton("管理反馈")
+            admin_button.clicked.connect(feedback_admin_fun)
+            feedback_layout.addWidget(admin_button)
+        if feedback_layout.count():
+            layout.addWidget(feedback_group)
 
         maintenance_group = QGroupBox("程序维护")
         maintenance_layout = QVBoxLayout()
@@ -2053,6 +2073,7 @@ class ChatGUI(QWidget):
         self.chat_display.regenerateTurnReplyRequested.connect(self.regenerate_turn_reply)  # noqa
         self.chat_display.regenerateAudioRequested.connect(self.regenerate_audio)  # noqa
         self.chat_display.forkChatRequested.connect(self.fork_chat_from_message)  # noqa
+        self.chat_display.feedbackRequested.connect(self.open_message_feedback)
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
 
         self.messages_box = QTextBrowser()
@@ -3033,6 +3054,7 @@ class ChatGUI(QWidget):
         menu = QMenu(self)
         clone_action = menu.addAction("复制对话")
         export_action = menu.addAction("导出此对话...")
+        feedback_action = menu.addAction("反馈此对话…")
         menu.addSeparator()
         rename_action = menu.addAction("重命名...")
         delete_action = menu.addAction("删除")
@@ -3041,6 +3063,8 @@ class ChatGUI(QWidget):
             self.clone_chat_from_sidebar(chat_id)
         elif selected_action == export_action:
             self.export_single_chat(chat_id)
+        elif selected_action == feedback_action:
+            self._open_feedback(chat_id=chat_id)
         elif selected_action == rename_action:
             self.rename_chat(chat_id)
         elif selected_action == delete_action:
@@ -4475,7 +4499,10 @@ class ChatGUI(QWidget):
 
     def refresh_current_chat_display(self):
         """从当前 Chat 数据重新渲染聊天显示。"""
-        self.chat_display.render_chat(self.current_chat)
+        self.chat_display.render_chat(
+            self.current_chat,
+            pending_turn=self.active_turn_id is not None and self.active_chat_id == self.current_chat_id,
+        )
         self.schedule_context_usage_refresh()
 
     def _apply_character_theme(self, palette: ThemePalette) -> None:
@@ -4572,6 +4599,86 @@ class ChatGUI(QWidget):
             logger.exception("打开大模型 API 配置窗口失败")
             self._set_message_box_text("打开大模型 API 配置窗口失败")
 
+    def open_message_feedback(self, message_index: int, rating: str) -> None:
+        """从完成的单角色回复发起反馈。"""
+        self._open_feedback(chat_id=self.current_chat_id, target=message_index, rating=rating)
+
+    def _open_feedback(self, *, chat_id: str | None = None, target: int | None = None, rating: str = "none") -> None:
+        """告知上传范围，用户提交时才渲染并冻结当前对话。"""
+        from feedback.client import ReceiptStore
+        from feedback.dialogs import FeedbackDialog
+        from feedback.protocol import freeze_payload
+
+        chat = self.chat_manager.get_chat_by_id(chat_id) if chat_id is not None else None
+        if chat_id is not None:
+            if chat is None or chat.type != ChatType.SINGLE_CHARACTER:
+                QMessageBox.information(self, "反馈", "目前支持单角色对话反馈；其他建议可从更多功能提交。")
+                return
+            if not self._ensure_chat_history_operation_allowed("提交对话反馈"):
+                return
+        if target is not None and (chat is None or not 0 <= target < len(chat.message_list) or Chat.is_real_user_message(chat.message_list[target])):
+            return
+        target_message = chat.message_list[target] if chat is not None and target is not None else None
+        target_snapshot = target_message.as_dict() if target_message is not None else None
+        consent_worldbook_enabled = chat is not None and chat.meta.worldbook.enabled
+        title = chat.name if chat is not None else "意见建议"
+        disclosure = "你的反馈有助于改进对话体验"
+        if chat is not None:
+            disclosure = "将上传当前的对话与角色、对话身份设定，以便我们改进对话体验"
+            if chat.meta.worldbook.enabled:
+                disclosure = "将上传当前的对话、角色设定与使用世界书的情况，供我们改进对话体验与世界书的效果"
+
+        def freeze(chosen_rating: str, comment: str) -> tuple[str, bytes]:
+            """在确认时检查目标绑定并读取当前设定与已有诊断。"""
+            diagnostics: list[dict[str, object]] = []
+            system_prompt = ""
+            if chat is not None:
+                if self.chat_manager.get_chat_by_id(chat.chat_id) is not chat:
+                    raise ValueError("原对话已改变，请重新发起反馈。")
+                if chat.meta.worldbook.enabled != consent_worldbook_enabled:
+                    raise ValueError("世界书开关已改变，请重新打开反馈以确认上传范围。")
+                if target is not None and (target >= len(chat.message_list) or chat.message_list[target] is not target_message or target_message.as_dict() != target_snapshot):
+                    raise ValueError("所选回复已被编辑或删除，请重新发起反馈。")
+                character_name = chat.get_character_name()
+                if not character_name or character_name not in self.character_by_name:
+                    raise ValueError("当前角色不存在，无法渲染 system prompt。仍可提交文字建议。")
+                system_prompt = self.dp_chat.render_feedback_system_prompt(chat, character_name)
+                diagnostic_store = getattr(self.dp_chat, "worldbook_diagnostic_store", None)
+                if chat.meta.worldbook.enabled and diagnostic_store is not None:
+                    diagnostics = diagnostic_store.records_for_chat(chat.chat_id)
+            return freeze_payload(app_version=read_current_version(get_version_file(get_app_root())),
+                                  rating=chosen_rating, comment=comment, chat=chat,
+                                  system_prompt=system_prompt, target=target, diagnostics=diagnostics)
+
+        try:
+            dialog = FeedbackDialog(title=title, disclosure=disclosure, freeze=freeze, rating=rating,
+                                    store=ReceiptStore(), palette=self._theme_palette, parent=self)
+            if dialog.exec_() == QDialog.Accepted:
+                notice = QMessageBox(self)
+                notice.setWindowTitle("反馈已提交")
+                notice.setText("谢谢你的反馈。可以在“已提交反馈”中撤回。")
+                history_button = notice.addButton("已提交反馈", QMessageBox.ActionRole)
+                notice.addButton("完成", QMessageBox.AcceptRole)
+                notice.exec_()
+                if notice.clickedButton() == history_button:
+                    self.open_feedback_history()
+        except Exception:
+            QMessageBox.warning(self, "反馈", "无法打开反馈存储，请检查本机数据目录权限。")
+
+    def open_feedback_history(self) -> None:
+        """打开与原聊天记录独立的本机提交列表。"""
+        from feedback.client import ReceiptStore
+        from feedback.dialogs import FeedbackHistoryDialog
+        try:
+            FeedbackHistoryDialog(ReceiptStore(), self._theme_palette, self).exec_()
+        except Exception:
+            QMessageBox.warning(self, "反馈", "无法读取本机提交记录。")
+
+    def open_feedback_admin(self) -> None:
+        """打开仅配置在开发者本机的反馈管理面板。"""
+        from feedback.admin import FeedbackAdminDialog
+        FeedbackAdminDialog(self._theme_palette, self).exec_()
+
     def open_more_function_window(self):
         more_function_win=MoreFunctionWindow(
             self.close_program,
@@ -4579,6 +4686,9 @@ class ChatGUI(QWidget):
             self.check_update_manual,
             self.check_repair_manual,
             has_update=self.pending_update_plan is not None,
+            feedback_fun=lambda: self._open_feedback(),
+            feedback_history_fun=self.open_feedback_history,
+            feedback_admin_fun=self.open_feedback_admin if os.environ.get("DSAKIKO_FEEDBACK_ADMIN_URL") else None,
         )
         more_function_win.exec_()
 
@@ -5222,6 +5332,8 @@ class ChatGUI(QWidget):
         )
         display_msg_index = msg_index if msg_index is not None else len(self.current_chat.message_list)
         self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
+        if display_msg_index == len(self.current_chat.message_list) - 1:
+            self.chat_display.complete_feedback_turn()
         self.schedule_context_usage_refresh()
 
     def _handle_structured_response(self, payload: dict[str, object]) -> None:
@@ -5297,6 +5409,8 @@ class ChatGUI(QWidget):
                 status = str(payload.get("status") or "ok")
                 self._clear_active_turn()
                 if status == "ok":
+                    if str(payload.get("chat_id") or "") == self.current_chat_id:
+                        self.chat_display.complete_feedback_turn()
                     self._set_message_box_idle()
                 else:
                     self.refresh_current_chat_display()

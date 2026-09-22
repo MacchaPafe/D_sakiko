@@ -248,8 +248,8 @@ class WorldbookDiagnosticStore:
             records = list(self._records)
         return records[-max(0, limit) :]
 
-    def export_chat(self, chat_id: str, output_path: Path) -> int:
-        """把当前日志和内存中属于一个对话的记录去重导出为 ZIP。"""
+    def records_for_chat(self, chat_id: str) -> list[dict[str, object]]:
+        """读取当前日志和内存中属于一个对话的记录，按记录编号去重。"""
 
         records: dict[str, dict[str, object]] = {}
         for path in self._diagnostic_log_paths():
@@ -275,6 +275,11 @@ class WorldbookDiagnosticStore:
             records.values(),
             key=lambda item: str(item.get("started_at") or ""),
         )
+        return ordered
+
+    def export_chat(self, chat_id: str, output_path: Path) -> int:
+        """把当前日志和内存中属于一个对话的记录去重导出为 ZIP。"""
+        ordered = self.records_for_chat(chat_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(
             output_path,

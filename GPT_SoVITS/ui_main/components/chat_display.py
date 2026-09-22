@@ -32,6 +32,7 @@ class _MessageDisplayMeta:
 class ChatDisplay(QTextBrowser):
     """集成的聊天记录渲染模块，封装聊天记录的渲染、流式打印和交互事件。"""
 
+    feedbackRequested = pyqtSignal(int, str)
     deleteMessageRequested = pyqtSignal(int)
     deleteTurnRequested = pyqtSignal(int)
     editMessageRequested = pyqtSignal(int)
@@ -53,6 +54,7 @@ class ChatDisplay(QTextBrowser):
         # 消息索引 -> 消息显示元数据
         # 这个信息会用于决定右键菜单长什么样（是否有重新生成音频的选项）以及流式打印时是否先渲染消息头
         self._message_meta_by_index: dict[int, _MessageDisplayMeta] = {}
+        self._feedback_message_indices: set[int] = set()
         self._stream_text = ""
         self._stream_translation = ""
         self._stream_anchor_href = ""
@@ -71,7 +73,7 @@ class ChatDisplay(QTextBrowser):
             raise TypeError("palette 必须是 ThemePalette")
         self._theme_palette = palette
 
-    def render_chat(self, chat: Chat, preserve_scroll: bool = True) -> None:
+    def render_chat(self, chat: Chat, preserve_scroll: bool = True, *, pending_turn: bool = False) -> None:
         """根据完整 Chat 数据重新渲染聊天记录。"""
         self._stop_stream(clear_buffer=True)
         self._user_persona_name = self._user_persona_name_from_chat(chat)
@@ -81,6 +83,15 @@ class ChatDisplay(QTextBrowser):
         was_at_bottom = saved_position == scroll_bar.maximum()
 
         self._message_meta_by_index.clear()
+        self._feedback_message_indices = {
+            index for index, message in enumerate(chat.message_list)
+            if not self._is_user_message(message)
+            and (
+                self._is_user_message(chat.message_list[index + 1])
+                if index + 1 < len(chat.message_list)
+                else not pending_turn
+            )
+        }
         html_parts: list[str] = []
         records_by_index = self._tool_records_by_message_index(chat)
 
@@ -107,6 +118,7 @@ class ChatDisplay(QTextBrowser):
         """清空聊天显示内容及所有显示层缓存状态。"""
         self._stop_stream(clear_buffer=True)
         self._message_meta_by_index.clear()
+        self._feedback_message_indices.clear()
         self.clear()
 
     def append_message(
@@ -119,6 +131,7 @@ class ChatDisplay(QTextBrowser):
     ) -> None:
         """追加显示一条消息，可选择使用逐字流式打印正文。"""
         self.finish_stream_now()
+        self._feedback_message_indices.discard(msg_index)
         self._remember_message_meta(msg_index, message)
         if Chat.is_real_user_message(message):
             self._set_regenerable_turn_reply_index(msg_index)
@@ -126,6 +139,19 @@ class ChatDisplay(QTextBrowser):
             self._append_message_streaming(message, msg_index, interval_ms)
             return
         self.append(self._render_message_html(message, msg_index))
+
+    def complete_feedback_turn(self) -> None:
+        """整轮回复完成后仅为最后一个角色片段添加反馈，等待其流式打印结束。"""
+        index = max(self._message_meta_by_index, default=-1)
+        meta = self._message_meta_by_index.get(index)
+        if meta is None or meta.is_user_message or index in self._feedback_message_indices:
+            return
+        self._feedback_message_indices.add(index)
+        if self.is_streaming():
+            return
+        cursor = QTextCursor(self.document())
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertHtml(self._feedback_links(index))
 
     def append_tool_status_line(
         self,
@@ -246,6 +272,7 @@ class ChatDisplay(QTextBrowser):
             )
             self._stream_index = len(self._stream_text)
         self._insert_stream_translation(cursor)
+        self._insert_stream_feedback(cursor)
         self.setTextCursor(cursor)
         self.moveCursor(QTextCursor.End)
         self._clear_stream_buffer()
@@ -315,6 +342,10 @@ class ChatDisplay(QTextBrowser):
 
             if meta is not None and not meta.is_user_message:
                 menu.addSeparator()
+                for label, rating in (("赞并反馈…", "up"), ("踩并反馈…", "down"), ("反馈此回复…", "none")):
+                    feedback_action = QAction(label, self)
+                    feedback_action.triggered.connect(lambda _checked=False, value=rating: self.feedbackRequested.emit(msg_index, value))
+                    menu.addAction(feedback_action)
                 regen_action = QAction(f"重新生成音频：情绪{meta.emotion_label}", self)
                 regen_action.triggered.connect(lambda: self.regenerateAudioRequested.emit(msg_index))
                 menu.addAction(regen_action)
@@ -348,6 +379,7 @@ class ChatDisplay(QTextBrowser):
         # 如果在打印翻译：一次性插入
         cursor.movePosition(QTextCursor.End)
         self._insert_stream_translation(cursor)
+        self._insert_stream_feedback(cursor)
         self.moveCursor(QTextCursor.End)
         self._clear_stream_buffer()
         self.streamFinished.emit()
@@ -363,6 +395,20 @@ class ChatDisplay(QTextBrowser):
             f'<span style="color: {self._theme_palette.text_secondary}; '
             f'font-style: italic;">{safe_translation}</span></a><br>'
         )
+
+    def _feedback_links(self, msg_index: int) -> str:
+        """生成不自动提交数据的反馈入口。"""
+        return "<br>" + " · ".join(
+            f'<a href="feedback:{rating}?msg={msg_index}" style="color: {self._theme_palette.text_secondary};">{label}</a>'
+            for rating, label in (("up", "赞"), ("down", "踩"), ("none", "反馈"))
+        )
+
+    def _insert_stream_feedback(self, cursor: QTextCursor) -> None:
+        """流式打印结束后补上回复反馈入口。"""
+        index = self._message_index_from_url(self._stream_anchor_href)
+        meta = self._message_meta_by_index.get(index) if index is not None else None
+        if index in self._feedback_message_indices and meta is not None and not meta.is_user_message:
+            cursor.insertHtml(self._feedback_links(index))
 
     def _body_character_format(self, anchor_href: str) -> QTextCharFormat:
         """创建流式正文使用的高对比可交互字符格式。"""
@@ -456,7 +502,10 @@ class ChatDisplay(QTextBrowser):
                 f'font-style: italic;">{safe_translation}</span>'
             )
         body += "</a>"
-        return header + body + attachments_html
+        feedback_html = ""
+        if msg_index in self._feedback_message_indices and not self._is_user_message(message):
+            feedback_html = self._feedback_links(msg_index)
+        return header + body + attachments_html + feedback_html
 
     def _render_message_header_html(self, message: Message, msg_index: int) -> str:
         """将一条消息的可点击标题渲染成 HTML。"""
@@ -664,6 +713,12 @@ class ChatDisplay(QTextBrowser):
     def _on_anchor_clicked(self, anchor_url: QUrl) -> None:
         """把聊天框中的链接点击转换成语义化信号。"""
         url_text = anchor_url.toString()
+        if url_text.startswith("feedback:"):
+            index = self._message_index_from_url(url_text)
+            rating = url_text.split(":", 1)[1].split("?", 1)[0]
+            if index is not None and rating in ("up", "down", "none"):
+                self.feedbackRequested.emit(index, rating)
+            return
         if url_text.startswith("toolcall:"):
             self.toolCallClicked.emit(url_text[len("toolcall:"):])
             return
