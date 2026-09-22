@@ -33,7 +33,7 @@ _DARK_ON_ACCENT_CHARACTER_SEEDS = frozenset({
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ThemePalette:
     """保存由角色原色衍生出的浅色界面语义色。"""
 

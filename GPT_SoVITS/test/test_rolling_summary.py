@@ -12,6 +12,7 @@ import dp_local2
 from chat.chat import Chat, ChatManager, Message, MessageAttachment, StaticPromptGenerator
 from chat.chat_meta import ToolCallRecordMeta
 from chat.rolling_summary import (
+    DEFAULT_ROLLING_SUMMARY_PROMPT,
     ROLLING_SUMMARY_META_KEY,
     build_llm_query_with_rolling_summary,
     build_rolling_summary_update,
@@ -20,10 +21,12 @@ from chat.rolling_summary import (
     find_recent_window_start,
     get_rolling_summary,
     invalidate_rolling_summary_from_message_index,
+    load_rolling_summary_prompt,
     rolling_summary_token_budget,
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
+    trim_messages_with_sliding_window,
 )
 from emotion_enum import EmotionEnum
 from qconfig import DSakikoConfig
@@ -64,6 +67,68 @@ class RollingSummaryTestCase(unittest.TestCase):
         self.assertEqual(item.range, (0.70, 0.90))
         self.assertEqual(item.validator.correct(0.20), 0.70)
         self.assertEqual(item.validator.correct(0.95), 0.90)
+
+    def test_rolling_summary_is_disabled_by_default(self) -> None:
+        self.assertFalse(DSakikoConfig.enable_rolling_summary.defaultValue)
+
+    def test_summary_prompt_falls_back_when_file_is_missing(self) -> None:
+        missing_path = mock.Mock()
+        missing_path.is_file.return_value = False
+        with mock.patch("chat.rolling_summary.ROLLING_SUMMARY_PROMPT_PATH", missing_path):
+            self.assertEqual(
+                load_rolling_summary_prompt(),
+                DEFAULT_ROLLING_SUMMARY_PROMPT,
+            )
+
+    def test_summary_request_combines_custom_prompt_and_hard_rules(self) -> None:
+        with mock.patch(
+            "chat.rolling_summary.load_rolling_summary_prompt",
+            return_value="请特别保留用户喜欢的音乐。",
+        ):
+            update = build_rolling_summary_update(self._chat_with_turns(12), perspective="角色")
+
+        self.assertIsNotNone(update)
+        assert update is not None
+        system_prompt = str(update.messages[0]["content"])
+        self.assertIn("请特别保留用户喜欢的音乐。", system_prompt)
+        self.assertIn("不可被个性化提示覆盖的硬性约束", system_prompt)
+
+    def test_sliding_window_removes_oldest_non_system_messages(self) -> None:
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "old-user"},
+            {"role": "assistant", "content": "old-assistant"},
+            {"role": "user", "content": "latest-user"},
+        ]
+
+        with mock.patch(
+            "chat.model_token_usage.count_message_tokens",
+            side_effect=lambda _model, candidate, **_kwargs: len(candidate) * 100,
+        ):
+            trimmed = trim_messages_with_sliding_window(
+                messages,
+                model="test/model",
+                token_limit=200,
+            )
+
+        self.assertEqual(trimmed, [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "latest-user"},
+        ])
+
+    def test_disabled_summary_skips_background_compaction(self) -> None:
+        subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
+        subject.d_sakiko_config = SimpleNamespace(
+            enable_rolling_summary=SimpleNamespace(value=False),
+        )
+
+        updated = subject._maybe_update_rolling_summary(
+            self._chat_with_turns(12),
+            "角色",
+            [{"role": "user", "content": "current"}],
+        )
+
+        self.assertFalse(updated)
 
     def test_summary_budget_is_ten_percent_without_a_fixed_upper_cap(self) -> None:
         self.assertEqual(rolling_summary_token_budget(1000), 100)
@@ -117,6 +182,64 @@ class RollingSummaryTestCase(unittest.TestCase):
             "turn_id": "turn-1",
             "message": "正在整理过往思绪...",
         })
+
+    def test_dp_passes_deepseek_file_cost_to_token_counter(self) -> None:
+        """DeepSeek Files 请求应使用图片 token 上限参与摘要触发统计。"""
+        chat = self._chat_with_turns(12)
+        subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
+        subject.chat_manager = mock.Mock()
+        subject.d_sakiko_config = SimpleNamespace(
+            enable_rolling_summary=SimpleNamespace(value=True),
+            use_default_deepseek_api=SimpleNamespace(value=False),
+            enable_custom_llm_api_provider=SimpleNamespace(value=False),
+            llm_api_provider=SimpleNamespace(value="deepseek"),
+            llm_api_model=SimpleNamespace(value={}),
+            llm_api_key=SimpleNamespace(value={}),
+            llm_api_base_url=SimpleNamespace(value={}),
+        )
+        completion_response = {
+            "choices": [{"message": {"content": "模型生成的累计摘要"}}],
+        }
+
+        with (
+            mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
+            mock.patch.object(subject, "_current_deepseek_file_service", return_value=object()),
+            mock.patch.object(subject, "_completion_with_current_config", return_value=completion_response),
+            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "count_message_tokens", return_value=800) as count_mock,
+        ):
+            updated = subject._maybe_update_rolling_summary(
+                chat,
+                "角色",
+                [{"role": "user", "content": "current"}],
+            )
+
+        self.assertTrue(updated)
+        self.assertEqual(
+            count_mock.call_args.kwargs["file_token_cost"],
+            dp_local2.DEEPSEEK_FILE_IMAGE_TOKEN_COST,
+        )
+
+    def test_emergency_trim_passes_file_cost_to_token_counter(self) -> None:
+        """紧急裁剪应沿用与摘要触发相同的 file token 成本。"""
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": [{"type": "file", "file_id": "file-1"}]},
+        ]
+
+        with mock.patch(
+            "chat.model_token_usage.count_message_tokens",
+            return_value=1,
+        ) as count_mock:
+            trimmed = trim_messages_for_emergency(
+                messages,
+                model="test/model",
+                token_limit=1000,
+                file_token_cost=384,
+            )
+
+        self.assertEqual(trimmed, messages)
+        self.assertEqual(count_mock.call_args.kwargs["file_token_cost"], 384)
 
     def test_dp_skips_summary_below_threshold(self) -> None:
         chat = self._chat_with_turns(12)

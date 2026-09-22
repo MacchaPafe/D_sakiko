@@ -11,7 +11,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .assets import AssetRegistry, PROJECT_ROOT
+from GPT_SoVITS.live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
+
+from .assets import AssetRegistry, LIVE2D_ROOT, PROJECT_ROOT
+from .live2d_presentation import Live2DPresentationResolver
 from .protocol import ProtocolError
 from .uploads import PendingImageStore
 
@@ -30,11 +33,19 @@ class HeadlessRuntime:
     ) -> None:
         self.assets = assets or AssetRegistry()
         self.uploads = uploads or PendingImageStore()
+        self.live2d_presentations = Live2DPresentationResolver(
+            self.assets,
+            PROJECT_ROOT,
+            LIVE2D_ROOT,
+            GPT_ROOT,
+        )
+        self.live2d_model_catalog = Live2DModelCatalog(LIVE2D_ROOT, PROJECT_ROOT)
         self.status = "starting"
         self.status_stage = "waiting"
         self.status_message = "等待初始化。"
         self.status_progress: float | None = 0.0
         self.error_message: str | None = None
+        self._last_storage_notice: dict[str, object] | None = None
         self.session_id = f"session_{uuid.uuid4().hex}"
         self.phase = "idle"
         self.active_chat_id: str | None = None
@@ -66,7 +77,7 @@ class HeadlessRuntime:
             import audio_generator
             import character
             import dp_local2
-            from chat.chat import get_chat_manager
+            from chat.chat import ChatType, get_chat_manager
 
             character_manager = character.GetCharacterAttributes()
             self.characters = list(character_manager.character_class_list)
@@ -77,7 +88,10 @@ class HeadlessRuntime:
                 item.character_folder_name: self.assets.register_character(item)
                 for item in self.characters
             }
-            self.chat_manager = get_chat_manager()
+            self.chat_manager = get_chat_manager(write_scope=ChatType.SINGLE_CHARACTER)
+            self.chat_manager.storage_notice = self._storage_notice
+            for notice in self.chat_manager.storage_notices:
+                self._storage_notice(notice)
 
             self._set_status("starting", "loading_llm", "正在初始化聊天运行时。", 0.45)
             self.dp_chat = dp_local2.DSLocalAndVoiceGen(self.characters, self.chat_manager)
@@ -134,12 +148,17 @@ class HeadlessRuntime:
             ).start()
             threading.Thread(target=self._run_tts_pipeline, name="WebUITTS", daemon=True).start()
             threading.Thread(target=self._forward_dp_events, name="WebUIEvents", daemon=True).start()
+            threading.Thread(
+                target=self._forward_live2d_events,
+                name="WebUILive2DEvents",
+                daemon=True,
+            ).start()
 
             self._restore_client_message_index()
             self._set_status("ready", "ready", "WebUI 后端已就绪。", 1.0)
         except Exception as exc:
             self.error_message = str(exc)
-            self._set_status("error", "initialization_failed", "后端初始化失败，请查看电脑端日志。", None)
+            self._set_status("error", "initialization_failed", f"后端初始化失败：{exc}", None)
             raise
 
     def _set_status(self, state: str, stage: str, message: str, progress: float | None) -> None:
@@ -350,6 +369,7 @@ class HeadlessRuntime:
                 "current_chat_id": chat.chat_id,
                 "chat_name": chat.name,
                 "character": self.character_entities[character.character_folder_name],
+                "live2d": self.live2d_presentations.resolve(chat, character).to_dict(),
                 "user_persona": self._persona_entity(chat),
                 "messages": [self._serialize_message(chat, index) for index in range(len(chat.message_list))],
                 "phase": self.phase,
@@ -365,7 +385,18 @@ class HeadlessRuntime:
             events = [self._local_event("chat_list_snapshot", self.chat_list_snapshot())]
             if self.chat_manager.single_character_chats():
                 events.append(self._local_event("state_snapshot", self.state_snapshot(), self.dp_chat.current_chat_id))
+            if self._last_storage_notice is not None:
+                if self._last_storage_notice["code"] != "CHAT_SAVE_FAILED" or self.chat_manager.storage_error:
+                    events.append(self._local_event("error", {"error": self._last_storage_notice}))
             return {"accepted": True}, events
+        if command_type == "save_chats":
+            with self._lock:
+                try:
+                    self.chat_manager.save()
+                except Exception as exc:
+                    raise ProtocolError("CHAT_SAVE_FAILED", str(exc), True) from exc
+                self._last_storage_notice = None
+            return {"saved": True}, []
         if command_type == "get_chat_list":
             return {"accepted": True}, [self._local_event("chat_list_snapshot", self.chat_list_snapshot())]
         if command_type == "ping":
@@ -379,6 +410,12 @@ class HeadlessRuntime:
                 "background": background,
                 "backgrounds": self.assets.backgrounds,
             })]
+        if command_type == "retry_live2d":
+            return self._retry_live2d(payload)
+        if command_type == "get_live2d_model_options":
+            return self._get_live2d_model_options(payload)
+        if command_type == "select_live2d_model":
+            return self._select_live2d_model(payload)
 
         with self._lock:
             if command_type == "send_message":
@@ -390,6 +427,198 @@ class HeadlessRuntime:
             if command_type == "create_chat":
                 return self._create_chat(payload)
         raise ProtocolError("INVALID_COMMAND", "不支持这个命令。")
+
+    def _retry_live2d(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        """重新解析当前对话的 Live2D 目标，不修改持久化配置。"""
+        chat_id = payload.get("chat_id")
+        if not isinstance(chat_id, str) or chat_id != self.dp_chat.current_chat_id:
+            raise ProtocolError("CHAT_MISMATCH", "当前会话已经变化，请重新操作。", True)
+        with self._lock:
+            chat = self.dp_chat.current_chat
+            character = self._character_for_chat(chat)
+            presentation = self.live2d_presentations.resolve(chat, character).to_dict()
+        return {"accepted": True}, [self._local_event(
+            "live2d_presentation_changed",
+            {"presentation": presentation, "reason": "retry"},
+            chat_id,
+            self.active_turn_id,
+        )]
+
+    def _get_live2d_model_options(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        """列出当前对话角色的可选 Live2D 服装。"""
+        chat_id = payload.get("chat_id")
+        if not isinstance(chat_id, str) or chat_id != self.dp_chat.current_chat_id:
+            raise ProtocolError("CHAT_MISMATCH", "当前会话已经变化，请重新操作。", True)
+        with self._lock:
+            chat = self.dp_chat.current_chat
+            character = self._character_for_chat(chat)
+            result = self._live2d_model_options_snapshot(chat, character)
+        return result, []
+
+    def _select_live2d_model(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        """校验、持久化并切换一个对话级 Live2D 服装。"""
+        chat_id = payload.get("chat_id")
+        option_id = payload.get("option_id")
+        if not isinstance(chat_id, str) or chat_id != self.dp_chat.current_chat_id:
+            raise ProtocolError("CHAT_MISMATCH", "当前会话已经变化，请重新操作。", True)
+        if not isinstance(option_id, str) or not option_id:
+            raise ProtocolError("INVALID_LIVE2D_OPTION", "服装选项无效。")
+
+        with self._lock:
+            chat = self.dp_chat.current_chat
+            character = self._character_for_chat(chat)
+            character_name = self._required_character_attribute(character, "character_name")
+            character_folder = self._required_character_attribute(character, "character_folder_name")
+            if character_folder == "sakiko":
+                raise ProtocolError("LIVE2D_SELECTION_UNSUPPORTED", "该角色由专用状态控制，暂不支持手动选择。")
+
+            option = self.live2d_model_catalog.find_option(character_folder, option_id)
+            if option is None:
+                raise ProtocolError(
+                    "LIVE2D_OPTIONS_STALE",
+                    "服装列表已变化，已为你重新刷新。",
+                    True,
+                )
+            if not option.available:
+                raise ProtocolError("LIVE2D_OPTION_INVALID", "该服装的模型 JSON 无法解析。")
+
+            self._normalize_live2d_option(option)
+            models = chat.meta.live2d_models
+            previous_exists = character_name in models
+            previous_target = models.get(character_name)
+            if option.is_default:
+                models.pop(character_name, None)
+            else:
+                models[character_name] = str(option.model_json_path)
+
+            presentation = self.live2d_presentations.resolve(chat, character)
+            if presentation.resolution != "resolved":
+                self._restore_live2d_target(models, character_name, previous_exists, previous_target)
+                raise ProtocolError("LIVE2D_OPTION_INVALID", "该服装无法解析，已保留原服装。")
+            try:
+                self.chat_manager.save()
+            except Exception as error:
+                self._restore_live2d_target(models, character_name, previous_exists, previous_target)
+                logger.exception("保存 WebUI Live2D 服装选择失败")
+                raise ProtocolError("LIVE2D_SAVE_FAILED", "服装选择保存失败，已保留原服装。", True) from error
+
+            serialized = presentation.to_dict()
+            response = {
+                "accepted": True,
+                "option_id": option.option_id,
+                "presentation": serialized,
+            }
+            event = self._local_event(
+                "live2d_presentation_changed",
+                {"presentation": serialized, "reason": "semantic_target_change"},
+                chat_id,
+                self.active_turn_id,
+            )
+        return response, [event]
+
+    def _live2d_model_options_snapshot(
+        self,
+        chat: object,
+        character: object,
+    ) -> dict[str, object]:
+        """构造不暴露本机路径的服装列表契约。"""
+        character_name = self._required_character_attribute(character, "character_name")
+        character_folder = self._required_character_attribute(character, "character_folder_name")
+        if character_folder == "sakiko":
+            return {
+                "supported": False,
+                "character_name": character_name,
+                "message": "该角色由专用状态控制，暂不支持手动选择。",
+                "options": [],
+            }
+
+        options = self.live2d_model_catalog.list_options(character_folder)
+        models = getattr(getattr(chat, "meta", None), "live2d_models", {})
+        explicit_target = models.get(character_name) if isinstance(models, dict) else None
+        current_option = (
+            self.live2d_model_catalog.find_by_path(character_folder, explicit_target)
+            if isinstance(explicit_target, str) and explicit_target.strip()
+            else next((option for option in options if option.is_default), None)
+        )
+        presentation = self.live2d_presentations.resolve(chat, character)
+        serialized_options: list[dict[str, object]] = []
+        if presentation.resolution == "configured_error":
+            serialized_options.append({
+                "option_id": f"live2d_invalid_{presentation.target_id or 'unknown'}",
+                "name": "当前配置不可用",
+                "is_default": False,
+                "is_current": True,
+                "available": False,
+                "error": presentation.error.message if presentation.error is not None else "当前模型无法解析。",
+            })
+            current_option = None
+        serialized_options.extend(
+            self._serialize_live2d_option(option, current_option)
+            for option in options
+        )
+        return {
+            "supported": True,
+            "character_name": character_name,
+            "message": None,
+            "options": serialized_options,
+        }
+
+    @staticmethod
+    def _serialize_live2d_option(
+        option: Live2DModelOption,
+        current_option: Live2DModelOption | None,
+    ) -> dict[str, object]:
+        """将共享目录选项转换为 WebUI 安全契约。"""
+        return {
+            "option_id": option.option_id,
+            "name": option.display_name,
+            "is_default": option.is_default,
+            "is_current": current_option is not None and current_option.option_id == option.option_id,
+            "available": option.available,
+            "error": None if option.available else "模型 JSON 无法解析。",
+        }
+
+    @staticmethod
+    def _normalize_live2d_option(option: Live2DModelOption) -> None:
+        """在保存选择前沿用本地客户端的模型规范化流程。"""
+        from live2d_support.model_normalizer import normalize_live2d_model_for_project
+
+        result = normalize_live2d_model_for_project(str(option.model_json_path))
+        if not result.ok:
+            raise ProtocolError(
+                "LIVE2D_NORMALIZE_FAILED",
+                result.error_message or "服装模型规范化失败。",
+            )
+
+    @staticmethod
+    def _restore_live2d_target(
+        models: dict[str, str],
+        character_name: str,
+        previous_exists: bool,
+        previous_target: object,
+    ) -> None:
+        """在校验或保存失败时恢复原对话模型目标。"""
+        if previous_exists and isinstance(previous_target, str):
+            models[character_name] = previous_target
+        else:
+            models.pop(character_name, None)
+
+    @staticmethod
+    def _required_character_attribute(character: object, name: str) -> str:
+        """读取必需的角色字符串属性。"""
+        value = getattr(character, name, None)
+        if not isinstance(value, str) or not value:
+            raise ProtocolError("INVALID_CHARACTER", "当前角色配置不完整。")
+        return value
 
     def _send_message(self, payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         chat_id = payload.get("chat_id")
@@ -609,6 +838,46 @@ class HeadlessRuntime:
                     "error": None,
                 }, chat_id, turn_id))
                 self.events.put(self._local_event("chat_list_snapshot", self.chat_list_snapshot()))
+
+    def _forward_live2d_events(self) -> None:
+        """将对话线程产生的换装命令转换为 WebUI 呈现事件。"""
+        while not self._stopping.is_set():
+            try:
+                command = self.change_char_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            self._handle_live2d_command(command)
+
+    def _handle_live2d_command(self, command: object) -> None:
+        """验证并处理一条归属于当前对话的 Live2D 命令。"""
+        if not isinstance(command, dict) or command.get("type") != "switch_live2d":
+            return
+        chat_id = command.get("chat_id")
+        turn_id = command.get("turn_id")
+        if not isinstance(chat_id, str) or not isinstance(turn_id, str):
+            logger.warning("WebUI 忽略缺少对话归属的 Live2D 命令：%s", command)
+            return
+
+        with self._lock:
+            if chat_id != self.dp_chat.current_chat_id:
+                logger.warning("WebUI 忽略非当前对话的 Live2D 命令：chat_id=%s", chat_id)
+                return
+            chat = self.chat_manager.get_chat_by_id(chat_id)
+            if chat is None or not any(item.get("turn_id") == turn_id for item in self._message_meta(chat)):
+                logger.warning("WebUI 忽略未知轮次的 Live2D 命令：turn_id=%s", turn_id)
+                return
+            character = self._character_for_chat(chat)
+            presentation = self.live2d_presentations.resolve(chat, character).to_dict()
+
+        self.events.put(self._local_event(
+            "live2d_presentation_changed",
+            {
+                "presentation": presentation,
+                "reason": "semantic_target_change",
+            },
+            chat_id,
+            turn_id,
+        ))
 
     def _rollback_failed_user_message(self, chat_id: str | None, turn_id: str | None) -> None:
         """推理未产生角色回复时，仅从持久记录中撤回本轮 WebUI 用户消息。"""
@@ -845,12 +1114,23 @@ class HeadlessRuntime:
                 self.dp_chat.clear_cancelled_turn(chat_id, turn_id)
             self.chat_manager.save()
 
+    def _storage_notice(self, message: str) -> None:
+        """通过网页现有错误提示通道传递保存失败或损坏恢复通知。"""
+        failed = message.startswith("聊天记录保存失败")
+        self._last_storage_notice = {
+            "code": "CHAT_SAVE_FAILED" if failed else "CHAT_STORAGE_RECOVERED",
+            "message": message, "retryable": failed, "details": {},
+        }
+        self.events.put(self._local_event("error", {"error": self._last_storage_notice}))
+
     def shutdown(self) -> None:
+        # 正常终端退出时，先处理保存结果，再销毁运行实例。
+        if self.chat_manager is not None:
+            from runtime.conversation_storage import save_before_terminal_close
+            save_before_terminal_close(self.chat_manager.save)
         self.status = "stopping"
         self._stopping.set()
         if self.dp_chat is not None:
             self.command_queue.put({"type": "exit"})
         if self.audio_gen is not None:
             self.audio_gen.shutdown_worker()
-        if self.chat_manager is not None:
-            self.chat_manager.save()

@@ -5,6 +5,7 @@ import time,os
 import uuid
 import threading
 import textwrap
+from pathlib import Path
 
 import json
 from queue import Empty
@@ -32,6 +33,7 @@ from chat.attachments import (
     resolve_attachment_path,
 )
 from chat.remote_attachments import (
+    DEEPSEEK_FILE_IMAGE_TOKEN_COST,
     DeepSeekFileServiceConfig,
     MissingLocalAttachmentError,
     RemoteAttachmentManager,
@@ -50,6 +52,7 @@ from chat.rolling_summary import (
     rolling_summary_validation_error,
     set_rolling_summary,
     trim_messages_for_emergency,
+    trim_messages_with_sliding_window,
 )
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
@@ -270,21 +273,35 @@ class DSLocalAndVoiceGen:
             self._cancelled_turns.discard((chat_id, turn_id))
 
     def _prepare_runtime_messages(self, messages: list[dict[str, object]]) -> list[dict[str, object]]:
-        """为主请求构造只读副本，并在逼近上限时执行最后一道紧急裁剪。"""
+        """根据上下文管理模式为主请求构造只读副本。"""
         model = self._current_litellm_model_name()
         token_limit = get_model_input_token_limit(model)
-        prepared = trim_messages_for_emergency(
+        trim_func = (
+            trim_messages_for_emergency
+            if self._rolling_summary_enabled()
+            else trim_messages_with_sliding_window
+        )
+        prepared = trim_func(
             messages,
             model=model,
             token_limit=token_limit,
+            file_token_cost=self._current_file_token_cost(),
         )
         if len(prepared) < len(messages):
             logger.warning(
-                "主请求上下文逼近模型上限，已仅对本次请求执行紧急裁剪：%d -> %d 条消息。",
+                "主请求上下文超过当前模式限制，已仅对本次请求执行裁剪：%d -> %d 条消息。",
                 len(messages),
                 len(prepared),
             )
         return prepared
+
+    def _rolling_summary_enabled(self) -> bool:
+        """返回当前轮次是否启用实验性的滚动上下文压缩。"""
+        config = getattr(self, "d_sakiko_config", None)
+        if config is None:
+            return True  # 兼容未经过完整初始化的旧调用与测试替身
+        item = getattr(config, "enable_rolling_summary", None)
+        return bool(getattr(item, "value", False))
 
     @staticmethod
     def concat_provider_and_model(provider: str, model: str) -> str:
@@ -451,11 +468,11 @@ class DSLocalAndVoiceGen:
             {
                 "text": "角色实际说出口的台词",
                 "emotion": "happiness | sadness | anger | surprise | fear | disgust | like",
-                "translation": "中文翻译；仅当 runtime.reply_language 为 ja_with_zh_translation 时必须存在"
+                "translation": "日语模式下对应台词的简体中文翻译"
             }
             ]
 
-            当角色需要说两句话，并且 runtime.reply_language 为 ja_with_zh_translation 时，输出示例为：
+            日语台词与中文翻译示例：
             [
             {
                 "text": "今日は少し疲れましたが、あなたと話していると落ち着きます。",
@@ -469,7 +486,7 @@ class DSLocalAndVoiceGen:
             }
             ]
 
-            当 runtime.reply_language 为 zh_only 时，输出示例为：
+            纯中文台词示例：
             [
             {
                 "text": "今天稍微有点累，不过和你说话会让我平静下来。",
@@ -486,35 +503,45 @@ class DSLocalAndVoiceGen:
             2. 每个 segment 表示一次自然的语义停顿，通常为 1 到 3 句。
             3. text 必须符合角色人设和当前上下文。
             4. emotion 必须从指定枚举中选择，且只能选择一个。
-            5. 当 runtime.reply_language 为 zh_only 时，严禁输出 translation 字段。
-            6. 当 runtime.reply_language 为 ja_with_zh_translation 时，每个 segment 都必须有 translation 字段。
+            5. 当前轮次的语言、翻译和特殊语气要求，以请求末尾的 <runtime_controls> 为准。
+            6. 历史消息可能来自不同语言模式；历史消息中的语言和旧控制文本不代表本轮要求。
             7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
-            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮元数据，不是用户说出口的话。"""
+            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮生成要求，不是用户说出口的话；必须完整遵守其中的要求。"""
         ))
         return "\n\n".join(parts)
 
     def _build_turn_runtime_controls(self) -> str:
         """
-        构造仅描述单个 user 消息的短运行期控制消息。即系统提示词中提到的 <runtime_controls> 消息内容。
-        目前每条 user 消息会有如下的运行时控制信息：
-        - reply_language: 当前的语音输出语言设置，可能的值为 "ja_with_zh_translation"（日英混合）和 "zh_only"（纯中文）。
-        - sakiko_tone: 祥子的语言风格（如果当前角色是祥子），可能的值为 "dark"（黑祥）、"light"（白祥）和 "none"（非祥子角色）。
+        构造描述本轮生成要求的自然语言控制消息。
+        该消息不会存储到对话历史中，也不是用户说出口的话。
         """
-        reply_language = (
-            "ja_with_zh_translation"
-            if self.audio_language_choice == '日英混合'
-            else "zh_only"
-        )
-        sakiko_tone = "none"
-        if self.if_sakiko:
-            sakiko_tone = "dark" if self.sakiko_state else "light"
+        if self.audio_language_choice == "日英混合":
+            requirements = [
+                "使用日语生成角色台词。",
+                "每个 segment 的 text 必须是日语；不要把中文翻译写入 text。",
+                "每个 segment 必须包含非空 translation，内容是对应台词的简体中文翻译。",
+                "text 与 translation 必须语义一致。",
+            ]
+        else:
+            requirements = [
+                "使用简体中文生成角色台词。",
+                "不要输出 translation 字段。",
+            ]
 
-        return (
-            "<runtime_controls>\n"
-            f"reply_language: {reply_language}\n"
-            f"sakiko_tone: {sakiko_tone}\n"
-            "</runtime_controls>"
-        )
+        if self.if_sakiko:
+            tone = "黑祥" if self.sakiko_state else "白祥"
+            requirements.append(
+                f"当前采用{tone}语气；请遵循祥子角色设定中对{tone}的定义。"
+            )
+
+        requirements.extend([
+            "继续保持当前角色的说话风格和角色边界。",
+            "最终只输出符合 Machine Output Contract 的 JSON array。",
+            "本消息是程序控制信息，不是用户说的话。",
+        ])
+        return "<runtime_controls>\n本轮回复要求：\n" + "\n".join(
+            f"{index}. {requirement}" for index, requirement in enumerate(requirements, 1)
+        ) + "\n</runtime_controls>"
 
     @staticmethod
     def _append_runtime_controls_message(messages: list[dict[str, object]], controls: str) -> None:
@@ -537,16 +564,25 @@ class DSLocalAndVoiceGen:
             if service is not None
             else None
         )
-        messages = [
-            dict(one)
-            # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
-            for one in build_llm_query_with_rolling_summary(
+        if self._rolling_summary_enabled():
+            query_messages = build_llm_query_with_rolling_summary(
                 self.current_chat,
                 perspective=character_name,
                 is_simplify=True,
                 include_translation=self.audio_language_choice == '日英混合',
                 attachment_context=attachment_context,
             )
+        else:
+            query_messages = self.current_chat.build_llm_query(
+                perspective=character_name,
+                is_simplify=True,
+                include_translation=self.audio_language_choice == '日英混合',
+                attachment_context=attachment_context,
+            )
+        messages = [
+            dict(one)
+            # 基于角色视角（即 AI 输出的内容为完整的带格式内容），并尽量简化
+            for one in query_messages
         ]
         runtime_system_instruction = self._build_runtime_system_instruction()
         system_idx = -1
@@ -565,6 +601,27 @@ class DSLocalAndVoiceGen:
         # 追加一条额外的用户消息描述本轮对话的选择（比如语言模式和祥子语气），该消息同样不会存储到对话历史中。
         self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
         return messages
+
+    def _count_current_request_tokens(
+            self,
+            messages: list[dict[str, object]],
+    ) -> int:
+        """按本轮冻结配置统计请求 token，并应用 provider-specific file 策略。"""
+        model = self._current_litellm_model_name()
+        file_token_cost = self._current_file_token_cost()
+        if file_token_cost is None:
+            return count_message_tokens(model, messages)
+        return count_message_tokens(
+            model,
+            messages,
+            file_token_cost=file_token_cost,
+        )
+
+    def estimate_current_context_tokens(self, character_name: str) -> int:
+        """估算当前对话下一次实际请求携带的 token 数，供 UI 预览使用。"""
+        messages = self._build_llm_messages_for_chat_turn(character_name)
+        prepared_messages = self._prepare_runtime_messages(messages)
+        return self._count_current_request_tokens(prepared_messages)
 
     def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
         """从本轮冻结配置中解析 DeepSeek Files 服务作用域。"""
@@ -593,6 +650,25 @@ class DSLocalAndVoiceGen:
             api_base=api_base,
             api_key=api_key,
         )
+
+    def _current_file_token_cost(self) -> int | None:
+        """返回本轮请求所需的 provider-specific file token 估算成本。"""
+        config = getattr(self, "d_sakiko_config", None)
+        required_fields = (
+            "use_default_deepseek_api",
+            "enable_custom_llm_api_provider",
+            "llm_api_provider",
+            "llm_api_model",
+            "llm_api_key",
+            "llm_api_base_url",
+        )
+        if config is None or any(
+                not hasattr(config, field) for field in required_fields
+        ):
+            return None
+        if self._current_deepseek_file_service() is None:
+            return None
+        return DEEPSEEK_FILE_IMAGE_TOKEN_COST
 
     def _formal_attachments(self) -> list[MessageAttachment]:
         """返回全部聊天中的正式附件，供可达性扫描使用。"""
@@ -635,6 +711,8 @@ class DSLocalAndVoiceGen:
         turn_id: str = "",
     ) -> bool:
         """在当前请求达到用户设置的阈值时，同步生成并保存累计摘要。"""
+        if not self._rolling_summary_enabled():
+            return False
         model = self._current_litellm_model_name()
         token_limit = get_model_input_token_limit(model)
         if token_limit is None:
@@ -642,7 +720,7 @@ class DSLocalAndVoiceGen:
             return False
 
         try:
-            used_tokens = count_message_tokens(model, current_request_messages)
+            used_tokens = self._count_current_request_tokens(current_request_messages)
         except Exception:
             logger.exception("统计滚动摘要触发 token 数失败，继续使用当前上下文。")
             return False
@@ -2023,22 +2101,39 @@ class DSLocalAndVoiceGen:
         from chat.reminder_manager import ReminderManager
         # 使用闭包回调直接将消息推入当前函数内的 qt2dp_queue，让下一次循环被读写
         reminder_mgr = ReminderManager(trigger_callback=lambda msg: qt2dp_queue.put(msg))
+        live2d_tool_context: dict[str, str | None] = {
+            "chat_id": None,
+            "turn_id": None,
+        }
         
         # --- 注册依赖前端环境的动态工具 ---
         def _get_char_folder() -> str:
             return self.get_current_character().character_folder_name
 
         def _change_live2d_model(new_model_json: str) -> None:
-            character_name = self.get_current_character().character_name
+            """保存 AI 选择的服装；默认模型恢复为跟随角色配置。"""
+            from live2d_support.model_catalog import Live2DModelCatalog
+
+            character = self.get_current_character()
+            character_name = character.character_name
+            project_root = Path(__file__).resolve().parents[1]
+            catalog = Live2DModelCatalog(project_root / "live2d_related", project_root)
+            option = catalog.find_by_path(character.character_folder_name, new_model_json)
             try:
-                self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
+                if option is not None and option.is_default:
+                    self.current_chat.clear_custom_live2d_model_meta(character_name)
+                else:
+                    self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
                 self.chat_manager.save()
             except Exception:
                 logger.exception("工具调用切换 Live2D 模型失败")
                 return
             change_char_queue.put({
                 "type": "switch_live2d",
+                "chat_id": live2d_tool_context["chat_id"],
+                "turn_id": live2d_tool_context["turn_id"],
                 "character_name": character_name,
+                "character_folder_name": character.character_folder_name,
                 "model_json": new_model_json,
             })
 
@@ -2137,6 +2232,8 @@ class DSLocalAndVoiceGen:
             raw_turn_id = command.get("turn_id")
             turn_id = raw_turn_id if isinstance(raw_turn_id, str) and raw_turn_id else uuid.uuid4().hex
             active_chat_id = chat.chat_id
+            live2d_tool_context["chat_id"] = active_chat_id
+            live2d_tool_context["turn_id"] = turn_id
             # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
             # 不过一般人手速没这么快吧（
             if self.is_turn_cancelled(active_chat_id, turn_id):

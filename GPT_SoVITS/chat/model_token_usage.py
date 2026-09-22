@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, cast
 
 from log import get_logger
 
@@ -12,12 +12,60 @@ logger = get_logger(__name__)
 _OVERRIDES_FILE = Path(__file__).with_name("model_context_overrides.json")
 
 
-def count_message_tokens(model: str, messages: list[dict[str, object]]) -> int:
-    """使用 LiteLLM 计算一组消息在指定模型下消耗的 token 数。"""
+_FILE_BLOCK_REMOVED = object()
+
+
+def count_message_tokens(
+    model: str,
+    messages: list[dict[str, object]],
+    *,
+    file_token_cost: int | None = None,
+) -> int:
+    """使用 LiteLLM 计算消息 token 数，并按策略估算 file 内容块。"""
     from litellm import token_counter
 
-    token_count = token_counter(model=model.strip(), messages=messages)
-    return max(0, int(token_count))
+    if file_token_cost is None:
+        token_count = token_counter(model=model.strip(), messages=messages)
+        return max(0, int(token_count))
+    if isinstance(file_token_cost, bool) or not isinstance(file_token_cost, int):
+        raise ValueError("file_token_cost 必须是正整数或 None。")
+    if file_token_cost <= 0:
+        raise ValueError("file_token_cost 必须是正整数或 None。")
+
+    sanitized, file_block_count = _sanitize_file_blocks(messages)
+    sanitized_messages = cast(list[dict[str, object]], sanitized)
+    token_count = token_counter(
+        model=model.strip(),
+        messages=sanitized_messages,
+    )
+    return max(0, int(token_count)) + file_block_count * file_token_cost
+
+
+def _sanitize_file_blocks(value: object) -> tuple[object, int]:
+    """复制消息结构并移除 file 内容块，返回移除数量。"""
+    if isinstance(value, list):
+        sanitized_list: list[object] = []
+        file_block_count = 0
+        for item in value:
+            sanitized_item, nested_count = _sanitize_file_blocks(item)
+            file_block_count += nested_count
+            if sanitized_item is not _FILE_BLOCK_REMOVED:
+                sanitized_list.append(sanitized_item)
+        return sanitized_list, file_block_count
+
+    if isinstance(value, dict):
+        if value.get("type") == "file":
+            return _FILE_BLOCK_REMOVED, 1
+        sanitized_dict: dict[object, object] = {}
+        file_block_count = 0
+        for key, item in value.items():
+            sanitized_item, nested_count = _sanitize_file_blocks(item)
+            file_block_count += nested_count
+            if sanitized_item is not _FILE_BLOCK_REMOVED:
+                sanitized_dict[key] = sanitized_item
+        return sanitized_dict, file_block_count
+
+    return value, 0
 
 
 @lru_cache(maxsize=256)

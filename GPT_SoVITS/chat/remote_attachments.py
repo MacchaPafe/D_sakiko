@@ -30,6 +30,7 @@ from log import get_logger
 logger = get_logger(__name__)
 
 DEEPSEEK_FILES_MODEL = "deepseek-v4-flash-vision-exp"
+DEEPSEEK_FILE_IMAGE_TOKEN_COST = 384
 DEEPSEEK_OFFICIAL_API_BASE = "https://api.deepseek.com"
 DEEPSEEK_FILE_EXPIRATION_SECONDS = 30 * 24 * 60 * 60
 DEEPSEEK_FILE_RENEWAL_WINDOW_SECONDS = 5 * 60

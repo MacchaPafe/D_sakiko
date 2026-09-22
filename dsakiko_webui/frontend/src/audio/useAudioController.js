@@ -7,10 +7,21 @@ const SILENCE_DATA_URL = (
 
 const idlePlayback = {
   messageId: null,
+  instanceId: 0,
   status: 'idle',
   progress: 0,
   duration: 0,
   error: '',
+}
+
+export function timeDomainRms(samples, byteEncoded = false) {
+  if (!samples.length) return 0
+  let sum = 0
+  for (const sample of samples) {
+    const amplitude = byteEncoded ? (sample - 128) / 128 : sample
+    sum += amplitude * amplitude
+  }
+  return Math.sqrt(sum / samples.length)
 }
 
 export function useAudioController() {
@@ -21,6 +32,7 @@ export function useAudioController() {
   const currentMessageRef = useRef(null)
   const queueRef = useRef([])
   const volumeRef = useRef(0)
+  const playbackInstanceRef = useRef(0)
   const [unlocked, setUnlocked] = useState(false)
   const [playback, setPlayback] = useState(idlePlayback)
 
@@ -34,8 +46,7 @@ export function useAudioController() {
 
     const context = new AudioContextClass()
     const analyser = context.createAnalyser()
-    analyser.fftSize = 256
-    analyser.smoothingTimeConstant = 0.7
+    analyser.fftSize = 1024
     const source = context.createMediaElementSource(audio)
     source.connect(analyser)
     analyser.connect(context.destination)
@@ -43,13 +54,15 @@ export function useAudioController() {
     audioContextRef.current = context
     analyserRef.current = analyser
 
-    const samples = new Uint8Array(analyser.fftSize)
+    const supportsFloatSamples = typeof analyser.getFloatTimeDomainData === 'function'
+    const samples = supportsFloatSamples
+      ? new Float32Array(analyser.fftSize)
+      : new Uint8Array(analyser.fftSize)
     const updateVolume = () => {
-      analyser.getByteTimeDomainData(samples)
-      let sum = 0
-      for (const sample of samples) sum += Math.abs(sample - 128)
-      const normalized = Math.min(1, (sum / samples.length / 22) * 1.7)
-      volumeRef.current = audio.paused ? 0 : normalized
+      if (supportsFloatSamples) analyser.getFloatTimeDomainData(samples)
+      else analyser.getByteTimeDomainData(samples)
+      const rms = timeDomainRms(samples, !supportsFloatSamples)
+      volumeRef.current = audio.paused || rms < 0.008 ? 0 : rms
       animationFrameRef.current = requestAnimationFrame(updateVolume)
     }
     updateVolume()
@@ -72,6 +85,7 @@ export function useAudioController() {
     audio.currentTime = 0
     setPlayback({
       messageId: message.id,
+      instanceId: playbackInstanceRef.current,
       status: 'loading',
       progress: 0,
       duration: 0,
@@ -82,8 +96,10 @@ export function useAudioController() {
       await audio.play()
       return true
     } catch (error) {
+      volumeRef.current = 0
       setPlayback({
         messageId: message.id,
+        instanceId: playbackInstanceRef.current,
         status: 'blocked',
         progress: 0,
         duration: 0,
@@ -99,10 +115,17 @@ export function useAudioController() {
     audioRef.current = audio
 
     const onPlay = () => {
-      setPlayback((current) => ({ ...current, status: 'playing', error: '' }))
+      playbackInstanceRef.current += 1
+      setPlayback((current) => ({
+        ...current,
+        instanceId: playbackInstanceRef.current,
+        status: 'playing',
+        error: '',
+      }))
     }
     const onPause = () => {
       if (audio.ended || !currentMessageRef.current) return
+      volumeRef.current = 0
       setPlayback((current) => ({ ...current, status: 'paused' }))
     }
     const onTimeUpdate = () => {

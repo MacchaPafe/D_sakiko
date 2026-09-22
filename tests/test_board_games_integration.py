@@ -133,3 +133,13 @@ def test_board_context_survives_remote_draft_attachment_flow():
     drafts_at = source.index("self.user_input.pending_draft_payloads")
     send_at = source.index("self._send_user_message_payload(send_text, draft_attachments=draft_attachments)")
     assert gomoku_at < reversi_at < drafts_at < send_at
+
+
+def test_recovery_banner_and_game_panels_coexist_after_upstream_merge():
+    """上游恢复提示与两个棋类面板必须同时挂载，避免解决冲突时遗漏任一功能。"""
+    source = ast.unparse(_chat_gui_method("__init__"))
+    recovery_at = source.index("layout.addWidget(self.recovery_banner)")
+    gomoku_at = source.index("layout.addWidget(self.gomoku_panel)")
+    reversi_at = source.index("layout.addWidget(self.reversi_panel)")
+    chat_at = source.index("layout.addWidget(self.chat_display)")
+    assert recovery_at < gomoku_at < reversi_at < chat_at

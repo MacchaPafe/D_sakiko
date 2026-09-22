@@ -63,9 +63,41 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
         self.assertEqual(messages[1]["content"], "[User]: 你好呀")
         self.assertEqual(messages[-1]["role"], "user")
         self.assertIn("<runtime_controls>", str(messages[-1]["content"]))
-        self.assertIn("reply_language: ja_with_zh_translation", str(messages[-1]["content"]))
+        self.assertIn("使用日语生成角色台词", str(messages[-1]["content"]))
+        self.assertIn("text 必须是日语", str(messages[-1]["content"]))
+        self.assertIn("translation，内容是对应台词的简体中文翻译", str(messages[-1]["content"]))
+        self.assertNotIn("reply_language:", str(messages[-1]["content"]))
+        self.assertNotIn("sakiko_tone:", str(messages[-1]["content"]))
         self.assertIn("JSON array", str(messages[0]["content"]))
         self.assertIn("[重要原则]保持角色边界。", str(messages[0]["content"]))
+
+    def test_runtime_controls_describe_chinese_mode_without_translation(self) -> None:
+        """中文模式应直接说明语言要求，并禁止 translation 字段。"""
+        subject = self._build_subject("中英混合")
+
+        controls = subject._build_turn_runtime_controls()
+
+        self.assertIn("使用简体中文生成角色台词", controls)
+        self.assertIn("不要输出 translation 字段", controls)
+        self.assertNotIn("使用日语生成角色台词", controls)
+        self.assertNotIn("reply_language:", controls)
+        self.assertNotIn("sakiko_tone:", controls)
+
+    def test_runtime_controls_describe_sakiko_tone_only_for_sakiko(self) -> None:
+        """祥子对话应追加黑祥/白祥语气，其他角色不应追加。"""
+        subject = self._build_subject("日英混合")
+
+        subject.if_sakiko = True
+        subject.sakiko_state = True
+        self.assertIn("当前采用黑祥语气", subject._build_turn_runtime_controls())
+
+        subject.sakiko_state = False
+        self.assertIn("当前采用白祥语气", subject._build_turn_runtime_controls())
+
+        subject.if_sakiko = False
+        controls = subject._build_turn_runtime_controls()
+        self.assertNotIn("黑祥", controls)
+        self.assertNotIn("白祥", controls)
 
     def test_parse_japanese_segments_requires_translation(self) -> None:
         """日文模式下每个 JSON 段落都必须带 translation。"""

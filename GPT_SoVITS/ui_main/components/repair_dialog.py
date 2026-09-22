@@ -39,8 +39,8 @@ class RepairDialog(QDialog):
         layout.addWidget(summary)
 
         warning = QLabel(
-            "如果你手动修改过下列文件，修改内容将丢失。"
-            "修复前，当前文件会被备份到程序目录下的 .updates/repair/backup 文件夹中。"
+            "如果你手动修改过这些文件，修改内容将丢失。"
+            "修复前，当前文件会被备份到程序目录下的 .updates/transactions 文件夹中。"
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color: #9B3A30; font-weight: 600;")

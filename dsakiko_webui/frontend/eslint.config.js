@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'public/live2d.min.js']),
+  globalIgnores(['dist', 'public/live2d.min.js', 'public/cubism/**']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [

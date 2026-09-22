@@ -1,5 +1,6 @@
 import { ChevronDown, Search, Settings, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import theaterIcon from '../../小剧场.svg?url'
 import editChatIcon from '../assets/edit-chat.svg?url'
 import { Avatar } from '../components/Avatar'
 import { CreateChatSheet } from '../components/CreateChatSheet'
@@ -66,7 +67,21 @@ export function ChatListView({ state, actions }) {
         }}
       >
         <header className="session-drawer__header">
-          <h1>所有消息</h1>
+          <label className="session-search">
+            <Search size={16} aria-hidden="true" />
+            <input
+              value={query}
+              type="search"
+              placeholder="搜索对话"
+              aria-label="搜索对话"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            {query && (
+              <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}>
+                <X size={15} />
+              </button>
+            )}
+          </label>
           <IconButton
             label="新建对话"
             className="new-chat-button"
@@ -77,23 +92,15 @@ export function ChatListView({ state, actions }) {
           </IconButton>
         </header>
 
-        <label className="session-search">
-          <Search size={16} aria-hidden="true" />
-          <input
-            value={query}
-            type="search"
-            placeholder="搜索对话"
-            aria-label="搜索对话"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          {query && (
-            <button type="button" aria-label="清除搜索" onClick={() => setQuery('')}>
-              <X size={15} />
-            </button>
-          )}
-        </label>
-
-        <p className="session-drawer__section-label"></p>
+        <button
+          type="button"
+          className="theater-mode-row"
+          onClick={() => actions.showNotice('还在开发中...')}
+        >
+          <img src={theaterIcon} alt="" />
+          <span>小剧场模式</span>
+        </button>
+        <div className="session-divider" aria-hidden="true" />
         <div className="session-list" role="list">
           {characterGroups.map((group) => {
             const characterId = group.character.id || group.character.name

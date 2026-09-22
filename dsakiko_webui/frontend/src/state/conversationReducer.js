@@ -7,6 +7,8 @@ export const initialConversationState = {
   userPersonas: [],
   currentChatId: null,
   character: null,
+  live2d: { resolution: 'absent' },
+  live2dReason: 'snapshot',
   messages: [],
   phase: 'idle',
   turnId: null,
@@ -21,6 +23,8 @@ export const initialConversationState = {
   displayLanguage: 'translation',
   pendingChatId: null,
   error: null,
+  notice: null,
+  authRetryUntil: null,
 }
 
 function appendUniqueMessage(messages, message) {
@@ -77,7 +81,9 @@ export function conversationReducer(state, action) {
             chatSummaries: event.data.chats,
             characters: event.data.characters || state.characters,
             userPersonas: event.data.user_personas || state.userPersonas,
-            currentChatId: event.data.current_chat_id || state.currentChatId,
+            currentChatId: state.pendingChatId
+              ? state.currentChatId
+              : (event.data.current_chat_id || state.currentChatId),
           }
 
         case 'state_snapshot': {
@@ -89,6 +95,8 @@ export function conversationReducer(state, action) {
             ...state,
             currentChatId: event.data.current_chat_id,
             character: event.data.character,
+            live2d: event.data.live2d || { resolution: 'absent' },
+            live2dReason: 'snapshot',
             messages: event.data.messages,
             phase: event.data.phase || 'idle',
             turnId: event.data.turn_id || null,
@@ -133,6 +141,14 @@ export function conversationReducer(state, action) {
             turnId: null,
           }
 
+        case 'live2d_presentation_changed':
+          if (event.chat_id !== state.currentChatId) return state
+          return {
+            ...state,
+            live2d: event.data.presentation,
+            live2dReason: event.data.reason || 'semantic_target_change',
+          }
+
         case 'background_changed':
           return {
             ...state,
@@ -140,12 +156,19 @@ export function conversationReducer(state, action) {
             backgrounds: event.data.backgrounds || state.backgrounds,
           }
 
-        case 'error':
+        case 'error': {
+          const endsCurrentTurn = (
+            event.chat_id === state.currentChatId
+            && (!event.turn_id || !state.turnId || event.turn_id === state.turnId)
+          )
           return {
             ...state,
             pendingChatId: null,
+            phase: endsCurrentTurn ? 'idle' : state.phase,
+            turnId: endsCurrentTurn ? null : state.turnId,
             error: event.data.error || event.data,
           }
+        }
 
         default:
           return state
@@ -156,10 +179,19 @@ export function conversationReducer(state, action) {
       return {
         ...state,
         connection: action.connection,
+        authRetryUntil: Object.hasOwn(action, 'retryUntil')
+          ? action.retryUntil
+          : (action.connection === 'needs_auth' ? state.authRetryUntil : null),
         error: action.message
           ? { code: action.code || 'CONNECTION', message: action.message }
           : state.error,
       }
+
+    case 'set_notice':
+      return { ...state, notice: action.message }
+
+    case 'clear_notice':
+      return { ...state, notice: null }
 
     case 'command_error':
       return {

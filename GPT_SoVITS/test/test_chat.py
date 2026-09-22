@@ -225,6 +225,14 @@ class ChatTestCase(unittest.TestCase):
         self.assertEqual(chat.meta.live2d_models["爱音"], "/tmp/anon.model3.json")
         self.assertFalse(chat.meta.tool_calling_enabled)
 
+    def test_clear_custom_live2d_model_restores_default_resolution(self) -> None:
+        """清除对话级模型后应删除对应角色的显式覆盖。"""
+        chat = Chat(meta={"live2d_models": {"爱音": "/tmp/costume.model3.json"}})
+
+        chat.clear_custom_live2d_model_meta("爱音")
+
+        self.assertNotIn("爱音", chat.meta.live2d_models)
+
     def test_find_turn_range_for_user_and_assistant_messages(self):
         """
         普通聊天轮次应从 User 消息开始，到下一条 User 消息之前结束。
@@ -1183,6 +1191,24 @@ class ChatTestCase(unittest.TestCase):
             self.assertEqual(exported_attachment_path, missing_attachment_path)
             exported_attachment = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]
             self.assertNotIn("remote_refs", exported_attachment)
+
+    def test_save_preserves_existing_file_when_serialization_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "all_conversation.json"
+            original = '{"existing": true}'
+            target.write_text(original, encoding="utf-8")
+            manager = ChatManager()
+
+            with mock.patch.object(
+                    chat_module.json,
+                    "dump",
+                    side_effect=RuntimeError("simulated interruption"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    manager.save(target)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(target.parent.glob("*.tmp")), [])
 
     @staticmethod
     def _character(name: str) -> CharacterAttributes:

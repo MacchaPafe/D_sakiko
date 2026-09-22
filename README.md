@@ -35,20 +35,29 @@
 ![img.png](./docs/img_theater.png) -->
 # 软件包下载：
 ## Windows：
-开箱即用，双击run.bat即可运行程序，无需安装任何依赖。
+开箱即用，双击软件包根目录的 `数字小祥启动器.bat` 打开图形启动器，无需额外安装依赖。
 
-百度网盘：```https://pan.baidu.com/s/1kLJT0mZ_gGQ2yRUrMJU_Tw?pwd=7vsd``` 提取码: 7vsd
+启动器整合桌面端、**WebUI（手机端）**、小剧场、启动参数配置、Live2D 模型下载器、动作组编辑器和手动更新，沿用主程序的角色配色、圆角控件和导入字体。直接点击对应按钮即可，关闭启动器后已打开的程序继续运行。各入口直接调用原 Python 程序，不依赖旧 BAT；旧的独立启动脚本仍可使用。启动出错时可点击“查看启动日志”。
 
-天翼云盘（不限速）：```https://cloud.189.cn/t/b2EjU36Nj67b``` （访问码：0fe8）
+手动更新需先关闭运行中的程序，再选择已解压的官方更新包。启动器退出后由原版更新器处理，更新成功后重新打开启动器。源码开发环境也可以运行 `python launcher/launcher.py`。
 
-Google Drive:```https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing```
+百度网盘：https://pan.baidu.com/s/1kLJT0mZ_gGQ2yRUrMJU_Tw?pwd=7vsd 提取码: 7vsd
+
+天翼云盘（不限速）：https://cloud.189.cn/t/b2EjU36Nj67b （访问码：0fe8）
+
+Google Drive: https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing
 
 ## MacOS：
-百度网盘： ```https://pan.baidu.com/s/1UrOc8sdQd4DeYtjo0ISTuA?pwd=m49g``` 提取码: m49g 
 
-天翼云盘：```https://cloud.189.cn/t/Q7Z7r2nYNvyu``` （访问码：yf5b）
+3.5.0 新版：
 
-Google Drive：```https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing```
+百度网盘：https://pan.baidu.com/s/1Mrfrb2NT3wEg7nNQw4wTzA?pwd=1122 提取码: 1122
+
+天翼云盘：https://cloud.189.cn/t/aqiqQbMjAZJj（访问码：s43d）
+
+2.6.5 旧版（尚未更新）：
+
+Google Drive：https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMFL-kiyz?usp=sharing
 
 
 MacOS版本软件包详细安装方法以及常见故障排除见：[MacOS软件包安装指南](./docs/MacOS%20软件包安装指南.md)  作者 [@yan-xiaoo](https://github.com/yan-xiaoo)

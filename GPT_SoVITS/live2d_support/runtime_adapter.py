@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import gc
 import importlib
-import json
 import os
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, ClassVar, Iterable, Literal, Protocol, cast
+from typing import Callable, ClassVar, Iterable, Protocol
+
+from OpenGL.GL import glUseProgram
+
+from .model_version import (
+    Live2DVersion,
+    detect_live2d_runtime_version,
+    read_live2d_model_json as _read_model_json,
+)
 
 from live2d_support.expression_policy import (
     select_expression_for_motion,
@@ -28,7 +35,6 @@ from live2d_support.motion_selection import (
 from log import get_logger
 
 
-Live2DVersion = Literal["v2", "v3"]
 MotionCallback = Callable[..., object]
 
 logger = get_logger(__name__)
@@ -191,36 +197,6 @@ class NullLive2DModel:
 
     def dispose(self) -> None:
         """幂等释放空模型，不执行任何操作。"""
-
-
-def _read_model_json(model_json_path: str) -> dict[str, object]:
-    """读取 Live2D 模型 JSON，并保证顶层是对象。"""
-    with open(model_json_path, "r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"Live2D 模型 JSON 顶层不是对象：{model_json_path}")
-    return cast(dict[str, object], data)
-
-
-def detect_live2d_runtime_version(model_json_path: str) -> Live2DVersion:
-    """根据模型 JSON 结构判断应使用的 Live2D runtime 版本。"""
-    path = Path(model_json_path)
-    if path.name.endswith(".model3.json"):
-        return "v3"
-
-    data = _read_model_json(model_json_path)
-    file_references = data.get("FileReferences")
-    if isinstance(file_references, dict):
-        moc = file_references.get("Moc")
-        if isinstance(moc, str) and moc.endswith(".moc3"):
-            return "v3"
-        return "v3"
-
-    model_file = data.get("model")
-    if isinstance(model_file, str):
-        return "v2"
-
-    raise ValueError(f"无法识别 Live2D 模型版本：{model_json_path}")
 
 
 def load_live2d_runtime(version: Live2DVersion) -> ModuleType:
@@ -389,7 +365,14 @@ class Live2DModelAdapter:
         data = _read_model_json(model_json_path)
         model_class = getattr(runtime, "LAppModel")
         model = model_class()
-        getattr(model, "LoadModelJson")(model_json_path)
+        glUseProgram(0)
+        try:
+            getattr(model, "LoadModelJson")(model_json_path)
+        except Exception:
+            glUseProgram(0)
+            _call_noarg(model, "DestroyRenderer")
+            del model
+            raise
         adapter = cls(
             model_json_path=model_json_path,
             version=version,
@@ -414,6 +397,7 @@ class Live2DModelAdapter:
         """释放当前模型实例持有的资源。"""
         if self.model is None:
             return
+        glUseProgram(0)
         _call_noarg(self.model, "StopAllMotions")
         _call_noarg(self.model, "DestroyRenderer")
         self.model = None
@@ -468,7 +452,11 @@ class Live2DModelAdapter:
 
     def draw(self) -> None:
         """绘制模型。"""
-        getattr(self._require_model(), "Draw")()
+        glUseProgram(0)
+        try:
+            getattr(self._require_model(), "Draw")()
+        finally:
+            glUseProgram(0)
 
     def Draw(self) -> None:
         """兼容旧调用风格，绘制模型。"""
