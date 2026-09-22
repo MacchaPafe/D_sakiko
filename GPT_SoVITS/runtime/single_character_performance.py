@@ -8,6 +8,7 @@ import wave
 import pygame
 from live2d.utils.lipsync import WavHandler
 from live2d_support.motion_semantics import motion_group_for_emotion
+from live2d_support.runtime_adapter import Live2DModelProtocol
 from log import get_logger
 
 
@@ -59,6 +60,30 @@ class SingleCharacterPerformance:
         self.audio_started = False
         self.audio_failed = False
         self.start_deadline = 0.0
+        self.recording = False
+        self.last_interaction = float("-inf")
+        # 普通窗口保留字幕；桌宠按播放完成时间自动收起。
+        self.subtitle_hide_delay: float | None = None
+        self.subtitle_deadline: float | None = None
+        self.subtitle_read_seconds = 6.0
+
+    def play_interaction(
+        self, model: Live2DModelProtocol, *, blocked: bool = False
+    ) -> bool:
+        """空闲点击时播放通用待机动作，并限制连续点击频率。"""
+        now = time.monotonic()
+        if blocked or self.busy or self.thinking or self.recording or self.audio_busy():
+            return False
+        if now - self.last_interaction < 1.0:
+            return False
+        self.last_interaction = now
+        for group in ("IDLE", "idle_motion"):
+            if model.StartRandomMotion(
+                group, 2, self.onStartCallback, self.onFinishCallback, position="C"
+            ):
+                self.last_idle = time.time()
+                return True
+        return False
 
     @staticmethod
     def audio_busy():
@@ -70,6 +95,8 @@ class SingleCharacterPerformance:
 
     def command(self, command, model):
         kind = command.get("type")
+        if kind in {"start_talking", "stop_talking"}:
+            self.recording = kind == "start_talking"
         key = (command.get("chat_id"), command.get("turn_id"))
         if kind == "play_segment":
             self.structured_mode = True
@@ -79,6 +106,9 @@ class SingleCharacterPerformance:
         if kind == "thinking":
             self.structured_mode = True
             self.thinking = True
+            self.subtitle_deadline = None
+            if self.subtitle_hide_delay is not None:
+                self.on_subtitle("")
             return True
         if kind == "generation_finished":
             self.thinking = False
@@ -104,6 +134,7 @@ class SingleCharacterPerformance:
             self.wavHandler = WavHandler()
             model.set_parameter_value("mouth_open_y", 0.0)
             self.on_subtitle("")
+            self.subtitle_deadline = None
             return True
         return False
 
@@ -129,6 +160,10 @@ class SingleCharacterPerformance:
             self.thinking = False
             text = str(segment.get("text") or "")
             translation = str(segment.get("translation") or "")
+            self.subtitle_deadline = None
+            self.subtitle_read_seconds = max(
+                6.0, min(30.0, len(text + translation) / 6.0)
+            )
             self.on_subtitle(text + ("\n" + translation if translation else ""))
             group = motion_group_for_emotion(
                 str(segment.get("emotion")), default="happiness"
@@ -152,6 +187,17 @@ class SingleCharacterPerformance:
             if self.audio_started and not self.audio_busy():
                 self.active_segment = None
                 self._reset_long_audio_motion_loop()
+                if self.subtitle_hide_delay is not None:
+                    has_audio = (
+                        bool(segment.get("audio_path"))
+                        and segment.get("audio_path") != "NO_AUDIO"
+                    )
+                    delay = (
+                        self.subtitle_hide_delay
+                        if has_audio and not self.audio_failed
+                        else self.subtitle_read_seconds
+                    )
+                    self.subtitle_deadline = time.monotonic() + delay
                 self.on_event(
                     dict(
                         segment,
@@ -160,6 +206,14 @@ class SingleCharacterPerformance:
                         else "playback_complete",
                     )
                 )
+        if (
+            self.subtitle_deadline is not None
+            and not self.busy
+            and not self.thinking
+            and time.monotonic() >= self.subtitle_deadline
+        ):
+            self.subtitle_deadline = None
+            self.on_subtitle("")
         if self.thinking and now - self.last_idle > 15:
             model.StartRandomMotion(
                 "text_generating",
@@ -197,6 +251,9 @@ class SingleCharacterPerformance:
         self.pending.clear()
         self.active_segment = None
         self.thinking = False
+        self.recording = False
+        self.subtitle_deadline = None
+        self.on_subtitle("")
         self._reset_long_audio_motion_loop()
         if pygame.mixer.get_init():
             pygame.mixer.music.stop()

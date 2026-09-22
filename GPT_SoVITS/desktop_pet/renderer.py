@@ -1,9 +1,12 @@
 """Qt 原生 Live2D 控件，窗口生命周期与公共演出逻辑分离。"""
 
+from __future__ import annotations
+
 import queue
+from typing import TYPE_CHECKING
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
-from PyQt5.QtGui import QImage
-from PyQt5.QtWidgets import QOpenGLWidget
+from PyQt5.QtGui import QImage, QMouseEvent, QWheelEvent
+from PyQt5.QtWidgets import QOpenGLWidget, QWidget
 from OpenGL.GL import (
     glBindFramebuffer,
     GL_FRAMEBUFFER,
@@ -23,6 +26,10 @@ from log import get_logger
 
 logger = get_logger(__name__)
 
+if TYPE_CHECKING:
+    from multiprocessing.queues import Queue as ProcessQueue
+    from multiprocessing.sharedctypes import Synchronized
+
 
 class PetRenderer(QOpenGLWidget):
     subtitleChanged = pyqtSignal(str)
@@ -30,8 +37,16 @@ class PetRenderer(QOpenGLWidget):
     modelReady = pyqtSignal()
     failed = pyqtSignal(str)
     clicked = pyqtSignal()
+    zoomRequested = pyqtSignal(float)
+    dragFinished = pyqtSignal()
 
-    def __init__(self, commands, playback_events, motion_complete, parent=None):
+    def __init__(
+        self,
+        commands: queue.Queue[dict[str, object]],
+        playback_events: ProcessQueue,
+        motion_complete: Synchronized,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMouseTracking(True)
@@ -42,6 +57,10 @@ class PetRenderer(QOpenGLWidget):
         self.performance = SingleCharacterPerformance()
         self.performance.on_event = playback_events.put
         self.performance.on_subtitle = self.subtitleChanged.emit
+        self.performance.subtitle_hide_delay = 6.0
+        self.interaction_requested = False
+        self.interaction_blocked = False
+        self.hit_bounds = self.rect()
         self.identity = ""
         self.target = None
         self.closed = False
@@ -112,12 +131,17 @@ class PetRenderer(QOpenGLWidget):
             self.failed.emit(f"{self.identity} · 模型加载失败")
         QTimer.singleShot(0, self.modelReady.emit)
 
-    def paintGL(self):
+    def paintGL(self) -> None:
         if self.closed:
             return
         try:
             # 即使窗口隐藏也由宿主 tick 消费命令；绘图时始终有 current context。
             self.consume_commands()
+            if self.interaction_requested:
+                self.performance.play_interaction(
+                    self.model, blocked=self.interaction_blocked
+                )
+                self.interaction_requested = False
             glBindFramebuffer(GL_FRAMEBUFFER, self.defaultFramebufferObject())
             width, height = (
                 round(self.width() * self.devicePixelRatioF()),
@@ -247,25 +271,46 @@ class PetRenderer(QOpenGLWidget):
                 rect = bounds()
         return rect or self.rect().adjusted(30, 30, -30, -30)
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+    def request_interaction(self) -> None:
+        """将点击动作延迟到持有 OpenGL 上下文的绘制阶段。"""
+        if not self.interaction_blocked:
+            self.interaction_requested = True
+            self.update()
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """仅在角色范围内将鼠标或触控板滚动转换为连续缩放。"""
+        if not self.hit_bounds.contains(event.pos()):
+            event.ignore()
+            return
+        pixels = event.pixelDelta().y()
+        steps = pixels / 40.0 if pixels else event.angleDelta().y() / 120.0
+        if steps:
+            self.zoomRequested.emit(1.05 ** max(-10.0, min(10.0, steps)))
+        event.accept()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """只允许从角色可见范围内开始点击或拖动。"""
+        if event.button() == Qt.LeftButton and self.hit_bounds.contains(event.pos()):
             self.press, self.origin = event.globalPos(), self.window().pos()
             self.dragged = False
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self.press is not None and event.buttons() & Qt.LeftButton:
             delta = event.globalPos() - self.press
             if delta.manhattanLength() > 6:
                 self.dragged = True
                 self.window().move(self.origin + delta)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """区分单击与拖动结束，避免移动桌宠时误触动作。"""
         if (
             event.button() == Qt.LeftButton
             and self.press is not None
             and not self.dragged
         ):
             self.clicked.emit()
+        if self.press is not None and self.dragged:
+            self.dragFinished.emit()
         self.press = None
 
     def shutdown(self):

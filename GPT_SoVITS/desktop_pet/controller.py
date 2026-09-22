@@ -1,7 +1,9 @@
 """应用级展示形态和托盘生命周期，不由聊天窗口是否可见决定。"""
 
+from __future__ import annotations
+
 import queue
-from PyQt5.QtCore import QObject, QTimer
+from PyQt5.QtCore import QObject, QTimer, Qt
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
 from desktop_pet.window import PetWindow
 
@@ -72,8 +74,14 @@ class DesktopController(QObject):
                 return
             self.pet_commands.put({"type": "character_state", "value": value})
 
-    def show_chat(self):
-        self.window.show()
+    def show_chat(self) -> None:
+        if self.pet is not None:
+            self.pet.clear_status()
+            self.pet.collapse()
+        if self.window.isMinimized():
+            self.window.showNormal()
+        else:
+            self.window.show()
         self.window.raise_()
         self.window.activateWindow()
 
@@ -84,13 +92,28 @@ class DesktopController(QObject):
             self.pet.show()
             self.pet.ensure_on_screen()
 
-    def toggle_mode(self):
-        if (
+    def can_switch_mode(self) -> bool:
+        """统一菜单与实际切换的忙碌判断，避免录音途中销毁输入宿主。"""
+        return not (
             self.runtime.busy
             or not self.motion_complete.value
             or getattr(self.window, "regen_thread", None) is not None
-        ):
-            self.window._set_message_box_text("请等待当前回复或播放完成后切换形态。")
+            or self.window.voice_input.state in {"recording", "transcribing"}
+        )
+
+    def switch_to_window(self) -> None:
+        """将桌宠切回普通形态，重复请求只打开聊天窗口。"""
+        if self.pet_mode:
+            self.toggle_mode()
+        else:
+            self.show_chat()
+
+    def toggle_mode(self) -> None:
+        if not self.can_switch_mode():
+            message = "请等待当前回复、播放或录音完成后切换形态。"
+            self.window._set_message_box_text(message)
+            if self.pet is not None and not self.window.isVisible():
+                self.pet.show_status(message)
             return
         if self.router.latest_model is not None:
             self.router.latest_model["sakiko_state"] = self.window.dp_chat.sakiko_state
@@ -111,6 +134,7 @@ class DesktopController(QObject):
                     self.motion_complete,
                 )
                 pet.openChat.connect(self.show_chat)
+                pet.switchToWindow.connect(self.switch_to_window, Qt.QueuedConnection)
                 pet.quitRequested.connect(self.quit)
                 pet.show()
                 pet.renderer.grabFramebuffer()
@@ -143,8 +167,10 @@ class DesktopController(QObject):
             self.pet_mode = False
             self.show_chat()
 
-    def chat_changed(self):
+    def chat_changed(self) -> None:
         if self.pet is not None:
+            self.pet.clear_status()
+            self.pet._subtitle("")
             self.pet.binding.switch(self.window.current_chat_id)
 
     def quit(self):

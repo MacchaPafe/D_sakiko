@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Generic, List, Mapping, Optional, Sequence, Tuple, Type, TypeVar, Union
+from typing import Any, Dict, Generic, List, Mapping, Optional, Sequence, Tuple, Type, TypeVar, Union, TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from qdrant_client import QdrantClient
 from qdrant_client import models as qdrant_models
-from sentence_transformers import SentenceTransformer
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 from .models import (
     BaseQdrantDocument,
@@ -224,7 +226,7 @@ class EmbeddingProvider:
 
         self._model_path: str = model_path
         self._default_batch_size: int = default_batch_size
-        self._model: Any = None
+        self._model: SentenceTransformer | None = None
         self._dimension: Optional[int] = None
 
     def ensure_loaded(self) -> None:
@@ -232,6 +234,9 @@ class EmbeddingProvider:
 
         if self._model is not None:
             return
+
+        # 普通窗口进程也会导入聊天模块；真正检索时才加载推理依赖。
+        from sentence_transformers import SentenceTransformer
 
         self._model = SentenceTransformer(self._model_path)
         self._dimension = self._model.get_embedding_dimension()

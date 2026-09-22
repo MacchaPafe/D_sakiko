@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from chat.tool_calling import ToolRegistry
@@ -16,7 +17,8 @@ from .models import (
     WorldbookKnowledgeResult,
     WorldbookResolvedContext,
 )
-from .service import WorldbookConversationService
+if TYPE_CHECKING:
+    from .service import WorldbookConversationService
 
 
 WORLD_BOOK_TOOL_LIMIT = 7

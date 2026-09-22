@@ -365,7 +365,7 @@ class Live2DModule(SingleCharacterPerformance):
 
         apply_current_layout()
 
-        mouse_position_x = 0
+        interaction_requested = False
         last_saved_time=time.time()     #待机动作计时器
         last_saved_time_think=time.time()
 
@@ -409,7 +409,7 @@ class Live2DModule(SingleCharacterPerformance):
                         layout_dragging = False
                         layout_last_mouse_pos = None
                     elif not layout_editing and event.button == 1:
-                        mouse_position_x, _= event.pos
+                        interaction_requested = True
                 elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
                     if layout_last_mouse_pos is not None:
                         last_x, last_y = layout_last_mouse_pos
@@ -505,9 +505,11 @@ class Live2DModule(SingleCharacterPerformance):
                 if command_type in {'play_segment', 'thinking', 'generation_finished', 'cancel_turn'}:
                     self.command(x, model)
                 elif command_type =='start_talking':   #录音时
+                    self.recording = True
                     self._reset_long_audio_motion_loop()
                     model.StartRandomMotion("talking_motion", 4, self.onStartCallback, position="C")
                 elif command_type=='stop_talking':   #录音结束
+                    self.recording = False
                     self._reset_long_audio_motion_loop()
                     self.onFinishCallback()
                 elif command_type=='change_l2d_background':
@@ -600,11 +602,12 @@ class Live2DModule(SingleCharacterPerformance):
                     model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
                 last_saved_time=time.time()
 
-            if not layout_editing and mouse_position_x != 0:  # 点击画面随机做动作
-                if self.if_sakiko:
-                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
-                mouse_position_x = 0
-                self.think_motion_is_over=True
+            if interaction_requested:
+                self.play_interaction(
+                    model,
+                    blocked=layout_editing or not is_text_generating_queue.empty(),
+                )
+                interaction_requested = False
 
             self.live2d_this_turn_motion_complete=not pygame.mixer.music.get_busy()
             # 更新到共享变量

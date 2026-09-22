@@ -179,6 +179,8 @@ class MessageTextEdit(QPlainTextEdit):
         super().__init__(composer)
         self._composer = composer
         self._input_method_composing = False
+        self._min_visible_lines = self.MIN_VISIBLE_LINES
+        self._max_visible_lines = self.MAX_VISIBLE_LINES
 
         self.setAcceptDrops(True)
         self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
@@ -250,12 +252,12 @@ class MessageTextEdit(QPlainTextEdit):
             + widget_margins.bottom()
         )
         minimum_height = (
-            line_height * self.MIN_VISIBLE_LINES
+            line_height * self._min_visible_lines
             + document_margin
             + widget_chrome
         )
         maximum_height = (
-            line_height * self.MAX_VISIBLE_LINES
+            line_height * self._max_visible_lines
             + document_margin
             + widget_chrome
         )
@@ -280,6 +282,12 @@ class MessageTextEdit(QPlainTextEdit):
             line_count += max(1, block.layout().lineCount())
             block = block.next()
         return max(1, line_count)
+
+    def set_visible_line_range(self, minimum: int, maximum: int) -> None:
+        """配置当前输入框的可见行数范围，不影响其他输入实例。"""
+        self._min_visible_lines = max(1, minimum)
+        self._max_visible_lines = max(self._min_visible_lines, maximum)
+        self.refresh_height()
 
     def insert_text_at_cursor(self, text: str) -> None:
         """使用一次可撤销编辑替换当前选区或在光标处插入文本。"""
@@ -440,6 +448,11 @@ class MessageInput(QWidget):
     def set_vision_support_checker(self, checker: Callable[[], bool]) -> None:
         """设置当前模型是否支持视觉输入的同步检查回调。"""
         self._vision_support_checker = checker
+
+    def set_compact_mode(self, enabled: bool) -> None:
+        """为桌宠提供紧凑输入布局，保留草稿、附件和输入法行为。"""
+        self.text_edit.set_visible_line_range(1 if enabled else 2, 5 if enabled else 6)
+        self.refresh_height()
 
     def set_managed_attachment_mode(self, enabled: bool = True) -> None:
         """启用由外部附件控制器负责暂存和上传的模式。"""

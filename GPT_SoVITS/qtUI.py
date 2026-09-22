@@ -2324,7 +2324,7 @@ class ChatGUI(QWidget):
         self.draft_binding = DraftBinding(self.drafts, self.user_input, self.current_chat_id)
         self.voice_input = VoiceInputService(self.drafts, self)
         self.voice_input.stateChanged.connect(self._voice_state_changed)
-        self.voice_input.error.connect(self._set_message_box_text)
+        self.voice_input.error.connect(self._show_runtime_status)
         self.voice_input.load()
         QTimer.singleShot(0, self.show_last_update_failure_if_needed)
         QTimer.singleShot(0, self.show_last_repair_failure_if_needed)
@@ -2981,15 +2981,24 @@ class ChatGUI(QWidget):
         self.chat_sidebar.set_character_theme_palettes(self._chat_sidebar_character_theme_palettes())
         self.chat_sidebar.set_chats(chats, self.current_chat_id)
 
-    def _set_message_box_text(self, message: str) -> None:
+    def _set_message_box_text(self, message: str, *, notify_pet: bool = False) -> None:
         """
         用指定文本替换状态栏提示。
         """
         self.messages_box.clear()
         self.messages_box.append(message)
         controller = getattr(self, 'desktop_controller', None)
-        if controller is not None and controller.pet is not None and message != '就绪':
+        if (
+            notify_pet
+            and not self.isVisible()
+            and controller is not None
+            and controller.pet is not None
+        ):
             controller.pet.show_status(message)
+
+    def _show_runtime_status(self, message: str) -> None:
+        """主窗口隐藏时，将需要用户关注的运行错误送到桌宠提示。"""
+        self._set_message_box_text(message, notify_pet=True)
 
     def _set_message_box_idle(self) -> None:
         """
@@ -4150,7 +4159,7 @@ class ChatGUI(QWidget):
     def _handle_add_image_button_clicked(self) -> None:
         """处理图片按钮点击，并在模型不支持时提供可执行的修复入口。"""
         if self.is_chat_busy():
-            self._set_message_box_text("请等待当前回复完成后再添加图片。")
+            self._set_message_box_text("请等待当前回复完成后再添加图片。", notify_pet=True)
             return
         if self._current_model_supports_vision():
             self._choose_image_files()
@@ -4194,7 +4203,7 @@ class ChatGUI(QWidget):
     def _handle_deepseek_vision_switch_requested(self) -> None:
         """响应消息输入错误条中的 DeepSeek Vision 快捷切换请求。"""
         if self.is_chat_busy():
-            self._set_message_box_text("请等待当前回复完成后再切换模型。")
+            self._set_message_box_text("请等待当前回复完成后再切换模型。", notify_pet=True)
             return
         self._confirm_and_switch_to_deepseek_vision()
 
@@ -4226,7 +4235,7 @@ class ChatGUI(QWidget):
         models = d_sakiko_config.llm_api_model.value
         old_models = dict(models) if isinstance(models, dict) else {}
         if not self._deepseek_vision_switch_available():
-            self._set_message_box_text("当前配置无法切换到 DeepSeek V4 Flash Vision。")
+            self._set_message_box_text("当前配置无法切换到 DeepSeek V4 Flash Vision。", notify_pet=True)
             return False
 
         try:
@@ -4244,7 +4253,7 @@ class ChatGUI(QWidget):
             except Exception:
                 logger.exception("回滚 DeepSeek Vision 模型配置失败")
             self._refresh_add_image_button_state()
-            self._set_message_box_text(f"切换视觉模型失败：{exc}")
+            self._set_message_box_text(f"切换视觉模型失败：{exc}", notify_pet=True)
             return False
 
         self._refresh_add_image_button_state()
@@ -5309,7 +5318,7 @@ class ChatGUI(QWidget):
         if event_type == "assistant_turn_error":
             if self._is_active_turn_payload(payload):
                 error_message = str(payload.get("message") or "出现了未知错误。")
-                self._set_message_box_text(error_message)
+                self._show_runtime_status(error_message)
             return
         # 事件：完成一轮对话的生成
         if event_type == "assistant_turn_complete":
