@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { unstable_splitSqlQuery } from 'wrangler';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { headerFor, DAY } from '../src/protocol.js';
 
@@ -14,9 +15,9 @@ test('real workerd + D1: schema, compression, atomic retries, quota rollback and
   }] }));
   try {
     const db = await mf.getD1Database('DB');
-    // D1 exec 按换行拆分 SQL；prepare 接收完整 trigger，因此分隔符需识别 END。
-    const migration = readFileSync('migrations/0001_feedback.sql', 'utf8').replace(/^--.*$/gm, '');
-    const statements = migration.match(/\s*CREATE TRIGGER[\s\S]*?\nEND;|[^;]+;/g).map(s => s.trim()).filter(Boolean);
+    // 使用 Wrangler 的 SQL 拆分器，避免自定义正则掩盖部署工具的解析问题。
+    const migration = readFileSync('migrations/0001_feedback.sql', 'utf8');
+    const statements = unstable_splitSqlQuery(migration);
     await db.batch(statements.map(sql => db.prepare(sql)));
     const id = crypto.randomUUID();
     const payload = { schema_version: 1, kind: 'feedback', request_id: id, created_at: Math.floor(Date.now() / 1000), app_version: 'workerd', rating: 'up', comment: '端到端', target: null, conversation: null, prompt_context: null, worldbook_enabled: false, worldbook_diagnostics: [], consent: 'feedback-v1-90d' };

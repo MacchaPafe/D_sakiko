@@ -33,14 +33,15 @@ INSERT INTO limits VALUES (1, 200, 20971520, 3145728, 314572800, 1000, 0);
 
 CREATE TRIGGER feedback_quota BEFORE INSERT ON feedback BEGIN
   INSERT OR IGNORE INTO daily_usage(day) VALUES (NEW.day);
-  SELECT CASE WHEN (SELECT controls >= daily_controls FROM daily_usage, limits WHERE day=NEW.day AND id=1)
-    THEN RAISE(ABORT, 'feedback_control_quota') END;
-  SELECT CASE WHEN NEW.state='active' AND (
+  -- 使用 WHERE 避免远程 D1 将 CASE 的 END 误判为触发器结束。
+  SELECT RAISE(ABORT, 'feedback_control_quota')
+    WHERE (SELECT controls >= daily_controls FROM daily_usage, limits WHERE day=NEW.day AND id=1);
+  SELECT RAISE(ABORT, 'feedback_quota') WHERE NEW.state='active' AND (
     SELECT count >= daily_count OR raw_bytes + NEW.raw_bytes > daily_raw
       OR stored_bytes + NEW.stored_bytes > daily_stored
       OR used_stored + NEW.stored_bytes > total_stored
     FROM daily_usage, limits WHERE day=NEW.day AND id=1
-  ) THEN RAISE(ABORT, 'feedback_quota') END;
+  );
 END;
 CREATE TRIGGER feedback_account AFTER INSERT ON feedback BEGIN
   UPDATE daily_usage SET controls=controls+1,

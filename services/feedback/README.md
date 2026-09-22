@@ -36,6 +36,10 @@ npx wrangler deploy --config wrangler.admin.jsonc
 5. 使用本账号实际套餐核定 `limits` 表预算。初值为每日 200 份、原始 JSON 合计 20 MiB、gzip 合计 3 MiB、在库存储正文 300 MiB；每日最多新增 1000 个控制记录。此预算预留数据库元数据/索引空间，仍需监控数据库实际大小。`used_stored` 只统计 BLOB 字节，不是数据库物理大小。每日计数不会因撤回恢复。两个配置的 CPU 上限为 50 ms，使用免费 Workers 套餐时需按该套餐上限调整并压测；超过 CPU 上限的请求不会收到业务回执。
 6. 完成接收方与联系方式说明后，将公开配置 `ACCEPTING` 改成 `true` 部署；设回 `false` 可暂停上传，撤回继续可用。核对 Cron 已启用，以及管理域名所有入口均受保护。不要在 CI 中打印令牌或上传正文。
 
+若初次迁移报 `incomplete input: SQLITE_ERROR`，请使用当前版本的 `0001_feedback.sql` 后重试原命令；配额触发器已改用 `SELECT RAISE(...) WHERE ...`，避免远程 D1 对 `CASE … END` 的解析兼容问题。本地 SQLite 或 workerd 测试通过不能替代远程迁移验证。失败的迁移会回滚，不需要删除数据库或手工标记迁移成功。
+
+Wrangler 配置中的 `ACCESS_TEAM`（团队域名前缀）、`ACCESS_AUD`（应用受众标识）、Account ID、Database ID 和域名均为标识或路由配置，不是认证密钥，可以公开；公开后会暴露部署归属信息，可按项目偏好使用示例配置。真正需要保密的是 Access service token 的 Client Secret、部署 API Token、OAuth token、Global API Key 和用户反馈撤回凭据。不要把这些秘密写入 Wrangler `vars` 或提交到 Git。管理端通过签名、issuer、audience 和有效期校验 JWT，知道 TEAM/AUD 不能伪造有效令牌。
+
 ## 客户端配置
 
 发布包将 `GPT_SoVITS/feedback/service.example.json` 复制为同目录 `service.json`，填写公开根地址、接收方和联系方式。也可用 `DSAKIKO_FEEDBACK_URL` 覆盖公开地址。地址必须为 HTTPS，不含登录信息、查询参数或片段。未配置时 UI 明确告知服务未就绪，不发送请求。公开地址不是秘密。
