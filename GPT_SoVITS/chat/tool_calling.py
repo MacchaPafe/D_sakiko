@@ -275,8 +275,8 @@ class ToolCallingAgentRuntime:
 
             # 遍历并执行所有工具调用，将结果转化为 tool 消息压入历史中供下一轮循环读取
             for call in tool_calls:
-                # 抽签窗口属于强交互型 UI，优先等待过渡文本播报完成后再弹出，避免体验割裂。
-                if call.name == "start_lottery" and pending_interim_future is not None:
+                # 抽签窗口、五子棋面板属于强交互型 UI，优先等待过渡文本播报完成后再弹出，避免体验割裂。
+                if call.name in {"start_lottery", "play_gomoku", "play_reversi"} and pending_interim_future is not None:
                     pending_interim_future.result()
                     pending_interim_future = None
 
@@ -918,6 +918,94 @@ def register_lottery_tool(
             "required": ["title", "options"],
         },
         handler=_start_lottery_handler,
+    )
+
+
+def register_gomoku_tool(
+    registry: ToolRegistry,
+    open_gomoku_ui_func: Callable[[int], bool],
+) -> None:
+    """注册五子棋工具，工具执行时通过依赖注入在前台展开五子棋面板。"""
+
+    def _play_gomoku_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        raw_size = arguments.get("board_size", 13)
+        try:
+            board_size = int(raw_size)
+        except (TypeError, ValueError):
+            board_size = 13
+        if board_size not in (9, 13, 19):
+            board_size = 13
+        side = str(arguments.get("side") or "black").strip().lower()
+        if side not in {"black", "white"}:
+            side = "black"
+
+        shown = open_gomoku_ui_func(board_size)
+        if not shown:
+            return {
+                "ok": False,
+                "error": "前台五子棋面板创建失败",
+            }
+        return {
+            "ok": True,
+            "message": f"已在前台展开 {board_size} 路五子棋面板",
+            "board_size": board_size,
+            "user_side": side,
+        }
+
+    registry.register_tool(
+        name="play_gomoku",
+        description=(
+            "【互动利器】在前台展开一个五子棋小游戏面板，让用户和内置 AI 下棋，"
+            "你会一边陪玩一边点评。**不要只等用户提到五子棋才用！**当你想和用户找点乐子、"
+            "活跃气氛、或者用户提到下棋、五子棋、连珠、棋盘对弈等话题时，主动调用它。"
+            "用户可以在面板里随时认输或关闭，你只需自然地继续对话。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "board_size": {
+                    "type": "integer",
+                    "description": "棋盘路数，可选 9 / 13 / 19，默认 13",
+                    "enum": [9, 13, 19],
+                },
+                "side": {
+                    "type": "string",
+                    "description": "用户执子颜色，black 或 white，默认 black（用户先手）",
+                    "enum": ["black", "white"],
+                },
+            },
+            "required": [],
+        },
+        handler=_play_gomoku_handler,
+    )
+
+
+def register_reversi_tool(
+    registry: ToolRegistry,
+    open_reversi_ui_func: Callable[[], bool],
+) -> None:
+    """注册标准 8×8 黑白棋工具。"""
+
+    def _play_reversi_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+        shown = open_reversi_ui_func()
+        if not shown:
+            return {"ok": False, "error": "前台黑白棋面板创建失败"}
+        return {
+            "ok": True,
+            "message": "已在前台展开标准 8×8 黑白棋面板",
+            "board_size": 8,
+            "user_side": "black",
+        }
+
+    registry.register_tool(
+        name="play_reversi",
+        description=(
+            "【互动利器】在前台展开标准 8×8 黑白棋（Reversi/Othello）小游戏，"
+            "让用户执黑棋先行、与内置 AI 对弈，并由你陪玩点评。用户提到黑白棋、"
+            "奥赛罗、翻子或想玩棋类游戏时可主动调用。"
+        ),
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=_play_reversi_handler,
     )
 
 
