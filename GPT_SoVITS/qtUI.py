@@ -52,7 +52,6 @@ from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, 
 from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
 
 import sounddevice as sd
-from opencc import OpenCC
 import os,sys
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -163,11 +162,13 @@ class CommunicateThreadDP2QT(QThread):
         self.chat_display=chat_display
 
     def run(self):
-        while True:
-            if not self.dp2qt_queue.empty() and not self.chat_display.is_streaming():     #解决了特定情况下显示不全回答的bug
-                self.this_turn_response=self.dp2qt_queue.get()
-                self.response_signal.emit(self.this_turn_response)  # noqa
-            time.sleep(0.1)
+        from queue import Empty
+        while not self.isInterruptionRequested():
+            try:
+                event = self.dp2qt_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            self.response_signal.emit(event)
 
 class CommunicateThreadMessages(QThread):
     message_signal=pyqtSignal(str)
@@ -177,45 +178,13 @@ class CommunicateThreadMessages(QThread):
         self.message_queue=message_queue
 
     def run(self):
-        while True:
-            self.message=self.message_queue.get()
-            self.message_signal.emit(self.message)  # noqa
-
-
-class ModelLoaderThread(QThread):   #加载语音识别模型的线程
-    model_loaded = pyqtSignal(object)
-    model_load_failed = pyqtSignal(str)
-
-    def __init__(self, model_size, device, compute_type):
-        super().__init__()
-        self.model_size = model_size
-        self.device = device
-        self.compute_type = compute_type
-
-    def run(self):
-        try:
-            from faster_whisper import WhisperModel
-            model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
-            self.model_loaded.emit(model)  # noqa
-        except Exception as e:
-            self.model_load_failed.emit(str(e))  # noqa
-
-
-class TranscriptionWorker(QObject):
-    finished = pyqtSignal(str)
-
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-
-    def transcribe(self, audio_data):
-        try:
-            segments, _ = self.model.transcribe(audio_data, beam_size=5, language="zh")
-            text = "".join([seg.text for seg in segments])
-            self.finished.emit(text)  # noqa
-        except Exception as e:
-            self.finished.emit(f"识别错误 {e}")  # noqa
-
+        from queue import Empty
+        while not self.isInterruptionRequested():
+            try:
+                message = self.message_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            self.message_signal.emit(message)
 
 class MoreFunctionWindow(QDialog):
     def __init__(
@@ -668,6 +637,10 @@ class SettingWindow(QDialog):
         layout.addWidget(setting_group)
         layout.addWidget(setting_group_2)
         layout.addWidget(sakiko_group)
+        if getattr(parent_window, 'desktop_controller', None) is not None:
+            pet_button = QPushButton('切换为普通形态' if parent_window.desktop_controller.pet_mode else '切换为桌宠形态')
+            pet_button.clicked.connect(lambda: (self.close(), parent_window.desktop_controller.toggle_mode()))
+            layout.addWidget(pet_button)
         self.setLayout(layout)
         self.current_color=color
         self.setStyleSheet(build_dialog_theme_stylesheet(derive_theme_palette(color)))
@@ -2004,8 +1977,12 @@ class ChatGUI(QWidget):
                  dp_chat,
                  audio_gen,live2d_text_queue,is_display_text_value,motion_complete_value,emotion_queue,audio_file_path_queue,
                  change_char_queue=None,
-                 is_motion_complete=None):
+                 is_motion_complete=None, conversation_runtime=None):
         super().__init__()
+        self.conversation_runtime = conversation_runtime
+        self.desktop_controller = None
+        from runtime.drafts import DraftStore
+        self.drafts = DraftStore(self)
         self.is_motion_complete = is_motion_complete
         self.audio_gen = audio_gen  # 为了获得音频文件路径，以及修改语速
         self.character_list:list[CharacterAttributes] = characters
@@ -2118,8 +2095,7 @@ class ChatGUI(QWidget):
         self.voice_button.setIcon(mic_icon)
         self.voice_button.setFixedSize(int(self.screen.height()*0.035), self.input_tool_button_height)
         self.voice_button.setIconSize(QSize(int(self.input_tool_button_height*0.58), int(self.input_tool_button_height*0.58)))
-        self.voice_button.pressed.connect(self.voice_dectect)  # noqa
-        self.voice_button.released.connect(self.voice_decect_end)  # noqa
+        self.voice_button.clicked.connect(self.toggle_voice_input)
 
         self.send_button = QToolButton()
         self.send_button.setObjectName("sendMessageButton")
@@ -2343,14 +2319,13 @@ class ChatGUI(QWidget):
         self.emotion_queue=emotion_queue
         self.audio_file_path_queue=audio_file_path_queue    #为了播放历史记录
         #-------------------------------------------------------------------------------以下为语音识别部分
-        self.voice_button.setCheckable(True)
-        self.voice_button.setEnabled(False)
-        self.record_timer = QTimer()
-        self.record_timer.timeout.connect(self.check_valid)  # noqa
-        self.is_recording=False
-        self.record_data=[]
-        self.voice_is_valid=False
-        self.load_whisper_model()
+        from runtime.drafts import DraftBinding
+        from runtime.voice_input import VoiceInputService
+        self.draft_binding = DraftBinding(self.drafts, self.user_input, self.current_chat_id)
+        self.voice_input = VoiceInputService(self.drafts, self)
+        self.voice_input.stateChanged.connect(self._voice_state_changed)
+        self.voice_input.error.connect(self._set_message_box_text)
+        self.voice_input.load()
         QTimer.singleShot(0, self.show_last_update_failure_if_needed)
         QTimer.singleShot(0, self.show_last_repair_failure_if_needed)
         from ui.controllers.worldbook_sync_controller import WorldbookSyncController
@@ -3012,6 +2987,9 @@ class ChatGUI(QWidget):
         """
         self.messages_box.clear()
         self.messages_box.append(message)
+        controller = getattr(self, 'desktop_controller', None)
+        if controller is not None and controller.pet is not None and message != '就绪':
+            controller.pet.show_status(message)
 
     def _set_message_box_idle(self) -> None:
         """
@@ -3454,6 +3432,7 @@ class ChatGUI(QWidget):
         )
         if not accepted:
             return
+        self.drafts.delete(chat_id)
         deleted_chat = self.chat_manager.delete_chat(chat_id)
         if deleted_chat is None:
             return
@@ -3620,7 +3599,14 @@ class ChatGUI(QWidget):
         """
         将当前对话同步给后端与 Live2D 进程。
         """
-        self.qt2dp_queue.put({"type": "switch_chat", "chat_id": self.current_chat_id})
+        if hasattr(self, 'draft_binding'):
+            self.draft_binding.switch(self.current_chat_id)
+        if getattr(self, 'conversation_runtime', None) is not None:
+            self.conversation_runtime.switch_chat(self.current_chat_id)
+        else:
+            self.qt2dp_queue.put({"type": "switch_chat", "chat_id": self.current_chat_id})
+        if getattr(self, 'desktop_controller', None) is not None:
+            self.desktop_controller.chat_changed()
         character_name = self.current_character.character_name
         model_json = self.current_chat.get_custom_live2d_model_meta(character_name)
         self._send_live2d_switch(character_name, model_json)
@@ -4332,7 +4318,7 @@ class ChatGUI(QWidget):
         """在 Qt 主线程更新缩略图上传状态。"""
         if not isinstance(payload, dict):
             return
-        self.user_input.update_managed_draft(payload)
+        self.drafts.update_attachment(payload)
         if str(payload.get("upload_state") or "") == "failed":
             self.user_input.show_error(
                 str(payload.get("error_message") or "图片上传失败，请点击图片重试。")
@@ -4714,135 +4700,38 @@ class ChatGUI(QWidget):
         self.talk_speed_label.setText(f"语速调节：{self.audio_gen.speed:.2f}")
         self.saved_talk_speed_and_pause_second[self.current_character.character_name]['talk_speed']=self.audio_gen.speed  # noqa
 
-    def load_whisper_model(self):
-        self.model_loader= ModelLoaderThread("./pretrained_models/faster_whisper_small", device="cpu", compute_type="int8")
-        self.model_loader.model_loaded.connect(self.on_model_loaded)  # noqa
-        self.model_loader.model_load_failed.connect(self.on_model_load_failed)  # noqa
-        self.model_loader.start()
+    def toggle_voice_input(self):
+        self.voice_input.toggle(self.current_chat_id, self.user_input.text_edit.textCursor().position())
 
-    def on_model_load_failed(self,error_message):
-        self.setWindowTitle(f"语音模型加载失败: {error_message}")
-
-    def on_model_loaded(self,model):
-        self.whisper_model=model
-        self.setWindowTitle("数字小祥")
-        self.voice_button.setEnabled(True)
-
-    def start_input_stream(self):
-        try:
-            self.stream = sd.InputStream(
-                samplerate=16000,
-                channels=1,
-                callback=self.audio_callback,
-                dtype='int16'  # 使用 int16 格式
-            )
-            # 啟動串流，它將在背景執行緒中持續呼叫 audio_callback
-            self.stream.start()
-
-        except Exception:
-            logger.warning("无法启动麦克风串流，本次运行无法使用语音输入，请检查麦克风是否连接或被其他程序占用。", exc_info=True)
-            self.voice_button.setEnabled(False)  # 保持按鈕禁用
+    def _voice_state_changed(self, state):
+        self.voice_button.setEnabled(state in {'idle', 'recording', 'unavailable'})
+        self.voice_button.setText('结束' if state == 'recording' else '重试' if state == 'unavailable' else '')
+        self.voice_button.setToolTip({'recording': '点击结束录音', 'transcribing': '正在识别', 'loading': '正在加载语音模型', 'unavailable': '点击重新加载语音模型'}.get(state, '点击开始录音'))
+        if state in {'recording', 'transcribing'} and self.change_char_queue is not None:
+            self.change_char_queue.put({'type': 'start_talking' if state == 'recording' else 'stop_talking'})
 
     def stop_input_stream(self):
-        if hasattr(self, "stream") and self.stream:
-            try:
-                self.stream.stop()
-                self.stream.close()
-                self.stream = None
-            except Exception:
-                logger.exception("关闭串流时出错")
-
-    def audio_callback(self, indata, frames, time, status):
-        if self.is_recording:
-            self.record_data.append(indata.copy())
-
-
-    def check_valid(self):
-        self.voice_is_valid=True
-
-    def voice_dectect(self):
-        self.setWindowTitle("正在准备录音...")
-        self.start_input_stream()
-        if not hasattr(self, 'stream') or self.stream is None:
-            return
-
-        self.voice_is_valid=False
-        self.is_recording=True
-        self.record_data=[]
-        self.record_timer.start(300)
-        self.run_input_command_text('start_talking', 'voice_button')
-        QTimer.singleShot(1000, lambda: self.setWindowTitle("正在录音...松开结束"))
-
-    def voice_decect_end(self):
-        if not self.is_recording:
-            return # 防止重复触发
-
-        self.setWindowTitle("数字小祥")
-        self.is_recording=False
-        self.record_timer.stop()
-        self.run_input_command_text('stop_talking', 'voice_button')
-
-        self.stop_input_stream()
-
-        if not self.voice_is_valid:
-            self.setWindowTitle("录音时间过短，请重试...")
-            return
-        else:
-            try:
-                if not self.record_data:
-                    self.setWindowTitle("录音失败，没有捕获到音频数据。")
-                    return
-
-                audio_data = np.concatenate(self.record_data, axis=0).flatten()  # noqa
-                audio_data = audio_data.astype(np.float32) / 32768.0
-
-            except ValueError:
-                self.setWindowTitle("录音数据处理失败，请重试。")
-                return
-            self.setWindowTitle("正在识别语音...")
-            self.run_transcription_thread(audio_data)
-
-    def run_transcription_thread(self, audio_data):
-        self.voice_button.setEnabled(False)
-        self.transcription_worker = TranscriptionWorker(self.whisper_model)
-        self.transcription_thread = QThread()
-        self.transcription_worker.moveToThread(self.transcription_thread)
-        self.transcription_thread.started.connect(lambda: self.transcription_worker.transcribe(audio_data))  # noqa
-        self.transcription_worker.finished.connect(self.on_transcription_finished)  # noqa
-
-        self.transcription_thread.finished.connect(self.transcription_thread.deleteLater)  # noqa
-        self.transcription_worker.finished.connect(self.transcription_thread.quit)  # noqa
-        self.transcription_worker.finished.connect(self.transcription_worker.deleteLater)  # noqa
-
-        self.transcription_thread.start()
-
-    def on_transcription_finished(self, text: str) -> None:
-        """将语音识别结果转换为简体中文后插入当前光标位置。"""
-        cc = OpenCC('tw2s.json')
-        text=cc.convert(text)
-        if text=='切换角色':
-            self.run_input_command_text('s', 'speech_recognition')
-        elif text=='切换语言':
-            self.run_input_command_text('l', 'speech_recognition')
-        else:
-            self.user_input.insert_text_at_cursor(text)
-
-        if self.whisper_model and not self.is_recording:
-            self.voice_button.setEnabled(True)
-            self.setWindowTitle("数字小祥")
+        if hasattr(self, 'voice_input'):
+            self.voice_input.close()
 
     def closeEvent(self, a0: QCloseEvent) -> None:
         """保存失败时暂停关闭，只有保存或明确放弃后才释放资源。"""
+        if getattr(self, 'desktop_controller', None) is not None and self.desktop_controller.pet_mode and not self.desktop_controller.exiting:
+            self.hide()
+            a0.ignore()
+            return
         from runtime.storage_ui import save_before_close
         if not save_before_close(self.chat_manager, self):
             a0.ignore()
             return
         self.stop_input_stream()
         self.remote_attachment_manager.shutdown()
+        if getattr(self, 'desktop_controller', None) is not None:
+            self.desktop_controller.cleanup()
         a0.accept()
 
     def play_history_audio(self,audio_path_and_emotion):
-        if self.motion_complete_value.value:
+        if self.motion_complete_value.value and not self.is_response_active():
             self.setWindowTitle("数字小祥")
             audio_path_and_emotion=audio_path_and_emotion.toString()
             if "silence.wav" in audio_path_and_emotion:
@@ -4887,8 +4776,14 @@ class ChatGUI(QWidget):
                         )
 
                     # ----------------------------
-                    self.audio_file_path_queue.put(audio_path)
-                    self.emotion_queue.put(emotion)
+                    if getattr(self, 'conversation_runtime', None) is not None:
+                        self.conversation_runtime.replay(self.current_chat_id, audio_path, emotion,
+                            target_msg.text if target_msg else '', target_msg.translation if target_msg else '')
+                        chat_id, turn_id = self.conversation_runtime.active
+                        self._start_active_turn(chat_id, turn_id, 'rendering')
+                    else:
+                        self.audio_file_path_queue.put(audio_path)
+                        self.emotion_queue.put(emotion)
                     logger.info("音频文件路径：%s", audio_path)
                     #print("注意：若你已经设置了if_delete_audio_cache.txt中的数字不为0，并且觉得这句生成的还不错，请复制该音频文件到别处，因为设置数字不为0的情况下关闭程序会自动删除该文件，以释放空间。设置数字不为0的情况下如果希望下次打开程序还能听到，再把这个文件复制回这个路径即可。\n")
                 else:
@@ -5341,6 +5236,16 @@ class ChatGUI(QWidget):
         处理来自 main2/dp_local2 的结构化 UI 事件。
         """
         event_type = str(payload.get("type") or "")
+        if event_type == "user_message_committed" and getattr(self, 'conversation_runtime', None) is not None:
+            committed = self.drafts.committed(str(payload.get('turn_id') or ''))
+            if committed or self._is_active_turn_payload(payload):
+                raw_ids = payload.get('draft_attachment_ids')
+                self.remote_attachment_manager.acknowledge_commit(
+                    [item for item in raw_ids if isinstance(item, str)] if isinstance(raw_ids, list) else [])
+                if str(payload.get('chat_id') or '') == self.current_chat_id:
+                    self.refresh_current_chat_display()
+                self._refresh_send_button_state()
+            return
         if self._is_cancelled_turn_payload(payload):
             if event_type == "assistant_turn_complete":
                 self.cancelled_turn_ids.discard(str(payload.get("turn_id") or ""))
@@ -5376,7 +5281,10 @@ class ChatGUI(QWidget):
                     else []
                 )
                 self.remote_attachment_manager.acknowledge_commit(draft_ids)
-                self.user_input.clear_after_commit()
+                if getattr(self, 'conversation_runtime', None) is not None:
+                    self.drafts.committed(str(payload.get('turn_id') or ''))
+                else:
+                    self.user_input.clear_after_commit()
                 self.refresh_current_chat_display()
                 self._refresh_send_button_state()
             return
@@ -5581,6 +5489,8 @@ class ChatGUI(QWidget):
         turn_id = self.active_turn_id
         phase = self.active_turn_phase or ""
         self.cancelled_turn_ids.add(turn_id)
+        if getattr(self, 'conversation_runtime', None) is not None:
+            self.conversation_runtime.cancel()
 
         if hasattr(self.dp_chat, "request_cancel_turn"):
             # 要求 dp_local2 终止对话生成
@@ -5629,13 +5539,13 @@ class ChatGUI(QWidget):
         """
         是否存在一轮仍在 LLM、语音合成或 UI 渲染阶段的对话。
         """
-        return self.active_turn_id is not None
+        return self.conversation_runtime.busy if getattr(self, 'conversation_runtime', None) is not None else self.active_turn_id is not None
 
     def is_chat_busy(self) -> bool:
         """
         当前界面是否仍有对话轮次或流式渲染未结束。
         """
-        return self.is_response_active() or self.chat_display.is_streaming()
+        return self.is_response_active() or (getattr(self, 'conversation_runtime', None) is None and self.chat_display.is_streaming())
 
     def is_chat_idle(self) -> bool:
         """
@@ -5689,6 +5599,9 @@ class ChatGUI(QWidget):
         self.setWindowTitle("数字小祥")
 
         if spec.command == "bye":
+            if getattr(self, 'desktop_controller', None) is not None:
+                self.desktop_controller.quit()
+                return
             if self.close():
                 self._send_internal_command_payload({"type": "exit"}, force=True)
             return
@@ -5841,14 +5754,16 @@ class ChatGUI(QWidget):
             "character_folder_name": self.current_character.character_folder_name,
             "character_name": character_name,
             "model_json": model_json,
+            "sakiko_state": self.dp_chat.sakiko_state,
         })
 
-    def handle_user_input(self) -> None:
+    def handle_user_input(self, input_view=None) -> None:
         """校验并发送输入框中的消息，同时保留失败发送的草稿。"""
+        view = input_view or self.user_input
         self.setWindowTitle("数字小祥")
-        raw_user_input = self.user_input.toPlainText()
-        user_this_turn_input = self.user_input.prepared_message()
-        image_source_paths = self.user_input.pending_image_source_paths()
+        raw_user_input = view.toPlainText()
+        user_this_turn_input = view.prepared_message()
+        image_source_paths = view.pending_image_source_paths()
         if not user_this_turn_input.strip() and not image_source_paths:
             return
         # 不可以在 AI 回复时补充内容
@@ -5856,30 +5771,30 @@ class ChatGUI(QWidget):
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再发送消息。")
             return
         if image_source_paths and not self._current_model_supports_vision():
-            self.user_input.show_error("当前模型不支持图片输入，请切换支持视觉的模型或删除图片附件。")
+            view.show_error("当前模型不支持图片输入，请切换支持视觉的模型或删除图片附件。")
             return
         if image_source_paths and not self._prepare_draft_uploads_for_send():
-            block_reason = self.user_input.draft_upload_block_reason()
+            block_reason = view.draft_upload_block_reason()
             if block_reason:
-                self.user_input.show_error(block_reason)
+                view.show_error(block_reason)
             return
         if not self._confirm_and_mark_unrecoverable_attachments():
             return
-        failed_image_paths = self.user_input.validate_pending_images()
+        failed_image_paths = view.validate_pending_images()
         if failed_image_paths:
-            self.user_input.show_error(f"图片不存在或无法读取：{os.path.basename(failed_image_paths[0])}")
+            view.show_error(f"图片不存在或无法读取：{os.path.basename(failed_image_paths[0])}")
             return
         # 存在换行符时，不处理输入框中的命令
         if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
             return
-        optimistic_attachments = self.user_input.optimistic_image_attachments()
-        draft_attachments = self.user_input.pending_draft_payloads()
+        optimistic_attachments = view.optimistic_image_attachments()
+        draft_attachments = view.pending_draft_payloads()
         self._send_user_message_payload(
             user_this_turn_input,
             draft_attachments=draft_attachments,
         )
-        if not draft_attachments:
-            self.user_input.clear_after_send()
+        if not draft_attachments and getattr(self, 'conversation_runtime', None) is None:
+            view.clear_after_send()
 
         # 简单预测用户的 msg_index，使其能支持右键删除功能
         if self.current_chat.message_list and self.current_chat.message_list[-1].text == user_this_turn_input:
@@ -5904,23 +5819,26 @@ class ChatGUI(QWidget):
         context_usage_delay_ms: int = 1300,
         image_source_paths: Sequence[str] = (),
         draft_attachments: Sequence[dict[str, object]] = (),
+        consume_draft: bool = True,
     ) -> None:
         """向后端发送用户消息请求，并启动当前 active turn。"""
-        turn_id = uuid.uuid4().hex
         worldbook_snapshot = self.worldbook_control.freeze_turn_snapshot(
             append_user_message=append_user_message
         )
-        self._start_active_turn(self.current_chat_id, turn_id, "llm")
-        self.qt2dp_queue.put({
-            "type": "send_message",
-            "chat_id": self.current_chat_id,
-            "turn_id": turn_id,
-            "text": text,
-            "append_user_message": append_user_message,
-            "image_source_paths": list(image_source_paths),
-            "worldbook_snapshot": worldbook_snapshot,
-            "draft_attachments": [dict(item) for item in draft_attachments],
-        })
+        if getattr(self, 'conversation_runtime', None) is not None:
+            turn_id = self.conversation_runtime.submit(self.current_chat_id, text,
+                append_user_message=append_user_message, image_source_paths=image_source_paths,
+                draft_attachments=draft_attachments, worldbook_snapshot=worldbook_snapshot)
+            if consume_draft and append_user_message:
+                self.drafts.submitted(self.current_chat_id, turn_id)
+            self._start_active_turn(self.current_chat_id, turn_id, 'llm')
+        else:
+            turn_id = uuid.uuid4().hex
+            self._start_active_turn(self.current_chat_id, turn_id, 'llm')
+            self.qt2dp_queue.put(dict(type='send_message', chat_id=self.current_chat_id,
+                turn_id=turn_id, text=text, append_user_message=append_user_message,
+                image_source_paths=list(image_source_paths), worldbook_snapshot=worldbook_snapshot,
+                draft_attachments=[dict(item) for item in draft_attachments]))
         self.schedule_context_usage_refresh(delay_ms=context_usage_delay_ms)
 
     def _save_chat(self) -> bool:
@@ -5978,13 +5896,17 @@ class ChatGUI(QWidget):
             self.messages_box.append("抽签命令解析失败：候选项少于 2 个")
             return
 
+        lottery_chat_id = self.current_chat_id
         def _on_lottery_result(winner: str):
             internal_event = (
                 f"【系统内部事件触发：抽签结束】抽签主题：{title}。"
                 f"用户已点击抽签，结果是：{winner}。"
                 "请你自然地继续对话并结合这个结果给出建议。"
             )
-            self.qt2dp_queue.put(internal_event)
+            if getattr(self, 'conversation_runtime', None) is not None:
+                self.conversation_runtime.queue_internal(lottery_chat_id, internal_event)
+            else:
+                self.qt2dp_queue.put(internal_event)
             self.messages_box.clear()
             self.messages_box.append(f"抽签结果：{winner}")
 

@@ -777,6 +777,7 @@ class AudioGenerate:
         segment_total: int | None = None,
         emotion: str | None = None,
         pronunciation_overrides: Mapping[str, str] | None = None,
+        generation_options: Mapping[str, float] | None = None,
     ) -> str:
         """按显式给定角色配置同步生成语音。"""
         if not character.has_valid_voice_model():
@@ -793,15 +794,20 @@ class AudioGenerate:
             self.audio_file_path = SILENCE_WAV_PATH
             return SILENCE_WAV_PATH
 
-        handle = self.generate_audio(
+        command = self._build_synthesize_command(
             normalized_text,
+            audio_lan_choice,
             character,
             sakiko_state,
-            audio_lan_choice,
             segment_index=segment_index,
             segment_total=segment_total,
             emotion=emotion,
         )
+        if generation_options:
+            for key in ('speed_factor', 'fragment_interval'):
+                if key in generation_options:
+                    command['payload'][key] = float(generation_options[key])
+        handle = self.submit_voice_task(command)
         self.audio_file_path = self._wait_for_synthesize_result(handle)
         return self.audio_file_path
 

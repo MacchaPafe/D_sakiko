@@ -4,6 +4,7 @@
 !/docs/
 /docs/*
 !/docs/repair-feature-guide.md
+!/docs/desktop-pet.md
 !/docs/agents/
 !/docs/agents/**
 !/docs/adr/
