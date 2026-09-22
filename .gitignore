@@ -4,10 +4,13 @@
 !/docs/
 /docs/*
 !/docs/repair-feature-guide.md
+!/docs/desktop-pet.md
 !/docs/agents/
 !/docs/agents/**
 !/docs/adr/
 !/docs/adr/**
+!/docs/design/
+!/docs/design/**
 /live2d_related/
 /pythonProject1/
 /reference_audio/
@@ -70,6 +73,9 @@ publish_pipeline/**
 *.pyc
 PyQt-Fluent-Widgets/**
 knowledge_base/**
+**/.build/**
+*.migration-report.json
+*.source-acceptances.json
 install_patch/**
 wheels/**
 

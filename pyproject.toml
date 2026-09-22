@@ -78,8 +78,13 @@ dependencies = [
     "litellm>=1.83",
     "pyqt-fluent-widgets>=1.11",
     "requests>=2.32.5",
+    "jsonschema>=4.23",
+    "keyring>=25.6,<26",
     "platformdirs>=4.5.1",
     "rapidfuzz>=3.14.3",
+    # 世界书运行时派生索引
+    "qdrant-client>=1.17.1",
+    "sentence-transformers>=5.3.0",
     "coloraide>=8.11.1,<9",
     "pytest>=9.1.1",
 ]
@@ -99,6 +104,13 @@ cu128 = [
 ]
 release = [
     "boto3>=1.40,<2",
+]
+rag = [
+    "jinja2>=3.1.6",
+    "nicegui>=2.12.1",
+    "opencv-python>=4.5.1.48,<4.12",
+    "pysubs2>=1.8.1",
+    "rapidocr>=3.9.2,<4",
 ]
 
 [tool.uv]

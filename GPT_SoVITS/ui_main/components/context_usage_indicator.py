@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
+from PyQt5.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter, QPen
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -13,6 +13,9 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSlider,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -26,6 +29,91 @@ MIN_SUMMARY_THRESHOLD_PERCENT = 70
 MAX_SUMMARY_THRESHOLD_PERCENT = 90
 SUMMARY_THRESHOLD_STEP_PERCENT = 5
 DEFAULT_SUMMARY_THRESHOLD_PERCENT = 80
+
+
+class ContextUsageCheckBox(QCheckBox):
+    """绘制不依赖系统主题的上下文压缩复选框。"""
+
+    def __init__(
+        self,
+        text: str,
+        palette: ThemePalette,
+        parent: QWidget | None = None,
+    ) -> None:
+        """初始化复选框并保存其语义色板。"""
+
+        super().__init__(text, parent)
+        self._theme_palette = palette
+
+    def set_theme_palette(self, palette: ThemePalette) -> None:
+        """更新复选框绘制所使用的语义色板。"""
+
+        self._theme_palette = palette
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """绘制原生标签，并覆盖绘制清晰稳定的选中指示器。"""
+
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        painter = QStylePainter(self)
+        try:
+            painter.drawControl(QStyle.CE_CheckBox, option)
+            indicator = self.style().subElementRect(
+                QStyle.SE_CheckBoxIndicator,
+                option,
+                self,
+            )
+            indicator_rect = QRectF(indicator).adjusted(0.5, 0.5, -0.5, -0.5)
+            palette = self._theme_palette
+            checked = bool(option.state & QStyle.State_On)
+            enabled = bool(option.state & QStyle.State_Enabled)
+            hovered = bool(option.state & QStyle.State_MouseOver)
+
+            background = QColor(
+                palette.accent
+                if checked
+                else palette.surface_selected if hovered else palette.surface
+            )
+            border = QColor(palette.accent if checked else palette.border_subtle)
+            if not enabled:
+                background.setAlpha(150)
+                border.setAlpha(150)
+
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(border, 1.0))
+            painter.setBrush(background)
+            radius = max(2.0, min(indicator_rect.width(), indicator_rect.height()) * 0.2)
+            painter.drawRoundedRect(indicator_rect, radius, radius)
+
+            if checked:
+                check_color = QColor(palette.on_accent)
+                if not enabled:
+                    check_color.setAlpha(180)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(
+                    QPen(
+                        check_color,
+                        max(1.8, indicator_rect.width() * 0.13),
+                        Qt.SolidLine,
+                        Qt.RoundCap,
+                        Qt.RoundJoin,
+                    )
+                )
+                left = indicator_rect.left()
+                top = indicator_rect.top()
+                width = indicator_rect.width()
+                height = indicator_rect.height()
+                painter.drawLine(
+                    QPointF(left + width * 0.22, top + height * 0.52),
+                    QPointF(left + width * 0.43, top + height * 0.73),
+                )
+                painter.drawLine(
+                    QPointF(left + width * 0.43, top + height * 0.73),
+                    QPointF(left + width * 0.80, top + height * 0.28),
+                )
+        finally:
+            painter.end()
 
 
 class RollingSummaryPromptDialog(QDialog):
@@ -229,7 +317,11 @@ class ContextUsagePopup(QFrame):
         self.used_label = QLabel(self)
         self.limit_label = QLabel(self)
         self.percent_label = QLabel(self)
-        self.summary_enabled_checkbox = QCheckBox("启用上下文压缩", self)
+        self.summary_enabled_checkbox = ContextUsageCheckBox(
+            "启用上下文压缩",
+            palette,
+            self,
+        )
         self.summary_threshold_label = QLabel(self)
         self.summary_threshold_slider = QSlider(Qt.Horizontal, self)
         self.edit_summary_prompt_button = QPushButton("修改压缩提示词", self)
@@ -318,6 +410,7 @@ class ContextUsagePopup(QFrame):
         if not isinstance(palette, ThemePalette):
             raise TypeError("palette 必须是 ThemePalette")
         self._theme_palette = palette
+        self.summary_enabled_checkbox.set_theme_palette(palette)
         self._apply_style(self._font_size, self._line_height)
 
     def set_summary_threshold_ratio(self, ratio: float) -> None:
@@ -334,18 +427,36 @@ class ContextUsagePopup(QFrame):
 
     def set_summary_enabled(self, enabled: bool) -> None:
         """同步上下文压缩开关，不触发用户修改信号。"""
-        self.summary_enabled_checkbox.blockSignals(True)
-        self.summary_enabled_checkbox.setChecked(bool(enabled))
-        self.summary_enabled_checkbox.blockSignals(False)
-        self.summary_threshold_label.setEnabled(bool(enabled))
-        self.summary_threshold_slider.setEnabled(bool(enabled))
-        self.edit_summary_prompt_button.setEnabled(bool(enabled))
 
-    def _on_summary_enabled_changed(self, enabled: bool) -> None:
+        self._summary_enabled = bool(enabled)
+        self._apply_summary_enabled_state(self._summary_enabled)
+
+    def _apply_summary_enabled_state(self, enabled: bool) -> None:
+        """更新压缩控件的已提交状态，并阻止产生新的修改请求。"""
+
+        self.summary_enabled_checkbox.blockSignals(True)
+        self.summary_enabled_checkbox.setChecked(enabled)
+        self.summary_enabled_checkbox.blockSignals(False)
         self.summary_threshold_label.setEnabled(enabled)
         self.summary_threshold_slider.setEnabled(enabled)
         self.edit_summary_prompt_button.setEnabled(enabled)
-        self.summaryEnabledChanged.emit(enabled)
+
+    def _on_summary_enabled_changed(self, enabled: bool) -> None:
+        """恢复已提交状态，并在 Popup 关闭后异步请求开启压缩。"""
+
+        requested_enabled = bool(enabled)
+        self._apply_summary_enabled_state(self._summary_enabled)
+        if not requested_enabled:
+            self.summaryEnabledChanged.emit(False)
+            return
+
+        self.hide()
+        QTimer.singleShot(0, self._emit_summary_enable_request)
+
+    def _emit_summary_enable_request(self) -> None:
+        """在下一轮 Qt 事件循环中发送压缩开启请求。"""
+
+        self.summaryEnabledChanged.emit(True)
 
     def _edit_summary_prompt(self) -> None:
         self.hide()

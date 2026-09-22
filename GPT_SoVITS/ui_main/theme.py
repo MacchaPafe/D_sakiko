@@ -33,7 +33,7 @@ _DARK_ON_ACCENT_CHARACTER_SEEDS = frozenset({
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ThemePalette:
     """保存由角色原色衍生出的浅色界面语义色。"""
 
@@ -203,9 +203,7 @@ def _derive_normalized_theme_palette(normalized_seed: str) -> ThemePalette:
         _MIN_ACCENT_TEXT_CONTRAST,
     )
 
-    black_contrast = _contrast(accent, "#000000")
-    white_contrast = _contrast(accent, "#FFFFFF")
-    on_accent = "#FFFFFF" if black_contrast >= white_contrast else "#FFFFFF"
+    on_accent = "#FFFFFF"
     if normalized_seed in _DARK_ON_ACCENT_CHARACTER_SEEDS:
         on_accent = _tone_for_contrast(
             seed_hue,

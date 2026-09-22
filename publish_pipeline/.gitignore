@@ -1,0 +1,8 @@
+.venv/
+.pyinstaller-cache/
+build/
+dist/
+*.spec
+data/*
+!data/.gitkeep
+test-output/

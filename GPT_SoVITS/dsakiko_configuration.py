@@ -3,11 +3,13 @@ from __future__ import annotations
 import sys
 import contextlib
 import os
+from pathlib import Path
 
 from PyQt5.QtWidgets import (QApplication,
                              QVBoxLayout, QLabel,
                              QStackedWidget, QMainWindow, QWidget)
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QCloseEvent
 
 # 去广告
 with contextlib.redirect_stdout(None):
@@ -23,6 +25,7 @@ from ui.components.gpt_sovits_area import GPTSoVITSArea
 from ui.components.llm_api_area import LLMAPIArea
 from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
 from ui.interfaces.character_area import CharacterArea
+from ui.interfaces.worldbook_area import WorldbookArea
 from ui_main.threads.update_config_thread import notify_config_reload
 
 
@@ -149,6 +152,7 @@ class DSakikoConfigWindow(FluentWindow):
         :param initial_interface: 初始打开时显示的分栏界面，取值为界面的 object_name。如果不传、传空字符串或不存在的界面，则默认为配置界面。
         目前所有可选的输入为：
         - 'CharacterArea': 显示用户人设与角色查看页面
+        - 'WorldbookArea': 显示世界书管理页面
         - 'DSakikoConfigArea': 显示配置页面（默认）
         """
         super().__init__()
@@ -157,18 +161,29 @@ class DSakikoConfigWindow(FluentWindow):
         self.setMinimumSize(700, 800)
 
         self.character_area = CharacterArea(self)
+        self.worldbook_area = WorldbookArea(self, app_root=Path(__file__).resolve().parent.parent)
         self.config_area = DSakikoConfigArea()
         self.addSubInterface(self.character_area, FluentIcon.PEOPLE, self.tr("角色与用户人设"))
+        self.addSubInterface(self.worldbook_area, FluentIcon.DOCUMENT, self.tr("世界书"))
         self.addSubInterface(self.config_area, FluentIcon.SETTING, self.tr("设置"),
                              position=NavigationItemPosition.BOTTOM)
 
         self.object_name_to_interface = {
             self.character_area.objectName(): self.character_area,
+            self.worldbook_area.objectName(): self.worldbook_area,
             self.config_area.objectName(): self.config_area,
         }
 
         initial_widget = self.object_name_to_interface.get(initial_interface, self.config_area)
         self.switchTo(initial_widget)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """关闭配置窗口前处理世界书页面尚未保存的修改。"""
+
+        if not self.worldbook_area.resolve_pending_changes():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 if __name__ == '__main__':
@@ -185,9 +200,6 @@ if __name__ == '__main__':
     try:
         app = QApplication(sys.argv)
         w = DSakikoConfigWindow(sys.argv[1] if len(sys.argv) > 1 else "")
-        # 把配置区域的 closeEvent（按下“关闭窗口”键触发）绑定到 app.quit()，这样就能关闭整个配置应用
-        # 介于配置程序和主程序都不在一个解释器进程下执行，配置程序的 QApplication 退出不会影响主程序
-        w.closeEvent = lambda e: app.quit()
 
         w.show()
         sys.exit(app.exec_())

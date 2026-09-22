@@ -42,104 +42,6 @@ main_logger = get_logger(__name__)
 NO_AUDIO_TEXT_EVENT_PREFIX = "__NO_AUDIO_TEXT__:"
 
 
-def get_character_by_name(character_name: str) -> character.CharacterAttributes | None:
-    """按角色名查找角色对象。"""
-    for one_character in characters:
-        if one_character.character_name == character_name:
-            return one_character
-    return None
-
-
-def build_assistant_segment_event(
-    payload: dict[str, object],
-    segment: dict[str, object],
-    audio_path: str,
-) -> dict[str, object]:
-    """构造发给 qtUI 的 assistant 片段事件。"""
-    raw_message_index = segment.get("message_index")
-    message_index = raw_message_index if isinstance(raw_message_index, int) else -1
-    return {
-        "type": "assistant_segment_ready",
-        "chat_id": str(payload.get("chat_id") or ""),
-        "turn_id": str(payload.get("turn_id") or ""),
-        "message_index": message_index,
-        "character_name": str(payload.get("character_name") or ""),
-        "text": str(segment.get("text") or ""),
-        "translation": str(segment.get("translation") or ""),
-        "emotion": str(segment.get("emotion") or "LABEL_0"),
-        "audio_path": audio_path,
-    }
-
-
-def build_assistant_turn_phase_event(payload: dict[str, object], phase: str) -> dict[str, object]:
-    """构造发给 qtUI 的对话轮次阶段事件。"""
-    segments = payload.get("segments")
-    message_indices = []
-    if isinstance(segments, list):
-        for segment in segments:
-            if isinstance(segment, dict) and isinstance(segment.get("message_index"), int):
-                message_indices.append(segment["message_index"])
-    return {
-        "type": "assistant_turn_phase",
-        "chat_id": str(payload.get("chat_id") or ""),
-        "turn_id": str(payload.get("turn_id") or ""),
-        "phase": phase,
-        "message_indices": message_indices,
-    }
-
-
-def build_assistant_turn_complete_event(payload: dict[str, object], status: str = "ok") -> dict[str, object]:
-    """构造发给 qtUI 的对话轮次完成事件。"""
-    return {
-        "type": "assistant_turn_complete",
-        "chat_id": str(payload.get("chat_id") or ""),
-        "turn_id": str(payload.get("turn_id") or ""),
-        "status": status,
-    }
-
-
-def is_payload_turn_cancelled(payload: dict[str, object]) -> bool:
-    """判断当前 payload 对应轮次是否已被前端取消。"""
-    chat_id = str(payload.get("chat_id") or "")
-    turn_id = str(payload.get("turn_id") or "")
-    if not chat_id or not turn_id or not hasattr(dp_chat, "is_turn_cancelled"):
-        return False
-    return bool(dp_chat.is_turn_cancelled(chat_id, turn_id))
-
-
-def mark_segments_no_audio(payload: dict[str, object], segments_raw: list[object], start_index: int = 0) -> None:
-    """将尚未生成语音的段落标记为无语音。"""
-    chat_id = str(payload.get("chat_id") or "")
-    chat = dp_chat.chat_manager.get_chat_by_id(chat_id)
-    if chat is None:
-        return
-    for segment_raw in segments_raw[start_index:]:
-        if not isinstance(segment_raw, dict):
-            continue
-        raw_message_index = segment_raw.get("message_index")
-        if not isinstance(raw_message_index, int):
-            continue
-        if 0 <= raw_message_index < len(chat.message_list):
-            msg = chat.message_list[raw_message_index]
-            if not msg.audio_path:
-                msg.audio_path = "NO_AUDIO"
-
-
-def update_segment_audio_path(payload: dict[str, object], segment_raw: dict[str, object], audio_path: str) -> None:
-    """直接回填某个段落的音频路径，便于取消后保留已生成语音。"""
-    chat_id = str(payload.get("chat_id") or "")
-    chat = dp_chat.chat_manager.get_chat_by_id(chat_id)
-    if chat is None:
-        return
-    raw_message_index = segment_raw.get("message_index")
-    if not isinstance(raw_message_index, int):
-        return
-    if 0 <= raw_message_index < len(chat.message_list):
-        msg = chat.message_list[raw_message_index]
-        msg.audio_path = audio_path
-        msg.translation = str(segment_raw.get("translation") or msg.translation)
-
-
 def clear_text_generating_flag_if_needed() -> None:
     """取消或异常收尾时，确保 Live2D 不会一直停留在思考状态。"""
     try:
@@ -152,118 +54,15 @@ def clear_text_generating_flag_if_needed() -> None:
 
 def handle_model_response_payload(payload: dict[str, object]) -> None:
     """处理结构化模型回复事件，逐段合成语音并通知 UI。"""
-    character_name = str(payload.get("character_name") or "")
-    current_character = get_character_by_name(character_name)
-    segments_raw = payload.get("segments")
-    # 当前的模型回复是否是最终回复（完成整段对话）
-    turn_complete = bool(payload.get("turn_complete", True))
-    if current_character is None or not isinstance(segments_raw, list):
-        main_logger.warning("收到无效模型回复 payload：%s", payload)
-        is_audio_play_complete.put("yes")
-        if turn_complete:
-            dp2qt_queue.put(build_assistant_turn_complete_event(payload, "error"))
-        return
-
-    audio_language_choice = str(payload.get("audio_language_choice") or dp_chat.audio_language_choice)
-    sakiko_state = bool(payload.get("sakiko_state", dp_chat.sakiko_state))
-    if_generate_audio = bool(payload.get("if_generate_audio", dp_chat.if_generate_audio))
-    turn_status = "ok"
-
     try:
-        # 转阶段：要求 qtUI 更新当前阶段为语音生成
-        dp2qt_queue.put(build_assistant_turn_phase_event(payload, "tts"))
-        for index, segment_raw in enumerate(segments_raw):
-            if not isinstance(segment_raw, dict):
-                continue
-            # 如果用户要求取消，则终止这个语音生成流程
-            if is_payload_turn_cancelled(payload):
-                turn_status = "cancelled"
-                mark_segments_no_audio(payload, segments_raw, index)
-                break
-            text = str(segment_raw.get("text") or "")
-            translation = str(segment_raw.get("translation") or "")
-            emotion_label = str(segment_raw.get("emotion") or "LABEL_0")
-            force_no_audio = bool(segment_raw.get("force_no_audio", False)) or not if_generate_audio
-
-            if force_no_audio:
-                if index == 0:
-                    is_text_generating_queue.get()
-                audio_file_path_queue.put("../reference_audio/silent_audio/silence.wav")
-                dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, "NO_AUDIO"))
-                emotion_queue.put(emotion_label)
-                continue
-
-            #QT_message_queue.put(f"正在合成语音...{index + 1}/{len(segments_raw)}")
-            cleaned_text = clean_text_for_audio(text)
-            audio_generate_count = 1
-            generated_audio_path = "../reference_audio/silent_audio/silence.wav"
-
-            while audio_generate_count <= 2:
-                try:
-                    generated_audio_path = audio_gen.generate_audio_for_character_sync(
-                        cleaned_text,
-                        current_character,
-                        sakiko_state,
-                        audio_language_choice,
-                        segment_index=index + 1,
-                        segment_total=len(segments_raw),
-                        emotion=emotion_label,
-                    )
-                    break
-                except Exception:
-                    QT_message_queue.put("语音合成出错，重试中")
-                    audio_generate_count += 1
-                    main_logger.exception("语音合成错误")
-                    time.sleep(1)
-
-            if index == 0:
-                is_text_generating_queue.get()
-
-            if is_payload_turn_cancelled(payload):
-                turn_status = "cancelled"
-                mark_segments_no_audio(payload, segments_raw, index)
-                break
-
-            if audio_generate_count > 2:
-                generated_audio_path = "../reference_audio/silent_audio/silence.wav"
-
-            # 在播放期间如果用户要求取消，则标记剩余段落无语音并终止流程
-            while not motion_complete_value.value:
-                if is_payload_turn_cancelled(payload):
-                    turn_status = "cancelled"
-                    mark_segments_no_audio(payload, segments_raw, index)
-                    break
-                time.sleep(0.2)
-            if turn_status == "cancelled":
-                break
-
-            audio_gen.audio_file_path = generated_audio_path
-            update_segment_audio_path(payload, segment_raw, generated_audio_path)
-            audio_file_path_queue.put(generated_audio_path)
-
-            while not motion_complete_value.value:
-                if is_payload_turn_cancelled(payload):
-                    turn_status = "cancelled"
-                    mark_segments_no_audio(payload, segments_raw, index + 1)
-                    break
-                time.sleep(0.5)
-            if turn_status == "cancelled":
-                break
-
-            dp2qt_queue.put(build_assistant_segment_event(payload, segment_raw, generated_audio_path))
-            emotion_queue.put(emotion_label)
+        conversation_runtime.process_response(payload)
     except Exception:
-        turn_status = "error"
-        QT_message_queue.put("语音合成流程出错。")
-        main_logger.exception("处理模型回复 payload 时出错")
+        main_logger.exception('公共对话运行时处理回复失败')
+        conversation_runtime.accept_event(dict(payload, type='assistant_turn_complete', status='error'))
     finally:
-        if turn_status in {"cancelled", "error"}:
-            clear_text_generating_flag_if_needed()
-        is_audio_play_complete.put("yes")
-        if turn_complete:
-            dp2qt_queue.put(build_assistant_turn_complete_event(payload, turn_status))
-        if turn_status == "cancelled" and hasattr(dp_chat, "clear_cancelled_turn"):
-            dp_chat.clear_cancelled_turn(str(payload.get("chat_id") or ""), str(payload.get("turn_id") or ""))
+        clear_text_generating_flag_if_needed()
+        is_audio_play_complete.put('yes')
+
 
 def merge_short_sentences(sentences, min_length=25):
     merged = []
@@ -382,7 +181,7 @@ def main_thread():
 
                 # tr1 是 live2d 进程变量，我们等待 live2d 进程结束，再向 Qt 窗口发送退出信息。
                 global tr1
-                tr1.join()
+                presentation_router.close()
 
                 QT_message_queue.put('bye')
                 break
@@ -509,7 +308,11 @@ if __name__=='__main__':
     qt2dp_queue=Queue()
     QT_message_queue=Queue()
     char_is_converted_queue=multiprocessing.Queue()
-    change_char_queue=multiprocessing.Queue()
+    normal_change_char_queue=multiprocessing.Queue()
+    playback_events=multiprocessing.Queue()
+    from runtime.presentation import PresentationRouter
+    presentation_router = PresentationRouter(normal_change_char_queue)
+    change_char_queue = presentation_router
     # Live2D 跨进程通信
     live2d_text_queue=multiprocessing.Queue()  # 用于传递要显示的文本
     is_display_text_value=multiprocessing.Value('b', True)  # 是否显示文本
@@ -561,7 +364,15 @@ if __name__=='__main__':
                 except Exception:
                     pass  # 删不掉就跳过
 
+    from PyQt5.QtGui import QSurfaceFormat
+    gl_format = QSurfaceFormat()
+    gl_format.setVersion(2, 1)
+    gl_format.setAlphaBufferSize(8)
+    gl_format.setDepthBufferSize(24)
+    gl_format.setStencilBufferSize(8)
+    QSurfaceFormat.setDefaultFormat(gl_format)
     qt_app = QApplication(sys.argv)
+    qt_app.setQuitOnLastWindowClosed(False)
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 
     desktop_w = QDesktopWidget().screenGeometry().width()
@@ -574,23 +385,34 @@ if __name__=='__main__':
     # 在 MacOS 下，所有的 NSWindow（Qt 窗口）只能在独立进程中创建，不可以在子线程中创建窗口。
     # 由于 live2d 模块会创建一个窗口，我们必须使用多进程而非多线程实现并行。
     main_logger.info("加载Live2D界面中...")
-    tr1=multiprocessing.Process(target=live2d_module.run_live2d_process,args=(emotion_queue,audio_file_path_queue,is_text_generating_queue,char_is_converted_queue,change_char_queue,live2d_text_queue,is_display_text_value,motion_complete_value, desktop_w, desktop_h, get_log_queue()))
+    def create_normal_presentation():
+        ready_event = multiprocessing.Event()
+        process = multiprocessing.Process(target=live2d_module.run_live2d_process,
+            args=(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue,
+                  normal_change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value,
+                  desktop_w, desktop_h, get_log_queue(), playback_events, ready_event))
+        process.ready_event = ready_event
+        return process
+    presentation_router.factory = create_normal_presentation
+    from runtime.conversation import ConversationRuntime
+    conversation_runtime = ConversationRuntime(dp_chat, audio_gen, characters, qt2dp_queue, dp2qt_queue, presentation_router)
     # LLM 生成模块（该模块为不同线程）
-    tr2=threading.Thread(target=dp_chat.text_generator,args=(text_queue,
+    tr2=threading.Thread(target=dp_chat.text_generator, daemon=True, args=(text_queue,
                                                              is_audio_play_complete,
                                                              is_text_generating_queue,
-                                                             dp2qt_queue,
-                                                             qt2dp_queue,
+                                                             conversation_runtime.event_sink,
+                                                             conversation_runtime.input_queue,
                                                              QT_message_queue,
                                                              char_is_converted_queue,
                                                              change_char_queue,
                                                              audio_gen))
     # 主要的循环线程
-    tr3=threading.Thread(target=main_thread)
+    tr3=threading.Thread(target=main_thread, daemon=True)
     # 更新配置的线程
     tr4 = UpdateConfigThread("d_sakiko_config")
     tr4.reload_requested.connect(d_sakiko_config.reload_from_disk)
-    tr1.start()
+    presentation_router.start_normal()
+    tr1 = presentation_router.process
     tr2.start()
     tr3.start()
     tr4.start()
@@ -603,7 +425,13 @@ if __name__=='__main__':
                           audio_gen=audio_gen, live2d_text_queue=live2d_text_queue,
                           is_display_text_value=is_display_text_value, motion_complete_value=motion_complete_value,
                           emotion_queue=emotion_queue, audio_file_path_queue=audio_file_path_queue,
-                          change_char_queue=change_char_queue)
+                          change_char_queue=change_char_queue, conversation_runtime=conversation_runtime)
+
+    from desktop_pet.controller import DesktopController
+    desktop_controller = DesktopController(qt_win, presentation_router, playback_events,
+        char_is_converted_queue, conversation_runtime, motion_complete_value)
+    qt_win.desktop_controller = desktop_controller
+    qt_app.aboutToQuit.connect(desktop_controller.cleanup)
 
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
     # font_id = -1 表示 Qt 无法加载给定的字体。此时，不设置程序的字体。
@@ -646,6 +474,7 @@ if __name__=='__main__':
         pass
 
     # 理论上讲 main_thread 函数中已经调用过 tr1.join，等待过 live2d 进程结束；这里再调用一次不是必要的，但也没有副作用。
+    presentation_router.close()
     tr1.join(timeout=3)
     if tr1.is_alive():
         try:
@@ -653,8 +482,8 @@ if __name__=='__main__':
             tr1.join(timeout=3)
         except Exception:
             pass
-    tr2.join()
-    tr3.join()
+    tr2.join(timeout=3)
+    tr3.join(timeout=3)
     tr4.quit()
     tr4.wait(3000)
 

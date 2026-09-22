@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "request_id",
+    "created_at",
+    "app_version",
+    "rating",
+    "comment",
+    "target",
+    "conversation",
+    "prompt_context",
+    "worldbook_enabled",
+    "worldbook_diagnostics",
+    "consent"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "feedback"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "created_at": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "app_version": {
+      "type": "string",
+      "maxLength": 100
+    },
+    "rating": {
+      "enum": [
+        "up",
+        "down",
+        "none"
+      ]
+    },
+    "comment": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "target": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 999
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/conversation"
+        }
+      ]
+    },
+    "prompt_context": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "rendered_at"
+          ],
+          "properties": {
+            "source": {
+              "const": "rendered_at_feedback"
+            },
+            "rendered_at": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "worldbook_enabled": {
+      "type": "boolean"
+    },
+    "worldbook_diagnostics": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    },
+    "consent": {
+      "const": "feedback-v1-90d"
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "maxLength": 262144
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "strings": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/label"
+      }
+    },
+    "conversation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "messages",
+        "prompt_config"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/label"
+        },
+        "prompt_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "content"
+          ],
+          "properties": {
+            "type": {
+              "const": "static"
+            },
+            "content": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        "messages": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "character_name",
+              "text",
+              "translation",
+              "emotion"
+            ],
+            "properties": {
+              "character_name": {
+                "$ref": "#/$defs/label"
+              },
+              "text": {
+                "$ref": "#/$defs/text"
+              },
+              "translation": {
+                "$ref": "#/$defs/text"
+              },
+              "emotion": {
+                "enum": [
+                  "happiness",
+                  "sadness",
+                  "anger",
+                  "disgust",
+                  "like",
+                  "surprise",
+                  "fear"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entry_id": {
+          "$ref": "#/$defs/label"
+        },
+        "package_id": {
+          "$ref": "#/$defs/label"
+        },
+        "entry_type": {
+          "$ref": "#/$defs/label"
+        },
+        "score": {
+          "type": "number"
+        },
+        "boost": {
+          "type": "number"
+        },
+        "final_score": {
+          "type": "number"
+        },
+        "title": {
+          "$ref": "#/$defs/text"
+        },
+        "summary": {
+          "$ref": "#/$defs/text"
+        },
+        "thought_text": {
+          "$ref": "#/$defs/text"
+        },
+        "character_name": {
+          "$ref": "#/$defs/label"
+        },
+        "epistemic_status": {
+          "$ref": "#/$defs/label"
+        },
+        "participant_names": {
+          "$ref": "#/$defs/strings"
+        },
+        "content": {
+          "$ref": "#/$defs/text"
+        },
+        "state_summary": {
+          "$ref": "#/$defs/text"
+        },
+        "speech_hint": {
+          "$ref": "#/$defs/text"
+        },
+        "object_character_nickname": {
+          "$ref": "#/$defs/text"
+        },
+        "target_character_name": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "$ref": "#/$defs/text"
+        },
+        "tool_name": {
+          "$ref": "#/$defs/label"
+        },
+        "duration_sec": {
+          "type": "number"
+        },
+        "candidates": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/candidate"
+          }
+        },
+        "selected_thought_ids": {
+          "$ref": "#/$defs/strings"
+        },
+        "selected_event_ids": {
+          "$ref": "#/$defs/strings"
+        },
+        "linked_ids": {
+          "$ref": "#/$defs/strings"
+        },
+        "unauthorized_ids": {
+          "$ref": "#/$defs/strings"
+        },
+        "deduplicated_ids": {
+          "$ref": "#/$defs/strings"
+        },
+        "injected_events": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/candidate"
+          }
+        },
+        "injected_thoughts": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/candidate"
+          }
+        },
+        "returned_items": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/candidate"
+          }
+        },
+        "selected_entry_ids": {
+          "$ref": "#/$defs/strings"
+        },
+        "failure_codes": {
+          "$ref": "#/$defs/strings"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "format_version"
+      ],
+      "properties": {
+        "record_id": {
+          "$ref": "#/$defs/label"
+        },
+        "format_version": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "turn_id": {
+          "$ref": "#/$defs/label"
+        },
+        "status": {
+          "$ref": "#/$defs/label"
+        },
+        "started_at": {
+          "$ref": "#/$defs/label"
+        },
+        "finished_at": {
+          "$ref": "#/$defs/label"
+        },
+        "model": {
+          "$ref": "#/$defs/label"
+        },
+        "current_user_text": {
+          "$ref": "#/$defs/text"
+        },
+        "recent_conversation_text": {
+          "$ref": "#/$defs/text"
+        },
+        "candidate_response": {
+          "$ref": "#/$defs/text"
+        },
+        "final_response": {
+          "$ref": "#/$defs/text"
+        },
+        "snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "root_package_id": {
+              "$ref": "#/$defs/label"
+            },
+            "root_package_version": {
+              "$ref": "#/$defs/label"
+            },
+            "package_ids": {
+              "$ref": "#/$defs/strings"
+            },
+            "character_id": {
+              "$ref": "#/$defs/label"
+            },
+            "series_id": {
+              "$ref": "#/$defs/label"
+            },
+            "timeline_id": {
+              "$ref": "#/$defs/label"
+            },
+            "canon_branch": {
+              "$ref": "#/$defs/label"
+            },
+            "current_time": {
+              "type": [
+                "string",
+                "number",
+                "null"
+              ]
+            },
+            "story_year": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "episode": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        },
+        "direct_retrieval": {
+          "$ref": "#/$defs/retrieval"
+        },
+        "tool_calls": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/retrieval"
+          }
+        }
+      }
+    }
+  }
+}

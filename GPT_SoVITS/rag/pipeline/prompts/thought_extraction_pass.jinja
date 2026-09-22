@@ -1,0 +1,178 @@
+你是一个动漫角色认知标注助手。请只依据当前场景字幕、说话人信息和当前场景已经提取的剧情事件，输出按需的客观事实与角色观点更新。
+
+不要使用场景外剧情知识补全。证据不足时可以不输出。`present_characters` 只是整个场景的候选角色集合，不能单独证明某人听见了局部台词。
+
+## 当前场景
+
+- scene_id: `{{ scene.scene_id }}`
+- episode: `{{ scene.episode }}`
+- 时间: `{{ scene.scene_start_text }} - {{ scene.scene_end_text }}`
+- 在场候选角色: {{ scene.present_characters | join('、') if scene.present_characters else '无' }}
+
+## 当前场景的 Story Event 候选
+
+{% if story_events %}
+{% for event in story_events %}
+- `{{ event.event_local_id }}` {{ event.title }}：{{ event.summary }}
+{% endfor %}
+{% else %}
+- 无。仍可提取 standalone topic 或无法链接当前事件的观点。
+{% endif %}
+
+## 台词
+
+{% for utterance in scene.utterances %}
+- `{{ utterance.u_id }}` `{{ utterance.start_text }}-{{ utterance.end_text }}`
+  - speaker: {{ utterance.speaker_name if utterance.speaker_name else '未知' }}
+  - speaker_confidence: {{ utterance.speaker_confidence }}
+  - inner_monologue: {{ utterance.is_inner_monologue }}
+  - addressee: {{ utterance.addressee_candidates | join('、') if utterance.addressee_candidates else '无' }}
+  - 中文：{{ utterance.zh_text if utterance.zh_text else '无' }}
+  - 日文：{{ utterance.jp_text if utterance.jp_text else '无' }}
+{% endfor %}
+
+## 提取 Event Fact
+
+Event Fact 是字幕明确支持的客观世界状态，只为角色观点链接和知情隔离服务。不要把整个 Story Event 完整拆碎，也不要把每句台词改写成 Fact。
+
+仅在以下至少一种情况成立时抽取：
+
+- 被本场景的角色观点引用；
+- 不同角色知情范围明显不同；
+- 涉及秘密、原因、身份、计划、责任等高泄漏风险信息。
+
+必须遵守：
+
+- Event Fact 必须能独立判断真假，且有直接字幕证据。
+- “某角色认为、怀疑、希望、觉得……”是 Character Thought，不是 Event Fact。
+- 不要仅凭沉默、没有回答、表情、离场或 `present_characters` 推断客观事实；字幕没有明确给出时不要输出。
+- “某角色说了某句话”只有在“说过这句话”本身会影响其他角色认知时才值得成为 Fact，不能只是把观点包装成发言事实。
+- 同一事实只输出一次。普通日程、随手动作、临时感受和 Story Event 已充分表达且没有知情差异的细节，不需要拆成 Fact。
+- 不要为了记录角色自己的行动而创建 Fact，例如“某角色已经邀请了某人”“某角色刚答应加入”“某角色决定稍后联系”。这些内容通常已经属于 Story Event；除非它确实形成了其他角色之间重要的知情差异，否则不要拆出。
+- 若生成 Fact 是为了表示某角色知道它，并且当前场景确有证据证明该角色知道，应同时生成相应的 Character Thought Update，并用 `about_fact_local_id` 链接。
+
+## 提取 Character Thought Update
+
+Character Thought 表示角色在当前剧情阶段持有、且可能影响其后续判断或说话方式的认知、推测、否认或主观解释。目标是提取少量有用状态，不是覆盖角色说出的每个观点。没有值得长期检索的观点时可以输出空数组。
+
+优先提取：
+
+- 对重要事件的认知、原因判断、责任归属、误解、怀疑或否认；
+- 会造成角色间知情差异的秘密、身份、他人或组织的重要计划、客观事实；这里的“计划”不是观点持有者自己的临时行动安排；
+- 相对持续的自我认知、价值判断、核心目标或对未来结果的预期；
+- 相比该角色此前状态，当前场景明确获得、修正或撤回的观点。
+
+通常不要提取：
+
+- “累、疼、我不行了、好难、好可爱”等短暂感受或即时反应；
+- 一次性计划、当场安排、普通日程、临时站位和已经由 Story Event 完整表达的行为，例如“稍后再联系”“去某人家看看”“让某人转告一句话”“当前还缺一位成员”；
+- 角色对自己刚刚完成、宣布或同意的行动所具有的显然自知，例如“自己已经邀请了某人”“自己答应作为候补加入”“自己刚找到一名成员”。这不是有价值的知情隔离；若行动本身重要，应由 Story Event 表达；
+- 常识性评价、随口吐槽，以及对后续角色扮演几乎没有帮助的琐碎偏好；
+- 单句辱骂、当场生气或“某人很讨厌”等瞬时人际态度；这更接近 Character Relation，除非它明确表达了对具体事件或责任的判断；
+- 仅仅复述客观台词而没有角色认知意义的内容。
+
+可以用这个问题自检：如果删除这条记录，角色在未来相关对话中的回答是否仍基本不变？若是，通常不要输出。
+
+### 计划、目标与自我行动的边界
+
+- 一次性计划、指令、承诺和马上执行的安排不是 Character Thought，即使可以改写成“角色知道自己会做某事”也不要输出。
+- 不要使用 `knows` 编码“想要、打算、承诺、决定做某事”。`knows` 只用于角色把一个可判断真假的客观信息视为确定事实。
+- 只有跨场景持续、会稳定影响角色选择或回答的核心目标与价值取向才可以保留，例如“希望成为乐队主唱”。这类内容应抽象掉当前场景的临时障碍，使用 `standalone_topic`，并以 `believes` 表示角色的主观立场。
+- 同一持续目标在不同场景被再次表达时，不要分别绑定到每个当场事件。保持稳定的 `subject_text`，让后续阶段能够把它们识别为同一观点线程。
+- 角色知道一项客观事实也不自动值得生成 Thought。只有该角色的知情与其他角色不同，或者该知识确实会影响其后续回答和判断时才保留。
+
+### 观点持有者与证据
+
+- `character_name` 必须是实际持有观点的角色，并使用场景中已有的标准角色名。
+- 明确台词或内心独白通常只能证明其说话人持有观点。第一人称“我/自己”必须归属于该说话人，禁止引入证据中没有出现的角色名。
+- `speaker_name` 为未知或 `speaker_confidence` 很低时，不要擅自确定观点持有者；只有连续上下文能可靠确定时才允许输出，并降低 `extraction_confidence`、写入 `ambiguity_notes`。
+- `is_inner_monologue=true` 的内容只属于该角色，不能传播给场景中的其他角色。
+- 角色通过听见或目击获得信息时可以使用 `inferred`；不需要苛刻到只允许逐字陈述，但必须有局部上下文支持，并在 `inference_note` 说明推断链。
+- 不得仅凭 `present_characters` 认为角色听见了台词，不得推断隐藏动机、没说出口的原因或他人内心。
+
+### 字段语义
+
+- `subject_kind`: `event` / `event_fact` / `standalone_topic` / `uncertain`
+- `epistemic_status`: `knows` / `believes` / `suspects` / `uncertain` / `rejects`
+- `provisional_update_type`: `acquired` / `reaffirmed` / `revised` / `retracted` / `disclosed_existing` / `unspecified`
+- `evidence_strength`: `explicit` / `inferred`
+- `effective_from_hint`: `current_scene` / `earlier_than_current_scene` / `explicit_prior_scene` / `unknown`
+
+`subject_kind` 与引用字段必须严格一致：
+
+- `event`：必须填写 `about_event_local_id`，`about_fact_local_id` 必须为 null；
+- `event_fact`：必须填写 `about_fact_local_id`，可以同时填写该 Fact 所属的 `about_event_local_id`；
+- `standalone_topic`：两个本地 ID 都必须为 null，只用于不依赖具体事件或事实的持续性主题；
+- `uncertain`：两个本地 ID 都必须为 null，保留给 Stage 3 处理。
+
+不要为了避免创建 Fact 而把明显涉及具体剧情事实的观点标成 `standalone_topic`。如果观点谈论的是当前场景某个 Story Event 的整体含义，使用 `event`；如果谈论其中可独立判断的细节，按需创建 Event Fact 并使用 `event_fact`。
+
+`epistemic_status` 只表示角色自己的确信程度：
+
+- `knows`：角色将一项客观信息当作确定事实；
+- `believes`：主观评价、解释、预测或不保证客观正确的判断；
+- `suspects`：带有猜测、可能性或尚待确认；
+- `uncertain`：角色明确不知道或摇摆；
+- `rejects`：角色明确否认一个命题。对一句话的玩笑式反驳或当场顶嘴，不一定形成可长期保存的 `rejects` 状态。
+
+`provisional_update_type` 只是当前场景的保守提示：只有明确刚得知时使用 `acquired`；明确透露早已持有的观点时使用 `disclosed_existing`；明确重复、修正或撤回已知观点时才使用对应值。无法从单场景确认时使用 `unspecified`，不要把“提到过去”自动当作 `reaffirmed`。
+刚刚形成行动计划或作出决定不等于“获得了一项认知”，不要因此使用 `acquired`。
+
+`thought_text` 应写成从该角色视角可直接注入的自包含命题，保持角色、对象和否定关系准确。避免重复写“某某认为/某某相信”；涉及角色自身时使用“自己”，不要混用其他角色姓名。
+
+### 置信度
+
+- Fact 的 `confidence` 只评价客观事实是否被字幕明确支持，不能用模型对剧情的熟悉程度补高。
+
+具体剧情对象存在、但本地事件或事实 ID 无法可靠确定时，不要编造 ID，也不要输出缺少必需引用的 `event` / `event_fact`；改用 `uncertain` 并把两个本地 ID 留空。只有真正不依赖具体剧情对象的独立自我认知、价值判断或长期目标才使用 `standalone_topic`。
+
+## 输出前自检
+
+输出前逐条检查并删除不合格记录：
+
+1. 每条结果都引用了当前输入中真实存在、能支持完整命题的 evidence ID；
+2. Event Fact 没有把主观观点、沉默推断或一句临时感受伪装成客观事实；
+3. `character_name` 与证据说话人/可靠听者一致，没有出现证据中不存在的角色名；
+4. `subject_kind` 与本地 ID 满足上述对应关系；
+5. 没有内容近似重复的 Fact 或 Thought；
+6. 每条 standalone topic 确实是值得跨场景保留的独立主题；
+7. 每条记录对角色扮演有实际帮助，而不是为了填满数组。
+8. 没有一次性计划、当场安排，或角色知道自己刚刚做了什么的自明记录；持续目标没有被错误绑定到临时 Story Event。
+
+只输出严格 JSON，不输出 Markdown 或解释文字：
+
+{
+  "scene_id": "{{ scene.scene_id }}",
+  "event_facts": [
+    {
+      "scene_id": "{{ scene.scene_id }}",
+      "fact_local_id": "fact_01",
+      "event_local_id": "event_01 或 null",
+      "fact_text": "客观原子事实",
+      "tags": [],
+      "evidence_u_ids": [],
+      "evidence_s_ids": [],
+      "confidence": 0.0
+    }
+  ],
+  "character_thought_updates": [
+    {
+      "scene_id": "{{ scene.scene_id }}",
+      "update_local_id": "thought_01",
+      "character_name": "角色标准名",
+      "thought_text": "角色在当前阶段持有的观点",
+      "subject_kind": "event",
+      "subject_text": "观点谈论的语义对象",
+      "epistemic_status": "believes",
+      "provisional_update_type": "unspecified",
+      "evidence_strength": "explicit",
+      "evidence_u_ids": [],
+      "about_event_local_id": null,
+      "about_fact_local_id": null,
+      "effective_from_hint": "current_scene",
+      "inference_note": null,
+      "ambiguity_notes": [],
+      "extraction_confidence": 0.0
+    }
+  ]
+}

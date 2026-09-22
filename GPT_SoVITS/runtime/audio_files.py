@@ -15,4 +15,3 @@ def allocate_output_wav_path(output_dir: str) -> str:
         except FileExistsError:
             continue
         return output_wav_path
-

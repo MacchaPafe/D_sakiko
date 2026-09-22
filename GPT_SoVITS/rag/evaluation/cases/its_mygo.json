@@ -1,0 +1,143 @@
+{
+  "format_version": 1,
+  "dataset_id": "its-mygo-reviewed-episodes-1-2-v1",
+  "description": "基于当前正式 MyGO 第 1～2 集世界书内容建立的小样本检索验收集；随审核分集继续扩展。",
+  "cases": [
+    {
+      "case_id": "lore-crychic",
+      "description": "精确专名 CRYCHIC 应返回旧乐队 Lore。",
+      "query_type": "lore",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "anon",
+      "query": "CRYCHIC 是什么乐队？",
+      "expected_entry_ids": ["1fca6ace-0c60-4905-8174-8fc98e24de1e"]
+    },
+    {
+      "case_id": "lore-ring",
+      "description": "精确专名 RiNG 应返回 Live House 分店 Lore。",
+      "query_type": "lore",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "anon",
+      "query": "RiNG 是什么地方？",
+      "expected_entry_ids": ["6d64ab22-a123-4792-a3d5-dac6ed36e75f"]
+    },
+    {
+      "case_id": "lore-tsukinomori",
+      "description": "学校专名月之森应返回对应学校设定。",
+      "query_type": "lore",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 2,
+      "character_id": "anon",
+      "query": "月之森是什么样的学校？",
+      "expected_entry_ids": ["bd2fdba1-abc2-4e96-b327-401c311c7178"]
+    },
+    {
+      "case_id": "lore-astronomy-club",
+      "description": "天文部查询应返回灯所在社团设定。",
+      "query_type": "lore",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "anon",
+      "query": "灯参加的天文部现在有几个人？",
+      "expected_entry_ids": ["fdbbd645-1291-4e66-9e66-243d80861b3f"]
+    },
+    {
+      "case_id": "direct-anon-live-goal",
+      "description": "第 1 集爱音谈组乐队目标时应召回举办 Live 的愿望。",
+      "query_type": "direct_thought",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "anon",
+      "query": "我为什么想赶快组建乐队，之后想做什么？",
+      "current_user_text": "组好乐队以后我想做什么？",
+      "expected_entry_ids": ["d921c3b4-209f-4406-81de-11f05de208f1"]
+    },
+    {
+      "case_id": "direct-anon-knows-tomori-past",
+      "description": "第 1 集爱音应知道灯以前参加过乐队。",
+      "query_type": "direct_thought",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "anon",
+      "query": "灯以前参加过乐队吗，她现在还有乐队吗？",
+      "expected_entry_ids": ["c4340e05-909d-4cb7-8a30-0a08bc26cfb4"]
+    },
+    {
+      "case_id": "direct-tomori-failure-fear",
+      "description": "灯视角应召回重新组乐队仍可能失败的预期。",
+      "query_type": "direct_thought",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "tomori",
+      "query": "如果重新组建乐队，灯担心会发生什么？",
+      "expected_entry_ids": ["a56513cd-9038-4037-b30e-87cc96bdfb2a"]
+    },
+    {
+      "case_id": "direct-episode2-invitation-reflection",
+      "description": "第 2 集爱音应能回忆自己邀请灯时可能太急切。",
+      "query_type": "direct_thought",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 2,
+      "character_id": "anon",
+      "query": "我之前邀请灯组乐队的方式是不是太急了？",
+      "expected_entry_ids": ["8569eee2-df42-4ae2-9d0a-91732d49befc"]
+    },
+    {
+      "case_id": "safety-no-episode2-thought-at-episode1",
+      "description": "第 1 集不得泄露第 2 集才产生的邀请方式反思。",
+      "query_type": "direct_thought",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "anon",
+      "query": "我邀请灯的时候是不是太急切了？",
+      "forbidden_entry_ids": ["8569eee2-df42-4ae2-9d0a-91732d49befc"]
+    },
+    {
+      "case_id": "safety-no-sakiko-perspective-for-anon",
+      "description": "爱音视角不得读取祥子对退出原因的主观认知。",
+      "query_type": "direct_thought",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 2,
+      "character_id": "anon",
+      "query": "祥子为什么退出 CRYCHIC？",
+      "forbidden_entry_ids": ["ac751618-0562-430a-ab6d-5dde8647641f"]
+    },
+    {
+      "case_id": "relation-anon-tomori-episode1",
+      "description": "第 1 集爱音对灯应是主动鼓励和接近的关系状态。",
+      "query_type": "relation",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 1,
+      "character_id": "anon",
+      "target_character_id": "tomori",
+      "query": "我现在如何对待灯、如何邀请她组乐队？",
+      "expected_entry_ids": ["71899211-e634-486e-a2d0-348a421aa105"],
+      "forbidden_entry_ids": ["d8993411-e3da-4b2a-87ac-547921287ea4"]
+    },
+    {
+      "case_id": "relation-anon-tomori-episode2",
+      "description": "第 2 集爱音对灯的当前关系应更新为尊重边界的关心。",
+      "query_type": "relation",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 2,
+      "character_id": "anon",
+      "target_character_id": "tomori",
+      "query": "道歉以后，我现在会怎样尊重灯的边界并继续关心她？",
+      "expected_entry_ids": ["d8993411-e3da-4b2a-87ac-547921287ea4"],
+      "forbidden_entry_ids": ["71899211-e634-486e-a2d0-348a421aa105"]
+    },
+    {
+      "case_id": "negative-unrelated-direct",
+      "description": "与世界书完全无关的技术问题不应强行直接注入角色观点。",
+      "query_type": "direct_thought",
+      "root_package_id": "official.bang_dream.its_mygo",
+      "episode": 2,
+      "character_id": "anon",
+      "query": "请推导量子色动力学的重整化群方程。",
+      "current_user_text": "量子色动力学重整化群",
+      "expect_empty": true
+    }
+  ]
+}

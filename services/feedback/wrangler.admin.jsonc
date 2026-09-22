@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "155808c4f6d4785b0971d407f9da2258",
+  "name": "dsakiko-feedback-admin",
+  "main": "src/admin.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {"ACCESS_TEAM": "raspy-wind-1f2a", "ACCESS_AUD": "14462a3c33683631276473d70baba17ce7b01d94b7f1f70b03462f4c0e5e2c5c"},
+  "d1_databases": [{"binding": "DB", "database_name": "dsakiko-feedback", "database_id": "e256eab8-667b-49f9-91aa-d599350a70bc", "migrations_dir": "migrations"}],
+  "routes": [
+    {
+      "pattern": "feedback-admin.dsakiko.com",
+      "custom_domain": true
+    }
+  ]
+}

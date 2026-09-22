@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import contextlib
-import math
 import re
 import time
-import wave
-from random import random
 from live2d.utils.lipsync import WavHandler
 import glob, os, sys
 
@@ -75,47 +72,21 @@ class BackgroundRen(object):
         glTexCoord2f(0, 1);glVertex3f(*args[0])
         glEnd()
 
-idle_recover_timer=time.time()
 
-class Live2DModule:
+from runtime.single_character_performance import SingleCharacterPerformance
+
+
+class Live2DModule(SingleCharacterPerformance):
     def __init__(self):
         self.PATH_JSON=None
         self.BACK_IMAGE=None
         self.BACKGROUND_POSITION=((-1.0, 1.0, 0), (1.0, -1.0, 0), (1.0, 1.0, 0), (-1.0, -1.0, 0))
-        self.motion_is_over=False
-        self.wavHandler=WavHandler()
-        self.lipSyncN:float=1.4
-        self.live2d_this_turn_motion_complete=True
-        self.think_motion_is_over=True
-        self.run=True
-        self.sakiko_state=True
-        self.if_sakiko=False
-        self.if_mask=True
-        self.character_list=[]
+        super().__init__()
+        self.character_list = []
         self.character_by_name = {}
         self.character_by_folder = {}
-        self.current_character_name = ""
-        self.current_model_json: str | None = None
-        self.is_display_text=True
-        self.new_text=''
-
-        #解决睁眼太快的突兀问题，强制睁眼过渡
-        self.force_eyes_open = False
-        self.eye_open_pending = False
-        self.eye_open_transition_start = 0.0
-        self.eye_open_transition_duration = 0.1
-        self.eye_open_param_ids = ("eye_l_open", "eye_r_open")
-        self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
-        
-        # 长音频动作循环状态机
-        self.long_audio_motion_threshold_seconds = 6.0  #超过这个时长的音频才会触发
-        self.long_audio_motion_repeat_delay_seconds = 2.5   #每次动作结束后等待这么久才触发下一次，防止动作切换过快
-        self.long_audio_motion_max_repeats = 2  #最长音频动作循环的最大重复次数，防止某些极端长的音频导致动作一直循环，这也有点人机
-        self.long_audio_motion_repeat_count = 0
-        self.long_audio_motion_active = False
-        self.long_audio_motion_group = ""
-        self.long_audio_next_motion_at = 0.0
-        self.long_audio_duration_seconds = 0.0
+        self.current_character_name = ''
+        self.current_model_json = None
 
     @property
     def current_character(self):
@@ -194,196 +165,6 @@ class Live2DModule:
             self.back_img_index = self.BACK_IMAGE.index(config_data)
 
 
-    # 动作播放开始后调用
-    def onStartCallback(self,*args):
-        self.motion_is_over=False
-        self._reset_eye_open_transition()
-        #print(f"touched and motion [] is started")
-
-    def onStartCallback_think_motion_version(self,*args):
-        self.think_motion_is_over = False
-        self._reset_eye_open_transition()
-        if self.if_sakiko:
-            pygame.display.set_caption("小祥思考中")
-        else:
-            pygame.display.set_caption(f"{self.current_character.character_name}思考中")
-
-    def onStartCallback_emotion_version(self,audio_file_path,*args):
-        self.motion_is_over=False
-        self._reset_eye_open_transition()
-        #print(f"touched and motion [] is started")
-        logger = get_logger(__name__)
-        if not audio_file_path or not os.path.isfile(audio_file_path):
-            logger.warning("跳过无效音频路径：%s", audio_file_path)
-            return
-        try:
-            # 播放音频
-            pygame.mixer.music.load(audio_file_path)
-            pygame.mixer.music.play()
-        except pygame.error as exc:
-            logger.warning("播放音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
-            return
-        # 处理口型同步
-        if audio_file_path!='../reference_audio/silent_audio/silence.wav':  #该函数无法处理无声音频
-            try:
-                self.wavHandler.Start(audio_file_path)
-            except Exception as exc:
-                logger.warning("口型同步读取音频失败，已跳过：%s，错误：%s", audio_file_path, exc)
-
-    # 动作播放结束后调用
-    def onFinishCallback(self, *args):
-        #print("motion finished")
-        self.motion_is_over=True
-        self._queue_eye_open_transition()
-        global idle_recover_timer
-        idle_recover_timer = time.time()
-
-    def onFinishCallback_think_motion_version(self, *args):
-        self.think_motion_is_over=True
-        self._queue_eye_open_transition()
-
-    def _reset_eye_open_transition(self):
-        self.force_eyes_open = False
-        self.eye_open_pending = False
-        self.eye_open_transition_start = 0.0
-        self.eye_open_start_values = {param_id: 1.0 for param_id in self.eye_open_param_ids}
-
-    def _queue_eye_open_transition(self):
-        self.force_eyes_open = False
-        self.eye_open_pending = True
-        self.eye_open_transition_start = 0.0
-
-    def _get_model_parameter_value(self, model, param_id: str, default: float = 1.0) -> float:
-        get_parameter_value = getattr(model, "get_parameter_value", None)
-        if callable(get_parameter_value):
-            try:
-                return float(get_parameter_value(param_id, default))
-            except Exception:
-                return default
-        try:
-            for index in range(model.GetParameterCount()):
-                param = model.GetParameter(index)
-                if getattr(param, "id", "") == param_id:
-                    return max(0.0, min(1.0, float(getattr(param, "value", default))))
-        except Exception:
-            pass
-        return default
-
-    def _set_model_eye_open_values(self, model, value_by_param_id):
-        set_parameter_value = getattr(model, "set_parameter_value", None)
-        if callable(set_parameter_value):
-            for param_id, value in value_by_param_id.items():
-                try:
-                    set_parameter_value(param_id, value)
-                except Exception:
-                    pass
-            return
-        try:
-            for param_id, value in value_by_param_id.items():
-                model.SetParameterValue(param_id, value)
-        except Exception:
-            pass
-
-    def _update_eye_open_transition(self, model):
-        if self.eye_open_pending:
-            self.eye_open_start_values = {
-                param_id: self._get_model_parameter_value(model, param_id)
-                for param_id in self.eye_open_param_ids
-            }
-            if self.eye_open_start_values.get("eye_l_open", 1.0) > 0.5:
-                self._reset_eye_open_transition()
-                return
-            self.eye_open_transition_start = time.time()
-            self.eye_open_pending = False
-
-        if self.eye_open_transition_start <= 0:
-            if self.force_eyes_open:
-                self._set_model_eye_open_values(model, {param_id: 1.0 for param_id in self.eye_open_param_ids})
-                self._reset_eye_open_transition()
-            return
-
-        elapsed = time.time() - self.eye_open_transition_start
-        progress = max(0.0, min(1.0, elapsed / self.eye_open_transition_duration))
-        eye_values = {
-            param_id: start_value + (1.0 - start_value) * progress
-            for param_id, start_value in self.eye_open_start_values.items()
-        }
-        self._set_model_eye_open_values(model, eye_values)
-        if progress >= 1.0:
-            self._set_model_eye_open_values(model, {param_id: 1.0 for param_id in self.eye_open_param_ids})
-            self._reset_eye_open_transition()
-
-    def _reset_long_audio_motion_loop(self):
-        self.long_audio_motion_active = False
-        self.long_audio_motion_group = ""
-        self.long_audio_next_motion_at = 0.0
-        self.long_audio_duration_seconds = 0.0
-        self.long_audio_motion_repeat_count = 0
-
-    def _get_audio_duration_seconds(self, audio_file_path: str) -> float:
-        if not audio_file_path or not os.path.isfile(audio_file_path):
-            return 0.0
-        try:
-            with wave.open(audio_file_path, "rb") as audio_file:
-                frame_rate = audio_file.getframerate()
-                if frame_rate <= 0:
-                    return 0.0
-                return audio_file.getnframes() / frame_rate
-        except Exception:
-            pass
-        try:
-            return float(pygame.mixer.Sound(audio_file_path).get_length())
-        except Exception:
-            return 0.0
-
-    def _prepare_long_audio_motion_loop(self, motion_group: str, audio_file_path: str):
-        duration = self._get_audio_duration_seconds(audio_file_path)
-        if duration < self.long_audio_motion_threshold_seconds:
-            self._reset_long_audio_motion_loop()
-            return
-        self.long_audio_motion_active = True
-        self.long_audio_motion_group = motion_group
-        self.long_audio_next_motion_at = 0.0
-        self.long_audio_duration_seconds = duration
-        self.long_audio_motion_repeat_count = 0
-
-    def _update_long_audio_motion_loop(self, model):
-        if not self.long_audio_motion_active:
-            return
-        if not pygame.mixer.music.get_busy():
-            self._reset_long_audio_motion_loop()
-            return
-        if not self.motion_is_over:
-            return
-        if not self.long_audio_motion_group:
-            self._reset_long_audio_motion_loop()
-            return
-        if self.long_audio_motion_repeat_count >= self.long_audio_motion_max_repeats:
-            return
-
-        now = time.time()
-        if self.long_audio_next_motion_at <= 0:
-            self.long_audio_next_motion_at = now + self.long_audio_motion_repeat_delay_seconds
-            return
-        if now < self.long_audio_next_motion_at:
-            return
-
-        self.motion_is_over = False
-        started = model.StartRandomMotion(
-            self.long_audio_motion_group,
-            3,
-            self.onStartCallback,
-            self.onFinishCallback,
-            position="C",
-        )
-        if not started:
-            self.motion_is_over = True
-            self._reset_long_audio_motion_loop()
-            return
-        self.long_audio_motion_repeat_count += 1
-        self.long_audio_next_motion_at = 0.0
-
-
     def save_l2d_json_paths_and_bg(self):
         l2d_json_paths_dict = {}
         for char in self.character_list:
@@ -404,7 +185,7 @@ class Live2DModule:
                     motion_complete_value,
                     desktop_w,
                     desktop_h,
-                    log_queue):
+                    log_queue, playback_events=None, ready_event=None):
         setup_worker_logging(log_queue)
         logger = get_logger(__name__)
 
@@ -470,6 +251,8 @@ class Live2DModule:
             model.SetSemanticExpression('serious')
 
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.current_character.character_name])
+        self.on_event = playback_events.put if playback_events is not None else lambda event: None
+        self.on_subtitle = lambda text: overlay.set_text(self.current_character.character_name, text)
         glEnable(GL_TEXTURE_2D)
 
         texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
@@ -582,15 +365,16 @@ class Live2DModule:
 
         apply_current_layout()
 
-        mouse_position_x = 0
+        interaction_requested = False
         last_saved_time=time.time()     #待机动作计时器
         last_saved_time_think=time.time()
-        global idle_recover_timer
 
         interval_think=1
         if_bye = False
         last_emotion = None
         logger.info("当前Live2D界面渲染硬件 %s", glGetString(GL_RENDERER).decode())
+        if ready_event is not None:
+            ready_event.set()
 
         is_update_mouth_sync = 0
         mouth_keep_open_value:float=0.0
@@ -625,7 +409,7 @@ class Live2DModule:
                         layout_dragging = False
                         layout_last_mouse_pos = None
                     elif not layout_editing and event.button == 1:
-                        mouse_position_x, _= event.pos
+                        interaction_requested = True
                 elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
                     if layout_last_mouse_pos is not None:
                         last_x, last_y = layout_last_mouse_pos
@@ -700,7 +484,7 @@ class Live2DModule:
                     break
                 except Exception:
                     break
-            if latest_text is not None:
+            if latest_text is not None and not self.structured_mode:
                 self.new_text = latest_text
                 if not layout_editing:
                     overlay.set_text(self.current_character.character_name, self.new_text)
@@ -718,36 +502,16 @@ class Live2DModule:
                     continue
 
                 command_type = str(x.get("type") or "")
-                if command_type =='start_talking':   #录音时
+                if command_type in {'play_segment', 'thinking', 'generation_finished', 'cancel_turn'}:
+                    self.command(x, model)
+                elif command_type =='start_talking':   #录音时
+                    self.recording = True
                     self._reset_long_audio_motion_loop()
                     model.StartRandomMotion("talking_motion", 4, self.onStartCallback, position="C")
                 elif command_type=='stop_talking':   #录音结束
+                    self.recording = False
                     self._reset_long_audio_motion_loop()
                     self.onFinishCallback()
-                elif command_type == "cancel_turn":
-                    self._reset_long_audio_motion_loop()
-                    pygame.mixer.music.stop()
-                    self.wavHandler = WavHandler()
-                    self.motion_is_over = True
-                    self.think_motion_is_over = True
-                    self.live2d_this_turn_motion_complete = True
-                    motion_complete_value.value = True
-                    overlay.set_text(self.current_character.character_name, '...')
-                    saw_bye = False
-                    while not emotion_queue.empty():
-                        try:
-                            queued_emotion = emotion_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                        if queued_emotion == "bye":
-                            saw_bye = True
-                    while not audio_file_queue.empty():
-                        try:
-                            audio_file_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                    if saw_bye:
-                        emotion_queue.put("bye")
                 elif command_type=='change_l2d_background':
                     glActiveTexture(GL_TEXTURE0)  # 必加，否则白屏
                     glDeleteTextures([texture])
@@ -758,6 +522,7 @@ class Live2DModule:
                         pygame.image.load(self.BACK_IMAGE[self.back_img_index]).convert_alpha())
                     render_background(texture)
                 elif command_type == "switch_live2d":
+                    self.sakiko_state = bool(x.get("sakiko_state", self.sakiko_state))
                     if layout_editing:
                         exit_layout_edit_mode()
                     self._reset_long_audio_motion_loop()
@@ -813,7 +578,7 @@ class Live2DModule:
                 else:
                     logger.warning("忽略未知 Live2D 命令：%s", x)
 
-            if not is_text_generating_queue.empty() and self.think_motion_is_over:  # 思考时
+            if not self.structured_mode and not is_text_generating_queue.empty() and self.think_motion_is_over:  # 思考时
                 if time.time()-last_saved_time_think>interval_think:
                     model.StartRandomMotion("text_generating",3,self.onStartCallback_think_motion_version, self.onFinishCallback_think_motion_version, position="C")
 
@@ -828,76 +593,38 @@ class Live2DModule:
                 else:
                     pygame.display.set_caption(f"{self.current_character.character_name}")
 
-            if self.motion_is_over and not pygame.mixer.music.get_busy():  #恢复idle动作
-                if is_text_generating_queue.empty() and time.time()-idle_recover_timer>2.5:
+            if not self.structured_mode and self.motion_is_over and not pygame.mixer.music.get_busy():  #恢复idle动作
+                if is_text_generating_queue.empty() and time.time()-self.idle_recover_timer>2.5:
                     model.StartRandomMotion("idle_motion", 1, self.onStartCallback, position="C")
 
-            if (time.time()-last_saved_time)>25 :   #待机动作
+            if not self.structured_mode and (time.time()-last_saved_time)>25 :   #待机动作
                 if self.live2d_this_turn_motion_complete and is_text_generating_queue.empty():
                     model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
                 last_saved_time=time.time()
 
-            if not layout_editing and mouse_position_x != 0:  # 点击画面随机做动作
-                if self.if_sakiko:
-                    model.StartRandomMotion("IDLE",1,self.onStartCallback,self.onFinishCallback, position="C")
-                mouse_position_x = 0
-                self.think_motion_is_over=True
+            if interaction_requested:
+                self.play_interaction(
+                    model,
+                    blocked=layout_editing or not is_text_generating_queue.empty(),
+                )
+                interaction_requested = False
 
             self.live2d_this_turn_motion_complete=not pygame.mixer.music.get_busy()
             # 更新到共享变量
-            motion_complete_value.value = self.live2d_this_turn_motion_complete
+            motion_complete_value.value = not self.busy and self.live2d_this_turn_motion_complete
 
             if not char_is_converted_queue.empty():
-                self._reset_long_audio_motion_loop()
-                if self.if_sakiko:
-                    conv_index=char_is_converted_queue.get()
-                    if not isinstance(model, Live2DModelAdapter) or model.version != "v2":
-                        logger.warning("当前没有可用的 Live2D V2 模型，跳过祥子黑白模型特殊切换。")
-                        continue
-                    if conv_index!='maskoff':
-                        if not conv_index:      #切换为白祥
-                            if self.PATH_JSON is None:
-                                logger.warning("祥子默认 Live2D 模型未配置，跳过特殊模型切换。")
-                                continue
-                            model = replace_model(model, self.PATH_JSON)
-                            if not isinstance(model, Live2DModelAdapter):
-                                continue
-                            model.Resize(win_w_and_h, win_w_and_h)
-                            model.SetAutoBlinkEnable(True)
-                            model.SetAutoBreathEnable(True)
-                            current_layout_model_path = self.PATH_JSON
-                            current_layout = get_live2d_layout(current_layout_model_path, model.version, layout_scene, "desktop")
-                            apply_current_layout()
-                            model.StartRandomMotion("change_character",2,self.onStartCallback,self.onFinishCallback, position="C")
-                            model.SetSemanticExpression("idle")
-                            self.sakiko_state=False
-
-                        else:       #切换为黑祥
-                            model = replace_model(model, '../live2d_related/sakiko/live2D_model_costume/3.model.json')
-                            if not isinstance(model, Live2DModelAdapter):
-                                continue
-                            model.Resize(win_w_and_h, win_w_and_h)
-                            model.SetAutoBlinkEnable(True)
-                            model.SetAutoBreathEnable(True)
-                            current_layout_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
-                            current_layout = get_live2d_layout(
-                                current_layout_model_path,
-                                model.version,
-                                layout_scene,
-                                "desktop",
-                            )
-                            apply_current_layout()
-
-                            self.if_mask=random()<0.5
-                            model.StartRandomMotion("change_character" if self.if_mask else "change_character_maskoff",2,self.onStartCallback,self.onFinishCallback, position="C")
-                            model.SetSemanticExpression("serious")
-                            self.sakiko_state=True
-                    else:
-                        if self.sakiko_state:   #黑祥
-                            model.StartRandomMotion("change_character_maskoff" if self.if_mask else "maskon",3,self.onStartCallback,self.onFinishCallback, position="C")
-                            self.if_mask = not self.if_mask
-                        else:
-                            model.StartMotion("text_generating", 0, 3, self.onStartCallback, self.onFinishCallback, position="C")
+                from runtime.character_presentation import apply_sakiko_state
+                def replace_character_model(previous, path):
+                    nonlocal current_layout_model_path, current_layout
+                    candidate = replace_model(previous, path)
+                    if isinstance(candidate, Live2DModelAdapter):
+                        current_layout_model_path = path
+                        current_layout = get_live2d_layout(path, candidate.version, layout_scene, 'desktop')
+                        candidate.SetScale(current_layout.scale)
+                        candidate.SetOffset(current_layout.offset_x, current_layout.offset_y)
+                    return candidate
+                model = apply_sakiko_state(self, model, char_is_converted_queue.get(), self.PATH_JSON, replace_character_model)
 
             if not emotion_queue.empty():
                 emotion = emotion_queue.get()
@@ -947,10 +674,13 @@ class Live2DModule:
             # 渲染背景图片
             render_background(texture)
             # 渲染live2d到屏幕
-            if self.wavHandler.Update() and is_update_mouth_sync % 3==0:  # 控制说话时的嘴型
+            if not self.structured_mode and self.wavHandler.Update() and is_update_mouth_sync % 3==0:  # 控制说话时的嘴型
                 mouth_keep_open_value=self.wavHandler.GetRms() * self.lipSyncN
-                idle_recover_timer = time.time()
-            model.set_parameter_value("mouth_open_y", mouth_keep_open_value)
+                self.idle_recover_timer = time.time()
+            if self.structured_mode:
+                self.update_playback(model)
+            else:
+                model.set_parameter_value("mouth_open_y", mouth_keep_open_value)
             is_update_mouth_sync += 1
 
             model.Draw()
@@ -995,7 +725,7 @@ class Live2DModule:
 
 def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_queue, char_is_converted_queue,
                        change_char_queue, live2d_text_queue, is_display_text_value, motion_complete_value, desktop_w,
-                       desktop_h, log_queue):
+                       desktop_h, log_queue, playback_events=None, ready_event=None):
     """
     Live2D 子进程入口函数
     不接收 characters 对象，而是在子进程内重新加载，避免 Windows 下 pickle 序列化截断问题
@@ -1026,7 +756,7 @@ def run_live2d_process(emotion_queue, audio_file_path_queue, is_text_generating_
     live2d_player.live2D_initialize(characters)
     live2d_player.play_live2d(emotion_queue, audio_file_path_queue, is_text_generating_queue,
                                 char_is_converted_queue, change_char_queue, live2d_text_queue, is_display_text_value,
-                                motion_complete_value, desktop_w, desktop_h, log_queue)
+                                motion_complete_value, desktop_w, desktop_h, log_queue, playback_events, ready_event)
 
 
 

@@ -34,8 +34,6 @@ from ui_main.theme import derive_theme_palette
 
 
 TEST_THEME_PALETTE = derive_theme_palette("#7799CC")
-
-
 class _FakeConfigSignal:
     """记录配置信号连接并允许测试主动发送。"""
 

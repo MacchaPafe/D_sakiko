@@ -8,6 +8,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication, QDialog
 
 from ui_main.components.context_usage_indicator import (
@@ -61,20 +62,57 @@ class ContextUsageThresholdTestCase(unittest.TestCase):
         self.assertEqual(received[-1], 0.85)
         self.assertEqual(popup.summary_threshold_label.text(), "上下文压缩阈值：85%")
 
-    def test_summary_switch_controls_threshold_slider(self) -> None:
+    def test_summary_switch_defers_enable_request_until_popup_closes(self) -> None:
+        """开启请求应在 Popup 关闭后的下一轮事件循环中提交。"""
         indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))
         received: list[bool] = []
         indicator.summaryEnabledChanged.connect(received.append)
+        indicator.summaryEnabledChanged.connect(indicator.set_summary_enabled)
 
         indicator.set_summary_enabled(False)
         popup = indicator._popup
         self.assertFalse(popup.summary_threshold_slider.isEnabled())
         self.assertFalse(popup.edit_summary_prompt_button.isEnabled())
 
+        popup.show()
         popup.summary_enabled_checkbox.setChecked(True)
+        self.assertEqual(received, [])
+        self.assertFalse(popup.isVisible())
+        self.assertFalse(popup.summary_enabled_checkbox.isChecked())
+        self.assertFalse(popup.summary_threshold_slider.isEnabled())
+
+        self.app.processEvents()
         self.assertEqual(received, [True])
+        self.assertTrue(popup.summary_enabled_checkbox.isChecked())
         self.assertTrue(popup.summary_threshold_slider.isEnabled())
         self.assertTrue(popup.edit_summary_prompt_button.isEnabled())
+
+        popup.summary_enabled_checkbox.setChecked(False)
+        self.assertEqual(received, [True, False])
+        self.assertFalse(popup.summary_enabled_checkbox.isChecked())
+        self.assertFalse(popup.summary_threshold_slider.isEnabled())
+
+    def test_checked_switch_renders_theme_indicator(self) -> None:
+        """选中状态应绘制主题色底和清晰勾号。"""
+
+        palette = derive_theme_palette("#7799CC")
+        indicator = ContextUsageIndicator(palette)
+        popup = indicator._popup
+        popup.set_summary_enabled(True)
+        checkbox = popup.summary_enabled_checkbox
+        checkbox.resize(180, 30)
+        checkbox.ensurePolished()
+
+        image = checkbox.grab().toImage()
+        rendered_colors = {
+            image.pixelColor(x, y).rgba()
+            for x in range(image.width())
+            for y in range(image.height())
+        }
+
+        self.assertTrue(checkbox.isChecked())
+        self.assertIn(QColor(palette.accent).rgba(), rendered_colors)
+        self.assertIn(QColor(palette.on_accent).rgba(), rendered_colors)
 
     def test_prompt_edit_button_is_available(self) -> None:
         indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))

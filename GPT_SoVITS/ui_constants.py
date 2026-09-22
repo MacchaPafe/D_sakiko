@@ -647,4 +647,3 @@ class AddCostume:
         with open(f"../reference_audio/{character_folder_name}/reference_text.txt",'w',encoding='utf-8') as f:
             f.write('')
 
-
