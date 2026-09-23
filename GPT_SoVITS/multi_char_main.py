@@ -2609,6 +2609,7 @@ if __name__ == "__main__":
 
     dp_module = DSLocalAndVoiceGen(get_char_attr.character_class_list)
     audio_gen = AudioGenerate()
+    audio_gen.if_small_theater_mode = True
 
     # === 进程/线程通信：统一用 multiprocessing 的 Queue（spawn 语义下可用）===
     # 重要：不要在启动 Live2D 子进程时传入 get_char_attr.character_class_list 这种大对象，

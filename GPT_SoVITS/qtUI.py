@@ -3632,7 +3632,10 @@ class ChatGUI(QWidget):
             self.setWindowIcon(QIcon(self.current_character.icon_path))
         self.talk_speed_reset()
         self.pause_second_reset()
-        self.dp_chat.if_generate_audio = self.current_character.has_valid_voice_model()
+        self.dp_chat.if_generate_audio = (
+            bool(d_sakiko_config.voice_output_enabled.value)
+            and self.current_character.has_valid_voice_model()
+        )
         self.audio_gen.request_preload_character(self.current_character)
 
     def _setup_input_commands(self, input_panel: QFrame) -> None:
@@ -4792,8 +4795,11 @@ class ChatGUI(QWidget):
 
     def closeEvent(self, a0: QCloseEvent) -> None:
         """保存失败时暂停关闭，只有保存或明确放弃后才释放资源。"""
-        if getattr(self, 'desktop_controller', None) is not None and self.desktop_controller.pet_mode and not self.desktop_controller.exiting:
-            self.hide()
+        if getattr(self, 'desktop_controller', None) is not None:
+            if self.desktop_controller.pet_mode and not self.desktop_controller.exiting:
+                self.hide()
+            else:
+                self.desktop_controller.quit()
             a0.ignore()
             return
         from runtime.storage_ui import save_before_close
@@ -5992,6 +5998,9 @@ class ChatGUI(QWidget):
 
     def handle_messages(self,message):
         if message=='bye':
+            if getattr(self, 'desktop_controller', None) is not None:
+                self.desktop_controller.quit()
+                return
             if not self.isVisible():
                 return
             self.close()

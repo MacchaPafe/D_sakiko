@@ -46,6 +46,14 @@ class GPTSoVITSArea(TransparentScrollArea):
             parent=self.audio_setting_group,
         )
 
+        self.voice_output_card = SwitchSettingCard(
+            FluentIcon.MUSIC,
+            self.tr("在对话中合成语音"),
+            self.tr("关闭后，角色不会在对话中说话"),
+            d_sakiko_config.voice_output_enabled,
+            parent=self.audio_setting_group,
+        )
+
         # 是否启用 fp16 推理（注意：配置项存的是 enable_fp32_inference，逻辑与 UI 反过来）
         self.fp_precision_card = ComboBoxSettingCard(
             d_sakiko_config.enable_fp32_inference,
@@ -122,6 +130,7 @@ class GPTSoVITSArea(TransparentScrollArea):
 
         self.audio_setting_group.addSettingCard(self.delete_audio_card)
         self.audio_setting_group.addSettingCard(self.voice_model_preload_card)
+        self.audio_setting_group.addSettingCard(self.voice_output_card)
         self.audio_setting_group.addSettingCard(self.fp_precision_card)
         self.audio_setting_group.addSettingCard(self.inference_step_card)
         self.audio_setting_group.addSettingCard(self.cuda_setting_card)

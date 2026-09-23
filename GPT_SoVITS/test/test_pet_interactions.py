@@ -278,6 +278,7 @@ class PetInteractionTests(TestCase):
     ) -> None:
         """普通窗口启动失败时保留桌宠，成功后才释放原桌宠。"""
         controller = Mock()
+        controller.exiting = False
         controller.can_switch_mode.return_value = True
         controller.router.latest_model = None
         controller.pet_mode = True
@@ -358,7 +359,9 @@ class PerformanceInteractionTests(TestCase):
         ):
             self.player.command(segment, self.model)
             self.player.update_playback(self.model)
-        self.assertEqual(self.player.subtitle_deadline, 30.0)
+        self.assertIsNone(self.player.subtitle_deadline)
+        self.assertEqual(self.player.text_segment_deadline, 30.0)
+        self.assertTrue(self.player.busy)
         with patch(
             "runtime.single_character_performance.time.monotonic", return_value=29.0
         ):
@@ -369,6 +372,7 @@ class PerformanceInteractionTests(TestCase):
         ):
             self.player.update_playback(self.model)
         self.assertEqual(subtitle.call_args.args, ("",))
+        self.assertFalse(self.player.busy)
         self.player.command(segment, self.model)
         with patch(
             "runtime.single_character_performance.time.monotonic", return_value=40.0

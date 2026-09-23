@@ -863,6 +863,25 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
             tts_manager.unload_all()
             break
 
+        if command_type == "unload_all":
+            try:
+                tts_manager.unload_all()
+                runtime_registry.clear()
+                # 在清除所有 prompt/权重引用之后再归还分配器缓存。
+                import gc
+                gc.collect()
+                torch_module = sys.modules.get("torch")
+                if torch_module is not None:
+                    if torch_module.cuda.is_available():
+                        torch_module.cuda.empty_cache()
+                    if torch_module.backends.mps.is_available():
+                        torch_module.mps.empty_cache()
+                put_ack(from_gptsovits_queue, "unload_all", "", True, request_id)
+            except Exception as exc:
+                logger.exception("全部语音模型卸载失败")
+                put_error(from_gptsovits_queue, "unload_all", "", str(exc), request_id)
+            continue
+
         if command_type == "load_model":
             try:
                 runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)

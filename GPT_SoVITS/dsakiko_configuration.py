@@ -21,6 +21,7 @@ sys.path.insert(0, script_dir)
 
 from log import setup_logging, shutdown_logging
 from ui.components.custom_setting_area import CustomSettingArea
+from ui.components.desktop_pet_setting_area import DesktopPetSettingArea
 from ui.components.gpt_sovits_area import GPTSoVITSArea
 from ui.components.llm_api_area import LLMAPIArea
 from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
@@ -44,11 +45,13 @@ class DSakikoConfigArea(TransparentScrollArea):
         # 对应的分栏内容
         self.llm_api_area = LLMAPIArea(self)
         self.gpt_sovits_area = GPTSoVITSArea(self)
+        self.desktop_pet_setting_area = DesktopPetSettingArea(self)
         self.custom_setting_area = CustomSettingArea(self)
 
         # 添加到分栏中
         self.add_sub_interface(self.llm_api_area, "LLMApiArea", self.tr("大模型 API 配置"))
         self.add_sub_interface(self.gpt_sovits_area, "GPTSoVITSArea", self.tr("语音合成模型配置"))
+        self.add_sub_interface(self.desktop_pet_setting_area, "DesktopPetSettingArea", self.tr("桌宠设置"))
         self.add_sub_interface(self.custom_setting_area, "customSettingArea", self.tr("个性化"))
 
         # 连接信号并初始化当前标签页
@@ -103,12 +106,13 @@ class DSakikoConfigArea(TransparentScrollArea):
         InfoBar.new(icon=icon, title="", content=message, isClosable=True, position=InfoBarPosition.BOTTOM, duration=3000,
                     parent=self)
 
-    def load_config_to_ui(self):
+    def load_config_to_ui(self) -> None:
         """
-        要求三个子组件将 d_sakiko_config 中的配置加载到 UI 界面中。
+        要求各设置页将 d_sakiko_config 中的配置加载到 UI 界面中。
         """
         self.llm_api_area.load_config_to_ui()
         self.gpt_sovits_area.load_config_to_ui()
+        self.desktop_pet_setting_area.load_config_to_ui()
         self.custom_setting_area.load_config_to_ui()
 
     def save_ui_to_config(self) -> bool:
@@ -124,6 +128,10 @@ class DSakikoConfigArea(TransparentScrollArea):
         result = self.gpt_sovits_area.save_ui_to_config()
         if not result:
             self.stacked_widget.setCurrentWidget(self.gpt_sovits_area)
+            return False
+        result = self.desktop_pet_setting_area.save_ui_to_config()
+        if not result:
+            self.stacked_widget.setCurrentWidget(self.desktop_pet_setting_area)
             return False
         result = self.custom_setting_area.save_ui_to_config()
         if not result:

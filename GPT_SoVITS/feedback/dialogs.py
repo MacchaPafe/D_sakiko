@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from PyQt5.QtCore import QThread, Qt
 from PyQt5.QtGui import QCloseEvent
-from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget, QMessageBox
 
 from feedback.client import FeedbackClient, Receipt, ReceiptStore, configured_endpoint, recipient_notice
 from ui_main.theme import ThemePalette, build_dialog_theme_stylesheet
@@ -191,9 +191,15 @@ class FeedbackHistoryDialog(QDialog):
         title.setWordWrap(True)
         layout.addWidget(title, 1)
         button = QPushButton("撤回")
-        button.clicked.connect(lambda: self._withdraw(receipt, row, button))
+        button.clicked.connect(lambda: self._double_check_withdraw(receipt, row, button))
         layout.addWidget(button)
         self.rows.addWidget(row)
+
+    def _double_check_withdraw(self, receipt: Receipt, row: QWidget, button: QPushButton) -> None:
+        """撤回前确认，避免误操作。"""
+        if QMessageBox.question(self, "确认撤回", "是否确认撤回提交的反馈？",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            self._withdraw(receipt, row, button)
 
     def _withdraw(self, receipt: Receipt, row: QWidget, button: QPushButton) -> None:
         """撤回失败保留凭据与按钮，确认后才移除本机记录。"""

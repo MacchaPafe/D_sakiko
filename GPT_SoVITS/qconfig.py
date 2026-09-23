@@ -127,6 +127,15 @@ class DSakikoConfig(QConfig):
     # 是否后台预加载当前角色语音模型
     enable_voice_model_preload = OptionsConfigItem("audio_setting", "enable_voice_model_preload", True,
                                                            validator=BoolValidator())
+    voice_output_enabled = OptionsConfigItem("audio_setting", "voice_output_enabled", True,
+                                            validator=BoolValidator())
+    unload_voice_models_when_pet_idle = OptionsConfigItem(
+        "audio_setting", "unload_voice_models_when_pet_idle", True, validator=BoolValidator()
+    )
+    # 仅在普通对话程序启动时读取，手动切换形态不修改该偏好。
+    start_in_pet_mode = OptionsConfigItem(
+        "desktop_pet_setting", "start_in_pet_mode", False, validator=BoolValidator()
+    )
     # 是否使用 fp32 精度推理音频
     # 如果设为 False，则使用 fp16 精度推理
     enable_fp32_inference = OptionsConfigItem("audio_setting", "enable_fp32_inference", True,

@@ -175,14 +175,7 @@ def main_thread():
                     this_turn_response = "bye"
 
             if this_turn_response=='bye':
-                emotion_queue.put('bye')    #退出live2D进程
-                dp2qt_queue.put("（再见）")
-                audio_gen.shutdown_worker()
-
-                # tr1 是 live2d 进程变量，我们等待 live2d 进程结束，再向 Qt 窗口发送退出信息。
-                global tr1
-                presentation_router.close()
-
+                # 由 GUI 控制器统一等待告别回执，保持桌宠的 Qt 绘制循环运行。
                 QT_message_queue.put('bye')
                 break
 
@@ -411,8 +404,6 @@ if __name__=='__main__':
     # 更新配置的线程
     tr4 = UpdateConfigThread("d_sakiko_config")
     tr4.reload_requested.connect(d_sakiko_config.reload_from_disk)
-    presentation_router.start_normal()
-    tr1 = presentation_router.process
     tr2.start()
     tr3.start()
     tr4.start()
@@ -442,7 +433,7 @@ if __name__=='__main__':
 
     qt_win.move(screen_w_mid, int(screen_h_mid - 0.35 * desktop_h))  # 因为窗口高度设置的是0.7倍桌面宽
 
-    qt_win.show()
+    desktop_controller.start()
     qt_app.exec_()
 
     # 尝试退出所有子程序。
@@ -473,15 +464,8 @@ if __name__=='__main__':
     except Exception:
         pass
 
-    # 理论上讲 main_thread 函数中已经调用过 tr1.join，等待过 live2d 进程结束；这里再调用一次不是必要的，但也没有副作用。
+    # 路由器统一管理当前宿主；直接启动桌宠时没有普通 Live2D 子进程。
     presentation_router.close()
-    tr1.join(timeout=3)
-    if tr1.is_alive():
-        try:
-            tr1.terminate()
-            tr1.join(timeout=3)
-        except Exception:
-            pass
     tr2.join(timeout=3)
     tr3.join(timeout=3)
     tr4.quit()

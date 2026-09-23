@@ -15,6 +15,7 @@ from typing import cast, TYPE_CHECKING, Optional
 from character import CharacterAttributes
 from inference_cli import synthesize
 from qconfig import d_sakiko_config
+from runtime.voice_residency import VoiceResidencyPolicy
 
 
 if TYPE_CHECKING:
@@ -197,6 +198,9 @@ class AudioGenerate:
         self.worker_dispatch_thread: threading.Thread | None = None
         # 语音模型调度状态：正式合成任务走 pending_worker_commands，预加载目标只保留最新一个。
         self.voice_schedule_lock = threading.Lock()
+        self.voice_residency = VoiceResidencyPolicy(time.monotonic())
+        self.models_may_be_loaded = False
+        self.next_unload_attempt = 0.0
         self.loaded_voice_key: str | None = None
         self.loading_voice_key: str | None = None
         self.pending_preload_key: str | None = None
@@ -351,6 +355,55 @@ class AudioGenerate:
         self.pending_preload_command = None
         self.pending_preload_not_before = 0.0
 
+    def update_voice_activity(self, *, pet_mode: bool, busy: bool) -> None:
+        """由界面报告对话、播放和录音状态；实际卸载由 worker 调度线程完成。"""
+        with self.voice_schedule_lock:
+            self.voice_residency.observe(
+                time.monotonic(),
+                pet_mode=pet_mode,
+                busy=busy,
+                voice_enabled=self._voice_output_enabled(),
+            )
+
+    def _voice_output_enabled(self) -> bool:
+        """普通对话遵守持久化静音偏好，小剧场沿用独立的语音能力策略。"""
+        return self.if_small_theater_mode or bool(d_sakiko_config.voice_output_enabled.value)
+
+    def _preload_allowed_locked(self) -> bool:
+        """静音或桌宠已进入省内存状态时禁止后台重新加载。"""
+        return bool(
+            d_sakiko_config.enable_voice_model_preload.value
+            and self._voice_output_enabled()
+            and not self.voice_residency.pet_idle(
+                time.monotonic(), bool(d_sakiko_config.unload_voice_models_when_pet_idle.value)
+            )
+        )
+
+    def _take_idle_unload_command(self) -> tuple[WorkerCommand, VoiceTaskHandle] | None:
+        """仅在正式命令队列空闲时生成一次全部卸载命令，避免打断推理。"""
+        with self.voice_schedule_lock:
+            now = time.monotonic()
+            self.voice_residency.observe(
+                now,
+                pet_mode=self.voice_residency.pet_mode,
+                busy=self.voice_residency.busy,
+                voice_enabled=self._voice_output_enabled(),
+            )
+            if (
+                now < self.next_unload_attempt
+                or not self.models_may_be_loaded
+                or not self.voice_residency.should_unload(
+                    now, bool(d_sakiko_config.unload_voice_models_when_pet_idle.value)
+                )
+            ):
+                return None
+            self._clear_pending_preload_locked()
+            self.next_unload_attempt = now + 30.0
+        request_id = self._create_request_id()
+        handle = VoiceTaskHandle(request_id, "unload_all")
+        self._register_command_handle(handle)
+        return {"type": "unload_all", "request_id": request_id}, handle
+
     def request_preload_character(self, character: CharacterAttributes | None) -> None:
         """
         请求后台预加载某个角色的语音模型。
@@ -358,10 +411,10 @@ class AudioGenerate:
         预加载不会进入正式 worker FIFO 队列，只在调度线程空闲且没有正式合成任务时执行。
         连续切换角色时，等待区只保留最新目标。
         """
-        if not d_sakiko_config.enable_voice_model_preload.value:
-            with self.voice_schedule_lock:
+        with self.voice_schedule_lock:
+            if not self._preload_allowed_locked():
                 self._clear_pending_preload_locked()
-            return
+                return
 
         if character is None or not character.has_valid_voice_model():
             return
@@ -390,7 +443,7 @@ class AudioGenerate:
     def _take_pending_preload_command(self) -> tuple[WorkerCommand, VoiceTaskHandle] | None:
         """在正式任务队列为空时，取出最新的预加载目标。"""
         with self.voice_schedule_lock:
-            if not d_sakiko_config.enable_voice_model_preload.value:
+            if not self._preload_allowed_locked():
                 self._clear_pending_preload_locked()
                 return None
             if self.pending_preload_command is None:
@@ -418,6 +471,10 @@ class AudioGenerate:
         if character_name == "":
             return
         with self.voice_schedule_lock:
+            if command_type in {"load_model", "synthesize", "set_device"}:
+                self.models_may_be_loaded = True
+            if command_type == "synthesize":
+                self.voice_residency.last_activity = time.monotonic()
             if command_type == "load_model":
                 self.loading_voice_key = character_name
             elif command_type == "synthesize":
@@ -431,6 +488,13 @@ class AudioGenerate:
         command_type = cast(str, command.get("type", ""))
         character_name = cast(str, command.get("character_name", ""))
         result_type = cast(str, result.get("type", ""))
+        if command_type == "unload_all":
+            with self.voice_schedule_lock:
+                if result_type == "ack" and bool(result.get("ok", False)):
+                    self.loaded_voice_key = None
+                    self.loading_voice_key = None
+                    self.models_may_be_loaded = False
+            return
         if character_name == "":
             return
 
@@ -551,7 +615,9 @@ class AudioGenerate:
             try:
                 command, handle = self.pending_worker_commands.get(timeout=0.1)
             except Empty:
-                preload_item = self._take_pending_preload_command()
+                preload_item = (
+                    self._take_idle_unload_command() or self._take_pending_preload_command()
+                )
                 if preload_item is None:
                     self._drain_progress_messages()
                     continue

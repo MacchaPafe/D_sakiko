@@ -73,7 +73,7 @@ class CustomSettingArea(TransparentScrollArea):
         self.worldbook_diagnostics_card = SwitchSettingCard(
             FluentIcon.DOCUMENT,
             self.tr("保存世界书诊断"),
-            self.tr("短期滚动保存相关对话、模型文本和检索结果，便于反馈检索问题"),
+            self.tr("保存世界书检索结果，便于反馈检索问题"),
             d_sakiko_config.worldbook_diagnostics_persistence,
             parent=self.personal_group,
         )

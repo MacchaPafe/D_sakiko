@@ -187,7 +187,7 @@ class DSLocalAndVoiceGen:
             logger.warning("未获取到 UP 的 API Key, 请在启动参数配置中设置自己的 API Key")
 
         # 是否为角色通过 GPT-SoVITS 模型生成音频
-        self.if_generate_audio = True
+        self.if_generate_audio = bool(d_sakiko_config.voice_output_enabled.value)
 
         # 当前角色是否是祥子
         self.if_sakiko = False
@@ -2281,7 +2281,9 @@ class DSLocalAndVoiceGen:
                 logger.error("当前角色无法开启语音合成，缺少 GPT-SoVITS 模型或参考音频文件。")
                 time.sleep(2)
                 return True
-            self.if_generate_audio = not self.if_generate_audio
+            enabled = not bool(d_sakiko_config.voice_output_enabled.value)
+            d_sakiko_config.set(d_sakiko_config.voice_output_enabled, enabled)
+            self.if_generate_audio = enabled
             message_queue.put("已" + ("开启" if self.if_generate_audio else "关闭") + "语音合成")
             time.sleep(2)
             return True

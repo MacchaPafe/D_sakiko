@@ -502,7 +502,9 @@ class Live2DModule(SingleCharacterPerformance):
                     continue
 
                 command_type = str(x.get("type") or "")
-                if command_type in {'play_segment', 'thinking', 'generation_finished', 'cancel_turn'}:
+                if self.farewell_started and command_type != "exit":
+                    continue
+                if command_type in {'play_segment', 'thinking', 'generation_finished', 'cancel_turn', 'farewell'}:
                     self.command(x, model)
                 elif command_type =='start_talking':   #录音时
                     self.recording = True
@@ -613,7 +615,7 @@ class Live2DModule(SingleCharacterPerformance):
             # 更新到共享变量
             motion_complete_value.value = not self.busy and self.live2d_this_turn_motion_complete
 
-            if not char_is_converted_queue.empty():
+            if not self.farewell_started and not char_is_converted_queue.empty():
                 from runtime.character_presentation import apply_sakiko_state
                 def replace_character_model(previous, path):
                     nonlocal current_layout_model_path, current_layout
@@ -626,7 +628,7 @@ class Live2DModule(SingleCharacterPerformance):
                     return candidate
                 model = apply_sakiko_state(self, model, char_is_converted_queue.get(), self.PATH_JSON, replace_character_model)
 
-            if not emotion_queue.empty():
+            if not self.farewell_started and not emotion_queue.empty():
                 emotion = emotion_queue.get()
                 if emotion=='bye':
                     self._reset_long_audio_motion_loop()

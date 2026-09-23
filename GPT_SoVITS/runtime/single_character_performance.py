@@ -12,6 +12,14 @@ from live2d_support.runtime_adapter import Live2DModelProtocol
 from log import get_logger
 
 
+def has_voice_audio(path: object) -> bool:
+    """统一识别缺失音频与合成器的静音占位文件。"""
+    return (
+        isinstance(path, str) and bool(path) and path != "NO_AUDIO"
+        and not os.path.normpath(path).endswith(os.path.join("silent_audio", "silence.wav"))
+    )
+
+
 class SingleCharacterPerformance:
     def __init__(self):
         self.motion_is_over = False
@@ -66,13 +74,38 @@ class SingleCharacterPerformance:
         self.subtitle_hide_delay: float | None = None
         self.subtitle_deadline: float | None = None
         self.subtitle_read_seconds = 6.0
+        self.text_segment_deadline = 0.0
+        self.farewell_started = False
+        self.farewell_finished = False
+        self.farewell_deadline = 0.0
+
+    def finish_farewell(self, *args: object) -> None:
+        """告别动作结束后仅发送一次完成回执。"""
+        if self.farewell_finished:
+            return
+        self.farewell_finished = True
+        self.on_event({"type": "farewell_complete"})
+
+    def start_farewell(self, model: Live2DModelProtocol) -> None:
+        """清空对话演出后播放告别，缺失动作时立即完成。"""
+        if self.farewell_started:
+            return
+        self.stop()
+        self.structured_mode = True
+        self.farewell_started = True
+        self.farewell_deadline = time.monotonic() + 8.0
+        model.set_parameter_value("mouth_open_y", 0.0)
+        if not model.StartRandomMotion(
+            "bye", 3, self.onStartCallback, self.finish_farewell, position="C"
+        ):
+            self.finish_farewell()
 
     def play_interaction(
         self, model: Live2DModelProtocol, *, blocked: bool = False
     ) -> bool:
         """空闲点击时播放通用待机动作，并限制连续点击频率。"""
         now = time.monotonic()
-        if blocked or self.busy or self.thinking or self.recording or self.audio_busy():
+        if self.farewell_started or blocked or self.busy or self.thinking or self.recording or self.audio_busy():
             return False
         if now - self.last_interaction < 1.0:
             return False
@@ -93,8 +126,13 @@ class SingleCharacterPerformance:
     def busy(self):
         return self.active_segment is not None or bool(self.pending)
 
-    def command(self, command, model):
+    def command(self, command: dict[str, object], model: Live2DModelProtocol) -> bool:
         kind = command.get("type")
+        if kind == "farewell":
+            self.start_farewell(model)
+            return True
+        if self.farewell_started:
+            return True
         if kind in {"start_talking", "stop_talking"}:
             self.recording = kind == "start_talking"
         key = (command.get("chat_id"), command.get("turn_id"))
@@ -138,18 +176,22 @@ class SingleCharacterPerformance:
             return True
         return False
 
-    def _start_segment_audio(self, segment):
+    def _start_segment_audio(self, segment: dict[str, object]) -> None:
         if self.active_segment is not segment or self.audio_started:
             return
         self.audio_started = True
         path = segment.get("audio_path")
-        if not path or path == "NO_AUDIO":
+        if not has_voice_audio(path):
             return
         self.onStartCallback_emotion_version(path)
         self.audio_failed = not self.audio_busy()
 
-    def update_playback(self, model):
+    def update_playback(self, model: Live2DModelProtocol) -> None:
         """每帧在模型 Update 之后调用；回执含轮次/段号，不依赖动作回调完成。"""
+        if self.farewell_started:
+            if time.monotonic() >= self.farewell_deadline:
+                self.finish_farewell()
+            return
         now = time.time()
         if self.active_segment is None and self.pending:
             segment = self.pending.popleft()
@@ -164,6 +206,7 @@ class SingleCharacterPerformance:
             self.subtitle_read_seconds = max(
                 6.0, min(30.0, len(text + translation) / 6.0)
             )
+            self.text_segment_deadline = time.monotonic() + self.subtitle_read_seconds
             self.on_subtitle(text + ("\n" + translation if translation else ""))
             group = motion_group_for_emotion(
                 str(segment.get("emotion")), default="happiness"
@@ -184,19 +227,17 @@ class SingleCharacterPerformance:
         if segment is not None:
             if not self.audio_started and now >= self.start_deadline:
                 self._start_segment_audio(segment)
-            if self.audio_started and not self.audio_busy():
+            text_only = not has_voice_audio(segment.get("audio_path"))
+            if self.audio_started and not self.audio_busy() and (
+                not (text_only or self.audio_failed)
+                or time.monotonic() >= self.text_segment_deadline
+            ):
                 self.active_segment = None
                 self._reset_long_audio_motion_loop()
                 if self.subtitle_hide_delay is not None:
-                    has_audio = (
-                        bool(segment.get("audio_path"))
-                        and segment.get("audio_path") != "NO_AUDIO"
-                    )
-                    delay = (
-                        self.subtitle_hide_delay
-                        if has_audio and not self.audio_failed
-                        else self.subtitle_read_seconds
-                    )
+                    has_audio = has_voice_audio(segment.get("audio_path"))
+                    # 无声音段落已在演出阶段保留阅读时间，结束后直接收起。
+                    delay = self.subtitle_hide_delay if has_audio and not self.audio_failed else 0.0
                     self.subtitle_deadline = time.monotonic() + delay
                 self.on_event(
                     dict(
