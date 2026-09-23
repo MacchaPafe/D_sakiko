@@ -31,6 +31,64 @@ class _Rect(ctypes.Structure):
     _fields_ = [("origin", _Point), ("size", _Size)]
 
 
+def _pet_frame(
+    panel: AppKit.NSPanel, rect: AppKit.NSRect, screen: AppKit.NSScreen | None
+) -> AppKit.NSRect:
+    """允许透明窗口边缘越过屏幕顶部，保留 Qt 请求的拖动与缩放位置。"""
+    return rect
+
+
+def _allow_pet_frame(panel: AppKit.NSPanel) -> None:
+    """仅为当前桌宠替换无新增实例字段的原生子类，不修改 Qt 全局面板。"""
+    runtime = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+    runtime.object_getClass.argtypes = [ctypes.c_void_p]
+    runtime.object_getClass.restype = ctypes.c_void_p
+    runtime.objc_getClass.argtypes = [ctypes.c_char_p]
+    runtime.objc_getClass.restype = ctypes.c_void_p
+    runtime.objc_allocateClassPair.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
+    runtime.objc_allocateClassPair.restype = ctypes.c_void_p
+    runtime.objc_registerClassPair.argtypes = [ctypes.c_void_p]
+    runtime.objc_registerClassPair.restype = None
+    runtime.class_getInstanceSize.argtypes = [ctypes.c_void_p]
+    runtime.class_getInstanceSize.restype = ctypes.c_size_t
+    runtime.object_setClass.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    runtime.object_setClass.restype = ctypes.c_void_p
+
+    pointer = objc.pyobjc_id(panel)
+    original = runtime.object_getClass(pointer)
+    class_name = b"DSakikoUnconstrainedPetPanel"
+    subclass = runtime.objc_getClass(class_name)
+    if original == subclass:
+        return
+    if original != runtime.objc_getClass(b"QNSPanel"):
+        raise RuntimeError("无法为非 Qt 桌宠面板配置位置约束")
+    if not subclass:
+        subclass = runtime.objc_allocateClassPair(original, class_name, 0)
+        if not subclass:
+            raise RuntimeError("无法创建桌宠专用原生面板类")
+        runtime.objc_registerClassPair(subclass)
+        # 由 PyObjC 处理 NSRect 的结构体返回 ABI；不增加 Python 子类实例字段。
+        objc.classAddMethods(
+            objc.lookUpClass(class_name.decode("ascii")),
+            [
+                objc.selector(
+                    _pet_frame,
+                    selector=b"constrainFrameRect:toScreen:",
+                    signature=AppKit.NSWindow.constrainFrameRect_toScreen_.signature,
+                )
+            ],
+        )
+    if runtime.class_getInstanceSize(original) != runtime.class_getInstanceSize(
+        subclass
+    ):
+        raise RuntimeError("桌宠原生面板实例布局不兼容")
+    runtime.object_setClass(pointer, subclass)
+
+
 def _create_panel(window: QWidget) -> AppKit.NSPanel:
     """仅在同步创建桌宠原生窗口期间调整初始化参数，并恢复原实现。"""
     if QThread.currentThread() != QApplication.instance().thread():
@@ -136,6 +194,7 @@ class MacPetFocus(PetFocus):
         """创建独立非激活面板，不改变聊天窗口和其他工具面板。"""
         super().__init__(window)
         self.panel = _create_panel(window)
+        _allow_pet_frame(self.panel)
         self.refresh_native()
 
     def refresh_native(self) -> None:

@@ -78,7 +78,7 @@ class PetInteractionTests(TestCase):
         self.pet.move(30, 30)
         center = renderer.hit_bounds.center()
         global_center = renderer.mapToGlobal(center)
-        delta = QPoint(-140, 0)
+        delta = QPoint(-140, -140)
         renderer.mousePressEvent(
             QMouseEvent(
                 QEvent.MouseButtonPress,
@@ -101,6 +101,7 @@ class PetInteractionTests(TestCase):
         )
         moved = self.pet.pos()
         self.assertEqual(moved.x(), -110)
+        self.assertEqual(moved.y(), -110)
         renderer.mouseReleaseEvent(
             QMouseEvent(
                 QEvent.MouseButtonRelease,
@@ -124,6 +125,23 @@ class PetInteractionTests(TestCase):
         controller = Mock(pet_mode=True, pet=self.pet)
         DesktopController.show_pet(controller)
         self.assertEqual(self.pet.pos(), before_show)
+
+    def test_released_voice_can_wake_and_preparing_can_cancel(self) -> None:
+        """模型释放后按钮可用，准备录音期间离开角色仍保留取消入口。"""
+        from qtUI import ChatGUI
+
+        chat = Mock()
+        for state in ("dormant", "unloading", "preparing"):
+            self.voice._state(state)
+            self.pet.hovered = False
+            self.pet.refresh_state()
+            self.assertTrue(self.pet.voice_button.isEnabled())
+            self.assertTrue(self.pet.record_button.isEnabled())
+            ChatGUI._voice_state_changed(chat, state)
+            chat.voice_button.setEnabled.assert_called_with(True)
+        self.assertFalse(self.pet.tools.isHidden())
+        self.assertIn("取消", self.pet.record_button.toolTip())
+        chat.voice_button.setText.assert_called_with("取消")
 
     def test_native_focus_loss_collapses_without_losing_draft(self) -> None:
         """原生非激活面板不调用应用激活，失去键盘焦点时保留草稿。"""

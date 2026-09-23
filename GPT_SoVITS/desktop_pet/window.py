@@ -471,6 +471,7 @@ class PetWindow(QWidget):
         self.renderer.interaction_blocked = busy or voice in {
             "recording",
             "transcribing",
+            "preparing",
         }
         self.send_button.setIcon(self._send_icons[busy])
         send_label = "停止回复" if busy else "发送"
@@ -487,13 +488,17 @@ class PetWindow(QWidget):
             if recording
             else "识别中…"
             if voice == "transcribing"
+            else "正在加载，点击取消录音"
+            if voice == "preparing"
+            else "正在加载语音模型…"
+            if voice == "loading"
             else "重试语音"
             if voice == "unavailable"
             else "语音输入"
         )
         voice_icon = (
             "stop.svg"
-            if recording
+            if recording or voice == "preparing"
             else "refresh.svg"
             if voice == "unavailable"
             else "microphone.png"
@@ -505,14 +510,20 @@ class PetWindow(QWidget):
             button.setIcon(icon)
             button.setToolTip(voice_label)
             button.setAccessibleName(voice_label)
-            button.setEnabled(voice in {"idle", "recording", "unavailable"})
-        self.tools.setVisible(not self.expanded and (self.hovered or recording))
+            button.setEnabled(
+                voice in {
+                    "idle", "recording", "unavailable", "dormant", "unloading", "preparing"
+                }
+            )
+        self.tools.setVisible(
+            not self.expanded and (self.hovered or recording or voice == "preparing")
+        )
         if self.expanded:
             self.layout_controls()
         self.renderer.tick_hidden()
 
     def toggle_voice(self) -> None:
-        if self.host.voice_input.state in {"idle", "unavailable"}:
+        if self.host.voice_input.state in {"idle", "unavailable", "dormant", "unloading"}:
             self.input.hide_error()
         self.host.voice_input.toggle(
             self.host.current_chat_id, self.input.text_edit.textCursor().position()

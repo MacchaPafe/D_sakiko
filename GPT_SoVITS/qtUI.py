@@ -4782,10 +4782,23 @@ class ChatGUI(QWidget):
     def toggle_voice_input(self):
         self.voice_input.toggle(self.current_chat_id, self.user_input.text_edit.textCursor().position())
 
-    def _voice_state_changed(self, state):
-        self.voice_button.setEnabled(state in {'idle', 'recording', 'unavailable'})
-        self.voice_button.setText('结束' if state == 'recording' else '重试' if state == 'unavailable' else '')
-        self.voice_button.setToolTip({'recording': '点击结束录音', 'transcribing': '正在识别', 'loading': '正在加载语音模型', 'unavailable': '点击重新加载语音模型'}.get(state, '点击开始录音'))
+    def _voice_state_changed(self, state: str) -> None:
+        """同步录音按钮，模型回收后允许一次点击唤醒并录音。"""
+        self.voice_button.setEnabled(
+            state in {
+                'idle', 'recording', 'unavailable', 'dormant', 'unloading', 'preparing'
+            }
+        )
+        self.voice_button.setText(
+            {'recording': '结束', 'preparing': '取消', 'unavailable': '重试'}.get(state, '')
+        )
+        self.voice_button.setToolTip({
+            'recording': '点击结束录音',
+            'transcribing': '正在识别',
+            'loading': '正在加载语音模型',
+            'preparing': '正在加载，点击取消录音',
+            'unavailable': '点击重新加载语音模型',
+        }.get(state, '点击开始录音'))
         if state in {'recording', 'transcribing'} and self.change_char_queue is not None:
             self.change_char_queue.put({'type': 'start_talking' if state == 'recording' else 'stop_talking'})
 

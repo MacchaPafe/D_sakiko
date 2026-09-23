@@ -8,7 +8,7 @@ import sys
 from unittest import TestCase, skipUnless
 from unittest.mock import Mock
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtWidgets import QApplication, QWidget
 
 from desktop_pet.focus import create_pet_focus
@@ -96,3 +96,72 @@ class NativePetFocusTests(TestCase):
         with self.assertRaisesRegex(RuntimeError, "模拟原生窗口创建失败"):
             _create_panel(window)
         self.assertEqual(self.initializer_address(), original)
+
+    def test_pet_can_cross_top_without_changing_other_panels(self) -> None:
+        """真实显示透明测试面板，验证顶部移动、缩放和恢复均无原生回弹。"""
+        import AppKit
+        import objc
+
+        window = QWidget()
+        self.addCleanup(window.close)
+        window.setWindowFlags(
+            Qt.Tool
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.NoDropShadowWindowHint
+        )
+        window.setAttribute(Qt.WA_TranslucentBackground)
+        window.setAttribute(Qt.WA_ShowWithoutActivating)
+        window.setAttribute(Qt.WA_TransparentForMouseEvents)
+        window.setWindowOpacity(0)
+        window.resize(380, 610)
+        focus = create_pet_focus(window)
+        self.assertTrue(focus.nonactivating)
+        panel = objc.objc_object(c_void_p=int(window.winId())).window()
+        window.show()
+        self.app.processEvents()
+        screen_top = AppKit.NSMaxY(AppKit.NSScreen.screens()[0].frame())
+
+        def assert_native_position() -> None:
+            """同时检查 Qt 与原生实际位置，避免仅验证 Qt 的请求坐标。"""
+            self.app.processEvents()
+            self.assertAlmostEqual(
+                screen_top - AppKit.NSMaxY(panel.frame()), window.y(), delta=1
+            )
+            self.assertAlmostEqual(panel.frame().origin.x, window.x(), delta=1)
+
+        for y in (100, 30, 0, -50, -100):
+            window.move(100, y)
+            assert_native_position()
+        foot = window.pos() + QPoint(window.width() // 2, 465)
+        window.resize(380, 510)
+        window.move(foot - QPoint(window.width() // 2, 372))
+        assert_native_position()
+        before = window.pos()
+        window.hide()
+        window.show()
+        focus.refresh_native()
+        assert_native_position()
+        self.assertEqual(window.pos(), before)
+        self.assertTrue(panel.styleMask() & AppKit.NSWindowStyleMaskNonactivatingPanel)
+
+        other = QWidget()
+        self.addCleanup(other.close)
+        other.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
+        other_panel = objc.objc_object(c_void_p=int(other.winId())).window()
+        for screen in AppKit.NSScreen.screens():
+            requested = AppKit.NSMakeRect(
+                screen.frame().origin.x + 100,
+                AppKit.NSMaxY(screen.frame()) + 100 - 610,
+                380,
+                610,
+            )
+            self.assertEqual(
+                panel.constrainFrameRect_toScreen_(requested, screen), requested
+            )
+            self.assertLess(
+                AppKit.NSMaxY(
+                    other_panel.constrainFrameRect_toScreen_(requested, screen)
+                ),
+                AppKit.NSMaxY(requested),
+            )
