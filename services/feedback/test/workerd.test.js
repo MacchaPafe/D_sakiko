@@ -10,7 +10,7 @@ import { headerFor, DAY } from '../src/protocol.js';
 test('real workerd + D1: schema, compression, atomic retries, quota rollback and withdrawal', async () => {
   const bundle = await build({ entryPoints: ['src/intake.js'], bundle: true, write: false, format: 'esm', platform: 'browser' });
   const mf = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: 'intake', modules: true, script: bundle.outputFiles[0].text, compatibilityDate: '2026-09-01',
-    d1Databases: { DB: 'feedback-test' }, bindings: { ACCEPTING: 'true', ENABLED_SCHEMAS: '1' },
+    d1Databases: { DB: 'feedback-test' }, bindings: { ACCEPTING: 'true', ENABLED_SCHEMAS: '2' },
     ratelimits: { RATE_LIMITER: { namespace_id: '1', simple: { limit: 100, period: 60 } } },
   }] }));
   try {
@@ -20,7 +20,7 @@ test('real workerd + D1: schema, compression, atomic retries, quota rollback and
     const statements = unstable_splitSqlQuery(migration);
     await db.batch(statements.map(sql => db.prepare(sql)));
     const id = crypto.randomUUID();
-    const payload = { schema_version: 1, kind: 'feedback', request_id: id, created_at: Math.floor(Date.now() / 1000), app_version: 'workerd', rating: 'up', comment: '端到端', target: null, conversation: null, prompt_context: null, worldbook_enabled: false, worldbook_diagnostics: [], consent: 'feedback-v1-90d' };
+    const payload = { schema_version: 2, kind: 'feedback', request_id: id, created_at: Math.floor(Date.now() / 1000), app_version: 'workerd', rating: 'up', comment: '端到端', target: null, conversation: null, prompt_context: null, worldbook_enabled: false, worldbook_diagnostics: [], consent: 'feedback-v1-90d' };
     const headers = { 'Content-Type': 'application/json', 'X-DSakiko-Feedback': await headerFor(id), 'X-DSakiko-Control': 'a'.repeat(64) };
     const send = () => mf.dispatchFetch('https://example/v1/feedback', { method: 'POST', headers, body: JSON.stringify(payload) });
     const replies = await Promise.all(Array.from({ length: 4 }, send));

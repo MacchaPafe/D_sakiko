@@ -19,7 +19,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "kind": {
       "const": "feedback"
@@ -75,7 +75,9 @@
           "additionalProperties": false,
           "required": [
             "source",
-            "rendered_at"
+            "rendered_at",
+            "base_system_prompt",
+            "runtime_system_prompt"
           ],
           "properties": {
             "source": {
@@ -84,6 +86,12 @@
             "rendered_at": {
               "type": "integer",
               "minimum": 0
+            },
+            "base_system_prompt": {
+              "$ref": "#/$defs/text"
+            },
+            "runtime_system_prompt": {
+              "$ref": "#/$defs/text"
             }
           }
         }
@@ -124,28 +132,12 @@
       "additionalProperties": false,
       "required": [
         "name",
-        "messages",
-        "prompt_config"
+        "character",
+        "messages"
       ],
       "properties": {
         "name": {
           "$ref": "#/$defs/label"
-        },
-        "prompt_config": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "content"
-          ],
-          "properties": {
-            "type": {
-              "const": "static"
-            },
-            "content": {
-              "$ref": "#/$defs/text"
-            }
-          }
         },
         "messages": {
           "type": "array",
@@ -154,6 +146,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
+              "role",
               "character_name",
               "text",
               "translation",
@@ -179,7 +172,35 @@
                   "surprise",
                   "fear"
                 ]
+              },
+              "role": {
+                "enum": [
+                  "user",
+                  "assistant"
+                ]
               }
+            }
+          }
+        },
+        "character": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "\\S"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "\\S"
             }
           }
         }

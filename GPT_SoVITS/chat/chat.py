@@ -432,8 +432,9 @@ class SystemPromptGenerator(ABC):
 
 
 class StaticPromptGenerator(SystemPromptGenerator):
-    def __init__(self, prompt_content: str):
+    def __init__(self, prompt_content: str, character_name: str | None = None):
         self.prompt_content = prompt_content
+        self.character_name = character_name
 
     def generate(self, perspective: str) -> str:
         """
@@ -442,11 +443,15 @@ class StaticPromptGenerator(SystemPromptGenerator):
         return self.prompt_content
 
     def to_dict(self) -> Dict:
-        return {"type": "static", "content": self.prompt_content}
+        data = {"type": "static", "content": self.prompt_content}
+        if self.character_name:
+            data["character_name"] = self.character_name
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict) -> "StaticPromptGenerator":
-        return cls(prompt_content=data.get("content", ""))
+        name = data.get("character_name")
+        return cls(prompt_content=data.get("content", ""), character_name=name if isinstance(name, str) and name else None)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -731,6 +736,8 @@ class Chat:
 
         :returns: 角色名称，若无法确定则返回 None
         """
+        if isinstance(self.prompt_generator, StaticPromptGenerator) and self.prompt_generator.character_name:
+            return self.prompt_generator.character_name
         if isinstance(self.prompt_generator, SingleCharacterPromptGenerator):
             return self.prompt_generator.character_name
         elif isinstance(self.prompt_generator, (SmallTheaterPromptGenerator, MultiCharacterPromptGenerator)):

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import copy
 import sys
 import tempfile
 import unittest
 from dataclasses import replace
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -15,13 +17,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PyQt5.QtCore import QUrl
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QLabel, QPlainTextEdit, QPushButton
+from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QPlainTextEdit, QPushButton
 
 from dp_local2 import DSLocalAndVoiceGen
 from feedback.client import FeedbackClient, Receipt, ReceiptStore
 from feedback.dialogs import FeedbackDialog, FeedbackHistoryDialog
 from feedback.protocol import freeze_payload
-from test.test_feedback import MemorySecrets, sample_chat
+from feedback.admin import FeedbackAdminDialog, AdminClient
+from feedback.viewer import FeedbackDetailView
+from feedback.importing import import_feedback, source_of
+from chat.chat import ChatManager
+from chat.system_prompt import compose_system_prompt
+from test.test_feedback import MemorySecrets, sample_chat, sample_character
+from test import test_feedback as feedback_test_cases
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.theme import derive_theme_palette
 
@@ -66,7 +74,7 @@ class FeedbackUiTests(unittest.TestCase):
 
             def freeze(rating: str, comment: str) -> tuple[str, bytes]:
                 """在首次确认时冻结源对话。"""
-                return freeze_payload(app_version="test", rating=rating, comment=comment, chat=chat, system_prompt="now")
+                return freeze_payload(app_version="test", rating=rating, comment=comment, chat=chat, character=sample_character(), base_system_prompt="now")
 
             def submit(client: FeedbackClient, receipt: Receipt, body: bytes) -> None:
                 """模拟服务端已保存、第一次响应丢失的场景。"""
@@ -181,9 +189,132 @@ class FeedbackUiTests(unittest.TestCase):
             if enabled:
                 subject._append_worldbook_runtime_instruction(messages)
             rendered = subject.render_feedback_system_prompt(chat, "missing-character")
+            base, runtime = subject.render_feedback_prompt_parts(chat, "missing-character")
+            self.assertEqual(base, "original")
+            self.assertEqual(compose_system_prompt(base, runtime), rendered)
             self.assertEqual(rendered, messages[0]["content"])
             self.assertNotIn(subject._build_turn_runtime_controls(), rendered)
             self.assertEqual("# Worldbook Knowledge" in rendered, enabled)
+
+    def test_detail_renders_rows_and_target_without_interpreting_uploaded_html(self) -> None:
+        detail = feedback_test_cases.FeedbackImportTests().detail()
+        detail["payload"]["comment"] = "<img src='https://attacker'>"
+        detail["payload"]["conversation"]["messages"][1]["text"] = "<a href='https://attacker'>text</a>"
+        view = FeedbackDetailView()
+        view.show_detail(detail)
+        self.assertEqual(view.comment.toPlainText(), "<img src='https://attacker'>")
+        self.assertIn("【反馈目标】 2 · missing-character", view.messages.toPlainText())
+        self.assertIn("<a href='https://attacker'>text</a>", view.messages.toPlainText())
+        self.assertNotIn('href="https://attacker"', view.messages.toHtml())
+        self.assertTrue(view.metadata.isHidden())
+        self.assertIn("没有诊断记录", view.diagnostics.toPlainText())
+        view.raw_toggle.setChecked(True)
+        view._locate()
+        self.assertEqual(view.stack.currentIndex(), 0)
+        self.assertNotIn("do not import", view.raw.toPlainText())
+        self.assertIn("do not import", view.prompts.toPlainText())
+
+    def admin_dialog(self, manager=None, importer=None, opener=None):
+        with patch.object(FeedbackAdminDialog, "_refresh"), patch("feedback.admin.ManagedExports"):
+            return FeedbackAdminDialog(derive_theme_palette("#5588aa"), chat_manager=manager,
+                                       import_chat=importer, open_chat=opener)
+
+    def test_admin_import_refetches_and_reuses_local_chat_without_auto_processing(self) -> None:
+        manager = ChatManager()
+        detail = feedback_test_cases.FeedbackImportTests().detail()
+        def importer(fresh, endpoint):
+            with patch.object(manager, "save"):
+                return import_feedback(manager, fresh, endpoint, sample_character()).chat_id
+        imported = Mock(side_effect=importer)
+        opener = Mock(return_value=True)
+        dialog = self.admin_dialog(manager, imported, opener)
+        dialog._show_detail(detail)
+        changed = copy.deepcopy(detail)
+        changed["payload"]["conversation"]["messages"][1]["text"] = "fresh"
+        client = Mock(request=Mock(return_value=changed))
+        with patch("feedback.admin.AdminClient", return_value=client):
+            dialog._import()
+            self.assertFalse(dialog.import_button.isEnabled())
+            self.wait_for_dialog(dialog)
+        client.request.assert_called_once_with("GET", "/" + detail["feedback_id"])
+        self.assertEqual(manager.chat_list[0].message_list[1].text, "fresh")
+        self.assertFalse(dialog.detail["processed"])
+        self.assertEqual(dialog.import_button.text(), "打开已导入对话")
+        dialog._import()
+        imported.assert_called_once()
+        opener.assert_called_once_with(manager.chat_list[0].chat_id)
+
+    def test_admin_missing_feedback_never_imported_and_plain_advice_disabled(self) -> None:
+        importer = Mock()
+        dialog = self.admin_dialog(importer=importer)
+        detail = feedback_test_cases.FeedbackImportTests().detail()
+        dialog._show_detail(detail)
+        with patch("feedback.admin.AdminClient", return_value=Mock(request=Mock(return_value={"missing": True}))):
+            dialog._import()
+            self.wait_for_dialog(dialog)
+        importer.assert_not_called()
+        self.assertIsNone(dialog.detail)
+        self.assertFalse(dialog.import_button.isEnabled())
+        detail["payload"].update(conversation=None, prompt_context=None, target=None, worldbook_enabled=False)
+        dialog._show_detail(detail)
+        self.assertFalse(dialog.import_button.isEnabled())
+        self.assertFalse(dialog.export_backup_action.isEnabled())
+        self.assertIn("未附带对话", dialog.viewer.messages.toPlainText())
+        dialog.reject()
+
+    def test_source_status_checks_preserve_local_conversation_on_missing_or_failure(self) -> None:
+        manager = ChatManager()
+        detail = feedback_test_cases.FeedbackImportTests().detail()
+        with patch.object(manager, "save"):
+            chat = import_feedback(manager, detail, "", sample_character())
+        dialog = self.admin_dialog(manager)
+        source = source_of(chat)
+        for response, expected in [({"missing": True}, "unavailable"), (ValueError("offline"), "unknown")]:
+            source["status"] = "available"
+            client = Mock()
+            if isinstance(response, Exception):
+                client.request.side_effect = response
+            else:
+                client.request.return_value = response
+            statuses = dialog._check_sources(client, dialog._source_snapshots())
+            with patch.object(manager, "save"):
+                dialog._apply_source_statuses(statuses)
+            self.assertEqual(source["status"], expected)
+            self.assertIs(manager.get_chat_by_id(chat.chat_id), chat)
+        dialog.lists.setCurrentIndex(1)
+        dialog.local_list.setCurrentRow(0)
+        self.assertIn("暂时无法检查", dialog.source_status.text())
+        dialog.reject()
+
+    def test_main_window_uses_loaded_character_and_cancel_does_not_create_chat(self) -> None:
+        from qtUI import ChatGUI
+        detail = feedback_test_cases.FeedbackImportTests().detail()
+        manager = ChatManager()
+        character = sample_character()
+        subject = SimpleNamespace(chat_manager=manager, character_list=[character], current_character=character,
+                                  _ensure_chat_history_operation_allowed=Mock(return_value=True), refresh_chat_list=Mock())
+        with patch.object(manager, "save"), patch("qtUI.QInputDialog") as choose:
+            chat_id = ChatGUI._import_feedback_chat(subject, detail, "https://admin.example")
+            choose.assert_not_called()
+        self.assertEqual(manager.get_chat_by_id(chat_id).get_character_name(), character.character_name)
+        manager.delete_chat(chat_id)
+        character.character_name = "local"
+        selector = Mock(findChildren=Mock(return_value=[]), exec_=Mock(return_value=QDialog.Rejected))
+        with patch("qtUI.QInputDialog", return_value=selector):
+            self.assertIsNone(ChatGUI._import_feedback_chat(subject, detail, "https://admin.example"))
+        self.assertEqual(manager.chat_list, [])
+        selector.exec_.return_value = QDialog.Accepted
+        selector.textValue.return_value = "local（missing-character）"
+        with patch.object(manager, "save"), patch("qtUI.QInputDialog", return_value=selector):
+            chat_id = ChatGUI._import_feedback_chat(subject, detail, "https://admin.example")
+        chat = manager.get_chat_by_id(chat_id)
+        self.assertEqual(chat.get_character_name(), "local")
+        self.assertEqual(chat.message_list[1].character_name, "local")
+        subject._ensure_chat_history_operation_allowed.return_value = False
+        with patch("qtUI.QInputDialog") as choose:
+            self.assertIsNone(ChatGUI._import_feedback_chat(subject, detail, "https://other.example"))
+            choose.assert_not_called()
+        self.assertEqual(len(manager.chat_list), 1)
 
 
 if __name__ == "__main__":

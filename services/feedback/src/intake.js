@@ -35,13 +35,13 @@ async function handle(request, env) {
   let body;
   try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
   catch { return accepted(id); }
-  if (body?.schema_version !== 1) {
+  if (body?.schema_version !== 2) {
     // 未知版本只检查公共信封；不声称知道其业务字段。
     return Number.isInteger(body?.schema_version) && body.schema_version > 0 && body.kind === 'feedback' && UUID.test(body.request_id) && body.request_id === id
       ? error(400, 'unsupported_schema_version') : accepted(id);
   }
   if (!validPayload(body) || body.request_id !== id) return accepted(id);
-  if (env.ENABLED_SCHEMAS !== '1') return error(400, 'unsupported_schema_version');
+  if (env.ENABLED_SCHEMAS !== '2') return error(400, 'unsupported_schema_version');
   // 请求最多可首次创建/重试七天；墓碑保留更久，不能过期后复活旧请求。
   if (body.created_at < now - 7 * DAY || body.created_at > now + 300) return error(400, 'request_expired');
   const bodyHash = await sha256(bytes);

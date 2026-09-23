@@ -14,9 +14,12 @@ import requests
 from platformdirs import user_data_path
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCloseEvent
-from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QListWidget, QMenu, QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
+from chat.chat import Chat, ChatManager
 from feedback.dialogs import NetworkJob
+from feedback.importing import find_imported_chat, source_of, source_status_text
+from feedback.viewer import FeedbackDetailView, RATINGS, plain_label
 from feedback.protocol import Json, MAX_BODY, export_backup, validate_payload
 from ui_main.theme import ThemePalette, build_dialog_theme_stylesheet
 
@@ -106,14 +109,20 @@ class ManagedExports:
 
 
 class FeedbackAdminDialog(QDialog):
-    """开发者同进程管理面板，不加载角色资产或执行上传内容。"""
+    """开发者同进程管理面板，网络操作与本机对话变更分开执行。"""
 
-    def __init__(self, palette: ThemePalette, parent: QWidget | None = None) -> None:
-        """创建筛选、分页、纯文本详情及管理操作。"""
+    def __init__(self, palette: ThemePalette, parent: QWidget | None = None, *,
+                 chat_manager: ChatManager | None = None,
+                 import_chat: Callable[[dict[str, Json], str], str | None] | None = None,
+                 open_chat: Callable[[str], bool] | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("反馈管理")
-        self.resize(900, 650)
+        self.resize(1050, 760)
         self.setStyleSheet(build_dialog_theme_stylesheet(palette))
+        self.manager = chat_manager
+        self.import_chat_callback = import_chat
+        self.open_chat_callback = open_chat
+        self.endpoint = os.environ.get("DSAKIKO_FEEDBACK_ADMIN_URL", "").rstrip("/")
         self.job: NetworkJob | None = None
         self.detail: dict[str, Json] | None = None
         self.cursor: str | None = None
@@ -125,67 +134,163 @@ class FeedbackAdminDialog(QDialog):
         self.filter.addItems(["全部", "未处理", "已处理"])
         self.rating = QComboBox()
         self.rating.addItems(["全部评价", "赞", "踩", "不评价"])
-        bar.addWidget(self.filter)
-        bar.addWidget(self.rating)
-        for label, callback in (("刷新", self._refresh), ("下一页", self._next_page)):
-            button = QPushButton(label)
-            button.clicked.connect(callback)
-            bar.addWidget(button)
+        self.refresh_button = QPushButton("刷新")
+        self.refresh_button.clicked.connect(self._refresh)
+        self.next_button = QPushButton("下一页")
+        self.next_button.clicked.connect(self._next_page)
+        for widget in (self.filter, self.rating, self.refresh_button, self.next_button):
+            bar.addWidget(widget)
+        bar.addStretch()
         layout.addLayout(bar)
+        splitter = QSplitter(Qt.Horizontal)
+        self.lists = QTabWidget()
         self.list = QListWidget()
+        self.local_list = QListWidget()
+        for listing in (self.list, self.local_list):
+            listing.setWordWrap(True)
+            listing.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list.itemSelectionChanged.connect(self._selected)
-        layout.addWidget(self.list, 1)
-        self.viewer = QPlainTextEdit()
-        self.viewer.setReadOnly(True)
-        layout.addWidget(self.viewer, 3)
+        self.local_list.itemSelectionChanged.connect(self._local_selected)
+        self.lists.addTab(self.list, "云端反馈")
+        self.lists.addTab(self.local_list, "已导入对话")
+        self.lists.currentChanged.connect(self._list_tab_changed)
+        splitter.addWidget(self.lists)
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        self.viewer = FeedbackDetailView()
+        right_layout.addWidget(self.viewer, 1)
+        self.source_status = plain_label()
+        right_layout.addWidget(self.source_status)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([280, 740])
+        layout.addWidget(splitter, 1)
         actions = QHBoxLayout()
-        for label, callback in (("标为已处理", lambda: self._mark(True)), ("标为未处理", lambda: self._mark(False)),
-                                ("导出反馈 JSON", lambda: self._export(False)), ("导出文本对话备份", lambda: self._export(True)), ("删除", self._delete)):
-            button = QPushButton(label)
-            button.clicked.connect(callback)
-            actions.addWidget(button)
+        self.import_button = QPushButton("导入为新对话")
+        self.import_button.clicked.connect(self._import)
+        self.mark_button = QPushButton("标为已处理")
+        self.mark_button.clicked.connect(self._mark)
+        self.more_button = QPushButton("更多操作")
+        menu = QMenu(self)
+        self.export_json_action = menu.addAction("导出反馈 JSON", lambda: self._export(False))
+        self.export_backup_action = menu.addAction("导出对话 ZIP", lambda: self._export(True))
+        menu.addSeparator()
+        self.delete_action = menu.addAction("删除云端反馈…", self._delete)
+        self.more_button.setMenu(menu)
+        for widget in (self.import_button, self.mark_button, self.more_button):
+            actions.addWidget(widget)
+        actions.addStretch()
         layout.addLayout(actions)
-        self.status = QLabel("查看不会加载角色、附件或外部链接。导出位于专用目录，打开面板时清理到期和已撤回副本；手动复制的文件需另行删除。")
-        self.status.setTextFormat(Qt.PlainText)
-        self.status.setWordWrap(True)
+        self.status = plain_label("本地导入的对话独立保留；刷新时检查原始反馈状态。")
         layout.addWidget(self.status)
+        self.filter.currentIndexChanged.connect(self._refresh)
+        self.rating.currentIndexChanged.connect(self._refresh)
+        self._refresh_local_list()
+        self._update_actions()
         self._refresh()
 
+    def _local_chat(self) -> Chat | None:
+        item = self.local_list.currentItem()
+        return self.manager.get_chat_by_id(item.data(Qt.UserRole)) if self.manager and item else None
+
+    def _existing_chat(self) -> Chat | None:
+        if self.lists.currentIndex() == 1:
+            return self._local_chat()
+        if self.manager and self.detail:
+            return find_imported_chat(self.manager, self.endpoint, str(self.detail["feedback_id"]))
+        return None
+
+    def _update_actions(self) -> None:
+        idle = self.job is None
+        selected = self.detail is not None and self.lists.currentIndex() == 0
+        existing = self._existing_chat()
+        conversation = self.detail and cast(dict[str, Json], self.detail["payload"])["conversation"]
+        self.import_button.setText("打开已导入对话" if existing else "导入为新对话")
+        self.import_button.setEnabled(idle and bool((existing and self.open_chat_callback) or
+                                                     (selected and conversation and self.import_chat_callback)))
+        self.mark_button.setEnabled(idle and selected)
+        self.mark_button.setText("标为未处理" if self.detail and self.detail["processed"] else "标为已处理")
+        self.more_button.setEnabled(idle and selected)
+        self.export_backup_action.setEnabled(bool(conversation))
+        for widget in (self.filter, self.rating, self.refresh_button, self.lists):
+            widget.setEnabled(idle)
+        self.next_button.setEnabled(idle and bool(self.cursor) and self.lists.currentIndex() == 0)
+
     def _start(self, operation: CallableOperation, complete: CallableResult) -> None:
-        """串行执行后台操作，保持 UI 可响应。"""
         if self.job is not None:
             return
-        self.list.setEnabled(False)
         self.job = NetworkJob(operation, self)
         self.job.finished.connect(lambda: self._finished(complete))
+        self._update_actions()
         self.job.start()
 
     def _finished(self, complete: CallableResult) -> None:
-        """处理后台结果，错误不泄漏凭据和响应原文。"""
         assert self.job is not None
         job = self.job
         self.job = None
-        self.list.setEnabled(True)
-        if job.error:
-            self.status.setText(job.error)
-        else:
-            try:
+        try:
+            if job.error:
+                self.status.setText(job.error)
+            else:
                 complete(job.result)
-            except (ValueError, KeyError, TypeError):
-                self.status.setText("管理响应不符合当前格式，请更新程序。")
-        job.deleteLater()
+        except ValueError as exc:
+            self.status.setText(str(exc))
+        except (KeyError, TypeError):
+            self.status.setText("管理响应不符合当前格式，请更新程序。")
+        finally:
+            self._update_actions()
+            job.deleteLater()
 
     def _refresh(self) -> None:
-        """重新加载第一页并同步受管理副本。"""
         self._load_page(None, sync=True)
 
     def _next_page(self) -> None:
-        """使用服务端游标加载下一页。"""
         if self.cursor:
             self._load_page(self.cursor)
 
+    def _source_snapshots(self) -> dict[str, dict[str, object]]:
+        """在主线程冻结来源元数据，后台不读取或修改 ChatManager。"""
+        sources = {}
+        if self.manager:
+            for chat in self.manager.single_character_chats():
+                source = source_of(chat)
+                if source and source.get("endpoint") == self.endpoint:
+                    sources[str(source["feedback_id"])] = dict(source)
+        return sources
+
+    @staticmethod
+    def _check_sources(client: AdminClient, sources: dict[str, dict[str, object]]) -> dict[str, str]:
+        statuses = {}
+        for feedback_id, source in sources.items():
+            if int(source["expires_at"]) <= time.time() or source.get("status") == "unavailable":
+                statuses[feedback_id] = "unavailable"
+                continue
+            try:
+                statuses[feedback_id] = "unavailable" if client.request("GET", "/" + feedback_id).get("missing") else "available"
+            except (ValueError, requests.RequestException):
+                statuses[feedback_id] = "unknown"
+        return statuses
+
+    def _apply_source_statuses(self, statuses: dict[str, str]) -> None:
+        if not self.manager or not statuses:
+            return
+        now = int(time.time())
+        for chat in self.manager.single_character_chats():
+            source = source_of(chat)
+            if source and source.get("endpoint") == self.endpoint and source.get("feedback_id") in statuses:
+                source["status"] = statuses[str(source["feedback_id"])]
+                source["checked_at"] = now
+                if source["status"] == "available":
+                    source["last_available_at"] = now
+        try:
+            self.manager.save()
+        except Exception:
+            self.status.setText("来源状态已更新，但未能保存到本机；请检查数据目录权限后重试。")
+        self._refresh_local_list()
+
     def _load_page(self, cursor: str | None, sync: bool = False) -> None:
-        """冻结筛选条件后查询，不把正文放进列表请求。"""
+        if self.job is not None:
+            return
         params = []
         if self.filter.currentIndex():
             params.append("processed=" + ("0" if self.filter.currentIndex() == 1 else "1"))
@@ -193,76 +298,167 @@ class FeedbackAdminDialog(QDialog):
             params.append("rating=" + ("up", "down", "none")[self.rating.currentIndex() - 1])
         if cursor:
             params.append("cursor=" + cursor)
+        sources = self._source_snapshots() if sync else {}
 
         def operation() -> object:
-            """执行受管理副本同步和列表读取。"""
-            client = AdminClient()
-            if sync:
-                self.exports.sync(client)
-            return client.request("GET", "?" + "&".join(params))
+            statuses = {key: "unknown" for key in sources}
+            notice = ""
+            try:
+                client = AdminClient()
+                statuses = self._check_sources(client, sources)
+                if sync:
+                    try:
+                        self.exports.sync(client)
+                    except (ValueError, OSError):
+                        notice = "部分导出副本未能同步，请稍后重试。"
+                page = client.request("GET", "?" + "&".join(params))
+                return page, statuses, notice
+            except ValueError as exc:
+                return None, statuses, str(exc)
 
-        self._start(operation, self._show_list)
+        def complete(result: object) -> None:
+            page, statuses, notice = result
+            if page is not None:
+                self._show_list(page)
+            self.status.setText(notice or f"本页 {len(self.items)} 条。" + ("还有下一页。" if self.cursor else ""))
+            self._apply_source_statuses(statuses)
+
+        self._start(operation, complete)
 
     def _show_list(self, result: object) -> None:
-        """填充纯文本列表并清除上一份详情。"""
         data = cast(dict[str, Json], result)
         self.items = cast(list[dict[str, Json]], data["items"])
         self.cursor = cast(str | None, data["cursor"])
         self.detail = None
         self.viewer.clear()
+        self.source_status.clear()
         self.list.clear()
         for item in self.items:
-            self.list.addItem(f"{item['feedback_id']} · {item['rating']} · {'已处理' if item['processed'] else '未处理'}")
-        self.status.setText(f"本页 {len(self.items)} 条。" + ("还有下一页。" if self.cursor else ""))
+            date = time.strftime("%m-%d %H:%M", time.localtime(int(str(item["created_at"]))))
+            self.list.addItem(f"{RATINGS[str(item['rating'])]} · {'已处理' if item['processed'] else '未处理'} · "
+                              f"{'对话反馈' if item['has_conversation'] else '意见建议'}\n{date} · #{str(item['feedback_id'])[:8]}")
+        if self.lists.currentIndex() == 1:
+            self._local_selected()
 
     def _selected(self) -> None:
-        """按编号读取单份反馈，避免把整个数据库正文下载到内存。"""
         index = self.list.currentRow()
-        if not 0 <= index < len(self.items) or self.job is not None:
+        if self.lists.currentIndex() != 0 or not 0 <= index < len(self.items) or self.job is not None:
             return
         feedback_id = str(self.items[index]["feedback_id"])
         self.detail = None
         self.viewer.clear()
+        self.source_status.clear()
         self._start(lambda: AdminClient().request("GET", "/" + feedback_id), self._show_detail)
 
     def _show_detail(self, result: object) -> None:
-        """纯文本显示完整反馈，不解释 HTML、模板或资源路径。"""
         detail = cast(dict[str, Json], result)
         if detail.get("missing"):
-            self.status.setText("反馈已撤回或到期。")
+            self.status.setText("反馈已撤回、删除或到期。")
             return
-        validate_payload(cast(dict[str, Json], detail["payload"]))
+        self.viewer.show_detail(detail)
         self.detail = detail
-        self.viewer.setPlainText(json.dumps(detail["payload"], ensure_ascii=False, indent=2))
+        existing = self._existing_chat()
+        if existing:
+            self.source_status.setText(source_status_text(source_of(existing)))
+        self.status.setText("本地导入的对话独立保留，不随云端记录删除。")
+        self._update_actions()
 
-    def _mark(self, processed: bool) -> None:
-        """只修改工作流状态，不改写用户正文。"""
+    def _refresh_local_list(self) -> None:
+        selected = self._local_chat()
+        selected_id = selected.chat_id if selected else None
+        self.local_list.blockSignals(True)
+        self.local_list.clear()
+        if self.manager:
+            for chat in self.manager.single_character_chats():
+                source = source_of(chat)
+                if not source or source.get("endpoint") != self.endpoint:
+                    continue
+                self.local_list.addItem(chat.name + "\n" + source_status_text(source))
+                item = self.local_list.item(self.local_list.count() - 1)
+                item.setData(Qt.UserRole, chat.chat_id)
+                if chat.chat_id == selected_id:
+                    self.local_list.setCurrentItem(item)
+        self.local_list.blockSignals(False)
+        if self.lists.currentIndex() == 1:
+            self._local_selected()
+
+    def _list_tab_changed(self) -> None:
+        self.detail = None
+        self.viewer.clear()
+        self.source_status.clear()
+        if self.lists.currentIndex() == 1:
+            self._local_selected()
+        else:
+            self._selected()
+        self._update_actions()
+
+    def _local_selected(self) -> None:
+        if self.lists.currentIndex() != 1:
+            return
+        self.viewer.clear()
+        self.source_status.clear()
+        chat = self._local_chat()
+        if chat:
+            self.viewer.heading.setText(chat.name)
+            self.viewer.summary.setText("本地导入对话 · 点击下方按钮打开")
+            self.source_status.setText(source_status_text(source_of(chat)))
+        self._update_actions()
+
+    def _mark(self) -> None:
         if self.detail is not None:
             feedback_id = str(self.detail["feedback_id"])
-            self._start(lambda: AdminClient().request("PATCH", "/" + feedback_id, {"processed": processed}), lambda _result: self._refresh())
+            processed = not bool(self.detail["processed"])
+            self._start(lambda: AdminClient().request("PATCH", "/" + feedback_id, {"processed": processed}), lambda _: self._refresh())
 
     def _delete(self) -> None:
-        """删除云端内容以及本工具管理的本机副本。"""
-        if self.detail is None:
+        if self.detail is None or QMessageBox.question(self, "删除云端反馈", "删除这条云端反馈及受管理的导出文件？已导入的本地对话会保留。") != QMessageBox.Yes:
             return
         feedback_id = str(self.detail["feedback_id"])
 
         def operation() -> object:
-            """服务器确认删除后清理受管理导出。"""
             result = AdminClient().request("DELETE", "/" + feedback_id)
             self.exports.remove(feedback_id)
             return result
 
-        self._start(operation, lambda _result: self._refresh())
+        def complete(_result: object) -> None:
+            self._apply_source_statuses({feedback_id: "unavailable"})
+            self._refresh()
+
+        self._start(operation, complete)
+
+    def _import(self) -> None:
+        existing = self._existing_chat()
+        if existing:
+            if self.open_chat_callback and self.open_chat_callback(existing.chat_id):
+                self.accept()
+            return
+        if self.detail is None or self.import_chat_callback is None:
+            return
+        feedback_id = str(self.detail["feedback_id"])
+
+        def complete(result: object) -> None:
+            detail = cast(dict[str, Json], result)
+            if detail.get("missing"):
+                self._apply_source_statuses({feedback_id: "unavailable"})
+                self.detail = None
+                self.viewer.clear()
+                self.status.setText("反馈已撤回、删除或到期，不能导入。")
+                return
+            self._show_detail(detail)
+            chat_id = self.import_chat_callback(detail, self.endpoint)
+            if chat_id:
+                self._refresh_local_list()
+                self.status.setText("已导入为独立对话，点击“打开已导入对话”继续。")
+                self._update_actions()
+
+        self._start(lambda: AdminClient().request("GET", "/" + feedback_id), complete)
 
     def _export(self, backup: bool) -> None:
-        """导出前重新读取，避免导出已撤回的内存副本。"""
         if self.detail is None:
             return
         feedback_id = str(self.detail["feedback_id"])
 
         def operation() -> object:
-            """确认反馈仍有效后写入专用目录。"""
             client = AdminClient()
             detail = client.request("GET", "/" + feedback_id)
             if detail.get("missing"):
@@ -273,13 +469,11 @@ class FeedbackAdminDialog(QDialog):
         self._start(operation, lambda path: self.status.setText(f"已导出：{path}"))
 
     def reject(self) -> None:
-        """后台操作完成后允许关闭。"""
         if self.job is None:
             self.detail = None
             super().reject()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """避免关闭弹窗时销毁后台线程。"""
         if self.job is not None:
             event.ignore()
         else:

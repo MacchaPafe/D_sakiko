@@ -8,7 +8,7 @@
 	"preview_urls": false,
 	"vars": {
 		"ACCEPTING": "true",
-		"ENABLED_SCHEMAS": "1"
+		"ENABLED_SCHEMAS": "2"
 	},
 	"triggers": {
 		"crons": [

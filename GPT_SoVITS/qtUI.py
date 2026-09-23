@@ -4626,7 +4626,9 @@ class ChatGUI(QWidget):
         def freeze(chosen_rating: str, comment: str) -> tuple[str, bytes]:
             """在确认时检查目标绑定并读取当前设定与已有诊断。"""
             diagnostics: list[dict[str, object]] = []
-            system_prompt = ""
+            base_system_prompt = ""
+            runtime_system_prompt = ""
+            feedback_character = None
             if chat is not None:
                 if self.chat_manager.get_chat_by_id(chat.chat_id) is not chat:
                     raise ValueError("原对话已改变，请重新发起反馈。")
@@ -4637,13 +4639,15 @@ class ChatGUI(QWidget):
                 character_name = chat.get_character_name()
                 if not character_name or character_name not in self.character_by_name:
                     raise ValueError("当前角色不存在，无法渲染 system prompt。仍可提交文字建议。")
-                system_prompt = self.dp_chat.render_feedback_system_prompt(chat, character_name)
+                feedback_character = self.character_by_name[character_name]
+                base_system_prompt, runtime_system_prompt = self.dp_chat.render_feedback_prompt_parts(chat, character_name)
                 diagnostic_store = getattr(self.dp_chat, "worldbook_diagnostic_store", None)
                 if chat.meta.worldbook.enabled and diagnostic_store is not None:
                     diagnostics = diagnostic_store.records_for_chat(chat.chat_id)
             return freeze_payload(app_version=read_current_version(get_version_file(get_app_root())),
                                   rating=chosen_rating, comment=comment, chat=chat,
-                                  system_prompt=system_prompt, target=target, diagnostics=diagnostics)
+                                  character=feedback_character, base_system_prompt=base_system_prompt,
+                                  runtime_system_prompt=runtime_system_prompt, target=target, diagnostics=diagnostics)
 
         try:
             dialog = FeedbackDialog(title=title, disclosure=disclosure, freeze=freeze, rating=rating,
@@ -4672,7 +4676,70 @@ class ChatGUI(QWidget):
     def open_feedback_admin(self) -> None:
         """打开仅配置在开发者本机的反馈管理面板。"""
         from feedback.admin import FeedbackAdminDialog
-        FeedbackAdminDialog(self._theme_palette, self).exec_()
+        FeedbackAdminDialog(self._theme_palette, self, chat_manager=self.chat_manager,
+                            import_chat=self._import_feedback_chat, open_chat=self._open_imported_feedback_chat).exec_()
+
+    def _import_feedback_chat(self, detail, endpoint: str) -> str | None:
+        """只使用已加载角色承接反馈；不会创建角色或触发跨进程重新扫描。"""
+        from feedback.importing import find_imported_chat, import_feedback
+        from feedback.protocol import validate_payload
+
+        if not self._ensure_chat_history_operation_allowed("导入反馈对话"):
+            return None
+        existing = find_imported_chat(self.chat_manager, endpoint, str(detail["feedback_id"]))
+        if existing:
+            return existing.chat_id
+        payload = detail["payload"]
+        validate_payload(payload)
+        source = payload["conversation"]["character"]
+        characters = list(self.character_list)
+        if not characters:
+            QMessageBox.information(self, "无法导入", "当前没有已加载的角色，请创建角色并重启后再导入。")
+            return None
+        selected = next((character for character in characters if
+                         character.character_name == source["name"] and character.character_folder_name == source["id"]), None)
+        if selected is None:
+            labels = [f"{character.character_name}（{character.character_folder_name}）" for character in characters]
+            default = next((i for i, character in enumerate(characters) if character.character_name == source["name"]),
+                           next((i for i, character in enumerate(characters) if character is self.current_character), 0))
+            selector = QInputDialog(self)
+            selector.setWindowTitle("选择承接反馈的角色")
+            selector.setLabelText(
+                f"原角色：{source['name']}（{source['id']}）\n"
+                "本机角色缺失或身份不完全一致，请选择已有角色。\n"
+                "所选角色用于本机显示和语音；对话人设使用反馈中的独立提示词。"
+            )
+            selector.setComboBoxItems(labels)
+            selector.setComboBoxEditable(False)
+            selector.setTextValue(labels[default])
+            selector.setOkButtonText("导入")
+            selector.setCancelButtonText("取消")
+            for label_widget in selector.findChildren(QLabel):
+                label_widget.setTextFormat(Qt.PlainText)
+            if selector.exec_() != QDialog.Accepted:
+                return None
+            selected = characters[labels.index(selector.textValue())]
+        try:
+            chat = import_feedback(self.chat_manager, detail, endpoint, selected)
+        except Exception:
+            logger.exception("导入反馈对话失败")
+            QMessageBox.warning(self, "导入失败", "反馈已失效或对话未能保存，请刷新反馈并检查数据目录权限后重试。")
+            return None
+        self.refresh_chat_list()
+        return chat.chat_id
+
+    def _open_imported_feedback_chat(self, chat_id: str) -> bool:
+        """打开本地副本并提示原始反馈的最近检查状态。"""
+        from feedback.importing import source_of, source_status_text
+        if not self._ensure_chat_history_operation_allowed("打开反馈对话"):
+            return False
+        self.switch_chat_by_id(chat_id)
+        if self.current_chat_id != chat_id:
+            return False
+        source = source_of(self.current_chat)
+        if source:
+            self._set_message_box_text(source_status_text(source))
+        return True
 
     def open_more_function_window(self):
         more_function_win=MoreFunctionWindow(

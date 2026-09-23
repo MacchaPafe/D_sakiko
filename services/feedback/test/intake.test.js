@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import intake from '../src/intake.js';
 import admin, { handleAdmin } from '../src/admin.js';
-import { cleanup, DAY, headerFor, MAX_BODY, unpack } from '../src/protocol.js';
+import { cleanup, DAY, headerFor, MAX_BODY, unpack, validPayload } from '../src/protocol.js';
 
 // 使用真实 SQLite 事务/触发器模拟 D1 接口，不以 Map 模拟配额与幂等。
 class Statement {
@@ -23,7 +23,7 @@ class Statement {
 function environment() {
   const db = new DatabaseSync(':memory:');
   db.exec(readFileSync(new URL('../migrations/0001_feedback.sql', import.meta.url), 'utf8'));
-  return { sql: db, ACCEPTING: 'true', ENABLED_SCHEMAS: '1', RATE_LIMITER: { limit: async () => ({ success: true }) }, DB: {
+  return { sql: db, ACCEPTING: 'true', ENABLED_SCHEMAS: '2', RATE_LIMITER: { limit: async () => ({ success: true }) }, DB: {
     prepare: sql => new Statement(db, sql),
     batch: async statements => {
       db.exec('BEGIN');
@@ -34,7 +34,7 @@ function environment() {
 }
 const secret = 'a'.repeat(64);
 function payload() {
-  return { schema_version: 1, kind: 'feedback', request_id: crypto.randomUUID(), created_at: Math.floor(Date.now() / 1000), app_version: 'test', rating: 'none', comment: '测试反馈', target: null, conversation: null, prompt_context: null, worldbook_enabled: false, worldbook_diagnostics: [], consent: 'feedback-v1-90d' };
+  return { schema_version: 2, kind: 'feedback', request_id: crypto.randomUUID(), created_at: Math.floor(Date.now() / 1000), app_version: 'test', rating: 'none', comment: '测试反馈', target: null, conversation: null, prompt_context: null, worldbook_enabled: false, worldbook_diagnostics: [], consent: 'feedback-v1-90d' };
 }
 async function request(body, method = 'POST', token = secret) {
   const id = body.request_id;
@@ -68,11 +68,33 @@ test('schema mismatch fakes success; supported shape with disabled version retur
   const env = environment(); const body = payload();
   assert.equal((await intake.fetch(await request({ ...body, unknown: 'secret' }), env)).status, 200);
   assert.equal(env.sql.prepare('SELECT count(*) AS n FROM feedback').get().n, 0);
+  assert.equal((await intake.fetch(await request({ ...body, schema_version: 1 }), env)).status, 400);
+  assert.equal((await intake.fetch(await request({ ...body, schema_version: 3 }), env)).status, 400);
   env.ENABLED_SCHEMAS = '';
   assert.equal((await intake.fetch(await request(body), env)).status, 400);
-  assert.equal((await intake.fetch(await request({ ...body, schema_version: 2 }), env)).status, 400);
   const malformed = await request(body);
   assert.equal((await intake.fetch(new Request(malformed, { body: '{' }), env)).status, 200);
+});
+test('v2 conversation round trip keeps prompt parts and explicit roles; invalid targets never enter storage', async () => {
+  const env = environment();
+  const body = { ...payload(), target: 1,
+    conversation: { name: '反馈对话', character: { id: 'source', name: '角色' }, messages: [
+      { role: 'user', character_name: 'User', text: '问题', translation: '', emotion: 'happiness' },
+      { role: 'assistant', character_name: '角色', text: '回答', translation: '', emotion: 'sadness' },
+    ] },
+    prompt_context: { source: 'rendered_at_feedback', rendered_at: Math.floor(Date.now() / 1000),
+      base_system_prompt: '  角色设定\n', runtime_system_prompt: '\n机器输出规则  ' },
+  };
+  assert.equal(validPayload(body), true);
+  for (const invalid of [{ ...body, target: 0 }, { ...body, target: 2 }, { ...body, prompt_context: null },
+    { ...body, conversation: null }, { ...body, worldbook_diagnostics: [{ format_version: 2 }] }]) {
+    assert.equal(validPayload(invalid), false);
+    assert.equal((await intake.fetch(await request(invalid), env)).status, 200);
+  }
+  assert.equal(env.sql.prepare('SELECT count(*) AS n FROM feedback').get().n, 0);
+  const receipt = await (await intake.fetch(await request(body), env)).json();
+  const result = await (await handleAdmin(new Request(`https://admin/v1/admin/feedback/${receipt.feedback_id}`), env, 'tester')).json();
+  assert.deepEqual(result.payload, body);
 });
 test('bounded stream rejects oversized body without content length, but missing header wins', async () => {
   const env = environment(); const body = payload(); const req = await request(body);

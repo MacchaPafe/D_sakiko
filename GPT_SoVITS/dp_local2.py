@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from qconfig import create_d_sakiko_config_snapshot, d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
 from character import CharacterAttributes
+from chat.system_prompt import compose_system_prompt
 from log import get_logger
 
 from chat.chat import (
@@ -572,12 +573,9 @@ class DSLocalAndVoiceGen:
         messages.append({"role": "user", "content": controls})
 
     @staticmethod
-    def _append_worldbook_runtime_instruction(
-        messages: list[dict[str, object]],
-    ) -> None:
-        """只在世界书启用回合追加稳定使用规则，不发送动态筛选约束。"""
-
-        instruction = textwrap.dedent(
+    def _worldbook_runtime_instruction() -> str:
+        """反馈快照和正常请求共用的世界书使用规则。"""
+        return textwrap.dedent(
             """# Worldbook Knowledge
             请求中可能出现 <worldbook_context>，其中是当前角色此刻可用的知识，
             可能包含她亲历或已知的事实，以及她自己的判断、信念和怀疑。
@@ -590,6 +588,13 @@ class DSLocalAndVoiceGen:
             工具返回为空或暂时不可用不等于相关事实不存在，此时应基于已有上下文继续回答，
             不要编造检索结果。"""
         ).strip()
+
+    @staticmethod
+    def _append_worldbook_runtime_instruction(
+        messages: list[dict[str, object]],
+    ) -> None:
+        """只在世界书启用回合追加稳定使用规则，不发送动态筛选约束。"""
+        instruction = DSLocalAndVoiceGen._worldbook_runtime_instruction()
         for message in messages:
             if message.get("role") != "system":
                 continue
@@ -762,13 +767,16 @@ class DSLocalAndVoiceGen:
 
     def render_feedback_system_prompt(self, chat: Chat, character_name: str) -> str:
         """使用当前设定渲染反馈用系统提示词，不调用检索、模型或附件服务。"""
-        content = chat.prompt_generator.generate(perspective=character_name)
-        messages: list[dict[str, object]] = [
-            {"role": "system", "content": content + "\n" + self._build_runtime_system_instruction()}
-        ]
+        base, runtime = self.render_feedback_prompt_parts(chat, character_name)
+        return compose_system_prompt(base, runtime)
+
+    def render_feedback_prompt_parts(self, chat: Chat, character_name: str) -> tuple[str, str]:
+        """按来源拆分快照，不解析文本，不重建历史某一轮请求。"""
+        base = chat.prompt_generator.generate(perspective=character_name)
+        runtime = self._build_runtime_system_instruction()
         if chat.meta.worldbook.enabled:
-            self._append_worldbook_runtime_instruction(messages)
-        return str(messages[0]["content"])
+            runtime += "\n\n" + self._worldbook_runtime_instruction()
+        return base, runtime
 
     def _build_llm_messages_for_chat_turn(self, character_name: str) -> list[dict[str, object]]:
         """
@@ -814,7 +822,7 @@ class DSLocalAndVoiceGen:
                 break
         if system_idx >= 0:
             content = str(messages[system_idx].get("content") or "")
-            messages[system_idx]["content"] = content + "\n" + runtime_system_instruction
+            messages[system_idx]["content"] = compose_system_prompt(content, runtime_system_instruction)
         else:
             messages.insert(0, {"role": "system", "content": runtime_system_instruction})
 

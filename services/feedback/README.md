@@ -54,10 +54,16 @@ DSAKIKO_FEEDBACK_ACCESS_ID=<Access service token client id>
 DSAKIKO_FEEDBACK_ACCESS_SECRET=<Access service token secret>
 ```
 
-不要将这些开发者变量加入普通发布包、源码或普通配置导出。面板支持按评价/处理状态筛选、分页、纯文本详情、处理状态修改、删除、JSON 和文本对话备份导出。管理 API 还支持 `since` / `until` Unix 秒范围过滤。查看不需要安装反馈中的角色，不执行 HTML、模板、工具、资源链接；导出备份只有 `manifest.json`，Static 提示词不改写用户原聊天。用户本机历史列表不提供正文查看。
+不要将这些开发者变量加入普通发布包、源码或普通配置导出。面板支持评价/处理状态筛选、分页、独立评论、逐条对话与反馈目标定位、世界书诊断、提示词快照和默认折叠的技术信息。可切换对话 JSON，修改处理状态，导出 JSON/文本对话 ZIP，或直接导入为独立对话。管理 API 还支持 `since` / `until` Unix 秒范围过滤。查看不需要安装反馈中的角色，不执行上传的 HTML、模板、工具或资源链接。用户本机提交历史列表仍不提供正文查看。
+
+直接导入前重新读取云端记录。角色 ID 与名称均匹配时复用已加载角色，否则让管理员选择已加载角色；不创建角色或刷新其他进程的角色目录。导入副本按显式消息 `role` 映射为本机用户/所选角色，正文与原始反馈保持不变。ZIP 导出与直接导入共用转换逻辑，只将基础提示词转换为 `StaticPromptGenerator`，默认关闭世界书，不包含附件和语音；所选角色用于本机显示、语音及正常运行设置，导入不保证复现历史请求。Static 提示词可显式绑定角色名，保证空对话也能打开。同一来源和反馈编号优先打开先前导入的本地对话，删除后可重新导入，分叉或复制不会冒充原导入记录。导入不自动修改处理状态。
 
 ## 协议和一致性
 
+- 正文只接受 `schema_version: 2`，部署配置 `ENABLED_SCHEMAS` 为 `"2"`。尚未上线的 v1 开发反馈不做迁移，管理端提示重新提交。HTTP 路径与公开约定头继续使用 v1，它们的版本独立于正文 schema；已有回执仍可撤回。
+- `conversation` 含名称、`character: {id, name}` 以及 `messages`。来源机器上的角色 ID 只是匹配线索，不是跨机器全局身份，不用作本地文件路径。消息的 `role` 必须为 `user` 或 `assistant`，另存原始 `character_name`、正文、翻译与情绪。`target` 为零基消息索引，非空时必须指向 assistant 消息。
+- `prompt_context` 含 `source: "rendered_at_feedback"`、`rendered_at`、`base_system_prompt`、`runtime_system_prompt`。基础段是当前提示词生成器的原样渲染结果；运行时段是程序追加的角色边界、输出契约及启用时的世界书规则。运行时段非空时，完整 system 文本为基础段 + 一个 LF + 运行时段；为空时只取基础段。不裁剪任何一段的空白。它是提交时快照，不是历史回复生成时的逐轮请求记录，不包含末尾的本轮 `<runtime_controls>` 消息。移除旧的 `conversation.prompt_config`，避免重复存储。
+- 文字建议的 `conversation` 与 `prompt_context` 必须同时为 null，无目标、无世界书开关与诊断；对话反馈两者同时非空。字段长度、数组数量、目标语义与整份大小均受验证，客户端与 Worker 共用 `schema.json` 并测试跨语言校验一致性。新字段不得绕过白名单。
 - `POST /v1/feedback`，`Content-Type: application/json`，UTF-8 紧凑 JSON，实际读取上限 1 MiB。不接收 gzip 请求、ZIP、附件或音频；入库压缩使用 gzip BLOB。
 - 约定头 `X-DSakiko-Feedback: v1:<uuid-v4>:<hex-sha256>`，摘要输入精确为 UTF-8 `d_sakiko.feedback/v1\n<uuid-v4>`。其中 `\n` 表示一个 LF 字符。算法公开，只过滤随机扫描。
 - 缺失或不正确的约定头先假成功，不读取正文、不访问限流器或 D1。有效头之后可返回 `429` / `413`。格式不符假成功；合法但停用的 schema 和具有有效公共信封的未知版本返回 `400`。JSON schema 是客户端与服务端共用的文件，避免有效客户端被静默丢弃。
@@ -70,10 +76,10 @@ DSAKIKO_FEEDBACK_ACCESS_SECRET=<Access service token secret>
 
 ## 数据范围与保留
 
-对话反馈上传全部普通消息的说话者、正文、翻译和情绪，以及反馈时渲染的 Static system prompt。当前世界书启用时上传该对话现存诊断，不重新检索。快照、检索候选、选中 ID、注入知识及工具返回知识均使用字段白名单；不透传任意 `payload` / 工具 `result` / 错误文本，检索失败仅保留允许的错误代码。聊天 `meta`、附件、音频路径、API 配置和普通日志不上传。文本本身不承诺自动去除个人信息。
+对话反馈上传来源角色 ID/名称、全部普通消息的 role、说话者、正文、翻译和情绪，以及分开的基础提示词与运行时指令。当前世界书启用时上传该对话现存诊断，不重新检索。快照、检索候选、选中 ID、注入知识及工具返回知识均使用字段白名单；不透传任意 `payload` / 工具 `result` / 错误文本，检索失败仅保留允许的错误代码。聊天 `meta`、附件、音频路径、API 配置和普通日志不上传。文本本身不承诺自动去除个人信息。
 
 每份云端正文在接收后 90 天到期，管理 API 立即停止提供到期内容；每小时 Cron 清空正文和业务字段，之后清理有限期控制记录与计数。撤回会立即清空当前 D1 正文。D1 平台的 Time Travel / 备份保留应按实际账号配置纳入运营说明；恢复数据库后须先重新应用撤回记录并运行过期清理，再开放管理读取和接收。
 
-管理面板导出集中在本机 `D_sakiko/feedback/admin_exports/`，保留来源服务和到期时间索引。重新打开/刷新面板会清理过期或云端已撤回的本工具副本，面板删除也会清理对应本机文件。未运行的程序无法定时清理本机文件；手工复制、另行导入聊天、系统备份等副本由开发者按保留规则管理。不要把导出文本提交到 Git 或公开 Issue。
+管理面板导出集中在本机 `D_sakiko/feedback/admin_exports/`，保留来源服务和到期时间索引。重新打开/刷新面板会清理过期或云端已撤回的受管理导出文件，面板删除也会清理对应导出文件。直接导入的对话作为独立本地副本保留，不自动清理。其本地 `feedback_source` 元数据保存来源、到期时间、角色映射与最近检查结果，不上传这些管理员操作信息，也不保存 Access 凭据。面板打开/刷新时只检查当前配置的管理服务，分辨“仍可用”“已不可用（撤回、删除或到期）”和“暂时无法检查”，网络错误不会当作已删除。“已导入对话”列表在原始反馈消失后仍能打开本地副本。手工复制、另行导入聊天、系统备份等副本由开发者管理。不要把导出文本提交到 Git 或公开 Issue。
 
 参考：[D1 batch 事务](https://developers.cloudflare.com/d1/worker-api/d1-database/)、[Rate Limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)、[Access JWT 验证](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)。

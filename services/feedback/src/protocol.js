@@ -23,7 +23,8 @@ export function validPayload(body) {
   if (body.rating === 'none' && !body.comment.trim()) return false;
   if (!body.worldbook_enabled && body.worldbook_diagnostics.length) return false;
   if (!body.conversation) return body.target === null && body.prompt_context === null && !body.worldbook_enabled && !body.worldbook_diagnostics.length;
-  return body.prompt_context !== null && (body.target === null || body.target < body.conversation.messages.length);
+  return body.prompt_context !== null && (body.target === null ||
+    (body.target < body.conversation.messages.length && body.conversation.messages[body.target].role === 'assistant'));
 }
 export async function boundedBytes(stream, limit = MAX_BODY) {
   if (!stream) return new Uint8Array();
