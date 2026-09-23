@@ -14,7 +14,7 @@ import requests
 from platformdirs import user_data_path
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCloseEvent
-from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QListWidget, QMenu, QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QListWidget, QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 from chat.chat import Chat, ChatManager
 from feedback.dialogs import NetworkJob
@@ -111,6 +111,8 @@ class ManagedExports:
 class FeedbackAdminDialog(QDialog):
     """开发者同进程管理面板，网络操作与本机对话变更分开执行。"""
 
+    _closing_dialogs: set[FeedbackAdminDialog] = set()
+
     def __init__(self, palette: ThemePalette, parent: QWidget | None = None, *,
                  chat_manager: ChatManager | None = None,
                  import_chat: Callable[[dict[str, Json], str], str | None] | None = None,
@@ -124,6 +126,7 @@ class FeedbackAdminDialog(QDialog):
         self.open_chat_callback = open_chat
         self.endpoint = os.environ.get("DSAKIKO_FEEDBACK_ADMIN_URL", "").rstrip("/")
         self.job: NetworkJob | None = None
+        self._closing_result: int | None = None
         self.detail: dict[str, Json] | None = None
         self.cursor: str | None = None
         self.items: list[dict[str, Json]] = []
@@ -181,6 +184,18 @@ class FeedbackAdminDialog(QDialog):
             actions.addWidget(widget)
         actions.addStretch()
         layout.addLayout(actions)
+        self.loading = QWidget()
+        loading_layout = QHBoxLayout(self.loading)
+        loading_layout.setContentsMargins(0, 0, 0, 0)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedSize(96, 8)
+        self.loading_text = plain_label()
+        loading_layout.addWidget(self.progress)
+        loading_layout.addWidget(self.loading_text, 1)
+        self.loading.hide()
+        layout.addWidget(self.loading)
         self.status = plain_label("本地导入的对话独立保留；刷新时检查原始反馈状态。")
         layout.addWidget(self.status)
         self.filter.currentIndexChanged.connect(self._refresh)
@@ -201,34 +216,45 @@ class FeedbackAdminDialog(QDialog):
         return None
 
     def _update_actions(self) -> None:
+        """锁定需要网络的操作，保留本地浏览和打开对话能力。"""
         idle = self.job is None
         selected = self.detail is not None and self.lists.currentIndex() == 0
         existing = self._existing_chat()
         conversation = self.detail and cast(dict[str, Json], self.detail["payload"])["conversation"]
         self.import_button.setText("打开已导入对话" if existing else "导入为新对话")
-        self.import_button.setEnabled(idle and bool((existing and self.open_chat_callback) or
-                                                     (selected and conversation and self.import_chat_callback)))
+        self.import_button.setEnabled(bool((existing and self.open_chat_callback) or
+                                           (idle and selected and conversation and self.import_chat_callback)))
         self.mark_button.setEnabled(idle and selected)
         self.mark_button.setText("标为未处理" if self.detail and self.detail["processed"] else "标为已处理")
         self.more_button.setEnabled(idle and selected)
-        self.export_backup_action.setEnabled(bool(conversation))
-        for widget in (self.filter, self.rating, self.refresh_button, self.lists):
+        self.export_json_action.setEnabled(idle and selected)
+        self.export_backup_action.setEnabled(idle and selected and bool(conversation))
+        self.delete_action.setEnabled(idle and selected)
+        for widget in (self.filter, self.rating, self.refresh_button, self.list):
             widget.setEnabled(idle)
         self.next_button.setEnabled(idle and bool(self.cursor) and self.lists.currentIndex() == 0)
 
-    def _start(self, operation: CallableOperation, complete: CallableResult) -> None:
-        if self.job is not None:
+    def _start(self, operation: CallableOperation, complete: CallableResult, *,
+               message: str = "正在连接反馈服务…") -> None:
+        """启动后台请求并显示加载状态，不阻塞主线程的事件循环。"""
+        if self.job is not None or self._closing_result is not None:
             return
         self.job = NetworkJob(operation, self)
         self.job.finished.connect(lambda: self._finished(complete))
+        self.loading_text.setText(message)
+        self.loading.show()
         self._update_actions()
         self.job.start()
 
     def _finished(self, complete: CallableResult) -> None:
+        """请求结束后恢复控件；已关闭窗口不再执行界面或导入回调。"""
         assert self.job is not None
         job = self.job
         self.job = None
         try:
+            if self._closing_result is not None:
+                self.done(self._closing_result)
+                return
             if job.error:
                 self.status.setText(job.error)
             else:
@@ -238,8 +264,11 @@ class FeedbackAdminDialog(QDialog):
         except (KeyError, TypeError):
             self.status.setText("管理响应不符合当前格式，请更新程序。")
         finally:
+            self.loading.setVisible(self.job is not None)
             self._update_actions()
             job.deleteLater()
+            if self.job is None:
+                self._closing_dialogs.discard(self)
 
     def _refresh(self) -> None:
         self._load_page(None, sync=True)
@@ -323,7 +352,7 @@ class FeedbackAdminDialog(QDialog):
             self.status.setText(notice or f"本页 {len(self.items)} 条。" + ("还有下一页。" if self.cursor else ""))
             self._apply_source_statuses(statuses)
 
-        self._start(operation, complete)
+        self._start(operation, complete, message="正在刷新反馈并同步来源状态…" if sync else "正在加载下一页…")
 
     def _show_list(self, result: object) -> None:
         data = cast(dict[str, Json], result)
@@ -348,15 +377,25 @@ class FeedbackAdminDialog(QDialog):
         self.detail = None
         self.viewer.clear()
         self.source_status.clear()
-        self._start(lambda: AdminClient().request("GET", "/" + feedback_id), self._show_detail)
+        self._start(lambda: AdminClient().request("GET", "/" + feedback_id), self._show_detail,
+                    message="正在加载反馈详情…")
 
     def _show_detail(self, result: object) -> None:
+        """保留当前云端详情，后台响应不会覆盖本地页的展示。"""
         detail = cast(dict[str, Json], result)
         if detail.get("missing"):
+            self.detail = None
+            if self.lists.currentIndex() == 0:
+                self.viewer.clear()
+                self.source_status.clear()
             self.status.setText("反馈已撤回、删除或到期。")
             return
-        self.viewer.show_detail(detail)
+        validate_payload(cast(dict[str, Json], detail["payload"]))
         self.detail = detail
+        if self.lists.currentIndex() != 0:
+            self._update_actions()
+            return
+        self.viewer.show_detail(detail)
         existing = self._existing_chat()
         if existing:
             self.source_status.setText(source_status_text(source_of(existing)))
@@ -383,13 +422,17 @@ class FeedbackAdminDialog(QDialog):
             self._local_selected()
 
     def _list_tab_changed(self) -> None:
-        self.detail = None
+        """切换本地页时保留云端详情，返回时优先展示已加载的内容。"""
         self.viewer.clear()
         self.source_status.clear()
         if self.lists.currentIndex() == 1:
             self._local_selected()
-        else:
+        elif self.detail is not None:
+            self._show_detail(self.detail)
+        elif self.job is None:
             self._selected()
+        else:
+            self.viewer.heading.setText("正在等待反馈加载…")
         self._update_actions()
 
     def _local_selected(self) -> None:
@@ -405,13 +448,17 @@ class FeedbackAdminDialog(QDialog):
         self._update_actions()
 
     def _mark(self) -> None:
-        if self.detail is not None:
+        """串行更新云端处理状态，完成后刷新列表。"""
+        if self.job is None and self.detail is not None and self.lists.currentIndex() == 0:
             feedback_id = str(self.detail["feedback_id"])
             processed = not bool(self.detail["processed"])
-            self._start(lambda: AdminClient().request("PATCH", "/" + feedback_id, {"processed": processed}), lambda _: self._refresh())
+            self._start(lambda: AdminClient().request("PATCH", "/" + feedback_id, {"processed": processed}),
+                        lambda _: self._refresh(), message="正在更新处理状态…")
 
     def _delete(self) -> None:
-        if self.detail is None or QMessageBox.question(self, "删除云端反馈", "删除这条云端反馈及受管理的导出文件？已导入的本地对话会保留。") != QMessageBox.Yes:
+        if self.job is not None or self.lists.currentIndex() != 0 or self.detail is None:
+            return
+        if QMessageBox.question(self, "删除云端反馈", "删除这条云端反馈及受管理的导出文件？已导入的本地对话会保留。") != QMessageBox.Yes:
             return
         feedback_id = str(self.detail["feedback_id"])
 
@@ -424,7 +471,7 @@ class FeedbackAdminDialog(QDialog):
             self._apply_source_statuses({feedback_id: "unavailable"})
             self._refresh()
 
-        self._start(operation, complete)
+        self._start(operation, complete, message="正在删除云端反馈…")
 
     def _import(self) -> None:
         existing = self._existing_chat()
@@ -432,7 +479,7 @@ class FeedbackAdminDialog(QDialog):
             if self.open_chat_callback and self.open_chat_callback(existing.chat_id):
                 self.accept()
             return
-        if self.detail is None or self.import_chat_callback is None:
+        if self.job is not None or self.lists.currentIndex() != 0 or self.detail is None or self.import_chat_callback is None:
             return
         feedback_id = str(self.detail["feedback_id"])
 
@@ -441,7 +488,8 @@ class FeedbackAdminDialog(QDialog):
             if detail.get("missing"):
                 self._apply_source_statuses({feedback_id: "unavailable"})
                 self.detail = None
-                self.viewer.clear()
+                if self.lists.currentIndex() == 0:
+                    self.viewer.clear()
                 self.status.setText("反馈已撤回、删除或到期，不能导入。")
                 return
             self._show_detail(detail)
@@ -451,10 +499,11 @@ class FeedbackAdminDialog(QDialog):
                 self.status.setText("已导入为独立对话，点击“打开已导入对话”继续。")
                 self._update_actions()
 
-        self._start(lambda: AdminClient().request("GET", "/" + feedback_id), complete)
+        self._start(lambda: AdminClient().request("GET", "/" + feedback_id), complete,
+                    message="正在获取最新反馈以导入对话…")
 
     def _export(self, backup: bool) -> None:
-        if self.detail is None:
+        if self.job is not None or self.lists.currentIndex() != 0 or self.detail is None:
             return
         feedback_id = str(self.detail["feedback_id"])
 
@@ -466,16 +515,30 @@ class FeedbackAdminDialog(QDialog):
                 raise ValueError("反馈已撤回或到期，不能导出。")
             return self.exports.save(detail, client.endpoint, backup)
 
-        self._start(operation, lambda path: self.status.setText(f"已导出：{path}"))
+        self._start(operation, lambda path: self.status.setText(f"已导出：{path}"), message="正在下载并导出反馈…")
+
+    def done(self, result: int) -> None:
+        """立即隐藏窗口，保留强引用到后台结束，防止销毁运行中的线程。"""
+        self._closing_result = result
+        self.detail = None
+        if self.job is not None:
+            self._closing_dialogs.add(self)
+            self.hide()
+            return
+        super().done(result)
+
+    def accept(self) -> None:
+        """打开本地对话后安全结束管理窗口。"""
+        self.done(QDialog.Accepted)
 
     def reject(self) -> None:
-        if self.job is None:
-            self.detail = None
-            super().reject()
+        """允许取消窗口，已发出的请求在后台完成。"""
+        self.done(QDialog.Rejected)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        """关闭按钮与取消采用相同的后台线程生命周期。"""
         if self.job is not None:
             event.ignore()
+            self.reject()
         else:
-            self.detail = None
             super().closeEvent(event)

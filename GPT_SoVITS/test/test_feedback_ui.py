@@ -7,6 +7,7 @@ import copy
 import sys
 import tempfile
 import unittest
+from threading import Event, get_ident
 from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
@@ -15,7 +16,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import QTimer, QUrl
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QPlainTextEdit, QPushButton
 
@@ -45,7 +46,7 @@ class FeedbackUiTests(unittest.TestCase):
         existing = QApplication.instance()
         cls.app = existing if isinstance(existing, QApplication) else QApplication([])
 
-    def wait_for_dialog(self, dialog: FeedbackDialog) -> None:
+    def wait_for_dialog(self, dialog: FeedbackDialog | FeedbackAdminDialog) -> None:
         """处理 Qt 事件直到后台测试操作结束。"""
         for _ in range(300):
             QTest.qWait(5)
@@ -285,6 +286,190 @@ class FeedbackUiTests(unittest.TestCase):
         dialog.local_list.setCurrentRow(0)
         self.assertIn("暂时无法检查", dialog.source_status.text())
         dialog.reject()
+
+    def test_admin_pending_request_keeps_local_browsing_and_cached_detail_available(self) -> None:
+        """慢请求期间事件循环继续运行，本地页不会被迟到的云端详情覆盖。"""
+        manager = ChatManager()
+        detail = feedback_test_cases.FeedbackImportTests().detail()
+        with patch.object(manager, "save"):
+            chat = import_feedback(manager, detail, "", sample_character())
+        dialog = self.admin_dialog(manager, opener=Mock(return_value=True))
+        dialog._show_detail(detail)
+        dialog.show()
+        release = Event()
+        worker_threads: list[int] = []
+        ticks: list[int] = []
+        timer = QTimer(dialog)
+        timer.setInterval(5)
+        timer.timeout.connect(lambda: ticks.append(1))
+
+        def operation() -> object:
+            """模拟被网络延迟阻塞的后台详情请求。"""
+            worker_threads.append(get_ident())
+            if not release.wait(5):
+                raise ValueError("测试请求超时")
+            return detail
+
+        try:
+            dialog._start(operation, dialog._show_detail, message="正在加载反馈详情…")
+            timer.start()
+            QTest.qWait(40)
+            self.assertTrue(ticks)
+            self.assertTrue(worker_threads)
+            self.assertNotEqual(worker_threads[0], get_ident())
+            self.assertTrue(dialog.loading.isVisible())
+            self.assertEqual(dialog.progress.maximum(), 0)
+            self.assertFalse(dialog.refresh_button.isEnabled())
+            self.assertFalse(dialog.list.isEnabled())
+            self.assertFalse(dialog.mark_button.isEnabled())
+            self.assertFalse(dialog.export_json_action.isEnabled())
+            self.assertTrue(dialog.viewer.isEnabled())
+            dialog.viewer.raw_toggle.setChecked(True)
+            self.assertEqual(dialog.viewer.stack.currentIndex(), 1)
+            dialog.lists.setCurrentIndex(1)
+            dialog.local_list.setCurrentRow(0)
+            self.assertTrue(dialog.local_list.isEnabled())
+            self.assertTrue(dialog.import_button.isEnabled())
+            self.assertEqual(dialog.viewer.heading.text(), chat.name)
+            with patch("feedback.admin.AdminClient") as client:
+                dialog.lists.setCurrentIndex(0)
+                self.assertEqual(dialog.detail, detail)
+                self.assertIn("针对第", dialog.viewer.summary.text())
+                dialog.lists.setCurrentIndex(1)
+                client.assert_not_called()
+            release.set()
+            self.wait_for_dialog(dialog)
+            self.assertIn("本地导入对话", dialog.viewer.summary.text())
+            self.assertFalse(dialog.loading.isVisible())
+            with patch("feedback.admin.AdminClient") as client:
+                dialog.lists.setCurrentIndex(0)
+                client.assert_not_called()
+            self.assertEqual(dialog.detail, detail)
+            self.assertTrue(dialog.mark_button.isEnabled())
+        finally:
+            timer.stop()
+            release.set()
+            self.wait_for_dialog(dialog)
+            dialog.reject()
+
+    def test_admin_opens_local_chat_while_request_finishes_without_late_callback(self) -> None:
+        """打开本地副本不等待网络，隐藏窗口保留线程至结束并忽略迟到回调。"""
+        manager = ChatManager()
+        detail = feedback_test_cases.FeedbackImportTests().detail()
+        with patch.object(manager, "save"):
+            chat = import_feedback(manager, detail, "", sample_character())
+        opener = Mock(return_value=True)
+        dialog = self.admin_dialog(manager, opener=opener)
+        dialog.lists.setCurrentIndex(1)
+        dialog.local_list.setCurrentRow(0)
+        dialog.show()
+        release = Event()
+        completed = Mock()
+
+        def operation() -> object:
+            """让网络操作持续到本地对话打开之后。"""
+            release.wait(5)
+            return detail
+
+        try:
+            dialog._start(operation, completed)
+            self.assertTrue(dialog.import_button.isEnabled())
+            dialog._import()
+            opener.assert_called_once_with(chat.chat_id)
+            self.assertFalse(dialog.isVisible())
+            self.assertIsNotNone(dialog.job)
+            self.assertIn(dialog, FeedbackAdminDialog._closing_dialogs)
+            release.set()
+            self.wait_for_dialog(dialog)
+            completed.assert_not_called()
+            self.assertEqual(dialog.result(), QDialog.Accepted)
+            self.assertNotIn(dialog, FeedbackAdminDialog._closing_dialogs)
+        finally:
+            release.set()
+            self.wait_for_dialog(dialog)
+
+    def test_admin_close_during_request_skips_completion_and_releases_window(self) -> None:
+        """关闭键立即隐藏窗口，后台结束后释放保活引用且不执行迟到操作。"""
+        dialog = self.admin_dialog()
+        dialog.show()
+        release = Event()
+        completed = Mock()
+
+        def operation() -> object:
+            """让后台结果在用户关闭窗口后才返回。"""
+            release.wait(5)
+            return None
+
+        try:
+            dialog._start(operation, completed)
+            dialog.close()
+            self.assertFalse(dialog.isVisible())
+            self.assertIn(dialog, FeedbackAdminDialog._closing_dialogs)
+            release.set()
+            self.wait_for_dialog(dialog)
+            completed.assert_not_called()
+            self.assertEqual(dialog.result(), QDialog.Rejected)
+            self.assertNotIn(dialog, FeedbackAdminDialog._closing_dialogs)
+        finally:
+            release.set()
+            self.wait_for_dialog(dialog)
+
+    def test_admin_error_restores_network_actions_and_hides_loading(self) -> None:
+        """请求失败后显示原因，恢复操作，不留下永久加载状态。"""
+        dialog = self.admin_dialog()
+        dialog._show_detail(feedback_test_cases.FeedbackImportTests().detail())
+
+        def operation() -> object:
+            """模拟可展示的网络失败。"""
+            raise ValueError("测试网络不可用")
+
+        completed = Mock()
+        dialog._start(operation, completed)
+        self.wait_for_dialog(dialog)
+        completed.assert_not_called()
+        self.assertTrue(dialog.loading.isHidden())
+        self.assertEqual(dialog.status.text(), "测试网络不可用")
+        self.assertTrue(dialog.refresh_button.isEnabled())
+        self.assertTrue(dialog.mark_button.isEnabled())
+        dialog.reject()
+
+    def test_admin_chained_refresh_keeps_loading_and_request_exclusion(self) -> None:
+        """处理状态提交后的连续刷新仍显示加载，并阻止重复网络操作。"""
+        dialog = self.admin_dialog()
+        dialog._show_detail(feedback_test_cases.FeedbackImportTests().detail())
+        release = Event()
+        refreshing = Event()
+
+        def request(method: str, suffix: str = "", body: object = None) -> object:
+            """先完成状态更新，再阻塞后续列表刷新。"""
+            if method == "PATCH":
+                return {"ok": True}
+            refreshing.set()
+            release.wait(5)
+            return {"items": [], "cursor": None}
+
+        client = Mock(request=Mock(side_effect=request))
+        try:
+            with patch("feedback.admin.AdminClient", return_value=client):
+                dialog._mark()
+                for _ in range(100):
+                    QTest.qWait(5)
+                    if refreshing.is_set():
+                        break
+                self.assertTrue(refreshing.is_set())
+                self.assertFalse(dialog.loading.isHidden())
+                self.assertIn("刷新", dialog.loading_text.text())
+                self.assertFalse(dialog.refresh_button.isEnabled())
+                dialog._mark()
+                self.assertEqual(client.request.call_count, 2)
+                release.set()
+                self.wait_for_dialog(dialog)
+            self.assertTrue(dialog.loading.isHidden())
+            self.assertTrue(dialog.refresh_button.isEnabled())
+        finally:
+            release.set()
+            self.wait_for_dialog(dialog)
+            dialog.reject()
 
     def test_main_window_uses_loaded_character_and_cancel_does_not_create_chat(self) -> None:
         from qtUI import ChatGUI
