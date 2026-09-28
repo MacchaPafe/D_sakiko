@@ -2421,6 +2421,10 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                 continue
 
+            # 在附件处理前固定本轮工具选择，处理中修改设置只影响下一轮。
+            enabled_tools_snapshot = chat.meta.enabled_tool_names()
+            tool_calling_enabled = bool(enabled_tools_snapshot)
+
             # 复制一份模型配置，防止一轮对话中间配置修改导致出错。
             # 图片导入前也需要使用本轮锁定的模型配置判断视觉能力。
             self.d_sakiko_config = create_d_sakiko_config_snapshot()
@@ -2594,8 +2598,6 @@ class DSLocalAndVoiceGen:
             is_text_generating_queue.put('no_complete')		#正在生成文字的标志
             # 为本轮用户输入锁定推理配置；如果用户在工具调用过程中修改 UI 设置，只会影响下一轮输入。
             reasoning_kwargs_snapshot = self._build_current_reasoning_kwargs_snapshot()
-            # 为本轮用户输入锁定工具调用开关；如果用户在请求过程中修改 UI 设置，只会影响下一轮输入。
-            tool_calling_enabled = bool(self.current_chat.meta.tool_calling_enabled)
             worldbook_tool_session: WorldbookToolSession | None = None
             if turn_worldbook_snapshot is not None:
                 try:
@@ -2638,6 +2640,7 @@ class DSLocalAndVoiceGen:
                             else None
                         ),
                         include_base_tools=tool_calling_enabled,
+                        enabled_general_tools=enabled_tools_snapshot,
                     )
                 else:
                     runtime_result = self._run_plain_completion_turn(

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from .tool_options import TOOL_NAMES, change_tool_selection, normalize_enabled_tools
+
 
 VALID_REASONING_ENABLED = {"auto", "on", "off"}
 VALID_REASONING_EFFORT = {"default", "minimal", "low", "medium", "high", "xhigh"}
@@ -278,11 +280,35 @@ class ChatMeta:
     llm_reasoning: ReasoningMeta = field(default_factory=ReasoningMeta)
     # 当前对话是否允许模型调用工具。
     tool_calling_enabled: bool = True
+    # 普通工具的关闭名单；旧存档缺失时由原开关决定全开或全关。
+    disabled_tools: list[str] = field(default_factory=list)
     # 当前对话的世界书开关、根包与剧情进度。
     worldbook: WorldbookChatSettings = field(default_factory=WorldbookChatSettings)
     # 用来存放一些无法分类的字段，避免旧程序载入新版本程序存档时丢失数据。
     # （不过有一说一，真的会有人更新版本后又用旧版本程序打开新版本对话记录吗？有点诡异了）
     extra: dict[str, object] = field(default_factory=dict)
+
+    def enabled_tool_names(self) -> frozenset[str]:
+        """返回依赖有效的普通工具快照，供界面及本轮执行共同使用。"""
+
+        if not self.tool_calling_enabled:
+            return frozenset()
+        return normalize_enabled_tools(TOOL_NAMES - frozenset(self.disabled_tools))
+
+    def set_all_tools_enabled(self, enabled: bool) -> None:
+        """批量全开或全关，清除之前的部分选择。"""
+
+        self.disabled_tools = []
+        self.tool_calling_enabled = enabled
+
+    def set_tool_enabled(self, name: str, enabled: bool) -> frozenset[str]:
+        """修改单项并同步依赖，返回所有发生变化的工具名称。"""
+
+        previous = self.enabled_tool_names()
+        selected = change_tool_selection(previous, name, enabled)
+        self.disabled_tools = sorted(TOOL_NAMES - selected)
+        self.tool_calling_enabled = bool(selected)
+        return previous ^ selected
 
     @classmethod
     def from_dict(cls, data: object) -> "ChatMeta":
@@ -313,21 +339,31 @@ class ChatMeta:
             "tool_call_history",
             "llm_reasoning",
             "tool_calling_enabled",
+            "disabled_tools",
             "worldbook",
         }
         # 保留所有未知的字段到 extra 中，确保数据不丢失
         extra = {str(key): value for key, value in mapping.items() if key not in known_keys}
 
-        return cls(
+        raw_disabled_tools = mapping.get("disabled_tools")
+        result = cls(
             theater=TheaterMeta.from_dict(mapping.get("theater")),
             live2d_models=live2d_models,
             tool_call_records=tool_call_records,
             tool_call_history=tool_call_history,
             llm_reasoning=ReasoningMeta.from_dict(mapping.get("llm_reasoning")),
             tool_calling_enabled=_as_bool(mapping.get("tool_calling_enabled"), True),
+            disabled_tools=[
+                name for name in (raw_disabled_tools if isinstance(raw_disabled_tools, list) else [])
+                if isinstance(name, str) and name in TOOL_NAMES
+            ],
             worldbook=WorldbookChatSettings.from_dict(mapping.get("worldbook")),
             extra=extra,
         )
+        selected = result.enabled_tool_names()
+        result.tool_calling_enabled = bool(selected)
+        result.disabled_tools = sorted(TOOL_NAMES - selected) if selected else []
+        return result
 
     def to_dict(self) -> dict[str, object]:
         """将对话元数据转换为可序列化字典。"""
@@ -342,8 +378,11 @@ class ChatMeta:
             data["tool_call_history"] = [one.to_dict() for one in self.tool_call_history]
         if self.llm_reasoning != ReasoningMeta():
             data["llm_reasoning"] = self.llm_reasoning.to_dict()
-        if not self.tool_calling_enabled:
+        selected = self.enabled_tool_names()
+        if not selected:
             data["tool_calling_enabled"] = False
+        elif selected != TOOL_NAMES:
+            data["disabled_tools"] = sorted(TOOL_NAMES - selected)
         if self.worldbook != WorldbookChatSettings():
             data["worldbook"] = self.worldbook.to_dict()
         return data

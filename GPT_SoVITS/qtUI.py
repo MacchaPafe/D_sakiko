@@ -101,7 +101,8 @@ from ui_main.components.context_usage_indicator import (
     resolve_context_usage_sizing,
 )
 from ui_main.components.message_input import MessageInput
-from ui_main.components.input_option_chips import ChoiceChip, ToggleChip
+from ui_main.components.input_option_chips import ChoiceChip
+from ui_main.components.tool_selection_chip import ToolSelectionChip
 from ui_main.theme import (
     DEFAULT_CHARACTER_THEME_SEED,
     ThemePalette,
@@ -3670,14 +3671,12 @@ class ChatGUI(QWidget):
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(6)
 
-        self.tool_calling_toggle_button = ToggleChip(
-            "工具",
-            accessible_name="工具调用",
+        self.tool_calling_toggle_button = ToolSelectionChip(
             height=self.input_tool_button_height,
         )
         self.tool_calling_toggle_button.setObjectName("toolCallingToggleButton")
         self.tool_calling_toggle_button.setMinimumWidth(max(46, int(self.input_tool_button_height * 1.8)))
-        self.tool_calling_toggle_button.clicked.connect(self._set_tool_calling_enabled)  # noqa
+        self.tool_calling_toggle_button.settingsChanged.connect(self._save_tool_calling_config)  # noqa
 
         self.reasoning_menu_button = ChoiceChip(
             accessible_name="思考模式",
@@ -3741,12 +3740,6 @@ class ChatGUI(QWidget):
 
         return menu
 
-    def _set_tool_calling_enabled(self, enabled: bool) -> None:
-        """修改当前对话的工具调用开关配置。"""
-        self.current_chat.meta.tool_calling_enabled = bool(enabled)
-        self._refresh_tool_calling_button()
-        self._save_tool_calling_config()
-
     def _refresh_input_option_buttons(self) -> None:
         """刷新输入栏中的对话级选项按钮。"""
         self._refresh_tool_calling_button()
@@ -3758,26 +3751,14 @@ class ChatGUI(QWidget):
         """根据当前对话配置刷新工具调用按钮文本和选中状态。"""
         if not hasattr(self, "tool_calling_toggle_button"):
             return
-        enabled = bool(self.current_chat.meta.tool_calling_enabled)
-        self.tool_calling_toggle_button.setChecked(enabled)
-        self.tool_calling_toggle_button.setText("工具")
-        self.tool_calling_toggle_button.setAccessibleDescription(
-            "已启用，当前对话允许模型调用工具"
-            if enabled
-            else "已关闭，当前对话不会调用工具"
-        )
-        self.tool_calling_toggle_button.setToolTip(
-            "当前对话允许模型调用工具"
-            if enabled
-            else "当前对话不会调用工具"
-        )
+        self.tool_calling_toggle_button.bind(self.current_chat.meta)
 
-    def _save_tool_calling_config(self) -> None:
+    def _save_tool_calling_config(self, message: str = "已更新工具调用设置") -> None:
         """保存当前对话的工具调用配置。"""
         try:
             if not self._save_chat():
                 return
-            self._show_input_option_status("已更新工具调用设置")
+            self._show_input_option_status(message)
         except Exception:
             logger.exception("保存工具调用设置失败")
             self._show_input_option_status("工具调用设置保存失败")

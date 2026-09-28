@@ -192,6 +192,16 @@ class ToolRegistry:
             combined._tools.update(overlay._tools)
         return combined
 
+    def with_enabled_general_tools(self, names: frozenset[str]) -> "ToolRegistry":
+        """复制本轮允许的普通工具及全部隐藏工具，同时限制声明和执行。"""
+
+        registry = ToolRegistry()
+        registry._tools = {
+            name: tool for name, tool in self._tools.items()
+            if tool.channel == "worldbook-hidden" or name in names
+        }
+        return registry
+
     def execute(self, request: ToolCallRequest) -> ToolExecutionResult:
         """
         执行指定工具，并返回面向模型与用户的独立结果文本。
@@ -349,6 +359,7 @@ class ToolCallingAgentRuntime:
         on_interim_message: Optional[InterimMessageCallback] = None,
         tool_overlay: ToolRegistry | None = None,
         include_base_tools: bool = True,
+        enabled_general_tools: frozenset[str] | None = None,
     ) -> AgentRunResult:
         """
         执行 Agent 工具调用主循环（简化版的 ReAct 模式）。
@@ -363,6 +374,7 @@ class ToolCallingAgentRuntime:
         :param on_interim_message: 在获得了模型返回的过渡展示信息时，该怎么做
         :param tool_overlay: 可选的传入一个工具表，该表的工具会与当前工具表合并后交给模型使用，这一过程不会影响二者原本的数据。如果存在同名的工具，优先使用 tool_overlay 中的工具。
         :param include_base_tools: 是否使用自身的工具表定义的基础工具。如果该选项设为否且没有传入 tool_overlay 覆盖工具表，那么**不会有任何工具发送给 LLM**，这可能导致未知的错误。
+        :param enabled_general_tools: 本轮允许的普通工具快照；None 保持兼容，隐藏世界书工具不受筛选。
         """
         # history 会在工具循环中不断追加 assistant/tool 消息，形成完整闭环上下文。
         # 这是一个 Agent 工具调用主循环（ReAct 模式的简化），不断询问 LLM，直到 LLM 不再输出 tool_calls 为止，或达到最大循环次数。
@@ -378,6 +390,8 @@ class ToolCallingAgentRuntime:
             if include_base_tools
             else ToolRegistry().combined(tool_overlay)
         )
+        if enabled_general_tools is not None:
+            active_registry = active_registry.with_enabled_general_tools(enabled_general_tools)
 
         while True:
             if tool_rounds >= self.max_tool_rounds:
