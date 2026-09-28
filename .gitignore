@@ -42,6 +42,8 @@
 /GPT_SoVITS/deepseek_prompt_cache_debug/
 /GPT_SoVITS/chat/model_attachment_capabilities.json
 
+/GPT_SoVITS/live2d_support/performance_descriptions/evidence/
+
 docs-site/.vitepress/cache
 docs-site/.vitepress/dist
 Live2D/*
