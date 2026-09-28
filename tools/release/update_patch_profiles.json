@@ -23,7 +23,11 @@
       "聊天记录注意事项！.txt",
       "docs-site/*",
       "services/feedback/**",
-      "dsakiko_webui/frontend/**"
+      "dsakiko_webui/frontend/**",
+      "electron_frontend/node_modules/**",
+      "electron_frontend/.vite/**",
+      "electron_frontend/scripts/test-*.mjs",
+      "electron_frontend/test/**"
     ],
     "hard_exclude": [
       ".git/**",
@@ -53,7 +57,8 @@
       "platform": "macos",
       "arch": "arm64",
       "ignore": [
-        "GPT_SoVITS/live2d_1.pyd"
+        "GPT_SoVITS/live2d_1.pyd",
+        "electron_frontend/**"
       ],
       "include": [
         "*.command",
@@ -61,9 +66,12 @@
       ]
     },
     "windows-x64": {
-      "include": ["修复程序.bat"],
       "platform": "windows",
-      "arch": "x64"
+      "arch": "x64",
+      "include": [
+        "修复程序.bat",
+        "electron_frontend/dist/**"
+      ]
     }
   }
 }
