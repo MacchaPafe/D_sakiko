@@ -5,9 +5,11 @@ import multiprocessing
 from multiprocessing.queues import Queue
 import sys,os
 import pathlib
+import uuid
+from queue import Empty
 from typing import Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
@@ -18,14 +20,18 @@ import time
 
 from qtUI import ChangeL2DModelWindow
 from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
+from ui.components.live2d_performance_editor import Live2DPerformanceEditor
+from ui.components.live2d_viewer_widgets import CharacterPicker, VIEWER_STYLE, V3_INTRO_TITLE, V3_INTRO_TEXT, show_v3_intro_once
+from live2d_support.viewer_preview import execute_viewer_preview
+from qconfig import d_sakiko_config
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
-    QApplication, QLabel, QDesktopWidget
+    QApplication, QLabel, QDesktopWidget, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox
 
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon
+from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QCloseEvent, QShowEvent
 
 import character
 from log import get_logger, setup_logging, shutdown_logging, setup_worker_logging, get_log_queue
@@ -135,7 +141,8 @@ class Live2DModule:
                     change_char_queue,
                     desktop_w,
                     desktop_h,
-                    log_queue: Queue | None = None):
+                    log_queue: Queue | None = None,
+                    preview_result_queue: Queue | None = None):
 
         if log_queue is not None:
             setup_worker_logging(log_queue)
@@ -333,14 +340,25 @@ class Live2DModule:
 
                     if self.character_list[self.current_character_num].icon_path is not None:
                         pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
+                elif isinstance(x, dict) and x.get("type") == "select_character":
+                    index = x.get("index")
+                    if isinstance(index, int) and 0 <= index < len(self.character_list):
+                        self.current_character_num = index
+                        selected = self.character_list[index]
+                        self.if_sakiko = selected.character_name == "祥子"
+                        self.PATH_JSON = str(x.get("model_path") or selected.live2d_json)
+                        model = switch_model_runtime(model, self.PATH_JSON)
+                        if selected.icon_path:
+                            pygame.display.set_icon(pygame.image.load(selected.icon_path))
                 # 传入一个路径，表示要求加载同角色一个新的 live2d 模型
                 elif isinstance(x, str):
                     model = switch_model_runtime(model, x)
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
-                if isinstance(model, Live2DModelAdapter):
-                    model.StartMotionFile(str(motion_name))
+                result = execute_viewer_preview(model, motion_name)
+                if preview_result_queue is not None:
+                    preview_result_queue.put(result)
 
             # 清除缓冲区
             #live2d.clearBuffer()
@@ -368,151 +386,233 @@ class Live2DModule:
 
 
 class ViewerGUI(QWidget):
-    def __init__(self,
-                 characters,
-                 motion_queue,
-                 change_char_queue):
+    def __init__(
+            self, characters: list[character.CharacterAttributes], motion_queue: Queue,
+            change_char_queue: Queue, preview_result_queue: Queue | None = None,
+    ) -> None:
+        """按模型版本展示编辑流程，并将预览、角色选择和保存状态分层。"""
         super().__init__()
-        self.setWindowTitle("动作编辑器")
-        # self.setWindowIcon(QIcon("../live2d_related/sakiko_icon.png"))
+        self.setWindowTitle("Live2D 演出编辑器")
+        self.setStyleSheet(VIEWER_STYLE)
+        self.resize(800, 760)
+        self.setMinimumSize(620, 600)
         self.screen = QDesktopWidget().screenGeometry()
-        self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
-        self.all_mnt_display = QTextBrowser()
-        self.all_mnt_display.setOpenExternalLinks(False)
-        self.all_mnt_display.setOpenLinks(False)
-        self.all_mnt_display.anchorClicked.connect(self.play_motion_all_mtn_ver)
-        self.current_mnt_display = QTextBrowser()
-        self.current_mnt_display.setOpenExternalLinks(False)
-        self.current_mnt_display.setOpenLinks(False)
-        self.current_mnt_display.anchorClicked.connect(self.play_motion_cur_mtn_ver)
-        self.message_box=QTextBrowser()
-        self.btn_change_char=QPushButton("切换角色")
+        self.character_list = characters
+        self.current_char_index = 0
+        self.motion_queue = motion_queue
+        self.change_char_queue = change_char_queue
+        self.preview_result_queue = preview_result_queue
+        self._preview_request_id: str | None = None
+        self._preview_started_at = 0.0
+        self._intro_pending = False
+        self._closed = False
+        self.all_motion_data = None
+        self.left_selected_motion_path: str | None = None
+        self.right_selected_group: str | None = None
+        self.right_selected_index: int | None = None
+        self.current_char_base_folder_name = ""
+        self.current_char_folder_path = pathlib.Path("")
+        self.current_model_json_path: pathlib.Path | None = None
+        self.current_model_version: str | None = None
+        self.use_default_model = {0: True}
+        self.extra_model_name = {0: None}
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 18, 20, 16)
+        main_layout.setSpacing(14)
+        header = QHBoxLayout()
+        self.btn_change_char = QPushButton()
         self.btn_change_char.clicked.connect(self.change_char)
-        self.btn_change_costume = QPushButton("切换当前角色服装")
+        self.btn_change_costume = QPushButton()
         self.btn_change_costume.clicked.connect(self.change_costume)
-        self.exit_edit=QPushButton("关闭程序")
-        self.exit_edit.clicked.connect(self.exit)
-        special_btn_layout=QHBoxLayout()
-        special_btn_layout.addWidget(self.btn_change_char)
-        special_btn_layout.addWidget(self.btn_change_costume)
-        special_btn_layout.addWidget(self.exit_edit)
-        # 操作栏（替代原先 13 个“替换到动作组X”按钮）
-        self.btn_add_motion = QPushButton("添加")
-        self.btn_replace_motion = QPushButton("替换")
-        self.btn_delete_motion = QPushButton("删除")
+        header.addWidget(self.btn_change_char)
+        header.addWidget(self.btn_change_costume)
+        header.addStretch()
+        self.version_badge = QLabel()
+        self.version_badge.setObjectName("muted")
+        header.addWidget(self.version_badge)
+        self.more_button = QToolButton()
+        self.more_button.setText("更多 ⋯")
+        self.more_button.setObjectName("quiet")
+        self.more_button.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(self.more_button)
+        self.automatic_action = menu.addAction("旧版动作组设置…", self.open_automatic_settings)
+        self.intro_action = menu.addAction("关于 V3 编辑方式…", self.show_v3_help)
+        self.more_button.setMenu(menu)
+        header.addWidget(self.more_button)
+        main_layout.addLayout(header)
+        self.page_title = QLabel()
+        self.page_title.setObjectName("pageTitle")
+        main_layout.addWidget(self.page_title)
+        self.pages = QStackedWidget()
+        main_layout.addWidget(self.pages, 1)
+
+        self.groups_panel = QWidget()
+        groups_layout = QVBoxLayout(self.groups_panel)
+        groups_layout.setContentsMargins(0, 0, 0, 0)
+        self.group_hint = QLabel("根据对话情绪，从对应组中选择动作。点击动作即可预览。")
+        self.group_hint.setObjectName("muted")
+        self.group_hint.setWordWrap(True)
+        groups_layout.addWidget(self.group_hint)
+        columns = QHBoxLayout()
+        self.all_mnt_display, self.current_mnt_display = QTextBrowser(), QTextBrowser()
+        self.all_mnt_title, self.current_mnt_title = QLabel("可用动作"), QLabel("动作组")
+        for label, browser in ((self.all_mnt_title, self.all_mnt_display), (self.current_mnt_title, self.current_mnt_display)):
+            label.setObjectName("sectionTitle")
+            column = QVBoxLayout()
+            column.addWidget(label)
+            browser.setOpenExternalLinks(False)
+            browser.setOpenLinks(False)
+            column.addWidget(browser, 1)
+            columns.addLayout(column)
+        self.all_mnt_display.anchorClicked.connect(self.play_motion_all_mtn_ver)
+        self.current_mnt_display.anchorClicked.connect(self.play_motion_cur_mtn_ver)
+        groups_layout.addLayout(columns, 1)
+        operations = QHBoxLayout()
+        self.btn_add_motion = QPushButton("添加到组")
+        self.btn_replace_motion = QPushButton("替换选中动作")
+        self.btn_delete_motion = QPushButton("从组中移除")
         self.btn_add_motion.clicked.connect(self.on_add_motion)
         self.btn_replace_motion.clicked.connect(self.on_replace_motion)
         self.btn_delete_motion.clicked.connect(self.on_delete_motion)
-        op_btn_layout = QHBoxLayout()
-        op_btn_layout.addWidget(self.btn_add_motion)
-        op_btn_layout.addWidget(self.btn_replace_motion)
-        op_btn_layout.addWidget(self.btn_delete_motion)
-
-        # ---创建两个标题 QLabel ---
-        self.all_mnt_title = QLabel("所有mtn文件")
-        self.current_mnt_title = QLabel("动作组编辑")
-
-        self.all_mnt_title.setAlignment(Qt.AlignCenter)
-        self.current_mnt_title.setAlignment(Qt.AlignCenter)
-        main_layout = QVBoxLayout()
-
-        # 2.1 顶部左右并排的显示区
-        top_display_layout = QHBoxLayout()
-
-        # --- 创建左侧垂直布局 (标题 + 文本框) ---
-        left_column_layout = QVBoxLayout()
-        left_column_layout.addWidget(self.all_mnt_title)
-        left_column_layout.addWidget(self.all_mnt_display)
-
-        # --- 创建右侧垂直布局 (标题 + 文本框) ---
-        right_column_layout = QVBoxLayout()
-        right_column_layout.addWidget(self.current_mnt_title)
-        right_column_layout.addWidget(self.current_mnt_display)
-
-        # --- 将两个垂直布局添加到顶部的水平布局中 ---
-        top_display_layout.addLayout(left_column_layout)
-        top_display_layout.addLayout(right_column_layout)
-
-        # --- 3. 将所有子布局添加到主布局 ---
-        main_layout.addLayout(top_display_layout, stretch=5)  # stretch=5 让显示区占据更多垂直空间
-        main_layout.addWidget(self.message_box, stretch=1)  # stretch=1 给日志区一点空间
-        main_layout.addLayout(op_btn_layout, stretch=1)  # 操作栏
-        main_layout.addLayout(special_btn_layout)  # 单独的按钮
-        self.setLayout(main_layout)
-        self.setStyleSheet("""
-                        QWidget {
-                            background-color: #E6F2FF;
-                            color: #7799CC;
-                        }
-
-                        QTextBrowser{
-                            text-decoration: none;
-                            background-color: #FFFFFF;
-                            border: 3px solid #B3D1F2;
-                            border-radius:9px;
-                            padding: 5px;
-                        }
-                        
-                        QPushButton {                
-                            background-color: #7FB2EB;
-                            color: #ffffff;
-                            border-radius: 6px;
-                            padding: 6px;
-                        }
-
-                        QPushButton:hover {
-                            background-color: #3FB2EB;
-                        }
-
-                        QPushButton:disabled {
-                            background-color: #D0E2F0;
-                            color: #7799CC;
-                        }    
-
-                        QScrollBar:vertical {
-                            border: none;
-                            background: #D0E2F0;
-                            width: 10px;
-                            margin: 0px 0px 0px 0px;
-                        }
-
-                        QScrollBar::handle:vertical {
-                            background: #B3D1F2;
-                            min-height: 20px;
-                            border-radius: 3px;
-                        }
-
-                    """)
-
-        self.character_list=characters
-        self.current_char_index = 0
-        self.motion_queue=motion_queue
-        self.change_char_queue=change_char_queue
-        self.all_motion_data=None   # 存储当前角色的所有动作数据
-
-        # 选中状态：左侧动作文件 / 右侧动作组或动作
-        self.left_selected_motion_path: Optional[str] = None
-        self.right_selected_group: Optional[str] = None
-        self.right_selected_index: Optional[int] = None
-
-        self.current_char_base_folder_name = ""  # 存储当前角色的基础文件夹名称（其实就是角色名称）
-
-        self.current_char_folder_path = pathlib.Path("")  # 存储当前角色的动作文件夹路径（这个路径可能为默认 live2d 模型的路径，也可能为 extra_model 中的某个模型路径，取决于用户选择）
-        self.current_model_json_path: pathlib.Path | None = None
-        self.current_model_version: str | None = None
-
-        # 默认使用默认模型（这句话多少有点废话了）
-        self.use_default_model = {0: True} # 角色 index-bool；True 表示使用默认模型，False 表示使用 extra_model 中的模型
-        self.extra_model_name = {0: None} # 角色 index-str；如果 use_default_model 为 False，那么该变量存储要使用的 extra_model 名称
-        # 如果角色 index 不存在于上述两个字典中，则表示该角色第一次加载模型，默认使用默认模型
-
+        for button in (self.btn_add_motion, self.btn_replace_motion, self.btn_delete_motion):
+            operations.addWidget(button)
+        groups_layout.addLayout(operations)
+        self.pages.addWidget(self.groups_panel)
+        self.performance_editor = Live2DPerformanceEditor(self.send_preview, self)
+        self.pages.addWidget(self.performance_editor)
+        self.footer_panel = QWidget()
+        footer = self.footer_layout = QHBoxLayout(self.footer_panel)
+        footer.setContentsMargins(0, 0, 0, 0)
+        self.status_label = QLabel("选择动作，在模型窗口预览")
+        self.status_label.setObjectName("muted")
+        self.status_label.setWordWrap(True)
+        footer.addWidget(self.status_label, 1)
+        footer.addStretch()
+        self.details_button = QToolButton()
+        self.details_button.setText("详情")
+        self.details_button.setObjectName("quiet")
+        self.details_button.setCheckable(True)
+        footer.addWidget(self.details_button)
+        main_layout.addWidget(self.footer_panel)
+        self.message_box = QTextBrowser()
+        self.message_box.setMaximumHeight(100)
+        self.message_box.hide()
+        self.details_button.toggled.connect(self.message_box.setVisible)
+        self.message_box.textChanged.connect(self._sync_log_status)
+        main_layout.addWidget(self.message_box)
+        self.result_timer = QTimer(self)
+        self.result_timer.timeout.connect(self.poll_preview_results)
+        self.result_timer.start(100)
         self.load_suitable_model()
-        self.message_box.append(
-            f"当前角色：{self.character_list[self.current_char_index].character_name}\n"
-            "选择右侧动作即可删除\n"
-            "选择左侧动作和右侧动作组后，可以添加或替换动作到组中\n"
-        )
-        self.update_button_states()
+
+    def _sync_log_status(self) -> None:
+        """把最近一条操作摘要放在状态栏，详情默认收起。"""
+        if self._preview_request_id:
+            return
+        lines = self.message_box.toPlainText().splitlines()
+        if lines:
+            self.status_label.setText(lines[-1])
+
+    def _refresh_model_page(self) -> None:
+        """V2 展示分组，V3 展示独立选择，不保留无效的技术标签页。"""
+        independent = self.current_model_version == "v3" and self.all_motion_data is not None
+        self.pages.setCurrentWidget(self.performance_editor if independent else self.groups_panel)
+        self.page_title.setText("动作与表情" if independent else "情绪与动作")
+        self.version_badge.setText((self.current_model_version or "无模型").upper())
+        self.btn_change_char.setText(self.character_list[self.current_char_index].character_name + " ▾")
+        self.btn_change_costume.setText(str(self.extra_model_name.get(self.current_char_index) or "默认服装") + " ▾")
+        self.automatic_action.setVisible(independent)
+        self.intro_action.setVisible(independent)
+        self.more_button.setVisible(independent)
+        self.status_label.setVisible(not independent)
+        self.footer_layout.removeWidget(self.details_button)
+        self.performance_editor.preview_actions.removeWidget(self.details_button)
+        target = self.performance_editor.preview_actions if independent else self.footer_layout
+        target.addWidget(self.details_button)
+        self.details_button.show()
+        self.footer_panel.setVisible(not independent)
+        self.group_hint.setText("用于待机、思考等事件，通常不会影响演出效果" if independent else
+                                "")
+        if independent and not self._intro_pending:
+            self._intro_pending = True
+            QTimer.singleShot(0, self._show_initial_v3_help)
+
+    def _show_initial_v3_help(self) -> None:
+        """延后首次介绍，避免在窗口布局和模型信息建立之前弹出。"""
+        self._intro_pending = False
+        if not self._closed and self.isVisible() and self.all_motion_data is not None:
+            try:
+                show_v3_intro_once(self, self.current_model_version, d_sakiko_config)
+            except (OSError, RuntimeError) as exc:
+                self.message_box.append(f"首次使用提示的已读状态保存失败：{exc}")
+
+    def show_v3_help(self) -> None:
+        """允许已读用户从更多菜单再次查看说明。"""
+        QMessageBox.information(self, V3_INTRO_TITLE, V3_INTRO_TEXT, QMessageBox.Ok)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """首次显示窗口时补发可能在隐藏状态被跳过的介绍。"""
+        super().showEvent(event)
+        if self.current_model_version == "v3" and not self._intro_pending:
+            self._intro_pending = True
+            QTimer.singleShot(0, self._show_initial_v3_help)
+
+    def send_preview(self, command: dict[str, object] | str) -> None:
+        """给预览请求加上身份，过期模型或旧请求的回执不覆盖当前状态。"""
+        request_id = uuid.uuid4().hex
+        self._preview_request_id = request_id
+        self._preview_started_at = time.monotonic()
+        payload = dict(command) if isinstance(command, dict) else {"file": command}
+        payload.update(request_id=request_id, model_path=str(self.current_model_json_path.resolve()) if self.current_model_json_path else "")
+        self.status_label.setText("正在加载预览…")
+        self.performance_editor.set_preview_status("正在加载预览…")
+        self.motion_queue.put(payload)
+
+    def poll_preview_results(self) -> None:
+        """只展示最新请求的真实结果，并对渲染器无响应给出明确反馈。"""
+        if self.preview_result_queue is not None:
+            while True:
+                try:
+                    result = self.preview_result_queue.get_nowait()
+                except Empty:
+                    break
+                if isinstance(result, dict) and result.get("request_id") == self._preview_request_id:
+                    self._preview_request_id = None
+                    message = str(result.get("message") or "预览失败")
+                    self.status_label.setText(message)
+                    self.performance_editor.set_preview_status(message)
+                    self.message_box.append(message)
+                    if not result.get("ok") and self.current_model_version == "v3":
+                        self.details_button.setChecked(True)
+        if self._preview_request_id and time.monotonic() - self._preview_started_at > 30:
+            self._preview_request_id = None
+            message = "预览窗口未响应，请检查模型是否加载完成"
+            self.status_label.setText(message)
+            self.performance_editor.set_preview_status(message)
+            self.message_box.append(message)
+            if self.current_model_version == "v3":
+                self.details_button.setChecked(True)
+
+    def open_automatic_settings(self) -> None:
+        """在次级窗口保留 V3 事件和回退分组，沿用原来的编辑流程。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("旧版动作组设置")
+        dialog.resize(740, 570)
+        layout = QVBoxLayout(dialog)
+        self.pages.removeWidget(self.groups_panel)
+        layout.addWidget(self.groups_panel)
+        # 从堆叠页移出的面板仍保留隐藏状态，需要在新容器中显式显示。
+        self.groups_panel.show()
+        close = QPushButton("完成")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        try:
+            dialog.exec_()
+        finally:
+            layout.removeWidget(self.groups_panel)
+            self.pages.addWidget(self.groups_panel)
+            self.pages.setCurrentWidget(self.performance_editor)
+            dialog.deleteLater()
 
     def load_suitable_model(self):
         """
@@ -588,6 +688,8 @@ class ViewerGUI(QWidget):
 
         :param extra_model_name: 如果该参数不是 None，那么改为加载该角色文件夹中 extra_model/{extra_model_name} 文件夹中的模型，而非默认模型。
         """
+        self._preview_request_id = None
+        self.current_model_version = None
         if self.character_list[self.current_char_index].character_name == '祥子':
             self.current_mnt_display.clear()
             self.current_mnt_display.append("祥子暂时不能编辑动作组")
@@ -624,11 +726,14 @@ class ViewerGUI(QWidget):
                 self.all_motion_data = None
                 self.message_box.append("没有找到当前模型的 model.json/model3.json，无法编辑动作组。")
                 self.update_button_states(disable_all=True)
+                self.performance_editor.load_model(None)
+                self._refresh_model_page()
                 return
 
             self.current_model_version = detect_live2d_runtime_version(str(self.current_model_json_path))
             if self.current_model_version == "v3":
                 character.rebuild_model3_motion_groups(str(self.current_model_json_path))
+            self.performance_editor.load_model(self.current_model_json_path)
 
             with open(self.current_model_json_path,'r',encoding='utf-8') as f:
                 self.all_motion_data=json.load(f)
@@ -643,12 +748,17 @@ class ViewerGUI(QWidget):
             self.update_button_states()
 
         # 重新填充左侧可选 mtn 文件列表
+        if self.all_motion_data is None:
+            self.performance_editor.load_model(None)
+        self._refresh_model_page()
         self.all_mnt_display.clear()
         folder_path=self.current_char_folder_path
-        self.all_mnt_title.setText("所有motion3文件" if self.current_model_version == "v3" else "所有mtn文件")
+        self.all_mnt_title.setText("可用动作 · 点击预览")
 
         all_paths = []
         suffix = self._current_motion_suffix()
+        if not folder_path.is_dir():
+            return
         for filename in os.listdir(folder_path):
             full_path = (folder_path / filename).resolve()
             if full_path.is_file() and filename.lower().endswith(suffix):
@@ -657,26 +767,32 @@ class ViewerGUI(QWidget):
 
         all_paths.sort()
         for idx, path in enumerate(all_paths, start=1):
-            self.all_mnt_display.append(f'<a href="{path}" style="text-decoration: none; color: #7799CC;">{idx}. {os.path.basename(path)}</a>'+'\n')
+            self.all_mnt_display.append(f'<a href="{path}" style="text-decoration: none; color: #426BAA;">{idx}. {os.path.basename(path)}</a>'+'\n')
+        self.all_mnt_display.verticalScrollBar().setValue(0)
 
-    def change_char(self):
-        if len(self.character_list) == 1:
-            self.current_char_index = 0
-        else:
-            if self.current_char_index < len(self.character_list) - 1:
-                self.current_char_index += 1
-            else:
-                self.current_char_index = 0
+    def change_char(self) -> None:
+        """通过搜索列表直接选择角色，而不是依次循环。"""
+        dialog = CharacterPicker(self.character_list, self.current_char_index, self)
+        if dialog.exec_() == QDialog.Accepted:
+            index = dialog.selected_index()
+            if index is not None:
+                self.select_character(index)
+        dialog.deleteLater()
 
-        if self.character_list[self.current_char_index].icon_path is not None:
-            self.setWindowIcon(QIcon(self.character_list[self.current_char_index].icon_path))
-        self.all_mnt_display.clear()
-        self.current_mnt_display.clear()
+    def select_character(self, index: int) -> bool:
+        """保护说明草稿后切换指定角色，并同步渲染进程的实际索引。"""
+        if index == self.current_char_index or not 0 <= index < len(self.character_list):
+            return False
+        if not self.performance_editor.confirm_leave():
+            return False
+        self.current_char_index = index
+        icon = getattr(self.character_list[index], "icon_path", None)
+        self.setWindowIcon(QIcon(icon) if icon else QIcon())
         self.message_box.clear()
-        # 加载新角色的默认模型
         self.load_suitable_model()
-        self.message_box.append("当前角色：" + self.character_list[self.current_char_index].character_name)
-        self.change_char_queue.put("change_character")
+        self.change_char_queue.put({"type": "select_character", "index": index,
+                                    "model_path": str(self.current_model_json_path) if self.current_model_json_path else None})
+        return True
 
     def change_costume(self):
         """
@@ -691,6 +807,10 @@ class ViewerGUI(QWidget):
     def _on_change_costume_confirmed(self, option: Live2DModelOption) -> None:
         """根据共享目录选项切换 Viewer 当前角色的服装。"""
         new_model_path = str(option.model_json_path)
+        if self.current_model_json_path and self.current_model_json_path.resolve() == option.model_json_path.resolve():
+            return
+        if not self.performance_editor.confirm_leave():
+            return
         logger.info("用户选择了新的服装模型路径：%s", new_model_path)
         if option.is_default:
             self.use_default_model_for_current_character()
@@ -737,7 +857,7 @@ class ViewerGUI(QWidget):
                 return
 
             abs_path = (self.current_char_folder_path / motion_filename).resolve().as_posix()
-            self.motion_queue.put(abs_path)
+            self.send_preview(abs_path)
             self.message_box.clear()
             self.message_box.append(
                 f"已选中动作：{motion_filename}\n"
@@ -749,7 +869,7 @@ class ViewerGUI(QWidget):
 
         # 兼容旧格式：如果仍然是路径链接，就当作“预览动作”
         if os.path.exists(url_str):
-            self.motion_queue.put(url_str)
+            self.send_preview(url_str)
             self.message_box.clear()
             self.message_box.append(f"当前预览动作：\n{os.path.basename(url_str)}")
 
@@ -761,7 +881,7 @@ class ViewerGUI(QWidget):
         self.message_box.append(f"当前选中动作（左侧）：\n{os.path.basename(motion_path)}")
 
         if os.path.exists(motion_path):
-            self.motion_queue.put(motion_path)
+            self.send_preview(motion_path)
 
         self.update_button_states()
 
@@ -799,9 +919,9 @@ class ViewerGUI(QWidget):
         for group_key, motion_values in motions.items():
             title = motion_group_display_title(group_key)
             if group_key == self.right_selected_group and self.right_selected_index is None:
-                title_color = "#ED784A"
+                title_color = "#294E87"
             else:
-                title_color = "#FFB099"
+                title_color = "#263449"
 
             html_parts.append(
                 f'<div style="margin-top:8px;">'
@@ -814,9 +934,9 @@ class ViewerGUI(QWidget):
             for idx, motion in enumerate(motion_values):
                 file_name = self._get_motion_file_name(motion)
                 if group_key == self.right_selected_group and self.right_selected_index == idx:
-                    item_color = "#ED784A"
+                    item_color = "#294E87"
                 else:
-                    item_color = "#7799CC"
+                    item_color = "#526985"
                 html_parts.append(
                     f'<div style="margin-left:12px;">'
                     f'<a href="item:{group_key}:{idx}" style="text-decoration:none; color:{item_color};">'
@@ -829,11 +949,13 @@ class ViewerGUI(QWidget):
         if scroll_bar is not None:
             scroll_bar.setValue(saved_pos)
 
-    def _write_motion_json(self):
+    def _write_motion_json(self) -> None:
+        """保存标准动作组，并刷新独立演出目录中的可用资源。"""
         if self.all_motion_data is None or self.current_model_json_path is None:
             return
         with open(self.current_model_json_path, 'w', encoding='utf-8') as f:
             json.dump(self.all_motion_data, f, indent=4, ensure_ascii=False)
+        self.performance_editor.load_model(self.current_model_json_path)
 
     def _generate_unique_motion_name(self, group_key: str) -> str:
         """生成动作 name：{group_key}_{n}，n 为从 1 开始的最小可用正整数。
@@ -1030,9 +1152,19 @@ class ViewerGUI(QWidget):
         )
         self._reload_after_change()
 
-    def exit(self):
-        self.change_char_queue.put("exit")
+    def exit(self) -> None:
+        """走统一关闭流程，保留未保存修改的保护。"""
         self.close()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """关闭前处理草稿，确认离开后通知渲染进程退出。"""
+        if not self.performance_editor.confirm_leave():
+            event.ignore()
+            return
+        self._closed = True
+        self.result_timer.stop()
+        self.change_char_queue.put("exit")
+        event.accept()
 
 
 if __name__ == "__main__":
@@ -1053,12 +1185,13 @@ if __name__ == "__main__":
         raise SystemExit(1)
     motion_queue = multiprocessing.Queue()
     change_char_queue=multiprocessing.Queue()
+    preview_result_queue = multiprocessing.Queue()
 
     live2d_player.live2D_initialize(model_characters)
 
     app = QApplication(sys.argv)
 
-    window = ViewerGUI(model_characters,motion_queue,change_char_queue)
+    window = ViewerGUI(model_characters, motion_queue, change_char_queue, preview_result_queue)
     # 如果出现加载字体问题，则忽略设置字体
     font_path = os.path.join(project_root, "font", "ft.ttf")
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
@@ -1069,7 +1202,7 @@ if __name__ == "__main__":
 
     desktop_w = QDesktopWidget().screenGeometry().width()
     desktop_h = QDesktopWidget().screenGeometry().height()
-    live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h, get_log_queue()))
+    live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h, get_log_queue(), preview_result_queue))
 
     screen_w_mid = int(0.5 * desktop_w)
     screen_h_mid = int(0.5 * desktop_h)

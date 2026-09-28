@@ -44,7 +44,7 @@ def select_random_motion(
     non_empty_groups = [
         name
         for name, motion_files in motion_files_by_group.items()
-        if motion_files
+        if motion_files and not name.startswith("__dsakiko_")
     ]
     if not non_empty_groups:
         return None

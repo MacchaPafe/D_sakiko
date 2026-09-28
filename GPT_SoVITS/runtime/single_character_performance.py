@@ -78,6 +78,9 @@ class SingleCharacterPerformance:
         self.farewell_started = False
         self.farewell_finished = False
         self.farewell_deadline = 0.0
+        self.generation_open = False
+        self.independent_performance = False
+        self._performance_model: Live2DModelProtocol | None = None
 
     def finish_farewell(self, *args: object) -> None:
         """告别动作结束后仅发送一次完成回执。"""
@@ -144,12 +147,14 @@ class SingleCharacterPerformance:
         if kind == "thinking":
             self.structured_mode = True
             self.thinking = True
+            self.generation_open = True
             self.subtitle_deadline = None
             if self.subtitle_hide_delay is not None:
                 self.on_subtitle("")
             return True
         if kind == "generation_finished":
             self.thinking = False
+            self.generation_open = False
             return True
         if kind == "cancel_turn":
             self.cancelled_turns.add(key)
@@ -168,6 +173,8 @@ class SingleCharacterPerformance:
                     pygame.mixer.music.stop()
                 self.active_segment = None
             self.thinking = False
+            self.generation_open = False
+            self._reset_visual_performance()
             self._reset_long_audio_motion_loop()
             self.wavHandler = WavHandler()
             model.set_parameter_value("mouth_open_y", 0.0)
@@ -188,6 +195,9 @@ class SingleCharacterPerformance:
 
     def update_playback(self, model: Live2DModelProtocol) -> None:
         """每帧在模型 Update 之后调用；回执含轮次/段号，不依赖动作回调完成。"""
+        if self._performance_model is not model:
+            self._reset_visual_performance()
+            self._performance_model = model
         if self.farewell_started:
             if time.monotonic() >= self.farewell_deadline:
                 self.finish_farewell()
@@ -211,18 +221,24 @@ class SingleCharacterPerformance:
             group = motion_group_for_emotion(
                 str(segment.get("emotion")), default="happiness"
             )
-            self._prepare_long_audio_motion_loop(
-                group, str(segment.get("audio_path") or "")
-            )
-            started = model.StartRandomMotion(
-                group,
-                3,
-                lambda *args: self._start_segment_audio(segment),
-                self.onFinishCallback,
-                position="C",
-            )
-            if not started:
+            self.independent_performance = getattr(model, "version", None) == "v3"
+            apply_performance = getattr(model, "apply_performance", None)
+            if self.independent_performance and callable(apply_performance):
+                self._reset_long_audio_motion_loop()
+                self._reset_eye_open_transition()
+                apply_performance(segment.get("performance"), str(segment.get("emotion") or ""),
+                                  context=(segment.get("chat_id"), segment.get("turn_id")),
+                                  on_finish=self.onFinishCallback)
+                self.motion_is_over = True
                 self._start_segment_audio(segment)
+            else:
+                self._prepare_long_audio_motion_loop(group, str(segment.get("audio_path") or ""))
+                started = model.StartRandomMotion(
+                    group, 3, lambda *args: self._start_segment_audio(segment),
+                    self.onFinishCallback, position="C",
+                )
+                if not started:
+                    self._start_segment_audio(segment)
         segment = self.active_segment
         if segment is not None:
             if not self.audio_started and now >= self.start_deadline:
@@ -233,6 +249,7 @@ class SingleCharacterPerformance:
                 or time.monotonic() >= self.text_segment_deadline
             ):
                 self.active_segment = None
+                self.idle_recover_timer = now
                 self._reset_long_audio_motion_loop()
                 if self.subtitle_hide_delay is not None:
                     has_audio = has_voice_audio(segment.get("audio_path"))
@@ -264,31 +281,49 @@ class SingleCharacterPerformance:
                 position="C",
             )
             self.last_idle = now
-        elif not self.busy and not self.thinking and now - self.last_idle > 25:
-            model.StartRandomMotion(
+        elif not self.busy and not self.thinking and not self.generation_open and now - self.last_idle > 25 and now - self.idle_recover_timer > 2.5:
+            self._reset_visual_performance()
+            started = model.StartRandomMotion(
                 "IDLE", 1, self.onStartCallback, self.onFinishCallback, position="C"
             )
+            if started:
+                self.motion_is_over = False
             self.last_idle = now
         if (
             not self.busy
             and not self.thinking
+            and not self.generation_open
             and self.motion_is_over
             and now - self.idle_recover_timer > 2.5
         ):
+            self._reset_visual_performance()
             model.StartRandomMotion(
                 "idle_motion", 1, self.onStartCallback, position="C"
             )
             self.idle_recover_timer = now
+            self.last_idle = now
         self._update_long_audio_motion_loop(model)
-        self._update_eye_open_transition(model)
+        if not self.independent_performance:
+            self._update_eye_open_transition(model)
         mouth = 0.0
         if self.audio_busy() and self.wavHandler.Update():
             mouth = self.wavHandler.GetRms() * self.lipSyncN
             if not __import__("math").isfinite(mouth):
                 mouth = 0.0
-        model.set_parameter_value("mouth_open_y", mouth)
+        if not self.independent_performance or self.audio_busy():
+            model.set_parameter_value("mouth_open_y", mouth)
+
+    def _reset_visual_performance(self) -> None:
+        """清除旧模型选择和表情保护，使取消及外部切换即时生效。"""
+        reset = getattr(self._performance_model, "reset_performance", None)
+        if callable(reset):
+            reset()
+        self.independent_performance = False
+        self._reset_eye_open_transition()
 
     def stop(self):
+        self._reset_visual_performance()
+        self.generation_open = False
         self.pending.clear()
         self.active_segment = None
         self.thinking = False
@@ -310,7 +345,8 @@ class SingleCharacterPerformance:
         self._reset_eye_open_transition()
 
     def onStartCallback_emotion_version(self, audio_file_path, *args):
-        self.motion_is_over = False
+        if not self.independent_performance:
+            self.motion_is_over = False
         self._reset_eye_open_transition()
         # print(f"touched and motion [] is started")
         logger = get_logger(__name__)
@@ -339,7 +375,8 @@ class SingleCharacterPerformance:
     def onFinishCallback(self, *args):
         # print("motion finished")
         self.motion_is_over = True
-        self._queue_eye_open_transition()
+        if not self.independent_performance:
+            self._queue_eye_open_transition()
         self.idle_recover_timer = time.time()
 
     def onFinishCallback_think_motion_version(self, *args):

@@ -392,6 +392,9 @@ def create_app(
                 http_error(ProtocolError("MODEL_NOT_FOUND", "请求的模型资源不存在。")),
                 status_code=404,
             )
+        document = assets.live2d_document(model_id, asset_path, request.query_params.get("single") == "1")
+        if document is not None:
+            return JSONResponse(document, headers={"Cache-Control": "private, no-cache"})
         return FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
 
     if FRONTEND_DIST.is_dir():

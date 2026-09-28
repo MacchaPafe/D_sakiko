@@ -22,21 +22,43 @@ export class Live2DRuntimeAdapter {
     }])
   }
 
-  async startMotion(group, index, priority, fadeInMs = 0) {
-    if (fadeInMs > 0) {
+  async startMotion(group, index, priority, fadeInMs = 0, single = false, isCurrent = () => true) {
+    if (fadeInMs > 0 || single) {
       const motion = await this.model.internalModel?.motionManager?.loadMotion?.(group, index)
+      if (!isCurrent()) return false
+      if (single && this.version === 'v3') motion?.setIsLoop?.(false)
       if (this.version === 'v3') motion?.setFadeInTime?.(fadeInMs / 1000)
       else motion?.setFadeIn?.(fadeInMs)
     }
     return this.model.motion(group, index, priority)
   }
 
-  async setExpression(expressionId) {
+  async setExpression(expressionId, isCurrent = () => true) {
     if (!expressionId) {
       this.resetExpression()
       return false
     }
+    const manager = this.model.internalModel?.motionManager?.expressionManager
+    const index = manager?.getExpressionIndex?.(expressionId)
+    if (Number.isInteger(index) && index >= 0) {
+      await manager.loadExpression(index)
+      if (!isCurrent()) return false
+      if (manager.expressions?.[index] === manager.currentExpression) return true
+    }
+    if (!isCurrent()) return false
     return this.model.expression(expressionId)
+  }
+
+  setPerformanceExpression(enabled) {
+    const internal = this.model.internalModel
+    if (!internal || this.version !== 'v3') return
+    if (enabled && internal.eyeBlink) {
+      this.savedEyeBlink = internal.eyeBlink
+      internal.eyeBlink = null
+    } else if (!enabled && this.savedEyeBlink) {
+      internal.eyeBlink = this.savedEyeBlink
+      this.savedEyeBlink = null
+    }
   }
 
   resetExpression() {
@@ -60,6 +82,7 @@ export class Live2DRuntimeAdapter {
   }
 
   applyMouthOpen() {
+    if (this.preserveExpressionMouth) return
     const coreModel = this.model.internalModel?.coreModel
     if (this.version === 'v3') {
       coreModel?.setParameterValueById?.('ParamMouthOpenY', this.mouthOpen)
@@ -109,6 +132,10 @@ export class Live2DRuntimeAdapter {
   applyParameterOverrides() {
     this.applyMouthOpen()
     this.applyEyeOpenOverride()
+  }
+
+  setSpeechActive(active) {
+    this.preserveExpressionMouth = this.version === 'v3' && !active
   }
 
   destroy() {

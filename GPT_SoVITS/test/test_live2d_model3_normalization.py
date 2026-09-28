@@ -94,7 +94,8 @@ class Live2DModel3NormalizationTestCase(unittest.TestCase):
             self.assertEqual([entry["File"] for entry in text_generating_l], ["mtn_smile01_L.motion3.json"])
 
             metadata = cast(dict[str, object], normalized_data["DSakiko"])
-            self.assertEqual(metadata["NormalizedModel3Version"], 1)
+            self.assertEqual(metadata["NormalizedModel3Version"], 2)
+            self.assertEqual(len(metadata["MotionAssets"]), 4)
             self.assertFalse(normalize_model3_for_project(str(model_json_path)))
 
     def test_normalize_model3_keeps_suffixless_motions_as_default_only(self) -> None:

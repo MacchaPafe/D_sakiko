@@ -3,6 +3,7 @@ import { createRuntimeAdapter } from './runtimeAdapters'
 import {
   selectMotion,
   selectSemanticExpression,
+  resolvePerformance,
 } from './cuePolicy'
 
 const THINKING_REPEAT_MS = 15_000
@@ -85,6 +86,7 @@ export class Live2DRuntimeController {
   }
 
   updateFrame(mouthOpen, now = Date.now()) {
+    this.adapter?.setSpeechActive?.(!this.performanceState || (this.cue?.kind === 'speaking' && !this.cue.silent))
     this.setMouthOpen(mouthOpen)
     if (!this.adapter || !this.eyeTransition) return
     if (this.eyeTransition.complete) {
@@ -128,6 +130,7 @@ export class Live2DRuntimeController {
 
     const nextKey = presentationKey(presentation)
     if (!force && nextKey && nextKey === presentationKey(this.presentation) && this.adapter) {
+      this.presentation = presentation
       return
     }
 
@@ -221,6 +224,12 @@ export class Live2DRuntimeController {
     const unchanged = this.cue?.kind === cue.kind && this.cue?.key === cue.key
     this.cue = cue
     if (unchanged) return
+    if (cue.kind === 'thinking' && this.performanceState && this.performanceTurn === cue.turnId) {
+      // 同一回复的分段等待期间保持演出。
+      clearTimeout(this.motionTimer)
+      this.adapter?.setMouthOpen(0)
+      return
+    }
 
     const shouldWaitForSpeakingMotion = (
       cue.kind === 'idle'
@@ -231,7 +240,7 @@ export class Live2DRuntimeController {
       this.pendingIdleCue = cue
       this.adapter?.setMouthOpen(0)
       if (this.activeMotion.finished) {
-        this.scheduleIdleRecovery(cue, this.activeMotion.finishedAt)
+        this.scheduleIdleRecovery(cue, this.performanceState ? Date.now() : this.activeMotion.finishedAt)
       }
       return
     }
@@ -240,7 +249,16 @@ export class Live2DRuntimeController {
 
   async applyCue(cue, force = false, options = {}) {
     if (!this.adapter || !this.presentation || this.destroyed) return
+    if (cue.kind === 'speaking' && this.presentation.version === 'v3' && this.presentation.capabilities?.performance) {
+      await this.applyPerformanceCue(cue)
+      return
+    }
+    this.performanceState = null
+    this.performanceTurn = null
+    this.adapter.setPerformanceExpression?.(false)
     const cueGeneration = ++this.cueGeneration
+    const adapter = this.adapter
+    const isCurrent = () => cueGeneration === this.cueGeneration && adapter === this.adapter && !this.destroyed
     clearTimeout(this.motionTimer)
     this.motionTimer = null
     this.removeMotionFinishListener?.()
@@ -253,22 +271,25 @@ export class Live2DRuntimeController {
     const capabilities = this.presentation.capabilities
     const motion = selectMotion(capabilities, cue)
     const expression = motion?.expression || selectSemanticExpression(capabilities, cue)
-    if (expression) await this.adapter.setExpression(expression).catch(() => false)
-    else this.adapter.resetExpression()
+    if (expression) await adapter.setExpression(expression, isCurrent).catch(() => false)
+    else adapter.resetExpression()
+    if (!isCurrent()) return
 
     const startedAt = Date.now()
     let motionStarted = false
     if (motion) {
-      motionStarted = await this.adapter.startMotion(
+      motionStarted = await adapter.startMotion(
         motion.group,
         motion.index,
         force ? MotionPriority.FORCE : MotionPriority.NORMAL,
         cue.kind === 'idle'
           ? IDLE_FADE_IN_MS
           : (cue.kind === 'speaking' ? SPEAKING_FADE_IN_MS : 0),
+        false,
+        isCurrent,
       ).catch(() => false)
     }
-    if (cueGeneration !== this.cueGeneration) return
+    if (!isCurrent()) return
     if (!motionStarted) {
       this.handleMissingMotion(cue, startedAt)
       return
@@ -293,7 +314,7 @@ export class Live2DRuntimeController {
     const motion = this.activeMotion
     motion.finished = true
     motion.finishedAt = Date.now()
-    this.queueEyeOpenTransition()
+    if (!this.performanceState) this.queueEyeOpenTransition()
 
     if (motion.kind === 'thinking') {
       this.scheduleMotionFromStart(THINKING_REPEAT_MS, motion, () => {
@@ -304,6 +325,10 @@ export class Live2DRuntimeController {
       return
     }
     if (motion.kind === 'speaking') {
+      if (this.performanceState) {
+        if (this.cue?.kind === 'idle') this.scheduleIdleRecovery(this.cue, motion.finishedAt)
+        return
+      }
       if (this.cue?.kind !== 'speaking' || this.cue?.key !== motion.key) {
         this.resumeCurrentCue(motion.finishedAt)
         return
@@ -346,6 +371,55 @@ export class Live2DRuntimeController {
     } else if (cue.kind === 'idle' || cue.kind === 'idle_random') {
       this.scheduleIdleCycle({ startedAt })
     }
+  }
+
+  async applyPerformanceCue(cue) {
+    const adapter = this.adapter
+    const capabilities = this.presentation.capabilities
+    const previous = this.performanceTurn === cue.turnId ? this.performanceState || {} : {}
+    const plan = resolvePerformance(capabilities.performance, cue.performance, cue.emotion, 'C', previous)
+    const generation = ++this.cueGeneration
+    const isCurrent = () => generation === this.cueGeneration && adapter === this.adapter && !this.destroyed
+    clearTimeout(this.motionTimer)
+    this.motionTimer = null
+    this.pendingIdleCue = null
+    this.resetEyeOpenTransition()
+    adapter.setMouthOpen(0)
+    let motionOk = !plan.change_motion
+    let expressionOk = !plan.change_expression
+    if (plan.change_motion) {
+      this.removeMotionFinishListener?.()
+      this.removeMotionFinishListener = null
+      const index = capabilities.motion_files_by_group?.__dsakiko_performance__?.indexOf(plan.state.motion_file) ?? -1
+      if (index >= 0) motionOk = await adapter.startMotion('__dsakiko_performance__', index, MotionPriority.FORCE, SPEAKING_FADE_IN_MS, true, isCurrent).catch(() => false)
+      if (!isCurrent()) return
+      this.activeMotion = { kind: 'speaking', key: cue.key, startedAt: Date.now(), finished: !motionOk, finishedAt: motionOk ? 0 : Date.now() }
+    }
+    // 表情资源可能加载较慢，先监听动作结束，避免漏掉唯一的完成事件。
+    this.removeMotionFinishListener?.()
+    this.removeMotionFinishListener = !this.activeMotion || this.activeMotion.finished ? null : adapter.onceMotionFinish(() => {
+      if (isCurrent() && this.activeMotion) {
+        this.activeMotion.finished = true
+        this.activeMotion.finishedAt = Date.now()
+        if (this.cue?.kind === 'idle') this.scheduleIdleRecovery(this.cue, Date.now())
+      }
+    })
+    if (plan.change_expression) {
+      expressionOk = await adapter.setExpression(plan.state.expression, isCurrent).catch(() => false)
+      if (!isCurrent()) return
+    }
+    this.performanceState = {
+      ...plan.state,
+      motion_id: motionOk ? plan.state.motion_id : previous.motion_id,
+      motion_file: motionOk ? plan.state.motion_file : previous.motion_file,
+      expression: expressionOk ? plan.state.expression : previous.expression,
+    }
+    this.performanceTurn = cue.turnId
+    adapter.setPerformanceExpression?.(Boolean(this.performanceState.expression))
+    if (!this.activeMotion) this.activeMotion = { kind: 'speaking', key: cue.key, finished: true, finishedAt: Date.now() }
+    // 相同动作继续播放时也更新回调代号，但不重新开始动作。
+    this.removeMotionFinishListener?.()
+    this.removeMotionFinishListener = this.activeMotion.finished ? null : adapter.onceMotionFinish(() => this.handleMotionFinish(generation))
   }
 
   scheduleMotionFromStart(interval, motion, callback) {
@@ -429,6 +503,9 @@ export class Live2DRuntimeController {
   }
 
   replaceAdapter(nextAdapter) {
+    this.cueGeneration += 1
+    this.performanceState = null
+    this.performanceTurn = null
     clearTimeout(this.motionTimer)
     this.motionTimer = null
     this.removeMotionFinishListener?.()

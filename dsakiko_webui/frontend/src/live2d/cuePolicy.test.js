@@ -68,6 +68,9 @@ describe('Live2D cue policy', () => {
       key: 'speaking:message_one:2',
       emotion: 'sadness',
       duration: 8.4,
+      performance: null,
+      turnId: 'turn_one',
+      silent: false,
     })
   })
 

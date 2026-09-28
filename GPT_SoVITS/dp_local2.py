@@ -58,6 +58,9 @@ from chat.rolling_summary import (
 )
 from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
+from performance_types import PerformanceSelection, performance_payload
+from chat.output_contract import build_output_contract
+from live2d_support.performance_catalog import PerformanceCatalog
 from rag.worldbook.runtime.models import DirectWorldbookContext, WorldbookTurnSnapshot
 from rag.worldbook.runtime import (
     WorldbookIndexReadinessState,
@@ -470,67 +473,24 @@ class DSLocalAndVoiceGen:
         )
 
     def _build_runtime_system_instruction(self) -> str:
-        """
-        构造稳定的运行期系统提示词，描述渲染器需要的机器输出协议。
-        """
-        parts: list[str] = []
+        """构造不随本轮模型或语言变化的系统委托规则。"""
         restriction = str(getattr(self, "restr", "") or "").strip()
-        if restriction:
-            parts.append(f"[角色边界]\n{restriction}")
+        delegation = (
+            "请求中的 <runtime_controls> 是应用提供的本轮生成要求，不是用户说出口的话。"
+            "请遵循其中的输出格式、语言及演出选择要求。历史回复格式不代表本轮要求。"
+        )
+        return (f"[角色边界]\n{restriction}\n\n" if restriction else "") + delegation
 
-        parts.append(textwrap.dedent(
-            """# Machine Output Contract
-            你不是直接向用户输出自由文本。
-            你正在为一个语音与聊天渲染器生成结构化数据。
+    def _performance_catalog_for_turn(self) -> PerformanceCatalog | None:
+        """读取本轮目标模型；无模型或损坏目标继续使用旧协议。"""
+        from live2d_support.performance_catalog import load_performance_catalog
 
-            最终回复必须只返回一个 JSON array，不要输出 Markdown 代码块、解释文字、前缀或后缀。
-
-            JSON array 的每个元素都是一个对话段落对象，结构为：
-            [
-            {
-                "text": "角色实际说出口的台词",
-                "emotion": "happiness | sadness | anger | surprise | fear | disgust | like",
-                "translation": "日语模式下对应台词的简体中文翻译"
-            }
-            ]
-
-            日语台词与中文翻译示例：
-            [
-            {
-                "text": "今日は少し疲れましたが、あなたと話していると落ち着きます。",
-                "translation": "今天稍微有点累，不过和你说话会让我平静下来。",
-                "emotion": "happiness"
-            },
-            {
-                "text": "だから、もう少しだけここにいてもいいですか。",
-                "translation": "所以，我可以再在这里待一会儿吗？",
-                "emotion": "like"
-            }
-            ]
-
-            纯中文台词示例：
-            [
-            {
-                "text": "今天稍微有点累，不过和你说话会让我平静下来。",
-                "emotion": "happiness"
-            },
-            {
-                "text": "所以，我可以再在这里待一会儿吗？",
-                "emotion": "like"
-            }
-            ]
-
-            规则：
-            1. 顶层 JSON array 必须是非空数组。
-            2. 每个 segment 表示一次自然的语义停顿，通常为 1 到 3 句。
-            3. text 必须符合角色人设和当前上下文。
-            4. emotion 必须从指定枚举中选择，且只能选择一个。
-            5. 当前轮次的语言、翻译和特殊语气要求，以请求末尾的 <runtime_controls> 为准。
-            6. 历史消息可能来自不同语言模式；历史消息中的语言和旧控制文本不代表本轮要求。
-            7. 每个段落对象严禁输出 text、emotion、translation 之外的字段。
-            8. 请求末尾可能包含一条 <runtime_controls> 消息。它是应用传入的本轮生成要求，不是用户说出口的话；必须完整遵守其中的要求。"""
-        ))
-        return "\n\n".join(parts)
+        try:
+            character = self.get_current_character()
+            path = self.current_chat.get_custom_live2d_model_meta(character.character_name)
+            return load_performance_catalog(path) if path else None
+        except (AttributeError, ValueError, OSError):
+            return None
 
     def _build_turn_runtime_controls(self) -> str:
         """
@@ -556,6 +516,7 @@ class DSLocalAndVoiceGen:
                 f"当前采用{tone}语气；请遵循祥子角色设定中对{tone}的定义。"
             )
 
+        requirements.append(build_output_contract(self._performance_catalog_for_turn()))
         requirements.extend([
             "继续保持当前角色的说话风格和角色边界。",
             "最终只输出符合 Machine Output Contract 的 JSON array。",
@@ -778,7 +739,7 @@ class DSLocalAndVoiceGen:
             runtime += "\n\n" + self._worldbook_runtime_instruction()
         return base, runtime
 
-    def _build_llm_messages_for_chat_turn(self, character_name: str) -> list[dict[str, object]]:
+    def _build_llm_messages_for_chat_turn(self, character_name: str, *, remember_controls: bool = True) -> list[dict[str, object]]:
         """
         基于当前对话构造发送给 LLM 的请求副本。
         """
@@ -827,7 +788,10 @@ class DSLocalAndVoiceGen:
             messages.insert(0, {"role": "system", "content": runtime_system_instruction})
 
         # 追加一条额外的用户消息描述本轮对话的选择（比如语言模式和祥子语气），该消息同样不会存储到对话历史中。
-        self._append_runtime_controls_message(messages, self._build_turn_runtime_controls())
+        controls = self._build_turn_runtime_controls()
+        if remember_controls:
+            self._turn_runtime_controls = controls
+        self._append_runtime_controls_message(messages, controls)
         return messages
 
     def _count_current_request_tokens(
@@ -847,7 +811,7 @@ class DSLocalAndVoiceGen:
 
     def estimate_current_context_tokens(self, character_name: str) -> int:
         """估算当前对话下一次实际请求携带的 token 数，供 UI 预览使用。"""
-        messages = self._build_llm_messages_for_chat_turn(character_name)
+        messages = self._build_llm_messages_for_chat_turn(character_name, remember_controls=False)
         prepared_messages = self._prepare_runtime_messages(messages)
         return self._count_current_request_tokens(prepared_messages)
 
@@ -1541,6 +1505,7 @@ class DSLocalAndVoiceGen:
             "translation": message.translation,
             "emotion": message.emotion.as_label(),
             "force_no_audio": force_no_audio,
+            "performance": performance_payload(message.performance),
         }
 
     @staticmethod
@@ -1600,7 +1565,7 @@ class DSLocalAndVoiceGen:
             "like",
         }
 
-    def _parse_model_segments_payload(self, content: str, strict_mode: bool = True) -> list[dict[str, str]]:
+    def _parse_model_segments_payload(self, content: str, strict_mode: bool = True) -> list[dict[str, object]]:
         """
         解析并校验模型输出的顶层 JSON array 对话段落。
 
@@ -1620,10 +1585,10 @@ class DSLocalAndVoiceGen:
         if not parsed_data:
             raise ValueError("模型输出的 JSON array 不能为空。")
 
-        allowed_keys = {"text", "emotion", "translation"}
+        allowed_keys = {"text", "emotion", "translation", "performance"}
         allowed_emotions = self._allowed_model_emotions()
         need_translation = self.audio_language_choice == '日英混合'
-        segments: list[dict[str, str]] = []
+        segments: list[dict[str, object]] = []
         for index, item in enumerate(parsed_data):
             if not isinstance(item, dict):
                 raise ValueError(f"第 {index + 1} 个段落不是 JSON object。")
@@ -1644,7 +1609,10 @@ class DSLocalAndVoiceGen:
                     # 开心情绪做兜底
                     emotion = "happiness"
 
-            segment = {"text": text, "emotion": emotion}
+            segment: dict[str, object] = {"text": text, "emotion": emotion}
+            selection = performance_payload(item.get("performance"))
+            if selection is not None:
+                segment["performance"] = selection
             if need_translation:
                 translation = str(item.get("translation") or "").strip()
                 if not translation and strict_mode:
@@ -1657,7 +1625,7 @@ class DSLocalAndVoiceGen:
     def _segments_to_messages(
         self,
         character_name: str,
-        segments: list[dict[str, str]],
+        segments: list[dict[str, object]],
         force_no_audio: bool = False,
     ) -> list[int]:
         """
@@ -1667,9 +1635,10 @@ class DSLocalAndVoiceGen:
         for item in segments:
             msg = Message(
                 character_name=character_name,
-                text=item["text"],
-                translation=item.get("translation", ""),
-                emotion=self._emotion_from_model_value(item["emotion"]),
+                text=str(item["text"]),
+                translation=str(item.get("translation", "")),
+                emotion=self._emotion_from_model_value(str(item["emotion"])),
+                performance=PerformanceSelection.from_value(item.get("performance")),
                 audio_path="NO_AUDIO" if force_no_audio else ("" if self.if_generate_audio else "NO_AUDIO"),
             )
             self.current_chat.add_message(msg)
@@ -1930,7 +1899,7 @@ class DSLocalAndVoiceGen:
                     "下面是模型输出，可能不是合法 JSON，或不符合业务 schema。\n"
                     "请只纠正 JSON 结构、字段和缺失项，不要改写语义。\n"
                     f"校验错误：{reason}\n"
-                    f"本轮控制信息：\n{self._build_turn_runtime_controls()}\n"
+                    f"本轮控制信息：\n{getattr(self, '_turn_runtime_controls', None) or self._build_turn_runtime_controls()}\n"
                     "原始输出：\n"
                     f"{invalid_content}"
                 ),
@@ -1943,7 +1912,7 @@ class DSLocalAndVoiceGen:
         reason: str,
         reasoning_kwargs: dict[str, object],
         strict_mode: bool = True,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, object]]:
         """
         对 schema 不合格的非空输出做一次格式纠正 retry。
         """
@@ -1960,7 +1929,7 @@ class DSLocalAndVoiceGen:
         runtime_messages: list[dict[str, object]],
         candidate_content: str,
         reasoning_kwargs: dict[str, object],
-    ) -> list[dict[str, str]] | str:
+    ) -> list[dict[str, object]] | str:
         """
         在工具调用阶段结束后，先验收最终候选内容。
 

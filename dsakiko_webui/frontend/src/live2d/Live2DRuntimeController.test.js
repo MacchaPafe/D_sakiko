@@ -8,6 +8,7 @@ vi.mock('pixi-live2d-display', () => ({
 }))
 
 import { Live2DRuntimeController } from './Live2DRuntimeController'
+import performanceFixtures from '../../../../GPT_SoVITS/test/fixtures/performance_cases.json'
 
 function deferred() {
   let resolve
@@ -90,6 +91,77 @@ function createController() {
 }
 
 describe('Live2DRuntimeController', () => {
+  it('remembers motion completion while an expression is still loading', async () => {
+    const model = fakeModel('slow-expression')
+    fromMock.mockResolvedValue(model)
+    const target = presentation('slow-expression', 'v3')
+    target.capabilities.performance = performanceFixtures.catalog
+    target.capabilities.motion_files_by_group.__dsakiko_performance__ = ['nod_C.motion3.json']
+    const { controller } = createController()
+    await controller.setPresentation(target)
+    const expression = deferred()
+    const expressionStarted = deferred()
+    model.expression.mockImplementationOnce(() => {
+      expressionStarted.resolve()
+      return expression.promise
+    })
+    const pending = controller.setCue({ kind: 'speaking', key: 's', turnId: 'turn', emotion: 'happiness',
+      performance: { motion: 'nod', expression: 'exp_smile01' } })
+    await expressionStarted.promise
+    model.finishMotion()
+    expression.resolve(true)
+    await pending
+    expect(controller.activeMotion.finished).toBe(true)
+    controller.destroy()
+  })
+
+  it('keeps a completed motion across segments while changing only expression', async () => {
+    vi.useFakeTimers()
+    const model = fakeModel('independent')
+    fromMock.mockResolvedValue(model)
+    const target = presentation('independent', 'v3')
+    target.capabilities.performance = performanceFixtures.catalog
+    target.capabilities.motion_files_by_group.__dsakiko_performance__ = ['nod_C.motion3.json', 'nod_L.motion3.json', 'serious_C.motion3.json']
+    const { controller } = createController()
+    await controller.setPresentation(target)
+    model.motion.mockClear()
+    await controller.setCue({ kind: 'speaking', key: 'segment-1', turnId: 'turn', emotion: 'happiness',
+      performance: { motion: 'nod', expression: 'exp_smile01' }, duration: 20 })
+    expect(model.motion).toHaveBeenCalledTimes(1)
+    model.finishMotion()
+    await controller.setCue({ kind: 'thinking', key: 'gap', turnId: 'turn' })
+    await vi.advanceTimersByTimeAsync(16000)
+    expect(model.motion).toHaveBeenCalledTimes(1)
+    await controller.setCue({ kind: 'speaking', key: 'segment-2', turnId: 'turn', emotion: 'sadness',
+      performance: { motion: 'nod', expression: 'exp_sad01' } })
+    expect(model.motion).toHaveBeenCalledTimes(1)
+    expect(model.expression).toHaveBeenLastCalledWith('exp_sad01')
+    await controller.setCue({ kind: 'idle', key: 'idle:chat' })
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(model.motion).toHaveBeenCalledTimes(2)
+    controller.destroy()
+  })
+
+  it('does not apply an obsolete performance after cancellation during loading', async () => {
+    const model = fakeModel('cancel')
+    fromMock.mockResolvedValue(model)
+    const target = presentation('cancel', 'v3')
+    target.capabilities.performance = performanceFixtures.catalog
+    target.capabilities.motion_files_by_group.__dsakiko_performance__ = ['nod_C.motion3.json']
+    const { controller } = createController()
+    await controller.setPresentation(target)
+    model.motion.mockClear()
+    const loading = deferred()
+    model.internalModel.motionManager.loadMotion.mockReturnValueOnce(loading.promise)
+    const pending = controller.setCue({ kind: 'speaking', key: 's', turnId: 'turn', emotion: 'happiness',
+      performance: { motion: 'nod', expression: 'exp_smile01' } })
+    await controller.setCue({ kind: 'idle', key: 'cancelled:turn' })
+    loading.resolve({})
+    await pending
+    expect(model.motion.mock.calls.every(([group]) => group !== '__dsakiko_performance__')).toBe(true)
+    controller.destroy()
+  })
+
   beforeEach(() => {
     fromMock.mockReset()
   })

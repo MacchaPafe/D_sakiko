@@ -670,6 +670,8 @@ class ChatDisplay(QTextBrowser):
             emotion=message.emotion,
             audio_path=message.audio_path,
             attachments=message.attachments,
+            performance=message.performance,
+            worldbook_snapshot=message.worldbook_snapshot,
         )
 
     @staticmethod

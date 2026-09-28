@@ -604,6 +604,7 @@ class Live2DModule:
         self.playlist=[]
         # 当前播放到播放列表的哪个位置
         self.playlist_pointer=0
+        self.performance_round = 0
 
     def _start_turn_audio(self, audio_file_path: str) -> bool:
         """播放当前句音频并启动口型同步，返回是否存在有效音频。"""
@@ -631,6 +632,8 @@ class Live2DModule:
             model: Live2DModelAdapter | None,
             emotion: str,
             position: MotionPosition,
+            performance: object = None,
+            context: object = None,
     ) -> bool:
         """尝试根据情绪触发可见模型动作，动作缺失时安静失败。"""
         if model is None:
@@ -642,6 +645,10 @@ class Live2DModule:
         group_name = motion_group_for_emotion(str(emotion), default="IDLE")
         self.last_motion_model = model
         self.force_eyes_open = False
+
+        if model.version == "v3":
+            self.motion_is_over = False
+            return model.apply_performance(performance, emotion, position, context, self.onFinishCallback_motion)
 
         started = model.StartRandomMotion(group_name, 3, None, self.onFinishCallback_motion, position=position)
         if not started:
@@ -1326,6 +1333,7 @@ class Live2DModule:
                     # 否则，在本句话播放完成后立刻切换到新内容，清空播放队列
                     if self.playlist_pointer==len(self.playlist):
                         self.playlist = data.get("playlist", [])
+                        self.performance_round += 1
                         self.playlist_pointer = 0
                         waiting_between_turns = False
                         next_turn_earliest_start_at = 0.0
@@ -1362,6 +1370,7 @@ class Live2DModule:
 
                     if len(queued_playlist) > 0:
                         self.playlist = queued_playlist.popleft()
+                        self.performance_round += 1
                         self.playlist_pointer = 0
                     continue
 
@@ -1394,10 +1403,12 @@ class Live2DModule:
                         speaker_slot = 1
                         last_speaker_slot = 1
                     else:
-                        # 当说话人名未命中任一槽位时，沿用上一次成功命中的槽位，避免动作落到错误对象或空对象
+                        # 保留布局位置；未知说话者的视觉通道在下方跳过。
                         speaker_slot = last_speaker_slot
 
                     this_turn_model = model_group[speaker_slot]
+                    if speaker_name not in {slot["character_name"] for slot in self.active_slots}:
+                        this_turn_model = None
                     lip_sync_model = this_turn_model
 
                     has_audio_file = self._start_turn_audio(str(audio_path))
@@ -1405,6 +1416,8 @@ class Live2DModule:
                     self._try_start_emotion_motion(
                         model=this_turn_model,
                         emotion=str(emotion),
+                        performance=this_turn_elements.get("performance"),
+                        context=self.performance_round,
                         position=self._motion_position_for_slot(
                             speaker_slot,
                             self._active_model_versions(),
@@ -1422,9 +1435,21 @@ class Live2DModule:
                         waiting_between_turns = True
                         previous_frame_audio_playing = False
 
+            if (self.playlist and self.playlist_pointer >= len(self.playlist)
+                    and not audio_is_playing
+                    and time.time() > max(idle_recover_timer, next_turn_earliest_start_at) + 2.5):
+                for slot_index, idle_model in enumerate(model_group):
+                    if idle_model is not None and idle_model.performance_state is not None:
+                        idle_model.reset_performance()
+                        idle_model.StartRandomMotion(
+                            "idle_motion", 3,
+                            position=self._motion_position_for_slot(slot_index, self._active_model_versions(), active_motion_facing_mode),
+                        )
+
             if (
                 self.motion_is_over
                 and self.last_motion_model is not None
+                and not self.last_motion_model.performance_expression_active
                 and not self.force_eyes_open
                 and time.time() - self.motion_finished_at > 0.5
             ):

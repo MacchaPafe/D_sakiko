@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from queue import Queue
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
@@ -11,7 +13,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PyQt5.QtGui import QMouseEvent, QWheelEvent
+from PyQt5.QtGui import QImage, QMouseEvent, QWheelEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
@@ -21,6 +23,7 @@ from desktop_pet.focus import PetFocus
 from runtime.drafts import DraftStore
 from runtime.single_character_performance import SingleCharacterPerformance
 from runtime.voice_input import VoiceInputService
+from ui_main.components.message_input import MessageInput
 from ui_main.theme import derive_theme_palette
 
 
@@ -73,9 +76,11 @@ class PetInteractionTests(TestCase):
         self.assertLessEqual(self.pet.zoom, 1.0)
 
     def test_drag_to_edge_is_not_clamped_by_release_input_zoom_or_tray(self) -> None:
-        """透明窗口可跨越屏幕边缘，松手、输入和托盘恢复均不回弹。"""
+        """拖动保留输入与草稿，跨越屏幕边缘后松手和恢复均不回弹。"""
         renderer = self.pet.renderer
         self.pet.move(30, 30)
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("拖动后继续输入")
         center = renderer.hit_bounds.center()
         global_center = renderer.mapToGlobal(center)
         delta = QPoint(-140, -140)
@@ -100,6 +105,7 @@ class PetInteractionTests(TestCase):
             )
         )
         moved = self.pet.pos()
+        self.assertTrue(self.pet.expanded)
         self.assertEqual(moved.x(), -110)
         self.assertEqual(moved.y(), -110)
         renderer.mouseReleaseEvent(
@@ -113,6 +119,9 @@ class PetInteractionTests(TestCase):
             )
         )
         self.assertEqual(self.pet.pos(), moved)
+        self.assertTrue(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "拖动后继续输入")
+        self.assertFalse(renderer.interaction_requested)
         self.pet.expand()
         self.assertEqual(self.pet.pos(), moved)
         foot = self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor))
@@ -142,6 +151,66 @@ class PetInteractionTests(TestCase):
         self.assertFalse(self.pet.tools.isHidden())
         self.assertIn("取消", self.pet.record_button.toolTip())
         chat.voice_button.setText.assert_called_with("取消")
+
+    def test_character_click_collapses_only_on_release_and_preserves_draft(
+        self,
+    ) -> None:
+        """确认单击后收起输入、归还焦点并保留草稿，仍触发空闲动作。"""
+        focus = Mock(spec=PetFocus, nonactivating=False)
+        self.pet._focus = focus
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("稍后继续输入")
+        self.pet._subtitle("正在显示的回复")
+        renderer = self.pet.renderer
+        center = renderer.hit_bounds.center()
+        QTest.mousePress(renderer, Qt.LeftButton, pos=center)
+        self.assertTrue(self.pet.expanded)
+        focus.release_input.assert_not_called()
+        QTest.mouseRelease(renderer, Qt.LeftButton, pos=center)
+        self.assertFalse(self.pet.expanded)
+        self.assertTrue(self.pet.panel.isHidden())
+        focus.release_input.assert_called_once()
+        self.assertEqual(self.drafts.get("test").text, "稍后继续输入")
+        self.assertFalse(self.pet.subtitle.isHidden())
+        self.assertTrue(renderer.interaction_requested)
+        self.pet.expand()
+        self.assertEqual(self.pet.input.toPlainText(), "稍后继续输入")
+
+    def test_character_click_while_busy_collapses_without_interrupting(
+        self,
+    ) -> None:
+        """回复或录音期间单击仍收起输入，但不触发动作或中断当前任务。"""
+        for responding, voice_state in (
+            (True, "idle"),
+            (False, "recording"),
+            (False, "transcribing"),
+            (False, "preparing"),
+        ):
+            with self.subTest(responding=responding, voice_state=voice_state):
+                self.host.is_response_active.return_value = responding
+                self.voice._state(voice_state)
+                self.pet.expand()
+                self.pet.input.text_edit.setPlainText("下一条草稿")
+                QTest.mouseClick(
+                    self.pet.renderer,
+                    Qt.LeftButton,
+                    pos=self.pet.renderer.hit_bounds.center(),
+                )
+                self.assertFalse(self.pet.expanded)
+                self.assertEqual(self.drafts.get("test").text, "下一条草稿")
+                self.assertEqual(self.voice.state, voice_state)
+                self.assertFalse(self.pet.renderer.interaction_requested)
+                self.host.cancel_active_turn.assert_not_called()
+                self.host.handle_user_input.assert_not_called()
+
+    def test_click_outside_character_keeps_input_open(self) -> None:
+        """点击角色范围外的透明区域不收起输入，也不触发角色动作。"""
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("保留输入")
+        QTest.mouseClick(self.pet.renderer, Qt.LeftButton, pos=QPoint(1, 1))
+        self.assertTrue(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "保留输入")
+        self.assertFalse(self.pet.renderer.interaction_requested)
 
     def test_native_focus_loss_collapses_without_losing_draft(self) -> None:
         """原生非激活面板不调用应用激活，失去键盘焦点时保留草稿。"""
@@ -218,6 +287,131 @@ class PetInteractionTests(TestCase):
         self.assertTrue(self.pet.subtitle.isHidden())
         self.assertTrue(self.pet.notice.isHidden())
 
+    def test_subtitle_remains_visible_and_updates_above_expanded_input(self) -> None:
+        """打开输入框后仍显示旧回复和新字幕，并与输入面板保持分离。"""
+        self.pet._subtitle("已经显示的回复")
+        self.pet.expand()
+        self.assertFalse(self.pet.subtitle.isHidden())
+        self.pet._subtitle("输入期间到达的新回复")
+        self.assertFalse(self.pet.subtitle.isHidden())
+        self.assertEqual(self.pet.subtitle.text(), "输入期间到达的新回复")
+        self.assertLess(
+            self.pet.subtitle.geometry().bottom(), self.pet.panel.geometry().top()
+        )
+
+    def test_enter_waits_for_submission_commit_before_collapsing(self) -> None:
+        """回车发送后等待提交确认，清空共享草稿后才收起输入面板。"""
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("待发送文本")
+        QTest.keyClick(self.pet.input.text_edit, Qt.Key_Return)
+        self.host.handle_user_input.assert_called_once_with(self.pet.input)
+        self.assertTrue(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "待发送文本")
+        self.drafts.submitted("test", "turn")
+        self.host.is_response_active.return_value = True
+        self.assertTrue(self.drafts.committed("turn"))
+        self.assertEqual(self.pet.input.toPlainText(), "")
+        self.assertFalse(self.pet.expanded)
+        self.assertTrue(self.pet.panel.isHidden())
+
+    def test_image_submission_collapses_only_after_all_sent_content_is_cleared(
+        self,
+    ) -> None:
+        """纯图片和图文发送均在提交确认同步清除附件后收起面板。"""
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        image_path = Path(directory.name) / "draft.png"
+        fixture = QImage(16, 16, QImage.Format_RGB32)
+        fixture.fill(0xFF7788AA)
+        self.assertTrue(fixture.save(str(image_path)))
+        for text in ("", "图片说明"):
+            with self.subTest(text=text):
+                self.pet.expand()
+                self.pet.input.text_edit.setPlainText(text)
+                self.pet.input.add_managed_draft(
+                    dict(
+                        draft_attachment_id="image",
+                        staging_path=str(image_path),
+                        mime_type="image/png",
+                        original_name="draft.png",
+                        upload_state="ready",
+                    )
+                )
+                self.pet.send_button.click()
+                self.assertTrue(self.pet.expanded)
+                self.drafts.submitted("test", "turn")
+                self.assertTrue(self.drafts.committed("turn"))
+                self.assertEqual(self.pet.input.toPlainText(), "")
+                self.assertEqual(self.pet.input.pending_image_source_paths(), [])
+                self.assertFalse(self.pet.expanded)
+
+    def test_synchronous_send_clear_collapses_input(self) -> None:
+        """同步发送路径清空输入后也收起面板，不必等待异步回执。"""
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("同步发送")
+
+        def clear_sent_draft(view: MessageInput) -> None:
+            """模拟同步发送成功后的草稿清理。"""
+            view.clear_after_send()
+
+        self.host.handle_user_input.side_effect = clear_sent_draft
+        self.pet.send()
+        self.assertFalse(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "")
+
+    def test_failed_send_keeps_draft_error_and_input_open(self) -> None:
+        """发送校验失败时保留输入面板、草稿和可处理的错误。"""
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("不能提交的草稿")
+
+        def reject_draft(view: MessageInput) -> None:
+            """模拟发送校验失败。"""
+            view.show_error("图片正在上传，请稍候。")
+
+        self.host.handle_user_input.side_effect = reject_draft
+        self.pet.send()
+        self.assertTrue(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "不能提交的草稿")
+        self.assertFalse(self.pet.input.error_bar.isHidden())
+
+    def test_empty_send_and_manual_clear_do_not_collapse_input(self) -> None:
+        """空输入发送和手动清空草稿均不作为发送成功处理。"""
+        self.pet.expand()
+        self.pet.send()
+        self.assertTrue(self.pet.expanded)
+        self.pet.input.text_edit.setPlainText("手动清空")
+        self.pet.input.text_edit.clear()
+        self.assertTrue(self.pet.expanded)
+
+    def test_submission_commit_preserves_new_draft_and_ignores_other_chat(
+        self,
+    ) -> None:
+        """提交确认不收起已有新草稿，也不影响其他对话的输入面板。"""
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("上一条")
+        self.pet.send()
+        self.drafts.submitted("test", "turn")
+        self.pet.input.text_edit.setPlainText("下一条草稿")
+        self.assertTrue(self.drafts.committed("turn"))
+        self.assertTrue(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "下一条草稿")
+        self.pet.input.text_edit.clear()
+        self.drafts.set("other", "其他对话", [])
+        self.drafts.submitted("other", "other-turn")
+        self.assertTrue(self.drafts.committed("other-turn"))
+        self.assertTrue(self.pet.expanded)
+
+    def test_stop_reply_keeps_input_open(self) -> None:
+        """点击停止回复不按发送成功处理，保留输入面板和新草稿。"""
+        self.pet.expand()
+        self.pet.input.text_edit.setPlainText("下一条草稿")
+        self.host.is_response_active.return_value = True
+        self.pet.send()
+        self.host.cancel_active_turn.assert_called_once()
+        self.host.handle_user_input.assert_not_called()
+        self.assertTrue(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "下一条草稿")
+
     def test_recognition_does_not_reactivate_inactive_mac_tool_window(self) -> None:
         """macOS 工具窗口保留活动标志时，识别完成也不能抢回应用焦点。"""
         with (
@@ -240,6 +434,7 @@ class PetInteractionTests(TestCase):
         self.assertLess(self.pet.panel.height(), 130)
         self.pet.input.text_edit.setPlainText("长文本\n" * 20)
         self.pet.show_input_error("错误详情\n" * 40)
+        self.pet._subtitle("输入期间继续显示的回复")
         QTest.qWait(20)
         self.pet.refresh_state()
         self.pet.panel.layout().activate()
@@ -248,6 +443,9 @@ class PetInteractionTests(TestCase):
         ).y()
         self.assertLessEqual(bottom, self.pet.panel.height())
         self.assertLessEqual(self.pet.panel.geometry().bottom(), self.pet.height())
+        self.assertLess(
+            self.pet.subtitle.geometry().bottom(), self.pet.panel.geometry().top()
+        )
         self.assertGreater(self.pet.input_scroll.verticalScrollBar().maximum(), 0)
         self.assertEqual(self.drafts.get("test").text, "长文本\n" * 20)
 

@@ -1,0 +1,28 @@
+{
+  "catalog": {
+    "version": "v3",
+    "motions": {
+      "nod": {"C": "nod_C.motion3.json", "L": "nod_L.motion3.json"},
+      "serious": {"C": "serious_C.motion3.json"},
+      "side_only": {"L": "side_L.motion3.json"}
+    },
+    "expressions": {"exp_smile01": "smile.exp3.json", "exp_sad01": "sad.exp3.json", "exp_idle01": "idle.exp3.json"},
+    "groups": {"happiness": ["nod"], "sadness": ["serious"], "like": ["nod"], "idle_motion": ["nod"]},
+    "semantic_expressions": {"happiness": ["exp_smile01", "exp_idle01"], "sadness": ["exp_sad01", "exp_idle01"], "like": ["exp_smile01", "exp_idle01"], "idle": ["exp_idle01"]}
+  },
+  "cases": [
+    {"name": "center never uses side only", "selection": {"motion": "side_only", "expression": "exp_sad01"}, "emotion": "happiness", "expected": {"motion_file": "nod_C.motion3.json", "expression": "exp_sad01", "change_motion": true, "change_expression": true}},
+    {"name": "right never substitutes left", "selection": {"motion": "side_only", "expression": "exp_smile01"}, "direction": "R", "emotion": "happiness", "expected": {"motion_file": "nod_C.motion3.json", "expression": "exp_smile01", "change_motion": true, "change_expression": true}},
+    {"name": "matching side only is usable", "selection": {"motion": "side_only", "expression": "exp_smile01"}, "direction": "L", "emotion": "happiness", "expected": {"motion_file": "side_L.motion3.json", "expression": "exp_smile01", "change_motion": true, "change_expression": true}},
+    {"name": "v3 independent", "selection": {"motion": "serious", "expression": "exp_smile01"}, "emotion": "sadness", "expected": {"motion_file": "serious_C.motion3.json", "expression": "exp_smile01", "change_motion": true, "change_expression": true}},
+    {"name": "v3 old protocol", "selection": null, "emotion": "sadness", "expected": {"motion_file": "serious_C.motion3.json", "expression": "exp_sad01", "change_motion": true, "change_expression": true}},
+    {"name": "missing motion only", "selection": {"motion": "missing", "expression": "exp_sad01"}, "emotion": "happiness", "expected": {"motion_file": "nod_C.motion3.json", "expression": "exp_sad01", "change_motion": true, "change_expression": true}},
+    {"name": "missing expression only", "selection": {"motion": "serious", "expression": "missing"}, "emotion": "happiness", "expected": {"motion_file": "serious_C.motion3.json", "expression": "exp_smile01", "change_motion": true, "change_expression": true}},
+    {"name": "same motion different expression", "selection": {"motion": "nod", "expression": "exp_sad01"}, "emotion": "happiness", "current": {"motion_id": "nod", "motion_file": "nod_C.motion3.json", "expression": "exp_smile01", "emotion": "happiness"}, "expected": {"motion_file": "nod_C.motion3.json", "expression": "exp_sad01", "change_motion": false, "change_expression": true}},
+    {"name": "auto reuses current", "selection": {"motion": "auto", "expression": "auto"}, "emotion": "happiness", "current": {"motion_id": "nod", "motion_file": "nod_C.motion3.json", "expression": "exp_smile01", "emotion": "happiness"}, "expected": {"motion_file": "nod_C.motion3.json", "expression": "exp_smile01", "change_motion": false, "change_expression": false}},
+    {"name": "program direction", "selection": {"motion": "nod", "expression": "exp_smile01"}, "emotion": "happiness", "direction": "L", "current": {"motion_id": "nod", "motion_file": "nod_C.motion3.json", "expression": "exp_smile01", "emotion": "happiness"}, "expected": {"motion_file": "nod_L.motion3.json", "expression": "exp_smile01", "change_motion": true, "change_expression": false}},
+    {"name": "missing direction", "selection": {"motion": "serious", "expression": "exp_smile01"}, "emotion": "happiness", "direction": "R", "expected": {"motion_file": "serious_C.motion3.json", "expression": "exp_smile01", "change_motion": true, "change_expression": true}},
+    {"name": "v2 new protocol", "version": "v2", "selection": {"motion": "serious", "expression": "exp_smile01"}, "emotion": "sadness", "expected": {"legacy_group": "sadness"}},
+    {"name": "v2 old protocol", "version": "v2", "selection": null, "emotion": "happiness", "expected": {"legacy_group": "happiness"}}
+  ]
+}

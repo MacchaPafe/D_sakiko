@@ -196,6 +196,10 @@ class DSakikoConfig(QConfig):
     live2d_model_layouts = ConfigItem("character_setting", "live2d_model_layouts", {})
     # Live2D 模型布局配置结构版本，用于启动时执行一次性迁移。
     live2d_layout_schema_version = ConfigItem("character_setting", "live2d_layout_schema_version", 1)
+    # 动作编辑器首次打开 V3 时的介绍已读状态，不绑定介绍文案版本。
+    live2d_viewer_v3_intro_seen = OptionsConfigItem(
+        "ui_state", "live2d_viewer_v3_intro_seen", False, validator=BoolValidator()
+    )
 
     # 普通聊天侧栏的展示模式：flat 为平铺模式，folded 为按角色折叠模式
     chat_sidebar_mode = OptionsConfigItem("ui_state", "chat_sidebar_mode", "flat",

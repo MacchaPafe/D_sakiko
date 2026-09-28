@@ -158,6 +158,7 @@ class PetWindow(QWidget):
         )
         self.input.sendRequested.connect(self.send)
         self.binding = DraftBinding(host.drafts, self.input, host.current_chat_id)
+        host.drafts.submissionCommitted.connect(self._collapse_after_submission)
         self.input_scroll = QScrollArea(self.panel)
         self.input_scroll.setFrameShape(QFrame.NoFrame)
         self.input_scroll.setWidgetResizable(True)
@@ -287,9 +288,12 @@ class PetWindow(QWidget):
         self.panel.setFixedWidth(panel_width)
         self.panel.layout().activate()
         self.input.refresh_height()
+        subtitle_height = 72
+        subtitle_space = subtitle_height + 10 if self.subtitle.text() else 0
+        panel_height_limit = min(360, self.height() - 16 - subtitle_space)
         # 极长错误或附件仍可滚动查看，操作按钮始终留在卡片内。
         self.input_scroll.setFixedHeight(
-            min(self.input.height(), max(48, min(360, self.height() - 16) - 60))
+            min(self.input.height(), max(48, panel_height_limit - 60))
         )
         panel_height = max(96, self.panel.layout().sizeHint().height())
         y = max(8, min(self.anchor - 18, self.height() - panel_height - 8))
@@ -303,7 +307,10 @@ class PetWindow(QWidget):
             (self.width() - panel_width) // 2, y, panel_width, panel_height
         )
         self.subtitle.setGeometry(
-            (self.width() - panel_width) // 2, max(5, y - 82), panel_width, 72
+            (self.width() - panel_width) // 2,
+            max(5, y - subtitle_height - 10),
+            panel_width,
+            subtitle_height,
         )
         notice_height = max(40, self.notice.heightForWidth(panel_width))
         notice_y = max(5, y - notice_height - 8)
@@ -318,8 +325,11 @@ class PetWindow(QWidget):
         self.notice.raise_()
 
     def play_interaction(self) -> None:
-        """仅在当前对话和录音都空闲时响应角色单击。"""
-        self.refresh_state()
+        """单击收起输入卡片并保留草稿，空闲时继续播放角色动作。"""
+        if self.expanded:
+            self.collapse()
+        else:
+            self.refresh_state()
         self.renderer.request_interaction()
 
     def zoom_by(self, factor: float) -> None:
@@ -381,7 +391,7 @@ class PetWindow(QWidget):
     def _subtitle(self, text: str) -> None:
         """更新回复字幕，不与操作通知共享文字或计时器。"""
         self.subtitle.setText(text)
-        self.subtitle.setVisible(bool(text) and not self.expanded)
+        self.subtitle.setVisible(bool(text))
         self.layout_controls()
 
     def show_status(self, text: str) -> None:
@@ -408,7 +418,6 @@ class PetWindow(QWidget):
         """展开输入卡片，仅在用户主动输入时获取焦点。"""
         self.expanded = True
         self.tools.hide()
-        self.subtitle.hide()
         self.panel.show()
         self.panel.raise_()
         self._focus.request_input()
@@ -551,11 +560,27 @@ class PetWindow(QWidget):
             self.popup_open = False
 
     def send(self) -> None:
+        """发送成功清空草稿后收起面板，等待后台确认时保持展开。"""
         if self.host.is_response_active():
             self.host.cancel_active_turn()
         else:
+            had_draft = bool(
+                self.input.toPlainText() or self.input.pending_image_source_paths()
+            )
             self.host.handle_user_input(self.input)
+            if had_draft:
+                self._collapse_after_submission(self.binding.chat_id)
         self.refresh_state()
+
+    def _collapse_after_submission(self, chat_id: str) -> None:
+        """当前对话发送确认后仅收起空草稿，保留等待期间新增的内容。"""
+        if (
+            chat_id == self.binding.chat_id
+            and self.expanded
+            and not self.input.toPlainText()
+            and not self.input.pending_image_source_paths()
+        ):
+            self.collapse()
 
     def create_context_menu(self) -> QMenu:
         """创建明确区分临时打开窗口与退出桌宠形态的菜单。"""

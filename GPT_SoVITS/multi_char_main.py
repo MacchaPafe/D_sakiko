@@ -1508,6 +1508,7 @@ class ViewerGUI(QWidget):
             "translation": turn_data.get("translation", ""),
             "emotion": turn_data.get("emotion", "normal"),
             "audio_path": turn_data.get("audio_path", ""),
+            "performance": turn_data.get("performance"),
         })
 
     def _character_indices_from_names(self, character_names: List[str]) -> List[int]:
@@ -1650,6 +1651,7 @@ class ViewerGUI(QWidget):
                 "translation": translation,
                 "emotion": emotion,
                 "audio_path": audio_path,
+                "performance": turn.get("performance"),
             }).as_dict()
             one_turn["turn_uid"] = turn_uid
             playlist_queue.append(one_turn)
@@ -2206,6 +2208,11 @@ class ViewerGUI(QWidget):
         self.qt2dp_queue.put({
             "char_index": self.current_char_index,
             "user_input": temporary_input,
+            "performance_models": {
+                str(slot.get("character_name")): slot.get("model_json_path")
+                for slot in self._build_active_slots_payload().get("slots", [])
+                if isinstance(slot, dict)
+            },
         })
 
 

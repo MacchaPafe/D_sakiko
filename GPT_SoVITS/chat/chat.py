@@ -24,6 +24,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from character import CharacterAttributes
 from emotion_enum import EmotionEnum
+from performance_types import PerformanceSelection
 from log import get_logger
 from chat.chat_meta import ChatMeta, TheaterMeta, ToolCallHistoryRecordMeta, ToolCallRecordMeta
 from rag.worldbook.runtime.models import WorldbookTurnSnapshot
@@ -188,6 +189,7 @@ class Message:
     attachments: list[MessageAttachment] = dataclasses.field(default_factory=list)
     # 真实用户消息入队时冻结的世界书上下文；旧消息为空。
     worldbook_snapshot: WorldbookTurnSnapshot | None = None
+    performance: PerformanceSelection | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Message":
@@ -215,6 +217,7 @@ class Message:
             audio_path=str(data.get("audio_path") or ""),
             attachments=attachments,
             worldbook_snapshot=worldbook_snapshot,
+            performance=PerformanceSelection.from_value(data.get("performance")),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -231,6 +234,8 @@ class Message:
         }
         if self.worldbook_snapshot is not None:
             data["worldbook_snapshot"] = self.worldbook_snapshot.model_dump(mode="json")
+        if self.performance is not None:
+            data["performance"] = self.performance.as_dict()
         return data
 
     @property

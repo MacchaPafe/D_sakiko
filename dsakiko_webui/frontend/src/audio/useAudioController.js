@@ -33,6 +33,8 @@ export function useAudioController() {
   const queueRef = useRef([])
   const volumeRef = useRef(0)
   const playbackInstanceRef = useRef(0)
+  const textTimerRef = useRef(null)
+  const finishPlaybackRef = useRef(null)
   const [unlocked, setUnlocked] = useState(false)
   const [playback, setPlayback] = useState(idlePlayback)
 
@@ -70,10 +72,25 @@ export function useAudioController() {
   }, [])
 
   const startPlayback = useCallback(async (message, keepQueue = false) => {
-    if (!message?.audio_url) return false
+    if (!message?.audio_url && !message?.text) return false
+    clearTimeout(textTimerRef.current)
+    textTimerRef.current = null
     if (!keepQueue) queueRef.current = []
     const audio = audioRef.current
     if (!audio) return false
+    if (!message.audio_url) {
+      audio.pause()
+      currentMessageRef.current = message
+      volumeRef.current = 0
+      playbackInstanceRef.current += 1
+      const duration = Math.max(6, Math.min(30, ((message.text || '').length + (message.translation || '').length) / 6))
+      setPlayback({ ...idlePlayback, messageId: message.id, instanceId: playbackInstanceRef.current, status: 'presenting', duration })
+      textTimerRef.current = setTimeout(() => {
+        textTimerRef.current = null
+        finishPlaybackRef.current?.()
+      }, duration * 1000)
+      return true
+    }
 
     const context = ensureAudioGraph()
     if (context?.state === 'suspended') {
@@ -115,6 +132,7 @@ export function useAudioController() {
     audioRef.current = audio
 
     const onPlay = () => {
+      if (!currentMessageRef.current?.audio_url) return
       playbackInstanceRef.current += 1
       setPlayback((current) => ({
         ...current,
@@ -124,11 +142,12 @@ export function useAudioController() {
       }))
     }
     const onPause = () => {
-      if (audio.ended || !currentMessageRef.current) return
+      if (audio.ended || !currentMessageRef.current?.audio_url) return
       volumeRef.current = 0
       setPlayback((current) => ({ ...current, status: 'paused' }))
     }
     const onTimeUpdate = () => {
+      if (!currentMessageRef.current?.audio_url) return
       const duration = Number.isFinite(audio.duration) ? audio.duration : 0
       setPlayback((current) => ({
         ...current,
@@ -136,7 +155,7 @@ export function useAudioController() {
         progress: duration > 0 ? audio.currentTime / duration : 0,
       }))
     }
-    const onEnded = () => {
+    const finishPlayback = () => {
       volumeRef.current = 0
       currentMessageRef.current = null
       const nextMessage = queueRef.current.shift()
@@ -146,7 +165,11 @@ export function useAudioController() {
       }
       setPlayback(idlePlayback)
     }
+    const onEnded = () => {
+      if (currentMessageRef.current?.audio_url) finishPlayback()
+    }
     const onError = () => {
+      if (!currentMessageRef.current?.audio_url) return
       volumeRef.current = 0
       setPlayback((current) => ({
         ...current,
@@ -154,6 +177,7 @@ export function useAudioController() {
         error: '音频加载失败',
       }))
     }
+    finishPlaybackRef.current = finishPlayback
 
     audio.addEventListener('play', onPlay)
     audio.addEventListener('pause', onPause)
@@ -163,6 +187,8 @@ export function useAudioController() {
     audio.addEventListener('error', onError)
 
     return () => {
+      clearTimeout(textTimerRef.current)
+      finishPlaybackRef.current = null
       audio.pause()
       audio.removeEventListener('play', onPlay)
       audio.removeEventListener('pause', onPause)
@@ -200,13 +226,13 @@ export function useAudioController() {
   }, [ensureAudioGraph])
 
   const enqueue = useCallback((message) => {
-    if (!message?.audio_url) return
+    if (!message?.audio_url && !message?.text) return
     if (currentMessageRef.current?.id === message.id) return
     if (queueRef.current.some((item) => item.id === message.id)) return
 
     const audio = audioRef.current
     if (!audio) return
-    if (currentMessageRef.current && !audio.ended) {
+    if (currentMessageRef.current && (textTimerRef.current || !audio.ended)) {
       queueRef.current.push(message)
       return
     }
@@ -229,6 +255,8 @@ export function useAudioController() {
   }, [startPlayback])
 
   const stop = useCallback(() => {
+    clearTimeout(textTimerRef.current)
+    textTimerRef.current = null
     queueRef.current = []
     currentMessageRef.current = null
     const audio = audioRef.current

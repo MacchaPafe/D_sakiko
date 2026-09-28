@@ -335,6 +335,7 @@ class ConversationRuntime:
                     translation=str(segment.get("translation") or ""),
                     emotion=str(segment.get("emotion") or "LABEL_0"),
                     audio_path=audio_path or "NO_AUDIO",
+                    performance=segment.get("performance"),
                 )
                 chat = self.chat_manager.get_chat_by_id(payload["chat_id"])
                 message_index = event["message_index"]
@@ -353,7 +354,10 @@ class ConversationRuntime:
                 dict(payload, type="assistant_turn_complete", status="ok")
             )
 
-    def replay(self, chat_id, audio_path, emotion, text="", translation=""):
+    def replay(self, chat_id: str, audio_path: str, emotion: str, text: str = "", translation: str = "", performance: object = None) -> None:
+        """使用已保存的演出选择重播消息，不重新调用模型或工具。"""
+        from performance_types import performance_payload
+
         with self._lock:
             if self.busy or self._closed:
                 raise RuntimeError("请等待当前回复或播放完成。")
@@ -372,6 +376,7 @@ class ConversationRuntime:
                     emotion=emotion,
                     text=text,
                     translation=translation,
+                    performance=performance_payload(performance),
                 )
             )
 

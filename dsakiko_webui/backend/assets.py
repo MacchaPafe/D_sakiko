@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -140,6 +142,25 @@ class AssetRegistry:
 
     def current_background(self) -> dict[str, Any]:
         return self.backgrounds[self.background_index]
+
+    def live2d_document(self, model_id: str, asset_path: str, single: bool = False) -> dict[str, object] | None:
+        """仅为已校验资产生成播放视图，拒绝未注册或越界资源。"""
+        path = self.live2d_file(model_id, asset_path)
+        entry = self._models.get(model_id)
+        if path is None or entry is None:
+            return None
+        if path == entry.root / entry.model_filename and path.name.endswith(".model3.json"):
+            gpt_path = str(PROJECT_ROOT / "GPT_SoVITS")
+            if gpt_path not in sys.path:
+                sys.path.insert(0, gpt_path)
+            from live2d_support.performance_catalog import projected_model_document
+            return projected_model_document(path)
+        if single and path.name.endswith(".motion3.json"):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("Meta"), dict):
+                data["Meta"]["Loop"] = False
+                return data
+        return None
 
     def next_background(self) -> dict[str, Any]:
         self.background_index = (self.background_index + 1) % len(self.backgrounds)

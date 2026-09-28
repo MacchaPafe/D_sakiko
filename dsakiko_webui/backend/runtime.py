@@ -310,6 +310,7 @@ class HeadlessRuntime:
             ),
             "sequence": int(meta.get("sequence") or 0),
             "emotion": message.emotion.as_string() if role == "assistant" else None,
+            "performance": message.performance.as_dict() if role == "assistant" and message.performance else None,
             "audio_url": audio_url,
             "audio_duration_ms": None,
             "attachments": attachments,

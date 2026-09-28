@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import gc
 import importlib
+import json
 import os
+import tempfile
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
@@ -33,6 +35,9 @@ from live2d_support.motion_selection import (
     select_random_motion as select_random_motion_entry,
 )
 from log import get_logger
+from live2d_support.performance_catalog import PERFORMANCE_MOTION_GROUP, cubism_motion_json, load_performance_catalog
+from live2d_support.performance_policy import PerformanceState, resolve_performance
+from performance_types import PerformanceSelection
 
 
 MotionCallback = Callable[..., object]
@@ -356,6 +361,11 @@ class Live2DModelAdapter:
     preview_motion_indices_by_path: dict[str, int]
     auto_blink_enabled: bool = False
     _last_update_time: float = field(default_factory=time.time)
+    performance_state: PerformanceState | None = None
+    performance_context: object = None
+    performance_expression_active: bool = False
+    performance_motion_indices: dict[str, int] = field(default_factory=dict)
+    _performance_generation: int = 0
 
     @classmethod
     def create(cls, model_json_path: str) -> Live2DModelAdapter:
@@ -401,6 +411,7 @@ class Live2DModelAdapter:
         _call_noarg(self.model, "StopAllMotions")
         _call_noarg(self.model, "DestroyRenderer")
         self.model = None
+        self.reset_performance()
         gc.collect()
 
     def refresh_parameter_ids(self) -> None:
@@ -433,7 +444,7 @@ class Live2DModelAdapter:
         delta_seconds = min(max(now - self._last_update_time, 0.0), 0.1)
         self._last_update_time = now
         getattr(model, "Update")()
-        if self.version == "v3" and self.auto_blink_enabled:
+        if self.version == "v3" and self.auto_blink_enabled and not self.performance_expression_active:
             is_motion_finished = getattr(model, "IsMotionFinished", None)
             if callable(is_motion_finished):
                 try:
@@ -601,7 +612,7 @@ class Live2DModelAdapter:
         """返回当前模型持久动作组声明出的方向动作能力。"""
         return motion_capabilities_from_motion_files_by_group(
             self.motion_files_by_group,
-            ignored_groups={self.PREVIEW_MOTION_GROUP},
+            ignored_groups={self.PREVIEW_MOTION_GROUP, PERFORMANCE_MOTION_GROUP},
         )
 
     def supports_positioned_motion(self, position: MotionPosition) -> bool:
@@ -729,6 +740,8 @@ class Live2DModelAdapter:
             )
             return False
         if self.version == "v3":
+            if auto_expression:
+                self.reset_performance()
             motion_files = self.motion_files_by_group.get(resolved_group_name, ())
             if motion_files and (motion_index < 0 or motion_index >= len(motion_files)):
                 logger.warning(
@@ -778,6 +791,93 @@ class Live2DModelAdapter:
                 except Exception:
                     continue
         return None
+
+    def reset_performance(self) -> None:
+        """外部动作、取消或新轮次开始时使独立演出状态失效。"""
+        self.performance_state = None
+        self.performance_context = None
+        self.performance_expression_active = False
+        self._performance_generation += 1
+
+    def apply_performance(
+            self, selection: object, emotion: str, direction: MotionPosition = "C",
+            context: object = None, on_finish: MotionCallback | None = None,
+    ) -> bool:
+        """在当前实际模型上应用独立选择，只提交成功执行的通道。"""
+        if self.version != "v3":
+            return False
+        if context != self.performance_context:
+            self.reset_performance()
+            self.performance_context = context
+        catalog = load_performance_catalog(self.model_json_path)
+        plan = resolve_performance(catalog, PerformanceSelection.from_value(selection), emotion,
+                                   direction, self.performance_state)
+        if plan.fallback_reasons:
+            logger.debug("演出通道回退：%s；模型：%s", plan.fallback_reasons, self.model_json_path)
+        previous = self.performance_state or PerformanceState()
+        motion_ok = not plan.change_motion
+        if plan.change_motion and plan.state.motion_file:
+            self._performance_generation += 1
+            generation = self._performance_generation
+
+            def finished(*args: object) -> None:
+                """丢弃已取消、被替换或已释放模型的旧回调。"""
+                if generation == self._performance_generation and self.model is not None and on_finish:
+                    on_finish(*args)
+
+            asset = catalog.motion(plan.state.motion_id or "", direction)
+            motion_ok = self._start_performance_motion(plan.state.motion_file, asset.entry if asset else {}, finished)
+        expression_ok = not plan.change_expression
+        if plan.change_expression and plan.state.expression:
+            expression_ok = self.SetExpression(plan.state.expression)
+        self.performance_state = PerformanceState(
+            plan.state.motion_id if motion_ok else previous.motion_id,
+            plan.state.motion_file if motion_ok else previous.motion_file,
+            plan.state.expression if expression_ok else previous.expression,
+            plan.state.emotion,
+        )
+        self.performance_expression_active = bool(self.performance_state.expression)
+        return True
+
+    def _start_performance_motion(
+            self, file: str, entry: dict[str, object], on_finish: MotionCallback | None,
+    ) -> bool:
+        """播放一次正式资源；临时派生循环文件，不改写用户资源。"""
+        path = (Path(self.model_json_path).parent / file).resolve()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            metadata = data.get("Meta", {})
+            loop = isinstance(metadata, dict) and metadata.get("Loop") is True
+            loaded = self._find_loaded_motion_by_file(str(path))
+            if loaded is not None and not loop:
+                started = self.start_motion(*loaded, 3, on_finish=on_finish, auto_expression=False)
+                is_finished = getattr(self._require_model(), "IsMotionFinished", None)
+                return started and not (callable(is_finished) and is_finished() is True)
+            index = self.performance_motion_indices.get(str(path))
+            if index is None:
+                if isinstance(metadata, dict):
+                    metadata["Loop"] = False
+                for key in ("FadeInTime", "FadeOutTime"):
+                    if key in entry:
+                        data[key] = entry[key]
+                with tempfile.TemporaryDirectory(prefix="dsakiko-motion-") as folder:
+                    temporary = Path(folder) / path.name
+                    temporary.write_text(cubism_motion_json(data), encoding="utf-8")
+                    index = int(getattr(self._require_model(), "LoadExtraMotion")(
+                        PERFORMANCE_MOTION_GROUP, str(temporary)))
+                if index < 0:
+                    return False
+                self.performance_motion_indices[str(path)] = index
+            getattr(self._require_model(), "StartMotion")(PERFORMANCE_MOTION_GROUP, index, 3, None, on_finish)
+            is_finished = getattr(self._require_model(), "IsMotionFinished", None)
+            if callable(is_finished) and is_finished() is True:
+                self.performance_motion_indices.pop(str(path), None)
+                logger.warning("运行时没有启动独立动作：%s", path)
+                return False
+            return True
+        except Exception:
+            logger.exception("播放独立演出动作失败：%s", path)
+            return False
 
     def start_motion_file(
             self,

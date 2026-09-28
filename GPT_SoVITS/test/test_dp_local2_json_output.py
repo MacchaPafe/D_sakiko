@@ -68,7 +68,8 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
         self.assertIn("translation，内容是对应台词的简体中文翻译", str(messages[-1]["content"]))
         self.assertNotIn("reply_language:", str(messages[-1]["content"]))
         self.assertNotIn("sakiko_tone:", str(messages[-1]["content"]))
-        self.assertIn("JSON array", str(messages[0]["content"]))
+        self.assertNotIn("JSON array", str(messages[0]["content"]))
+        self.assertIn("JSON array", str(messages[-1]["content"]))
         self.assertIn("[重要原则]保持角色边界。", str(messages[0]["content"]))
 
     def test_runtime_controls_describe_chinese_mode_without_translation(self) -> None:

@@ -735,20 +735,25 @@ class ToolCallingAgentRuntime:
         return "text" in payload and ("emotion" in payload or "translation" in payload)
 
     @staticmethod
-    def _normalize_structured_text_payload(items: List[Any]) -> str:
+    def _normalize_structured_text_payload(items: list[object]) -> str:
         """把解析切片出的对话回复信息再次转化成严格标准的基于数组格式的 JSON 字符串供主链路使用。"""
-        normalized: List[Dict[str, Any]] = []
+        from performance_types import performance_payload
+
+        normalized: list[dict[str, object]] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
-            one: Dict[str, Any] = {"text": text}
+            one: dict[str, object] = {"text": text}
             if "translation" in item:
                 one["translation"] = str(item.get("translation") or "")
             if "emotion" in item:
                 one["emotion"] = str(item.get("emotion") or "neutral")
+            selection = performance_payload(item.get("performance"))
+            if selection is not None:
+                one["performance"] = selection
             normalized.append(one)
 
         if not normalized:

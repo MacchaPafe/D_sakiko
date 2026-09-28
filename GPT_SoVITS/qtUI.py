@@ -4873,7 +4873,8 @@ class ChatGUI(QWidget):
                     # ----------------------------
                     if getattr(self, 'conversation_runtime', None) is not None:
                         self.conversation_runtime.replay(self.current_chat_id, audio_path, emotion,
-                            target_msg.text if target_msg else '', target_msg.translation if target_msg else '')
+                            target_msg.text if target_msg else '', target_msg.translation if target_msg else '',
+                            performance=target_msg.performance if target_msg else None)
                         chat_id, turn_id = self.conversation_runtime.active
                         self._start_active_turn(chat_id, turn_id, 'rendering')
                     else:

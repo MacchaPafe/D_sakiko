@@ -62,6 +62,7 @@ class Live2DCapabilities:
     expression_ids: tuple[str, ...]
     expressions_by_motion: dict[str, tuple[str | None, ...]]
     semantic_expressions: dict[str, tuple[str, ...]]
+    performance: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """转换为可序列化的能力摘要。"""
@@ -72,6 +73,7 @@ class Live2DCapabilities:
                 for group_name, files in self.motion_files_by_group.items()
             },
             "expression_ids": list(self.expression_ids),
+            "performance": self.performance,
             "expressions_by_motion": {
                 group_name: list(expressions)
                 for group_name, expressions in self.expressions_by_motion.items()
@@ -133,7 +135,7 @@ class Live2DPresentationResolver:
         self._project_root = project_root.resolve()
         self._live2d_root = live2d_root.resolve()
         self._gpt_root = gpt_root.resolve()
-        self._manifest_cache: dict[tuple[str, int, int], _ManifestCacheEntry] = {}
+        self._manifest_cache: dict[tuple[str, int, int, int], _ManifestCacheEntry] = {}
 
     def resolve(self, chat: object, character: object) -> Live2DPresentation:
         """解析当前对话的有效 Live2D 呈现目标。"""
@@ -247,7 +249,13 @@ class Live2DPresentationResolver:
     def _manifest(self, model_path: Path) -> _ManifestCacheEntry:
         """读取或复用与当前文件修订绑定的模型 manifest。"""
         stat = model_path.stat()
-        cache_key = (str(model_path), stat.st_mtime_ns, stat.st_size)
+        self._ensure_gpt_import_path()
+        from live2d_support.performance_catalog import (
+            PERFORMANCE_MOTION_GROUP, load_performance_catalog, performance_config_path, performance_motion_entries,
+        )
+
+        sidecar = performance_config_path(model_path)
+        cache_key = (str(model_path), stat.st_mtime_ns, stat.st_size, sidecar.stat().st_mtime_ns if sidecar.is_file() else 0)
         cached = self._manifest_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -266,6 +274,9 @@ class Live2DPresentationResolver:
         model_data = cast(dict[str, object], loaded)
         version = detect_live2d_runtime_version(str(model_path))
         motion_files_by_group = self._motion_files(model_data, version)
+        catalog = load_performance_catalog(model_path)
+        if version == "v3":
+            motion_files_by_group[PERFORMANCE_MOTION_GROUP] = tuple(str(entry["File"]) for entry in performance_motion_entries(catalog))
         expression_ids = self._expression_ids(model_data, version)
         supported_expressions = frozenset(expression_ids)
         expressions_by_motion = {
@@ -290,6 +301,7 @@ class Live2DPresentationResolver:
                 expression_ids=tuple(sorted(expression_ids)),
                 expressions_by_motion=expressions_by_motion,
                 semantic_expressions=semantic_expressions,
+                performance=catalog.runtime_projection() if version == "v3" else None,
             ),
         )
         self._manifest_cache = {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import shutil
@@ -19,7 +20,7 @@ from live2d_support.motion_semantics import (
 )
 
 # 本项目规范化后，在 Live2D V3 model3.json 中写入的版本号。
-NORMALIZED_MODEL3_VERSION = 1
+NORMALIZED_MODEL3_VERSION = 2
 # 规范化后在 model3.json 中写入的数据名称，标识这个模型结构是我们认识的
 DSAKIKO_MODEL3_METADATA_KEY = "DSakiko"
 MODEL3_ASSET_REFERENCE_KEYS = ("Moc", "Physics", "Pose", "DisplayInfo", "UserData")
@@ -160,6 +161,11 @@ def _flatten_model3_asset_reference(
         raise FileNotFoundError(f"Live2D V3 模型引用的文件不存在：{source_path}")
 
     target_name = source_path.name
+    if source_path != model_dir / target_name and ((model_dir / target_name).exists() or target_name in flattened_by_source.values()):
+        namespace = hashlib.sha256(str(source_path.parent.relative_to(model_dir) if source_path.is_relative_to(model_dir) else source_path.parent).encode()).hexdigest()[:8]
+        target_name = namespace + "_" + target_name
+        while (model_dir / target_name).exists():
+            target_name = "asset_" + target_name
     target_path = model_dir / target_name
     _move_or_copy_model3_asset(source_path, target_path, model_dir, moved_dirs)
     flattened_by_source[source_key] = target_name
@@ -438,6 +444,7 @@ def _flatten_model3_file_references(
                 position = _motion_position_from_file(file_name)
                 sort_key = f"{group_name}:{motion_index:04d}:{file_name}"
                 motion_candidates.append((next_entry, frozenset(keywords), position, sort_key))
+                motion_entries[motion_index] = next_entry
 
     _remove_empty_model3_dirs(moved_dirs, model_dir)
     return motion_candidates
@@ -461,11 +468,43 @@ def normalize_model3_for_project(model3_json_path: str) -> bool:
     if _model3_is_normalized(model_data, file_references, model_dir):
         return False
 
+    from live2d_support.performance_catalog import load_performance_catalog, motion_assets, performance_config_path, save_config
+
+    metadata = _as_object_mapping(model_data.get(DSAKIKO_MODEL3_METADATA_KEY))
+    already_normalized = bool(metadata.get("NormalizedModel3Version"))
+    all_assets = motion_assets(model_data)
+    original_catalog = load_performance_catalog(model_path)
+    logical_ids = {asset.file: key for key, variants in original_catalog.motions.items() for asset in variants.values()}
+    for entry in all_assets:
+        if str(entry["File"]) in logical_ids:
+            entry["LogicalId"] = logical_ids[str(entry["File"])]
+    if already_normalized:
+        known = {str(entry["File"]) for entry in all_assets}
+        for file in sorted(model_dir.rglob("*.motion3.json")):
+            relative = file.relative_to(model_dir).as_posix()
+            if relative not in known:
+                try:
+                    motion_data = json.loads(file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if isinstance(motion_data, dict) and isinstance(motion_data.get("Curves"), list):
+                    all_assets.append({"File": relative})
+    groups = _as_object_mapping(file_references.setdefault("Motions", {}))
+    original_files = [str(entry["File"]) for entry in all_assets]
+    groups["__dsakiko_asset_index__"] = all_assets
     motion_candidates = _flatten_model3_file_references(file_references, model_dir)
-    file_references["Motions"] = _build_standard_model3_motions(motion_candidates)
-    model_data[DSAKIKO_MODEL3_METADATA_KEY] = {
-        "NormalizedModel3Version": NORMALIZED_MODEL3_VERSION,
-    }
+    complete_assets = groups.pop("__dsakiko_asset_index__")
+    rewritten_files = {file: str(entry["File"]) for file, entry in zip(original_files, complete_assets)}
+    bindings = original_catalog.config.get("bindings")
+    if isinstance(bindings, dict):
+        updated_bindings = {rewritten_files.get(str(file), str(file)): value for file, value in bindings.items()}
+        if updated_bindings != bindings:
+            original_catalog.config["bindings"] = updated_bindings
+            save_config(performance_config_path(model_path), original_catalog.config)
+    if not already_normalized:
+        file_references["Motions"] = _build_standard_model3_motions(motion_candidates)
+    metadata.update({"NormalizedModel3Version": NORMALIZED_MODEL3_VERSION, "MotionAssets": complete_assets})
+    model_data[DSAKIKO_MODEL3_METADATA_KEY] = metadata
 
     with open(model3_json_path, 'w', encoding='utf-8') as f:
         json.dump(model_data, f, ensure_ascii=False, indent=4)

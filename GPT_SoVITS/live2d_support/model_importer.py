@@ -115,6 +115,23 @@ def _copy_model_references_and_write_json(
         _rewrite_model2_references(model_data, context)
 
     target_model_json = target_dir / source_model_json.name
+    from live2d_support.performance_catalog import performance_config_path, load_performance_catalog, object_mapping, save_config
+
+    source_catalog = load_performance_catalog(source_model_json)
+    sidecar = dict(source_catalog.config)
+    # 共享描述即使没有模型覆盖文件也需要随导入保留。
+    shared_series = object_mapping(object_mapping(source_catalog.shared.get("series")).get(source_catalog.series))
+    for kind in ("motions", "expressions"):
+        common, local = object_mapping(shared_series.get(kind)), object_mapping(sidecar.get(kind))
+        if common:
+            sidecar[kind] = {**common, **local}
+    if sidecar:
+        bindings = sidecar.get("bindings")
+        if isinstance(bindings, dict):
+            sidecar["bindings"] = {str(_copy_model_reference(str(file), context)): value
+                                   for file, value in bindings.items()}
+        sidecar.setdefault("series", source_catalog.series)
+        save_config(performance_config_path(target_model_json), sidecar)
     with open(target_model_json, "w", encoding="utf-8") as model_file:
         json.dump(model_data, model_file, ensure_ascii=False, indent=4)
     return target_model_json
@@ -131,6 +148,9 @@ def _rewrite_model3_references(model_data: dict[str, object], context: _Referenc
     _rewrite_file_reference_list(file_references, "Textures", context)
     _rewrite_entries_file_reference_list(file_references, "Expressions", ("File",), context)
     _rewrite_motion_groups(file_references, "Motions", ("File", "Sound"), context)
+    metadata = model_data.get("DSakiko")
+    if isinstance(metadata, dict):
+        _rewrite_entries_file_reference_list(metadata, "MotionAssets", ("File", "Sound"), context)
 
 
 def _rewrite_model2_references(model_data: dict[str, object], context: _ReferenceCopyContext) -> None:

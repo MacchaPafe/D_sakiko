@@ -19,6 +19,25 @@ function fakeModel(coreModel, breath) {
 }
 
 describe('Live2D runtime adapters', () => {
+  it('protects expression eyes and silent mouth while retaining spoken mouth animation', () => {
+    const coreModel = { setParameterValueById: vi.fn() }
+    const model = fakeModel(coreModel)
+    const blink = {}
+    model.internalModel.eyeBlink = blink
+    const adapter = createRuntimeAdapter(model, 'v3')
+    adapter.setPerformanceExpression(true)
+    expect(model.internalModel.eyeBlink).toBeNull()
+    adapter.setSpeechActive(false)
+    adapter.setMouthOpen(0)
+    model.emitBeforeModelUpdate()
+    expect(coreModel.setParameterValueById).not.toHaveBeenCalled()
+    adapter.setSpeechActive(true)
+    adapter.setMouthOpen(0.6)
+    expect(coreModel.setParameterValueById).toHaveBeenCalledWith('ParamMouthOpenY', 0.6)
+    adapter.setPerformanceExpression(false)
+    expect(model.internalModel.eyeBlink).toBe(blink)
+  })
+
   it('writes the Cubism 2 mouth parameter', () => {
     const coreModel = { setParamFloat: vi.fn() }
     createRuntimeAdapter(fakeModel(coreModel), 'v2').setMouthOpen(0.7)

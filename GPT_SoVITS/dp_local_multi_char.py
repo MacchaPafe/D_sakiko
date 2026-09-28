@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from chat.output_contract import build_output_contract
+from live2d_support.performance_catalog import load_performance_catalog
+
 import time,os
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
@@ -34,16 +39,7 @@ class DSLocalAndVoiceGen:
 								# Content Safety
 								This is a wholesome, all-ages comedy scenario. Avoid any sexual, violent, or non-consensual content. Focus on the humor of the situation.
 								
-								# Output Format (JSON)
-								[
-								  {
-									"speaker": "角色名",
-									"emotion": "仅可以从happiness/sadness/anger/fear/like/disgust/surprise这几个选项中选择！",
-									"text": "角色的台词内容（日语）",
-									"translation": "台词的中文翻译"
-								  },
-								  ...
-								]
+								请遵循请求末尾 <runtime_controls> 指定的本轮输出格式和演出要求。
 								'''
 
 	@staticmethod
@@ -97,6 +93,7 @@ class DSLocalAndVoiceGen:
 					if data=='EXIT':
 						user_input='EXIT'
 						break
+					self.performance_models = data.get('performance_models', {})
 					self.current_character_num=data['char_index']
 					user_input=data['user_input']
 					if not user_input:
@@ -139,6 +136,14 @@ class DSLocalAndVoiceGen:
 
 			user_this_turn_msg = [{"role":"system","content":self.base_prompt},
 								  {"role": "user","content": user_prompt}]
+			controls = ["<runtime_controls>", "使用日语台词，每段包含对应的简体中文 translation。每段 speaker 必须是本轮角色名。"]
+			for character_index in self.current_character_num:
+				character = self.character_list[character_index]
+				path = self.performance_models.get(character.character_name)
+				catalog = load_performance_catalog(path) if path else None
+				controls.append("说话者：" + character.character_name + "\n" + build_output_contract(catalog, speaker=True))
+			controls.append("只使用当前 speaker 对应的目录，不跨角色选资源。\n</runtime_controls>")
+			user_this_turn_msg.append({"role": "user", "content": "\n".join(controls)})
 			message_queue.put("调用大模型生成文本中...")
 			temperature = d_sakiko_config.llm_temperature.value
 			top_p = d_sakiko_config.llm_top_p.value

@@ -15,6 +15,7 @@ class Draft:
 
 class DraftStore(QObject):
     changed = pyqtSignal(str)
+    submissionCommitted = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,7 +53,8 @@ class DraftStore(QObject):
     def submitted(self, chat_id, turn_id):
         self._submitted[turn_id] = (chat_id, self.get(chat_id))
 
-    def committed(self, turn_id):
+    def committed(self, turn_id: str) -> bool:
+        """确认提交并同步剩余草稿，再通知视图本次发送成功。"""
         item = self._submitted.pop(turn_id, None)
         if item is None:
             return False
@@ -65,6 +67,7 @@ class DraftStore(QObject):
             "" if current.text_revision == sent.text_revision else current.text,
             images,
         )
+        self.submissionCommitted.emit(chat_id)
         return True
 
     def insert_recognition(self, chat_id, revision, cursor, text):
