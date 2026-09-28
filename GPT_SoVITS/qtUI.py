@@ -213,9 +213,10 @@ class MoreFunctionWindow(QDialog):
         self.open_persona_editor_button = QPushButton("编辑对话身份和角色信息")
         self.open_persona_editor_button.clicked.connect(self.on_click_open_persona_editor_button)
         advanced_settings_layout.addWidget(self.open_persona_editor_button)
-        self.open_worldbook_button = QPushButton("世界书管理")
-        self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
-        advanced_settings_layout.addWidget(self.open_worldbook_button)
+        # 世界书暂不发布，保留入口代码供后续恢复。
+        # self.open_worldbook_button = QPushButton("世界书管理")
+        # self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
+        # advanced_settings_layout.addWidget(self.open_worldbook_button)
 
         self.open_start_config_button=QPushButton("启动参数配置")
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
@@ -2328,13 +2329,14 @@ class ChatGUI(QWidget):
         self.voice_input.load()
         QTimer.singleShot(0, self.show_last_update_failure_if_needed)
         QTimer.singleShot(0, self.show_last_repair_failure_if_needed)
-        from ui.controllers.worldbook_sync_controller import WorldbookSyncController
-        self.worldbook_sync_controller = WorldbookSyncController(
-            Path(get_app_root()),
-            self,
-            readiness_state=self.dp_chat.worldbook_index_readiness,
-        )
-        QTimer.singleShot(0, self.worldbook_sync_controller.reconcile_all)
+        # 世界书暂不发布，启动时不运行索引同步，也不要求附带 embedding 模型。
+        # from ui.controllers.worldbook_sync_controller import WorldbookSyncController
+        # self.worldbook_sync_controller = WorldbookSyncController(
+        #     Path(get_app_root()),
+        #     self,
+        #     readiness_state=self.dp_chat.worldbook_index_readiness,
+        # )
+        # QTimer.singleShot(0, self.worldbook_sync_controller.reconcile_all)
         QTimer.singleShot(30000, self.start_auto_update_check)
 
     def show_last_update_failure_if_needed(self) -> None:
@@ -3688,7 +3690,8 @@ class ChatGUI(QWidget):
 
         bottom_layout.addWidget(self.add_image_button, 0)
         bottom_layout.addWidget(self.tool_calling_toggle_button, 0)
-        bottom_layout.addWidget(self.worldbook_control.button, 0)
+        # 世界书暂不发布，控制模块仍保留历史回合快照逻辑。
+        # bottom_layout.addWidget(self.worldbook_control.button, 0)
         bottom_layout.addStretch(1)
         bottom_layout.addWidget(self.context_usage_indicator, 0)
         bottom_layout.addWidget(self.reasoning_menu_button, 0)

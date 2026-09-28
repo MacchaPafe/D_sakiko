@@ -84,7 +84,9 @@ class CustomSettingArea(TransparentScrollArea):
         self.personal_group.addSettingCard(self.font_card)
         self.personal_group.addSettingCard(self.theme_card)
         self.personal_group.addSettingCard(self.theme_color_card)
-        self.personal_group.addSettingCard(self.worldbook_diagnostics_card)
+        # 世界书暂不发布，诊断配置仍保留，但不展示设置入口。
+        self.worldbook_diagnostics_card.hide()
+        # self.personal_group.addSettingCard(self.worldbook_diagnostics_card)
 
         self.v_box_layout.addWidget(self.personal_group)
 

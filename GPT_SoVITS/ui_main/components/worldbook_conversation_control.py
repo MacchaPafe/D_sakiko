@@ -110,6 +110,7 @@ class WorldbookConversationControl(QObject):
         self._button.setObjectName("worldbookMenuButton")
         self._button.setToolTip("设置当前对话的世界书、剧情进度和角色知识视角")
         self._button.setEnabled(False)
+        self._button.hide()
         self._button.clicked.connect(self._on_main_button_clicked)  # noqa
 
     @property
@@ -126,7 +127,9 @@ class WorldbookConversationControl(QObject):
         self._pending_enable_from_main = False
         supported = chat.type == ChatType.SINGLE_CHARACTER
         self._button.setEnabled(supported)
-        self._button.setVisible(supported)
+        # 世界书暂不发布，切换对话时也保持入口隐藏。
+        # self._button.setVisible(supported)
+        self._button.hide()
         self._refresh()
 
     def set_theme_palette(self, palette: ThemePalette) -> None:

@@ -146,8 +146,12 @@ class WorldbookConversationControlTest(unittest.TestCase):
         self.parent.deleteLater()
         self.app.processEvents()
 
-    def test_button_uses_fixed_label_and_exposes_configuration_menu(self) -> None:
-        """完整配置应保持固定按钮文案，并在菜单说明当前配置。"""
+    def test_hidden_button_keeps_configuration_after_rebinding(self) -> None:
+        """窗口显示和重新绑定对话后入口仍隐藏，内部菜单保持原有配置。"""
+
+        self.parent.show()
+        self.app.processEvents()
+        self.assertTrue(self.control.button.isHidden())
 
         settings = self.chat.meta.worldbook
         settings.enabled = True
@@ -156,6 +160,7 @@ class WorldbookConversationControlTest(unittest.TestCase):
 
         self.control.bind(self.chat, self.character)
 
+        self.assertTrue(self.control.button.isHidden())
         self.assertEqual(self.control.button.text(), "世界书")
         self.assertTrue(self.control.button.isChecked())
         self.assertEqual(
@@ -553,7 +558,7 @@ class WorldbookConversationControlTest(unittest.TestCase):
 
 
 class WorldbookDiagnosticsSettingUiTest(unittest.TestCase):
-    """验证诊断持久化开关位于个性化设置区域。"""
+    """验证未发布的诊断开关隐藏且保留原有配置绑定。"""
 
     app: QApplication
 
@@ -564,11 +569,15 @@ class WorldbookDiagnosticsSettingUiTest(unittest.TestCase):
         existing = QApplication.instance()
         cls.app = existing if isinstance(existing, QApplication) else QApplication([])
 
-    def test_personalization_contains_worldbook_diagnostics_switch(self) -> None:
-        """个性化页应暴露全局世界书诊断持久化开关。"""
+    def test_personalization_hides_worldbook_diagnostics_switch(self) -> None:
+        """个性化页加载配置后也不应显示世界书诊断开关。"""
 
         area = CustomSettingArea()
         try:
+            area.load_config_to_ui()
+            area.show()
+            self.app.processEvents()
+            self.assertTrue(area.worldbook_diagnostics_card.isHidden())
             self.assertIs(
                 area.worldbook_diagnostics_card.configItem,
                 d_sakiko_config.worldbook_diagnostics_persistence,
