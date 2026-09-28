@@ -37,7 +37,7 @@ from update.update_paths import get_version_file
 
 
 CHANNEL = "stable"
-DEFAULT_REPAIR_BASE_URLS: tuple[str, ...] = ("https://d-sakiko-data.xjtutoolbox.com/d-sakiko/repair/",)
+DEFAULT_REPAIR_BASE_URLS: tuple[str, ...] = ("https://assets.dsakiko.com/d-sakiko/repair/", "https://d-sakiko-data.xjtutoolbox.com/d-sakiko/repair/",)
 REQUEST_TIMEOUT = (5.0, 20.0)
 
 
