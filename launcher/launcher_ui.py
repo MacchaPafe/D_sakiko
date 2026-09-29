@@ -14,9 +14,9 @@ from PyQt5.QtWidgets import (
 from launcher_actions import ENTRY_BY_KEY, LauncherProcesses, preferred_font
 
 MODES = {
-    "desktop": ("桌面端", "日常小助手", "启动桌面端"),
-    "webui": ("WebUI", "全新界面 · 通过局域网在手机或平板上运行数字小祥", "启动 WebUI"),
-    "theater": ("小剧场模式", "自由编排两名角色的互动剧情", "启动小剧场"),
+    "desktop": ("桌面端&桌宠", "日常小助手", "启动"),
+    "webui": ("WebUI", "全新界面 · 通过局域网在手机或平板上体验数字小祥", "启动"),
+    "theater": ("小剧场模式", "自由编排两名角色的互动剧情", "启动"),
 }
 
 class WatermarkOverlay(QWidget):
@@ -313,7 +313,7 @@ class LauncherWindow(QDialog):
 
         self.launch_button = QPushButton()
         self.launch_button.setObjectName("launch")
-        self.launch_button.setMinimumWidth(260)
+        self.launch_button.setMinimumWidth(160)
         self.launch_button.clicked.connect(lambda: self.launch(self.selected_mode))
         layout.addWidget(self.launch_button, 0, Qt.AlignHCenter)
 
@@ -479,6 +479,27 @@ class LauncherWindow(QDialog):
         self.set_notice(f"已启动{ENTRY_BY_KEY[key].title}。首次加载可能需要一些时间。")
         self.showMinimized()
 
+    def activate_on_startup(self) -> None:
+        """首次显示后将启动器带到前台，不保留置顶状态或持续抢焦点。"""
+        self.raise_()
+        self.activateWindow()
+        import sys
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,
+                                           ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                           ctypes.c_int, wintypes.UINT]
+            user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            hwnd = int(self.winId())
+            # 批处理的终端可能仍拥有前台权；临时调整 Z 序后立即取消置顶。
+            flags = 0x0001 | 0x0002  # SWP_NOSIZE | SWP_NOMOVE
+            user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)
+            user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)
+            user32.SetForegroundWindow(hwnd)
+
     def poll_processes(self) -> None:
         finished = self.processes.finished()
         for key, code, log_path in finished:
@@ -508,7 +529,7 @@ class LauncherWindow(QDialog):
         item = self.processes.running.get(self.selected_mode)
         running = item is not None and item.process.poll() is None
         self.launch_button.setEnabled(reason is None)
-        self.launch_button.setText("进程已启动" if running else launch_text + "  →")
+        self.launch_button.setText("进程已启动" if running else launch_text)
         self.launch_button.setToolTip(reason or "在独立终端中启动")
         self.status.setText("进程运行中 · 首次加载可能需要一些时间" if running else reason or "")
         for key, button in self.buttons.items():
@@ -541,4 +562,5 @@ def run(root: Path) -> int:
         window.resize(min(760, area.width() - 40), min(560, area.height() - 60))
         window.move(area.center() - window.rect().center())
     window.show()
+    QTimer.singleShot(0, window.activate_on_startup)
     return app.exec_()

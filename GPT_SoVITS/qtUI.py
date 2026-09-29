@@ -221,7 +221,7 @@ class MoreFunctionWindow(QDialog):
         # self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
         # advanced_settings_layout.addWidget(self.open_worldbook_button)
 
-        self.open_start_config_button=QPushButton("启动参数配置")
+        self.open_start_config_button=QPushButton("大模型/启动参数配置")
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
         advanced_settings_layout.addWidget(self.open_start_config_button)
         advanced_settings_group.setLayout(advanced_settings_layout)
