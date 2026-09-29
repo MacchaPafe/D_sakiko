@@ -141,17 +141,8 @@ class ChatDisplay(QTextBrowser):
         self.append(self._render_message_html(message, msg_index))
 
     def complete_feedback_turn(self) -> None:
-        """整轮回复完成后仅为最后一个角色片段添加反馈，等待其流式打印结束。"""
-        index = max(self._message_meta_by_index, default=-1)
-        meta = self._message_meta_by_index.get(index)
-        if meta is None or meta.is_user_message or index in self._feedback_message_indices:
-            return
-        self._feedback_message_indices.add(index)
-        if self.is_streaming():
-            return
-        cursor = QTextCursor(self.document())
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml(self._feedback_links(index))
+        """保留回复完成通知接口，正文不再追加评价入口。"""
+        return
 
     def append_tool_status_line(
         self,
@@ -397,18 +388,12 @@ class ChatDisplay(QTextBrowser):
         )
 
     def _feedback_links(self, msg_index: int) -> str:
-        """生成不自动提交数据的反馈入口。"""
-        return "<br>" + " · ".join(
-            f'<a href="feedback:{rating}?msg={msg_index}" style="color: {self._theme_palette.text_secondary};">{label}</a>'
-            for rating, label in (("up", "赞"), ("down", "踩"), ("none", "反馈"))
-        )
+        """历史正文不再渲染评价行，仍保留右键反馈入口。"""
+        return ""
 
     def _insert_stream_feedback(self, cursor: QTextCursor) -> None:
-        """流式打印结束后补上回复反馈入口。"""
-        index = self._message_index_from_url(self._stream_anchor_href)
-        meta = self._message_meta_by_index.get(index) if index is not None else None
-        if index in self._feedback_message_indices and meta is not None and not meta.is_user_message:
-            cursor.insertHtml(self._feedback_links(index))
+        """流式正文结束后不追加评价行。"""
+        return
 
     def _body_character_format(self, anchor_href: str) -> QTextCharFormat:
         """创建流式正文使用的高对比可交互字符格式。"""

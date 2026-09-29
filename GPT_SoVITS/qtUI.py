@@ -48,8 +48,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot
-from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QObject, Qt, QSize, QUrl, QPoint, pyqtSlot, QRectF
+from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QPalette, QColor, QImage, QPixmap, QCursor, QPainter, QShowEvent, QPainterPath
 
 import sounddevice as sd
 import os,sys
@@ -198,6 +198,8 @@ class MoreFunctionWindow(QDialog):
         feedback_fun: Callable[[], None] | None = None,
         feedback_history_fun: Callable[[], None] | None = None,
         feedback_admin_fun: Callable[[], None] | None = None,
+        toggle_pet_fun: Callable[[], None] | None = None,
+        pet_mode: bool = False,
     ) -> None:
         super().__init__()
         self.setWindowTitle("更多功能...")
@@ -205,7 +207,7 @@ class MoreFunctionWindow(QDialog):
         self.resize(int(0.20 * self.screen.width()), int(0.4 * self.screen.height()))
         layout = QVBoxLayout()
 
-        advanced_settings_group = QGroupBox("高级设置与编辑")
+        advanced_settings_group = QGroupBox("高级设置")
         advanced_settings_layout = QVBoxLayout()
         self.open_motion_editor_button =QPushButton("编辑角色的动作组")
         self.open_motion_editor_button.clicked.connect(self.on_click_open_motion_editor_button)  # noqa
@@ -219,17 +221,25 @@ class MoreFunctionWindow(QDialog):
         # self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
         # advanced_settings_layout.addWidget(self.open_worldbook_button)
 
-        self.open_start_config_button=QPushButton("启动参数配置")
+        self.open_start_config_button=QPushButton("程序启动参数配置")
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
         advanced_settings_layout.addWidget(self.open_start_config_button)
         advanced_settings_group.setLayout(advanced_settings_layout)
         layout.addWidget(advanced_settings_group)
 
-        gameplay_group = QGroupBox("玩法")
+        gameplay_group = QGroupBox("更多玩法")
         gameplay_layout = QVBoxLayout()
+        if toggle_pet_fun is not None:
+            self.pet_button = QPushButton("切换为普通形态" if pet_mode else "切换为桌宠形态")
+            self.pet_button.clicked.connect(self.close)
+            self.pet_button.clicked.connect(toggle_pet_fun)
+            gameplay_layout.addWidget(self.pet_button)
         self.open_small_theater_btn=QPushButton("小剧场模式")
         self.open_small_theater_btn.clicked.connect(self.on_click_open_small_theater)  # noqa
         gameplay_layout.addWidget(self.open_small_theater_btn)
+        self.webui_button = QPushButton("WebUI模式")
+        self.webui_button.clicked.connect(lambda: QMessageBox.information(self, "数字小祥WebUI", "WebUI 模式可让你在手机等移动设备上也体验到数字小祥。\n需要先退出本程序，在启动器中开启 WebUI。"))
+        gameplay_layout.addWidget(self.webui_button)
         gameplay_group.setLayout(gameplay_layout)
         layout.addWidget(gameplay_group)
 
@@ -241,10 +251,9 @@ class MoreFunctionWindow(QDialog):
         tools_group.setLayout(tools_layout)
         layout.addWidget(tools_group)
 
-        feedback_group = QGroupBox("反馈")
-        feedback_layout = QVBoxLayout(feedback_group)
+        feedback_layout = QVBoxLayout()
         feedback_buttons_layout = QHBoxLayout()
-        for label, callback in (("意见建议", feedback_fun), ("已提交反馈", feedback_history_fun)):
+        for label, callback in (("反馈建议", feedback_fun), ("已提交反馈", feedback_history_fun)):
             if callback is not None:
                 button = QPushButton(label)
                 button.clicked.connect(callback)
@@ -255,10 +264,8 @@ class MoreFunctionWindow(QDialog):
             admin_button = QPushButton("管理反馈")
             admin_button.clicked.connect(feedback_admin_fun)
             feedback_layout.addWidget(admin_button)
-        if feedback_layout.count():
-            layout.addWidget(feedback_group)
 
-        maintenance_group = QGroupBox("程序维护")
+        maintenance_group = QGroupBox("程序维护与反馈")
         maintenance_layout = QVBoxLayout()
         if check_update_fun is not None:
             check_update_text = "检查更新（有新版本）" if has_update else "检查更新"
@@ -280,6 +287,8 @@ class MoreFunctionWindow(QDialog):
         self.version_label = QLabel(f"当前版本: {current_version}")
         self.version_label.setAlignment(Qt.AlignCenter)
         self.version_label.setProperty("dialogRole", "secondary")
+        if feedback_layout.count():
+            maintenance_layout.addLayout(feedback_layout)
         maintenance_layout.addWidget(self.version_label)
         maintenance_group.setLayout(maintenance_layout)
         layout.addWidget(maintenance_group)
@@ -639,10 +648,6 @@ class SettingWindow(QDialog):
         layout.addWidget(setting_group)
         layout.addWidget(setting_group_2)
         layout.addWidget(sakiko_group)
-        if getattr(parent_window, 'desktop_controller', None) is not None:
-            pet_button = QPushButton('切换为普通形态' if parent_window.desktop_controller.pet_mode else '切换为桌宠形态')
-            pet_button.clicked.connect(lambda: (self.close(), parent_window.desktop_controller.toggle_mode()))
-            layout.addWidget(pet_button)
         self.setLayout(layout)
         self.current_color=color
         self.setStyleSheet(build_dialog_theme_stylesheet(derive_theme_palette(color)))
@@ -1361,6 +1366,27 @@ class ChangeReferenceAudioWindow(QDialog):
 
 
 class ColorPicker(QDialog):
+    @staticmethod
+    def circular_avatar(path: Path) -> QIcon:
+        """仅为配色按钮生成圆形头像，中心裁切略缩进以去除白边，不修改源文件。"""
+        source = QPixmap(str(path))
+        if source.isNull():
+            return QIcon()
+        side = min(source.width(),source.height())
+        crop_side = side * .96
+        crop = QRectF((source.width()-crop_side)/2,(source.height()-crop_side)/2,crop_side,crop_side)
+        result = QPixmap(side,side)
+        result.fill(Qt.transparent)
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        circle = QPainterPath()
+        circle.addEllipse(QRectF(0,0,side,side))
+        painter.setClipPath(circle)
+        painter.drawPixmap(QRectF(0,0,side,side),source,crop)
+        painter.end()
+        return QIcon(result)
+
     def __init__(
         self,
         parent_window_set_color_fun: Callable[[str], None],
@@ -1394,7 +1420,7 @@ class ColorPicker(QDialog):
             btn.clicked.connect(lambda checked, col=info["theme_color"]: self.set_theme_color(col))
             avatar_path = Path(__file__).resolve().parent / "assets" / "char_headprof" / f"{char_name}.png"
             if avatar_path.is_file():
-                btn.setIcon(QIcon(str(avatar_path)))
+                btn.setIcon(self.circular_avatar(avatar_path))
                 btn.setIconSize(
                     QSize(int(self.screen.height() * 0.06 * 0.7), int(self.screen.height() * 0.075 * 0.7)))
             btn.setStyleSheet(f"""
@@ -4605,7 +4631,7 @@ class ChatGUI(QWidget):
         target_snapshot = target_message.as_dict() if target_message is not None else None
         consent_worldbook_enabled = chat is not None and chat.meta.worldbook.enabled
         title = chat.name if chat is not None else "意见建议"
-        disclosure = "你的反馈有助于改进对话体验"
+        disclosure = ""
         if chat is not None:
             disclosure = "将上传当前的对话与角色、对话身份设定，以便我们改进对话体验"
             if chat.meta.worldbook.enabled:
@@ -4643,7 +4669,7 @@ class ChatGUI(QWidget):
             if dialog.exec_() == QDialog.Accepted:
                 notice = QMessageBox(self)
                 notice.setWindowTitle("反馈已提交")
-                notice.setText("谢谢你的反馈。可以在“已提交反馈”中撤回。")
+                notice.setText("感谢反馈。可以在“已提交反馈”中撤回。")
                 history_button = notice.addButton("已提交反馈", QMessageBox.ActionRole)
                 notice.addButton("完成", QMessageBox.AcceptRole)
                 notice.exec_()
@@ -4730,6 +4756,8 @@ class ChatGUI(QWidget):
         return True
 
     def open_more_function_window(self):
+        """打开更多功能，并按当前桌宠状态提供形态切换入口。"""
+        controller = getattr(self,"desktop_controller",None)
         more_function_win=MoreFunctionWindow(
             self.close_program,
             self._theme_palette,
@@ -4739,6 +4767,8 @@ class ChatGUI(QWidget):
             feedback_fun=lambda: self._open_feedback(),
             feedback_history_fun=self.open_feedback_history,
             feedback_admin_fun=self.open_feedback_admin if os.environ.get("DSAKIKO_FEEDBACK_ADMIN_URL") else None,
+            toggle_pet_fun=controller.toggle_mode if controller is not None else None,
+            pet_mode=controller.pet_mode if controller is not None else False,
         )
         more_function_win.exec_()
 

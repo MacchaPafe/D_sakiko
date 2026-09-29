@@ -109,3 +109,7 @@ install_brew.sh
 # 本地资源服务凭证：随私有发行包提供，不提交版本库。
 /GPT_SoVITS/live2d_download/hosted/_credentials.py
 /GPT_SoVITS/.model_download_cache/
+
+# 本地维护的下载器实现与迭代资料，不纳入版本管理。
+/GPT_SoVITS/live2d_download/hosted/
+/下载器v2迭代/

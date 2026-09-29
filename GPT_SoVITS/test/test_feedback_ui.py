@@ -100,6 +100,28 @@ class FeedbackUiTests(unittest.TestCase):
             self.assertIsNone(dialog.body)
             self.assertEqual(store.all()[0].status, "submitted")
 
+    def test_rating_buttons_keep_protocol_values_and_comment(self) -> None:
+        """评价按钮沿用旧协议值，切换提示不覆盖输入且提示文字不参与上传。"""
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReceiptStore(Path(directory)/"receipts",MemorySecrets())
+            freeze = Mock(side_effect=ValueError("仅验证参数"))
+            dialog = FeedbackDialog(title="意见建议",disclosure="",freeze=freeze,
+                                    palette=derive_theme_palette("#5588aa"),store=store)
+            self.assertEqual(dialog.rating_value,"none")
+            self.assertFalse(any(button.isChecked() for button in dialog.rating_buttons.values()))
+            self.assertEqual(dialog.comment.placeholderText(),"有什么想告诉我们？")
+            with patch.dict(os.environ,{"DSAKIKO_FEEDBACK_URL":"https://feedback.example"}):
+                dialog._submit()
+                freeze.assert_called_with("none","")
+                dialog.comment.setPlainText("我的意见")
+                for value,hint in (("up","感谢认可，欢迎提出一些改进建议~"),("down","有哪些地方想吐槽呢？...")):
+                    dialog.rating_buttons[value].click()
+                    self.assertEqual(dialog.comment.placeholderText(),hint)
+                    self.assertEqual(sum(button.isChecked() for button in dialog.rating_buttons.values()),1)
+                    dialog._submit()
+                    freeze.assert_called_with(value,"我的意见")
+            dialog.reject()
+
     def test_history_only_shows_title_and_withdraw(self) -> None:
         """回执列表中没有正文查看，标题按纯文本显示。"""
         with tempfile.TemporaryDirectory() as directory:
@@ -114,7 +136,7 @@ class FeedbackUiTests(unittest.TestCase):
             dialog.reject()
 
     def test_reply_links_after_streaming_emit_without_upload(self) -> None:
-        """流式回复完成后出现入口，点击只发起弹窗信号。"""
+        """流式回复完成后不出现评价行，保留反馈信号处理。"""
         display = ChatDisplay(derive_theme_palette("#5588aa"))
         events: list[tuple[int, str]] = []
         display.feedbackRequested.connect(lambda index, rating: events.append((index, rating)))
@@ -123,12 +145,12 @@ class FeedbackUiTests(unittest.TestCase):
         display.complete_feedback_turn()
         self.assertNotIn("feedback:up", display.toHtml())
         display.finish_stream_now()
-        self.assertIn("feedback:up", display.toHtml())
+        self.assertNotIn("feedback:up", display.toHtml())
         display._on_anchor_clicked(QUrl("feedback:down?msg=0"))
         self.assertEqual(events, [(0, "down")])
 
     def test_history_feedback_only_on_last_reply_of_each_turn(self) -> None:
-        """多段历史回复每轮仅有一个入口，刷新和删除后目标随最后一句变化。"""
+        """历史回复、刷新及删除后都不出现评价行。"""
         chat = sample_chat()
         reply = chat.message_list[0]
         user = replace(reply, character_name="User", text="用户提问")
@@ -137,20 +159,20 @@ class FeedbackUiTests(unittest.TestCase):
         display = ChatDisplay(derive_theme_palette("#5588aa"))
         display.render_chat(chat)
         rendered = display.toHtml()
-        self.assertEqual(rendered.count("feedback:up?msg="), 2)
-        self.assertIn("feedback:up?msg=2", rendered)
-        self.assertIn("feedback:up?msg=5", rendered)
+        self.assertEqual(rendered.count("feedback:up?msg="), 0)
+        self.assertNotIn("feedback:up?msg=2", rendered)
+        self.assertNotIn("feedback:up?msg=5", rendered)
         chat.message_list = chat.message_list[:5]
         display.render_chat(chat, pending_turn=True)
-        self.assertEqual(display.toHtml().count("feedback:up?msg="), 1)
+        self.assertEqual(display.toHtml().count("feedback:up?msg="), 0)
         display.render_chat(chat)
-        self.assertEqual(display.toHtml().count("feedback:up?msg="), 2)
-        self.assertIn("feedback:up?msg=4", display.toHtml())
+        self.assertEqual(display.toHtml().count("feedback:up?msg="), 0)
+        self.assertNotIn("feedback:up?msg=4", display.toHtml())
         # 让历史渲染安排的滚动回调在控件销毁前完成。
         QTest.qWait(20)
 
     def test_live_feedback_waits_for_turn_completion_and_keeps_previous_turn(self) -> None:
-        """逐句输出和工具过渡不添加入口，整轮结束只标记末句且不会重复。"""
+        """逐句输出、工具过渡及整轮结束均不追加评价行。"""
         display = ChatDisplay(derive_theme_palette("#5588aa"))
         reply = sample_chat().message_list[0]
         display.append_message(reply, 0, stream=True)
@@ -161,14 +183,14 @@ class FeedbackUiTests(unittest.TestCase):
         self.assertNotIn("feedback:up", display.toHtml())
         display.complete_feedback_turn()
         display.complete_feedback_turn()
-        self.assertEqual(display.toHtml().count("feedback:up?msg="), 1)
-        self.assertIn("feedback:up?msg=1", display.toHtml())
+        self.assertEqual(display.toHtml().count("feedback:up?msg="), 0)
+        self.assertNotIn("feedback:up?msg=1", display.toHtml())
         display.append_message(replace(reply, character_name="User"), 2)
         display.append_message(reply, 3, stream=True)
         display.complete_feedback_turn()
         display.finish_stream_now()
-        self.assertEqual(display.toHtml().count("feedback:up?msg="), 2)
-        self.assertIn("feedback:up?msg=3", display.toHtml())
+        self.assertEqual(display.toHtml().count("feedback:up?msg="), 0)
+        self.assertNotIn("feedback:up?msg=3", display.toHtml())
         display.clear_chat()
         display.append_message(reply, 0)
         self.assertNotIn("feedback:up", display.toHtml())

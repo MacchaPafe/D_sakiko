@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from PyQt5.QtCore import QThread, Qt
 from PyQt5.QtGui import QCloseEvent
-from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget, QMessageBox
+from PyQt5.QtWidgets import QButtonGroup, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget, QMessageBox
 
 from feedback.client import FeedbackClient, Receipt, ReceiptStore, configured_endpoint, recipient_notice
 from ui_main.theme import ThemePalette, build_dialog_theme_stylesheet
@@ -51,13 +51,27 @@ class FeedbackDialog(QDialog):
         self.body: bytes | None = None
         self.job: NetworkJob | None = None
         layout = QVBoxLayout(self)
-        self.rating = QComboBox()
-        for label, value in (("不评价", "none"), ("赞", "up"), ("踩", "down")):
-            self.rating.addItem(label, value)
-        self.rating.setCurrentIndex(max(0, self.rating.findData(rating)))
+        self.intro = QLabel("数字小祥项目的体验如何？期待你的反馈",self)
+        self.intro.setWordWrap(True)
+        layout.addWidget(self.intro)
+        self.rating_value = rating if rating in ("up","down") else "none"
+        self.rating = QWidget(self)
+        rating_layout = QHBoxLayout(self.rating)
+        rating_layout.setContentsMargins(0,0,0,0)
+        self.rating_group = QButtonGroup(self)
+        self.rating_group.setExclusive(True)
+        self.rating_buttons = {}
+        for label,value in (("还不错","up"),("有待进步","down")):
+            button = QPushButton(label,self.rating)
+            button.setCheckable(True)
+            button.setChecked(value == self.rating_value)
+            self.rating_group.addButton(button)
+            self.rating_buttons[value] = button
+            button.clicked.connect(lambda checked,v=value:self.select_rating(v))
+            rating_layout.addWidget(button)
         layout.addWidget(self.rating)
         self.comment = QPlainTextEdit()
-        self.comment.setPlaceholderText("有什么想告诉我们？")
+        self.select_rating(self.rating_value)
         layout.addWidget(self.comment)
         self.disclosure = QLabel(disclosure)
         self.disclosure.setTextFormat(Qt.PlainText)
@@ -92,6 +106,15 @@ class FeedbackDialog(QDialog):
         buttons.addWidget(self.submit)
         layout.addLayout(buttons)
 
+    def select_rating(self, value: str) -> None:
+        """仅切换评价与输入提示，沿用 none/up/down 协议且不替换用户已输入的意见。"""
+        self.rating_value = value
+        self.comment.setPlaceholderText({
+            "none":"有什么想告诉我们？",
+            "up":"感谢认可，欢迎提出一些改进建议~",
+            "down":"有哪些地方想吐槽呢？...",
+        }[value])
+
     def _submit(self) -> None:
         """先冻结并保存控制信息，再在后台提交同一份字节。"""
         if self.job is not None and self.job.isRunning():
@@ -99,7 +122,7 @@ class FeedbackDialog(QDialog):
         try:
             if self.receipt is None:
                 endpoint = configured_endpoint()
-                request_id, body = self.freeze(str(self.rating.currentData()), self.comment.toPlainText())
+                request_id, body = self.freeze(self.rating_value, self.comment.toPlainText())
                 receipt = self.store.add(request_id, self.title, endpoint)
                 self.receipt, self.body = receipt, body
             receipt, body = self.receipt, self.body
