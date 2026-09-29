@@ -247,8 +247,8 @@ class QtTests(unittest.TestCase):
         for identifier, _, _ in BANDS[:-1]:
             self.assertTrue((ROOT / "GPT_SoVITS/assets/band_logo" / (identifier + ".png")).is_file())
 
-    def test_drag_integer_coordinates_return_and_reverse(self):
-        """复现整数鼠标位移，验证左拖、右拖及不足阈值回弹不会产生空动画帧。"""
+    def test_drag_integer_coordinates_return_and_reverse(self) -> None:
+        """验证整数鼠标左右拖过半个槽位时就近切换，轻微移动不会产生空动画帧。"""
         from PyQt5.QtCore import Qt
         self.window.choose_mode("new")
         carousel = self.window.characters.carousel
@@ -256,15 +256,15 @@ class QtTests(unittest.TestCase):
         carousel.slide.valueChanged.connect(frames.append)
         for direction, expected in ((-1,1),(1,0)):
             start = int(carousel.width()/2)
-            finish = start + direction*int(carousel.card_step()*.3)
+            finish = start + direction*int(carousel.card_step()*.7)
             carousel.mousePressEvent(SimpleNamespace(button=lambda:Qt.LeftButton,x=lambda:start))
             carousel.mouseMoveEvent(SimpleNamespace(x=lambda:finish))
-            carousel.mouseReleaseEvent(SimpleNamespace(x=lambda:finish))
+            carousel.mouseReleaseEvent(SimpleNamespace(button=lambda:Qt.LeftButton,x=lambda:finish))
             self.wait_for(lambda: carousel.index == expected and carousel.drag_offset == 0)
         start = int(carousel.width()/2)
         carousel.mousePressEvent(SimpleNamespace(button=lambda:Qt.LeftButton,x=lambda:start))
         carousel.mouseMoveEvent(SimpleNamespace(x=lambda:start-2))
-        carousel.mouseReleaseEvent(SimpleNamespace(x=lambda:start-2))
+        carousel.mouseReleaseEvent(SimpleNamespace(button=lambda:Qt.LeftButton,x=lambda:start-2))
         self.wait_for(lambda: carousel.drag_offset == 0)
         self.assertEqual(carousel.index,0)
         self.assertTrue(frames)
@@ -285,12 +285,12 @@ class QtTests(unittest.TestCase):
         self.assertEqual(self.window.background_color,animation.endValue())
         self.assertEqual(self.window.selection.source,"arale")
 
-    def test_cached_center_and_neighbors_fade_again(self):
-        """验证缓存立绘初次进入时淡入，切换和回弹只对新进入角色淡入。"""
+    def test_cached_center_and_neighbors_fade_again(self) -> None:
+        """验证整组缓存首次淡入，五卡循环切换和回弹均不重播立绘淡入。"""
         from PyQt5.QtGui import QPixmap
         self.window.choose_mode("new")
         carousel = self.window.characters.carousel
-        visible = [carousel.members[i] for i in (-1,0,1)]
+        visible = [carousel.members[i] for i in (-2,-1,0,1,2)]
         for character in carousel.members:
             carousel.pictures[character] = QPixmap(10,10)
         carousel.visible_characters.clear()
@@ -304,8 +304,7 @@ class QtTests(unittest.TestCase):
         retained = {carousel.members[0],carousel.members[1]}
         self.assertTrue(all(carousel.alphas[c] == 1 for c in retained))
         newcomer = carousel.members[2]
-        self.assertLess(carousel.alphas[newcomer],1)
-        self.wait_for(lambda:carousel.alphas[newcomer] == 1)
+        self.assertEqual(carousel.alphas[newcomer],1)
         carousel.shift(0)
         self.wait_for(lambda:carousel.slide.state() == carousel.slide.Stopped)
         self.assertTrue(all(carousel.alphas[c] == 1 for c in carousel.visible_characters))

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -159,6 +161,200 @@ class ConversationTests(unittest.TestCase):
         )
         self.assertFalse(self.runtime.busy)
         self.assertTrue(any(e.get("status") == "error" for e in self.events.queue))
+
+    def test_replay_replacement_ignores_stale_completion(self) -> None:
+        """连续切换和原句重播均替换旧轮次，迟到回执不能结束最新回放。"""
+        first = self.runtime.replay("a", "first.wav", "LABEL_0")
+        second = self.runtime.replay("a", "second.wav", "LABEL_1")
+        latest = self.runtime.replay("a", "second.wav", "LABEL_1")
+        self.assertEqual(len({first, second, latest}), 3)
+        self.assertTrue(self.runtime.is_replaying)
+        self.assertEqual(
+            [event["type"] for event in self.presentation.queue],
+            ["play_segment", "cancel_turn", "play_segment", "cancel_turn", "play_segment"],
+        )
+        for turn in (first, second):
+            self.runtime.playback_event(dict(
+                type="playback_complete", chat_id="a", turn_id=turn, segment_id=1,
+            ))
+        self.assertEqual(self.runtime.active, ("a", latest))
+        self.manager.save.assert_not_called()
+        self.runtime.playback_event(dict(
+            type="playback_complete", chat_id="a", turn_id=latest, segment_id=1,
+        ))
+        self.assertFalse(self.runtime.busy)
+        self.assertFalse(self.runtime.is_replaying)
+        self.manager.save.assert_called_once()
+
+    def test_replay_cannot_replace_generation_or_its_pending_playback(self) -> None:
+        """生成期间和生成已结束但仍待播时，都不能用历史回放打断新回复。"""
+        self.runtime.replay("a", "old.wav", "LABEL_0")
+        self.runtime.cancel()
+        turn = self.runtime.submit("a", "新回复")
+        self.assertFalse(self.runtime.is_replaying)
+        with self.assertRaises(RuntimeError):
+            self.runtime.replay("a", "old.wav", "LABEL_0")
+        self.runtime.process_response(self.payload(turn))
+        with self.assertRaises(RuntimeError):
+            self.runtime.replay("a", "old.wav", "LABEL_0")
+        self.assertEqual(self.runtime.active, ("a", turn))
+
+    def test_closed_runtime_rejects_replay(self) -> None:
+        """关闭运行时会取消回放并拒绝新的播放请求。"""
+        self.runtime.replay("a", "old.wav", "LABEL_0")
+        self.runtime.close()
+        self.assertFalse(self.runtime.is_replaying)
+        with self.assertRaises(RuntimeError):
+            self.runtime.replay("a", "next.wav", "LABEL_0")
+
+    def test_replay_replacement_stops_audio_and_clears_queued_segments(self) -> None:
+        """真实演出队列在切换时停掉旧声音，只启动最后选中的历史音频。"""
+        from runtime.single_character_performance import SingleCharacterPerformance
+
+        player = SingleCharacterPerformance()
+        model = Mock()
+        model.StartRandomMotion.return_value = False
+        player.on_event = self.runtime.playback_event
+        with patch.object(player, "audio_busy", return_value=True), patch.object(
+            player, "onStartCallback_emotion_version"
+        ) as start_audio, patch(
+            "runtime.single_character_performance.pygame.mixer.get_init", return_value=True
+        ), patch("runtime.single_character_performance.pygame.mixer.music.stop") as stop_audio:
+            self.runtime.replay("a", "first.wav", "LABEL_0")
+            player.command(self.presentation.get_nowait(), model)
+            player.update_playback(model)
+            self.runtime.replay("a", "second.wav", "LABEL_1")
+            latest = self.runtime.replay("a", "third.wav", "LABEL_2")
+            while not self.presentation.empty():
+                player.command(self.presentation.get_nowait(), model)
+            player.update_playback(model)
+        stop_audio.assert_called_once()
+        self.assertEqual(
+            [call.args[0] for call in start_audio.call_args_list],
+            ["first.wav", "third.wav"],
+        )
+        self.assertEqual(player.active_segment["turn_id"], latest)
+        self.assertFalse(player.pending)
+
+    def test_history_click_replaces_busy_replay_but_invalid_message_keeps_it(self) -> None:
+        """界面允许忙碌回放直接切换，无效链接或文件丢失不应停止旧回放。"""
+        from PyQt5.QtCore import QUrl
+        from qtUI import ChatGUI
+
+        host = Mock()
+        host.conversation_runtime = self.runtime
+        host.current_chat_id = "a"
+        host.current_chat = self.chat
+        host.motion_complete_value.value = False
+        host.is_response_active.side_effect = lambda: self.runtime.busy
+        self.chat.message_list[0].text = "历史正文"
+        self.chat.message_list[0].character_name = "爱音"
+        self.chat.message_list[0].performance = None
+        first = self.runtime.replay("a", "first.wav", "LABEL_0")
+        with patch("qtUI.os.path.isfile", return_value=False):
+            for link in ("no-audio:", "no-audio:?msg=-1", "no-audio:?msg=99", "no-audio:?msg=bad", "user:?msg=0", "missing.wav[LABEL_0]?msg=0"):
+                ChatGUI.play_history_audio(host, QUrl(link))
+                self.assertEqual(self.runtime.active, ("a", first))
+        with patch("qtUI.os.path.isfile", return_value=True):
+            ChatGUI.play_history_audio(host, QUrl("second.wav[LABEL_1]?msg=0"))
+        self.assertNotEqual(self.runtime.active, ("a", first))
+        host._start_active_turn.assert_called_once_with("a", self.runtime.active[1], "rendering")
+        self.assertEqual(list(self.presentation.queue)[-1]["audio_path"], "second.wav")
+        self.runtime.cancel()
+        turn = self.runtime.submit("a", "新的回复")
+        host.motion_complete_value.value = True
+        ChatGUI.play_history_audio(host, QUrl("second.wav[LABEL_1]?msg=0"))
+        self.assertEqual(self.runtime.active, ("a", turn))
+        host.setWindowTitle.assert_called_with("请等待当前过程完成后重试...")
+
+    def test_silent_history_replays_selected_message_and_finishes_without_audio(self) -> None:
+        """空路径、无音频标记和静音占位均按消息索引重播文字及演出并正常结束。"""
+        from PyQt5.QtCore import QUrl
+        from chat.chat import Message
+        from qtUI import ChatGUI
+        from runtime.single_character_performance import SingleCharacterPerformance
+        from ui_main.components.chat_display import ChatDisplay
+
+        for path in ("", "NO_AUDIO", "/missing/silent_audio/silence.wav"):
+            with self.subTest(path=path):
+                self.chat.message_list = [Message.from_dict({
+                    "character_name": "爱音", "text": text, "translation": "translation",
+                    "audio_path": path, "emotion": "like",
+                    "performance": {"motion": "nod", "expression": "smile"},
+                }) for text in ("不要选中前一条", "选中的无声消息")]
+                host = Mock()
+                host.conversation_runtime = self.runtime
+                host.current_chat_id = "a"
+                host.current_chat = self.chat
+                host.motion_complete_value.value = True
+                host.is_response_active.side_effect = lambda: self.runtime.busy
+                display = Mock()
+                display._is_user_message.side_effect = ChatDisplay._is_user_message
+                link = ChatDisplay._message_anchor_href(display, self.chat.message_list[1], 1)
+                ChatGUI.play_history_audio(host, QUrl(link))
+                segment = self.presentation.get_nowait()
+                self.assertEqual(segment["audio_path"], "NO_AUDIO")
+                self.assertEqual(segment["text"], "选中的无声消息")
+                self.assertEqual(segment["translation"], "translation")
+                self.assertEqual(segment["emotion"], "LABEL_4")
+                self.assertEqual(segment["performance"], {"motion": "nod", "expression": "smile"})
+
+                player = SingleCharacterPerformance()
+                player.on_event = self.runtime.playback_event
+                subtitle = Mock()
+                player.on_subtitle = subtitle
+                model = Mock()
+                model.version = "v3"
+                player.command(segment, model)
+                with patch.object(player, "audio_busy", return_value=False), patch.object(
+                    player, "onStartCallback_emotion_version"
+                ) as audio, patch(
+                    "runtime.single_character_performance.time.monotonic", return_value=0.0
+                ) as clock:
+                    player.update_playback(model)
+                    subtitle.assert_called_with("选中的无声消息\ntranslation")
+                    self.assertTrue(self.runtime.is_replaying)
+                    model.apply_performance.assert_called_once()
+                    # V3 无声演出保留表情自身的嘴形，不驱动语音口型。
+                    model.set_parameter_value.assert_not_called()
+                    clock.return_value = 6.0
+                    player.update_playback(model)
+                    audio.assert_not_called()
+                self.assertFalse(self.runtime.busy)
+                self.assertEqual(self.presentation.get_nowait()["type"], "generation_finished")
+        self.audio.generate_audio_for_character_sync.assert_not_called()
+        self.assertTrue(self.commands.empty())
+
+    def test_silent_and_voiced_history_can_replace_each_other(self) -> None:
+        """无声回放支持原句重播及与有声消息双向切换，仍保护正在生成的新回复。"""
+        from PyQt5.QtCore import QUrl
+        from chat.chat import Message
+        from qtUI import ChatGUI
+
+        self.chat.message_list = [Message.from_dict({
+            "character_name": "爱音", "text": "无声消息", "audio_path": "NO_AUDIO",
+        })]
+        host = Mock()
+        host.conversation_runtime = self.runtime
+        host.current_chat_id = "a"
+        host.current_chat = self.chat
+        host.motion_complete_value.value = False
+        host.is_response_active.side_effect = lambda: self.runtime.busy
+        turn = self.runtime.replay("a", "voice.wav", "LABEL_0")
+        with patch("qtUI.os.path.isfile", return_value=True):
+            for link, path in (("no-audio:?msg=0", "NO_AUDIO"),
+                               ("no-audio:?msg=0", "NO_AUDIO"),
+                               ("voice.wav[LABEL_0]?msg=0", "voice.wav")):
+                ChatGUI.play_history_audio(host, QUrl(link))
+                self.assertNotEqual(self.runtime.active[1], turn)
+                turn = self.runtime.active[1]
+                self.assertEqual(list(self.presentation.queue)[-1]["audio_path"], path)
+        self.runtime.cancel()
+        turn = self.runtime.submit("a", "新回复")
+        host.motion_complete_value.value = True
+        ChatGUI.play_history_audio(host, QUrl("no-audio:?msg=0"))
+        self.assertEqual(self.runtime.active, ("a", turn))
+        host.setWindowTitle.assert_called_with("请等待当前过程完成后重试...")
 
 
 class DraftTests(unittest.TestCase):

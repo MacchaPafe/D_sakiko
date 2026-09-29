@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Optional, Sequence
+import math
 import uuid
 import re
 
 from PyQt5.QtCore import Qt, QSize, QRectF, QTimer, QVariantAnimation, QEasingCurve, pyqtSignal, QUrl, QPointF
-from PyQt5.QtGui import QColor, QPainter, QPixmap, QIcon, QDesktopServices, QFont, QPainterPath, QFontMetricsF, QLinearGradient, QRadialGradient, QPen, QCursor
+from PyQt5.QtGui import QColor, QPainter, QPixmap, QIcon, QDesktopServices, QFont, QPainterPath, QFontMetricsF, QLinearGradient, QRadialGradient, QPen, QCursor, QPaintEvent, QMouseEvent
 from PyQt5.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QStackedWidget, QComboBox, QScrollArea, QButtonGroup, QToolButton, QMessageBox,
     QListWidget, QListWidgetItem, QGroupBox, QProgressBar, QLineEdit, QApplication, QLayout, QGridLayout, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QSizePolicy)
@@ -40,14 +42,18 @@ class CharacterCarousel(QWidget):
     selected = pyqtSignal(str)
     requested = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化角色轮播状态与立绘淡入动画。"""
         super().__init__()
         self.members, self.index = (), 0
         self.pictures, self.failures = {}, set()
         self.portrait_shadows = {}
-        self.start_x = None
-        self.drag_offset = 0.0
+        self._card_images: dict[str, tuple[tuple[float, float, float, int, int, float, str, bool], QPixmap]] = {}
+        self.start_x: Optional[int] = None
+        self._drag_start_position = 0.0
+        self._drag_step = 1.0
+        self._dragged = False
+        self._position = 0.0
         self.slide_target = 0
         self.slide = QVariantAnimation(self)
         self.slide.setDuration(320)
@@ -143,13 +149,17 @@ class CharacterCarousel(QWidget):
         animation.setEndValue(1.0)
         animation.start()
 
-    def set_members(self, members):
+    def set_members(self, members: Sequence[str]) -> None:
         """切换分组成员并回到该组的第一位角色。"""
         self.slide.stop()
-        self.drag_offset = 0.0
+        self.slide_target = 0
+        self._position = 0.0
         self.start_x = None
+        self._dragged = False
         self.setCursor(Qt.OpenHandCursor)
         self.members, self.index = members, 0
+        self._card_images.clear()
+        self.visible_characters.clear()
         self.changed()
 
     def resizeEvent(self, event):
@@ -166,57 +176,90 @@ class CharacterCarousel(QWidget):
             button.graphicsEffect().setBlurRadius(max(1,size*.24))
             button.graphicsEffect().setOffset(0,max(1,size*.045))
 
-    def changed(self):
-        """发布当前选择并请求当前角色及两侧角色的立绘。"""
-        if not self.members:
-            self.visible_characters.clear()
-            return
-        self.selected.emit(self.members[self.index])
-        visible = {self.members[(self.index+delta)%len(self.members)] for delta in (-1,0,1)}
-        # 保持仍在画面内的角色透明度，仅新进入视野的卡片重新淡入。
-        for character in visible - self.visible_characters:
-            if character in self.pictures:
-                self.fade_picture(character)
-        self.visible_characters = visible
-        for delta in (-2, -1, 0, 1, 2):
-            character = self.members[(self.index + delta) % len(self.members)]
-            if character not in self.pictures:
-                self.requested.emit(character)
+    def changed(self) -> None:
+        """正式提交选择，再准备当前展示与补位卡片。"""
+        if self.members:
+            self.selected.emit(self.members[self.index])
+        self._prepare_cards(fade_cached=not self.visible_characters)
         self.update()
 
-    def shift(self, amount):
-        """把相邻角色平滑移到中心，动画期间忽略重复切换。"""
+    def _prepare_cards(self, fade_cached: bool = False) -> None:
+        """随绘制窗口预取立绘并回收海报缓存，拖动途中不提交角色选择。"""
+        if not self.members:
+            self.visible_characters.clear()
+            self._card_images.clear()
+            return
+        offsets = self.card_offsets()
+        characters = dict.fromkeys(self.members[(self.index+delta)%len(self.members)]
+                                   for delta in sorted(offsets, key=lambda d: abs(d + self._position)))
+        # 仅整组首次展示淡入；缓存补位始终沿用已有立绘，避免落位后重新闪现。
+        if fade_cached:
+            for character in characters:
+                if character in self.pictures:
+                    self.fade_picture(character)
+        self.visible_characters = set(characters)
+        self._card_images = {character: cached for character, cached in self._card_images.items()
+                             if character in self.visible_characters}
+        for character in characters:
+            if character not in self.pictures:
+                self.requested.emit(character)
+
+    def shift(self, amount: int) -> None:
+        """按钮及侧卡点击仍只切换一位，拖动和动画期间不重复启动。"""
+        if self.start_x is not None or self.slide.state() == QVariantAnimation.Running:
+            return
+        self._animate_to((1 if amount > 0 else -1) if amount else 0)
+
+    def _animate_to(self, target: int) -> None:
+        """吸附到指定逻辑槽位，剩余距离越短动画越短，已到位时直接提交。"""
         if len(self.members) < 2:
-            self.drag_offset = 0.0
+            self._position = 0.0
             self.update()
             return
-        if self.slide.state() == QVariantAnimation.Running:
+        self.slide_target = target
+        distance = abs(self._position + target)
+        if distance * self.card_step() < .5:
+            self._settled()
             return
-        self.slide_target = (1 if amount > 0 else -1) if amount else 0
         # 鼠标坐标为 int，Qt 不会自动为 int/float 混合端点选择插值器。
         # 同时替换端点时屏蔽旧端点参与产生的瞬时 valueChanged。
         self.slide.blockSignals(True)
-        self.slide.setStartValue(float(self.drag_offset))
-        self.slide.setEndValue(float(-self.slide_target * self.card_step()))
+        self.slide.setDuration(max(1, round(320 * distance)))
+        self.slide.setStartValue(float(self._position))
+        self.slide.setEndValue(float(-self.slide_target))
         self.slide.blockSignals(False)
         self.slide.start()
 
-    def card_step(self):
-        """根据当前内容区计算卡片中心之间的距离。"""
-        return min(self.height() * .96 * .72, self.width() * .52) * .84
+    @property
+    def drag_offset(self) -> float:
+        """将逻辑槽位进度换算为像素，窗口缩放时保持动画进度不变。"""
+        return self._position * self.card_step()
 
-    def _slide(self, value):
-        """同步动画位移，让整张卡片及其文字立绘一起移动。"""
+    @drag_offset.setter
+    def drag_offset(self, value: float) -> None:
+        """把鼠标像素位移转换成统一的槽位进度。"""
+        self._slide(float(value) / max(1.0, self.card_step()))
+
+    def card_step(self) -> float:
+        """以中心到近侧槽位的距离作为一次拖动的长度。"""
+        width = min(self.height() * .96 * .72, self.width() * .52)
+        return max(1.0, self._slot_state(1.0)[0] * width)
+
+    def _slide(self, value: Optional[float]) -> None:
+        """同步无界槽位进度，越过槽位边界时滚动有限的卡片绘制窗口。"""
         if value is None:
             return
-        self.drag_offset = float(value)
+        previous_anchor = math.floor(-self._position)
+        self._position = float(value)
+        if math.floor(-self._position) != previous_anchor:
+            self._prepare_cards()
         self.update()
 
-    def _settled(self):
+    def _settled(self) -> None:
         """吸附结束后提交角色选择，并无缝重置绘制坐标。"""
         if self.members:
             self.index = (self.index + self.slide_target) % len(self.members)
-        self.drag_offset = 0.0
+        self._position = 0.0
         self.slide_target = 0
         self.changed()
 
@@ -243,14 +286,60 @@ class CharacterCarousel(QWidget):
         small = silhouette.scaledToHeight(120, Qt.SmoothTransformation)
         return small.scaled(silhouette.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
-    def card_rect(self, delta):
-        """按窗口内容区比例布局竖版卡片，左右相邻卡片在后方露出。"""
+    def card_offsets(self) -> tuple[int, ...]:
+        """围绕当前进度维护展示槽位与两端补位，长距离拖动也只绘制有限卡片。"""
+        count = min(5, len(self.members))
+        if count < 2:
+            return (0,) if count else ()
+        left, right = (count - 1) // 2, count // 2
+        anchor = math.floor(-self._position)
+        return tuple(range(anchor - left - 1, anchor + right + 2))
+
+    def _slot_state(self, position: float) -> tuple[float, float, float, float]:
+        """插值横向位置、缩放、下沉及透明度，端点收进前方圆角卡片内。"""
+        width = max(1.0, min(self.height() * .96 * .72, self.width() * .52))
+        outer_edge = min(1.22, self.width() / (2 * width) - .025)
+        near_x = .5 + (outer_edge - .5) * .8 - .83 / 2
+        far_x = outer_edge - .66 / 2
+        states = [(0.0, 1.0, 0.0, 1.0), (near_x, .83, .025, .6),
+                  (far_x, .66, .05, .3)]
+        count = min(5, len(self.members))
+        extent = (count - 1) // 2 if position < 0 else count // 2
+        extent = max(0, extent)
+        states = states[:extent + 1]
+        x, scale, down, opacity = states[-1]
+        states.append((x + scale * .04, scale * .9, down, opacity))
+        distance = min(abs(position), float(len(states) - 1))
+        start = min(int(distance), len(states) - 2)
+        fraction = distance - start
+        first, second = states[start], states[start + 1]
+        values = tuple(a + (b - a) * fraction for a, b in zip(first, second))
+        return (-values[0] if position < 0 else values[0], values[1], values[2], values[3])
+
+    def card_rect(self, delta: int) -> QRectF:
+        """沿收紧的槽位轨迹移动卡片，外侧只露窄边，隐藏端点完全内含。"""
         height = self.height() * .96
         width = min(height * .72, self.width() * .52)
-        distance = abs(delta + self.drag_offset / max(1, self.card_step()))
-        scale = 1.0 - .17 * min(1.0, distance)
-        return QRectF(self.width()/2 - width*scale/2 + delta*width*.84 + self.drag_offset,
-                      (self.height()-height*scale)/2 + height*.025*min(1.0, distance), width*scale, height*scale)
+        x, scale, down, _ = self._slot_state(delta + self._position)
+        return QRectF(self.width()/2 + width*x - width*scale/2,
+                      (self.height()-height*scale)/2 + height*down, width*scale, height*scale)
+
+    def card_layers(self, front_delta: Optional[int] = None) -> list[tuple[int, QPainterPath]]:
+        """按前后关系裁掉被覆盖区域，避免半透明侧卡透出隐藏补位。"""
+        covered = QPainterPath()
+        viewport = QPainterPath()
+        viewport.addRect(QRectF(self.rect()))
+        layers: list[tuple[int, QPainterPath]] = []
+        order = sorted(self.card_offsets(), key=lambda d: (d != front_delta, abs(d + self._position), d + self._position))
+        for delta in order:
+            rect = self.card_rect(delta)
+            outline = QPainterPath()
+            outline.addRoundedRect(rect, rect.width()*.045, rect.width()*.045)
+            clip = viewport.subtracted(covered)
+            if not outline.intersected(clip).isEmpty():
+                layers.append((delta, clip))
+            covered = covered.united(outline)
+        return list(reversed(layers))
 
     def draw_text(self, painter, text, rect, size, color, bold=False):
         """按卡片尺寸设置文字，并在长姓名超宽时缩小到可用宽度。"""
@@ -266,24 +355,49 @@ class CharacterCarousel(QWidget):
         painter.setPen(color)
         painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, text)
 
-    def paintEvent(self, event):
-        """绘制姓名在左、放大立绘在右的竖版角色海报，保留中部留白。"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """绘制轮播；中心两卡交接时短暂混合前后层次，避免遮挡突变。"""
         if not self.members:
             return
-        canvas = painter
-        # 离中心最近的卡片最后绘制，切换过程中自然交接前后层次。
-        offsets = (-1, 0, 1) if len(self.members) > 1 else (0,)
-        for delta in sorted(offsets, key=lambda d: abs(d+self.drag_offset/max(1,self.card_step())), reverse=True):
+        canvas = QPainter(self)
+        left = math.floor(-self._position)
+        fraction = -self._position - left
+        blend = max(0.0, min(1.0, (fraction - .35) / .3))
+        blend = blend * blend * (3 - 2 * blend)
+        if blend in (0.0, 1.0):
+            self._paint_cards(canvas, self.card_layers(left if blend == 0.0 else left + 1))
+        else:
+            ratio = self.devicePixelRatioF()
+            composite = QPixmap(round(self.width()*ratio), round(self.height()*ratio))
+            composite.setDevicePixelRatio(ratio)
+            composite.fill(Qt.transparent)
+            mixer = QPainter(composite)
+            mixer.setCompositionMode(QPainter.CompositionMode_Plus)
+            for front, weight in ((left, 1 - blend), (left + 1, blend)):
+                scene = QPixmap(composite.size())
+                scene.setDevicePixelRatio(ratio)
+                scene.fill(Qt.transparent)
+                scene_painter = QPainter(scene)
+                self._paint_cards(scene_painter, self.card_layers(front))
+                scene_painter.end()
+                mixer.setOpacity(weight)
+                mixer.drawPixmap(0, 0, scene)
+            mixer.end()
+            canvas.drawPixmap(0, 0, composite)
+        canvas.end()
+
+    def _paint_cards(self, canvas: QPainter, layers: list[tuple[int, QPainterPath]]) -> None:
+        """按遮挡区域合成角色海报，整张卡片共同缩放和调整透明度。"""
+        canvas.setRenderHint(QPainter.Antialiasing)
+        canvas.setRenderHint(QPainter.SmoothPixmapTransform)
+        for delta, clip in layers:
+            canvas.save()
+            canvas.setClipPath(clip)
             character = self.members[(self.index + delta) % len(self.members)]
-            info = CHARACTERS[character]
             rect = self.card_rect(delta)
-            w, h, x, y = rect.width(), rect.height(), rect.left(), rect.top()
-            color = QColor(info["theme_color"])
-            focus = max(0.0, 1.0-abs(delta+self.drag_offset/max(1,self.card_step())))
-            opacity = .6 + .4*focus
+            w, h = rect.width(), rect.height()
+            focus = max(0.0, 1.0-abs(delta+self._position))
+            opacity = self._slot_state(delta + self._position)[3]
             radius = w*.045
             # 分层描绘柔和投影；所有距离随卡片大小缩放。
             canvas.setPen(Qt.NoPen)
@@ -292,76 +406,98 @@ class CharacterCarousel(QWidget):
                 canvas.setBrush(QColor(38, 48, 82, round((1+spread*.12)*focus)))
                 canvas.drawRoundedRect(rect.adjusted(-padding, -padding, padding, padding).translated(0,h*.009),
                                        radius+padding, radius+padding)
-            # 先合成为整张卡片，再统一设置透明度，避免叠加图层使侧卡颜色变浓。
-            ratio = self.devicePixelRatioF()
-            layer = QPixmap(round(w*ratio)+2, round(h*ratio)+2)
-            layer.setDevicePixelRatio(ratio)
-            layer.fill(Qt.transparent)
-            painter = QPainter(layer)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            painter.translate(-x,-y)
-            outline = QPainterPath()
-            outline.addRoundedRect(rect, radius, radius)
-            painter.setClipPath(outline)
-            hue, saturation, value, _ = color.getHsvF()
-            base = QColor.fromHsvF(max(0,hue), saturation*.67, min(.87,max(.58,value*.9)))
-            gradient = QLinearGradient(x,y,x,y+h)
-            gradient.setColorAt(0,base.lighter(118))
-            gradient.setColorAt(1,base.darker(112))
-            painter.fillRect(rect, gradient)
-            painter.setPen(QPen(QColor(255,255,255,13), max(1,w*.002)))
-            for stripe in range(-8, 16):
-                sx = x+stripe*w*.15
-                painter.drawLine(QPointF(sx,y),
-                                 QPointF(sx+h*.45,y+h))
-            glow = QLinearGradient(x,y+h*.2,x+w,y+h*.7)
-            glow.setColorAt(0,QColor(255,255,255,0))
-            glow.setColorAt(.65,QColor(255,255,255,35))
-            glow.setColorAt(1,QColor(255,255,255,0))
-            painter.fillRect(rect,glow)
-            if character in self.pictures:
-                picture = self.pictures[character]
-                image_h = h * 1.5
-                image_w = image_h * picture.width()/picture.height()
-                portrait = QRectF(x+w*.63-image_w/2, y+h*.15, image_w, image_h)
-                painter.setOpacity(self.alphas.get(character,1.0))
-                shadow = self.portrait_shadows.get(character)
-                if shadow is not None:
-                    painter.drawPixmap(portrait.translated(w*.018,h*.009),shadow,QRectF(shadow.rect()))
-                painter.drawPixmap(portrait, picture, QRectF(picture.rect()))
-                painter.setOpacity(1)
-            elif character in self.failures:
-                self.draw_text(painter, "立绘暂不可用", QRectF(x+w*.1,y+h*.4,w*.8,h*.08),w*.047,QColor("#5F6368"))
-            # 底部色雾覆盖立绘末端，让裁切自然融入卡片底色。
-            mist = QLinearGradient(x,y+h*.65,x,y+h)
-            mist.setColorAt(0,QColor(base.red(),base.green(),base.blue(),0))
-            mist.setColorAt(1,QColor(base.red(),base.green(),base.blue(),175))
-            painter.fillRect(rect,mist)
-            full = info["full_name"]
-            chinese = full.split("（", 1)[0]
-            match = re.search(r"（([^）]+)）", full)
-            japanese = match[1].split("-", 1)[0] if match else info["display_name"]
-            # 深色角色底色使用白字；亮色保持草图中的深灰标题。
-            luminance = .2126*color.redF()+.7152*color.greenF()+.0722*color.blueF()
-            ink = QColor("#5F6368") if luminance > .55 else QColor("#FFFFFF")
-            self.draw_text(painter,chinese,QRectF(x+w*.06,y+h*.025,w*.88,h*.10),w*.115,ink,True)
-            # 副标题使用深墨色；仅深色背景改用淡蓝白，避免亮底白字消失。
-            top = base.lighter(118)
-            lightness = .2126*top.redF()+.7152*top.greenF()+.0722*top.blueF()
-            subtitle_ink = QColor("#35425B") if lightness > .48 else QColor("#E2EAF5")
-            self.draw_text(painter,japanese,QRectF(x+w*.065,y+h*.125,w*.83,h*.065),w*.050,subtitle_ink)
-            band = next((title for identifier, title, members in BANDS if identifier != "others" and character in members), "")
-            if band:
-                self.draw_badge(painter, band, x+w*.065,y+h*.825,w*.86,h*.055,w*.048)
-            role = CHARACTER_ROLES.get(character, "")
-            if role:
-                self.draw_badge(painter,role,x+w*.065,y+h*.902,w*.75,h*.049,w*.043)
-            painter.end()
-            canvas.save()
+            layer = self._card_image(character)
             canvas.setOpacity(opacity)
-            canvas.drawPixmap(rect.topLeft(),layer)
+            ratio = self.devicePixelRatioF()
+            source_height = self.height() * .96
+            source_width = min(source_height * .72, self.width() * .52)
+            canvas.drawPixmap(rect, layer, QRectF(0, 0, source_width*ratio, source_height*ratio))
             canvas.restore()
+
+    def _card_image(self, character: str) -> QPixmap:
+        """缓存中心尺寸的完整海报，运动帧只缩放合成，避免反复排字和绘制立绘。"""
+        h = self.height() * .96
+        w = min(h * .72, self.width() * .52)
+        ratio = self.devicePixelRatioF()
+        picture = self.pictures.get(character)
+        shadow = self.portrait_shadows.get(character)
+        key = (w, h, ratio, picture.cacheKey() if picture is not None else 0,
+               shadow.cacheKey() if shadow is not None else 0, self.alphas.get(character, 1.0),
+               self.font().toString(), character in self.failures)
+        cached = self._card_images.get(character)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        info = CHARACTERS[character]
+        color = QColor(info["theme_color"])
+        x = y = 0.0
+        rect = QRectF(x, y, w, h)
+        radius = w * .045
+        # 先合成为整张卡片，再统一设置透明度，避免叠加图层使侧卡颜色变浓。
+        layer = QPixmap(round(w*ratio)+2, round(h*ratio)+2)
+        layer.setDevicePixelRatio(ratio)
+        layer.fill(Qt.transparent)
+        painter = QPainter(layer)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        outline = QPainterPath()
+        outline.addRoundedRect(rect, radius, radius)
+        painter.setClipPath(outline)
+        hue, saturation, value, _ = color.getHsvF()
+        base = QColor.fromHsvF(max(0,hue), saturation*.67, min(.87,max(.58,value*.9)))
+        gradient = QLinearGradient(x,y,x,y+h)
+        gradient.setColorAt(0,base.lighter(118))
+        gradient.setColorAt(1,base.darker(112))
+        painter.fillRect(rect, gradient)
+        painter.setPen(QPen(QColor(255,255,255,13), max(1,w*.002)))
+        for stripe in range(-8, 16):
+            sx = x+stripe*w*.15
+            painter.drawLine(QPointF(sx,y),
+                             QPointF(sx+h*.45,y+h))
+        glow = QLinearGradient(x,y+h*.2,x+w,y+h*.7)
+        glow.setColorAt(0,QColor(255,255,255,0))
+        glow.setColorAt(.65,QColor(255,255,255,35))
+        glow.setColorAt(1,QColor(255,255,255,0))
+        painter.fillRect(rect,glow)
+        if character in self.pictures:
+            picture = self.pictures[character]
+            image_h = h * 1.5
+            image_w = image_h * picture.width()/picture.height()
+            portrait = QRectF(x+w*.63-image_w/2, y+h*.15, image_w, image_h)
+            painter.setOpacity(self.alphas.get(character,1.0))
+            shadow = self.portrait_shadows.get(character)
+            if shadow is not None:
+                painter.drawPixmap(portrait.translated(w*.018,h*.009),shadow,QRectF(shadow.rect()))
+            painter.drawPixmap(portrait, picture, QRectF(picture.rect()))
+            painter.setOpacity(1)
+        elif character in self.failures:
+            self.draw_text(painter, "立绘暂不可用", QRectF(x+w*.1,y+h*.4,w*.8,h*.08),w*.047,QColor("#5F6368"))
+        # 底部色雾覆盖立绘末端，让裁切自然融入卡片底色。
+        mist = QLinearGradient(x,y+h*.65,x,y+h)
+        mist.setColorAt(0,QColor(base.red(),base.green(),base.blue(),0))
+        mist.setColorAt(1,QColor(base.red(),base.green(),base.blue(),175))
+        painter.fillRect(rect,mist)
+        full = info["full_name"]
+        chinese = full.split("（", 1)[0]
+        match = re.search(r"（([^）]+)）", full)
+        japanese = match[1].split("-", 1)[0] if match else info["display_name"]
+        # 深色角色底色使用白字；亮色保持草图中的深灰标题。
+        luminance = .2126*color.redF()+.7152*color.greenF()+.0722*color.blueF()
+        ink = QColor("#5F6368") if luminance > .55 else QColor("#FFFFFF")
+        self.draw_text(painter,chinese,QRectF(x+w*.06,y+h*.025,w*.88,h*.10),w*.115,ink,True)
+        # 副标题使用深墨色；仅深色背景改用淡蓝白，避免亮底白字消失。
+        top = base.lighter(118)
+        lightness = .2126*top.redF()+.7152*top.greenF()+.0722*top.blueF()
+        subtitle_ink = QColor("#35425B") if lightness > .48 else QColor("#E2EAF5")
+        self.draw_text(painter,japanese,QRectF(x+w*.065,y+h*.125,w*.83,h*.065),w*.050,subtitle_ink)
+        band = next((title for identifier, title, members in BANDS if identifier != "others" and character in members), "")
+        if band:
+            self.draw_badge(painter, band, x+w*.065,y+h*.825,w*.86,h*.055,w*.048)
+        role = CHARACTER_ROLES.get(character, "")
+        if role:
+            self.draw_badge(painter,role,x+w*.065,y+h*.902,w*.75,h*.049,w*.043)
+        painter.end()
+        self._card_images[character] = (key, layer)
+        return layer
 
     def draw_badge(self, painter, text, x, y, max_width, height, size):
         """用半透明深色胶囊承载乐队名或声部，长名称自动缩小。"""
@@ -375,31 +511,37 @@ class CharacterCarousel(QWidget):
         painter.drawRoundedRect(QRectF(x,y,width,height),height*.45,height*.45)
         self.draw_text(painter,text,QRectF(x+padding,y,width-padding*2,height),size,QColor("white"),True)
 
-    def mousePressEvent(self, event):
-        """记录拖动起点，并提供抓取卡片的光标反馈。"""
-        if event.button() == Qt.LeftButton and self.slide.state() != QVariantAnimation.Running:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """记录拖动起点与固定换算比例，整次手势不因卡片缩放而改变速率。"""
+        if event.button() == Qt.LeftButton and len(self.members) > 1 and self.slide.state() != QVariantAnimation.Running:
             self.start_x = event.x()
+            self._drag_start_position = self._position
+            self._drag_step = self.card_step()
+            self._dragged = False
             self.setCursor(Qt.ClosedHandCursor)
 
-    def mouseMoveEvent(self, event):
-        """拖动时让卡片跟随鼠标移动，位移限制为半张卡片。"""
-        if self.start_x is not None:
-            limit = self.card_rect(0).width()*.5
-            self.drag_offset = float(max(-limit,min(limit,event.x()-self.start_x)))
-            self.update()
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """按固定比例跟随鼠标，允许跨过任意多个角色或完整循环。"""
+        if self.start_x is not None and len(self.members) > 1:
+            distance = event.x() - self.start_x
+            self._dragged = self._dragged or abs(distance) >= QApplication.startDragDistance()
+            if self._dragged:
+                self._slide(self._drag_start_position + distance / self._drag_step)
 
-    def mouseReleaseEvent(self, event):
-        """按相对卡片宽度判定切换，短点击只在侧卡区域切换。"""
-        if self.start_x is None:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """拖动松手吸附到最近角色；未发生拖动时保留侧卡单步点击。"""
+        if event.button() != Qt.LeftButton or self.start_x is None:
             return
-        delta = event.x() - self.start_x
+        self.mouseMoveEvent(event)
         self.start_x = None
         self.setCursor(Qt.OpenHandCursor)
-        center_width = self.card_step()/.84
+        if self._dragged:
+            self._dragged = False
+            self._animate_to(math.floor(-self._position + .5))
+            return
+        center_width = min(self.height() * .96 * .72, self.width() * .52)
         center = QRectF(self.width()/2-center_width/2,0,center_width,self.height())
-        if abs(delta) > center.width()*.12:
-            self.shift(-1 if delta > 0 else 1)
-        elif event.x() < center.left():
+        if event.x() < center.left():
             self.shift(-1)
         elif event.x() > center.right():
             self.shift(1)

@@ -4840,68 +4840,77 @@ class ChatGUI(QWidget):
             self.desktop_controller.cleanup()
         a0.accept()
 
-    def play_history_audio(self,audio_path_and_emotion):
-        if self.motion_complete_value.value and not self.is_response_active():
-            self.setWindowTitle("数字小祥")
-            audio_path_and_emotion=audio_path_and_emotion.toString()
-            if "silence.wav" in audio_path_and_emotion:
-                return
-            msg_index = None
-            # 去除新增的 ?msg= 锚点参数
-            if '?msg=' in audio_path_and_emotion:
-                audio_path_and_emotion, msg_index_text = audio_path_and_emotion.split('?msg=', 1)
-                try:
-                    msg_index = int(msg_index_text)
-                except ValueError:
-                    msg_index = None
-            if audio_path_and_emotion in ("user:", "no_audio:"):
-                logger.info("点击到用户消息或无音频的消息，无法播放")
-                return
-
-            match=re.match(r"(.+?)\[(.+?)\]$", audio_path_and_emotion)
-            if match:
-                audio_path = match.group(1)  # 路径
-                emotion = match.group(2)  #emotion标签
-
-                if not audio_path or audio_path == "NO_AUDIO" or os.path.isdir(audio_path):
-                    logger.info("点击到无效音频路径，无法播放：%s", audio_path)
-                    return
-
-                if os.path.isfile(audio_path):
-                    #----------------------------设置live2d文本框内容逻辑
-                    target_msg = None
-                    # 按照 msg_index 属性寻找对应的消息条目
-                    if msg_index is not None and 0 <= msg_index < len(self.current_chat.message_list):
-                        target_msg = self.current_chat.message_list[msg_index]
-                    else:
-                        filename=os.path.basename(audio_path)
-                        for msg in self.current_chat.message_list:
-                            if os.path.basename(msg.audio_path) == filename:
-                                target_msg = msg
-                                break
-                    # 如果能找到对应的消息，那么添加翻译后一同发送给 live2d 模块，从而显示翻译。
-                    if target_msg is not None:
-                        self.live2d_text_queue.put(
-                            self._format_live2d_display_text(target_msg.text, target_msg.translation)
-                        )
-
-                    # ----------------------------
-                    if getattr(self, 'conversation_runtime', None) is not None:
-                        self.conversation_runtime.replay(self.current_chat_id, audio_path, emotion,
-                            target_msg.text if target_msg else '', target_msg.translation if target_msg else '',
-                            performance=target_msg.performance if target_msg else None)
-                        chat_id, turn_id = self.conversation_runtime.active
-                        self._start_active_turn(chat_id, turn_id, 'rendering')
-                    else:
-                        self.audio_file_path_queue.put(audio_path)
-                        self.emotion_queue.put(emotion)
-                    logger.info("音频文件路径：%s", audio_path)
-                    #print("注意：若你已经设置了if_delete_audio_cache.txt中的数字不为0，并且觉得这句生成的还不错，请复制该音频文件到别处，因为设置数字不为0的情况下关闭程序会自动删除该文件，以释放空间。设置数字不为0的情况下如果希望下次打开程序还能听到，再把这个文件复制回这个路径即可。\n")
-                else:
-                    self.setWindowTitle('所选文本对应的音频文件已经删除...')
-                    logger.info("所选文本对应的音频文件已经删除。")
-        else:
+    def play_history_audio(self, audio_link: QUrl) -> None:
+        """回放历史消息的声音或无声演出，允许直接替换当前历史回放。"""
+        runtime = getattr(self, 'conversation_runtime', None)
+        replacing_replay = runtime is not None and runtime.is_replaying
+        if not replacing_replay and (not self.motion_complete_value.value or self.is_response_active()):
             self.setWindowTitle('请等待当前过程完成后重试...')
+            return
+
+        link, separator, index_text = audio_link.toString().partition('?msg=')
+        if link == "user:":
+            return
+        target_msg: Optional[Message] = None
+        if separator:
+            try:
+                msg_index = int(index_text)
+            except ValueError:
+                return
+            if not 0 <= msg_index < len(self.current_chat.message_list):
+                return
+            target_msg = self.current_chat.message_list[msg_index]
+            if target_msg.character_name == "User":
+                return
+
+        if link == "no-audio:":
+            if target_msg is None:
+                return
+            audio_path = "NO_AUDIO"
+            emotion = target_msg.emotion.as_label()
+        else:
+            match = re.match(r"(.+?)\[(.+?)\]$", link)
+            if match is None:
+                return
+            audio_path, emotion = match.groups()
+            if audio_path == "NO_AUDIO" or os.path.basename(audio_path) == "silence.wav":
+                # 静音占位文件无需存在；用消息正文进行无声演出。
+                if target_msg is None:
+                    return
+                audio_path = "NO_AUDIO"
+            elif os.path.isdir(audio_path):
+                return
+            elif not os.path.isfile(audio_path):
+                self.setWindowTitle('所选文本对应的音频文件已经删除...')
+                return
+            if target_msg is None:
+                filename = os.path.basename(audio_path)
+                target_msg = next((msg for msg in self.current_chat.message_list
+                                   if os.path.basename(msg.audio_path) == filename), None)
+
+        if runtime is not None:
+            try:
+                turn_id = runtime.replay(
+                    self.current_chat_id, audio_path, emotion,
+                    target_msg.text if target_msg else '',
+                    target_msg.translation if target_msg else '',
+                    performance=target_msg.performance if target_msg else None,
+                )
+            except RuntimeError as error:
+                self.setWindowTitle(str(error))
+                return
+            self._start_active_turn(self.current_chat_id, turn_id, 'rendering')
+        else:
+            # 旧音频队列仅用于不带公共运行时的独立界面入口。
+            if audio_path == "NO_AUDIO":
+                return
+            self.audio_file_path_queue.put(audio_path)
+            self.emotion_queue.put(emotion)
+        if target_msg is not None:
+            self.live2d_text_queue.put(
+                self._format_live2d_display_text(target_msg.text, target_msg.translation)
+            )
+        self.setWindowTitle("数字小祥")
 
 
     def delete_message(self, msg_index: int) -> None:

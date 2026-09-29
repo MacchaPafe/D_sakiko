@@ -61,6 +61,7 @@ class ConversationRuntime:
         self.chat_manager = engine.chat_manager
         self._lock = threading.RLock()
         self.active = None
+        self._replaying: bool = False
         self._pending = set()
         self._generation_done = False
         self._status = "ok"
@@ -91,6 +92,12 @@ class ConversationRuntime:
     def busy(self):
         with self._lock:
             return self.active is not None
+
+    @property
+    def is_replaying(self) -> bool:
+        """区分可被下一次回放替换的历史演出与正在生成的新回复。"""
+        with self._lock:
+            return self.active is not None and self._replaying
 
     def matches(self, event):
         with self._lock:
@@ -130,6 +137,7 @@ class ConversationRuntime:
             self._submitted = payload
             self._committed = False
             self.active = (chat_id, turn_id)
+            self._replaying = False
             self._pending.clear()
             self._generation_done = False
             self._status = "ok"
@@ -178,6 +186,7 @@ class ConversationRuntime:
                 dict(type="cancel_turn", chat_id=chat_id, turn_id=turn_id)
             )
             self.active = None
+            self._replaying = False
             self._pending.clear()
 
     def accept_event(self, event):
@@ -236,6 +245,7 @@ class ConversationRuntime:
                 )
             )
         self.active = None
+        self._replaying = False
         self.presentation.put(
             dict(type="generation_finished", chat_id=chat_id, turn_id=turn_id)
         )
@@ -354,15 +364,19 @@ class ConversationRuntime:
                 dict(payload, type="assistant_turn_complete", status="ok")
             )
 
-    def replay(self, chat_id: str, audio_path: str, emotion: str, text: str = "", translation: str = "", performance: object = None) -> None:
-        """使用已保存的演出选择重播消息，不重新调用模型或工具。"""
+    def replay(self, chat_id: str, audio_path: str, emotion: str, text: str = "", translation: str = "", performance: object = None) -> str:
+        """替换历史回放并返回新轮次标识，正在生成的新回复仍不可打断。"""
         from performance_types import performance_payload
 
         with self._lock:
-            if self.busy or self._closed:
+            if self._closed or (self.busy and not self.is_replaying):
                 raise RuntimeError("请等待当前回复或播放完成。")
+            if self.is_replaying:
+                self.cancel()
             turn_id = uuid.uuid4().hex
             self.active = (chat_id, turn_id)
+            self._replaying = True
+            self._message_indices = set()
             self._pending = {1}
             self._generation_done = True
             self._status = "ok"
@@ -379,6 +393,7 @@ class ConversationRuntime:
                     performance=performance_payload(performance),
                 )
             )
+            return turn_id
 
     def close(self):
         with self._lock:

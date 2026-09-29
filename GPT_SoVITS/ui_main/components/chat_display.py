@@ -525,7 +525,7 @@ class ChatDisplay(QTextBrowser):
         if message.audio_path and message.audio_path != "NO_AUDIO":
             abs_path = os.path.abspath(message.audio_path).replace("\\", "/")
             return f"{abs_path}[{message.emotion.as_label()}]{msg_param}"
-        return f"no_audio:{msg_param}"
+        return f"no-audio:{msg_param}"
 
     def _render_tool_record_html(self, record: dict[str, object]) -> str:
         """将持久化的工具调用记录渲染成 HTML。"""

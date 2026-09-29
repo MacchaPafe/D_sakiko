@@ -204,7 +204,7 @@ class ThemePaletteQtIntegrationTestCase(unittest.TestCase):
         rendered = display._render_message_html(message, 0)
 
         self.assertLess(rendered.index("</a>"), rendered.index("角色正文"))
-        self.assertEqual(rendered.count('href="no_audio:?msg=0"'), 2)
+        self.assertEqual(rendered.count('href="no-audio:?msg=0"'), 2)
         self.assertIn(f"color: {palette.text_accent}", rendered)
         self.assertIn(f"color: {palette.text_primary}", rendered)
         self.assertIn(f"color: {palette.text_secondary}", rendered)
@@ -235,6 +235,25 @@ class ThemePaletteQtIntegrationTestCase(unittest.TestCase):
         self.assertEqual(len(emitted_urls), 1)
         self.assertIn("theme-click-test.wav", emitted_urls[0])
         self.assertIn("?msg=4", emitted_urls[0])
+        display.close()
+        display.deleteLater()
+
+    def test_left_click_on_silent_message_preserves_message_index(self) -> None:
+        """无声正文使用合法 Qt 链接，真实点击后仍携带所选消息的索引。"""
+        display = ChatDisplay(derive_theme_palette("#77BBDD"))
+        display.resize(500, 240)
+        display.show()
+        emitted_urls: list[str] = []
+        display.audioLinkClicked.connect(lambda url: emitted_urls.append(url.toString()))
+        display.append_message(Message(
+            character_name="高松灯", text="无声消息也可以回放", translation="",
+            emotion=EmotionEnum.HAPPINESS, audio_path="NO_AUDIO",
+        ), 4)
+        self.app.processEvents()
+        point = self._text_point(display, "无声消息也可以回放")
+        QTest.mouseClick(display.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+        self.app.processEvents()
+        self.assertEqual(emitted_urls, ["no-audio:?msg=4"])
         display.close()
         display.deleteLater()
 
