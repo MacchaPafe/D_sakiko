@@ -63,6 +63,61 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(self.runtime.active, ("a", current))
         self.assertFalse(self.runtime._committed)
 
+    def test_prepared_segments_wait_for_actual_start_and_ignore_duplicate_events(self):
+        """合成完成仅排队，实际开始才显示；重复或旧轮次回执不重复打印。"""
+        turn = self.runtime.submit("a", "hi")
+        self.runtime.process_response(self.payload(turn, 2))
+        self.assertFalse(any(e["type"].startswith("assistant_segment") for e in self.events.queue))
+        segments = [e for e in self.presentation.queue if e["type"] == "play_segment"]
+        self.assertTrue(all(e["wait_for_text"] for e in segments))
+        started = dict(segments[0], type="playback_started")
+        self.runtime.playback_event(started)
+        self.runtime.playback_event(started)
+        visible = [e for e in self.events.queue if e["type"] == "assistant_segment_started"]
+        self.assertEqual([e["segment_id"] for e in visible], [1])
+        self.runtime.text_display_finished(started)
+        self.assertEqual(list(self.presentation.queue)[-1]["type"], "segment_text_complete")
+        self.runtime.cancel()
+        self.runtime.submit("a", "new")
+        count = self.presentation.qsize()
+        self.runtime.playback_event(started)
+        self.runtime.text_display_finished(started)
+        self.assertEqual(self.presentation.qsize(), count)
+
+    def test_redraw_hides_unplayed_messages_and_replay_does_not_append(self):
+        """正文重绘不泄露已生成未播放的后续段，历史重播不增加聊天条目。"""
+        from chat.chat import Chat, Message
+        from emotion_enum import EmotionEnum
+
+        def message(name, text):
+            """创建真实消息，避免存档投影测试绕过角色身份规则。"""
+            return Message(character_name=name, text=text, translation="",
+                           emotion=EmotionEnum.HAPPINESS, audio_path="")
+
+        chat = Chat(chat_id="a", message_list=[message("User", "old")])
+        self.manager.get_chat_by_id.return_value = chat
+        turn = self.runtime.submit("a", "hi")
+        chat.message_list.extend([
+            message("User", "hi"), message("爱音", "one"), message("爱音", "two"),
+        ])
+        self.assertEqual(len(self.runtime.visible_chat(chat).message_list), 2)
+        payload = self.payload(turn, 2)
+        for index, segment in enumerate(payload["segments"]):
+            segment["message_index"] = index + 2
+        self.runtime.process_response(payload)
+        started = dict(type="playback_started", chat_id="a", turn_id=turn, segment_id=1)
+        self.runtime.playback_event(started)
+        self.assertEqual(len(self.runtime.visible_chat(chat).message_list), 2)
+        self.runtime.text_display_started(started)
+        self.assertEqual(len(self.runtime.visible_chat(chat).message_list), 3)
+        self.assertEqual(len(chat.message_list), 4)
+        self.runtime.cancel()
+        self.runtime.replay("a", "voice.wav", "LABEL_0", "old")
+        before = self.events.qsize()
+        self.runtime.playback_event(dict(type="playback_started", chat_id="a", turn_id=self.runtime.active[1], segment_id=1))
+        self.assertEqual(self.events.qsize(), before)
+        self.assertIs(self.runtime.visible_chat(chat), chat)
+
     def test_internal_reminder_waits_for_audio_and_original_chat(self):
         self.engine._normalize_input_command = lambda text: dict(
             type="send_message", chat_id="a"
@@ -278,7 +333,7 @@ class ConversationTests(unittest.TestCase):
         turn = self.runtime.replay("a", "NO_AUDIO", "LABEL_0")
         host.active_chat_id, host.active_turn_id = "a", turn
         host.active_turn_phase = "rendering"
-        target = Mock(chat_id="b")
+        target = Mock(chat_id="b", message_list=[])
         target.get_character_name.return_value = "爱音"
         with patch("qtUI.QMessageBox.information") as notice:
             ChatGUI.switch_chat_by_id(host, "a")
@@ -403,12 +458,15 @@ class ConversationTests(unittest.TestCase):
                 display._is_user_message.side_effect = ChatDisplay._is_user_message
                 link = ChatDisplay._message_anchor_href(display, self.chat.message_list[1], 1)
                 ChatGUI.play_history_audio(host, QUrl(link))
+                # 公共演出统一显示字幕，不再提前向旧文本队列发送。
+                host.live2d_text_queue.put.assert_not_called()
                 segment = self.presentation.get_nowait()
                 self.assertEqual(segment["audio_path"], "NO_AUDIO")
                 self.assertEqual(segment["text"], "选中的无声消息")
                 self.assertEqual(segment["translation"], "translation")
                 self.assertEqual(segment["emotion"], "LABEL_4")
                 self.assertEqual(segment["performance"], {"motion": "nod", "expression": "smile"})
+                self.assertFalse(segment["wait_for_text"])
 
                 player = SingleCharacterPerformance()
                 player.on_event = self.runtime.playback_event
@@ -423,15 +481,22 @@ class ConversationTests(unittest.TestCase):
                     "runtime.single_character_performance.time.monotonic", return_value=0.0
                 ) as clock:
                     player.update_playback(model)
+                    subtitle.assert_not_called()
+                    model.apply_performance.assert_called_once()
+                    callbacks = model.apply_performance.call_args.kwargs
+                    callbacks["on_start"]()
                     subtitle.assert_called_with("选中的无声消息\ntranslation")
                     self.assertTrue(self.runtime.is_replaying)
-                    model.apply_performance.assert_called_once()
                     # V3 无声演出保留表情自身的嘴形，不驱动语音口型。
                     model.set_parameter_value.assert_not_called()
                     clock.return_value = 6.0
                     player.update_playback(model)
+                    self.assertTrue(self.runtime.is_replaying)
+                    callbacks["on_finish"]()
+                    player.update_playback(model)
                     audio.assert_not_called()
                 self.assertFalse(self.runtime.busy)
+                self.assertFalse(any(e.get("type") == "assistant_segment_started" for e in self.events.queue))
                 self.assertEqual(self.presentation.get_nowait()["type"], "generation_finished")
         self.audio.generate_audio_for_character_sync.assert_not_called()
         self.assertTrue(self.commands.empty())
@@ -466,6 +531,96 @@ class ConversationTests(unittest.TestCase):
         ChatGUI.play_history_audio(host, QUrl("no-audio:?msg=0"))
         self.assertEqual(self.runtime.active, ("a", turn))
         host.setWindowTitle.assert_called_with("请等待当前过程完成后重试...")
+
+
+class SegmentDisplayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        """使用真实 Qt 文字控件验证隐藏窗口的逐字打印完成回执。"""
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_hidden_chat_stream_completes_before_second_segment_starts(self):
+        """贯通合成、播放开始、Qt 打印和完成回执，提前合成不提前显示。"""
+        from types import MethodType
+        from PyQt5.QtTest import QTest
+        from chat.chat import Chat, Message
+        from emotion_enum import EmotionEnum
+        from qtUI import ChatGUI
+        from runtime.single_character_performance import SingleCharacterPerformance
+        from ui_main.components.chat_display import ChatDisplay
+        from ui_main.theme import derive_theme_palette
+
+        chat = Chat(chat_id="a")
+        manager = Mock()
+        manager.get_chat_by_id.return_value = chat
+        engine = SimpleNamespace(chat_manager=manager, if_generate_audio=False,
+                                 sakiko_state=False, audio_language_choice="中文")
+        events, presentation = Queue(), Queue()
+        runtime = ConversationRuntime(engine, Mock(), [SimpleNamespace(character_name="爱音")],
+                                      Queue(), events, presentation)
+        turn = runtime.submit("a", "hi")
+        chat.message_list.extend([
+            Message("爱音", "甲", "", EmotionEnum.HAPPINESS, ""),
+            Message("爱音", "乙", "", EmotionEnum.HAPPINESS, ""),
+        ])
+        runtime.process_response(dict(chat_id="a", turn_id=turn, character_name="爱音", segments=[
+            dict(text="甲", message_index=0), dict(text="乙", message_index=1),
+        ]))
+        host = Mock(current_chat_id="a", active_chat_id="a", active_turn_id=turn,
+                    current_character=SimpleNamespace(character_name="爱音"))
+        host.conversation_runtime = runtime
+        host.chat_manager = manager
+        host._is_cancelled_turn_payload.return_value = False
+        host._is_active_turn_payload = MethodType(ChatGUI._is_active_turn_payload, host)
+        host._on_segment_text_finished = MethodType(ChatGUI._on_segment_text_finished, host)
+        host._streaming_segment = None
+        host.chat_display = ChatDisplay(derive_theme_palette("#7799CC"))
+        self.addCleanup(host.chat_display.deleteLater)
+        host.chat_display.streamFinished.connect(host._on_segment_text_finished)
+        host.chat_display.render_chat(runtime.visible_chat(chat))
+        self.assertNotIn("甲", host.chat_display.toPlainText())
+        player, model = SingleCharacterPerformance(), Mock()
+        model.StartRandomMotion.return_value = False
+        player.on_event = runtime.playback_event
+
+        def drain():
+            """模拟两个宿主共用的命令路由和 Qt 事件派发。"""
+            while not presentation.empty():
+                player.command(presentation.get_nowait(), model)
+            while not events.empty():
+                event = events.get_nowait()
+                if event["type"] == "assistant_segment_started":
+                    ChatGUI._handle_structured_response(host, event)
+
+        with patch.object(player, "audio_busy", return_value=False), patch(
+            "runtime.single_character_performance.time.monotonic", return_value=100.0
+        ) as clock:
+            drain()
+            player.update_playback(model)
+            # 开始回执已排队、Qt 尚未处理：此时重绘不能抢先全文显示。
+            host.chat_display.render_chat(runtime.visible_chat(chat))
+            self.assertNotIn("甲", host.chat_display.toPlainText())
+            drain()
+            self.assertTrue(host.chat_display.is_streaming())
+            self.assertFalse(player.segment_text_complete)
+            clock.return_value = 107.0
+            player.update_playback(model)
+            self.assertEqual(player.active_segment["segment_id"], 1)
+            QTest.qWait(180)
+            drain()
+            self.assertTrue(player.segment_text_complete)
+            self.assertIn("甲", host.chat_display.toPlainText())
+            self.assertNotIn("乙", host.chat_display.toPlainText())
+            player.update_playback(model)
+            player.update_playback(model)
+            drain()
+            self.assertEqual(player.active_segment["segment_id"], 2)
+            QTest.qWait(180)
+            drain()
+            clock.return_value = 114.0
+            player.update_playback(model)
+            self.assertFalse(runtime.busy)
+            self.assertIn("乙", host.chat_display.toPlainText())
 
 
 class DraftTests(unittest.TestCase):

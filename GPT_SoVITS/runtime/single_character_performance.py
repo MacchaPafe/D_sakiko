@@ -65,6 +65,7 @@ class SingleCharacterPerformance:
         self.on_event = lambda event: None
         self.on_subtitle = lambda text: None
         self.last_idle = time.time()
+        self.last_think_motion = float("-inf")
         self.audio_started = False
         self.audio_failed = False
         self.start_deadline = 0.0
@@ -81,6 +82,11 @@ class SingleCharacterPerformance:
         self.generation_open = False
         self.independent_performance = False
         self._performance_model: Live2DModelProtocol | None = None
+        self.segment_motion_complete = True
+        self.segment_motion_deadline = 0.0
+        self.segment_motion_token = None
+        self.segment_text_complete = True
+        self.segment_error = ""
 
     def finish_farewell(self, *args: object) -> None:
         """告别动作结束后仅发送一次完成回执。"""
@@ -139,6 +145,11 @@ class SingleCharacterPerformance:
         if kind in {"start_talking", "stop_talking"}:
             self.recording = kind == "start_talking"
         key = (command.get("chat_id"), command.get("turn_id"))
+        if kind == "segment_text_complete":
+            segment = self.active_segment
+            if segment is not None and key == (segment.get("chat_id"), segment.get("turn_id")) and command.get("segment_id") == segment.get("segment_id"):
+                self.segment_text_complete = True
+            return True
         if kind == "play_segment":
             self.structured_mode = True
             if key not in self.cancelled_turns:
@@ -151,6 +162,8 @@ class SingleCharacterPerformance:
             self.subtitle_deadline = None
             if self.subtitle_hide_delay is not None:
                 self.on_subtitle("")
+            self._reset_visual_performance()
+            self._start_thinking_motion(model)
             return True
         if kind == "generation_finished":
             self.thinking = False
@@ -172,6 +185,7 @@ class SingleCharacterPerformance:
                 if pygame.mixer.get_init():
                     pygame.mixer.music.stop()
                 self.active_segment = None
+                self.segment_motion_token = None
             self.thinking = False
             self.generation_open = False
             self._reset_visual_performance()
@@ -183,21 +197,83 @@ class SingleCharacterPerformance:
             return True
         return False
 
+    def _start_thinking_motion(self, model: Live2DModelProtocol) -> None:
+        """立即尝试思考动作，独立记录重播时间，缺失动作时不逐帧重试。"""
+        self.last_think_motion = time.monotonic()
+        self.last_idle = time.time()
+        self.think_motion_is_over = False
+        if not model.StartRandomMotion(
+            "text_generating", 3,
+            self.onStartCallback_think_motion_version,
+            self.onFinishCallback_think_motion_version,
+            position="C",
+        ):
+            self.think_motion_is_over = True
+
     def _start_segment_audio(self, segment: dict[str, object]) -> None:
+        """在动作实际开始时一次性启动声音、字幕与聊天文字显示回执。"""
         if self.active_segment is not segment or self.audio_started:
             return
         self.audio_started = True
+        self.text_segment_deadline = time.monotonic() + self.subtitle_read_seconds
         path = segment.get("audio_path")
-        if not has_voice_audio(path):
+        if has_voice_audio(path):
+            self.onStartCallback_emotion_version(path)
+            self.audio_failed = not self.audio_busy()
+        if self.segment_motion_complete:
+            self.motion_is_over = True
+        text = str(segment.get("text") or "")
+        translation = str(segment.get("translation") or "")
+        self.on_subtitle(text + ("\n" + translation if translation else ""))
+        self.on_event(dict(segment, type="playback_started"))
+
+    def _segment_motion_callbacks(self, segment):
+        """动作回调绑定本段和本次动作，取消、换模型及后续重播后旧回调失效。"""
+        token = object()
+        self.segment_motion_token = token
+        self.segment_motion_complete = False
+        self.motion_is_over = False
+        self.segment_motion_deadline = time.monotonic() + max(60.0, self.long_audio_duration_seconds + 5.0)
+
+        def started(*args):
+            """同步开启仍有效的当前段。"""
+            if self.active_segment is segment and self.segment_motion_token is token:
+                self.onStartCallback()
+                self._start_segment_audio(segment)
+
+        def finished(*args):
+            """结束当前段的动作等待，并沿用原有眼睛恢复流程。"""
+            if self.active_segment is segment and self.segment_motion_token is token:
+                self.segment_motion_complete = True
+                self.onFinishCallback()
+
+        return started, finished
+
+    def _update_segment_motion(self, model) -> None:
+        """回调丢失时查询运行时；持续不结束的异常动作有界降级，避免卡住回复。"""
+        if self.segment_motion_complete:
             return
-        self.onStartCallback_emotion_version(path)
-        self.audio_failed = not self.audio_busy()
+        check = getattr(model, "is_motion_finished", None)
+        if self.audio_started and callable(check) and check() is True:
+            self.segment_motion_complete = True
+            self.onFinishCallback()
+        elif time.monotonic() >= self.segment_motion_deadline:
+            self.segment_motion_complete = True
+            self.segment_motion_token = None
+            self.motion_is_over = True
+            self._reset_long_audio_motion_loop()
+            self.segment_error = "动作结束回执超时，已继续后续回复。"
+            get_logger(__name__).warning(self.segment_error)
 
     def update_playback(self, model: Live2DModelProtocol) -> None:
-        """每帧在模型 Update 之后调用；回执含轮次/段号，不依赖动作回调完成。"""
+        """每帧推进本段，声音、动作和文字均完成后才释放下一段。"""
         if self._performance_model is not model:
             self._reset_visual_performance()
             self._performance_model = model
+            # 换装或渲染失败后旧模型不会再回调，声音和文字仍可完成。
+            self.segment_motion_token = None
+            self.segment_motion_complete = True
+            self._reset_long_audio_motion_loop()
         if self.farewell_started:
             if time.monotonic() >= self.farewell_deadline:
                 self.finish_farewell()
@@ -208,7 +284,9 @@ class SingleCharacterPerformance:
             self.active_segment = segment
             self.audio_started = False
             self.audio_failed = False
-            self.start_deadline = now + 0.25
+            self.start_deadline = time.monotonic() + 0.25
+            self.segment_text_complete = not bool(segment.get("wait_for_text"))
+            self.segment_error = ""
             self.thinking = False
             text = str(segment.get("text") or "")
             translation = str(segment.get("translation") or "")
@@ -216,39 +294,42 @@ class SingleCharacterPerformance:
             self.subtitle_read_seconds = max(
                 6.0, min(30.0, len(text + translation) / 6.0)
             )
-            self.text_segment_deadline = time.monotonic() + self.subtitle_read_seconds
-            self.on_subtitle(text + ("\n" + translation if translation else ""))
             group = motion_group_for_emotion(
                 str(segment.get("emotion")), default="happiness"
             )
             self.independent_performance = getattr(model, "version", None) == "v3"
             apply_performance = getattr(model, "apply_performance", None)
             if self.independent_performance and callable(apply_performance):
-                self._reset_long_audio_motion_loop()
                 self._reset_eye_open_transition()
-                apply_performance(segment.get("performance"), str(segment.get("emotion") or ""),
-                                  context=(segment.get("chat_id"), segment.get("turn_id")),
-                                  on_finish=self.onFinishCallback)
-                self.motion_is_over = True
+            self._prepare_long_audio_motion_loop(group, str(segment.get("audio_path") or ""))
+            on_start, on_finish = self._segment_motion_callbacks(segment)
+            try:
+                if self.independent_performance and callable(apply_performance):
+                    started = apply_performance(
+                        segment.get("performance"), str(segment.get("emotion") or ""),
+                        context=(segment.get("chat_id"), segment.get("turn_id")),
+                        on_start=on_start, on_finish=on_finish, restart_motion=True,
+                    )
+                else:
+                    started = model.StartRandomMotion(group, 3, on_start, on_finish, position="C")
+            except Exception:
+                get_logger(__name__).exception("段落动作启动失败，保留语音与文字")
+                started = False
+            if not started:
+                on_finish()
                 self._start_segment_audio(segment)
-            else:
-                self._prepare_long_audio_motion_loop(group, str(segment.get("audio_path") or ""))
-                started = model.StartRandomMotion(
-                    group, 3, lambda *args: self._start_segment_audio(segment),
-                    self.onFinishCallback, position="C",
-                )
-                if not started:
-                    self._start_segment_audio(segment)
         segment = self.active_segment
         if segment is not None:
-            if not self.audio_started and now >= self.start_deadline:
+            if not self.audio_started and time.monotonic() >= self.start_deadline:
                 self._start_segment_audio(segment)
+            self._update_segment_motion(model)
             text_only = not has_voice_audio(segment.get("audio_path"))
-            if self.audio_started and not self.audio_busy() and (
+            if self.audio_started and not self.audio_busy() and self.segment_motion_complete and self.segment_text_complete and (
                 not (text_only or self.audio_failed)
                 or time.monotonic() >= self.text_segment_deadline
             ):
                 self.active_segment = None
+                self.segment_motion_token = None
                 self.idle_recover_timer = now
                 self._reset_long_audio_motion_loop()
                 if self.subtitle_hide_delay is not None:
@@ -260,8 +341,9 @@ class SingleCharacterPerformance:
                     dict(
                         segment,
                         type="playback_failed"
-                        if self.audio_failed
+                        if self.audio_failed or self.segment_error
                         else "playback_complete",
+                        error=self.segment_error or ("音频播放失败，已保留文字。" if self.audio_failed else ""),
                     )
                 )
         if (
@@ -272,15 +354,8 @@ class SingleCharacterPerformance:
         ):
             self.subtitle_deadline = None
             self.on_subtitle("")
-        if self.thinking and now - self.last_idle > 15:
-            model.StartRandomMotion(
-                "text_generating",
-                3,
-                self.onStartCallback_think_motion_version,
-                self.onFinishCallback_think_motion_version,
-                position="C",
-            )
-            self.last_idle = now
+        if self.thinking and self.think_motion_is_over and time.monotonic() - self.last_think_motion >= 15:
+            self._start_thinking_motion(model)
         elif not self.busy and not self.thinking and not self.generation_open and now - self.last_idle > 25 and now - self.idle_recover_timer > 2.5:
             self._reset_visual_performance()
             started = model.StartRandomMotion(
@@ -326,6 +401,7 @@ class SingleCharacterPerformance:
         self.generation_open = False
         self.pending.clear()
         self.active_segment = None
+        self.segment_motion_token = None
         self.thinking = False
         self.recording = False
         self.subtitle_deadline = None
@@ -499,6 +575,9 @@ class SingleCharacterPerformance:
     def _update_long_audio_motion_loop(self, model):
         if not self.long_audio_motion_active:
             return
+        if self.active_segment is not None and not self.audio_started:
+            # 原生动作的开始回调可能下一帧才到，不能在此提前丢掉长语音配置。
+            return
         if not self.audio_busy():
             self._reset_long_audio_motion_loop()
             return
@@ -519,15 +598,28 @@ class SingleCharacterPerformance:
         if now < self.long_audio_next_motion_at:
             return
 
+        on_start, on_finish = self.onStartCallback, self.onFinishCallback
+        if self.active_segment is not None:
+            on_start, on_finish = self._segment_motion_callbacks(self.active_segment)
         self.motion_is_over = False
-        started = model.StartRandomMotion(
-            self.long_audio_motion_group,
-            3,
-            self.onStartCallback,
-            self.onFinishCallback,
-            position="C",
-        )
+        try:
+            if self.independent_performance and self.active_segment is not None:
+                segment = self.active_segment
+                started = model.apply_performance(
+                    segment.get("performance"), str(segment.get("emotion") or ""),
+                    context=(segment.get("chat_id"), segment.get("turn_id")),
+                    on_start=on_start, on_finish=on_finish, restart_motion=True,
+                )
+            else:
+                started = model.StartRandomMotion(
+                    self.long_audio_motion_group, 3, on_start, on_finish, position="C",
+                )
+        except Exception:
+            get_logger(__name__).exception("长语音追加动作失败，继续当前声音与文字")
+            started = False
         if not started:
+            if self.active_segment is not None:
+                on_finish()
             self.motion_is_over = True
             self._reset_long_audio_motion_loop()
             return

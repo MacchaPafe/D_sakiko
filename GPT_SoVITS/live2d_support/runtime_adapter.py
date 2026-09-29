@@ -473,6 +473,18 @@ class Live2DModelAdapter:
         """兼容旧调用风格，更新模型状态。"""
         self.update()
 
+    def is_motion_finished(self) -> bool | None:
+        """提供动作结束兜底查询；不支持查询的运行时返回未知，仍以回调为准。"""
+        method = getattr(self._require_model(), "IsMotionFinished", None)
+        if callable(method):
+            try:
+                result = method()
+                if isinstance(result, bool):
+                    return result
+            except Exception:
+                logger.debug("查询动作结束状态失败", exc_info=True)
+        return None
+
     def draw(self) -> None:
         """绘制模型。"""
         glUseProgram(0)
@@ -843,6 +855,7 @@ class Live2DModelAdapter:
     def apply_performance(
             self, selection: object, emotion: str, direction: MotionPosition = "C",
             context: object = None, on_finish: MotionCallback | None = None,
+            *, on_start: MotionCallback | None = None, restart_motion: bool = False,
     ) -> bool:
         """在当前实际模型上应用独立选择，只提交成功执行的通道。"""
         if self.version != "v3":
@@ -861,8 +874,9 @@ class Live2DModelAdapter:
         if plan.fallback_reasons:
             logger.debug("演出通道回退：%s；模型：%s", plan.fallback_reasons, self.model_json_path)
         previous = self.performance_state or PerformanceState()
-        motion_ok = not plan.change_motion
-        if plan.change_motion and plan.state.motion_file:
+        change_motion = plan.change_motion or bool(restart_motion and plan.state.motion_file)
+        motion_ok = not change_motion
+        if change_motion and plan.state.motion_file:
             self._performance_generation += 1
             generation = self._performance_generation
 
@@ -871,8 +885,16 @@ class Live2DModelAdapter:
                 if generation == self._performance_generation and self.model is not None and on_finish:
                     on_finish(*args)
 
+            def started(*args: object) -> None:
+                """只回传仍有效的本次动作开始，供桌面端同步声音与文字。"""
+                if generation == self._performance_generation and self.model is not None and on_start:
+                    on_start(*args)
+
             asset = catalog.motion(plan.state.motion_id or "", direction)
-            motion_ok = self._start_performance_motion(plan.state.motion_file, asset.entry if asset else {}, finished)
+            motion_ok = self._start_performance_motion(
+                plan.state.motion_file, asset.entry if asset else {}, finished,
+                on_start=started if on_start is not None else None,
+            )
         change_expression = plan.change_expression
         owners = object_mapping(catalog.config.get("custom_expressions"))
         if plan.state.expression in owners:
@@ -890,10 +912,16 @@ class Live2DModelAdapter:
             plan.state.emotion,
         )
         self.performance_expression_active = bool(self.performance_state.expression)
+        if on_start is not None and (not change_motion or not motion_ok):
+            # 无动作、启动失败或仅更新表情时，声音和文字不应等待不存在的回调。
+            on_start()
+            if on_finish is not None:
+                on_finish()
         return True
 
     def _start_performance_motion(
             self, file: str, entry: dict[str, object], on_finish: MotionCallback | None,
+            *, on_start: MotionCallback | None = None,
     ) -> bool:
         """播放一次正式资源；临时派生循环文件，不改写用户资源。"""
         path = (Path(self.model_json_path).parent / file).resolve()
@@ -903,7 +931,7 @@ class Live2DModelAdapter:
             loop = isinstance(metadata, dict) and metadata.get("Loop") is True
             loaded = self._find_loaded_motion_by_file(str(path))
             if loaded is not None and not loop:
-                started = self.start_motion(*loaded, 3, on_finish=on_finish, auto_expression=False)
+                started = self.start_motion(*loaded, 3, on_start=on_start, on_finish=on_finish, auto_expression=False)
                 is_finished = getattr(self._require_model(), "IsMotionFinished", None)
                 return started and not (callable(is_finished) and is_finished() is True)
             index = self.performance_motion_indices.get(str(path))
@@ -921,7 +949,7 @@ class Live2DModelAdapter:
                 if index < 0:
                     return False
                 self.performance_motion_indices[str(path)] = index
-            getattr(self._require_model(), "StartMotion")(PERFORMANCE_MOTION_GROUP, index, 3, None, on_finish)
+            getattr(self._require_model(), "StartMotion")(PERFORMANCE_MOTION_GROUP, index, 3, on_start, on_finish)
             is_finished = getattr(self._require_model(), "IsMotionFinished", None)
             if callable(is_finished) and is_finished() is True:
                 self.performance_motion_indices.pop(str(path), None)

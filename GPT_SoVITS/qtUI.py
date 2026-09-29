@@ -2046,6 +2046,7 @@ class ChatGUI(QWidget):
         # 即 AI 生成对话，角色语音合成、界面慢速渲染三个部分。
         self.active_turn_phase: str | None = None
         self.active_turn_message_indices: set[int] = set()
+        self._streaming_segment: dict[str, object] | None = None
         # 用户取消的对话轮次的 id
         self.cancelled_turn_ids: set[str] = set()
         self.tool_call_records_cache: dict[str, dict] = {}
@@ -2081,6 +2082,7 @@ class ChatGUI(QWidget):
         self.chat_display.forkChatRequested.connect(self.fork_chat_from_message)  # noqa
         self.chat_display.feedbackRequested.connect(self.open_message_feedback)
         self.chat_display.streamFinished.connect(self._refresh_send_button_state)  # noqa
+        self.chat_display.streamFinished.connect(self._on_segment_text_finished)
 
         self.messages_box = QTextBrowser()
         self.messages_box.setStyleSheet("""
@@ -4512,8 +4514,12 @@ class ChatGUI(QWidget):
 
     def refresh_current_chat_display(self):
         """从当前 Chat 数据重新渲染聊天显示。"""
+        chat = self.current_chat
+        runtime = getattr(self, "conversation_runtime", None)
+        if runtime is not None:
+            chat = runtime.visible_chat(chat)
         self.chat_display.render_chat(
-            self.current_chat,
+            chat,
             pending_turn=self.active_turn_id is not None and self.active_chat_id == self.current_chat_id,
         )
         self.schedule_context_usage_refresh()
@@ -4910,7 +4916,7 @@ class ChatGUI(QWidget):
                 return
             self.audio_file_path_queue.put(audio_path)
             self.emotion_queue.put(emotion)
-        if target_msg is not None:
+        if runtime is None and target_msg is not None:
             self.live2d_text_queue.put(
                 self._format_live2d_display_text(target_msg.text, target_msg.translation)
             )
@@ -5451,7 +5457,10 @@ class ChatGUI(QWidget):
                 if not self._save_chat():
                     return
             return
-        if event_type != "assistant_segment_ready":
+        if event_type not in {"assistant_segment_ready", "assistant_segment_started"}:
+            return
+        runtime = getattr(self, "conversation_runtime", None)
+        if runtime is not None and event_type == "assistant_segment_ready":
             return
 
         chat_id = str(payload.get("chat_id") or "")
@@ -5460,6 +5469,8 @@ class ChatGUI(QWidget):
             return
         chat = self.chat_manager.get_chat_by_id(chat_id)
         if chat is None:
+            if event_type == "assistant_segment_started" and runtime is not None:
+                runtime.text_display_finished(payload)
             return
         raw_message_index = payload.get("message_index")
         message_index = raw_message_index if isinstance(raw_message_index, int) else -1
@@ -5468,6 +5479,8 @@ class ChatGUI(QWidget):
             msg.audio_path = str(payload.get("audio_path") or "NO_AUDIO")
             msg.translation = str(payload.get("translation") or msg.translation)
         if chat_id != self.current_chat_id:
+            if event_type == "assistant_segment_started" and runtime is not None:
+                runtime.text_display_finished(payload)
             self.refresh_chat_list()
             return
 
@@ -5493,9 +5506,27 @@ class ChatGUI(QWidget):
             audio_path=abs_path,
         )
         display_msg_index = message_index if message_index >= 0 else len(chat.message_list)
-        self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
+        # 先结束旧的用户输入打印，再绑定当前回复，防止把旧信号误认为本段完成。
+        self.chat_display.finish_stream_now()
+        if event_type == "assistant_segment_started":
+            self._streaming_segment = dict(payload)
+            if runtime is not None:
+                runtime.text_display_started(payload)
+        try:
+            self.chat_display.append_message(display_message, display_msg_index, stream=True, interval_ms=30)
+        finally:
+            if not self.chat_display.is_streaming():
+                self._on_segment_text_finished()
         self.refresh_chat_list()
         self.schedule_context_usage_refresh()
+
+    def _on_segment_text_finished(self) -> None:
+        """逐字打印结束后确认本段，隐藏聊天窗口时 Qt 定时器仍继续推进。"""
+        segment = self._streaming_segment
+        self._streaming_segment = None
+        runtime = getattr(self, "conversation_runtime", None)
+        if segment is not None and runtime is not None:
+            runtime.text_display_finished(segment)
 
     def _start_active_turn(self, chat_id: str, turn_id: str, phase: str = "llm") -> None:
         """

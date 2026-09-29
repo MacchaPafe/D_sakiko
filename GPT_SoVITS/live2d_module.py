@@ -504,7 +504,7 @@ class Live2DModule(SingleCharacterPerformance):
                 command_type = str(x.get("type") or "")
                 if self.farewell_started and command_type != "exit":
                     continue
-                if command_type in {'play_segment', 'thinking', 'generation_finished', 'cancel_turn', 'farewell'}:
+                if command_type in {'play_segment', 'thinking', 'generation_finished', 'cancel_turn', 'farewell', 'segment_text_complete'}:
                     self.command(x, model)
                 elif command_type =='start_talking':   #录音时
                     self.recording = True
@@ -667,7 +667,8 @@ class Live2DModule(SingleCharacterPerformance):
 
 
             # 清除缓冲区
-            self._update_long_audio_motion_loop(model)
+            if not self.structured_mode:
+                self._update_long_audio_motion_loop(model)
 
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区

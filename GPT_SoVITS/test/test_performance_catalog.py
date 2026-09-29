@@ -108,8 +108,9 @@ def test_native_dedup_single_play_and_stale_callback(tmp_path: Path) -> None:
     native.LoadExtraMotion.side_effect = load_extra
     adapter = Live2DModelAdapter(str(path), "v3", ModuleType("fake"), native, frozenset(), {},
                                 frozenset({"exp_smile01", "exp_sad01"}), frozenset(), {})
-    finished = Mock()
-    adapter.apply_performance({"motion": "mtn_nod01", "expression": "exp_smile01"}, "like", context="turn", on_finish=finished)
+    started, finished = Mock(), Mock()
+    adapter.apply_performance({"motion": "mtn_nod01", "expression": "exp_smile01"}, "like", context="turn", on_start=started, on_finish=finished)
+    start_callback = native.StartMotion.call_args.args[-2]
     callback = native.StartMotion.call_args.args[-1]
     adapter.apply_performance({"motion": "mtn_nod01", "expression": "exp_sad01"}, "like", context="turn", on_finish=finished)
     assert native.StartMotion.call_count == 1
@@ -117,7 +118,9 @@ def test_native_dedup_single_play_and_stale_callback(tmp_path: Path) -> None:
     assert loaded_data[0]["Meta"]["Loop"] is False
     assert json.loads((tmp_path / "mtn_nod01_C.motion3.json").read_text())["Meta"]["Loop"] is True
     adapter.reset_performance()
+    start_callback()
     callback()
+    started.assert_not_called()
     finished.assert_not_called()
 
 
@@ -233,6 +236,8 @@ def test_native_segment_gaps_hold_until_whole_turn_finishes(tmp_path: Path) -> N
     path = make_model(tmp_path)
     native = Mock()
     native.LoadExtraMotion.return_value = 0
+    native.IsMotionFinished.return_value = False
+    native.StartMotion.side_effect = lambda group, index, priority, started, finished: started() if started else None
     adapter = Live2DModelAdapter(str(path), "v3", ModuleType("fake"), native, frozenset(), {},
                                 frozenset({"exp_smile01", "exp_sad01"}), frozenset(), {})
     player = SingleCharacterPerformance()
@@ -247,22 +252,25 @@ def test_native_segment_gaps_hold_until_whole_turn_finishes(tmp_path: Path) -> N
           patch.object(adapter, "StartRandomMotion", return_value=True) as idle):
         player.last_idle = 100
         player.command({"type": "thinking"}, adapter)
+        idle.reset_mock()
         player.command(segment, adapter)
         player.update_playback(adapter)
         assert player.audio_started and player.independent_performance
         timer.return_value = wall.return_value = 107
+        native.StartMotion.call_args.args[-1]()
         player.update_playback(adapter)
-        assert len(events) == 1
+        assert [event["type"] for event in events] == ["playback_started", "playback_complete"]
         timer.return_value = wall.return_value = 125
         player.update_playback(adapter)
         idle.assert_not_called()
         segment = dict(segment, segment_id=2, performance={"motion": "mtn_nod01", "expression": "exp_sad01"})
         player.command(segment, adapter)
         player.update_playback(adapter)
-        assert native.StartMotion.call_count == 1
+        assert native.StartMotion.call_count == 2
         assert native.SetExpression.call_count == 2
         player.command({"type": "generation_finished"}, adapter)
         timer.return_value = wall.return_value = 132
+        native.StartMotion.call_args.args[-1]()
         player.update_playback(adapter)
         idle.assert_not_called()
         timer.return_value = wall.return_value = 135

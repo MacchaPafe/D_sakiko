@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 from collections import deque
 import re
 import threading
@@ -70,6 +70,10 @@ class ConversationRuntime:
         self.event_sink = RuntimeEventSink(self)
         self.input_queue = RuntimeInputQueue(self)
         self._internal = deque()
+        self._segments = {}
+        self._started_segments = set()
+        self._display_start = None
+        self._displayed_indices = set()
 
     def queue_internal(self, chat_id, text):
         with self._lock:
@@ -143,6 +147,10 @@ class ConversationRuntime:
             self._status = "ok"
             self._sequence = 0
             self._message_indices = set()
+            self._segments.clear()
+            self._started_segments.clear()
+            self._display_start = len(self.chat_manager.get_chat_by_id(chat_id).message_list)
+            self._displayed_indices.clear()
             self._voice_options = {
                 key: float(value)
                 for key, value in [
@@ -193,6 +201,38 @@ class ConversationRuntime:
             self.active = None
             self._replaying = False
             self._pending.clear()
+            self._segments.clear()
+            self._started_segments.clear()
+
+    def visible_chat(self, chat):
+        """重绘时只投影已开始演出的回复，避免合成中的存档内容提前显示。"""
+        from chat.chat import Chat
+
+        with self._lock:
+            if self.active is None or self.active[0] != chat.chat_id or self._display_start is None:
+                return chat
+            end = len(chat.message_list)
+            for index in range(self._display_start, end):
+                if index not in self._displayed_indices and not Chat.is_real_user_message(chat.message_list[index]):
+                    end = index
+                    break
+            visible = copy(chat)
+            visible.message_list = chat.message_list[:end]
+            return visible
+
+    def text_display_finished(self, event):
+        """把文字显示完成回执交给当前段，旧轮次和重复回执不能推进其他段。"""
+        with self._lock:
+            if self.matches(event) and event.get("segment_id") in self._started_segments:
+                self.presentation.put(dict(event, type="segment_text_complete"))
+
+    def text_display_started(self, event):
+        """Qt 消费开始事件后才纳入重绘，避免排队中的刷新先全文显示又重复追加。"""
+        with self._lock:
+            if self.matches(event) and event.get("segment_id") in self._started_segments:
+                segment = self._segments.get(event.get("segment_id"))
+                if segment is not None:
+                    self._displayed_indices.add(segment.get("message_index"))
 
     def accept_event(self, event):
         with self._lock:
@@ -217,17 +257,28 @@ class ConversationRuntime:
 
     def playback_event(self, event):
         with self._lock:
-            if not self.matches(event):
+            if not self.matches(event) or event.get("segment_id") not in self._pending:
+                return
+            segment_id = event.get("segment_id")
+            if event.get("type") == "playback_started":
+                if segment_id in self._started_segments:
+                    return
+                self._started_segments.add(segment_id)
+                segment = self._segments.get(segment_id)
+                if segment is not None:
+                    self.events.put(dict(segment, type="assistant_segment_started"))
                 return
             if event.get("type") in ("playback_complete", "playback_failed"):
-                self._pending.discard(event.get("segment_id"))
+                self._pending.discard(segment_id)
+                self._segments.pop(segment_id, None)
+                self._started_segments.discard(segment_id)
                 if event.get("type") == "playback_failed":
                     self.events.put(
                         dict(
                             type="assistant_turn_error",
                             chat_id=self.active[0],
                             turn_id=self.active[1],
-                            message="音频播放失败，已保留文字。",
+                            message=str(event.get("error") or "音频播放失败，已保留文字。"),
                         )
                     )
                 self._finish_if_ready()
@@ -362,8 +413,8 @@ class ConversationRuntime:
                     chat.message_list[message_index].audio_path = event["audio_path"]
                     chat.message_list[message_index].translation = event["translation"]
                 self._pending.add(self._sequence)
-                self.events.put(event)
-                self.presentation.put(dict(event, type="play_segment"))
+                self._segments[self._sequence] = event
+                self.presentation.put(dict(event, type="play_segment", wait_for_text=True))
         if payload.get("turn_complete", True):
             self.accept_event(
                 dict(payload, type="assistant_turn_complete", status="ok")
@@ -385,12 +436,17 @@ class ConversationRuntime:
             self._pending = {1}
             self._generation_done = True
             self._status = "ok"
+            self._segments.clear()
+            self._started_segments.clear()
+            self._display_start = None
             self.presentation.put(
                 dict(
                     type="play_segment",
                     chat_id=chat_id,
                     turn_id=turn_id,
                     segment_id=1,
+                    # 历史记录已显示，回放只等待动作与声音/阅读时间，不重复打印。
+                    wait_for_text=False,
                     audio_path=audio_path,
                     emotion=emotion,
                     text=text,
