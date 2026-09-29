@@ -36,7 +36,7 @@ from .stage2b_thought_extraction import load_stage2b_annotation_artifact
 from .stage3_document_review import load_stage3_document_review_artifact
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RegenerationResult:
     """描述一次已完成重生成步骤的输出与迁移摘要。"""
 

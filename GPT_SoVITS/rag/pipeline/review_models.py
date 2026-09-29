@@ -1,6 +1,7 @@
 """定义 Stage 3 人工审核、来源摘要与迁移报告的公共模型。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 
@@ -18,7 +19,7 @@ ExcludeReasonCode = Literal[
     "not_long_term_knowledge",
     "other",
 ]
-DispositionReasonCode = RejectReasonCode | ExcludeReasonCode
+DispositionReasonCode = Union[RejectReasonCode, ExcludeReasonCode]
 RiskLevel = Literal["low", "medium", "high"]
 
 
@@ -28,7 +29,7 @@ class SourceFingerprint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role: str = Field(min_length=1)
-    episode: int | None = Field(default=None, ge=0)
+    episode: Union[int, None] = Field(default=None, ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -38,13 +39,13 @@ class ReviewFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     review_status: ReviewStatus = "unreviewed"
-    disposition: Disposition | None = None
-    suggested_disposition: SuggestedDisposition | None = None
-    disposition_reason_code: DispositionReasonCode | None = None
-    disposition_reason_note: str | None = None
-    review_notes: str | None = None
+    disposition: Union[Disposition, None] = None
+    suggested_disposition: Union[SuggestedDisposition, None] = None
+    disposition_reason_code: Union[DispositionReasonCode, None] = None
+    disposition_reason_note: Union[str, None] = None
+    review_notes: Union[str, None] = None
     review_basis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    previous_review_reference: str | None = None
+    previous_review_reference: Union[str, None] = None
     risk_level: RiskLevel = "low"
     risk_reasons: list[str] = Field(default_factory=list)
 
@@ -113,7 +114,7 @@ class ReviewMigrationReport(BaseModel):
     artifact_type: str
     output_path: str
     succeeded: bool
-    blocked_reason: str | None = None
+    blocked_reason: Union[str, None] = None
     counts: MigrationCounts = Field(default_factory=MigrationCounts)
     migrated_ids: list[str] = Field(default_factory=list)
     reset_ids: list[str] = Field(default_factory=list)
@@ -135,8 +136,8 @@ def reset_review_fields(fields: ReviewFields) -> None:
 def complete_review(
     fields: ReviewFields,
     disposition: Disposition,
-    reason_code: DispositionReasonCode | None = None,
-    reason_note: str | None = None,
+    reason_code: Union[DispositionReasonCode, None] = None,
+    reason_note: Union[str, None] = None,
 ) -> None:
     """用统一规则完成人工审核并立即校验处置组合。"""
 

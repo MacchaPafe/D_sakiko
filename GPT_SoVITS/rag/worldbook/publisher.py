@@ -1,6 +1,7 @@
 """世界书 build spec 的纯验证与正式发布编排。"""
 
 from __future__ import annotations
+from typing import Union
 
 from collections.abc import Callable
 import json
@@ -21,10 +22,10 @@ from .models import ValidationIssue
 from .worker import run_worker
 
 
-IndexRebuildCallback = Callable[[Path], tuple[bool, str | None]]
+IndexRebuildCallback = Callable[[Path], tuple[bool, Union[str, None]]]
 
 
-def validate_worldbook_build(build_spec_path: str | Path) -> WorldbookBuildReport:
+def validate_worldbook_build(build_spec_path: Union[str, Path]) -> WorldbookBuildReport:
     """只读验证 build spec、审核门槛、正式 Schema 和全局包集合。"""
 
     resolved = load_build_spec(build_spec_path)
@@ -61,12 +62,12 @@ def validate_worldbook_build(build_spec_path: str | Path) -> WorldbookBuildRepor
 
 
 def publish_worldbook_package(
-    build_spec_path: str | Path,
-    allowed_removed_ids: set[str] | None = None,
+    build_spec_path: Union[str, Path],
+    allowed_removed_ids: Union[set[str], None] = None,
     allow_all_removed: bool = False,
-    reactivate_ids: set[str] | None = None,
+    reactivate_ids: Union[set[str], None] = None,
     reactivate_all: bool = False,
-    rebuild_callback: IndexRebuildCallback | None = None,
+    rebuild_callback: Union[IndexRebuildCallback, None] = None,
 ) -> WorldbookBuildReport:
     """审计 staging 后替换正式包，并对全部世界书索引执行一次重建。"""
 
@@ -124,12 +125,12 @@ def publish_worldbook_package(
 
 
 def publish_worldbook_packages(
-    batch_spec_path: str | Path,
-    allowed_removed_ids: set[str] | None = None,
+    batch_spec_path: Union[str, Path],
+    allowed_removed_ids: Union[set[str], None] = None,
     allow_all_removed: bool = False,
-    reactivate_ids: set[str] | None = None,
+    reactivate_ids: Union[set[str], None] = None,
     reactivate_all: bool = False,
-    rebuild_callback: IndexRebuildCallback | None = None,
+    rebuild_callback: Union[IndexRebuildCallback, None] = None,
 ) -> WorldbookBatchBuildReport:
     """先共同审计全部 staging，再依次替换并且只重建一次索引。"""
 
@@ -253,7 +254,7 @@ def _derive_app_root(official_root: Path) -> Path:
     return resolved.parents[3]
 
 
-def _default_rebuild_callback(app_root: Path) -> tuple[bool, str | None]:
+def _default_rebuild_callback(app_root: Path) -> tuple[bool, Union[str, None]]:
     """调用现有 worker 对四张世界书 collection 执行全量重建。"""
 
     exit_code = run_worker(app_root, "rebuild")
@@ -272,7 +273,7 @@ def _new_report(package_id: str, command: str, report_path: Path) -> WorldbookBu
     )
 
 
-def _git_commit() -> str | None:
+def _git_commit() -> Union[str, None]:
     """尽力读取当前 Git commit，不检查或记录 dirty 状态。"""
 
     try:

@@ -105,3 +105,7 @@ install_brew.sh
 # 独立修复入口与维护说明
 !修复程序.command
 !docs/maintenance-recovery.md
+
+# 本地资源服务凭证：随私有发行包提供，不提交版本库。
+/GPT_SoVITS/live2d_download/hosted/_credentials.py
+/GPT_SoVITS/.model_download_cache/

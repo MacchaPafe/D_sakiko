@@ -23,7 +23,7 @@ CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 TRAILING_NOISE_RE = re.compile(r"[ぁ-んァ-ンA-Za-z]+$")
 
 
-@dataclass(slots=True)
+@dataclass()
 class ObservationCluster:
     """保存暂未转换为正式事件的一组连续相似观测。"""
 

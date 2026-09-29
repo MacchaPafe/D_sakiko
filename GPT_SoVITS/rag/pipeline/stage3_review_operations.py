@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import Literal, Union
 
 from pydantic import BaseModel
 
@@ -33,60 +33,46 @@ from .stage3_thought_models import (
 )
 
 
-ReviewArtifact: TypeAlias = (
-    Stage3DocumentReviewArtifact
-    | Stage3RelationReviewArtifact
-    | Stage3ThoughtReviewArtifact
-    | Stage3LoreDecisionsArtifact
-)
-OrdinaryReviewArtifact: TypeAlias = (
-    Stage3DocumentReviewArtifact
-    | Stage3RelationReviewArtifact
-    | Stage3ThoughtReviewArtifact
-)
-IdentityReviewItem: TypeAlias = (
-    StoryEventReviewRecord
-    | LoreEntryReviewRecord
-    | RelationTypeReviewRecord
-    | ThoughtThreadReviewRecord
-)
+ReviewArtifact = Union[Stage3DocumentReviewArtifact, Stage3RelationReviewArtifact, Stage3ThoughtReviewArtifact, Stage3LoreDecisionsArtifact]
+OrdinaryReviewArtifact = Union[Stage3DocumentReviewArtifact, Stage3RelationReviewArtifact, Stage3ThoughtReviewArtifact]
+IdentityReviewItem = Union[StoryEventReviewRecord, LoreEntryReviewRecord, RelationTypeReviewRecord, ThoughtThreadReviewRecord]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CompleteItemReviewCommand:
     """表示完成一个普通审核单位的最终处置。"""
 
     item_id: str
     disposition: Disposition
-    reason_code: DispositionReasonCode | None = None
-    reason_note: str | None = None
-    review_notes: str | None = None
+    reason_code: Union[DispositionReasonCode, None] = None
+    reason_note: Union[str, None] = None
+    review_notes: Union[str, None] = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class BatchCompleteReviewCommand:
     """表示把显式选择的多个审核单位批量审核通过。"""
 
     item_ids: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class MarkItemFollowupCommand:
     """表示把一个普通审核单位标记为需要继续处理。"""
 
     item_id: str
-    review_notes: str | None = None
+    review_notes: Union[str, None] = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class UpdateItemNotesCommand:
     """表示只更新审核备注。"""
 
     item_id: str
-    review_notes: str | None
+    review_notes: Union[str, None]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReplaceStoryDocumentCommand:
     """表示替换 Story Event 的完整人工文档。"""
 
@@ -94,7 +80,7 @@ class ReplaceStoryDocumentCommand:
     content: StoryEventPayload
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReplaceLoreDocumentCommand:
     """表示替换 Lore Entry 的完整人工文档。"""
 
@@ -102,7 +88,7 @@ class ReplaceLoreDocumentCommand:
     content: LoreEntryPayload
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReplaceRelationContentCommand:
     """表示替换 Relation Type 的完整人工内容。"""
 
@@ -110,7 +96,7 @@ class ReplaceRelationContentCommand:
     content: RelationTypeContentDraft
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReplaceThoughtContentCommand:
     """表示替换 Thought Thread 的完整人工内容。"""
 
@@ -118,14 +104,14 @@ class ReplaceThoughtContentCommand:
     content: ThoughtThreadContentDraft
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RestoreGeneratedContentCommand:
     """表示删除人工快照并恢复机器基准。"""
 
     item_id: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class AssignRelationObservationCommand:
     """表示把一个 Observation 移入目标 Relation State。"""
 
@@ -134,7 +120,7 @@ class AssignRelationObservationCommand:
     target_state_index: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class AssignThoughtUpdateCommand:
     """表示把一个 Thought Update 移入目标 Thought State。"""
 
@@ -143,7 +129,7 @@ class AssignThoughtUpdateCommand:
     target_state_index: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SplitRelationTypeCommand:
     """表示在指定 State 位置拆分 Relation Type。"""
 
@@ -153,7 +139,7 @@ class SplitRelationTypeCommand:
     new_semantic_label: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class MergeRelationTypesCommand:
     """表示把两个同向 Relation Type 合并到主 Type。"""
 
@@ -162,7 +148,7 @@ class MergeRelationTypesCommand:
     semantic_label: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SplitThoughtThreadCommand:
     """表示在指定 State 位置拆分 Thought Thread。"""
 
@@ -173,7 +159,7 @@ class SplitThoughtThreadCommand:
     new_thought_aspect: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class MergeThoughtThreadsCommand:
     """表示把同一角色的两个 Thought Thread 合并到主 Thread。"""
 
@@ -183,53 +169,34 @@ class MergeThoughtThreadsCommand:
     thought_aspect: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ResolveIdentityCommand:
     """表示确认一个候选是否继承上一版开发侧身份。"""
 
     item_id: str
     choice: Literal["inherit", "new"]
-    previous_id: str | None = None
+    previous_id: Union[str, None] = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CompleteLoreDecisionCommand:
     """表示完成一个 Lore 重复组的人工决定。"""
 
     group_id: str
     action: LoreDedupAction
-    primary_candidate_id: str | None = None
-    reviewed_document: LoreEntryPayload | None = None
-    review_notes: str | None = None
+    primary_candidate_id: Union[str, None] = None
+    reviewed_document: Union[LoreEntryPayload, None] = None
+    review_notes: Union[str, None] = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ClearLoreDecisionCommand:
     """表示清除一个人工 Lore 决定并恢复待处理状态。"""
 
     group_id: str
 
 
-ReviewCommand: TypeAlias = (
-    CompleteItemReviewCommand
-    | BatchCompleteReviewCommand
-    | MarkItemFollowupCommand
-    | UpdateItemNotesCommand
-    | ReplaceStoryDocumentCommand
-    | ReplaceLoreDocumentCommand
-    | ReplaceRelationContentCommand
-    | ReplaceThoughtContentCommand
-    | RestoreGeneratedContentCommand
-    | AssignRelationObservationCommand
-    | AssignThoughtUpdateCommand
-    | SplitRelationTypeCommand
-    | MergeRelationTypesCommand
-    | SplitThoughtThreadCommand
-    | MergeThoughtThreadsCommand
-    | ResolveIdentityCommand
-    | CompleteLoreDecisionCommand
-    | ClearLoreDecisionCommand
-)
+ReviewCommand = Union[CompleteItemReviewCommand, BatchCompleteReviewCommand, MarkItemFollowupCommand, UpdateItemNotesCommand, ReplaceStoryDocumentCommand, ReplaceLoreDocumentCommand, ReplaceRelationContentCommand, ReplaceThoughtContentCommand, RestoreGeneratedContentCommand, AssignRelationObservationCommand, AssignThoughtUpdateCommand, SplitRelationTypeCommand, MergeRelationTypesCommand, SplitThoughtThreadCommand, MergeThoughtThreadsCommand, ResolveIdentityCommand, CompleteLoreDecisionCommand, ClearLoreDecisionCommand]
 
 
 def apply_review_command(

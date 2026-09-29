@@ -1,6 +1,7 @@
 """定义跨集 Lore 去重决策产物。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 
@@ -23,10 +24,10 @@ class LoreDedupDecisionRecord(BaseModel):
     decision_basis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_ids: list[str] = Field(min_length=2)
     status: LoreDecisionStatus = "pending"
-    action: LoreDedupAction | None = None
-    primary_candidate_id: str | None = None
-    reviewed_document: LoreEntryPayload | None = None
-    review_notes: str | None = None
+    action: Union[LoreDedupAction, None] = None
+    primary_candidate_id: Union[str, None] = None
+    reviewed_document: Union[LoreEntryPayload, None] = None
+    review_notes: Union[str, None] = None
 
     @model_validator(mode="after")
     def validate_decision(self) -> "LoreDedupDecisionRecord":

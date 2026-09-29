@@ -280,10 +280,10 @@ class BackendTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             live2d_root = root / "live2d_related"
-            headprof_root = root / "char_headprof"
+            headprof_root = root / "assets" / "char_headprof"
             (live2d_root / "sakiko").mkdir(parents=True)
             (live2d_root / "anon").mkdir(parents=True)
-            headprof_root.mkdir()
+            headprof_root.mkdir(parents=True)
             sakiko_icon = live2d_root / "sakiko" / "sakiko_icon.png"
             anon_icon = headprof_root / "爱音.png"
             sakiko_icon.write_bytes(b"sakiko")

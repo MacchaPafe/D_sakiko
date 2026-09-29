@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 from multiprocessing import freeze_support
 from pathlib import Path
-from typing import TypeAlias
+from typing import Union
 
 try:
     from nicegui import native, ui
@@ -24,9 +24,9 @@ try:
 except ImportError:
     from stage2_editor_schema import Stage2InputArtifact
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+JsonScalar = Union[str, int, float, bool, None]
+JsonValue = Union[JsonScalar, list['JsonValue'], dict[str, 'JsonValue']]
+JsonObject = dict[str, JsonValue]
 
 PIPELINE_ROOT = Path(__file__).resolve().parent
 SOURCE_DATA_DIR = PIPELINE_ROOT / "data" / "annotations_stage2"

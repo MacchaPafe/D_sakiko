@@ -1,6 +1,7 @@
 """NiceGUI 驱动的统一 Stage 3 审核工作台。"""
 
 from __future__ import annotations
+from typing import Union
 
 import argparse
 import json
@@ -102,7 +103,7 @@ LORE_DECISION_STATUS_LABELS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewListItem:
     """表示左侧统一审核队列中的一项。"""
 
@@ -111,15 +112,15 @@ class ReviewListItem:
     kind: str
     title: str
     review_status: str
-    disposition: str | None
+    disposition: Union[str, None]
     risk_level: str
     identity_pending: bool
     human_edited: bool
-    time_order: int | None = None
+    time_order: Union[int, None] = None
     published_lore_match_count: int = 0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PublishedLoreMatchInfo:
     """表示当前工作区内一条同名且已经审核收录的 Lore。"""
 
@@ -129,7 +130,7 @@ class PublishedLoreMatchInfo:
     document: LoreEntryPayload
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StoryThoughtLinkInfo:
     """表示审核器展示的一条 Story Event 反向 Thought 链接。"""
 
@@ -141,7 +142,7 @@ class StoryThoughtLinkInfo:
     visible_from: int
     visible_to: int
     review_status: str
-    disposition: str | None
+    disposition: Union[str, None]
     stale: bool
 
 
@@ -246,19 +247,19 @@ class Stage3ReviewWorkbench:
         self.workspace = ReviewWorkspace(build_spec_path)
         self.regenerator = Stage3ReviewRegenerator(build_spec_path)
         self.current_section = "overview"
-        self.current_item_id: str | None = None
+        self.current_item_id: Union[str, None] = None
         self.search_text = ""
         self.status_filter = "all"
         self.selected_items: set[tuple[str, str]] = set()
         self.last_audit_messages: list[str] = []
 
-        self.navigation_column: ui.column | None = None
-        self.queue_column: ui.column | None = None
-        self.detail_column: ui.column | None = None
-        self.evidence_column: ui.column | None = None
-        self.summary_column: ui.column | None = None
-        self.status_badge: ui.badge | None = None
-        self.dirty_badge: ui.badge | None = None
+        self.navigation_column: Union[ui.column, None] = None
+        self.queue_column: Union[ui.column, None] = None
+        self.detail_column: Union[ui.column, None] = None
+        self.evidence_column: Union[ui.column, None] = None
+        self.summary_column: Union[ui.column, None] = None
+        self.status_badge: Union[ui.badge, None] = None
+        self.dirty_badge: Union[ui.badge, None] = None
 
     def build_ui(self) -> None:
         """构建工作台页面。"""
@@ -1700,7 +1701,7 @@ class Stage3ReviewWorkbench:
             primary.value,
         )
 
-        def refresh_preview(_: object | None = None) -> None:
+        def refresh_preview(_: Union[object, None] = None) -> None:
             """根据当前去重动作刷新说明、警告和候选状态标签。"""
 
             action_value = _widget_text(action)
@@ -2035,7 +2036,7 @@ class Stage3ReviewWorkbench:
         slot_key: str,
         record: ReviewFields,
         choice: str,
-        previous_id: str | None,
+        previous_id: Union[str, None],
     ) -> None:
         """确认当前候选的开发侧身份。"""
 
@@ -2264,7 +2265,7 @@ class Stage3ReviewWorkbench:
         except (TypeError, ValueError, KeyError, IndexError) as exc:
             self._notify_error(exc)
 
-    def _locate_current(self) -> tuple[ArtifactSlot, BaseModel] | None:
+    def _locate_current(self) -> Union[tuple[ArtifactSlot, BaseModel], None]:
         """在当前审核域中定位选中的 Pydantic 记录。"""
 
         if self.current_item_id is None:
@@ -2286,7 +2287,7 @@ class Stage3ReviewWorkbench:
                     return slot, record
         return None
 
-    def _find_lore_candidate(self, candidate_id: str) -> LoreEntryReviewRecord | None:
+    def _find_lore_candidate(self, candidate_id: str) -> Union[LoreEntryReviewRecord, None]:
         """在全部逐集 Review 中查找 Lore 候选。"""
 
         for slot in self.workspace.slots.values():
@@ -2414,7 +2415,7 @@ class Stage3ReviewWorkbench:
                 ui.button("关闭", on_click=dialog.close).props("flat")
         dialog.open()
 
-    def open_source_revalidation_dialog(self, slot_key: str | None = None) -> None:
+    def open_source_revalidation_dialog(self, slot_key: Union[str, None] = None) -> None:
         """打开消费投影差异和人工来源重新确认对话框。"""
 
         if slot_key is not None:
@@ -2574,8 +2575,8 @@ class Stage3ReviewWorkbench:
         dialog: object,
         preview: SourceRevalidationPreview,
         force: bool,
-        reason_widget: object | None,
-        confirmation_widget: object | None,
+        reason_widget: Union[object, None],
+        confirmation_widget: Union[object, None],
     ) -> None:
         """在 I/O worker 中保存来源确认并展示构建审计结果。"""
 
@@ -2834,7 +2835,7 @@ def _ordinary_list_item(
     human_edited: bool,
     identity_pending: bool,
     *,
-    time_order: int | None = None,
+    time_order: Union[int, None] = None,
 ) -> ReviewListItem:
     """构造普通审核单位的统一队列项。"""
 
@@ -2914,7 +2915,7 @@ def _model_item_id(record: BaseModel) -> str:
     raise ValueError("记录没有可识别的稳定 ID")
 
 
-def _generated_payload(record: BaseModel) -> object | None:
+def _generated_payload(record: BaseModel) -> Union[object, None]:
     """返回当前记录的机器基准 JSON 投影。"""
 
     if isinstance(record, (StoryEventReviewRecord, LoreEntryReviewRecord)):
@@ -2926,7 +2927,7 @@ def _generated_payload(record: BaseModel) -> object | None:
     return None
 
 
-def _previous_payload(record: BaseModel) -> object | None:
+def _previous_payload(record: BaseModel) -> Union[object, None]:
     """返回当前记录上一版人工内容的 JSON 投影。"""
 
     if isinstance(record, (StoryEventReviewRecord, LoreEntryReviewRecord)):
@@ -2965,7 +2966,7 @@ def _event_checked(event: object) -> bool:
 def _review_risk_explanations(
     record: ReviewFields,
     thought_updates: list[ThoughtUpdateEvidence],
-    relation_observations: list[RelationObservationReviewRecord] | None = None,
+    relation_observations: Union[list[RelationObservationReviewRecord], None] = None,
 ) -> list[str]:
     """汇总已有风险原因及可由 Relation/Thought 证据还原的细节。"""
 
@@ -3082,7 +3083,7 @@ def _widget_int(widget: object) -> int:
     return int(value)
 
 
-def _widget_optional_int(widget: object) -> int | None:
+def _widget_optional_int(widget: object) -> Union[int, None]:
     """读取可空整数表单值。"""
 
     value = _widget_value(widget)
@@ -3126,7 +3127,7 @@ def _widget_string_list(widget: object) -> list[str]:
     return _widget_csv(widget)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Union[list[str], None] = None) -> argparse.Namespace:
     """解析审核工作台启动参数。"""
 
     parser = argparse.ArgumentParser(description="启动统一 Stage 3 审核工作台")
@@ -3137,7 +3138,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Union[list[str], None] = None) -> None:
     """启动统一 Stage 3 审核工作台。"""
 
     args = parse_args(argv)

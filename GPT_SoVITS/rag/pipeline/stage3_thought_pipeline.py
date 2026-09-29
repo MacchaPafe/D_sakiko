@@ -44,7 +44,7 @@ THOUGHT_VISIBLE_TO_DEFAULT = 999999
 DEFAULT_LINK_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "thought_reference_linking.jinja"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _EventLinkCandidate:
     """保存提供给 Stage 3 LLM 的 Story Event 候选摘要。"""
 
@@ -54,7 +54,7 @@ class _EventLinkCandidate:
     time: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _FactLinkCandidate:
     """保存提供给 Stage 3 LLM 的 Event Fact 候选摘要。"""
 
@@ -63,7 +63,7 @@ class _FactLinkCandidate:
     event_id: str | None
 
 
-@dataclass(slots=True)
+@dataclass()
 class _ThoughtPipelinePreparation:
     """保存观点链接前的确定性规范化结果。"""
 

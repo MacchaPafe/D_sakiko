@@ -6,11 +6,11 @@ import json
 import time
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import TypeAlias
+from typing import Union
 
 
-JSONPrimitive: TypeAlias = str | int | float | bool | None
-JSONValue: TypeAlias = JSONPrimitive | list["JSONValue"] | dict[str, "JSONValue"]
+JSONPrimitive = Union[str, int, float, bool, None]
+JSONValue = Union[JSONPrimitive, list['JSONValue'], dict[str, 'JSONValue']]
 
 
 class Scenario(str, Enum):

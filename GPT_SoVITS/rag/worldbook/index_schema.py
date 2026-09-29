@@ -16,7 +16,7 @@ PROJECTION_VERSION = 1
 EMBEDDING_MODEL_ID = "multilingual-e5-small"
 """当前世界书索引使用的 embedding 模型标识。"""
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PayloadIndexSpec:
     """描述一个 Qdrant payload 索引字段。"""
 

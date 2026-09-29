@@ -68,7 +68,7 @@ class CharacterThoughtContentV0(BaseModel):
         return self
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CharacterThoughtTypeModule:
     """集中解释 Character Thought 发布 Schema v0。"""
 

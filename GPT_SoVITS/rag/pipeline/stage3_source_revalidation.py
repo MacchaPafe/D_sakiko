@@ -1,6 +1,7 @@
 """计算 Stage 3 下游消费投影并保存本地来源重新确认记录。"""
 
 from __future__ import annotations
+from typing import Union
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,8 +59,8 @@ class ProjectionDifference(BaseModel):
 
     path: str
     change: Literal["added", "removed", "modified"]
-    before_summary: str | None = None
-    after_summary: str | None = None
+    before_summary: Union[str, None] = None
+    after_summary: Union[str, None] = None
 
 
 class SourceAcceptanceRecord(BaseModel):
@@ -69,10 +70,10 @@ class SourceAcceptanceRecord(BaseModel):
 
     accepted_at: str
     mode: AcceptanceMode
-    reason: str | None = None
+    reason: Union[str, None] = None
     old_source_fingerprints: list[SourceFingerprint]
     new_source_fingerprints: list[SourceFingerprint]
-    old_projection_sha256: str | None = None
+    old_projection_sha256: Union[str, None] = None
     new_projection_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     differences: list[ProjectionDifference] = Field(default_factory=list)
 
@@ -107,7 +108,7 @@ class SourceRevalidationPreview(BaseModel):
     differences: list[ProjectionDifference] = Field(default_factory=list)
 
 
-def source_acceptance_path(artifact_path: str | Path) -> Path:
+def source_acceptance_path(artifact_path: Union[str, Path]) -> Path:
     """返回审核 artifact 对应的本地来源接受 sidecar 路径。"""
 
     resolved = Path(artifact_path)
@@ -224,8 +225,8 @@ def projection_differences(
 
 
 def load_source_acceptance_log(
-    artifact_path: str | Path,
-) -> tuple[BaselineStatus, SourceAcceptanceLog | None]:
+    artifact_path: Union[str, Path],
+) -> tuple[BaselineStatus, Union[SourceAcceptanceLog, None]]:
     """读取本地 sidecar，并把缺失、损坏和版本不兼容显式区分。"""
 
     path = source_acceptance_path(artifact_path)
@@ -245,7 +246,7 @@ def load_source_acceptance_log(
 
 
 def save_generation_baseline(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     baseline: SourceProjectionBaseline,
 ) -> Path:
     """为 fresh 产物补写当前基线，并保留已有人工接受历史。"""
@@ -262,11 +263,11 @@ def save_generation_baseline(
 
 
 def build_acceptance_log(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     preview: SourceRevalidationPreview,
     *,
     mode: AcceptanceMode,
-    reason: str | None,
+    reason: Union[str, None],
 ) -> SourceAcceptanceLog:
     """根据确认预览构造新的本地基线和完整接受记录。"""
 
@@ -303,10 +304,7 @@ def validate_current_references(
     resolved: ResolvedBuildSpec,
     slot_key: str,
     artifact: (
-        Stage3RelationReviewArtifact
-        | Stage3ThoughtReviewArtifact
-        | Stage3LoreDecisionsArtifact
-        | BaseModel
+        Union[Union[Union[Stage3RelationReviewArtifact, Stage3ThoughtReviewArtifact], Stage3LoreDecisionsArtifact], BaseModel]
     ),
 ) -> None:
     """拒绝人工来源确认掩盖 episode 范围或直接候选引用错误。"""

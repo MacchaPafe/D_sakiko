@@ -20,7 +20,7 @@ _SERIES_BASES: dict[SeriesId, int] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StoryTimeCoordinate:
     """表示可由内部整数稳定还原的集数与集内时间点。"""
 

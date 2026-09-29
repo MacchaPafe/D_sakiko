@@ -1,6 +1,7 @@
 """从审核产物确定性构建正式世界书 staging 包。"""
 
 from __future__ import annotations
+from typing import Union
 
 from dataclasses import dataclass
 import json
@@ -40,7 +41,7 @@ _ENTRY_FILES: tuple[tuple[EntryType, str], ...] = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ResolvedBuildSpec:
     """保存 build spec 及其相对配置文件解析后的路径。"""
 
@@ -56,7 +57,7 @@ class ResolvedBuildSpec:
     build_report: Path
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class BuiltWorldbookPackage:
     """保存一次 staging 构建的产物和使用的身份集合。"""
 
@@ -66,7 +67,7 @@ class BuiltWorldbookPackage:
     input_sha256: dict[str, str]
 
 
-def load_build_spec(path: str | Path) -> ResolvedBuildSpec:
+def load_build_spec(path: Union[str, Path]) -> ResolvedBuildSpec:
     """读取单包 build spec，并相对配置文件解析全部路径。"""
 
     spec_path = Path(path).resolve()

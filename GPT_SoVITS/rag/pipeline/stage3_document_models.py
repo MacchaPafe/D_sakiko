@@ -1,6 +1,7 @@
 """定义 Story Event 与 Lore Entry 的 Stage 3 审核产物。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 
@@ -16,15 +17,15 @@ class StoryEventReviewRecord(ReviewFields):
     model_config = ConfigDict(extra="forbid")
 
     candidate_id: str = Field(pattern=r"^story_candidate:[0-9a-f-]{36}$")
-    legacy_source_id: str | None = None
+    legacy_source_id: Union[str, None] = None
     source_scene_id: str
     source_local_id: str
     evidence_u_ids: list[str] = Field(default_factory=list)
     evidence_s_ids: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     generated_document: StoryEventPayload
-    reviewed_document: StoryEventPayload | None = None
-    previous_reviewed_document: StoryEventPayload | None = None
+    reviewed_document: Union[StoryEventPayload, None] = None
+    previous_reviewed_document: Union[StoryEventPayload, None] = None
     identity_suggestions: list[IdentitySuggestion] = Field(default_factory=list)
 
     def effective_document(self) -> StoryEventPayload:
@@ -39,15 +40,15 @@ class LoreEntryReviewRecord(ReviewFields):
     model_config = ConfigDict(extra="forbid")
 
     candidate_id: str = Field(pattern=r"^lore_candidate:[0-9a-f-]{36}$")
-    legacy_source_id: str | None = None
+    legacy_source_id: Union[str, None] = None
     source_scene_id: str
     source_local_id: str
     evidence_u_ids: list[str] = Field(default_factory=list)
     evidence_s_ids: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     generated_document: LoreEntryPayload
-    reviewed_document: LoreEntryPayload | None = None
-    previous_reviewed_document: LoreEntryPayload | None = None
+    reviewed_document: Union[LoreEntryPayload, None] = None
+    previous_reviewed_document: Union[LoreEntryPayload, None] = None
     identity_suggestions: list[IdentitySuggestion] = Field(default_factory=list)
 
     def effective_document(self) -> LoreEntryPayload:

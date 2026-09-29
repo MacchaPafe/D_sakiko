@@ -1,6 +1,7 @@
 """构建并迁移单集 Story Event 与 Lore Entry 审核产物。"""
 
 from __future__ import annotations
+from typing import Union
 
 import json
 from pathlib import Path
@@ -241,8 +242,8 @@ def _migrate_lore_records(
 def build_stage3_document_review_artifact(
     normalized: Stage3NormalizedImportArtifact,
     direct_sources: list[SourceFingerprint],
-    previous: Stage3DocumentReviewArtifact | None = None,
-    allowed_removed_ids: set[str] | None = None,
+    previous: Union[Stage3DocumentReviewArtifact, None] = None,
+    allowed_removed_ids: Union[set[str], None] = None,
     allow_all_removed: bool = False,
     output_path: str = "",
 ) -> tuple[Stage3DocumentReviewArtifact, ReviewMigrationReport]:
@@ -307,7 +308,7 @@ def build_stage3_document_review_artifact(
     return artifact, report
 
 
-def load_stage3_document_review_artifact(path: str | Path) -> Stage3DocumentReviewArtifact:
+def load_stage3_document_review_artifact(path: Union[str, Path]) -> Stage3DocumentReviewArtifact:
     """读取严格的新 Story/Lore 审核产物。"""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -318,18 +319,18 @@ def load_stage3_document_review_artifact(path: str | Path) -> Stage3DocumentRevi
 
 
 def normalize_stage3_documents_from_files(
-    input_path: str | Path,
-    annotation_path: str | Path,
-    output_path: str | Path,
-    previous_path: str | Path | None = None,
+    input_path: Union[str, Path],
+    annotation_path: Union[str, Path],
+    output_path: Union[str, Path],
+    previous_path: Union[Union[str, Path], None] = None,
     fresh: bool = False,
-    allowed_removed_ids: set[str] | None = None,
+    allowed_removed_ids: Union[set[str], None] = None,
     allow_all_removed: bool = False,
 ) -> tuple[Stage3DocumentReviewArtifact, ReviewMigrationReport]:
     """从文件构建、迁移并安全保存 Story/Lore 审核产物。"""
 
     output = Path(output_path)
-    resolved_previous: Path | None = None
+    resolved_previous: Union[Path, None] = None
     if not fresh:
         if previous_path is not None:
             resolved_previous = Path(previous_path)

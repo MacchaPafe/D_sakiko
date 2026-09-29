@@ -35,7 +35,7 @@ SAMPLE_STAGE2_INPUT_PATH = ROOT_DIR / "GPT_SoVITS/rag/pipeline/data/annotations_
 SAMPLE_PASS2_RAW_PATH = ROOT_DIR / "GPT_SoVITS/rag/pipeline/data/annotations_stage2/ep01_pass2_raw.json"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _FakeCompletionPayload:
     """保存测试替身返回的 JSON 解析结果。"""
 

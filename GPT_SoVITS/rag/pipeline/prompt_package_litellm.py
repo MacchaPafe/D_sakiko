@@ -14,7 +14,7 @@ from .prompt_package import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PromptPackageCompletionReport:
     """记录 Prompt Package 请求模型后的完成、跳过与失败数量。"""
 

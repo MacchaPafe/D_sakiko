@@ -1,6 +1,7 @@
 """提供 OCR 中间产物的加载、校验和原子写入。"""
 
 from __future__ import annotations
+from typing import Union
 
 import hashlib
 import json
@@ -17,7 +18,7 @@ from .models import OCRObservationsArtifact, OCRReviewArtifact
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-def json_file_sha256(path: str | Path) -> str:
+def json_file_sha256(path: Union[str, Path]) -> str:
     """计算 JSON 文件的字节级 SHA-256，用于外部修改保护。"""
 
     digest = hashlib.sha256()
@@ -27,7 +28,7 @@ def json_file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def atomic_write_model(model: BaseModel, path: str | Path) -> Path:
+def atomic_write_model(model: BaseModel, path: Union[str, Path]) -> Path:
     """把 Pydantic 模型安全写入同目录临时文件后原子替换。"""
 
     target = Path(path)
@@ -58,14 +59,14 @@ def atomic_write_model(model: BaseModel, path: str | Path) -> Path:
     return target
 
 
-def load_observations(path: str | Path) -> OCRObservationsArtifact:
+def load_observations(path: Union[str, Path]) -> OCRObservationsArtifact:
     """加载并验证 observations JSON。"""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return OCRObservationsArtifact.model_validate(payload)
 
 
-def load_review(path: str | Path) -> OCRReviewArtifact:
+def load_review(path: Union[str, Path]) -> OCRReviewArtifact:
     """加载并验证 review JSON。"""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))

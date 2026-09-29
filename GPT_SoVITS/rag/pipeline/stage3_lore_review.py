@@ -1,6 +1,7 @@
 """从多集 Story/Lore Review 生成可审核的 Lore 去重决定。"""
 
 from __future__ import annotations
+from typing import Union
 
 import json
 from pathlib import Path
@@ -16,8 +17,8 @@ from .stage3_lore_models import LoreDedupDecisionRecord, Stage3LoreDecisionsArti
 
 
 def build_stage3_lore_decisions(
-    rag_paths: list[str | Path],
-    previous_path: str | Path | None = None,
+    rag_paths: list[Union[str, Path]],
+    previous_path: Union[Union[str, Path], None] = None,
 ) -> Stage3LoreDecisionsArtifact:
     """聚合已审核发布的 Lore 候选并生成自动或待人工决定的去重组。"""
 
@@ -74,7 +75,7 @@ def build_stage3_lore_decisions(
     )
 
 
-def load_stage3_lore_decisions(path: str | Path) -> Stage3LoreDecisionsArtifact:
+def load_stage3_lore_decisions(path: Union[str, Path]) -> Stage3LoreDecisionsArtifact:
     """读取严格的跨集 Lore decisions artifact。"""
 
     try:
@@ -85,7 +86,7 @@ def load_stage3_lore_decisions(path: str | Path) -> Stage3LoreDecisionsArtifact:
 
 def save_stage3_lore_decisions(
     artifact: Stage3LoreDecisionsArtifact,
-    path: str | Path,
+    path: Union[str, Path],
 ) -> None:
     """安全保存可版本管理的 Lore decisions artifact。"""
 

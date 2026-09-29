@@ -60,7 +60,7 @@ def _format_default_tool_output_for_display(result: object) -> str:
     return _truncate_display_text(text)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class ToolExecutionResult:
     """保存一次工具执行的状态以及面向模型和用户的两种文本表示。"""
 

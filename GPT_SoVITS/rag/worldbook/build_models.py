@@ -1,6 +1,7 @@
 """世界书单包／批量构建配置、身份和报告模型。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 from uuid import UUID
@@ -40,7 +41,7 @@ class WorldbookBuildSpec(BaseModel):
     series_id: SeriesId
     timeline_id: str = Field(min_length=1)
     canon_branch: CanonBranch
-    story_year: int | None = Field(default=None, ge=1)
+    story_year: Union[int, None] = Field(default=None, ge=1)
     dependencies: list[PackageDependency] = Field(default_factory=list)
     episodes: list[EpisodeBuildInput] = Field(default_factory=list)
     relation_review: str
@@ -118,7 +119,7 @@ class BuildIdentityChange(BaseModel):
 
     identity_key: str
     change: Literal["allocate", "deactivate", "reactivate", "retire"]
-    entry_id: UUID | None = None
+    entry_id: Union[UUID, None] = None
     provisional: bool = False
 
 
@@ -133,13 +134,13 @@ class WorldbookBuildReport(BaseModel):
     succeeded: bool = False
     package_published: bool = False
     index_rebuilt: bool = False
-    index_readiness: str | None = None
-    git_commit: str | None = None
+    index_readiness: Union[str, None] = None
+    git_commit: Union[str, None] = None
     input_sha256: dict[str, str] = Field(default_factory=dict)
     identity_changes: list[BuildIdentityChange] = Field(default_factory=list)
     issues: list[ValidationIssue] = Field(default_factory=list)
-    staging_path: str | None = None
-    report_path: str | None = None
+    staging_path: Union[str, None] = None
+    report_path: Union[str, None] = None
 
 
 class WorldbookBatchBuildReport(BaseModel):
@@ -152,5 +153,5 @@ class WorldbookBatchBuildReport(BaseModel):
     package_reports: list[WorldbookBuildReport] = Field(default_factory=list)
     issues: list[ValidationIssue] = Field(default_factory=list)
     index_rebuilt: bool = False
-    index_readiness: str | None = None
-    report_path: str | None = None
+    index_readiness: Union[str, None] = None
+    report_path: Union[str, None] = None

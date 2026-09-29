@@ -1,6 +1,7 @@
 """把跨集关系聚合结果组装为 Relation Type 级审核序列。"""
 
 from __future__ import annotations
+from typing import Union
 
 import json
 from collections import defaultdict
@@ -30,7 +31,7 @@ from .stage3_relation_models import (
 )
 
 
-def _state_draft(record: CharacterRelationStateReviewRecord) -> RelationStateDraft | None:
+def _state_draft(record: CharacterRelationStateReviewRecord) -> Union[RelationStateDraft, None]:
     """把旧单 State 记录转换为新序列中的状态草稿。"""
 
     document = record.document
@@ -147,9 +148,9 @@ def _inherit_state_ids(
 def build_stage3_relation_review_artifact(
     legacy: Stage3RelationAggregationArtifact,
     direct_sources: list[SourceFingerprint],
-    previous: Stage3RelationReviewArtifact | None = None,
+    previous: Union[Stage3RelationReviewArtifact, None] = None,
     output_path: str = "",
-    allowed_removed_ids: set[str] | None = None,
+    allowed_removed_ids: Union[set[str], None] = None,
     allow_all_removed: bool = False,
 ) -> tuple[Stage3RelationReviewArtifact, ReviewMigrationReport]:
     """从现有聚合内部结果构建 Relation Type 级审核产物。"""
@@ -338,7 +339,7 @@ def build_stage3_relation_review_artifact(
     return artifact, report
 
 
-def load_stage3_relation_review_artifact(path: str | Path) -> Stage3RelationReviewArtifact:
+def load_stage3_relation_review_artifact(path: Union[str, Path]) -> Stage3RelationReviewArtifact:
     """读取严格的全量 Relation Review。"""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -351,7 +352,7 @@ def load_stage3_relation_review_artifact(path: str | Path) -> Stage3RelationRevi
 def save_stage3_relation_review_artifact(
     artifact: Stage3RelationReviewArtifact,
     report: ReviewMigrationReport,
-    output_path: str | Path,
+    output_path: Union[str, Path],
 ) -> None:
     """安全保存 Relation Review 及本次迁移报告。"""
 

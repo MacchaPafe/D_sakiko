@@ -1,6 +1,7 @@
 """Stage 2B：按场景抽取 Event Fact 与角色观点更新。"""
 
 from __future__ import annotations
+from typing import Union
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -38,7 +39,7 @@ from .schemas import (
 DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "thought_extraction_pass.jinja"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _Stage2BSceneRequest:
     """保存一次 Stage 2B 场景请求所需的不可变数据。"""
 
@@ -53,7 +54,7 @@ class _Stage2BSceneRequest:
 def render_stage2b_prompt(
     scene: Stage2SceneInput,
     story_events: list[StoryEventCandidate],
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
 ) -> str:
     """渲染单个场景的 Stage 2B prompt。"""
 
@@ -90,10 +91,10 @@ def annotate_scene_stage2b_with_llm(
     scene: Stage2SceneInput,
     story_events: list[StoryEventCandidate],
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
     stream: bool = False,
-    status_callback: Callable[[str], None] | None = None,
-    stream_callback: Callable[[str], None] | None = None,
+    status_callback: Union[Callable[[str], None], None] = None,
+    stream_callback: Union[Callable[[str], None], None] = None,
 ) -> SceneThoughtExtractionPass2B:
     """对单个场景执行 Stage 2B LLM 抽取并校验结果。"""
 
@@ -117,15 +118,15 @@ def annotate_stage2b_artifact(
     input_artifact: Stage2InputArtifact,
     stage2a_artifact: Stage2AnnotationArtifact,
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    source_stage2a_output_path: str | None = None,
-    scene_ids: set[str] | None = None,
-    max_scenes: int | None = None,
-    prompts_dir: str | Path | None = None,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    source_stage2a_output_path: Union[str, None] = None,
+    scene_ids: Union[set[str], None] = None,
+    max_scenes: Union[int, None] = None,
+    prompts_dir: Union[Union[str, Path], None] = None,
     stream: bool = False,
-    status_callback: Callable[[str], None] | None = None,
-    stream_callback: Callable[[str], None] | None = None,
-    max_prompt_chars: int | None = None,
+    status_callback: Union[Callable[[str], None], None] = None,
+    stream_callback: Union[Callable[[str], None], None] = None,
+    max_prompt_chars: Union[int, None] = None,
     window_utterances: int = 40,
     window_overlap: int = 8,
 ) -> Stage2BAnnotationArtifact:
@@ -225,8 +226,8 @@ def _annotate_stage2b_request(
     request: _Stage2BSceneRequest,
     llm_config: LiteLLMConfig,
     stream: bool,
-    status_callback: Callable[[str], None] | None,
-    stream_callback: Callable[[str], None] | None,
+    status_callback: Union[Callable[[str], None], None],
+    stream_callback: Union[Callable[[str], None], None],
 ) -> Stage2BSceneAnnotationResult:
     """执行一个已渲染的 Stage 2B 请求并封装错误。"""
 
@@ -276,8 +277,8 @@ def _annotate_stage2b_request(
 def _render_stage2b_prompt_windows(
     scene: Stage2SceneInput,
     story_events: list[StoryEventCandidate],
-    template_path: str | Path,
-    max_prompt_chars: int | None,
+    template_path: Union[str, Path],
+    max_prompt_chars: Union[int, None],
     window_utterances: int,
     window_overlap: int,
 ) -> list[str]:
@@ -361,7 +362,7 @@ def _merge_window_annotations(
 
 def save_stage2b_annotation_artifact(
     artifact: Stage2BAnnotationArtifact,
-    output_path: str | Path,
+    output_path: Union[str, Path],
 ) -> None:
     """保存 Stage 2B 标注产物。"""
 
@@ -373,7 +374,7 @@ def save_stage2b_annotation_artifact(
     )
 
 
-def load_stage2b_annotation_artifact(input_path: str | Path) -> Stage2BAnnotationArtifact:
+def load_stage2b_annotation_artifact(input_path: Union[str, Path]) -> Stage2BAnnotationArtifact:
     """读取并校验 Stage 2B 标注产物。"""
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
@@ -383,13 +384,13 @@ def load_stage2b_annotation_artifact(input_path: str | Path) -> Stage2BAnnotatio
 def prepare_stage2b_prompt_package(
     input_artifact: Stage2InputArtifact,
     stage2a_artifact: Stage2AnnotationArtifact,
-    input_path: str | Path,
-    stage2a_path: str | Path,
-    output_dir: str | Path,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    scene_ids: set[str] | None = None,
-    max_scenes: int | None = None,
-    max_prompt_chars: int | None = None,
+    input_path: Union[str, Path],
+    stage2a_path: Union[str, Path],
+    output_dir: Union[str, Path],
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    scene_ids: Union[set[str], None] = None,
+    max_scenes: Union[int, None] = None,
+    max_prompt_chars: Union[int, None] = None,
     window_utterances: int = 40,
     window_overlap: int = 8,
 ) -> PromptPackageManifest:
@@ -448,7 +449,7 @@ def prepare_stage2b_prompt_package(
 
 
 def assemble_stage2b_prompt_package(
-    manifest_path: str | Path,
+    manifest_path: Union[str, Path],
     model_label: str = "codex-workspace",
     allow_partial: bool = False,
     allow_stale: bool = False,
@@ -473,7 +474,7 @@ def assemble_stage2b_prompt_package(
         allow_partial=allow_partial,
         allow_stale=allow_stale,
     )
-    tasks_by_scene: dict[str, list[tuple[str, str, str | None]]] = {}
+    tasks_by_scene: dict[str, list[tuple[str, str, Union[str, None]]]] = {}
     for task in manifest.tasks:
         scene_id = task.context.get("scene_id", task.task_id)
         tasks_by_scene.setdefault(scene_id, []).append(
@@ -497,7 +498,7 @@ def assemble_stage2b_prompt_package(
             continue
         annotations: list[SceneThoughtExtractionPass2B] = []
         raw_contents: list[str] = []
-        error_message: str | None = None
+        error_message: Union[str, None] = None
         for _, task_id, raw_response in scene_tasks:
             if raw_response is None:
                 error_message = f"缺少 response: {task_id}"
@@ -549,7 +550,7 @@ def assemble_stage2b_prompt_package(
 
 
 def _validate_window_options(
-    max_prompt_chars: int | None,
+    max_prompt_chars: Union[int, None],
     window_utterances: int,
     window_overlap: int,
 ) -> None:
@@ -563,7 +564,7 @@ def _validate_window_options(
         raise ValueError("window_overlap 必须大于等于 0 且小于 window_utterances")
 
 
-def _emit_status(callback: Callable[[str], None] | None, message: str) -> None:
+def _emit_status(callback: Union[Callable[[str], None], None], message: str) -> None:
     """在提供回调时发送 Stage 2B 状态消息。"""
 
     if callback is not None:

@@ -1,6 +1,7 @@
 """第一阶段：字幕到 speaker 标注的编排逻辑。"""
 
 from __future__ import annotations
+from typing import Union
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -57,15 +58,15 @@ class _Stage1SceneRequest:
     scene_index: int
     total_scenes: int
     prompt: str
-    prompt_path: str | None
+    prompt_path: Union[str, None]
 
 
 def prepare_stage1_scenes(
-    subtitle_path: str | Path,
+    subtitle_path: Union[str, Path],
     series_id: SeriesId,
     timeline_id: str,
-    anime_title: str | None = None,
-    story_year: int | None = None,
+    anime_title: Union[str, None] = None,
+    story_year: Union[int, None] = None,
     canon_branch: CanonBranch = CanonBranch.MAIN,
     scene_gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> list[SceneChunk]:
@@ -90,11 +91,11 @@ def prepare_stage1_scenes(
 
 
 def prepare_stage1_artifact(
-    subtitle_path: str | Path,
+    subtitle_path: Union[str, Path],
     series_id: SeriesId,
     timeline_id: str,
-    anime_title: str | None = None,
-    story_year: int | None = None,
+    anime_title: Union[str, None] = None,
+    story_year: Union[int, None] = None,
     canon_branch: CanonBranch = CanonBranch.MAIN,
     scene_gap_ms: int = DEFAULT_SCENE_GAP_MS,
 ) -> Stage1PreparedArtifact:
@@ -127,7 +128,7 @@ def prepare_stage1_artifact(
     )
 
 
-def save_stage1_prepared_artifact(artifact: Stage1PreparedArtifact, output_path: str | Path) -> None:
+def save_stage1_prepared_artifact(artifact: Stage1PreparedArtifact, output_path: Union[str, Path]) -> None:
     """保存第一阶段预处理产物。"""
 
     output_path = Path(output_path)
@@ -138,7 +139,7 @@ def save_stage1_prepared_artifact(artifact: Stage1PreparedArtifact, output_path:
     )
 
 
-def load_stage1_prepared_artifact(input_path: str | Path) -> Stage1PreparedArtifact:
+def load_stage1_prepared_artifact(input_path: Union[str, Path]) -> Stage1PreparedArtifact:
     """读取第一阶段预处理产物。"""
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
@@ -176,7 +177,7 @@ def _scene_to_prompt_context(scene: SceneChunk) -> dict[str, Any]:
     }
 
 
-def render_stage1_prompt(scene: SceneChunk, template_path: str | Path = DEFAULT_TEMPLATE_PATH) -> str:
+def render_stage1_prompt(scene: SceneChunk, template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH) -> str:
     """将场景渲染为第一阶段 prompt。"""
 
     template_path = Path(template_path)
@@ -194,10 +195,10 @@ def render_stage1_prompt(scene: SceneChunk, template_path: str | Path = DEFAULT_
 def annotate_scene_with_llm(
     scene: SceneChunk,
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
     stream: bool = False,
-    status_callback: Callable[[str], None] | None = None,
-    stream_callback: Callable[[str], None] | None = None,
+    status_callback: Union[Callable[[str], None], None] = None,
+    stream_callback: Union[Callable[[str], None], None] = None,
 ) -> SceneAnnotationPass1:
     """对单个场景执行第一阶段 LLM 标注。"""
 
@@ -218,13 +219,13 @@ def annotate_scene_with_llm(
 def annotate_prepared_stage1_artifact(
     artifact: Stage1PreparedArtifact,
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    scene_ids: set[str] | None = None,
-    max_scenes: int | None = None,
-    prompts_dir: str | Path | None = None,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    scene_ids: Union[set[str], None] = None,
+    max_scenes: Union[int, None] = None,
+    prompts_dir: Union[Union[str, Path], None] = None,
     stream: bool = False,
-    status_callback: Callable[[str], None] | None = None,
-    stream_callback: Callable[[str], None] | None = None,
+    status_callback: Union[Callable[[str], None], None] = None,
+    stream_callback: Union[Callable[[str], None], None] = None,
 ) -> Stage1AnnotationArtifact:
     """对预处理后的场景批量执行第一阶段标注。"""
 
@@ -324,7 +325,7 @@ def annotate_prepared_stage1_artifact(
     )
 
 
-def save_stage1_annotation_artifact(artifact: Stage1AnnotationArtifact, output_path: str | Path) -> None:
+def save_stage1_annotation_artifact(artifact: Stage1AnnotationArtifact, output_path: Union[str, Path]) -> None:
     """保存第一阶段原始标注结果。"""
 
     output_path = Path(output_path)
@@ -335,7 +336,7 @@ def save_stage1_annotation_artifact(artifact: Stage1AnnotationArtifact, output_p
     )
 
 
-def load_stage1_annotation_artifact(input_path: str | Path) -> Stage1AnnotationArtifact:
+def load_stage1_annotation_artifact(input_path: Union[str, Path]) -> Stage1AnnotationArtifact:
     """读取第一阶段原始标注结果。"""
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
@@ -344,11 +345,11 @@ def load_stage1_annotation_artifact(input_path: str | Path) -> Stage1AnnotationA
 
 def prepare_stage1_prompt_package(
     artifact: Stage1PreparedArtifact,
-    prepared_path: str | Path,
-    output_dir: str | Path,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    scene_ids: set[str] | None = None,
-    max_scenes: int | None = None,
+    prepared_path: Union[str, Path],
+    output_dir: Union[str, Path],
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    scene_ids: Union[set[str], None] = None,
+    max_scenes: Union[int, None] = None,
 ) -> PromptPackageManifest:
     """为 Stage 1 说话人标注生成可由 Codex 完成的静态任务包。"""
 
@@ -380,7 +381,7 @@ def prepare_stage1_prompt_package(
 
 
 def assemble_stage1_prompt_package(
-    manifest_path: str | Path,
+    manifest_path: Union[str, Path],
     model_label: str = "codex-workspace",
     allow_partial: bool = False,
     allow_stale: bool = False,
@@ -471,8 +472,8 @@ def _annotate_stage1_scene_request(
     request: _Stage1SceneRequest,
     llm_config: LiteLLMConfig,
     stream: bool,
-    status_callback: Callable[[str], None] | None,
-    stream_callback: Callable[[str], None] | None,
+    status_callback: Union[Callable[[str], None], None],
+    stream_callback: Union[Callable[[str], None], None],
 ) -> Stage1SceneAnnotationResult:
     scene = request.scene
     scene_index = request.scene_index
@@ -537,6 +538,6 @@ def _annotate_stage1_scene_request(
         )
 
 
-def _emit_status(status_callback: Callable[[str], None] | None, message: str) -> None:
+def _emit_status(status_callback: Union[Callable[[str], None], None], message: str) -> None:
     if status_callback is not None:
         status_callback(message)

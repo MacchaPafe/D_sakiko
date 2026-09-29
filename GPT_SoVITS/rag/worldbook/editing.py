@@ -46,7 +46,7 @@ class WorldbookExtensionReferencedError(WorldbookReferenceError):
         super().__init__(f"该剧情事件仍被 {len(self.referencing_entries)} 个角色想法引用")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PackageEntryRecord:
     """表示根世界书依赖闭包中的一个可导航条目位置。"""
 
@@ -73,7 +73,7 @@ class PackageEntryRecord:
         raise ValueError("条目记录缺少可显示内容")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PersistentEntryRecord:
     """表示跨全部已安装包保留的官方或用户条目。"""
 
@@ -94,7 +94,7 @@ DeletionImpactAction = Literal[
 ]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StoryEventDeletionImpact:
     """描述删除剧情事件时一条角色想法将采取的动作。"""
 
@@ -106,7 +106,7 @@ class StoryEventDeletionImpact:
     detail: str = ""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StoryEventDeletionPlan:
     """保存一次剧情事件级联删除的纯规划结果。"""
 

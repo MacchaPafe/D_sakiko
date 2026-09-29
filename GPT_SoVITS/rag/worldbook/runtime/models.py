@@ -1,6 +1,7 @@
 """定义世界书聊天运行时的上下文、候选和模型安全结果。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Generic, Literal, TypeVar
 from uuid import UUID
@@ -42,7 +43,7 @@ class WorldbookResolvedContext(BaseModel):
     timeline_id: str
     canon_branch: CanonBranch
     current_time: int
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     episode: int = Field(ge=1, le=13)
 
 
@@ -93,7 +94,7 @@ class RetrievalBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     candidates: list[RetrievalCandidate] = Field(default_factory=list)
-    failure: RetrievalFailure | None = None
+    failure: Union[RetrievalFailure, None] = None
 
 
 class PayloadRecord(BaseModel):
@@ -113,7 +114,7 @@ class PayloadBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     records: list[PayloadRecord] = Field(default_factory=list)
-    failure: RetrievalFailure | None = None
+    failure: Union[RetrievalFailure, None] = None
 
 
 class DirectThought(BaseModel):
@@ -161,8 +162,8 @@ class RelationKnowledge(BaseModel):
 
     target_character_name: str
     state_summary: str
-    speech_hint: str | None = None
-    object_character_nickname: str | None = None
+    speech_hint: Union[str, None] = None
+    object_character_nickname: Union[str, None] = None
 
 
 class RelationHistoryPage(BaseModel):
@@ -173,7 +174,7 @@ class RelationHistoryPage(BaseModel):
     items: list[RelationKnowledge]
     page: int = Field(ge=1)
     has_more: bool
-    next_page: int | None = None
+    next_page: Union[int, None] = None
 
 
 class ThoughtMemory(BaseModel):
@@ -209,7 +210,7 @@ class WorldbookKnowledgeResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    knowledge: DirectWorldbookContext | CharacterMemoryKnowledge
+    knowledge: Union[DirectWorldbookContext, CharacterMemoryKnowledge]
     thought_trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
     event_trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
     linked_event_ids: list[UUID] = Field(default_factory=list)
@@ -221,7 +222,7 @@ class WorldbookKnowledgeResult(BaseModel):
     )
 
     @property
-    def failure(self) -> RetrievalFailure | None:
+    def failure(self) -> Union[RetrievalFailure, None]:
         """兼容读取第一个来源失败，同时保留完整失败列表。"""
 
         return self.source_failures[0].failure if self.source_failures else None
@@ -248,7 +249,7 @@ class WorldbookQueryResult(BaseModel, Generic[ResultItemT]):
     model_config = ConfigDict(extra="forbid")
 
     items: list[ResultItemT] = Field(default_factory=list)
-    failure: RetrievalFailure | None = None
+    failure: Union[RetrievalFailure, None] = None
     trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
 
 
@@ -258,7 +259,7 @@ class RelationHistoryQueryResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     page: RelationHistoryPage
-    failure: RetrievalFailure | None = None
+    failure: Union[RetrievalFailure, None] = None
     trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
 
 
@@ -268,4 +269,4 @@ class RelationTargetsQueryResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[CharacterId] = Field(default_factory=list)
-    failure: RetrievalFailure | None = None
+    failure: Union[RetrievalFailure, None] = None

@@ -1,6 +1,7 @@
 """第二阶段：从整合后的 scene 输入中抽取三张表候选。"""
 
 from __future__ import annotations
+from typing import Union
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -45,7 +46,7 @@ class _Stage2SceneRequest:
     scene_index: int
     total_scenes: int
     prompt: str
-    prompt_path: str | None
+    prompt_path: Union[str, None]
 
 
 def _scene_to_prompt_context(scene: Stage2SceneInput) -> dict[str, Any]:
@@ -54,7 +55,7 @@ def _scene_to_prompt_context(scene: Stage2SceneInput) -> dict[str, Any]:
 
 def render_stage2_prompt(
     scene: Stage2SceneInput,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
 ) -> str:
     """将第二阶段 scene 输入渲染为 prompt。"""
 
@@ -73,10 +74,10 @@ def render_stage2_prompt(
 def annotate_scene_stage2_with_llm(
     scene: Stage2SceneInput,
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
     stream: bool = False,
-    status_callback: Callable[[str], None] | None = None,
-    stream_callback: Callable[[str], None] | None = None,
+    status_callback: Union[Callable[[str], None], None] = None,
+    stream_callback: Union[Callable[[str], None], None] = None,
 ) -> SceneAnnotationPass2:
     """对单个场景执行第二阶段 LLM 抽取。"""
 
@@ -97,13 +98,13 @@ def annotate_scene_stage2_with_llm(
 def annotate_stage2_input_artifact(
     artifact: Stage2InputArtifact,
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    scene_ids: set[str] | None = None,
-    max_scenes: int | None = None,
-    prompts_dir: str | Path | None = None,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    scene_ids: Union[set[str], None] = None,
+    max_scenes: Union[int, None] = None,
+    prompts_dir: Union[Union[str, Path], None] = None,
     stream: bool = False,
-    status_callback: Callable[[str], None] | None = None,
-    stream_callback: Callable[[str], None] | None = None,
+    status_callback: Union[Callable[[str], None], None] = None,
+    stream_callback: Union[Callable[[str], None], None] = None,
 ) -> Stage2AnnotationArtifact:
     """对第二阶段输入批量执行 LLM 抽取。"""
 
@@ -209,7 +210,7 @@ def annotate_stage2_input_artifact(
     )
 
 
-def save_stage2_annotation_artifact(artifact: Stage2AnnotationArtifact, output_path: str | Path) -> None:
+def save_stage2_annotation_artifact(artifact: Stage2AnnotationArtifact, output_path: Union[str, Path]) -> None:
     """保存第二阶段原始抽取结果。"""
 
     output_path = Path(output_path)
@@ -220,7 +221,7 @@ def save_stage2_annotation_artifact(artifact: Stage2AnnotationArtifact, output_p
     )
 
 
-def load_stage2_annotation_artifact(input_path: str | Path) -> Stage2AnnotationArtifact:
+def load_stage2_annotation_artifact(input_path: Union[str, Path]) -> Stage2AnnotationArtifact:
     """读取第二阶段原始抽取结果。"""
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
@@ -229,11 +230,11 @@ def load_stage2_annotation_artifact(input_path: str | Path) -> Stage2AnnotationA
 
 def prepare_stage2_prompt_package(
     artifact: Stage2InputArtifact,
-    input_path: str | Path,
-    output_dir: str | Path,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    scene_ids: set[str] | None = None,
-    max_scenes: int | None = None,
+    input_path: Union[str, Path],
+    output_dir: Union[str, Path],
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    scene_ids: Union[set[str], None] = None,
+    max_scenes: Union[int, None] = None,
 ) -> PromptPackageManifest:
     """为 Stage 2A 文档抽取生成可离线完成的静态任务包。"""
 
@@ -265,7 +266,7 @@ def prepare_stage2_prompt_package(
 
 
 def assemble_stage2_prompt_package(
-    manifest_path: str | Path,
+    manifest_path: Union[str, Path],
     model_label: str = "codex-workspace",
     allow_partial: bool = False,
     allow_stale: bool = False,
@@ -343,8 +344,8 @@ def _annotate_stage2_scene_request(
     request: _Stage2SceneRequest,
     llm_config: LiteLLMConfig,
     stream: bool,
-    status_callback: Callable[[str], None] | None,
-    stream_callback: Callable[[str], None] | None,
+    status_callback: Union[Callable[[str], None], None],
+    stream_callback: Union[Callable[[str], None], None],
 ) -> Stage2SceneAnnotationResult:
     scene = request.scene
     scene_index = request.scene_index
@@ -415,6 +416,6 @@ def _annotate_stage2_scene_request(
         )
 
 
-def _emit_status(status_callback: Callable[[str], None] | None, message: str) -> None:
+def _emit_status(status_callback: Union[Callable[[str], None], None], message: str) -> None:
     if status_callback is not None:
         status_callback(message)

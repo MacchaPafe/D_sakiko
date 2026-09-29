@@ -89,7 +89,7 @@ def _refresh_flow_container(container: QWidget, layout: FlowLayout) -> None:
         current = parent
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SelectionOption:
     """表示多选对话框中的稳定值和用户可读标签。"""
 
@@ -100,7 +100,7 @@ class SelectionOption:
     group_label: str = ""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FormValidationIssue:
     """描述一个需要用户处理的表单问题及其聚焦控件。"""
 

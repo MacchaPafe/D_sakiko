@@ -19,7 +19,7 @@ _LONG_TERM_KINDS: frozenset[ReviewItemKind] = frozenset(
 _STATE_KINDS: frozenset[ReviewItemKind] = frozenset({"relation", "thought"})
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewReasonOption:
     """描述一个面向用户的不收录原因及其内部处置语义。"""
 

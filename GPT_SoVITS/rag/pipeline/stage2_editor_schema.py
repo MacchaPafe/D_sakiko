@@ -1,6 +1,7 @@
 """独立 Stage2 数据集编辑器使用的轻量数据结构。"""
 
 from __future__ import annotations
+from typing import Union
 
 from pydantic import BaseModel, Field
 
@@ -25,12 +26,12 @@ class Stage2Utterance(BaseModel):
     end_ms: int
     start_text: str
     end_text: str
-    speaker_name: str | None = None
+    speaker_name: Union[str, None] = None
     speaker_confidence: float = 0.0
     is_inner_monologue: bool = False
     addressee_candidates: list[str] = Field(default_factory=list)
     mentioned_characters: list[str] = Field(default_factory=list)
-    emotion_hint: str | None = None
+    emotion_hint: Union[str, None] = None
     zh_text: str = ""
     jp_text: str = ""
 
@@ -41,14 +42,14 @@ class Stage2SceneInput(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     episode: int
     scene_id: str
     start_ms: int
     end_ms: int
     scene_start_text: str
     scene_end_text: str
-    scene_summary_hint: str | None = None
+    scene_summary_hint: Union[str, None] = None
     present_characters: list[str] = Field(default_factory=list)
     screen_texts: list[Stage2ScreenText] = Field(default_factory=list)
     utterances: list[Stage2Utterance] = Field(default_factory=list)
@@ -69,13 +70,13 @@ class Stage2InputMetadata(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     canon_branch: str
     episode: int
     scene_gap_ms: int
     source_stage1_model: str
     source_stage1_template_path: str
-    source_stage1_output_path: str | None = None
+    source_stage1_output_path: Union[str, None] = None
 
 
 class Stage2InputArtifact(BaseModel):

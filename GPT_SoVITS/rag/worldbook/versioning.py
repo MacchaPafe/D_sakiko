@@ -14,7 +14,7 @@ _SEMVER_PATTERN = re.compile(
 _COMPARATOR_PATTERN = re.compile(r"^(==|>=|<=|>|<)(.+)$")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SemVer:
     """保存足以执行世界书依赖比较的 SemVer。"""
 

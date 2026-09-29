@@ -25,7 +25,7 @@ WORLD_BOOK_TOOL_LIMIT = 7
 """单个真实用户回合最多执行的世界书工具次数。"""
 
 
-@dataclass(slots=True)
+@dataclass()
 class WorldbookToolDiagnostic:
     """保存一次隐藏工具调用的参数、候选、结果和耗时。"""
 
@@ -46,7 +46,7 @@ class WorldbookToolDiagnostic:
     source_durations_sec: dict[str, float] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass()
 class WorldbookToolBudget:
     """跟踪单回合世界书查询次数并生成临近上限提示。"""
 
@@ -77,7 +77,7 @@ class WorldbookToolBudget:
         return f"还能再查询 {remaining} 次"
 
 
-@dataclass(slots=True)
+@dataclass()
 class WorldbookToolSession:
     """持有一轮对话的动态工具 registry、预算和隐藏诊断。"""
 

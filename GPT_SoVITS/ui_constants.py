@@ -417,8 +417,109 @@ char_info_json={
     "bestdori_index": None,
     "romaji": "yuno",
     "full_name": "千石由乃（千石ユノ-夢限大MewType）"
+  },
+  "萤": {
+    "theme_color": "#99FF99",
+    "bestdori_index": None,
+    "romaji": "hotaru",
+    "full_name": "汐见萤（汐見蛍-millsage）"
+  },
+  "枣": {
+    "theme_color": "#FF4444",
+    "bestdori_index": None,
+    "romaji": "natsume",
+    "full_name": "伊泽枣（伊沢なつめ-millsage）"
+  },
+  "凪": {
+    "theme_color": "#5555FF",
+    "bestdori_index": None,
+    "romaji": "nagi",
+    "full_name": "琴平凪（琴平凪-millsage）"
+  },
+  "茉幌": {
+    "theme_color": "#77FFFF",
+    "bestdori_index": None,
+    "romaji": "mahoro",
+    "full_name": "滨崎茉幌（浜崎まほろ-millsage）"
+  },
+  "朋花": {
+    "theme_color": "#EE99EE",
+    "bestdori_index": None,
+    "romaji": "houka",
+    "full_name": "和泉朋花（和泉朋花-millsage）"
+  },
+  "蕾叶": {
+    "theme_color": "#FF7700",
+    "bestdori_index": None,
+    "romaji": "raika",
+    "full_name": "须贺蕾叶（須賀蕾叶-一家Dumb Rock!）"
+  },
+  "心玖": {
+    "theme_color": "#22CCFF",
+    "bestdori_index": None,
+    "romaji": "miku",
+    "full_name": "马桥心玖（馬橋心玖-一家Dumb Rock!）"
+  },
+  "蓬咲": {
+    "theme_color": "#448888",
+    "bestdori_index": None,
+    "romaji": "yomogi",
+    "full_name": "矢仓蓬咲（矢倉蓬咲-一家Dumb Rock!）"
+  },
+  "千樱梨": {
+    "theme_color": "#FF55AA",
+    "bestdori_index": None,
+    "romaji": "chieri",
+    "full_name": "梅里千樱梨（梅里ちえり-一家Dumb Rock!）"
+  },
+  "宁月": {
+    "theme_color": "#9999FF",
+    "bestdori_index": None,
+    "romaji": "shizuku",
+    "full_name": "四宫宁月（四宮寧月-一家Dumb Rock!）"
+  },
+  "Mortis": {
+    "theme_color": "#779977",
+    "bestdori_index": None,
+    "romaji": "mortis",
+    "full_name": "Mortis（モーティス）"
+  },
+  "真奈": {
+    "theme_color": "#C47143",
+    "bestdori_index": None,
+    "romaji": "mana",
+    "full_name": "真奈（真奈）"
+  },
+  "薇欧拉": {
+    "theme_color": "#7FECCC",
+    "bestdori_index": None,
+    "romaji": "viola",
+    "full_name": "薇欧拉（ビオラ）"
+  },
+  "Bell": {
+    "theme_color": "#F88F55",
+    "bestdori_index": None,
+    "romaji": "bell",
+    "full_name": "Bell（ベル）"
+  },
+  "Popo": {
+    "theme_color": "#BCD6F8",
+    "bestdori_index": None,
+    "romaji": "popo",
+    "full_name": "Popo（ポポ）"
+  },
+  "梦限大经纪人": {
+    "theme_color": "#7799CC",
+    "bestdori_index": None,
+    "romaji": "yumemita_manager",
+    "full_name": "梦限大经纪人（マネージャー）"
   }
 }
+
+# 下载器展示分组，不代表角色所属乐队；不从 full_name 推断此顺序。
+DOWNLOADER_OTHERS_CHARACTER_IDS = (
+    "mortis", "mana", "viola", "bell", "popo", "yumemita_manager",
+)
 
 def downloadable_character_names() -> list[str]:
     """返回具有有效 Bestdori 角色编号的可下载角色名称。"""

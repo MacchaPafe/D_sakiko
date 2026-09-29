@@ -1,6 +1,7 @@
 """RAG 标注流水线的数据结构。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 
@@ -61,7 +62,7 @@ class CandidateCharacter(BaseModel):
     display_name: str
     character_id: str
     aliases: list[str] = Field(default_factory=list)
-    notes: str | None = None
+    notes: Union[str, None] = None
     score: int = 0
 
 
@@ -73,7 +74,7 @@ class SceneChunk(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     scene_id: str
     episode: int
     start_ms: int
@@ -81,19 +82,19 @@ class SceneChunk(BaseModel):
     utterances: list[UtteranceUnit] = Field(default_factory=list)
     screen_texts: list[ScreenTextUnit] = Field(default_factory=list)
     candidate_characters: list[CandidateCharacter] = Field(default_factory=list)
-    scene_summary_hint: str | None = None
+    scene_summary_hint: Union[str, None] = None
 
 
 class SpeakerAnnotation(BaseModel):
     """表示单句 speaker 标注结果。"""
 
     u_id: str
-    speaker_name: str | None
+    speaker_name: Union[str, None]
     speaker_confidence: float
     is_inner_monologue: bool
     addressee_candidates: list[str] = Field(default_factory=list)
     mentioned_characters: list[str] = Field(default_factory=list)
-    emotion_hint: str | None = None
+    emotion_hint: Union[str, None] = None
     reason_brief: str
 
 
@@ -114,7 +115,7 @@ class Stage1Metadata(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     canon_branch: str
     episode: int
     scene_gap_ms: int
@@ -131,10 +132,10 @@ class Stage1SceneAnnotationResult(BaseModel):
     """表示单个场景的第一阶段标注结果。"""
 
     scene_id: str
-    prompt_path: str | None = None
-    raw_response_text: str | None = None
-    annotation: SceneAnnotationPass1 | None = None
-    error: str | None = None
+    prompt_path: Union[str, None] = None
+    raw_response_text: Union[str, None] = None
+    annotation: Union[SceneAnnotationPass1, None] = None
+    error: Union[str, None] = None
 
 
 class Stage1AnnotationArtifact(BaseModel):
@@ -166,12 +167,12 @@ class Stage2Utterance(BaseModel):
     end_ms: int
     start_text: str
     end_text: str
-    speaker_name: str | None = None
+    speaker_name: Union[str, None] = None
     speaker_confidence: float = 0.0
     is_inner_monologue: bool = False
     addressee_candidates: list[str] = Field(default_factory=list)
     mentioned_characters: list[str] = Field(default_factory=list)
-    emotion_hint: str | None = None
+    emotion_hint: Union[str, None] = None
     zh_text: str = ""
     jp_text: str = ""
 
@@ -182,14 +183,14 @@ class Stage2SceneInput(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     episode: int
     scene_id: str
     start_ms: int
     end_ms: int
     scene_start_text: str
     scene_end_text: str
-    scene_summary_hint: str | None = None
+    scene_summary_hint: Union[str, None] = None
     present_characters: list[str] = Field(default_factory=list)
     screen_texts: list[Stage2ScreenText] = Field(default_factory=list)
     utterances: list[Stage2Utterance] = Field(default_factory=list)
@@ -210,13 +211,13 @@ class Stage2InputMetadata(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     canon_branch: str
     episode: int
     scene_gap_ms: int
     source_stage1_model: str
     source_stage1_template_path: str
-    source_stage1_output_path: str | None = None
+    source_stage1_output_path: Union[str, None] = None
 
 
 class Stage2InputArtifact(BaseModel):
@@ -343,10 +344,10 @@ class Stage2SceneAnnotationResult(BaseModel):
     """表示单个场景的第二阶段抽取结果。"""
 
     scene_id: str
-    prompt_path: str | None = None
-    raw_response_text: str | None = None
-    annotation: SceneAnnotationPass2 | None = None
-    error: str | None = None
+    prompt_path: Union[str, None] = None
+    raw_response_text: Union[str, None] = None
+    annotation: Union[SceneAnnotationPass2, None] = None
+    error: Union[str, None] = None
 
 
 class Stage2AnnotationArtifact(BaseModel):
@@ -417,7 +418,7 @@ class CharacterRelationStateReviewRecord(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     ambiguity_notes: str = ""
-    document: CharacterRelationStatePayload | None = None
+    document: Union[CharacterRelationStatePayload, None] = None
 
 
 class RelationObservationReviewRecord(BaseModel):
@@ -452,7 +453,7 @@ class Stage3RelationAggregationMetadata(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     canon_branch: str
     episodes: list[int] = Field(default_factory=list)
     subtitle_paths: list[str] = Field(default_factory=list)
@@ -482,7 +483,7 @@ class EventFactCandidate(BaseModel):
 
     scene_id: str
     fact_local_id: str
-    event_local_id: str | None = None
+    event_local_id: Union[str, None] = None
     fact_text: str
     tags: list[str] = Field(default_factory=list)
     evidence_u_ids: list[str] = Field(default_factory=list)
@@ -503,10 +504,10 @@ class CharacterThoughtUpdateCandidate(BaseModel):
     provisional_update_type: ProvisionalThoughtUpdateType
     evidence_strength: ThoughtEvidenceStrength
     evidence_u_ids: list[str] = Field(default_factory=list)
-    about_event_local_id: str | None = None
-    about_fact_local_id: str | None = None
+    about_event_local_id: Union[str, None] = None
+    about_fact_local_id: Union[str, None] = None
     effective_from_hint: ThoughtEffectiveFromHint = "current_scene"
-    inference_note: str | None = None
+    inference_note: Union[str, None] = None
     ambiguity_notes: list[str] = Field(default_factory=list)
     extraction_confidence: float = Field(ge=0.0, le=1.0)
 
@@ -531,11 +532,11 @@ class Stage2BSceneAnnotationResult(BaseModel):
     """表示单场景 Stage 2B 调用及校验结果。"""
 
     scene_id: str
-    prompt_path: str | None = None
+    prompt_path: Union[str, None] = None
     prompt_paths: list[str] = Field(default_factory=list)
-    raw_response_text: str | None = None
-    annotation: SceneThoughtExtractionPass2B | None = None
-    error: str | None = None
+    raw_response_text: Union[str, None] = None
+    annotation: Union[SceneThoughtExtractionPass2B, None] = None
+    error: Union[str, None] = None
 
 
 class Stage2BAnnotationArtifact(BaseModel):
@@ -543,7 +544,7 @@ class Stage2BAnnotationArtifact(BaseModel):
 
     metadata: Stage2InputMetadata
     source_stage2a_model: str
-    source_stage2a_output_path: str | None = None
+    source_stage2a_output_path: Union[str, None] = None
     model: str
     template_path: str
     results: list[Stage2BSceneAnnotationResult] = Field(default_factory=list)
@@ -562,7 +563,7 @@ class ThoughtReferenceLinkDecision(BaseModel):
     source_local_id: str
     link_status: ThoughtLinkStatus
     target_kind: ThoughtReferenceTargetKind
-    target_id: str | None = None
+    target_id: Union[str, None] = None
     thought_aspect: str
     link_confidence: float = Field(ge=0.0, le=1.0)
     reason_brief: str
@@ -574,7 +575,7 @@ class NormalizedEventFact(BaseModel):
     fact_id: str
     source_scene_id: str
     source_local_id: str
-    about_event_id: str | None = None
+    about_event_id: Union[str, None] = None
     fact_text: str
     tags: list[str] = Field(default_factory=list)
     evidence_u_ids: list[str] = Field(default_factory=list)
@@ -596,15 +597,15 @@ class LinkedCharacterThoughtUpdate(BaseModel):
     resolved_update_type: ResolvedThoughtUpdateType
     evidence_strength: ThoughtEvidenceStrength
     evidence_u_ids: list[str] = Field(default_factory=list)
-    inference_note: str | None = None
+    inference_note: Union[str, None] = None
     ambiguity_notes: list[str] = Field(default_factory=list)
     effective_from_hint: ThoughtEffectiveFromHint
     extraction_confidence: float = Field(ge=0.0, le=1.0)
     link_status: ThoughtLinkStatus
     link_confidence: float = Field(ge=0.0, le=1.0)
-    about_event_id: str | None = None
-    about_fact_id: str | None = None
-    standalone_topic_key: str | None = None
+    about_event_id: Union[str, None] = None
+    about_fact_id: Union[str, None] = None
+    standalone_topic_key: Union[str, None] = None
     thought_aspect: str
     thought_thread_key: str
     evidence_time: int
@@ -619,9 +620,9 @@ class CharacterThoughtPayload(BaseModel):
     canon_branch: CanonBranch
     thought_thread_key: str
     subject_kind: ThoughtSubjectKind
-    about_event_id: str | None = None
-    about_fact_id: str | None = None
-    standalone_topic_key: str | None = None
+    about_event_id: Union[str, None] = None
+    about_fact_id: Union[str, None] = None
+    standalone_topic_key: Union[str, None] = None
     thought_text: str
     epistemic_status: EpistemicStatus
     valid_from: int
@@ -664,14 +665,14 @@ class CharacterThoughtReviewRecord(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
     provisional_update_types: list[ProvisionalThoughtUpdateType] = Field(default_factory=list)
     resolved_update_type: ResolvedThoughtUpdateType
-    document: CharacterThoughtPayload | None = None
+    document: Union[CharacterThoughtPayload, None] = None
 
 
 class StoryEventPayload(BaseModel):
     """表示可直接实例化为 StoryEventDocument 的 payload。"""
 
     timeline_id: str
-    occurred_story_year: int | None = None
+    occurred_story_year: Union[int, None] = None
     series_id: SeriesId
     episode: int
     time_order: int
@@ -719,11 +720,11 @@ class LoreEntryPayload(BaseModel):
     """表示可直接实例化为 LoreEntryDocument 的 payload。"""
 
     scope_type: ScopeType
-    series_ids: list[SeriesId] | None = None
+    series_ids: Union[list[SeriesId], None] = None
     timeline_id: str
-    applicable_story_years: list[int] | None = None
-    visible_from: int | None = None
-    visible_to: int | None = None
+    applicable_story_years: Union[list[int], None] = None
+    visible_from: Union[int, None] = None
+    visible_to: Union[int, None] = None
     canon_branch: CanonBranch
     title: str
     content: str
@@ -799,7 +800,7 @@ class Stage3ImportMetadata(BaseModel):
     anime_title: str
     series_id: SeriesId
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     canon_branch: CanonBranch
     episode: int
     source_stage2_model: str
@@ -821,7 +822,7 @@ class Stage3ThoughtImportArtifact(BaseModel):
 
     metadata: Stage3ImportMetadata
     source_stage2b_model: str
-    linker_model: str | None = None
+    linker_model: Union[str, None] = None
     event_facts: list[NormalizedEventFact] = Field(default_factory=list)
     linked_updates: list[LinkedCharacterThoughtUpdate] = Field(default_factory=list)
     character_thoughts: list[CharacterThoughtReviewRecord] = Field(default_factory=list)

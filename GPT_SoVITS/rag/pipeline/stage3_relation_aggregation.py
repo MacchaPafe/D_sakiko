@@ -1,6 +1,7 @@
 """Stage 3：把场景级关系观察聚合为长期角色关系状态。"""
 
 from __future__ import annotations
+from typing import Union
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -44,7 +45,7 @@ RELATION_VISIBLE_TO_DEFAULT = 999999
 DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "relation_aggregation_pass.jinja"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _ObservationSource:
     """保存规范化关系观察及其原始角色名称。"""
 
@@ -57,8 +58,8 @@ def build_stage3_relation_aggregation_artifact(
     input_artifact: Stage2InputArtifact,
     annotation_artifact: Stage2AnnotationArtifact,
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    status_callback: Callable[[str], None] | None = None,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    status_callback: Union[Callable[[str], None], None] = None,
 ) -> Stage3RelationAggregationArtifact:
     """聚合单份剧集输入，并复用跨剧集全量聚合实现。"""
 
@@ -75,8 +76,8 @@ def build_stage3_relation_aggregation_artifact_from_many(
     input_artifacts: list[Stage2InputArtifact],
     annotation_artifacts: list[Stage2AnnotationArtifact],
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    status_callback: Callable[[str], None] | None = None,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    status_callback: Union[Callable[[str], None], None] = None,
 ) -> Stage3RelationAggregationArtifact:
     """全量聚合同一系列、季度与剧情分支中的多集关系观察。"""
 
@@ -169,7 +170,7 @@ def render_relation_aggregation_prompt(
     subject_character_name: str,
     object_character_name: str,
     observations: list[RelationObservationReviewRecord],
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
 ) -> str:
     """渲染单个有向角色对的关系聚合 Prompt。"""
 
@@ -191,7 +192,7 @@ def render_relation_aggregation_prompt(
 
 def save_stage3_relation_aggregation_artifact(
     artifact: Stage3RelationAggregationArtifact,
-    output_path: str | Path,
+    output_path: Union[str, Path],
 ) -> None:
     """保存角色关系聚合审查产物。"""
 
@@ -204,7 +205,7 @@ def save_stage3_relation_aggregation_artifact(
 
 
 def load_stage3_relation_aggregation_artifact(
-    input_path: str | Path,
+    input_path: Union[str, Path],
 ) -> Stage3RelationAggregationArtifact:
     """读取角色关系聚合审查产物。"""
 
@@ -215,10 +216,10 @@ def load_stage3_relation_aggregation_artifact(
 def prepare_stage3_relation_prompt_package(
     input_artifacts: list[Stage2InputArtifact],
     annotation_artifacts: list[Stage2AnnotationArtifact],
-    input_paths: list[str | Path],
-    annotation_paths: list[str | Path],
-    output_dir: str | Path,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    input_paths: list[Union[str, Path]],
+    annotation_paths: list[Union[str, Path]],
+    output_dir: Union[str, Path],
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
 ) -> PromptPackageManifest:
     """按有向角色对生成跨场景关系聚合静态任务包。"""
 
@@ -268,7 +269,7 @@ def prepare_stage3_relation_prompt_package(
 
 
 def assemble_stage3_relation_prompt_package(
-    manifest_path: str | Path,
+    manifest_path: Union[str, Path],
     model_label: str = "codex-workspace",
     allow_partial: bool = False,
     allow_stale: bool = False,
@@ -488,7 +489,7 @@ def _normalize_observation(
     utterance_ids: set[str],
     input_artifact: Stage2InputArtifact,
     issues: list[NormalizationIssue],
-) -> _ObservationSource | None:
+) -> Union[_ObservationSource, None]:
     """把单条场景关系观察转换为审查记录。"""
 
     invalid_evidence_ids = [item for item in observation.evidence_u_ids if item not in utterance_ids]
@@ -829,7 +830,7 @@ def _stable_id(prefix: str, *parts: str) -> str:
     return f"{prefix}:{digest}"
 
 
-def _emit_status(callback: Callable[[str], None] | None, message: str) -> None:
+def _emit_status(callback: Union[Callable[[str], None], None], message: str) -> None:
     """在调用方提供状态回调时发送进度消息。"""
 
     if callback is not None:

@@ -1,6 +1,7 @@
 """单一录音/识别会话；识别绑定录音开始时的对话和草稿位置。"""
 
 from __future__ import annotations
+from typing import Union
 
 import threading
 from collections.abc import Callable
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
     from runtime.asr_client import ASRProcessClient
 
 RecognitionTarget = tuple[str, int, int]
-RecognitionResult = tuple[RecognitionTarget, str, str | None]
+RecognitionResult = tuple[RecognitionTarget, str, Union[str, None]]
 
 # 语音输入独立计时，不随文字对话、语音合成或桌宠形态切换重置。
 ASR_IDLE_TIMEOUT_MS = 120_000

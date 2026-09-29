@@ -45,7 +45,7 @@ class EntryTypeModule(Protocol):
         """生成扁平 Qdrant payload。"""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _SchemaV0Adapter:
     """验证当前实验 Schema v0，不把它承诺为公开 v1。"""
 

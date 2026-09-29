@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class WorldbookPaths:
     """保存可从应用根目录推导的世界书路径。"""
 

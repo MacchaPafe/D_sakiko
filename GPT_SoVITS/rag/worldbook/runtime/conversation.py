@@ -1,6 +1,7 @@
 """解析角色映射并在消息入队时冻结世界书上下文。"""
 
 from __future__ import annotations
+from typing import Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -15,8 +16,8 @@ class WorldbookSnapshotResolution(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    snapshot: WorldbookTurnSnapshot | None = None
-    disabled_reason: str | None = None
+    snapshot: Union[WorldbookTurnSnapshot, None] = None
+    disabled_reason: Union[str, None] = None
 
 
 def normalize_character_knowledge_mappings(
@@ -44,7 +45,7 @@ def freeze_worldbook_snapshot(
     *,
     enabled: bool,
     root_package_id: str,
-    episode: int | None,
+    episode: Union[int, None],
     character_folder_name: str,
     mappings: dict[str, CharacterId],
 ) -> WorldbookSnapshotResolution:

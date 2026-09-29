@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+from typing import Union
 
 # ruff: noqa: E402
 
@@ -21,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools.release.file_selection import list_git_untracked_files, path_matches
 
 
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+JsonValue = Union[Union[Union[Union[Union[Union[None, bool], int], float], str], list['JsonValue']], dict[str, 'JsonValue']]
 
 APP_ID = "D_sakiko"
 CHANNEL = "stable"

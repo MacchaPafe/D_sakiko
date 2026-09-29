@@ -1,6 +1,7 @@
 """定义跨集 Character Relation 状态序列审核产物。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 
@@ -54,8 +55,8 @@ class RelationTypeReviewRecord(ReviewFields):
     canon_branch: CanonBranch
     covered_observation_ids: list[str] = Field(default_factory=list)
     generated_content: RelationTypeContentDraft
-    reviewed_content: RelationTypeContentDraft | None = None
-    previous_reviewed_content: RelationTypeContentDraft | None = None
+    reviewed_content: Union[RelationTypeContentDraft, None] = None
+    previous_reviewed_content: Union[RelationTypeContentDraft, None] = None
     identity_suggestions: list[IdentitySuggestion] = Field(default_factory=list)
 
     @property
@@ -71,13 +72,13 @@ class RelationTypeReviewRecord(ReviewFields):
         return self.generated_content.states
 
     @property
-    def reviewed_sequence(self) -> list[RelationStateDraft] | None:
+    def reviewed_sequence(self) -> Union[list[RelationStateDraft], None]:
         """返回人工状态序列，供只读兼容调用。"""
 
         return None if self.reviewed_content is None else self.reviewed_content.states
 
     @property
-    def previous_reviewed_sequence(self) -> list[RelationStateDraft] | None:
+    def previous_reviewed_sequence(self) -> Union[list[RelationStateDraft], None]:
         """返回上一版人工状态序列，供只读对比。"""
 
         return (

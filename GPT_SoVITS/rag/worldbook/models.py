@@ -1,6 +1,7 @@
 """世界书管理 envelope 与同步报告模型。"""
 
 from __future__ import annotations
+from typing import Union
 
 from enum import Enum
 from typing import Literal
@@ -72,7 +73,7 @@ class WorldbookConversationContext(BaseModel):
 
     series_id: SeriesId
     canon_branch: CanonBranch
-    story_year: int | None = Field(default=None, ge=1)
+    story_year: Union[int, None] = Field(default=None, ge=1)
 
 
 class WorldbookManifest(BaseModel):
@@ -86,7 +87,7 @@ class WorldbookManifest(BaseModel):
     display_name: str
     package_type: Literal["season", "common"]
     timeline_id: str
-    conversation_context: WorldbookConversationContext | None = None
+    conversation_context: Union[WorldbookConversationContext, None] = None
     dependencies: list[PackageDependency] = Field(default_factory=list)
     content_files: list[ContentFileRecord] = Field(default_factory=list)
 
@@ -166,15 +167,15 @@ class ValidationIssue(BaseModel):
 
     code: str
     message: str
-    package_id: str | None = None
-    entry_id: UUID | None = None
-    path: str | None = None
+    package_id: Union[str, None] = None
+    entry_id: Union[UUID, None] = None
+    path: Union[str, None] = None
 
 
 class PackageLoadResult(BaseModel):
     """表示包加载器对单个 manifest 的完整结果。"""
 
-    manifest: WorldbookManifest | None = None
+    manifest: Union[WorldbookManifest, None] = None
     entries: list[WorldbookEntry] = Field(default_factory=list)
     issues: list[ValidationIssue] = Field(default_factory=list)
     readiness: PackageReadiness = PackageReadiness.UNAVAILABLE

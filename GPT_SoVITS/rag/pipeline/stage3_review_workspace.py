@@ -1,6 +1,7 @@
 """管理 Stage 3 审核工作台的多文件草稿、保存与来源状态。"""
 
 from __future__ import annotations
+from typing import Union
 
 import json
 import os
@@ -35,22 +36,22 @@ from .stage3_source_revalidation import (
 from .stage3_thought_models import Stage3ThoughtReviewArtifact
 
 
-@dataclass(slots=True)
+@dataclass()
 class ArtifactSlot:
     """保存一个审核文件的路径、草稿与会话历史。"""
 
     key: str
     label: str
     path: Path
-    artifact: ReviewArtifact | None
-    loaded_sha256: str | None
+    artifact: Union[ReviewArtifact, None]
+    loaded_sha256: Union[str, None]
     existed_when_loaded: bool
     dirty: bool = False
     undo_stack: list[ReviewArtifact] = field(default_factory=list)
     redo_stack: list[ReviewArtifact] = field(default_factory=list)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SaveAllResult:
     """描述一次保存全部的逐文件结果。"""
 
@@ -58,7 +59,7 @@ class SaveAllResult:
     failed: dict[str, str]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FreshnessResult:
     """描述一个审核产物的缺失或来源过期状态。"""
 
@@ -73,7 +74,7 @@ class FreshnessResult:
         return not self.missing and not self.stale_sources
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SourceAcceptanceResult:
     """描述一次来源重新确认的保存、审计和剩余过期状态。"""
 
@@ -89,7 +90,7 @@ class ReviewWorkspace:
 
     def __init__(
         self,
-        build_spec_path: str | Path,
+        build_spec_path: Union[str, Path],
         *,
         bootstrap_baselines: bool = True,
     ) -> None:
@@ -97,7 +98,7 @@ class ReviewWorkspace:
 
         self.resolved: ResolvedBuildSpec = load_build_spec(build_spec_path)
         self.slots: dict[str, ArtifactSlot] = {}
-        self.current_key: str | None = None
+        self.current_key: Union[str, None] = None
         self._stage2_cache: dict[int, Stage2InputArtifact] = {}
         self.baseline_warnings: list[str] = []
         self._load_slots()
@@ -181,7 +182,7 @@ class ReviewWorkspace:
         slot.dirty = True
         return updated
 
-    def undo(self, key: str | None = None) -> bool:
+    def undo(self, key: Union[str, None] = None) -> bool:
         """撤销指定文件的上一个会话内命令。"""
 
         slot = self.slots[key or self.current_slot().key]
@@ -192,7 +193,7 @@ class ReviewWorkspace:
         slot.dirty = True
         return True
 
-    def redo(self, key: str | None = None) -> bool:
+    def redo(self, key: Union[str, None] = None) -> bool:
         """重做指定文件刚撤销的会话内命令。"""
 
         slot = self.slots[key or self.current_slot().key]
@@ -287,7 +288,7 @@ class ReviewWorkspace:
 
     def preview_source_revalidation(
         self,
-        key: str | None = None,
+        key: Union[str, None] = None,
     ) -> SourceRevalidationPreview:
         """计算当前来源、消费投影和本地基线之间的可确认差异。"""
 
@@ -352,7 +353,7 @@ class ReviewWorkspace:
         preview: SourceRevalidationPreview,
         *,
         force: bool = False,
-        reason: str | None = None,
+        reason: Union[str, None] = None,
     ) -> SourceAcceptanceResult:
         """重新校验预览并原子保存当前来源指纹与本地接受记录。"""
 
@@ -568,7 +569,7 @@ class ReviewWorkspace:
                 f"{slot.key}: 未写入自动比较基线：{type(exc).__name__}: {exc}"
             )
 
-    def _expected_sources(self, key: str) -> dict[tuple[str, int | None], Path]:
+    def _expected_sources(self, key: str) -> dict[tuple[str, Union[int, None]], Path]:
         """返回一个审核文件按逻辑角色声明的当前直接来源。"""
 
         if key.startswith("document:"):
@@ -607,7 +608,7 @@ class ReviewWorkspace:
         raise KeyError(f"未知审核文件: {key}")
 
 
-def load_review_artifact(path: str | Path) -> ReviewArtifact:
+def load_review_artifact(path: Union[str, Path]) -> ReviewArtifact:
     """按 artifact_type 加载严格审核 artifact。"""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -640,7 +641,7 @@ def validate_review_artifact(artifact: ReviewArtifact) -> ReviewArtifact:
     raise TypeError("未知的审核 artifact 类型")
 
 
-def _artifact_sources(artifact: ReviewArtifact) -> dict[tuple[str, int | None], SourceFingerprint]:
+def _artifact_sources(artifact: ReviewArtifact) -> dict[tuple[str, Union[int, None]], SourceFingerprint]:
     """把 artifact 直接来源转换为可比较映射。"""
 
     return {(item.role, item.episode): item for item in artifact.direct_sources}

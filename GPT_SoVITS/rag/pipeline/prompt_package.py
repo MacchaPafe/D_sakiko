@@ -1,6 +1,7 @@
 """为可暂停的 LLM 标注流程提供 Prompt Package 深模块。"""
 
 from __future__ import annotations
+from typing import Union
 
 from dataclasses import dataclass
 import hashlib
@@ -22,7 +23,7 @@ PromptStageKind = Literal[
 ]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PreparedPrompt:
     """表示尚未写入磁盘的一条静态 Prompt 任务。"""
 
@@ -59,7 +60,7 @@ class PromptPackageManifest(BaseModel):
     tasks: list[PromptPackageTask] = Field(default_factory=list)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PromptResponseBundle:
     """保存从 Prompt Package 读取的原始 response 与完整性问题。"""
 
@@ -72,12 +73,12 @@ class PromptPackageError(ValueError):
 
 
 def create_prompt_package(
-    output_dir: str | Path,
+    output_dir: Union[str, Path],
     stage_kind: PromptStageKind,
     prompts: list[PreparedPrompt],
-    source_paths: list[str | Path],
-    template_paths: list[str | Path],
-    parameters: dict[str, str] | None = None,
+    source_paths: list[Union[str, Path]],
+    template_paths: list[Union[str, Path]],
+    parameters: Union[dict[str, str], None] = None,
 ) -> PromptPackageManifest:
     """写入静态 Prompt、response 目录和带哈希的 manifest。"""
 
@@ -125,7 +126,7 @@ def create_prompt_package(
 
 def save_prompt_package_manifest(
     manifest: PromptPackageManifest,
-    output_path: str | Path,
+    output_path: Union[str, Path],
 ) -> None:
     """保存 Prompt Package manifest。"""
 
@@ -137,7 +138,7 @@ def save_prompt_package_manifest(
     )
 
 
-def load_prompt_package_manifest(input_path: str | Path) -> PromptPackageManifest:
+def load_prompt_package_manifest(input_path: Union[str, Path]) -> PromptPackageManifest:
     """读取并校验 Prompt Package manifest。"""
 
     payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
@@ -145,7 +146,7 @@ def load_prompt_package_manifest(input_path: str | Path) -> PromptPackageManifes
 
 
 def read_prompt_package_responses(
-    manifest_path: str | Path,
+    manifest_path: Union[str, Path],
     allow_partial: bool = False,
     allow_stale: bool = False,
 ) -> PromptResponseBundle:
@@ -185,7 +186,7 @@ def read_prompt_package_responses(
 
 
 def validate_prompt_package(
-    manifest_path: str | Path,
+    manifest_path: Union[str, Path],
     allow_stale: bool = False,
 ) -> PromptPackageManifest:
     """在请求模型前校验 manifest、源文件、模板与 Prompt 指纹。"""
@@ -212,13 +213,13 @@ def parse_json_response(content: str) -> object:
     return json.loads(stripped)
 
 
-def task_prompt_path(manifest_path: str | Path, task: PromptPackageTask) -> Path:
+def task_prompt_path(manifest_path: Union[str, Path], task: PromptPackageTask) -> Path:
     """返回某条任务在 Package 中的绝对 Prompt 路径。"""
 
     return _resolve_package_member(Path(manifest_path).resolve().parent, task.prompt_file)
 
 
-def task_response_path(manifest_path: str | Path, task: PromptPackageTask) -> Path:
+def task_response_path(manifest_path: Union[str, Path], task: PromptPackageTask) -> Path:
     """返回某条任务在 Package 中的绝对 response 路径。"""
 
     return _resolve_package_member(Path(manifest_path).resolve().parent, task.response_file)
@@ -249,7 +250,7 @@ def _validate_package_fingerprints(
     return errors
 
 
-def _fingerprint_file(path_value: str | Path) -> PromptSourceFingerprint:
+def _fingerprint_file(path_value: Union[str, Path]) -> PromptSourceFingerprint:
     """计算一个现有文件的绝对路径和 SHA-256。"""
 
     path = Path(path_value).resolve()

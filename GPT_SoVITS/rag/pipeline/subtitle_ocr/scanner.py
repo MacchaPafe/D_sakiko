@@ -162,7 +162,10 @@ def _primary_candidates(
     accepted_lines: list[tuple[float, str, float, OCRBox]] = []
     minimum_height = crop_height * profile.minimum_box_height_ratio
 
-    for raw_box, text, score in zip(boxes, texts, scores, strict=True):
+    # Python 3.9 没有 zip(strict=True)，保留原有的长度一致性校验。
+    if not len(boxes) == len(texts) == len(scores):
+        raise ValueError("OCR boxes, texts and scores must have equal lengths")
+    for raw_box, text, score in zip(boxes, texts, scores):
         box = _box_from_array(raw_box)
         rejection_reason: str | None = None
         if box.height < minimum_height:
@@ -731,7 +734,7 @@ def refine_review_boundaries(
         capture.release()
 
     active_events = sorted(review.events, key=lambda item: (item.start_ms, item.end_ms))
-    for previous, current in zip(active_events, active_events[1:], strict=False):
+    for previous, current in zip(active_events, active_events[1:]):
         if previous.end_ms <= current.start_ms:
             continue
         transition_ms = max(previous.start_ms + 1, current.start_ms)

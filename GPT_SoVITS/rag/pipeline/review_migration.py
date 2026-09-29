@@ -1,6 +1,7 @@
 """提供 Stage 3 审核摘要、迁移诊断和安全文件替换。"""
 
 from __future__ import annotations
+from typing import Union
 
 import hashlib
 import json
@@ -25,7 +26,7 @@ def canonical_json_sha256(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def file_sha256(path: str | Path) -> str:
+def file_sha256(path: Union[str, Path]) -> str:
     """流式计算文件 SHA-256。"""
 
     digest = hashlib.sha256()
@@ -37,21 +38,21 @@ def file_sha256(path: str | Path) -> str:
 
 def build_source_fingerprint(
     role: str,
-    path: str | Path,
-    episode: int | None = None,
+    path: Union[str, Path],
+    episode: Union[int, None] = None,
 ) -> SourceFingerprint:
     """为一份直接来源建立不依赖文件位置的逻辑摘要。"""
 
     return SourceFingerprint(role=role, episode=episode, sha256=file_sha256(path))
 
 
-def migration_report_path(output_path: str | Path) -> Path:
+def migration_report_path(output_path: Union[str, Path]) -> Path:
     """返回审核产物并排的固定迁移报告路径。"""
 
     return Path(f"{Path(output_path)}.migration-report.json")
 
 
-def safely_write_json_model(model: BaseModel, output_path: str | Path) -> None:
+def safely_write_json_model(model: BaseModel, output_path: Union[str, Path]) -> None:
     """校验后使用同目录临时文件和原子替换保存模型。"""
 
     target = Path(output_path)
@@ -81,7 +82,7 @@ def safely_write_json_model(model: BaseModel, output_path: str | Path) -> None:
         raise
 
 
-def write_migration_report(report: ReviewMigrationReport, output_path: str | Path) -> Path:
+def write_migration_report(report: ReviewMigrationReport, output_path: Union[str, Path]) -> Path:
     """覆盖写入本次审核迁移报告并返回实际路径。"""
 
     report_path = migration_report_path(output_path)

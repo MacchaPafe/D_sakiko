@@ -10,7 +10,7 @@ from ..models import EntryType, WorldbookEntry
 from .common import display_fields
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StoryEventTypeModule:
     """集中解释当前 Story Event Schema。"""
 

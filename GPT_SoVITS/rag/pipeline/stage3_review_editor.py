@@ -1,6 +1,7 @@
 """为 Stage 3 审核 CLI 提供薄文件适配器。"""
 
 from __future__ import annotations
+from typing import Union
 
 import json
 from pathlib import Path
@@ -34,12 +35,12 @@ from .stage3_thought_models import Stage3ThoughtReviewArtifact, ThoughtThreadCon
 
 
 def complete_artifact_item_review(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     item_id: str,
     disposition: Disposition,
-    reason_code: DispositionReasonCode | None = None,
-    reason_note: str | None = None,
-    review_notes: str | None = None,
+    reason_code: Union[DispositionReasonCode, None] = None,
+    reason_note: Union[str, None] = None,
+    review_notes: Union[str, None] = None,
 ) -> None:
     """完成一个普通审核项并安全替换文件。"""
 
@@ -56,9 +57,9 @@ def complete_artifact_item_review(
 
 
 def mark_artifact_item_followup(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     item_id: str,
-    review_notes: str | None = None,
+    review_notes: Union[str, None] = None,
 ) -> None:
     """把一个普通审核项标记为需要跟进。"""
 
@@ -69,9 +70,9 @@ def mark_artifact_item_followup(
 
 
 def update_artifact_item_notes(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     item_id: str,
-    review_notes: str | None,
+    review_notes: Union[str, None],
 ) -> None:
     """只修改审核备注，不撤销已有审批。"""
 
@@ -82,9 +83,9 @@ def update_artifact_item_notes(
 
 
 def replace_artifact_item_content(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     item_id: str,
-    replacement_path: str | Path,
+    replacement_path: Union[str, Path],
 ) -> None:
     """写入完整人工快照并立即撤销既有审批。"""
 
@@ -119,7 +120,7 @@ def replace_artifact_item_content(
 
 
 def restore_artifact_item_content(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     item_id: str,
 ) -> None:
     """删除人工快照并恢复机器版本。"""
@@ -131,10 +132,10 @@ def restore_artifact_item_content(
 
 
 def resolve_artifact_identity(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     item_id: str,
     choice: Literal["inherit", "new"],
-    previous_id: str | None = None,
+    previous_id: Union[str, None] = None,
 ) -> str:
     """确认身份建议并返回确认后的开发侧稳定 ID。"""
 
@@ -154,12 +155,12 @@ def resolve_artifact_identity(
 
 
 def complete_lore_dedup_decision(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     group_id: str,
     action: LoreDedupAction,
-    primary_candidate_id: str | None = None,
-    replacement_path: str | Path | None = None,
-    review_notes: str | None = None,
+    primary_candidate_id: Union[str, None] = None,
+    replacement_path: Union[Union[str, Path], None] = None,
+    review_notes: Union[str, None] = None,
 ) -> None:
     """完成一个人工 Lore 去重决定。"""
 
@@ -183,7 +184,7 @@ def complete_lore_dedup_decision(
 
 
 def clear_lore_dedup_decision(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     group_id: str,
 ) -> None:
     """清除一个人工 Lore 去重决定。"""
@@ -192,7 +193,7 @@ def clear_lore_dedup_decision(
 
 
 def _apply_and_save(
-    artifact_path: str | Path,
+    artifact_path: Union[str, Path],
     command: ReviewCommand,
 ) -> None:
     """加载审核文件、应用受支持命令并安全保存。"""
@@ -204,7 +205,7 @@ def _apply_and_save(
     )
 
 
-def _load_review_artifact(path: str | Path) -> ReviewArtifact:
+def _load_review_artifact(path: Union[str, Path]) -> ReviewArtifact:
     """按 artifact_type 读取四种审核文件。"""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -222,7 +223,7 @@ def _load_review_artifact(path: str | Path) -> ReviewArtifact:
     raise ValueError(f"不支持的审核 artifact_type: {artifact_type}")
 
 
-def _save_artifact(path: str | Path, artifact: BaseModel) -> None:
+def _save_artifact(path: Union[str, Path], artifact: BaseModel) -> None:
     """完整校验后安全替换审核文件。"""
 
     safely_write_json_model(artifact, path)

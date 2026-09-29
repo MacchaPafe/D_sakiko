@@ -103,13 +103,13 @@ class ChatSidebarToolbar(QWidget):
 @lru_cache(maxsize=256)
 def _load_character_head_profile(character_name: str) -> QPixmap | None:
     """
-    按角色名加载 char_headprof 中的头像 PNG。
+    按角色名加载 assets/char_headprof 中的头像 PNG。
     """
     normalized_name = character_name.strip()
     if not normalized_name:
         return None
 
-    avatar_path = Path(__file__).resolve().parents[2] / "char_headprof" / f"{normalized_name}.png"
+    avatar_path = Path(__file__).resolve().parents[2] / "assets" / "char_headprof" / f"{normalized_name}.png"
     if not avatar_path.is_file():
         return None
 

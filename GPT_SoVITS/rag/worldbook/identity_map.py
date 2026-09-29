@@ -1,6 +1,7 @@
 """开发侧稳定身份到正式 UUID 的生命周期管理。"""
 
 from __future__ import annotations
+from typing import Union
 
 import json
 import os
@@ -62,7 +63,7 @@ class IdentityResolver:
         self,
         identity_map: WorldbookIdentityMap,
         allocate: bool,
-        reactivate_ids: set[str] | None = None,
+        reactivate_ids: Union[set[str], None] = None,
         reactivate_all: bool = False,
     ) -> None:
         """保存解析模式与一次性重新激活许可。"""

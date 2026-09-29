@@ -44,7 +44,7 @@ class IndexReadinessProvider(Protocol):
         """返回当前索引就绪态。"""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RetrievalConstraints:
     """描述一次查询共享的世界书硬过滤条件。"""
 
@@ -56,7 +56,7 @@ class RetrievalConstraints:
     known_by_character_id: CharacterId | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SemanticSearchRequest:
     """描述一次带最低阈值和轻量精确词加分的向量查询。"""
 
@@ -69,7 +69,7 @@ class SemanticSearchRequest:
     candidate_limit: int = 24
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PayloadScanRequest:
     """描述一次不进行语义排序的 payload 扫描。"""
 

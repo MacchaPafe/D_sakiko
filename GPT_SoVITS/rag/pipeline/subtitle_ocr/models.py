@@ -1,6 +1,7 @@
 """定义视频字幕 OCR 的可版本化中间产物。"""
 
 from __future__ import annotations
+from typing import Union
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,7 +117,7 @@ class OCRCandidate(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     boxes: list[OCRBox] = Field(default_factory=list)
     accepted: bool = True
-    rejection_reason: str | None = None
+    rejection_reason: Union[str, None] = None
 
 
 class FrameObservation(BaseModel):
@@ -127,7 +128,7 @@ class FrameObservation(BaseModel):
     timestamp_ms: int = Field(ge=0)
     phase: ObservationPhase = "coarse"
     candidates: list[OCRCandidate] = Field(default_factory=list)
-    selected_candidate_index: int | None = Field(default=None, ge=0)
+    selected_candidate_index: Union[int, None] = Field(default=None, ge=0)
     ocr_seconds: float = Field(ge=0.0)
 
     @model_validator(mode="after")
@@ -140,7 +141,7 @@ class FrameObservation(BaseModel):
             raise ValueError("selected_candidate_index 超出 candidates 范围")
         return self
 
-    def selected_candidate(self) -> OCRCandidate | None:
+    def selected_candidate(self) -> Union[OCRCandidate, None]:
         """返回当前采样点用于聚合的候选。"""
 
         if self.selected_candidate_index is None:
@@ -212,10 +213,10 @@ class SubtitleReviewEvent(BaseModel):
     representative_timestamp_ms: int = Field(ge=0)
     observation_timestamps_ms: list[int] = Field(default_factory=list)
     candidates: list[EventCandidateSummary] = Field(default_factory=list)
-    evidence_full_frame: str | None = None
-    evidence_crop: str | None = None
+    evidence_full_frame: Union[str, None] = None
+    evidence_crop: Union[str, None] = None
     human_edited: bool = False
-    deletion_reason: str | None = None
+    deletion_reason: Union[str, None] = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> SubtitleReviewEvent:
@@ -251,7 +252,7 @@ class OCRReviewArtifact(BaseModel):
     updated_at: str = Field(default_factory=utc_now_text)
     revision: int = Field(default=0, ge=0)
     events: list[SubtitleReviewEvent] = Field(default_factory=list)
-    publication: PublicationRecord | None = None
+    publication: Union[PublicationRecord, None] = None
 
     def pending_count(self) -> int:
         """返回尚未完成复核的事件数量。"""
@@ -270,7 +271,7 @@ def default_artifact_stem(series_id: str, episode: int) -> str:
     return f"{series_id}[{episode:02d}]"
 
 
-def artifact_paths(output_dir: str | Path, series_id: str, episode: int) -> tuple[Path, Path]:
+def artifact_paths(output_dir: Union[str, Path], series_id: str, episode: int) -> tuple[Path, Path]:
     """返回 observations 与 review JSON 的默认路径。"""
 
     root = Path(output_dir)

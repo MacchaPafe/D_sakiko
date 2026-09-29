@@ -1,6 +1,7 @@
 """反馈协议：只从明确允许的字段构造上传副本。"""
 
 from __future__ import annotations
+from typing import Union
 
 import hashlib
 import json
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     from chat.chat import Chat
     from character import CharacterAttributes
 
-Json = str | int | float | bool | None | list["Json"] | dict[str, "Json"]
+Json = Union[Union[Union[Union[Union[Union[str, int], float], bool], None], list['Json']], dict[str, 'Json']]
 MAX_BODY = 1024 * 1024
 SCHEMA: dict[str, Json] = json.loads(Path(__file__).with_name("schema.json").read_text("utf-8"))
 

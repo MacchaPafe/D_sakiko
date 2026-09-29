@@ -1,6 +1,7 @@
 """一次性把旧 Story/Lore RAG 与 point ID map 升级到审核 Schema。"""
 
 from __future__ import annotations
+from typing import Union
 
 import json
 from pathlib import Path
@@ -18,11 +19,11 @@ from .stage3_document_models import LoreEntryReviewRecord, Stage3DocumentReviewA
 
 def upgrade_stage3_review_schema(
     package_id: str,
-    artifact_paths: list[str | Path],
-    stage2_input_paths: list[str | Path],
-    annotation_paths: list[str | Path],
-    old_id_map_path: str | Path,
-    new_id_map_path: str | Path,
+    artifact_paths: list[Union[str, Path]],
+    stage2_input_paths: list[Union[str, Path]],
+    annotation_paths: list[Union[str, Path]],
+    old_id_map_path: Union[str, Path],
+    new_id_map_path: Union[str, Path],
     apply: bool = False,
 ) -> tuple[list[Stage3DocumentReviewArtifact], WorldbookIdentityMap]:
     """转换旧产物并把已有正式 UUID 迁移到新 candidate identity。"""

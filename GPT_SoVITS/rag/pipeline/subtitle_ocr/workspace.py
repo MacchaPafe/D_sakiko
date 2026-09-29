@@ -10,7 +10,7 @@ from .models import OCRReviewArtifact, ReviewStatus, SubtitleReviewEvent, utc_no
 from .storage import atomic_write_model, json_file_sha256, load_review
 
 
-@dataclass(slots=True)
+@dataclass()
 class OCRReviewWorkspace:
     """管理单集字幕审核文件的内存草稿和撤销历史。"""
 

@@ -1,6 +1,7 @@
 """Stage3 lore 条目的规范化去重工具。"""
 
 from __future__ import annotations
+from typing import Union
 
 from dataclasses import dataclass, field
 import json
@@ -18,7 +19,7 @@ from .stage3_rag_import import (
 )
 
 
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+JsonValue = Union[Union[Union[Union[Union[Union[None, bool], int], float], str], list['JsonValue']], dict[str, 'JsonValue']]
 JsonObject = dict[str, JsonValue]
 LoreDedupAction = Literal["auto_merge_identical", "merge", "keep_separate", "drop"]
 
@@ -26,7 +27,7 @@ FUZZY_WRATIO_THRESHOLD = 72.0
 FUZZY_PARTIAL_RATIO_THRESHOLD = 90.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LoreScopeKey:
     """表示 lore 条目的适用范围身份。"""
 
@@ -46,7 +47,7 @@ class LoreScopeKey:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LoreRecordSnapshot:
     """表示 review 文件中展示的一条 lore 候选快照。"""
 
@@ -90,7 +91,7 @@ class LoreRecordSnapshot:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LoreReviewGroup:
     """表示需要人工或自动处理的一组 lore 候选。"""
 
@@ -119,7 +120,7 @@ class LoreReviewGroup:
         return payload
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LoreDedupDecision:
     """表示一条可重复执行的 lore 去重人工决策。"""
 
@@ -163,7 +164,7 @@ class LoreDedupDecision:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class LoreDedupReviewArtifact:
     """表示 lore 去重 review 队列和自动决策草稿。"""
 
@@ -184,7 +185,7 @@ class LoreDedupReviewArtifact:
         }
 
 
-@dataclass(slots=True)
+@dataclass()
 class _MutableLoreRecord:
     """表示应用决策时可被修改的一条 lore 记录。"""
 

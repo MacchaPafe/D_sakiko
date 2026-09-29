@@ -1,6 +1,7 @@
 """按角色跨集聚合 Character Thought Update 为长期 Thread。"""
 
 from __future__ import annotations
+from typing import Union
 
 from collections import defaultdict
 import hashlib
@@ -60,11 +61,11 @@ def prepare_stage3_thought_prompt_package(
     input_artifacts: list[Stage2InputArtifact],
     stage2b_artifacts: list[Stage2BAnnotationArtifact],
     rag_artifacts: list[Stage3DocumentReviewArtifact],
-    input_paths: list[str | Path],
-    stage2b_paths: list[str | Path],
-    rag_paths: list[str | Path],
-    output_dir: str | Path,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    input_paths: list[Union[str, Path]],
+    stage2b_paths: list[Union[str, Path]],
+    rag_paths: list[Union[str, Path]],
+    output_dir: Union[str, Path],
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
 ) -> PromptPackageManifest:
     """按角色渲染完整集数范围的 Thought 聚合 Prompt Package。"""
 
@@ -114,13 +115,13 @@ def prepare_stage3_thought_prompt_package(
 
 
 def assemble_stage3_thought_prompt_package(
-    manifest_path: str | Path,
+    manifest_path: Union[str, Path],
     model_label: str = "codex-workspace",
     allow_partial: bool = False,
     allow_stale: bool = False,
-    previous: Stage3ThoughtReviewArtifact | None = None,
+    previous: Union[Stage3ThoughtReviewArtifact, None] = None,
     output_path: str = "",
-    allowed_removed_ids: set[str] | None = None,
+    allowed_removed_ids: Union[set[str], None] = None,
     allow_all_removed: bool = False,
 ) -> tuple[Stage3ThoughtReviewArtifact, ReviewMigrationReport]:
     """校验按角色 response 并组装唯一的全量 Thought Review。"""
@@ -281,9 +282,9 @@ def _finish_thought_artifact(
     assigned_ids: set[str],
     direct_sources: list[SourceFingerprint],
     aggregation_model: str,
-    previous: Stage3ThoughtReviewArtifact | None,
+    previous: Union[Stage3ThoughtReviewArtifact, None],
     output_path: str,
-    allowed_removed_ids: set[str] | None,
+    allowed_removed_ids: Union[set[str], None],
     allow_all_removed: bool,
 ) -> tuple[Stage3ThoughtReviewArtifact, ReviewMigrationReport]:
     """补齐未覆盖 Update，迁移上一版审核并执行消失保护。"""
@@ -503,7 +504,7 @@ def render_thought_aggregation_prompt(
     updates: list[ThoughtUpdateEvidence],
     story_events: list[dict[str, object]],
     event_facts: list[dict[str, object]],
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
 ) -> str:
     """渲染一个角色完整集数范围的 Thought 聚合 Prompt。"""
 
@@ -592,7 +593,7 @@ def _build_character_threads(
         sequence: list[ThoughtStateDraft] = []
         transitions: list[ThoughtTransitionDraft] = []
         covered: list[str] = []
-        active: ThoughtStateDraft | None = None
+        active: Union[ThoughtStateDraft, None] = None
         for state_proposal in proposal.states:
             valid_update_ids: list[str] = []
             for update_id in dict.fromkeys(state_proposal.supporting_update_ids):
@@ -745,7 +746,7 @@ def _inherit_thought_state_ids(
 
 def _migrate_thought_review(
     artifact: Stage3ThoughtReviewArtifact,
-    previous: Stage3ThoughtReviewArtifact | None,
+    previous: Union[Stage3ThoughtReviewArtifact, None],
     report: ReviewMigrationReport,
 ) -> None:
     """迁移 Thread、State 和未归属 Update 的上一版审核。"""
@@ -813,11 +814,11 @@ def build_stage3_thought_review_artifact(
     rag_artifacts: list[Stage3DocumentReviewArtifact],
     direct_sources: list[SourceFingerprint],
     llm_config: LiteLLMConfig,
-    template_path: str | Path = DEFAULT_TEMPLATE_PATH,
-    previous: Stage3ThoughtReviewArtifact | None = None,
-    status_callback: Callable[[str], None] | None = None,
+    template_path: Union[str, Path] = DEFAULT_TEMPLATE_PATH,
+    previous: Union[Stage3ThoughtReviewArtifact, None] = None,
+    status_callback: Union[Callable[[str], None], None] = None,
     output_path: str = "",
-    allowed_removed_ids: set[str] | None = None,
+    allowed_removed_ids: Union[set[str], None] = None,
     allow_all_removed: bool = False,
 ) -> tuple[Stage3ThoughtReviewArtifact, ReviewMigrationReport]:
     """按角色调用一次 LLM，构建完整范围的长期 Thought Review。"""
@@ -970,7 +971,7 @@ def build_stage3_thought_review_artifact(
     return artifact, report
 
 
-def load_stage3_thought_review_artifact(path: str | Path) -> Stage3ThoughtReviewArtifact:
+def load_stage3_thought_review_artifact(path: Union[str, Path]) -> Stage3ThoughtReviewArtifact:
     """读取严格的全量 Thought Review，并拒绝旧逐集格式。"""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -983,7 +984,7 @@ def load_stage3_thought_review_artifact(path: str | Path) -> Stage3ThoughtReview
 def save_stage3_thought_review_artifact(
     artifact: Stage3ThoughtReviewArtifact,
     report: ReviewMigrationReport,
-    output_path: str | Path,
+    output_path: Union[str, Path],
 ) -> None:
     """安全保存 Thought Review 和本次迁移报告。"""
 

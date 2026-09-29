@@ -1,6 +1,7 @@
 """定义版本化世界书检索验收案例与报告。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 from uuid import UUID
@@ -32,8 +33,8 @@ class WorldbookEvaluationCase(BaseModel):
     character_id: CharacterId
     query: str = Field(min_length=1)
     current_user_text: str = ""
-    target_character_id: CharacterId | None = None
-    relation_episode: int | None = Field(default=None, ge=1, le=13)
+    target_character_id: Union[CharacterId, None] = None
+    relation_episode: Union[int, None] = Field(default=None, ge=1, le=13)
     expected_entry_ids: list[UUID] = Field(default_factory=list)
     forbidden_entry_ids: list[UUID] = Field(default_factory=list)
     expect_empty: bool = False
@@ -76,7 +77,7 @@ class WorldbookEvaluationCaseResult(BaseModel):
     retrieved_entry_ids: list[UUID] = Field(default_factory=list)
     missing_expected_entry_ids: list[UUID] = Field(default_factory=list)
     leaked_forbidden_entry_ids: list[UUID] = Field(default_factory=list)
-    failure: str | None = None
+    failure: Union[str, None] = None
 
 
 class WorldbookEvaluationReport(BaseModel):

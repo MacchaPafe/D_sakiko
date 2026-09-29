@@ -1,6 +1,7 @@
 """定义跨集 Character Thought 聚合响应与审核产物。"""
 
 from __future__ import annotations
+from typing import Union
 
 from typing import Literal
 
@@ -30,7 +31,7 @@ class ThoughtAggregationMetadata(BaseModel):
     anime_title: str
     series_id: str
     timeline_id: str
-    story_year: int | None = None
+    story_year: Union[int, None] = None
     canon_branch: CanonBranch
     episodes: list[int] = Field(default_factory=list)
 
@@ -51,11 +52,11 @@ class ThoughtUpdateEvidence(BaseModel):
     provisional_update_type: ProvisionalThoughtUpdateType
     evidence_strength: ThoughtEvidenceStrength
     evidence_u_ids: list[str] = Field(default_factory=list)
-    inference_note: str | None = None
+    inference_note: Union[str, None] = None
     ambiguity_notes: list[str] = Field(default_factory=list)
     extraction_confidence: float = Field(ge=0.0, le=1.0)
-    event_candidate_id: str | None = None
-    event_fact_id: str | None = None
+    event_candidate_id: Union[str, None] = None
+    event_fact_id: Union[str, None] = None
     evidence_time: int
 
 
@@ -155,8 +156,8 @@ class ThoughtThreadReviewRecord(ReviewFields):
     covered_update_ids: list[str] = Field(default_factory=list)
     transitions: list[ThoughtTransitionDraft] = Field(default_factory=list)
     generated_content: ThoughtThreadContentDraft
-    reviewed_content: ThoughtThreadContentDraft | None = None
-    previous_reviewed_content: ThoughtThreadContentDraft | None = None
+    reviewed_content: Union[ThoughtThreadContentDraft, None] = None
+    previous_reviewed_content: Union[ThoughtThreadContentDraft, None] = None
     identity_suggestions: list[IdentitySuggestion] = Field(default_factory=list)
 
     @property
@@ -178,13 +179,13 @@ class ThoughtThreadReviewRecord(ReviewFields):
         return self.generated_content.states
 
     @property
-    def reviewed_sequence(self) -> list[ThoughtStateDraft] | None:
+    def reviewed_sequence(self) -> Union[list[ThoughtStateDraft], None]:
         """返回人工状态序列，供只读兼容调用。"""
 
         return None if self.reviewed_content is None else self.reviewed_content.states
 
     @property
-    def previous_reviewed_sequence(self) -> list[ThoughtStateDraft] | None:
+    def previous_reviewed_sequence(self) -> Union[list[ThoughtStateDraft], None]:
         """返回上一版人工状态序列，供只读对比。"""
 
         return (

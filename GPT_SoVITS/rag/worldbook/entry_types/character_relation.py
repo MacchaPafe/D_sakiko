@@ -58,7 +58,7 @@ class CharacterRelationContentV0(BaseModel):
         return self
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CharacterRelationTypeModule:
     """集中解释 Character Relation 发布 Schema v0。"""
 

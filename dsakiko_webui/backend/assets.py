@@ -13,7 +13,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_ROOT = (PROJECT_ROOT / "live2d_related").resolve()
 REFERENCE_AUDIO_ROOT = (PROJECT_ROOT / "reference_audio").resolve()
-CHAR_HEADPROF_ROOT = (PROJECT_ROOT / "GPT_SoVITS" / "char_headprof").resolve()
+CHAR_HEADPROF_ROOT = (PROJECT_ROOT / "GPT_SoVITS" / "assets" / "char_headprof").resolve()
 
 
 @dataclass(frozen=True)

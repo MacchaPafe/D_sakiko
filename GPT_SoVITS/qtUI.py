@@ -1392,8 +1392,9 @@ class ColorPicker(QDialog):
             btn.setFixedSize(int(self.screen.height() * 0.06), int(self.screen.height() * 0.075))
             btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             btn.clicked.connect(lambda checked, col=info["theme_color"]: self.set_theme_color(col))
-            if os.path.exists(f'./char_headprof/{char_name}.png'):
-                btn.setIcon(QIcon(f'./char_headprof/{char_name}.png'))
+            avatar_path = Path(__file__).resolve().parent / "assets" / "char_headprof" / f"{char_name}.png"
+            if avatar_path.is_file():
+                btn.setIcon(QIcon(str(avatar_path)))
                 btn.setIconSize(
                     QSize(int(self.screen.height() * 0.06 * 0.7), int(self.screen.height() * 0.075 * 0.7)))
             btn.setStyleSheet(f"""
