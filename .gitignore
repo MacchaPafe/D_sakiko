@@ -110,6 +110,6 @@ install_brew.sh
 /GPT_SoVITS/live2d_download/hosted/_credentials.py
 /GPT_SoVITS/.model_download_cache/
 
-# 本地维护的下载器实现与迭代资料，不纳入版本管理。
-/GPT_SoVITS/live2d_download/hosted/
+# 下载器开发文档与迭代资料仅保留在本地，源码正常跟踪。
+/GPT_SoVITS/live2d_download/hosted/开发说明.md
 /下载器v2迭代/
