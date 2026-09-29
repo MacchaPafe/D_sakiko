@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import importlib
 import json
 import os
@@ -35,7 +36,10 @@ from live2d_support.motion_selection import (
     select_random_motion as select_random_motion_entry,
 )
 from log import get_logger
-from live2d_support.performance_catalog import PERFORMANCE_MOTION_GROUP, cubism_motion_json, load_performance_catalog
+from live2d_support.performance_catalog import (
+    PERFORMANCE_MOTION_GROUP, PerformanceCatalog, cubism_motion_json,
+    load_performance_catalog, object_mapping,
+)
 from live2d_support.performance_policy import PerformanceState, resolve_performance
 from performance_types import PerformanceSelection
 
@@ -366,6 +370,8 @@ class Live2DModelAdapter:
     performance_expression_active: bool = False
     performance_motion_indices: dict[str, int] = field(default_factory=dict)
     _performance_generation: int = 0
+    _custom_expression_revisions: dict[str, str] = field(default_factory=dict)
+    _custom_expression_active: bool = False
 
     @classmethod
     def create(cls, model_json_path: str) -> Live2DModelAdapter:
@@ -443,7 +449,13 @@ class Live2DModelAdapter:
         now = time.time()
         delta_seconds = min(max(now - self._last_update_time, 0.0), 0.1)
         self._last_update_time = now
+        if self.version == "v3":
+            set_blink = getattr(getattr(model, "_model", None), "SetAutoBlink", None)
+            if callable(set_blink):
+                set_blink(self.auto_blink_enabled and self._custom_expression_active)
         getattr(model, "Update")()
+        if self._custom_expression_active:
+            return
         if self.version == "v3" and self.auto_blink_enabled and not self.performance_expression_active:
             is_motion_finished = getattr(model, "IsMotionFinished", None)
             if callable(is_motion_finished):
@@ -556,6 +568,28 @@ class Live2DModelAdapter:
         """在模型支持指定表情时设置表情。"""
         if not expression_id:
             return False
+        custom = False
+        if self.version == "v3":
+            catalog = load_performance_catalog(self.model_json_path)
+            owners = object_mapping(catalog.config.get("custom_expressions"))
+            custom = expression_id in owners and owners[expression_id] == catalog.expressions.get(expression_id)
+            if custom:
+                try:
+                    revision = self._custom_expression_revision(catalog, expression_id)
+                    if revision != self._custom_expression_revisions.get(expression_id):
+                        native = self._require_model()
+                        # 原生加载器会释放旧资源，必须先停止引用该资源的播放管理器。
+                        getattr(native, "ResetExpressions")()
+                        getattr(native, "LoadExtraExpression")(expression_id,
+                            str(catalog.model_path.parent / catalog.expressions[expression_id]))
+                        self._custom_expression_revisions[expression_id] = revision
+                    self.expression_ids = self.expression_ids | {expression_id}
+                except (OSError, ValueError, AttributeError, RuntimeError):
+                    logger.exception("加载自定义表情失败：%s", expression_id)
+                    return False
+            elif expression_id in self._custom_expression_revisions:
+                self.expression_ids = self.expression_ids - {expression_id}
+                return False
         if expression_id not in self.expression_ids:
             logger.warning(
                 "Live2D 模型不包含表情 '%s'，已跳过：%s",
@@ -565,6 +599,7 @@ class Live2DModelAdapter:
             return False
         try:
             getattr(self._require_model(), "SetExpression")(expression_id)
+            self._custom_expression_active = custom
             return True
         except Exception:
             logger.exception("设置 Live2D 表情失败：%s", expression_id)
@@ -573,6 +608,11 @@ class Live2DModelAdapter:
     def SetExpression(self, expression_id: str) -> bool:
         """兼容旧调用风格，安全设置表情。"""
         return self.set_expression_if_supported(expression_id)
+
+    def _custom_expression_revision(self, catalog: PerformanceCatalog, expression_id: str) -> str:
+        """计算自定义文件版本，保证相同 ID 的修改也会重新加载。"""
+        file = catalog.expressions.get(expression_id, "")
+        return hashlib.sha256((catalog.model_path.parent / file).read_bytes()).hexdigest()
 
     def select_supported_expression(self, candidates: Iterable[str]) -> str | None:
         """从候选表情 ID 中选择当前模型支持的第一个表情。"""
@@ -797,6 +837,7 @@ class Live2DModelAdapter:
         self.performance_state = None
         self.performance_context = None
         self.performance_expression_active = False
+        self._custom_expression_active = False
         self._performance_generation += 1
 
     def apply_performance(
@@ -810,6 +851,11 @@ class Live2DModelAdapter:
             self.reset_performance()
             self.performance_context = context
         catalog = load_performance_catalog(self.model_json_path)
+        current_expression = self.performance_state.expression if self.performance_state else None
+        if current_expression in self._custom_expression_revisions and current_expression not in catalog.expressions:
+            getattr(self._require_model(), "ResetExpressions")()
+            self.performance_expression_active = False
+            self._custom_expression_active = False
         plan = resolve_performance(catalog, PerformanceSelection.from_value(selection), emotion,
                                    direction, self.performance_state)
         if plan.fallback_reasons:
@@ -827,8 +873,15 @@ class Live2DModelAdapter:
 
             asset = catalog.motion(plan.state.motion_id or "", direction)
             motion_ok = self._start_performance_motion(plan.state.motion_file, asset.entry if asset else {}, finished)
-        expression_ok = not plan.change_expression
-        if plan.change_expression and plan.state.expression:
+        change_expression = plan.change_expression
+        owners = object_mapping(catalog.config.get("custom_expressions"))
+        if plan.state.expression in owners:
+            try:
+                change_expression = change_expression or self._custom_expression_revision(catalog, plan.state.expression) != self._custom_expression_revisions.get(plan.state.expression)
+            except OSError:
+                change_expression = True
+        expression_ok = not change_expression
+        if change_expression and plan.state.expression:
             expression_ok = self.SetExpression(plan.state.expression)
         self.performance_state = PerformanceState(
             plan.state.motion_id if motion_ok else previous.motion_id,

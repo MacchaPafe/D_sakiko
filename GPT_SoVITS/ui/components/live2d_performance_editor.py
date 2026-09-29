@@ -34,6 +34,7 @@ class Live2DPerformanceEditor(QWidget):
     """浏览两类资源、保留逐项草稿，并将次要管理操作放入对话框。"""
 
     previewFeedback = pyqtSignal(str)
+    expressionResult = pyqtSignal(object)
 
     def __init__(self, send_preview: Callable[[dict[str, object]], object], parent: QWidget | None = None) -> None:
         """建立双列表、说明编辑区和突出显示的重播操作。"""
@@ -58,6 +59,9 @@ class Live2DPerformanceEditor(QWidget):
         hint.setObjectName("muted")
         heading.addWidget(hint)
         heading.addStretch()
+        self.custom_expressions_button = QPushButton("自定义表情…")
+        self.custom_expressions_button.clicked.connect(self.open_custom_expressions)
+        heading.addWidget(self.custom_expressions_button)
         self.presets_button = QPushButton("组合预设…")
         self.presets_button.clicked.connect(self.open_presets)
         heading.addWidget(self.presets_button)
@@ -168,6 +172,24 @@ class Live2DPerformanceEditor(QWidget):
             if selector.item(index).data(Qt.UserRole) == resource_id:
                 selector.setCurrentRow(index)
                 return
+
+    def open_custom_expressions(self) -> None:
+        """固定入口打开模态编辑器，并在退出后刷新资源及描述。"""
+        if self.catalog is None or self.catalog.version != "v3" or not self.confirm_leave():
+            return
+        from ui.components.live2d_expression_editor import CustomExpressionDialog
+
+        dialog = CustomExpressionDialog(self.catalog.model_path, self.selected_id("expressions"),
+                                        self.send_preview, confirm_description_changes, self)
+        self.expressionResult.connect(dialog.receive)
+        try:
+            dialog.exec_()
+        finally:
+            self.expressionResult.disconnect(dialog.receive)
+            self.load_model(self.catalog.model_path)
+            if dialog.selected:
+                self.select_resource("expressions", dialog.selected)
+            dialog.deleteLater()
 
     def load_model(self, path: str | Path | None) -> None:
         """更换模型时重置方向；同一模型刷新目录时保留选择和草稿。"""

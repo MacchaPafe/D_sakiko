@@ -23,6 +23,7 @@ from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
 from ui.components.live2d_performance_editor import Live2DPerformanceEditor
 from ui.components.live2d_viewer_widgets import CharacterPicker, VIEWER_STYLE, V3_INTRO_TITLE, V3_INTRO_TEXT, show_v3_intro_once
 from live2d_support.viewer_preview import execute_viewer_preview
+from live2d_support.expression_preview import ExpressionPreviewSession
 from qconfig import d_sakiko_config
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL
@@ -170,6 +171,7 @@ class Live2DModule:
         pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
         glViewport(0, 0, *display)
         session = Live2DRuntimeSession()
+        expression_session = ExpressionPreviewSession()
         model_notice = ModelLoadNoticeOverlay(display, slot_count=1)
         #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
 
@@ -256,6 +258,7 @@ class Live2DModule:
             layout_editing = False
             layout_dragging = False
             layout_last_mouse_pos = None
+            expression_session.close()
             model_adapter.dispose()
             model_notice.clear()
             glClear(GL_COLOR_BUFFER_BIT)
@@ -356,7 +359,10 @@ class Live2DModule:
 
             if not motion_queue.empty():
                 motion_name=motion_queue.get()
-                result = execute_viewer_preview(model, motion_name)
+                if isinstance(motion_name, dict) and motion_name.get("type") == "expression_editor":
+                    result = expression_session.execute(model, motion_name)
+                else:
+                    result = execute_viewer_preview(model, motion_name)
                 if preview_result_queue is not None:
                     preview_result_queue.put(result)
 
@@ -364,7 +370,9 @@ class Live2DModule:
             #live2d.clearBuffer()
             glClear(GL_COLOR_BUFFER_BIT)
             # 更新live2d到缓冲区
-            model.Update()
+            if not expression_session.static:
+                model.Update()
+                expression_session.after_update()
             # 渲染背景图片
             render_background(texture)
 
@@ -376,6 +384,7 @@ class Live2DModule:
 
 
         try:
+            expression_session.close()
             model.dispose()
         except Exception:
             logger.debug("释放 Live2D 模型失败", exc_info=True)
@@ -560,6 +569,10 @@ class ViewerGUI(QWidget):
     def send_preview(self, command: dict[str, object] | str) -> None:
         """给预览请求加上身份，过期模型或旧请求的回执不覆盖当前状态。"""
         request_id = uuid.uuid4().hex
+        if isinstance(command, dict) and command.get("type") == "expression_editor":
+            self.motion_queue.put(dict(command, request_id=request_id,
+                model_path=str(self.current_model_json_path.resolve()) if self.current_model_json_path else ""))
+            return
         self._preview_request_id = request_id
         self._preview_started_at = time.monotonic()
         payload = dict(command) if isinstance(command, dict) else {"file": command}
@@ -576,6 +589,9 @@ class ViewerGUI(QWidget):
                     result = self.preview_result_queue.get_nowait()
                 except Empty:
                     break
+                if isinstance(result, dict) and result.get("type") == "expression_editor":
+                    self.performance_editor.expressionResult.emit(result)
+                    continue
                 if isinstance(result, dict) and result.get("request_id") == self._preview_request_id:
                     self._preview_request_id = None
                     message = str(result.get("message") or "预览失败")

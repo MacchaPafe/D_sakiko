@@ -382,6 +382,7 @@ def _model3_is_normalized(model_data: dict[str, object], file_references: dict[s
 def _flatten_model3_file_references(
         file_references: dict[str, object],
         model_dir: Path,
+        preserved_expressions: frozenset[str] = frozenset(),
 ) -> list[tuple[dict[str, object], frozenset[str], MotionPosition | None, str]]:
     """平铺 FileReferences 中的资产路径，并收集原始动作候选。"""
     moved_dirs: set[Path] = set()
@@ -405,6 +406,8 @@ def _flatten_model3_file_references(
     if isinstance(expressions, list):
         for expression in expressions:
             expression_mapping = _as_object_mapping(expression)
+            if isinstance(expression_mapping.get("File"), str) and expression_mapping["File"] in preserved_expressions:
+                continue
             if "File" in expression_mapping:
                 expression_mapping["File"] = _flatten_model3_asset_reference(
                     expression_mapping["File"],
@@ -492,7 +495,10 @@ def normalize_model3_for_project(model3_json_path: str) -> bool:
     groups = _as_object_mapping(file_references.setdefault("Motions", {}))
     original_files = [str(entry["File"]) for entry in all_assets]
     groups["__dsakiko_asset_index__"] = all_assets
-    motion_candidates = _flatten_model3_file_references(file_references, model_dir)
+    custom = _as_object_mapping(original_catalog.config.get("custom_expressions"))
+    preserved_expressions = frozenset(file for name, file in original_catalog.expressions.items()
+                                      if custom.get(name) == file)
+    motion_candidates = _flatten_model3_file_references(file_references, model_dir, preserved_expressions)
     complete_assets = groups.pop("__dsakiko_asset_index__")
     rewritten_files = {file: str(entry["File"]) for file, entry in zip(original_files, complete_assets)}
     bindings = original_catalog.config.get("bindings")
