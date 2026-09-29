@@ -1,4 +1,4 @@
-"""桌宠输入视图：角色下边缘的悬浮入口与共享草稿面板。"""
+"""桌宠输入视图：右上方悬浮入口与角色下边缘的共享草稿面板。"""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QGraphicsDropShadowEffect,
     QScrollArea,
+    QTextBrowser,
 )
 from ui_main.components.message_input import MessageInput
 from ui_main.theme import ThemePalette
@@ -40,6 +41,19 @@ if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
     from queue import Queue
     from qtUI import ChatGUI
+
+
+class SubtitleBubble(QTextBrowser):
+    """可滚动的纯文本字幕，短回复自适应高度，长回复可完整阅读。"""
+
+    def text(self) -> str:
+        """保持字幕读取接口与原标签一致。"""
+        return self.toPlainText()
+
+    def setText(self, text: str) -> None:
+        """按纯文本显示字幕，并从新回复的开头开始阅读。"""
+        self.setPlainText(text)
+        self.verticalScrollBar().setValue(0)
 
 
 class PetWindow(QWidget):
@@ -86,13 +100,23 @@ class PetWindow(QWidget):
         self.fallback.setGeometry(65, 140, 250, 100)
         self.fallback.clicked.connect(self.openChat)
         self.fallback.hide()
-        self.subtitle = QLabel("", self)
-        self.subtitle.setWordWrap(True)
-        self.subtitle.setAlignment(Qt.AlignCenter)
+        self.subtitle = SubtitleBubble(self)
+        self.subtitle.setFrameShape(QFrame.NoFrame)
+        self.subtitle.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.subtitle.setFocusPolicy(Qt.NoFocus)
+        subtitle_option = self.subtitle.document().defaultTextOption()
+        subtitle_option.setAlignment(Qt.AlignHCenter)
+        self.subtitle.document().setDefaultTextOption(subtitle_option)
         self.subtitle.setStyleSheet(
             "background:rgba(30,35,45,210);color:white;border-radius:8px;padding:7px;"
         )
         self.subtitle.hide()
+        self.activity_bubble = QLabel("", self)
+        self.activity_bubble.setObjectName("petActivity")
+        self.activity_bubble.setTextFormat(Qt.PlainText)
+        self.activity_bubble.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.activity_bubble.hide()
+        self._running_tools = {}
         self.notice = QLabel("", self)
         self.notice.setObjectName("petNotice")
         self.notice.setWordWrap(True)
@@ -268,6 +292,10 @@ class PetWindow(QWidget):
         self.notice.setStyleSheet(
             f"QLabel#petNotice {{ background: {palette.surface_tint}; color: {palette.text_primary}; border: 1px solid {palette.border_subtle}; border-radius: 10px; padding: 8px; }}"
         )
+        self.activity_bubble.setStyleSheet(
+            f"QLabel#petActivity {{ background: {palette.surface_tint}; color: {palette.text_primary}; "
+            f"border: 1px solid {palette.border_subtle}; border-radius: 12px; border-bottom-left-radius: 0px; padding: 8px 12px; }}"
+        )
         self._send_icons = {
             False: self._tinted_icon("send.svg", palette.on_accent),
             True: self._tinted_icon("stop.svg", palette.on_accent),
@@ -283,12 +311,19 @@ class PetWindow(QWidget):
         self.refresh_state()
 
     def layout_controls(self) -> None:
-        """将固定字号的输入卡片贴近角色下缘，并限制在当前窗口内。"""
+        """输入卡片贴近角色下缘，字幕按缩放后的模型轮廓限高并水平居中。"""
         panel_width = min(360, self.width() - 20)
         self.panel.setFixedWidth(panel_width)
         self.panel.layout().activate()
         self.input.refresh_height()
-        subtitle_height = 72
+        # 预留滚动条宽度测量换行；超长回复在有限区域内滚动查看。
+        document = self.subtitle.document().clone()
+        document.setTextWidth(max(40, panel_width - 38))
+        subtitle_height = min(
+            max(48, round(document.size().height()) + 24),
+            max(1, self.bounds.height() // 3),
+        )
+        document.deleteLater()
         subtitle_space = subtitle_height + 10 if self.subtitle.text() else 0
         panel_height_limit = min(360, self.height() - 16 - subtitle_space)
         # 极长错误或附件仍可滚动查看，操作按钮始终留在卡片内。
@@ -297,17 +332,14 @@ class PetWindow(QWidget):
         )
         panel_height = max(96, self.panel.layout().sizeHint().height())
         y = max(8, min(self.anchor - 18, self.height() - panel_height - 8))
-        self.tools.setGeometry(
-            (self.width() - 84) // 2,
-            max(8, min(self.anchor - 18, self.height() - 52)),
-            84,
-            44,
-        )
         self.panel.setGeometry(
             (self.width() - panel_width) // 2, y, panel_width, panel_height
         )
         self.subtitle.setGeometry(
-            (self.width() - panel_width) // 2,
+            max(0, min(
+                self.width() - panel_width,
+                self.bounds.center().x() + self.renderer.x() - panel_width // 2,
+            )),
             max(5, y - subtitle_height - 10),
             panel_width,
             subtitle_height,
@@ -323,6 +355,48 @@ class PetWindow(QWidget):
         self.panel.raise_()
         self.subtitle.raise_()
         self.notice.raise_()
+        self._layout_activity_bubble()
+
+    def _layout_activity_bubble(self) -> None:
+        """气泡贴近模型右上方，下方预留交互入口；无提示时仍保留其高度。"""
+        self.activity_bubble.adjustSize()
+        width = min(self.activity_bubble.width(), self.width() - 16)
+        height = max(self.activity_bubble.height(), self.activity_bubble.fontMetrics().height() + 18)
+        self.activity_bubble.resize(width, height)
+        # bounds 是模型可见轮廓的渲染器局部坐标，不能直接贴窗口右上角。
+        model_bounds = self.bounds.translated(self.renderer.pos())
+        x = min(self.width() - width - 8, model_bounds.right() - width // 3)
+        y = max(8, model_bounds.top() - self.activity_bubble.height() // 2)
+        self.activity_bubble.move(max(8, x), min(y, self.height() - height - 60))
+        self.tools.setGeometry(
+            max(8, min(self.width() - 92, model_bounds.right() - 28)),
+            self.activity_bubble.geometry().bottom() + 9,
+            84,
+            44,
+        )
+        self.tools.raise_()
+        self.activity_bubble.raise_()
+
+    def update_tool_activity(self, tool_id: str, name: str, running: bool) -> None:
+        """记录正在执行的工具，支持多个调用重叠并在完成后恢复思考提示。"""
+        if running:
+            self._running_tools[tool_id] = name
+        else:
+            self._running_tools.pop(tool_id, None)
+        self.refresh_state()
+
+    def _refresh_activity_bubble(self, busy: bool) -> None:
+        """按工具调用、思考、空闲的优先级更新气泡，停止后清除旧状态。"""
+        if not busy:
+            self._running_tools.clear()
+        text = ""
+        if busy and self._running_tools:
+            text = f"用一下{list(self._running_tools.values())[-1]}..."
+        elif busy and self.renderer.performance.thinking:
+            text = "思考中"
+        self.activity_bubble.setText(text)
+        self.activity_bubble.setVisible(bool(text))
+        self._layout_activity_bubble()
 
     def play_interaction(self) -> None:
         """单击收起输入卡片并保留草稿，空闲时继续播放角色动作。"""
@@ -477,6 +551,7 @@ class PetWindow(QWidget):
         voice = self.host.voice_input.state
         recording = voice == "recording"
         busy = self.host.is_response_active()
+        self._refresh_activity_bubble(busy)
         self.renderer.interaction_blocked = busy or voice in {
             "recording",
             "transcribing",

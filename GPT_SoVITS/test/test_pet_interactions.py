@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import QApplication
 from desktop_pet.window import PetWindow
 from desktop_pet.controller import DesktopController
 from desktop_pet.focus import PetFocus
-from runtime.drafts import DraftStore
+from runtime.drafts import DraftStore, DraftBinding
 from runtime.single_character_performance import SingleCharacterPerformance
 from runtime.voice_input import VoiceInputService
 from ui_main.components.message_input import MessageInput
@@ -298,6 +298,88 @@ class PetInteractionTests(TestCase):
         self.assertLess(
             self.pet.subtitle.geometry().bottom(), self.pet.panel.geometry().top()
         )
+
+    def test_committed_text_clears_both_views_before_reply(self) -> None:
+        """真实提交回执在回复前同步清空主窗口和桌宠草稿。"""
+        from qtUI import ChatGUI
+
+        main_input = MessageInput(self.host._theme_palette)
+        self.addCleanup(main_input.deleteLater)
+        binding = DraftBinding(self.drafts, main_input, "test")
+        self.pet.expand()
+        self.pet.input.setPlainText("纯文本消息")
+        self.assertEqual(main_input.toPlainText(), "纯文本消息")
+        self.drafts.submitted("test", "text-turn")
+        self.host.conversation_runtime = object()
+        ChatGUI._handle_structured_response(self.host, {
+            "type": "user_message_committed", "chat_id": "test",
+            "turn_id": "text-turn", "draft_attachment_ids": [],
+        })
+        self.assertEqual(main_input.toPlainText(), "")
+        self.assertEqual(self.pet.input.toPlainText(), "")
+        self.assertFalse(self.pet.expanded)
+
+    def test_long_subtitle_scrolls_and_bubble_follows_model_bounds(self) -> None:
+        """长回复保留全文且可滚动，气泡跟随模型轮廓而非固定窗口边缘。"""
+        # 显示真实文字视口以完成布局，隐藏 GL 控件以隔离模型与显卡。
+        self.pet.renderer.hide()
+        self.pet.show()
+        text = "这是一段较长的回复，需要能够完整阅读。" * 100
+        self.pet._subtitle(text)
+        self.pet.subtitle.show()
+        self.app.processEvents()
+        self.assertEqual(self.pet.subtitle.toPlainText(), text)
+        self.assertGreater(self.pet.subtitle.verticalScrollBar().maximum(), 0)
+        for zoom in (0.6, 1.0, 1.6):
+            self.pet.set_zoom(zoom)
+            self.app.processEvents()
+            self.assertLessEqual(self.pet.subtitle.height(), self.pet.bounds.height() // 3)
+            self.assertGreater(self.pet.subtitle.verticalScrollBar().maximum(), 0)
+            model_center = self.pet.bounds.center().x() + self.pet.renderer.x()
+            self.assertLessEqual(abs(self.pet.subtitle.geometry().center().x() - model_center), 1)
+        self.pet.set_zoom(1.0)
+        self.pet._subtitle("第一段\n第二段")
+        self.assertEqual(
+            self.pet.subtitle.document().defaultTextOption().alignment(), Qt.AlignHCenter
+        )
+        self.host.is_response_active.return_value = True
+        self.pet.renderer.performance.thinking = True
+        self.pet.bounds = QRect(30, 70, 150, 350)
+        self.pet.refresh_state()
+        self.assertGreater(self.pet.tools.y(), self.pet.activity_bubble.geometry().bottom())
+        self.assertGreater(self.pet.tools.geometry().center().x(), self.pet.bounds.center().x())
+        before = self.pet.activity_bubble.pos()
+        tools_before = self.pet.tools.pos()
+        self.pet.bounds.translate(25, 30)
+        self.pet.layout_controls()
+        self.assertEqual(self.pet.activity_bubble.pos() - before, QPoint(25, 30))
+        self.assertEqual(self.pet.tools.pos() - tools_before, QPoint(25, 30))
+        self.host.is_response_active.return_value = False
+        self.pet.refresh_state()
+        self.assertGreater(self.pet.tools.y(), self.pet.activity_bubble.geometry().bottom())
+
+    def test_activity_bubble_tracks_thinking_tools_and_stop(self) -> None:
+        """工具覆盖思考提示，重叠调用逐个结束，停止时隐藏并清理。"""
+        self.host.is_response_active.return_value = True
+        self.pet.renderer.performance.thinking = True
+        self.pet.refresh_state()
+        self.assertEqual(self.pet.activity_bubble.text(), "思考中")
+        self.assertFalse(self.pet.activity_bubble.isHidden())
+        self.pet.update_tool_activity("first", "搜索", True)
+        self.pet.update_tool_activity("second", "天气", True)
+        self.assertEqual(self.pet.activity_bubble.text(), "用一下天气...")
+        self.pet.update_tool_activity("second", "天气", False)
+        self.assertEqual(self.pet.activity_bubble.text(), "用一下搜索...")
+        self.pet.update_tool_activity("first", "搜索", False)
+        self.assertEqual(self.pet.activity_bubble.text(), "思考中")
+        self.pet.renderer.performance.thinking = False
+        self.pet.refresh_state()
+        self.assertTrue(self.pet.activity_bubble.isHidden())
+        self.pet.update_tool_activity("third", "搜索", True)
+        self.host.is_response_active.return_value = False
+        self.pet.refresh_state()
+        self.assertTrue(self.pet.activity_bubble.isHidden())
+        self.assertEqual(self.pet._running_tools, {})
 
     def test_enter_waits_for_submission_commit_before_collapsing(self) -> None:
         """回车发送后等待提交确认，清空共享草稿后才收起输入面板。"""

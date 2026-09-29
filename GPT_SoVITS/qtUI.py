@@ -3976,6 +3976,7 @@ class ChatGUI(QWidget):
         self.tool_call_records_cache[tool_call_id] = payload
         tool_name = str(payload.get("tool_name") or "unknown")
         self._append_tool_status_line(tool_call_id, f"<正在调用工具...>", status="running")
+        self._update_pet_tool_activity(tool_call_id, tool_name, True)
 
     def _handle_tool_call_update_event(self, payload: dict):
         tool_call_id = str(payload.get("tool_call_id") or "")
@@ -3985,6 +3986,16 @@ class ChatGUI(QWidget):
         tool_name = str(payload.get("tool_name") or "unknown")
         duration_sec = float(payload.get("duration_sec") or 0.0)
         self._append_tool_status_line(tool_call_id, f"<工具调用完成 {duration_sec:.2f}秒>", status="completed")
+        self._update_pet_tool_activity(tool_call_id, tool_name, False)
+
+    def _update_pet_tool_activity(self, tool_call_id: str, tool_name: str, running: bool) -> None:
+        """向桌宠转发工具执行状态，显示已有中文工具名映射。"""
+        controller = getattr(self, "desktop_controller", None)
+        pet = getattr(controller, "pet", None)
+        if pet is not None:
+            pet.update_tool_activity(
+                tool_call_id, str(tool_name_chi_mapping.get(tool_name, tool_name)), running
+            )
 
     def _open_tool_call_dialog(self, tool_call_id: str):
         record = self.tool_call_records_cache.get(tool_call_id)

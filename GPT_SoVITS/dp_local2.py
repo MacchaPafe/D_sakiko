@@ -2533,13 +2533,13 @@ class DSLocalAndVoiceGen:
                         )
                         self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                         continue
-                    if draft_attachment_ids:
-                        dp2qt_queue.put({
-                            "type": "user_message_committed",
-                            "chat_id": active_chat_id,
-                            "turn_id": turn_id,
-                            "draft_attachment_ids": list(draft_attachment_ids),
-                        })
+                # 纯文本同样需要提交回执，不能等到回复或语音合成后才清理输入草稿。
+                dp2qt_queue.put({
+                    "type": "user_message_committed",
+                    "chat_id": active_chat_id,
+                    "turn_id": turn_id,
+                    "draft_attachment_ids": list(draft_attachment_ids),
+                })
 
             worldbook_diagnostic = self._start_worldbook_diagnostic(
                 active_chat_id,
