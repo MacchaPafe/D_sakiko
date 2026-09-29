@@ -627,7 +627,7 @@ class CharacterPage(QWidget):
         nav.addStretch(1)
         nav.addWidget(self.next, 0, Qt.AlignRight)
         layout.addLayout(nav)
-        self.credit = QPushButton("素材与资源来自Bang Dream GBP & Ournotes",self)
+        self.credit = QPushButton("素材与资源来自Bang Dream GBP & OurNotes",self)
         self.credit.setObjectName("resourceCredit")
         self.credit.setCursor(Qt.PointingHandCursor)
         self.credit.setToolTip("点击隐藏")
@@ -1269,13 +1269,13 @@ class ResourcePage(QWidget):
         for kind in kinds:
             if kind == "v2" and not isinstance(CHARACTERS[choice.source]["bestdori_index"], int):
                 continue
-            box = QFrame() if background else QGroupBox({"v2": "Live2D V2 · Girls Band Party", "model": "Live2D V3 · Ournotes", "avatar": "WebUI 聊天头像"}[kind])
+            box = QFrame() if background else QGroupBox({"v2": "Live2D V2 · Girls Band Party", "model": "Live2D V3 · OurNotes", "avatar": "WebUI 聊天头像"}[kind])
             if background:
                 box.setObjectName("backgroundGalleryPanel")
             body = QVBoxLayout(box)
             status = QLabel("正在读取目录…")
             status.setObjectName("pageCountNotice")
-            if kind == "background":
+            if background:
                 status.setObjectName("galleryTitle")
             status.setWordWrap(True)
             if background:
@@ -1406,7 +1406,7 @@ class ResourcePage(QWidget):
                 row.finished(self.saved_images[entry.key],"")
         listing.scrollToTop()
         listing.center_timer.start(0)
-        status.setText("Ournotes 故事模式背景图" if kind == "background" else (f"共 {len(entries)} 张" if entries else "没有匹配的图片"))
+        status.setText("OurNotes 故事模式背景图" if kind == "background" else "WebUI 角色聊天头像")
         self.page_label.setText(f"{self.image_page+1} / {pages}")
         self.previous_page.setEnabled(self.image_page > 0)
         self.next_page.setEnabled(self.image_page+1 < pages)

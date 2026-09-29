@@ -431,7 +431,7 @@ class QtTests(unittest.TestCase):
         self.window.choose_mode("background")
         page = self.window.resources
         self.wait_for(lambda:bool(page.rows))
-        self.assertEqual(page.panels["background"][1].text(),"Ournotes 故事模式背景图")
+        self.assertEqual(page.panels["background"][1].text(),"OurNotes 故事模式背景图")
         row = page.rows[0][2]
         dialog = OriginalPreview(row)
         dialog.show()
@@ -509,6 +509,8 @@ class QtTests(unittest.TestCase):
         page = self.window.resources
         self.wait_for(lambda:bool(page.rows))
         self.assertEqual(page.panels["avatar"][2].viewMode(),QListWidget.IconMode)
+        self.assertEqual(page.panels["avatar"][1].objectName(), "galleryTitle")
+        self.assertEqual(page.panels["avatar"][1].text(), "WebUI 角色聊天头像")
         self.assertTrue(page.rows[0][2].image_tile)
         self.assertEqual(page.styleSheet(),self.window.metrics.page_stylesheet("avatars"))
         self.assertTrue(page.heading.isHidden())
