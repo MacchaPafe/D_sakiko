@@ -3614,11 +3614,13 @@ class ChatGUI(QWidget):
 
     def switch_chat_by_id(self, chat_id: str) -> None:
         """
-        切换当前普通对话。
+        切换当前普通对话，验证目标有效后自动结束历史回放。
         """
         if chat_id == self.current_chat_id:
             return
-        if self.is_chat_busy():
+        runtime = getattr(self, 'conversation_runtime', None)
+        was_replaying = runtime is not None and runtime.is_replaying
+        if self.is_chat_busy() and not was_replaying:
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再切换对话。")
             self.refresh_chat_list()
             return
@@ -3631,6 +3633,8 @@ class ChatGUI(QWidget):
 
         self.current_chat_id = chat.chat_id
         self.sync_current_chat_to_backends()
+        if was_replaying:
+            self._clear_active_turn()
         self.apply_current_chat_ui_state()
         self.refresh_chat_list()
 

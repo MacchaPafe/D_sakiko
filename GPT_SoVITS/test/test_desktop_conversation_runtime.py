@@ -199,6 +199,117 @@ class ConversationTests(unittest.TestCase):
             self.runtime.replay("a", "old.wav", "LABEL_0")
         self.assertEqual(self.runtime.active, ("a", turn))
 
+    def test_switch_chat_stops_voiced_and_silent_replay_and_ignores_old_events(self) -> None:
+        """切换会停止声音或无声阅读、清空字幕，旧回执不能结束新对话轮次。"""
+        from runtime.single_character_performance import SingleCharacterPerformance
+
+        for audio_path in ("voice.wav", "NO_AUDIO"):
+            with self.subTest(audio_path=audio_path):
+                player = SingleCharacterPerformance()
+                model = Mock()
+                model.StartRandomMotion.return_value = False
+                subtitle = Mock()
+                player.on_subtitle = subtitle
+                player.on_event = self.runtime.playback_event
+                old_turn = self.runtime.replay("a", audio_path, "LABEL_0", "旧字幕")
+                player.command(self.presentation.get_nowait(), model)
+                with patch.object(player, "audio_busy", return_value=audio_path != "NO_AUDIO"), patch.object(
+                    player, "onStartCallback_emotion_version"
+                ), patch.object(player.wavHandler, "Update", return_value=False), patch(
+                    "runtime.single_character_performance.pygame.mixer.get_init", return_value=True
+                ), patch("runtime.single_character_performance.pygame.mixer.music.stop") as stop_audio:
+                    player.update_playback(model)
+                    self.assertTrue(player.busy)
+                    self.runtime.switch_chat("b")
+                    self.assertFalse(self.runtime.busy)
+                    player.command(self.presentation.get_nowait(), model)
+                    self.assertFalse(player.busy)
+                    subtitle.assert_called_with("")
+                    stop_audio.assert_called_once()
+                self.assertEqual(self.commands.get_nowait(), dict(type="switch_chat", chat_id="b"))
+                new_turn = self.runtime.submit("b", "新对话")
+                for event_type in ("playback_complete", "playback_failed"):
+                    self.runtime.playback_event(dict(
+                        type=event_type, chat_id="a", turn_id=old_turn, segment_id=1,
+                    ))
+                self.runtime.accept_event(dict(
+                    type="assistant_turn_complete", chat_id="a", turn_id=old_turn,
+                ))
+                self.assertEqual(self.runtime.active, ("b", new_turn))
+                self.assertTrue(self.events.empty())
+                self.runtime.cancel()
+                while not self.presentation.empty():
+                    self.presentation.get_nowait()
+                while not self.commands.empty():
+                    self.commands.get_nowait()
+
+    def test_switch_chat_rejects_generation_and_missing_target_without_cancelling(self) -> None:
+        """不存在的目标不取消历史回放，生成中的新回复仍禁止切换。"""
+        turn = self.runtime.replay("a", "NO_AUDIO", "LABEL_0")
+        self.manager.get_chat_by_id.return_value = None
+        with self.assertRaises(ValueError):
+            self.runtime.switch_chat("missing")
+        self.assertEqual(self.runtime.active, ("a", turn))
+        self.engine.request_cancel_turn.assert_not_called()
+        self.manager.get_chat_by_id.return_value = self.chat
+        self.runtime.cancel()
+        turn = self.runtime.submit("a", "生成中")
+        with self.assertRaises(RuntimeError):
+            self.runtime.switch_chat("b")
+        self.assertEqual(self.runtime.active, ("a", turn))
+
+    def test_qt_chat_switch_validates_target_then_cancels_replay_before_model_switch(self) -> None:
+        """界面保留无效目标下的回放，成功切换先取消演出并清除旧轮次状态。"""
+        from qtUI import ChatGUI
+
+        host = Mock()
+        host.current_chat_id = "a"
+        host.conversation_runtime = self.runtime
+        host.chat_manager = self.manager
+        host.character_by_name = {"爱音": Mock()}
+        host.current_character.character_name = "爱音"
+        host.desktop_controller = None
+        host.is_chat_busy.side_effect = lambda: self.runtime.busy
+        host.sync_current_chat_to_backends.side_effect = lambda: ChatGUI.sync_current_chat_to_backends(host)
+        host._clear_active_turn.side_effect = lambda: ChatGUI._clear_active_turn(host)
+        host._send_live2d_switch.side_effect = lambda name, meta: self.presentation.put(
+            dict(type="switch_live2d", character_name=name)
+        )
+        turn = self.runtime.replay("a", "NO_AUDIO", "LABEL_0")
+        host.active_chat_id, host.active_turn_id = "a", turn
+        host.active_turn_phase = "rendering"
+        target = Mock(chat_id="b")
+        target.get_character_name.return_value = "爱音"
+        with patch("qtUI.QMessageBox.information") as notice:
+            ChatGUI.switch_chat_by_id(host, "a")
+            self.assertEqual(self.runtime.active, ("a", turn))
+            self.manager.get_chat_by_id.return_value = None
+            ChatGUI.switch_chat_by_id(host, "missing")
+            self.assertEqual(self.runtime.active, ("a", turn))
+            self.manager.get_chat_by_id.return_value = target
+            target.get_character_name.return_value = "已删除的角色"
+            ChatGUI.switch_chat_by_id(host, "b")
+            self.assertEqual(self.runtime.active, ("a", turn))
+            self.assertEqual(host.current_chat_id, "a")
+            target.get_character_name.return_value = "爱音"
+            notice.reset_mock()
+            ChatGUI.switch_chat_by_id(host, "b")
+            notice.assert_not_called()
+            self.assertEqual(host.current_chat_id, "b")
+            self.assertFalse(self.runtime.busy)
+            self.assertIsNone(host.active_turn_id)
+            self.assertIsNone(host.active_chat_id)
+            host.draft_binding.switch.assert_called_once_with("b")
+            host.apply_current_chat_ui_state.assert_called_once()
+            self.assertEqual([event["type"] for event in self.presentation.queue],
+                             ["play_segment", "cancel_turn", "switch_live2d"])
+            self.assertEqual(self.commands.get_nowait(), dict(type="switch_chat", chat_id="b"))
+            new_turn = self.runtime.submit("b", "新回复")
+            ChatGUI.switch_chat_by_id(host, "a")
+            self.assertEqual(host.current_chat_id, "b")
+            self.assertEqual(self.runtime.active, ("b", new_turn))
+            notice.assert_called_once()
+
     def test_closed_runtime_rejects_replay(self) -> None:
         """关闭运行时会取消回放并拒绝新的播放请求。"""
         self.runtime.replay("a", "old.wav", "LABEL_0")

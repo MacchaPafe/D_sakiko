@@ -161,10 +161,15 @@ class ConversationRuntime:
                 raise
             return turn_id
 
-    def switch_chat(self, chat_id):
+    def switch_chat(self, chat_id: str) -> None:
+        """切换对话时终止历史回放，仍保护正在生成或自动播放的新回复。"""
         with self._lock:
-            if self.busy:
+            if self.busy and not self.is_replaying:
                 raise RuntimeError("回复尚未完成，不能切换对话。")
+            if self.chat_manager.get_chat_by_id(chat_id) is None:
+                raise ValueError("对话不存在。")
+            if self.is_replaying:
+                self.cancel()
             self.commands.put(dict(type="switch_chat", chat_id=chat_id))
 
     def cancel(self):
