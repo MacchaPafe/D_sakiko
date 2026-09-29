@@ -221,7 +221,7 @@ class MoreFunctionWindow(QDialog):
         # self.open_worldbook_button.clicked.connect(self.on_click_open_worldbook)
         # advanced_settings_layout.addWidget(self.open_worldbook_button)
 
-        self.open_start_config_button=QPushButton("程序启动参数配置")
+        self.open_start_config_button=QPushButton("启动参数配置")
         self.open_start_config_button.clicked.connect(self.on_click_open_start_config_button)  # noqa
         advanced_settings_layout.addWidget(self.open_start_config_button)
         advanced_settings_group.setLayout(advanced_settings_layout)
@@ -243,7 +243,7 @@ class MoreFunctionWindow(QDialog):
         gameplay_group.setLayout(gameplay_layout)
         layout.addWidget(gameplay_group)
 
-        tools_group = QGroupBox("工具")
+        tools_group = QGroupBox("资产扩充")
         tools_layout = QVBoxLayout()
         open_live2d_downloader_btn=QPushButton("Live2D模型下载器")
         open_live2d_downloader_btn.clicked.connect(self.on_click_open_live2d_downloader)  # noqa
