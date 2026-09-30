@@ -48,29 +48,64 @@ class PetInteractionTests(TestCase):
         self.host.isVisible.return_value = False
         self.host._current_model_supports_vision.return_value = True
         self.host.desktop_controller = None
-        self.pet = PetWindow(self.host, Queue(), Queue(), SimpleNamespace(value=True))
+        # 通用交互用 100% 基准尺寸；Windows DPI 补偿在独立用例中验证。
+        with patch.object(PetWindow, "_model_dpi_scale", return_value=1.0):
+            self.pet = PetWindow(self.host, Queue(), Queue(), SimpleNamespace(value=True))
         self.pet.base_bounds = QRect(40, 35, 300, 430)
         self.pet.set_zoom(1.0)
         self.addCleanup(self.voice.close)
         self.addCleanup(self.pet.shutdown)
 
+    def test_windows_dpi_scales_default_model_without_changing_zoom_limit(self) -> None:
+        """100/150/200% 的角色基准随 DPI 变化，控件与 1.6 倍上限保持不变。"""
+        for dpi in (96.0, 144.0, 192.0):
+            with self.subTest(dpi=dpi):
+                screen = Mock()
+                screen.logicalDotsPerInch.return_value = dpi
+                screen.availableGeometry.return_value = QRect(0, 0, 3840, 2160)
+                with patch("desktop_pet.window.sys.platform", "win32"), patch.object(PetWindow, "screen", return_value=screen):
+                    pet = PetWindow(self.host, Queue(), Queue(), SimpleNamespace(value=True))
+                    try:
+                        self.assertEqual(pet.zoom, 1.0)
+                        self.assertEqual(pet.renderer.width(), round(380 * dpi / 96))
+                        self.assertEqual(pet.renderer.height(), round(500 * dpi / 96))
+                        self.assertEqual(pet.panel.width(), 360)
+                        self.assertEqual(pet.tools.size(), self.pet.tools.size())
+                        pet.set_zoom(10)
+                        self.assertEqual(pet.zoom, 1.6)
+                        pet.reset_zoom()
+                        self.assertEqual(pet.zoom, 1.0)
+                        self.assertEqual(pet.renderer.height(), round(500 * dpi / 96))
+                    finally:
+                        pet.shutdown()
+
+    def test_qt_scaled_screen_does_not_double_scale_model(self) -> None:
+        """Qt 已吸收 Windows 缩放时逻辑 DPI 为 96，不再重复放大基准尺寸。"""
+        screen = Mock()
+        screen.logicalDotsPerInch.return_value = 96.0
+        screen.devicePixelRatio.return_value = 1.5
+        with patch.object(self.pet, "screen", return_value=screen), patch("desktop_pet.window.sys.platform", "win32"):
+            self.assertEqual(self.pet._model_dpi_scale(), 1.0)
+        with patch("desktop_pet.window.sys.platform", "darwin"):
+            self.assertEqual(self.pet._model_dpi_scale(), 1.0)
+
     def test_zoom_keeps_foot_and_input_size_and_does_not_recalibrate(self) -> None:
         """缩放保持脚底位置和输入字号，不重新抓帧标定模型。"""
         self.pet.move(100, 10)
-        foot = self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor))
+        foot = self.pet.renderer.mapToGlobal(QPoint(self.pet.renderer.width() // 2, self.pet.anchor))
         font = self.pet.input.font()
         with patch.object(self.pet.renderer, "fit_and_bounds") as fit:
             self.pet.set_zoom(0.6)
             fit.assert_not_called()
         self.assertEqual(self.pet.renderer.size().width(), 228)
         self.assertEqual(
-            self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor)), foot
+            self.pet.renderer.mapToGlobal(QPoint(self.pet.renderer.width() // 2, self.pet.anchor)), foot
         )
         self.assertEqual(self.pet.input.font(), font)
         self.pet.set_zoom(10.0)
         self.assertLessEqual(self.pet.zoom, 1.6)
         self.assertEqual(
-            self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor)), foot
+            self.pet.renderer.mapToGlobal(QPoint(self.pet.renderer.width() // 2, self.pet.anchor)), foot
         )
         self.pet.reset_zoom()
         self.assertLessEqual(self.pet.zoom, 1.0)
@@ -124,10 +159,10 @@ class PetInteractionTests(TestCase):
         self.assertFalse(renderer.interaction_requested)
         self.pet.expand()
         self.assertEqual(self.pet.pos(), moved)
-        foot = self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor))
+        foot = self.pet.renderer.mapToGlobal(QPoint(self.pet.renderer.width() // 2, self.pet.anchor))
         self.pet.set_zoom(0.8)
         self.assertEqual(
-            self.pet.mapToGlobal(QPoint(self.pet.width() // 2, self.pet.anchor)), foot
+            self.pet.renderer.mapToGlobal(QPoint(self.pet.renderer.width() // 2, self.pet.anchor)), foot
         )
         before_show = self.pet.pos()
         self.pet.hide()
@@ -287,7 +322,7 @@ class PetInteractionTests(TestCase):
         self.assertTrue(self.pet.subtitle.isHidden())
         self.assertTrue(self.pet.notice.isHidden())
 
-    def test_subtitle_remains_visible_and_updates_above_expanded_input(self) -> None:
+    def test_subtitle_remains_visible_and_updates_below_expanded_input(self) -> None:
         """打开输入框后仍显示旧回复和新字幕，并与输入面板保持分离。"""
         self.pet._subtitle("已经显示的回复")
         self.pet.expand()
@@ -296,8 +331,15 @@ class PetInteractionTests(TestCase):
         self.assertFalse(self.pet.subtitle.isHidden())
         self.assertEqual(self.pet.subtitle.text(), "输入期间到达的新回复")
         self.assertLess(
-            self.pet.subtitle.geometry().bottom(), self.pet.panel.geometry().top()
+            self.pet.panel.geometry().bottom(), self.pet.subtitle.geometry().top()
         )
+        self.assertGreater(self.pet.panel.x(), self.pet.bounds.right() + self.pet.renderer.x())
+        self.assertEqual(self.pet.panel.x(), self.pet.subtitle.x())
+        self.assertEqual(self.pet.panel.width(), 360)
+        self.assertEqual(self.pet.tools.width(), 84)
+        self.pet.collapse()
+        self.assertGreater(self.pet.subtitle.y(), self.pet.tools.geometry().bottom())
+        self.assertLess(self.pet.subtitle.y(), self.pet.panel.geometry().bottom())
 
     def test_committed_text_clears_both_views_before_reply(self) -> None:
         """真实提交回执在回复前同步清空主窗口和桌宠草稿。"""
@@ -335,8 +377,9 @@ class PetInteractionTests(TestCase):
             self.app.processEvents()
             self.assertLessEqual(self.pet.subtitle.height(), self.pet.bounds.height() // 3)
             self.assertGreater(self.pet.subtitle.verticalScrollBar().maximum(), 0)
-            model_center = self.pet.bounds.center().x() + self.pet.renderer.x()
-            self.assertLessEqual(abs(self.pet.subtitle.geometry().center().x() - model_center), 1)
+            model_right = self.pet.bounds.right() + self.pet.renderer.x()
+            self.assertGreater(self.pet.subtitle.x(), model_right)
+            self.assertEqual(self.pet.subtitle.x(), self.pet.panel.x())
         self.pet.set_zoom(1.0)
         self.pet._subtitle("第一段\n第二段")
         self.assertEqual(
@@ -526,7 +569,7 @@ class PetInteractionTests(TestCase):
         self.assertLessEqual(bottom, self.pet.panel.height())
         self.assertLessEqual(self.pet.panel.geometry().bottom(), self.pet.height())
         self.assertLess(
-            self.pet.subtitle.geometry().bottom(), self.pet.panel.geometry().top()
+            self.pet.panel.geometry().bottom(), self.pet.subtitle.geometry().top()
         )
         self.assertGreater(self.pet.input_scroll.verticalScrollBar().maximum(), 0)
         self.assertEqual(self.drafts.get("test").text, "长文本\n" * 20)

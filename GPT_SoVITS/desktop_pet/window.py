@@ -1,8 +1,9 @@
-"""桌宠输入视图：右上方悬浮入口与角色下边缘的共享草稿面板。"""
+"""桌宠输入视图：角色右侧按层排列的交互入口、共享草稿与回复字幕。"""
 
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import TYPE_CHECKING
 from PyQt5 import sip
 from PyQt5.QtCore import (
@@ -80,10 +81,12 @@ class PetWindow(QWidget):
         self.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setWindowTitle("桌宠")
-        self.resize(380, 610)
+        dpi_scale = self._model_dpi_scale()
+        self.base_render_size = QSize(round(380 * dpi_scale), round(500 * dpi_scale))
+        self.resize(self.base_render_size.width(), self.base_render_size.height() + 110)
         self._focus = create_pet_focus(self)
         self.renderer = PetRenderer(commands, playback_events, motion_complete, self)
-        self.renderer.setGeometry(0, 0, 380, 500)
+        self.renderer.setGeometry(QRect(QPoint(), self.base_render_size))
         self.renderer.clicked.connect(self.play_interaction)
         self.renderer.zoomRequested.connect(self.zoom_by)
         self.renderer.modelReady.connect(self._model_ready)
@@ -92,7 +95,7 @@ class PetWindow(QWidget):
         self.hovered = False
         self.expanded = False
         self.popup_open = False
-        self.anchor = 440
+        self.anchor = round(440 * dpi_scale)
         self.bounds = self.renderer.rect()
         self.zoom = 1.0
         self.base_bounds = QRect(self.bounds)
@@ -240,9 +243,9 @@ class PetWindow(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_state)
         self.timer.start(100)
+        self.set_zoom(1.0)
         area = QApplication.primaryScreen().availableGeometry()
         self.move(area.right() - self.width() - 36, area.bottom() - self.height() - 24)
-        self.layout_controls()
 
     def showEvent(self, event: QShowEvent) -> None:
         """恢复显示时刷新原生悬浮追踪，不激活应用或修正拖动位置。"""
@@ -311,8 +314,10 @@ class PetWindow(QWidget):
         self.refresh_state()
 
     def layout_controls(self) -> None:
-        """输入卡片贴近角色下缘，字幕按缩放后的模型轮廓限高并水平居中。"""
-        panel_width = min(360, self.width() - 20)
+        """右侧依次堆叠入口、输入、字幕和通知，沿用原有组件尺寸规则。"""
+        model_column_width = max(380, self.renderer.width())
+        canvas_height = self.renderer.height() + 110
+        panel_width = min(360, model_column_width - 20)
         self.panel.setFixedWidth(panel_width)
         self.panel.layout().activate()
         self.input.refresh_height()
@@ -325,51 +330,47 @@ class PetWindow(QWidget):
         )
         document.deleteLater()
         subtitle_space = subtitle_height + 10 if self.subtitle.text() else 0
-        panel_height_limit = min(360, self.height() - 16 - subtitle_space)
+        panel_height_limit = min(360, canvas_height - 16 - subtitle_space)
         # 极长错误或附件仍可滚动查看，操作按钮始终留在卡片内。
         self.input_scroll.setFixedHeight(
             min(self.input.height(), max(48, panel_height_limit - 60))
         )
         panel_height = max(96, self.panel.layout().sizeHint().height())
-        y = max(8, min(self.anchor - 18, self.height() - panel_height - 8))
-        self.panel.setGeometry(
-            (self.width() - panel_width) // 2, y, panel_width, panel_height
-        )
-        self.subtitle.setGeometry(
-            max(0, min(
-                self.width() - panel_width,
-                self.bounds.center().x() + self.renderer.x() - panel_width // 2,
-            )),
-            max(5, y - subtitle_height - 10),
-            panel_width,
-            subtitle_height,
-        )
+        self._layout_activity_bubble()
+        x = self.tools.x()
+        y = self.tools.geometry().bottom() + 10
+        self.panel.setGeometry(x, y, panel_width, panel_height)
+        if self.expanded:
+            y = self.panel.geometry().bottom() + 10
+        self.subtitle.setGeometry(x, y, panel_width, subtitle_height)
+        if self.subtitle.text():
+            y = self.subtitle.geometry().bottom() + 10
         notice_height = max(40, self.notice.heightForWidth(panel_width))
-        notice_y = max(5, y - notice_height - 8)
-        if self.subtitle.isVisible():
-            notice_y = max(5, self.subtitle.y() - notice_height - 8)
-        self.notice.setGeometry(
-            (self.width() - panel_width) // 2, notice_y, panel_width, notice_height
+        self.notice.setGeometry(x, y, panel_width, notice_height)
+        # 扩展透明宿主容纳侧栏，不拉伸渲染器或压缩卡片。
+        bottom = self.notice.geometry().bottom() + 8 if self.notice.text() else y + 8
+        self.resize(
+            max(model_column_width, x + max(panel_width, self.activity_bubble.width()) + 8),
+            max(canvas_height, bottom),
         )
         self.tools.raise_()
         self.panel.raise_()
         self.subtitle.raise_()
         self.notice.raise_()
-        self._layout_activity_bubble()
 
     def _layout_activity_bubble(self) -> None:
-        """气泡贴近模型右上方，下方预留交互入口；无提示时仍保留其高度。"""
+        """气泡与入口对齐模型右侧，为下方输入和字幕提供统一锚点。"""
         self.activity_bubble.adjustSize()
-        width = min(self.activity_bubble.width(), self.width() - 16)
+        width = min(self.activity_bubble.width(), max(380, self.renderer.width()) - 16)
         height = max(self.activity_bubble.height(), self.activity_bubble.fontMetrics().height() + 18)
         self.activity_bubble.resize(width, height)
         # bounds 是模型可见轮廓的渲染器局部坐标，不能直接贴窗口右上角。
         model_bounds = self.bounds.translated(self.renderer.pos())
-        x = min(self.width() - width - 8, model_bounds.right() - width // 3)
+        x = model_bounds.right() + 12
         y = max(8, model_bounds.top() - self.activity_bubble.height() // 2)
-        self.activity_bubble.move(max(8, x), min(y, self.height() - height - 60))
+        self.activity_bubble.move(x, y)
         self.tools.setGeometry(
-            max(8, min(self.width() - 92, model_bounds.right() - 28)),
+            x,
             self.activity_bubble.geometry().bottom() + 9,
             84,
             44,
@@ -396,7 +397,6 @@ class PetWindow(QWidget):
             text = "思考中"
         self.activity_bubble.setText(text)
         self.activity_bubble.setVisible(bool(text))
-        self._layout_activity_bubble()
 
     def play_interaction(self) -> None:
         """单击收起输入卡片并保留草稿，空闲时继续播放角色动作。"""
@@ -410,6 +410,12 @@ class PetWindow(QWidget):
         """以角色下边缘中心为锚点调整桌宠大小。"""
         self.set_zoom(self.zoom * factor)
 
+    def _model_dpi_scale(self) -> float:
+        """只补偿 Windows 未被 Qt 吸收的 DPI 缩放，不再次乘设备像素比。"""
+        if sys.platform != "win32":
+            return 1.0
+        return max(1.0, self.screen().logicalDotsPerInch() / 96.0)
+
     def reset_zoom(self) -> None:
         """恢复本次运行的默认桌宠大小。"""
         self.set_zoom(1.0)
@@ -417,14 +423,15 @@ class PetWindow(QWidget):
     def set_zoom(self, requested: float) -> None:
         """同步调整渲染视口和稳定轮廓，避免放大模型后被固定视口裁切。"""
         area = self.screen().availableGeometry()
-        maximum = min(1.6, area.width() / 380.0, (area.height() - 110) / 500.0)
+        base_width, base_height = self.base_render_size.width(), self.base_render_size.height()
+        maximum = min(1.6, area.width() / base_width, (area.height() - 110) / base_height)
         zoom = max(min(0.6, maximum), min(maximum, requested))
-        foot = self.mapToGlobal(QPoint(self.width() // 2, self.anchor))
+        foot = self.renderer.mapToGlobal(QPoint(self.renderer.width() // 2, self.anchor))
         self.zoom = zoom
-        render_width, render_height = round(380 * zoom), round(500 * zoom)
-        self.resize(min(area.width(), max(380, render_width)), render_height + 110)
+        render_width, render_height = round(base_width * zoom), round(base_height * zoom)
+        model_column_width = min(area.width(), max(380, render_width))
         self.renderer.setGeometry(
-            (self.width() - render_width) // 2, 0, render_width, render_height
+            (model_column_width - render_width) // 2, 0, render_width, render_height
         )
         self.bounds = QRect(
             round(self.base_bounds.x() * zoom),
@@ -435,10 +442,10 @@ class PetWindow(QWidget):
         self.renderer.hit_bounds = QRect(self.bounds)
         self.anchor = self.bounds.bottom()
         self.fallback.setGeometry(
-            (self.width() - 250) // 2, max(20, render_height // 3), 250, 100
+            (model_column_width - 250) // 2, max(20, render_height // 3), 250, 100
         )
         self.layout_controls()
-        self.move(foot - QPoint(self.width() // 2, self.anchor))
+        self.move(foot - QPoint(self.renderer.x() + render_width // 2, self.anchor))
         self.renderer.update()
 
     def _model_failed(self, message: str) -> None:
@@ -480,6 +487,7 @@ class PetWindow(QWidget):
         self.notice_timer.stop()
         self.notice.clear()
         self.notice.hide()
+        self.layout_controls()
 
     def show_input_error(self, message: str) -> None:
         """保留可处理的输入错误，面板收起时另给出短时提示。"""
@@ -526,7 +534,9 @@ class PetWindow(QWidget):
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self.renderer and event.type() == QEvent.MouseMove:
-            self.hovered = self.bounds.contains(event.pos())
+            # 跨过模型与侧栏之间的透明间隙时，入口不能先消失。
+            hover_bounds = self.bounds.united(self.tools.geometry().translated(-self.renderer.pos()))
+            self.hovered = hover_bounds.contains(event.pos())
             self.refresh_state()
         if (
             event.type() == QEvent.ApplicationDeactivate
@@ -602,8 +612,7 @@ class PetWindow(QWidget):
         self.tools.setVisible(
             not self.expanded and (self.hovered or recording or voice == "preparing")
         )
-        if self.expanded:
-            self.layout_controls()
+        self.layout_controls()
         self.renderer.tick_hidden()
 
     def toggle_voice(self) -> None:
