@@ -68,7 +68,7 @@ class PetRenderer(QOpenGLWidget):
         self.offset = (0.0, 0.0)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update)
-        self.timer.start(33)
+        self.timer.start(16)
         self.press = None
         self.origin = None
         self.dragged = False
