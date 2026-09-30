@@ -18,6 +18,32 @@ from live2d_support.model_importer import Live2DModelImportError, import_live2d_
 class Live2DModelImporterTestCase(unittest.TestCase):
     """测试本地 Live2D 模型导入逻辑。"""
 
+    def test_import_v3_separates_random_idle_and_preserves_source(self) -> None:
+        """完整导入后随机组只收正面变化动作，基础组用 idle，外部源文件不变。"""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source"
+            destination = root / "installed"
+            (destination / "arare").mkdir(parents=True)
+            names = ["mtn_idle01_C.motion3.json", "mtn_kime01_C.motion3.json",
+                     "mtn_smile01_C.motion3.json", "mtn_wink01_L.motion3.json",
+                     "mtn_wink01_R.motion3.json"]
+            for name in names:
+                self._write_file(source / name, '{"Meta":{"Loop":true},"Curves":[]}')
+            model = source / "model.model3.json"
+            self._write_file(model, json.dumps({"Version": 3, "FileReferences": {
+                "Motions": {"Idle": [{"File": name} for name in names]},
+            }}))
+            original = {path.name: path.read_bytes() for path in source.iterdir()}
+            result = import_live2d_model(str(model), "arare", str(destination))
+            imported = self._read_json_object(Path(result.model_json_path))
+            groups = imported["FileReferences"]["Motions"]
+            self.assertEqual({entry["File"] for entry in groups["IDLE"]},
+                             {"mtn_kime01_C.motion3.json", "mtn_smile01_C.motion3.json"})
+            self.assertEqual(groups["IDLE"], groups["IDLE_C"])
+            self.assertEqual(groups["idle_motion"], [{"File": "mtn_idle01_C.motion3.json"}])
+            self.assertEqual({path.name: path.read_bytes() for path in source.iterdir()}, original)
+
     def _write_file(self, path: Path, content: str = "{}") -> None:
         """写入测试用模型资源文件。"""
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -206,7 +206,10 @@ def _motion_keywords_from_name(name: str) -> set[str]:
     stem = re.sub(r"^(mtn_|motion_)", "", stem)
     stem = re.sub(r"_([clr])$", "", stem)
     keywords: set[str] = set()
-    for segment in re.split(r"[_\-]+", stem):
+    segments = re.split(r"[_\-]+", stem)
+    # 保留 nf_left / nf_right 等 V2 规则使用的复合词，兼容平铺后的哈希前缀。
+    keywords.update("_".join(segments[index:index + 2]) for index in range(len(segments) - 1))
+    for segment in segments:
         if not segment or segment in {"mtn", "motion", "c", "l", "r"}:
             continue
         keywords.add(segment)
@@ -258,7 +261,7 @@ def _entries_by_position(
 def _default_motion_entries(
         candidates: list[tuple[dict[str, object], frozenset[str], MotionPosition | None, str]],
 ) -> list[dict[str, object]]:
-    """从候选动作中选择基础动作组默认条目。"""
+    """基础组优先正面 C，其次无方向动作，绝不混入 L/R。"""
     suffixless_entries: list[dict[str, object]] = []
     center_entries: list[dict[str, object]] = []
     for entry, _keywords, position, _sort_key in sorted(candidates, key=lambda item: item[3]):
@@ -266,9 +269,7 @@ def _default_motion_entries(
             _append_unique_motion_entry(suffixless_entries, entry)
         elif position == "C":
             _append_unique_motion_entry(center_entries, entry)
-    if suffixless_entries:
-        return suffixless_entries
-    return center_entries
+    return center_entries or suffixless_entries
 
 
 def _build_standard_model3_motions(
@@ -282,11 +283,25 @@ def _build_standard_model3_motions(
     standard_group_ids = standard_motion_group_ids()
 
     for group_name in standard_group_ids:
-        matched_candidates = _matching_motion_entries(candidates, direct_motion_keywords(group_name))
-        if not matched_candidates:
-            matched_candidates = _matching_motion_entries(candidates, weak_motion_keywords(group_name))
-        grouped_by_standard[group_name] = _entries_by_position(matched_candidates)
-        default_by_standard[group_name] = _default_motion_entries(matched_candidates)
+        group_candidates = candidates
+        if group_name in {"IDLE", "idle_motion"}:
+            # 部分原模型把所有动作放在 Idle 组，待机分类必须像 V2 下载器一样看文件名。
+            group_candidates = [
+                (entry, frozenset(_motion_keywords_from_name(str(entry.get("File", "")))), position, key)
+                for entry, _keywords, position, key in candidates
+            ]
+        direct_candidates = _matching_motion_entries(group_candidates, direct_motion_keywords(group_name))
+        weak_candidates = _matching_motion_entries(group_candidates, weak_motion_keywords(group_name))
+        direct_positions = _entries_by_position(direct_candidates)
+        weak_positions = _entries_by_position(weak_candidates)
+        # 某个方向的直接匹配不能阻止其他方向使用自己的弱匹配。
+        grouped_by_standard[group_name] = {
+            position: direct_positions[position] or weak_positions[position]
+            for position in POSITION_MOTION_SUFFIXES
+        }
+        default_by_standard[group_name] = (
+            _default_motion_entries(direct_candidates) or _default_motion_entries(weak_candidates)
+        )
 
     for group_name in standard_group_ids:
         if not default_by_standard[group_name]:

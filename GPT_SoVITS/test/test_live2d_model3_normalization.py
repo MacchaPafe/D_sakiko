@@ -163,6 +163,64 @@ class Live2DModel3NormalizationTestCase(unittest.TestCase):
             self.assertEqual(len(cast(list[object], motions["happiness"])), 6)
             self.assertEqual(len(cast(list[object], motions["talking_motion"])), 1)
 
+    def _normalize_motion_names(self, root: Path, names: list[str]) -> dict:
+        """用常见的单个 Idle 原始组导入，确保归组依据文件名而非原组名。"""
+        root.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            self._write_file(root / name, '{"Meta":{"Loop":false},"Curves":[]}')
+        path = root / "model.model3.json"
+        self._write_file(path, json.dumps({"Version": 3, "FileReferences": {
+            "Motions": {"Idle": [{"File": name} for name in names]},
+        }}))
+        self.assertTrue(normalize_model3_for_project(str(path)))
+        result = self._read_json_object(path)["FileReferences"]["Motions"]
+        original = path.read_bytes()
+        self.assertFalse(normalize_model3_for_project(str(path)))
+        self.assertEqual(path.read_bytes(), original)
+        return result
+
+    def test_random_idle_uses_v2_candidates_and_center_direction(self) -> None:
+        """随机待机有变化，基础待机只用 idle，C 与左右方向不混用。"""
+        with tempfile.TemporaryDirectory() as folder:
+            expected = [f"mtn_{name}_C.motion3.json" for name in (
+                "kime01", "nnf02", "smile01", "wink01", "sleep01", "niyaniya01", "nf_left", "nf_right",
+            )]
+            names = expected + ["mtn_idle01_C.motion3.json", "mtn_kime01.motion3.json",
+                                "mtn_kime01_L.motion3.json", "mtn_wink01_R.motion3.json",
+                                "mtn_angry01_C.motion3.json"]
+            groups = self._normalize_motion_names(Path(folder), names)
+            self.assertEqual({item["File"] for item in groups["IDLE"]}, set(expected))
+            self.assertEqual(groups["IDLE"], groups["IDLE_C"])
+            self.assertEqual(groups["idle_motion"], [{"File": "mtn_idle01_C.motion3.json"}])
+            self.assertEqual(groups["IDLE_L"], [{"File": "mtn_kime01_L.motion3.json"}])
+            self.assertEqual(groups["IDLE_R"], [{"File": "mtn_wink01_R.motion3.json"}])
+
+    def test_random_idle_fallback_never_inserts_sideways_motion_into_default(self) -> None:
+        """有无方向候选就使用它；没有正面随机动作时回退正面 idle；只有左右则基础组为空。"""
+        cases = [
+            (["mtn_kime01.motion3.json", "mtn_kime01_L.motion3.json"], ["mtn_kime01.motion3.json"]),
+            (["mtn_kime01_L.motion3.json", "mtn_idle01_C.motion3.json"], ["mtn_idle01_C.motion3.json"]),
+            (["mtn_kime01_L.motion3.json", "mtn_wink01_R.motion3.json"], []),
+        ]
+        for names, expected in cases:
+            with self.subTest(names=names), tempfile.TemporaryDirectory() as folder:
+                groups = self._normalize_motion_names(Path(folder), names)
+                self.assertEqual([item["File"] for item in groups["IDLE"]], expected)
+
+    def test_existing_normalized_groups_remain_user_owned(self) -> None:
+        """新规则不自动覆盖已经由编辑器调整过的随机待机组。"""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self._normalize_motion_names(root, ["mtn_idle01_C.motion3.json", "mtn_kime01_C.motion3.json"])
+            path = root / "model.model3.json"
+            data = self._read_json_object(path)
+            data["FileReferences"]["Motions"]["IDLE"] = []
+            data["FileReferences"]["Motions"]["IDLE_C"] = [{"File": "mtn_idle01_C.motion3.json"}]
+            self._write_file(path, json.dumps(data))
+            original = path.read_bytes()
+            self.assertFalse(normalize_model3_for_project(str(path)))
+            self.assertEqual(path.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,6 +39,12 @@ class DownloadedV2MotionRule:
     target_stop_count: int
 
 
+# V2 下载器与 V3 导入共用随机待机候选；基础 idle 动作仍由 idle_motion 承担。
+_RANDOM_IDLE_MOTION_PREFIXES = (
+    "kime", "nnf", "smile01", "wink", "sleep", "niyaniya", "nf_left", "nf_right",
+)
+
+
 _STANDARD_MOTION_GROUPS: tuple[StandardMotionGroup, ...] = (
     StandardMotionGroup(
         "happiness",
@@ -92,7 +98,7 @@ _STANDARD_MOTION_GROUPS: tuple[StandardMotionGroup, ...] = (
     StandardMotionGroup(
         "IDLE",
         "8. 待机时随机",
-        frozenset(("idle",)),
+        frozenset(_RANDOM_IDLE_MOTION_PREFIXES),
         fallback_groups=("idle_motion", "happiness"),
     ),
     StandardMotionGroup(
@@ -176,7 +182,7 @@ _DOWNLOADED_V2_MOTION_RULES: tuple[DownloadedV2MotionRule, ...] = (
     DownloadedV2MotionRule("like", ("smile", "kime", "jaan", "gattsu", "oowarai", "nnf04"), 29),
     DownloadedV2MotionRule("surprise", ("surprised", "scared", "jaan", "oowarai", "odoodo"), 35),
     DownloadedV2MotionRule("fear", ("scared", "cry", "serious", "sneeze", "odoodo"), 41),
-    DownloadedV2MotionRule("IDLE", ("kime", "nnf", "smile01", "wink", "sleep", "niyaniya", "nf_left", "nf_right"), 50),
+    DownloadedV2MotionRule("IDLE", _RANDOM_IDLE_MOTION_PREFIXES, 50),
     DownloadedV2MotionRule("text_generating", ("thinking", "eeto"), 53),
     DownloadedV2MotionRule("bye", ("bye", "wink", "smile"), 55),
     DownloadedV2MotionRule("change_character", ("bye", "smile", "kime", "shame", "gattsu", "jaan"), 58),
