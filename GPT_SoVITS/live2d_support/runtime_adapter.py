@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import tempfile
 import time
 from contextlib import redirect_stderr, redirect_stdout
@@ -372,6 +373,8 @@ class Live2DModelAdapter:
     _performance_generation: int = 0
     _custom_expression_revisions: dict[str, str] = field(default_factory=dict)
     _custom_expression_active: bool = False
+    default_expression_id: str | None = None
+    _default_expression_active: bool = False
 
     @classmethod
     def create(cls, model_json_path: str) -> Live2DModelAdapter:
@@ -401,7 +404,55 @@ class Live2DModelAdapter:
             preview_motion_indices_by_path={},
         )
         adapter.refresh_parameter_ids()
+        adapter._initialize_default_expression(data)
         return adapter
+
+    def _initialize_default_expression(self, data: dict[str, object]) -> None:
+        """V3 加载后优先微笑、其次 idle；只使用实际存在的表情文件。"""
+        if self.version != "v3":
+            return
+        model_dir = Path(self.model_json_path).resolve().parent
+        references = object_mapping(data.get("FileReferences"))
+        entries = references.get("Expressions", [])
+        registered = []
+        for entry in entries if isinstance(entries, list) else []:
+            entry = object_mapping(entry)
+            name, file = entry.get("Name", entry.get("name")), entry.get("File")
+            if isinstance(name, str) and name and isinstance(file, str) and file:
+                registered.append((name, model_dir / file))
+
+        for filename in ("exp_smile01.exp3.json","exp_idle01.exp3.json"):
+            # 导入时同名资源可能带有八位目录哈希前缀，表情 ID 则不一定等于文件名。
+            pattern = re.compile(r"(?:[0-9a-f]{8}_)?" + re.escape(filename), re.IGNORECASE)
+            candidates = [(name, path) for name, path in registered
+                          if pattern.fullmatch(path.name) and path.is_file()]
+            if not candidates:
+                # 兼容文件已经存在、但模型清单没有登记的情况，不改写模型资源。
+                try:
+                    candidates = [(None, path) for path in sorted(model_dir.rglob("*.exp3.json"))
+                                  if pattern.fullmatch(path.name) and path.is_file()]
+                except OSError:
+                    logger.debug("查找默认表情失败：%s", self.model_json_path, exc_info=True)
+            for expression_id, path in candidates:
+                try:
+                    if expression_id is None:
+                        expression_id = "__dsakiko_default_expression__"
+                        getattr(self._require_model(), "LoadExtraExpression")(expression_id, str(path))
+                        self.expression_ids = self.expression_ids | {expression_id}
+                    self.default_expression_id = expression_id
+                    if self._restore_default_expression():
+                        return
+                except Exception:
+                    logger.warning("加载默认表情失败：%s", path, exc_info=True)
+                self.default_expression_id = None
+
+    def _restore_default_expression(self) -> bool:
+        """回到待机表情；两个候选都缺失时不设置其他表情。"""
+        if not self.default_expression_id:
+            return False
+        if self._default_expression_active:
+            return True
+        return self.set_expression_if_supported(self.default_expression_id)
 
     def _require_model(self) -> object:
         """返回当前模型实例，若已释放则抛出错误。"""
@@ -452,9 +503,10 @@ class Live2DModelAdapter:
         if self.version == "v3":
             set_blink = getattr(getattr(model, "_model", None), "SetAutoBlink", None)
             if callable(set_blink):
-                set_blink(self.auto_blink_enabled and self._custom_expression_active)
+                # 默认表情与自定义表情一样，在眨眼之后叠加，避免闭眼微笑被强行睁开。
+                set_blink(self.auto_blink_enabled and (self._custom_expression_active or self._default_expression_active))
         getattr(model, "Update")()
-        if self._custom_expression_active:
+        if self._custom_expression_active or self._default_expression_active:
             return
         if self.version == "v3" and self.auto_blink_enabled and not self.performance_expression_active:
             is_motion_finished = getattr(model, "IsMotionFinished", None)
@@ -592,6 +644,7 @@ class Live2DModelAdapter:
                         native = self._require_model()
                         # 原生加载器会释放旧资源，必须先停止引用该资源的播放管理器。
                         getattr(native, "ResetExpressions")()
+                        self._default_expression_active = False
                         getattr(native, "LoadExtraExpression")(expression_id,
                             str(catalog.model_path.parent / catalog.expressions[expression_id]))
                         self._custom_expression_revisions[expression_id] = revision
@@ -612,6 +665,7 @@ class Live2DModelAdapter:
         try:
             getattr(self._require_model(), "SetExpression")(expression_id)
             self._custom_expression_active = custom
+            self._default_expression_active = expression_id == self.default_expression_id
             return True
         except Exception:
             logger.exception("设置 Live2D 表情失败：%s", expression_id)
@@ -632,6 +686,8 @@ class Live2DModelAdapter:
 
     def set_semantic_expression(self, semantic_name: str) -> bool:
         """按语义名设置表情，允许不同模型使用不同实际表情 ID。"""
+        if self.version == "v3" and semantic_name == "idle":
+            return self._restore_default_expression()
         candidates = semantic_expression_candidates(semantic_name)
         if candidates is None:
             logger.warning("未知 Live2D 语义表情 '%s'，已跳过。", semantic_name)
@@ -695,6 +751,12 @@ class Live2DModelAdapter:
     def _apply_auto_expression_for_motion(self, group_name: str, motion_index: int) -> None:
         """为即将播放的 V3 动作应用自动表情。"""
         if self.version != "v3":
+            return
+        base_group, _, direction = group_name.rpartition("_")
+        if direction not in {"C", "L", "R"}:
+            base_group = group_name
+        if base_group in {"IDLE", "idle_motion", "change_character"}:
+            self._restore_default_expression()
             return
         motion_file = self._motion_file_at(group_name, motion_index)
         expression_id = self._select_expression_for_motion(group_name, motion_file)
@@ -867,6 +929,7 @@ class Live2DModelAdapter:
         current_expression = self.performance_state.expression if self.performance_state else None
         if current_expression in self._custom_expression_revisions and current_expression not in catalog.expressions:
             getattr(self._require_model(), "ResetExpressions")()
+            self._default_expression_active = False
             self.performance_expression_active = False
             self._custom_expression_active = False
         plan = resolve_performance(catalog, PerformanceSelection.from_value(selection), emotion,

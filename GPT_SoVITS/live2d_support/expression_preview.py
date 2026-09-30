@@ -32,6 +32,7 @@ class ExpressionPreviewSession:
             return
         native = self.model.model
         self.model.reset_performance()
+        self.model._default_expression_active = False
         for method in ("StopAllMotions", "ResetExpressions", "ResetParameters", "ResetPose"):
             getattr(native, method)()
 
