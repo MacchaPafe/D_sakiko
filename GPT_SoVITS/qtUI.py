@@ -243,7 +243,7 @@ class MoreFunctionWindow(QDialog):
         gameplay_group.setLayout(gameplay_layout)
         layout.addWidget(gameplay_group)
 
-        tools_group = QGroupBox("资产扩充")
+        tools_group = QGroupBox("资源下载")
         tools_layout = QVBoxLayout()
         open_live2d_downloader_btn=QPushButton("Live2D模型下载器")
         open_live2d_downloader_btn.clicked.connect(self.on_click_open_live2d_downloader)  # noqa
