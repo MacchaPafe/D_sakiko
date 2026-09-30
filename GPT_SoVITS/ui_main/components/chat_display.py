@@ -333,7 +333,7 @@ class ChatDisplay(QTextBrowser):
 
             if meta is not None and not meta.is_user_message:
                 menu.addSeparator()
-                for label, rating in (("赞并反馈…", "up"), ("踩并反馈…", "down"), ("反馈此回复…", "none")):
+                for label, rating in (("反馈此回复…", "none"),):
                     feedback_action = QAction(label, self)
                     feedback_action.triggered.connect(lambda _checked=False, value=rating: self.feedbackRequested.emit(msg_index, value))
                     menu.addAction(feedback_action)
