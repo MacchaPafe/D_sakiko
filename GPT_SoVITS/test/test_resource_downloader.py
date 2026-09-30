@@ -627,6 +627,26 @@ class QtTests(unittest.TestCase):
         self.assertTrue(page.back.isEnabled())
         self.assertIn("取消", row.status.text())
 
+    def test_v3_installs_using_selection_snapshot_and_reports_missing_description(self):
+        """V3 卡片调用安装服务，并区分安装完成和缺少角色描述。"""
+        from live2d_download.hosted.installer import InstallResult
+        self.window.selection = Selection("existing", "tomori", "custom", "本地爱音")
+        self.window.show_resources()
+        page = self.window.resources
+        self.wait_for(lambda: bool(page.rows))
+        row = next(widget for _, _, widget in page.rows if not widget.legacy)
+        result = InstallResult(Path("installed-model"), False, True)
+        self.window.installer = MagicMock()
+        self.window.installer.download.return_value = result
+        row.clicked()
+        self.wait_for(lambda: not self.window.hub.busy)
+        args = self.window.installer.download.call_args.args
+        self.assertEqual(args[1].target_id, "custom")
+        self.assertEqual(args[1].source, "tomori")
+        self.assertEqual(row.saved, result.path)
+        self.assertIn("安装完成", row.status.text())
+        self.assertIn("补齐角色描述", row.status.text())
+
     # 验证关闭窗口先取消再等待线程池退出。
     def test_close_cancels_and_waits(self):
         self.window.choose_mode("background")

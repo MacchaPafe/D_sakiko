@@ -13,6 +13,7 @@ from live2d_support.motion_semantics import (
     MotionPosition,
     POSITION_MOTION_SUFFIXES,
     direct_motion_keywords,
+    downloaded_v2_motion_prefixes,
     fallback_motion_groups,
     rana_motion_slices,
     standard_motion_group_ids,
@@ -274,6 +275,7 @@ def _default_motion_entries(
 
 def _build_standard_model3_motions(
         candidates: list[tuple[dict[str, object], frozenset[str], MotionPosition | None, str]],
+        *, downloaded: bool = False,
 ) -> dict[str, list[dict[str, object]]]:
     """根据动作候选生成项目标准动作组和位置变体组。"""
     grouped_by_standard: dict[str, dict[MotionPosition, list[dict[str, object]]]] = {}
@@ -284,14 +286,25 @@ def _build_standard_model3_motions(
 
     for group_name in standard_group_ids:
         group_candidates = candidates
-        if group_name in {"IDLE", "idle_motion"}:
+        if downloaded or group_name in {"IDLE", "idle_motion"}:
             # 部分原模型把所有动作放在 Idle 组，待机分类必须像 V2 下载器一样看文件名。
             group_candidates = [
                 (entry, frozenset(_motion_keywords_from_name(str(entry.get("File", "")))), position, key)
                 for entry, _keywords, position, key in candidates
             ]
-        direct_candidates = _matching_motion_entries(group_candidates, direct_motion_keywords(group_name))
-        weak_candidates = _matching_motion_entries(group_candidates, weak_motion_keywords(group_name))
+        if downloaded:
+            prefixes = downloaded_v2_motion_prefixes(group_name)
+            direct_candidates = [candidate for candidate in group_candidates
+                                 if _downloaded_motion_name(str(candidate[0].get("File", ""))).startswith(prefixes)]
+        else:
+            direct_candidates = _matching_motion_entries(group_candidates, direct_motion_keywords(group_name))
+        weak_candidates = [] if downloaded else _matching_motion_entries(group_candidates, weak_motion_keywords(group_name))
+        if downloaded and group_name == "idle_motion":
+            # 基础待机先用 idle；smile 仅在当前朝向没有 idle 时兜底。
+            weak_candidates = [candidate for candidate in direct_candidates
+                               if _downloaded_motion_name(str(candidate[0]["File"])).startswith("smile")]
+            direct_candidates = [candidate for candidate in direct_candidates
+                                 if _downloaded_motion_name(str(candidate[0]["File"])).startswith("idle")]
         direct_positions = _entries_by_position(direct_candidates)
         weak_positions = _entries_by_position(weak_candidates)
         # 某个方向的直接匹配不能阻止其他方向使用自己的弱匹配。
@@ -326,12 +339,32 @@ def _build_standard_model3_motions(
 
     result: dict[str, list[dict[str, object]]] = {}
     for group_name in standard_group_ids:
-        result[group_name] = [dict(entry) for entry in default_by_standard[group_name]]
+        default_entries = default_by_standard[group_name]
+        if downloaded and group_name == "idle_motion":
+            default_entries = sorted(default_entries, key=_downloaded_idle_priority)[:1]
+        result[group_name] = [dict(entry) for entry in default_entries]
         for suffix in POSITION_MOTION_SUFFIXES:
             positioned_entries = grouped_by_standard[group_name][suffix]
+            if downloaded and group_name == "idle_motion":
+                positioned_entries = sorted(positioned_entries, key=_downloaded_idle_priority)[:1]
             if positioned_entries:
                 result[f"{group_name}_{suffix}"] = [dict(entry) for entry in positioned_entries]
     return result
+
+
+def _downloaded_motion_name(file_name: str) -> str:
+    """去掉 V3 文件前缀与平铺冲突前缀，复用 V2 的 startswith 分类规则。"""
+    return re.sub(r"^(?:asset_)*(?:[0-9a-f]{8}_)?(?:mtn_|motion_)?", "", Path(file_name).name.lower())
+
+
+def _downloaded_idle_priority(entry: dict[str, object]) -> tuple[int, str]:
+    """同朝向优先 idle01，再选其他 idle；基础待机始终只保留一个动作。"""
+    name = _downloaded_motion_name(str(entry["File"]))
+    if re.fullmatch(r"idle01(?:_[clr])?\.motion3\.json", name):
+        priority = 0
+    else:
+        priority = 1 if name.startswith("idle") else 2 if name.startswith("smile") else 3
+    return priority, str(entry["File"])
 
 
 def _standard_model3_motion_schema_is_complete(motions: object) -> bool:
@@ -468,7 +501,7 @@ def _flatten_model3_file_references(
     return motion_candidates
 
 
-def normalize_model3_for_project(model3_json_path: str) -> bool:
+def normalize_model3_for_project(model3_json_path: str, *, downloaded: bool = False) -> bool:
     """将 Live2D V3 model3.json 规范化为项目内部可用结构。"""
     model_path = Path(model3_json_path)
     model_dir = model_path.parent
@@ -483,13 +516,13 @@ def normalize_model3_for_project(model3_json_path: str) -> bool:
         raise ValueError(f"Live2D V3 模型 FileReferences 格式错误：{model3_json_path}")
     file_references = cast(dict[str, object], file_references_value)
 
-    if _model3_is_normalized(model_data, file_references, model_dir):
+    if not downloaded and _model3_is_normalized(model_data, file_references, model_dir):
         return False
 
     from live2d_support.performance_catalog import load_performance_catalog, motion_assets, performance_config_path, save_config
 
     metadata = _as_object_mapping(model_data.get(DSAKIKO_MODEL3_METADATA_KEY))
-    already_normalized = bool(metadata.get("NormalizedModel3Version"))
+    already_normalized = bool(metadata.get("NormalizedModel3Version")) and not downloaded
     all_assets = motion_assets(model_data)
     original_catalog = load_performance_catalog(model_path)
     logical_ids = {asset.file: key for key, variants in original_catalog.motions.items() for asset in variants.values()}
@@ -523,7 +556,7 @@ def normalize_model3_for_project(model3_json_path: str) -> bool:
             original_catalog.config["bindings"] = updated_bindings
             save_config(performance_config_path(model_path), original_catalog.config)
     if not already_normalized:
-        file_references["Motions"] = _build_standard_model3_motions(motion_candidates)
+        file_references["Motions"] = _build_standard_model3_motions(motion_candidates, downloaded=downloaded)
     metadata.update({"NormalizedModel3Version": NORMALIZED_MODEL3_VERSION, "MotionAssets": complete_assets})
     model_data[DSAKIKO_MODEL3_METADATA_KEY] = metadata
 

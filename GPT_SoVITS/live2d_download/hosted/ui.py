@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from .catalog import APP_ROOT, PROJECT_ROOT, CACHE_ROOT, BANDS, CHARACTERS, CHARACTER_ROLES, Selection, destination
 from .service import ResourceService, Resource
 from .legacy import LegacyService
+from .installer import V3Installer, InstallResult
 from .jobs import JobHub
 from .appearance import ScreenMetrics, BAND_COLORS
 
@@ -1095,7 +1096,7 @@ class ResourceRow(QFrame):
                 QMessageBox.Yes | QMessageBox.Cancel,QMessageBox.Cancel)
             if answer != QMessageBox.Yes:
                 return
-        if self.legacy and choice.mode == "new":
+        if (self.legacy or self.entry.kind == "model") and choice.mode == "new":
             name = CHARACTERS[choice.source]["display_name"]
             duplicate = (PROJECT_ROOT / "live2d_related" / choice.source).exists() or any(
                 character.character_name == name or character.character_folder_name == choice.source
@@ -1116,6 +1117,8 @@ class ResourceRow(QFrame):
         self.status.setText("等待下载…")
         if self.legacy:
             action = lambda event, progress: window.legacy.download(self.entry, self.title, choice, event, progress)
+        elif self.entry.kind == "model":
+            action = lambda event, progress: window.installer.download(self.entry, choice, window.zip_root, event, progress)
         else:
             folder = destination(self.entry, window.zip_root)
             action = lambda event, progress: window.service.download(self.entry, folder, event, progress)
@@ -1130,6 +1133,9 @@ class ResourceRow(QFrame):
         self.bar.setRange(0, 100 if total else 0)
         if total:
             self.bar.setValue(min(100, int(done / total * 100)))
+        if not self.legacy and self.entry.kind == "model" and total > 0 and done >= total and self.button.isEnabled():
+            self.status.setText("下载完成，正在校验并安装…")
+            self.bar.setRange(0, 0)
 
     def finished(self, value, error):
         """显示下载或安装结果，取消和失败时恢复重试操作。"""
@@ -1147,11 +1153,19 @@ class ResourceRow(QFrame):
             self.button.setText("重试")
             self.button.setEnabled(True)
         else:
-            self.saved = Path(value)
+            self.saved = value.path if isinstance(value, InstallResult) else Path(value)
             self.bar.setValue(100)
             status = "安装完成" if self.legacy else (
                 "已下载 · SHA-256 校验通过" if self.entry.sha256 else
                 "已下载 · 未提供校验值" if self.entry.kind == "model" else "原图已保存")
+            if isinstance(value, InstallResult):
+                status = "安装完成"
+                if value.description_missing:
+                    status += " · 请补齐角色描述后重启"
+                elif value.new_character:
+                    status += " · 重启后可使用新角色"
+                if not self.entry.sha256:
+                    status += " · 未提供校验值"
             self.status.setText(status)
             if self.image_tile:
                 self.page.saved_images[self.entry.key] = self.saved
@@ -1489,6 +1503,7 @@ class DownloadWizardWindow(QDialog):
         self.selection = Selection()
         self.service = service or ResourceService()
         self.legacy = legacy or LegacyService()
+        self.installer = V3Installer(self.service)
         self.hub = JobHub(self)
         self.closing = False
         self.background_color = QColor("#F0F4F9")
@@ -1502,7 +1517,7 @@ class DownloadWizardWindow(QDialog):
         self.watermark_animation.setDuration(380)
         self.watermark_animation.setEasingCurve(QEasingCurve.InOutCubic)
         self.watermark_animation.valueChanged.connect(self.blend_watermarks)
-        # 原型阶段保留完整 ZIP 供检查；.part 始终清理，后续安装阶段再自动清理 ZIP。
+        # V3 每次任务清理自己的 ZIP 与解包文件，会话空目录在关闭时移除。
         self.zip_root = CACHE_ROOT / "resource-downloads" / uuid.uuid4().hex
         self.setWindowTitle("数字小祥资源下载器")
         geometry = QApplication.primaryScreen().availableGeometry()
@@ -1794,6 +1809,12 @@ class DownloadWizardWindow(QDialog):
         """有后台任务时先取消并异步等待，避免销毁仍被使用的控件。"""
         if self.hub.idle():
             self.close_timer.stop()
+            session = self.zip_root.resolve()
+            if session.parent == (CACHE_ROOT / "resource-downloads").resolve() and not self.zip_root.is_symlink():
+                try:
+                    session.rmdir()  # 只删除已清空的本次会话目录。
+                except OSError:
+                    pass
             event.accept()
             return
         event.ignore()
