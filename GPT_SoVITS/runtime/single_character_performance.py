@@ -291,9 +291,7 @@ class SingleCharacterPerformance:
             text = str(segment.get("text") or "")
             translation = str(segment.get("translation") or "")
             self.subtitle_deadline = None
-            self.subtitle_read_seconds = max(
-                6.0, min(30.0, len(text + translation) / 6.0)
-            )
+            self.subtitle_read_seconds = min(8.0, len(text + translation) / 6.0)
             group = motion_group_for_emotion(
                 str(segment.get("emotion")), default="happiness"
             )

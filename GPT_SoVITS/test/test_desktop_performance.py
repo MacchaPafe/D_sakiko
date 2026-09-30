@@ -95,10 +95,10 @@ class PerformanceTests(unittest.TestCase):
               patch("runtime.single_character_performance.time.monotonic", return_value=0.0) as clock):
             self.player.update_playback(self.model)
             self.assertEqual([e["type"] for e in self.events], ["playback_started"])
-            clock.return_value = 5.9
+            clock.return_value = 0.8
             self.player.update_playback(self.model)
             self.assertEqual(self.subtitles, ["text1"])
-            clock.return_value = 6.0
+            clock.return_value = 5.0 / 6.0
             self.player.update_playback(self.model)
             self.assertEqual([e["segment_id"] for e in self.events if e["type"] == "playback_complete"], [1])
             self.player.update_playback(self.model)

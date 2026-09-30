@@ -899,15 +899,15 @@ class PerformanceInteractionTests(TestCase):
             self.player.command(segment, self.model)
             self.player.update_playback(self.model)
         self.assertIsNone(self.player.subtitle_deadline)
-        self.assertEqual(self.player.text_segment_deadline, 30.0)
+        self.assertEqual(self.player.text_segment_deadline, 18.0)
         self.assertTrue(self.player.busy)
         with patch(
-            "runtime.single_character_performance.time.monotonic", return_value=29.0
+            "runtime.single_character_performance.time.monotonic", return_value=17.0
         ):
             self.player.update_playback(self.model)
         subtitle.assert_called_once_with(text)
         with patch(
-            "runtime.single_character_performance.time.monotonic", return_value=31.0
+            "runtime.single_character_performance.time.monotonic", return_value=19.0
         ):
             self.player.update_playback(self.model)
         self.assertEqual(subtitle.call_args.args, ("",))
