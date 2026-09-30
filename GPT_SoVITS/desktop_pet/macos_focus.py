@@ -189,11 +189,13 @@ class MacPetFocus(PetFocus):
 
     nonactivating = True
     passive_mouse = True
+    mouse_passthrough = True
 
     def __init__(self, window: QWidget) -> None:
         """创建独立非激活面板，不改变聊天窗口和其他工具面板。"""
         super().__init__(window)
         self.panel = _create_panel(window)
+        self._mouse_passthrough_initialized = False
         _allow_pet_frame(self.panel)
         self.refresh_native()
 
@@ -223,6 +225,17 @@ class MacPetFocus(PetFocus):
     def request_input(self) -> None:
         """只让面板接收键盘，不调用应用激活接口。"""
         self.panel.makeKeyWindow()
+
+    def set_mouse_passthrough(self, enabled: bool) -> None:
+        """在系统分发点击前切换穿透，不改变窗口外观或键盘焦点。"""
+        # Cocoa 初始 false 仍可能按画面透明度自动穿透；首次必须明确写入。
+        if not self._mouse_passthrough_initialized or bool(self.panel.ignoresMouseEvents()) != enabled:
+            self.panel.setIgnoresMouseEvents_(enabled)
+            self._mouse_passthrough_initialized = True
+
+    def mouse_buttons_pressed(self) -> bool:
+        """穿透到其他应用后仍能识别按住的鼠标，避免抢走下层拖动。"""
+        return bool(AppKit.NSEvent.pressedMouseButtons())
 
     def release_input(self) -> None:
         """收起输入框时释放原生键盘焦点。"""

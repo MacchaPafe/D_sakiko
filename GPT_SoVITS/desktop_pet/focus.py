@@ -17,6 +17,7 @@ class PetFocus:
 
     nonactivating = False
     passive_mouse = False
+    mouse_passthrough = False
 
     def __init__(self, window: QWidget) -> None:
         """记录所属桌宠，不提前创建平台窗口。"""
@@ -38,6 +39,13 @@ class PetFocus:
 
     def refresh_native(self) -> None:
         """默认后端没有需要更新的原生属性。"""
+
+    def set_mouse_passthrough(self, enabled: bool) -> None:
+        """未适配的平台保留原有输入行为。"""
+
+    def mouse_buttons_pressed(self) -> bool:
+        """默认使用 Qt 已知的鼠标按键状态。"""
+        return QApplication.mouseButtons() != Qt.NoButton
 
     def native_event(
         self, event_type: QByteArray, message: sip.voidptr

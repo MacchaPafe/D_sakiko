@@ -17,7 +17,7 @@ from PyQt5.QtCore import (
     QObject,
     pyqtSignal,
 )
-from PyQt5.QtGui import QColor, QContextMenuEvent, QIcon, QPainter, QShowEvent
+from PyQt5.QtGui import QColor, QContextMenuEvent, QHideEvent, QIcon, QPainter, QShowEvent
 from PyQt5.QtWidgets import (
     QWidget,
     QFrame,
@@ -36,6 +36,7 @@ from ui_main.theme import ThemePalette, build_menu_theme_stylesheet
 from runtime.drafts import DraftBinding
 from desktop_pet.renderer import PetRenderer
 from desktop_pet.focus import create_pet_focus
+from desktop_pet.input_region import PetInputRegion
 
 if TYPE_CHECKING:
     from multiprocessing.queues import Queue as ProcessQueue
@@ -85,6 +86,7 @@ class PetWindow(QWidget):
         self.base_render_size = QSize(round(380 * dpi_scale), round(500 * dpi_scale))
         self.resize(self.base_render_size.width(), self.base_render_size.height() + 110)
         self._focus = create_pet_focus(self)
+        self._input_region: PetInputRegion | None = None
         self.renderer = PetRenderer(commands, playback_events, motion_complete, self)
         self.renderer.setGeometry(QRect(QPoint(), self.base_render_size))
         self.renderer.clicked.connect(self.play_interaction)
@@ -246,11 +248,20 @@ class PetWindow(QWidget):
         self.set_zoom(1.0)
         area = QApplication.primaryScreen().availableGeometry()
         self.move(area.right() - self.width() - 36, area.bottom() - self.height() - 24)
+        self._input_region = PetInputRegion(self)
 
     def showEvent(self, event: QShowEvent) -> None:
         """恢复显示时刷新原生悬浮追踪，不激活应用或修正拖动位置。"""
         super().showEvent(event)
         self._focus.refresh_native()
+        if self._input_region is not None:
+            self._input_region.start()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        """隐藏桌宠时停止鼠标区域轮询，恢复时再重新命中。"""
+        if self._input_region is not None:
+            self._input_region.stop()
+        super().hideEvent(event)
 
     def nativeEvent(
         self, event_type: QByteArray, message: sip.voidptr
@@ -347,16 +358,23 @@ class PetWindow(QWidget):
             y = self.subtitle.geometry().bottom() + 10
         notice_height = max(40, self.notice.heightForWidth(panel_width))
         self.notice.setGeometry(x, y, panel_width, notice_height)
-        # 扩展透明宿主容纳侧栏，不拉伸渲染器或压缩卡片。
-        bottom = self.notice.geometry().bottom() + 8 if self.notice.text() else y + 8
-        self.resize(
-            max(model_column_width, x + max(panel_width, self.activity_bubble.width()) + 8),
-            max(canvas_height, bottom),
-        )
+        # 只为当前展开的控件扩展宿主，隐藏侧栏不占据透明窗口区域。
+        width, height = model_column_width, canvas_height
+        for control in (
+            self.tools, self.panel, self.subtitle, self.notice, self.activity_bubble
+        ):
+            # 宿主隐藏时仍保留控件的显示意图，恢复桌宠后无需重新展开。
+            if not control.isHidden():
+                geometry = control.geometry()
+                width = max(width, geometry.x() + geometry.width() + 8)
+                height = max(height, geometry.y() + geometry.height() + 8)
+        self.resize(width, height)
         self.tools.raise_()
         self.panel.raise_()
         self.subtitle.raise_()
         self.notice.raise_()
+        if self._input_region is not None:
+            self._input_region.refresh()
 
     def _layout_activity_bubble(self) -> None:
         """气泡与入口对齐模型右侧，为下方输入和字幕提供统一锚点。"""
@@ -523,17 +541,19 @@ class PetWindow(QWidget):
                 self.collapse()
 
     def enterEvent(self, event: QEvent) -> None:
-        self.hovered = True
-        self.refresh_state()
+        if not self._focus.mouse_passthrough:
+            self.hovered = True
+            self.refresh_state()
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:
-        self.hovered = False
-        self.refresh_state()
+        if not self._focus.mouse_passthrough:
+            self.hovered = False
+            self.refresh_state()
         super().leaveEvent(event)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        if obj is self.renderer and event.type() == QEvent.MouseMove:
+        if not self._focus.mouse_passthrough and obj is self.renderer and event.type() == QEvent.MouseMove:
             # 跨过模型与侧栏之间的透明间隙时，入口不能先消失。
             hover_bounds = self.bounds.united(self.tools.geometry().translated(-self.renderer.pos()))
             self.hovered = hover_bounds.contains(event.pos())
@@ -699,6 +719,8 @@ class PetWindow(QWidget):
             menu.deleteLater()
 
     def shutdown(self) -> None:
+        if self._input_region is not None:
+            self._input_region.stop()
         self.timer.stop()
         self.notice_timer.stop()
         QApplication.instance().removeEventFilter(self)

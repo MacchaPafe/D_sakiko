@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PyQt5.QtGui import QImage, QMouseEvent, QWheelEvent
+from PyQt5.QtGui import QColor, QImage, QMouseEvent, QWheelEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
@@ -340,6 +340,127 @@ class PetInteractionTests(TestCase):
         self.pet.collapse()
         self.assertGreater(self.pet.subtitle.y(), self.pet.tools.geometry().bottom())
         self.assertLess(self.pet.subtitle.y(), self.pet.panel.geometry().bottom())
+
+    def test_sidebar_releases_space_without_moving_character(self) -> None:
+        """悬浮、输入和字幕逐步收起时回收窗口宽度，缩放后的角色位置保持不变。"""
+        for zoom in (0.6, 1.0, 1.6):
+            with self.subTest(zoom=zoom):
+                self.pet.set_zoom(zoom)
+                compact_size = self.pet.size()
+                self.assertEqual(compact_size.width(), max(380, self.pet.renderer.width()))
+                origin = self.pet.renderer.mapToGlobal(QPoint())
+                render_size = self.pet.renderer.size()
+
+                self.pet.enterEvent(QEvent(QEvent.Enter))
+                tools_size = self.pet.size()
+                self.assertFalse(self.pet.tools.isHidden())
+                self.assertTrue(self.pet.rect().contains(self.pet.tools.geometry()))
+                self.assertLess(tools_size.width(), self.pet.panel.geometry().right())
+
+                self.pet.expand()
+                self.pet.input.setPlainText("收起后保留草稿")
+                self.pet._subtitle("仍然显示的回复")
+                self.assertTrue(self.pet.rect().contains(self.pet.panel.geometry()))
+                self.assertTrue(self.pet.rect().contains(self.pet.subtitle.geometry()))
+                self.assertEqual(self.pet.renderer.mapToGlobal(QPoint()), origin)
+                self.pet.collapse()
+                self.assertFalse(self.pet.subtitle.isHidden())
+                self.assertTrue(self.pet.rect().contains(self.pet.subtitle.geometry()))
+                self.assertGreater(self.pet.width(), tools_size.width())
+
+                self.pet._subtitle("")
+                self.assertEqual(self.pet.size(), tools_size)
+                self.pet.leaveEvent(QEvent(QEvent.Leave))
+                self.assertEqual(self.pet.size(), compact_size)
+                self.assertEqual(self.pet.renderer.mapToGlobal(QPoint()), origin)
+                self.assertEqual(self.pet.renderer.size(), render_size)
+                self.assertEqual(self.pet.input.toPlainText(), "收起后保留草稿")
+
+    def test_hidden_host_preserves_space_for_notice_and_activity(self) -> None:
+        """宿主隐藏时仍为通知和活动气泡保留恢复空间，清除后收回空白。"""
+        self.assertTrue(self.pet.isHidden())
+        compact_size = self.pet.size()
+        self.host.is_response_active.return_value = True
+        self.pet.update_tool_activity("search", "检索当前对话中的相关资料", True)
+        self.assertFalse(self.pet.activity_bubble.isHidden())
+        self.assertTrue(self.pet.rect().contains(self.pet.activity_bubble.geometry()))
+        activity_size = self.pet.size()
+
+        self.pet.show_status("操作通知")
+        self.assertTrue(self.pet.rect().contains(self.pet.notice.geometry()))
+        self.pet.clear_status()
+        self.assertEqual(self.pet.size(), activity_size)
+        self.host.is_response_active.return_value = False
+        self.pet.refresh_state()
+        self.assertEqual(self.pet.size(), compact_size)
+
+    def test_alpha_hit_test_preserves_holes_and_retina_coordinates(self) -> None:
+        """两倍像素图中的透明孔洞可穿透，缩放后仍按角色像素而非外接矩形命中。"""
+        renderer = self.pet.renderer
+        renderer.hit_image = QImage(760, 1000, QImage.Format_RGBA8888)
+        renderer.hit_image.fill(Qt.transparent)
+        for x in range(300, 320):
+            for y in range(400, 420):
+                renderer.hit_image.setPixelColor(x, y, QColor(255, 255, 255, 255))
+        self.assertTrue(renderer.hit_test(QPoint(155, 205)))
+        self.assertFalse(renderer.hit_test(QPoint(170, 205)))
+        self.assertFalse(renderer.hit_test(QPoint(-1, 205)))
+        self.pet.set_zoom(0.6)
+        self.assertTrue(renderer.hit_test(QPoint(93, 123)))
+        self.assertFalse(renderer.hit_test(QPoint(102, 123)))
+        renderer.hit_image.fill(Qt.transparent)
+        self.assertFalse(renderer.hit_test(QPoint(93, 123)))
+
+    def test_input_region_excludes_gaps_hidden_controls_and_notices(self) -> None:
+        """输入区域仅包含角色像素与可交互控件，提示气泡和侧栏空白可穿透。"""
+        region = self.pet._input_region
+        self.pet.renderer.hit_image = QImage(380, 500, QImage.Format_RGBA8888)
+        self.pet.renderer.hit_image.fill(Qt.transparent)
+        self.pet.hovered = True
+        self.pet.refresh_state()
+        self.assertTrue(region.contains(self.pet.tools.geometry().center()))
+        self.assertFalse(region.contains(self.pet.tools.geometry().topLeft()))
+        self.assertFalse(region.contains(QPoint(self.pet.tools.x() - 5, self.pet.tools.y() + 20)))
+        self.pet.expand()
+        self.assertFalse(region.contains(self.pet.tools.geometry().center()))
+        self.assertTrue(region.contains(self.pet.panel.geometry().center()))
+        self.pet._subtitle("可滚动字幕")
+        self.pet.show_status("不可交互的通知")
+        self.assertTrue(region.contains(self.pet.subtitle.geometry().center()))
+        self.assertFalse(region.contains(self.pet.notice.geometry().center()))
+        self.pet.collapse()
+        self.pet._subtitle("")
+        self.assertFalse(region.contains(self.pet.panel.geometry().center()))
+        self.host.is_response_active.return_value = True
+        self.pet.update_tool_activity("search", "搜索", True)
+        self.assertFalse(region.contains(self.pet.activity_bubble.geometry().center()))
+
+    def test_passthrough_retains_hover_bridge_and_mouse_gesture_owner(self) -> None:
+        """穿过间隙保留入口但允许下层点击，任一应用按住鼠标时不改变接收方。"""
+        focus = Mock(mouse_passthrough=True, nonactivating=False)
+        focus.mouse_buttons_pressed.return_value = False
+        self.pet._focus = focus
+        region = self.pet._input_region
+        origin = self.pet.mapToGlobal(QPoint())
+        with patch.object(self.pet, "isVisible", return_value=True):
+            with patch("desktop_pet.input_region.QCursor.pos", return_value=origin + self.pet.bounds.center()):
+                region.refresh()
+            self.assertTrue(self.pet.hovered)
+            focus.set_mouse_passthrough.assert_called_with(False)
+            gap = QPoint(self.pet.tools.x() - 5, self.pet.tools.y() + 20)
+            with patch("desktop_pet.input_region.QCursor.pos", return_value=origin + gap):
+                region.refresh()
+                self.assertTrue(self.pet.hovered)
+                focus.set_mouse_passthrough.assert_called_with(True)
+                focus.set_mouse_passthrough.reset_mock()
+                focus.mouse_buttons_pressed.return_value = True
+                region.refresh()
+                focus.set_mouse_passthrough.assert_not_called()
+            focus.mouse_buttons_pressed.return_value = False
+            with patch("desktop_pet.input_region.QCursor.pos", return_value=origin - QPoint(20, 20)):
+                region.refresh()
+            self.assertFalse(self.pet.hovered)
+            self.assertTrue(self.pet.tools.isHidden())
 
     def test_committed_text_clears_both_views_before_reply(self) -> None:
         """真实提交回执在回复前同步清空主窗口和桌宠草稿。"""

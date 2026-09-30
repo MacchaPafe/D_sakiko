@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import queue
+from time import monotonic
 from typing import TYPE_CHECKING
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect
-from PyQt5.QtGui import QImage, QMouseEvent, QWheelEvent
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QPoint
+from PyQt5.QtGui import QCursor, QImage, QMouseEvent, QWheelEvent
 from PyQt5.QtWidgets import QOpenGLWidget, QWidget
 from OpenGL.GL import (
     glBindFramebuffer,
@@ -18,6 +19,9 @@ from OpenGL.GL import (
     GL_SCISSOR_TEST,
     GL_COLOR_BUFFER_BIT,
     GL_DEPTH_BUFFER_BIT,
+    glReadPixels,
+    GL_RGBA,
+    GL_UNSIGNED_BYTE,
 )
 from live2d_support.runtime_session import Live2DRuntimeSession
 from live2d_support.runtime_adapter import NullLive2DModel
@@ -61,6 +65,9 @@ class PetRenderer(QOpenGLWidget):
         self.interaction_requested = False
         self.interaction_blocked = False
         self.hit_bounds = self.rect()
+        self.hit_image = QImage()
+        self._hit_sample_time = 0.0
+        self._hit_sample_failed = False
         self.identity = ""
         self.target = None
         self.closed = False
@@ -96,6 +103,8 @@ class PetRenderer(QOpenGLWidget):
         self.doneCurrent()
 
     def load_target(self, event):
+        self.hit_image = QImage()
+        self._hit_sample_failed = False
         self.target = dict(event)
         self.identity = str(event.get("character_name") or "角色")
         self.identityChanged.emit(self.identity)
@@ -157,6 +166,7 @@ class PetRenderer(QOpenGLWidget):
             self.performance.update_playback(self.model)
             self.motion_complete.value = not self.performance.busy
             self.model.Draw()
+            self._sample_hit_image(width, height)
         except Exception as error:
             logger.exception("桌宠帧绘制失败")
             self.failed.emit(str(error))
@@ -271,6 +281,38 @@ class PetRenderer(QOpenGLWidget):
                 rect = bounds()
         return rect or self.rect().adjusted(30, 30, -30, -30)
 
+    def _sample_hit_image(self, width: int, height: int) -> None:
+        """缓存当前帧透明度；鼠标远离角色时不持续读回 GPU。"""
+        if self._hit_sample_failed or isinstance(self.model, NullLive2DModel):
+            return
+        if not self.hit_image.isNull():
+            if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+                return
+            if monotonic() - self._hit_sample_time < 0.05:
+                return
+        try:
+            glBindFramebuffer(GL_FRAMEBUFFER, self.defaultFramebufferObject())
+            pixels = bytes(glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE))
+            self.hit_image = QImage(
+                pixels, width, height, width * 4, QImage.Format_RGBA8888
+            ).mirrored()
+            self._hit_sample_time = monotonic()
+        except Exception:
+            # 读回失败不能中断演出；仅此模型退回稳定边界，并避免逐帧刷日志。
+            self._hit_sample_failed = True
+            self.hit_image = QImage()
+            logger.exception("桌宠轮廓读取失败，回退到角色边界命中")
+
+    def hit_test(self, point: QPoint) -> bool:
+        """按当前帧透明度命中角色，将 Retina 像素映射到控件逻辑坐标。"""
+        if not self.rect().contains(point):
+            return False
+        if self.hit_image.isNull():
+            return self.hit_bounds.contains(point)
+        x = min(self.hit_image.width() - 1, point.x() * self.hit_image.width() // self.width())
+        y = min(self.hit_image.height() - 1, point.y() * self.hit_image.height() // self.height())
+        return self.hit_image.pixelColor(x, y).alpha() > 10
+
     def request_interaction(self) -> None:
         """将点击动作延迟到持有 OpenGL 上下文的绘制阶段。"""
         if not self.interaction_blocked:
@@ -279,7 +321,7 @@ class PetRenderer(QOpenGLWidget):
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """仅在角色范围内将鼠标或触控板滚动转换为连续缩放。"""
-        if not self.hit_bounds.contains(event.pos()):
+        if not self.hit_test(event.pos()):
             event.ignore()
             return
         pixels = event.pixelDelta().y()
@@ -290,7 +332,7 @@ class PetRenderer(QOpenGLWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """只允许从角色可见范围内开始点击或拖动。"""
-        if event.button() == Qt.LeftButton and self.hit_bounds.contains(event.pos()):
+        if event.button() == Qt.LeftButton and self.hit_test(event.pos()):
             self.press, self.origin = event.globalPos(), self.window().pos()
             self.dragged = False
 

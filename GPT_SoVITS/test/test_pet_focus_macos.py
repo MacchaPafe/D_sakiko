@@ -9,6 +9,7 @@ from unittest import TestCase, skipUnless
 from unittest.mock import Mock
 
 from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QWidget
 
 from desktop_pet.focus import create_pet_focus
@@ -96,6 +97,42 @@ class NativePetFocusTests(TestCase):
         with self.assertRaisesRegex(RuntimeError, "模拟原生窗口创建失败"):
             _create_panel(window)
         self.assertEqual(self.initializer_address(), original)
+
+    def test_native_passthrough_changes_system_hit_without_changing_focus(self) -> None:
+        """系统命中跳过穿透面板，恢复交互后重新命中，键盘焦点不被开关夺走。"""
+        import AppKit
+        import objc
+
+        bottom = QWidget()
+        self.addCleanup(bottom.close)
+        bottom.setWindowTitle("桌宠原生穿透测试底层")
+        bottom.setGeometry(180, 180, 500, 400)
+        bottom.show()
+        window = QWidget()
+        self.addCleanup(window.close)
+        window.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        window.setAttribute(Qt.WA_TranslucentBackground)
+        window.setAttribute(Qt.WA_ShowWithoutActivating)
+        window.setStyleSheet("background:rgba(60,100,150,255)")
+        window.setGeometry(220, 220, 300, 250)
+        focus = create_pet_focus(window)
+        window.show()
+        native = objc.objc_object(c_void_p=int(window.winId())).window()
+        QTest.qWait(100)
+        key_before = bool(native.isKeyWindow())
+        point = window.mapToGlobal(QPoint(100, 100))
+        screen_top = AppKit.NSMaxY(AppKit.NSScreen.screens()[0].frame())
+        native_point = AppKit.NSMakePoint(point.x(), screen_top - point.y())
+        for passthrough in (False, True, False, True):
+            with self.subTest(passthrough=passthrough):
+                focus.set_mouse_passthrough(passthrough)
+                QTest.qWait(80)
+                number = AppKit.NSWindow.windowNumberAtPoint_belowWindowWithWindowNumber_(
+                    native_point, 0
+                )
+                self.assertEqual(number == native.windowNumber(), not passthrough)
+                self.assertEqual(bool(native.isKeyWindow()), key_before)
+                self.assertTrue(native.styleMask() & AppKit.NSWindowStyleMaskNonactivatingPanel)
 
     def test_pet_can_cross_top_without_changing_other_panels(self) -> None:
         """真实显示透明测试面板，验证顶部移动、缩放和恢复均无原生回弹。"""
