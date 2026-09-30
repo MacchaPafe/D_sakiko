@@ -21,10 +21,16 @@ class PairingRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
 
 
+class AvatarSelection(BaseModel):
+    character_id: str = Field(min_length=1, max_length=256)
+    avatar_id: str = Field(min_length=1, max_length=1024)
+
+
 class SettingsUpdateRequest(BaseModel):
     speech_speed: Optional[float] = Field(default=None, ge=0.6, le=1.4)
     sentence_pause_seconds: Optional[float] = Field(default=None, ge=0.1, le=0.8)
     llm_choice_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    avatar: Optional[AvatarSelection] = None
 
 
 class CommandEnvelope(BaseModel):

@@ -89,8 +89,9 @@ export async function deleteUploadedImage(uploadId) {
   })
 }
 
-async function settingsRequest(method, body) {
-  const response = await fetch('/api/v1/settings', {
+async function settingsRequest(method, body, characterId) {
+  const query = characterId ? `?avatar_character_id=${encodeURIComponent(characterId)}` : ''
+  const response = await fetch(`/api/v1/settings${query}`, {
     method,
     credentials: 'same-origin',
     cache: 'no-store',
@@ -106,8 +107,8 @@ async function settingsRequest(method, body) {
   return result
 }
 
-export function getSettings() {
-  return settingsRequest('GET')
+export function getSettings(characterId) {
+  return settingsRequest('GET', undefined, characterId)
 }
 
 export function updateSettings(settings) {

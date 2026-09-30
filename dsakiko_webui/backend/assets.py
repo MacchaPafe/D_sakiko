@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -76,25 +77,45 @@ class AssetRegistry:
     def media(self, media_id: str) -> MediaEntry | None:
         return self._media.get(media_id)
 
-    def register_character(self, character: Any) -> dict[str, Any]:
-        avatar_url = None
+    def avatar_options(self, character: Any) -> list[dict[str, str]]:
+        """实时枚举该角色所有头像来源；只接受来源目录内的图片。"""
         character_root = LIVE2D_ROOT / character.character_folder_name
         preferred_icon = character_root / f"{character.character_folder_name}_icon.png"
-        root_icons = sorted(
-            path for path in character_root.glob("*.png")
-            if path.is_file()
-        )
-        if preferred_icon.is_file():
-            avatar_path = preferred_icon
-        elif root_icons:
-            avatar_path = root_icons[0]
-        else:
-            fallback_icon = CHAR_HEADPROF_ROOT / f"{character.character_name}.png"
-            avatar_path = fallback_icon if fallback_icon.is_file() else None
+        downloaded_root = CHAR_HEADPROF_ROOT / "webui_chat_mode_avatars" / character.character_folder_name
+        sources = [(preferred_icon, character_root)]
+        sources.extend((path, character_root) for path in sorted(character_root.glob("*")))
+        sources.append((CHAR_HEADPROF_ROOT / f"{character.character_name}.png", CHAR_HEADPROF_ROOT))
+        sources.extend((path, downloaded_root) for path in sorted(downloaded_root.rglob("*")))
+        options = []
+        seen = set()
+        revision = time.time_ns()
+        for path, root in sources:
+            if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"} or not path.is_file():
+                continue
+            resolved = path.resolve()
+            # 不通过符号链接读取其他角色或任意主机文件。
+            if not resolved.is_relative_to(root.absolute()):
+                continue
+            if not resolved.is_relative_to(PROJECT_ROOT) or resolved in seen:
+                continue
+            seen.add(resolved)
+            media_id = self.register_media(resolved, "avatar")
+            options.append({
+                "id": resolved.relative_to(PROJECT_ROOT).as_posix(),
+                "name": path.stem,
+                "image_url": f"/api/v1/media/{media_id}?v={revision}",
+            })
+        return options
 
-        if avatar_path is not None:
-            media_id = self.register_media(avatar_path, "avatar")
-            avatar_url = f"/api/v1/media/{media_id}"
+    def register_character(self, character: Any, avatar_id: str | None = None,
+                           *, options: list[dict[str, str]] | None = None) -> dict[str, Any]:
+        options = self.avatar_options(character) if options is None else options
+        selected = next((item for item in options if item["id"] == avatar_id), None)
+        if selected is None:
+            # 保持原有默认来源；仅下载的头像由用户明确选择后启用。
+            downloaded = (CHAR_HEADPROF_ROOT / "webui_chat_mode_avatars").relative_to(PROJECT_ROOT).as_posix() + "/"
+            selected = next((item for item in options if not item["id"].startswith(downloaded)), None)
+        avatar_url = selected["image_url"] if selected else None
 
         palettes = [
             ("#168779", "#DCEFEC"),
@@ -109,6 +130,7 @@ class AssetRegistry:
             "id": character.character_folder_name,
             "name": character.character_name,
             "avatar_url": avatar_url,
+            "avatar_id": selected["id"] if selected else None,
             "accent": accent,
             "accent_soft": accent_soft,
         }

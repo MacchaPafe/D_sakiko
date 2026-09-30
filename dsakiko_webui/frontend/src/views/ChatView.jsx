@@ -1,6 +1,7 @@
 import { List, UserRound } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Avatar } from '../components/Avatar'
+import { AvatarMenu } from '../components/AvatarMenu'
+import { AvatarPickerSheet } from '../components/AvatarPickerSheet'
 import { IconButton } from '../components/IconButton'
 import { LanguageSwitcher } from '../components/LanguageSwitcher'
 import { MessageComposer } from '../components/MessageComposer'
@@ -21,6 +22,7 @@ export function ChatView({ state, actions, audio }) {
   const pendingImages = state.pendingImagesByChatId[state.currentChatId] || []
   const busy = state.phase !== 'idle'
   const [typingTurnId, setTypingTurnId] = useState(null)
+  const [avatarCharacterId, setAvatarCharacterId] = useState(null)
 
   useEffect(() => {
     if (!busy || !state.turnId) return undefined
@@ -88,7 +90,7 @@ export function ChatView({ state, actions, audio }) {
               data-emotion={message.emotion || undefined}
             >
               {message.role === 'assistant' && (
-                <Avatar character={state.character} size="message" />
+                <AvatarMenu character={state.character} onChange={() => setAvatarCharacterId(state.character.id)} />
               )}
               <div className="message-bubble">
                 {message.attachments?.length > 0 && (
@@ -134,6 +136,10 @@ export function ChatView({ state, actions, audio }) {
         onSend={actions.sendMessage}
         onCancel={actions.cancelTurn}
       />
+      {avatarCharacterId && avatarCharacterId === state.character?.id && (
+        <AvatarPickerSheet key={avatarCharacterId} character={state.character}
+          onClose={() => setAvatarCharacterId(null)} onLoad={actions.loadSettings} onSave={actions.saveSettings} />
+      )}
     </section>
   )
 }

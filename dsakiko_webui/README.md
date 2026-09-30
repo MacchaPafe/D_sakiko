@@ -44,6 +44,14 @@ Windows 可以双击 `数字小祥启动器.bat`，选择 WebUI 模式。服务�
 
 `HeadlessRuntime` 继续使用 `GPT_SoVITS/character.py`、`chat/chat.py`、`dp_local2.py` 与 `audio_generator.py`。它没有导入 `main2.py`，也不会创建 PyQt 或 Python Live2D 窗口。
 
+## 聊天头像
+
+聊天模式下点击消息旁的角色头像，选择“更改头像”，在底部网格中选中图片后点击“确定”。选择只影响该角色的 WebUI 展示，所有对话共用；关闭面板不保存草稿。
+
+每次打开面板都会重新扫描角色资源根目录的图片、`GPT_SoVITS/assets/char_headprof/<角色显示名称>.png` 和 `GPT_SoVITS/assets/char_headprof/webui_chat_mode_avatars/<角色ID>/` 下载目录（包括子目录）。不递归扫描 Live2D 模型纹理。配置保存在项目根目录 `d_sakiko_config.json` 的 `webui_setting.character_avatars` 中，以稳定角色 ID 为键、项目相对路径为值；启动时恢复，文件缺失时沿用原有默认头像回退。
+
+复用现有设置和媒体路由：`GET /api/v1/settings?avatar_character_id=<角色ID>` 实时返回 `avatar` 候选列表；`PATCH /api/v1/settings` 单独提交 `{"avatar":{"character_id":"anon","avatar_id":"<候选ID>"}}`。保存时重新校验候选，不接受任意文件路径。保存成功返回更新后的角色，并通过现有 WebSocket 广播 `character_updated`；前端同步更新消息、对话列表与角色选项。目录响应和头像图片均禁用缓存，候选图片 URL 每次读取带新的版本参数。
+
 ## 鉴权
 
 同一时间只有一个控制端。访问码正确的新登录会生成新的 HttpOnly Cookie，旧 Cookie 立即失效，旧 WebSocket 以 `4409` 关闭。正在进行的 LLM/TTS 任务不会因接管而取消，新控制端连接后发送 `sync` 即可恢复状态。

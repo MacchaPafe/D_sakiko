@@ -4,6 +4,21 @@ import {
   initialConversationState,
 } from './conversationReducer'
 
+it('updates every conversation for the chosen character without disturbing playback state', () => {
+  const old = { id: 'anon', avatar_url: '/old' }
+  const other = { id: 'tomori', avatar_url: '/tomori' }
+  const character = { ...old, avatar_url: '/new' }
+  const state = conversationReducer({ ...initialConversationState, character: old,
+    phase: 'speaking', turnId: 'turn_one', characters: [old, other],
+    chatSummaries: [{ character: old }, { character: old }, { character: other }],
+  }, { type: 'runtime_event', event: { type: 'character_updated', data: { character } } })
+  expect(state.character).toEqual(character)
+  expect(state.characters).toEqual([character, other])
+  expect(state.chatSummaries.map((chat) => chat.character)).toEqual([character, character, other])
+  expect(state.phase).toBe('speaking')
+  expect(state.turnId).toBe('turn_one')
+})
+
 describe('conversationReducer Live2D presentation', () => {
   it('hydrates conversation-level presentation from state snapshot', () => {
     const live2d = { resolution: 'resolved', target_id: 'live2d_one' }

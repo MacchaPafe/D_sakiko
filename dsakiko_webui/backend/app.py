@@ -6,6 +6,7 @@ import queue
 import time
 import unicodedata
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI, File, Request, Response, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -276,17 +277,18 @@ def create_app(
         await ws_manager.serve(websocket)
 
     @app.get("/api/v1/settings")
-    async def get_settings(request: Request) -> JSONResponse:
+    async def get_settings(request: Request, avatar_character_id: Optional[str] = None) -> JSONResponse:
         if not authenticated(request):
             return JSONResponse(
                 http_error(ProtocolError("AUTH_REQUIRED", "登录会话已失效。", True)),
                 status_code=401,
             )
         try:
-            data = await asyncio.to_thread(runtime.settings_snapshot)
+            kwargs = {"avatar_character_id": avatar_character_id} if avatar_character_id is not None else {}
+            data = await asyncio.to_thread(runtime.settings_snapshot, **kwargs)
             return JSONResponse(data, headers={"Cache-Control": "no-store"})
         except ProtocolError as exc:
-            return JSONResponse(http_error(exc), status_code=503)
+            return JSONResponse(http_error(exc), status_code=503 if exc.code == "RUNTIME_NOT_READY" else 400)
 
     @app.patch("/api/v1/settings")
     async def update_settings(body: SettingsUpdateRequest, request: Request) -> JSONResponse:
@@ -301,6 +303,7 @@ def create_app(
                 speech_speed=body.speech_speed,
                 sentence_pause_seconds=body.sentence_pause_seconds,
                 llm_choice_id=body.llm_choice_id,
+                avatar=body.avatar.model_dump() if body.avatar is not None else None,
             )
             return JSONResponse(data, headers={"Cache-Control": "no-store"})
         except ProtocolError as exc:
@@ -376,7 +379,8 @@ def create_app(
         return FileResponse(
             entry.path,
             media_type=entry.media_type,
-            headers={"Cache-Control": "private, max-age=3600", "Accept-Ranges": "bytes"},
+            headers={"Cache-Control": "no-store" if media_id.startswith("media_avatar_") else "private, max-age=3600",
+                     "Accept-Ranges": "bytes"},
         )
 
     @app.get("/api/v1/live2d/{model_id}/{asset_path:path}")

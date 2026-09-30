@@ -290,6 +290,7 @@ class BackendTest(unittest.TestCase):
             anon_icon.write_bytes(b"anon")
 
             with (
+                patch.object(assets_module, "PROJECT_ROOT", root.resolve()),
                 patch.object(assets_module, "LIVE2D_ROOT", live2d_root.resolve()),
                 patch.object(assets_module, "CHAR_HEADPROF_ROOT", headprof_root.resolve()),
             ):
@@ -305,8 +306,8 @@ class BackendTest(unittest.TestCase):
                     live2d_json=None,
                 ))
 
-                sakiko_media = registry.media(sakiko["avatar_url"].rsplit("/", 1)[-1])
-                anon_media = registry.media(anon["avatar_url"].rsplit("/", 1)[-1])
+                sakiko_media = registry.media(sakiko["avatar_url"].split("?", 1)[0].rsplit("/", 1)[-1])
+                anon_media = registry.media(anon["avatar_url"].split("?", 1)[0].rsplit("/", 1)[-1])
                 self.assertEqual(sakiko_media.path, sakiko_icon.resolve())
                 self.assertEqual(anon_media.path, anon_icon.resolve())
 

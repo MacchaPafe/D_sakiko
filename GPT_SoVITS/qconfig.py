@@ -167,6 +167,9 @@ class DSakikoConfig(QConfig):
 
     # 用户自定义人设。内置的默认用户人设由程序创建，不写入配置。
     user_characters = ConfigItem("character_setting", "user_characters", [])
+
+    # 按稳定角色 ID 保存 WebUI 头像；路径相对于项目根目录。
+    webui_character_avatars = ConfigItem("webui_setting", "character_avatars", {})
     # AI 角色文件夹到世界书规范 CharacterId 的全局知识视角映射。
     worldbook_character_mappings = ConfigItem(
         "worldbook_setting",

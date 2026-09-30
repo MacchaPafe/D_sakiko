@@ -84,8 +84,12 @@ class HeadlessRuntime:
             self.user_personas = list(character_manager.user_characters)
             self.character_by_id = {item.character_folder_name: item for item in self.characters}
             self.character_by_name = {item.character_name: item for item in self.characters}
+            from qconfig import create_d_sakiko_config_snapshot
+            avatar_choices = create_d_sakiko_config_snapshot().webui_character_avatars.value
+            avatar_choices = avatar_choices if isinstance(avatar_choices, dict) else {}
             self.character_entities = {
-                item.character_folder_name: self.assets.register_character(item)
+                item.character_folder_name: self.assets.register_character(
+                    item, avatar_choices.get(item.character_folder_name))
                 for item in self.characters
             }
             self.chat_manager = get_chat_manager(write_scope=ChatType.SINGLE_CHARACTER)
@@ -909,10 +913,43 @@ class HeadlessRuntime:
                 self._client_message_turns.pop((chat_id, client_message_id), None)
             self.chat_manager.save()
 
-    def settings_snapshot(self) -> dict[str, Any]:
+    def _avatar_snapshot(self, character_id: str) -> dict[str, Any]:
+        character = self.character_by_id.get(character_id)
+        if character is None:
+            raise ProtocolError("INVALID_SETTING", "角色已不存在，请刷新后重试。")
+        from qconfig import create_d_sakiko_config_snapshot
+        choices = create_d_sakiko_config_snapshot().webui_character_avatars.value
+        selected = choices.get(character_id) if isinstance(choices, dict) else None
+        options = self.assets.avatar_options(character)
+        entity = self.assets.register_character(character, selected, options=options)
+        return {"character_id": character_id, "selected_id": entity["avatar_id"],
+                "options": options, "character": entity}
+
+    def _update_avatar(self, selection: dict[str, str]) -> dict[str, Any]:
+        snapshot = self._avatar_snapshot(selection["character_id"])
+        if not any(item["id"] == selection["avatar_id"] for item in snapshot["options"]):
+            raise ProtocolError("INVALID_SETTING", "头像已不存在或不属于该角色，请重新打开头像选择。")
+        from qconfig import d_sakiko_config
+        try:
+            with d_sakiko_config as config:
+                value = config.webui_character_avatars.value
+                choices = dict(value) if isinstance(value, dict) else {}
+                choices[selection["character_id"]] = selection["avatar_id"]
+                config.set(config.webui_character_avatars, choices)
+        except (OSError, RuntimeError) as exc:
+            raise ProtocolError("SETTINGS_SAVE_FAILED", "头像配置保存失败，请重试。", True) from exc
+        character = self.character_by_id[selection["character_id"]]
+        entity = self.assets.register_character(character, selection["avatar_id"], options=snapshot["options"])
+        self.character_entities[selection["character_id"]] = entity
+        self.events.put(self._local_event("character_updated", {"character": entity}))
+        return {"avatar": {**snapshot, "selected_id": entity["avatar_id"], "character": entity}}
+
+    def settings_snapshot(self, *, avatar_character_id: str | None = None) -> dict[str, Any]:
         with self._lock:
             if self.status != "ready":
                 raise ProtocolError("RUNTIME_NOT_READY", "后端仍在初始化，请稍后重试。", True)
+            if avatar_character_id is not None:
+                return {"avatar": self._avatar_snapshot(avatar_character_id)}
             character = self.dp_chat.get_current_character()
             voice = self._voice_settings_by_character.setdefault(character.character_name, {
                 "speech_speed": float(self.audio_gen.speed),
@@ -986,8 +1023,16 @@ class HeadlessRuntime:
         speech_speed: float | None,
         sentence_pause_seconds: float | None,
         llm_choice_id: str | None,
+        avatar: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
+            if avatar is not None:
+                if self.status != "ready":
+                    raise ProtocolError("RUNTIME_NOT_READY", "后端仍在初始化，请稍后重试。", True)
+                if any(value is not None for value in (speech_speed, sentence_pause_seconds, llm_choice_id)):
+                    raise ProtocolError("INVALID_SETTING", "请单独保存头像设置。")
+                # 头像不参与推理与播放，允许在对话进行时单独更换。
+                return self._update_avatar(avatar)
             if self.phase != "idle":
                 raise ProtocolError("CHAT_BUSY", "回复完成后才能修改设置。", True)
             snapshot = self.settings_snapshot()

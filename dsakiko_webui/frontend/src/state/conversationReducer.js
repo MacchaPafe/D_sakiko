@@ -50,6 +50,16 @@ export function conversationReducer(state, action) {
     case 'runtime_event': {
       const event = action.event
       switch (event.type) {
+        case 'character_updated': {
+          const character = event.data.character
+          const replace = (current) => current?.id === character.id ? character : current
+          return {
+            ...state,
+            character: replace(state.character),
+            characters: state.characters.map(replace),
+            chatSummaries: state.chatSummaries.map((chat) => ({ ...chat, character: replace(chat.character) })),
+          }
+        }
         case 'runtime_status':
           return {
             ...state,

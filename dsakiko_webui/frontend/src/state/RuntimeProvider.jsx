@@ -477,9 +477,9 @@ export function RuntimeProvider({ children }) {
     }
   }, [client])
 
-  const loadSettings = useCallback(async () => {
+  const loadSettings = useCallback(async (characterId) => {
     try {
-      return await getSettings()
+      return await getSettings(characterId)
     } catch (error) {
       dispatch({ type: 'command_error', error })
       throw error
@@ -489,7 +489,12 @@ export function RuntimeProvider({ children }) {
   const saveSettings = useCallback(async (settings) => {
     try {
       const result = await updateSettings(settings)
-      dispatch({ type: 'capabilities_updated', capabilities: result.capabilities })
+      if (result.capabilities) dispatch({ type: 'capabilities_updated', capabilities: result.capabilities })
+      if (result.avatar?.character) {
+        dispatch({ type: 'runtime_event', event: {
+          type: 'character_updated', data: { character: result.avatar.character },
+        } })
+      }
       return result
     } catch (error) {
       dispatch({ type: 'command_error', error })
