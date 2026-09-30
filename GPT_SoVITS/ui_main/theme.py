@@ -256,9 +256,28 @@ def resolve_character_theme_seed(qt_style_content: str | None) -> str:
         return DEFAULT_CHARACTER_THEME_SEED
 
 
+def build_menu_theme_stylesheet(palette: ThemePalette) -> str:
+    """为弹出菜单提供明确的悬停与键盘选中反馈，保留原有尺寸。"""
+    return f"""
+        QMenu {{
+            background-color: {palette.surface};
+            color: {palette.text_primary};
+            selection-background-color: {palette.accent};
+            selection-color: {palette.on_accent};
+        }}
+        QMenu::item:selected:enabled {{
+            background-color: {palette.accent};
+            color: {palette.on_accent};
+        }}
+        QMenu::item:disabled {{
+            color: {palette.text_secondary};
+        }}
+    """
+
+
 def build_character_theme_stylesheet(palette: ThemePalette) -> str:
     """把角色语义色板转换为主聊天窗口使用的 Qt 样式表。"""
-    return f"""
+    return build_menu_theme_stylesheet(palette) + f"""
         QWidget {{
             background-color: {palette.surface_tint};
             color: {palette.text_primary};

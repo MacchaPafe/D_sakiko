@@ -38,7 +38,7 @@ class DesktopController(QObject):
         menu = QMenu(window)
         menu.addAction("显示桌宠", self.show_pet)
         menu.addAction("打开聊天窗口", self.show_chat)
-        menu.addAction("切换桌宠 / 普通形态", self.toggle_mode)
+        menu.addAction("切换桌宠 / 桌面端形态", self.toggle_mode)
         menu.addSeparator()
         menu.addAction("退出程序", self.quit)
         self.tray.setContextMenu(menu)

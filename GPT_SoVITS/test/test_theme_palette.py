@@ -11,10 +11,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from coloraide import Color
-from PyQt5.QtCore import QObject, QPoint, QRect, Qt, pyqtSignal
-from PyQt5.QtGui import QContextMenuEvent, QImage, QPainter
+from PyQt5.QtCore import QEvent, QObject, QPoint, QRect, Qt, pyqtSignal
+from PyQt5.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPainter
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QMenu, QStyle, QStyleOptionViewItem
+from PyQt5.QtWidgets import QApplication, QMenu, QStyle, QStyleOptionViewItem, QWidget
 
 from chat.chat import Message
 from emotion_enum import EmotionEnum
@@ -22,6 +22,8 @@ from ui_constants import char_info_json
 from ui_main.components.chat_display import ChatDisplay
 from ui_main.components.message_input import MessageInput
 from ui_main.components.chat_sidebar import ChatSidebarDelegate, ChatSidebarRow
+from ui_main.components.input_option_chips import ChoiceChip
+from ui_main.components.tool_selection_chip import ToolSelectionChip
 from ui_main.theme import (
     DEFAULT_CHARACTER_THEME_SEED,
     ThemePalette,
@@ -171,6 +173,54 @@ class ThemePaletteQtIntegrationTestCase(unittest.TestCase):
             if isinstance(existing_application, QApplication)
             else QApplication([])
         )
+
+    def test_popup_hover_tracks_mouse_and_theme_through_chip_styles(self) -> None:
+        """普通、工具和推理菜单继承主题，高亮跟随鼠标且不改变勾选。"""
+        host = QWidget()
+        choice = ChoiceChip(accessible_name="推理", height=28, parent=host)
+        reasoning = QMenu(host)
+        choice.setMenu(reasoning)
+        tools = ToolSelectionChip(height=28, parent=host)
+        ordinary = QMenu(host)
+        for menu in (ordinary, reasoning):
+            menu.addAction("第一项").setCheckable(True)
+            menu.addAction("第二项").setCheckable(True)
+        host.show()
+        try:
+            for seed in ("#7799CC", "#FFEE55"):
+                palette = derive_theme_palette(seed)
+                host.setStyleSheet(build_character_theme_stylesheet(palette))
+                choice.set_theme_palette(palette)
+                tools.set_theme_palette(palette)
+                for menu in (ordinary, reasoning, tools.menu()):
+                    with self.subTest(seed=seed, menu=menu):
+                        first, second = menu.actions()[:2]
+                        first.setChecked(True)
+                        menu.popup(QPoint(100, 100))
+                        self.app.processEvents()
+                        for action, previous in ((first, second), (second, first)):
+                            rect = menu.actionGeometry(action)
+                            self.app.sendEvent(menu, QMouseEvent(
+                                QEvent.MouseMove, rect.center(), Qt.NoButton,
+                                Qt.NoButton, Qt.NoModifier,
+                            ))
+                            self.app.processEvents()
+                            self.assertIs(menu.activeAction(), action)
+                            snapshot = menu.grab().toImage()
+                            self.assertEqual(
+                                snapshot.pixelColor(rect.right() - 6, rect.center().y()).name().upper(),
+                                palette.accent,
+                            )
+                            old_rect = menu.actionGeometry(previous)
+                            self.assertNotEqual(
+                                snapshot.pixelColor(old_rect.right() - 6, old_rect.center().y()).name().upper(),
+                                palette.accent,
+                            )
+                        self.assertTrue(first.isChecked())
+                        menu.hide()
+        finally:
+            host.close()
+            host.deleteLater()
 
     def test_signal_updates_synchronous_palette_consumers(self) -> None:
         """同一信号应把同一不可变色板同步给聊天区和输入区槽函数。"""

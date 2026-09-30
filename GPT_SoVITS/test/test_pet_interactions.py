@@ -541,14 +541,14 @@ class PetInteractionTests(TestCase):
         actions["打开聊天窗口"].trigger()
         opened.assert_called_once()
         switched.assert_not_called()
-        actions["切换到窗口对话"].trigger()
+        actions["切换回桌面端形态"].trigger()
         switched.assert_called_once()
         menu.deleteLater()
         self.host.is_response_active.return_value = True
         menu = self.pet.create_context_menu()
         self.assertFalse(
             next(
-                action for action in menu.actions() if action.text() == "切换到窗口对话"
+                action for action in menu.actions() if action.text() == "切换回桌面端形态"
             ).isEnabled()
         )
         menu.deleteLater()

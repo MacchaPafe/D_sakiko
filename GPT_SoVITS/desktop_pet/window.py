@@ -31,7 +31,7 @@ from PyQt5.QtWidgets import (
     QTextBrowser,
 )
 from ui_main.components.message_input import MessageInput
-from ui_main.theme import ThemePalette
+from ui_main.theme import ThemePalette, build_menu_theme_stylesheet
 from runtime.drafts import DraftBinding
 from desktop_pet.renderer import PetRenderer
 from desktop_pet.focus import create_pet_focus
@@ -660,9 +660,10 @@ class PetWindow(QWidget):
     def create_context_menu(self) -> QMenu:
         """创建明确区分临时打开窗口与退出桌宠形态的菜单。"""
         menu = QMenu(self)
+        menu.setStyleSheet(build_menu_theme_stylesheet(self.host._theme_palette))
         menu.setToolTipsVisible(True)
         menu.addAction("打开聊天窗口", self.openChat.emit)
-        switch = menu.addAction("切换到窗口对话", self.switchToWindow.emit)
+        switch = menu.addAction("切换回桌面端形态", self.switchToWindow.emit)
         controller = getattr(self.host, "desktop_controller", None)
         allowed = (
             controller.can_switch_mode()
