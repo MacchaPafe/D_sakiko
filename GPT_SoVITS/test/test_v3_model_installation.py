@@ -96,6 +96,46 @@ def test_new_character_flatten_references_and_description(tmp_path):
     assert not list((tmp_path / "live2d_related").glob(".v3-install-*"))
 
 
+@pytest.mark.parametrize("missing_color", [False, True])
+def test_new_character_theme_from_character_table(tmp_path, monkeypatch, missing_color):
+    from live2d_download.hosted.catalog import CHARACTERS
+    from ui_main.theme import resolve_character_theme_seed
+
+    if missing_color:
+        monkeypatch.delitem(CHARACTERS["arale"], "theme_color")
+    V3Installer(None, tmp_path).install_archive(
+        package(tmp_path), resource("arale"), Selection("new", "arale"), Event())
+    style = tmp_path / "reference_audio/arale/QT_style.json"
+    assert resolve_character_theme_seed(style.read_text(encoding="utf-8")).lower() == (
+        "#7799cc" if missing_color else "#ffee55")
+
+
+def test_new_character_preserves_existing_theme(tmp_path):
+    style = tmp_path / "reference_audio/arale/QT_style.json"
+    style.parent.mkdir(parents=True)
+    original = "QWidget { color: #123456; }"
+    style.write_text(original, encoding="utf-8")
+    V3Installer(None, tmp_path).install_archive(
+        package(tmp_path), resource("arale"), Selection("new", "arale"), Event())
+    assert style.read_text(encoding="utf-8") == original
+
+
+def test_failed_character_publish_removes_new_theme(tmp_path, monkeypatch):
+    rename = Path.rename
+
+    def fail_publish(path, target):
+        if path.name == "character":
+            raise OSError("无法发布角色目录")
+        return rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_publish)
+    with pytest.raises(DownloadError):
+        V3Installer(None, tmp_path).install_archive(
+            package(tmp_path), resource("arale"), Selection("new", "arale"), Event())
+    assert not (tmp_path / "reference_audio/arale/QT_style.json").exists()
+    assert not (tmp_path / "live2d_related/arale").exists()
+
+
 @pytest.mark.parametrize("has_default", [False, True])
 def test_existing_default_or_extra_preserves_identity_and_description(tmp_path, has_default):
     character = tmp_path / "live2d_related/custom"

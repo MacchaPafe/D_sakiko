@@ -249,7 +249,22 @@ class V3Installer:
                         (ready / "character_description.txt").write_text(description, encoding="utf-8")
                     model_dir.rename(ready / "live2D_model")
                     check_cancel(cancel)
-                    ready.rename(character)
+                    style = self.project_root / "reference_audio" / selection.source / "QT_style.json"
+                    created_style = False
+                    try:
+                        style.parent.mkdir(parents=True, exist_ok=True)
+                        if not style.exists():
+                            # CHARACTERS 按 char_info_json 的 romaji 建索引。
+                            color = CHARACTERS.get(selection.source, {}).get("theme_color") or "#7799cc"
+                            with style.open("x", encoding="utf-8") as output:
+                                created_style = True
+                                output.write(f"QWidget {{\n    color: {color};\n}}")
+                        check_cancel(cancel)
+                        ready.rename(character)
+                    except Exception:
+                        if created_style:
+                            style.unlink()
+                        raise
                     return InstallResult(character, True, not bool(description and description.strip()))
 
                 default = character / "live2D_model"

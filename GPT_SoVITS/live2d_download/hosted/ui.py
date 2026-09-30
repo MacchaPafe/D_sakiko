@@ -1161,9 +1161,9 @@ class ResourceRow(QFrame):
             if isinstance(value, InstallResult):
                 status = "安装完成"
                 if value.description_missing:
-                    status += " · 请补齐角色描述后重启"
+                    status += " · 暂缺角色描述，需自行补齐"
                 elif value.new_character:
-                    status += " · 重启后可使用新角色"
+                    status += " · 重启后与角色对话吧~"
                 if not self.entry.sha256:
                     status += " · 未提供校验值"
             self.status.setText(status)

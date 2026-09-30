@@ -4588,6 +4588,7 @@ class ChatGUI(QWidget):
     def _save_character_theme_seed(self, seed: str) -> bool:
         """以旧版 QSS 文件格式保存角色原色，返回保存是否成功。"""
         try:
+            os.makedirs(f"../reference_audio/{self.current_character.character_folder_name}", exist_ok=True)
             with open(f"../reference_audio/{self.current_character.character_folder_name}/QT_style.json",'w',encoding='utf-8') as f:
                 f.write(f"QWidget {{\n    color: {seed};\n}}")
             return True
