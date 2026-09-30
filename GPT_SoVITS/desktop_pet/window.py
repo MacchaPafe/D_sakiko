@@ -96,6 +96,7 @@ class PetWindow(QWidget):
         self.renderer.subtitleChanged.connect(self._subtitle)
         self.hovered = False
         self.expanded = False
+        self._expanding_input = False
         self.popup_open = False
         self.anchor = round(440 * dpi_scale)
         self.bounds = self.renderer.rect()
@@ -516,23 +517,35 @@ class PetWindow(QWidget):
 
     def expand(self) -> None:
         """展开输入卡片，仅在用户主动输入时获取焦点。"""
-        self.expanded = True
-        self.tools.hide()
-        self.panel.show()
-        self.panel.raise_()
-        self._focus.request_input()
-        self.input.setFocus(Qt.MouseFocusReason)
-        self.layout_controls()
+        # 显示控件和获取原生焦点会同步触发 Qt 信号；完成交接前不能
+        # 将尚未拿到的键盘焦点当成失焦，否则首次展开会被重入的收起打断。
+        self._expanding_input = True
+        try:
+            self.expanded = True
+            self.tools.hide()
+            self.panel.show()
+            self.panel.raise_()
+            self._focus.request_input()
+            self.input.setFocus(Qt.MouseFocusReason)
+            self.layout_controls()
+        finally:
+            self._expanding_input = False
 
     def collapse(self) -> None:
         """收起输入卡片并释放非激活面板的键盘焦点，保留草稿。"""
         self.expanded = False
         self.panel.hide()
         self.subtitle.setVisible(bool(self.subtitle.text()))
-        self._focus.release_input()
+        # 先确定收起后的窗口尺寸，再让原生焦点适配器恢复显示该窗口。
         self.refresh_state()
+        self._focus.release_input()
 
     def focus_changed(self, old: QWidget | None, new: QWidget | None) -> None:
+        """普通窗口按 Qt 焦点收起，非激活面板统一由原生焦点检查决定。"""
+        if not self.expanded or self._expanding_input or self._focus.nonactivating:
+            # Cocoa 的 key window 与 Qt 控件焦点在交接中可能暂时不一致。
+            # 非激活面板由 refresh_state 检查真实失焦，不在此释放其键盘。
+            return
         if new is not None and new.window() is not self and not self.popup_open:
             if (
                 QApplication.activeModalWidget() is None
@@ -571,6 +584,7 @@ class PetWindow(QWidget):
         if (
             self._focus.nonactivating
             and self.expanded
+            and not self._expanding_input
             and not self.popup_open
             and QApplication.activePopupWidget() is None
             and QApplication.activeModalWidget() is None

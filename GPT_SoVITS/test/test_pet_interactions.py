@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtCore import QEvent, QPoint, QPointF, QRect, Qt
 from PyQt5.QtGui import QColor, QImage, QMouseEvent, QWheelEvent
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QWidget
 
 from desktop_pet.window import PetWindow
 from desktop_pet.controller import DesktopController
@@ -211,6 +211,31 @@ class PetInteractionTests(TestCase):
         self.pet.expand()
         self.assertEqual(self.pet.input.toPlainText(), "稍后继续输入")
 
+    def test_collapse_finishes_layout_before_returning_native_focus(self) -> None:
+        """原生焦点交接恢复窗口前完成缩窄，始终保持角色画布与缩放不变。"""
+        focus = Mock(spec=PetFocus, nonactivating=False)
+        self.pet._focus = focus
+        renderer_geometry = self.pet.renderer.geometry()
+        for subtitle in ("", "仍在显示的回复"):
+            with self.subTest(subtitle=subtitle):
+                self.pet._subtitle(subtitle)
+                self.pet.expand()
+                expanded_width = self.pet.width()
+                widths_at_release: list[int] = []
+
+                def observe_release() -> None:
+                    """在原生窗口可能重新显示的边界检查实际布局。"""
+                    self.assertFalse(self.pet.expanded)
+                    self.assertTrue(self.pet.panel.isHidden())
+                    self.assertEqual(self.pet.renderer.geometry(), renderer_geometry)
+                    widths_at_release.append(self.pet.width())
+
+                focus.release_input.side_effect = observe_release
+                self.pet.collapse()
+                self.assertEqual(widths_at_release, [self.pet.width()])
+                if not subtitle:
+                    self.assertLess(self.pet.width(), expanded_width)
+
     def test_character_click_while_busy_collapses_without_interrupting(
         self,
     ) -> None:
@@ -246,6 +271,58 @@ class PetInteractionTests(TestCase):
         self.assertTrue(self.pet.expanded)
         self.assertEqual(self.pet.input.toPlainText(), "保留输入")
         self.assertFalse(self.pet.renderer.interaction_requested)
+
+    def test_expand_does_not_treat_focus_handoff_as_focus_loss(self) -> None:
+        """展开过程中同步重入状态刷新时，尚未完成的原生焦点请求不算失焦。"""
+        focus = Mock(spec=PetFocus, nonactivating=True)
+        focus.has_input_focus.return_value = False
+        self.pet._focus = focus
+
+        def acquire_focus() -> None:
+            """模拟首次焦点请求完成前触发控件或语音状态刷新。"""
+            self.pet.refresh_state()
+            focus.has_input_focus.return_value = True
+
+        focus.request_input.side_effect = acquire_focus
+        self.pet.expand()
+        self.assertTrue(self.pet.expanded)
+        self.assertFalse(self.pet.panel.isHidden())
+        focus.release_input.assert_not_called()
+        focus.has_input_focus.return_value = False
+        self.pet.refresh_state()
+        self.assertFalse(self.pet.expanded)
+        focus.release_input.assert_called_once()
+
+    def test_native_focus_is_authoritative_over_qt_widget_focus(self) -> None:
+        """非激活面板忽略 Qt 的过渡焦点通知，但真实原生失焦仍收起并保留草稿。"""
+        other = QWidget()
+        self.addCleanup(other.close)
+        focus = Mock(spec=PetFocus, nonactivating=True)
+        focus.has_input_focus.return_value = True
+        self.pet._focus = focus
+        self.pet.expand()
+        self.pet.input.setPlainText("首次展开的草稿")
+        self.pet.focus_changed(self.pet.input.text_edit, other)
+        self.pet.refresh_state()
+        self.assertTrue(self.pet.expanded)
+        focus.release_input.assert_not_called()
+        focus.has_input_focus.return_value = False
+        self.pet.refresh_state()
+        self.assertFalse(self.pet.expanded)
+        self.assertEqual(self.pet.input.toPlainText(), "首次展开的草稿")
+        focus.release_input.assert_called_once()
+
+    def test_qt_focus_loss_still_collapses_on_ordinary_backends(self) -> None:
+        """普通 Qt 后端继续响应其他窗口焦点，已收起时不重复交还焦点。"""
+        other = QWidget()
+        self.addCleanup(other.close)
+        focus = Mock(spec=PetFocus, nonactivating=False)
+        self.pet._focus = focus
+        self.pet.expand()
+        self.pet.focus_changed(self.pet.input.text_edit, other)
+        self.assertFalse(self.pet.expanded)
+        self.pet.focus_changed(None, other)
+        focus.release_input.assert_called_once()
 
     def test_native_focus_loss_collapses_without_losing_draft(self) -> None:
         """原生非激活面板不调用应用激活，失去键盘焦点时保留草稿。"""

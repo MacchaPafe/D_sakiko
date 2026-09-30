@@ -206,6 +206,9 @@ class MacPetFocus(PetFocus):
         )
         self.panel.setBecomesKeyOnlyIfNeeded_(True)
         self.panel.setAcceptsMouseMovedEvents_(True)
+        # Qt 工具面板默认带弹出动画；交还焦点时的 orderOut/orderFront
+        # 会与收起时的窗口缩窄叠加，造成模型瞬间横向拉伸。
+        self.panel.setAnimationBehavior_(AppKit.NSWindowAnimationBehaviorNone)
         view = self.panel.contentView()
         for old in list(view.trackingAreas()):
             if old.options() & AppKit.NSTrackingActiveAlways:
@@ -223,8 +226,13 @@ class MacPetFocus(PetFocus):
             view.addTrackingArea_(area)
 
     def request_input(self) -> None:
-        """只让面板接收键盘，不调用应用激活接口。"""
+        """取得键盘焦点并接通 Qt 原生文本输入客户端，不激活整个应用。"""
         self.panel.makeKeyWindow()
+        # 只有 key window 不足以启用 IME：第一响应者若仍是 NSPanel，
+        # 普通按键可进入 Qt，但 Cocoa 没有当前 NSTextInputContext。
+        view = self.panel.contentView()
+        if view is not None and view.acceptsFirstResponder():
+            self.panel.makeFirstResponder_(view)
 
     def set_mouse_passthrough(self, enabled: bool) -> None:
         """在系统分发点击前切换穿透，不改变窗口外观或键盘焦点。"""
@@ -238,9 +246,15 @@ class MacPetFocus(PetFocus):
         return bool(AppKit.NSEvent.pressedMouseButtons())
 
     def release_input(self) -> None:
-        """收起输入框时释放原生键盘焦点。"""
+        """通过窗口排序交还键盘焦点，保持 AppKit 的 key window 记录一致。"""
         if self.panel.isKeyWindow():
-            self.panel.resignKeyWindow()
+            # resignKeyWindow 是系统通知入口，直接调用会留下 NSApp.keyWindow
+            # 指向已失焦面板，导致下次 makeKeyWindow 被当成无需操作。
+            # 同步移出再无激活地恢复显示，由 AppKit 完成真正的焦点交接。
+            visible = bool(self.panel.isVisible())
+            self.panel.orderOut_(None)
+            if visible:
+                self.panel.orderFrontRegardless()
 
     def has_input_focus(self) -> bool:
         """以原生键盘焦点为准，避免 Qt 工具窗口活动标志滞留。"""

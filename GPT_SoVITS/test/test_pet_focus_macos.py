@@ -7,10 +7,12 @@ import os
 import sys
 from unittest import TestCase, skipUnless
 from unittest.mock import Mock
+from queue import Queue
+from types import SimpleNamespace
 
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtWidgets import QApplication, QPlainTextEdit, QWidget
 
 from desktop_pet.focus import create_pet_focus
 
@@ -71,6 +73,7 @@ class NativePetFocusTests(TestCase):
             )
             focus.refresh_native()
             self.assertEqual(len(native.contentView().trackingAreas()), len(areas))
+            self.assertEqual(native.animationBehavior(), AppKit.NSWindowAnimationBehaviorNone)
             self.assertEqual(self.initializer_address(), original)
             self.assertIsNotNone(
                 AppKit.NSPanel.instanceMethodForSelector_(
@@ -83,6 +86,7 @@ class NativePetFocusTests(TestCase):
             self.assertFalse(
                 other_native.styleMask() & AppKit.NSWindowStyleMaskNonactivatingPanel
             )
+            self.assertNotEqual(other_native.animationBehavior(), AppKit.NSWindowAnimationBehaviorNone)
             other.close()
             window.close()
 
@@ -97,6 +101,119 @@ class NativePetFocusTests(TestCase):
         with self.assertRaisesRegex(RuntimeError, "模拟原生窗口创建失败"):
             _create_panel(window)
         self.assertEqual(self.initializer_address(), original)
+
+    def test_input_focus_activates_native_ime_client_without_activating_app(self) -> None:
+        """非激活面板展开与重新展开时恢复 Cocoa 输入客户端，并能预编辑及提交中文。"""
+        import AppKit
+        import objc
+
+        window = QWidget()
+        self.addCleanup(window.close)
+        window.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
+        window.setAttribute(Qt.WA_ShowWithoutActivating)
+        window.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
+        window.setGeometry(200, 200, 320, 180)
+        focus = create_pet_focus(window)
+        editor = QPlainTextEdit(window)
+        editor.setGeometry(10, 10, 300, 160)
+        window.show()
+        native = objc.objc_object(c_void_p=int(window.winId())).window()
+        view = native.contentView()
+        AppKit.NSApp.deactivate()
+        QTest.qWait(100)
+        active_before = bool(AppKit.NSApp.isActive())
+        for cycle in range(2):
+            editor.clear()
+            editor.show()
+            # 复现此前只有面板拿到键盘、Qt 视图未成为第一响应者的状态。
+            native.makeFirstResponder_(None)
+            focus.request_input()
+            editor.setFocus(Qt.MouseFocusReason)
+            QTest.qWait(50)
+            self.assertTrue(focus.has_input_focus(), f"第 {cycle + 1} 次展开未取得原生焦点")
+            self.assertEqual(native.firstResponder(), view)
+            self.assertEqual(AppKit.NSTextInputContext.currentInputContext(), view.inputContext())
+            self.assertIsNotNone(view.inputContext())
+            self.assertEqual(bool(AppKit.NSApp.isActive()), active_before)
+            self.assertTrue(view.validAttributesForMarkedText())
+
+            replacement = AppKit.NSMakeRange(AppKit.NSNotFound, 0)
+            view.setMarkedText_selectedRange_replacementRange_(
+                "nihao", AppKit.NSMakeRange(5, 0), replacement
+            )
+            self.assertTrue(view.hasMarkedText())
+            self.assertEqual(editor.toPlainText(), "")
+            rect, _ = view.firstRectForCharacterRange_actualRange_(AppKit.NSMakeRange(0, 0), None)
+            self.assertGreater(rect.size.height, 0)
+            view.insertText_replacementRange_("你好", replacement)
+            self.assertFalse(view.hasMarkedText())
+            self.assertEqual(editor.toPlainText(), "你好")
+            frame_before = native.frame()
+            self.assertEqual(native.animationBehavior(), AppKit.NSWindowAnimationBehaviorNone)
+            editor.hide()
+            focus.release_input()
+            self.assertFalse(focus.has_input_focus())
+            QTest.qWait(50)
+            self.assertNotEqual(AppKit.NSApp.keyWindow(), native)
+            self.assertTrue(native.isVisible())
+            self.assertEqual(native.frame(), frame_before)
+
+    def test_pet_first_expand_survives_stale_qt_focus_and_real_loss_still_closes(self) -> None:
+        """直接显示桌宠后首次展开抵御滞后 Qt 通知，真实失焦仍收起且可以继续中文输入。"""
+        import AppKit
+        import objc
+        from desktop_pet.window import PetWindow
+        from runtime.drafts import DraftStore
+        from runtime.voice_input import VoiceInputService
+        from ui_main.theme import derive_theme_palette
+
+        drafts = DraftStore()
+        voice = VoiceInputService(drafts)
+        voice._state("idle")
+        host = Mock(current_chat_id="first-focus", drafts=drafts, voice_input=voice)
+        host._theme_palette = derive_theme_palette("#7799CC")
+        host.is_response_active.return_value = False
+        host.isVisible.return_value = False
+        host._current_model_supports_vision.return_value = True
+        pet = PetWindow(host, Queue(), Queue(), SimpleNamespace(value=True))
+        self.addCleanup(voice.close)
+        self.addCleanup(pet.shutdown)
+        other = QWidget()
+        self.addCleanup(other.close)
+        editor = QPlainTextEdit(other)
+        # 主窗口从未显示，不预先 deactivate/activate 或请求过键盘焦点。
+        pet.renderer.hide()
+        pet.renderer.timer.stop()
+        pet.show()
+        QTest.qWait(100)
+        for cycle in range(2):
+            pet.text_button.click()
+            native = objc.objc_object(c_void_p=int(pet.winId())).window()
+            self.assertTrue(native.isKeyWindow())
+            # 模拟冷启动时晚到的控件焦点通知，不伪造原生 key window。
+            self.app.focusChanged.emit(pet.input.text_edit, editor)
+            QTest.qWait(150)
+            self.assertTrue(pet.expanded, f"第 {cycle + 1} 次展开被 Qt 过渡通知收起")
+            self.assertTrue(native.isKeyWindow())
+            self.assertFalse(pet.panel.isHidden())
+            view = native.contentView()
+            self.assertEqual(AppKit.NSTextInputContext.currentInputContext(), view.inputContext())
+            self.assertIsNotNone(view.inputContext())
+            pet.input.setPlainText("")
+            replacement = AppKit.NSMakeRange(AppKit.NSNotFound, 0)
+            view.setMarkedText_selectedRange_replacementRange_(
+                "nihao", AppKit.NSMakeRange(5, 0), replacement
+            )
+            self.assertTrue(view.hasMarkedText())
+            view.insertText_replacementRange_("你好", replacement)
+            self.assertEqual(pet.input.toPlainText(), "你好")
+            other.show()
+            objc.objc_object(c_void_p=int(other.winId())).window().makeKeyWindow()
+            QTest.qWait(200)
+            self.assertFalse(pet.expanded)
+            self.assertFalse(native.isKeyWindow())
+            self.assertEqual(pet.input.toPlainText(), "你好")
+            other.hide()
 
     def test_native_passthrough_changes_system_hit_without_changing_focus(self) -> None:
         """系统命中跳过穿透面板，恢复交互后重新命中，键盘焦点不被开关夺走。"""
