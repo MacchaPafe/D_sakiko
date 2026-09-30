@@ -10,7 +10,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
-from PyQt5.QtCore import QLockFile, Qt, QTimer
+from PyQt5.QtCore import QLockFile, QRect, QSize, Qt, QTimer
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
@@ -19,7 +19,7 @@ from live2d_support.performance_catalog import read_config, save_config, perform
 from live2d_support.runtime_adapter import Live2DModelAdapter, NullLive2DModel
 from live2d_support.viewer_preview import execute_viewer_preview
 from ui.components.live2d_performance_editor import Live2DPerformanceEditor, PerformancePresetDialog
-from ui.components.live2d_viewer_widgets import show_v3_intro_once
+from ui.components.live2d_viewer_widgets import show_v3_intro_once, preview_desktop_size
 from live2d_viewer import ViewerGUI
 from qconfig import DSakikoConfig
 
@@ -166,6 +166,52 @@ def test_model_specific_pages_and_cancelled_navigation(app: QApplication, models
         assert window.footer_panel.isVisible()
         window.close()
         app.processEvents()
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5, 2.0])
+@pytest.mark.parametrize("version", [0, 1])
+def test_scaled_work_area_keeps_editor_controls_reachable(
+    app: QApplication, models: tuple[Path, Path], scale: float, version: int,
+) -> None:
+    """1080p 各缩放下两代编辑页及展开的详情均不越出可用桌面。"""
+    area = QRect(0, 0, round(1920 / scale), round(1040 / scale))
+    screen = Mock()
+    screen.availableGeometry.return_value = area
+    screen.geometry.return_value = QRect(0, 0, round(1920 / scale), round(1080 / scale))
+    screen.devicePixelRatio.return_value = scale
+    characters = [SimpleNamespace(character_name="测试角色", character_folder_name="test",
+                                  live2d_json=str(models[version]), icon_path=None)]
+    with patch.object(ViewerGUI, "screen", return_value=screen), patch("live2d_viewer.show_v3_intro_once"):
+        window = ViewerGUI(characters, Queue(), Queue(), Queue())
+        try:
+            window.show()
+            app.processEvents()
+            for details in (False, True):
+                window.details_button.setChecked(details)
+                app.processEvents()
+                assert area.contains(window.frameGeometry())
+                buttons = ([window.btn_add_motion, window.btn_replace_motion, window.btn_delete_motion]
+                           if version == 0 else [window.performance_editor.preview_button,
+                                                 window.performance_editor.expression_button])
+                for button in buttons + [window.btn_change_char, window.btn_change_costume, window.details_button]:
+                    assert button.isVisible()
+                    assert window.rect().contains(QRect(button.mapTo(window, button.rect().topLeft()), button.size()))
+            with patch("ui.components.live2d_viewer_widgets.sys.platform", "win32"):
+                assert preview_desktop_size(screen) == QSize(1920, 1080)
+            if version == 1:
+                dialog_bounds = []
+
+                def inspect_group_dialog() -> None:
+                    dialog = app.activeModalWidget()
+                    dialog_bounds.append(dialog.frameGeometry())
+                    dialog.accept()
+
+                QTimer.singleShot(0, inspect_group_dialog)
+                window.open_automatic_settings()
+                assert len(dialog_bounds) == 1
+                assert area.contains(dialog_bounds[0])
+        finally:
+            window.close()
 
 
 def test_automatic_settings_visible_on_reopen_and_return_to_v2(app: QApplication, models: tuple[Path, Path]) -> None:

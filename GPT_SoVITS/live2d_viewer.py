@@ -9,7 +9,7 @@ import uuid
 from queue import Empty
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QSize
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
@@ -21,7 +21,10 @@ import time
 from qtUI import ChangeL2DModelWindow
 from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
 from ui.components.live2d_performance_editor import Live2DPerformanceEditor
-from ui.components.live2d_viewer_widgets import CharacterPicker, VIEWER_STYLE, V3_INTRO_TITLE, V3_INTRO_TEXT, show_v3_intro_once
+from ui.components.live2d_viewer_widgets import (
+    CharacterPicker, VIEWER_STYLE, V3_INTRO_TITLE, V3_INTRO_TEXT, show_v3_intro_once,
+    configure_viewer_dpi, place_viewer_window, preview_desktop_size,
+)
 from live2d_support.viewer_preview import execute_viewer_preview
 from live2d_support.expression_preview import ExpressionPreviewSession
 from qconfig import d_sakiko_config
@@ -30,7 +33,7 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
-    QApplication, QLabel, QDesktopWidget, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox
+    QApplication, QLabel, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox
 
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QCloseEvent, QShowEvent
 
@@ -403,9 +406,6 @@ class ViewerGUI(QWidget):
         super().__init__()
         self.setWindowTitle("Live2D 演出编辑器")
         self.setStyleSheet(VIEWER_STYLE)
-        self.resize(800, 760)
-        self.setMinimumSize(620, 600)
-        self.screen = QDesktopWidget().screenGeometry()
         self.character_list = characters
         self.current_char_index = 0
         self.motion_queue = motion_queue
@@ -513,6 +513,7 @@ class ViewerGUI(QWidget):
         self.result_timer.timeout.connect(self.poll_preview_results)
         self.result_timer.start(100)
         self.load_suitable_model()
+        place_viewer_window(self)
 
     def _sync_log_status(self) -> None:
         """把最近一条操作摘要放在状态栏，详情默认收起。"""
@@ -613,7 +614,6 @@ class ViewerGUI(QWidget):
         """在次级窗口保留 V3 事件和回退分组，沿用原来的编辑流程。"""
         dialog = QDialog(self)
         dialog.setWindowTitle("旧版动作组设置")
-        dialog.resize(740, 570)
         layout = QVBoxLayout(dialog)
         self.pages.removeWidget(self.groups_panel)
         layout.addWidget(self.groups_panel)
@@ -622,6 +622,7 @@ class ViewerGUI(QWidget):
         close = QPushButton("完成")
         close.clicked.connect(dialog.accept)
         layout.addWidget(close)
+        place_viewer_window(dialog, QSize(740, 570))
         try:
             dialog.exec_()
         finally:
@@ -1205,9 +1206,9 @@ if __name__ == "__main__":
 
     live2d_player.live2D_initialize(model_characters)
 
+    configure_viewer_dpi()
     app = QApplication(sys.argv)
 
-    window = ViewerGUI(model_characters, motion_queue, change_char_queue, preview_result_queue)
     # 如果出现加载字体问题，则忽略设置字体
     font_path = os.path.join(project_root, "font", "ft.ttf")
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体
@@ -1216,14 +1217,10 @@ if __name__ == "__main__":
         font = QFont(font_family[0], 12)
         app.setFont(font)
 
-    desktop_w = QDesktopWidget().screenGeometry().width()
-    desktop_h = QDesktopWidget().screenGeometry().height()
+    window = ViewerGUI(model_characters, motion_queue, change_char_queue, preview_result_queue)
+    desktop = preview_desktop_size(window.screen())
+    desktop_w, desktop_h = desktop.width(), desktop.height()
     live2d_thread=multiprocessing.Process(target=live2d_player.play_live2d,args=(motion_queue,change_char_queue, desktop_w, desktop_h, get_log_queue(), preview_result_queue))
-
-    screen_w_mid = int(0.5 * desktop_w)
-    screen_h_mid = int(0.5 * desktop_h)
-    window.move(screen_w_mid,
-                int(screen_h_mid - 0.35 * desktop_h))  # 因为窗口高度设置的是0.7倍桌面宽
 
     live2d_thread.start()
     window.show()

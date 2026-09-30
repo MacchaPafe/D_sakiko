@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+import sys
+
+from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QDialog, QDialogButtonBox, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QVBoxLayout, QWidget
 
 from character import CharacterAttributes
 from qconfig import DSakikoConfig
@@ -43,6 +45,34 @@ QMenu::item { padding: 7px 22px; }
 QMenu::item:selected { background: #DFE9F8; }
 QSplitter::handle { background: transparent; }
 """
+
+
+def configure_viewer_dpi() -> None:
+    """在创建 QApplication 前启用逻辑像素与高分辨率图标，保留分数缩放。"""
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+
+
+def place_viewer_window(window: QWidget, preferred_size: QSize | None = None) -> None:
+    """按逻辑工作区放置编辑器，缩放后仍留出标题栏和任务栏空间。"""
+    screen = window.parentWidget().screen() if window.parentWidget() is not None else window.screen()
+    area = screen.availableGeometry().adjusted(12, 12, -12, -40)
+    preferred_size = preferred_size or QSize(800, 760)
+    width, height = min(preferred_size.width(), area.width()), min(preferred_size.height(), area.height())
+    window.setMinimumSize(min(620, width), min(600, height))
+    window.resize(width, height)
+    # 优先占右半边；空间不足时向左收回，避免右侧按钮落在屏幕外。
+    x = min(area.center().x(), area.right() - window.width() + 1)
+    y = area.top() + max(0, (area.height() - window.height()) // 2)
+    window.move(max(area.left(), x), y)
+
+
+def preview_desktop_size(screen) -> QSize:
+    """Windows 预览子进程按物理像素建窗，不复用 Qt 的逻辑桌面尺寸。"""
+    size = screen.geometry().size()
+    scale = screen.devicePixelRatio() if sys.platform == "win32" else 1.0
+    return QSize(round(size.width() * scale), round(size.height() * scale))
 
 
 def show_v3_intro_once(parent: QWidget, version: str | None, config: DSakikoConfig) -> bool:
