@@ -601,7 +601,7 @@ class ChatTestCase(unittest.TestCase):
         config_path = self._create_temp_attachment_capabilities_config({
             "version": 1,
             "image_upload": {
-                "force_allowlist": ["deepseek/deepseek-v4-flash"],
+                "force_allowlist": ["deepseek/deepseek-v4-pro"],
             },
         })
 
@@ -609,8 +609,8 @@ class ChatTestCase(unittest.TestCase):
             mock.patch.object(attachments, "_MODEL_ATTACHMENT_CAPABILITIES_PATH", config_path),
             mock.patch("litellm.supports_vision", return_value=True),
         ):
-            self.assertFalse(attachments.model_supports_image_upload("deepseek/deepseek-v4-flash"))
-            self.assertFalse(attachments.model_can_force_allow_image_upload("deepseek/deepseek-v4-flash"))
+            self.assertFalse(attachments.model_supports_image_upload("deepseek/deepseek-v4-pro"))
+            self.assertFalse(attachments.model_can_force_allow_image_upload("deepseek/deepseek-v4-pro"))
 
     def test_up_deepseek_api_disables_image_upload(self) -> None:
         """使用 Up 的 DeepSeek API 时，应固定禁止图片上传与强制允许。"""

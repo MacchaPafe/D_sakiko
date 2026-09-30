@@ -4073,7 +4073,7 @@ class ChatGUI(QWidget):
     def _current_litellm_model_name(self) -> str:
         """按照当前配置解析 LiteLLM 实际使用的模型名称。"""
         if d_sakiko_config.use_default_deepseek_api.value:
-            return "deepseek/deepseek-v4-flash"
+            return "deepseek/deepseek-flash"
         if d_sakiko_config.enable_custom_llm_api_provider.value:
             custom_model = str(d_sakiko_config.custom_llm_api_model.value or "")
             return ensure_openai_compatible_model(custom_model)
@@ -4164,7 +4164,7 @@ class ChatGUI(QWidget):
         self._refresh_add_image_button_state()
 
     def _deepseek_vision_switch_available(self) -> bool:
-        """判断当前配置是否允许一键切换到 DeepSeek V4 Flash Vision。"""
+        """判断当前配置是否允许一键切换到 DeepSeek Flash（V4.1）。"""
         if bool(d_sakiko_config.use_default_deepseek_api.value):
             return False
         provider = str(d_sakiko_config.llm_api_provider.value or "").strip()
@@ -4174,7 +4174,7 @@ class ChatGUI(QWidget):
         if not isinstance(models, dict):
             return False
         current_model = str(models.get("deepseek", "") or "").strip().lower()
-        if current_model != "deepseek-v4-flash":
+        if current_model not in {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}:
             return False
         keys = d_sakiko_config.llm_api_key.value
         if not isinstance(keys, dict):
@@ -4202,10 +4202,10 @@ class ChatGUI(QWidget):
 
         if self._deepseek_vision_switch_available():
             message_box.setInformativeText(
-                "可以切换到 DeepSeek V4 Flash Vision 模型以上传图片"
+                "可以切换到 DeepSeek Flash（V4.1）模型以上传图片"
             )
             switch_button = message_box.addButton(
-                "切换到 V4 Flash Vision", QMessageBox.AcceptRole
+                "切换到 DeepSeek Flash", QMessageBox.AcceptRole
             )
             message_box.addButton("打开模型配置", QMessageBox.ActionRole)
             message_box.addButton("取消", QMessageBox.RejectRole)
@@ -4234,7 +4234,7 @@ class ChatGUI(QWidget):
         self._confirm_and_switch_to_deepseek_vision()
 
     def _confirm_and_switch_to_deepseek_vision(self) -> None:
-        """确认并原子切换到 DeepSeek V4 Flash Vision，成功后恢复待处理图片。"""
+        """确认并原子切换到 DeepSeek Flash（V4.1），成功后恢复待处理图片。"""
         if not self._deepseek_vision_switch_available():
             self._prompt_image_upload_unavailable()
             return
@@ -4242,7 +4242,7 @@ class ChatGUI(QWidget):
         confirm_box = QMessageBox(self)
         confirm_box.setIcon(QMessageBox.Information)
         confirm_box.setWindowTitle("切换到视觉模型")
-        confirm_box.setText("将全局模型切换为 DeepSeek V4 Flash Vision。")
+        confirm_box.setText("将全局模型切换为 DeepSeek Flash（V4.1）。")
         confirm_box.setInformativeText(
             "图片附件会上传至 DeepSeek 服务器，最多保存 30 天。"
         )
@@ -4261,18 +4261,18 @@ class ChatGUI(QWidget):
         models = d_sakiko_config.llm_api_model.value
         old_models = dict(models) if isinstance(models, dict) else {}
         if not self._deepseek_vision_switch_available():
-            self._set_message_box_text("当前配置无法切换到 DeepSeek V4 Flash Vision。", notify_pet=True)
+            self._set_message_box_text("当前配置无法切换到 DeepSeek Flash（V4.1）。", notify_pet=True)
             return False
 
         try:
             updated_models = dict(old_models)
-            updated_models["deepseek"] = "deepseek-v4-flash-vision-exp"
+            updated_models["deepseek"] = "deepseek-flash"
             with d_sakiko_config as cfg:
                 cfg.set(cfg.llm_api_model, updated_models)
             if not notify_config_reload():
                 raise RuntimeError("主程序未能重新加载配置")
         except Exception as exc:
-            logger.exception("切换到 DeepSeek V4 Flash Vision 失败")
+            logger.exception("切换到 DeepSeek Flash（V4.1）失败")
             try:
                 with d_sakiko_config as cfg:
                     cfg.set(cfg.llm_api_model, old_models)
@@ -4285,7 +4285,7 @@ class ChatGUI(QWidget):
         self._refresh_add_image_button_state()
         self.schedule_context_usage_refresh()
         self._set_message_box_text(
-            "已切换到 DeepSeek V4 Flash Vision，下一条消息生效"
+            "已切换到 DeepSeek Flash（V4.1），下一条消息生效"
         )
         return True
 

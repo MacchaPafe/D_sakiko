@@ -25,11 +25,12 @@ from chat.attachments import (
 )
 from chat.chat import MessageAttachment, RemoteFileReference
 from log import get_logger
+from deepseek_models import DEEPSEEK_FLASH_MODEL, DEEPSEEK_FLASH_COMPATIBLE_NAMES
 
 
 logger = get_logger(__name__)
 
-DEEPSEEK_FILES_MODEL = "deepseek-v4-flash-vision-exp"
+DEEPSEEK_FILES_MODEL = DEEPSEEK_FLASH_MODEL
 DEEPSEEK_FILE_IMAGE_TOKEN_COST = 384
 DEEPSEEK_OFFICIAL_API_BASE = "https://api.deepseek.com"
 DEEPSEEK_FILE_EXPIRATION_SECONDS = 30 * 24 * 60 * 60
@@ -198,7 +199,8 @@ def build_deepseek_file_service_config(
     """根据当前模型配置构造 DeepSeek Files 服务配置。"""
     if use_default_deepseek_api or provider_id == "deepseek_up":
         return None
-    if normalize_deepseek_model_name(model) != DEEPSEEK_FILES_MODEL:
+    normalized_model = normalize_deepseek_model_name(model)
+    if normalized_model not in DEEPSEEK_FLASH_COMPATIBLE_NAMES:
         return None
     if provider_id not in {"deepseek", "custom"}:
         return None
@@ -210,7 +212,7 @@ def build_deepseek_file_service_config(
     return DeepSeekFileServiceConfig(
         api_base=normalized_base,
         api_key=api_key,
-        model=DEEPSEEK_FILES_MODEL,
+        model=normalized_model,
     )
 
 

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from PyQt5.QtGui import QImageReader
 
+from deepseek_models import DEEPSEEK_FLASH_COMPATIBLE_NAMES
+
 if TYPE_CHECKING:
     from chat.chat import MessageAttachment
 
@@ -38,9 +40,6 @@ _MIME_TYPE_EXTENSIONS = {
 
 _MODEL_ATTACHMENT_CAPABILITIES_PATH = Path(__file__).with_name("model_attachment_capabilities.json")
 _DEFAULT_IMAGE_UPLOAD_BLOCKLIST = [
-    "deepseek-v4-flash",
-    "deepseek/deepseek-v4-flash",
-    "openai/deepseek-v4-flash",
     "deepseek-ai/deepseek-v4-flash",
     "openai/deepseek-ai/deepseek-v4-flash",
     "deepseek-ai/DeepSeek-V4-Flash",
@@ -274,7 +273,9 @@ def _default_model_attachment_capabilities() -> dict[str, object]:
         "version": 1,
         "image_upload": {
             "force_allowlist": [
-                "deepseek/deepseek-v4-flash-vision-exp"
+                f"{prefix}{model}"
+                for model in DEEPSEEK_FLASH_COMPATIBLE_NAMES
+                for prefix in ("", "deepseek/", "openai/")
             ],
         },
     }

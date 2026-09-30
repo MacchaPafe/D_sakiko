@@ -2,6 +2,12 @@
 import contextlib
 import os
 
+from deepseek_models import (
+    DEEPSEEK_FLASH_MODEL,
+    DEEPSEEK_MODEL_PRESETS,
+    normalize_official_deepseek_model,
+)
+
 from ..custom_widgets.custom_switch_setting_card import SwitchSettingCard
 
 # 设置这个变量来缩短 litellm 的加载时间，禁止其请求网络
@@ -294,23 +300,19 @@ class LLMAPIArea(TransparentScrollArea):
         # 加载初始内容
         self.load_config_to_ui()
 
-    def update_model_list(self, provider):
+    def update_model_list(self, provider: str) -> None:
         """
-        Update the model list for the given provider using litellm.
+        更新供应商模型列表，内置 DeepSeek 使用当前官方预设。
         """
         self.standard_model_combo.blockSignals(True)
         self.standard_model_combo.clear()
-        DEEPSEEK_DEPRECATED_MODEL_ALIASES = {
-            "deepseek-chat": "deepseek-v4-flash",
-            "deepseek-reasoner": "deepseek-v4-flash",
-        }
         # Add current configured model first if it exists
         current_model = d_sakiko_config.llm_api_model.value.get(provider)
         if provider == "deepseek":
-            current_model = DEEPSEEK_DEPRECATED_MODEL_ALIASES.get(current_model, current_model)
-            if current_model not in ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"]:
-                current_model = "deepseek-v4-flash"
-            for model in ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"]:
+            current_model = normalize_official_deepseek_model(current_model or DEEPSEEK_FLASH_MODEL)
+            if current_model not in DEEPSEEK_MODEL_PRESETS:
+                current_model = DEEPSEEK_FLASH_MODEL
+            for model in DEEPSEEK_MODEL_PRESETS:
                 self.standard_model_combo.addItem(model)
             self.standard_model_combo.setCurrentText(current_model)
             self.standard_model_combo.blockSignals(False)
@@ -394,6 +396,8 @@ class LLMAPIArea(TransparentScrollArea):
             # Otherwise, we might want a default or the first one in the list
             if models.get(provider):
                 current_model = models.get(provider)
+                if provider == "deepseek":
+                    current_model = normalize_official_deepseek_model(current_model)
                 self.standard_model_combo.setCurrentText(current_model)
 
             # 3. Set API Key
@@ -635,6 +639,8 @@ class LLMAPIArea(TransparentScrollArea):
                 cfg.set(cfg.llm_api_provider, provider_data)
                 models = dict(cfg.llm_api_model.value)
                 models[provider_data] = self.standard_model_combo.currentText()
+                if provider_data == "deepseek":
+                    models[provider_data] = normalize_official_deepseek_model(models[provider_data])
                 cfg.set(cfg.llm_api_model, models)
 
                 # Update key in the dictionary

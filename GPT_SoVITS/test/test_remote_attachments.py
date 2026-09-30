@@ -97,6 +97,30 @@ class RemoteAttachmentManagerTestCase(unittest.TestCase):
             api_key="sk-test",
         ))
 
+    def test_flash_and_legacy_names_enable_files_only_for_official_service(self) -> None:
+        """Flash 及旧别名均走官方文件通道，第三方端点和 Pro 不启用。"""
+        for model in ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"):
+            with self.subTest(model=model):
+                service = build_deepseek_file_service_config(
+                    provider_id="deepseek", model=f"deepseek/{model}",
+                    api_base="https://api.deepseek.com/v1", api_key="sk-test",
+                )
+                self.assertIsNotNone(service)
+                assert service is not None
+                self.assertEqual(service.model, model)
+                for provider, base, use_default in (
+                    ("custom", "https://proxy.example/v1", False),
+                    ("deepseek", "", True),
+                    ("modelscope", "https://api.deepseek.com", False),
+                ):
+                    self.assertIsNone(build_deepseek_file_service_config(
+                        provider_id=provider, model=model, api_base=base,
+                        api_key="sk-test", use_default_deepseek_api=use_default,
+                    ))
+        self.assertIsNone(build_deepseek_file_service_config(
+            provider_id="deepseek", model="deepseek-v4-pro", api_base="", api_key="sk-test",
+        ))
+
     def test_stage_upload_and_reload_journal(self) -> None:
         """草稿上传成功后应保存 file ID，重新加载日志仍可读取。"""
         record = self.manager.stage_draft_image(str(self.image_path))

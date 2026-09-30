@@ -29,7 +29,7 @@ class _DeepSeekConfig:
         self.custom_llm_api_key = _ConfigItem("")
         self.llm_api_provider = _ConfigItem("deepseek")
         self.llm_api_model = _ConfigItem({
-            "deepseek": "deepseek-v4-flash-vision-exp",
+            "deepseek": "deepseek-flash",
         })
         self.llm_api_key = _ConfigItem({"deepseek": "sk-test"})
         self.llm_api_base_url = _ConfigItem({})
@@ -106,7 +106,7 @@ class DeepSeekMultimodalTransportTestCase(unittest.TestCase):
         """同名模型位于非官方自定义端点时仍应走 LiteLLM。"""
         self.subject.d_sakiko_config.enable_custom_llm_api_provider.value = True
         self.subject.d_sakiko_config.custom_llm_api_model.value = (
-            "deepseek/deepseek-v4-flash-vision-exp"
+            "deepseek/deepseek-flash"
         )
         self.subject.d_sakiko_config.custom_llm_api_url.value = "https://proxy.example/v1"
         self.subject.d_sakiko_config.custom_llm_api_key.value = "sk-test"
@@ -155,7 +155,7 @@ class DeepSeekMultimodalTransportTestCase(unittest.TestCase):
         ):
             result = self.subject._openai_deepseek_chat_completion(
                 {
-                    "model": "deepseek/deepseek-v4-flash-vision-exp",
+                    "model": "deepseek/deepseek-flash",
                     "messages": [{"role": "user", "content": "hello"}],
                     "api_key": "hidden",
                     "base_url": "https://api.deepseek.com",
@@ -174,7 +174,7 @@ class DeepSeekMultimodalTransportTestCase(unittest.TestCase):
             max_retries=0,
         )
         request = fake_client.chat.completions.create.call_args.kwargs
-        self.assertEqual(request["model"], "deepseek-v4-flash-vision-exp")
+        self.assertEqual(request["model"], "deepseek-flash")
         self.assertEqual(request["extra_body"]["thinking"], {"type": "enabled"})
         self.assertEqual(request["extra_body"]["reasoning_effort"], "max")
         self.assertNotIn("api_key", request)

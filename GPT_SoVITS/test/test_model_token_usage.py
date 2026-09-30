@@ -59,6 +59,13 @@ class ModelTokenUsageTestCase(unittest.TestCase):
 
         self.assertEqual(limit, 1000000)
 
+    def test_deepseek_flash_uses_million_token_context_when_litellm_missing(self) -> None:
+        """新官方 Flash 名称在 LiteLLM 未收录时也应使用 1M 上下文。"""
+        with mock.patch.object(model_token_usage, "_get_litellm_model_input_token_limit", return_value=None):
+            for model in ("deepseek-flash", "deepseek/deepseek-flash", "openai/deepseek-flash"):
+                with self.subTest(model=model):
+                    self.assertEqual(model_token_usage.get_model_input_token_limit(model), 1000000)
+
     def test_local_override_suppresses_litellm_unmapped_debug(self) -> None:
         """本地已覆盖的模型未被 LiteLLM 收录时，不应记录预期 miss。"""
         unmapped_error = Exception("This model isn't mapped yet. model=deepseek/deepseek-v4-pro")

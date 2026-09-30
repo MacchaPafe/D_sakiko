@@ -394,7 +394,7 @@ class MessageInput(QWidget):
         self.switch_to_vision_button = QToolButton(self)
         self.switch_to_vision_button.setObjectName("messageInputVisionActionButton")
         self.switch_to_vision_button.setText("切换到视觉模型")
-        self.switch_to_vision_button.setToolTip("切换到 DeepSeek V4 Flash Vision")
+        self.switch_to_vision_button.setToolTip("切换到 DeepSeek Flash（V4.1）")
         self.switch_to_vision_button.clicked.connect(self._handle_vision_switch_requested)  # noqa
         self.switch_to_vision_button.hide()
         self.insert_filename_button = QToolButton(self)

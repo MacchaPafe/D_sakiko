@@ -165,7 +165,7 @@ class DeepSeekVisionShortcutTestCase(unittest.TestCase):
 
         self.assertEqual(
             config.llm_api_model.value,
-            {"deepseek": "deepseek-v4-flash-vision-exp"},
+            {"deepseek": "deepseek-flash"},
         )
         subject._refresh_add_image_button_state.assert_called_once()
         subject.schedule_context_usage_refresh.assert_called_once()

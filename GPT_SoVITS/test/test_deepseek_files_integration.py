@@ -48,7 +48,7 @@ class DeepSeekFilesIntegrationTestCase(unittest.TestCase):
 
             client = OpenAI(api_key=api_key, base_url=api_base, max_retries=0)
             response = client.chat.completions.create(
-                model="deepseek-v4-flash-vision-exp",
+                model="deepseek-flash",
                 messages=[{
                     "role": "user",
                     "content": [

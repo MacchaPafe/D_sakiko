@@ -1297,7 +1297,7 @@ class DSLocalAndVoiceGen:
             provider_id = "deepseek_up"
             logger.debug("正在使用 UP 的 DeepSeek API")
             completion_kwargs: dict[str, object] = {
-                "model": "deepseek/deepseek-v4-flash",
+                "model": "deepseek/deepseek-flash",
                 "messages": messages,
                 "api_key": self.model,
                 "stream": stream,
@@ -1766,7 +1766,7 @@ class DSLocalAndVoiceGen:
         根据当前配置解析 LiteLLM 实际收到的 model 字符串。
         """
         if self.d_sakiko_config.use_default_deepseek_api.value:
-            return "deepseek/deepseek-v4-flash"
+            return "deepseek/deepseek-flash"
         if self.d_sakiko_config.enable_custom_llm_api_provider.value:
             return ensure_openai_compatible_model(self.d_sakiko_config.custom_llm_api_model.value)
 
