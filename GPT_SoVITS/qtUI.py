@@ -609,12 +609,9 @@ class SettingWindow(QDialog):
         self.switch_live2d_text_btn.clicked.connect(self.parent_window.toggle_live2d_text_display)
         self.change_l2d_background_btn=QPushButton("切换Live2D背景")
         self.change_l2d_background_btn.clicked.connect(self.change_l2d_background)
-        self.change_l2d_model_btn=QPushButton("更改当前角色Live2D模型")
-        self.change_l2d_model_btn.clicked.connect(self.change_live2d_model_1)
         self.edit_l2d_layout_btn=QPushButton("调整Live2D位置/大小")
         self.edit_l2d_layout_btn.clicked.connect(self.edit_live2d_layout)
         if not current_chara.live2d_json:
-            self.change_l2d_model_btn.setText("添加 Live2D 模型")
             self.edit_l2d_layout_btn.setEnabled(False)
         self.change_l2d_fps_btn=QPushButton(f"Live2D渲染帧率：{self.parent_window.get_current_l2d_fps()}")
         self.change_l2d_fps_btn.clicked.connect(self.change_l2d_fps)
@@ -635,8 +632,7 @@ class SettingWindow(QDialog):
         setting_layout_2=QGridLayout()
         setting_layout_2.addWidget(self.change_theme_color_btn,0,0,1,2)
         setting_layout_2.addWidget(self.change_reference_audio_btn,1,0,1,2)
-        setting_layout_2.addWidget(self.change_l2d_model_btn,2,0,1,2)
-        setting_layout_2.addWidget(self.edit_l2d_layout_btn,3,0,1,2)
+        setting_layout_2.addWidget(self.edit_l2d_layout_btn,2,0,1,2)
         setting_group_2=QGroupBox("角色与外观")
         setting_group_2.setLayout(setting_layout_2)
         layout=QVBoxLayout()
@@ -682,16 +678,6 @@ class SettingWindow(QDialog):
     def edit_live2d_layout(self) -> None:
         """通知主窗口切换 Live2D 布局编辑模式。"""
         self.parent_window.toggle_live2d_layout_edit()
-
-
-    def change_live2d_model_1(self):
-        current_char_folder_name=self.parent_window.current_character.character_folder_name
-        change_l2d_model_window=ChangeL2DModelWindow(current_char_folder_name,self.change_live2d_model_2)
-        change_l2d_model_window.exec_()
-    def change_live2d_model_2(self, option: Live2DModelOption) -> None:
-        """将用户选中的共享目录选项交给主窗口。"""
-        self.parent_window._send_l2d_model_payload(option)
-
 
 
 class ChangeL2DModelWindow(QDialog):
@@ -2271,6 +2257,14 @@ class ChatGUI(QWidget):
 
 
 
+        self.change_l2d_model_btn = QToolButton()
+        self.change_l2d_model_btn.setIcon(QIcon('./icons/clothes.svg'))
+        self.change_l2d_model_btn.setFixedSize(self.save_dialog_btn.size())
+        self.change_l2d_model_btn.setIconSize(self.save_dialog_btn.iconSize())
+        self.change_l2d_model_btn.setToolTip("换装（更换或添加 Live2D 模型）")
+        self.change_l2d_model_btn.setAccessibleName("换装")
+        self.change_l2d_model_btn.clicked.connect(self.open_change_live2d_model_window)
+
         self.setting_btn=QToolButton()
         self.setting_btn.setIcon(QIcon('./icons/setting.svg'))
         self.setting_btn.setFixedSize(int(self.screen.height()*0.04),int(self.screen.height()*0.04))
@@ -2306,6 +2300,7 @@ class ChatGUI(QWidget):
 
         top_layout=QHBoxLayout()
         top_layout.addWidget(self.messages_box,1)
+        top_layout.addWidget(self.change_l2d_model_btn,0)
         top_layout.addWidget(self.save_dialog_btn,0)
         top_layout.addWidget(self.change_character_button,0)
         top_layout.addWidget(self.setting_btn,0)
@@ -4554,6 +4549,7 @@ class ChatGUI(QWidget):
     def _rebuild_toolbar_icons(self, color: str) -> None:
         """将主工具栏 SVG 图标重绘为指定的可读强调色。"""
         icon_map = {
+            self.change_l2d_model_btn: './icons/clothes.svg',
             self.setting_btn: './icons/setting.svg',
             self.change_character_button: './icons/chat_list.svg',
             self.save_dialog_btn: './icons/save.svg',
@@ -4566,6 +4562,9 @@ class ChatGUI(QWidget):
                 pattern = r'fill=(["\'])(.*?)\1'
                 replacement = f'fill="{color}"'
                 new_data = re.sub(pattern, replacement, orig_data)
+                if not re.search(pattern, orig_data):
+                    # 未显式声明 fill 的 SVG 使用根节点填充色，保持换装图标随主题变化。
+                    new_data = new_data.replace('<svg ', f'<svg fill="{color}" ', 1)
                 svg_bytes = new_data.encode('utf-8')
 
                 image = QImage.fromData(svg_bytes)
@@ -4604,6 +4603,16 @@ class ChatGUI(QWidget):
         self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen.pause_second:.2f}")
         self.saved_talk_speed_and_pause_second[self.current_character.character_name]['pause_second']=self.audio_gen.pause_second  # noqa
 
+
+    def open_change_live2d_model_window(self) -> None:
+        """从主工具栏打开当前角色的共享换装与模型导入窗口。"""
+        window = ChangeL2DModelWindow(
+            self.current_character.character_folder_name,
+            self._send_l2d_model_payload,
+        )
+        window.exec_()
+        self.schedule_context_usage_refresh()
+        self._refresh_send_button_state()
 
     def open_setting_window(self):
         setting_window=SettingWindow(
