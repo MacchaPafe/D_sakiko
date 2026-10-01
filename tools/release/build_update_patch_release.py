@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -20,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.release.file_selection import list_git_untracked_files, path_matches
+from tools.build_diff_patch import resolve_min_updater_version
 
 
 JsonValue = Union[Union[Union[Union[Union[Union[None, bool], int], float], str], list['JsonValue']], dict[str, 'JsonValue']]
@@ -81,6 +83,7 @@ class BuildConfig:
     read_gitignore: bool
     use_git_tracked: bool
     clean_output: bool
+    build_frontend: bool
     no_platform_includes: bool
     ignore: list[str]
     include: list[str]
@@ -112,12 +115,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--zip-output", default="", help="patch zip 输出路径；默认使用规范文件名。")
     parser.add_argument("--app-id", default="", help="覆盖 app_id。")
     parser.add_argument("--channel", default="", help="覆盖 channel。")
-    parser.add_argument("--min-updater-version", default="", help="覆盖最低更新器版本。")
+    parser.add_argument("--min-updater-version", default="", help="覆盖最低更新器版本；使用 replace 时自动保证至少为 1.1.0。")
     parser.add_argument("--hdiff-bin", default="", help="覆盖 hdiffz 路径。")
     parser.add_argument("--hpatch-bin", default="", help="覆盖 hpatchz 路径。")
     parser.add_argument("--read-gitignore", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--use-git-tracked", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--clean-output", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--build-frontend", action=argparse.BooleanOptionalAction, default=None,
+                        help="打包前执行 pnpm build，默认开启；--no-build-frontend 可关闭。")
     parser.add_argument("--no-platform-includes", action="store_true", default=None)
     parser.add_argument("--allow-non-forward-version", action="store_true", help="允许 target_version 不大于 base_version。")
     parser.add_argument("--allow-cross-platform-build", action="store_true", help="允许当前机器平台与 profile 平台不一致。")
@@ -126,7 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confirm-user-assets-change", action="store_true", help="自动确认用户资源文件变更。")
     parser.add_argument("--yes", action="store_true", help="自动同意所有确认型风险，不绕过硬错误。")
     parser.add_argument("--no-zip", action="store_true", help="只生成 patch_files，不生成 patch zip。")
-    parser.add_argument("--dry-run", action="store_true", help="只执行构建前校验并打印底层命令。")
+    parser.add_argument("--dry-run", action="store_true", help="只执行构建前校验并打印前端和补丁构建命令。")
     return parser.parse_args()
 
 
@@ -390,6 +395,10 @@ def build_config(args: argparse.Namespace, repo_root: Path) -> BuildConfig:
         *args.hard_exclude,
     ]
     replace = [normalize_manifest_path(item, "--replace") for item in args.replace]
+    effective_min_updater_version = resolve_min_updater_version(min_updater_version, bool(replace))
+    if effective_min_updater_version != min_updater_version:
+        print(f"[信息] 根据补丁动作提高 min_updater_version：{min_updater_version} → {effective_min_updater_version}")
+    min_updater_version = effective_min_updater_version
 
     current = resolve_relative_to_root(repo_root, current_text)
     old = find_old_directory(
@@ -424,6 +433,7 @@ def build_config(args: argparse.Namespace, repo_root: Path) -> BuildConfig:
         read_gitignore=choose_bool("read_gitignore", args.read_gitignore, profile_data, defaults, local_override, True),
         use_git_tracked=choose_bool("use_git_tracked", args.use_git_tracked, profile_data, defaults, local_override, True),
         clean_output=choose_bool("clean_output", args.clean_output, profile_data, defaults, local_override, True),
+        build_frontend=choose_bool("build_frontend", args.build_frontend, profile_data, defaults, local_override, True),
         no_platform_includes=choose_bool("no_platform_includes", args.no_platform_includes, profile_data, defaults, local_override, False),
         ignore=ignore,
         include=include,
@@ -742,8 +752,8 @@ def postflight(config: BuildConfig, options: CliOptions) -> None:
         actual = require_manifest_string(manifest, key)
         if actual != expected:
             raise BuildError(f"manifest.{key} = {actual!r}，不等于预期 {expected!r}")
-    if require_manifest_string(manifest, "min_updater_version") == "":
-        raise BuildError("manifest.min_updater_version 不能为空")
+    if require_manifest_string(manifest, "min_updater_version") != config.min_updater_version:
+        raise BuildError("manifest.min_updater_version 与本次构建配置不一致")
     patch_file = normalize_manifest_path(manifest.get("patch_file"), "patch_file")
     if patch_file != config.patch_file:
         raise BuildError(f"manifest.patch_file = {patch_file!r}，不等于预期 {config.patch_file!r}")
@@ -789,6 +799,11 @@ def write_build_metadata(config: BuildConfig, command: list[str]) -> None:
         "read_gitignore": config.read_gitignore,
         "use_git_tracked": config.use_git_tracked,
         "clean_output": config.clean_output,
+        "build_frontend": config.build_frontend,
+        "frontend_command": ["pnpm", "build"] if config.build_frontend else [],
+        "frontend_cwd": str(config.current / "dsakiko_webui" / "frontend"),
+        "min_updater_version": config.min_updater_version,
+        "replace": config.replace,
         "ignore": config.ignore,
         "include": config.include,
         "hard_exclude": config.hard_exclude,
@@ -799,9 +814,35 @@ def write_build_metadata(config: BuildConfig, command: list[str]) -> None:
     print(f"[输出] 构建元数据：{metadata_path}")
 
 
+def build_frontend(config: BuildConfig, dry_run: bool) -> None:
+    """在补丁生成前构建前端，构建失败时阻止发布旧产物。"""
+
+    if not config.build_frontend:
+        print("[信息] 已关闭自动前端构建。")
+        return
+    frontend_root = config.current / "dsakiko_webui" / "frontend"
+    if not (frontend_root / "package.json").is_file():
+        raise BuildError(f"缺少前端 package.json：{frontend_root}")
+    print(f"[信息] 前端构建命令：pnpm build（目录：{frontend_root}）", flush=True)
+    if dry_run:
+        return
+    pnpm = shutil.which("pnpm")
+    if pnpm is None:
+        raise BuildError("未找到 pnpm，请先安装并加入 PATH；可用 --no-build-frontend 关闭自动构建。")
+    try:
+        completed = subprocess.run([pnpm, "build"], cwd=frontend_root)
+    except OSError as exc:
+        raise BuildError(f"无法执行 pnpm build：{exc}") from exc
+    if completed.returncode != 0:
+        raise BuildError(f"pnpm build 执行失败，退出码：{completed.returncode}；已停止打包。")
+    if not (frontend_root / "dist" / "index.html").is_file():
+        raise BuildError("pnpm build 完成后缺少 dist/index.html；已停止打包。")
+
+
 def run_build(config: BuildConfig, options: CliOptions) -> None:
     """运行底层补丁构建命令并执行构建后检查。"""
 
+    build_frontend(config, dry_run=options.dry_run)
     command = build_command(config, no_zip=options.no_zip)
     print("[信息] 底层构建命令：")
     print(" ".join(json.dumps(part, ensure_ascii=False) for part in command))

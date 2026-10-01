@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -139,7 +140,7 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="目标架构，写入 manifest。",
     )
-    parser.add_argument("--min-updater-version", default="1.0.0", help="最低更新器版本，写入 manifest。")
+    parser.add_argument("--min-updater-version", default="1.0.0", help="最低更新器版本；使用 replace 时自动保证至少为 1.1.0。")
     parser.add_argument("--zip-output", default="", help="可选：将输出目录打包为 patch zip。")
     parser.add_argument(
         "--platform",
@@ -404,6 +405,18 @@ def write_remove_warning_file(output_root: Path, warn_file_name: str, remove_fil
     return warning_file
 
 
+def resolve_min_updater_version(configured_version: str, has_replace: bool) -> str:
+    """按文件动作提高最低更新器版本，并保留配置中更高的要求。"""
+
+    required_version = "1.1.0" if has_replace else "1.0.0"
+    configured_parts = tuple(int(part) for part in re.findall(r"\d+", configured_version)) or (0,)
+    required_parts = tuple(int(part) for part in required_version.split("."))
+    width = max(len(configured_parts), len(required_parts))
+    configured_parts += (0,) * (width - len(configured_parts))
+    required_parts += (0,) * (width - len(required_parts))
+    return required_version if configured_parts < required_parts else configured_version
+
+
 def write_manifest(
     output_root: Path,
     manifest_name: str,
@@ -432,8 +445,9 @@ def write_manifest(
         item.path.replace("\\", "/") in dependency_files
         for item in records
     )
+    has_replace = bool(replace_files) or any(item.action == "replace" for item in records)
     manifest = {
-        "format_version": 4 if replace_files else 3,
+        "format_version": 4 if has_replace else 3,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "hdiff",
         "app_id": app_id,
@@ -442,7 +456,7 @@ def write_manifest(
         "target_version": target_version,
         "platform": platform,
         "arch": arch,
-        "min_updater_version": min_updater_version,
+        "min_updater_version": resolve_min_updater_version(min_updater_version, has_replace),
         "patch_file": patch_file_name,
         "ignore_patterns": ignore_patterns,
         "include_patterns": include_patterns,

@@ -12,6 +12,7 @@
     "read_gitignore": true,
     "use_git_tracked": true,
     "clean_output": true,
+    "build_frontend": true,
     "no_platform_includes": false,
     "ignore": [
       "GPT_SoVITS/configs/*",
