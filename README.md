@@ -49,11 +49,11 @@ Google Drive: https://drive.google.com/drive/folders/1jWgKRWXvpRIgyiYpkVgk7vXGMF
 
 ## MacOS：
 
-3.5.0 新版：
+4.0.0 新版：
 
-百度网盘：https://pan.baidu.com/s/1Mrfrb2NT3wEg7nNQw4wTzA?pwd=1122 提取码: 1122
+百度网盘：https://pan.baidu.com/s/1yZBPyI1Db8aJ5r3IzIr3sA?pwd=1122 提取码: 1122
 
-天翼云盘：https://cloud.189.cn/t/aqiqQbMjAZJj（访问码：s43d）
+天翼云盘：https://cloud.189.cn/t/FZ7FZvmArqQv（访问码：r8yi）
 
 2.6.5 旧版（尚未更新）：
 
