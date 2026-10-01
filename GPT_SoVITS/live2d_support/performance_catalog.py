@@ -215,33 +215,26 @@ def load_performance_catalog(model_path: str | Path) -> PerformanceCatalog:
         ids = [file_to_id[str(item.get("File"))] for item in raw_entries
                if isinstance(item, dict) and str(item.get("File")) in file_to_id]
         catalog.groups[group] = list(dict.fromkeys(ids))
-    bundled = read_config(Path(__file__).parent / "performance_descriptions/tomori_ournote.json")
-    prefix = str(bundled.get("model_prefix") or "")
-    if not prefix or not path.name.startswith(prefix):
-        bundled = {}
-    series = str(catalog.config.get("series") or bundled.get("series") or "default")
+    series = str(catalog.config.get("series") or "default")
     catalog.series = series
-    if series != bundled.get("series"):
-        bundled = {}
     shared_series = object_mapping(object_mapping(catalog.shared.get("series")).get(series))
     for kind, resources, labels in (("motions", catalog.motions, _MOTION_LABELS),
                                     ("expressions", catalog.expressions, _EXPRESSION_LABELS)):
         local = object_mapping(catalog.config.get(kind))
         common = object_mapping(shared_series.get(kind))
-        defaults = object_mapping(bundled.get(kind))
         catalog.descriptions[kind], catalog.sources[kind] = {}, {}
         catalog.inherited_descriptions[kind] = {}
         for resource_id in sorted(resources):
             fallback = next((labels[token] for token in normalized_name_tokens(resource_id) if token in labels), "")
             local_value, shared_value = local.get(resource_id), common.get(resource_id)
-            inherited = shared_value if isinstance(shared_value, str) else defaults.get(resource_id)
+            inherited = shared_value
             catalog.inherited_descriptions[kind][resource_id] = inherited if isinstance(inherited, str) and inherited.strip() else fallback
-            description = local_value if isinstance(local_value, str) else shared_value if isinstance(shared_value, str) else defaults.get(resource_id)
+            description = local_value if isinstance(local_value, str) else shared_value
             if not isinstance(description, str) or not description.strip():
                 description = fallback
             if description:
                 catalog.descriptions[kind][resource_id] = description
-            catalog.sources[kind][resource_id] = "model" if isinstance(local_value, str) else "shared" if isinstance(shared_value, str) else "bundled" if resource_id in defaults else "name"
+            catalog.sources[kind][resource_id] = "model" if isinstance(local_value, str) else "shared" if isinstance(shared_value, str) else "name"
     presets = catalog.config.get("presets", [])
     catalog.presets = [object_mapping(item) for item in presets if isinstance(item, dict)] if isinstance(presets, list) else []
     return catalog

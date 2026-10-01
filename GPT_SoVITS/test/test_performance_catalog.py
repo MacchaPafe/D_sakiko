@@ -78,6 +78,41 @@ def test_catalog_inheritance_presets_and_projection(tmp_path: Path) -> None:
     assert path.read_bytes() == original
 
 
+@pytest.mark.parametrize("model_name", ["sample", "adv_live2d_tomori_001_casual_spring_01"])
+def test_catalog_without_guidance_uses_name_labels(tmp_path: Path, model_name: str) -> None:
+    """缺少随模型携带的指导时，仅使用名称标签，不按角色名注入描述。"""
+    path = make_model(tmp_path).rename(tmp_path / f"{model_name}.model3.json")
+    catalog = load_performance_catalog(path)
+    assert catalog.series == "default"
+    assert catalog.descriptions["motions"] == {"mtn_nod01": "点头"}
+    assert catalog.descriptions["expressions"] == {"exp_sad01": "悲伤", "exp_smile01": "微笑"}
+    assert all(source == "name" for values in catalog.sources.values() for source in values.values())
+    assert "mtn_other" in catalog.motions
+    assert "mtn_other" not in catalog.prompt_projection()["motions"]
+
+
+def test_tomori_model_guidance_and_explicit_shared_series(tmp_path: Path) -> None:
+    """燈模型自身的指导优先，未覆盖项按显式系列继承共享描述。"""
+    path = make_model(tmp_path).rename(tmp_path / "adv_live2d_tomori_001_casual_spring_01.model3.json")
+    save_config(shared_config_path(path), {"series": {
+        "ournote_tomori_001": {"motions": {"mtn_nod01": "共享点头"},
+                              "expressions": {"exp_sad01": "共享的悲伤表情"}},
+        "default": {"expressions": {"exp_sad01": "另一系列的描述"}},
+    }})
+    save_config(performance_config_path(path), {
+        "series": "ournote_tomori_001", "motions": {"mtn_nod01": "模型包中的点头说明"},
+        "expressions": {"exp_smile01": "模型包中的微笑说明"},
+    })
+    catalog = load_performance_catalog(path)
+    assert catalog.series == "ournote_tomori_001"
+    assert catalog.descriptions["motions"]["mtn_nod01"] == "模型包中的点头说明"
+    assert catalog.sources["motions"]["mtn_nod01"] == "model"
+    assert catalog.inherited_descriptions["motions"]["mtn_nod01"] == "共享点头"
+    assert catalog.descriptions["expressions"]["exp_sad01"] == "共享的悲伤表情"
+    assert catalog.sources["expressions"]["exp_sad01"] == "shared"
+    assert catalog.descriptions["expressions"]["exp_smile01"] == "模型包中的微笑说明"
+
+
 def test_normalization_upgrade_keeps_user_groups_and_assets(tmp_path: Path) -> None:
     """旧模型升级索引保留用户分组，未知动作仍可独立选择。"""
     path = make_model(tmp_path)
