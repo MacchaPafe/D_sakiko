@@ -14,6 +14,9 @@ class FakeChat:
 
     chat_id = "chat-1"
 
+    def get_custom_live2d_model_meta(self, character_name):
+        return None
+
     def build_llm_query(
         self,
         perspective: str,

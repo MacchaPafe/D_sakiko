@@ -272,6 +272,8 @@ class ChatMeta:
     theater: TheaterMeta = field(default_factory=TheaterMeta)
     # Live2D 模型相关的存储数据，key: 角色名称 value: live2d 模型的 json 描述文件的相对路径
     live2d_models: dict[str, str] = field(default_factory=dict)
+    character_forms: dict[str, str] = field(default_factory=dict)
+    live2d_form_models: dict[str, dict[str, str]] = field(default_factory=dict)
     # 工具调用记录
     tool_call_records: list[ToolCallRecordMeta] = field(default_factory=list)
     # 工具调用历史
@@ -319,6 +321,18 @@ class ChatMeta:
             for key, value in _as_mapping(mapping.get("live2d_models")).items()
             if isinstance(value, str)
         }
+        character_forms = {
+            str(key): value for key, value in _as_mapping(mapping.get("character_forms")).items()
+            if value in ("black", "white")
+        }
+        live2d_form_models = {
+            str(key): {form: path.strip() for form, path in _as_mapping(value).items()
+                       if form in ("black", "white") and isinstance(path, str) and path.strip()}
+            for key, value in _as_mapping(mapping.get("live2d_form_models")).items()
+        }
+        legacy_sakiko = live2d_models.pop("祥子", None)
+        if legacy_sakiko and legacy_sakiko.strip():
+            live2d_form_models.setdefault("sakiko", {}).setdefault("white", legacy_sakiko.strip())
 
         raw_tool_call_records = mapping.get("tool_call_records")
         tool_call_records = [
@@ -335,6 +349,8 @@ class ChatMeta:
         known_keys = {
             "theater",
             "live2d_models",
+            "character_forms",
+            "live2d_form_models",
             "tool_call_records",
             "tool_call_history",
             "llm_reasoning",
@@ -349,6 +365,8 @@ class ChatMeta:
         result = cls(
             theater=TheaterMeta.from_dict(mapping.get("theater")),
             live2d_models=live2d_models,
+            character_forms=character_forms,
+            live2d_form_models=live2d_form_models,
             tool_call_records=tool_call_records,
             tool_call_history=tool_call_history,
             llm_reasoning=ReasoningMeta.from_dict(mapping.get("llm_reasoning")),
@@ -372,6 +390,10 @@ class ChatMeta:
             data["theater"] = self.theater.to_dict()
         if self.live2d_models:
             data["live2d_models"] = dict(self.live2d_models)
+        if self.character_forms:
+            data["character_forms"] = dict(self.character_forms)
+        if self.live2d_form_models:
+            data["live2d_form_models"] = {key: dict(value) for key, value in self.live2d_form_models.items()}
         if self.tool_call_records:
             data["tool_call_records"] = [one.to_dict() for one in self.tool_call_records]
         if self.tool_call_history:

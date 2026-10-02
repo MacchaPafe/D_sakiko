@@ -5,6 +5,7 @@ import { IconButton } from '../components/IconButton'
 export function Live2DModelSheet({
   open,
   presentationTargetId,
+  presentationForm,
   runtimeState,
   onClose,
   onLoad,
@@ -31,7 +32,7 @@ export function Live2DModelSheet({
     if (!open) return undefined
     const timer = window.setTimeout(load, 0)
     return () => window.clearTimeout(timer)
-  }, [load, open, presentationTargetId])
+  }, [load, open, presentationTargetId, presentationForm])
 
   if (!open) return null
 
@@ -44,7 +45,8 @@ export function Live2DModelSheet({
     setSelectingId(option.option_id)
     setError('')
     try {
-      await onSelect(option.option_id)
+      if (catalog?.chat_id) await onSelect(option.option_id, catalog.current_form, catalog.chat_id)
+      else await onSelect(option.option_id)
       onClose()
     } catch (selectError) {
       setError(selectError.message || '服装切换失败。')
@@ -67,7 +69,7 @@ export function Live2DModelSheet({
         <header className="live2d-model-sheet__header">
           <div>
             <h2>选择服装</h2>
-            <p>{catalog?.character_name || '当前角色'}</p>
+            <p>{catalog?.character_name || '当前角色'}{catalog?.current_form_name ? ` · ${catalog.current_form_name}` : ''}</p>
           </div>
           <div className="live2d-model-sheet__tools">
             <IconButton label="刷新服装列表" onClick={load} disabled={loading || Boolean(selectingId)}>

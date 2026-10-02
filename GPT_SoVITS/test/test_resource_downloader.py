@@ -163,8 +163,11 @@ class LegacyBridgeTests(unittest.TestCase):
                   patch("live2d_download.hosted.legacy.BestdoriClient"),
                   patch("live2d_download.hosted.legacy.Live2dDownloader"),
                   patch("live2d_download.hosted.legacy.AddCostume") as installer):
+                installed = root / "live2d_related/custom/live2D_model/常服"
+                installer.add_costume_for_existed_char.return_value = str(installed)
                 selection = Selection("existing", "tomori", "custom", "自定义角色")
-                LegacyService().download("036_test", "常服", selection, Event(), lambda *_: None)
+                result = LegacyService().download("036_test", "常服", selection, Event(), lambda *_: None)
+                self.assertEqual(result, installed)
                 installer.add_costume_for_existed_char.assert_called_once_with("custom", "036_test", "常服")
                 installer.add_costume_for_new_character.assert_not_called()
             self.assertFalse(cache.exists())
@@ -645,7 +648,8 @@ class QtTests(unittest.TestCase):
         self.assertEqual(args[1].source, "tomori")
         self.assertEqual(row.saved, result.path)
         self.assertIn("安装完成", row.status.text())
-        self.assertIn("补齐角色描述", row.status.text())
+        self.assertIn("暂缺角色描述", row.status.text())
+        self.assertIn("需自行补齐", row.status.text())
 
     # 验证关闭窗口先取消再等待线程池退出。
     def test_close_cancels_and_waits(self):

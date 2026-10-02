@@ -91,6 +91,32 @@ function createController() {
 }
 
 describe('Live2DRuntimeController', () => {
+  it('plays explicit mask actions and ignores requests for another model or form', async () => {
+    const model = fakeModel('sakiko-mask')
+    fromMock.mockResolvedValue(model)
+    const target = { ...presentation('sakiko-mask', 'v3'), current_form: 'black', mask_action_indices: { off: 0 } }
+    const { controller } = createController()
+    await controller.setPresentation(target)
+    model.motion.mockClear()
+    expect(await controller.playMaskAction({ id: 'one', target_id: 'sakiko-mask', current_form: 'black', index: 0 })).toBe(true)
+    expect(model.motion).toHaveBeenCalledWith('__dsakiko_mask__', 0, 3)
+    model.motion.mockClear()
+    expect(await controller.playMaskAction({ id: 'two', target_id: 'other', current_form: 'black', index: 0 })).toBe(false)
+    expect(await controller.playMaskAction({ id: 'three', target_id: 'sakiko-mask', current_form: 'white', index: 0 })).toBe(false)
+    expect(model.motion).not.toHaveBeenCalled()
+    controller.destroy()
+  })
+
+  it('reloads when form changes even if both forms use the same model', async () => {
+    fromMock.mockImplementation(() => Promise.resolve(fakeModel('shared')))
+    const { controller } = createController()
+    await controller.setPresentation({ ...presentation('shared'), current_form: 'black' })
+    const count = fromMock.mock.calls.length
+    await controller.setPresentation({ ...presentation('shared'), current_form: 'white' })
+    expect(fromMock.mock.calls.length).toBe(count + 1)
+    controller.destroy()
+  })
+
   it('remembers motion completion while an expression is still loading', async () => {
     const model = fakeModel('slow-expression')
     fromMock.mockResolvedValue(model)

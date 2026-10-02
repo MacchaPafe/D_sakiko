@@ -49,6 +49,7 @@ export function CharacterView({ state, actions, audio, active, live2dCue }) {
           presentationReason={state.live2dReason}
           active={active}
           cue={live2dCue}
+          maskRequest={state.live2dMaskRequest}
           mouthOpenRef={audio.volumeRef}
           onRetryPresentation={actions.retryLive2D}
           onRuntimeStateChange={setLive2dRuntimeState}
@@ -119,6 +120,7 @@ export function CharacterView({ state, actions, audio, active, live2dCue }) {
       <Live2DModelSheet
         open={modelSheetOpen}
         presentationTargetId={state.live2d?.target_id}
+        presentationForm={state.live2d?.current_form}
         runtimeState={live2dRuntimeState}
         onClose={() => setModelSheetOpen(false)}
         onLoad={actions.loadLive2DModelOptions}

@@ -4,7 +4,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -97,6 +97,8 @@ class Live2DPresentation:
     layout: Live2DLayoutPresentation | None = None
     capabilities: Live2DCapabilities | None = None
     error: Live2DError | None = None
+    current_form: str | None = None
+    mask_action_indices: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         """转换为后端快照和事件的数据契约。"""
@@ -109,6 +111,8 @@ class Live2DPresentation:
             "layout": self.layout.to_dict() if self.layout is not None else None,
             "capabilities": self.capabilities.to_dict() if self.capabilities is not None else None,
             "error": self.error.to_dict() if self.error is not None else None,
+            "current_form": self.current_form,
+            "mask_action_indices": dict(self.mask_action_indices),
         }
 
 
@@ -138,14 +142,38 @@ class Live2DPresentationResolver:
         self._manifest_cache: dict[tuple[str, int, int, int], _ManifestCacheEntry] = {}
 
     def resolve(self, chat: object, character: object) -> Live2DPresentation:
+        self._ensure_gpt_import_path()
+        from live2d_support.character_forms import character_form
+        from live2d_support.mask_actions import MASK_ACTIONS, mask_actions
+        result = self._resolve(chat, character)
+        folder = self._required_string_attribute(character, "character_folder_name")
+        form = character_form(getattr(chat, "meta", None), folder)
+        indices = {}
+        if form == "black" and result.resolution == "resolved" and result.capabilities:
+            target = self._target_for_form(chat, character)
+            actions = mask_actions(str(self._resolve_model_path(target))) if target else {}
+            indices = {action: index for index, action in enumerate(key for key in MASK_ACTIONS if key in actions)}
+        return replace(result, current_form=form, mask_action_indices=indices)
+
+    def _target_for_form(self, chat, character):
+        from live2d_support.character_forms import character_form, explicit_model
+        from live2d_support.model_catalog import Live2DModelCatalog
+        name = self._required_string_attribute(character, "character_name")
+        folder = self._required_string_attribute(character, "character_folder_name")
+        target = explicit_model(getattr(chat, "meta", None), name, folder)
+        if target is not None:
+            return target
+        if folder == "sakiko":
+            option = next((item for item in Live2DModelCatalog(self._live2d_root, self._project_root)
+                           .list_options(folder, form=character_form(getattr(chat, "meta", None), folder)) if item.is_default), None)
+            return str(option.model_json_path) if option else None
+        return getattr(character, "live2d_json", None)
+
+    def _resolve(self, chat: object, character: object) -> Live2DPresentation:
         """解析当前对话的有效 Live2D 呈现目标。"""
         character_name = self._required_string_attribute(character, "character_name")
         character_folder_name = self._required_string_attribute(character, "character_folder_name")
-        explicit_target = self._explicit_target(chat, character_name)
-        raw_target = explicit_target
-        if raw_target is None:
-            default_target = getattr(character, "live2d_json", None)
-            raw_target = default_target.strip() if isinstance(default_target, str) and default_target.strip() else None
+        raw_target = self._target_for_form(chat, character)
         if raw_target is None:
             return Live2DPresentation(resolution="absent")
 
@@ -205,16 +233,6 @@ class Live2DPresentationResolver:
             raise ValueError(f"Live2D 呈现目标缺少 {attribute_name}")
         return value.strip()
 
-    @staticmethod
-    def _explicit_target(chat: object, character_name: str) -> str | None:
-        """读取对话元数据中的显式模型目标，不触发默认回退。"""
-        meta = getattr(chat, "meta", None)
-        models = getattr(meta, "live2d_models", None)
-        if not isinstance(models, Mapping):
-            return None
-        value = models.get(character_name)
-        return value.strip() if isinstance(value, str) and value.strip() else None
-
     def _resolve_model_path(self, raw_target: str) -> Path:
         """按项目与 GPT 运行时语义规范化模型路径。"""
         raw_path = Path(raw_target).expanduser()
@@ -242,6 +260,9 @@ class Live2DPresentationResolver:
         try:
             stat = model_path.stat()
             source = f"{model_path}:{stat.st_mtime_ns}:{stat.st_size}"
+            sidecar = model_path.with_suffix(".performance.json")
+            if sidecar.is_file():
+                source += f":{sidecar.stat().st_mtime_ns}:{sidecar.stat().st_size}"
         except OSError:
             source = f"{model_path}:missing"
         return hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
@@ -277,6 +298,9 @@ class Live2DPresentationResolver:
         catalog = load_performance_catalog(model_path)
         if version == "v3":
             motion_files_by_group[PERFORMANCE_MOTION_GROUP] = tuple(str(entry["File"]) for entry in performance_motion_entries(catalog))
+        from live2d_support.mask_actions import MASK_ACTIONS, MASK_MOTION_GROUP, mask_actions
+        actions = mask_actions(str(model_path))
+        motion_files_by_group[MASK_MOTION_GROUP] = tuple(actions[key] for key in MASK_ACTIONS if key in actions)
         expression_ids = self._expression_ids(model_data, version)
         supported_expressions = frozenset(expression_ids)
         expressions_by_motion = {

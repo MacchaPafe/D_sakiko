@@ -63,7 +63,7 @@ def performance_config_path(model_path: Path) -> Path:
 def shared_config_path(model_path: Path) -> Path:
     """以角色目录标识共享范围，外部模型使用同目录共享文件。"""
     for parent in model_path.parents:
-        if parent.name in {"live2D_model", "extra_model"}:
+        if parent.name in {"live2D_model", "live2D_model_costume", "extra_model"}:
             return parent.parent / "performance.shared.json"
     return model_path.parent / "performance.shared.json"
 
@@ -249,10 +249,18 @@ def performance_motion_entries(catalog: PerformanceCatalog) -> list[dict[str, ob
 def projected_model_document(model_path: Path) -> dict[str, object]:
     """为浏览器生成内部动作组视图，保持磁盘模型和用户分组不变。"""
     data = read_config(model_path)
+    from .mask_actions import MASK_ACTIONS, MASK_MOTION_GROUP, mask_actions
+    actions = mask_actions(str(model_path))
+    if not isinstance(data.get("FileReferences"), dict):
+        groups = object_mapping(data.get("motions"))
+        groups[MASK_MOTION_GROUP] = [{"file": actions[key]} for key in MASK_ACTIONS if key in actions]
+        data["motions"] = groups
+        return data
     refs = object_mapping(data.get("FileReferences"))
     groups = object_mapping(refs.get("Motions"))
     entries = performance_motion_entries(load_performance_catalog(model_path))
     groups[PERFORMANCE_MOTION_GROUP] = [dict(entry, File=str(entry["File"]) + "?single=1") for entry in entries]
+    groups[MASK_MOTION_GROUP] = [{"File": actions[action]} for action in MASK_ACTIONS if action in actions]
     refs["Motions"] = groups
     data["FileReferences"] = refs
     return data

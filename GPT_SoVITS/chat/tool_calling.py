@@ -1038,7 +1038,9 @@ def register_lottery_tool(
 def register_live2d_tools(
     registry: ToolRegistry,
     get_char_folder_func: Callable[[], str],
-    change_model_func: Callable[[str], None]
+    change_model_func: Callable[[str], object],
+    get_form_func: Callable[[], str | None] | None = None,
+    get_model_func: Callable[[], str | None] | None = None,
 ) -> None:
     """
     注册获取和切换前台角色 Live2D 模型的专用大模型工具。
@@ -1047,26 +1049,28 @@ def register_live2d_tools(
     def _fetch_all_live2d_models_handler(arguments: dict[str, object]) -> dict[str, object]:
         """具体的获取可用 Live2D 模型列表的处理闭包函数。"""
         char_folder = get_char_folder_func()
-        if char_folder == 'sakiko':
-            return {
-                "ok": False,
-                "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
-            }
+        form = get_form_func() if get_form_func else ("black" if char_folder == "sakiko" else None)
 
         from live2d_support.model_catalog import Live2DModelCatalog
 
         project_root = Path(__file__).resolve().parents[2]
         catalog = Live2DModelCatalog(project_root / "live2d_related", project_root)
+        current_path = get_model_func() if get_model_func else None
+        current_option = catalog.find_by_path(char_folder, current_path, form=form) if current_path else None
         models = [
             {
                 "model_name": option.display_name,
                 "model_json_path": str(option.model_json_path),
+                "is_current": current_option is not None and option.option_id == current_option.option_id,
             }
-            for option in catalog.list_options(char_folder)
+            for option in catalog.list_options(char_folder, form=form)
             if option.available
         ]
 
-        return {'ok': True, 'character_folder': char_folder, 'models': models}
+        return {'ok': True, 'character_folder': char_folder, 'models': models,
+                'current_form': form, 'current_form_name': {'black': '黑祥', 'white': '白祥'}.get(form),
+                'current_model_name': current_option.display_name if current_option else None,
+                'message': '模型切换只修改当前形态的选择，另一形态保持不变。'}
 
     def _change_character_live2d_handler(arguments: dict[str, object]) -> dict[str, object]:
         """具体的执行前台 Live2D 模型切换效果的闭包回调执行器。"""
@@ -1076,14 +1080,21 @@ def register_live2d_tools(
             return {'ok': False, 'error': 'model_json_path 参数不能为空'}
 
         char_folder = get_char_folder_func()
-        if char_folder == 'sakiko':
-            return {
-                "ok": False,
-                "error": "祥子（sakiko）存在双重状态机制，不支持通过常规方式切换Live2D服装"
-            }
-
-        change_model_func(target_path)
-        return {'ok': True, 'message': f'成功发送异步切换服装指令：{target_path}'}
+        from live2d_support.model_catalog import Live2DModelCatalog
+        from live2d_support.model_normalizer import normalize_live2d_model_for_project
+        form = get_form_func() if get_form_func else ("black" if char_folder == "sakiko" else None)
+        project_root = Path(__file__).resolve().parents[2]
+        option = Live2DModelCatalog(project_root / "live2d_related", project_root).find_by_path(char_folder, target_path, form=form)
+        if option is None or not option.available:
+            return {'ok': False, 'error': '模型不在当前可选列表中，请重新获取模型列表。', 'current_form': form}
+        normalized = normalize_live2d_model_for_project(str(option.model_json_path))
+        if not normalized.ok:
+            return {'ok': False, 'error': normalized.error_message, 'current_form': form}
+        result = change_model_func(str(option.model_json_path))
+        if isinstance(result, dict):
+            return result
+        return {'ok': True, 'status': 'accepted', 'current_form': form, 'updated_form': form,
+                'message': '已发送异步模型加载请求，仅修改当前形态的模型选择。'}
 
     registry.register_tool(
         name='fetch_all_live2d_models',
@@ -1094,7 +1105,7 @@ def register_live2d_tools(
 
     registry.register_tool(
         name='change_character_live2d',
-        description='【主动视觉表现】将角色的服装换为指定路径。**核心扮演动作：用换装制造惊喜，绝不被动等待！**不需要用户允许或要求，比如当用户夸你时主动换上特制装扮，聊到晚安主动换上睡衣。用突然发生的外观变化给用户惊喜感！(必须先调用 fetch_all_live2d_models 挑选合适的衣服)',
+        description='将角色当前展示形态的模型换为指定路径。祥子的黑祥和白祥各有独立选择；本工具只修改当前形态，不切换形态。可根据聊天气氛主动换装。必须先调用 fetch_all_live2d_models 选择模型。返回 accepted 表示已接受异步加载请求。',
         parameters={
             'type': 'object',
             'properties': {'model_json_path': {'type': 'string', 'description': '需要切换到的 Live2D 模型对应的 json 文件绝对或相对路径（必填）'}},

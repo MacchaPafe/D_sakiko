@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from GPT_SoVITS.live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
+from GPT_SoVITS.live2d_support.character_forms import character_form, explicit_model, set_model_override
 
 from .assets import AssetRegistry, LIVE2D_ROOT, PROJECT_ROOT
 from .live2d_presentation import Live2DPresentationResolver
@@ -421,6 +422,10 @@ class HeadlessRuntime:
             return self._get_live2d_model_options(payload)
         if command_type == "select_live2d_model":
             return self._select_live2d_model(payload)
+        if command_type == "set_character_form":
+            return self._set_character_form(payload)
+        if command_type == "mask_action":
+            return self._mask_action(payload)
 
         with self._lock:
             if command_type == "send_message":
@@ -451,6 +456,53 @@ class HeadlessRuntime:
             chat_id,
             self.active_turn_id,
         )]
+
+    def _set_character_form(self, payload):
+        with self._lock:
+            chat = self.dp_chat.current_chat
+            if payload.get("chat_id") != chat.chat_id:
+                raise ProtocolError("CHAT_MISMATCH", "对话已变化，请重新操作。", True)
+            if self.phase != "idle":
+                raise ProtocolError("CHAT_BUSY", "请等待回复和播放完成后切换形态。", True)
+            character = self._character_for_chat(chat)
+            form = payload.get("form")
+            if character.character_folder_name != "sakiko" or form not in ("black", "white"):
+                raise ProtocolError("INVALID_FORM", "当前角色不支持该形态。")
+            previous_entry = chat.meta.character_forms.get("sakiko")
+            chat.set_character_form(form)
+            try:
+                self.chat_manager.save()
+            except Exception as error:
+                if previous_entry is None:
+                    chat.meta.character_forms.pop("sakiko", None)
+                else:
+                    chat.set_character_form(previous_entry)
+                raise ProtocolError("LIVE2D_SAVE_FAILED", "无法保存形态，已保留原设置。", True) from error
+            self.dp_chat.sakiko_state = form == "black"
+            target = self.live2d_presentations._target_for_form(chat, character)
+            from live2d_support.model_normalizer import normalize_live2d_model_for_project
+            normalized = normalize_live2d_model_for_project(target)
+            if not normalized.ok:
+                logger.error("WebUI 形态模型规范化失败，保留目标：%s", normalized.error_message)
+            presentation = self.live2d_presentations.resolve(chat, character).to_dict()
+            return {"accepted": True, "current_form": form}, [self._local_event(
+                "live2d_presentation_changed", {"presentation": presentation, "reason": "semantic_target_change"}, chat.chat_id)]
+
+    def _mask_action(self, payload):
+        with self._lock:
+            chat = self.dp_chat.current_chat
+            if payload.get("chat_id") != chat.chat_id:
+                raise ProtocolError("CHAT_MISMATCH", "对话已变化，请重新操作。", True)
+            if self.phase != "idle":
+                raise ProtocolError("CHAT_BUSY", "请等待回复和播放完成后操作面具。", True)
+            presentation = self.live2d_presentations.resolve(chat, self._character_for_chat(chat))
+            action = payload.get("action")
+            index = presentation.mask_action_indices.get(action)
+            if index is None:
+                raise ProtocolError("MASK_UNAVAILABLE", "当前形态或模型未配置该面具动作。")
+            return {"accepted": True}, [self._local_event("live2d_mask_action", {
+                "action": action, "index": index, "target_id": presentation.target_id,
+                "current_form": presentation.current_form, "id": uuid.uuid4().hex}, chat.chat_id)]
 
     def _get_live2d_model_options(
         self,
@@ -483,10 +535,12 @@ class HeadlessRuntime:
             character = self._character_for_chat(chat)
             character_name = self._required_character_attribute(character, "character_name")
             character_folder = self._required_character_attribute(character, "character_folder_name")
-            if character_folder == "sakiko":
-                raise ProtocolError("LIVE2D_SELECTION_UNSUPPORTED", "该角色由专用状态控制，暂不支持手动选择。")
-
-            option = self.live2d_model_catalog.find_option(character_folder, option_id)
+            form = character_form(chat.meta, character_folder)
+            if self.phase != "idle":
+                raise ProtocolError("CHAT_BUSY", "请等待回复完成后选择模型。", True)
+            if character_folder == "sakiko" and payload.get("form") != form:
+                raise ProtocolError("LIVE2D_OPTIONS_STALE", "形态已变化，请重新打开模型窗口。", True)
+            option = self.live2d_model_catalog.find_option(character_folder, option_id, form=form)
             if option is None:
                 raise ProtocolError(
                     "LIVE2D_OPTIONS_STALE",
@@ -497,22 +551,18 @@ class HeadlessRuntime:
                 raise ProtocolError("LIVE2D_OPTION_INVALID", "该服装的模型 JSON 无法解析。")
 
             self._normalize_live2d_option(option)
-            models = chat.meta.live2d_models
-            previous_exists = character_name in models
-            previous_target = models.get(character_name)
-            if option.is_default:
-                models.pop(character_name, None)
-            else:
-                models[character_name] = str(option.model_json_path)
+            previous_target = explicit_model(chat.meta, character_name, character_folder, form)
+            set_model_override(chat.meta, character_name, character_folder,
+                               None if option.is_default else str(option.model_json_path), form)
 
             presentation = self.live2d_presentations.resolve(chat, character)
             if presentation.resolution != "resolved":
-                self._restore_live2d_target(models, character_name, previous_exists, previous_target)
+                set_model_override(chat.meta, character_name, character_folder, previous_target, form)
                 raise ProtocolError("LIVE2D_OPTION_INVALID", "该服装无法解析，已保留原服装。")
             try:
                 self.chat_manager.save()
             except Exception as error:
-                self._restore_live2d_target(models, character_name, previous_exists, previous_target)
+                set_model_override(chat.meta, character_name, character_folder, previous_target, form)
                 logger.exception("保存 WebUI Live2D 服装选择失败")
                 raise ProtocolError("LIVE2D_SAVE_FAILED", "服装选择保存失败，已保留原服装。", True) from error
 
@@ -538,19 +588,11 @@ class HeadlessRuntime:
         """构造不暴露本机路径的服装列表契约。"""
         character_name = self._required_character_attribute(character, "character_name")
         character_folder = self._required_character_attribute(character, "character_folder_name")
-        if character_folder == "sakiko":
-            return {
-                "supported": False,
-                "character_name": character_name,
-                "message": "该角色由专用状态控制，暂不支持手动选择。",
-                "options": [],
-            }
-
-        options = self.live2d_model_catalog.list_options(character_folder)
-        models = getattr(getattr(chat, "meta", None), "live2d_models", {})
-        explicit_target = models.get(character_name) if isinstance(models, dict) else None
+        form = character_form(getattr(chat, "meta", None), character_folder)
+        options = self.live2d_model_catalog.list_options(character_folder, form=form)
+        explicit_target = explicit_model(getattr(chat, "meta", None), character_name, character_folder, form)
         current_option = (
-            self.live2d_model_catalog.find_by_path(character_folder, explicit_target)
+            self.live2d_model_catalog.find_by_path(character_folder, explicit_target, form=form)
             if isinstance(explicit_target, str) and explicit_target.strip()
             else next((option for option in options if option.is_default), None)
         )
@@ -573,6 +615,9 @@ class HeadlessRuntime:
         return {
             "supported": True,
             "character_name": character_name,
+            "chat_id": chat.chat_id,
+            "current_form": form,
+            "current_form_name": {"black": "黑祥", "white": "白祥"}.get(form),
             "message": None,
             "options": serialized_options,
         }
@@ -603,19 +648,6 @@ class HeadlessRuntime:
                 "LIVE2D_NORMALIZE_FAILED",
                 result.error_message or "服装模型规范化失败。",
             )
-
-    @staticmethod
-    def _restore_live2d_target(
-        models: dict[str, str],
-        character_name: str,
-        previous_exists: bool,
-        previous_target: object,
-    ) -> None:
-        """在校验或保存失败时恢复原对话模型目标。"""
-        if previous_exists and isinstance(previous_target, str):
-            models[character_name] = previous_target
-        else:
-            models.pop(character_name, None)
 
     @staticmethod
     def _required_character_attribute(character: object, name: str) -> str:
@@ -859,7 +891,7 @@ class HeadlessRuntime:
             return
         chat_id = command.get("chat_id")
         turn_id = command.get("turn_id")
-        if not isinstance(chat_id, str) or not isinstance(turn_id, str):
+        if not isinstance(chat_id, str):
             logger.warning("WebUI 忽略缺少对话归属的 Live2D 命令：%s", command)
             return
 
@@ -868,7 +900,7 @@ class HeadlessRuntime:
                 logger.warning("WebUI 忽略非当前对话的 Live2D 命令：chat_id=%s", chat_id)
                 return
             chat = self.chat_manager.get_chat_by_id(chat_id)
-            if chat is None or not any(item.get("turn_id") == turn_id for item in self._message_meta(chat)):
+            if chat is None or (turn_id is not None and not any(item.get("turn_id") == turn_id for item in self._message_meta(chat))):
                 logger.warning("WebUI 忽略未知轮次的 Live2D 命令：turn_id=%s", turn_id)
                 return
             character = self._character_for_chat(chat)
@@ -1013,6 +1045,9 @@ class HeadlessRuntime:
                     "character_name": character.character_name,
                     **voice,
                 },
+                "character_form": character_form(self.dp_chat.current_chat.meta, character.character_folder_name),
+                "chat_id": self.dp_chat.current_chat_id,
+                "mask_actions": list(self.live2d_presentations.resolve(self.dp_chat.current_chat, character).mask_action_indices),
                 "llm": {"selected_id": selected_id, "options": options},
                 "capabilities": self.capabilities(),
             }

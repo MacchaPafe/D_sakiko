@@ -20,6 +20,15 @@ it('updates every conversation for the chosen character without disturbing playb
 })
 
 describe('conversationReducer Live2D presentation', () => {
+  it('rejects stale mask requests after a model, form, or conversation change', () => {
+    const current = { ...initialConversationState, currentChatId: 'sakiko-chat', live2d: { target_id: 'shared', current_form: 'black' } }
+    const data = { target_id: 'shared', current_form: 'black', action: 'off', index: 0, id: 'one' }
+    const accepted = conversationReducer(current, { type: 'runtime_event', event: { type: 'live2d_mask_action', chat_id: 'sakiko-chat', data } })
+    expect(accepted.live2dMaskRequest).toEqual(data)
+    for (const [chatId, changed] of [['other', data], ['sakiko-chat', { ...data, target_id: 'other' }], ['sakiko-chat', { ...data, current_form: 'white' }]]) {
+      expect(conversationReducer(current, { type: 'runtime_event', event: { type: 'live2d_mask_action', chat_id: chatId, data: changed } })).toBe(current)
+    }
+  })
   it('hydrates conversation-level presentation from state snapshot', () => {
     const live2d = { resolution: 'resolved', target_id: 'live2d_one' }
     const state = conversationReducer(initialConversationState, {

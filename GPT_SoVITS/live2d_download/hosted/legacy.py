@@ -64,8 +64,8 @@ class LegacyService:
                 safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).rstrip(". ") or costume
                 if safe_title in (".", ".."):
                     safe_title = costume
-                AddCostume.add_costume_for_existed_char(selection.target_id, costume, safe_title)
-                return PROJECT_ROOT / "live2d_related" / selection.target_id / "extra_model" / safe_title
+                return Path(AddCostume.add_costume_for_existed_char(
+                    selection.target_id, costume, safe_title))
             if (PROJECT_ROOT / "live2d_related" / selection.source).exists():
                 raise DownloadError("该角色已存在，无法重复安装")
             AddCostume.add_costume_for_new_character(info["display_name"], selection.source, costume)

@@ -117,7 +117,7 @@ function AppExperience() {
         <ChatView state={state} actions={experienceActions} audio={audio} />
       )}
       {state.activeView === 'chat_list' && (
-        <ChatListView state={state} actions={experienceActions} />
+        <ChatListView state={state} actions={experienceActions} playbackBusy={playback.status === "playing"} />
       )}
 
       <div key={visibleView} className="view-transition-wash" aria-hidden="true" />

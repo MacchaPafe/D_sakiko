@@ -970,13 +970,26 @@ class Chat:
 
         self.start_message = theater_meta.situation
     
-    def get_custom_live2d_model_meta(self, character_name: str) -> Optional[str]:
+    def get_character_form(self, character_folder: str = "sakiko") -> Optional[str]:
+        from live2d_support.character_forms import character_form
+        return character_form(self.meta, character_folder)
+
+    def set_character_form(self, form: str, character_folder: str = "sakiko") -> None:
+        if character_folder != "sakiko" or form not in ("black", "white"):
+            raise ValueError("无效的角色形态")
+        self.meta.character_forms[character_folder] = form
+
+    def get_custom_live2d_model_meta(self, character_name: str, form: Optional[str] = None) -> Optional[str]:
         """
         获取指定角色的模型目标；显式目标即使失效也原样返回，否则解析默认模型。
         """
-        model_path = self.meta.live2d_models.get(character_name)
+        from live2d_support.character_forms import explicit_model, default_form_model
+        folder = "sakiko" if character_name == "祥子" else ""
+        model_path = explicit_model(self.meta, character_name, folder, form)
         if isinstance(model_path, str) and model_path.strip():
             return model_path.strip()
+        if folder == "sakiko":
+            return default_form_model(form or self.get_character_form())
         from character import GetCharacterAttributes
         char_manager = GetCharacterAttributes()
         for one in char_manager.character_class_list:
@@ -984,18 +997,20 @@ class Chat:
                 return one.live2d_json
         return None
     
-    def update_custom_live2d_model_meta(self, character_name: str, model_path: str) -> None:
+    def update_custom_live2d_model_meta(self, character_name: str, model_path: str, form: Optional[str] = None) -> None:
         """
         更新指定角色的自定义 Live2D 模型路径，并确保路径存在。更新后会覆盖之前的设置。
         """
         if not os.path.exists(model_path):
             raise ValueError(f"提供的模型路径不存在: {model_path}")
 
-        self.meta.live2d_models[character_name] = model_path.strip()
+        from live2d_support.character_forms import set_model_override
+        set_model_override(self.meta, character_name, "sakiko" if character_name == "祥子" else "", model_path, form)
 
-    def clear_custom_live2d_model_meta(self, character_name: str) -> None:
+    def clear_custom_live2d_model_meta(self, character_name: str, form: Optional[str] = None) -> None:
         """清除指定角色的对话级 Live2D 覆盖，恢复跟随角色默认模型。"""
-        self.meta.live2d_models.pop(character_name, None)
+        from live2d_support.character_forms import set_model_override
+        set_model_override(self.meta, character_name, "sakiko" if character_name == "祥子" else "", None, form)
 
     def get_tool_call_records(self) -> List[ToolCallRecordMeta]:
         """获取当前对话的工具调用展示记录。"""

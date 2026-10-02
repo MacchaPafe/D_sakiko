@@ -19,7 +19,7 @@ const MODEL_LOAD_TIMEOUT_MS = 30_000
 
 function presentationKey(presentation) {
   if (!presentation?.target_id) return null
-  return `${presentation.target_id}:${presentation.revision || ''}`
+  return `${presentation.target_id}:${presentation.revision || ''}:${presentation.current_form || ''}`
 }
 
 function errorMessage(error) {
@@ -217,6 +217,32 @@ export class Live2DRuntimeController {
       force: true,
       retry: true,
     })
+  }
+
+  async playMaskAction(request) {
+    if (!this.adapter || this.destroyed || request.target_id !== this.presentation?.target_id
+      || request.current_form !== 'black' || this.presentation?.current_form !== 'black'
+      || this.cue?.kind === 'speaking' || this.cue?.kind === 'thinking') return false
+    const adapter = this.adapter
+    const generation = ++this.cueGeneration
+    clearTimeout(this.motionTimer)
+    this.motionTimer = null
+    this.pendingIdleCue = null
+    this.removeMotionFinishListener?.()
+    this.removeMotionFinishListener = null
+    const isCurrent = () => this.adapter === adapter && generation === this.cueGeneration && !this.destroyed
+    const started = await adapter.startMotion('__dsakiko_mask__', request.index, MotionPriority.FORCE, 0, true, isCurrent).catch(() => false)
+    if (started && isCurrent()) {
+      this.activeMotion = { kind: 'mask', key: request.id, startedAt: Date.now(), finished: false, finishedAt: 0 }
+      this.removeMotionFinishListener = adapter.onceMotionFinish(() => {
+        if (isCurrent()) {
+          this.activeMotion.finished = true
+          this.activeMotion.finishedAt = Date.now()
+          this.scheduleIdleRecovery(this.cue, Date.now())
+        }
+      })
+    }
+    return started
   }
 
   async setCue(cue) {

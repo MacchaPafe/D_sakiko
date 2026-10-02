@@ -41,6 +41,7 @@ def import_live2d_model(
         source_model_json_path: str,
         character_folder_name: str,
         live2d_related_dir: str = "../live2d_related",
+        *, form: str | None = None,
 ) -> Live2DModelImportResult:
     """导入模型；角色没有默认模型时写入默认目录，否则写入额外模型目录。"""
     source_model_json = Path(source_model_json_path).expanduser().resolve(strict=True)
@@ -61,7 +62,7 @@ def import_live2d_model(
     character_dir = live2d_related_root / character_folder_name
     if not character_dir.is_dir():
         raise Live2DModelImportError(f"角色目录不存在：{character_folder_name}")
-    default_model_dir = character_dir / "live2D_model"
+    default_model_dir = character_dir / ("live2D_model_costume" if character_folder_name == "sakiko" and form == "black" else "live2D_model")
     has_default_model = _contains_model_json(default_model_dir)
     target_root = character_dir / "extra_model" if has_default_model else default_model_dir
     target_root.mkdir(parents=True, exist_ok=True)

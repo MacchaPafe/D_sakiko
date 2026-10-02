@@ -618,7 +618,7 @@ class SettingWindow(QDialog):
         self.convert_sakiko_state_btn=QPushButton("黑/白祥")
         self.convert_sakiko_state_btn.clicked.connect(self.convert_sakiko_state)
         self.sakiko_mask_btn=QPushButton("面具")
-        self.sakiko_mask_btn.clicked.connect(self.sakiko_mask)
+        self.sakiko_mask_btn.setMenu(self.parent_window._create_sakiko_mask_menu())
         setting_layout=QGridLayout()
         setting_layout.addWidget(self.change_lan_btn,0,0,1,2)
         setting_layout.addWidget(self.clear_history_btn,1,0,1,2)
@@ -685,6 +685,7 @@ class ChangeL2DModelWindow(QDialog):
         self,
         current_char_folder_name: str,
         change_l2d_model_func: Callable[[Live2DModelOption], None],
+        form: Optional[str] = None,
     ) -> None:
         """创建一个使用共享 Catalog 的 Live2D 服装选择窗口。"""
         super().__init__()
@@ -693,6 +694,9 @@ class ChangeL2DModelWindow(QDialog):
         self.resize(int(screen.width()*0.25),int(screen.height()*0.4))
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.current_char_folder_name=current_char_folder_name
+        self.form = form
+        if form:
+            self.setWindowTitle("祥子 · " + {"black": "黑祥", "white": "白祥"}[form] + " — 选择模型")
         self.change_l2d_model_func=change_l2d_model_func
         self.model_catalog = Live2DModelCatalog(Path(project_root) / "live2d_related", Path(project_root))
         self.refresh_ui()
@@ -712,7 +716,7 @@ class ChangeL2DModelWindow(QDialog):
             QWidget().setLayout(old_layout)
 
         self.current_char_l2d_models = list(
-            self.model_catalog.list_options(self.current_char_folder_name)
+            self.model_catalog.list_options(self.current_char_folder_name, form=self.form)
         )
         layout = QVBoxLayout()
         title_layout=QHBoxLayout()
@@ -721,10 +725,9 @@ class ChangeL2DModelWindow(QDialog):
         refresh_btn.setIcon(QIcon("./icons/refresh.svg"))
         refresh_btn.clicked.connect(self.refresh_ui)  # noqa
         title_layout.addWidget(title_label)
-        if self.current_char_folder_name != 'sakiko':
-            import_btn = QPushButton("导入模型")
-            import_btn.clicked.connect(self.import_l2d_model)  # noqa
-            title_layout.addWidget(import_btn)
+        import_btn = QPushButton("导入模型")
+        import_btn.clicked.connect(self.import_l2d_model)  # noqa
+        title_layout.addWidget(import_btn)
         title_layout.addWidget(refresh_btn)
         layout.addLayout(title_layout)
 
@@ -746,31 +749,27 @@ class ChangeL2DModelWindow(QDialog):
                     self.refresh_ui()
             except Exception as e:
                 logger.exception("删除 Live2D 模型文件夹失败")
-        if self.current_char_folder_name != 'sakiko':
-            if not self.current_char_l2d_models:
-                display_layout.addWidget(QLabel("当前角色尚未配置 Live2D 模型，可点击“导入模型”添加。"))
-            for model in self.current_char_l2d_models:
-                model_layout = QHBoxLayout()
-                name_label = QLabel(model.display_name)
-                select_btn = QToolButton()
-                select_btn.setText("选择")
-                select_btn.clicked.connect(
-                    lambda checked=False, option=model: self.change_l2d_model_func(option))  # noqa
-                select_btn.setEnabled(model.available)
-                if model.error_message:
-                    select_btn.setToolTip("模型 JSON 无法解析")
-                delete_btn = QToolButton()
-                delete_btn.setIcon(QIcon("./icons/delete.svg"))
-                delete_target_path = str(model.model_directory)
-                delete_btn.clicked.connect(lambda checked=False, p=delete_target_path: delete_model_folder(p))
-                model_layout.addWidget(name_label)
-                model_layout.addWidget(select_btn)
-                if not model.is_default: #默认模型不允许删除
-                    model_layout.addWidget(delete_btn)
-                display_layout.addLayout(model_layout)
-        else:
-            label = QLabel("祥子暂时不能更换L2D模型。可手动修改sakiko文件夹内的模型文件。")
-            display_layout.addWidget(label)
+        if not self.current_char_l2d_models:
+            display_layout.addWidget(QLabel("当前角色尚未配置 Live2D 模型，可点击“导入模型”添加。"))
+        for model in self.current_char_l2d_models:
+            model_layout = QHBoxLayout()
+            name_label = QLabel(model.display_name)
+            select_btn = QToolButton()
+            select_btn.setText("选择")
+            select_btn.clicked.connect(
+                lambda checked=False, option=model: self.change_l2d_model_func(option))  # noqa
+            select_btn.setEnabled(model.available)
+            if model.error_message:
+                select_btn.setToolTip("模型 JSON 无法解析")
+            delete_btn = QToolButton()
+            delete_btn.setIcon(QIcon("./icons/delete.svg"))
+            delete_target_path = str(model.model_directory)
+            delete_btn.clicked.connect(lambda checked=False, p=delete_target_path: delete_model_folder(p))
+            model_layout.addWidget(name_label)
+            model_layout.addWidget(select_btn)
+            if not model.is_default: #默认模型不允许删除
+                model_layout.addWidget(delete_btn)
+            display_layout.addLayout(model_layout)
         scroll_area.setWidget(scroll_widget)    #把填充了模型选项的画布放进滚动区域，scroll_area只能这样设置子widget
         group_layout.addWidget(scroll_area)     #把滚动区域放进groupbox的布局，groupbox显示的就是这个滚动区域，滚动区域里是那个画布，画布上有每个模型的选项
         display_group.setLayout(group_layout)   #最后把groupbox放到主布局上
@@ -792,7 +791,7 @@ class ChangeL2DModelWindow(QDialog):
             return
 
         try:
-            result = import_live2d_model(selected_path, self.current_char_folder_name)
+            result = import_live2d_model(selected_path, self.current_char_folder_name, form=self.form)
         except Live2DModelImportError as exc:
             QMessageBox.warning(self, "导入失败", str(exc))
             return
@@ -803,13 +802,13 @@ class ChangeL2DModelWindow(QDialog):
 
         if result.model_name == "默认":
             for character in GetCharacterAttributes().character_class_list:
-                if character.character_folder_name == self.current_char_folder_name:
+                if character.character_folder_name == self.current_char_folder_name and self.form != "black":
                     character.live2d_json = result.model_json_path
                     break
             default_option = next(
                 (
                     option
-                    for option in self.model_catalog.list_options(self.current_char_folder_name)
+                    for option in self.model_catalog.list_options(self.current_char_folder_name, form=self.form)
                     if option.is_default
                 ),
                 None,
@@ -3648,7 +3647,9 @@ class ChatGUI(QWidget):
         if getattr(self, 'desktop_controller', None) is not None:
             self.desktop_controller.chat_changed()
         character_name = self.current_character.character_name
+        self.dp_chat.sakiko_state = self.current_chat.get_character_form() == "black"
         model_json = self.current_chat.get_custom_live2d_model_meta(character_name)
+        self._prepare_live2d_model_for_switch(model_json, "加载当前对话模型")
         self._send_live2d_switch(character_name, model_json)
 
     def apply_current_chat_ui_state(self) -> None:
@@ -4607,9 +4608,15 @@ class ChatGUI(QWidget):
 
     def open_change_live2d_model_window(self) -> None:
         """从主工具栏打开当前角色的共享换装与模型导入窗口。"""
+        if self.is_chat_busy():
+            self.QT_message_queue.put("请等待回复和播放完成后选择模型。")
+            return
+        chat_id = self.current_chat.chat_id
+        form = self.current_chat.get_character_form(self.current_character.character_folder_name)
         window = ChangeL2DModelWindow(
             self.current_character.character_folder_name,
-            self._send_l2d_model_payload,
+            lambda option: self._send_l2d_model_payload(option, chat_id=chat_id, form=form),
+            form=form,
         )
         window.exec_()
         self.schedule_context_usage_refresh()
@@ -5804,6 +5811,11 @@ class ChatGUI(QWidget):
             self.user_input.clear_after_send()
             return
 
+        if spec.command == "mask":
+            menu = self._create_sakiko_mask_menu()
+            menu.exec_(self.mapToGlobal(self.rect().center()))
+            menu.deleteLater()
+            return
         if spec.command == "change_l2d_model":
             self._open_l2d_model_command_window()
             self.user_input.clear_after_send()
@@ -5849,12 +5861,27 @@ class ChatGUI(QWidget):
         danger_text = spec.danger_text or f"确定要执行 {spec.display_command} 吗？"
         WarningWindow(danger_text, css, callback).exec_()
 
+    def _create_sakiko_mask_menu(self):
+        from live2d_support.mask_actions import mask_actions
+        menu = QMenu(self)
+        for key, label in (("on", "戴上面具"), ("off", "摘下面具")):
+            action = menu.addAction(label)
+            action.setData(key)
+            action.triggered.connect(lambda checked=False, value=key: self._send_internal_command_payload(
+                {"type": "legacy_command", "command": "mask_" + value, "chat_id": self.current_chat_id}))
+        def refresh():
+            enabled = self.current_character.character_folder_name == "sakiko" and self.current_chat.get_character_form() == "black"
+            bindings = mask_actions(self.current_chat.get_custom_live2d_model_meta(self.current_character.character_name)) if enabled else {}
+            for action in menu.actions():
+                available = action.data() in bindings and not self.is_chat_busy()
+                action.setEnabled(available)
+                action.setToolTip("" if available else "当前形态或模型未配置此动作，或正在回复/播放。")
+        menu.aboutToShow.connect(refresh)
+        return menu
+
     def _open_l2d_model_command_window(self) -> None:
-        """打开 Live2D 模型选择窗口。"""
-        current_char_folder_name = self.current_character.character_folder_name
-        change_l2d_model_window = ChangeL2DModelWindow(current_char_folder_name, self._send_l2d_model_payload)
-        change_l2d_model_window.exec_()
-    
+        self.open_change_live2d_model_window()
+
     def switch_l2d_fps(self):
         if not hasattr(self, 'l2d_fps_dict'):
             self.l2d_fps_dict = {"current_fps":1,
@@ -5881,8 +5908,15 @@ class ChatGUI(QWidget):
             return self.l2d_fps_dict["all_fps"][self.l2d_fps_dict["current_fps"]]
         return 60
 
-    def _send_l2d_model_payload(self, option: Live2DModelOption) -> None:
+    def _send_l2d_model_payload(self, option: Live2DModelOption, *, chat_id=None, form=None) -> None:
         """校验并发送 Live2D 模型切换 payload。"""
+        active_form = self.current_chat.get_character_form(self.current_character.character_folder_name)
+        if self.is_chat_busy() or (chat_id is not None and (chat_id != self.current_chat.chat_id or form != active_form)):
+            self.QT_message_queue.put("对话或形态已变化，或正在回复，请重新打开模型窗口。")
+            return
+        form = active_form
+        from live2d_support.character_forms import explicit_model, set_model_override
+        previous = explicit_model(self.current_chat.meta, self.current_character.character_name, self.current_character.character_folder_name, form)
         new_model_json = str(option.model_json_path)
         if not self._prepare_live2d_model_for_switch(new_model_json, "切换模型"):
             return
@@ -5893,8 +5927,10 @@ class ChatGUI(QWidget):
             else:
                 self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
             if not self._save_chat():
+                set_model_override(self.current_chat.meta, character_name, self.current_character.character_folder_name, previous, form)
                 return
         except Exception:
+            set_model_override(self.current_chat.meta, character_name, self.current_character.character_folder_name, previous, form)
             self.QT_message_queue.put("切换模型失败，保存对话模型配置时出错。")
             logger.exception("保存对话级 Live2D 模型配置失败。")
             return

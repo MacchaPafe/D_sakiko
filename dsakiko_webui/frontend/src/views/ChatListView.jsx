@@ -7,13 +7,13 @@ import { CreateChatSheet } from '../components/CreateChatSheet'
 import { IconButton } from '../components/IconButton'
 import { SettingsSheet } from '../components/SettingsSheet'
 
-export function ChatListView({ state, actions }) {
+export function ChatListView({ state, actions, playbackBusy = false }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [expandedCharacters, setExpandedCharacters] = useState(null)
   const [closing, setClosing] = useState(false)
-  const busy = state.phase !== 'idle'
+  const busy = state.phase !== 'idle' || playbackBusy
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const chats = useMemo(() => {
     if (!normalizedQuery) return state.chatSummaries
@@ -181,6 +181,8 @@ export function ChatListView({ state, actions }) {
         onClose={() => setSettingsOpen(false)}
         onLoad={actions.loadSettings}
         onSave={actions.saveSettings}
+        onFormChange={actions.setCharacterForm}
+        onMaskAction={actions.maskAction}
       />
     </div>
   )

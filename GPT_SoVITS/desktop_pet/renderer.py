@@ -120,10 +120,6 @@ class PetRenderer(QOpenGLWidget):
         self.performance.sakiko_state = bool(
             event.get("sakiko_state", self.performance.sakiko_state)
         )
-        from runtime.character_presentation import SAKIKO_COSTUME
-
-        if self.performance.if_sakiko and self.performance.sakiko_state and path:
-            path = SAKIKO_COSTUME
         try:
             if path:
                 self.model = self.session.create_model(str(path))
@@ -191,26 +187,10 @@ class PetRenderer(QOpenGLWidget):
                 self.load_target(event)
             elif kind == "character_state":
                 from runtime.character_presentation import apply_sakiko_state
-
-                def replace(previous, path):
-                    previous.dispose()
-                    try:
-                        loaded = self.session.create_model(path)
-                        loaded.SetAutoBlinkEnable(True)
-                        loaded.SetAutoBreathEnable(True)
-                        QTimer.singleShot(0, self.modelReady.emit)
-                        return loaded
-                    except Exception:
-                        logger.exception("角色专属模型切换失败")
-                        self.failed.emit(f"{self.identity} · 模型加载失败")
-                        return NullLive2DModel()
-
                 self.model = apply_sakiko_state(
                     self.performance,
                     self.model,
                     event.get("value"),
-                    (self.target or {}).get("model_json"),
-                    replace,
                 )
             elif kind == "start_talking":
                 self.model.StartRandomMotion("talking_motion", 4, position="C")

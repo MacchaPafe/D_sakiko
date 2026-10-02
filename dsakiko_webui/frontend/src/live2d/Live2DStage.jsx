@@ -10,6 +10,7 @@ export function Live2DStage({
   presentationReason,
   active,
   cue,
+  maskRequest,
   mouthOpenRef,
   onRetryPresentation,
   onRuntimeStateChange,
@@ -97,6 +98,10 @@ export function Live2DStage({
   useEffect(() => {
     controllerRef.current?.setCue(cue)
   }, [cue])
+
+  useEffect(() => {
+    if (maskRequest) controllerRef.current?.playMaskAction(maskRequest)
+  }, [maskRequest])
 
   const retry = useCallback(() => {
     if (presentation?.resolution === 'configured_error') {

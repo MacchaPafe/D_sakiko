@@ -40,7 +40,7 @@ class Live2DModelCatalog:
         self._live2d_root = live2d_root.resolve()
         self._project_root = (project_root or self._live2d_root.parent).resolve()
 
-    def list_options(self, character_folder_name: str) -> tuple[Live2DModelOption, ...]:
+    def list_options(self, character_folder_name: str, *, form: str | None = None) -> tuple[Live2DModelOption, ...]:
         """列出指定角色的默认模型和额外服装。"""
         character_root = self._character_root(character_folder_name)
         if character_root is None:
@@ -51,7 +51,7 @@ class Live2DModelCatalog:
             character_folder_name,
             "默认",
             "default",
-            character_root / "live2D_model",
+            character_root / ("live2D_model_costume" if character_folder_name == "sakiko" and form == "black" else "live2D_model"),
         )
         if default_option is not None:
             options.append(default_option)
@@ -73,12 +73,12 @@ class Live2DModelCatalog:
                     options.append(option)
         return tuple(options)
 
-    def find_option(self, character_folder_name: str, option_id: str) -> Live2DModelOption | None:
+    def find_option(self, character_folder_name: str, option_id: str, *, form: str | None = None) -> Live2DModelOption | None:
         """根据不透明标识查找当前仍存在的模型选项。"""
         return next(
             (
                 option
-                for option in self.list_options(character_folder_name)
+                for option in self.list_options(character_folder_name, form=form)
                 if option.option_id == option_id
             ),
             None,
@@ -88,13 +88,14 @@ class Live2DModelCatalog:
         self,
         character_folder_name: str,
         configured_path: str | Path,
+        *, form: str | None = None,
     ) -> Live2DModelOption | None:
         """根据存档中的绝对或相对路径匹配模型选项。"""
         candidates = self._configured_path_candidates(configured_path)
         return next(
             (
                 option
-                for option in self.list_options(character_folder_name)
+                for option in self.list_options(character_folder_name, form=form)
                 if option.model_json_path in candidates
             ),
             None,

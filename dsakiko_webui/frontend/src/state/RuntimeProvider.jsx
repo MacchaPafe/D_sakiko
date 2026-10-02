@@ -416,11 +416,33 @@ export function RuntimeProvider({ children }) {
     }
   }, [client])
 
-  const selectLive2DModel = useCallback(async (optionId) => {
+  const selectLive2DModel = useCallback(async (optionId, form, sourceChatId) => {
     const chatId = stateRef.current.currentChatId
     if (!chatId) throw new Error('当前没有可用的对话。')
     try {
-      return await client.selectLive2DModel(chatId, optionId)
+      if (sourceChatId && sourceChatId !== chatId) throw new Error('对话已变化，请重新打开模型窗口。')
+      return await client.selectLive2DModel(chatId, optionId, form)
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+      throw error
+    }
+  }, [client])
+
+  const setCharacterForm = useCallback(async (form, sourceChatId) => {
+    const chatId = stateRef.current.currentChatId
+    try {
+      if (sourceChatId && sourceChatId !== chatId) throw new Error('对话已变化，请重新打开设置。')
+      return await client.setCharacterForm(chatId, form)
+    } catch (error) {
+      dispatch({ type: 'command_error', error })
+      throw error
+    }
+  }, [client])
+
+  const maskAction = useCallback(async (action, sourceChatId) => {
+    try {
+      if (sourceChatId && sourceChatId !== stateRef.current.currentChatId) throw new Error('对话已变化，请重新打开设置。')
+      return await client.maskAction(stateRef.current.currentChatId, action)
     } catch (error) {
       dispatch({ type: 'command_error', error })
       throw error
@@ -523,6 +545,8 @@ export function RuntimeProvider({ children }) {
       nextBackground,
       loadLive2DModelOptions,
       selectLive2DModel,
+      setCharacterForm,
+      maskAction,
       retryLive2D,
       setDisplayLanguage,
       clearError,
@@ -551,6 +575,8 @@ export function RuntimeProvider({ children }) {
     saveSettings,
     showNotice,
     selectLive2DModel,
+    setCharacterForm,
+    maskAction,
     selectChat,
     sendMessage,
     setDisplayLanguage,

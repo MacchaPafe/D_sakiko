@@ -15,6 +15,16 @@ const OPTIONS = {
 describe('Live2DModelSheet', () => {
   afterEach(cleanup)
 
+  it('shows the current form and binds selection to the catalog conversation and form', async () => {
+    const onSelect = vi.fn().mockResolvedValue({ accepted: true })
+    render(<Live2DModelSheet open presentationTargetId="shared" presentationForm="black"
+      onLoad={vi.fn().mockResolvedValue({ ...OPTIONS, character_name: '祥子', current_form: 'black', current_form_name: '黑祥', chat_id: 'sakiko-chat' })}
+      onSelect={onSelect} onClose={vi.fn()} />)
+    expect(await screen.findByText('祥子 · 黑祥')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /礼服2/ }))
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('dress-id', 'black', 'sakiko-chat'))
+  })
+
   it('loads names only and closes after an accepted selection', async () => {
     const onLoad = vi.fn().mockResolvedValue(OPTIONS)
     const onSelect = vi.fn().mockResolvedValue({ accepted: true })

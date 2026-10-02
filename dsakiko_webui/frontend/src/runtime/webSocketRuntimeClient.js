@@ -180,11 +180,20 @@ export class WebSocketRuntimeClient {
     return this.command('get_live2d_model_options', { chat_id: chatId })
   }
 
-  selectLive2DModel(chatId, optionId) {
+  selectLive2DModel(chatId, optionId, form) {
     return this.command('select_live2d_model', {
       chat_id: chatId,
       option_id: optionId,
+      ...(form === undefined ? {} : { form }),
     })
+  }
+
+  setCharacterForm(chatId, form) {
+    return this.command('set_character_form', { chat_id: chatId, form })
+  }
+
+  maskAction(chatId, action) {
+    return this.command('mask_action', { chat_id: chatId, action })
   }
 
   retryLive2D(chatId) {

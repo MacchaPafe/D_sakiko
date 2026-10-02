@@ -9,6 +9,7 @@ export const initialConversationState = {
   character: null,
   live2d: { resolution: 'absent' },
   live2dReason: 'snapshot',
+  live2dMaskRequest: null,
   messages: [],
   phase: 'idle',
   turnId: null,
@@ -107,6 +108,7 @@ export function conversationReducer(state, action) {
             character: event.data.character,
             live2d: event.data.live2d || { resolution: 'absent' },
             live2dReason: 'snapshot',
+            live2dMaskRequest: null,
             messages: event.data.messages,
             phase: event.data.phase || 'idle',
             turnId: event.data.turn_id || null,
@@ -151,12 +153,17 @@ export function conversationReducer(state, action) {
             turnId: null,
           }
 
+        case 'live2d_mask_action':
+          if (event.chat_id !== state.currentChatId || event.data.target_id !== state.live2d?.target_id || event.data.current_form !== state.live2d?.current_form) return state
+          return { ...state, live2dMaskRequest: event.data }
+
         case 'live2d_presentation_changed':
           if (event.chat_id !== state.currentChatId) return state
           return {
             ...state,
             live2d: event.data.presentation,
             live2dReason: event.data.reason || 'semantic_target_change',
+            live2dMaskRequest: null,
           }
 
         case 'background_changed':

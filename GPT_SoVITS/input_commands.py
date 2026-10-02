@@ -126,7 +126,7 @@ def build_default_input_command_specs() -> tuple[CommandSpec, ...]:
             display_command="/mask",
             title="面具",
             aliases=("face",),
-            description="切换祥子的面具状态",
+            description="选择戴上或摘下祥子的面具",
             visibility="public",
             execution_policy="immediate",
         ),

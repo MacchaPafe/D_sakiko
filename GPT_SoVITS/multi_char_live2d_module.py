@@ -1,4 +1,5 @@
 from __future__ import annotations
+from pathlib import Path
 
 import contextlib
 from live2d.utils.lipsync import WavHandler
@@ -743,6 +744,9 @@ class Live2DModule:
                 "model_json_path": model_json_path,
                 "model_version": model_version,
             })
+            if slot_data.get("character_folder_name") == "sakiko" or character_name == "祥子":
+                normalized[-1]["character_folder_name"] = "sakiko"
+                normalized[-1]["sakiko_state"] = bool(slot_data.get("sakiko_state", True))
 
         return normalized
 
@@ -876,21 +880,6 @@ class Live2DModule:
                     model.dispose()
                 logger.exception("小剧场 slot=%d 模型加载失败：%s", slot, model_path)
 
-    def _sakiko_model_target(
-            self,
-            model_group: list[Live2DModelAdapter | None],
-    ) -> tuple[int, str] | None:
-        """解析祥子换装目标，让特殊切换复用普通槽位生命周期。"""
-        for slot, slot_data in enumerate(self.active_slots):
-            if slot_data.get("character_name") != "祥子":
-                continue
-            model = model_group[slot]
-            if model is None or model.version != "v2":
-                return None
-            directory = "live2D_model" if "live2D_model_costume" in model.model_json_path else "live2D_model_costume"
-            return slot, f"../live2d_related/sakiko/{directory}/3.model.json"
-        return None
-
     def live2D_initialize(self, characters):
         if len(characters)<2:
             raise ValueError("至少需要两个角色...")
@@ -930,7 +919,7 @@ class Live2DModule:
     def play_live2d(self,
                     change_char_queue,
                     to_live2d_module_queue,
-                    tell_qt_this_turn_finish_queue):
+                    tell_qt_this_turn_finish_queue, playback_idle_value=None):
 
         # print("正在开启Live2D模块")
         # 只在 Windows 下处理高DPI问题，因为 MacOS 下 PyQt 根本就没有模糊问题
@@ -1069,6 +1058,7 @@ class Live2DModule:
             """判断小剧场当前是否没有正在播放或等待推进的对话句。"""
             return (
                 self.playlist_pointer == len(self.playlist)
+                and to_live2d_module_queue.empty()
                 and not pygame.mixer.music.get_busy()
                 and (not waiting_between_turns or time.time() >= next_turn_earliest_start_at)
             )
@@ -1277,7 +1267,7 @@ class Live2DModule:
                 # preserve_playback=True 的语义是“切换模型但保留当前播放列表”，False 则是“切换模型并停止当前播放列表（如果有）”
                 # 目前在切换不同角色的模型时停止播放列表，在切换同角色的不同模型时保留播放列表
                 should_stop_current_playlist = (
-                    message_type in ("set_active_slots", "toggle_sakiko_model")
+                    message_type == "set_active_slots"
                     and not bool(x.get("preserve_playback", False))
                 )
                 if should_stop_current_playlist and self.playlist_pointer != len(self.playlist):
@@ -1289,19 +1279,18 @@ class Live2DModule:
                         if layout_editing:
                             exit_layout_edit_mode()
                         apply_slots_payload(x)
-                    elif message_type == "toggle_sakiko_model":
-                        if layout_editing:
-                            exit_layout_edit_mode()
-                        target = self._sakiko_model_target(model_group)
-                        if target is not None:
-                            slot, model_path = target
-                            slots = [dict(slot_data) for slot_data in self.active_slots]
-                            slots[slot]["model_json_path"] = model_path
-                            apply_slots_payload({
-                                "slots": slots,
-                                "changed_slot": slot,
-                                "motion_facing_mode": active_motion_facing_mode,
-                            })
+                    elif message_type == "mask_action":
+                        from live2d_support.mask_actions import mask_actions
+                        action = x.get("action")
+                        for slot, slot_data in enumerate(self.active_slots):
+                            if slot_data.get("character_folder_name") != "sakiko" or not slot_data.get("sakiko_state", True):
+                                continue
+                            model = model_group[slot]
+                            if model is not None:
+                                file = mask_actions(model.model_json_path).get(action)
+                                if file:
+                                    model.StartMotionFile(str(Path(model.model_json_path).resolve().parent / file), 3,
+                                                          on_finish=self.onFinishCallback_motion, auto_expression=False)
                     elif message_type == "switch_l2d_fps":
                         fps = int(x.get("fps"))
                         if fps in (30, 60, 120):
@@ -1490,6 +1479,8 @@ class Live2DModule:
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()
+            if playback_idle_value is not None:
+                playback_idle_value.value = is_dialogue_idle()
             frame_clock.tick(target_fps)
 
         try:
@@ -1524,7 +1515,7 @@ class Live2DModule:
         pygame.quit()
 
 
-def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue, logging_queue):
+def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue, logging_queue, playback_idle_value=None):
     """Live2D 子进程入口。
 
     注意：该函数必须在模块顶层定义，才能在 Windows/macOS 的 spawn 模式下被 pickle。
@@ -1541,7 +1532,7 @@ def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_t
 
     get_char_attr = character.GetCharacterAttributes()
     live2d_player = Live2DModule(get_char_attr.character_class_list)
-    live2d_player.play_live2d(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue)
+    live2d_player.play_live2d(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue, playback_idle_value)
 
 
 if __name__ == "__main__":

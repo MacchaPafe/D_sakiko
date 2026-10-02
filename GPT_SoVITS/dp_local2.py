@@ -267,6 +267,7 @@ class DSLocalAndVoiceGen:
         """
         try:
             self.if_sakiko = self.get_current_character().character_name == "祥子"
+            self.sakiko_state = self.current_chat.get_character_form() == "black"
         except ValueError:
             self.if_sakiko = False
 
@@ -515,6 +516,12 @@ class DSLocalAndVoiceGen:
             requirements.append(
                 f"当前采用{tone}语气；请遵循祥子角色设定中对{tone}的定义。"
             )
+            path = self.current_chat.get_custom_live2d_model_meta("祥子")
+            from live2d_support.model_catalog import Live2DModelCatalog
+            root = Path(__file__).resolve().parents[1]
+            option = Live2DModelCatalog(root / "live2d_related", root).find_by_path("sakiko", path, form="black" if self.sakiko_state else "white") if path else None
+            model_name = option.display_name if option else (Path(path).parent.name if path else "未配置")
+            requirements.append(f"当前展示形态为{tone}，模型为{model_name}；换装工具只修改当前形态，另一形态的模型选择保持不变。")
 
         requirements.append(build_output_contract(self._performance_catalog_for_turn()))
         requirements.extend([
@@ -2228,18 +2235,45 @@ class DSLocalAndVoiceGen:
             return True
 
         legacy_command = str(command.get("command") or "")
-        if legacy_command == "mask":
+        if legacy_command in {"mask_on", "mask_off"}:
             if self.if_sakiko:
-                char_is_converted_queue.put("maskoff")
+                from live2d_support.mask_actions import mask_actions
+                action = "on" if legacy_command == "mask_on" else "off"
+                path = chat.get_custom_live2d_model_meta("祥子")
+                if self.sakiko_state and action in mask_actions(path):
+                    char_is_converted_queue.put({"type": "mask_action", "action": action})
+                else:
+                    message_queue.put("当前形态或模型未配置对应的面具动作。")
             else:
                 message_queue.put("祥子好像不在<w>")
             time.sleep(2)
             return True
         if legacy_command == "conv":
             if self.if_sakiko:
-                self.sakiko_state = not self.sakiko_state
+                previous = chat.get_character_form()
+                previous_entry = chat.meta.character_forms.get("sakiko")
+                chat.set_character_form("white" if previous == "black" else "black")
+                try:
+                    self.chat_manager.save()
+                except Exception:
+                    if previous_entry is None:
+                        chat.meta.character_forms.pop("sakiko", None)
+                    else:
+                        chat.set_character_form(previous_entry)
+                    logger.exception("保存祥子形态失败")
+                    message_queue.put("切换形态失败：无法保存对话。")
+                    return True
+                self.sakiko_state = chat.get_character_form() == "black"
+                target = chat.get_custom_live2d_model_meta("祥子")
+                from live2d_support.model_normalizer import normalize_live2d_model_for_project
+                normalized = normalize_live2d_model_for_project(target)
+                if not normalized.ok:
+                    logger.error("形态模型规范化失败，保留目标供渲染器报告：%s", normalized.error_message)
                 message_queue.put("已切换为" + ("黑祥" if self.sakiko_state else "白祥"))
-                char_is_converted_queue.put(self.sakiko_state)
+                change_char_queue.put({"type": "switch_live2d", "chat_id": chat.chat_id,
+                                       "character_name": "祥子", "character_folder_name": "sakiko",
+                                       "model_json": target,
+                                       "sakiko_state": self.sakiko_state})
             else:
                 message_queue.put("祥子好像不在<w>")
             time.sleep(2)
@@ -2315,7 +2349,7 @@ class DSLocalAndVoiceGen:
         def _get_char_folder() -> str:
             return self.get_current_character().character_folder_name
 
-        def _change_live2d_model(new_model_json: str) -> None:
+        def _change_live2d_model(new_model_json: str) -> dict[str, object]:
             """保存 AI 选择的服装；默认模型恢复为跟随角色配置。"""
             from live2d_support.model_catalog import Live2DModelCatalog
 
@@ -2323,7 +2357,12 @@ class DSLocalAndVoiceGen:
             character_name = character.character_name
             project_root = Path(__file__).resolve().parents[1]
             catalog = Live2DModelCatalog(project_root / "live2d_related", project_root)
-            option = catalog.find_by_path(character.character_folder_name, new_model_json)
+            form = self.current_chat.get_character_form(character.character_folder_name)
+            option = catalog.find_by_path(character.character_folder_name, new_model_json, form=form)
+            if option is None or not option.available:
+                return {"ok": False, "error": "模型不属于当前形态的可选列表，请重新获取列表。"}
+            from live2d_support.character_forms import explicit_model, set_model_override
+            previous = explicit_model(self.current_chat.meta, character_name, character.character_folder_name, form)
             try:
                 if option is not None and option.is_default:
                     self.current_chat.clear_custom_live2d_model_meta(character_name)
@@ -2331,8 +2370,9 @@ class DSLocalAndVoiceGen:
                     self.current_chat.update_custom_live2d_model_meta(character_name, new_model_json)
                 self.chat_manager.save()
             except Exception:
+                set_model_override(self.current_chat.meta, character_name, character.character_folder_name, previous, form)
                 logger.exception("工具调用切换 Live2D 模型失败")
-                return
+                return {"ok": False, "error": "无法保存模型选择。"}
             change_char_queue.put({
                 "type": "switch_live2d",
                 "chat_id": live2d_tool_context["chat_id"],
@@ -2340,7 +2380,14 @@ class DSLocalAndVoiceGen:
                 "character_name": character_name,
                 "character_folder_name": character.character_folder_name,
                 "model_json": new_model_json,
+                "sakiko_state": self.sakiko_state,
             })
+            updated_catalog = self._performance_catalog_for_turn()
+            return {"ok": True, "status": "accepted", "current_form": form, "updated_form": form,
+                    "current_form_name": {"black": "黑祥", "white": "白祥"}.get(form),
+                    "model_name": option.display_name,
+                    "output_contract": build_output_contract(updated_catalog),
+                    "message": "已保存模型选择并发送加载请求；仅修改当前形态的模型。后续回复使用此模型的演出目录和输出要求。"}
 
         from chat.tool_calling import register_live2d_tools, register_reminder_tool, register_lottery_tool
 
@@ -2355,7 +2402,9 @@ class DSLocalAndVoiceGen:
         register_live2d_tools(
             self.tool_runtime.tool_registry,
             get_char_folder_func=_get_char_folder,
-            change_model_func=_change_live2d_model
+            change_model_func=_change_live2d_model,
+            get_form_func=lambda: self.current_chat.get_character_form(_get_char_folder()),
+            get_model_func=lambda: self.current_chat.get_custom_live2d_model_meta(self.get_current_character().character_name),
         )
         register_reminder_tool(
             self.tool_runtime.tool_registry,

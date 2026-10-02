@@ -171,7 +171,7 @@ class AssetRegistry:
         entry = self._models.get(model_id)
         if path is None or entry is None:
             return None
-        if path == entry.root / entry.model_filename and path.name.endswith(".model3.json"):
+        if path == entry.root / entry.model_filename and path.name.endswith((".model3.json", ".model.json")):
             gpt_path = str(PROJECT_ROOT / "GPT_SoVITS")
             if gpt_path not in sys.path:
                 sys.path.insert(0, gpt_path)

@@ -247,7 +247,7 @@ class Live2DModule(SingleCharacterPerformance):
             initial_icon_path = "../live2d_related/sakiko/sakiko_icon.png"
         pygame.display.set_icon(pygame.image.load(initial_icon_path))
 
-        if self.if_sakiko and isinstance(model, Live2DModelAdapter):
+        if self.if_sakiko and self.sakiko_state and isinstance(model, Live2DModelAdapter):
             model.SetSemanticExpression('serious')
 
         overlay=TextOverlay((win_w_and_h, win_w_and_h),[self.current_character.character_name])
@@ -537,8 +537,6 @@ class Live2DModule(SingleCharacterPerformance):
                         character_folder_name=character_folder_name,
                         use_default=False,
                     )
-                    if self.if_sakiko and self.sakiko_state and target_model_path is not None:
-                        target_model_path = '../live2d_related/sakiko/live2D_model_costume/3.model.json'
 
                     mouth_keep_open_value = 0.0
                     self.motion_is_over = True
@@ -617,16 +615,7 @@ class Live2DModule(SingleCharacterPerformance):
 
             if not self.farewell_started and not char_is_converted_queue.empty():
                 from runtime.character_presentation import apply_sakiko_state
-                def replace_character_model(previous, path):
-                    nonlocal current_layout_model_path, current_layout
-                    candidate = replace_model(previous, path)
-                    if isinstance(candidate, Live2DModelAdapter):
-                        current_layout_model_path = path
-                        current_layout = get_live2d_layout(path, candidate.version, layout_scene, 'desktop')
-                        candidate.SetScale(current_layout.scale)
-                        candidate.SetOffset(current_layout.offset_x, current_layout.offset_y)
-                    return candidate
-                model = apply_sakiko_state(self, model, char_is_converted_queue.get(), self.PATH_JSON, replace_character_model)
+                model = apply_sakiko_state(self, model, char_is_converted_queue.get())
 
             if not self.farewell_started and not emotion_queue.empty():
                 emotion = emotion_queue.get()

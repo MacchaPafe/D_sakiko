@@ -35,7 +35,7 @@ def execute_viewer_preview(model: Live2DModelAdapter | NullLive2DModel, command:
                 label = expression
         else:
             file = str(payload.get("file") or "")
-            ok = model.StartMotionFile(file)
+            ok = model.StartMotionFile(file, auto_expression=False) if payload.get("auto_expression") is False else model.StartMotionFile(file)
             label = Path(file).name
         return dict(result, ok=ok, message=f"正在预览：{label}" if ok else f"预览未完整启动：{label}，请检查资源")
     except Exception:

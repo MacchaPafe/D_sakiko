@@ -626,59 +626,85 @@ class CurrentConfig:
         logger.debug("为已存在角色下载：%s", self.download_for_existing_char)
 
 import os,shutil,glob,json
+from pathlib import Path
+import tempfile
+
+
 class AddCostume:
     @staticmethod
     def add_costume_for_existed_char(char_folder_name: str,internal_live2d_name: str,costume_name: str):
-        save_folder_path=f"../live2d_related/{char_folder_name}/extra_model"
-        new_costume_path=f"{save_folder_path}/{costume_name}"
-        if not os.path.exists(save_folder_path):    #创建extra_model文件夹
-            os.makedirs(save_folder_path)
-        if not os.path.exists(new_costume_path):    #创建服装文件夹
-            os.makedirs(new_costume_path)
-        if not os.path.exists(f"./.model_download_cache/{internal_live2d_name}"):    #检查缓存文件夹是否存在
-            raise FileNotFoundError(f"未找到已下载服装的缓存文件夹，下载过程可能出现了某些未知错误:./.model_download_cache/{internal_live2d_name}!")
+        """已有角色的首个模型成为默认模型，后续服装保存到额外模型目录。"""
+        character = Path("../live2d_related") / char_folder_name
+        if not character.is_dir():
+            raise FileNotFoundError(f"角色目录不存在：{char_folder_name}")
+        default = character / "live2D_model"
+        models = sorted(
+            (p for p in default.rglob("*.json")
+             if p.is_file() and p.name.lower().endswith((".model.json", ".model3.json"))),
+            key=lambda p: (len(p.parts), str(p)),
+        )
+        parent = character / ("extra_model" if models else "live2D_model")
+        parent.mkdir(exist_ok=True)
+        target = parent / costume_name
+        index = 2
+        while target.exists():
+            target = parent / f"{costume_name}_{index}"
+            index += 1
+        # V3 默认模型不能作为 V2 配置模板，直接从本次资源生成 V2 配置。
+        template = next((p for p in models if p.name.lower().endswith(".model.json")), None)
+        with tempfile.TemporaryDirectory(prefix=".v2-install-", dir=str(parent)) as stage:
+            ready = Path(stage) / "model"
+            ready.mkdir()
+            AddCostume._write_downloaded_v2_model(internal_live2d_name, ready, template)
+            ready.rename(target)
+        return str(target.resolve())
 
-        #首先从默认模型文件夹中复制除moc和贴图的文件
-        default_model_path=f"../live2d_related/{char_folder_name}/live2D_model"
-        all_copy_files=[]
-        model_json=glob.glob(os.path.join(default_model_path,f"*.model.json"))[0]
-        all_copy_files.append(model_json)
-        mtns=glob.glob(os.path.join(default_model_path,f"*.mtn"))
-        all_copy_files.extend(mtns)
-        exps=glob.glob(os.path.join(default_model_path,f"*.exp.json"))
-        all_copy_files.extend(exps)
-        for file in all_copy_files:
-            shutil.copy(file,new_costume_path)
-        #然后从下载缓存文件夹中复制下载到的文件
-        cache_mocs=glob.glob(os.path.join(f"./.model_download_cache/{internal_live2d_name}",f"*.moc"))
-        for file in cache_mocs:
-            shutil.copy(file,new_costume_path)
-        cache_physics=glob.glob(os.path.join(f"./.model_download_cache/{internal_live2d_name}",f"*.physics.json"))
-        for file in cache_physics:
-            shutil.copy(file,new_costume_path)
-        cache_textures=glob.glob(os.path.join(f"./.model_download_cache/{internal_live2d_name}/textures",f"*.png"))
-        for file in cache_textures:
-            shutil.copy(file,new_costume_path)
-        cache_motions=glob.glob(os.path.join(f"./.model_download_cache/{internal_live2d_name}/motions",f"*.mtn"))
-        for file in cache_motions:
-            shutil.copy(file,new_costume_path)
-        cache_expressions=glob.glob(os.path.join(f"./.model_download_cache/{internal_live2d_name}/expressions",f"*.exp.json"))
-        for file in cache_expressions:
-            shutil.copy(file,new_costume_path)
-        #修改新的model.json文件
-        with open(f"{new_costume_path}/{os.path.basename(model_json)}",'r',encoding='utf-8') as f:
-            model_json_content=json.load(f)
-        model_json_content["model"]=f"{os.path.basename(cache_mocs[0])}"
-        model_json_content["textures"]=[f"{os.path.basename(tex)}" for tex in cache_textures]
-        if cache_physics:
-            model_json_content["physics"]=f"{os.path.basename(cache_physics[0])}"
-            if "physics_v2" in model_json_content:
-                model_json_content["physics_v2"]= {"file":f"{os.path.basename(cache_physics[0])}"}
+    @staticmethod
+    def _write_downloaded_v2_model(live2d_name, destination, template=None):
+        """复制下载资源，并沿用 V2 模板或独立生成项目标准模型配置。"""
+        cache = Path("./.model_download_cache") / live2d_name
+        if not cache.is_dir():
+            raise FileNotFoundError(f"未找到已下载服装的缓存文件夹：{cache}")
+        mocs = sorted(cache.glob("*.moc"))
+        physics = sorted(cache.glob("*.physics.json"))
+        textures = sorted((cache / "textures").glob("*.png"))
+        motions = sorted((cache / "motions").glob("*.mtn"))
+        expressions = sorted((cache / "expressions").glob("*.exp.json"))
+        if not mocs or not textures:
+            raise ValueError("下载的 V2 模型缺少 moc 或贴图文件")
+        if template is not None:
+            data = json.loads(template.read_text(encoding="utf-8"))
+            for pattern in ("*.mtn", "*.exp.json"):
+                for file in template.parent.glob(pattern):
+                    shutil.copy2(file, destination / file.name)
+            model_name = template.name
         else:
-            model_json_content.pop("physics", None)
-            model_json_content.pop("physics_v2", None)
-        with open(f"{new_costume_path}/{os.path.basename(model_json)}",'w',encoding='utf-8') as f:
-            json.dump(model_json_content,f, indent=4, ensure_ascii=False)
+            data = {
+                "motions": build_downloaded_v2_standard_motions(
+                    [file.name for file in motions],
+                    fallback_file_name=motions[randint(0, len(motions) - 1)].name if motions else None,
+                ),
+                "expressions": [
+                    {"name": "idle" if file.name == "idle01.exp.json" else file.name[:-len(".exp.json")],
+                     "file": file.name}
+                    for file in expressions
+                ],
+            }
+            model_name = "3.model.json"
+        for file in mocs + physics + textures + motions + expressions:
+            shutil.copy2(file, destination / file.name)
+        data["model"] = mocs[0].name
+        data["textures"] = [file.name for file in textures]
+        if physics:
+            data["physics"] = physics[0].name
+            if template is None or "physics_v2" in data:
+                data["physics_v2"] = {"file": physics[0].name}
+        else:
+            data.pop("physics", None)
+            data.pop("physics_v2", None)
+        (destination / model_name).write_text(
+            json.dumps(data, indent=4, ensure_ascii=False), encoding="utf-8",
+        )
 
     @staticmethod
     def add_costume_for_new_character(character_ui_name,character_folder_name,live2d_name):
@@ -693,44 +719,7 @@ class AddCostume:
             f.write("你精通角色扮演，你要扮演BangDream角色: "+char_info_json[character_ui_name]["full_name"]+"当用户提到一些和角色相关的信息，但你并不了解具体情况时（比如，角色的兴趣爱好、喜欢的食物等），请调用web_search工具去获取信息。")
         save_model_folder_path=f"../live2d_related/{character_folder_name}/live2D_model"
         os.makedirs(save_model_folder_path)
-        #从从下载缓存文件夹中复制下载到的文件
-        cache_mocs=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}",f"*.moc"))
-        for file in cache_mocs:
-            shutil.copy(file,save_model_folder_path)
-        cache_physics=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}",f"*.physics.json"))
-        for file in cache_physics:
-            shutil.copy(file,save_model_folder_path)
-        cache_textures=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}/textures",f"*.png"))
-        for file in cache_textures:
-            shutil.copy(file,save_model_folder_path)
-        cache_motions=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}/motions",f"*.mtn"))
-        for file in cache_motions:
-            shutil.copy(file,save_model_folder_path)
-        cache_expressions=glob.glob(os.path.join(f"./.model_download_cache/{live2d_name}/expressions",f"*.exp.json"))
-        for file in cache_expressions:
-            shutil.copy(file,save_model_folder_path)
-        #创建model.json文件
-        model_json_content={"model":f"{os.path.basename(cache_mocs[0])}",
-                            "textures":[f"{os.path.basename(tex)}" for tex in cache_textures],
-                            }
-        if cache_physics:
-            model_json_content["physics"]=f"{os.path.basename(cache_physics[0])}"
-            model_json_content["physics_v2"]= {"file":f"{os.path.basename(cache_physics[0])}"}
-
-        cache_motion_names = [os.path.basename(motion_file) for motion_file in cache_motions]
-        fallback_motion_name = (
-            os.path.basename(cache_motions[randint(0, len(cache_motions) - 1)])
-            if cache_motions
-            else None
-        )
-        model_json_content["motions"] = build_downloaded_v2_standard_motions(
-            cache_motion_names,
-            fallback_file_name=fallback_motion_name,
-        )
-        model_json_content["expressions"]=[{"name":"idle","file":"idle01.exp.json"}]    #修复没有表情字段导致切换角色崩溃
-        with open(f"{save_model_folder_path}/3.model.json",'w',encoding='utf-8') as f:
-            json.dump(model_json_content,f, indent=4, ensure_ascii=False)
-
+        AddCostume._write_downloaded_v2_model(live2d_name, Path(save_model_folder_path))
 
         #创建reference_audio内的空文件夹
         os.makedirs(f"../reference_audio/{character_folder_name}",exist_ok=True)
@@ -747,4 +736,3 @@ class AddCostume:
 3''')
         with open(f"../reference_audio/{character_folder_name}/reference_text.txt",'w',encoding='utf-8') as f:
             f.write('')
-

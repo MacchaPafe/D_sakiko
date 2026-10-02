@@ -891,7 +891,7 @@ class SettingsDialog(QDialog):
         self.btn_sakiko_state = QPushButton("切换黑/白祥")
         self.btn_sakiko_state.setMinimumHeight(btn_h)
 
-        self.btn_sakiko_model = QPushButton("切换外观")
+        self.btn_sakiko_model = QPushButton("面具")
         self.btn_sakiko_model.setMinimumHeight(btn_h)
 
         sakiko_layout.addWidget(self.btn_sakiko_state, 0, 0)
@@ -940,13 +940,6 @@ class SettingsDialog(QDialog):
             live2d_group.hide()
             self.btn_character_0_model.hide()
             self.btn_character_1_model.hide()
-        # 祥子不能换模型；如果有个输入角色为祥子，隐藏 live2d 模型切换按钮
-        if "祥子" in character_names:
-            if character_names[0] == "祥子":
-                self.btn_character_0_model.hide()
-            elif character_names[1] == "祥子":
-                self.btn_character_1_model.hide()
-
         # 根据当前对话角色动态显示祥子状态控制按钮
         if "祥子" in self.character_names:
             sakiko_group.show()
@@ -998,7 +991,7 @@ class SettingsDialog(QDialog):
             self.btn_change_char.clicked.connect(self.parent_gui._change_character)
             self.btn_detail_info.clicked.connect(self.parent_gui.config_more_info)
             self.btn_sakiko_state.clicked.connect(self.parent_gui.convert_sakiko_state)
-            self.btn_sakiko_model.clicked.connect(self.parent_gui.convert_sakiko_model)
+            self.btn_sakiko_model.setMenu(self.parent_gui.create_mask_menu())
             self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
             self.btn_set_bgm.clicked.connect(self.parent_gui.set_bgm)
             self.btn_motion_facing.clicked.connect(self.change_motion_facing_mode)
@@ -1024,11 +1017,9 @@ class SettingsDialog(QDialog):
         if folder_path != "":
             dialog = ChangeL2DModelWindow(
                 folder_path,
-                lambda option: self.parent_gui._on_live2d_model_changed(
-                    char_index,
-                    self.character_names[char_index],
-                    option,
-                ),
+                lambda option, chat_id=self.parent_gui.current_chat.chat_id, form=self.parent_gui.current_chat.get_character_form(folder_path): self.parent_gui._on_live2d_model_changed(
+                    char_index, self.character_names[char_index], option, chat_id=chat_id, form=form),
+                form=self.parent_gui.current_chat.get_character_form(folder_path),
             )
             dialog.exec()
 
@@ -1071,9 +1062,11 @@ class ViewerGUI(QWidget):
                  audio_gen_module,
                  to_live2d_module_queue,
                  to_live2d_change_character_queue,
-                 tell_qt_this_turn_finish_queue
+                 tell_qt_this_turn_finish_queue,
+                 playback_idle_value=None,
                  ):
         super().__init__()
+        self.playback_idle_value = playback_idle_value
 
         self.setWindowTitle("数字小祥 小剧场")
         self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
@@ -1261,6 +1254,8 @@ class ViewerGUI(QWidget):
         self._generation_serial = 0
         self.settings_dialog: Optional[SettingsDialog] = None
         self.ensure_theater_chat_exists()
+        if self.current_chat is not None:
+            self.sakiko_state = self.current_chat.get_character_form() == "black"
         self.refresh_chat_list()
 
         self.two_char_names=[]
@@ -1689,13 +1684,18 @@ class ViewerGUI(QWidget):
             if slot not in override_paths and self.current_chat is not None:
                 model_path = self.current_chat.get_custom_live2d_model_meta(char_name)
             if slot not in override_paths and self.current_chat is None:
-                model_path = self._default_model_path_from_index(char_index)
+                if self.character_list[char_index].character_folder_name == "sakiko":
+                    from live2d_support.character_forms import default_form_model
+                    model_path = default_form_model("black" if self.sakiko_state else "white")
+                else:
+                    model_path = self._default_model_path_from_index(char_index)
 
             slots.append({
                 "slot": slot,
                 "character_name": char_name,
                 "character_folder_name": self.character_list[char_index].character_folder_name,
                 "model_json_path": model_path,
+                "sakiko_state": self.sakiko_state,
             })
             if model_path is not None:
                 model_paths.append(model_path)
@@ -1734,6 +1734,10 @@ class ViewerGUI(QWidget):
             preserve_playback=preserve_playback,
             changed_slot=changed_slot,
         )
+        for slot in payload["slots"]:
+            path = slot.get("model_json_path")
+            if path:
+                self._prepare_live2d_model_for_switch(path, "加载小剧场 Live2D 模型")
         self.to_live2d_change_character_queue.put(payload)
         self._refresh_open_settings_dialog()
 
@@ -1745,6 +1749,8 @@ class ViewerGUI(QWidget):
         :param preserve_playback: 设置为 True 时，传入的内容会进入队列排队，在前面已有内容播放完后再播放；
         设置为 False 时，当前正在播放的内容播放完一整句后会被立刻打断，立即播放传入的内容。（此时队列缓存的待播放内容也会被清空）
         """
+        if self.playback_idle_value is not None and msg:
+            self.playback_idle_value.value = False
         payload = {
             "playlist": msg,
             "preserve_playback": preserve_playback,
@@ -1756,11 +1762,18 @@ class ViewerGUI(QWidget):
         char_index: int,
         character_name: str,
         option: Live2DModelOption,
+        *, chat_id=None, form=None,
     ) -> None:
         """
         接收 SettingsDialog 中角色模型更换的回调，并通知 Live2D 模块更新指定角色的模型。
         随后，将新的模型路径保存到对话信息中。
         """
+        folder = self.character_list[self.current_char_index[char_index]].character_folder_name
+        if self.current_chat is None or character_name != self.character_list[self.current_char_index[char_index]].character_name or (chat_id is not None and (chat_id != self.current_chat.chat_id or form != self.current_chat.get_character_form(folder))):
+            self.message_queue.put("对话或形态已变化，请重新打开模型窗口。")
+            return
+        from live2d_support.character_forms import explicit_model, set_model_override
+        previous = explicit_model(self.current_chat.meta, character_name, folder, form)
         model_path = str(option.model_json_path)
         if not self._prepare_live2d_model_for_switch(model_path, "切换小剧场 Live2D 模型"):
             return
@@ -1770,6 +1783,7 @@ class ViewerGUI(QWidget):
             else:
                 self.current_chat.update_custom_live2d_model_meta(character_name, model_path)
             if not self._save_chat():
+                set_model_override(self.current_chat.meta, character_name, folder, previous, form)
                 return
         # 设置面板中的“切同角色不同模型”不应中断正在播放的句子
         self.sync_live2d_active_slots(
@@ -1794,6 +1808,7 @@ class ViewerGUI(QWidget):
     def switch_chat(self, chat: Chat) -> None:
         """切换当前对话，并同步文本渲染与 Live2D 角色。"""
         self.current_chat = chat
+        self.sakiko_state = chat.get_character_form() == "black"
         self._ensure_current_chat_theater_meta()
 
         char_names = self._chat_character_names(chat)
@@ -2086,29 +2101,41 @@ class ViewerGUI(QWidget):
             self.two_char_names[1] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
 
     def convert_sakiko_state(self):
-        sakiko_exists=False
-        for index in self.current_char_index:
-            if self.character_list[index].character_name=='祥子':
-                sakiko_exists=True
-                break
-        if not sakiko_exists:
-            self.message_queue.put("祥子好像不在...")
+        if self.current_chat is None or not any(self.character_list[index].character_folder_name == "sakiko" for index in self.current_char_index):
+            self.message_queue.put("祥子好像不在…")
             return
-        self.sakiko_state=not self.sakiko_state
+        if not self.generate_btn.isEnabled() or self.pending_turn_uids or (self.playback_idle_value is not None and not self.playback_idle_value.value):
+            self.message_queue.put("请等待生成和播放完成后切换形态。")
+            return
+        previous = self.current_chat.get_character_form()
+        stored_form = self.current_chat.meta.character_forms.get("sakiko")
+        self.current_chat.set_character_form("white" if previous == "black" else "black")
+        if not self._save_chat():
+            if stored_form is None:
+                self.current_chat.meta.character_forms.pop("sakiko", None)
+            else:
+                self.current_chat.set_character_form(stored_form)
+            return
+        self.sakiko_state = self.current_chat.get_character_form() == "black"
         self.set_two_char_names()
-        self.audio_gen_module.sakiko_which_state=self.sakiko_state
-        self.message_queue.put(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]} ")
+        self.audio_gen_module.sakiko_which_state = self.sakiko_state
+        self.sync_live2d_active_slots()
+        self.message_queue.put(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]}")
 
-    def convert_sakiko_model(self):
-        sakiko_exists = False
-        for index in self.current_char_index:
-            if self.character_list[index].character_name == '祥子':
-                sakiko_exists = True
-                break
-        if not sakiko_exists:
-            self.message_queue.put("祥子好像不在...")
-            return
-        self.to_live2d_change_character_queue.put({"type": "toggle_sakiko_model"})
+    def create_mask_menu(self):
+        from live2d_support.mask_actions import mask_actions
+        menu = QMenu(self)
+        for key, label in (("on", "戴上面具"), ("off", "摘下面具")):
+            action = menu.addAction(label)
+            action.setData(key)
+            action.triggered.connect(lambda checked=False, value=key: self.to_live2d_change_character_queue.put({"type": "mask_action", "action": value}))
+        def refresh():
+            present = any(self.character_list[index].character_folder_name == "sakiko" for index in self.current_char_index)
+            bindings = mask_actions(self.current_chat.get_custom_live2d_model_meta("祥子")) if self.current_chat and present and self.sakiko_state else {}
+            for action in menu.actions():
+                action.setEnabled(action.data() in bindings and self.generate_btn.isEnabled() and not self.pending_turn_uids and (self.playback_idle_value is None or self.playback_idle_value.value))
+        menu.aboutToShow.connect(refresh)
+        return menu
 
     def switch_l2d_fps(self):
         self.l2d_fps_dict["current_fps"] = (
@@ -2627,6 +2654,7 @@ if __name__ == "__main__":
     dp2qt_queue = ctx.Queue()
     to_live2d_module_queue = ctx.Queue()
     tell_qt_this_turn_finish_queue = ctx.Queue()
+    playback_idle_value = ctx.Value("b", True)
 
     audio_gen.initialize(get_char_attr.character_class_list, message_queue)
 
@@ -2634,7 +2662,7 @@ if __name__ == "__main__":
     live2d_process = ctx.Process(
         target=run_live2d_process,
         args=(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue, 
-              get_log_queue()),
+              get_log_queue(), playback_idle_value),
         name="Live2DProcess",
     )
 
@@ -2654,6 +2682,7 @@ if __name__ == "__main__":
         to_live2d_module_queue,
         change_char_queue,
         tell_qt_this_turn_finish_queue,
+        playback_idle_value,
     )
     font_path = os.path.join(project_root, "font", "msyh.ttc")
     font_id = QFontDatabase.addApplicationFont(os.path.abspath(font_path))  # 设置字体

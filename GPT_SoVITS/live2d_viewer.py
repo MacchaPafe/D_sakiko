@@ -33,7 +33,7 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
-    QApplication, QLabel, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox
+    QApplication, QLabel, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox, QComboBox
 
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QCloseEvent, QShowEvent
 
@@ -230,8 +230,6 @@ class Live2DModule:
             apply_viewer_layout(model_adapter)
             model_adapter.SetAutoBlinkEnable(True)
             model_adapter.SetAutoBreathEnable(True)
-            if self.if_sakiko:
-                model_adapter.SetSemanticExpression('serious')
             return model_adapter
 
         def create_viewer_model(model_json_path: str) -> Live2DModelAdapter:
@@ -339,10 +337,7 @@ class Live2DModule:
                 # 传入 change_character 字符串，表示要求切换角色
                 if x == "change_character":
                     self.change_character()
-                    if self.if_sakiko and self.sakiko_state:
-                        model = switch_model_runtime(model, '../live2d_related/sakiko/live2D_model_costume/3.model.json')
-                    else:
-                        model = switch_model_runtime(model, self.PATH_JSON)
+                    model = switch_model_runtime(model, self.PATH_JSON)
 
                     if self.character_list[self.current_character_num].icon_path is not None:
                         pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
@@ -352,7 +347,7 @@ class Live2DModule:
                         self.current_character_num = index
                         selected = self.character_list[index]
                         self.if_sakiko = selected.character_name == "祥子"
-                        self.PATH_JSON = str(x.get("model_path") or selected.live2d_json)
+                        self.PATH_JSON = x.get("model_path")
                         model = switch_model_runtime(model, self.PATH_JSON)
                         if selected.icon_path:
                             pygame.display.set_icon(pygame.image.load(selected.icon_path))
@@ -408,6 +403,7 @@ class ViewerGUI(QWidget):
         self.setStyleSheet(VIEWER_STYLE)
         self.character_list = characters
         self.current_char_index = 0
+        self.editing_form = "black"
         self.motion_queue = motion_queue
         self.change_char_queue = change_char_queue
         self.preview_result_queue = preview_result_queue
@@ -434,7 +430,16 @@ class ViewerGUI(QWidget):
         self.btn_change_costume = QPushButton()
         self.btn_change_costume.clicked.connect(self.change_costume)
         header.addWidget(self.btn_change_char)
+        self.form_selector = QComboBox()
+        self.form_selector.addItem("黑祥", "black")
+        self.form_selector.addItem("白祥", "white")
+        self.form_selector.setAccessibleName("编辑的祥子形态")
+        self.form_selector.currentIndexChanged.connect(self.select_form)
+        header.addWidget(self.form_selector)
         header.addWidget(self.btn_change_costume)
+        self.mask_button = QPushButton("面具动作…")
+        self.mask_button.clicked.connect(self.open_mask_actions)
+        header.addWidget(self.mask_button)
         header.addStretch()
         self.version_badge = QLabel()
         self.version_badge.setObjectName("muted")
@@ -530,7 +535,11 @@ class ViewerGUI(QWidget):
         self.page_title.setText("动作与表情" if independent else "情绪与动作")
         self.version_badge.setText((self.current_model_version or "无模型").upper())
         self.btn_change_char.setText(self.character_list[self.current_char_index].character_name + " ▾")
-        self.btn_change_costume.setText(str(self.extra_model_name.get(self.current_char_index) or "默认服装") + " ▾")
+        self.btn_change_costume.setText(str(self.extra_model_name.get(self._selection_key()) or "默认服装") + " ▾")
+        sakiko = self.character_list[self.current_char_index].character_folder_name == "sakiko"
+        self.form_selector.setVisible(sakiko)
+        self.mask_button.setVisible(sakiko)
+        self.mask_button.setEnabled(self.current_model_json_path is not None and self.all_motion_data is not None)
         self.automatic_action.setVisible(independent)
         self.intro_action.setVisible(independent)
         self.more_button.setVisible(independent)
@@ -631,21 +640,46 @@ class ViewerGUI(QWidget):
             self.pages.setCurrentWidget(self.performance_editor)
             dialog.deleteLater()
 
+    def _selection_key(self):
+        return (self.current_char_index, self.editing_form) if self.character_list[self.current_char_index].character_folder_name == "sakiko" else self.current_char_index
+
+    def select_form(self):
+        form = self.form_selector.currentData()
+        if form == self.editing_form:
+            return
+        if not self.performance_editor.confirm_leave():
+            self.form_selector.blockSignals(True)
+            self.form_selector.setCurrentIndex(self.form_selector.findData(self.editing_form))
+            self.form_selector.blockSignals(False)
+            return
+        self.editing_form = form
+        self.load_suitable_model()
+        self.change_char_queue.put({"type": "select_character", "index": self.current_char_index,
+            "model_path": str(self.current_model_json_path) if self.current_model_json_path else None})
+
+    def open_mask_actions(self):
+        if not self.current_model_json_path or not self.performance_editor.confirm_leave():
+            return
+        from ui.components.live2d_mask_editor import MaskActionsDialog
+        dialog = MaskActionsDialog(self.current_model_json_path, self.send_preview, self)
+        dialog.exec_()
+        dialog.deleteLater()
+
     def load_suitable_model(self):
         """
         根据 self.use_default_model 和 self.extra_model_name 的值，加载合适的模型。
         """
-        if self.use_default_model.get(self.current_char_index, True):
+        if self.use_default_model.get(self._selection_key(), True):
             self.load_model(None)
         else:
-            self.load_model(self.extra_model_name.get(self.current_char_index))
+            self.load_model(self.extra_model_name.get(self._selection_key()))
 
     def use_default_model_for_current_character(self):
         """
         切换显示模块使用当前角色的默认模型，并且更新类属性，保存这一设置
         """
-        self.use_default_model[self.current_char_index] = True
-        self.extra_model_name[self.current_char_index] = None
+        self.use_default_model[self._selection_key()] = True
+        self.extra_model_name[self._selection_key()] = None
         self.load_model(None)
 
     def use_extra_model_for_current_character(self, extra_model_name):
@@ -654,8 +688,8 @@ class ViewerGUI(QWidget):
 
         :param extra_model_name: 要使用的 extra_model 名称。
         """
-        self.use_default_model[self.current_char_index] = False
-        self.extra_model_name[self.current_char_index] = extra_model_name
+        self.use_default_model[self._selection_key()] = False
+        self.extra_model_name[self._selection_key()] = extra_model_name
         self.load_model(extra_model_name)
 
     def _find_model_json_in_folder(self, folder_path: pathlib.Path) -> pathlib.Path | None:
@@ -664,7 +698,7 @@ class ViewerGUI(QWidget):
             pathlib.Path(project_root),
         )
         resolved_folder = folder_path.resolve()
-        for option in catalog.list_options(self.current_char_base_folder_name):
+        for option in catalog.list_options(self.current_char_base_folder_name, form=self.editing_form):
             if option.available and option.model_directory.resolve() == resolved_folder:
                 return option.model_json_path
         return None
@@ -700,91 +734,52 @@ class ViewerGUI(QWidget):
         return ".motion3.json" if self.current_model_version == "v3" else ".mtn"
 
     def load_model(self, extra_model_name=None):
-        """
-        加载一个角色模型的所有动作名称信息。
-
-        :param extra_model_name: 如果该参数不是 None，那么改为加载该角色文件夹中 extra_model/{extra_model_name} 文件夹中的模型，而非默认模型。
-        """
+        """按角色、编辑形态与模型选择进入通用 V2/V3 编辑流程。"""
         self._preview_request_id = None
         self.current_model_version = None
-        if self.character_list[self.current_char_index].character_name == '祥子':
-            self.current_mnt_display.clear()
-            self.current_mnt_display.append("祥子暂时不能编辑动作组")
-            self.btn_change_costume.setEnabled(False)
-            # 仍然设置一个可用的动作文件夹路径，保证左侧 mtn 列表可用
-            self.current_char_base_folder_name = self.character_list[self.current_char_index].character_folder_name
-            costume_path = pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "live2D_model_costume"
-            default_path = pathlib.Path("../live2d_related") / self.current_char_base_folder_name / "live2D_model"
-            if costume_path.exists():
-                self.current_char_folder_path = costume_path
-            else:
-                self.current_char_folder_path = default_path
-
-            self.current_model_json_path = self._find_model_json_in_folder(self.current_char_folder_path)
-            if self.current_model_json_path is not None:
-                self.current_model_version = detect_live2d_runtime_version(str(self.current_model_json_path))
-            self.all_motion_data = None
-            self.left_selected_motion_path = None
-            self.right_selected_group = None
-            self.right_selected_index = None
-            self.update_button_states(disable_all=True)
-        else:
-            self.btn_change_costume.setEnabled(True)
-
-            self.current_char_base_folder_name = self.character_list[self.current_char_index].character_folder_name
-            if extra_model_name is not None:
-                self.current_char_folder_path = pathlib.Path("../live2d_related") / self.character_list[self.current_char_index].character_folder_name / "extra_model" / extra_model_name
-                self.current_model_json_path = self._find_model_json_in_folder(self.current_char_folder_path)
-            else:
-                self.current_model_json_path = pathlib.Path(self.character_list[self.current_char_index].live2d_json)
-                self.current_char_folder_path = self.current_model_json_path.parent
-
-            if self.current_model_json_path is None or not self.current_model_json_path.exists():
-                self.all_motion_data = None
-                self.message_box.append("没有找到当前模型的 model.json/model3.json，无法编辑动作组。")
-                self.update_button_states(disable_all=True)
-                self.performance_editor.load_model(None)
-                self._refresh_model_page()
-                return
-
-            self.current_model_version = detect_live2d_runtime_version(str(self.current_model_json_path))
-            if self.current_model_version == "v3":
-                character.rebuild_model3_motion_groups(str(self.current_model_json_path))
-            self.performance_editor.load_model(self.current_model_json_path)
-
-            with open(self.current_model_json_path,'r',encoding='utf-8') as f:
-                self.all_motion_data=json.load(f)
-
-            # 切换角色/模型时，重置选中状态
-            self.left_selected_motion_path = None
-            self.right_selected_group = None
-            self.right_selected_index = None
-
-            self.current_mnt_display.clear()
-            self.refresh_current_mnt_display(preserve_scroll=False)
-            self.update_button_states()
-
-        # 重新填充左侧可选 mtn 文件列表
-        if self.all_motion_data is None:
-            self.performance_editor.load_model(None)
-        self._refresh_model_page()
+        self.all_motion_data = None
+        self.left_selected_motion_path = None
+        self.right_selected_group = None
+        self.right_selected_index = None
+        selected = self.character_list[self.current_char_index]
+        self.current_char_base_folder_name = selected.character_folder_name
+        self.btn_change_costume.setEnabled(True)
+        catalog = Live2DModelCatalog(pathlib.Path(project_root) / "live2d_related", pathlib.Path(project_root))
+        options = catalog.list_options(self.current_char_base_folder_name, form=self.editing_form)
+        option = next((item for item in options if
+                       (item.is_default if extra_model_name is None else item.model_directory.name == extra_model_name)), None)
+        self.current_model_json_path = option.model_json_path if option else None
+        if option is None and extra_model_name is None and selected.character_folder_name != "sakiko" and selected.live2d_json:
+            self.current_model_json_path = pathlib.Path(selected.live2d_json)
+        self.current_char_folder_path = self.current_model_json_path.parent if self.current_model_json_path else pathlib.Path(project_root) / "live2d_related" / selected.character_folder_name
         self.all_mnt_display.clear()
-        folder_path=self.current_char_folder_path
-        self.all_mnt_title.setText("可用动作 · 点击预览")
-
-        all_paths = []
-        suffix = self._current_motion_suffix()
-        if not folder_path.is_dir():
+        self.current_mnt_display.clear()
+        if self.current_model_json_path is None or not self.current_model_json_path.exists():
+            self.message_box.append("没有找到当前模型的 model.json/model3.json，无法编辑。")
+            self.update_button_states(disable_all=True)
+            self.performance_editor.load_model(None)
+            self._refresh_model_page()
             return
-        for filename in os.listdir(folder_path):
-            full_path = (folder_path / filename).resolve()
-            if full_path.is_file() and filename.lower().endswith(suffix):
-                full_path=full_path.as_posix()
-                all_paths.append(full_path)
-
-        all_paths.sort()
-        for idx, path in enumerate(all_paths, start=1):
-            self.all_mnt_display.append(f'<a href="{path}" style="text-decoration: none; color: #426BAA;">{idx}. {os.path.basename(path)}</a>'+'\n')
+        from live2d_support.model_normalizer import normalize_live2d_model_for_project
+        result = normalize_live2d_model_for_project(str(self.current_model_json_path))
+        if not result.ok:
+            self.message_box.append("模型配置无法读取：" + result.error_message)
+            self.update_button_states(disable_all=True)
+            self.performance_editor.load_model(None)
+            self._refresh_model_page()
+            return
+        self.current_model_version = detect_live2d_runtime_version(str(self.current_model_json_path))
+        with open(self.current_model_json_path, encoding="utf-8") as model_file:
+            self.all_motion_data = json.load(model_file)
+        self.performance_editor.load_model(self.current_model_json_path)
+        self.refresh_current_mnt_display(preserve_scroll=False)
+        self.update_button_states()
+        self._refresh_model_page()
+        self.all_mnt_title.setText("可用动作 · 点击预览")
+        suffix = self._current_motion_suffix()
+        paths = sorted(path.resolve() for path in self.current_char_folder_path.rglob("*" + suffix) if path.is_file())
+        for index, path in enumerate(paths, start=1):
+            self.all_mnt_display.append(f'<a href="{path.as_posix()}" style="text-decoration:none; color:#426BAA;">{index}. {path.name}</a>\n')
         self.all_mnt_display.verticalScrollBar().setValue(0)
 
     def change_char(self) -> None:
@@ -818,6 +813,7 @@ class ViewerGUI(QWidget):
         dialog = ChangeL2DModelWindow(
             self.current_char_base_folder_name,
             self._on_change_costume_confirmed,
+            form=self.editing_form if self.current_char_base_folder_name == "sakiko" else None,
         )
         dialog.exec()
 
@@ -841,8 +837,6 @@ class ViewerGUI(QWidget):
 
         # 右侧栏点击：可能是组标题，也可能是某个具体动作
         url_str = motion_path.toString()
-        if self.character_list[self.current_char_index].character_name == '祥子':
-            return
         if self.all_motion_data is None:
             return
 
@@ -903,7 +897,7 @@ class ViewerGUI(QWidget):
         self.update_button_states()
 
     def update_button_states(self, disable_all: bool = False):
-        if disable_all or self.character_list[self.current_char_index].character_name == '祥子':
+        if disable_all:
             self.btn_add_motion.setEnabled(False)
             self.btn_replace_motion.setEnabled(False)
             self.btn_delete_motion.setEnabled(False)
@@ -1025,7 +1019,7 @@ class ViewerGUI(QWidget):
         self.load_suitable_model()
 
         # 恢复选中状态（仅在可编辑角色时）
-        if self.character_list[self.current_char_index].character_name != '祥子' and self.all_motion_data is not None:
+        if self.all_motion_data is not None:
             self.left_selected_motion_path = old_left
             self.right_selected_group = old_group
             self.right_selected_index = old_index
@@ -1074,7 +1068,7 @@ class ViewerGUI(QWidget):
             self.message_box.append(f"动作组 '{group_key}' 不存在，无法添加！")
             return
 
-        file_name = os.path.basename(self.left_selected_motion_path)
+        file_name = pathlib.Path(self.left_selected_motion_path).resolve().relative_to(self.current_char_folder_path.resolve()).as_posix()
 
         # 新动作的 name：{group}_{n}，n 取最小可用
         new_motion_name = self._generate_unique_motion_name(group_key) if self.current_model_version != "v3" else ""
@@ -1126,7 +1120,7 @@ class ViewerGUI(QWidget):
             self.message_box.append("右侧选中动作无效，无法替换！")
             return
 
-        file_name = os.path.basename(self.left_selected_motion_path)
+        file_name = pathlib.Path(self.left_selected_motion_path).resolve().relative_to(self.current_char_folder_path.resolve()).as_posix()
         self._set_motion_file_name(target_list[idx], file_name)
         self._write_motion_json()
         self.message_box.clear()

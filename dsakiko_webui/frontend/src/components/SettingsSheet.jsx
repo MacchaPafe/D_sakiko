@@ -2,7 +2,7 @@ import { ChevronDown, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { IconButton } from './IconButton'
 
-export function SettingsSheet({ open, busy, onClose, onLoad, onSave }) {
+export function SettingsSheet({ open, busy, onClose, onLoad, onSave, onFormChange, onMaskAction }) {
   const [settings, setSettings] = useState(null)
   const [saving, setSaving] = useState(false)
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement))
@@ -46,6 +46,27 @@ export function SettingsSheet({ open, busy, onClose, onLoad, onSave }) {
     }
   }
 
+  const changeForm = async () => {
+    if (busy || saving) return
+    setSaving(true)
+    try {
+      await onFormChange(settings.character_form === 'black' ? 'white' : 'black', settings.chat_id)
+      const result = await onLoad()
+      setSettings(result)
+    } catch {
+      // RuntimeProvider displays command failures.
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const playMask = async (action) => {
+    if (busy || saving) return
+    setSaving(true)
+    try { await onMaskAction(action, settings.chat_id) } catch { /* Shared error toast. */ }
+    finally { setSaving(false) }
+  }
+
   const toggleFullscreen = async (enabled) => {
     try {
       if (enabled && !document.fullscreenElement) await document.documentElement.requestFullscreen()
@@ -74,6 +95,19 @@ export function SettingsSheet({ open, busy, onClose, onLoad, onSave }) {
           <div className="settings-sheet__loading"><span className="loading-spinner" />正在读取设置</div>
         ) : (
           <div className="settings-sheet__content">
+            {settings.character_form && (
+              <section className="settings-group">
+                <h3>祥子 · {settings.character_form === 'black' ? '黑祥' : '白祥'}</h3>
+                <button type="button" disabled={busy || saving} onClick={changeForm}>
+                  切换为{settings.character_form === 'black' ? '白祥' : '黑祥'}
+                </button>
+                <div>
+                  <button type="button" disabled={busy || saving || !settings.mask_actions?.includes('on')} onClick={() => playMask('on')}>戴上面具</button>
+                  <button type="button" disabled={busy || saving || !settings.mask_actions?.includes('off')} onClick={() => playMask('off')}>摘下面具</button>
+                </div>
+                <p className="settings-hint">在电脑端演出编辑器中配置模型的面具动作。</p>
+              </section>
+            )}
             <section className="settings-group">
               <h3>角色语音：{settings?.voice.character_name || '当前角色'}</h3>
               <label className="setting-slider">
