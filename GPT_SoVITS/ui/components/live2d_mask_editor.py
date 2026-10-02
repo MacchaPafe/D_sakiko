@@ -12,7 +12,7 @@ class MaskActionsDialog(QDialog):
         self.setWindowTitle("当前模型的面具动作")
         self.model_path = str(model_path)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("选择模型自身的摘戴动作。无需配置循环或保持动作。"))
+        layout.addWidget(QLabel("选择戴上与摘下面具的动作"))
         form = QFormLayout()
         self.selectors = {}
         choices = mask_motion_options(self.model_path)

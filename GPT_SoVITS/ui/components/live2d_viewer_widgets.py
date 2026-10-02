@@ -35,6 +35,14 @@ QPushButton#primary:disabled { background: #DCE3EC; color: #98A4B5; }
 QToolButton#quiet { background: transparent; border: none; padding: 4px 7px; }
 QToolButton#quiet::menu-indicator { image: none; width: 0px; height: 0px; }
 QListWidget, QTextBrowser, QTextEdit, QLineEdit, QComboBox { background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 6px; padding: 6px; selection-background-color: #DFE9F8; selection-color: #263449; }
+QComboBox#formSelector { padding: 7px 30px 7px 12px; combobox-popup: 0; }
+QComboBox#formSelector:hover { background: #EAF0FA; border-color: #A8BDD9; }
+QComboBox#formSelector:focus { border-color: #426BAA; }
+QComboBox#formSelector::drop-down { subcontrol-origin: border; subcontrol-position: top right; width: 26px; border: none; }
+QComboBox#formSelector::down-arrow { image: url(:/qfluentwidgets/images/icons/ChevronDown_black.svg); width: 10px; height: 10px; }
+QComboBox#formSelector QAbstractItemView { background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 0; padding: 4px; outline: none; selection-background-color: #DFE9F8; selection-color: #294E87; }
+QComboBox#formSelector QAbstractItemView::item { min-height: 28px; padding: 3px 8px; }
+QComboBox#formSelector QAbstractItemView::item:selected { background: #DFE9F8; color: #294E87; border: none; }
 QListWidget { outline: none; }
 QListWidget::item { padding: 7px 6px; border-radius: 4px; }
 QListWidget::item:selected { background: #DFE9F8; color: #294E87; }

@@ -33,7 +33,7 @@ from pygame.locals import DOUBLEBUF, OPENGL
 from OpenGL.GL import *
 import glob,os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
-    QApplication, QLabel, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox, QComboBox
+    QApplication, QLabel, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox, QComboBox, QListView, QStyleFactory
 
 from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QCloseEvent, QShowEvent
 
@@ -431,6 +431,15 @@ class ViewerGUI(QWidget):
         self.btn_change_costume.clicked.connect(self.change_costume)
         header.addWidget(self.btn_change_char)
         self.form_selector = QComboBox()
+        self.form_selector.setObjectName("formSelector")
+        # 使用普通列表弹窗，避免 macOS 原生菜单与编辑器样式混用导致偏移和黑边。
+        form_style = QStyleFactory.create("Fusion")
+        form_style.setParent(self.form_selector)
+        self.form_selector.setStyle(form_style)
+        form_view = QListView(self.form_selector)
+        self.form_selector.setView(form_view)
+        self.form_selector.setStyleSheet(VIEWER_STYLE)
+        self.form_selector.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.form_selector.addItem("黑祥", "black")
         self.form_selector.addItem("白祥", "white")
         self.form_selector.setAccessibleName("编辑的祥子形态")
@@ -538,7 +547,7 @@ class ViewerGUI(QWidget):
         self.btn_change_costume.setText(str(self.extra_model_name.get(self._selection_key()) or "默认服装") + " ▾")
         sakiko = self.character_list[self.current_char_index].character_folder_name == "sakiko"
         self.form_selector.setVisible(sakiko)
-        self.mask_button.setVisible(sakiko)
+        self.mask_button.setVisible(sakiko and self.editing_form == "black")
         self.mask_button.setEnabled(self.current_model_json_path is not None and self.all_motion_data is not None)
         self.automatic_action.setVisible(independent)
         self.intro_action.setVisible(independent)
