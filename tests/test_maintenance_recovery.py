@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import contextlib
 import hashlib
 import io
@@ -15,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'GPT_SoVITS'))
 sys.path.insert(0, str(ROOT))
 
-from maintenance.transactions import Transaction, load_transactions, pending_transactions, recommended_version, recover_pending, reconcile_recovery
+from maintenance.transactions import Transaction, pending_transactions, recommended_version, recover_pending, reconcile_recovery
 from tools.repair import choose_version
 
 
@@ -134,13 +136,12 @@ class RecoveryTest(unittest.TestCase):
 class UpdateTransactionIntegrationTest(unittest.TestCase):
     """验证真实更新入口把故障写入独立恢复事务。"""
 
-    def test_partial_binary_write_recovers_other_files_then_retries(self) -> None:
-        """模拟 Windows 持续拒绝二进制写入，验证回滚和启动重试。"""
+    def test_partial_temporary_write_keeps_original_and_rolls_back_other_files(self) -> None:
+        """临时文件写到一半失败时，原生库保持旧内容且其他文件完成回滚。"""
         import argparse
         import shutil
         from tools import apply_update_patch as updater
         original_copy = shutil.copy2
-        original_replace = Path.replace
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             root = Path(directory).resolve()
             package = root / 'package'
@@ -169,26 +170,23 @@ class UpdateTransactionIntegrationTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, 'patch ok', '')
 
             def interrupted_copy(source: Path, target: Path, **kwargs: object) -> str:
-                """模拟覆盖二进制时发生部分写入然后拒绝访问。"""
-                if Path(target) == binary:
-                    binary.write_bytes(b'partial')
-                    raise PermissionError('injected binary write failure')
+                """临时文件发生部分写入后模拟 Windows 共享冲突。"""
+                if Path(target).name.startswith('.library.pyd.'):
+                    Path(target).write_bytes(b'partial')
+                    error = PermissionError('injected binary write failure')
+                    error.winerror = 32
+                    raise error
                 return str(original_copy(source, target))
-
-            def locked_replace(source: Path, target: Path) -> Path:
-                """模拟同一个二进制在回滚时依旧拒绝替换。"""
-                if Path(target) == binary:
-                    raise PermissionError('injected rollback failure')
-                return original_replace(source, target)
 
             args = argparse.Namespace(manifest='manifest.json', version_file='version.json', no_remove_package=True,
                                       after_updater_restart=False)
             recorder = updater.UpdateResultRecorder(root, None, root/'update.log')
-            with patch.object(updater, 'detect_platform', return_value='macos'), patch.object(updater, 'detect_arch', return_value='arm64'), patch.object(updater.subprocess, 'run', side_effect=stage), patch.object(shutil, 'copy2', side_effect=interrupted_copy), patch.object(Path, 'replace', locked_replace):
+            with patch.object(updater, 'detect_platform', return_value='macos'), patch.object(updater, 'detect_arch', return_value='arm64'), patch.object(updater.subprocess, 'run', side_effect=stage), patch.object(shutil, 'copy2', side_effect=interrupted_copy), patch('maintenance.file_operations.time.sleep'), patch('maintenance.file_operations.describe_file_users', side_effect=RuntimeError('diagnosis unavailable')):
                 self.assertEqual(updater.apply_package_chain(root, root/'version.json', [package], hpatch, args, recorder), 1)
             self.assertEqual((root/'first.py').read_bytes(), b'old')
-            self.assertEqual(binary.read_bytes(), b'partial')
-            self.assertEqual(len(pending_transactions(root)), 1)
+            self.assertEqual(binary.read_bytes(), b'old')
+            self.assertFalse(pending_transactions(root))
+            self.assertFalse(list(root.glob('.library.pyd.*.tmp')))
             self.assertTrue(recover_pending(root))
             self.assertEqual(binary.read_bytes(), b'old')
 

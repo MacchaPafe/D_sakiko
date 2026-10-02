@@ -8,7 +8,8 @@
       "old_versions_root": "/Volumes/Windows Bac/D_sakiko_versions"
     },
     "windows-x64": {
-      "old_versions_root": "D://D_sakiko/"
+      "old_versions_root": "D://D_sakiko/",
+      "small_file_replace_threshold": 512000
     }
   }
 }

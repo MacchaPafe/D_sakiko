@@ -179,6 +179,61 @@ class ReleaseBuildTest(unittest.TestCase):
                 self.assertEqual(manifest["min_updater_version"], expected)
                 self.assertEqual(manifest["format_version"], 4 if replace else 3)
 
+    def test_small_file_threshold_configuration_and_zero_override(self) -> None:
+        """默认、profile、local 与 CLI 按优先级生效，零关闭自动替换。"""
+        self.assertEqual(self.config().small_file_replace_threshold, 512000)
+        data = json.loads(self.profile.read_text())
+        data['defaults']['small_file_replace_threshold'] = 128
+        self.profile.write_text(json.dumps(data))
+        self.assertEqual(self.config().small_file_replace_threshold, 128)
+        data['profiles']['macos-arm64']['small_file_replace_threshold'] = 256
+        self.profile.write_text(json.dumps(data))
+        self.assertEqual(self.config().small_file_replace_threshold, 256)
+        self.local.write_text(json.dumps({'profile_overrides': {'macos-arm64': {
+            'small_file_replace_threshold': 1024,
+        }}}))
+        self.assertEqual(self.config().small_file_replace_threshold, 1024)
+        config = self.config('--small-file-replace-threshold', '0')
+        self.assertEqual(config.small_file_replace_threshold, 0)
+        command = release.build_command(config, no_zip=True)
+        self.assertEqual(command[command.index('--small-file-replace-threshold') + 1], '0')
+
+    def test_invalid_threshold_configuration_is_rejected(self) -> None:
+        for value in (-1, True, '512000', 1.5):
+            with self.subTest(value=value):
+                self.local.write_text(json.dumps({'profile_overrides': {'macos-arm64': {
+                    'small_file_replace_threshold': value,
+                }}}))
+                with self.assertRaises(release.BuildError):
+                    self.config()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.config('--small-file-replace-threshold', '-1')
+
+    def test_automatic_replace_minimum_is_accepted_and_recorded(self) -> None:
+        """自动替换允许底层提高版本要求，并在元数据记录最终值与路径。"""
+        for configured, expected in (('1.0.0', '1.1.0'), ('1.10.0', '1.10.0')):
+            with self.subTest(configured=configured):
+                config = self.config('--min-updater-version', configured)
+                config.output.mkdir(exist_ok=True)
+                (config.output / 'patch.hdiff').touch()
+                write_manifest(
+                    output_root=config.output, manifest_name=config.manifest, patch_file_name=config.patch_file,
+                    base_version=config.base_version, target_version=config.target_version,
+                    app_id=config.app_id, channel=config.channel, platform=config.platform_name, arch=config.arch,
+                    min_updater_version=config.min_updater_version, ignore_patterns=[], include_patterns=[],
+                    records=[FileRecord('small.py', 'replace', '0' * 64, 2)],
+                    remove_files=[], added_files=[], changed_files=[],
+                )
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        patch.object(release, 'current_git_commit', return_value='test'):
+                    release.postflight(config, self.options)
+                    release.write_build_metadata(config, [])
+                metadata = json.loads((config.output / 'build_metadata.json').read_text())
+                self.assertEqual(metadata['min_updater_version'], expected)
+                self.assertEqual(metadata['replace'], ['small.py'])
+                self.assertEqual(metadata['explicit_replace'], [])
+                self.assertEqual(metadata['small_file_replace_threshold'], 512000)
+
     def test_frontend_runs_before_patch_and_records_build(self) -> None:
         """先完成前端构建再生成补丁，并记录此次构建选项。"""
 
@@ -198,6 +253,9 @@ class ReleaseBuildTest(unittest.TestCase):
                 self.assertEqual(calls, ["frontend"])
                 self.assertEqual(cwd, self.root)
                 calls.append("patch")
+                (config.output / config.manifest).write_text(json.dumps({
+                    'files': [], 'min_updater_version': config.min_updater_version,
+                }), encoding='utf-8')
             return subprocess.CompletedProcess(command, 0)
 
         with patch.object(release.shutil, "which", return_value="/fake/pnpm"), \

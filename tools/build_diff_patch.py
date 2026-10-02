@@ -92,6 +92,18 @@ PLATFORM_IGNORE_PATTERNS = {
 
 
 DEFAULT_INCLUDE_PATTERNS: list[str] = []
+DEFAULT_SMALL_FILE_REPLACE_THRESHOLD = 500 * 1024
+
+
+def nonnegative_bytes(value: str) -> int:
+    """将命令行字节阈值解析为非负整数，零表示关闭自动替换。"""
+    try:
+        result = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("文件大小阈值必须为非负整数字节数") from exc
+    if result < 0:
+        raise argparse.ArgumentTypeError("文件大小阈值必须为非负整数字节数")
+    return result
 
 
 PLATFORM_INCLUDE_PATTERNS = {
@@ -167,6 +179,11 @@ def parse_args() -> argparse.Namespace:
         help="最终排除哪些文件（支持 glob），不能被 include 覆盖，可多次传入。",
     )
     parser.add_argument("--replace", action="append", default=[], help="以完整文件替换方式发布的路径，可重复传入。")
+    parser.add_argument(
+        "--small-file-replace-threshold", type=nonnegative_bytes,
+        default=DEFAULT_SMALL_FILE_REPLACE_THRESHOLD,
+        help="新文件小于此字节数的修改项自动使用 replace；默认 512000（500 KiB），0 关闭。",
+    )
     parser.add_argument("--restart-updater-before-next-patch", action="store_true", help="应用成功后由新版更新器接力剩余补丁。")
     parser.add_argument(
         "--no-platform-includes",
@@ -477,6 +494,7 @@ def write_manifest(
             "remove_count": len(remove_files),
             "added_count": len(added_files),
             "changed_count": len(changed_files),
+            "replace_count": sum(item.action == "replace" for item in records),
             "file_count": len(records),
         },
     }
@@ -600,6 +618,16 @@ def main() -> int:
         current_files=current_files,
         old_files=old_files,
     )
+    unchanged_count = len(current_files & old_files) - len(changed_files)
+    automatic_replace = {
+        relative_path for relative_path in changed_files
+        if (current_root / relative_path).stat().st_size < args.small_file_replace_threshold
+    }
+    replace_files = sorted(set(replace_files) | automatic_replace)
+    changed_files = [path for path in changed_files if path not in automatic_replace]
+    print(f"[文件] 差分修改 {len(changed_files)}，完整替换 {len(replace_files)}"
+          f"（自动 {len(automatic_replace)}），新增 {len(added_files)}，"
+          f"删除 {len(remove_files)}，跳过未变化 {unchanged_count}")
     # 构建文件记录列表，供 manifest 和应用端使用
     records = build_file_records(
         current_root=current_root,
@@ -613,14 +641,14 @@ def main() -> int:
 
     patch_path = output_root / args.patch_file
     with tempfile.TemporaryDirectory(prefix="d_sakiko_hdiff_") as temp_dir:
-        # 创建新/旧版本两个目录，只放入所有满足扫描条件的旧文件和新文件
+        # 未变化、replace 和 remove 项不参与 hdiff，避免读取无关旧文件。
         temp_root = Path(temp_dir)
         old_stage = temp_root / "old"
         new_stage = temp_root / "new"
         old_stage.mkdir(parents=True, exist_ok=True)
         new_stage.mkdir(parents=True, exist_ok=True)
-        stage_tree(old_root, old_files, old_stage)
-        stage_tree(current_root, current_files, new_stage)
+        stage_tree(old_root, changed_files, old_stage)
+        stage_tree(current_root, [*changed_files, *added_files], new_stage)
         # 调用 hdiffz 生成差分文件，输入为两个 staging 目录，输出为指定路径的差分文件
         hdiff_options = normalize_hdiff_options(args.hdiff_option)
         print(f"[信息] hdiffz 参数：{' '.join(hdiff_options) if hdiff_options else '<默认>'}")

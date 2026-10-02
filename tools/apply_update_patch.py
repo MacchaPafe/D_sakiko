@@ -24,9 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "GPT_SoVITS") not in sys.path:
     sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 
-from maintenance.process import TeeWriter, parse_restart_command, restart_app, setup_logging, wait_for_process_exit
+from maintenance.process import parse_restart_command, restart_app, setup_logging, wait_for_process_exit
 
 from maintenance.transactions import Transaction, pending_transactions
+from maintenance.file_operations import FileOperation, atomic_copy_file, run_file_operations
 from update.operation_lock import OperationLockBusy, acquire_operation_lock
 
 
@@ -209,10 +210,22 @@ def load_json(file_path: Path) -> dict[str, object]:
     return json.loads(file_path.read_text(encoding="utf-8"))
 
 
-def write_json(file_path: Path, content: dict[str, object]) -> None:
-    """将字典按 UTF-8 JSON 格式写回文件。"""
+def write_json(file_path: Path, content: dict[str, object], transaction: Transaction | None = None) -> None:
+    """通过临时替换提交版本元数据，避免直接截断原版本文件。"""
 
-    file_path.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    staging = tempfile.TemporaryDirectory(prefix="d_sakiko_version_")
+    try:
+        source = Path(staging.name) / "version.json"
+        source.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        expected_sha = sha256_file(source)
+        run_file_operations([
+            FileOperation(file_path, "版本号", lambda: atomic_copy_file(source, file_path, expected_sha)),
+        ], log=transaction.log if transaction is not None else print)
+    finally:
+        try:
+            staging.cleanup()
+        except OSError as exc:
+            print(f"[清理] 版本临时目录暂未删除：{staging.name}，错误：{exc}")
 
 
 def resolve_hpatch_bin(app_root: Path, hpatch_bin_arg: str) -> Path:
@@ -384,7 +397,7 @@ def remove_path(path: Path) -> None:
     if path.is_file() or path.is_symlink():
         path.unlink(missing_ok=True)
     elif path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path)
 
 
 def set_executable(file_path: Path) -> None:
@@ -541,9 +554,10 @@ def apply_hdiff(
     if not os.access(hpatch_bin, os.X_OK):
         raise RuntimeError(f"hpatchz 不可执行，请先 chmod +x：{hpatch_bin}")
 
-    with tempfile.TemporaryDirectory(prefix="d_sakiko_hpatch_") as temp_dir:
+    staging = tempfile.TemporaryDirectory(prefix="d_sakiko_hpatch_")
+    try:
         # 先把补丁输出到临时目录，校验通过后再覆盖应用目录，便于失败回滚。
-        staged_new_root = Path(temp_dir) / "new_root"
+        staged_new_root = Path(staging.name) / "new_root"
         command = [str(hpatch_bin), "-f", str(app_root), str(patch_path), str(staged_new_root)]
         completed = subprocess.run(command, capture_output=True, text=True)
         if completed.stdout.strip():
@@ -555,91 +569,120 @@ def apply_hdiff(
             stdout = completed.stdout.strip()
             raise RuntimeError(f"hpatchz 执行失败：{stderr or stdout or '未知错误'}")
 
-        processed_paths: list[str] = []
-        files = manifest.get("files", [])
-        if not isinstance(files, list):
-            raise RuntimeError("manifest.files 必须是数组")
-        for item in files:
-            if not isinstance(item, dict):
-                raise RuntimeError("manifest.files[] 必须是对象")
-            action = item.get("action")
-            if action not in {"add", "modify", "remove", "replace"}:
-                raise RuntimeError(f"不支持的文件动作：{action!r}")
-            if action == "replace":
-                continue
-            relative_path = normalize_manifest_path(item.get("path"), "files[].path")
+        return apply_staged_files(
+            app_root, package_root, manifest, staged_new_root, backup_root,
+            touch_records, transaction,
+        )
+    finally:
+        try:
+            staging.cleanup()
+        except OSError as exc:
+            # 已应用文件的内容正确时，清理 staging 失败不能触发回滚。
+            print(f"[清理] 差分临时目录暂未删除：{staging.name}，错误：{exc}")
 
-            target = resolve_under_root(app_root, relative_path, "files[].path")
-            if transaction is not None:
-                transaction.prepare(relative_path, str(item.get("sha256") or "") or None)
-            existed_before = target.exists() if transaction is not None else backup_if_exists(app_root, backup_root, relative_path)
-            touch_records.append(TouchRecord(path=relative_path, existed_before=existed_before))
 
-            if action in {"add", "modify"}:
-                source = resolve_under_root(staged_new_root, relative_path, "files[].path")
-                if not source.exists():
-                    raise RuntimeError(f"hpatch 输出缺少文件：{relative_path}")
-                if source.is_symlink() or not source.is_file():
-                    raise RuntimeError(f"hpatch 输出不是普通文件：{relative_path}")
+def apply_staged_files(
+    app_root: Path, package_root: Path, manifest: dict[str, object],
+    staged_new_root: Path | None, backup_root: Path, touch_records: list[TouchRecord],
+    transaction: Transaction | None = None,
+) -> list[str]:
+    """先校验全部输出，再统一执行差分、替换和删除的延后重试。"""
+    files = manifest.get('files', [])
+    if not isinstance(files, list):
+        raise RuntimeError('manifest.files 必须是数组')
+    operations: list[FileOperation] = []
+    processed: list[str] = []
 
-                expected_sha = str(item.get("sha256") or "").strip()
-                # 只要清单提供了哈希，就强制校验，防止损坏补丁写入运行目录。
-                if expected_sha and sha256_file(source) != expected_sha:
-                    raise RuntimeError(f"hpatch 输出 SHA256 校验失败：{relative_path}")
+    def operation_for(relative: str, action: str, source: Path | None,
+                      expected_sha: str | None) -> FileOperation:
+        target = resolve_under_root(app_root, relative, 'files[].path')
+        prepared = False
 
-                ensure_parent(target)
-                shutil.copy2(source, target)
-                processed_paths.append(relative_path)
-                print(f"[文件] {action}: {relative_path}")
-            elif action == "remove":
+        def apply() -> None:
+            nonlocal prepared
+            if not prepared:
+                if transaction is not None:
+                    transaction.prepare(relative, expected_sha)
+                    existed_before = target.exists()
+                else:
+                    existed_before = backup_if_exists(app_root, backup_root, relative)
+                touch_records.append(TouchRecord(path=relative, existed_before=existed_before))
+                prepared = True
+            if source is None:
                 remove_path(target)
-                processed_paths.append(relative_path)
-                print(f"[文件] remove: {relative_path}")
+                if target.exists() or target.is_symlink():
+                    raise RuntimeError(f'删除后目标仍然存在：{relative}')
+            else:
+                atomic_copy_file(source, target, expected_sha)
+            print(f'[文件] {action}: {relative}')
 
-    return processed_paths
+        return FileOperation(target, action, apply)
+
+    for item in files:
+        if not isinstance(item, dict):
+            raise RuntimeError('manifest.files[] 必须是对象')
+        action = item.get('action')
+        if action not in {'add', 'modify', 'remove', 'replace'}:
+            raise RuntimeError(f'不支持的文件动作：{action!r}')
+        if staged_new_root is None and action != 'replace':
+            continue
+        relative = normalize_manifest_path(item.get('path'), 'files[].path')
+        if relative in processed:
+            raise RuntimeError(f'更新清单包含重复路径：{relative}')
+        source = None
+        expected_sha = None
+        if action != 'remove':
+            if action == 'replace':
+                payload = normalize_manifest_path(item.get('payload'), 'files[].payload')
+                source = resolve_under_root(package_root, payload, 'files[].payload')
+            else:
+                source = resolve_under_root(staged_new_root, relative, 'files[].path')
+            if not source.is_file() or source.is_symlink():
+                raise RuntimeError(f'更新输出不是普通文件或缺少文件：{relative}')
+            expected_sha = str(item.get('sha256') or '').strip().lower()
+            if action == 'replace':
+                size = item.get('size')
+                if not isinstance(size, int) or source.stat().st_size != size:
+                    raise RuntimeError(f'replace payload 大小校验失败：{relative}')
+                if not expected_sha:
+                    raise RuntimeError(f'replace payload 缺少 SHA256：{relative}')
+            actual_sha = sha256_file(source)
+            if expected_sha and actual_sha != expected_sha:
+                raise RuntimeError(f'更新输出 SHA256 校验失败：{relative}')
+            expected_sha = actual_sha
+        operations.append(operation_for(relative, str(action), source, expected_sha))
+        processed.append(relative)
+    run_file_operations(operations, log=transaction.log if transaction is not None else print)
+    return processed
 
 
 def apply_replace_files(
-    app_root: Path,
-    package_root: Path,
-    manifest: dict[str, object],
-    backup_root: Path,
-    touch_records: list[TouchRecord],
+    app_root: Path, package_root: Path, manifest: dict[str, object],
+    backup_root: Path, touch_records: list[TouchRecord],
     transaction: Transaction | None = None,
 ) -> list[str]:
-    """从 payload 原子替换 replace 文件，并校验完整文件内容。"""
+    """供独立调用者使用的 replace 文件入口。"""
+    return apply_staged_files(app_root, package_root, manifest, None, backup_root,
+                              touch_records, transaction)
 
-    processed: list[str] = []
-    files = manifest.get("files", [])
-    if not isinstance(files, list):
-        raise RuntimeError("manifest.files 必须是数组")
-    for item in files:
-        if not isinstance(item, dict) or item.get("action") != "replace":
-            continue
-        relative_path = normalize_manifest_path(item.get("path"), "files[].path")
-        payload_path = normalize_manifest_path(item.get("payload"), "files[].payload")
-        source = resolve_under_root(package_root, payload_path, "files[].payload")
-        target = resolve_under_root(app_root, relative_path, "files[].path")
-        if not source.is_file() or source.is_symlink():
-            raise RuntimeError(f"replace payload 不是普通文件：{relative_path}")
-        expected_size = item.get("size")
-        expected_sha = str(item.get("sha256") or "").strip().lower()
-        if not isinstance(expected_size, int) or source.stat().st_size != expected_size:
-            raise RuntimeError(f"replace payload 大小校验失败：{relative_path}")
-        if not expected_sha or sha256_file(source) != expected_sha:
-            raise RuntimeError(f"replace payload SHA256 校验失败：{relative_path}")
-        if transaction is not None:
-            transaction.prepare(relative_path, expected_sha)
-        existed_before = target.exists() if transaction is not None else backup_if_exists(app_root, backup_root, relative_path)
-        touch_records.append(TouchRecord(path=relative_path, existed_before=existed_before))
-        ensure_parent(target)
-        temporary = target.with_name(f".{target.name}.replace.tmp")
-        shutil.copy2(source, temporary)
-        os.replace(temporary, target)
-        if sha256_file(target) != expected_sha:
-            raise RuntimeError(f"replace 后 SHA256 校验失败：{relative_path}")
-        processed.append(relative_path)
-    return processed
+
+def verify_applied_files(app_root: Path, manifest: dict[str, object], transaction: Transaction) -> None:
+    """提交版本号前复核所有目标，读取占用同样最多尝试三次。"""
+    def verify(item: dict[str, object], target: Path) -> None:
+        if item['action'] == 'remove':
+            if target.exists() or target.is_symlink():
+                raise RuntimeError(f'更新后待删除文件仍然存在：{target}')
+        else:
+            expected_sha = str(item.get('sha256') or '').strip().lower()
+            if not target.is_file() or (expected_sha and sha256_file(target) != expected_sha):
+                raise RuntimeError(f'更新后文件 SHA256 校验失败或缺失：{target}')
+
+    operations = []
+    for item in manifest['files']:
+        relative = normalize_manifest_path(item.get('path'), 'files[].path')
+        target = resolve_under_root(app_root, relative, 'files[].path')
+        operations.append(FileOperation(target, '最终校验', lambda item=item, target=target: verify(item, target)))
+    run_file_operations(operations, log=transaction.log)
 
 
 def apply_post_process(app_root: Path, relative_paths: list[str]) -> None:
@@ -787,7 +830,7 @@ def apply_package_chain(
 
         try:
             verify_modified_file(manifest, app_root)
-            print(f"[信息] 待修改文件校验全部通过")
+            print("[信息] 待修改文件校验全部通过")
         except Exception as exc:
             print(f"错误：{exc}", file=sys.stderr)
             recorder.write_failed(rollback_performed=False, rollback_succeeded=None)
@@ -812,13 +855,13 @@ def apply_package_chain(
                 hpatch_bin=hpatch_bin,
                 transaction=transaction,
             )
-            processed_paths.extend(apply_replace_files(app_root, package_root, manifest, backup_root, touch_records, transaction))
             apply_post_process(app_root, processed_paths)
             run_macos_uv_sync_if_needed(app_root, manifest)
+            verify_applied_files(app_root, manifest, transaction)
 
             version_data = load_json(version_file)
             version_data["version"] = target_version
-            write_json(version_file, version_data)
+            write_json(version_file, version_data, transaction)
 
             transaction.complete()
 

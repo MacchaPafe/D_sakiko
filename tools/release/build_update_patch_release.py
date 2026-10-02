@@ -31,7 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.release.file_selection import list_git_untracked_files, path_matches
-from tools.build_diff_patch import resolve_min_updater_version
+from tools.build_diff_patch import DEFAULT_SMALL_FILE_REPLACE_THRESHOLD, nonnegative_bytes, resolve_min_updater_version
 from tools.repair_versions import REPAIR_VERSIONS_PATH, load_repair_versions
 
 
@@ -100,6 +100,7 @@ class BuildConfig:
     include: list[str]
     hard_exclude: list[str]
     replace: list[str]
+    small_file_replace_threshold: int
     restart_updater_before_next_patch: bool
     zip_output: Path
 
@@ -122,6 +123,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include", action="append", default=[], help="追加强制包含规则，可重复。")
     parser.add_argument("--hard-exclude", action="append", default=[], help="追加不可被 include 覆盖的最终排除规则。")
     parser.add_argument("--replace", action="append", default=[], help="以完整文件替换方式发布的路径，可重复传入。")
+    parser.add_argument("--small-file-replace-threshold", type=nonnegative_bytes, default=None,
+                        help="自动 replace 的新文件大小阈值（字节），默认 512000；0 关闭。")
     parser.add_argument("--restart-updater-before-next-patch", action="store_true", help="应用成功后由新版更新器接力剩余补丁。")
     parser.add_argument("--zip-output", default="", help="patch zip 输出路径；默认使用规范文件名。")
     parser.add_argument("--app-id", default="", help="覆盖 app_id。")
@@ -265,6 +268,23 @@ def version_key(version: str) -> tuple[int, ...]:
 
     numbers = [int(item) for item in re.findall(r"\d+", version)]
     return tuple(numbers or [0])
+
+
+def choose_small_file_threshold(
+    cli_value: int | None, profile_data: dict[str, JsonValue], defaults: dict[str, JsonValue],
+    local_override: dict[str, JsonValue],
+) -> int:
+    """按配置优先级选择字节阈值，零不能被默认值覆盖。"""
+    if cli_value is not None:
+        return cli_value
+    key = "small_file_replace_threshold"
+    for source in (local_override, profile_data, defaults):
+        if key in source:
+            value = source[key]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise BuildError(f"{key} 必须为非负整数字节数")
+            return value
+    return DEFAULT_SMALL_FILE_REPLACE_THRESHOLD
 
 
 def compare_versions(left: str, right: str) -> int:
@@ -450,6 +470,9 @@ def build_config(args: argparse.Namespace, repo_root: Path) -> BuildConfig:
         include=include,
         hard_exclude=hard_exclude,
         replace=replace,
+        small_file_replace_threshold=choose_small_file_threshold(
+            args.small_file_replace_threshold, profile_data, defaults, local_override,
+        ),
         restart_updater_before_next_patch=bool(args.restart_updater_before_next_patch),
         zip_output=zip_output,
     )
@@ -661,6 +684,8 @@ def build_command(config: BuildConfig, no_zip: bool) -> list[str]:
         config.channel,
         "--min-updater-version",
         config.min_updater_version,
+        "--small-file-replace-threshold",
+        str(config.small_file_replace_threshold),
         "--manifest",
         config.manifest,
         "--patch-file",
@@ -780,7 +805,10 @@ def postflight(config: BuildConfig, options: CliOptions) -> None:
         actual = require_manifest_string(manifest, key)
         if actual != expected:
             raise BuildError(f"manifest.{key} = {actual!r}，不等于预期 {expected!r}")
-    if require_manifest_string(manifest, "min_updater_version") != config.min_updater_version:
+    has_replace = any(isinstance(item, dict) and item.get("action") == "replace"
+                      for item in require_manifest_list(manifest, "files"))
+    expected_minimum = resolve_min_updater_version(config.min_updater_version, has_replace)
+    if require_manifest_string(manifest, "min_updater_version") != expected_minimum:
         raise BuildError("manifest.min_updater_version 与本次构建配置不一致")
     patch_file = normalize_manifest_path(manifest.get("patch_file"), "patch_file")
     if patch_file != config.patch_file:
@@ -812,6 +840,9 @@ def current_git_commit(current: Path) -> str:
 def write_build_metadata(config: BuildConfig, command: list[str]) -> None:
     """写出本次补丁构建的追踪元数据。"""
 
+    manifest = load_manifest(config.output / config.manifest)
+    actual_replace: list[JsonValue] = [item["path"] for item in require_manifest_list(manifest, "files")
+                                     if isinstance(item, dict) and item.get("action") == "replace"]
     metadata: dict[str, JsonValue] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "profile": config.profile,
@@ -830,8 +861,10 @@ def write_build_metadata(config: BuildConfig, command: list[str]) -> None:
         "build_frontend": config.build_frontend,
         "frontend_command": ["pnpm", "build"] if config.build_frontend else [],
         "frontend_cwd": str(config.current / "dsakiko_webui" / "frontend"),
-        "min_updater_version": config.min_updater_version,
-        "replace": config.replace,
+        "min_updater_version": require_manifest_string(manifest, "min_updater_version"),
+        "replace": actual_replace,
+        "explicit_replace": config.replace,
+        "small_file_replace_threshold": config.small_file_replace_threshold,
         "ignore": config.ignore,
         "include": config.include,
         "hard_exclude": config.hard_exclude,

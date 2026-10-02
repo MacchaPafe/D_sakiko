@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from repair.repair_manifest import resolve_under_root, sha256_file, version_key
+from maintenance.file_operations import FileOperation, atomic_copy_file, run_file_operations
 
 
 @dataclass
@@ -75,11 +76,14 @@ class Transaction:
             if sha256_file(backup) != original_sha:
                 raise RuntimeError(f'事务备份校验失败：{relative}')
         self.records.append(FileRecord(relative, original_sha, target_sha))
-        self.save()
+        try:
+            self.save()
+        except OSError as exc:
+            self.records.pop()
+            raise RuntimeError(f'事务记录持久化失败，禁止继续更新：{relative}') from exc
 
-    def log_exception(self, context: str) -> None:
-        """保存完整异常链，避免脱离终端后丢失诊断信息。"""
-        detail = context + '\n' + traceback.format_exc()
+    def log(self, detail: str) -> None:
+        """把文件错误和诊断同时保存到更新输出及恢复日志。"""
         print(detail)
         try:
             with (self.directory / 'recovery.log').open('a', encoding='utf-8') as stream:
@@ -87,48 +91,57 @@ class Transaction:
         except OSError:
             traceback.print_exc(file=sys.stderr)
 
+    def log_exception(self, context: str) -> None:
+        """保存完整异常链，避免脱离终端后丢失诊断信息。"""
+        self.log(context + '\n' + traceback.format_exc())
+
     def rollback(self) -> bool:
-        """逐文件恢复，保留额外修改，单项失败不阻断其他文件。"""
+        """独立恢复每个文件，占用失败最多三次且不阻断其他文件。"""
         self.status = 'recovering'
         self.save()
-        for record in reversed(self.records):
-            try:
-                target = resolve_under_root(self.root, record.path)
-                current_sha = sha256_file(target) if target.is_file() else None
-                if not target.exists() and record.original_sha is None:
-                    record.restored = True
-                elif current_sha is not None and current_sha == record.original_sha:
-                    record.restored = True
-                else:
-                    if target.exists() and not target.is_file():
-                        raise RuntimeError(f'恢复目标不是普通文件：{record.path}')
-                    if current_sha is not None and current_sha != record.target_sha:
-                        conflict = resolve_under_root(self.directory / 'conflicts' / uuid4().hex, record.path)
-                        conflict.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(target, conflict)
-                    if record.original_sha is None:
-                        target.unlink(missing_ok=True)
-                    else:
-                        backup = resolve_under_root(self.directory / 'files', record.path)
-                        if not backup.is_file() or sha256_file(backup) != record.original_sha:
-                            raise RuntimeError(f'恢复备份不存在或哈希不符：{record.path}')
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        temporary = target.with_name(f'.{target.name}.{uuid4().hex}.restore.tmp')
-                        try:
-                            shutil.copy2(backup, temporary)
-                            temporary.replace(target)
-                        finally:
-                            temporary.unlink(missing_ok=True)
-                        if sha256_file(target) != record.original_sha:
-                            raise RuntimeError(f'恢复后校验失败：{record.path}')
-                    record.restored = True
-                record.error = ''
-                print(f'[回滚] 已恢复：{record.path}')
-            except Exception as exc:
-                record.restored = False
-                record.error = str(exc)
-                self.log_exception(f'[回滚] 恢复失败：{record.path}')
+        conflicts_saved: dict[str, str] = {}
+
+        def restore(record: FileRecord) -> None:
+            target = resolve_under_root(self.root, record.path)
+            current_sha = sha256_file(target) if target.is_file() else None
+            if not target.exists() and record.original_sha is None:
+                return
+            if current_sha is not None and current_sha == record.original_sha:
+                return
+            if target.exists() and not target.is_file():
+                raise RuntimeError(f'恢复目标不是普通文件：{record.path}')
+            if (current_sha is not None and current_sha != record.target_sha
+                    and conflicts_saved.get(record.path) != current_sha):
+                conflict = resolve_under_root(self.directory / 'conflicts' / uuid4().hex, record.path)
+                conflict.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target, conflict)
+                conflicts_saved[record.path] = current_sha
+            if record.original_sha is None:
+                target.unlink(missing_ok=True)
+            else:
+                backup = resolve_under_root(self.directory / 'files', record.path)
+                if not backup.is_file() or sha256_file(backup) != record.original_sha:
+                    raise RuntimeError(f'恢复备份不存在或哈希不符：{record.path}')
+                atomic_copy_file(backup, target, record.original_sha)
+
+        def restored(record: FileRecord) -> None:
+            record.restored = True
+            record.error = ''
+            print(f'[回滚] 已恢复：{record.path}')
             self.save()
+
+        def failed(record: FileRecord, exc: Exception) -> None:
+            record.restored = False
+            record.error = str(exc)
+            self.save()
+
+        operations = [FileOperation(
+            resolve_under_root(self.root, record.path), '回滚',
+            lambda record=record: restore(record),
+            succeeded=lambda record=record: restored(record),
+            failed=lambda exc, record=record: failed(record, exc),
+        ) for record in reversed(self.records)]
+        run_file_operations(operations, continue_on_error=True, log=self.log)
         self.status = 'rolled_back' if all(record.restored for record in self.records) else 'recovery_failed'
         self.save()
         return self.status == 'rolled_back'

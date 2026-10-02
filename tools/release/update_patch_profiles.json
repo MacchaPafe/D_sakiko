@@ -5,6 +5,7 @@
     "app_id": "D_sakiko",
     "channel": "stable",
     "min_updater_version": "1.0.0",
+    "small_file_replace_threshold": 512000,
     "manifest": "manifest.json",
     "patch_file": "patch.hdiff",
     "hdiff_bin": "tools/hdiffz",
