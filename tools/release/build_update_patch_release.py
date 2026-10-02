@@ -11,10 +11,20 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        raise SystemExit(
+            "Python 3.9/3.10 发布工具需要 tomli，请使用运行脚本的同一 Python 安装依赖：\n"
+            "python -m pip install -r tools/release/requirements.txt"
+        ) from None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -22,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.release.file_selection import list_git_untracked_files, path_matches
 from tools.build_diff_patch import resolve_min_updater_version
+from tools.repair_versions import REPAIR_VERSIONS_PATH, load_repair_versions
 
 
 JsonValue = Union[Union[Union[Union[Union[Union[None, bool], int], float], str], list['JsonValue']], dict[str, 'JsonValue']]
@@ -564,6 +575,22 @@ def assert_output_clean(config: BuildConfig) -> None:
         raise BuildError(f"输出目录已存在且非空，但未启用 clean_output：{config.output}")
 
 
+def warn_missing_repair_version(config: BuildConfig) -> None:
+    """检查待打包目录的快捷修复选项，只警告，不阻止构建。"""
+
+    path = config.current / REPAIR_VERSIONS_PATH
+    try:
+        versions = load_repair_versions(path)
+    except (OSError, ValueError) as exc:
+        print(f"警告：无法检查手动修复的可选项（{path}）：{exc}。请检查版本列表。", file=sys.stderr)
+        return
+    if config.target_version not in versions:
+        print(
+            f"警告：当前版本不在手动修复的可选项中（{config.target_version}），请更新 {path}。",
+            file=sys.stderr,
+        )
+
+
 def preflight(config: BuildConfig, options: CliOptions, repo_root: Path) -> None:
     """执行构建前校验。"""
 
@@ -581,6 +608,7 @@ def preflight(config: BuildConfig, options: CliOptions, repo_root: Path) -> None
     current_version = read_version_file(config.current / "version.json")
     if current_version != config.target_version:
         raise BuildError(f"当前 version.json 版本为 {current_version}，不等于 target_version {config.target_version}。")
+    warn_missing_repair_version(config)
     old_version = read_version_file(config.old / "version.json")
     if old_version != config.base_version:
         raise BuildError(f"旧目录 version.json 版本为 {old_version}，不等于 base_version {config.base_version}。")

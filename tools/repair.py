@@ -10,31 +10,39 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'GPT_SoVITS'))
+sys.path.insert(0, str(ROOT))
 
 from maintenance.process import setup_logging
 from maintenance.transactions import recommended_version, recover_pending
 from repair.repair_checker import check_integrity, get_configured_repair_base_urls, prepare_repair
 from repair.repair_manifest import version_key
-
-# 发行时维护；实际可用性仍由该平台的已签名远端清单确认。
-BUILTIN_VERSIONS: tuple[str, ...] = ('3.5.0', '3.2.0')
+from tools.repair_versions import REPAIR_VERSIONS_PATH, load_repair_versions
 
 
 def choose_version(recommendation: str | None) -> str:
     """推荐版本并允许按编号选择或手动输入版本。"""
-    print('请选择当前程序的版本。你可以从这些版本中选择：')
-    for index, version in enumerate(BUILTIN_VERSIONS, 1):
+    # 快捷选项在发行时维护；实际可用性仍由已签名远端清单确认。
+    versions_path = ROOT / REPAIR_VERSIONS_PATH
+    try:
+        builtin_versions = load_repair_versions(versions_path)
+    except (OSError, ValueError) as exc:
+        print(f'警告：无法读取手动修复的版本列表（{versions_path}）：{exc}。仍可手动输入版本。')
+        builtin_versions = ()
+    print('请选择当前程序的版本。你可以从这些版本中选择：' if builtin_versions else '请选择当前程序的版本。请手动输入版本。')
+    for index, version in enumerate(builtin_versions, 1):
         print(f'  {index}. {version}')
     print()
 
     print('如果对版本选择有问题，请联系开发者，选择错误的版本可能导致程序完全损坏。')
     while True:
-        prompt = f'检测到当前版本为 {recommendation}。你可以输入编号，或按下回车按 {recommendation} 版本修复：' if recommendation else '请输入编号或版本，如 "1", "3.2.0"：'
+        prompt = f'检测到当前版本为 {recommendation}。你可以输入版本，或按下回车按 {recommendation} 版本修复：' if recommendation else '请输入版本，如 "4.0.0"：'
+        if builtin_versions:
+            prompt = f'检测到当前版本为 {recommendation}。你可以输入编号或版本，或按下回车按 {recommendation} 版本修复：' if recommendation else '请输入编号或版本，如 "1", "4.0.0"：'
         value = input(prompt).strip()
         if not value and recommendation:
             return recommendation
-        if value.isdigit() and 1 <= int(value) <= len(BUILTIN_VERSIONS):
-            return BUILTIN_VERSIONS[int(value) - 1]
+        if value.isdigit() and 1 <= int(value) <= len(builtin_versions):
+            return builtin_versions[int(value) - 1]
         try:
             version_key(value)
             return value

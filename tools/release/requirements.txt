@@ -1,0 +1,2 @@
+# 发布补丁工具的 TOML 兼容依赖；Python 3.11+ 使用内置 tomllib。
+tomli>=2.0.1,<3; python_version < "3.11"

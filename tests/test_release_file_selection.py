@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import json
 import unittest
 from pathlib import Path
 
@@ -9,6 +10,30 @@ from tools.release.file_selection import FileSelectionRules, collect_selected_fi
 
 class ReleaseFileSelectionTest(unittest.TestCase):
     """验证更新与修复共用的文件规则求值语义。"""
+
+    def test_default_profiles_ship_repair_choices_and_loader(self) -> None:
+        """两平台的更新和修复规则都纳入新增列表及读取模块。"""
+        from tools.build_diff_patch import DEFAULT_IGNORE_PATTERNS, PLATFORM_IGNORE_PATTERNS
+        from tools.release.build_repair_manifest import load_profile
+
+        repo_root = Path(__file__).resolve().parents[1]
+        profile_dir = repo_root / "tools" / "release"
+        profiles = json.loads((profile_dir / "update_patch_profiles.json").read_text(encoding="utf-8"))
+        defaults = profiles["defaults"]
+        paths = {"tools/repair.py", "tools/repair_versions.py", "tools/repair_versions.json"}
+        for name in ("macos-arm64", "windows-x64"):
+            with self.subTest(profile=name):
+                profile = profiles["profiles"][name]
+                update_rules = FileSelectionRules(
+                    include=tuple(defaults["include"] + profile.get("include", [])),
+                    exclude=tuple(DEFAULT_IGNORE_PATTERNS + PLATFORM_IGNORE_PATTERNS[profile["platform"]]
+                                  + defaults["ignore"] + profile.get("ignore", [])),
+                    hard_exclude=tuple(defaults["hard_exclude"] + profile.get("hard_exclude", [])),
+                )
+                repair_rules = load_profile(profile_dir / "repair_asset_profiles.json", name).rules
+                for rules in (update_rules, repair_rules):
+                    result = select_files(repo_root, paths, rules, tracked_candidates=paths)
+                    self.assertEqual(result.selected, frozenset(paths))
 
     def test_include_overrides_exclude_but_not_hard_exclude(self) -> None:
         """普通排除可被 include 覆盖，最终排除不可被覆盖。"""

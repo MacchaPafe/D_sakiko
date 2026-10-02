@@ -119,7 +119,7 @@ class RecoveryTest(unittest.TestCase):
     def test_cli_version_selection(self) -> None:
         """支持接受推荐、选择内置项和输入其他版本。"""
         with contextlib.redirect_stdout(io.StringIO()):
-            for recommendation, answer, expected in [('3.2.0', '', '3.2.0'), (None, '1', '3.5.0'), (None, '3.1.0', '3.1.0')]:
+            for recommendation, answer, expected in [('3.2.0', '', '3.2.0'), (None, '1', '4.0.0'), (None, '2', '3.5.0'), (None, '3.1.0', '3.1.0')]:
                 with patch('builtins.input', return_value=answer):
                     self.assertEqual(choose_version(recommendation), expected)
 

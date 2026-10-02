@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
@@ -55,6 +57,93 @@ class ReleaseBuildTest(unittest.TestCase):
         self.assertFalse(self.config().build_frontend)
         self.assertTrue(self.config("--build-frontend").build_frontend)
         self.assertFalse(self.config("--no-build-frontend").build_frontend)
+
+    def test_pyproject_version_reader(self) -> None:
+        """不同解释器的 TOML 读取都应正确处理注释、其他字段和版本。"""
+        path = self.root / "pyproject.toml"
+        path.write_text(
+            '# 测试版本元数据\n[project]\nname = "d-sakiko"\nversion = "4.0.1" # 发布版本\n'
+            'dependencies = ["example>=1"]\n', encoding="utf-8",
+        )
+        self.assertEqual(release.read_pyproject_version(path), "4.0.1")
+        path.write_text('[project]\nname = "d-sakiko"\n', encoding="utf-8")
+        with self.assertRaisesRegex(release.BuildError, "缺少 project.version"):
+            release.read_pyproject_version(path)
+
+    def test_missing_toml_parser_explains_manual_dependency(self) -> None:
+        """没有任何 TOML 解析器时给出安装命令，不输出导入堆栈。"""
+        result = subprocess.run(
+            [sys.executable, "-c",
+             'import sys; sys.modules["tomllib"] = None; sys.modules["tomli"] = None; '
+             'from tools.release import build_update_patch_release'],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("python -m pip install -r tools/release/requirements.txt", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def prepare_preflight(self) -> release.BuildConfig:
+        """准备可通过真实预检查的独立待打包目录。"""
+        config = self.config("--no-use-git-tracked", "--no-build-frontend")
+        config.old.mkdir()
+        (config.old / "version.json").write_text('{"version":"3.5.0"}', encoding="utf-8")
+        (config.current / "version.json").write_text('{"version":"4.0.0"}', encoding="utf-8")
+        (config.current / "pyproject.toml").write_text('[project]\nversion = "4.0.0"\n', encoding="utf-8")
+        for executable in (config.hdiff_bin, config.hpatch_bin):
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.touch()
+            executable.chmod(0o755)
+        return config
+
+    def test_preflight_checks_current_directory_repair_choices(self) -> None:
+        """待打包目录缺少目标版本时警告，即使工具仓库列表包含该版本。"""
+        config = self.prepare_preflight()
+        path = config.current / release.REPAIR_VERSIONS_PATH
+        for versions in (["4.0.0", "3.5.0"], ["3.5.0"]):
+            with self.subTest(versions=versions):
+                path.write_text(json.dumps(versions), encoding="utf-8")
+                output = io.StringIO()
+                with patch.object(release, "LOCAL_FILE", self.local), \
+                        patch.object(release, "detect_current_platform", return_value="macos"), \
+                        contextlib.redirect_stderr(output):
+                    release.preflight(config, self.options, self.root)
+                if "4.0.0" in versions:
+                    self.assertEqual(output.getvalue(), "")
+                else:
+                    self.assertIn("当前版本不在手动修复的可选项中（4.0.0）", output.getvalue())
+                    self.assertIn(str(path), output.getvalue())
+
+    def test_preflight_missing_or_broken_repair_choices_only_warns(self) -> None:
+        """列表缺失或损坏时警告，但仍能完成发布预检查。"""
+        config = self.prepare_preflight()
+        path = config.current / release.REPAIR_VERSIONS_PATH
+        for contents in (None, "{broken", "{}"):
+            with self.subTest(contents=contents):
+                if contents is not None:
+                    path.write_text(contents, encoding="utf-8")
+                output = io.StringIO()
+                with patch.object(release, "LOCAL_FILE", self.local), \
+                        patch.object(release, "detect_current_platform", return_value="macos"), \
+                        contextlib.redirect_stderr(output):
+                    release.preflight(config, self.options, self.root)
+                self.assertIn("无法检查手动修复的可选项", output.getvalue())
+                self.assertIn(str(path), output.getvalue())
+
+    def test_dry_run_and_yes_still_warn_about_missing_repair_choice(self) -> None:
+        """真实发布入口的预演和自动确认不会隐藏版本遗漏。"""
+        config = self.prepare_preflight()
+        (config.current / release.REPAIR_VERSIONS_PATH).write_text('["3.5.0"]', encoding="utf-8")
+        output = io.StringIO()
+        argv = ["release", "--profile", "macos-arm64", "--base-version", "3.5.0",
+                "--target-version", "4.0.0", "--dry-run", "--yes"]
+        with patch.object(sys, "argv", argv), patch.object(release, "build_config", return_value=config), \
+                patch.object(release, "LOCAL_FILE", self.local), \
+                patch.object(release, "detect_current_platform", return_value="macos"), \
+                patch.object(release.subprocess, "run") as run, \
+                contextlib.redirect_stderr(output), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(release.main(), 0)
+            run.assert_not_called()
+        self.assertIn("当前版本不在手动修复的可选项中", output.getvalue())
 
     def test_repeated_replace_raises_minimum_and_preserves_higher_cli_version(self) -> None:
         """重复 replace 参数进入底层命令，较低要求自动提高，较高要求保持。"""
