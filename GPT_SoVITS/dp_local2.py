@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from qconfig import create_d_sakiko_config_snapshot, d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
+from llm_request_settings import request_timeout
 from character import CharacterAttributes
 from chat.system_prompt import compose_system_prompt
 from log import get_logger
@@ -971,7 +972,6 @@ class DSLocalAndVoiceGen:
                 tools=None,
                 tool_choice="none",
                 stream=False,
-                timeout=30,
                 max_tokens=rolling_summary_token_budget(token_limit),
                 _reasoning_snapshot_locked=True,
             )
@@ -1135,7 +1135,7 @@ class DSLocalAndVoiceGen:
         request_kwargs.pop("api_key", None)
         request_kwargs.pop("base_url", None)
         request_kwargs.pop(CACHE_DEBUG_PHASE_KEY, None)
-        timeout = request_kwargs.pop("timeout", 30)
+        timeout = request_kwargs.pop("timeout", request_timeout(d_sakiko_config))
         request_kwargs.pop("max_retries", None)
         request_kwargs["model"] = service.model
 
@@ -1292,7 +1292,8 @@ class DSLocalAndVoiceGen:
         # 提取运行时参数，避免后续和显式传参重复。
         runtime_kwargs: dict[str, object] = dict(kwargs)
         stream = runtime_kwargs.pop("stream", False)
-        timeout = runtime_kwargs.pop("timeout", 30)
+        timeout = runtime_kwargs.pop("timeout", getattr(
+            self, "_turn_request_timeout", request_timeout(self.d_sakiko_config)))
         reasoning_snapshot_locked = bool(runtime_kwargs.pop("_reasoning_snapshot_locked", False))
         cache_debug_phase = str(runtime_kwargs.pop(CACHE_DEBUG_PHASE_KEY, model) or model)
         # 不允许通过 kwargs 手动指定这些参数；这些参数只能在本函数内构建
@@ -1670,7 +1671,6 @@ class DSLocalAndVoiceGen:
         for _ in range(2):
             request_kwargs = {
                 "stream": False,
-                "timeout": 30,
                 **reasoning_kwargs,
             }
             if max_tokens > 0:
@@ -1692,7 +1692,6 @@ class DSLocalAndVoiceGen:
                     use_json_mode = False
                     fallback_kwargs = {
                         "stream": False,
-                        "timeout": 30,
                         CACHE_DEBUG_PHASE_KEY: f"{phase}_fallback",
                         **reasoning_kwargs,
                     }
@@ -1738,7 +1737,6 @@ class DSLocalAndVoiceGen:
             tools=None,
             tool_choice="none",
             stream=False,
-            timeout=30,
             **reasoning_kwargs,
         )
         return AgentRunResult(
@@ -2477,6 +2475,8 @@ class DSLocalAndVoiceGen:
             # 复制一份模型配置，防止一轮对话中间配置修改导致出错。
             # 图片导入前也需要使用本轮锁定的模型配置判断视觉能力。
             self.d_sakiko_config = create_d_sakiko_config_snapshot()
+            # 与模型配置一起锁定本轮秒数，所有后续格式修正和摘要使用同一值。
+            self._turn_request_timeout = request_timeout(self.d_sakiko_config)
             deepseek_file_service = self._current_deepseek_file_service()
 
             if (image_source_paths or draft_attachment_ids) and not self._current_model_supports_vision():
@@ -2679,7 +2679,6 @@ class DSLocalAndVoiceGen:
                         messages=self._prepare_runtime_messages(to_llm_msg),
                         llm_kwargs={
                             "stream": False,
-                            "timeout": 30,
                             **reasoning_kwargs_snapshot,
                         },
                         on_interim_message=interim_callback,

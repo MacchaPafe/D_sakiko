@@ -7,6 +7,7 @@ import time,os
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
+from llm_request_settings import request_timeout
 from character import CharacterAttributes
 
 
@@ -145,8 +146,10 @@ class DSLocalAndVoiceGen:
 			controls.append("只使用当前 speaker 对应的目录，不跨角色选资源。\n</runtime_controls>")
 			user_this_turn_msg.append({"role": "user", "content": "\n".join(controls)})
 			message_queue.put("调用大模型生成文本中...")
+			d_sakiko_config.reload_from_disk()
 			temperature = d_sakiko_config.llm_temperature.value
 			top_p = d_sakiko_config.llm_top_p.value
+			llm_timeout = request_timeout(d_sakiko_config, theater=True)
 			time.sleep(2)
 			try:
 				if d_sakiko_config.use_default_deepseek_api.value:
@@ -155,7 +158,7 @@ class DSLocalAndVoiceGen:
 						messages=user_this_turn_msg,
 						api_key=self.model,
 						stream=False,
-						timeout=100,
+						timeout=llm_timeout,
 						temperature=temperature,
 						top_p=top_p,
 						drop_params=True
@@ -171,7 +174,7 @@ class DSLocalAndVoiceGen:
 						# 自定义 API 地址
 						base_url=d_sakiko_config.custom_llm_api_url.value,
 						stream=False,
-						timeout=100,
+						timeout=llm_timeout,
 						temperature=temperature,
 						top_p=top_p,
 						drop_params=True
@@ -189,7 +192,7 @@ class DSLocalAndVoiceGen:
 							messages=user_this_turn_msg,
 							api_key=api_key,
 							stream=False,
-							timeout=100,
+							timeout=llm_timeout,
 							base_url=base_url,
 							temperature=temperature,
 							top_p=top_p,
@@ -201,7 +204,7 @@ class DSLocalAndVoiceGen:
 							messages=user_this_turn_msg,
 							api_key=api_key,
 							stream=False,
-							timeout=100,
+							timeout=llm_timeout,
 							temperature = temperature,
 							top_p = top_p,
 							drop_params = True

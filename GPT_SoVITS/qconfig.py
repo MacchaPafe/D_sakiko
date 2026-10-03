@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from deepseek_models import DEEPSEEK_FLASH_MODEL, normalize_official_deepseek_model
+from llm_request_settings import MAX_REQUEST_TIMEOUT, normalize_request_timeout
 
 from PyQt5.QtCore import QLockFile
 from PyQt5.QtGui import QColor
@@ -65,6 +66,19 @@ class FileValidator(ConfigValidator):
         return str(value)
 
 
+class RequestTimeoutValidator(ConfigValidator):
+    """拒绝无效类型、零和负数，旧配置保持原来的默认超时。"""
+
+    def __init__(self, default):
+        self.default = default
+
+    def validate(self, value):
+        return type(value) is int and 1 <= value <= MAX_REQUEST_TIMEOUT
+
+    def correct(self, value):
+        return normalize_request_timeout(value, self.default)
+
+
 class DSakikoConfig(QConfig):
     """
     启动配置与其他使用设置的统一记录参数类
@@ -105,6 +119,10 @@ class DSakikoConfig(QConfig):
     llm_temperature = RangeConfigItem("llm_setting", "llm_temperature", 1.0, validator=RangeValidator(0.0, 2.0))
     # 模型的 top-p
     llm_top_p = RangeConfigItem("llm_setting", "llm_top_p", 1.0, validator=RangeValidator(0.0, 1.0))
+    llm_request_timeout_seconds = ConfigItem(
+        "llm_setting", "llm_request_timeout_seconds", 30, RequestTimeoutValidator(30))
+    theater_request_timeout_seconds = ConfigItem(
+        "llm_setting", "theater_request_timeout_seconds", 100, RequestTimeoutValidator(100))
     # 是否启用实验性的滚动上下文压缩；关闭时使用传统滑动窗口
     enable_rolling_summary = OptionsConfigItem(
         "llm_setting",

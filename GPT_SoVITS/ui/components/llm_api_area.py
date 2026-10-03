@@ -31,6 +31,7 @@ with contextlib.redirect_stdout(None):
     ListWidget, ToolTipFilter, FluentIcon
 
 from ..custom_widgets.float_range_setting_card import FloatRangeSettingCard
+from ..custom_widgets.request_timeout_setting_card import RequestTimeoutSettingCard
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 logger = get_logger(__name__)
@@ -296,6 +297,16 @@ class LLMAPIArea(TransparentScrollArea):
         self.v_box_layout.addWidget(self.display_unformatted_message_card)
         self.v_box_layout.addWidget(self.llm_temperature_card)
         self.v_box_layout.addWidget(self.llm_top_p_card)
+        self.timeout_cards = []
+        for item, title, content in (
+            (d_sakiko_config.llm_request_timeout_seconds, "大模型请求超时",
+             "控制所有对话模式的大模型请求超时，包括桌面端、桌宠、WebUI。"),
+            (d_sakiko_config.theater_request_timeout_seconds, "小剧场请求超时",
+             "控制小剧场生成角色对话时的大模型请求超时。"),
+        ):
+            card = RequestTimeoutSettingCard(item, self.tr(title), self.tr(content), self)
+            self.timeout_cards.append(card)
+            self.v_box_layout.addWidget(card)
 
         # 加载初始内容
         self.load_config_to_ui()
