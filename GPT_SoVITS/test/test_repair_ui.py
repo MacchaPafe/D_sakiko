@@ -120,9 +120,9 @@ class RepairDialogTest(unittest.TestCase):
         group_titles = [group.title() for group in dialog.findChildren(QGroupBox)]
         self.assertEqual(
             group_titles,
-            ["高级设置与编辑", "玩法", "工具", "程序维护"],
+            ["高级设置", "更多玩法", "资源下载", "程序维护与反馈"],
         )
-        self.assertIs(dialog.text_label.parentWidget(), dialog)
+        self.assertIs(dialog.text_label.parentWidget(), dialog.content_widget)
         self.assertIs(dialog.close_program_button.parentWidget(), dialog)
 
 

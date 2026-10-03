@@ -8,7 +8,7 @@ import random
 import uuid
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Callable, Optional, Sequence, cast
+from typing import TYPE_CHECKING, Callable, Optional, Sequence, cast
 
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
@@ -103,6 +103,11 @@ from ui_main.components.context_usage_indicator import (
 from ui_main.components.message_input import MessageInput
 from ui_main.components.input_option_chips import ChoiceChip
 from ui_main.components.tool_selection_chip import ToolSelectionChip
+from ui_main.custom_widgets.scrollable_dialog import ResponsiveButtonLayout, ScrollableDialog
+
+if TYPE_CHECKING:
+    from audio_generator import AudioGenerate
+
 from ui_main.theme import (
     DEFAULT_CHARACTER_THEME_SEED,
     ThemePalette,
@@ -187,7 +192,9 @@ class CommunicateThreadMessages(QThread):
                 continue
             self.message_signal.emit(message)
 
-class MoreFunctionWindow(QDialog):
+class MoreFunctionWindow(ScrollableDialog):
+    """提供分组功能入口，并在小屏幕上滚动显示内容。"""
+
     def __init__(
         self,
         parent_window_close_fun: Callable[[], None],
@@ -200,12 +207,12 @@ class MoreFunctionWindow(QDialog):
         feedback_admin_fun: Callable[[], None] | None = None,
         toggle_pet_fun: Callable[[], None] | None = None,
         pet_mode: bool = False,
+        parent: QWidget | None = None,
     ) -> None:
-        super().__init__()
+        """创建功能分组和始终可见的退出按钮。"""
+        super().__init__(parent, preferred_size=QSize(420, 720))
         self.setWindowTitle("更多功能...")
-        self.screen = QDesktopWidget().screenGeometry()
-        self.resize(int(0.20 * self.screen.width()), int(0.4 * self.screen.height()))
-        layout = QVBoxLayout()
+        layout = self.content_layout
 
         advanced_settings_group = QGroupBox("高级设置")
         advanced_settings_layout = QVBoxLayout()
@@ -252,12 +259,12 @@ class MoreFunctionWindow(QDialog):
         layout.addWidget(tools_group)
 
         feedback_layout = QVBoxLayout()
-        feedback_buttons_layout = QHBoxLayout()
+        feedback_buttons_layout = ResponsiveButtonLayout()
         for label, callback in (("反馈建议", feedback_fun), ("已提交反馈", feedback_history_fun)):
             if callback is not None:
                 button = QPushButton(label)
                 button.clicked.connect(callback)
-                feedback_buttons_layout.addWidget(button, 1)
+                feedback_buttons_layout.addWidget(button)
         if feedback_buttons_layout.count():
             feedback_layout.addLayout(feedback_buttons_layout)
         if feedback_admin_fun is not None:
@@ -285,6 +292,7 @@ class MoreFunctionWindow(QDialog):
         except Exception:
             current_version = "无法识别"
         self.version_label = QLabel(f"当前版本: {current_version}")
+        self.version_label.setWordWrap(True)
         self.version_label.setAlignment(Qt.AlignCenter)
         self.version_label.setProperty("dialogRole", "secondary")
         if feedback_layout.count():
@@ -294,16 +302,17 @@ class MoreFunctionWindow(QDialog):
         layout.addWidget(maintenance_group)
 
         self.text_label = QLabel("更多小功能还在开发中...")
+        self.text_label.setWordWrap(True)
         self.text_label.setAlignment(Qt.AlignCenter)
         self.text_label.setProperty("dialogRole", "secondary")
         layout.addWidget(self.text_label)
+        layout.addStretch()
 
         self.close_program_button=QPushButton("退出程序")
         self.close_program_button.clicked.connect(parent_window_close_fun)  # noqa
         self.close_program_button.clicked.connect(self.close)  # noqa
-        layout.addWidget(self.close_program_button)
+        self.footer_layout.addWidget(self.close_program_button)
 
-        self.setLayout(layout)
         self.setStyleSheet(build_dialog_theme_stylesheet(theme_palette))
 
     @staticmethod
@@ -584,14 +593,16 @@ class LotteryDialog(QDialog):
         self.animation_timer.start(50)
 
 
-class SettingWindow(QDialog):
-    def __init__(self,parent_window,desktop_size,color,audio_gen_module):
-        super().__init__()
+class SettingWindow(ScrollableDialog):
+    """在可滚动分组中提供聊天与角色设置。"""
+
+    def __init__(self, parent_window: ChatGUI, color: str, audio_gen_module: AudioGenerate) -> None:
+        """沿用父窗口所在屏幕，并为角色状态按钮提供自适应排列。"""
+        super().__init__(parent_window, preferred_size=QSize(420, 640))
         self.parent_window:ChatGUI=parent_window
         self.audio_gen_module=audio_gen_module
         self.setWindowTitle('设置')
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.resize(int(desktop_size.width()*0.2),int(desktop_size.height()*0.4))
         self.change_lan_btn=QPushButton("切换语言")
         self.change_lan_btn.clicked.connect(self.change_lan)
         self.switch_voice_btn=QPushButton("开启/关闭语音合成")
@@ -635,16 +646,16 @@ class SettingWindow(QDialog):
         setting_layout_2.addWidget(self.edit_l2d_layout_btn,2,0,1,2)
         setting_group_2=QGroupBox("角色与外观")
         setting_group_2.setLayout(setting_layout_2)
-        layout=QVBoxLayout()
+        layout=self.content_layout
         sakiko_group=QGroupBox("祥子的状态")
-        sakiko_layout=QHBoxLayout()
+        sakiko_layout=ResponsiveButtonLayout()
         sakiko_layout.addWidget(self.convert_sakiko_state_btn)
         sakiko_layout.addWidget(self.sakiko_mask_btn)
         sakiko_group.setLayout(sakiko_layout)
         layout.addWidget(setting_group)
         layout.addWidget(setting_group_2)
         layout.addWidget(sakiko_group)
-        self.setLayout(layout)
+        layout.addStretch()
         self.current_color=color
         self.setStyleSheet(build_dialog_theme_stylesheet(derive_theme_palette(color)))
 
@@ -4625,7 +4636,6 @@ class ChatGUI(QWidget):
     def open_setting_window(self):
         setting_window=SettingWindow(
             self,
-            self.screen,
             self.current_character.theme_seed,
             self.audio_gen,
         )
@@ -4807,6 +4817,7 @@ class ChatGUI(QWidget):
             feedback_admin_fun=self.open_feedback_admin if os.environ.get("DSAKIKO_FEEDBACK_ADMIN_URL") else None,
             toggle_pet_fun=controller.toggle_mode if controller is not None else None,
             pet_mode=controller.pet_mode if controller is not None else False,
+            parent=self,
         )
         more_function_win.exec_()
 
