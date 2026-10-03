@@ -230,7 +230,7 @@ class PreviewController:
         if self.model is None:
             return
         native = self.model.model
-        methods = ('StopAllMotions', 'ResetExpressions', 'ResetParameters', 'ResetPose')
+        methods = ('StopAllMotions', 'ResetExpressions', 'ResetAllParameters', 'ResetPose')
         for name in methods:
             if not callable(getattr(native, name, None)):
                 raise RuntimeError(f'当前 live2d-py 缺少 {name}，无法可靠重置演出')

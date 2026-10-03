@@ -8,10 +8,10 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 
-from live2d_support.runtime_adapter import Live2DModelAdapter
+from live2d_support.runtime_adapter import Live2DModelAdapter, Live2DVersion
 
 
-def create_model(root: Path, expressions: list[tuple[str, str]], *, missing=(), version="v3"):
+def create_model(root: Path, expressions: list[tuple[str, str]], *, missing: tuple[str, ...] = (), version: Live2DVersion = "v3") -> tuple[Live2DModelAdapter, Mock]:
     """经过真实 adapter 加载入口，只替换 OpenGL 和原生模型。"""
     for _, file in expressions:
         if file not in missing:
@@ -30,9 +30,9 @@ def create_model(root: Path, expressions: list[tuple[str, str]], *, missing=(), 
         document = {"model": "sample.moc", "expressions": [{"name": name, "file": file} for name, file in expressions]}
     path.write_text(json.dumps(document), encoding="utf-8")
     native = Mock()
-    native.GetParameterCount.return_value = 0
+    native.GetParamIds.return_value = []
     native.IsMotionFinished.return_value = True
-    with patch("live2d_support.runtime_adapter.load_live2d_runtime", return_value=Mock(LAppModel=Mock(return_value=native))), \
+    with patch("live2d_support.runtime_adapter.load_live2d_runtime", return_value=Mock(Model=Mock(return_value=native))), \
             patch("live2d_support.runtime_adapter.glUseProgram"):
         adapter = Live2DModelAdapter.create(str(path))
     return adapter, native
@@ -111,14 +111,14 @@ def test_default_can_be_restored_after_editor_resets_native_expressions(tmp_path
     assert native.SetExpression.call_args_list == [call("smile"), call("smile")]
 
 
-def test_default_eye_expression_is_not_overwritten_after_motion_finishes(tmp_path):
+def test_default_eye_expression_is_not_overwritten_after_motion_finishes(tmp_path: Path) -> None:
     adapter, native = create_model(tmp_path, [("smile", "exp_smile01.exp3.json")])
     adapter.set_auto_blink_enable(True)
     adapter.StartMotion("IDLE", 0, 3)
     adapter.update()
     native.Update.assert_called_once()
-    native._model.SetAutoBlink.assert_called_with(True)
-    native._model.UpdateBlink.assert_not_called()
+    native.SetAutoBlink.assert_called_with(True)
+    native.UpdateBlink.assert_not_called()
 
 
 def test_expression_failure_falls_back_without_failing_model_load(tmp_path):

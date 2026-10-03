@@ -503,7 +503,8 @@ def _flatten_model3_file_references(
 
 def normalize_model3_for_project(model3_json_path: str, *, downloaded: bool = False) -> bool:
     """将 Live2D V3 model3.json 规范化为项目内部可用结构。"""
-    model_path = Path(model3_json_path)
+    # 先消除 macOS /var 与 /private/var 等目录别名，再判断是否需要平铺资源。
+    model_path = Path(model3_json_path).resolve()
     model_dir = model_path.parent
     with open(model3_json_path, 'r', encoding='utf-8') as f:
         loaded_data = json.load(f)

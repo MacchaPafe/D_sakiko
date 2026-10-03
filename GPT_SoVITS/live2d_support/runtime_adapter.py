@@ -50,8 +50,8 @@ MotionCallback = Callable[..., object]
 logger = get_logger(__name__)
 
 RUNTIME_MODULE_BY_VERSION: dict[Live2DVersion, str] = {
-    "v2": "live2d.v2cpp",
-    "v3": "live2d.v3",
+    "v2": "live2d",
+    "v3": "live2d",
 }
 
 PARAMETER_CANDIDATES: dict[str, tuple[str, str]] = {
@@ -60,7 +60,7 @@ PARAMETER_CANDIDATES: dict[str, tuple[str, str]] = {
     "eye_r_open": ("PARAM_EYE_R_OPEN", "ParamEyeROpen"),
 }
 
-BREATH_PARAMETER_ONLY_METHOD = "SetAutoBreathParameterOnlyEnable"
+BREATH_PARAMETER_ONLY_METHOD = "SetAutoBreathParameterOnly"
 
 
 class Live2DModelProtocol(Protocol):
@@ -248,7 +248,7 @@ def _disable_live2d_runtime_logging(runtime: ModuleType) -> None:
 
     set_log_level = getattr(runtime, "setLogLevel", None)
     if callable(set_log_level):
-        log_levels = getattr(runtime, "Live2DLogLevels", None)
+        log_levels = getattr(runtime, "LogLevels", None)
         error_level = getattr(log_levels, "LV_ERROR", None)
         if error_level is not None:
             try:
@@ -270,8 +270,8 @@ def release_live2d_runtime(runtime: ModuleType | None) -> None:
     """释放 Live2D runtime 及其 OpenGL 资源。"""
     if runtime is None:
         return
-    _call_noarg(runtime, "dispose")
     _call_noarg(runtime, "glRelease")
+    _call_noarg(runtime, "dispose")
 
 
 def _collect_motion_groups(data: dict[str, object], version: Live2DVersion) -> frozenset[str]:
@@ -349,6 +349,17 @@ def _collect_expression_ids(data: dict[str, object], version: Live2DVersion) -> 
     return frozenset(expression_ids)
 
 
+@dataclass(frozen=True)
+class Live2DParameter:
+    """将统一运行时的参数元数据提供给现有参数编辑器。"""
+
+    id: str
+    value: float
+    min: float
+    max: float
+    default: float
+
+
 @dataclass
 class Live2DModelAdapter:
     """封装单个 Live2D 模型实例，隐藏 v2/v3 API 差异。"""
@@ -365,7 +376,7 @@ class Live2DModelAdapter:
     parameter_ids: frozenset[str]
     preview_motion_indices_by_path: dict[str, int]
     auto_blink_enabled: bool = False
-    _last_update_time: float = field(default_factory=time.time)
+    _last_update_time: float = field(default_factory=time.monotonic)
     performance_state: PerformanceState | None = None
     performance_context: object = None
     performance_expression_active: bool = False
@@ -382,7 +393,7 @@ class Live2DModelAdapter:
         version = detect_live2d_runtime_version(model_json_path)
         runtime = load_live2d_runtime(version)
         data = _read_model_json(model_json_path)
-        model_class = getattr(runtime, "LAppModel")
+        model_class = getattr(runtime, "Model")
         model = model_class()
         glUseProgram(0)
         try:
@@ -474,17 +485,11 @@ class Live2DModelAdapter:
     def refresh_parameter_ids(self) -> None:
         """从模型实例读取当前参数 ID 集合。"""
         model = self._require_model()
-        parameter_ids: set[str] = set()
         try:
-            count = int(getattr(model, "GetParameterCount")())
-            for index in range(count):
-                parameter = getattr(model, "GetParameter")(index)
-                parameter_id = getattr(parameter, "id", "")
-                if isinstance(parameter_id, str) and parameter_id:
-                    parameter_ids.add(parameter_id)
+            self.parameter_ids = frozenset(getattr(model, "GetParamIds")())
         except Exception:
             logger.debug("读取 Live2D 参数列表失败：%s", self.model_json_path, exc_info=True)
-        self.parameter_ids = frozenset(parameter_ids)
+            self.parameter_ids = frozenset()
 
     def resize(self, width: int, height: int) -> None:
         """调整模型视口尺寸。"""
@@ -497,15 +502,15 @@ class Live2DModelAdapter:
     def update(self) -> None:
         """更新模型状态。"""
         model = self._require_model()
-        now = time.time()
+        now = time.monotonic()
         delta_seconds = min(max(now - self._last_update_time, 0.0), 0.1)
         self._last_update_time = now
         if self.version == "v3":
-            set_blink = getattr(getattr(model, "_model", None), "SetAutoBlink", None)
+            set_blink = getattr(model, "SetAutoBlink", None)
             if callable(set_blink):
                 # 默认表情与自定义表情一样，在眨眼之后叠加，避免闭眼微笑被强行睁开。
                 set_blink(self.auto_blink_enabled and (self._custom_expression_active or self._default_expression_active))
-        getattr(model, "Update")()
+        getattr(model, "Update")(delta_seconds)
         if self._custom_expression_active or self._default_expression_active:
             return
         if self.version == "v3" and self.auto_blink_enabled and not self.performance_expression_active:
@@ -516,8 +521,7 @@ class Live2DModelAdapter:
                         return
                 except Exception:
                     logger.debug("Check Live2D V3 motion state failed", exc_info=True)
-            raw_model = getattr(model, "_model", None)
-            update_blink = getattr(raw_model, "UpdateBlink", None)
+            update_blink = getattr(model, "UpdateBlink", None)
             if callable(update_blink):
                 update_blink(delta_seconds)
 
@@ -553,19 +557,8 @@ class Live2DModelAdapter:
         """设置自动眨眼。"""
         model = self._require_model()
         self.auto_blink_enabled = enabled
-        if self.version == "v3":
-            raw_model = getattr(model, "_model", None)
-            update_blink = getattr(raw_model, "UpdateBlink", None)
-            set_auto_blink = getattr(raw_model, "SetAutoBlink", None)
-            if callable(update_blink) and callable(set_auto_blink):
-                set_auto_blink(False)
-                return
-        for method_name in ("SetAutoBlinkEnable", "SetAutoBlink"):
-            method = getattr(model, method_name, None)
-            if callable(method):
-                method(enabled)
-                return
-        logger.debug("Current Live2D runtime does not support auto blink API: %s", self.model_json_path)
+        # V3 待机眨眼在表情之前或空闲更新之后施加；V2 使用统一运行时的默认顺序。
+        getattr(model, "SetAutoBlink")(enabled if self.version == "v2" else False)
 
     def SetAutoBlinkEnable(self, enabled: bool) -> None:
         """兼容旧调用风格，设置自动眨眼。"""
@@ -578,11 +571,11 @@ class Live2DModelAdapter:
             if _call_breath_parameter_only(model, True):
                 return
             logger.warning(
-                "当前 live2d.v3 runtime 不支持仅 ParamBreath 自动呼吸 API，"
+                "当前 live2d runtime 不支持仅 ParamBreath 自动呼吸 API，"
                 "将回退到完整 AutoBreath：%s",
                 self.model_json_path,
             )
-        getattr(model, "SetAutoBreathEnable")(enabled)
+        getattr(model, "SetAutoBreath")(enabled)
 
     def set_auto_breath_parameter_only_enable(self, enabled: bool) -> bool:
         """设置仅 ParamBreath 自动呼吸，runtime 不支持时返回 False。"""
@@ -1032,31 +1025,19 @@ class Live2DModelAdapter:
             auto_expression: bool = True,
     ) -> bool:
         """播放一个外部动作文件，用于动作编辑器预览。"""
-        if self.version == "v3":
-            loaded_motion = self._find_loaded_motion_by_file(motion_path)
-            if loaded_motion is not None:
-                group_name, motion_index = loaded_motion
-                return self.start_motion(
-                    group_name,
-                    motion_index,
-                    priority,
-                    on_start,
-                    on_finish,
-                    auto_expression=auto_expression,
-                )
+        loaded_motion = self._find_loaded_motion_by_file(motion_path)
+        if loaded_motion is not None:
+            group_name, motion_index = loaded_motion
+            return self.start_motion(
+                group_name,
+                motion_index,
+                priority,
+                on_start,
+                on_finish,
+                auto_expression=auto_expression,
+            )
 
         model = self._require_model()
-        load_motion = getattr(model, "LoadMotion", None)
-        start_loaded_motion = getattr(model, "StartLoadedMotion", None)
-        if callable(load_motion) and callable(start_loaded_motion):
-            try:
-                motion_no = load_motion(motion_path)
-                start_loaded_motion(motion_no)
-                return True
-            except Exception:
-                logger.exception("播放 Live2D 外部动作文件失败：%s", motion_path)
-                return False
-
         load_extra_motion = getattr(model, "LoadExtraMotion", None)
         if callable(load_extra_motion):
             group_name = self.PREVIEW_MOTION_GROUP
@@ -1121,18 +1102,8 @@ class Live2DModelAdapter:
         return None
 
     def _set_runtime_parameter_value(self, parameter_id: str, value: float) -> bool:
-        model = self._require_model()
-        if self.version == "v3":
-            raw_model = getattr(model, "_model", None)
-            set_parameter_value_by_id = getattr(raw_model, "SetParameterValueById", None)
-            if callable(set_parameter_value_by_id):
-                set_parameter_value_by_id(parameter_id, value)
-                return True
-            set_parameter_value_by_id = getattr(model, "SetParameterValueById", None)
-            if callable(set_parameter_value_by_id):
-                set_parameter_value_by_id(parameter_id, value)
-                return True
-        getattr(model, "SetParameterValue")(parameter_id, value)
+        """通过上游统一参数接口写入当前帧数值。"""
+        getattr(self._require_model(), "SetParamById")(parameter_id, value)
         return True
 
     def set_parameter_value(self, semantic_name: str, value: float) -> bool:
@@ -1207,20 +1178,23 @@ class Live2DModelAdapter:
             return default
         model = self._require_model()
         try:
-            count = int(getattr(model, "GetParameterCount")())
-            for index in range(count):
-                parameter = getattr(model, "GetParameter")(index)
-                if getattr(parameter, "id", "") == parameter_id:
-                    value = float(getattr(parameter, "value", default))
-                    return max(0.0, min(1.0, value))
+            value = float(getattr(model, "GetParamValueById")(parameter_id))
+            return max(0.0, min(1.0, value))
         except Exception:
             logger.debug("读取 Live2D 参数失败：%s", parameter_id, exc_info=True)
         return default
 
     def GetParameterCount(self) -> int:
         """兼容旧调用风格，返回模型参数数量。"""
-        return int(getattr(self._require_model(), "GetParameterCount")())
+        return int(getattr(self._require_model(), "GetParamCount")())
 
     def GetParameter(self, index: int) -> object:
         """兼容旧调用风格，返回指定索引的模型参数。"""
-        return getattr(self._require_model(), "GetParameter")(index)
+        model = self._require_model()
+        return Live2DParameter(
+            id=getattr(model, "GetParamIds")()[index],
+            value=float(getattr(model, "GetParamValueByIndex")(index)),
+            min=float(getattr(model, "GetParamMinByIndex")(index)),
+            max=float(getattr(model, "GetParamMaxByIndex")(index)),
+            default=float(getattr(model, "GetParamDefaultByIndex")(index)),
+        )

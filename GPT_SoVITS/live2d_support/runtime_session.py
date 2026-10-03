@@ -27,7 +27,8 @@ class Live2DRuntimeSession:
         glUseProgram(0)
         if version not in self._runtimes:
             runtime = load_live2d_runtime(version)
-            initialize_live2d_runtime(runtime)
+            if runtime not in self._runtimes.values():
+                initialize_live2d_runtime(runtime)
             self._runtimes[version] = runtime
         return Live2DModelAdapter.create(path)
 
@@ -36,7 +37,7 @@ class Live2DRuntimeSession:
         glUseProgram(0)
         first_error: Exception | None = None
         try:
-            for runtime in self._runtimes.values():
+            for runtime in dict.fromkeys(self._runtimes.values()):
                 try:
                     release_live2d_runtime(runtime)
                 except Exception as error:

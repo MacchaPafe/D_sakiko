@@ -151,9 +151,12 @@ def test_invalid_parameters_rejected(entry: dict[str, object]) -> None:
 def adapter(model_path: Path) -> Live2DModelAdapter:
     """用可观察原生对象构建完整适配器，保持真实解析逻辑。"""
     native = Mock()
-    native.GetParameterCount.return_value = len(SPECS)
-    native.GetParameter.side_effect = lambda index: SimpleNamespace(
-        id=SPECS[index].id, min=SPECS[index].minimum, max=SPECS[index].maximum, default=SPECS[index].default)
+    native.GetParamCount.return_value = len(SPECS)
+    native.GetParamIds.return_value = [spec.id for spec in SPECS]
+    native.GetParamValueByIndex.return_value = 0.0
+    native.GetParamMinByIndex.side_effect = lambda index: SPECS[index].minimum
+    native.GetParamMaxByIndex.side_effect = lambda index: SPECS[index].maximum
+    native.GetParamDefaultByIndex.side_effect = lambda index: SPECS[index].default
     return Live2DModelAdapter(str(model_path), "v3", ModuleType("fake"), native, frozenset(), {},
                               frozenset({"original"}), frozenset(item.id for item in SPECS), {})
 
@@ -187,7 +190,7 @@ def test_preview_session_static_performance_and_stale_commands(model_path: Path)
     assert session.static
     data = expression_document([{"Id": "ParamEyeLOpen", "Value": 0.4, "Blend": "Multiply"}], 0.5, 0.5, SPECS)
     assert session.execute(model, dict(command, action="preview", document=data, mode="static"))["ok"]
-    native.SetParameterValue.assert_called_with("ParamEyeLOpen", 0.4)
+    native.SetParamById.assert_called_with("ParamEyeLOpen", 0.4)
     assert not session.execute(model, dict(command, session_id="old", action="end"))["ok"]
     assert session.static
     assert session.execute(model, dict(command, action="preview", document=data, mode="performance"))["ok"]

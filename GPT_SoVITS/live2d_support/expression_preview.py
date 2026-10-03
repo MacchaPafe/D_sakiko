@@ -33,7 +33,7 @@ class ExpressionPreviewSession:
         native = self.model.model
         self.model.reset_performance()
         self.model._default_expression_active = False
-        for method in ("StopAllMotions", "ResetExpressions", "ResetParameters", "ResetPose"):
+        for method in ("StopAllMotions", "ResetExpressions", "ResetAllParameters", "ResetPose"):
             getattr(native, method)()
 
     def close(self) -> None:
@@ -109,7 +109,7 @@ class ExpressionPreviewSession:
                     key, value, blend = str(entry["Id"]), float(entry["Value"]), str(entry.get("Blend", "Add"))
                     base = by_id[key].default
                     target = value if blend == "Overwrite" else base + value if blend == "Add" else base * value
-                    getattr(model.model, "SetParameterValue")(key, target)
+                    getattr(model.model, "SetParamById")(key, target)
             else:
                 motion = str(command.get("motion") or "")
                 if motion:
