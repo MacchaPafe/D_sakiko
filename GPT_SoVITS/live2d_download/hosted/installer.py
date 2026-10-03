@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -225,6 +226,52 @@ class V3Installer:
             check_cancel(cancel)
             return self.install_archive(archive, resource, selection, cancel)
 
+    @contextmanager
+    def _reference_audio(self, character_id):
+        """补齐 V2 新角色的语音目录结构；失败仅回滚本次创建的内容。"""
+        root = self.project_root / "reference_audio"
+        character = root / character_id
+        models = character / "GPT-SoVITS_models"
+        color = CHARACTERS.get(character_id, {}).get("theme_color") or "#7799cc"
+        files = {
+            models / "在这里放入角色的GPT-SoVITS模型（.pth和.ckpt）": "",
+            character / "QT_style.json": f"QWidget {{\n    color: {color};\n}}",
+            character / "reference_audio_language.txt": (
+                "#填写说明：修改末行数字设置参考音频语言：1中文、2英文、3日文、4粤语、5韩文、"
+                "6中英混合、7日英混合、8粤英混合、9韩英混合、10多语种混合、11多语种混合（粤语）\n"
+                "#末行只填写数字，不添加空格等其他内容\n3"),
+            character / "reference_text.txt": "",
+        }
+        created_files, created_dirs = [], []
+        try:
+            for directory in (root, character, models):
+                if directory.is_symlink():
+                    raise DownloadError("语音资源目录不能是链接")
+                if not directory.exists():
+                    directory.mkdir()
+                    created_dirs.append(directory)
+            for path, content in files.items():
+                if path.is_symlink():
+                    raise DownloadError("语音配置文件不能是链接")
+                if path.exists():
+                    if not path.is_file():
+                        raise DownloadError("语音配置路径不是文件")
+                    continue
+                with path.open("x", encoding="utf-8") as output:
+                    created_files.append(path)
+                    output.write(content)
+            yield
+        except Exception:
+            for path in reversed(created_files):
+                path.unlink(missing_ok=True)
+            for directory in reversed(created_dirs):
+                # 只删除空目录；并发写入的用户文件始终保留。
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+            raise
+
     def install_archive(self, archive, resource, selection, cancel):
         """在同盘临时目录完整验证后发布，失败不留下半成品角色或模型。"""
         check_cancel(cancel)
@@ -249,22 +296,9 @@ class V3Installer:
                         (ready / "character_description.txt").write_text(description, encoding="utf-8")
                     model_dir.rename(ready / "live2D_model")
                     check_cancel(cancel)
-                    style = self.project_root / "reference_audio" / selection.source / "QT_style.json"
-                    created_style = False
-                    try:
-                        style.parent.mkdir(parents=True, exist_ok=True)
-                        if not style.exists():
-                            # CHARACTERS 按 char_info_json 的 romaji 建索引。
-                            color = CHARACTERS.get(selection.source, {}).get("theme_color") or "#7799cc"
-                            with style.open("x", encoding="utf-8") as output:
-                                created_style = True
-                                output.write(f"QWidget {{\n    color: {color};\n}}")
+                    with self._reference_audio(selection.source):
                         check_cancel(cancel)
                         ready.rename(character)
-                    except Exception:
-                        if created_style:
-                            style.unlink()
-                        raise
                     return InstallResult(character, True, not bool(description and description.strip()))
 
                 default = character / "live2D_model"
@@ -294,8 +328,9 @@ class V3Installer:
                             copied_description = True
                             output.write(description)
                     missing = not description_path.is_file() or not description_path.read_text(encoding="utf-8-sig").strip()
-                    check_cancel(cancel)
-                    model_dir.rename(target)
+                    with self._reference_audio(selection.target_id):
+                        check_cancel(cancel)
+                        model_dir.rename(target)
                 except Exception:
                     if copied_description:
                         description_path.unlink()

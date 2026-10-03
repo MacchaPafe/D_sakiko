@@ -93,6 +93,11 @@ def test_new_character_flatten_references_and_description(tmp_path):
     assert (result.path / "character_description.txt").read_text(encoding="utf-8") == "包内角色描述"
     assert_model(result.path / "live2D_model")
     assert archive.read_bytes() == original
+    audio = tmp_path / "reference_audio/viola"
+    assert (audio / "GPT-SoVITS_models/在这里放入角色的GPT-SoVITS模型（.pth和.ckpt）").is_file()
+    assert (audio / "reference_text.txt").read_text(encoding="utf-8") == ""
+    language = (audio / "reference_audio_language.txt").read_text(encoding="utf-8")
+    assert [line for line in language.splitlines() if line and not line.startswith("#")] == ["3"]
     assert not list((tmp_path / "live2d_related").glob(".v3-install-*"))
 
 
@@ -133,6 +138,7 @@ def test_failed_character_publish_removes_new_theme(tmp_path, monkeypatch):
         V3Installer(None, tmp_path).install_archive(
             package(tmp_path), resource("arale"), Selection("new", "arale"), Event())
     assert not (tmp_path / "reference_audio/arale/QT_style.json").exists()
+    assert not (tmp_path / "reference_audio/arale").exists()
     assert not (tmp_path / "live2d_related/arale").exists()
 
 
@@ -155,7 +161,41 @@ def test_existing_default_or_extra_preserves_identity_and_description(tmp_path, 
     assert_model(result.path)
     again = installer.install_archive(archive, resource(), Selection("existing", "viola", "custom"), Event())
     assert again.path != result.path
+    assert (tmp_path / "reference_audio/custom/GPT-SoVITS_models").is_dir()
+    assert not (tmp_path / "reference_audio/viola").exists()
     assert_model(result.path)
+
+
+def test_existing_audio_files_survive_install_and_failed_publish(tmp_path, monkeypatch):
+    character = tmp_path / "live2d_related/custom"
+    character.mkdir(parents=True)
+    (character / "name.txt").write_text("自定义角色", encoding="utf-8")
+    audio = tmp_path / "reference_audio/custom"
+    models = audio / "GPT-SoVITS_models"
+    models.mkdir(parents=True)
+    originals = {audio / "reference_text.txt": b"my transcript", models / "voice.pth": b"my voice",
+                 audio / "QT_style.json": b"QWidget {color: #123456;}"}
+    for path, content in originals.items():
+        path.write_bytes(content)
+    installer = V3Installer(None, tmp_path)
+    archive = package(tmp_path)
+    original_rename = Path.rename
+
+    def fail_model_publish(path, target):
+        if path.name == "model":
+            raise OSError("model publish failed")
+        return original_rename(path, target)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "rename", fail_model_publish)
+        with pytest.raises(DownloadError):
+            installer.install_archive(archive, resource(), Selection("existing", "viola", "custom"), Event())
+    assert not (audio / "reference_audio_language.txt").exists()
+    assert list(models.iterdir()) == [models / "voice.pth"]
+    installer.install_archive(archive, resource(), Selection("existing", "viola", "custom"), Event())
+    for path, content in originals.items():
+        assert path.read_bytes() == content
+    assert (audio / "reference_audio_language.txt").is_file()
 
 
 @pytest.mark.parametrize("description", [None, ""])
