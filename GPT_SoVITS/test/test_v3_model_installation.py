@@ -160,7 +160,8 @@ def test_existing_default_or_extra_preserves_identity_and_description(tmp_path, 
     assert (character / "name.txt").read_text(encoding="utf-8") == "本地身份"
     assert_model(result.path)
     again = installer.install_archive(archive, resource(), Selection("existing", "viola", "custom"), Event())
-    assert again.path != result.path
+    assert again.path == result.path
+    assert again.already_installed
     assert (tmp_path / "reference_audio/custom/GPT-SoVITS_models").is_dir()
     assert not (tmp_path / "reference_audio/viola").exists()
     assert_model(result.path)
@@ -270,6 +271,66 @@ def test_duplicate_new_character_stops_before_downloading(tmp_path):
     with pytest.raises(DownloadError, match="已存在"):
         V3Installer(service, tmp_path).download(resource(), Selection("new", "viola"), tmp_path / "cache", Event(), lambda *_: None)
     service.download.assert_not_called()
+
+
+def test_existing_model_skips_network_after_reopening_installer(tmp_path: Path) -> None:
+    """重新创建安装器后仍识别磁盘模型，不依赖会话缓存，也不下载重复资源。"""
+    choice = Selection("existing", "viola", "custom")
+    character = tmp_path / "live2d_related/custom"
+    character.mkdir(parents=True)
+    first = V3Installer(None, tmp_path).install_archive(package(tmp_path), resource(), choice, Event())
+    service = Mock()
+    result = V3Installer(service, tmp_path).download(resource(), choice, tmp_path / "cache", Event(), lambda *_: None)
+    assert result.already_installed
+    assert result.path == first.path
+    service.download.assert_not_called()
+    assert not (tmp_path / "cache").exists()
+
+
+def test_model_installed_during_download_is_reused(tmp_path: Path) -> None:
+    """下载期间出现同一模型时，安装阶段重新识别，不生成第二份副本。"""
+    choice = Selection("existing", "viola", "custom")
+    character = tmp_path / "live2d_related/custom"
+    character.mkdir(parents=True)
+    archive = package(tmp_path)
+    existing = character / "extra_model/用户改过的文件夹"
+
+    def download_and_publish(*args: object) -> Path:
+        """模拟另一个安装流程在当前下载完成前发布同一模型。"""
+        with zipfile.ZipFile(archive) as source:
+            source.extractall(existing)
+        return archive
+
+    service = Mock()
+    service.download.side_effect = download_and_publish
+    result = V3Installer(service, tmp_path).download(resource(), choice, tmp_path / "cache", Event(), lambda *_: None)
+    assert result.already_installed
+    assert result.path == existing / "wrapper"
+    assert list((character / "extra_model").iterdir()) == [existing]
+
+
+def test_different_models_with_same_title_remain_installable(tmp_path: Path) -> None:
+    """相同服装展示名称不等于同一模型，不同标识仍可安装到独立目录。"""
+    from dataclasses import replace
+    character = tmp_path / "live2d_related/custom"
+    character.mkdir(parents=True)
+    default = character / "live2D_model"
+    default.mkdir()
+    (default / "old.model.json").write_text("{}", encoding="utf-8")
+    choice = Selection("existing", "viola", "custom")
+    archive = package(tmp_path)
+    installer = V3Installer(None, tmp_path)
+    first = installer.install_archive(archive, resource(), choice, Event())
+    second_archive = tmp_path / "second.zip"
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(second_archive, "w") as output:
+        for name in source.namelist():
+            target = name.replace("model.model3.json", "other.model3.json")
+            output.writestr(target, source.read(name))
+    second = installer.install_archive(second_archive, replace(resource(), model_id="other"), choice, Event())
+    assert not second.already_installed
+    assert first.path != second.path
+    assert second.path.name == first.path.name + "_2"
+    assert (second.path / "other.model3.json").is_file()
 
 
 def test_static_model_with_no_motions_is_installable(tmp_path):

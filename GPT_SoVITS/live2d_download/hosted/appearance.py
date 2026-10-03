@@ -12,6 +12,7 @@ BAND_COLORS = ("#E95B88", "#D85963", "#64BBA8", "#7772BC", "#DBAD39",
 # 各页面样式集中维护；页面规则仅应用到对应页面，尺寸统一按屏幕换算。
 COMMON_STYLE = """
 QLabel#modeHint {color:#8794A8; font-size:14px;}
+QLabel#selectionNotice {color:#8794A8; font-size:13px; font-weight:400; padding:0;}
 /* 透明顶栏和统一玻璃胶囊；尺寸仍由 ScreenMetrics 换算。 */
 QFrame#topNavContainer {
     background:transparent; border:0; border-bottom:1px solid rgba(0,0,0,0.04);

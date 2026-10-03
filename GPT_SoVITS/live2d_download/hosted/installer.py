@@ -12,11 +12,14 @@ import shutil
 import stat
 import tempfile
 import zipfile
+from typing import Optional
 
 from live2d_support.model_normalizer import MODEL3_ASSET_REFERENCE_KEYS, normalize_model3_for_project
 from live2d_support.performance_catalog import load_performance_catalog, motion_assets, performance_config_path
 from .catalog import CHARACTERS, PROJECT_ROOT
-from .service import DownloadError, check_cancel
+from .service import DownloadError, Resource, check_cancel
+from .targets import creation_conflicts, read_targets
+from .installed_models import find_installed_v3
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,7 @@ class InstallResult:
     path: Path
     new_character: bool
     description_missing: bool
+    already_installed: bool = False
 
 
 def _read_json(path):
@@ -209,17 +213,30 @@ class V3Installer:
         if character.is_symlink():
             raise DownloadError("接收角色目录不能是链接")
         if selection.mode == "new":
-            display_name = CHARACTERS[selection.source]["display_name"]
-            if character.exists() or any(p.read_text(encoding="utf-8-sig").strip() == display_name
-                                        for p in root.glob("*/name.txt")):
+            if creation_conflicts(self.project_root, selection.source, read_targets(self.project_root)):
                 raise DownloadError("该角色已存在，请使用“为已有角色添加服装”入口")
         elif not character.is_dir():
             raise DownloadError("接收角色目录不存在，请重新选择")
         return character
 
+    def _existing_install(self, character: Path, resource: Resource) -> Optional[InstallResult]:
+        """复用已有模型的实际目录，让界面漏判或重复安装调用也不会创建副本。"""
+        installed = find_installed_v3(character, resource.model_id)
+        if installed is None:
+            return None
+        try:
+            missing = not (character / "character_description.txt").read_text(encoding="utf-8-sig").strip()
+        except (OSError, UnicodeError):
+            missing = True
+        return InstallResult(installed, False, missing, already_installed=True)
+
     def download(self, resource, selection, cache_root, cancel, progress):
         """下载后立即安装，成功、失败或取消均清理本次临时包。"""
-        self._target(resource, selection)
+        check_cancel(cancel)
+        character = self._target(resource, selection)
+        existing = self._existing_install(character, resource)
+        if existing is not None:
+            return existing
         Path(cache_root).mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="v3-", dir=str(cache_root)) as folder:
             archive = self.service.download(resource, Path(folder), cancel, progress)
@@ -276,6 +293,9 @@ class V3Installer:
         """在同盘临时目录完整验证后发布，失败不留下半成品角色或模型。"""
         check_cancel(cancel)
         character = self._target(resource, selection)
+        existing = self._existing_install(character, resource)
+        if existing is not None:
+            return existing
         root = character.parent
         root.mkdir(parents=True, exist_ok=True)
         try:
@@ -288,6 +308,9 @@ class V3Installer:
                 _, description = _flatten(extracted, model_dir, cancel)
                 check_cancel(cancel)
                 self._target(resource, selection)
+                existing = self._existing_install(character, resource)
+                if existing is not None:
+                    return existing
                 if selection.mode == "new":
                     ready = stage / "character"
                     ready.mkdir()

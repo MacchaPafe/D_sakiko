@@ -11,19 +11,26 @@ from PyQt5.QtCore import Qt, QSize, QRectF, QTimer, QVariantAnimation, QEasingCu
 from PyQt5.QtGui import QColor, QPainter, QPixmap, QIcon, QDesktopServices, QFont, QPainterPath, QFontMetricsF, QLinearGradient, QRadialGradient, QPen, QCursor, QPaintEvent, QMouseEvent
 from PyQt5.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QStackedWidget, QComboBox, QScrollArea, QButtonGroup, QToolButton, QMessageBox,
-    QListWidget, QListWidgetItem, QGroupBox, QProgressBar, QLineEdit, QApplication, QLayout, QGridLayout, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QSizePolicy)
+    QListWidget, QListWidgetItem, QGroupBox, QProgressBar, QLineEdit, QApplication, QLayout, QGridLayout, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QSizePolicy, QDialogButtonBox)
 
 from .catalog import APP_ROOT, PROJECT_ROOT, CACHE_ROOT, BANDS, CHARACTERS, CHARACTER_ROLES, Selection, destination
 from .service import ResourceService, Resource
 from .legacy import LegacyService
 from .installer import V3Installer, InstallResult
+from .installed_models import find_installed_v3
 from .jobs import JobHub
 from .appearance import ScreenMetrics, BAND_COLORS
+from .targets import LocalTarget, read_targets, creation_conflicts, default_target
 
 
 
 
 class CharacterComboBox(QComboBox):
+    def find_target(self, identifier: str) -> int:
+        """按目录标识查找接收角色，避免 Qt 对 Python 元组数据的比较差异。"""
+        return next((index for index in range(1, self.count())
+                     if self.itemData(index)[0] == identifier), -1)
+
     def paintEvent(self, event):
         """绘制统一配色的下拉箭头，替代 Windows 原生方形按钮。"""
         super().paintEvent(event)
@@ -689,13 +696,18 @@ class CharacterPage(QWidget):
         self.select_band(0)
         self.update_next()
 
-    def receiver_changed(self):
-        """保存本地接收角色，并控制来源选择区是否可用。"""
+    def receiver_changed(self) -> None:
+        """保存手动接收角色，原地更新服装状态，不自动重新匹配。"""
         value = self.receiver.currentData()
+        if self.window.selection.mode != "existing":
+            value = None
         self.window.selection = replace(self.window.selection, target_id=value[0] if value else "",
                                         target_name=value[1] if value else "")
         self.source_box.setEnabled(True)
         self.update_next()
+        self.window.selection_notice.clear()
+        self.window.selection_notice.hide()
+        self.window.resources.update_target()
 
     def select_band(self, index):
         """选中乐队按钮并加载本地配置的成员顺序。"""
@@ -715,13 +727,12 @@ class CharacterPage(QWidget):
         self.window.selection = replace(self.window.selection, source=character)
         self.update_next()
 
-    def update_next(self):
-        """按入口校验来源与接收角色是否齐全，控制下一步按钮。"""
+    def update_next(self) -> None:
+        """允许先浏览模型，接收角色在开始下载前补全。"""
         choice = self.window.selection
         self.next.setText("查看可下载头像" if choice.mode == "avatar" else "查看可下载模型")
         self.target_hint.setText("" if choice.mode == "existing" and not choice.target_id else "")
-        self.next.setEnabled(bool(choice.source) and (choice.mode != "existing" or bool(choice.target_id))
-                             and self.carousel.slide.state() != QVariantAnimation.Running)
+        self.next.setEnabled(bool(choice.source) and self.carousel.slide.state() != QVariantAnimation.Running)
 
     def retry_portrait(self):
         """强制重新获取当前立绘，绕过旧图片缓存。"""
@@ -943,6 +954,8 @@ class ResourceRow(QFrame):
         if self.image_tile:
             self.setObjectName("resourceCard")
         self.job, self.saved = None, None
+        self.download_selection: Optional[Selection] = None
+        self.target_context: Optional[tuple[str, str]] = None
         self.preview_requested = False
         self.preview_pixmap = QPixmap(str(APP_ROOT / "icons/loading.png"))
         self.metadata_ready = not legacy
@@ -1080,7 +1093,42 @@ class ResourceRow(QFrame):
         if self.preview_pixmap is not None:
             self.picture.setPixmap(self.preview_pixmap.scaled(self.picture.size(),Qt.KeepAspectRatio,Qt.SmoothTransformation))
 
-    def clicked(self):
+    def installation_key(self, choice: Selection) -> tuple[str, str, str]:
+        """用接收角色、来源角色和资源标识区分本次会话的安装结果。"""
+        target = choice.source if choice.mode == "new" else choice.target_id
+        resource = "v2:" + self.entry if self.legacy else "v3:" + self.entry.key
+        return target, choice.source, resource
+
+    def update_target(self) -> None:
+        """接收角色变化时刷新安装状态，不重建卡片或影响预览与滚动位置。"""
+        if self.image_tile or self.job is not None:
+            return
+        window = self.page.window
+        choice = window.selection
+        context = (choice.mode, choice.target_id)
+        changed = context != self.target_context
+        self.target_context = context
+        saved = window.installed_models.get(self.installation_key(choice))
+        if saved is not None and not saved.is_dir():
+            saved = None
+        if saved is None and not self.legacy and choice.mode == "existing" and choice.target_id:
+            saved = find_installed_v3(PROJECT_ROOT / "live2d_related" / choice.target_id, self.entry.model_id)
+        if saved is None and self.legacy and self.metadata_ready and choice.mode == "existing" and choice.target_id:
+            title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", self.title).rstrip(". ") or self.entry
+            character = PROJECT_ROOT / "live2d_related" / choice.target_id
+            saved = next((path for path in (character / "extra_model" / title,
+                                           character / "live2D_model" / title) if path.is_dir()), None)
+        if changed or saved != self.saved:
+            self.saved = saved
+            self.bar.hide()
+            self.locate.setVisible(saved is not None)
+            self.status.setVisible(saved is not None)
+            self.status.setText("此服装已安装" if saved else "")
+            self.status.setToolTip(str(saved) if saved else "")
+            self.button.setText("已安装" if saved else "下载")
+        self.button.setEnabled(not window.hub.busy and self.metadata_ready and self.saved is None)
+
+    def clicked(self) -> None:
         """开始快照化下载任务，或请求停止正在执行的任务。"""
         hub = self.page.window.hub
         if self.job is not None:
@@ -1089,6 +1137,8 @@ class ResourceRow(QFrame):
             self.status.setText("正在停止，请稍候…")
             return
         window = self.page.window
+        if hub.busy:
+            return
         choice = window.selection  # 不可变任务快照
         if self.image_tile and (destination(self.entry,window.zip_root) / self.entry.filename).exists():
             answer = QMessageBox.warning(window,"确认覆盖",
@@ -1096,14 +1146,14 @@ class ResourceRow(QFrame):
                 QMessageBox.Yes | QMessageBox.Cancel,QMessageBox.Cancel)
             if answer != QMessageBox.Yes:
                 return
-        if (self.legacy or self.entry.kind == "model") and choice.mode == "new":
-            name = CHARACTERS[choice.source]["display_name"]
-            duplicate = (PROJECT_ROOT / "live2d_related" / choice.source).exists() or any(
-                character.character_name == name or character.character_folder_name == choice.source
-                for character in window.character_list)
-            if duplicate:
-                QMessageBox.warning(window,"无法安装","同名角色已存在，请使用“为已有角色添加服装”。")
+        if self.legacy or self.entry.kind == "model":
+            choice = window.prepare_model_download()
+            if choice is None:
                 return
+            self.update_target()
+            if self.saved is not None:
+                return
+            self.download_selection = choice
         self.status.show()
         if self.compact_card:
             self.name.hide()
@@ -1154,12 +1204,15 @@ class ResourceRow(QFrame):
             self.button.setEnabled(True)
         else:
             self.saved = value.path if isinstance(value, InstallResult) else Path(value)
+            if self.download_selection is not None:
+                self.page.window.installed_models[self.installation_key(self.download_selection)] = self.saved
+                self.page.window.model_installed(self.download_selection)
             self.bar.setValue(100)
             status = "安装完成" if self.legacy else (
                 "已下载 · SHA-256 校验通过" if self.entry.sha256 else
                 "已下载 · 未提供校验值" if self.entry.kind == "model" else "原图已保存")
             if isinstance(value, InstallResult):
-                status = "安装完成"
+                status = "此服装已安装" if value.already_installed else "安装完成"
                 if value.description_missing:
                     status += " · 暂缺角色描述，需自行补齐"
                 elif value.new_character:
@@ -1170,7 +1223,7 @@ class ResourceRow(QFrame):
             if self.image_tile:
                 self.page.saved_images[self.entry.key] = self.saved
             self.status.setToolTip(str(self.saved))
-            self.button.setText("已完成")
+            self.button.setText("已安装" if isinstance(value, InstallResult) and value.already_installed else "已完成")
             self.button.setEnabled(False)
             self.locate.show()
             if self.compact_card:
@@ -1245,6 +1298,17 @@ class ResourcePage(QWidget):
             css += f"QLabel, QGroupBox, QGroupBox::title, QPushButton {{color:{accent};}} QLabel#resourceDetail {{color:{accent};}} QLabel#resourcePreview {{color:{accent};}} QProgressBar::chunk {{background:{accent};}}"
         self.setStyleSheet(css)
 
+    def update_target(self) -> None:
+        """仅更新模型用途、接收角色与各卡片安装状态，保留资源查询和列表位置。"""
+        choice = self.window.selection
+        if choice.mode not in ("new", "existing"):
+            return
+        target = (f"添加到已有角色"
+                  if choice.mode == "existing" else "加入新角色")
+        self.heading.setText(f"{CHARACTERS[choice.source]['display_name']} · {target}")
+        for _, _, row in self.rows:
+            row.update_target()
+
     def load(self):
         """重建当前资源页，独立查询 V2、V3 或图片目录。"""
         if self.window.hub.busy:
@@ -1275,8 +1339,7 @@ class ResourcePage(QWidget):
         elif choice.mode == "avatar":
             self.heading.setText(CHARACTERS[choice.source]["display_name"] + " · 聊天头像")
         else:
-            prefix = f"为 {choice.target_name} 准备服装 · " if choice.mode == "existing" else "加入新角色 · "
-            self.heading.setText(prefix + CHARACTERS[choice.source]["display_name"])
+            self.update_target()
         self.back.setText("返回角色选择")
         self.back.setVisible(choice.mode != "background")
         kinds = ["background"] if choice.mode == "background" else ["avatar"] if choice.mode == "avatar" else ["v2", "model"]
@@ -1361,6 +1424,7 @@ class ResourcePage(QWidget):
                 listing.addItem(item)
                 listing.setItemWidget(item, row)
                 self.rows.append((listing, item, row))
+                row.update_target()
         # 只有成功确认空目录才隐藏；错误和未完成查询保持可见。
         nonempty = any(state == "ready" for state in self.states.values())
         for key, (panel, _, _) in self.panels.items():
@@ -1454,15 +1518,7 @@ class ResourcePage(QWidget):
                         widget.title = value[0]
                         widget.name.setText(value[0])
                         widget.preview(value[1])
-                        choice = self.window.selection
-                        if choice.mode == "existing" and widget.job is None:
-                            existing = PROJECT_ROOT / "live2d_related" / choice.target_id / "extra_model" / value[0]
-                            if existing.is_dir():
-                                widget.saved = existing
-                                widget.status.setText("此服装已安装")
-                                widget.button.setEnabled(False)
-                                widget.button.setText("已安装")
-                                widget.locate.show()
+                        widget.update_target()
                     else:
                         widget.preview(None)
                 else:
@@ -1501,6 +1557,7 @@ class DownloadWizardWindow(QDialog):
         super().__init__()
         self.character_list = characters
         self.selection = Selection()
+        self.installed_models: dict[tuple[str, str, str], Path] = {}
         self.service = service or ResourceService()
         self.legacy = legacy or LegacyService()
         self.installer = V3Installer(self.service)
@@ -1574,9 +1631,25 @@ class DownloadWizardWindow(QDialog):
         root.addWidget(self.stack)
         self.characters = CharacterPage(self)
         self.resources = ResourcePage(self)
+        self.receiver_bar = QWidget(self)
+        receiver_layout = QHBoxLayout(self.receiver_bar)
+        receiver_layout.addWidget(QLabel("添加到本地角色：", self.receiver_bar))
+        receiver_layout.addWidget(self.characters.receiver, 1)
+        root.insertWidget(1, self.receiver_bar)
+        self.selection_notice = QLabel(self)
+        self.selection_notice.setObjectName("selectionNotice")
+        self.selection_notice.setWordWrap(True)
+        self.selection_notice.setTextFormat(Qt.PlainText)
+        self.selection_notice.hide()
+        self.selection_notice_timer = QTimer(self)
+        self.selection_notice_timer.setSingleShot(True)
+        self.selection_notice_timer.setInterval(4000)
+        self.selection_notice_timer.timeout.connect(self.selection_notice.hide)
+        root.insertWidget(2, self.selection_notice)
         for page in (self.characters, self.resources):
             self.stack.addWidget(page)
             page.setProperty("themeSurface", True)
+        self.stack.currentChanged.connect(self.update_installation_controls)
         for widget in self.findChildren(QWidget):
             if type(widget) in (QWidget, QStackedWidget):
                 widget.setProperty("themeSurface", True)
@@ -1763,41 +1836,169 @@ class DownloadWizardWindow(QDialog):
             button.style().polish(button)
             button.update()
 
-    def update_navigation(self, busy):
+    def refresh_targets(self) -> list[LocalTarget]:
+        """刷新磁盘接收角色，保留仍可用的手动选择，并纳入本次新安装的角色。"""
+        targets = read_targets(PROJECT_ROOT)
+        receiver = self.characters.receiver
+        previous = receiver.currentData()
+        receiver.blockSignals(True)
+        receiver.clear()
+        receiver.addItem("请选择本地角色", None)
+        for target in targets:
+            if target.usable:
+                receiver.addItem(f"{target.name}（{target.identifier}）", (target.identifier, target.name))
+                if previous and previous[0] == target.identifier:
+                    receiver.setCurrentIndex(receiver.count() - 1)
+        receiver.blockSignals(False)
+        value = receiver.currentData() if self.selection.mode == "existing" else None
+        self.selection = replace(self.selection, target_id=value[0] if value else "",
+                                 target_name=value[1] if value else "")
+        return targets
+
+    def match_on_entry(self) -> None:
+        """每次进入模型列表重置安装选择，仅依据本次线上来源匹配唯一接收角色。"""
+        receiver = self.characters.receiver
+        receiver.blockSignals(True)
+        receiver.setCurrentIndex(0)
+        receiver.blockSignals(False)
+        self.choose_mode("new")
+        targets = self.refresh_targets()
+        target = default_target(self.selection.source, targets)
+        if target is None:
+            return
+        self.choose_mode("existing")
+        receiver.setCurrentIndex(receiver.find_target(target.identifier))
+        # self.selection_notice.setText(f"本地已有该角色，已切换为添加服装。接收角色：{target.name}。")
+        # self.selection_notice.show()
+        # self.selection_notice_timer.start()
+
+    def model_installed(self, choice: Selection) -> None:
+        """新角色安装成功后原地转为给该角色添加服装，已有角色安装保留手动目标。"""
+        self.refresh_targets()
+        if choice.mode == "new":
+            index = self.characters.receiver.find_target(choice.source)
+            if index > 0:
+                self.choose_mode("existing")
+                self.characters.receiver.setCurrentIndex(index)
+
+    def update_installation_controls(self) -> None:
+        """仅在模型列表显示用途与接收角色设置，角色页只承担线上来源选择。"""
+        model_list = (self.stack.currentWidget() is self.resources
+                      and self.selection.mode in ("new", "existing"))
+        self.model_options.setVisible(model_list)
+        self.receiver_bar.setVisible(model_list and self.selection.mode == "existing")
+        self.characters.receiver.setVisible(model_list and self.selection.mode == "existing")
+        if not model_list:
+            self.selection_notice_timer.stop()
+            self.selection_notice.hide()
+
+    def request_receiver(self, targets: Sequence[LocalTarget]) -> bool:
+        """在当前模型页补全接收角色，确认后继续刚才的下载，取消则留在原处。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("选择本地接收角色")
+        layout = QVBoxLayout(dialog)
+        label = QLabel("这套服装要添加到哪个本地角色？", dialog)
+        layout.addWidget(label)
+        receiver = CharacterComboBox(dialog)
+        receiver.addItem("请选择本地角色", None)
+        for target in targets:
+            if target.usable:
+                receiver.addItem(f"{target.name}（{target.identifier}）", (target.identifier, target.name))
+        selected = self.characters.receiver.currentData()
+        recommended = default_target(self.selection.source, targets)
+        if selected is None and recommended is not None:
+            selected = (recommended.identifier, recommended.name)
+        if selected is not None:
+            receiver.setCurrentIndex(max(0, receiver.find_target(selected[0])))
+        layout.addWidget(receiver)
+        if receiver.count() == 1:
+            label.setText("未找到可用的本地角色。已有目录可能不完整，请检查角色目录后重试。")
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        confirm = buttons.button(QDialogButtonBox.Ok)
+        confirm.setText("添加并下载")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        confirm.setEnabled(receiver.currentData() is not None)
+        receiver.currentIndexChanged.connect(lambda _: confirm.setEnabled(receiver.currentData() is not None))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return False
+        value = receiver.currentData()
+        self.refresh_targets()
+        index = self.characters.receiver.find_target(value[0]) if value else -1
+        if index <= 0:
+            QMessageBox.warning(self, "无法安装", "所选本地角色已发生变化，请重新选择。")
+            return False
+        self.characters.receiver.setCurrentIndex(index)
+        return True
+
+    def prepare_model_download(self) -> Optional[Selection]:
+        """下载前重新验证磁盘状态，在原地处理新建冲突或补全接收角色。"""
+        targets = self.refresh_targets()
+        conflict = self.selection.mode == "new" and creation_conflicts(PROJECT_ROOT, self.selection.source, targets)
+        if conflict:
+            self.choose_mode("existing")
+        if self.selection.mode == "existing" and (conflict or not self.selection.target_id):
+            if not self.request_receiver(targets):
+                self.resources.update_target()
+                return None
+        self.resources.update_target()
+        return self.selection
+
+    def update_navigation(self, busy: bool) -> None:
         """下载未结束时锁定顶部类型与用途，防止切换任务上下文。"""
         self.navigation.setEnabled(not busy)
+        self.receiver_bar.setEnabled(not busy)
 
-    def choose_mode(self, mode):
-        """切换下载类型或模型用途，保留当前乐队与来源角色。"""
+    def choose_mode(self, mode: str) -> None:
+        """切换模型用途时原地更新接收角色，切换资源类型时进入对应页面。"""
         if self.hub.busy:
             return
-        self.resources.generation += 1
+        model_switch = self.selection.mode in ("new", "existing") and mode in ("new", "existing")
+        if not model_switch:
+            self.resources.generation += 1
+            self.hub.cancel_reads()
+            self.characters.receiver.blockSignals(True)
+            self.characters.receiver.setCurrentIndex(0)
+            self.characters.receiver.blockSignals(False)
+            if mode in ("new", "existing"):
+                mode = "new"
         if mode in ("new","existing"):
             self.model_mode = mode
         kind = "model" if mode in ("new","existing") else mode
         self.type_tabs[kind].setChecked(True)
         self.mode_tabs[self.model_mode].setChecked(True)
-        self.model_options.setVisible(kind == "model")
-        source = self.characters.carousel.members[self.characters.carousel.index]
+        source = (self.selection.source if model_switch else
+                  self.characters.carousel.members[self.characters.carousel.index])
         target = self.characters.receiver.currentData() if mode == "existing" else None
         self.selection = Selection(mode,source,target[0] if target else "",target[1] if target else "")
-        self.characters.receiver.setVisible(mode == "existing")
+        self.selection_notice_timer.stop()
+        self.selection_notice.clear()
+        self.selection_notice.hide()
         self.characters.update_next()
-        if mode == "background":
+        if model_switch:
+            self.resources.update_target()
+        elif mode == "background":
             self.show_resources()
         else:
             self.stack.setCurrentWidget(self.characters)
 
+        self.update_installation_controls()
         self.update()
 
-    def show_home(self):
+    def show_home(self) -> None:
         """兼容旧返回入口，重定向至当前模型用途的角色选择页。"""
-        self.choose_mode(self.model_mode)
+        if not self.hub.busy:
+            self.resources.go_back()
+            self.choose_mode(self.model_mode)
 
-    def show_resources(self):
+    def show_resources(self) -> None:
         """进入资源页并按当前不可变选择查询目录。"""
         if self.hub.busy:
             return
+        if self.stack.currentWidget() is self.characters and self.selection.mode in ("new", "existing"):
+            self.match_on_entry()
         self.stack.setCurrentWidget(self.resources)
         self.resources.load()
 

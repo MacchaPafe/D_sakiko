@@ -1,4 +1,5 @@
 """无网络回归：鉴权边界、文件完整性、取消和 Qt 页面生命周期。"""
+from __future__ import annotations
 import hashlib
 import json
 import os
@@ -6,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 from threading import Event
+from typing import Callable
 import time
 import unittest
 from unittest.mock import patch, MagicMock
@@ -224,9 +226,360 @@ class QtTests(unittest.TestCase):
     # 准备每项测试独立使用的服务、资源或窗口。
     def setUp(self):
         self.service = FakeService()
+        self.project_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.project_directory.cleanup)
+        self.project_root = Path(self.project_directory.name)
+        self.add_local_target("custom", "本地爱音")
+        root_patch = patch("live2d_download.hosted.ui.PROJECT_ROOT", self.project_root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
         self.window = DownloadWizardWindow([SimpleNamespace(character_name="本地爱音", character_folder_name="custom")],
                                            self.service, FakeLegacy())
         self.window.show()
+
+    def add_local_target(self, identifier: str, name: str) -> Path:
+        """创建独立测试目录中的本地角色，避免测试依赖用户已安装的角色。"""
+        folder = self.project_root / "live2d_related" / identifier
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "name.txt").write_text(name, encoding="utf-8")
+        (folder / "character_description.txt").write_text("测试角色", encoding="utf-8")
+        return folder
+
+    def test_entry_matches_once_and_preserves_manual_clear(self) -> None:
+        """只在进入列表时匹配，浏览角色和刷新列表均不覆盖用户清空的目标。"""
+        window = self.window
+        source = window.selection.source
+        self.add_local_target(source, CHARACTERS[source]["display_name"])
+        window.characters.select_character(source)
+        self.assertEqual(window.selection.mode, "new")
+        window.show_resources()
+        self.assertEqual(window.selection.mode, "existing")
+        self.assertEqual(window.selection.target_id, source)
+        window.characters.receiver.setCurrentIndex(0)
+        window.resources.load()
+        self.app.processEvents()
+        self.assertEqual(window.selection.target_id, "")
+        window.choose_mode("new")
+        window.choose_mode("existing")
+        self.assertEqual(window.selection.target_id, "")
+        window.resources.go_back()
+        window.show_resources()
+        self.assertEqual(window.selection.target_id, source)
+
+    def test_reentry_discards_manual_target_even_for_same_source(self) -> None:
+        """返回后重新进入同一来源也重新匹配，不沿用上次手动指定的接收角色。"""
+        window = self.window
+        source = window.selection.source
+        self.add_local_target(source, CHARACTERS[source]["display_name"])
+        window.show_resources()
+        window.characters.receiver.setCurrentIndex(1)
+        self.assertEqual(window.selection.target_id, "custom")
+        window.choose_mode("new")
+        window.resources.go_back()
+        window.show_resources()
+        self.assertEqual(window.selection.mode, "existing")
+        self.assertEqual(window.selection.target_id, source)
+
+    def test_next_source_download_uses_its_own_matched_target(self) -> None:
+        """下载完一个角色再进入另一个角色列表时，实际安装目标必须随新来源重新匹配。"""
+        from live2d_download.hosted.installer import InstallResult
+        window = self.window
+        for band in (0, 9):
+            source = BANDS[band][2][0]
+            self.add_local_target(source, CHARACTERS[source]["display_name"])
+        with patch.object(window.installer, "download") as download:
+            for band in (0, 9):
+                window.characters.select_band(band)
+                source = window.selection.source
+                window.show_resources()
+                self.assertEqual(window.selection, Selection("existing", source, source,
+                                                             CHARACTERS[source]["display_name"]))
+                self.wait_for(lambda: bool(window.resources.rows))
+                saved = self.project_root / "live2d_related" / source / "extra_model/test"
+                saved.mkdir(parents=True)
+                download.return_value = InstallResult(saved, False, False)
+                window.resources.rows[0][2].clicked()
+                self.wait_for(lambda: not window.hub.busy)
+                self.assertEqual(download.call_args.args[1].target_id, source)
+                window.resources.go_back()
+                self.assertTrue(window.model_options.isHidden())
+                self.assertTrue(window.receiver_bar.isHidden())
+                self.assertTrue(window.selection_notice.isHidden())
+                self.assertFalse(window.selection_notice_timer.isActive())
+        window.characters.select_band(1)
+        window.show_resources()
+        self.assertEqual(window.selection.mode, "new")
+        self.assertEqual(window.selection.target_id, "")
+        self.assertIsNone(window.characters.receiver.currentData())
+
+    def test_ambiguous_or_incomplete_match_keeps_new_mode_until_download(self) -> None:
+        """目录冲突或身份歧义不自动指定角色，下载前仍进入原地补全流程。"""
+        window = self.window
+        source = window.selection.source
+        folder = self.project_root / "live2d_related" / source
+        folder.mkdir()
+        for ambiguous in (False, True):
+            with self.subTest(ambiguous=ambiguous):
+                if ambiguous:
+                    self.add_local_target(source, "目录匹配但名称不同")
+                    self.add_local_target("custom", CHARACTERS[source]["display_name"])
+                window.show_resources()
+                self.assertEqual(window.selection.mode, "new")
+                self.assertEqual(window.selection.target_id, "")
+                with patch.object(window, "request_receiver", return_value=False) as request:
+                    self.assertIsNone(window.prepare_model_download())
+                    request.assert_called_once()
+                self.assertIs(window.stack.currentWidget(), window.resources)
+                self.assertEqual(window.selection.mode, "existing")
+                window.resources.go_back()
+
+    def test_refresh_and_failed_download_preserve_manual_cross_character_target(self) -> None:
+        """本次列表内刷新、失败或取消均保留用户手动指定的跨角色接收目标。"""
+        window = self.window
+        source = window.selection.source
+        self.add_local_target(source, CHARACTERS[source]["display_name"])
+        window.show_resources()
+        window.characters.receiver.setCurrentIndex(window.characters.receiver.find_target("custom"))
+        choice = window.selection
+        for error in (DownloadError("模拟失败"), Cancelled("下载已取消")):
+            with self.subTest(error=str(error)):
+                window.resources.load()
+                self.wait_for(lambda: bool(window.resources.rows))
+                self.assertEqual(window.selection, choice)
+                with patch.object(window.installer, "download", side_effect=error):
+                    row = window.resources.rows[0][2]
+                    row.clicked()
+                    self.assertFalse(window.receiver_bar.isEnabled())
+                    window.choose_mode("new")
+                    window.resources.go_back()
+                    self.assertEqual(window.selection, choice)
+                    self.assertIs(window.stack.currentWidget(), window.resources)
+                    self.wait_for(lambda: not window.hub.busy)
+                self.assertEqual(window.selection, choice)
+                self.assertTrue(window.receiver_bar.isEnabled())
+                self.assertIn(str(error), row.status.text())
+
+    def test_mode_switch_keeps_rows_scroll_and_pending_catalog(self) -> None:
+        """列表加载中切换用途仍接收结果，加载后切换保留卡片、滚动和手动目标。"""
+        window = self.window
+        source = window.selection.source
+        entries = [Resource("model", f"ournotes/{source}/model/{i}.zip", str(i), source,
+                            model_id=str(i)) for i in range(20)]
+        with patch.object(self.service, "catalog", return_value=entries):
+            window.show_resources()
+            generation = window.resources.generation
+            window.choose_mode("existing")
+            self.wait_for(lambda: len(window.resources.rows) == 20)
+        page = window.resources
+        listing = page.panels["model"][2]
+        listing.verticalScrollBar().setValue(150)
+        position = listing.verticalScrollBar().value()
+        row = page.rows[0][2]
+        window.characters.receiver.setCurrentIndex(1)
+        window.choose_mode("new")
+        window.choose_mode("existing")
+        self.assertIs(window.stack.currentWidget(), page)
+        self.assertIs(page.rows[0][2], row)
+        self.assertEqual(page.generation, generation)
+        self.assertEqual(listing.verticalScrollBar().value(), position)
+        self.assertEqual(window.selection.target_id, "custom")
+        self.assertTrue(window.receiver_bar.isVisible())
+
+    def test_target_switch_refreshes_installation_and_location(self) -> None:
+        """不同接收角色拥有独立的安装状态，切换后打开位置不指向旧角色。"""
+        window = self.window
+        window.show_resources()
+        self.wait_for(lambda: bool(window.resources.rows))
+        row = window.resources.rows[0][2]
+        window.choose_mode("existing")
+        window.characters.receiver.setCurrentIndex(1)
+        saved = self.project_root / "live2d_related/custom/extra_model/costume"
+        saved.mkdir(parents=True)
+        window.installed_models[row.installation_key(window.selection)] = saved
+        row.update_target()
+        self.assertEqual(row.saved, saved)
+        self.assertFalse(row.button.isEnabled())
+        window.characters.receiver.setCurrentIndex(0)
+        self.assertIsNone(row.saved)
+        self.assertTrue(row.button.isEnabled())
+        self.assertTrue(row.locate.isHidden())
+        window.characters.receiver.setCurrentIndex(1)
+        self.assertEqual(row.saved, saved)
+
+    def test_v3_disk_model_is_detected_without_session_history(self) -> None:
+        """历史 V3 模型按配置标识显示已安装，目录改名及切换目标后仍能定位正确目录。"""
+        window = self.window
+        saved = self.project_root / "live2d_related/custom/extra_model/校服_2"
+        saved.mkdir(parents=True)
+        (saved / "model.moc3").write_bytes(b"moc")
+        (saved / "texture.png").write_bytes(b"texture")
+        (saved / "model.model3.json").write_text(json.dumps({"Version": 3, "FileReferences": {
+            "Moc": "model.moc3", "Textures": ["texture.png"]}}), encoding="utf-8")
+        window.show_resources()
+        self.wait_for(lambda: bool(window.resources.rows))
+        window.choose_mode("existing")
+        window.characters.receiver.setCurrentIndex(window.characters.receiver.find_target("custom"))
+        row = window.resources.rows[0][2]
+        self.assertEqual(window.installed_models, {})
+        self.assertEqual(row.saved, saved)
+        self.assertEqual(row.button.text(), "已安装")
+        self.assertFalse(row.button.isEnabled())
+        self.assertTrue(row.locate.isVisible())
+        renamed = saved.with_name("用户改名")
+        saved.rename(renamed)
+        window.resources.load()
+        self.wait_for(lambda: bool(window.resources.rows))
+        row = window.resources.rows[0][2]
+        self.assertEqual(row.saved, renamed)
+        with patch("live2d_download.hosted.ui.QDesktopServices.openUrl") as open_url:
+            row.open_location()
+            self.assertEqual(open_url.call_args.args[0].toLocalFile(), str(renamed))
+        window.characters.receiver.setCurrentIndex(0)
+        self.assertIsNone(row.saved)
+        self.assertTrue(row.button.isEnabled())
+        window.characters.receiver.setCurrentIndex(window.characters.receiver.find_target("custom"))
+        self.assertEqual(row.saved, renamed)
+
+    def test_late_conflict_dialog_continues_original_download(self) -> None:
+        """进入列表后才出现同名角色时，通过真实补全对话框继续下载原卡片。"""
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+        from live2d_download.hosted.installer import InstallResult
+        window = self.window
+        window.show_resources()
+        self.wait_for(lambda: bool(window.resources.rows))
+        row = window.resources.rows[0][2]
+        original_source = window.selection.source
+        character = self.add_local_target(original_source, CHARACTERS[original_source]["display_name"])
+        saved = character / "extra_model/test"
+        saved.mkdir(parents=True)
+        window.installer = MagicMock()
+        window.installer.download.return_value = InstallResult(saved, False, False)
+        recommended_ids: list[str] = []
+
+        def accept_receiver() -> None:
+            """确认自动推荐的本地角色，并记录对话框的默认项。"""
+            from live2d_download.hosted.ui import CharacterComboBox
+            dialog = QApplication.activeModalWidget()
+            if isinstance(dialog, QDialog):
+                value = dialog.findChild(CharacterComboBox).currentData()
+                if value:
+                    recommended_ids.append(value[0])
+                    dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok).click()
+                else:
+                    dialog.reject()
+
+        QTimer.singleShot(0, accept_receiver)
+        row.clicked()
+        self.wait_for(lambda: not window.hub.busy)
+        self.assertEqual(recommended_ids, [original_source])
+        args = window.installer.download.call_args.args
+        self.assertIs(args[0], row.entry)
+        self.assertEqual(args[1], Selection("existing", original_source, original_source,
+                                          CHARACTERS[original_source]["display_name"]))
+        self.assertIs(window.stack.currentWidget(), window.resources)
+        self.assertEqual(row.saved, saved)
+
+    def test_cancel_receiver_dialog_does_not_download_or_navigate(self) -> None:
+        """未选接收角色时取消补全对话框，保留列表且不提交下载任务。"""
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QDialog
+        window = self.window
+        window.show_resources()
+        window.choose_mode("existing")
+        self.wait_for(lambda: bool(window.resources.rows))
+        window.installer = MagicMock()
+
+        def cancel_receiver() -> None:
+            """模拟用户取消当前接收角色对话框。"""
+            dialog = QApplication.activeModalWidget()
+            if isinstance(dialog, QDialog):
+                dialog.reject()
+
+        QTimer.singleShot(0, cancel_receiver)
+        row = window.resources.rows[0][2]
+        row.clicked()
+        window.installer.download.assert_not_called()
+        self.assertIs(window.stack.currentWidget(), window.resources)
+        self.assertEqual(window.selection.target_id, "")
+        self.assertIsNone(row.job)
+
+    def test_new_install_becomes_available_without_restart(self) -> None:
+        """V3 新角色安装后自动接收第二套服装，缺少描述也不必再弹出补全对话框。"""
+        from live2d_download.hosted.installer import InstallResult
+        window = self.window
+        source = window.selection.source
+        entries = [Resource("model", f"ournotes/{source}/model/{i}.zip", str(i), source,
+                            model_id=str(i)) for i in range(2)]
+        with patch.object(self.service, "catalog", return_value=entries):
+            window.show_resources()
+            self.wait_for(lambda: len(window.resources.rows) == 2)
+        row = window.resources.rows[0][2]
+        choices: list[Selection] = []
+
+        def install_model(resource: Resource, choice: Selection, cache_root: Path, cancel: Event,
+                          progress: Callable[[int, int], None]) -> InstallResult:
+            """模拟新角色发布以及后续服装安装，并记录不可变任务选择。"""
+            choices.append(choice)
+            character = self.project_root / "live2d_related" / source
+            if choice.mode == "existing":
+                extra = character / "extra_model/second"
+                extra.mkdir(parents=True)
+                return InstallResult(extra, False, True)
+            model = character / "live2D_model"
+            model.mkdir(parents=True)
+            (character / "name.txt").write_text(CHARACTERS[source]["display_name"], encoding="utf-8")
+            (model / "3.model3.json").write_text("{}", encoding="utf-8")
+            return InstallResult(character, True, True)
+
+        with patch.object(window.installer, "download", side_effect=install_model), \
+                patch.object(window, "request_receiver") as request:
+            row.clicked()
+            self.wait_for(lambda: not window.hub.busy)
+            second = window.resources.rows[1][2]
+            second.clicked()
+            self.wait_for(lambda: not window.hub.busy)
+            request.assert_not_called()
+        receiver = window.characters.receiver
+        self.assertGreater(receiver.find_target(source), 0)
+        self.assertEqual(window.selection.mode, "existing")
+        self.assertEqual(window.selection.target_id, source)
+        self.assertEqual([choice.mode for choice in choices], ["new", "existing"])
+        self.assertEqual(choices[1].target_id, source)
+        self.assertIs(window.resources.rows[0][2], row)
+        self.assertIn("暂缺角色描述", row.status.text())
+
+    def test_v2_new_character_automatically_receives_second_costume(self) -> None:
+        """V2 路径返回值同样触发新建后换装，第二套服装沿用刚创建的角色。"""
+        window = self.window
+        source = window.selection.source
+        choices: list[Selection] = []
+
+        def install_costume(costume: str, title: str, choice: Selection, cancel: Event,
+                            progress: Callable[[int, int], None]) -> Path:
+            """模拟 V2 发布角色及服装目录，记录每次任务目标。"""
+            choices.append(choice)
+            if choice.mode == "new":
+                return self.add_local_target(source, CHARACTERS[source]["display_name"])
+            saved = self.project_root / "live2d_related" / choice.target_id / "extra_model" / title
+            saved.mkdir(parents=True)
+            return saved
+
+        with patch.object(window.legacy, "catalog", return_value=["first", "second"]), \
+                patch.object(self.service, "catalog", return_value=[]):
+            window.show_resources()
+            self.wait_for(lambda: len(window.resources.rows) == 2)
+        with patch.object(window.legacy, "download", create=True, side_effect=install_costume), \
+                patch.object(window, "request_receiver") as request:
+            for listing, item, row in window.resources.rows:
+                listing.scrollToItem(item)
+                self.wait_for(lambda: row.metadata_ready)
+                row.clicked()
+                self.wait_for(lambda: not window.hub.busy)
+            request.assert_not_called()
+        self.assertEqual([choice.mode for choice in choices], ["new", "existing"])
+        self.assertEqual(choices[1].target_id, source)
+        self.assertEqual(window.selection.target_id, source)
     # 驱动 Qt 事件循环，等待异步条件并在超时后断言失败。
     def wait_for(self, predicate):
         until = time.monotonic() + 4
@@ -525,11 +878,14 @@ class QtTests(unittest.TestCase):
         page.names_toggle.setChecked(True)
         self.assertFalse(row.name.isHidden())
 
-    def test_navigation_preserves_character_and_requires_target(self):
-        """验证默认角色页、跨类型保留来源、已有角色必选目标及背景直达网格。"""
+    def test_navigation_hides_installation_controls_and_discards_old_target(self) -> None:
+        """角色页隐藏安装设置，跨类别返回模型时不携带上次接收角色。"""
         window = self.window
         self.assertIs(window.stack.currentWidget(),window.characters)
         self.assertEqual(window.selection.mode,"new")
+        self.assertTrue(window.model_options.isHidden())
+        self.assertTrue(window.receiver_bar.isHidden())
+        self.assertTrue(window.characters.receiver.isHidden())
         window.characters.select_band(9)
         source = window.selection.source
         window.type_tabs["avatar"].click()
@@ -537,9 +893,10 @@ class QtTests(unittest.TestCase):
         self.assertEqual(window.selection.source,source)
         self.assertTrue(window.model_options.isHidden())
         window.type_tabs["model"].click()
+        window.show_resources()
         window.mode_tabs["existing"].click()
         self.assertEqual(window.selection.source,source)
-        self.assertFalse(window.characters.next.isEnabled())
+        self.assertTrue(window.characters.next.isEnabled())
         self.assertTrue(window.characters.source_box.isEnabled())
         window.characters.receiver.setCurrentIndex(1)
         self.assertTrue(window.characters.next.isEnabled())
@@ -548,7 +905,13 @@ class QtTests(unittest.TestCase):
         self.assertTrue(window.resources.back.isHidden())
         window.type_tabs["model"].click()
         self.assertEqual(window.selection.source,source)
-        self.assertEqual(window.selection.target_id,"custom")
+        self.assertEqual(window.selection.target_id, "")
+        self.assertIs(window.stack.currentWidget(), window.characters)
+        self.assertTrue(window.model_options.isHidden())
+        self.assertTrue(window.receiver_bar.isHidden())
+        window.show_resources()
+        self.assertEqual(window.selection.mode, "new")
+        self.assertEqual(window.selection.target_id, "")
         window.update_navigation(True)
         self.assertFalse(window.navigation.isEnabled())
         window.update_navigation(False)
@@ -589,9 +952,11 @@ class QtTests(unittest.TestCase):
         self.assertEqual(carousel.members[0], "arale")
 
     # 验证接收角色必选，以及切换模式清空旧目标。
-    def test_existing_target_required_and_mode_resets_it(self):
+    def test_existing_target_optional_for_browsing(self) -> None:
+        """允许未选接收角色时浏览模型，图片模式不携带安装目标。"""
+        self.window.show_resources()
         self.window.choose_mode("existing")
-        self.assertFalse(self.window.characters.next.isEnabled())
+        self.assertTrue(self.window.characters.next.isEnabled())
         self.window.characters.receiver.setCurrentIndex(1)
         self.assertTrue(self.window.characters.next.isEnabled())
         self.assertEqual(self.window.selection.target_id, "custom")
@@ -633,8 +998,10 @@ class QtTests(unittest.TestCase):
     def test_v3_installs_using_selection_snapshot_and_reports_missing_description(self):
         """V3 卡片调用安装服务，并区分安装完成和缺少角色描述。"""
         from live2d_download.hosted.installer import InstallResult
-        self.window.selection = Selection("existing", "tomori", "custom", "本地爱音")
+        self.window.selection = Selection("new", "tomori")
         self.window.show_resources()
+        self.window.choose_mode("existing")
+        self.window.characters.receiver.setCurrentIndex(1)
         page = self.window.resources
         self.wait_for(lambda: bool(page.rows))
         row = next(widget for _, _, widget in page.rows if not widget.legacy)

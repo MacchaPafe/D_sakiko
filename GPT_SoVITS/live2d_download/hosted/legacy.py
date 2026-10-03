@@ -10,6 +10,7 @@ from live2d_download.models import CancelToken, CancelledError
 from ui_constants import AddCostume
 from .catalog import APP_ROOT, PROJECT_ROOT, CHARACTERS
 from .service import Cancelled, DownloadError, check_cancel
+from .targets import creation_conflicts, read_targets
 
 
 class LegacyService:
@@ -47,7 +48,7 @@ class LegacyService:
         info = CHARACTERS[selection.source]
         client = BestdoriClient(timeout_seconds=15)
         try:
-            if selection.mode == "new" and (PROJECT_ROOT / "live2d_related" / selection.source).exists():
+            if selection.mode == "new" and creation_conflicts(PROJECT_ROOT, selection.source, read_targets(PROJECT_ROOT)):
                 raise DownloadError("该角色已存在，请从“为软件包内角色添加服装”入口下载")
 
             def report(*, file=None, model=None):
@@ -66,7 +67,7 @@ class LegacyService:
                     safe_title = costume
                 return Path(AddCostume.add_costume_for_existed_char(
                     selection.target_id, costume, safe_title))
-            if (PROJECT_ROOT / "live2d_related" / selection.source).exists():
+            if creation_conflicts(PROJECT_ROOT, selection.source, read_targets(PROJECT_ROOT)):
                 raise DownloadError("该角色已存在，无法重复安装")
             AddCostume.add_costume_for_new_character(info["display_name"], selection.source, costume)
             return PROJECT_ROOT / "live2d_related" / selection.source
