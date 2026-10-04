@@ -1,0 +1,14 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+.env
+.env.*
+!.env.example
+coverage/
+test-results/
+.venv/
+__pycache__/
+*.pyc
