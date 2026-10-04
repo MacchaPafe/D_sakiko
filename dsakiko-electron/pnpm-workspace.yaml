@@ -1,0 +1,10 @@
+# 单包工程也使用此文件保存 pnpm 11 的项目设置。
+packages: []
+# 使用普通依赖目录，方便 Electron 安装包收集运行时依赖。
+nodeLinker: hoisted
+allowBuilds:
+  electron: true
+  esbuild: true
+  '@tailwindcss/oxide': true
+  # Windows 使用 NSIS，未启用 Squirrel 安装器。
+  electron-winstaller: false

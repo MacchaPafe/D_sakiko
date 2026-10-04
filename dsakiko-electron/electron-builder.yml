@@ -1,0 +1,30 @@
+appId: io.dsakiko.desktop
+productName: 数字小祥
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+extraResources:
+  - from: resources
+    to: resources
+    filter:
+      - '**/*'
+      - '!*.md'
+asar: true
+win:
+  executableName: dsakiko
+  target:
+    - nsis
+nsis:
+  artifactName: dsakiko-${version}-windows-${arch}-setup.${ext}
+  shortcutName: 数字小祥
+mac:
+  category: public.app-category.entertainment
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - dmg
+    - zip
+dmg:
+  artifactName: dsakiko-${version}-macos-${arch}.${ext}
