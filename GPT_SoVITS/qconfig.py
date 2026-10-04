@@ -100,6 +100,8 @@ class DSakikoConfig(QConfig):
     # API Key
     # 采用字典形式存储。键为所有可能的 llm_api_provider，再加上一个“custom_llm_api_key“，值为对应的 API Key
     llm_api_key = ConfigItem("llm_setting", "llm_api_key", {})
+    # 额度查询按供应商与端点保存；专用凭据只保存系统凭据库引用。
+    api_usage_configs = ConfigItem("llm_setting", "api_usage_configs", {})
 
     # 可选的 API Base URL（用于第三方 OpenAI 兼容端点等场景）
     # 采用字典形式存储。键为 llm_api_provider（如 modelscope），值为对应的 base_url。
