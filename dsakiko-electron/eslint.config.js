@@ -7,7 +7,17 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import prettier from 'eslint-config-prettier'
 
 export default [
-  { ignores: ['node_modules/**', 'out/**', 'dist/**', 'test-results/**', 'coverage/**'] },
+  {
+    ignores: [
+      'node_modules/**',
+      'out/**',
+      'dist/**',
+      'test-results/**',
+      'coverage/**',
+      'src/renderer/public/**',
+      'python/vendor/**'
+    ]
+  },
   js.configs.recommended,
   {
     files: [
@@ -15,7 +25,7 @@ export default [
       'src/main/**/*.js',
       'src/preload/**/*.js',
       'src/backend/**/*.js',
-      'scripts/**/*.js'
+      'scripts/**/*.{js,mjs}'
     ],
     languageOptions: { globals: globals.node }
   },

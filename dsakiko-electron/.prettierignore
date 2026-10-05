@@ -2,6 +2,11 @@ out
 dist
 pnpm-lock.yaml
 LICENSE.md
+LICENSE
+python/uv.lock
 node_modules
 test-results
 coverage
+
+python/vendor/
+src/renderer/public/

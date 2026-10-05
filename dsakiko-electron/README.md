@@ -1,74 +1,74 @@
-# 数字小祥 · Electron
+# 数字小祥 · Electron 开发原型
 
-Windows / macOS 桌面客户端的初始化工程，使用 pnpm、Electron、React、JavaScript 和 shadcn/ui。
+本机可启动的单角色/二人对话原型，包含有限 Agent Loop、时间工具、格式纠正、GPT-SoVITS 语音、双版本 Live2D、多聊天后台推进和用户人格。本轮交付不包含安装包。
 
-目前提供空白工作区、浅色/深色外观切换，以及 React → preload → Electron IPC → Node 后端的运行状态查询。尚未实现聊天、存档、语音或 Live2D 业务。
+范围、状态规则与验收标准见 [原型说明](docs/prototype.md)。原有 [核心接口设计](docs/core-interfaces.md) 继续保留，便于后续比较设计与原型实现。
 
-## 开发
+## 本机启动
 
-需要 Node.js 22.12+ 和 pnpm 11；项目通过 packageManager 固定 pnpm 11.24.0。当前 Electron 要求 Windows 10+ 或 macOS 13+。
-
-在本目录执行：
+需要 Node.js 22.12+、pnpm 11，以及能运行 GPT-SoVITS 的 Python 环境。当前机器使用已有 Python 3.11 虚拟环境完成了 CPU 推理验证。
 
 ```sh
+cd dsakiko-electron
 pnpm install
+# 首次配置时将 .env.example 复制为 .env.local，并填写路径
 pnpm dev
 ```
 
-请通过 Electron 启动应用。直接用浏览器打开开发服务器不具备 preload 提供的桌面接口。
+本轮已为当前机器准备忽略提交的 `.env.local`，指向现有资源目录和 Python 解释器。它只包含本机路径，不包含 API 密钥。直接打开开发服务器网页无法使用 Electron 的受控接口。
 
-## 常用命令
+进入「设置」，点击「从旧配置读取模型连接」，或填写兼容 Chat Completions 的服务地址、模型和密钥，保存后新建对话。服务地址一般填写到 `/v1`；也支持已包含 `/chat/completions` 的地址。旧配置中的 DeepSeek/OpenAI 默认地址及显式配置的兼容地址可导入；其他供应商可能需要手动填写兼容地址。
 
-| 命令                | 用途                                                   |
-| ------------------- | ------------------------------------------------------ |
-| `pnpm dev`          | 启动开发服务器和 Electron 窗口                         |
-| `pnpm build`        | 构建主进程、preload 和 React，输出到 out               |
-| `pnpm start`        | 启动已经构建的程序，需要先执行 build                   |
-| `pnpm lint`         | 检查 JavaScript 和 React 代码                          |
-| `pnpm format`       | 格式化工程文件                                         |
-| `pnpm format:check` | 只检查格式                                             |
-| `pnpm test`         | 运行模块和集成测试；当前业务测试为空                   |
-| `pnpm test:smoke`   | 构建并打开真实 Electron，检查页面、IPC、隔离与外观切换 |
-| `pnpm build:unpack` | 生成当前平台可直接运行的应用目录                       |
-| `pnpm build:mac`    | 构建 macOS 安装包                                      |
-| `pnpm build:win`    | 构建 Windows 安装包                                    |
+新建聊天选择一名或两名角色，可选用户人格。生成及演出期间可以编辑草稿、切换聊天，不能向同一聊天追加消息。「停止」保留当前播放句，撤销后续任务。打开设置会让所有聊天进入后台。关闭主窗口会退出程序与语音进程。
 
-桌面冒烟测试需要图形桌面环境，运行结束后关闭测试窗口，截图保存在忽略提交的 `test-results/startup.png`。测试使用独立的临时用户数据目录。
+尚未开始演出的台词不显示气泡或占位文字；轮到该句后，原文与翻译按演出进度逐字出现。历史内容继续完整保留，回放不会重新隐藏历史消息。退出时并行清理对话和语音；如果渲染端失去响应，最长 12 秒后结束程序，重启时按中断任务处理。
 
-Windows 与 macOS 安装包建议分别在对应系统构建；默认使用当前机器架构。当前保留模板图标，尚未配置签名、公证和自动更新，正式发布时再补齐。
+侧栏「角色装扮」或舞台右上角「切换装扮」可选择各角色的 Live2D 模型。列表读取共用角色目录中的默认模型、额外服装与旧版演出服，显示装扮名称和 V2/V3 标记。点击「应用装扮」后更新舞台并记住选择，适用于该角色的所有对话。涉及该角色的任一对话正在生成或演出时暂时不能换装，其他角色的后台任务可继续运行。新增外部模型文件后重启原型以重新扫描。
 
-## 目录
+## 数据与资源
 
-- `src/main`：Electron 生命周期、窗口、系统集成和 IPC。
-- `src/preload`：向页面暴露少量明确的桌面能力。
-- `src/backend`：不依赖 Electron 的 Node 业务模块。
-- `src/shared/contracts`：跨进程数据约定与通道名称。
-- `src/renderer`：React 前端，业务界面按 features 划分。
-- `src/server`：后续浏览器访问入口，目前仅预留说明。
-- `python`：后续 Python 子进程接入说明。
-- `resources`：随应用发布的静态默认资源。
-- `build`：安装包素材。
-- `scripts`：开发与维护脚本。
-- `tests`：集成测试和桌面端测试。
+开发启动默认把数据写入 `.local/data/`，可通过 `DSAKIKO_DATA_DIR` 改为其他绝对路径。直接 `pnpm start` 默认使用 Electron 用户数据目录，若希望与开发启动共用记录，请显式传入同一个 `DSAKIKO_DATA_DIR`。
 
-完整职责与依赖方向见 [目录与开发约定](docs/architecture.md)。空目录用 `.gitkeep` 保留，不代表已经实现对应模块。
+- `settings.json`：本机设置及模型凭据，默认权限为仅当前用户可读写，原型未接入系统钥匙串。
+- `chats/`、`personas/`：带格式版本和修订号的 JSON 存档。
+- `character-models/`：每个角色独立保存的模型选择；不修改旧程序的服装配置。
+- `assets.json`、`audio/`：稳定资源引用与已经导入的音频。
+- `speech-temp/`、`logs/speech.log`：本次推理临时输出和诊断信息。
 
-核心业务的审查入口见 [核心模块接口原型](docs/core-interfaces.md)，包含核心模块的方法签名、输入输出与职责约束。原型仅包含 JSDoc 和空方法，尚未接入运行流程。
+外部资源根目录只读，按现有目录布局识别：
 
-## 添加 shadcn/ui 组件
-
-已配置 Tailwind CSS、JavaScript/JSX、样式变量和路径别名：
-
-```sh
-pnpm dlx shadcn@latest add button
+```text
+资源根目录/
+├── d_sakiko_config.json              # 可选，读取模型连接及当前服装
+├── live2d_related/<角色>/             # 名称、描述、头像、Live2D
+├── reference_audio/<角色>/           # GPT/SoVITS 权重和参考音频
+└── GPT_SoVITS/
+    ├── pretrained_models/           # Hubert、BERT、语种检测及相应版本权重
+    └── text/G2PWModel/               # 中文读音模型
 ```
 
-组件写入 `src/renderer/src/components/ui`，业务组件放在各自的 `features` 中。新增组件后补充项目要求的中文 JSDoc，并运行格式与代码检查。
+缺少语音资源的角色可以使用文字演出。模型或合成运行失败有界面提示，并降级为无模型/无语音演出。数据目录不自动清理，删除聊天也暂不回收持久音频。重启只恢复记录，永不续跑中断的 Agent、合成或演出。
 
-## 与旧项目共存
+## 检查命令
 
-本工程具有独立的依赖、锁文件和构建配置，不导入父目录的 Python 或旧 WebUI 代码。后续需要调用旧资源时，通过显式配置传入资源位置。
+| 命令                                         | 内容                                         |
+| -------------------------------------------- | -------------------------------------------- |
+| `pnpm build`                                 | 构建主进程、preload 和 React                 |
+| `pnpm lint` / `pnpm format:check`            | 代码与格式检查                               |
+| `pnpm test`                                  | Node、演出、存档、人格、Agent 与并发边界测试 |
+| `pnpm test:python`                           | 无需模型的 Python 调度测试                   |
+| `pnpm test:smoke`                            | 真实 Electron + 本机模型响应测试服务器       |
+| `node scripts/verify-speech.mjs sakiko anon` | 两个真实 GPT-SoVITS 模型的并发验收           |
+| `node scripts/verify-agent.mjs sakiko anon`  | **显式调用外部模型服务**，消耗该服务额度     |
 
-聊天数据、用户设置和大型模型不写入源码目录或安装包。将来由桌面宿主解析用户数据路径，再传给 Node 后端。
+桌面测试使用临时数据，不调用外部模型服务。可设置 `DSAKIKO_E2E_RESOURCES` 来额外验证本机的 v2/v3 混合同屏、换装和重启后恢复；再设置 `DSAKIKO_E2E_SPEECH_PYTHON` 可验证真实语音合成、播放与完整演出。截图保存在忽略提交的 `test-results/`。
 
-pnpm 11 的项目设置位于 `pnpm-workspace.yaml`；本工程仍然只有一个 JavaScript 包。安装脚本仅为 Electron、esbuild 和 Tailwind 原生依赖开放。
+2026-10-05 已获授权并实测 DeepSeek `deepseek-flash`：一次时间工具调用后成功返回祥子、爱音两名角色的有效台词。详细结果见原型说明；外部服务实测命令不会加入默认测试套件。
+
+## 工程边界
+
+`src/backend` 持有聊天、设置、存档与角色目录；`src/main` 负责 Electron 和 Python 生命周期；`src/preload` 只开放具名命令。`src/renderer/src/performance` 独立管理前后台演出，React 页面只观察状态。`python/speech` 独占语音队列与资源预算。
+
+需要的旧 WebUI 适配代码和 GPT-SoVITS 推理依赖已复制，工程没有导入父目录业务代码。复制来源和差异见 [依赖说明](python/vendor/README.md)。Python 独立依赖与锁文件见 [Python 启动说明](python/README.md)。大型权重、SDK 使用条件和运行环境不会因为复制代码而消失。
+
+已保留初始化工程的打包脚本，但本轮没有制作或验证安装包。移动端、桌宠、托盘、ASR、附件、资源下载、更新等入口不在本原型范围。

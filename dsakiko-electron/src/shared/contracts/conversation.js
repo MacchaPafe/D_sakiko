@@ -88,7 +88,7 @@
 /**
  * @typedef {object} MessageDisplay
  * @property {string} messageId 对应持久化消息。
- * @property {'progress' | 'full'} mode 只有 character 可跟随演出使用 progress；其他类型和停止播放后使用 full，迟到进度不能重新隐藏文本。
+ * @property {'pending' | 'progress' | 'full'} mode character 等待时隐藏，实际演出时使用 progress；其他类型和停止播放后使用 full，迟到进度不能重新隐藏文本。
  * @property {number} revealedCharacters 当前应展示的字符数。
  */
 

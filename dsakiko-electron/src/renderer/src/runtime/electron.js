@@ -1,13 +1,21 @@
+import { COMMANDS } from '../../../shared/contracts/desktop.js'
+
 /**
- * 将 preload 提供的能力适配为前端统一接口。
- * @param {import('../../../shared/contracts/runtime.js').RuntimeClient | undefined} bridge 桌面桥梁。
- * @returns {import('../../../shared/contracts/runtime.js').RuntimeClient} 异步运行时客户端。
+ * 将固定 preload 命令转换为返回值或 Problem 异常。
+ * @param {object} [bridge] Electron 桥。
+ * @returns {object} 与传输细节无关的具名客户端。
  */
 export function createElectronClient(bridge = window.dsakiko) {
-  return {
-    async getRuntimeInfo() {
-      if (!bridge) throw new Error('桌面接口不可用，请使用 pnpm dev 启动 Electron。')
-      return bridge.getRuntimeInfo()
+  const client = {}
+  for (const name of COMMANDS)
+    client[name] = async (...args) => {
+      if (!bridge) throw new Error('请通过 pnpm dev 启动 Electron。')
+      const result = await bridge[name](...args)
+      if (result.problem)
+        throw Object.assign(new Error(result.problem.message), { problem: result.problem })
+      return result.value
     }
-  }
+  client.onUpdate = (listener) => bridge.onUpdate(listener)
+  client.getRuntimeInfo = () => bridge.getRuntimeInfo()
+  return client
 }

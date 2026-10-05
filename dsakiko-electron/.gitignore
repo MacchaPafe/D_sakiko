@@ -12,3 +12,8 @@ test-results/
 .venv/
 __pycache__/
 *.pyc
+.local/
+
+python/vendor/**/__pycache__/
+!LICENSE
+!python/vendor/**/LICENSE

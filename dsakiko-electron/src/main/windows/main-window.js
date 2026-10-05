@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url'
 export function createMainWindow() {
   const window = new BrowserWindow({
     title: '数字小祥',
-    width: 1100,
-    height: 760,
-    minWidth: 640,
-    minHeight: 480,
+    width: 1360,
+    height: 860,
+    minWidth: 860,
+    minHeight: 640,
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#f5f7fb',
@@ -20,7 +20,9 @@ export function createMainWindow() {
       preload: fileURLToPath(new URL('../preload/index.cjs', import.meta.url)),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      backgroundThrottling: false,
+      autoplayPolicy: 'no-user-gesture-required'
     }
   })
 
