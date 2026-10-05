@@ -8,6 +8,12 @@ from unittest import mock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import dp_local2
+from deepseek_prompt_cache_debug import (
+    DEEPSEEK_PROMPT_CACHE_DEBUG_ENV,
+    DEEPSEEK_PROMPT_CACHE_RICH_ENV,
+    extract_prompt_cache_usage,
+    log_prompt_cache_usage,
+)
 
 
 class UsageWithModelDump:
@@ -57,7 +63,7 @@ class PromptCacheUsageTestCase(unittest.TestCase):
         """usage 为 litellm 对象时，应能读取 prompt cache 字段。"""
         response = ResponseWithUsage(UsageWithModelDump())
 
-        usage = dp_local2._extract_prompt_cache_usage(response)
+        usage = extract_prompt_cache_usage(response)
 
         self.assertEqual(
             usage,
@@ -72,7 +78,7 @@ class PromptCacheUsageTestCase(unittest.TestCase):
 
     def test_extract_from_response_model_dump(self) -> None:
         """响应只通过 model_dump 暴露 usage 时，应能回退读取。"""
-        usage = dp_local2._extract_prompt_cache_usage(ResponseWithModelDump())
+        usage = extract_prompt_cache_usage(ResponseWithModelDump())
 
         self.assertEqual(usage["prompt_cache_hit_tokens"], 10)
         self.assertEqual(usage["prompt_cache_miss_tokens"], 30)
@@ -81,7 +87,7 @@ class PromptCacheUsageTestCase(unittest.TestCase):
         """缺少 DeepSeek cache 字段时，应返回 None 而不是报错。"""
         response = ResponseWithUsage({"prompt_tokens": 10, "completion_tokens": 1})
 
-        usage = dp_local2._extract_prompt_cache_usage(response)
+        usage = extract_prompt_cache_usage(response)
 
         self.assertIsNone(usage)
 
@@ -98,16 +104,30 @@ class PromptCacheUsageTestCase(unittest.TestCase):
             model="deepseek-chat",
         )
 
-        with mock.patch.object(dp_local2.logger, "info") as mocked_info:
-            dp_local2._log_prompt_cache_usage(response, {"model": "deepseek/deepseek-chat"})
+        logger = mock.Mock()
+        with (
+            mock.patch("deepseek_prompt_cache_debug.debugger._load_deepseek_tokenizer", return_value=None),
+            mock.patch.dict(os.environ, {
+                DEEPSEEK_PROMPT_CACHE_DEBUG_ENV: "1",
+                DEEPSEEK_PROMPT_CACHE_RICH_ENV: "0",
+            }),
+        ):
+            log_prompt_cache_usage(response, {"model": "deepseek/deepseek-chat"}, logger)
 
-        mocked_info.assert_called_once()
-        log_args = mocked_info.call_args.args
-        self.assertIn("deepseek_prompt_cache", log_args[0])
-        self.assertEqual(log_args[1], "deepseek/deepseek-chat")
-        self.assertEqual(log_args[2], 25)
-        self.assertEqual(log_args[3], 25)
-        self.assertEqual(log_args[4], "50.00%")
+        logger.info.assert_called_once()
+        template, *args = logger.info.call_args.args
+        message = template % tuple(args)
+        for field in ("deepseek_prompt_cache", "model=deepseek/deepseek-chat",
+                      "hit=25", "miss=25", "hit_rate=50.00%",
+                      "prompt=50", "completion=4", "total=54"):
+            self.assertIn(field, message)
+
+    def test_debug_disabled_does_not_log_usage(self) -> None:
+        """未开启调试时即使响应包含缓存统计也不输出调试日志。"""
+        logger = mock.Mock()
+        with mock.patch.dict(os.environ, {DEEPSEEK_PROMPT_CACHE_DEBUG_ENV: "0"}):
+            log_prompt_cache_usage(ResponseWithUsage(UsageWithModelDump()), {}, logger)
+        logger.info.assert_not_called()
 
     def test_completion_returns_original_response_and_logs_usage(self) -> None:
         """completion 包装函数应返回原始响应，并在成功后记录 usage。"""
@@ -119,8 +139,8 @@ class PromptCacheUsageTestCase(unittest.TestCase):
         )
 
         with (
-            mock.patch.object(dp_local2.litellm, "completion", return_value=response) as mocked_completion,
-            mock.patch.object(dp_local2, "_log_prompt_cache_usage") as mocked_log,
+            mock.patch("litellm.completion", return_value=response) as mocked_completion,
+            mock.patch.object(dp_local2, "log_prompt_cache_usage") as mocked_log,
         ):
             result = dp_local2.completion(
                 model="openai/deepseek-chat",

@@ -48,14 +48,31 @@ class Stage3RelationAggregationTest(unittest.TestCase):
     def test_legacy_character_relations_migrate_to_observations(self) -> None:
         """旧版 Stage 2 JSON 应自动迁移且新序列化只写新字段。"""
 
-        artifact = load_stage2_annotation_artifact(SAMPLE_PASS2_RAW_PATH)
-        first_annotation = artifact.results[0].annotation
-        self.assertIsNotNone(first_annotation)
-        assert first_annotation is not None
-        self.assertGreater(len(first_annotation.relation_observations), 0)
+        first_annotation = SceneAnnotationPass2.model_validate({
+            "scene_id": "ep01_s001",
+            "character_relations": [{
+                "relation_local_id": "rel_01",
+                "subject_character_name": "素世",
+                "object_character_name": "祥子",
+                "state_summary": "素世试图挽留祥子。",
+                "speech_hint": "温和",
+                "object_character_nickname": "小祥",
+                "evidence_u_ids": ["ep01_u0001"],
+                "confidence": 0.9,
+            }],
+        })
+        self.assertEqual(len(first_annotation.relation_observations), 1)
         observation = first_annotation.relation_observations[0]
         self.assertEqual(observation.observation_local_id, "rel_01")
         self.assertEqual(observation.evidence_strength, "inferred")
+        self.assertEqual(observation.scene_id, "ep01_s001")
+        self.assertEqual(observation.observation_text, "素世试图挽留祥子。")
+        self.assertEqual(observation.subject_character_name, "素世")
+        self.assertEqual(observation.object_character_name, "祥子")
+        self.assertEqual(observation.speech_hint, "温和")
+        self.assertEqual(observation.object_character_nickname, "小祥")
+        self.assertEqual(observation.evidence_u_ids, ["ep01_u0001"])
+        self.assertEqual(observation.confidence, 0.9)
         dumped = first_annotation.model_dump(mode="json")
         self.assertIn("relation_observations", dumped)
         self.assertNotIn("character_relations", dumped)

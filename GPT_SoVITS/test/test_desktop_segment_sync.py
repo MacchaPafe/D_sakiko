@@ -1,5 +1,7 @@
 """验证桌面普通窗口与桌宠共享的逐段同步、长语音动作和失败降级。"""
 
+from __future__ import annotations
+
 from itertools import permutations
 from unittest import TestCase
 from unittest.mock import Mock, patch
@@ -217,7 +219,7 @@ class SegmentSyncTests(TestCase):
         self.player.update_playback(replacement)
         self.assertFalse(self.player.busy)
 
-    def test_silent_replay_waits_for_both_reading_and_motion(self):
+    def test_silent_replay_waits_for_both_reading_and_motion(self) -> None:
         """无声回放在动作开始时显示，动作与阅读时间任一未完成都不能结束。"""
         for version in ("v2", "v3"):
             for motion_first in (True, False):
@@ -227,20 +229,22 @@ class SegmentSyncTests(TestCase):
                     self.motions.clear()
                     self.subtitles.clear()
                     self.events.clear()
-                    self.player.command(dict(self.segment(1), audio_path="NO_AUDIO", wait_for_text=False), self.model)
+                    self.clock.return_value = self.wall.return_value = 100.0
+                    self.player.command(dict(self.segment(1), text="一二三四五六", translation="七八九十一二",
+                                             audio_path="NO_AUDIO", wait_for_text=False), self.model)
                     self.advance(100.0)
                     self.assertEqual(self.subtitles, [])
                     self.motions[0][0]()
-                    self.assertEqual(self.subtitles, ["text1"])
+                    self.assertEqual(self.subtitles, ["一二三四五六\n七八九十一二"])
                     if motion_first:
                         self.motions[0][1]()
-                        self.advance(105.9)
+                        self.advance(101.9)
                     else:
-                        self.advance(106.0)
+                        self.advance(102.0)
                     self.assertTrue(self.player.busy)
                     if not motion_first:
                         self.motions[0][1]()
-                    self.advance(106.0)
+                    self.advance(102.0)
                     self.assertFalse(self.player.busy)
                     self.assertEqual([e["type"] for e in self.events], ["playback_started", "playback_complete"])
                     self.audio.assert_not_called()

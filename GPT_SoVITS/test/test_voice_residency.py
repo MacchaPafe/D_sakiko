@@ -185,6 +185,9 @@ class VoiceDispatchTests(TestCase):
 
     def test_worker_accepts_load_again_after_unloading(self) -> None:
         """通过真实 worker 循环验证卸载有回执且后续加载仍能执行。"""
+        from GPT_SoVITS.tools import i18n as i18n_package
+        from GPT_SoVITS.tools.i18n import i18n as i18n_module
+
         commands: Queue[dict[str, object]] = Queue()
         results: Queue[dict[str, object]] = Queue()
         progress: Queue[dict[str, object]] = Queue()
@@ -201,7 +204,11 @@ class VoiceDispatchTests(TestCase):
             patch("inference_cli.SharedTTSManager", return_value=manager),
             patch("inference_cli.get_or_create_runtime", return_value=runtime),
             patch("inference_cli.signal.signal"),
-            patch.dict("sys.modules", {"torch": None}),
+            patch.dict("sys.modules", {
+                "torch": None,
+                "tools.i18n": i18n_package,
+                "tools.i18n.i18n": i18n_module,
+            }),
         ):
             synthesize(commands, results, progress)
         self.assertEqual(
