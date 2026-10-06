@@ -17,3 +17,5 @@ __pycache__/
 python/vendor/**/__pycache__/
 !LICENSE
 !python/vendor/**/LICENSE
+
+.pnpm-store/**
