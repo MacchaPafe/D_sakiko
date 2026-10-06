@@ -102,6 +102,7 @@ from ui_main.components.context_usage_indicator import (
 )
 from ui_main.components.message_input import MessageInput
 from ui_main.components.input_option_chips import ChoiceChip
+from ui_main.components.api_usage import ApiUsageButton
 from ui_main.components.tool_selection_chip import ToolSelectionChip
 from ui_main.custom_widgets.scrollable_dialog import ResponsiveButtonLayout, ScrollableDialog
 
@@ -3732,6 +3733,10 @@ class ChatGUI(QWidget):
         # 世界书暂不发布，控制模块仍保留历史回合快照逻辑。
         # bottom_layout.addWidget(self.worldbook_control.button, 0)
         bottom_layout.addStretch(1)
+        self.api_usage_button = ApiUsageButton(self.input_panel, height=self.input_tool_button_height)
+        self.api_usage_button.set_theme_palette(self._theme_palette)
+        self.themePaletteChanged.connect(self.api_usage_button.set_theme_palette)  # noqa
+        bottom_layout.addWidget(self.api_usage_button, 0)
         bottom_layout.addWidget(self.context_usage_indicator, 0)
         bottom_layout.addWidget(self.reasoning_menu_button, 0)
         bottom_layout.addWidget(self.voice_button, 0)

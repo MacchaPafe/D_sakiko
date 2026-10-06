@@ -33,6 +33,8 @@ with contextlib.redirect_stdout(None):
 from ..custom_widgets.float_range_setting_card import FloatRangeSettingCard
 from ..custom_widgets.request_timeout_setting_card import RequestTimeoutSettingCard
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
+from chat.api_usage import ApiTarget, OFFICIAL_BASES, normalize_base
+from ui_main.components.api_usage import ApiUsageSettingsWidget
 
 logger = get_logger(__name__)
 
@@ -310,6 +312,24 @@ class LLMAPIArea(TransparentScrollArea):
 
         # 加载初始内容
         self.load_config_to_ui()
+        self.api_usage_settings = ApiUsageSettingsWidget(self._usage_draft_target, self)
+        self.v_box_layout.addWidget(self.api_usage_settings)
+        self.llm_provider_combobox.currentIndexChanged.connect(self.api_usage_settings.load_target)
+        self.custom_url_input.editingFinished.connect(self.api_usage_settings.load_target)
+
+    def _usage_draft_target(self) -> ApiTarget:
+        """额度测试读取表单草稿，不先保存或切换正在使用的聊天 API。"""
+        provider = self.llm_provider_combobox.currentData()
+        if provider == "deepseek_up":
+            return ApiTarget("deepseek_up", "", shared=True)
+        if provider == "custom":
+            return ApiTarget("custom", normalize_base(self.custom_url_input.text()), self.custom_key_input.text())
+        if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            base = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP[provider]["base_url"]
+            return ApiTarget(provider, base, self.third_party_key_input.text())
+        bases = d_sakiko_config.llm_api_base_url.value or {}
+        return ApiTarget(provider or "", normalize_base(bases.get(provider) or OFFICIAL_BASES.get(provider, "")),
+                         self.standard_key_input.text())
 
     def update_model_list(self, provider: str) -> None:
         """
@@ -533,6 +553,8 @@ class LLMAPIArea(TransparentScrollArea):
                 self.llm_stack.setCurrentIndex(3)
             else:
                 self.llm_stack.setCurrentIndex(2)
+        if hasattr(self, "api_usage_settings"):
+            self.api_usage_settings.load_target(force=True)
 
     def reset_error_indicators(self):
         """Reset error indicators on input fields."""
@@ -544,6 +566,14 @@ class LLMAPIArea(TransparentScrollArea):
         self.third_party_key_input.setError(False)
 
     def save_ui_to_config(self) -> bool:
+        """先验证额度草稿，再保存 API 和额度配置。"""
+        if not self.api_usage_settings.validate_draft():
+            return False
+        if not self._save_api_settings_to_config():
+            return False
+        return self.api_usage_settings.save()
+
+    def _save_api_settings_to_config(self) -> bool:
         """
         将当前 ui 的设置存储到 d_sakiko_config 中
 
