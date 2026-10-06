@@ -15,30 +15,34 @@ from launcher_actions import ENTRIES, LauncherProcesses, RunningEntry, build_com
 
 
 class LauncherActionsTest(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
+        """创建规范化临时路径并准备各启动入口。"""
         self.temp = tempfile.TemporaryDirectory(prefix="启动 测试 & ! ")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         for entry in ENTRIES:
             path = self.root / entry.script
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("", encoding="utf-8")
 
-    def package(self):
+    def package(self) -> Path:
+        """创建带空格路径的最小更新包夹具。"""
         path = self.root / "更新 包"
         path.mkdir()
         (path / "manifest.json").write_text("{}")
         (path / "patch.hdiff").write_bytes(b"fixture")
         return path
 
-    def test_all_legacy_tools_launch_without_bat_files(self):
+    def test_all_legacy_tools_launch_without_bat_files(self) -> None:
+        """旧入口在各平台使用对应工作目录并直接执行 Python。"""
         expected = {"desktop": "main2.py", "theater": "multi_char_main.py", "config": "dsakiko_configuration.py",
                     "downloader": "live2d_downloader_ui.py", "editor": "live2d_viewer.py"}
-        for key, script in expected.items():
-            with self.subTest(key=key):
-                args, cwd = build_command(key, self.root, sys.executable)
-                self.assertEqual(args, [sys.executable, "-u", str(self.root / "GPT_SoVITS" / script)])
-                self.assertEqual(cwd, self.root / "GPT_SoVITS")
+        for platform in ("darwin", "win32", "linux"):
+            for key, script in expected.items():
+                with self.subTest(platform=platform, key=key), patch("launcher_actions.sys.platform", platform):
+                    args, cwd = build_command(key, self.root, sys.executable)
+                    self.assertEqual(args, [sys.executable, "-u", str(self.root / "GPT_SoVITS" / script)])
+                    self.assertEqual(cwd, self.root if platform == "darwin" else self.root / "GPT_SoVITS")
         self.assertFalse(list(self.root.rglob("*.bat")))
 
     def test_webui_starts_pairing_under_isolated_python(self):
@@ -79,16 +83,32 @@ class LauncherActionsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "manifest.json"):
             build_command("update", self.root, sys.executable, package=self.root, wait_pid=123)
 
-    def test_child_exit_code_and_output_are_preserved(self):
-        script = self.root / "GPT_SoVITS/main2.py"
-        script.write_text("import os; print(os.getcwd()); print('启动日志'); raise SystemExit(7)", encoding="utf-8")
-        runner = LauncherProcesses(self.root)
-        log = runner.start("desktop")
-        runner.running["desktop"].process.wait(timeout=15)
-        self.assertEqual(runner.finished(), [("desktop", 7, log)])
-        self.assertIn("启动日志", log.read_text(encoding="utf-8"))
-        self.assertIn(str(script.parent), log.read_text(encoding="utf-8"))
-        self.assertFalse(runner.running)
+    def test_child_exit_code_and_launch_log_are_preserved(self) -> None:
+        """独立终端接收运行输出，启动器仍记录启动信息和退出码。"""
+        for platform, target in (("darwin", "launcher_macos.start_in_terminal"),
+                                 ("linux", "launcher_actions.subprocess.Popen")):
+            with self.subTest(platform=platform), patch("launcher_actions.sys.platform", platform):
+                process = Mock(poll=Mock(return_value=None))
+                runner = LauncherProcesses(self.root, executable=sys.executable)
+                with patch(target, return_value=process) as launch:
+                    log = runner.start("desktop")
+                command, cwd = build_command("desktop", self.root, sys.executable)
+                if platform == "darwin":
+                    launch.assert_called_once_with(command, cwd, self.root, log)
+                else:
+                    launch.assert_called_once()
+                    self.assertEqual(launch.call_args.args, (command,))
+                    self.assertEqual(launch.call_args.kwargs["cwd"], str(cwd))
+                    self.assertNotIn("stdout", launch.call_args.kwargs)
+                    self.assertNotIn("stderr", launch.call_args.kwargs)
+                self.assertEqual(runner.finished(), [])
+                process.poll.return_value = 7
+                self.assertEqual(runner.finished(), [("desktop", 7, log)])
+                content = log.read_text(encoding="utf-8")
+                self.assertIn(str(cwd), content)
+                self.assertIn("运行输出显示在独立终端中", content)
+                self.assertIn("退出码：7", content)
+                self.assertFalse(runner.running)
 
     def test_duplicate_and_update_while_running_are_blocked(self):
         runner = LauncherProcesses(self.root)
@@ -98,20 +118,26 @@ class LauncherActionsTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runner.start("update", package=self.package())
 
-    def test_spawn_failure_does_not_leave_running_entry(self):
-        runner = LauncherProcesses(self.root)
-        with patch("launcher_actions.subprocess.Popen", side_effect=OSError("fixture")):
-            with self.assertRaises(OSError):
-                runner.start("desktop")
-        self.assertFalse(runner.running)
+    def test_spawn_failure_does_not_leave_running_entry(self) -> None:
+        """两种启动适配器报错后均不残留占用入口。"""
+        for platform, target in (("darwin", "launcher_macos.start_in_terminal"),
+                                 ("linux", "launcher_actions.subprocess.Popen")):
+            with self.subTest(platform=platform), patch("launcher_actions.sys.platform", platform):
+                runner = LauncherProcesses(self.root, executable=sys.executable)
+                with patch(target, side_effect=OSError("fixture")) as launch:
+                    with self.assertRaisesRegex(OSError, "fixture"):
+                        runner.start("desktop")
+                    launch.assert_called_once()
+                self.assertFalse(runner.running)
 
-    def test_font_selection_matches_main_program_without_deleting_fonts(self):
+    def test_launcher_uses_bundled_font_without_deleting_custom_fonts(self) -> None:
+        """启动器固定使用打包字体并保留目录中的自定义字体。"""
         folder = self.root / "font"
         folder.mkdir()
-        self.assertEqual(preferred_font(self.root), folder / "msyh.ttc")
+        self.assertEqual(preferred_font(self.root), folder / "ft.ttf")
         for name in ("custom_font_9.ttf", "custom_font_100.ttf", "custom_font_invalid.ttf"):
             (folder / name).touch()
-        self.assertEqual(preferred_font(self.root).name, "custom_font_100.ttf")
+        self.assertEqual(preferred_font(self.root), folder / "ft.ttf")
         self.assertEqual(len(list(folder.iterdir())), 3)
 
 
