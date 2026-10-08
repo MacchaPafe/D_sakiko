@@ -39,7 +39,7 @@
  * @property {string} id 场景内的演员位置编号，guide 只引用这个编号。
  * @property {string} displayName 字幕显示名称。
  * @property {ModelPresentation | null} presentation 无模型时仍可播放语音和显示文本。
- * @property {{ x: number, y: number, scale: number }} layout 归一化位置与缩放。
+ * @property {{ x: number, y: number, scale: number, facing: 'left' | 'right' }} layout 归一化位置与缩放。
  */
 
 /**
@@ -87,7 +87,8 @@
  * @property {number} revision 单调递增的观察版本，用于忽略迟到事件。
  * @property {boolean} foreground 是否被明确选择为前台。
  * @property {'empty' | 'waiting' | 'playing' | 'closed'} state 仅描述演出状态。
- * @property {GuideProgress | null} current 当前正在播放的 guide；等待材料时为 null。
+ * @property {GuideProgress | null} current 当前普通 guide；等待材料时为 null。
+ * @property {GuideProgress | null} transition 当前过渡动作，不影响普通队首 waitingFor。
  * @property {GuideId | null} waitingFor 如果当前 sequence 正在因为某个 guide 而阻塞，则指向阻塞的 guide；如果当前没有阻塞，为 null。
  */
 
@@ -95,7 +96,8 @@
  * guide 的终态；删除和关闭也会结束等待，但不伪装成正常播放完成。
  * @typedef {object} GuideFinish
  * @property {GuideId} guideId 对应 guide。
- * @property {'completed' | 'removed' | 'closed'} outcome 终态类别，不携带业务取消原因。
+ * @property {'completed' | 'removed' | 'closed' | 'failed'} outcome 终态类别；播放故障有界结算，不携带业务取消原因。
+ * @property {import('./common.js').Problem | null} problem 播放故障，即使降级完成也可报告；不是 TTS 故障。
  */
 
 /**
@@ -103,6 +105,29 @@
  * @property {SequenceSnapshot} snapshot 订阅时先发送当前快照，之后按版本发送更新。
  * @property {GuideFinish[]} finished 本次更新新进入终态的 guide；初始快照为空。
  * @property {import('./common.js').Problem | null} problem 本次音频或模型播放故障；不包含 TTS 状态。
+ */
+
+/**
+ * 过渡只包含动作/表情，没有文本、翻译、音频或 ready；与普通 guide 共用稳定身份和终态等待。
+ * @typedef {object} TransitionGuide
+ * @property {string} slotId 必须存在的演员位置。
+ * @property {PerformanceSelection} performance 动作与表情。
+ * @property {boolean} recurring 队首可循环并阻塞后续过渡，循环一次不结算最终等待。
+ */
+
+/**
+ * @typedef {object} BgmSettings
+ * @property {AssetRef | null} audio 独立音轨资源，null 清空。
+ * @property {boolean} enabled 全局开关。
+ * @property {number} volume [0, 1]。
+ * @property {boolean} loop 是否循环。
+ */
+
+/**
+ * @typedef {object} BgmSnapshot
+ * @property {BgmSettings} settings 当前音轨设置。
+ * @property {'empty' | 'playing' | 'paused' | 'failed'} state 独立播放状态，不影响任何 Turn 完成。
+ * @property {import('./common.js').Problem | null} problem 音轨故障，允许显式重试播放。
  */
 
 export {}

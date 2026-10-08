@@ -12,7 +12,10 @@
  * 模式选择、展示端交接、DOM 挂载和回调路由属于内部实现；窗口创建、透明及鼠标穿透借助宿主的有限能力完成。
  * Conversation 使用相同的演出接口，不接收窗口、DOM 或模式专用的播放状态；宿主不承担逐句调度。
  *
- * 顺序：每个 sequence 严格按追加顺序执行；队首未 ready 就等待，绝不越过。
+ * 顺序：普通队列严格按追加顺序，队首未 ready 时仅允许过渡动作，不能跳到后方 ready 项。
+ * 过渡：普通队列空或队首未 ready 时播放过渡队首；普通队首 ready 时原子清除全部过渡。
+ * 后台不实际循环过渡；回到前台也不能恢复已被普通内容清理的过渡。
+ * V2 按情绪动作组；V3 对缺失或不可用的显式动作/表情逐通道降级。语音驱动口型，故障不无限阻塞。
  * 前台：由实际语音、阅读计时和动作结束决定完成，等待所需部分中最晚的一项。
  * 长语音：可在语音或阅读仍进行时追加动作；基础时长结束后不再追加，等当前动作收尾。
  * 后台：按音频时长、文本阅读估计和动作时长估计推进，不输出音频或渲染。
@@ -42,6 +45,48 @@ export class Performance {
    * @returns {Promise<GuideId[]>} 每条 guide 各自的编号。
    */
   async appendGuides(sequenceId, guides) {}
+
+  /**
+   * 普通 guide 正在播放时忽略新增，返回空数组；过渡正在播放时可追加，输入无效整批拒绝。
+   * recurring 队首持续重复，可阻塞其他过渡。无有效动作或持续失败有界退出，不能无限忙循环。
+   * 普通内容抢占以 removed 结算；稳定 guideId 不随循环变化，旧循环回调不能完成新播放。
+   * @param {SequenceId} sequenceId 目标。
+   * @param {import('../../../shared/contracts/presentation.js').TransitionGuide[]} guides 过渡材料。
+   * @returns {Promise<GuideId[]>} 实际接受的稳定身份，按输入顺序。
+   */
+  async appendTransitionGuides(sequenceId, guides) {}
+
+  /**
+   * 清除全部过渡，包括当前动作；逐项按 removed 结算等待，重复停止幂等。
+   * @param {SequenceId} sequenceId 目标。
+   * @returns {Promise<void>} 过渡已清除，普通队列不受影响。
+   */
+  async stopTransitionGuide(sequenceId) {}
+
+  /**
+   * 幂等目标状态操作，例如戴上/摘下面具；已达目标不重复翻转，不生成消息。
+   * 使用同一过渡调度规则，普通内容播放时不强行插入；能力未知/不支持明确报告。
+   * @param {SequenceId} sequenceId 目标。
+   * @param {{ slotId: string, state: string, value: boolean }} target 模型已声明的状态及目标值。
+   * @returns {Promise<GuideId | null>} 实际过渡身份，已达目标或当前普通内容使其忽略时为 null。
+   */
+  async setModelState(sequenceId, target) {}
+
+  /**
+   * 独立全局音轨，不进入台词队列或 Turn 完成判断；持久偏好由 Settings 保存。
+   * @param {import('../../../shared/contracts/presentation.js').BgmSettings} options 音轨/开关/音量/循环。
+   * @returns {Promise<void>} 材料及音量已更新；加载失败报告音轨问题，不阻塞对话。
+   */
+  async setBgm(options) {}
+
+  /**
+   * @param {boolean} playing true 播放或显式重试，false 暂停；重复当前状态不重播。
+   * @returns {Promise<void>} 播放意图已应用。
+   */
+  async setBgmPlaying(playing) {}
+
+  /** @returns {Promise<import('../../../shared/contracts/presentation.js').BgmSnapshot>} 当前独立音轨状态。 */
+  async getBgmState() {}
 
   /**
    * 写入语音材料并将 guide 标记 ready；audio 为 null 即无语音放行。
@@ -116,7 +161,7 @@ export class Performance {
    * sequence 的删除、关闭必须结算已注册的等待（将所有 guide 视为取消）；sequence 关闭后，新发起的等待将被拒绝。
    * @param {GuideId} guideId 目标 guide。
    * @param {AbortSignal} [signal] 取消本次等待。
-   * @returns {Promise<import('../../../shared/contracts/presentation.js').GuideFinish>} 播完、删除或关闭的终态。
+   * @returns {Promise<import('../../../shared/contracts/presentation.js').GuideFinish>} 播完、删除、关闭或有界失败的终态。
    */
   async waitForGuideFinish(guideId, signal) {}
 

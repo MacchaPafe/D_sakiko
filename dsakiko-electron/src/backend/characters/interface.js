@@ -2,32 +2,8 @@
 
 /** @typedef {import('../../shared/contracts/persona.js').UserPersonaDefinition} UserPersonaDefinition */
 
-/**
- * 可编辑、可持久化的角色配置；可选资源失效时仍保留原引用，不能用能力解析结果覆盖配置。
- * @typedef {object} CharacterDefinition
- * @property {string} id 稳定角色身份；迁移时沿用角色文件夹身份，不由显示名推导。
- * @property {number} revision 本次修改所基于的配置版本；新建为 0，保存时由目录递增，调用方不预先递增。
- * @property {string} displayName 显示名称，从角色对应文件读取，可能是空字符串。
- * @property {string} description 角色描述，从角色对应文件读取，可能是空字符串。
- * @property {import('../../shared/contracts/common.js').AssetRef | null} avatar 可选头像。
- * @property {import('../../shared/contracts/presentation.js').ModelPresentation | null} presentation 可选模型与演出映射。
- * @property {import('../../shared/contracts/speech.js').VoiceProfile | null} voice 可选声音。
- * @property {import('../../shared/contracts/common.js').Metadata} metadata 角色默认设置与扩展字段。
- */
-
-/**
- * 从配置和资源元数据派生的临时快照，不是另一份角色配置，也不代表模型已经加载成功。
- * 实际模型加载或推理失败仍由演出、语音模块处理；JSDoc 不会自动执行对象转换。
- * @typedef {object} CharacterCapabilities
- * @property {string} id 稳定角色身份。
- * @property {number} revision 本次解析使用的配置版本。
- * @property {string} displayName 显示名快照。
- * @property {string} description 描述快照。
- * @property {import('../../shared/contracts/presentation.js').ModelPresentation | null} presentation 经元数据检查可尝试加载的模型；已知不可用时为 null。
- * @property {import('../../shared/contracts/presentation.js').PerformanceCatalog} performances 允许生成模块选择的逻辑演出目录。
- * @property {import('../../shared/contracts/speech.js').VoiceProfile | null} voice 经资源检查可尝试使用的声音配置；已知不可用时为 null。
- * @property {import('../../shared/contracts/common.js').Problem[]} problems 可选能力的诊断，不使角色身份失效。
- */
+/** @typedef {import('../../shared/contracts/characters.js').CharacterDefinition} CharacterDefinition */
+/** @typedef {import('../../shared/contracts/characters.js').CharacterCapabilities} CharacterCapabilities */
 
 /**
  * 角色目录模块：统一管理角色配置、对话身份定义与资源解析，是 Node 中唯一的权威目录。
@@ -43,7 +19,7 @@
  */
 export class CharacterCatalog {
   /**
-   * 列出 AI 角色入口，不包含用户的对话身份，不加载推理模型。
+   * 按目录顺序列出 AI 角色默认形态的摘要，不包含用户人格、不加载推理模型。
    * 新角色经目录保存后即可出现在后续查询中并用于创建 Chat，不要求重启应用。
    * @returns {Promise<Array<{ id: string, displayName: string, avatar: import('../../shared/contracts/common.js').AssetRef | null }>>} 角色摘要。
    */
@@ -66,14 +42,37 @@ export class CharacterCatalog {
 
   /**
    * 解析身份、演出目录与声音配置；只读取描述和资源元数据，不常驻 Live2D 或 TTS 模型。
+   * 显式无效形态/模型拒绝，省略 formId 使用默认形态；已配置但缺失的可选资源保留诊断。
    * @param {string} characterId 角色身份。
+   * @param {{ formId?: string, modelId?: string | null }} options null 模型采用本形态默认指针。
    * @returns {Promise<CharacterCapabilities>} 可供一次编排使用的只读快照。
    */
-  async resolveCapabilities(characterId) {}
+  async resolveCapabilities(characterId, options) {}
+
+  /**
+   * 普通生成用已冻结能力，历史重合成先解析当前原形态能力；本方法不重读目录、不重新推断情绪。
+   * @param {CharacterCapabilities} capabilities 一致的形态与声音快照。
+   * @param {string | null} emotion 原台词情绪。
+   * @returns {Promise<import('../../shared/contracts/characters.js').VoiceResolution>} 完整声音材料或同形态降级结果。
+   */
+  async resolveVoice(capabilities, emotion) {}
+
+  /**
+   * @param {string[]} characterIds 完整有序角色 ID，原子校验无遗漏/重复。
+   * @returns {Promise<void>} 仅更新目录顺序，不改角色定义。
+   */
+  async setOrder(characterIds) {}
+
+  /**
+   * @param {string} personaId 人格定义身份。
+   * @param {number} expectedRevision 所基于版本。
+   * @returns {Promise<void>} 定义已删除，已有 Chat 的人格快照及头像引用不受影响。
+   */
+  async deletePersona(personaId, expectedRevision) {}
 
   /**
    * 列出对话身份供用户选择；关联角色的摘要使用当前名称与头像，不将摘要保存为身份快照。
-   * 来源角色缺失的身份仍保留入口并报告问题，以便编辑修复，不使整个列表失败。
+   * 角色身份通过其默认形态解析名称和头像；来源角色缺失的身份仍保留入口并报告问题，以便编辑修复，不使整个列表失败。
    * @returns {Promise<import('../../shared/contracts/persona.js').UserPersonaSummary[]>} 当前身份摘要。
    */
   async listPersonas() {}
@@ -96,7 +95,7 @@ export class CharacterCatalog {
 
   /**
    * 按调用时的定义解析实际身份；角色引用每次读取当前角色名称、描述和头像，不复用绑定时的旧文本。
-   * 只读取身份字段，不调用完整能力解析，不加载模型；返回结果来自一致的定义与角色配置快照。
+   * 角色引用采用当前默认形态的名称、描述和头像；只读取身份字段，不调用完整能力解析，不加载模型；返回结果来自一致的定义与角色配置快照。
    * 仅构造独立数据，不保存到目录或 Chat；是否以及何时固定这份结果由调用方决定。
    * @param {string} personaId 对话身份编号。
    * @returns {Promise<import('../../shared/contracts/persona.js').UserPersonaSnapshot>} 实际身份快照；身份或来源角色不存在时拒绝，不静默降级为默认身份。

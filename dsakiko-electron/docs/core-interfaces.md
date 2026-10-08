@@ -1,6 +1,8 @@
-# 核心模块接口原型
+# 核心模块接口契约
 
-本文链接的 `interface.js` / `interface.py` 文件继续用于审查模块职责和调用方式，方法体保留为空。可运行原型已经通过同目录新增的实现文件接入应用启动；实现范围、入口和未覆盖部分见 [原型说明](prototype.md)。不能直接实例化接口审查文件，或将本文的完整设计范围视为本轮已经全部实现。
+更新日期：2026-10-08。依据 [Python 功能需求](python-feature-requirements.md)和[核心设计复核](python-core-design-review.md)中已确认的决定更新声明。文档优先于旧快速原型；本次只更新类型、空接口和行为约定，没有编写业务实现或把新接口接入应用。
+
+本文链接的接口和只读投影 helper 用于审查职责与调用方式，函数体保持为空。现有可运行实现仍采用旧原型契约，见[原型说明](prototype.md)；不能把原型表现、通过旧测试或导入声明文件当作符合本设计。Python 新增数据类也只声明参数，原型 HTTP/worker 尚未消费。
 
 模型与工具调用的独立选型验证见 [AI SDK 使用与接口验证](ai-sdk-demo.md)。
 
@@ -11,7 +13,7 @@
 | 模块                    | 接口文件                                                                 | 对外负责                                                | 不接收或不承担                                   |
 | ----------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------ |
 | 对话 `Conversations`    | [conversation/interface.js](../src/backend/conversation/interface.js)    | 接收用户意图，管理多个 Chat，编排生成、存档、合成和演出 | 动作计时、推理池、模型实例、连接细节             |
-| 生成 `Agent`            | [llm/interface.js](../src/backend/llm/interface.js)                      | 基于一次请求完成模型与工具循环，返回完整校验后的台词    | 完整可修改 Chat、前后台、TTS、sequence、消息落盘 |
+| 生成 `Agent`            | [llm/interface.js](../src/backend/llm/interface.js)                      | 基于一次请求完成模型与工具循环，交付保留分组的响应、工具结果，检查上下文与压缩    | 完整可修改 Chat、前后台、TTS、sequence、消息落盘 |
 | 演出 `Performance`      | [performance/interface.js](../src/renderer/src/performance/interface.js) | 场景、sequence、音频、字幕、Live2D 与全部播放进度       | Chat、Turn、合成状态、取消原因、对话编排         |
 | 合成 `Speech`           | [speech/interface.js](../src/backend/speech/interface.js)                | 转换输入和结果，提交、查询、控制并等待 Python 合成任务  | 调度队列、模型实例、对话归属、失败展示策略       |
 | 识别 `Recognition`      | [recognition/interface.js](../src/backend/recognition/interface.js)      | 将录音转换成文本，管理识别模型                          | 麦克风录制、草稿、光标、自动发送                 |
@@ -21,10 +23,24 @@
 | 远端文件 `RemoteFiles`  | [remote-files/interface.js](../src/backend/remote-files/interface.js)    | 厂商文件上传复用、引用失效、显式删除与自动回收          | Chat、输入框状态、生成流程重试、任意账号文件管理 |
 | 输入 `InputSessions`    | [input-sessions.js](../src/renderer/src/features/chat/input-sessions.js) | 每个对话的草稿、录音、附件和识别文本插入                | Agent、历史修改、TTS、演出                       |
 
+新增后端模块同样只提供声明：
+
+| 模块 | 接口文件 | 职责 |
+| --- | --- | --- |
+| Settings | [settings/interface.js](../src/backend/settings/interface.js) | 类型化设置、连接、能力来源与受控凭据写入 |
+| ToolCatalog / Interactions / ReminderWriter | [tools/interface.js](../src/backend/tools/interface.js) | 依赖与授权、可靠交互、仅工具可用的提醒创建 |
+| Worldbook | [worldbook/interface.js](../src/backend/worldbook/interface.js) | 固定知识范围、受限查询与独立诊断，本次不实际检索 |
+| PythonChatImporter | [python-import-interface.js](../src/backend/storage/python-import-interface.js) | 旧 Python 一次性有损转换 |
+| Live2dImporter | [live2d-import/interface.js](../src/backend/live2d-import/interface.js) | V2/V3 完整依赖包与原子发布 |
+
 共享数据集中在以下文件，避免调用方依赖模块内部类：
 
 - [common.js](../src/shared/contracts/common.js)：资源引用、持有者编号、问题、元数据与取消订阅函数。
-- [conversation.js](../src/shared/contracts/conversation.js)：`Chat → Turn → Message`、用户输入、提醒与界面投影。
+- [conversation.js](../src/shared/contracts/conversation.js)：嵌套历史、句级定位、输入来源、运行与保存状态。
+- [message-projections.js](../src/shared/contracts/message-projections.js)：只读台词、reasoning、调用、结果与展示 helper 声明。
+- [settings.js](../src/shared/contracts/settings.js)、[models.js](../src/shared/contracts/models.js)：配置分组、执行覆盖、连接与能力来源。
+- [characters.js](../src/shared/contracts/characters.js)：forms、默认模型指针及声音选择。
+- [tools.js](../src/shared/contracts/tools.js)、[worldbook.js](../src/shared/contracts/worldbook.js)、[archive.js](../src/shared/contracts/archive.js)：交互关联、知识范围与恢复警告。
 - [presentation.js](../src/shared/contracts/presentation.js)：场景、逻辑演出选择、guide、进度与终态。
 - [speech.js](../src/shared/contracts/speech.js)：声音配置、合成请求、任务编号与结果。
 - [persona.js](../src/shared/contracts/persona.js)：可复用的对话身份定义、选择摘要与 Chat 固定的身份快照。
@@ -45,6 +61,10 @@ flowchart LR
     Conversation --> Performance[演出]
     Conversation --> Store[存档]
     Conversation --> Characters[角色目录]
+    Conversation --> Settings[设置与连接]
+    Conversation --> Worldbook[世界书]
+    Conversation --> Tools[工具与交互]
+    Tools -. 已登记交互结果 .-> Conversation
     Performance -. 进度与终态 .-> Conversation
     Conversation -. 消息与显示投影 .-> UI
     Input --> Assets[资源]
@@ -52,7 +72,7 @@ flowchart LR
     Speech --> Assets
 ```
 
-界面取得 `PreparedSubmission` 后调用对话接口，受理成功再确认清理草稿。生成模块提交完整台词批次；对话模块保存消息、创建 guides、提交合成，使用返回的编号关联结果。合成成功则提交音频并放行 guide，失败则按业务策略无语音放行。演出模块始终独立推进，只有需要时才订阅或等待完成。
+界面取得 `PreparedSubmission` 后调用对话接口，受理成功再确认清理草稿。生成模块按响应身份交付有序内容，包含完整校验的台词；对话模块构造嵌套消息、创建 guides、提交合成，按稳定句身份关联结果。合成成功则提交音频并放行 guide，失败则按业务策略无语音放行。演出模块始终独立推进，只有需要时才订阅或等待完成。
 
 对话模块可将演出进度映射为消息显示投影，但不重新计算演出时间。其他只关心演出的界面也可以直接观察演出模块。
 
@@ -64,6 +84,8 @@ flowchart LR
 
 ## 角色目录与对话身份
 
+`CharacterDefinition` 使用非空 `forms` 与 `defaultFormId`，每个形态含名称、描述、头像、主题色、声音和 `defaultModelId`；所有模型平级登记。Chat 保存当前 formId 及各形态模型覆盖，换装不改变形态或目录默认值。
+
 `CharacterDefinition` 保存用户配置，包括当前不可用资源的原引用；`CharacterCapabilities` 是从配置与资源元数据派生的一次能力快照，提供逻辑动作、表情目录和问题说明。解析不会把临时不可用的能力写回配置，也不代表已经实际加载模型。演出与语音模块仍负责实际加载和运行时故障处理。这两个结构都是普通数据对象，转换由目录实现，JSDoc 不会自动裁剪或转换字段。
 
 Node 中的 `CharacterCatalog` 是唯一的权威目录。通过目录保存角色后，后续 `list`、`get` 和相关解析即可看到新配置；目录维护自己的缓存及资源依赖失效，页面按需重新查询。Python 与演出模块只接收执行所需材料，不分别维护全量角色列表。新角色登记后即可创建 Chat，不要求应用重启；本轮不提供向已有 Chat 添加参与角色的操作。直接修改外部文件的发现方式属于目录内部接入设计，本轮不增加公开重新扫描方法。
@@ -72,7 +94,7 @@ Node 中的 `CharacterCatalog` 是唯一的权威目录。通过目录保存角�
 
 `UserPersonaDefinition.source` 有两种互斥形式：`custom` 保存 `displayName`、`description` 与可选 `avatar`；`character` 只保存 `characterId`，不在绑定时复制角色文本或头像。角色引用失效时仍能读取定义以修复，也会出现在带问题说明的选择列表中；解析时则明确拒绝，不使用过期文本或默认人格掩盖问题。
 
-普通新建通过 `createChat({ ..., userPersonaId })` 选择身份，省略或 null 表示无自定义人格。Conversation 在创建时调用 `resolvePersona`，将实际采用的完整身份快照保存到 `Chat.userPersona`。关联角色当时的名称和描述被固定下来；角色缺失时创建失败。目录只负责解析数据，不负责何时创建 Chat，也不解析用户身份的模型、语音或动作能力。
+普通新建通过 `createChat({ ..., userPersonaId })` 选择身份，省略或 null 表示无自定义人格。Conversation 在创建时调用 `resolvePersona`，将实际采用的完整身份快照保存到 `Chat.userPersona`。关联角色当时默认形态的名称和描述被固定下来；角色缺失时创建失败。目录只负责解析数据，不负责何时创建 Chat，也不解析用户身份的模型、语音或动作能力。
 
 例如，角色描述为 A 时创建的 Chat 保留 A；角色描述改为 B 后，新建的 Chat 获得 B。继续已有 Chat、重新生成、分支和归档导入都沿用已固定的身份，不重新解析当前目录；自定义人格修改也只影响后续普通新建。身份快照的来源编号只用于记录出处，不要求导入环境存在原始人格或角色。快照头像由 Chat 持有资源引用并随归档携带；旧存档没有任何身份信息时才使用 null，不能从当前目录补造历史身份。
 
@@ -92,11 +114,22 @@ Node 中的 `CharacterCatalog` 是唯一的权威目录。通过目录保存角�
 
 ## 消息与生成输入
 
-消息列表按生成过程顺序保存 `user → reasoning → tool → reasoning → character` 等记录。每段 reasoning 保存为一条只含正文及通用存档字段的消息；工具完成时更新原工具消息的位置不变。两者都通过现有 `observe` 展示，只有 `character` 台词进入合成和演出。
+权威历史为 `Chat → Turn → Message`。Message 有四种：
 
-Agent 复用 `onIntermediate`，按 `GeneratedMessage.kind` 交付 reasoning 或已校验的过渡台词；工具通知沿用 `onToolActivity`。同一次执行依次等待通知被接受，最终台词仅由 `run()` 的结果交付，最终响应的 reasoning 仍先经过通知交付。这里只保留完整记录，第一版不增加 token 流或 reasoning 专用查询方法。
+- `UserMessage`：source 区分 manual、async、reminder；async 保留请求、来源 Turn/call、原问题及实际结果的有序结构。
+- `AssistantMessage`：一次模型响应一个容器，parts 按原顺序保存 reasoning、tool-call、dialogue；dialogue 内为有稳定 ID 的 CharacterLine。
+- `ToolResultMessage`：用 assistantMessageId/callId 关联调用，结果只存一份；区分成功空值、accepted、失败和运行器中断。
+- `AbstractMessage`：累计摘要，位于所覆盖最后完整 Turn 的消息末尾。位置表达范围，不重复保存覆盖终点、父摘要 ID 或定位表。
 
-`ContextMessage`、`GeneratedLine`、`GeneratedReasoning` 都是临时普通对象，正式消息统一以 `Message` 保存。Conversation 用私有函数提取输入字段，Agent 决定 reasoning 是否按供应商协议回传，不能把它当作角色台词拼入普通上下文。这个投影不承诺精确重建原始供应商请求；需要精确重放时再保留必要的分组与协议信息。
+`Turn.input` 只定位本轮 UserMessage 或标记 scenario；移除重复表达来源的 trigger。无用户文本的主动情景生成使用 `generateScenario`，不走草稿、不伪造用户消息。小剧场只生成一次、之后只重生成的产品限制留在前端，后端不按模式封死连续输入。
+
+Agent 的 `onResponse` 用稳定 responseId 追加尚未接受的 parts：可先交付实际 reasoning/调用，再接受通过校验的台词，仍属于同一容器。工具结果走 `onToolResult`。全部通知顺序等待接受，最终台词也从这里交付；run 只返回 Loop 终态与 usage，避免回调和返回值各复制一份最终回复。格式修复产生的新模型响应另建容器；失败原文只留诊断。
+
+工具按调用列表串行：sync 等本地完成，block-async 等交互结束，async 等可靠 accepted。所有工具统一记录，删除 visibility/隐藏分支。async 后续成功结果进入后续 Turn 的 UserMessage，原 accepted 不回写第二份 ToolResultMessage。中断恢复对缺失结果使用通用 runner/interrupted 结果，不重新执行工具；具体 not_executed/cancelled/outcome_unknown 分类仍是建议，不作为必填枚举。
+
+只读投影 helper 保留原身份与顺序，不产生第二份可写历史。句级操作改用 `LineRef`，不能把一个 assistant 响应当成一条台词。ContextTurn 保留完整轮次裁剪边界，ContextMessage 保留分组、reasoning 类别、协议必要材料和调用关联；协议附加字段只保存必要脱敏内容，不能据此承诺所有供应商报文可无损重放。
+
+上下文只投影最后有效摘要与其后文，system/情景等本次材料正常构造；原始历史保留。只压缩已结束的完整 Turn，至少保留最后一轮，失败保留旧有效摘要。原地编辑保留后文但删除依赖它的后方摘要；截断/分支按位置处理。上下文查询与实际准备共用规则，计入角色、人格、提示、工具、Schema、附件及本次输入，区分估计、未知和实际 usage；查询不压缩、不上传、不执行工具。
 
 ## 本地资源与厂商文件
 
@@ -127,7 +160,8 @@ RemoteFileRef 只包含消息需要的 file-id 或 file-uri 形式与值，上�
 7. **资源生命期**：持久化使用 `AssetRef`，不保存临时 URL、SDK 对象或运行句柄。交接时先建立新引用，再释放旧引用。音频任务结果、草稿、存档与演出使用中的材料都必须有有效持有者。
 8. **失败约定**：输入无效、编号未知、版本冲突等通过抛出或拒绝 Promise 报错；可预期的合成、识别终态使用各自的结果联合类型。对外错误携带 `Problem`，原始异常和堆栈仅用于内部诊断。带 `signal` 的等待被取消时以 `AbortError` 拒绝。
 9. **快照与订阅**：观察接口先发送当前快照，再按来源顺序发送更新；跨进程的运行态观察使用快照版本识别迟到消息，本地草稿观察不公开内部版本。取消订阅只取消本地监听，不撤销业务任务；观察函数不得阻塞模块推进。需要可靠结算的单个 guide 使用等待接口。
-10. **必要输入投影**：角色目录可以返回完整能力快照，但对话模块只能把必要字段分别传给 Agent、合成和演出。第一版仅实现单角色及编剧式二人台词；演出模块不承担群聊策略。世界书暂不实现检索，保留轮次元数据和生成补充上下文入口。
+10. **必要输入投影**：角色目录可以返回完整能力快照，但对话模块只能把必要字段分别传给 Agent、合成和演出。目标范围含单角色及编剧式二人台词；演出不承担群聊策略。世界书已有后端契约，本次不实际调用；多角色私有知识隔离细则仍待定。
+11. **重生成身份**：只重生成最后一个 Turn，保留其输入内容，以当前设置建立新 Turn 并替换旧轮，返回新的 TurnId。校验材料后统一受理并协调旧任务失效和替换，受理保存失败保留旧轮与共用附件。不复用旧 ID 或另建轮次执行编号；已发生的工具副作用不自动撤销。一次 Agent Loop 内的多次模型响应仍属于同一 Turn。详见 [ADR-0049](../../docs/adr/0049-regenerate-last-electron-turn-with-current-settings.md)；async 结果按轮次组合并、失效的已确认语义及剩余问题见[需求清单](./python-feature-requirements.md)。
 
 ## 运行位置与通信
 
@@ -147,4 +181,63 @@ Python 查询返回排队、运行或终态，成功时带文件路径和实际�
 
 Electron 窗口、桌宠、托盘、Python 进程生命周期以及配对、鉴权、控制端接管沿用 `main`、`preload`、`server`、`renderer/src/runtime` 的入口划分，本轮不增加这些运行外壳的空类。运行外壳调用核心接口，不承担对话生成、合成队列或逐句计时。界面不直接绕过对话模块修改运行存档。
 
-设置键、具体工具清单、IPC 通道名称和持久化文件格式尚未逐项定义；它们不应通过给核心模块传入全局配置对象来补齐。Python 语音 HTTP 报文只在语音调度设计中约定，不成为 Conversation 的调用协议。
+本次已定义业务设置字段与签名；具体工具适配清单、IPC 通道和序列化格式留给实现设计，不能通过透传可变全局对象补齐。Python 语音 HTTP 报文只在语音调度设计中约定，不成为 Conversation 的调用协议。
+
+## 与更新设计的偏差及本次落点
+
+下表对照的是修改前的正式接口。所有新增方法均为未实现声明，旧原型与本表没有兼容承诺。
+
+| 需求 | 修改前偏差 | 本次契约 |
+| --- | --- | --- |
+| CHAT-02、AGENT-06/10 | 消息扁平保存，结果写入调用项 | 嵌套响应、独立结果、稳定句身份、只读投影、顺序通知 |
+| CHAT-03 至 07 | 缺重命名/排序/原地编辑/包含边界截断，编辑重发为候选 | renameChat、setChatOrder、editHistory、truncateFromTurn；末轮原子替换/新 UUID/当前配置 |
+| RUN-03/06、TOOL-05 | 无纯情景命令，内部来源/交互关联不完整 | generateScenario、来源联合类型、可靠交互及批量 async 受理 |
+| RUN-01/04/07、CHAT-09 | 无整轮完成和保存故障门禁 | 生命周期、受理投影、独立保存状态、retrySave、整轮回放 |
+| AGENT-07/08 | 仅 summary 字符串 | 位置表达累计摘要，inspectContext、compressHistory/Agent.compress |
+| SET-01 至 06 | setDefaults(Metadata)，连接/采样字段不完整 | 分组 setter、TurnOptions、全局设置/连接目录、能力来源/覆盖/未知值 |
+| TOOL-01 至 06、WORLD-05 | 未区分三种等待语义，存在 hidden | 三模式、依赖与权限契约、全部记录、受限提醒创建/管理 |
+| WORLD-01 至 05/08 | 只有补充字符串 | WorldbookInfo/Scope/Query，角色共享映射，Turn.meta 独立诊断 |
+| CHAR-04/06/07、LIVE-06、TTS-02/08 | 单一模型/voice，缺人格删除 | forms/默认指针/Chat 覆盖、resolveVoice、deletePersona/目录排序、原语义结合当前声音 |
+| LIVE-04/08/10 | 无过渡队列、目标状态或 BGM | 稳定 transition/抢占/有界结算、幂等 setModelState、独立 BGM |
+| INPUT-06、ASSET-01 | 准备不能观察/取消，缺附件重试 | preparing/提前可见 recordingId、Recognition.prepare、retryAttachment |
+| CHAT-08/09、ASSET-05 | 导入无警告，缺备份恢复/整包规则 | ArchiveDrafts/警告/资源交接、recoverCorrupt、一次性 Python 导入及 Live2D 整包导入 |
+
+## 设置、受理与失败
+
+Chat.meta.settings 保存 generation、speech、scenario、tools、worldbook、characters、presentation，通过 Conversation 对应分组操作修改，删除 setDefaults。全局、Chat、本次 options 依次合并，省略表示继承，数组整体替换；执行前必须解析完整材料并校验模型支持，不能猜缺失连接。凭据只由后端受控写入和解析，不进入 Chat/归档。
+
+自动语音开关固定整个 Turn，关闭时不提交合成、直接无声 ready；不删除历史音频或隐式补合成。手动重合成保留原句、形态、情绪、发声语言/读音，采用当前对应声音资源及任务参数。Speech 只接收完整 VoiceProfile；情绪参考不可用先降为同形态默认、再无声。设备、精度、模型结构、并发与驻留预算下次启动生效。
+
+初始校验和保存完成才受理，之后才清草稿/消费 async、打断相关回放和启动模型工具。受理前失败保留原材料和旧轮；受理后失败保留新输入和已接受过程。保存故障阻止该 Chat 新生成/历史修改，允许查看/停止/重试保存；已运行任务仍结算到当前内存。retrySave 不重执行模型、工具或合成，revision 冲突不能靠改大版本绕过。
+
+| 当前工作 | 同 Chat 受理约定 |
+| --- | --- |
+| 生成、自动语音或普通演出未结算 | Turn 保持 running；拒绝下一轮（含 async）、手动压缩和历史修改；可改下轮设置、登记 async |
+| 手动压缩 | 互斥生成/历史修改，允许历史回放 |
+| 独立历史回放 | 不使历史 Turn running；新轮持久受理后中断相关临时 sequence（含当前句），保留常驻 sequence 和其他 Chat |
+| 保存故障 | 只锁该 Chat 新生成/历史修改；停止与结算继续，成功重试后解除 |
+| 独立音频重合成 | 不使历史 Turn running、不改 async 资格；目标内容失效/删除/更新任务后旧音频不得覆盖，精确目标句保护仍待定 |
+
+finished 等本轮合成和普通演出全部结束或明确故障结算，排除未完成 async 交互、BGM、循环过渡。Agent 不可恢复失败使 Turn terminated 并作废组；语音失败无声 ready，播放故障有界结算，不终止组。停止保留当前句；底层推理实际退出前仍占调度资源。
+
+## async、提醒与重启
+
+Interactions 在可靠登记时绑定请求与发起 Turn/call/组。async 的 accepted 只是协议受理结果；后续成功回调登记到 Conversation，running 全阶段只排队。空闲且允许受理时批量消费当时全部有效成功项，用一条 UserMessage 开新 Turn；不等待其他交互，后到结果留下一批。可靠受理前失败返回原调用错误；之后失败/取消只结束请求，不新建回复或补第二份工具结果。
+
+手动输入和显式重生成开新组，旧组未消费及尚未返回请求失效；自动轮正常开始/结束不失效本组。组内任一 Turn 终止作废全组；原地编辑/删除/回溯作废 Chat 全部未消费结果。校验失败、忙碌拒绝、草稿编辑、背景或音频修改不改变资格。受理/消费/停止串行，同一结果至多进入一个 Turn；无有效结果不创建空轮。本阶段不加跨轮累计续聊限制。
+
+ReminderWriter 仅供绑定 Chat 的工具创建提醒，公共管理只列出/查看/删除。提醒持久保存，不因 async 组失效而删除；忙碌延迟，保留到期后 12 小时补发及 expired，投递与 Turn 受理去重。重启只恢复已保存历史并结算未完成协议调用，不续跑模型、工具、交互、演出，不恢复组和请求资格。提醒按自身规则处理，无有效组时另开组；不保证恢复未落盘内容或撤销外部副作用。
+
+## 尚未定案与范围限制
+
+- 停止普通 Turn 保留当前句时何时重新开放提交；手动重合成目标句的具体保护。
+- 显式锁定参考材料的范围和优先级；本次不添加猜测性覆盖参数。
+- 多角色私有知识隔离的查询细则；范围类型不能替代完整隔离设计。
+- 中断工具细分错误枚举、逐供应商协议字段白名单；只提供通用中断与必要材料承接位置，不宣称全供应商已验证。
+- 具体工具 Schema/服务配置/授权仍需适配设计；预加载、空闲卸载策略、识别规范化、资源编辑器/下载、WebUI、反馈、更新修复及世界书制作维持原暂缓/独立范围。
+
+## 本次验证范围
+
+2026-10-08：23 个修改或新增的 JS 声明文件通过语法、ESLint 和 Prettier 检查；AST 检查确认 112 个函数全部为空。检查了 178 处 JSDoc 文件/类型名称引用和 122 处文档相对路径，未发现缺失；这不是完整 TypeScript 类型检查。Python 契约通过 Python 3.9 语法解析。
+
+现有原型回归测试通过 22 个 JS、7 个 Python 用例。测试没有覆盖新接口的受理、嵌套消息、async、摘要等行为；本次没有实现这些行为，也没有新增仅验证空壳的测试。已有实现文件、模型推理和应用接线保持原状，新契约需要后续按模块实现与验收。

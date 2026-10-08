@@ -18,13 +18,29 @@ class VoiceProfile:
 
 
 @dataclass(frozen=True)
+class SpeechSampling:
+    """一次任务固定的采样材料；范围及权重架构兼容性在受理前校验。
+
+    top_k、sample_steps 为正整数，top_p 在 (0, 1]，temperature 为正有限值。
+    seed 为整数，-1 表示随机；不能让不同推理实例通过共享随机状态互相污染。
+    """
+
+    top_k: int
+    top_p: float
+    temperature: float
+    seed: int
+    sample_steps: int
+
+
+@dataclass(frozen=True)
 class SpeechRequest:
     """仅包含合成所需数据，不接收角色、对话、消息或演出编号。
 
     text 已完成需要的读音替换，language 是合成语言。
     priority 为非负整数，数字越小越优先，0 优先使用下一个可用执行槽。
     speed 必须为有限正数，sentence_pause_ms 必须为非负整数。
-    两个可选值为 None 时，在受理时固定为合成配置的默认值。
+    可选值为 None 时，在受理时固定为合成配置的默认值。
+    sampling 是正式设计新增字段，快速原型的 HTTP/worker 尚未消费，不表示已实现。
     """
 
     text: str
@@ -33,6 +49,7 @@ class SpeechRequest:
     priority: int
     speed: Optional[float] = None
     sentence_pause_ms: Optional[int] = None
+    sampling: Optional[SpeechSampling] = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +97,20 @@ class CancelledTask:
 
 
 TaskSnapshot = Union[PendingTask, SucceededTask, FailedTask, CancelledTask]
+
+
+@dataclass(frozen=True)
+class InferenceConfig:
+    """下次 Python 启动生效的设备、精度和模型结构，不作为逐任务覆盖。
+
+    兼容的 BERT、HuBERT、SV 按版本、设备和精度共享；角色 GPT/SoVITS 网络、
+    参考缓存、取消及中间状态隔离。共享池生命周期不等同于一个可并发修改的 TTS 对象。
+    本声明不负责加载，不承诺尚未同条件测量的内存收益。
+    """
+
+    device: Literal["cpu", "cuda", "mps"]
+    precision: Literal["float32", "float16"]
+    architecture: str
 
 
 @dataclass(frozen=True)

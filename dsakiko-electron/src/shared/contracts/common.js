@@ -21,7 +21,7 @@
  * @typedef {object} Problem
  * @property {string} code 稳定的问题类别，供调用方决定是否重试或降级。
  * @property {string} message 可展示的说明。
- * @property {boolean} retryable 是否允许重新提交同类请求。
+ * @property {boolean} retryable 是否允许重试所指失败步骤；不授权重放整个 Turn 或已成功的工具副作用。
  */
 
 export {}

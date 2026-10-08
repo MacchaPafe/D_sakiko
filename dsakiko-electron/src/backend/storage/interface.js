@@ -18,12 +18,27 @@ export class ChatStore {
   async list() {}
 
   /**
-   * 加载并迁移存档，保留未知扩展字段；不创建生成或演出任务。
+   * 加载并迁移本应用版本，保留未知扩展字段；旧 Python 文件由独立导入适配器一次转换，核心不长期读取旧索引。
+   * 缺少资源保留引用并报告警告，不阻止可读历史；权限/临时 I/O/较新格式拒绝，不标为损坏。
    * 保留 userPersona 中已固定的文本，不查询当前身份目录；旧存档仅在缺少身份信息时迁移为 null。
    * @param {string} chatId 存档身份。
-   * @returns {Promise<Chat | null>} 独立的数据快照；不存在时为 null。
+   * @returns {Promise<import('../../shared/contracts/archive.js').ChatLoadResult>} 正常、缺失或损坏检测结果，不自动覆盖。
    */
   async load(chatId) {}
+
+  /**
+   * 重新核对损坏文件后先完整备份成功，再创建替代存档；备份失败绝不覆盖，保守保留备份所需资源。
+   * @param {import('../../shared/contracts/archive.js').CorruptArchive} recovery 本次检测身份。
+   * @param {Chat} replacement 同一 chatId、revision 0 的替代内容；只接受损坏恢复分支，不借此绕过正常 revision 冲突。
+   * @returns {Promise<{ chat: Chat, backupId: string }>} 已保存替代与可追溯备份身份。
+   */
+  async recoverCorrupt(recovery, replacement) {}
+
+  /**
+   * @param {string[]} chatIds 完整排序 ID，原子验证无重复/遗漏；与创建/删除索引更新串行。
+   * @returns {Promise<void>} 仅更新独立索引，不读取/改写全部 Chat。
+   */
+  async setOrder(chatIds) {}
 
   /**
    * snapshot.revision 表示本次修改所基于的持久化版本，调用方不预先递增。
@@ -58,7 +73,7 @@ export class ChatStore {
    * 提醒是否启用和保存时机也由 Conversation 决定；失败时回收未交付的临时资源。
    * userPersona 快照及其资源引用随归档恢复，不根据来源编号重新获取或覆盖人格文本。
    * @param {import('../../shared/contracts/common.js').AssetRef} archive 已导入的归档文件。
-   * @returns {Promise<Chat[]>} 可由对话模块继续处理的数据草稿。
+   * @returns {Promise<import('../../shared/contracts/archive.js').ArchiveDrafts>} 新格式草稿、结构化警告及临时资源所有者。
    */
   async readArchive(archive) {}
 }

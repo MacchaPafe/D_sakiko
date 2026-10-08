@@ -13,8 +13,9 @@
  * @property {string} chatId 草稿所属对话，不随当前选中对话改变。
  * @property {string} text 当前文本。
  * @property {{ start: number, end: number }} selection 输入框选择区域，使用 UTF-16 索引。
+ * @property {string | null} recordingId 准备前分配，允许在权限/模型唤醒期间取消。
  * @property {DraftAttachment[]} attachments 正在导入或已就绪的附件。
- * @property {'idle' | 'recording' | 'recognizing'} voiceState 用户可见的录音或识别状态。
+ * @property {'idle' | 'preparing' | 'recording' | 'recognizing'} voiceState 用户可见的录音或识别状态。
  * @property {Array<{ id: string, text: string }>} transcriptSuggestions 草稿已变化时保留的识别候选，不覆盖用户编辑。
  * @property {import('../../../../shared/contracts/common.js').Problem | null} problem 输入相关问题。
  */
@@ -33,6 +34,7 @@
  * 录音、识别和导入的迟到结果由内部操作记录校验；不能伪装为用户的新编辑交给 updateDraft。
  * 需要：chatId、用户编辑、选择区域、文件和录音许可；通过识别接口获取文本。
  * 不需要：Agent、sequence、历史裁剪、TTS 或生成完成状态；不在识别后自动发送。
+ * 主窗口与桌宠交接同一草稿编辑入口，桌宠只绑定当前选中 Chat；不创建独立可写副本。
  * 实例由前端应用持有，不能在某个聊天组件卸载时销毁全部草稿。
  * 这是审查用接口，方法均未实现。
  */
@@ -66,10 +68,20 @@ export class InputSessions {
 
   /**
    * 在等待录音许可前绑定草稿、选择区域和内部编辑状态；同一客户端同时只录制一路音频。
+   * 准备/权限/模型唤醒期间先发布 preparing 和 recordingId；取消使迟到准备结果失效，不得开始录音。
+   * 只有准备完成后进入 recording；准备失败回到 idle 并报告可重试问题。
    * @param {string} chatId 所属草稿。
    * @returns {Promise<string>} 录音编号，之后切换对话不改变归属。
    */
   async startRecording(chatId) {}
+
+  /**
+   * 重试原失败附件的本地导入，保留附件身份，删除后迟到结果无效；不增加远端 isRetry 标志。
+   * @param {string} chatId 所属草稿。
+   * @param {string} attachmentId 失败附件身份。
+   * @returns {Promise<void>} 重试已受理，状态继续通过 observe 交付。
+   */
+  async retryAttachment(chatId, attachmentId) {}
 
   /**
    * 停止录音并请求识别；模块内部核对录音所绑定的草稿和编辑状态。
@@ -80,7 +92,7 @@ export class InputSessions {
   async finishRecording(recordingId) {}
 
   /**
-   * 取消录音或其尚未完成的识别；不移除已经被用户接受的文本。
+   * 取消准备、录音或其尚未完成的识别；不移除已经被用户接受的文本。
    * @param {string} recordingId 录音编号。
    * @returns {Promise<void>} 取消已生效。
    */
@@ -106,7 +118,7 @@ export class InputSessions {
   discardTranscript(chatId, suggestionId) {}
 
   /**
-   * 冻结当前输入，待调用方提交给 Conversations；空输入或有未就绪附件时拒绝。
+   * 冻结当前输入，待调用方提交给 Conversations；无文本且无有效附件或有未就绪附件时拒绝；纯图片允许，情景生成不通过草稿入口。
    * 不清空草稿；内部绑定待发送内容和草稿变化记录，不要求调用方读取或回传版本。
    * 内容未修改时重复准备复用同一发送编号；仅移动光标不改变发送意图。
    * 发送确认清理后再次输入相同内容属于新意图，不能复用已经确认的编号。

@@ -20,6 +20,7 @@
  * @property {SpeechPriority} priority 本次任务的初始优先级。
  * @property {number} [speed] 正的语速倍率；省略时使用 Python 合成配置的默认值。
  * @property {number} [sentencePauseMs] 非负整数，句间停顿毫秒数；省略时使用 Python 默认值。
+ * @property {import('./settings.js').SpeechSampling} [sampling] 本次固定的采样值；省略时在 Python 受理时固定默认值，不读取运行中变化的设置。
  * @property {Array<{ text: string, reading: string }>} [pronunciationOverrides] 上游已解析的读音替换；客户端转换为实际发声文本，Python 不接收角色词典。
  */
 

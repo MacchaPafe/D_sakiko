@@ -21,7 +21,16 @@
  */
 export class Recognition {
   /**
-   * 发起一次独立识别；内部调度不得长时间阻塞 Node 事件循环。
+   * 按需唤醒模型，可供录音前准备；并发准备可共享，一个等待取消不影响其他等待者。
+   * 模型准备失败允许重试；取消后不得迟到启动录音，模型空闲释放仍由本模块负责。
+   * @param {AbortSignal} signal 取消本次等待。
+   * @returns {Promise<void>} 引擎可接受识别；输入模块负责 preparing 状态。
+   */
+  async prepare(signal) {}
+
+  /**
+   * 发起一次独立识别，必要时准备模型；空/损坏音频必须校验，语言规范化暂缓。
+   * 内部调度不得长时间阻塞 Node 事件循环。
    * 调用方用自己的请求编号关联结果，不需要了解识别线程或模型实例。
    * @param {RecognitionRequest} request 识别输入。
    * @param {AbortSignal} signal 取消本次识别，迟到结果不再交付为成功。
