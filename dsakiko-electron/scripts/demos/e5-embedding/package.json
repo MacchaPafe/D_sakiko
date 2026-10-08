@@ -1,0 +1,17 @@
+{
+  "name": "dsakiko-e5-embedding-demo",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "demo": "node demo.mjs",
+    "lancedb": "node lancedb-demo.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1",
+    "@lancedb/lancedb": "0.39.0",
+    "apache-arrow": "18.1.0"
+  }
+}
