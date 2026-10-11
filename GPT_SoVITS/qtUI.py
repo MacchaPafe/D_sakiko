@@ -3734,6 +3734,7 @@ class ChatGUI(QWidget):
         # bottom_layout.addWidget(self.worldbook_control.button, 0)
         bottom_layout.addStretch(1)
         self.api_usage_button = ApiUsageButton(self.input_panel, height=self.input_tool_button_height)
+        self.api_usage_button.settingsRequested.connect(self._open_llm_configuration)
         self.api_usage_button.set_theme_palette(self._theme_palette)
         self.themePaletteChanged.connect(self.api_usage_button.set_theme_palette)  # noqa
         bottom_layout.addWidget(self.api_usage_button, 0)

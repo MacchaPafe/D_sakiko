@@ -157,6 +157,8 @@ class ApiUsageConfig:
             raise UsageError("额度查询配置格式错误，请重新保存配置。")
         values = {k: v for k, v in (data or {}).items() if k in fields}
         values.setdefault("template", default_template(target))
+        # 只有已识别的官方接口可以无配置自动查询；尊重用户保存过的关闭选择。
+        values.setdefault("enabled", not target.shared and values["template"] != "custom" and data is None)
         values["approved_origins"] = tuple(values.get("approved_origins", ()))
         return cls(**values)
 
@@ -243,6 +245,8 @@ class UsageEntry:
     unit: str | None = None
     planName: str | None = None
     extra: str | None = None
+    grantedBalance: float | None = None
+    toppedUpBalance: float | None = None
 
 
 def parse_entries(data: object, secrets: tuple[str, ...] = ()) -> tuple[UsageEntry, ...]:
@@ -259,7 +263,7 @@ def parse_entries(data: object, secrets: tuple[str, ...] = ()) -> tuple[UsageEnt
             value = item.get(field.name)
             if value is None:
                 continue
-            if field.name in {"remaining", "used", "total"}:
+            if field.name in {"remaining", "used", "total", "grantedBalance", "toppedUpBalance"}:
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                     raise UsageError(f"{field.name} 须为有限数字或空值。")
             elif field.name == "isValid":
@@ -316,7 +320,7 @@ def template_script(config: ApiUsageConfig, target: ApiTarget) -> tuple[str, str
             return r.balance_infos.map(function(b) { return {isValid:r.is_available !== false,
               invalidMessage:r.is_available === false ? '账户当前没有可用余额' : null,
               remaining:amount(b.total_balance), unit:b.currency, planName:'账户余额',
-              extra:'充值余额：'+amount(b.topped_up_balance)+'；赠金：'+amount(b.granted_balance)}; });""",
+              toppedUpBalance:amount(b.topped_up_balance),grantedBalance:amount(b.granted_balance)}; });""",
         "siliconflow": """if (r.code !== 20000 && r.code !== 0 && r.code !== undefined) throw Error(r.message || '余额查询失败');
             if (!r.data) throw Error('余额信息缺失');
             return {remaining:amount(r.data.totalBalance),unit:UNIT,planName:'账户余额',
