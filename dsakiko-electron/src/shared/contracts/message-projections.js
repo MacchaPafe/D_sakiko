@@ -10,18 +10,21 @@
 export function getCharacterLines(source) {}
 
 /**
+ * 按记录顺序提取一轮或一份响应中的实际推理内容。
  * @param {MessageSource} source 一轮或响应。
  * @returns {ReadonlyArray<Readonly<import('./conversation.js').ReasoningPart>>} 有序实际 reasoning，不推测缺失内容。
  */
 export function getReasoningParts(source) {}
 
 /**
+ * 按调用顺序提取一轮或一份响应中的工具调用记录。
  * @param {MessageSource} source 一轮或响应。
  * @returns {ReadonlyArray<Readonly<import('./conversation.js').ToolCallPart>>} 保留稳定身份和调用顺序的只读调用项。
  */
 export function getToolCalls(source) {}
 
 /**
+ * 查找指定轮次内与某个工具调用对应的结果记录。
  * @param {import('./conversation.js').Turn} turn 调用所属轮次，callId 的关联范围。
  * @param {string} callId 模型原始调用 ID。
  * @returns {Readonly<import('./conversation.js').ToolResultMessage> | null} null 表示尚无结果，不等于成功空值；多份结果视为存档错误。

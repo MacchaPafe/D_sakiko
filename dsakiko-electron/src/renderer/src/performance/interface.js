@@ -47,6 +47,7 @@ export class Performance {
   async appendGuides(sequenceId, guides) {}
 
   /**
+   * 向指定演出序列追加等待普通内容时使用的过渡动作。
    * 普通 guide 正在播放时忽略新增，返回空数组；过渡正在播放时可追加，输入无效整批拒绝。
    * recurring 队首持续重复，可阻塞其他过渡。无有效动作或持续失败有界退出，不能无限忙循环。
    * 普通内容抢占以 removed 结算；稳定 guideId 不随循环变化，旧循环回调不能完成新播放。
@@ -64,6 +65,7 @@ export class Performance {
   async stopTransitionGuide(sequenceId) {}
 
   /**
+   * 将指定演员模型的开关状态设置为目标值，例如戴上或摘下面具。
    * 幂等目标状态操作，例如戴上/摘下面具；已达目标不重复翻转，不生成消息。
    * 使用同一过渡调度规则，普通内容播放时不强行插入；能力未知/不支持明确报告。
    * @param {SequenceId} sequenceId 目标。
@@ -73,6 +75,7 @@ export class Performance {
   async setModelState(sequenceId, target) {}
 
   /**
+   * 设置全局背景音乐的音轨、开关、音量和循环方式。
    * 独立全局音轨，不进入台词队列或 Turn 完成判断；持久偏好由 Settings 保存。
    * @param {import('../../../shared/contracts/presentation.js').BgmSettings} options 音轨/开关/音量/循环。
    * @returns {Promise<void>} 材料及音量已更新；加载失败报告音轨问题，不阻塞对话。
@@ -80,12 +83,16 @@ export class Performance {
   async setBgm(options) {}
 
   /**
+   * 播放、暂停或重试播放当前背景音乐。
    * @param {boolean} playing true 播放或显式重试，false 暂停；重复当前状态不重播。
    * @returns {Promise<void>} 播放意图已应用。
    */
   async setBgmPlaying(playing) {}
 
-  /** @returns {Promise<import('../../../shared/contracts/presentation.js').BgmSnapshot>} 当前独立音轨状态。 */
+  /**
+   * 查询当前背景音乐的播放状态和故障信息。
+   * @returns {Promise<import('../../../shared/contracts/presentation.js').BgmSnapshot>} 当前独立音轨状态。
+   */
   async getBgmState() {}
 
   /**
@@ -148,6 +155,7 @@ export class Performance {
   async getProgress(sequenceId) {}
 
   /**
+   * 订阅指定演出序列的播放进度和各条内容的完成状态。
    * 先交付当前快照，再按版本交付进度及新终态。每个 guide 只进入终态一次。
    * @param {SequenceId} sequenceId 目标 sequence。
    * @param {(update: import('../../../shared/contracts/presentation.js').PerformanceUpdate) => void} listener 本地观察函数。

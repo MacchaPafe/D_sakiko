@@ -65,7 +65,7 @@
  * @property {ContextTurn[]} history 当前输入之前的轮次投影，保留完整裁剪单位。
  * @property {{ kind: 'message', message: ContextUserMessage } | { kind: 'scenario' }} input 手动/内部消息投影或主动情景命令。
  * @property {import('../../shared/contracts/settings.js').ScenarioSettings | null} scenario 固定情境，拼入 User Prompt，不伪造存档用户输入。
- * @property {ResolvedGenerationOptions} options 已完整解析的生成设置，禁止下层再读全局覆盖。
+ * @property {ResolvedGenerationOptions} options 已完整解析的生成设置，不接收模板文本或路径，禁止下层再读全局覆盖。
  * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 后端临时连接快照，与附件准备使用同一作用域。
  * @property {string[]} supplementalContext 允许直接供模型使用的内容，不含检索诊断。
  * @property {import('../../shared/contracts/tools.js').AgentTool[]} tools 已解析依赖和权限且固定的工具，不隐式注入未选择工具。
@@ -102,7 +102,7 @@
  * 压缩输入由 Conversation 在同一操作内固定，不把可改 Chat 传入 Agent。
  * @typedef {object} CompressionRequest
  * @property {ContextTurn[]} history 旧累计摘要和新增的完整可压缩轮次投影，不包含必须保留的末轮。
- * @property {Required<import('../../shared/contracts/settings.js').GenerationOptions>} options 固定预算、摘要提示及模型设置。
+ * @property {ResolvedGenerationOptions} options 固定预算及生成参数；摘要模板由 Agent 内部提供，连接与模型由 connection 指定。
  * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 本次连接快照。
  */
 
@@ -112,6 +112,7 @@
  * 超预算先由 Conversation 协调自动压缩；失败保留原文/旧摘要。仍需裁剪时只裁完整旧 Turn，
  * 不拆开 assistant 与对应结果，不删本次输入、必需提示或保留末轮；必需材料仍超限则明确失败。
  * Agent 管提示、单轮预算、模型和工具循环；LLM 适配负责供应商参数与协议转换。
+ * 内置模板只渲染本次固定材料，渲染前校验输入；执行与上下文预览共用渲染规则。
  * 同响应工具按调用顺序串行：sync 等本地完成，block-async 等交互完成，async 等可靠 accepted 后继续。
  * 重试只重试失败请求，不重放已执行工具或重复通知；同调用去重，显式新 Turn 是新执行。
  * 校验 Schema、角色/形态/语言/情绪/演出目录，格式修复有界；失败原文只留诊断，不进入正式上下文或 Speech。
@@ -121,9 +122,11 @@
  * 文件引用失效只使实际旧引用失效；同连接快照重新准备，再判断重试安全性，不重跑整个 Loop。
  * 停止/失败后缺结果调用交由 Conversation 结算；已 accepted 的交互不产生第二个协议结果。
  * 本文件仅声明，未实现或接入 AI SDK。
+ * @see ../../../docs/nunjucks-prompts.md 模板归属、Nunjucks 选型及渲染约定。
  */
 export class Agent {
   /**
+   * 根据固定输入执行一轮模型与工具循环，交付角色台词、推理记录和工具调用结果。
    * 所有内容都经 observer 接受，返回值不再重复最终台词。取消不撤销已接受过程及外部副作用。
    * @param {GenerationRequest} request 固定输入。
    * @param {GenerationObserver} observer 顺序接收者。
@@ -133,6 +136,7 @@ export class Agent {
   async run(request, observer, signal) {}
 
   /**
+   * 预览本次请求的上下文占用、预算是否足够及模型输入能力问题。
    * 与 run 共用请求准备规则，估计附件开销但不上传、不调用模型/工具、不压缩或写存档。
    * @param {ContextInspectionRequest} request 要检查的材料，不创建运行身份。
    * @returns {Promise<ContextInspection>} 占用和能力诊断。
@@ -140,6 +144,7 @@ export class Agent {
   async inspectContext(request) {}
 
   /**
+   * 将选定的完整历史轮次和旧摘要压缩为新的累计摘要文本。
    * 自动压缩也由 Conversation 在当前生成操作内调用并确定插入位置；失败保留原文和旧摘要。
    * @param {CompressionRequest} request 可压缩的完整材料。
    * @param {AbortSignal} signal 取消。

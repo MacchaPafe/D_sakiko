@@ -2,23 +2,27 @@
  * 配置声明，不提供默认值实现。省略覆盖字段表示继承；数组整体替换，未知业务字段拒绝。
  * 执行时由 Conversation 按全局 → Chat → 本次 options 解析一次，再分发必要材料。
  * 凭据、SDK 对象和运行句柄不进入这些持久化设置或 Chat。
+ * 提示词模板由 Agent 内部固定，不提供全局、Chat 或单轮模板覆盖。
+ */
+
+/**
+ * @typedef {'Japanese' | 'Chinese'} GenerationLanguage
  */
 
 /**
  * @typedef {object} GenerationOptions
  * @property {string} [connectionId] 后端连接身份，执行前必须解析存在且可用的连接。
  * @property {string} [modelId] 连接内的准确模型身份，不能仅凭显示名称推测能力。
- * @property {string} [language] 生成台词的语言。
- * @property {string | null} [translationLanguage] null 明确关闭翻译。
+ * @property {GenerationLanguage} [language] 生成台词的语言。
+ * @property {GenerationLanguage | null} [translationLanguage] null 明确关闭翻译。
  * @property {number} [temperature] 有限值，范围由所选模型校验。
  * @property {number} [topP] (0, 1]；不支持时报告配置问题。
  * @property {number} [timeoutMs] 单次模型请求的正整数超时。
  * @property {number} [maxOutputTokens] 正整数输出上限。
  * @property {{ enabled: boolean, effort: string | null }} [reasoning] 按模型支持的推理强度校验。
  * @property {{ enabled: boolean, thresholdTokens: number, retainedTurns: number }} [compression] 阈值为正，至少保留最后一轮。
- * @property {number} [contextTokenBudget] 完整请求预算，不能放宽模型上限。
+ * @property {number} [contextTokenBudget] 完整请求预算。若超过模型上下文上限，自动缩小至上下文上限。
  * @property {{ maxSteps: number, maxRequestRetries: number, maxFormatRepairs: number }} [limits] 单轮有界循环；请求重试与格式修复分别计数，不限制跨轮自动续聊。
- * @property {{ system: string, output: string, summary: string }} [prompts] 三类提示材料；采样、超时不拼入提示词。
  */
 
 /**
@@ -46,8 +50,8 @@
 
 /**
  * @typedef {object} CharacterSelection
- * @property {string} formId 当前形态，显式无效值拒绝。
- * @property {Object<string, string | null>} modelOverrides 按形态 ID 保存模型覆盖；null 或缺少键表示使用该形态默认模型。
+ * @property {string} formId 当前选中的形态，显式无效值拒绝。
+ * @property {Object<string, string | null>} modelOverrides 按形态 ID 保存模型覆盖；模型必须属于对应形态的 models，null 或缺少键表示使用该形态默认模型。
  */
 
 /**
@@ -65,8 +69,8 @@
  * @typedef {object} ChatSettings
  * @property {GenerationOptions} generation 后续执行覆盖。
  * @property {SpeechOptions} speech 后续语音覆盖。
- * @property {ScenarioSettings | null} scenario 对话情景，不是可编辑的 Turn 设置。
- * @property {ToolSelection} tools 普通工具选择，不替代世界书开关。
+ * @property {ScenarioSettings | null} scenario 对话情景，不是可编辑的 Turn 设置。只在 scripted-dialogue 模式下（小剧场）使用
+ * @property {ToolSelection} tools 普通工具选择。该开关不影响世界书相关工具。
  * @property {import('./worldbook.js').WorldbookInfo} worldbook 本 Chat 的知识范围设置。
  * @property {Object<string, CharacterSelection>} characters 按参与角色 ID 保存形态与模型选择。
  * @property {ChatPresentationSettings} presentation 场景偏好。

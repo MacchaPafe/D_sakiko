@@ -27,6 +27,7 @@ export class ChatStore {
   async load(chatId) {}
 
   /**
+   * 在保留损坏原件备份的前提下，用指定内容恢复该对话存档。
    * 重新核对损坏文件后先完整备份成功，再创建替代存档；备份失败绝不覆盖，保守保留备份所需资源。
    * @param {import('../../shared/contracts/archive.js').CorruptArchive} recovery 本次检测身份。
    * @param {Chat} replacement 同一 chatId、revision 0 的替代内容；只接受损坏恢复分支，不借此绕过正常 revision 冲突。
@@ -35,22 +36,26 @@ export class ChatStore {
   async recoverCorrupt(recovery, replacement) {}
 
   /**
+   * 保存对话存档列表的完整排序。
    * @param {string[]} chatIds 完整排序 ID，原子验证无重复/遗漏；与创建/删除索引更新串行。
    * @returns {Promise<void>} 仅更新独立索引，不读取/改写全部 Chat。
    */
   async setOrder(chatIds) {}
 
   /**
+   * 将完整 Chat 快照持久化为新存档或当前存档的新版本。
    * snapshot.revision 表示本次修改所基于的持久化版本，调用方不预先递增。
    * 新建使用 revision 0，仅当该 ID 不存在时接受，首次成功保存为版本 1。
    * 更新时版本比较与写入是同一原子操作：必须匹配当前存档版本，再由本模块递增一次。
    * 冲突拒绝，不覆盖较新的存档；未成功提交不递增，不修改传入对象。
+   * 提醒 ID 必须全应用唯一；拒绝同一 Chat 内重复或与其他 Chat 冲突的提醒 ID。
    * @param {Chat} snapshot 已完成业务修改、仍携带原版本的完整快照。
    * @returns {Promise<Chat>} 已落盘且携带新 revision 的独立快照，作为后续修改的基础。
    */
   async save(snapshot) {}
 
   /**
+   * 删除指定对话的持久化存档及其索引入口。
    * 版本比较与删除是同一原子操作；共享附件和音频不在此直接删除。
    * 此操作不携带 Chat 快照，因此显式提供所基于的版本，不能用内部最新值替代。
    * @param {string} chatId 存档身份。
@@ -70,7 +75,7 @@ export class ChatStore {
   /**
    * 读取并校验归档，返回已迁移的数据草稿；不直接覆盖正在运行的对话。
    * 草稿保留归档中的身份与版本；Conversation 分配新身份并将 revision 设为 0 后，才能作为新 Chat 保存。
-   * 提醒是否启用和保存时机也由 Conversation 决定；失败时回收未交付的临时资源。
+   * Conversation 为复制提醒分配全局唯一新 ID、改写相关引用并停用；保存时机也由其决定，失败时回收未交付的临时资源。
    * userPersona 快照及其资源引用随归档恢复，不根据来源编号重新获取或覆盖人格文本。
    * @param {import('../../shared/contracts/common.js').AssetRef} archive 已导入的归档文件。
    * @returns {Promise<import('../../shared/contracts/archive.js').ArchiveDrafts>} 新格式草稿、结构化警告及临时资源所有者。

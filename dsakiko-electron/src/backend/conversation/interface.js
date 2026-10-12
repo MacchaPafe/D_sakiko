@@ -7,7 +7,7 @@
 /**
  * @typedef {object} CreateChatOptions
  * @property {string} title 标题。
- * @property {string[]} characterIds 固定参与角色，不在已有 Chat 追加角色。
+ * @property {string[]} characterIds 固定参与角色。已创建的 Chat 不能追加角色。
  * @property {import('../../shared/contracts/conversation.js').DialogueMode} mode 编排方式。
  * @property {import('../../shared/contracts/settings.js').ChatSettings} settings 对话设置，创建时校验角色选择。
  * @property {string | null} [userPersonaId] 省略或 null 表示无自定义人格；否则解析并保存固定快照。
@@ -35,32 +35,37 @@
  * 本文件全部为未实现的审查声明，不接入快速原型。
  */
 export class Conversations {
-  /** @returns {Promise<import('../../shared/contracts/conversation.js').ChatSummary[]>} 按持久索引排序的入口，不加载全文。 */
+  /**
+   * 列出已保存对话的摘要，供界面展示和选择对话。
+   * @returns {Promise<import('../../shared/contracts/conversation.js').ChatSummary[]>} 按持久索引排序的入口，不加载全文。
+   */
   async listChats() {}
 
   /**
-   * 创建并保存空 Chat，revision 从 0 提交为 1；身份解析失败拒绝，不伪造人格。
+   * 创建并保存新的空白 Chat。
+   * revision 从 0 提交为 1；身份解析失败拒绝，不伪造人格。
    * @param {CreateChatOptions} options 创建材料。
    * @returns {Promise<string>} 已保存的 ChatId。
    */
   async createChat(options) {}
 
   /**
-   * 普通手动发送；来源由本入口固定为 manual。空文本加有效图片可受理。
+   * 手动发送一条信息。
+   * 本接口创建的新轮次来源都是 manual，表示用户自己发送了新消息。自动补聊（工具创建的新轮次）会通过其他接口创建。
    * 相同 requestId/材料重试返回同一 Turn，即使此时忙碌也不重复执行；同 ID 改材料拒绝。
    * 首次受理后开新组、作废旧 async，停止本 Chat 临时回放（包含当前句）并交接常驻演出。
    * 校验/保存失败不打断回放、不使旧组失效；工具交互答案不得通过此入口提交。
    * @param {string} chatId 目标对话。
-   * @param {UserSubmission} submission 手动内容。
-   * @param {TurnOptions} options 稳定请求身份与本次覆盖。
+   * @param {UserSubmission} submission 用户发送的内容。
+   * @param {TurnOptions} options 本轮次修改的覆盖选项。
    * @returns {Promise<string>} 输入已保存且生成已受理的 TurnId，不等待演出。
    */
   async createTurn(chatId, submission, options) {}
 
   /**
-   * 按当前情景主动生成，不伪造空 UserMessage、不消费草稿；情境必须有效。
+   * 按当前情景开始生成小剧场对话。此接口应当只在模式为 scripted-dialogue 时使用。
    * 情景输入记为 Turn.input.kind=scenario，受理与开组规则同手动发起。
-   * 小剧场后续只重生成的产品限制由前端承担，后端不按模式永久禁止连续输入。
+   * 小剧场理论上不支持接续生成。不过，后续只重生成的产品限制由前端承担，后端不按模式永久禁止连续输入。
    * @param {string} chatId 目标对话。
    * @param {TurnOptions} options 稳定请求身份与本次覆盖。
    * @returns {Promise<string>} 新 TurnId。
@@ -68,6 +73,7 @@ export class Conversations {
   async generateScenario(chatId, options) {}
 
   /**
+   * 停止指定轮次的生成及后续自动回复，保留已经接受的历史内容和当前播放句。
    * 先使运行 Turn terminated、作废所属组的全部未消费及尚未返回 async，再尽力取消任务。
    * 保留已接受内容并全文展示；原子移除后续演出，保留当前句。底层推理实际退出前仍占调度资源。
    * 缺少结果的调用以原 callId 结算通用中断错误，不推断副作用回滚；accepted 不补第二份结果。
@@ -96,7 +102,7 @@ export class Conversations {
 
   /**
    * 按记录顺序回放整 Turn 的台词；跳过 reasoning/工具/摘要，不重跑历史来源 Turn。
-   * 新轮持久受理后关闭本 Chat 临时回放 sequence 并结算等待；不关闭常驻 sequence 或其他 Chat。
+   * 新轮持久受理后关闭当前临时回放的 sequence；不关闭常驻 sequence 或其他 Chat。
    * @param {string} chatId 来源对话。
    * @param {string} turnId 来源轮次。
    * @param {{ silent: boolean }} options 回放选项。
@@ -105,6 +111,7 @@ export class Conversations {
   async replayTurn(chatId, turnId, options) {}
 
   /**
+   * 保留最后一轮的输入，按当前设置重新生成并替换该轮回复。
    * 仅替换最后一个 Turn；保留原输入/附件/内部输入或情景命令，保留角色、模式和固定人格。
    * 读取当前配置及本次覆盖，不隐式复用旧临时 options；新 UUID、新组，旧组保持失效。
    * 先校验目标和材料；统一协调旧任务失效、记录替换及持久化。受理保存失败保留旧轮和资源。
@@ -117,7 +124,9 @@ export class Conversations {
   async recreateTurn(chatId, turnId, options) {}
 
   /**
-   * 只接受最后一轮的 manual 输入；一次原子受理完成编辑和替换，不要求调用方先删除再创建。
+   * 编辑最后一轮的手动用户输入，并按当前设置重新生成回复。
+   * 原输入必须为 manual；提醒、async 结果或情景命令不能通过此入口编辑。
+   * 内部一次原子受理完成编辑和替换，不要求调用方先删除再创建。
    * 新输入校验或受理保存失败不丢旧轮，共用附件先建立新引用再释放旧引用；其他语义同 recreateTurn。
    * @param {string} chatId 目标对话。
    * @param {string} turnId 最后一轮身份。
@@ -128,7 +137,7 @@ export class Conversations {
   async editAndRecreateTurn(chatId, turnId, submission, options) {}
 
   /**
-   * 原地编辑 manual 用户内容或台词/翻译，保留后文且不生成；拒绝内部输入、reasoning、工具和摘要。
+   * 原地编辑 manual 用户内容或台词/翻译，保留后文且不生成。不可以编辑内部输入、reasoning、工具和摘要。
    * 移除依赖被改内容的后方摘要，作废全部未消费 async。正文变化同步更新发声文本并使旧音频失效；
    * 仅翻译变化不使无关音频失效。编辑/删除导致目标内容失效时，旧音频任务不得覆盖当前记录。
    * @param {string} chatId 目标对话。
@@ -138,7 +147,7 @@ export class Conversations {
   async editHistory(chatId, edit) {}
 
   /**
-   * 删除选中 Turn 及之后全部内容，协调任务、演出、摘要及资源失效，不撤销外部副作用。
+   * 删除选中 Turn 及之后全部内容，协调任务、演出、摘要及资源失效。不撤销已完成工具的副作用。
    * @param {string} chatId 目标对话。
    * @param {string} turnId 第一条删除轮次，包含该轮。
    * @returns {Promise<void>} 截断已保存。
@@ -154,7 +163,9 @@ export class Conversations {
   async rollback(chatId, throughTurnId) {}
 
   /**
+   * 将指定历史位置及之前的内容复制为一个独立的新对话。
    * 复制到 Turn 结束处，沿用固定人格；新 Chat/revision 0，不复制运行资格，提醒默认停用。
+   * 复制的提醒分配全局唯一新 ID，并同步改写复制历史中指向这些提醒的引用。
    * @param {string} chatId 来源对话。
    * @param {string | null} throughTurnId null 只复制配置。
    * @returns {Promise<string>} 已保存新 ChatId。
@@ -164,7 +175,7 @@ export class Conversations {
   /**
    * 保留原句、原形态/情绪/发声语言/读音，按当前对应声音资源及语音参数重合成，不自动回放。
    * 不切换到其他形态；只合并当前记录的音频字段。删除、内容编辑或更新任务后旧结果不能覆盖。
-   * 不改变 finished 生命周期或 async 资格；显式锁定参考材料的优先级仍待定，本次不提供参数。
+   * 不改变 finished 生命周期或 async 资格。
    * @param {string} chatId 来源对话。
    * @param {LineRef} line 目标句。
    * @returns {Promise<void>} 已受理，结果和音频故障经 observe 交付。
@@ -181,7 +192,8 @@ export class Conversations {
   async inspectContext(chatId, submission, options) {}
 
   /**
-   * 手动压缩互斥生成/历史修改，但允许历史回放。仅压缩已结束完整轮次，至少保留最后一轮。
+   * 手动触发上下文压缩。仅压缩已结束完整轮次，至少保留最后一轮。
+   * 压缩过程和生成/历史修改互斥，无法同时进行，但允许历史回放。
    * 累计摘要插入覆盖末轮末尾；失败保留旧有效摘要和原文，不制造回复，不恢复失效 async。
    * @param {string} chatId 目标对话。
    * @returns {Promise<void>} 压缩与保存完成；不可压缩时明确报告。
@@ -189,7 +201,7 @@ export class Conversations {
   async compressHistory(chatId) {}
 
   /**
-   * 只重试持久化当前内存修改，按保存顺序合并已运行任务结果；成功解除受理限制。
+   * 重试保存当前内存修改，按保存顺序合并已运行任务结果。
    * 版本冲突不能修改版本号强存，不重新执行模型/工具/合成。
    * @param {string} chatId 保存失败的对话。
    * @returns {Promise<void>} 当前待保存内容已落盘。
@@ -197,6 +209,7 @@ export class Conversations {
   async retrySave(chatId) {}
 
   /**
+   * 修改对话的显示标题。
    * @param {string} chatId 目标。
    * @param {string} title 新标题。
    * @returns {Promise<void>} 已保存，不改历史语义。
@@ -204,12 +217,14 @@ export class Conversations {
   async renameChat(chatId, title) {}
 
   /**
+   * 保存对话列表的完整显示顺序。
    * @param {string[]} chatIds 完整有序 ID，原子校验无遗漏/重复。
    * @returns {Promise<void>} 仅保存索引，不重写全部 Chat。
    */
   async setChatOrder(chatIds) {}
 
   /**
+   * 设置或清除后续小剧场生成使用的情境及各角色互动设定。
    * @param {string} chatId 目标。
    * @param {import('../../shared/contracts/settings.js').ScenarioSettings | null} options 情景。
    * @returns {Promise<void>} 后续轮次使用。
@@ -217,6 +232,7 @@ export class Conversations {
   async setScenario(chatId, options) {}
 
   /**
+   * 设置该对话后续生成可使用的普通工具集合。
    * @param {string} chatId 目标。
    * @param {import('../../shared/contracts/settings.js').ToolSelection} options 普通工具，校验依赖。
    * @returns {Promise<void>} 已保存，不改本轮工具集合。
@@ -224,6 +240,7 @@ export class Conversations {
   async setTools(chatId, options) {}
 
   /**
+   * 设置该对话后续生成使用的世界书范围、剧情进度及相关开关。
    * @param {string} chatId 目标。
    * @param {import('../../shared/contracts/worldbook.js').WorldbookInfo} options 知识范围。
    * @returns {Promise<void>} 后续使用，不清除历史已泄露的知识。
@@ -231,6 +248,7 @@ export class Conversations {
   async setWorldbookInfo(chatId, options) {}
 
   /**
+   * 更改角色的形态和 live2d 服装选择。
    * 换装不改形态，形态选择不改目录默认；当前 Agent 约定不变，下轮读取新目录。
    * 演出更新不重播音频；V2 按情绪动作组、V3 按实际模型逐通道降级。
    * @param {string} chatId 目标。
@@ -241,6 +259,7 @@ export class Conversations {
   async setCharacterSelection(chatId, characterId, options) {}
 
   /**
+   * 修改对话的生成设置。这些设置需要等到下轮对话才能生效。
    * @param {string} chatId 目标。
    * @param {import('../../shared/contracts/settings.js').GenerationOptions} options 完整覆盖集合，空对象恢复继承。
    * @returns {Promise<void>} 后续执行使用。
@@ -248,6 +267,7 @@ export class Conversations {
   async setGenerationOptions(chatId, options) {}
 
   /**
+   * 设置对话的语音合成相关选项。需要等到下轮对话才生效。
    * @param {string} chatId 目标。
    * @param {import('../../shared/contracts/settings.js').SpeechOptions} options 完整覆盖集合。
    * @returns {Promise<void>} 自动语音开关下轮生效，不改当前轮后续台词。
@@ -255,6 +275,7 @@ export class Conversations {
   async setSpeechOptions(chatId, options) {}
 
   /**
+   * 更新当前的 live2d 场景，包含背景图片、角色 live2d 模型缩放和平移数据。
    * @param {string} chatId 目标。
    * @param {import('../../shared/contracts/settings.js').ChatPresentationSettings} options 背景/布局/朝向。
    * @returns {Promise<void>} 保存并更新场景，不失效 async。
@@ -262,26 +283,30 @@ export class Conversations {
   async setPresentation(chatId, options) {}
 
   /**
-   * @param {string} chatId 所属对话。
-   * @returns {Promise<import('../../shared/contracts/conversation.js').Reminder[]>} 包含 delivered/expired 的记录。
+   * 列出全程序的提醒事项，也可只查询指定对话的提醒。
+   * @param {{ chatId?: string }} [options] 省略 chatId 时查询所有对话。
+   * @returns {Promise<import('../../shared/contracts/conversation.js').ReminderEntry[]>} 携带所属 chatId，包含 disabled/delivered/expired 的记录。
    */
-  async listReminders(chatId) {}
+  async listReminders(options) {}
 
   /**
-   * @param {string} chatId 所属对话。
-   * @param {string} reminderId 身份。
-   * @returns {Promise<import('../../shared/contracts/conversation.js').Reminder | null>} 记录或不存在。
+   * 按全局唯一 ID 查看提醒详情及其所属对话。
+   * @param {string} reminderId 全局唯一提醒身份。
+   * @returns {Promise<import('../../shared/contracts/conversation.js').ReminderEntry | null>} 记录或不存在。
    */
-  async getReminder(chatId, reminderId) {}
+  async getReminder(reminderId) {}
 
   /**
-   * @param {string} chatId 所属对话。
-   * @param {string} reminderId 身份。
+   * 按全局唯一 ID 删除提醒，阻止它之后被投递。
+   * 由本模块定位所属 Chat，与该 Chat 的提醒投递及保存串行协调；不存在时无副作用。
+   * @param {string} reminderId 全局唯一提醒身份。
    * @returns {Promise<void>} 已删除；不终止已经受理的提醒 Turn。
    */
-  async removeReminder(chatId, reminderId) {}
+  async removeReminder(reminderId) {}
 
   /**
+   * 接收 async 工具发起的宿主交互的最终结果，让角色在当前轮结束后根据有效结果继续回复。
+   * 成功结果作为后续轮次的内部输入，不回写为原工具调用的第二份结果；block-async 由交互模块继续原 Loop。
    * 内部入口，仅给装配绑定的交互协调者，页面不能自报来源/组。登记成功不表示立即创建 Turn。
    * 校验请求身份和资格，重复结果幂等；running 全阶段只排队，空闲且允许受理才批量消费当时有效成功结果。
    * 同批用一条 UserMessage、新 Turn，后到结果留下一批，不等待其他交互。受理失败不消费队列。
@@ -292,6 +317,7 @@ export class Conversations {
   async acceptInteractionResult(completion) {}
 
   /**
+   * 尝试投递一条到期提醒；符合投递条件且对话允许受理时，以提醒内容创建新的 Turn。
    * 内部入口，仅提醒扫描器可调用。绑定所属 Chat、到期/12 小时补发及稳定投递 ID，忙碌延后。
    * 持久化输入和标记 delivered 必须协调去重；不消费草稿，无有效组时开启新组。
    * @param {string} chatId 所属对话。
@@ -302,6 +328,7 @@ export class Conversations {
   async deliverReminder(chatId, reminderId, deliveryId) {}
 
   /**
+   * 删除选中的对话。
    * 正常 running 阶段遵守历史修改互斥，拒绝删除；受理后再协调旧任务与资源清理。
    * @param {string} chatId 目标。
    * @returns {Promise<void>} 停止任务并删除存档和索引，仅按引用回收资源。
@@ -309,13 +336,16 @@ export class Conversations {
   async deleteChat(chatId) {}
 
   /**
+   * 导出选定的一个或者多个对话。
    * @param {string[]} chatIds 目标。
    * @returns {Promise<import('../../shared/contracts/common.js').AssetRef>} 已保存内容及必要资源的归档。
    */
   async exportChats(chatIds) {}
 
   /**
+   * 从外部备份导入其中的所有对话。
    * 导入分配新身份/revision 0，修正内部引用、停用复制提醒；不恢复组/任务，也不重新解析固定人格。
+   * 复制的提醒分配全局唯一新 ID，并同步改写导入历史中指向这些提醒的引用，重复导入不复用旧 ID。
    * 缺图/音频/角色保留引用及可读历史，生成前另查可用性。
    * @param {import('../../shared/contracts/common.js').AssetRef} archive 归档。
    * @returns {Promise<import('../../shared/contracts/archive.js').ChatImportResult>} 新身份及结构化警告。
@@ -323,6 +353,7 @@ export class Conversations {
   async importChats(archive) {}
 
   /**
+   * 订阅某个 chatId 的事件。
    * 先当前快照后按运行版本发布，取消订阅不停止任务；观察回调不能阻塞推进。
    * @param {string} chatId 目标。
    * @param {(snapshot: import('../../shared/contracts/conversation.js').ConversationSnapshot) => void} listener 本地回调。

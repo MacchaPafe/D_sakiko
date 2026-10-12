@@ -1,10 +1,12 @@
 # 核心模块接口契约
 
-更新日期：2026-10-08。依据 [Python 功能需求](python-feature-requirements.md)和[核心设计复核](python-core-design-review.md)中已确认的决定更新声明。文档优先于旧快速原型；本次只更新类型、空接口和行为约定，没有编写业务实现或把新接口接入应用。
+更新日期：2026-10-09。依据 [Python 功能需求](python-feature-requirements.md)和[核心设计复核](python-core-design-review.md)中已确认的决定更新声明，并落实模型归属形态、提醒全局查询与唯一身份的补充决定。文档优先于旧快速原型；本次只更新类型、空接口和行为约定，没有编写业务实现或把新接口接入应用。
 
 本文链接的接口和只读投影 helper 用于审查职责与调用方式，函数体保持为空。现有可运行实现仍采用旧原型契约，见[原型说明](prototype.md)；不能把原型表现、通过旧测试或导入声明文件当作符合本设计。Python 新增数据类也只声明参数，原型 HTTP/worker 尚未消费。
 
 模型与工具调用的独立选型验证见 [AI SDK 使用与接口验证](ai-sdk-demo.md)。
+
+提示词采用 Agent 内置的固定文件模板，选型与使用约定见 [Nunjucks 提示词模板设计](nunjucks-prompts.md)。
 
 参数和返回值中的必要属性使用 `@typedef` 描述。没有声明公开的属性均由模块内部管理；调用方不得通过读取队列、修改 Chat 对象或访问 SDK 实例完成业务操作。构造与依赖装配留到实现阶段，不在原型中公开各模块的内部组成。
 
@@ -84,7 +86,9 @@ flowchart LR
 
 ## 角色目录与对话身份
 
-`CharacterDefinition` 使用非空 `forms` 与 `defaultFormId`，每个形态含名称、描述、头像、主题色、声音和 `defaultModelId`；所有模型平级登记。Chat 保存当前 formId 及各形态模型覆盖，换装不改变形态或目录默认值。
+`CharacterDefinition` 使用非空 `forms` 与 `defaultFormId`，每个形态含名称、描述、头像、主题色、声音、`models` 和 `defaultModelId`。产品明确每个模型配置只属于一个形态，因此模型登记在 `CharacterForm.models` 下，不再保留角色级 `models` 或模型的 `formIds`。模型 ID 在同一角色内唯一；默认指针必须指向本形态的一项，无模型时为 null。不同模型配置仍可引用相同底层资源包，配置归属不要求复制资源或改变包内目录。
+
+Chat 保存当前 formId 及各形态模型覆盖，覆盖值必须属于对应形态；换装不改变形态或目录默认值，切回形态时沿用该形态的模型覆盖。`Live2dImporter` 只产生尚未登记的模型配置和资源，调用方将其放入目标形态后交目录保存。迁移旧平级配置时按形态归入 models；旧配置被多个形态引用时，拆成各形态独立且 ID 不同的配置，修正默认指针和 Chat 覆盖，底层资源可复用。
 
 `CharacterDefinition` 保存用户配置，包括当前不可用资源的原引用；`CharacterCapabilities` 是从配置与资源元数据派生的一次能力快照，提供逻辑动作、表情目录和问题说明。解析不会把临时不可用的能力写回配置，也不代表已经实际加载模型。演出与语音模块仍负责实际加载和运行时故障处理。这两个结构都是普通数据对象，转换由目录实现，JSDoc 不会自动裁剪或转换字段。
 
@@ -206,6 +210,8 @@ Electron 窗口、桌宠、托盘、Python 进程生命周期以及配对、鉴�
 
 Chat.meta.settings 保存 generation、speech、scenario、tools、worldbook、characters、presentation，通过 Conversation 对应分组操作修改，删除 setDefaults。全局、Chat、本次 options 依次合并，省略表示继承，数组整体替换；执行前必须解析完整材料并校验模型支持，不能猜缺失连接。凭据只由后端受控写入和解析，不进入 Chat/归档。
 
+GenerationOptions 不再包含 prompts。提示词模板是 Agent 内部随应用发布的固定资源，不属于 Settings、Chat 或 TurnOptions，也不用 AssetRef 引用。角色 description、固定用户人格、情景和语言等作为本次渲染数据传入；生成与预览共用渲染规则，压缩使用固定摘要模板。CompressionRequest.options 与普通生成共用 ResolvedGenerationOptions，连接和模型只由 connection 指定。具体模板、加载与错误规则集中在 [Nunjucks 设计说明](nunjucks-prompts.md)，不新增公共模板管理接口。
+
 自动语音开关固定整个 Turn，关闭时不提交合成、直接无声 ready；不删除历史音频或隐式补合成。手动重合成保留原句、形态、情绪、发声语言/读音，采用当前对应声音资源及任务参数。Speech 只接收完整 VoiceProfile；情绪参考不可用先降为同形态默认、再无声。设备、精度、模型结构、并发与驻留预算下次启动生效。
 
 初始校验和保存完成才受理，之后才清草稿/消费 async、打断相关回放和启动模型工具。受理前失败保留原材料和旧轮；受理后失败保留新输入和已接受过程。保存故障阻止该 Chat 新生成/历史修改，允许查看/停止/重试保存；已运行任务仍结算到当前内存。retrySave 不重执行模型、工具或合成，revision 冲突不能靠改大版本绕过。
@@ -227,6 +233,10 @@ Interactions 在可靠登记时绑定请求与发起 Turn/call/组。async 的 a
 手动输入和显式重生成开新组，旧组未消费及尚未返回请求失效；自动轮正常开始/结束不失效本组。组内任一 Turn 终止作废全组；原地编辑/删除/回溯作废 Chat 全部未消费结果。校验失败、忙碌拒绝、草稿编辑、背景或音频修改不改变资格。受理/消费/停止串行，同一结果至多进入一个 Turn；无有效结果不创建空轮。本阶段不加跨轮累计续聊限制。
 
 ReminderWriter 仅供绑定 Chat 的工具创建提醒，公共管理只列出/查看/删除。提醒持久保存，不因 async 组失效而删除；忙碌延迟，保留到期后 12 小时补发及 expired，投递与 Turn 受理去重。重启只恢复已保存历史并结算未完成协议调用，不续跑模型、工具、交互、演出，不恢复组和请求资格。提醒按自身规则处理，无有效组时另开组；不保证恢复未落盘内容或撤销外部副作用。
+
+提醒继续保存在所属 `Chat.meta.reminders`，`Reminder.id` 是全应用唯一 UUID。`listReminders(options?)` 默认列出全部对话的提醒，可用 `options.chatId` 过滤；查询结果 `ReminderEntry` 补充所属 chatId，不把它重复写入嵌套记录。`getReminder(reminderId)` 与 `removeReminder(reminderId)` 只接收提醒 ID，由 Conversations 定位所属 Chat。删除与该 Chat 的投递受理和保存串行协调；不存在时无副作用，已经受理的提醒 Turn 不随提醒记录删除而终止。
+
+分支和导入为复制提醒分配新 UUID、同步改写复制历史中指向这些提醒的引用，并默认停用；重复导入不会共享提醒身份。全局查询索引只作为派生信息，不形成第二份可独立修改的提醒记录；保存时须保证 ID 在同一 Chat 内及跨 Chat 都无重复，重建索引发现冲突时明确报告，不任意选择一个所属 Chat。内部投递仍携带 chatId、reminderId 和稳定 deliveryId，并核对所属关系。
 
 ## 尚未定案与范围限制
 

@@ -67,6 +67,7 @@ export class InputSessions {
   removeAttachment(chatId, attachmentId) {}
 
   /**
+   * 为指定对话的草稿开始一次麦克风录音。
    * 在等待录音许可前绑定草稿、选择区域和内部编辑状态；同一客户端同时只录制一路音频。
    * 准备/权限/模型唤醒期间先发布 preparing 和 recordingId；取消使迟到准备结果失效，不得开始录音。
    * 只有准备完成后进入 recording；准备失败回到 idle 并报告可重试问题。
@@ -139,6 +140,7 @@ export class InputSessions {
   acknowledgeSubmission(chatId, submissionId) {}
 
   /**
+   * 订阅指定对话的草稿、附件、录音及识别状态变化。
    * 先交付当前草稿快照，再按本地状态变化顺序交付更新；未创建时交付空草稿。
    * 这是同一前端实例内的观察，不公开仅供内部异步校验使用的草稿版本。
    * @param {string} chatId 目标草稿。

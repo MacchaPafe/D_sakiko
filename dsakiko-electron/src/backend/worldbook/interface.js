@@ -7,6 +7,7 @@
  */
 export class Worldbook {
   /**
+   * 根据对话配置和角色知识映射，确定本次生成可使用的世界书知识范围。
    * @param {import('../../shared/contracts/worldbook.js').WorldbookInfo} info 对话配置。
    * @param {Object<string, import('../../shared/contracts/worldbook.js').KnowledgeMapping[]>} mappings 目录的共享知识映射。
    * @returns {Promise<import('../../shared/contracts/worldbook.js').WorldbookScope>} 解析依赖和角色视角后的固定范围。
@@ -14,6 +15,7 @@ export class Worldbook {
   async resolveScope(info, mappings) {}
 
   /**
+   * 在已确定的知识范围内检索相关证据，并返回检索诊断信息。
    * 直接上下文和工具均调用相同查询契约；预算不能扩大角色权限。
    * @param {import('../../shared/contracts/worldbook.js').WorldbookScope} scope 本次范围。
    * @param {import('../../shared/contracts/worldbook.js').WorldbookQuery} query 查询。

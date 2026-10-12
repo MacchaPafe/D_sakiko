@@ -11,6 +11,7 @@
  */
 export class PythonChatImporter {
   /**
+   * 将旧 Python 对话存档转换为新格式草稿，供 Conversation 按普通导入流程保存。
    * @param {import('../../shared/contracts/common.js').AssetRef} source 已受控导入的旧存档或包。
    * @returns {Promise<import('../../shared/contracts/archive.js').ArchiveDrafts>} 新格式草稿、警告、临时资源持有者，之后按普通导入受理。
    */

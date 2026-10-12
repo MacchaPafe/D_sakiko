@@ -1,4 +1,4 @@
-/** 角色配置/派生能力分开；单形态也使用 forms，模型与形态不是同一个身份。 */
+/** 角色配置/派生能力分开；单形态也使用 forms，每个模型配置只属于一个形态。 */
 
 /**
  * @typedef {object} VoiceReference
@@ -22,17 +22,19 @@
  * @property {string} description 形态描述/语气，可为空。
  * @property {import('./common.js').AssetRef | null} avatar 头像。
  * @property {string | null} themeColor 主题色。
- * @property {string | null} defaultModelId 平级模型的默认指针，无模型时 null。
+ * @property {CharacterModel[]} models 本形态的模型配置，允许为空；同一角色内模型 ID 唯一。
+ * @property {string | null} defaultModelId 必须指向本形态 models 中的一项；无模型时为 null。
  * @property {FormVoice | null} voice 可选声音配置，失效引用仍保留。
  */
 
 /**
  * @typedef {object} CharacterModel
- * @property {string} id 稳定模型身份，不由路径判断形态。
+ * @property {string} id 角色内唯一的稳定模型身份，所属形态由包含它的 CharacterForm 确定。
  * @property {string} name 展示名。
- * @property {string[]} formIds 可用于哪些形态。
- * @property {import('./presentation.js').ModelPresentation} presentation 入口及逻辑映射。
+ * @property {import('./presentation.js').ModelPresentation} presentation 入口及逻辑映射；不同模型配置可引用同一底层资源包。
  */
+
+// 产品按形态提供独立的模型选择，便于表达形态的外观差异；模型配置不跨形态共享，底层资源仍可复用。
 
 /**
  * @typedef {object} CharacterDefinition
@@ -40,7 +42,6 @@
  * @property {number} revision 本次基于的版本，0 为新建。
  * @property {string} defaultFormId 必须指向 forms 中一项。
  * @property {CharacterForm[]} forms 非空且 ID 唯一，不限制为两项。
- * @property {CharacterModel[]} models 平级模型列表；默认模型只用指针。
  * @property {import('./worldbook.js').KnowledgeMapping[]} knowledgeMappings 跨该角色所有 Chat 共享的知识映射。
  * @property {import('./common.js').Metadata} extensions 未知扩展字段，不能替代正式配置。
  */

@@ -7,7 +7,7 @@
 /** @typedef {import('./common.js').Metadata} Metadata */
 /** @typedef {import('./common.js').AssetRef} AssetRef */
 /** @typedef {import('./common.js').JsonValue} JsonValue */
-/** @typedef {'single-character' | 'scripted-dialogue'} DialogueMode 首期支持单角色和编剧式二人台词。 */
+/** @typedef {'single-character' | 'scripted-dialogue'} DialogueMode 首期支持单角色和编剧式二人互动。 */
 
 /**
  * @typedef {object} Attachment
@@ -21,6 +21,9 @@
  * @property {string} text 输入文本，可为空但必须有有效图片；无文本且无有效附件才是空提交。
  * @property {Attachment[]} attachments 已完成本地导入的附件，不保存厂商文件 ID。
  */
+
+// 请求组装时，file-api 附件通过 RemoteFiles.ensureUploaded(AssetRef) 取得厂商引用。
+// RemoteFiles 按资源及实际连接作用域维护复用映射；inline 附件直接读取本地资源，不需要厂商文件 ID。
 
 /**
  * @typedef {object} AsyncResultItem
@@ -146,10 +149,15 @@
 
 /**
  * @typedef {object} Reminder
- * @property {string} id 稳定提醒身份。
+ * @property {string} id 全应用唯一的稳定 UUID；分支或导入复制提醒时分配新 ID。
  * @property {string} dueAt ISO 8601 到期时间。
  * @property {string} instruction 内部输入。
  * @property {'enabled' | 'disabled' | 'delivered' | 'expired'} state 到期后忙碌延后，超过到期 12 小时仍未投递则过期。
+ */
+
+/**
+ * 全局提醒查询结果；chatId 来自所属 Chat，不在嵌套保存的 Reminder 中重复存储。
+ * @typedef {Reminder & { chatId: string }} ReminderEntry
  */
 
 /**
