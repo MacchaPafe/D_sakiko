@@ -40,6 +40,12 @@ class FeedbackUiTests(unittest.TestCase):
 
     app: QApplication
 
+    def setUp(self) -> None:
+        """使用明确的本地管理模式，隔离其他模块载入的真实端点配置。"""
+        endpoint = patch.dict(os.environ, {"DSAKIKO_FEEDBACK_ADMIN_URL": ""})
+        endpoint.start()
+        self.addCleanup(endpoint.stop)
+
     @classmethod
     def setUpClass(cls) -> None:
         """复用当前 Qt 应用。"""

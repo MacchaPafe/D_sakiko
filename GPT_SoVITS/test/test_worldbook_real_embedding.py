@@ -62,9 +62,23 @@ class WorldbookRealEmbeddingTest(unittest.TestCase):
             root = Path(directory)
             index = QdrantWorldbookIndex(root / "qdrant", MODEL_PATH)
             try:
+                loader = WorldbookPackageLoader(OFFICIAL_PATH)
+                packages = loader.discover()
+                self.assertTrue(packages)
+                self.assertTrue(all(not package.issues for package in packages.values()))
+                expected = {
+                    entry.entry_id: entry.entry_type
+                    for package in packages.values()
+                    for entry in package.entries
+                }
+                self.assertTrue(expected)
+                self.assertEqual(
+                    {entry.entry_type for package in packages.values() for entry in package.entries},
+                    {"story_event", "character_relation", "lore_entry", "character_thought"},
+                )
                 fingerprint = index.index_fingerprint()
                 report = WorldbookSyncCoordinator(
-                    WorldbookPackageLoader(OFFICIAL_PATH),
+                    loader,
                     WorldbookUserStateRepository(root / "state"),
                     create_default_registry(),
                     index,
@@ -72,8 +86,11 @@ class WorldbookRealEmbeddingTest(unittest.TestCase):
                 ).reconcile_all()
 
                 self.assertTrue(report.success)
-                self.assertEqual(report.indexed_count, 72)
-                self.assertEqual(len(index.scan_metadata()), 72)
+                self.assertEqual(report.indexed_count, len(expected))
+                self.assertEqual(
+                    {entry_id: metadata.entry_type for entry_id, metadata in index.scan_metadata().items()},
+                    expected,
+                )
             finally:
                 index.close()
 

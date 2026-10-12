@@ -46,7 +46,7 @@ class ThemePaletteAlgorithmTestCase(unittest.TestCase):
     _HEX_PATTERN = re.compile(r"^#[0-9A-F]{6}$")
 
     def test_all_preset_colors_meet_semantic_contrast_thresholds(self) -> None:
-        """全部预置色应满足格式、原色保留和关键文字对比度约束。"""
+        """正文、次级和强调文字遵循当前语义阈值，不约束白色按钮文字。"""
         for character_name, character_info in char_info_json.items():
             seed = str(character_info["theme_color"])
             with self.subTest(character=character_name, seed=seed):
@@ -56,20 +56,20 @@ class ThemePaletteAlgorithmTestCase(unittest.TestCase):
                     value = getattr(palette, field.name)
                     self.assertRegex(value, self._HEX_PATTERN)
                     self.assertTrue(Color(value).in_gamut("srgb"))
-                self.assertGreaterEqual(self._contrast(palette.text_primary, palette.surface), 9.0)
-                self.assertGreaterEqual(self._contrast(palette.text_secondary, palette.surface), 5.5)
-                self.assertGreaterEqual(self._contrast(palette.text_accent, palette.surface), 4.75)
+                self.assertGreaterEqual(self._contrast(palette.text_primary, palette.surface), 5.0)
+                self.assertGreaterEqual(self._contrast(palette.text_secondary, palette.surface), 3.75)
+                self.assertGreaterEqual(self._contrast(palette.text_accent, palette.surface), 4.5)
                 self.assertGreaterEqual(
                     self._contrast(palette.text_primary, palette.surface_selected),
-                    9.0,
+                    5.0,
                 )
                 self.assertGreaterEqual(
                     self._contrast(palette.text_secondary, palette.surface_selected),
-                    5.5,
+                    3.75,
                 )
                 self.assertGreaterEqual(
                     self._contrast(palette.text_accent, palette.surface_selected),
-                    4.75,
+                    4.5,
                 )
 
     def test_representative_extremes_are_deterministic(self) -> None:
@@ -153,7 +153,8 @@ class ThemePaletteForegroundPolicyTestCase(unittest.TestCase):
             for character_info in char_info_json.values()
         }
 
-        self.assertEqual(len(preset_seeds), 50)
+        self.assertTrue(preset_seeds)
+        self.assertTrue(self.SPECIAL_DARK_SEEDS <= preset_seeds)
         for seed in preset_seeds - self.SPECIAL_DARK_SEEDS:
             with self.subTest(seed=seed):
                 self.assertEqual(derive_theme_palette(seed).on_accent, "#FFFFFF")

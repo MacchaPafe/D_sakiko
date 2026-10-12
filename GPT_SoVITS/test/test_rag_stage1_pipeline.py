@@ -6,7 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -32,7 +32,15 @@ from rag.pipeline.stage2_document_extraction import (
     load_stage2_annotation_artifact,
     render_stage2_prompt,
 )
-from rag.pipeline.schemas import StoryEventCandidate, UtteranceUnit
+from rag.pipeline.schemas import (
+    CharacterRelationImportRecord,
+    CharacterRelationPayload,
+    Stage3ImportMetadata,
+    Stage3NormalizedImportArtifact,
+    StoryEventCandidate,
+    UtteranceUnit,
+)
+from rag.pipeline.stage3_document_review import load_stage3_document_review_artifact
 from rag.pipeline.stage3_rag_import import (
     backfill_existing_stage3_character_relations,
     build_stage3_normalized_import_artifact,
@@ -256,7 +264,8 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertEqual(legacy.known_by_character_names, [])
         self.assertEqual(proposed.known_by_character_names, ["爱音", "灯"])
 
-    def test_build_stage3_normalized_import_artifact_from_real_pass2(self):
+    def test_build_stage3_normalized_import_artifact_from_real_pass2(self) -> None:
+        """真实标注可投影且保留事件标题、集数与场景身份。"""
         input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
         annotation_artifact = load_stage2_annotation_artifact(SAMPLE_PASS2_RAW_PATH)
         normalized = build_stage3_normalized_import_artifact(
@@ -268,34 +277,55 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertGreater(len(normalized.character_relations), 0)
         self.assertGreater(len(normalized.lore_entries), 0)
         self.assertEqual(normalized.story_events[0].document.time_order, 4000)
-        self.assertEqual(normalized.story_events[0].document.participants[0].value, "tomori")
-        self.assertEqual(normalized.story_events[0].document.known_by_character_ids, [])
-        self.assertEqual(normalized.character_relations[0].document.subject_character_id.value, "soyo")
-        self.assertEqual(normalized.lore_entries[0].document.scope_type.value, "series")
-
-        pair_windows = {}
+        first_annotation = annotation_artifact.results[0].annotation
+        assert first_annotation is not None
+        self.assertEqual(normalized.story_events[0].document.title, first_annotation.story_events[0].title)
+        self.assertTrue(normalized.story_events[0].document.participants)
+        self.assertEqual(normalized.metadata.series_id, input_artifact.metadata.series_id)
+        self.assertEqual(normalized.metadata.episode, input_artifact.metadata.episode)
+        scene_ids = {scene.scene_id for scene in input_artifact.scenes}
         for record in normalized.character_relations:
-            key = (
-                record.document.subject_character_id.value,
-                record.document.object_character_id.value,
-                record.source_scene_id,
-            )
-            pair_windows[key] = (record.document.visible_from, record.document.visible_to)
+            self.assertIn(record.source_scene_id, scene_ids)
+            self.assertLessEqual(record.document.visible_from, record.document.visible_to)
 
-        self.assertEqual(pair_windows[("soyo", "sakiko", "ep01_s001")], (4000, 4006))
-        self.assertEqual(pair_windows[("soyo", "sakiko", "ep01_s008")], (4007, 999999))
-        self.assertEqual(pair_windows[("anon", "tomori", "ep01_s007")], (4006, 4008))
-        self.assertEqual(pair_windows[("anon", "tomori", "ep01_s010")], (4009, 999999))
-        self.assertEqual(pair_windows[("tomori", "anon", "ep01_s007")], (4006, 4008))
-        self.assertEqual(pair_windows[("tomori", "anon", "ep01_s010")], (4009, 999999))
-
-    def test_backfill_existing_stage3_character_relations(self):
-        input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
-        annotation_artifact = load_stage2_annotation_artifact(SAMPLE_PASS2_RAW_PATH)
-        normalized = build_stage3_normalized_import_artifact(
-            input_artifact=input_artifact,
-            annotation_artifact=annotation_artifact,
+    @staticmethod
+    def relation_window_fixture() -> Stage3NormalizedImportArtifact:
+        """构造固定的有向关系时间轴，避免工作标注更新改变边界预期。"""
+        rows = (
+            ("soyo", "sakiko", "ep01_s001", 4000),
+            ("soyo", "sakiko", "ep01_s008", 4007),
+            ("anon", "tomori", "ep01_s007", 4006),
+            ("anon", "tomori", "ep01_s010", 4009),
+            ("tomori", "anon", "ep01_s007", 4006),
+            ("tomori", "anon", "ep01_s010", 4009),
         )
+        return Stage3NormalizedImportArtifact(
+            metadata=Stage3ImportMetadata(
+                subtitle_path="fixture.ass", anime_title="It's MyGO!!!!!",
+                series_id="its_mygo", timeline_id="bang_dream_original",
+                story_year=3, canon_branch="main", episode=1,
+                source_stage2_model="fixture", source_stage2_template_path="fixture.txt",
+            ),
+            character_relations=[
+                CharacterRelationImportRecord(
+                    point_id=f"{subject}-{target}-{scene}", source_scene_id=scene,
+                    source_local_id="rel_01", confidence=0.9,
+                    document=CharacterRelationPayload(
+                        subject_character_id=subject, object_character_id=target,
+                        timeline_id="bang_dream_original", series_id="its_mygo",
+                        visible_from=begin, visible_to=999999, canon_branch="main",
+                        relation_label="general_bond", state_summary="测试关系状态",
+                        speech_hint="", object_character_nickname="", tags=["关系"],
+                        retrieval_text="测试关系状态",
+                    ),
+                )
+                for subject, target, scene, begin in rows
+            ],
+        )
+
+    def test_backfill_existing_stage3_character_relations(self) -> None:
+        """固定夹具验证关系时间窗回填及开放结束边界。"""
+        normalized = self.relation_window_fixture()
 
         for record in normalized.character_relations:
             record.document.visible_to = 999999
@@ -315,6 +345,8 @@ class RagStage1PipelineTest(unittest.TestCase):
         self.assertEqual(pair_windows[("soyo", "sakiko", "ep01_s008")], (4007, 999999))
         self.assertEqual(pair_windows[("anon", "tomori", "ep01_s007")], (4006, 4008))
         self.assertEqual(pair_windows[("anon", "tomori", "ep01_s010")], (4009, 999999))
+        self.assertEqual(pair_windows[("tomori", "anon", "ep01_s007")], (4006, 4008))
+        self.assertEqual(pair_windows[("tomori", "anon", "ep01_s010")], (4009, 999999))
 
     def test_litellm_client_streaming_callbacks(self):
         fake_module = types.SimpleNamespace()
@@ -537,72 +569,60 @@ class RagStage1PipelineTest(unittest.TestCase):
             self.assertIsNotNone(artifact.results[0].annotation)
             self.assertEqual(artifact.results[0].annotation.story_events[0].title, "测试事件")
 
-    def test_cli_normalize_and_import_stage3(self):
+    def test_cli_normalize_stage3_creates_document_review(self) -> None:
+        """规范化命令生成当前审核格式，重复运行保留候选身份。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_path = Path(temp_dir) / "ep01_review.json"
+            command = [
+                "normalize-stage3-rag", "--input", str(SAMPLE_STAGE2_INPUT_PATH),
+                "--annotation", str(SAMPLE_PASS2_RAW_PATH), "--output", str(review_path),
+            ]
+            self.assertEqual(pipeline_cli_main(command), 0)
+            review = load_stage3_document_review_artifact(review_path)
+            self.assertEqual(review.artifact_type, "stage3_document_review")
+            self.assertTrue(review.story_events)
+            self.assertTrue(review.lore_entries)
+            self.assertTrue(review.direct_sources)
+            self.assertTrue(all(record.generated_document.title for record in review.story_events))
+            candidate_ids = {record.candidate_id for record in [*review.story_events, *review.lore_entries]}
+            self.assertEqual(pipeline_cli_main(command), 0)
+            updated = load_stage3_document_review_artifact(review_path)
+            self.assertEqual(
+                {record.candidate_id for record in [*updated.story_events, *updated.lore_entries]},
+                candidate_ids,
+            )
+
+    def test_cli_import_stage3_normalized_artifact(self) -> None:
+        """导入命令向服务传递已投影的入库格式，并关闭服务。"""
         input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
         annotation_artifact = load_stage2_annotation_artifact(SAMPLE_PASS2_RAW_PATH)
         normalized = build_stage3_normalized_import_artifact(
-            input_artifact=input_artifact,
-            annotation_artifact=annotation_artifact,
+            input_artifact=input_artifact, annotation_artifact=annotation_artifact,
         )
-
         with tempfile.TemporaryDirectory() as temp_dir:
             normalized_path = Path(temp_dir) / "ep01_rag_ready.json"
             save_stage3_normalized_import_artifact(normalized, normalized_path)
-
-            exit_code = pipeline_cli_main(
-                [
-                    "normalize-stage3-rag",
-                    "--input",
-                    str(SAMPLE_STAGE2_INPUT_PATH),
-                    "--annotation",
-                    str(SAMPLE_PASS2_RAW_PATH),
-                    "--output",
-                    str(normalized_path),
-                ]
-            )
-            self.assertEqual(exit_code, 0)
-            loaded = load_stage3_normalized_import_artifact(normalized_path)
-            self.assertGreater(len(loaded.story_events), 0)
-
-            class FakeService:
-                def close(self):
-                    return None
-
-            fake_report = types.SimpleNamespace(
-                requested_count=1,
-                success_count=1,
-                failure_count=0,
-            )
-            with patch(
-                "rag.pipeline.cli.create_rag_service",
-                return_value=FakeService(),
-            ), patch(
+            service = Mock()
+            fake_report = types.SimpleNamespace(requested_count=1, success_count=1, failure_count=0)
+            with patch("rag.pipeline.cli.create_rag_service", return_value=service) as create, patch(
                 "rag.pipeline.cli.upsert_stage3_normalized_import_artifact",
-                return_value={
-                    "story_events": fake_report,
-                    "character_relations": fake_report,
-                    "lore_entries": fake_report,
-                },
-            ):
-                exit_code = pipeline_cli_main(
-                    [
-                        "import-stage3-rag",
-                        "--input",
-                        str(normalized_path),
-                        "--qdrant-connect-type",
-                        "memory",
-                    ]
-                )
-
+                return_value={name: fake_report for name in ("story_events", "character_relations", "lore_entries")},
+            ) as upsert:
+                exit_code = pipeline_cli_main([
+                    "import-stage3-rag", "--input", str(normalized_path),
+                    "--qdrant-connect-type", "memory",
+                ])
             self.assertEqual(exit_code, 0)
+            create.assert_called_once()
+            self.assertEqual(create.call_args.kwargs["qdrant_connect_type"], "memory")
+            upsert.assert_called_once()
+            self.assertEqual(upsert.call_args.args[0], normalized)
+            self.assertIs(upsert.call_args.args[1], service)
+            service.close.assert_called_once()
 
-    def test_cli_backfill_stage3_relations(self):
-        input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
-        annotation_artifact = load_stage2_annotation_artifact(SAMPLE_PASS2_RAW_PATH)
-        normalized = build_stage3_normalized_import_artifact(
-            input_artifact=input_artifact,
-            annotation_artifact=annotation_artifact,
-        )
+    def test_cli_backfill_stage3_relations(self) -> None:
+        """固定夹具验证关系时间窗回填及开放结束边界。"""
+        normalized = self.relation_window_fixture()
         for record in normalized.character_relations:
             record.document.visible_to = 999999
 
@@ -635,13 +655,9 @@ class RagStage1PipelineTest(unittest.TestCase):
             self.assertEqual(pair_windows[("soyo", "sakiko", "ep01_s001")], (4000, 4006))
             self.assertEqual(pair_windows[("soyo", "sakiko", "ep01_s008")], (4007, 999999))
 
-    def test_cli_backfill_stage3_relations_across_directory(self):
-        input_artifact = load_stage2_input_artifact(SAMPLE_STAGE2_INPUT_PATH)
-        annotation_artifact = load_stage2_annotation_artifact(SAMPLE_PASS2_RAW_PATH)
-        normalized = build_stage3_normalized_import_artifact(
-            input_artifact=input_artifact,
-            annotation_artifact=annotation_artifact,
-        )
+    def test_cli_backfill_stage3_relations_across_directory(self) -> None:
+        """固定夹具验证关系时间窗回填及开放结束边界。"""
+        normalized = self.relation_window_fixture()
 
         first_file_artifact = normalized.model_copy(deep=True)
         second_file_artifact = normalized.model_copy(deep=True)
