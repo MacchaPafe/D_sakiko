@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 from datetime import datetime
-import json
+import threading
 from typing import Callable
 
 from PyQt5.QtCore import QObject, QTimer, Qt, pyqtSignal
@@ -18,6 +17,7 @@ from chat.api_usage import (
     ApiTarget, ApiUsageConfig, ApiUsageService, TEMPLATE_NAMES, UsageError,
     UsageSnapshot, default_template, normalize_base, resolve_target,
 )
+from chat.api_usage_tool import UsageSnapshotView, bind_reader, config_fingerprint, unbind_reader
 
 
 def snapshot_text(snapshot: UsageSnapshot) -> str:
@@ -62,6 +62,9 @@ class ApiUsageController(QObject):
         self.snapshot = UsageSnapshot()
         self._revision = ""
         self._closed = False
+        self._view_lock = threading.RLock()
+        self._view = UsageSnapshotView(fingerprint="", provider=self.target.name)
+        self._reader_token = None
         self.polling = polling
         self._delivered.connect(self._accept)
         self.timer = QTimer(self)
@@ -75,7 +78,43 @@ class ApiUsageController(QObject):
                      "api_usage_configs"):
             item = getattr(config, name)
             item.valueChanged.connect(self.schedule_reload)
+        self._publish()
+        self._reader_token = bind_reader(self._tool_view)
         QTimer.singleShot(0, self.reload)
+
+    def _publish(self) -> None:
+        """发布一个全新的不可变视图；工具线程与 UI 线程都只读取这一份引用。"""
+        view = UsageSnapshotView(fingerprint=self._revision, provider=self.target.name,
+                                 snapshot=self.snapshot, enabled=self.usage_config.enabled,
+                                 shared=self.target.shared)
+        with self._view_lock:
+            self._view = view
+
+    def _tool_view(self) -> UsageSnapshotView:
+        """给聊天工具线程的只读视图；不操作 Qt，配置一变化立即失效。"""
+        if self._closed:
+            # 已关闭与“配置变化”必须分开：退出语义是未就绪，不是正在刷新。
+            return None
+        try:
+            target = resolve_target(self.config)
+            usage = self.read_config(target)
+            usage.validate()
+            fingerprint = config_fingerprint(target, usage)
+        except Exception:
+            with self._view_lock:
+                provider = self._view.provider
+            return UsageSnapshotView(fingerprint="", provider=provider, snapshot=UsageSnapshot(
+                status="error", error="当前额度配置无法读取，请检查 API 设置。"))
+        with self._view_lock:
+            view = self._view
+            closed = self._closed
+        if closed:
+            # 关闭可能发生在配置读取窗口内；返回前再确认一次，退出语义必须是未就绪。
+            return None
+        if fingerprint != view.fingerprint:
+            return UsageSnapshotView(fingerprint=fingerprint, provider=target.name, pending=True,
+                snapshot=UsageSnapshot(status="loading", error="配置已变化，正在重新读取额度。"))
+        return view
 
     def schedule_reload(self, _value=None) -> None:
         if not self._closed:
@@ -99,10 +138,10 @@ class ApiUsageController(QObject):
             self.service.cancel()
             self._revision = "invalid"
             self.snapshot = UsageSnapshot("error", error="额度查询配置格式错误，请重新保存配置。")
+            self._publish()
             self.snapshotChanged.emit(self.snapshot)
             return
-        revision = hashlib.sha256(json.dumps([target.config_key, target.api_key, target.shared,
-            usage.to_dict()], sort_keys=True).encode()).hexdigest()
+        revision = config_fingerprint(target, usage)
         if revision == self._revision:
             return
         self._revision = revision
@@ -110,6 +149,7 @@ class ApiUsageController(QObject):
         self.service.cancel()
         self.target, self.usage_config = target, usage
         self.snapshot = UsageSnapshot(error="尚未查询。")
+        self._publish()
         self.snapshotChanged.emit(self.snapshot)
         self.refresh()
 
@@ -129,6 +169,7 @@ class ApiUsageController(QObject):
         if self._closed or revision != self._revision:
             return
         self.snapshot = snapshot
+        self._publish()
         self.snapshotChanged.emit(snapshot)
         self.timer.stop()
         if (snapshot.status not in {"loading", "needs_confirmation", "disabled"}
@@ -173,6 +214,8 @@ class ApiUsageController(QObject):
         self._closed = True
         self.timer.stop()
         self.reload_timer.stop()
+        unbind_reader(self._reader_token)
+        self._reader_token = None
         self.service.close()
 
 

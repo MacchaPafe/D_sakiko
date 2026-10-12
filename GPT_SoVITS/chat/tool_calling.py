@@ -20,6 +20,8 @@ import requests
 
 from log import get_logger
 
+from chat.api_usage_tool import register_api_usage_tool
+
 
 ToolHandler = Callable[[Dict[str, Any]], Any]
 ToolDisplayFormatter = Callable[[object], str]
@@ -918,6 +920,9 @@ def build_default_tool_registry() -> ToolRegistry:
 
     # 文件阅读工具集（目录浏览 / 分页读取 / 关键字搜索）
     register_file_reading_tools(registry)
+
+    # 当前 API 额度的只读快照工具；注册时不创建桌面控制器
+    register_api_usage_tool(registry)
 
     return registry
 

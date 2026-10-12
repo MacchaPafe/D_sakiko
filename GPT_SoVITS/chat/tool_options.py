@@ -18,6 +18,7 @@ TOOL_OPTIONS = (
     ToolOption("get_current_datetime", "获取时间"),
     ToolOption("set_reminder", "设置提醒", ("get_current_datetime",)),
     ToolOption("get_system_hardware_status", "硬件状态"),
+    ToolOption("get_api_usage", "读取 API 额度"),
     ToolOption("web_search", "网络搜索"),
     ToolOption("get_weather", "获取天气"),
     ToolOption("fetch_all_live2d_models", "获取服装列表"),

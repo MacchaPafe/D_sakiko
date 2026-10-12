@@ -177,6 +177,35 @@ def test_close_stops_polling(controller):
     assert not controller.timer.isActive()
 
 
+def test_tool_view_publishes_and_unbinds_on_close(controller):
+    """控制器发布只读视图；关闭后聊天工具读到 unavailable，旧数据不再可见。"""
+    from chat.api_usage_tool import read_api_usage, unbind_all_readers
+
+    controller.save(controller.target, ApiUsageConfig(enabled=True, template="deepseek"), {})
+    wait(lambda: controller.snapshot.status == "success")
+    published = read_api_usage()
+    assert published["entries"] and published["entries"][0]["remaining"] == 8
+    token = controller._reader_token
+    controller.close()
+    assert read_api_usage()["status"] == "unavailable"
+    unbind_all_readers()
+    assert token is not None
+
+
+def test_tool_view_invalidates_before_merged_reload(controller):
+    """Qt 30 毫秒合并重载尚未执行时，工具也不得读到旧账户的数据。"""
+    from chat.api_usage_tool import read_api_usage
+
+    controller.save(controller.target, ApiUsageConfig(enabled=True, template="deepseek"), {})
+    wait(lambda: controller.snapshot.status == "success")
+    assert read_api_usage()["entries"][0]["remaining"] == 8
+    controller.config.set(controller.config.llm_api_key, {"deepseek": "switched-chat-key"})
+    immediate = read_api_usage()
+    assert immediate["entries"] == [] and immediate["status"] == "loading"
+    wait(lambda: controller.snapshot.status == "success" and read_api_usage()["entries"])
+    assert read_api_usage()["entries"][0]["remaining"] == 8
+
+
 def test_dedicated_key_replacement_refreshes_same_profile(controller):
     config = ApiUsageConfig(enabled=True, template="deepseek", auto_interval=0)
     controller.save(controller.target, config, {"api_key": "first-private-key"})
