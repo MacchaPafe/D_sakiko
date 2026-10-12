@@ -92,7 +92,7 @@ def _clean_bindings():
         unbind_all_readers()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def app():
     return QApplication.instance() or QApplication([])
 
@@ -226,7 +226,7 @@ def test_unavailable_when_no_controller():
 # ---------------------------------------------------------------- T08 / T09 / T10
 def test_config_change_before_qt_reload_returns_no_stale_account(controller):
     controller.save(controller.target, ApiUsageConfig(enabled=True, template="generic"), {})
-    wait(lambda: controller.snapshot.status == "success")
+    wait(lambda: controller.snapshot.status == "success" and read_api_usage()["entries"])
     assert read_api_usage()["entries"][0]["remaining"] == 8.5
     # 立即改密钥：30 毫秒合并重载尚未执行，也不允许读到旧账户的数据。
     controller.config.set(controller.config.llm_api_key, {"deepseek": "another-chat-key"})
@@ -317,7 +317,7 @@ def test_old_controller_close_keeps_newer_binding():
 # ---------------------------------------------------------------- T12 / T16
 def test_concurrent_reads_from_chat_thread_and_no_extra_queries(controller):
     controller.save(controller.target, ApiUsageConfig(enabled=True, template="generic"), {})
-    wait(lambda: controller.snapshot.status == "success")
+    wait(lambda: controller.snapshot.status == "success" and read_api_usage()["entries"])
     queries = {"count": 0}
     real_query = controller.service.query
 
@@ -561,7 +561,7 @@ def test_registry_execute_never_exposes_traceback():
 # ---------------------------------------------------------------- T17
 def test_draft_test_query_is_not_visible_to_the_tool(controller):
     controller.save(controller.target, ApiUsageConfig(enabled=True, template="generic"), {})
-    wait(lambda: controller.snapshot.status == "success")
+    wait(lambda: controller.snapshot.status == "success" and read_api_usage()["entries"])
     before = read_api_usage()
     controller.service.test(ApiTarget("custom", "https://draft.example/v1", "draft-key"),
                             ApiUsageConfig(enabled=True, template="generic"),
@@ -675,7 +675,7 @@ def test_success_message_and_fingerprint_consistency():
 
 def test_controller_publishes_view_and_unbinds_on_close(controller):
     controller.save(controller.target, ApiUsageConfig(enabled=True, template="generic"), {})
-    wait(lambda: controller.snapshot.status == "success")
+    wait(lambda: controller.snapshot.status == "success" and read_api_usage()["entries"])
     result = read_api_usage()
     assert result["provider"] and result["entries"]
     token = controller._reader_token

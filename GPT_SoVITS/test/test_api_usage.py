@@ -46,7 +46,8 @@ def test_deepseek_keeps_currencies_and_zero():
     assert [row.remaining for row in rows] == [0, 2.5]
     assert [row.unit for row in rows] == ["CNY", "USD"]
     assert not rows[0].isValid
-    assert "赠金" in rows[1].extra
+    assert rows[0].grantedBalance == 0 and rows[0].toppedUpBalance == 0
+    assert rows[1].grantedBalance == 1.5 and rows[1].toppedUpBalance == 1
 
 
 @pytest.mark.parametrize("host,unit", [("api.siliconflow.cn", "CNY"), ("api.siliconflow.com", "USD")])

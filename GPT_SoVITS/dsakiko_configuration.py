@@ -62,7 +62,7 @@ class DSakikoConfigArea(TransparentScrollArea):
         # 添加标题和分栏组件到主布局
         self.v_box_layout.setContentsMargins(30, 10, 30, 30)
         self.v_box_layout.addWidget(self.pivot, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.v_box_layout.addWidget(self.stacked_widget, 1, Qt.AlignmentFlag.AlignHCenter)
+        self.v_box_layout.addWidget(self.stacked_widget, 1)
 
         self.save_button = PrimaryPushButton(self.tr("保存配置"), self)
         self.save_button.clicked.connect(self.save_config)
