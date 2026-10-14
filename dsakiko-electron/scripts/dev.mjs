@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 if (existsSync(join(root, '.env.local'))) process.loadEnvFile(join(root, '.env.local'))
-process.env.DSAKIKO_DATA_DIR ||= join(root, '.local', 'data')
+process.env.DSAKIKO_DATA_DIR ||= join(root, '.local', 'core-v1')
 delete process.env.ELECTRON_RUN_AS_NODE
 const executable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 const child = spawn(executable, ['exec', 'electron-vite', 'dev'], {

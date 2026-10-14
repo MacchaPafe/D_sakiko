@@ -98,7 +98,7 @@
  * @property {GenerationOptions} generation 生成默认值；执行前校验必需值完整，不猜连接。
  * @property {SpeechOptions} speech 语音默认值。
  * @property {SpeechStartupSettings} speechStartup 下次启动生效，不能改变在途任务。
- * @property {import('./presentation.js').BgmSettings} bgm 全局持久偏好；播放位置和错误是运行态。
+ * @property {import('./presentation.js').BgmSettings} bgm 曲目、开关及循环的全局持久偏好；音量由客户端保存，播放位置和错误是运行态。
  * @property {{ frameRate: number, theme: 'system' | 'light' | 'dark', startInPetMode: boolean }} display 正帧率及宿主展示偏好；窗口细节由宿主设计。
  */
 

@@ -1,10 +1,26 @@
 import { fileURLToPath } from 'node:url'
+import { cpSync, mkdirSync } from 'node:fs'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  main: {},
+  main: {
+    plugins: [
+      {
+        name: 'fixed-prompts',
+        closeBundle() {
+          const destination = fileURLToPath(new URL('./out/main/prompts', import.meta.url))
+          mkdirSync(destination, { recursive: true })
+          cpSync(
+            fileURLToPath(new URL('./src/backend/llm/prompts/templates', import.meta.url)),
+            destination,
+            { recursive: true }
+          )
+        }
+      }
+    ]
+  },
   preload: {
     build: {
       // 沙箱 preload 使用单个 CommonJS 文件，不依赖页面中的 Node 环境。

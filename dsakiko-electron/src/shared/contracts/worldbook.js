@@ -38,12 +38,31 @@
  */
 
 /**
- * @typedef {object} WorldbookDiagnostic
- * @property {'direct-context' | 'query'} stage 实际检索阶段。
- * @property {WorldbookQuery} query 实际查询及预算。
- * @property {WorldbookEvidence[]} selected 实际选中材料。
+ * 不包含调用阶段或 Turn 身份，Worldbook 只报告检索事实；被选中材料仅在 WorldbookQueryResult.evidence 中保存一份。
+ * @typedef {object} WorldbookTrace
  * @property {Array<{ packageId: string, entryId: string, reason: string }>} filtered 过滤及预算裁剪原因。
+ * @property {number | null} estimatedTokens 返回知识的 token 估值，无法估计时为 null；请求预算来自 WorldbookQuery.tokenBudget。
  * @property {import('./common.js').Problem | null} problem 本次查询故障，不含原始堆栈。
+ */
+
+/**
+ * @typedef {object} WorldbookQueryResult
+ * @property {WorldbookEvidence[]} evidence 通过范围及预算校验的知识；可预期查询失败时为空，不能把失败当作成功的空查询。
+ * @property {WorldbookTrace} trace 检索事实，与知识由同一次查询产生。
+ */
+
+/**
+ * 由本轮查询函数补入的调用来源，不属于模型工具参数；所属 Turn 由包含它的 Turn.meta 表达。
+ * @typedef {{ kind: 'direct-context' }
+ *   | { kind: 'tool-query', assistantMessageId: string, callId: string }} WorldbookQuerySource
+ */
+
+/**
+ * Conversation 接受后保存的一份实际查询记录，不再重复保存 stage 或 selected。
+ * @typedef {object} WorldbookDiagnostic
+ * @property {WorldbookQuerySource} source 由可信调用路径确定的阶段及调用关联。
+ * @property {WorldbookQuery} query 实际查询及请求预算。
+ * @property {WorldbookQueryResult} result 本次知识与检索事实；只将 result.evidence 投影给模型。
  */
 
 export {}

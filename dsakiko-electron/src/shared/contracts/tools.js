@@ -12,7 +12,7 @@
  * @property {string} name 工具名称。
  * @property {string} description 用途。
  * @property {import('./common.js').Metadata} parametersSchema 参数 JSON Schema。
- * @property {'sync' | 'block-async' | 'async'} mode 等待本地完成、交互完成或可靠受理；只有 async 成功受理返回 accepted，其他模式返回实际结果。
+ * @property {'sync' | 'async'} mode sync 等后端实际结果再继续当前 Loop，内部可使用 Promise；前端交互工具统一 async，可靠受理后返回 accepted，最终结果进入后续 Turn。
  * @property {(parameters: import('./common.js').Metadata, context: ToolExecutionContext, signal: AbortSignal) => Promise<import('./conversation.js').ToolOutcome>} execute 已绑定 Chat、授权及本次范围的 Node 函数，不传输或持久化。
  */
 
@@ -21,7 +21,7 @@
  * @property {string} name 稳定工具名。
  * @property {string} description 工具用途。
  * @property {string[]} dependencies 依赖工具；解析成闭包，缺少依赖或循环明确报错。
- * @property {'sync' | 'block-async' | 'async'} mode 执行方式。
+ * @property {'sync' | 'async'} mode 后端完成并继续当前 Loop，或可靠登记后在后续 Turn 回流；依赖前端交互的工具必须为 async。
  * @property {import('./common.js').Metadata} parametersSchema 完整参数结构，具体 Python 工具清单由后续适配登记。
  * @property {import('./common.js').Metadata} resultSchema 成功结果结构；失败和中断不要求符合成功格式。
  * @property {string[]} requiredCapabilities 外部服务和宿主授权要求，不通过名称暗含权限。
@@ -35,10 +35,9 @@
  */
 
 /**
- * @typedef {object} InteractionRequest
+ * @typedef {object} InteractionRequest 仅用于 async 交互，不提供等待前端结果后继续当前 Loop 的模式。
  * @property {string} requestId 调用方为该调用固定的去重身份，重试同 ID/材料。
  * @property {ToolExecutionContext} source 原执行关联；由已绑定的工具能力校验。
- * @property {'async' | 'block-async'} mode 交互完成的去向。
  * @property {string} kind 已登记的宿主交互种类。
  * @property {import('./common.js').JsonValue} payload 问题或展示材料。
  */

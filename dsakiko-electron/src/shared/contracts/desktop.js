@@ -1,4 +1,5 @@
-/** 桌面协议只列出本轮允许的入口；不暴露任意模块调用。 */
+/** 仅供尚未替换的 React 原型使用；正式业务入口见 api.js。 */
+/** 旧页面使用的命令名称；当前主进程已不注册这些业务 IPC。 */
 export const COMMANDS = [
   'getBootstrap',
   'getSettings',
@@ -37,16 +38,7 @@ export const PERFORMANCE_COMMAND = 'performance:command'
 export const PERFORMANCE_REPLY = 'performance:reply'
 export const PERFORMANCE_UPDATE = 'performance:update'
 
-/**
- * 创建能跨进程交付的问题异常。
- * @param {string} code 稳定错误类别。
- * @param {string} message 用户可读说明。
- * @param {boolean} [retryable] 是否可以重新尝试。
- * @returns {Error & {problem: import('./common.js').Problem}} 含问题数据的异常。
- */
-export function problemError(code, message, retryable = false) {
-  return Object.assign(new Error(message), { problem: { code, message, retryable } })
-}
+export { problemError } from '../problems.js'
 
 /**
  * 将内部异常投影为有限的问题数据。

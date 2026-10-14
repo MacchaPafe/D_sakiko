@@ -1,4 +1,5 @@
-/* eslint no-unused-vars: ["error", { "args": "none" }] -- 接口原型保留参数名称，方法体刻意留空。 */
+import { PythonSpeechTransport } from './python-transport.js'
+import { abortable, requireValue } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/speech.js').SpeechTaskId} SpeechTaskId */
 /** @typedef {import('../../shared/contracts/speech.js').SpeechPriority} SpeechPriority */
@@ -14,16 +15,47 @@
  * 需要：实际发声文本、发音配置、读音覆盖、优先级数字及待控制的任务编号。
  * 不需要：Chat、Turn、任务组、角色关系、guide、播放进度、前台对话身份，或合成失败后的展示策略。
  * 批量编号由调用方关联；后续新任务必须显式携带当时的优先级，不隐式继承某个组。
- * 这是审查用接口，方法均未实现。
+ * 业务实现由宿主注入存储位置与外部能力。
  */
 export class Speech {
+  /**
+   * 绑定语音传输与受管理资源；Python 是推理任务的唯一调度者。
+   * @param {object} options 宿主依赖。
+   * @param {() => Promise<import('./python-transport.js').SpeechConnection>} options.connect 获取就绪连接。
+   * @param {import('../resources/interface.js').MediaAssets} options.assets 任务结果成功交付前的资源导入能力。
+   */
+  constructor({ connect, assets }) {
+    this.waiting = new Map()
+    this.assets = assets
+    this.transport = new PythonSpeechTransport(connect, {
+      localPath: async (asset) => {
+        await assets.inspect(asset)
+        return assets.localPath(asset)
+      },
+      importAudio: async (file, taskId) =>
+        (await assets.importAsset({ kind: 'local-file', path: file }, 'speech:' + taskId)).asset
+    })
+  }
+
   /**
    * 提交一条语音请求；Python 完成校验并登记任务后返回，不等待模型加载或合成。
    * 文本和发音配置在受理时固定，后续修改角色配置不影响已提交任务。
    * @param {import('../../shared/contracts/speech.js').SpeechRequest} request 完整输入，包含初始优先级。
    * @returns {Promise<SpeechTaskId>} Python 分配的临时任务编号。
    */
-  async submit(request) {}
+  async submit(request) {
+    requireValue(Number.isInteger(request.priority) && request.priority >= 0)
+    const languages = { Japanese: 'ja', Chinese: 'zh' }
+    return this.transport.submit({
+      ...request,
+      language: languages[request.language] ?? request.language,
+      voice: {
+        ...request.voice,
+        referenceLanguage:
+          languages[request.voice.referenceLanguage] ?? request.voice.referenceLanguage
+      }
+    })
+  }
 
   /**
    * 获取任务状态；成功时同时取得资源引用与音频时长，不单独暴露文件路径或模型状态。
@@ -31,7 +63,9 @@ export class Speech {
    * @param {SpeechTaskId} taskId 任务编号。
    * @returns {Promise<import('../../shared/contracts/speech.js').SpeechTaskSnapshot>} 当前快照；未知、过期或 Python 重启前的编号拒绝查询。
    */
-  async getTask(taskId) {}
+  async getTask(taskId) {
+    return this.transport.getTask(taskId)
+  }
 
   /**
    * 等待指定语音任务结束，取得合成结果或失败、取消状态。
@@ -42,7 +76,28 @@ export class Speech {
    * @param {AbortSignal} [signal] 仅取消本次等待。
    * @returns {Promise<import('../../shared/contracts/speech.js').SpeechResult>} 合成终态。
    */
-  async waitForResult(taskId, signal) {}
+  async waitForResult(taskId, signal) {
+    if (!this.waiting.has(taskId)) {
+      const poll = async () => {
+        let failures = 0
+        for (;;) {
+          try {
+            const result = await this.getTask(taskId)
+            failures = 0
+            if (['succeeded', 'failed', 'cancelled'].includes(result.status)) return result
+          } catch (error) {
+            failures += 1
+            if (!error.problem?.retryable || failures > 3) throw error
+          }
+          await new Promise((resolve) => setTimeout(resolve, 350 * (failures + 1)))
+        }
+      }
+      // 每个任务只保留一个轮询；下面的 abortable 只取消某个调用方的等待，不中断共享轮询。
+      const pending = poll().finally(() => this.waiting.delete(taskId))
+      this.waiting.set(taskId, pending)
+    }
+    return abortable(this.waiting.get(taskId), signal)
+  }
 
   /**
    * 在 Python 内一次性修改所列任务中尚未开始任务的优先级，保留原提交顺序。
@@ -52,7 +107,9 @@ export class Speech {
    * @param {SpeechPriority} priority 新优先级。
    * @returns {Promise<void>} 排队策略已更新。
    */
-  async setPriority(taskIds, priority) {}
+  async setPriority(taskIds, priority) {
+    return this.transport.setPriority([...new Set(taskIds)], priority)
+  }
 
   /**
    * 在 Python 内一次性取消所列未完成任务；已进入终态的任务保持原结果。
@@ -62,5 +119,7 @@ export class Speech {
    * @param {SpeechTaskId[]} taskIds 要取消的任务编号。
    * @returns {Promise<void>} 取消已生效，不保证底层设备已立刻空闲。
    */
-  async cancel(taskIds) {}
+  async cancel(taskIds) {
+    return this.transport.cancel([...new Set(taskIds)])
+  }
 }

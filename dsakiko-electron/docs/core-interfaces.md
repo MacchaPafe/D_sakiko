@@ -1,39 +1,35 @@
 # 核心模块接口契约
 
-更新日期：2026-10-09。依据 [Python 功能需求](python-feature-requirements.md)和[核心设计复核](python-core-design-review.md)中已确认的决定更新声明，并落实模型归属形态、提醒全局查询与唯一身份的补充决定。文档优先于旧快速原型；本次只更新类型、空接口和行为约定，没有编写业务实现或把新接口接入应用。
+更新日期：2026-10-13。正式后端已开始按这些契约实现，主要业务代码位于原接口文件中；装配、HTTP/WebSocket、前端封装和实际覆盖范围见[后端首批实现](backend-implementation.md)。文档仍优先于旧快速原型，未接入的独立适配器保留契约，不以旧原型测试代替验收。
 
-本文链接的接口和只读投影 helper 用于审查职责与调用方式，函数体保持为空。现有可运行实现仍采用旧原型契约，见[原型说明](prototype.md)；不能把原型表现、通过旧测试或导入声明文件当作符合本设计。Python 新增数据类也只声明参数，原型 HTTP/worker 尚未消费。
-
-模型与工具调用的独立选型验证见 [AI SDK 使用与接口验证](ai-sdk-demo.md)。
-
-提示词采用 Agent 内置的固定文件模板，选型与使用约定见 [Nunjucks 提示词模板设计](nunjucks-prompts.md)。
-
-参数和返回值中的必要属性使用 `@typedef` 描述。没有声明公开的属性均由模块内部管理；调用方不得通过读取队列、修改 Chat 对象或访问 SDK 实例完成业务操作。构造与依赖装配留到实现阶段，不在原型中公开各模块的内部组成。
+Performance 已拆为[后端计划调度](../src/backend/performance/interface.js)与[前端本地播放](../src/renderer/src/performance/interface.js)。后端推进所有 sequence，不区分前后台，不等待播放反馈；各客户端独立选择展示、计算逐字进度、调节本地音量及回放。
 
 ## 阅读顺序
 
-| 模块                    | 接口文件                                                                 | 对外负责                                                | 不接收或不承担                                   |
-| ----------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------ |
-| 对话 `Conversations`    | [conversation/interface.js](../src/backend/conversation/interface.js)    | 接收用户意图，管理多个 Chat，编排生成、存档、合成和演出 | 动作计时、推理池、模型实例、连接细节             |
-| 生成 `Agent`            | [llm/interface.js](../src/backend/llm/interface.js)                      | 基于一次请求完成模型与工具循环，交付保留分组的响应、工具结果，检查上下文与压缩    | 完整可修改 Chat、前后台、TTS、sequence、消息落盘 |
-| 演出 `Performance`      | [performance/interface.js](../src/renderer/src/performance/interface.js) | 场景、sequence、音频、字幕、Live2D 与全部播放进度       | Chat、Turn、合成状态、取消原因、对话编排         |
-| 合成 `Speech`           | [speech/interface.js](../src/backend/speech/interface.js)                | 转换输入和结果，提交、查询、控制并等待 Python 合成任务  | 调度队列、模型实例、对话归属、失败展示策略       |
-| 识别 `Recognition`      | [recognition/interface.js](../src/backend/recognition/interface.js)      | 将录音转换成文本，管理识别模型                          | 麦克风录制、草稿、光标、自动发送                 |
-| 存档 `ChatStore`        | [storage/interface.js](../src/backend/storage/interface.js)              | 版本校验、原子持久化、迁移、归档                        | 历史裁剪规则、运行任务、演出进度                 |
-| 角色 `CharacterCatalog` | [characters/interface.js](../src/backend/characters/interface.js)        | 角色与对话身份定义的存取、身份与能力解析                | 当前 Chat、自动替换已有快照、模型加载与推理      |
-| 资源 `MediaAssets`      | [resources/interface.js](../src/backend/resources/interface.js)          | 文件导入、访问寻址、引用和回收                          | 对话业务、文件应在哪一句播放、历史删除决策       |
-| 远端文件 `RemoteFiles`  | [remote-files/interface.js](../src/backend/remote-files/interface.js)    | 厂商文件上传复用、引用失效、显式删除与自动回收          | Chat、输入框状态、生成流程重试、任意账号文件管理 |
-| 输入 `InputSessions`    | [input-sessions.js](../src/renderer/src/features/chat/input-sessions.js) | 每个对话的草稿、录音、附件和识别文本插入                | Agent、历史修改、TTS、演出                       |
+| 模块                    | 接口文件                                                                 | 对外负责                                                                       | 不接收或不承担                                   |
+| ----------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------ |
+| 对话 `Conversations`    | [conversation/interface.js](../src/backend/conversation/interface.js)    | 接收用户意图，管理多个 Chat，编排生成、存档、合成和演出                        | 动作计时、推理池、模型实例、连接细节             |
+| 生成 `Agent`            | [llm/interface.js](../src/backend/llm/interface.js)                      | 基于一次请求完成模型与工具循环，交付保留分组的响应、工具结果，检查上下文与压缩 | 完整可修改 Chat、前后台、TTS、sequence、消息落盘 |
+| 后端 `Performance`      | [performance/interface.js](../src/backend/performance/interface.js)      | 场景、sequence、计划时钟与 guide 终态                                          | Chat、Turn、客户端实际播放进度                   |
+| 客户端 `Performance`    | [performance/interface.js](../src/renderer/src/performance/interface.js) | 从动播放、本地音量、回放与输出适配                                             | 对话受理和其他客户端进度                         |
+| 合成 `Speech`           | [speech/interface.js](../src/backend/speech/interface.js)                | 转换输入和结果，提交、查询、控制并等待 Python 合成任务                         | 调度队列、模型实例、对话归属、失败展示策略       |
+| 识别 `Recognition`      | [recognition/interface.js](../src/backend/recognition/interface.js)      | 将录音转换成文本，管理识别模型                                                 | 麦克风录制、草稿、光标、自动发送                 |
+| 存档 `ChatStore`        | [storage/interface.js](../src/backend/storage/interface.js)              | 版本校验、原子持久化、迁移、归档                                               | 历史裁剪规则、运行任务、演出进度                 |
+| 角色 `CharacterCatalog` | [characters/interface.js](../src/backend/characters/interface.js)        | 角色与对话身份定义的存取、身份与能力解析                                       | 当前 Chat、自动替换已有快照、模型加载与推理      |
+| 资源 `MediaAssets`      | [resources/interface.js](../src/backend/resources/interface.js)          | 文件导入、访问寻址、引用和回收                                                 | 对话业务、文件应在哪一句播放、历史删除决策       |
+| 远端文件 `RemoteFiles`  | [remote-files/interface.js](../src/backend/remote-files/interface.js)    | 厂商文件上传复用、引用失效、显式删除与自动回收                                 | Chat、输入框状态、生成流程重试、任意账号文件管理 |
+| 输入 `InputSessions`    | [input-sessions.js](../src/renderer/src/features/chat/input-sessions.js) | 每个对话的草稿、录音、附件和识别文本插入                                       | Agent、历史修改、TTS、演出                       |
 
 新增后端模块同样只提供声明：
 
-| 模块 | 接口文件 | 职责 |
-| --- | --- | --- |
-| Settings | [settings/interface.js](../src/backend/settings/interface.js) | 类型化设置、连接、能力来源与受控凭据写入 |
-| ToolCatalog / Interactions / ReminderWriter | [tools/interface.js](../src/backend/tools/interface.js) | 依赖与授权、可靠交互、仅工具可用的提醒创建 |
-| Worldbook | [worldbook/interface.js](../src/backend/worldbook/interface.js) | 固定知识范围、受限查询与独立诊断，本次不实际检索 |
-| PythonChatImporter | [python-import-interface.js](../src/backend/storage/python-import-interface.js) | 旧 Python 一次性有损转换 |
-| Live2dImporter | [live2d-import/interface.js](../src/backend/live2d-import/interface.js) | V2/V3 完整依赖包与原子发布 |
+| 模块                                        | 接口文件                                                                                 | 职责                                                                     |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Settings                                    | [settings/interface.js](../src/backend/settings/interface.js)                            | 类型化设置、连接、能力来源与受控凭据写入                                 |
+| ToolCatalog / Interactions / ReminderWriter | [tools/interface.js](../src/backend/tools/interface.js)                                  | 依赖与授权、可靠交互、仅工具可用的提醒创建                               |
+| Worldbook                                   | [worldbook/interface.js](../src/backend/worldbook/interface.js)                          | 固定知识范围、受限查询与独立诊断，本次不实际检索                         |
+| Conversation 内部查询绑定                   | [worldbook-query-interface.js](../src/backend/conversation/worldbook-query-interface.js) | 直接上下文与工具共用查询，统一关联来源、校验资格和接收诊断，不公开到 IPC |
+| PythonChatImporter                          | [python-import-interface.js](../src/backend/storage/python-import-interface.js)          | 旧 Python 一次性有损转换                                                 |
+| Live2dImporter                              | [live2d-import/interface.js](../src/backend/live2d-import/interface.js)                  | V2/V3 完整依赖包与原子发布                                               |
 
 共享数据集中在以下文件，避免调用方依赖模块内部类：
 
@@ -43,11 +39,13 @@
 - [settings.js](../src/shared/contracts/settings.js)、[models.js](../src/shared/contracts/models.js)：配置分组、执行覆盖、连接与能力来源。
 - [characters.js](../src/shared/contracts/characters.js)：forms、默认模型指针及声音选择。
 - [tools.js](../src/shared/contracts/tools.js)、[worldbook.js](../src/shared/contracts/worldbook.js)、[archive.js](../src/shared/contracts/archive.js)：交互关联、知识范围与恢复警告。
-- [presentation.js](../src/shared/contracts/presentation.js)：场景、逻辑演出选择、guide、进度与终态。
+- [presentation.js](../src/shared/contracts/presentation.js)：场景、逻辑演出选择、模型状态映射与快照、guide、进度、终态及回放材料，不含客户端音量。
 - [speech.js](../src/shared/contracts/speech.js)：声音配置、合成请求、任务编号与结果。
 - [persona.js](../src/shared/contracts/persona.js)：可复用的对话身份定义、选择摘要与 Chat 固定的身份快照。
 
 Python 合成调度的接口原型见 [speech/interface.py](../python/speech/interface.py)，输入和结果见 [speech/contracts.py](../python/speech/contracts.py)，调度规则与 HTTP 映射见 [语音调度接口设计](../python/speech/README.md)。Python 的接口只描述合成任务，不依赖 JavaScript 的业务对象。
+
+前端专用的 [playback-contracts.js](../src/renderer/src/performance/playback-contracts.js) 保存 PlaybackOptions 声明；它不属于共享网络报文或后端 Settings。
 
 ## 调用关系
 
@@ -129,11 +127,89 @@ Node 中的 `CharacterCatalog` 是唯一的权威目录。通过目录保存角�
 
 Agent 的 `onResponse` 用稳定 responseId 追加尚未接受的 parts：可先交付实际 reasoning/调用，再接受通过校验的台词，仍属于同一容器。工具结果走 `onToolResult`。全部通知顺序等待接受，最终台词也从这里交付；run 只返回 Loop 终态与 usage，避免回调和返回值各复制一份最终回复。格式修复产生的新模型响应另建容器；失败原文只留诊断。
 
-工具按调用列表串行：sync 等本地完成，block-async 等交互结束，async 等可靠 accepted。所有工具统一记录，删除 visibility/隐藏分支。async 后续成功结果进入后续 Turn 的 UserMessage，原 accepted 不回写第二份 ToolResultMessage。中断恢复对缺失结果使用通用 runner/interrupted 结果，不重新执行工具；具体 not_executed/cancelled/outcome_unknown 分类仍是建议，不作为必填枚举。
+工具仅保留 sync 和 async，按调用列表串行：sync 等后端完成，async 等可靠 accepted。sync 内部可使用 Promise，但不等待前端交互；抽签、问答等需要前端参与的工具统一 async，受理不依赖展示端在线或用户回答。所有工具统一记录，删除 visibility/隐藏分支。async 后续成功结果进入后续 Turn 的 UserMessage，原 accepted 不回写第二份 ToolResultMessage，也不继续原 Loop。InteractionRequest 不再携带执行模式，全部按 async 处理；出现确实需要同轮等待前端的具体需求前不增加第三种模式。中断恢复对缺失结果使用通用 runner/interrupted 结果，不重新执行工具；具体 not_executed/cancelled/outcome_unknown 分类仍是建议，不作为必填枚举。
 
 只读投影 helper 保留原身份与顺序，不产生第二份可写历史。句级操作改用 `LineRef`，不能把一个 assistant 响应当成一条台词。ContextTurn 保留完整轮次裁剪边界，ContextMessage 保留分组、reasoning 类别、协议必要材料和调用关联；协议附加字段只保存必要脱敏内容，不能据此承诺所有供应商报文可无损重放。
 
 上下文只投影最后有效摘要与其后文，system/情景等本次材料正常构造；原始历史保留。只压缩已结束的完整 Turn，至少保留最后一轮，失败保留旧有效摘要。原地编辑保留后文但删除依赖它的后方摘要；截断/分支按位置处理。上下文查询与实际准备共用规则，计入角色、人格、提示、工具、Schema、附件及本次输入，区分估计、未知和实际 usage；查询不压缩、不上传、不执行工具。
+
+## 客户端本地播放音量
+
+每个客户端在前端持久化 `PlaybackOptions { volume, bgmVolume }`。两个值均为有限值，范围 `[0, 1]`，本地值缺失、无效或被清除后对应字段使用 1（100%）。volume 为总音量，bgmVolume 为 BGM 相对音量；第一版不增加 muted 或上次音量，volume 为 0 即静音。它们不属于 Settings、SpeechOptions、Chat、Turn 或 guide，不参与生成时的设置冻结。
+
+`Performance.getPlaybackOptions()` 读取本地偏好，`setPlaybackOptions(options)` 在前端保存并即时应用，不发送后端命令。启动及展示端重建读取本端最新值，本地保存和交接按顺序处理，迟到读取不能覆盖更新后的值；保存失败显式报告，不伪装已经持久化。同一 Electron 客户端的普通窗口与桌宠共用本地偏好；独立浏览器或设备互不覆盖。客户端按自己的前端存储空间管理偏好，不按 Chat 保存。
+
+删除 `GlobalSettings.playback` 与 `BgmSettings.volume`；旧后端设置中的这两个字段在迁移时丢弃，不作为新客户端的初值。BGM 的曲目、开关与循环仍属于原共享配置，实际输出音量只在客户端计算。
+
+| 内容                                    | 音量规则                                                |
+| --------------------------------------- | ------------------------------------------------------- |
+| 本端正在播放的台词                      | 使用本客户端 volume，当前句立即生效，后续句沿用。       |
+| 本端 BGM                                | 使用 volume × bgmVolume，曲目开关与本地暂停仍独立生效。 |
+| 本端未播放的 sequence、显式 silent 回放 | 继续无声，提高本地音量不能使其发声。                    |
+
+总音量为 0 时只关闭本端声音输出，字幕、动作和口型照常推进，不重播、不补合成、不改写历史音频，也不影响后端计划时间线与 Turn 完成。silent 由客户端用于本次回放，不修改材料或持久音量。普通模式与桌宠交接不能恢复旧窗口的音量。自动语音开关仍控制本轮是否合成，下轮生效。
+
+## 停止与本地回放
+
+停止时由后端原子保留其计划时间线中的当前普通 guide，并移除本轮后续 guide。Turn 立即 terminated，所属组未消费 async 结果失效，但只要保留句尚未逻辑结束，`admission.canGenerate` 仍为 false。没有当前句时不增加等待；该句逻辑结束或已被显式删除/替换移除后，这项门禁解除，保存故障和压缩等其他限制仍独立生效。`stopTurn` 返回表示停止指令已生效，不承诺下一轮立即可受理；不等待任何客户端实际播完或上报。
+
+后端 `Conversations.getReplayMaterials(chatId, target)` 只读取单句或整轮已保存的场景和台词，返回 `ReplayMaterials`。前端调用 `Performance.replay(materials, { silent })` 独立播放，不创建后端 sequence、不重新生成或合成、不使历史 Turn running，也不反向修改实时演出进度。
+
+后端不持有客户端当前选中的 Chat：删除 `Conversations.selectConversation` 和 `ConversationSnapshot.selected`。页面选择与回放状态由本客户端管理，不能通过选择聊天使其他客户端退出回放。
+
+其他客户端发起的新轮、提醒或 async 自动新轮只提示有新内容，不打断本端回放。用户主动退出，或本端手动新轮确认受理后，调用 `Performance.resumeLive()` 结束本端回放并跟随最新快照；被拒绝或受理结果尚未确认时保留回放。只使本地旧加载和播放回调失效，不关闭后端常驻 sequence、不取消其他客户端回放，也不终止来源 Turn。
+
+## 世界书查询与诊断交接
+
+Worldbook 只接收 `scope/query/signal`，返回 `WorldbookQueryResult { evidence, trace }`。evidence 是允许使用的知识；trace 只保存过滤原因、返回知识的 token 估值和失败信息。请求预算已在 query 中，不重复维护；trace 不再保存阶段、Turn 身份或另一份 selected。可预期查询失败返回空 evidence 与 trace.problem，合法的空结果则 problem 为 null；参数/范围错误按 Problem 拒绝，取消按 AbortError 拒绝。
+
+Conversation 使用内部声明 `bindWorldbookQuery(worldbook, options)` 创建本轮查询函数。options 绑定 TurnId、固定 scope、执行有效期 signal 和唯一的 `acceptDiagnostic` 接收函数。查询函数接收 query、可信 origin 和本次 signal，直接上下文与世界书工具共用同一条查询及记录路径，不为诊断再执行一次检索。
+
+| 调用路径       | 传入的 origin                                           | 存档中的 source                                                                          |
+| -------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 直接上下文准备 | `{ kind: 'direct-context' }`                            | 相同的来源标记。                                                                         |
+| 世界书工具包装 | `{ kind: 'tool-query', context: ToolExecutionContext }` | `{ kind: 'tool-query', assistantMessageId, callId }`；先核对 context.turnId 与本轮一致。 |
+
+origin 由 Conversation 或已登记的工具包装构造，不进入模型可填写的参数 Schema。绑定函数检查 enabled 及 directContext/queryTools 开关；接收器还核对调用确实属于当前 Turn。本轮修改设置不替换当前绑定；下一次生成及重生成按当时设置建立新绑定。
+
+每次实际查询只组合一份 `WorldbookDiagnostic { source, query, result }`，其中 result 就是该次 Worldbook 返回值。绑定函数 await 接收后仅返回 evidence。工具包装将知识或普通失败转换为 ToolOutcome，继续使用 Agent 原有 onToolResult；不扩展 GenerationObserver，不经工具结果传诊断，不让 Worldbook 或工具直接修改 Turn.meta。
+
+`ToolCatalog.resolve(chatId, selection, access, queryWorldbook)` 接收这个本轮窄能力。Conversation 仅在 queryTools 启用时传入函数，否则传 null；目录据此注入世界书工具，普通工具 selection 不替代世界书开关。工具调用必须使用 tool-query 来源，不能伪装成直接上下文。
+
+受理前的直接上下文诊断只暂存在当前准备操作中，受理成功后随新 Turn 保存并继续使用同一绑定；校验或初始保存失败时丢弃暂存，不建立空 Turn，也不提前启动工具。受理后的接收器串行核对执行有效性，再追加到当前内存；保存故障按原约定由 retrySave 处理。准备被放弃、生成结束或执行失效时取消绑定信号，旧查询不能继续服务下一轮。长检索不持有 Chat 修改锁，停止与诊断提交仍能有序协调。
+
+可预期检索失败先记录同次诊断，再向调用者报告 Problem；意外异常先脱敏。取消或接收返回 stale 时，不向旧执行交付成功，也不补写新的失败诊断。诊断接收本身失败不能被当作第二次检索失败再次记录；不能因此重查或重放工具。同文本的独立查询仍是不同的实际记录，不按文本合并。
+
+## 模型目标状态与动作映射
+
+保留 `setModelState(sequenceId, target)`，target 为 `ModelStateTarget { slotId, state, value }`。第一版状态值为 boolean，模型 mapping 文件通过 `ModelStateMapping` 声明状态键及 on/off 目标动作，不把完整状态机加入核心接口。例如，已有逻辑动作 put_on_mask 和 take_off_mask 的模型可添加：
+
+```json
+{
+  "states": {
+    "mask": {
+      "description": "是否戴着面具",
+      "on": { "motion": "put_on_mask" },
+      "off": { "motion": "take_off_mask" }
+    }
+  },
+  "stateEffects": { "motions": {}, "expressions": {} }
+}
+```
+
+目标动作必须能从未知状态到达并保持指定目标，不能仅翻转当前值，也不能在结束后立即恢复为相反值。第一版只支持 motion；以后可以扩展映射中的执行方式，调用方仍提交目标状态。旧映射缺少 states/stateEffects 时按空集合解析，不从动作名猜测面具能力。initial 可省略；只有模型声明且加载时能确认初态，才能采用该值，否则按未知处理。
+
+CharacterCatalog 校验状态键、目标动作引用及效果声明；无效状态报告问题并从能力目录排除，仍可保留该模型其他可用能力。PerformanceCatalog.states 只公开键和说明。状态专用动作不进入普通 motions 候选；AgentCharacter.performances 只接收 motions/expressions，不因增加状态能力而改变台词输出 Schema。
+
+Performance 复用一次性 transition 调度。普通内容正在播放时忽略新增请求；没有冲突且已确认达到目标时返回 null。相同的最近未完成目标、且中间无影响该状态的冲突动作时，复用已有 guideId；相反目标按顺序排队。不能因“当前还是 false”就忽略排在 on 后面的 off。执行前重新判断，已达目标可无动作完成；终态仍通过 waitForGuideFinish 获取，不增加第二套完成回调。
+
+计划完成值与待执行目标分开，使用 `SequenceSnapshot.modelStates` 中的 `ModelStateSnapshot` 观察。动作入队不改变确认值；计划动作开始后，受影响状态变为未知，计划结束后更新为 true/false。失败或抢占且无法确认结果时保留未知；未开始就被移除不改变实际状态。pending 表示最近未结算目标，不冒充当前值。
+
+后端按计划时长结算目标动作，modelStates 表示计划目标，不作为客户端实际执行证据。每个客户端维护自己的实际模型状态；卡顿、动作失败和旧实例回调均不影响后端或其他客户端。
+
+普通动作或表情也可能改变状态，须在 stateEffects 中按逻辑动作/表情名声明影响；value 为 null 表示终值未知。on/off 的本状态效果已经由目标映射表达，不重复声明，互相冲突时拒绝该能力。其他状态的影响仍须声明；缺少可靠效果信息时不能保证该状态能力的幂等性。
+
+后端这些运行值属于 slot 当前模型的计划状态；各客户端另外维护实际实例状态，不保存进 Chat 或角色配置。换模型时移除该 slot 的旧状态 guide，按 removed 结算并重新确认初态；旧实例回调不能写入新实例。只改背景/布局不重置状态。客户端重建实例时须依据最新计划重新应用目标，不能把后端计划值直接当作本地执行成功。
 
 ## 本地资源与厂商文件
 
@@ -157,9 +233,9 @@ RemoteFileRef 只包含消息需要的 file-id 或 file-uri 形式与值，上�
 
 1. **状态所有权**：对话负责已提交内容，演出负责播放进度，输入负责草稿。返回快照只读；修改必须经过对应模块方法。生成完成即可保存全文，不等待语音或演出。
 2. **长期 sequence**：允许一个对话长期使用一个 sequence。创建返回 `sequenceId`，追加返回每条 guide 的 `guideId`；没有批次回执要求，也没有永久结束标志。空队列进入默认展示，`closeSequence` 才释放序列。已完成 guide 仅保留最小终态至关闭，以支持事后等待。
-3. **后台推进**：只有一个明确选择的前台 sequence，其余按估算时间推进。返回前台从当前未完成句开头播放。没有前台时不自动选择其他序列。前台选择、消息已读状态和 TTS 优先级属于不同信息，不能互相推导。
+3. **统一推进**：所有 sequence 在后端按同一规则推进；客户端选择只是本地展示偏好，不改变时钟、完成条件或 TTS 优先级。客户端连接后使用当前材料与时间锚点跟随，可独立选择回放。
 4. **按需通知**：`waitForGuideFinish` 可代替额外的完成回调注册；播放完、主动移除、sequence 关闭都必须结算等待。取消等待只结束该等待者，不能取消演出或合成。
-5. **停止和竞态**：`discardPendingGuides` 在演出模块内原子保留当前句、删除后续目标。对话模块使旧执行失效，避免迟到结果重新播放或写回。停止播放后全文展示是业务决定，后续进度不能撤销它。
+5. **停止和竞态**：`discardPendingGuides` 在后端计划时间线内原子保留当前句、删除后续目标；保留句逻辑结束前阻止下一轮，不等待客户端播放反馈。对话模块使旧执行失效，避免迟到结果重新播放或写回。停止后全文展示是业务决定，后续进度不能撤销它。
 6. **控制与材料分开**：演出模块只看到 `ready`、材料和删除操作；它不接收“为什么取消”或“为什么没有语音”。自己的播放故障由它处理并降级，不能与上游 TTS 错误混为一谈。
 7. **资源生命期**：持久化使用 `AssetRef`，不保存临时 URL、SDK 对象或运行句柄。交接时先建立新引用，再释放旧引用。音频任务结果、草稿、存档与演出使用中的材料都必须有有效持有者。
 8. **失败约定**：输入无效、编号未知、版本冲突等通过抛出或拒绝 Promise 报错；可预期的合成、识别终态使用各自的结果联合类型。对外错误携带 `Problem`，原始异常和堆栈仅用于内部诊断。带 `signal` 的等待被取消时以 `AbortError` 拒绝。
@@ -169,42 +245,32 @@ RemoteFileRef 只包含消息需要的 file-id 或 file-uri 形式与值，上�
 
 ## 运行位置与通信
 
-Node 中放置对话、Agent、角色目录、存档、资源、语音客户端与识别模块。前端中放置输入和演出模块；演出的调度与渲染属于同一包。Python 负责语音任务排队、优先级、模型加载与复用、并发和常驻上限，以及 GPT-SoVITS 推理；进程启动和运行配置装配由 Electron 宿主管理。
+Node 承载业务模块和后端 Performance；Python 承载语音推理与调度。前端保留输入、从动播放和渲染适配。Electron 主进程装配 Node 后端与 loopback HTTP/WS 服务，程序退出时关闭服务和 Python，不要求后台常驻。
 
-Speech 客户端提供 `submit`、`getTask`、`setPriority`、`cancel` 和本地封装的 `waitForResult`。后两种控制按任务 ID 数组在 Python 内原子处理，不使用公开任务组；未来追加的任务必须显式携带优先级。Conversation 关联消息与任务，并协调在途提交与切换、停止操作。Node 负责资源引用和路径的转换、读音覆盖处理、轮询和文件导入，不维护第二份调度队列。资源预算通过 Python 启动配置提供，本轮不保留动态预算、模型预热或任务组生命周期方法。
+业务通信统一 HTTP + WebSocket。HTTP 白名单命令映射见 [api.js](../src/shared/contracts/api.js)，WS 订阅 conversation、performance、interactions 和 settings 完整快照。运行快照以 runtimeId/revision 排序；连接断开不取消对话，重连重新查询快照。AbortSignal 和回调留在本地，取消等待不等于撤销已受理命令。
 
-Python 查询返回排队、运行或终态，成功时带文件路径和实际音频时长。Node 将文件导入资源模块后才交付 `AssetRef`；导入失败与通信失败通过拒绝 Promise 报告，不改写 Python 的合成终态。任务 ID 在 Python 重启或结果过期后失效；结果保留、查询续期和临时资源交接遵守 Python 调度设计，不自动重新提交未知任务。
+桌面专有能力仅通过窄 IPC：当前提供连接 bootstrap、运行信息和文件选择导入。桌宠、托盘与窗口交接留在 Electron/客户端，不强迫业务后端持有 UI context。音频、模型和字幕实际故障是本地状态；后端 guide 的完成只表示计划区间结束。
 
-上述接口描述调用语义，不要求跨进程直接传递对象。IPC 或 HTTP/WebSocket 实现负责把具名方法映射为经过校验的命令，把需要跨进程排序的观察结果映射为带版本的消息；本地输入方法仍在前端实例内同步执行。监听函数和 `AbortSignal` 留在调用方，由本地代理转换为订阅或取消命令；DOM 和 `File` 也不能直接作为任意远程调用参数传给 Node。协议层只能公开允许的业务入口，不能暴露整个模块对象或任意方法调用能力。
-
-展示模式通过 `setPresentationMode('stage' | 'desktop-pet')` 选择，作用于整个演出模块。Conversation 始终使用同一套 sequence 和 guide 接口，不按普通演出或桌宠模式分支。模式切换保留前台选择、场景、编号、队列及订阅和等待；新展示端就绪后才交接，避免双重发声和重复完成通知。需要重建播放时，从交接时仍有效的当前未完成句开头重播。切换失败则保留原模式与有效演出状态，重复选择已生效模式不重播。
-
-页面容器挂载由演出模块自己的前端接入部分完成，公开接口不接收 DOM，也不提供 `attachSurface`。不同窗口的展示端共用一个在模式切换期间持续存活的调度实例；不会因各自加载模块代码而分别推进队列。演出模块负责交接与回调路由，通过宿主提供的有限能力创建、配置窗口，宿主不参与逐句演出判断。
-
-应用内切换聊天或展示模式时，演出调度保持存活；没有可用展示端时使用后台计时方式推进且不发声。系统挂起或整个演出运行环境关闭期间不保证实时演出：恢复时可以从当前句恢复，或由演出模块根据保留的进度补算。整个演出运行环境被销毁后旧 `sequenceId` 和 `guideId` 失效，必须重新建立 sequence；跨宿主持久化播放检查点的格式不在本轮核心接口中展开。
-
-Electron 窗口、桌宠、托盘、Python 进程生命周期以及配对、鉴权、控制端接管沿用 `main`、`preload`、`server`、`renderer/src/runtime` 的入口划分，本轮不增加这些运行外壳的空类。运行外壳调用核心接口，不承担对话生成、合成队列或逐句计时。界面不直接绕过对话模块修改运行存档。
-
-本次已定义业务设置字段与签名；具体工具适配清单、IPC 通道和序列化格式留给实现设计，不能通过透传可变全局对象补齐。Python 语音 HTTP 报文只在语音调度设计中约定，不成为 Conversation 的调用协议。
+传输鉴权、幂等范围、前端调用示例及未接入部分见[实现说明](backend-implementation.md)。
 
 ## 与更新设计的偏差及本次落点
 
-下表对照的是修改前的正式接口。所有新增方法均为未实现声明，旧原型与本表没有兼容承诺。
+下表对照的是修改前的正式接口。本表保留契约补齐记录；当前实现进度以实现说明为准，旧原型无兼容承诺。
 
-| 需求 | 修改前偏差 | 本次契约 |
-| --- | --- | --- |
-| CHAT-02、AGENT-06/10 | 消息扁平保存，结果写入调用项 | 嵌套响应、独立结果、稳定句身份、只读投影、顺序通知 |
-| CHAT-03 至 07 | 缺重命名/排序/原地编辑/包含边界截断，编辑重发为候选 | renameChat、setChatOrder、editHistory、truncateFromTurn；末轮原子替换/新 UUID/当前配置 |
-| RUN-03/06、TOOL-05 | 无纯情景命令，内部来源/交互关联不完整 | generateScenario、来源联合类型、可靠交互及批量 async 受理 |
-| RUN-01/04/07、CHAT-09 | 无整轮完成和保存故障门禁 | 生命周期、受理投影、独立保存状态、retrySave、整轮回放 |
-| AGENT-07/08 | 仅 summary 字符串 | 位置表达累计摘要，inspectContext、compressHistory/Agent.compress |
-| SET-01 至 06 | setDefaults(Metadata)，连接/采样字段不完整 | 分组 setter、TurnOptions、全局设置/连接目录、能力来源/覆盖/未知值 |
-| TOOL-01 至 06、WORLD-05 | 未区分三种等待语义，存在 hidden | 三模式、依赖与权限契约、全部记录、受限提醒创建/管理 |
-| WORLD-01 至 05/08 | 只有补充字符串 | WorldbookInfo/Scope/Query，角色共享映射，Turn.meta 独立诊断 |
-| CHAR-04/06/07、LIVE-06、TTS-02/08 | 单一模型/voice，缺人格删除 | forms/默认指针/Chat 覆盖、resolveVoice、deletePersona/目录排序、原语义结合当前声音 |
-| LIVE-04/08/10 | 无过渡队列、目标状态或 BGM | 稳定 transition/抢占/有界结算、幂等 setModelState、独立 BGM |
-| INPUT-06、ASSET-01 | 准备不能观察/取消，缺附件重试 | preparing/提前可见 recordingId、Recognition.prepare、retryAttachment |
-| CHAT-08/09、ASSET-05 | 导入无警告，缺备份恢复/整包规则 | ArchiveDrafts/警告/资源交接、recoverCorrupt、一次性 Python 导入及 Live2D 整包导入 |
+| 需求                              | 修改前偏差                                          | 本次契约                                                                               |
+| --------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| CHAT-02、AGENT-06/10              | 消息扁平保存，结果写入调用项                        | 嵌套响应、独立结果、稳定句身份、只读投影、顺序通知                                     |
+| CHAT-03 至 07                     | 缺重命名/排序/原地编辑/包含边界截断，编辑重发为候选 | renameChat、setChatOrder、editHistory、truncateFromTurn；末轮原子替换/新 UUID/当前配置 |
+| RUN-03/06、TOOL-05                | 无纯情景命令，内部来源/交互关联不完整               | generateScenario、来源联合类型、可靠交互及批量 async 受理                              |
+| RUN-01/04/07、CHAT-09             | 无整轮完成和保存故障门禁                            | 生命周期、受理投影、独立保存状态、retrySave、整轮回放                                  |
+| AGENT-07/08                       | 仅 summary 字符串                                   | 位置表达累计摘要，inspectContext、compressHistory/Agent.compress                       |
+| SET-01 至 06                      | setDefaults(Metadata)，连接/采样字段不完整          | 分组 setter、TurnOptions、全局设置/连接目录、能力来源/覆盖/未知值                      |
+| TOOL-01 至 06、WORLD-05           | 未区分三种等待语义，存在 hidden                     | sync/async 两模式、依赖与权限契约、全部记录、受限提醒创建/管理                         |
+| WORLD-01 至 05/08                 | 只有补充字符串                                      | WorldbookInfo/Scope/Query，角色共享映射，Turn.meta 独立诊断                            |
+| CHAR-04/06/07、LIVE-06、TTS-02/08 | 单一模型/voice，缺人格删除                          | forms/默认指针/Chat 覆盖、resolveVoice、deletePersona/目录排序、原语义结合当前声音     |
+| LIVE-04/08/10                     | 无过渡队列、目标状态或 BGM                          | 稳定 transition/抢占/有界结算、幂等 setModelState、独立 BGM                            |
+| INPUT-06、ASSET-01                | 准备不能观察/取消，缺附件重试                       | preparing/提前可见 recordingId、Recognition.prepare、retryAttachment                   |
+| CHAT-08/09、ASSET-05              | 导入无警告，缺备份恢复/整包规则                     | ArchiveDrafts/警告/资源交接、recoverCorrupt、一次性 Python 导入及 Live2D 整包导入      |
 
 ## 设置、受理与失败
 
@@ -212,19 +278,20 @@ Chat.meta.settings 保存 generation、speech、scenario、tools、worldbook、c
 
 GenerationOptions 不再包含 prompts。提示词模板是 Agent 内部随应用发布的固定资源，不属于 Settings、Chat 或 TurnOptions，也不用 AssetRef 引用。角色 description、固定用户人格、情景和语言等作为本次渲染数据传入；生成与预览共用渲染规则，压缩使用固定摘要模板。CompressionRequest.options 与普通生成共用 ResolvedGenerationOptions，连接和模型只由 connection 指定。具体模板、加载与错误规则集中在 [Nunjucks 设计说明](nunjucks-prompts.md)，不新增公共模板管理接口。
 
-自动语音开关固定整个 Turn，关闭时不提交合成、直接无声 ready；不删除历史音频或隐式补合成。手动重合成保留原句、形态、情绪、发声语言/读音，采用当前对应声音资源及任务参数。Speech 只接收完整 VoiceProfile；情绪参考不可用先降为同形态默认、再无声。设备、精度、模型结构、并发与驻留预算下次启动生效。
+自动语音开关固定整个 Turn，关闭时不提交合成、直接无声 ready；不删除历史音频或隐式补合成。客户端本地 volume 则立即作用于本端播放，不进入后端设置、Turn 快照或 Speech 请求。手动重合成保留原句、形态、情绪、发声语言/读音，采用当前对应声音资源及任务参数。Speech 只接收完整 VoiceProfile；情绪参考不可用先降为同形态默认、再无声。设备、精度、模型结构、并发与驻留预算下次启动生效。
 
-初始校验和保存完成才受理，之后才清草稿/消费 async、打断相关回放和启动模型工具。受理前失败保留原材料和旧轮；受理后失败保留新输入和已接受过程。保存故障阻止该 Chat 新生成/历史修改，允许查看/停止/重试保存；已运行任务仍结算到当前内存。retrySave 不重执行模型、工具或合成，revision 冲突不能靠改大版本绕过。
+初始校验和保存完成才受理，之后才清草稿/消费 async 和启动模型工具；发起手动新轮的客户端在确认受理后退出自己的回放。受理前失败保留原材料和旧轮；受理后失败保留新输入和已接受过程。保存故障阻止该 Chat 新生成/历史修改，允许查看/停止/重试保存；已运行任务仍结算到当前内存。retrySave 不重执行模型、工具或合成，revision 冲突不能靠改大版本绕过。
 
-| 当前工作 | 同 Chat 受理约定 |
-| --- | --- |
-| 生成、自动语音或普通演出未结算 | Turn 保持 running；拒绝下一轮（含 async）、手动压缩和历史修改；可改下轮设置、登记 async |
-| 手动压缩 | 互斥生成/历史修改，允许历史回放 |
-| 独立历史回放 | 不使历史 Turn running；新轮持久受理后中断相关临时 sequence（含当前句），保留常驻 sequence 和其他 Chat |
-| 保存故障 | 只锁该 Chat 新生成/历史修改；停止与结算继续，成功重试后解除 |
-| 独立音频重合成 | 不使历史 Turn running、不改 async 资格；目标内容失效/删除/更新任务后旧音频不得覆盖，精确目标句保护仍待定 |
+| 当前工作                       | 同 Chat 受理约定                                                                                         |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| 生成、自动语音或普通演出未结算 | Turn 保持 running；拒绝下一轮（含 async）、手动压缩和历史修改；可改下轮设置、登记 async                  |
+| 手动压缩                       | 互斥生成/历史修改，允许历史回放                                                                          |
+| 停止后保留当前句               | Turn 已 terminated，但保留句在后端逻辑结束或被显式移除前不受理下一轮，不依赖客户端播放状态               |
+| 独立历史回放                   | 不使历史 Turn running、不锁新轮；其他端及自动新轮只提示，本端主动退出或手动新轮确认受理后恢复实时展示    |
+| 保存故障                       | 只锁该 Chat 新生成/历史修改；停止与结算继续，成功重试后解除                                              |
+| 独立音频重合成                 | 不使历史 Turn running、不改 async 资格；目标内容失效/删除/更新任务后旧音频不得覆盖，精确目标句保护仍待定 |
 
-finished 等本轮合成和普通演出全部结束或明确故障结算，排除未完成 async 交互、BGM、循环过渡。Agent 不可恢复失败使 Turn terminated 并作废组；语音失败无声 ready，播放故障有界结算，不终止组。停止保留当前句；底层推理实际退出前仍占调度资源。
+finished 等本轮合成和后端计划的普通演出全部结束或明确故障结算，排除未完成 async 交互、BGM、循环过渡。Agent 不可恢复失败使 Turn terminated 并作废组；语音失败无声 ready，客户端播放故障不改变后端进度或终止组。停止保留当前句并等待其逻辑结束才解除相应受理门禁；底层推理实际退出前仍占调度资源。
 
 ## async、提醒与重启
 
@@ -240,7 +307,7 @@ ReminderWriter 仅供绑定 Chat 的工具创建提醒，公共管理只列出/�
 
 ## 尚未定案与范围限制
 
-- 停止普通 Turn 保留当前句时何时重新开放提交；手动重合成目标句的具体保护。
+- 手动重合成目标句的具体保护。
 - 显式锁定参考材料的范围和优先级；本次不添加猜测性覆盖参数。
 - 多角色私有知识隔离的查询细则；范围类型不能替代完整隔离设计。
 - 中断工具细分错误枚举、逐供应商协议字段白名单；只提供通用中断与必要材料承接位置，不宣称全供应商已验证。
@@ -248,6 +315,14 @@ ReminderWriter 仅供绑定 Chat 的工具创建提醒，公共管理只列出/�
 
 ## 本次验证范围
 
+2026-10-13 本轮客户端音量、回放与停止门禁调整：7 个 JS 声明文件通过 Node 语法、ESLint 和 Prettier 检查，AST 确认 64 个方法仍为空；核对 76 处 JSDoc 文件/类型名称引用，以及三份设计文档和 ADR-0049 中的 146 个本地链接，未发现缺失。此检查不验证持久化、跨客户端独立性或播放行为，也不代表旧 Performance 已完成前后端拆分。
+
+2026-10-13 此前的接口补齐：12 个 JS 声明文件通过 Node 语法、ESLint 和 Prettier 检查；AST 检查确认其中 85 个函数仍为空。检查了 124 处 JSDoc 文件/类型名称引用、三份文档的 143 个本地文件链接及新增 JSON 示例，未发现缺失或解析错误。这不是完整 TypeScript 类型检查，也不证明新功能已实现；未修改或运行旧原型业务来替代契约验收。
+
+后续实现需验收：两个客户端音量独立、本地缺值/清除后为 100%、即时调节及模式交接不重播，静音不改变后端完成时机；停止保留句逻辑结束前拒绝新轮，不等待客户端回报；其他端/自动新轮不打断本地回放，本端手动受理后才退出；世界书直接上下文/工具各只查询与记录一次，取消或保存失败不重复执行；连续 on/on、on/off、抢占、后台未实际执行及换模型时，状态和 guide 终态符合上述约定。
+
 2026-10-08：23 个修改或新增的 JS 声明文件通过语法、ESLint 和 Prettier 检查；AST 检查确认 112 个函数全部为空。检查了 178 处 JSDoc 文件/类型名称引用和 122 处文档相对路径，未发现缺失；这不是完整 TypeScript 类型检查。Python 契约通过 Python 3.9 语法解析。
 
-现有原型回归测试通过 22 个 JS、7 个 Python 用例。测试没有覆盖新接口的受理、嵌套消息、async、摘要等行为；本次没有实现这些行为，也没有新增仅验证空壳的测试。已有实现文件、模型推理和应用接线保持原状，新契约需要后续按模块实现与验收。
+此前声明阶段记录：旧原型回归测试通过 22 个 JS、7 个 Python 用例。测试没有覆盖新接口的受理、嵌套消息、async、摘要等行为；当时没有实现这些行为，旧实现和应用接线保持原状；此段仅作为历史记录，不描述当前实现状态。
+
+2026-10-13 实现阶段：正式核心接口、HTTP/WS 与客户端封装的行为测试已加入 tests/core。下文或上文的空方法计数属于此前声明阶段记录，不能代表当前代码；当前边界见[实现说明](backend-implementation.md)。

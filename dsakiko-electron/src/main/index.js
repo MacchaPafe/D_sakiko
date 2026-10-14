@@ -1,124 +1,76 @@
-import { app, dialog, ipcMain, net, protocol } from 'electron'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { app, dialog, ipcMain } from 'electron'
+import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { createBackend } from '../backend/create-backend.js'
-import { PerformanceProxy } from '../backend/conversation/performance-proxy.js'
+import { createCoreBackend } from '../backend/create-core-backend.js'
+import { startHttpServer } from '../server/http-server.js'
 import { SpeechProcess } from './processes/speech-process.js'
 import { createMainWindow } from './windows/main-window.js'
-import {
-  COMMANDS,
-  DESKTOP_EVENT,
-  PERFORMANCE_COMMAND,
-  PERFORMANCE_REPLY,
-  PERFORMANCE_UPDATE,
-  toProblem,
-  problemError
-} from '../shared/contracts/desktop.js'
+import { requireValue } from '../backend/core/support.js'
 
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: 'dsakiko-media',
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      stream: true,
-      corsEnabled: true
-    }
-  }
-])
 let mainWindow = null
 let backend = null
+let transport = null
+let speechProcess = null
 let quitting = false
 
+/** IPC 是宿主权限入口，只信任当前主窗口顶层页面，不能接受子 frame 借用权限。 */
 function checkSender(event) {
-  if (
-    !mainWindow ||
-    mainWindow.isDestroyed() ||
-    event.sender !== mainWindow.webContents ||
-    event.senderFrame !== mainWindow.webContents.mainFrame
+  requireValue(
+    mainWindow &&
+      !mainWindow.isDestroyed() &&
+      event.sender === mainWindow.webContents &&
+      event.senderFrame === mainWindow.webContents.mainFrame,
+    'unauthorized'
   )
-    throw problemError('unauthorized', '不允许此页面调用桌面能力。')
 }
+/** 先装配业务和本机传输，再创建窗口；后端不依赖 React 是否加载成功。 */
 async function startApplication() {
-  // 名称会进入 Chromium User-Agent；中文会使自定义协议的 Headers 转换失败。
   app.setName('D_Sakiko')
-  const dataRoot = process.env.DSAKIKO_DATA_DIR || join(app.getPath('userData'), 'prototype')
-  const performance = new PerformanceProxy()
-  const speech = new SpeechProcess(join(app.getAppPath(), 'python'), dataRoot, () =>
-    backend.settings.get()
-  )
-  backend = await createBackend({
-    dataRoot,
-    defaults: {
+  // 正式存档与旧原型隔离；旧扁平历史不能被误当作新契约直接迁移。
+  const dataRoot = process.env.DSAKIKO_DATA_DIR || join(app.getPath('userData'), 'core-v1')
+  speechProcess = new SpeechProcess(join(app.getAppPath(), 'python'), dataRoot, async () => {
+    const settings = await backend.settings.get()
+    return {
       resourceRoot: process.env.DSAKIKO_RESOURCE_ROOT || '',
-      pythonExecutable: process.env.DSAKIKO_PYTHON || 'python3'
-    },
-    performance,
-    connectSpeech: () => speech.connect(),
-    restartSpeech: () => speech.close(),
-    emit(value) {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(DESKTOP_EVENT, value)
+      pythonExecutable: process.env.DSAKIKO_PYTHON || 'python3',
+      assetsRoot: join(dataRoot, 'assets'),
+      precision: settings.speechStartup.precision,
+      architecture: settings.speechStartup.architecture,
+      device: settings.speechStartup.device,
+      maxConcurrent: settings.speechStartup.maxConcurrentInferences,
+      maxResident: settings.speechStartup.maxResidentModels
     }
   })
-  protocol.handle('dsakiko-media', async (request) => {
-    try {
-      const path = await backend.assets.pathForUrl(request.url)
-      const response = await net.fetch(pathToFileURL(path).href, { headers: request.headers })
-      const headers = new Headers(response.headers)
-      headers.set('Access-Control-Allow-Origin', '*')
-      return new Response(response.body, { status: response.status, headers })
-    } catch (error) {
-      console.warn('媒体资源读取失败', error.message)
-      return new Response('资源不可用', { status: 404 })
-    }
+  backend = await createCoreBackend({
+    dataRoot,
+    connectSpeech: () => speechProcess.connect(),
+    templateDirectory: join(app.getAppPath(), 'out/main/prompts')
   })
-  for (const name of COMMANDS)
-    ipcMain.handle(`desktop:${name}`, async (event, args) => {
-      try {
-        checkSender(event)
-        if (!Array.isArray(args)) throw problemError('invalid_request', '命令参数无效。')
-        if (name === 'performanceReady') {
-          performance.attach((command) => mainWindow.webContents.send(PERFORMANCE_COMMAND, command))
-          return { value: true }
-        }
-        if (name === 'chooseResourceRoot' || name === 'choosePython') {
-          const result = await dialog.showOpenDialog(mainWindow, {
-            title: name === 'choosePython' ? '选择 Python 解释器' : '选择旧程序根目录',
-            properties: [name === 'choosePython' ? 'openFile' : 'openDirectory']
-          })
-          return { value: result.canceled ? null : result.filePaths[0] }
-        }
-        return { value: await backend[name](...args) }
-      } catch (error) {
-        return { problem: toProblem(error) }
-      }
-    })
-  ipcMain.handle('runtime:get-info', (event) => {
+  const origins = ['null']
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL)
+    origins.push(new URL(process.env.ELECTRON_RENDERER_URL).origin)
+  transport = await startHttpServer(backend, { origins })
+  ipcMain.handle('host:backend-connection', (event) => {
     checkSender(event)
-    return backend.getRuntimeInfo()
+    return { baseUrl: transport.baseUrl, token: transport.token }
   })
-  ipcMain.on(PERFORMANCE_REPLY, (event, value) => {
-    try {
-      checkSender(event)
-      performance.reply(value)
-    } catch {
-      /* 拒绝非主页面回执。 */
-    }
+  ipcMain.handle('host:runtime-info', (event) => {
+    checkSender(event)
+    return { platform: process.platform, appVersion: app.getVersion() }
   })
-  ipcMain.on(PERFORMANCE_UPDATE, (event, value) => {
-    try {
-      checkSender(event)
-      performance.update(value)
-    } catch {
-      /* 拒绝非主页面进度。 */
-    }
+  ipcMain.handle('host:import-files', async (event) => {
+    checkSender(event)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '导入本地资源',
+      properties: ['openFile', 'multiSelections']
+    })
+    if (result.canceled) return []
+    const imported = []
+    for (const path of result.filePaths)
+      imported.push(await backend.assets.importAsset({ kind: 'local-file', path }, 'host-import'))
+    return imported
   })
   mainWindow = createMainWindow()
-  mainWindow.webContents.on('render-process-gone', () => performance.disconnect())
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => {
-    if (isMainFrame && performance.ready) performance.disconnect()
-  })
   mainWindow.on('close', (event) => {
     if (!quitting) {
       event.preventDefault()
@@ -129,14 +81,16 @@ async function startApplication() {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else await mainWindow.loadFile(fileURLToPath(new URL('../renderer/index.html', import.meta.url)))
 }
+// 先关闭外部命令入口，再结算业务与 Python；总退出期限防止外部进程拖住应用。
 app.on('before-quit', (event) => {
   if (quitting) return
   event.preventDefault()
   quitting = true
-  // 清理正常完成后直接退出；失去响应的渲染端不能无限阻塞窗口关闭握手。
   const deadline = setTimeout(() => app.exit(0), 12000)
-  void Promise.resolve()
+  Promise.resolve()
+    .then(() => transport?.close())
     .then(() => backend?.close())
+    .then(() => speechProcess?.close())
     .catch((error) => console.error('退出清理失败', error))
     .finally(() => {
       clearTimeout(deadline)
@@ -147,7 +101,7 @@ app
   .whenReady()
   .then(startApplication)
   .catch((error) => {
-    console.error('启动失败：', error)
+    console.error('启动失败', error)
     quitting = true
     app.quit()
   })

@@ -14,7 +14,7 @@ from typing import Dict, Tuple, cast
 from .contracts import SpeechRequest, VoiceProfile
 
 
-def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: str, directory: str) -> None:
+def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
     """在隔离进程加载复制的推理代码，仅从外部位置读取权重。"""
     try:
         vendor = Path(__file__).resolve().parents[1] / "vendor" / "gpt_sovits"
@@ -44,8 +44,12 @@ def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: 
         if device == "mps" and not torch.backends.mps.is_available():
             raise RuntimeError("配置了 MPS，但设备不可用")
         version = get_sovits_version_from_path_fast(voice.sovits_weights_path)[1]
+        if version != architecture:
+            raise RuntimeError("权重结构与固定启动配置不一致")
+        if precision == "float16" and device != "cuda":
+            raise RuntimeError("当前设备不支持本实现的半精度推理")
         config = TTS_Config({"custom": {
-            "device": device, "is_half": device == "cuda", "version": version,
+            "device": device, "is_half": precision == "float16", "version": version,
             "t2s_weights_path": voice.gpt_weights_path, "vits_weights_path": voice.sovits_weights_path,
             "bert_base_path": str(Path(pretrained) / "chinese-roberta-wwm-ext-large"),
             "cnhuhbert_base_path": str(Path(pretrained) / "chinese-hubert-base"),
@@ -66,6 +70,10 @@ def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: 
                 "top_k": 15, "top_p": 1.0, "temperature": 1.0, "seed": -1,
                 "parallel_infer": False, "use_cuda_graph": False, "sample_steps": 16,
             }
+            if request.sampling is not None:
+                inputs.update({"top_k": request.sampling.top_k, "top_p": request.sampling.top_p,
+                               "temperature": request.sampling.temperature, "seed": request.sampling.seed,
+                               "sample_steps": request.sampling.sample_steps})
             generator = pipeline.run(inputs)
             try:
                 sample_rate, samples = next(generator)
@@ -93,7 +101,7 @@ class ProcessWorker:
         """创建受预算约束的单模型进程。"""
         context = multiprocessing.get_context("spawn")
         self.pipe, child = context.Pipe()
-        self.process = context.Process(target=worker_main, args=(child, voice, pretrained, device, directory), daemon=True)
+        self.process = context.Process(target=worker_main, args=(child, voice, pretrained, device, directory, precision, architecture), daemon=True)
         self.process.start()
         child.close()
         self.closing = False

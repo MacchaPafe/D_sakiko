@@ -2,60 +2,53 @@
 
 ## 运行环境
 
-React 通过 runtime 客户端调用 preload 暴露的具名方法。preload 使用 Electron IPC；主进程核对请求来自当前主窗口的顶层页面，再调用 Node 后端。共享协议只包含能跨环境使用的数据与常量。
+业务通信统一使用 HTTP/WebSocket。Electron 的 main 装配正式 Node 后端并监听 `127.0.0.1`；前端通过 `backend/client.js` 调用业务方法和订阅完整快照。WebUI 复用同一封装，由自己的授权入口提供连接与凭证。
 
-当前只有运行状态查询，用于验证工程连接，不承载业务流程。
+preload 仅通过 IPC 暴露 `dsakikoHost.getBackendConnection()`、`getRuntimeInfo()` 和 `importFiles()`。主进程验证调用来自当前主窗口顶层页面。文件选择等桌面能力由宿主管理，不为了统一 HTTP 而让后端承担窗口上下文。
 
-- main 可以导入 backend 和 shared。
+- main 可以导入 backend、server 和 shared。
 - preload 可以导入 shared，并使用受限的 Electron 能力。
 - backend 不导入 Electron、React 或前端代码。
-- renderer 不导入 Electron、Node、main、preload 或 backend 的实现。
-- shared 不导入 Electron、Node 专用模块、React 或其他层的实现。
+- renderer 不运行导入 Electron、Node、main、preload 或 backend 的实现；JSDoc 类型引用不产生运行时依赖。
+- shared 的运行时代码不导入 Electron、Node、React 或其他层的实现。
 
-preload 输出为独立 CommonJS 文件，并启用 contextIsolation、sandbox、禁用 nodeIntegration。页面不能自行打开新窗口或跳转到其他页面。
+preload 构建为独立 CommonJS 文件，窗口启用 contextIsolation 和 sandbox，禁用 nodeIntegration。页面不能自行打开新窗口或跳转到其他页面。业务后端随 Electron 退出关闭，不要求退出后仍在后台运行。
 
 ## 模块位置
 
-| 目录                       | 后续职责                               |
-| -------------------------- | -------------------------------------- |
-| main/windows               | 主窗口与后续的桌宠窗口                 |
-| main/system                | 托盘、系统路径、文件选择               |
-| main/processes             | Python 等子进程的启动、就绪与退出管理  |
-| backend/conversation       | 对话、轮次、生成、取消与消息持久化协调 |
-| backend/characters         | 角色身份、角色描述及可选能力           |
-| backend/llm                | 模型请求、Agent Loop 与工具调用        |
-| backend/settings           | 设置校验、读取与保存                   |
-| backend/storage            | 存储机制与数据版本迁移                 |
-| backend/speech             | 合成请求与结果转换、Python 客户端      |
-| backend/resources          | 附件、语音文件与模型资源管理           |
-| backend/remote-files       | 厂商文件上传复用、引用失效与远端删除   |
-| python/speech              | 合成调度、模型复用、资源上限与推理     |
-| renderer/src/app           | 应用级布局、Provider 与页面组装        |
-| renderer/src/features      | 按聊天、角色、设置等用户功能组织的界面 |
-| renderer/src/components/ui | shadcn 通用基础组件                    |
-| renderer/src/runtime       | 前端通信实现与统一调用入口             |
-| renderer/src/performance   | 演出序列、音频、字幕及 Live2D 协调     |
-| renderer/src/hooks         | 多个功能确实复用的 hooks               |
-| renderer/src/lib           | 少量与业务无关的前端工具               |
-| renderer/src/assets        | 参与前端构建的资源                     |
-| renderer/public            | 原样复制到前端产物的公开静态资源       |
+| 目录或入口                            | 当前职责                                          |
+| ------------------------------------- | ------------------------------------------------- |
+| backend/create-core-backend.js        | 正式模块装配与提醒扫描、关闭生命周期              |
+| backend/core                          | 公共文件工具、快照通知、固定默认值与输入校验      |
+| backend/conversation                  | 对话运行状态、受理、历史、保存、async 结果和提醒  |
+| backend/performance                   | 无客户端也推进的演出计划，不区分前后台            |
+| backend/characters                    | 角色、形态与人格目录                              |
+| backend/llm                           | 固定 Nunjucks 模板、模型请求和工具循环            |
+| backend/settings                      | 共享设置、模型连接及后端私有凭据                  |
+| backend/storage                       | 原子存档索引、不可变版本文件、归档导入导出        |
+| backend/resources                     | 受管理资源与引用交接                              |
+| backend/speech                        | 正式语音接口及 Python 协议适配器                  |
+| server                                | 鉴权 HTTP/WS、命令去重与短期资源读取              |
+| shared                                | 可跨环境使用的数据契约和问题异常                  |
+| main/windows、main/processes          | 窗口与 Python 子进程生命周期                      |
+| renderer/src/backend                  | Electron/WebUI 共用的业务封装、订阅恢复和快照容器 |
+| renderer/src/performance/interface.js | 本客户端跟随、回放、字幕进度与音量                |
+| python/speech                         | 唯一语音调度器、推理执行与模型资源预算            |
 
-业务功能内部可以按需加入 components、hooks 或状态文件；不为尚未出现的需求创建多层抽象。业务状态属于 Node 后端，页面切换不应决定生成任务是否存活。
+其他尚未实现的接口声明继续保留，具体边界见 [后端实现说明](backend-implementation.md)。不要根据存在接口文件就推断模块已实现。
 
-角色身份保持独立于 Live2D 和语音能力。演出进度与聊天记录分别管理，回放不重复生成或写入消息。
+`renderer/src/app`、`components`、`features`、`runtime` 和原有 Live2D/舞台显示代码仍用于未替换的 React 原型；其中旧通信协议不再有后端接收者。保留这些文件是为了后续页面工作，正式业务封装不依赖它们。
 
-## 测试
+## 生命周期与维护
 
-模块测试靠近源码，文件名为 *.test.js 或 *.test.jsx；跨模块测试放在 tests/integration。
+Conversation 是每个 Chat 的唯一运行时修改所有者。运行材料在受理时固定，页面切换和断线不决定生成是否存活。后端 Performance 只确认计划进度；实际音频、模型实例、回放与音量属于各客户端。
 
-tests/e2e 验证真正构建后的 Electron 窗口。默认 pnpm test 不启动图形界面，pnpm test:smoke 单独运行桌面冒烟测试。
+普通业务方法返回数据，不透传后端实例给页面。需要跨层访问时注入窄能力；不为单纯转发重复建立第二套业务实现。核心数据结构使用中文 JSDoc `@typedef`，公开入口说明参数和返回值，内部关键位置解释去重、时序、取消和资源所有权。
 
-当前 Vitest 默认使用 Node 环境；实现 React 交互测试时，再按需引入 DOM 测试环境和 Testing Library。
+原型业务后端已经移除。串行队列与 JSON 工具迁入 `backend/core/files.js`；Python 传输整理为 `backend/speech/python-transport.js`；通用错误与旧桌面协议分离到 `shared/problems.js`。旧 `JsonStore`、扁平对话实现和演出 IPC 代理不再保留。
 
-## 构建与资源
+## 验证与构建
 
-electron-vite 分别构建 main、preload 和 renderer，输出到 out。electron-builder 从构建结果和运行依赖生成应用，目标平台只有 Windows 和 macOS。
+`tests/core` 验证正式接口与传输，`tests/integration` 保留仍存在的显示层和草稿回归。`tests/e2e/host.test.js` 启动构建后的 Electron 验证宿主 bootstrap、renderer 发起 HTTP 请求以及退出清理，不以旧页面功能作为通过条件。默认 `pnpm test` 不启动图形界面，`pnpm test:smoke` 单独运行宿主冒烟测试。
 
-resources 随应用发布；build 只供打包使用；用户数据与大型模型使用安装目录外的位置。当前模板图标只是占位素材。
-
-未来启动 Python 时，解释器、工作目录和模型目录都必须显式配置，不依赖父仓库固定路径。Python 可执行文件不能直接在 ASAR 内运行。
+electron-vite 分别构建 main、preload 和 renderer，输出到 out。固定 Nunjucks 模板复制到构建资源目录；用户数据、大型模型与运行日志位于安装目录外。Python 解释器、工作目录和资源目录由宿主显式提供，不依赖父仓库隐式导入。安装包及不同设备上的真实推理需另行验收。

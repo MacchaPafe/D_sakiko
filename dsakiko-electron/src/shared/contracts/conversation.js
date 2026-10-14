@@ -135,7 +135,7 @@
  * @property {Object<string, import('./settings.js').CharacterSelection>} characters 实际采用的形态与模型。
  * @property {string[]} tools 解析依赖后本轮工具集合。
  * @property {import('./worldbook.js').WorldbookScope | null} worldbook 本次知识范围。
- * @property {import('./worldbook.js').WorldbookDiagnostic[]} worldbookDiagnostics 实际检索诊断，不进入模型历史。
+ * @property {import('./worldbook.js').WorldbookDiagnostic[]} worldbookDiagnostics 本轮查询函数统一交付的来源/query/result 记录，不进入模型历史，不重复存 stage/selected。
  * @property {Metadata} extensions 迁移原文或可选诊断，不参与普通上下文。
  */
 
@@ -198,7 +198,7 @@
 /**
  * @typedef {object} TurnExecution
  * @property {string} turnId 已知轮次；未知回调拒收，不用回调重建映射。
- * @property {'running' | 'finished' | 'terminated'} state finished 等待生成、自动语音及普通演出全部结算。
+ * @property {'running' | 'finished' | 'terminated'} state finished 等待生成、自动语音及后端计划的普通演出全部结算；terminated 仍可能有保留句阻止新轮。
  * @property {'generation' | 'speech' | 'presentation' | null} phase 面向用户的当前阶段，不替代生命周期。
  * @property {import('./common.js').Problem | null} problem 终止原因；单句音频错误另外报告。
  */
@@ -211,9 +211,9 @@
  * @property {string | null} activeTurnId 本轮身份；历史回放不激活历史 Turn。
  * @property {TurnExecution[]} executions 当前运行环境已知的生命周期；重启不恢复旧映射。
  * @property {{ state: 'saved' | 'saving' | 'failed', problem: import('./common.js').Problem | null }} persistence 保存状态，与执行成功失败分开。
- * @property {{ canGenerate: boolean, canEditHistory: boolean, reasons: string[] }} admission 实际受理限制，包含忙碌、压缩和保存故障。
- * @property {boolean} selected 是否选中。
- * @property {MessageDisplay[]} display 只读展示进度。
+ * @property {{ canGenerate: boolean, canEditHistory: boolean, reasons: string[] }} admission 实际受理限制，包含忙碌、停止后保留句尚未逻辑结束、压缩和保存故障；不依据客户端播放状态。
+ * @property {string} runtimeId 本次后端运行身份，用于重连时区分快照版本序列。
+ * @property {{ sequenceId: string, lines: Array<{ line: LineRef, guideId: string }> }} presentation 句与后端 guide 的关联；逐字进度由各客户端计算，terminated 时客户端全文展示。
  * @property {Array<{ line: LineRef, problem: import('./common.js').Problem }>} audioProblems 单句错误不取消整个轮次组。
  * @property {import('./common.js').Problem | null} problem 最近需要处理的问题。
  */

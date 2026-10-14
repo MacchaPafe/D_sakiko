@@ -40,7 +40,7 @@ class SpeechRequest:
     priority 为非负整数，数字越小越优先，0 优先使用下一个可用执行槽。
     speed 必须为有限正数，sentence_pause_ms 必须为非负整数。
     可选值为 None 时，在受理时固定为合成配置的默认值。
-    sampling 是正式设计新增字段，快速原型的 HTTP/worker 尚未消费，不表示已实现。
+    sampling 由 HTTP 受理校验，固定后传入隔离 worker，不读取运行中变化的设置。
     """
 
     text: str

@@ -1,25 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import {
-  COMMANDS,
-  DESKTOP_EVENT,
-  PERFORMANCE_COMMAND,
-  PERFORMANCE_REPLY,
-  PERFORMANCE_UPDATE
-} from '../shared/contracts/desktop.js'
 
-function subscribe(channel, callback) {
-  function receive(_event, value) {
-    callback(value)
-  }
-  ipcRenderer.on(channel, receive)
-  return () => ipcRenderer.removeListener(channel, receive)
+// IPC 只提供可信 bootstrap 和本地宿主能力；业务命令及演出快照统一使用 HTTP/WS。
+/** @type {import('../shared/contracts/api.js').DesktopHost} */
+const host = {
+  getBackendConnection: () => ipcRenderer.invoke('host:backend-connection'),
+  getRuntimeInfo: () => ipcRenderer.invoke('host:runtime-info'),
+  importFiles: () => ipcRenderer.invoke('host:import-files')
 }
-const bridge = {
-  getRuntimeInfo: () => ipcRenderer.invoke('runtime:get-info'),
-  onUpdate: (callback) => subscribe(DESKTOP_EVENT, callback),
-  onPerformanceCommand: (callback) => subscribe(PERFORMANCE_COMMAND, callback),
-  replyPerformance: (reply) => ipcRenderer.send(PERFORMANCE_REPLY, reply),
-  updatePerformance: (update) => ipcRenderer.send(PERFORMANCE_UPDATE, update)
-}
-for (const name of COMMANDS) bridge[name] = (...args) => ipcRenderer.invoke(`desktop:${name}`, args)
-contextBridge.exposeInMainWorld('dsakiko', bridge)
+contextBridge.exposeInMainWorld('dsakikoHost', host)

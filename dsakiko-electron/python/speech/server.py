@@ -14,7 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, cast
 
-from .contracts import SchedulerConfig, SpeechRequest, VoiceProfile
+from .contracts import SchedulerConfig, SpeechRequest, SpeechSampling, VoiceProfile
 from .scheduler import RequestError, Scheduler
 from .worker import ProcessWorker
 
@@ -40,16 +40,17 @@ def integer_value(value: object, minimum: int = 0) -> int:
     return value
 
 
-def request_from_json(body: Dict[str, object], root: Path) -> SpeechRequest:
+def request_from_json(body: Dict[str, object], root: Path, assets_root: Optional[Path] = None) -> SpeechRequest:
     """校验文件路径和语言，避免 HTTP 入口变成任意本机文件读取。"""
     voice = object_value(body.get("voice"))
     paths: List[str] = []
     for key in ("gpt_weights_path", "sovits_weights_path", "reference_audio_path"):
         path = Path(text_value(voice.get(key))).resolve(strict=True)
-        try:
-            path.relative_to(root)
-        except ValueError as error:
-            raise RequestError("invalid_request", "模型和参考音频必须位于资源根目录") from error
+        allowed_roots = [root.resolve()]
+        if assets_root is not None:
+            allowed_roots.append(assets_root.resolve())
+        if not any(path == allowed or allowed in path.parents for allowed in allowed_roots):
+            raise RequestError("invalid_request", "模型和参考音频必须位于宿主授权的资源目录")
         if not path.is_file():
             raise RequestError("invalid_request", "资源不是文件")
         paths.append(str(path))
@@ -64,19 +65,31 @@ def request_from_json(body: Dict[str, object], root: Path) -> SpeechRequest:
     text = text_value(body.get("text"))
     if len(text) > 5000:
         raise RequestError("invalid_request", "单条语音文本过长")
-    return SpeechRequest(text, language, VoiceProfile(paths[0], paths[1], paths[2], text_value(voice.get("reference_text")), reference_language), integer_value(body.get("priority")), float(speed_value), integer_value(body.get("sentence_pause_ms", 300)))
+    sampling_data = body.get("sampling")
+    sampling: Optional[SpeechSampling] = None
+    if sampling_data is not None:
+        values = object_value(sampling_data)
+        top_p = values.get("top_p")
+        temperature = values.get("temperature")
+        if isinstance(top_p, bool) or not isinstance(top_p, (int, float)) or not math.isfinite(top_p) or not 0 < top_p <= 1:
+            raise RequestError("invalid_request", "top_p 必须在 (0, 1] 内")
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not math.isfinite(temperature) or temperature <= 0:
+            raise RequestError("invalid_request", "temperature 必须为有限正数")
+        sampling = SpeechSampling(integer_value(values.get("top_k"), 1), float(top_p), float(temperature), integer_value(values.get("seed"), -1), integer_value(values.get("sample_steps"), 1))
+    return SpeechRequest(text, language, VoiceProfile(paths[0], paths[1], paths[2], text_value(voice.get("reference_text")), reference_language), integer_value(body.get("priority")), float(speed_value), integer_value(body.get("sentence_pause_ms", 300)), sampling)
 
 
 async def serve(args: argparse.Namespace) -> None:
     """绑定回环地址并输出一次就绪通知，退出时关闭全部 worker。"""
     root = Path(args.root).resolve(strict=True)
+    assets_root = Path(args.assets_root).resolve(strict=True) if args.assets_root else None
     output = Path(args.output).resolve() / uuid.uuid4().hex
     config = SchedulerConfig(args.concurrent, args.resident, str(output), 300000)
     pretrained = str(root / "GPT_SoVITS" / "pretrained_models")
 
     def create_worker(voice: VoiceProfile) -> ProcessWorker:
         """每个实例使用独立的可写运行目录。"""
-        return ProcessWorker(voice, pretrained, args.device, str(output / uuid.uuid4().hex))
+        return ProcessWorker(voice, pretrained, args.device, str(output / uuid.uuid4().hex), args.precision, args.architecture)
 
     scheduler = Scheduler(config, create_worker)
     token = os.environ.get("DSAKIKO_SPEECH_TOKEN", "")
@@ -103,7 +116,7 @@ async def serve(args: argparse.Namespace) -> None:
             raw = await asyncio.wait_for(reader.readexactly(length), 10)
             body = object_value(json.loads(raw)) if raw else {}
             if method == "POST" and target == "/speech/tasks":
-                result = {"task_id": await scheduler.submit(request_from_json(body, root))}
+                result = {"task_id": await scheduler.submit(request_from_json(body, root, assets_root))}
                 status = 202
             elif method == "GET" and target.startswith("/speech/tasks/"):
                 result = asdict(await scheduler.get_task(target.rsplit("/", 1)[-1]))
@@ -157,6 +170,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--assets-root")
+    parser.add_argument("--precision", choices=["float32", "float16"], default="float32")
+    parser.add_argument("--architecture", default="v2")
     parser.add_argument("--device", choices=["cpu", "mps", "cuda"], default="cpu")
     parser.add_argument("--concurrent", type=int, default=1)
     parser.add_argument("--resident", type=int, default=2)

@@ -1,5 +1,7 @@
-# 浏览器宿主预留位置
+# HTTP / WebSocket 适配
 
-当前尚未启动 HTTP 或 WebSocket 服务。
+`http-server.js` 将正式后端模块映射到共享白名单 `src/shared/contracts/api.js`。由 Electron 主进程调用 `startHttpServer(backend)`，仅监听 `127.0.0.1`，不要求独立守护进程。
 
-后续在此创建独立 Node 入口，复用 backend，通过 HTTP 和 WebSocket 提供与桌面通信语义一致的能力，并补充访问控制、重连与状态恢复。浏览器客户端适配器放在 renderer/src/runtime。
+业务客户端位于 `src/renderer/src/backend/client.js`；页面和 Electron 使用同一协议。读写命令通过 HTTP，conversation / performance / interactions / settings 完整快照通过 WebSocket。私有凭据解析、任意方法调用、磁盘路径和工具执行入口不公开。
+
+鉴权、去重、调用示例及实际实现边界见 [backend-implementation.md](../../docs/backend-implementation.md)。

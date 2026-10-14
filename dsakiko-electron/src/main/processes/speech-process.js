@@ -3,15 +3,37 @@ import { randomBytes } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { join } from 'node:path'
-import { problemError } from '../../shared/contracts/desktop.js'
+import { problemError } from '../../shared/problems.js'
+
+/**
+ * @typedef {object} SpeechProcessSettings
+ * @property {string} resourceRoot 只读基础权重和词典目录。
+ * @property {string} pythonExecutable 宿主配置的解释器。
+ * @property {string} [assetsRoot] 应用管理的角色权重与参考音频目录。
+ * @property {string} [precision] 模型精度，下次启动进程时生效。
+ * @property {string} [architecture] 模型结构，下次启动进程时生效。
+ * @property {string} device 推理设备。
+ * @property {number} maxConcurrent Python 最大并发推理数。
+ * @property {number} maxResident Python 最大驻留模型数。
+ */
 
 /** 宿主只管理 Python 生命周期与就绪，不参与语音任务调度。 */
 export class SpeechProcess {
+  /**
+   * 绑定 Python 入口与启动配置，首次请求连接时才创建子进程。
+   * @param {string} pythonRoot 包含 speech 模块的目录，作为子进程工作目录。
+   * @param {string} dataRoot 日志和临时音频目录。
+   * @param {() => Promise<SpeechProcessSettings>} getSettings 启动时读取一次的宿主配置。
+   */
   constructor(pythonRoot, dataRoot, getSettings) {
     Object.assign(this, { pythonRoot, dataRoot, getSettings })
     this.child = null
     this.starting = null
   }
+  /**
+   * 获取就绪连接；并发合成请求共享一次启动，避免启动多个调度器。
+   * @returns {Promise<import('../../backend/speech/python-transport.js').SpeechConnection>} 当前 Python 进程的鉴权连接。
+   */
   async connect() {
     if (this.connection) return this.connection
     if (!this.starting)
@@ -20,10 +42,12 @@ export class SpeechProcess {
       })
     return this.starting
   }
+  /** 启动可信解释器并等待握手；端口和运行身份必须来自此次子进程，而非旧缓存。 */
   async start() {
-    const settings = this.getSettings()
+    const settings = await this.getSettings()
     if (!settings.resourceRoot) throw problemError('missing_resources', '请配置资源目录。')
     await mkdir(join(this.dataRoot, 'logs'), { recursive: true })
+    if (settings.assetsRoot) await mkdir(settings.assetsRoot, { recursive: true })
     const token = randomBytes(32).toString('hex')
     const log = createWriteStream(join(this.dataRoot, 'logs', 'speech.log'), { flags: 'a' })
     const child = spawn(
@@ -36,6 +60,11 @@ export class SpeechProcess {
         settings.resourceRoot,
         '--output',
         join(this.dataRoot, 'speech-temp'),
+        ...(settings.assetsRoot ? ['--assets-root', settings.assetsRoot] : []),
+        '--precision',
+        settings.precision ?? 'float32',
+        '--architecture',
+        settings.architecture ?? 'v2',
         '--device',
         settings.device,
         '--concurrent',
@@ -77,6 +106,7 @@ export class SpeechProcess {
           return
         }
         buffer += data.toString()
+        // stdout 分块不等于完整一行，保留尾部直到握手 JSON 收齐。
         const rows = buffer.split('\n')
         buffer = rows.pop()
         for (const row of rows) {
@@ -97,6 +127,10 @@ export class SpeechProcess {
       })
     })
   }
+  /**
+   * 先请求 Python 清理，超过期限再终止进程，避免阻塞 Electron 退出。
+   * @returns {Promise<void>} 子进程已退出或已收到终止信号。
+   */
   async close() {
     const child = this.child
     if (!child) return
