@@ -1,37 +1,49 @@
 import { SerialQueue } from '../core/files.js'
 import { problemError } from '../../shared/problems.js'
 
-/** @typedef {{ url: string, token: string, runId: string }} SpeechConnection 宿主就绪握手提供的本机连接；runId 标识一次 Python 运行。 */
 /**
- * @typedef {object} SpeechAssetAccess
- * @property {(asset: import('../../shared/contracts/common.js').AssetRef) => Promise<string>} localPath 可信资源引用解析为 Python 可读路径。
- * @property {(path: string, taskId: string) => Promise<import('../../shared/contracts/common.js').AssetRef>} importAudio 将临时结果交接到受管理资源。
+ * @typedef {object} SpeechConnection
+ * @property {string} url Python 语音服务的本地 HTTP 地址。
+ * @property {string} token 请求鉴权令牌。
+ * @property {string} runId 当前 Python 进程运行实例的唯一标识。
  */
 
-/** Python 协议适配器只负责传输与文件交接，不维护第二份推理队列；轮询策略由 Speech 接口统一实现。 */
+/**
+ * @typedef {object} SpeechAssetAccess
+ * @property {(asset: import('../../shared/contracts/common.js').AssetRef) => Promise<string>} localPath 将资源引用解析为本地文件路径。
+ * @property {(path: string, taskId: string) => Promise<import('../../shared/contracts/common.js').AssetRef>} importAudio 将合成生成的临时音频文件导入到媒体资源库。
+ */
+
+/**
+ * Python 语音服务 HTTP 传输客户端，负责与本地 Python 语音进程通信并交接音频文件。
+ */
 export class PythonSpeechTransport {
-  /** @type {Map<string, Promise<import('../../shared/contracts/presentation.js').AudioMaterial>>} 同任务的查询共享一次资源导入。 */
+  /** @type {Map<string, Promise<import('../../shared/contracts/presentation.js').AudioMaterial>>} */
   results = new Map()
   controls = new SerialQueue()
+
   /**
-   * 绑定进程就绪能力与资源交接能力，不在构造时启动 Python。
-   * @param {() => Promise<SpeechConnection>} connect 获取当前进程的鉴权连接。
-   * @param {SpeechAssetAccess} assets 后端专用文件能力，不接受浏览器提交的路径。
+   * 创建一个 Python 语音传输客户端。
+   * @param {() => Promise<SpeechConnection>} connect 获取当前 Python 语音服务连接信息的函数。
+   * @param {SpeechAssetAccess} assets 资源路径解析与音频导入回调。
    */
   constructor(connect, assets) {
     this.connect = connect
     this.assets = assets
   }
+
   /**
-   * 发送一次 Python 请求；提交结果不确定时不自动重交，避免重复推理。
-   * @param {string} method HTTP 方法。
-   * @param {string} path 协议内的相对路径。
-   * @param {object | null} [body] 可选 JSON 请求体。
-   * @param {string} [expectedRun] 已有任务所属的进程身份。
-   * @returns {Promise<object | null>} Python 响应；204 无结果。
+   * 向 Python 语音服务发送 HTTP 请求。
+   * @param {string} method HTTP 请求方法。
+   * @param {string} path 请求的接口相对路径。
+   * @param {object | null} [body] JSON 请求体数据。
+   * @param {string} [expectedRun] 期望的 Python 进程运行 ID（用于校验旧任务所属进程是否已重启）。
+   * @returns {Promise<object | null>} 响应的 JSON 数据；状态码为 204 时返回 null。
    */
   async request(method, path, body, expectedRun) {
     const connection = await this.connect()
+    // 为什么比对 expectedRun：
+    // Python 进程重启后内存中的旧任务队列已丢失，核对 runId 可直接告知调用方旧任务已失效，避免向新进程查询不存在的任务。
     if (expectedRun && connection.runId !== expectedRun)
       throw problemError('task_unavailable', '语音进程已重启，旧任务不会自动重交。')
     let response
@@ -46,6 +58,7 @@ export class PythonSpeechTransport {
         signal: AbortSignal.timeout(15000)
       })
     } catch {
+      // 网络中断时无法确认 Python 是否已收到 POST 请求，因此不自动重发提交请求，防止重复合成。
       throw problemError(
         'speech_unavailable',
         '语音服务通信中断；提交结果可能不确定，请检查语音日志。',
@@ -60,10 +73,11 @@ export class PythonSpeechTransport {
       })
     return value
   }
+
   /**
-   * 将固定的声音、读音替换和采样参数转换为 Python 任务材料。
-   * @param {import('../../shared/contracts/speech.js').SpeechRequest} request 语言已由 Speech 接口转为 Python 使用的代码。
-   * @returns {Promise<string>} Python 分配的任务身份；不等待合成结束。
+   * 将合成请求转换为 Python 接口格式并提交任务。
+   * @param {import('../../shared/contracts/speech.js').SpeechRequest} request 语音合成请求参数。
+   * @returns {Promise<string>} Python 服务返回的任务 ID。
    */
   async submit(request) {
     const voice = request.voice
@@ -94,10 +108,11 @@ export class PythonSpeechTransport {
       }
     return (await this.request('POST', '/speech/tasks', body)).task_id
   }
+
   /**
-   * 读取任务快照，成功音频先导入受管理资源再返回。
-   * @param {string} taskId 含进程身份的临时任务编号。
-   * @returns {Promise<import('../../shared/contracts/speech.js').SpeechTaskSnapshot>} 不包含临时磁盘路径的快照。
+   * 查询语音任务状态；若任务已合成成功，则先将生成的音频导入媒体资源库再返回。
+   * @param {string} taskId 任务 ID。
+   * @returns {Promise<import('../../shared/contracts/speech.js').SpeechTaskSnapshot>} 任务状态快照。
    */
   async getTask(taskId) {
     const snapshot = await this.request(
@@ -108,7 +123,8 @@ export class PythonSpeechTransport {
     )
     if (snapshot.status === 'succeeded') {
       if (!this.results.has(taskId)) {
-        // 缓存 Promise 而非完成值，并发轮询才不会复制出多份音频；导入失败允许再试。
+        // 为什么缓存导入过程的 Promise 而不是等导入完成后再缓存结果：
+        // 防止多个调用方同时查询同一个刚完成的任务时，触发多次重复的文件导入。
         const importing = this.assets
           .importAudio(snapshot.audio_path, taskId)
           .then((asset) => ({ asset, durationMs: snapshot.duration_ms }))
@@ -126,11 +142,12 @@ export class PythonSpeechTransport {
       ...(snapshot.problem ? { problem: snapshot.problem } : {})
     }
   }
+
   /**
-   * 按调用顺序向 Python 提交优先级变更；排队与执行仍由 Python 决定。
-   * @param {string[]} taskIds 当前进程中的任务编号。
-   * @param {number} priority 非负整数，越小越优先。
-   * @returns {Promise<void>} Python 已受理变更。
+   * 向 Python 服务发送批量修改任务优先级的请求。
+   * @param {string[]} taskIds 任务 ID 列表。
+   * @param {number} priority 新优先级数值。
+   * @returns {Promise<void>}
    */
   async setPriority(taskIds, priority) {
     if (taskIds.length)
@@ -143,10 +160,11 @@ export class PythonSpeechTransport {
         )
       )
   }
+
   /**
-   * 取消所列任务；Python 确认取消不代表底层推理已释放设备。
-   * @param {string[]} taskIds 当前进程中的任务编号。
-   * @returns {Promise<void>} Python 已受理取消。
+   * 向 Python 服务发送批量取消任务的请求。
+   * @param {string[]} taskIds 要取消的任务 ID 列表。
+   * @returns {Promise<void>}
    */
   async cancel(taskIds) {
     if (taskIds.length)

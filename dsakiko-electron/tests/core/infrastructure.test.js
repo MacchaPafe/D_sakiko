@@ -103,7 +103,8 @@ test('正式 Speech 接口转换请求，并发查询同一任务只导入一次
   expect(results[0].audio).toEqual({ asset: { id: 'audio' }, durationMs: 1250 })
   expect(assets.importAsset).toHaveBeenCalledExactlyOnceWith(
     { kind: 'local-file', path: '/temporary/result.wav' },
-    'speech:runA-task'
+    'speech:runA-task',
+    'audio'
   )
 })
 

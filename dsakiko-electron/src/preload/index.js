@@ -5,6 +5,6 @@ import { contextBridge, ipcRenderer } from 'electron'
 const host = {
   getBackendConnection: () => ipcRenderer.invoke('host:backend-connection'),
   getRuntimeInfo: () => ipcRenderer.invoke('host:runtime-info'),
-  importFiles: () => ipcRenderer.invoke('host:import-files')
+  importFiles: (options) => ipcRenderer.invoke('host:import-files', options)
 }
 contextBridge.exposeInMainWorld('dsakikoHost', host)

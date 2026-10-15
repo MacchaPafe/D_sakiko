@@ -52,3 +52,5 @@ Conversation 是每个 Chat 的唯一运行时修改所有者。运行材料在�
 `tests/core` 验证正式接口与传输，`tests/integration` 保留仍存在的显示层和草稿回归。`tests/e2e/host.test.js` 启动构建后的 Electron 验证宿主 bootstrap、renderer 发起 HTTP 请求以及退出清理，不以旧页面功能作为通过条件。默认 `pnpm test` 不启动图形界面，`pnpm test:smoke` 单独运行宿主冒烟测试。
 
 electron-vite 分别构建 main、preload 和 renderer，输出到 out。固定 Nunjucks 模板复制到构建资源目录；用户数据、大型模型与运行日志位于安装目录外。Python 解释器、工作目录和资源目录由宿主显式提供，不依赖父仓库隐式导入。安装包及不同设备上的真实推理需另行验收。
+
+应用数据、资源库、缓存的分类与统一资源访问见[数据目录与统一资源访问设计](data-directories-and-resources.md)。第一阶段已实现三个根目录注入和统一 `AssetRef` 寻址；目录迁移、容量查看和清理功能暂缓。

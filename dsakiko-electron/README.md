@@ -15,9 +15,9 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 启动 Electron 宿主、本机业务服务和保留的原型页面，不代表页面适配已经完成。默认开发数据目录为 `.local/core-v1/`；直接启动构建产物时默认使用 Electron userData 下的 `core-v1/`。`DSAKIKO_DATA_DIR` 可显式覆盖目录，但不会自动将旧原型存档转换为新格式。
+`pnpm dev` 启动 Electron 宿主、本机业务服务和保留的原型页面，不代表页面适配已经完成。开发环境分别使用 `.local/core-v1/`、`.local/library/` 和 `.local/cache/`。正式环境的应用数据位于 macOS Application Support 或 Windows LocalAppData 下，资源库与缓存单独配置，见[数据目录设计](docs/data-directories-and-resources.md)。旧单目录资源索引不会自动迁移或覆盖。
 
-`DSAKIKO_RESOURCE_ROOT` 指定语音基础权重和词典目录，`DSAKIKO_PYTHON` 指定解释器。具体依赖与限制见 [Python 运行时](python/README.md)。不要把 API 密钥放入 `.env.local` 或日志；模型连接通过正式 Settings 接口配置。
+`DSAKIKO_DATA_DIR`、`DSAKIKO_RESOURCE_LIBRARY_DIR`、`DSAKIKO_CACHE_DIR` 分别覆盖三个根目录，均使用绝对路径且不能重叠。`DSAKIKO_PYTHON` 指定解释器。旧 `DSAKIKO_RESOURCE_ROOT` 已停用，仍配置该变量时启动会明确报错；更新配置需同时准备新资源库，程序不搬运原文件。具体依赖与限制见 [Python 运行时](python/README.md)。不要把 API 密钥放入 `.env.local` 或日志；模型连接通过正式 Settings 接口配置。
 
 ## 代码入口
 

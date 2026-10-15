@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
-import { join } from 'node:path'
+import { join, delimiter } from 'node:path'
 import { problemError } from '../../shared/problems.js'
 
 /**
@@ -22,11 +22,11 @@ export class SpeechProcess {
   /**
    * 绑定 Python 入口与启动配置，首次请求连接时才创建子进程。
    * @param {string} pythonRoot 包含 speech 模块的目录，作为子进程工作目录。
-   * @param {string} dataRoot 日志和临时音频目录。
+   * @param {string} cacheRoot 日志和临时音频目录。
    * @param {() => Promise<SpeechProcessSettings>} getSettings 启动时读取一次的宿主配置。
    */
-  constructor(pythonRoot, dataRoot, getSettings) {
-    Object.assign(this, { pythonRoot, dataRoot, getSettings })
+  constructor(pythonRoot, cacheRoot, getSettings) {
+    Object.assign(this, { pythonRoot, cacheRoot, getSettings })
     this.child = null
     this.starting = null
   }
@@ -46,20 +46,26 @@ export class SpeechProcess {
   async start() {
     const settings = await this.getSettings()
     if (!settings.resourceRoot) throw problemError('missing_resources', '请配置资源目录。')
-    await mkdir(join(this.dataRoot, 'logs'), { recursive: true })
-    if (settings.assetsRoot) await mkdir(settings.assetsRoot, { recursive: true })
+    await mkdir(join(this.cacheRoot, 'logs'), { recursive: true })
+    if (
+      !(
+        await stat(join(settings.resourceRoot, 'GPT_SoVITS', 'pretrained_models')).catch(() => null)
+      )?.isDirectory()
+    )
+      throw problemError('missing_resources', '资源库中缺少 GPT-SoVITS 基础模型。')
     const token = randomBytes(32).toString('hex')
-    const log = createWriteStream(join(this.dataRoot, 'logs', 'speech.log'), { flags: 'a' })
+    const log = createWriteStream(join(this.cacheRoot, 'logs', 'speech.log'), { flags: 'a' })
     const child = spawn(
       settings.pythonExecutable,
       [
+        '-B',
         '-u',
         '-m',
         'speech.server',
         '--root',
         settings.resourceRoot,
         '--output',
-        join(this.dataRoot, 'speech-temp'),
+        join(this.cacheRoot, 'speech-temp'),
         ...(settings.assetsRoot ? ['--assets-root', settings.assetsRoot] : []),
         '--precision',
         settings.precision ?? 'float32',
@@ -73,8 +79,14 @@ export class SpeechProcess {
         String(settings.maxResident)
       ],
       {
-        cwd: this.pythonRoot,
-        env: { ...process.env, DSAKIKO_SPEECH_TOKEN: token, PYTHONUNBUFFERED: '1' },
+        cwd: this.cacheRoot,
+        env: {
+          ...process.env,
+          DSAKIKO_SPEECH_TOKEN: token,
+          PYTHONUNBUFFERED: '1',
+          PYTHONDONTWRITEBYTECODE: '1',
+          PYTHONPATH: [this.pythonRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter)
+        },
         stdio: ['ignore', 'pipe', 'pipe']
       }
     )

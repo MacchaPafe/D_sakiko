@@ -7,13 +7,14 @@ export { SerialQueue, readJson, writeJson, safeId, failure }
 export const uuid = randomUUID
 
 /**
- * 将内部异常转换为可传输的问题；不回显未知异常的路径或凭据。
- * @param {unknown} error 捕获的异常。
- * @returns {import('../../shared/contracts/common.js').Problem} 可公开的稳定错误信息。
+ * 将捕获到的异常转换为可对外返回的标准化 Problem 对象。
+ * @param {unknown} error 捕获到的异常。
+ * @returns {import('../../shared/contracts/common.js').Problem} 脱敏后的错误信息对象。
  */
 export function problem(error) {
   if (error?.name === 'AbortError')
     return { code: 'cancelled', message: '操作已取消。', retryable: false }
+  // 未知内部异常统一返回通用提示，避免向前端暴露本地文件路径或密钥等敏感信息。
   return (
     error?.problem ?? {
       code: 'internal_error',
@@ -24,35 +25,36 @@ export function problem(error) {
 }
 
 /**
- * 拒绝不符合业务条件的输入。
- * @param {unknown} condition 为假时拒绝操作。
- * @param {string} [code] 可供调用方分支处理的错误码。
- * @param {string} [message] 可公开的中文说明。
- * @returns {void} 条件满足时正常返回，否则抛出业务错误。
+ * 断言条件成立，不成立时抛出带错误码的业务异常。
+ * @param {unknown} condition 要检查的条件。
+ * @param {string} [code] 错误码，默认 'invalid_input'。
+ * @param {string} [message] 错误描述信息。
+ * @returns {void}
  */
 export function requireValue(condition, code = 'invalid_input', message = '输入不符合接口约定。') {
   if (!condition) throw failure(code, message)
 }
 
 /**
- * 复制接口数据，避免观察者或调用方修改权威状态。
+ * 深拷贝一个纯数据对象。
  * @template T
- * @param {T} value 支持结构化克隆的数据，不含函数或实例能力。
- * @returns {T} 与原对象独立的数据副本。
+ * @param {T} value 要复制的数据。
+ * @returns {T} 独立的数据副本。
  */
 export function copy(value) {
   return structuredClone(value)
 }
 
 /**
- * 按键排序以比较同一请求的语义材料，不依赖对象字段插入顺序。
- * @param {unknown} value 普通 JSON 材料；数组顺序仍有语义。
- * @returns {string} 用于请求去重和过期检查的摘要，不用作身份授权。
+ * 计算 JSON 数据的稳定 SHA-256 哈希摘要（忽略对象键的排列顺序）。
+ * @param {unknown} value 要计算摘要的数据。
+ * @returns {string} 十六进制哈希字符串。
  */
 export function fingerprint(value) {
   function order(item) {
     if (Array.isArray(item)) return item.map(order)
     if (item && typeof item === 'object') {
+      // 递归对普通对象的键名排序，确保语义相同但键顺序不同的对象算出相同的哈希。
       return Object.fromEntries(
         Object.keys(item)
           .sort()
@@ -67,9 +69,9 @@ export function fingerprint(value) {
 }
 
 /**
- * 合并普通数据；数组整体替换，禁止原型键进入配置。
- * @param {...object} values 从默认值到覆盖值依次合并；undefined 表示继承。
- * @returns {object} 独立的合并结果，不修改任一输入。
+ * 按顺序深合并多个配置对象（undefined 字段会被忽略，数组直接替换而非按下标合并）。
+ * @param {...object} values 从默认配置到高优先级覆盖配置依次传入的对象。
+ * @returns {object} 合并后的新对象。
  */
 export function merge(...values) {
   const result = {}
@@ -87,10 +89,10 @@ export function merge(...values) {
 }
 
 /**
- * 限制对象字段，避免通过扩展参数绕过公开接口。
- * @param {unknown} value 待校验对象。
- * @param {string[]} names 允许的字段；必填性由业务模块另行检查。
- * @returns {void} 含未知字段或不是普通对象时抛出业务错误。
+ * 校验对象是否为普通对象，且只包含允许列表中的字段名。
+ * @param {unknown} value 待校验的对象。
+ * @param {string[]} names 允许出现的字段名列表。
+ * @returns {void}
  */
 export function fields(value, names) {
   requireValue(value && typeof value === 'object' && !Array.isArray(value))
@@ -98,11 +100,11 @@ export function fields(value, names) {
 }
 
 /**
- * 等待可以单独取消，取消不会影响被等待任务或其他等待者。
+ * 包装一个 Promise，使调用方可以通过 AbortSignal 提前取消当前等待。
  * @template T
- * @param {Promise<T>} promise 已开始且可能共享的异步任务。
- * @param {AbortSignal} [signal] 只控制当前等待。
- * @returns {Promise<T>} 任务结果，或当前等待的 AbortError。
+ * @param {Promise<T>} promise 被等待的异步任务。
+ * @param {AbortSignal} [signal] 控制本次等待的取消信号。
+ * @returns {Promise<T>} 原任务结果（若取消则以 AbortError 拒绝）。
  */
 export function abortable(promise, signal) {
   if (!signal) return promise
@@ -111,22 +113,25 @@ export function abortable(promise, signal) {
     function abort() {
       reject(new DOMException('操作已取消', 'AbortError'))
     }
+    // 仅结束当前调用方的等待，不中断底层共享的 promise 本身，避免影响其他共同等待同一任务的调用者。
     signal.addEventListener('abort', abort, { once: true })
     promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
   })
 }
 
-/** 本地快照通知隔离观察者异常，不能让页面监听阻断业务推进。 */
+/**
+ * 状态快照发布总线，用于向订阅者推送数据快照。
+ */
 export class SnapshotBus {
   listeners = new Map()
 
   /**
-   * 登记观察者并交付可选的初始快照；先登记可避免回调触发修改时漏通知。
+   * 订阅指定键的状态变更通知。
    * @template T
-   * @param {string} key 观察对象身份。
-   * @param {(snapshot: T) => void | Promise<void>} listener 接收独立快照。
-   * @param {T} [initial] 省略则等待下次发布。
-   * @returns {() => void} 幂等取消函数，不改变被观察对象。
+   * @param {string} key 订阅目标的标识。
+   * @param {(snapshot: T) => void | Promise<void>} listener 状态更新时的回调函数。
+   * @param {T} [initial] 可选的初始快照；若提供，会在订阅时立即触发一次回调。
+   * @returns {() => void} 取消订阅的函数。
    */
   subscribe(key, listener, initial) {
     const group = this.listeners.get(key) ?? new Set()
@@ -139,27 +144,31 @@ export class SnapshotBus {
     }
   }
 
-  /** 每位观察者单独克隆数据，且其同步或异步失败都不影响业务提交。 */
+  /**
+   * 向单个监听者投递深拷贝后的快照。
+   * 隔离每个监听者的同步或异步异常，并单独深拷贝数据，防止某个监听者报错或篡改对象影响主流程及其他监听者。
+   */
   deliver(listener, value) {
     try {
       Promise.resolve(listener(copy(value))).catch(() => {})
     } catch {
-      /* 单个观察者不影响其他观察者。 */
+      /* 忽略单个观察者的异常 */
     }
   }
 
   /**
-   * 发布当前身份的完整快照。
-   * @param {string} key 观察对象身份。
-   * @param {unknown} value 可克隆的数据。
-   * @returns {void} 不等待观察者完成。
+   * 向指定键的所有订阅者广播最新状态快照。
+   * @param {string} key 订阅目标的标识。
+   * @param {unknown} value 要广播的状态数据。
+   * @returns {void}
    */
   emit(key, value) {
     for (const listener of this.listeners.get(key) ?? []) this.deliver(listener, value)
   }
 
-  /** 释放所有订阅；不承担业务任务的取消。
-   * @returns {void} 观察者不再收到后续通知。
+  /**
+   * 清空所有订阅者。
+   * @returns {void}
    */
   clear() {
     this.listeners.clear()

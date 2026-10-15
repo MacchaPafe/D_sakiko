@@ -56,7 +56,9 @@ async function fixture(run) {
     )
   }
   const backend = await createCoreBackend({
-    dataRoot: directory,
+    appDataRoot: path.join(directory, 'app'),
+    resourceLibraryRoot: path.join(directory, 'library'),
+    cacheRoot: path.join(directory, 'cache'),
     agent,
     scanReminders: false,
     performance: new Performance({ readingMsPerCharacter: 10, minimumReadingMs: 20 })
@@ -126,7 +128,13 @@ test('无客户端继续推进；持久受理身份防止重复执行', async ()
   expect(agent.run).toHaveBeenCalledTimes(1)
   expect((await backend.conversations.getSnapshot(chatId)).admission.canGenerate).toBe(true)
   await backend.close()
-  const restarted = await createCoreBackend({ dataRoot: directory, agent, scanReminders: false })
+  const restarted = await createCoreBackend({
+    appDataRoot: path.join(directory, 'app'),
+    resourceLibraryRoot: path.join(directory, 'library'),
+    cacheRoot: path.join(directory, 'cache'),
+    agent,
+    scanReminders: false
+  })
   cleanups.push(() => restarted.close())
   expect((await restarted.conversations.getSnapshot(chatId)).chat.turns).toHaveLength(1)
   expect((await restarted.conversations.getSnapshot(chatId)).executions).toEqual([])

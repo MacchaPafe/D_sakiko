@@ -16,46 +16,46 @@ import {
 /** @typedef {import('../../shared/contracts/characters.js').CharacterCapabilities} CharacterCapabilities */
 
 /**
- * 角色目录模块：统一管理角色配置、对话身份定义与资源解析，是 Node 中唯一的权威目录。
- * 对话身份独立存放于用户数据目录的 personas/<personaId>.json；路径由宿主装配，不由业务调用方指定。
- * 需要：角色配置、对话身份定义和资源引用。
- * 不需要：全局“当前角色”、当前 Chat、生成历史、演出时间线或模型推理实例。
- * 修改目录不自动替换运行中的演出，也不追溯修改已有轮次快照。
- * 保存成功后，后续读取与解析立即可见；本模块更新或失效自己的缓存，依赖资源变化也须使相关解析缓存失效。
- * 页面可重新查询列表；Python 与演出模块只接收任务材料，不各自维护完整角色目录。
- * 人格指向角色时只保存引用，不会立刻存储人格信息；解析时机与 Chat 快照保存由 Conversation 决定，目录不接收 Chat。
- * 调用方只把能力快照中必要的部分交给 Agent、语音和演出模块。
- * 业务实现由宿主注入存储位置与外部能力。
+ * 角色与用户对话身份目录，负责管理角色配置、用户身份（Persona）以及解析角色在对话中可用的能力。
  */
 export class CharacterCatalog {
   /**
-   * 绑定角色定义存储与模型元数据解析能力，不加载渲染实例。
-   * @param {object} options 宿主依赖。
-   * @param {string} options.directory 角色目录与人格文件的存储根。
-   * @param {(presentation: import('../../shared/contracts/presentation.js').ModelPresentation) => Promise<object>} [options.resolveModel] 解析动作、表情和状态声明。
+   * 创建一个角色目录。
+   * @param {object} options 创建选项。
+   * @param {string} options.directory 角色的数据目录，存储角色配置和对话身份信息。
+   * @param {(value: unknown) => Promise<void>} [options.validateResources] 校验持久资源引用。
+   * @param {(presentation: import('../../shared/contracts/presentation.js').ModelPresentation) => Promise<object>} [options.resolveModel] 自定义函数，描述如何根据模型文件解析动作、表情和状态等资源。
    */
   constructor({
     directory,
+    validateResources = async () => {},
     resolveModel = async () => ({ motions: {}, expressions: {}, states: {} })
   }) {
     this.file = path.join(directory, 'characters.json')
     this.directory = directory
     this.queue = new SerialQueue()
     this.resolveModel = resolveModel
+    this.validateResources = validateResources
   }
-  /** 目录索引与定义一起读取，调用方在 catalog 串行队列内完成比较和发布。 */
+
+  /**
+   * 读取目录的完整持久化状态（包含角色字典、排序列表和对话身份 ID 列表）。
+   */
   async state() {
     return readJson(this.file, { characters: {}, order: [], personas: [] })
   }
-  /** 人格身份必须先通过文件名校验，不能用调用方的 ID 拼接任意路径。 */
+
+  /**
+   * 获取指定对话身份的存储文件路径。
+   * 拼接路径前先校验 ID 格式，防止传入恶意 ID 导致路径穿越。
+   */
   personaFile(id) {
     return path.join(this.directory, 'personas', safeId(id) + '.json')
   }
 
   /**
-   * 按目录顺序列出 AI 角色默认形态的摘要，不包含用户人格、不加载推理模型。
-   * 与 Python 旧设计不同：新角色经目录保存后即可出现在后续查询中并用于创建 Chat，不要求重启应用。
-   * @returns {Promise<Array<{ id: string, displayName: string, avatar: import('../../shared/contracts/common.js').AssetRef | null }>>} 角色摘要。
+   * 按目录顺序获取所有角色的摘要列表（使用各角色的默认形态展示名称和头像）。
+   * @returns {Promise<Array<{ id: string, displayName: string, avatar: import('../../shared/contracts/common.js').AssetRef | null }>>} 角色摘要列表。
    */
   async list() {
     const state = await this.state()
@@ -67,28 +67,25 @@ export class CharacterCatalog {
   }
 
   /**
-   * 读取角色配置。
-   * 不会开始任何语音模型、live2d 等内容的加载。
-   * @param {string} characterId 角色身份。
-   * @returns {Promise<CharacterDefinition | null>} 独立配置快照。
+   * 获取指定角色的完整配置。
+   * @param {string} characterId 角色 ID。
+   * @returns {Promise<CharacterDefinition | null>} 角色配置对象；角色不存在时返回 null。
    */
   async get(characterId) {
     return copy((await this.state()).characters[characterId] ?? null)
   }
 
   /**
-   * 使用 definition.revision 核对并保存角色。防止未预期的覆盖。
-   * 版本比较、保存和版本递增必须原子完成；校验模型只属于一个形态及各默认模型指针有效。
-   * revision 成功后由目录递增一次，调用方不应当主动递增。
-   * 0 仅用于新建且要求该 ID 不存在，首次保存为 1；冲突拒绝，不修改输入对象。
-   * @param {CharacterDefinition} definition 已完成修改、仍携带原版本的完整配置。
-   * @returns {Promise<CharacterDefinition>} 已保存且携带新版本的独立配置；后续读取与解析可见新配置。
+   * 创建或更新一个角色配置。
+   * @param {CharacterDefinition} definition 完整的角色配置。新建角色时 revision 应传 0，更新已有角色时需传入所基于的 revision 版本号以防止并发覆盖。
+   * @returns {Promise<CharacterDefinition>} 保存成功并递增版本号后的角色配置副本。
    */
   async save(definition) {
     return this.queue.run('catalog', async () => {
       const state = await this.state()
       safeId(definition.id)
       requireValue(!['__proto__', 'constructor', 'prototype'].includes(definition.id))
+      // 核对版本号防止并发修改互相覆盖；由后端统一递增 revision，避免调用方自行计算版本号出错。
       requireValue(
         definition.revision === (state.characters[definition.id]?.revision ?? 0),
         'revision_conflict'
@@ -106,6 +103,7 @@ export class CharacterCatalog {
             ? !form.models.length
             : form.models.some((model) => model.id === form.defaultModelId)
         )
+      await this.validateResources(definition)
       const next = copy(definition)
       next.revision += 1
       state.characters[next.id] = next
@@ -116,13 +114,10 @@ export class CharacterCatalog {
   }
 
   /**
-   * 解析身份、演出目录与声音配置；只读取描述和资源元数据，不常驻 Live2D 或 TTS 模型。
-   * 显式无效形态/模型或模型不属于所选形态时拒绝，省略 formId 使用默认形态；已配置但缺失的可选资源保留诊断。
-   * 解析模型映射的 states/on/off 及 stateEffects；无效状态报告问题并从 performances.states 排除，不猜动作名称。
-   * 普通动作目录排除状态专用动作，状态目录只返回键和说明；实际布尔值与待执行目标由 Performance 维护。
-   * @param {string} characterId 角色身份。
-   * @param {{ formId?: string, modelId?: string | null }} options formId 省略时使用默认形态；modelId 省略或为 null 时使用该形态默认模型。
-   * @returns {Promise<CharacterCapabilities>} 可供一次编排使用的只读快照。
+   * 解析指定角色在特定形态和模型下的可用能力（包括人设信息、可用动作/表情/状态列表以及语音配置）。
+   * @param {string} characterId 角色 ID。
+   * @param {{ formId?: string, modelId?: string | null }} options 解析选项。省略 formId 时使用角色的默认形态；省略 modelId 或为 null 时使用该形态的默认模型。
+   * @returns {Promise<CharacterCapabilities>} 角色能力快照及解析过程中发现的问题列表。
    */
   async resolveCapabilities(characterId, options) {
     const character = await this.get(characterId)
@@ -155,6 +150,8 @@ export class CharacterCatalog {
         continue
       }
       states[key] = state.description ?? key
+      // 为什么把状态切换关联的动作加入 excluded：
+      // 状态专属的开/关动作需要通过状态切换接口触发，从普通动作列表中剔除可避免 LLM 在日常台词中误选导致模型状态错乱。
       excluded.add(state.on.motion)
       excluded.add(state.off.motion)
     }
@@ -184,11 +181,10 @@ export class CharacterCatalog {
   }
 
   /**
-   * 根据已解析的形态能力和台词情绪，选出完整的语音合成参考材料或无声降级结果。
-   * 普通生成用已冻结能力，历史重合成先解析当前原形态能力；本方法不重读目录、不重新推断情绪。
-   * @param {CharacterCapabilities} capabilities 一致的形态与声音快照。
-   * @param {string | null} emotion 原台词情绪。
-   * @returns {Promise<import('../../shared/contracts/characters.js').VoiceResolution>} 完整声音材料或同形态降级结果。
+   * 根据角色能力和台词情绪，选择对应的语音合成参考音频与模型权重。
+   * @param {CharacterCapabilities} capabilities 已解析的角色能力快照。
+   * @param {string | null} emotion 台词的情绪标签。若该情绪无专属参考音频，则回退使用默认参考音频。
+   * @returns {Promise<import('../../shared/contracts/characters.js').VoiceResolution>} 匹配到的语音合成参考材料；若未配置可用声音则返回静音降级结果。
    */
   async resolveVoice(capabilities, emotion) {
     const voice = capabilities.voice
@@ -215,9 +211,9 @@ export class CharacterCatalog {
   }
 
   /**
-   * 更新角色的排序。角色排序可能会用于新建对话时的角色列表顺序。
-   * @param {string[]} characterIds 完整的，修改排序后的角色 ID。
-   * @returns {Promise<void>} 仅更新目录顺序，不改角色定义。
+   * 更新角色列表的展示排序。
+   * @param {string[]} characterIds 重新排序后的完整角色 ID 数组（不能遗漏或重复已有角色）。
+   * @returns {Promise<void>}
    */
   async setOrder(characterIds) {
     return this.queue.run('catalog', async () => {
@@ -233,10 +229,10 @@ export class CharacterCatalog {
   }
 
   /**
-   * 删除一个对话身份。
-   * @param {string} personaId 对话身份定义。
-   * @param {number} expectedRevision 所基于版本（防止误删更新的版本）
-   * @returns {Promise<void>} 定义已删除，已有 Chat 的人格快照及头像引用不受影响。
+   * 删除一个用户对话身份（Persona）。
+   * @param {string} personaId 要删除的对话身份 ID。
+   * @param {number} expectedRevision 当前所基于的版本号，用于防止误删已被更新的身份。
+   * @returns {Promise<void>}
    */
   async deletePersona(personaId, expectedRevision) {
     return this.queue.run('catalog', async () => {
@@ -249,9 +245,8 @@ export class CharacterCatalog {
   }
 
   /**
-   * 列出对话身份供用户选择；关联角色的摘要使用当前名称与头像，不将摘要保存为身份快照。
-   * 角色身份通过其默认形态解析名称和头像；来源角色缺失的身份仍保留入口并报告问题，以便编辑修复，不使整个列表失败。
-   * @returns {Promise<import('../../shared/contracts/persona.js').UserPersonaSummary[]>} 当前身份摘要。
+   * 列出所有可选的用户对话身份摘要。
+   * @returns {Promise<import('../../shared/contracts/persona.js').UserPersonaSummary[]>} 对话身份摘要列表。
    */
   async listPersonas() {
     const result = []
@@ -265,6 +260,8 @@ export class CharacterCatalog {
           problem: null
         })
       } catch (error) {
+        // 为什么关联角色缺失时不直接抛出异常：
+        // 若某个身份引用的角色被删除，仍保留该身份项并附带错误信息，方便用户在界面上看到并修复或删除它，而不是让整个列表无法加载。
         result.push({ id, displayName: null, avatar: null, problem: problem(error) })
       }
     }
@@ -272,10 +269,9 @@ export class CharacterCatalog {
   }
 
   /**
-   * 读取对话身份定义。
-   * 如果对话身份是某个角色，那么角色引用将保持引用状态，不会补全为对应角色的 prompt 文本。
-   * @param {string} personaId 对话身份编号。
-   * @returns {Promise<UserPersonaDefinition | null>} 独立定义快照；身份不存在时为 null。
+   * 获取指定用户对话身份的原始定义。
+   * @param {string} personaId 对话身份 ID。
+   * @returns {Promise<UserPersonaDefinition | null>} 对话身份定义；不存在时返回 null。
    */
   async getPersona(personaId) {
     if (!(await this.state()).personas.includes(personaId)) return null
@@ -283,22 +279,22 @@ export class CharacterCatalog {
   }
 
   /**
-   * 保存可复用的对话身份，支持自定义名称/描述或角色引用。
-   * definition.revision 是所基于的版本，0 仅用于新建；版本比较和写入原子完成，成功后递增一次。
-   * 关联角色时，不复制名称、描述或头像；来源角色后续更新不递增此定义的 revision。
-   * @param {UserPersonaDefinition} definition 完整身份定义；不得同时携带自定义文本与角色引用。
-   * @returns {Promise<UserPersonaDefinition>} 已保存且携带新版本的独立定义；冲突拒绝，不修改输入对象。
+   * 创建或更新一个用户对话身份（支持自定义文本或引用某个角色）。
+   * @param {UserPersonaDefinition} definition 完整的身份定义。新建时 revision 为 0，更新时传入当前版本号。
+   * @returns {Promise<UserPersonaDefinition>} 保存成功并递增版本号后的身份定义副本。
    */
   async savePersona(definition) {
     return this.queue.run('catalog', async () => {
       const state = await this.state()
       const previous = await this.getPersona(definition.id)
       requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
+      // 引用角色时只保存 characterId 而不复制角色的名称和描述，这样角色更新后，新建对话时能自动获取到最新的人设信息。
       if (definition.source.kind === 'character') fields(definition.source, ['kind', 'characterId'])
       else {
         requireValue(definition.source.kind === 'custom')
         fields(definition.source, ['kind', 'displayName', 'description', 'avatar'])
       }
+      await this.validateResources(definition)
       const next = copy(definition)
       next.revision += 1
       await writeJson(this.personaFile(next.id), next)
@@ -311,11 +307,9 @@ export class CharacterCatalog {
   }
 
   /**
-   * 按调用时的定义解析实际身份，返回实际的对话身份信息。
-   * 对角色引用，每次调用时都读取当前瞬间的角色名称、描述和头像。
-   * 角色引用采用当前默认形态的名称、描述和头像；返回结果来自一致的定义与角色配置快照。
-   * @param {string} personaId 对话身份编号。
-   * @returns {Promise<import('../../shared/contracts/persona.js').UserPersonaSnapshot>} 实际身份快照；身份或来源角色不存在时拒绝，不静默降级为默认身份。
+   * 解析指定对话身份的实际名称、人设描述和头像（若身份引用了某个角色，则提取该角色当前默认形态的信息）。
+   * @param {string} personaId 对话身份 ID。
+   * @returns {Promise<import('../../shared/contracts/persona.js').UserPersonaSnapshot>} 解析后的实际身份信息快照。
    */
   async resolvePersona(personaId) {
     const definition = await this.getPersona(personaId)

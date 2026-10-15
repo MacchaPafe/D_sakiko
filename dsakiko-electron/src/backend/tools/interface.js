@@ -4,29 +4,34 @@ import { copy, requireValue, fingerprint, SerialQueue, SnapshotBus } from '../co
 /** @typedef {import('../../shared/contracts/tools.js').InteractionRequest} InteractionRequest */
 /** @typedef {import('../../shared/contracts/tools.js').InteractionCompletion} InteractionCompletion */
 /** @typedef {import('../conversation/interface.js').InteractionRegistration} InteractionRegistration */
+
 /**
  * @typedef {object} ToolEntry
- * @property {import('../../shared/contracts/tools.js').ToolDefinition} definition 公开的工具声明。
- * @property {boolean} [frontend] 是否依赖前端交互；此类工具只能使用 async。
- * @property {(access: {chatId: string, interactions: Interactions, reminders?: ReminderWriter}) => import('../../shared/contracts/tools.js').AgentTool['execute']} bind 为本轮绑定窄能力，不交付完整后端。
+ * @property {import('../../shared/contracts/tools.js').ToolDefinition} definition 工具的公开声明信息。
+ * @property {boolean} [frontend] 是否依赖前端用户交互（依赖前端交互的工具必须采用 async 模式）。
+ * @property {(access: {chatId: string, interactions: Interactions, reminders?: ReminderWriter}) => import('../../shared/contracts/tools.js').AgentTool['execute']} bind 为指定对话生成工具执行函数的工厂函数。
  */
+
 /**
  * @typedef {object} InteractionRecord
- * @property {InteractionRequest} request 固定的问题与来源。
- * @property {InteractionRegistration} registration 后端核准的资格。
- * @property {string} material 同一登记身份的材料摘要。
- * @property {InteractionCompletion | null} completion 第一个成功登记的终态，用于幂等确认或拒绝其他答案。
+ * @property {InteractionRequest} request 交互请求内容与来源信息。
+ * @property {InteractionRegistration} registration 后端核准的交互登记凭证。
+ * @property {string} material 请求内容的哈希摘要，用于校验重复请求是否一致。
+ * @property {InteractionCompletion | null} completion 已完成的交互结果（未完成时为 null）。
  */
-/** @typedef {{revision: number, pending: Array<InteractionRequest & {chatId: string}>}} InteractionSnapshot 未完成且仍有效的问题快照。 */
 
-/** 工具目录统一依赖、配置及权限检查；世界书工具由范围绑定注入，不受普通开关替代。 */
+/** @typedef {{revision: number, pending: Array<InteractionRequest & {chatId: string}>}} InteractionSnapshot 当前待处理的前端交互请求快照。 */
+
+/**
+ * 工具目录模块，负责管理可用工具定义，并为对话解析出可执行的工具列表。
+ */
 export class ToolCatalog {
   /**
-   * 绑定工具目录及按 Chat 创建的能力。
-   * @param {object} options 宿主依赖。
-   * @param {ToolEntry[]} [options.entries] 内置工具实现及声明。
-   * @param {Interactions} options.interactions 交互登记能力。
-   * @param {(chatId: string) => ReminderWriter} options.reminders 已限定目标 Chat 的提醒能力。
+   * 创建一个工具目录。
+   * @param {object} options 创建选项。
+   * @param {ToolEntry[]} [options.entries] 注册的工具条目列表（包含工具声明与执行绑定函数）。
+   * @param {Interactions} options.interactions 前端交互管理器，供需要用户交互的工具发起请求。
+   * @param {(chatId: string) => ReminderWriter} options.reminders 为指定对话创建提醒写入器的工厂函数。
    */
   constructor({ entries = [], interactions, reminders }) {
     this.entries = new Map(entries.map((entry) => [entry.definition.name, entry]))
@@ -35,31 +40,26 @@ export class ToolCatalog {
   }
 
   /**
-   * 列出工具目录中可供选择的工具及其声明。
-   * @returns {Promise<import('../../shared/contracts/tools.js').ToolDefinition[]>} 可选择的工具定义；不执行工具。
+   * 列出工具目录中所有可供选择的工具定义。
+   * @returns {Promise<import('../../shared/contracts/tools.js').ToolDefinition[]>} 工具定义列表。
    */
   async list() {
     return [...this.entries.values()].map((entry) => copy(entry.definition))
   }
 
   /**
-   * 将对话选择的工具及其依赖解析为本次可执行的工具集合。
-   * 按 Chat 绑定窄能力，拒绝越界读取与任意指定写路径；一次固定依赖闭包，不在 run 中读全局选择。
-   * 所有工具都记录调用/结果，不提供 visibility 或隐藏通知分支。
-   * 需要前端交互的工具必须声明 async；sync 可以等待后端异步 I/O，但不能等待前端交互结果。
-   * 非空 queryWorldbook 仅在本轮允许 queryTools 时由 Conversation 提供，用来额外注入世界书工具；普通 selection 不替代该开关。
-   * 世界书工具包装固定 origin.kind=tool-query，context 来自 execute 的 ToolExecutionContext；模型参数不含来源或范围。
-   * 只将返回知识转为 ToolOutcome；失败沿用 Problem 处理，不重复收集诊断，不把 trace/source 交给模型。
-   * @param {string} chatId 唯一作用对话。
-   * @param {import('../../shared/contracts/settings.js').ToolSelection} selection 用户选择。
-   * @param {import('../../shared/contracts/tools.js').ToolAccessScope} access 宿主已授权范围。
-   * @param {import('../conversation/worldbook-query-interface.js').BoundWorldbookQuery | null} queryWorldbook 本轮查询窄能力，未启用查询工具时为 null，不可回退读取全局世界书配置。
-   * @returns {Promise<import('../../shared/contracts/tools.js').AgentTool[]>} 后端可执行材料，由装配提供具体函数。
+   * 根据对话选择的工具列表与权限范围，解析出本轮生成可调用的工具实例集合。
+   * @param {string} chatId 当前对话 ID。
+   * @param {import('../../shared/contracts/settings.js').ToolSelection} selection 对话中启用的工具选择配置。
+   * @param {import('../../shared/contracts/tools.js').ToolAccessScope} access 当前宿主环境允许的权限范围。
+   * @param {import('../conversation/worldbook-query-interface.js').BoundWorldbookQuery | null} queryWorldbook 已绑定本轮范围的世界书查询函数；未启用世界书查询工具时传 null。
+   * @returns {Promise<import('../../shared/contracts/tools.js').AgentTool[]>} 可直接供 Agent 调用的工具列表。
    */
   async resolve(chatId, selection, access, queryWorldbook) {
     const ordered = []
     const visited = new Set()
     const visiting = new Set()
+    // 通过深度优先遍历自动补齐工具依赖，并检测是否存在循环依赖。
     const visit = (name) => {
       if (visited.has(name)) return
       requireValue(!visiting.has(name), 'tool_dependency_cycle')
@@ -71,6 +71,8 @@ export class ToolCatalog {
         ),
         'tool_forbidden'
       )
+      // 为什么要求依赖前端交互的工具必须是 async 模式：
+      // 用户何时回答不确定（甚至可能不在线），采用 async 模式可让当前轮次在登记问题后先行结束，待用户回答后再作为新轮次继续对话，避免长期挂起 LLM 请求。
       requireValue(
         ['sync', 'async'].includes(entry.definition.mode) &&
           (!entry.frontend || entry.definition.mode === 'async'),
@@ -94,6 +96,7 @@ export class ToolCatalog {
         reminders: this.reminders?.(chatId)
       })
     }))
+    // 世界书查询工具由当前对话的世界书配置决定是否注入，不混在普通工具勾选列表中。
     if (queryWorldbook)
       result.push({
         name: 'query_worldbook',
@@ -120,24 +123,22 @@ export class ToolCatalog {
 }
 
 /**
- * 已由装配绑定 Chat 的提醒创建能力，只交给工具，不向页面/Conversations 公共管理入口暴露手动添加。
- * 持久化与所属 Chat 保存串行；同调用去重，新 Turn 的重新生成可创建新的提醒。
+ * 绑定到特定对话的提醒写入器，仅供工具在对话过程中创建定时提醒。
  */
 export class ReminderWriter {
   /**
-   * 绑定限定目标 Chat 的提醒写入能力。
-   * @param {(options: {dueAt: string, instruction: string}, source: import('../../shared/contracts/tools.js').ToolExecutionContext) => Promise<import('../../shared/contracts/conversation.js').Reminder>} write 带来源校验的持久化入口。
+   * 创建一个提醒写入器。
+   * @param {(options: {dueAt: string, instruction: string}, source: import('../../shared/contracts/tools.js').ToolExecutionContext) => Promise<import('../../shared/contracts/conversation.js').Reminder>} write 实际执行提醒创建与持久化的回调函数。
    */
   constructor(write) {
     this.write = write
   }
 
   /**
-   * 为绑定的对话创建并保存一条到期后触发角色回复的提醒。
-   * 新提醒分配全应用唯一 UUID，同一次工具调用的通信重试返回同一提醒。
-   * @param {{ dueAt: string, instruction: string }} options 到期时间与内容。
-   * @param {import('../../shared/contracts/tools.js').ToolExecutionContext} source 创建调用身份。
-   * @returns {Promise<import('../../shared/contracts/conversation.js').Reminder>} 已持久化提醒。
+   * 为当前绑定的对话创建一条到期后触发角色主动回复的提醒。
+   * @param {{ dueAt: string, instruction: string }} options 提醒的到期时间（ISO 字符串）与提示指令。
+   * @param {import('../../shared/contracts/tools.js').ToolExecutionContext} source 触发创建的工具调用上下文。
+   * @returns {Promise<import('../../shared/contracts/conversation.js').Reminder>} 创建并保存成功的提醒对象。
    */
   async create(options, source) {
     return this.write(options, source)
@@ -145,18 +146,16 @@ export class ReminderWriter {
 }
 
 /**
- * 宿主交互的窄接口；实例绑定 Chat 与受控宿主。可靠登记时建立 request → Turn/call/组的映射。
- * 前端交互工具统一使用 async；最终结果只路由到 Conversations.acceptInteractionResult，不继续原 Loop。
- * 重启不恢复未完成交互；旧宿主回调没有资格时拒收，不根据 payload 重建资格。
+ * 前端交互管理器，负责登记异步工具向用户发起的交互请求（如提问、选择）并收集用户的最终回答。
  */
 export class Interactions {
   /**
-   * 绑定交互资格校验和结果入队能力；连接数不影响交互是否存活。
-   * @param {object} options 仅由可信后端装配提供。
-   * @param {(request: InteractionRequest) => Promise<InteractionRegistration | null>} options.qualify 核对真实工具调用。
-   * @param {(registration: InteractionRegistration) => boolean | Promise<boolean>} options.isValid 查询原组是否有效。
-   * @param {(completion: InteractionCompletion, registration: InteractionRegistration, request: InteractionRequest) => Promise<void>} options.accept 提交结果，不等待自动轮完成。
-   * @param {Record<string, {requestSchema: object, resultSchema: object}>} [options.kinds] 问题和成功答案的 JSON Schema。
+   * 创建一个前端交互管理器。
+   * @param {object} options 创建选项。
+   * @param {(request: InteractionRequest) => Promise<InteractionRegistration | null>} options.qualify 校验交互请求是否来自真实且仍在运行中的工具调用。
+   * @param {(registration: InteractionRegistration) => boolean | Promise<boolean>} options.isValid 检查已登记的交互请求所属的对话轮次组当前是否仍然有效。
+   * @param {(completion: InteractionCompletion, registration: InteractionRegistration, request: InteractionRequest) => Promise<void>} options.accept 将用户完成的交互结果提交给对话模块的回调函数。
+   * @param {Record<string, {requestSchema: object, resultSchema: object}>} [options.kinds] 各交互类型的请求参数与返回结果 JSON Schema 定义。
    */
   constructor({ qualify, isValid, accept, kinds = {} }) {
     Object.assign(this, { qualify, isValid, accept, kinds })
@@ -167,9 +166,10 @@ export class Interactions {
     this.revision = 0
     this.validator = new Ajv({ strict: false })
   }
+
   /**
-   * 查询未完成且仍有资格的交互；断线或没有客户端不会丢请求。
-   * @returns {Promise<InteractionSnapshot>} 完整待处理问题，不要求客户端持有旧事件。
+   * 获取当前所有未完成且依然有效的前端交互请求列表。
+   * @returns {Promise<InteractionSnapshot>} 待处理交互请求快照。
    */
   async list() {
     const pending = []
@@ -178,23 +178,29 @@ export class Interactions {
         pending.push({ ...copy(record.request), chatId: record.registration.chatId })
     return { revision: this.revision, pending }
   }
-  /** 资格变化也重新投影完整列表，客户端无需自行推导哪些问题已过期。 */
+
+  /**
+   * 重新计算并向所有订阅者推送最新的待处理交互列表。
+   */
   publish() {
     this.revision += 1
     this.list()
       .then((snapshot) => this.bus.emit('pending', snapshot))
       .catch(() => {})
   }
+
   /**
-   * 观察待处理问题列表。
-   * @param {(snapshot: InteractionSnapshot) => void} listener 完整快照接收者。
-   * @returns {Promise<() => void>} 取消观察，不撤销问题。
+   * 订阅待处理交互列表的变更通知（订阅时会立即推送一次当前列表）。
+   * @param {(snapshot: InteractionSnapshot) => void} listener 接收最新待处理交互快照的回调函数。
+   * @returns {Promise<() => void>} 取消订阅的函数。
    */
   async observe(listener) {
     return this.bus.subscribe('pending', listener, await this.list())
   }
-  /** 进程退出时撤销内存交互，不将未完成资格恢复到下一次运行。
-   * @returns {void} 记录和观察者已释放。
+
+  /**
+   * 清空内存中的所有交互记录与订阅者。
+   * @returns {void}
    */
   close() {
     this.requests.clear()
@@ -202,11 +208,10 @@ export class Interactions {
   }
 
   /**
-   * 登记抽签、问答等前端交互请求，可靠受理后立即交还当前工具调用。
-   * 受理不等待展示端连接、交互播放或用户回答；待处理请求由宿主在可用时展示。
-   * @param {import('../../shared/contracts/tools.js').InteractionRequest} request 固定请求身份与交互材料。
-   * @param {AbortSignal} signal 当前执行的取消信号。
-   * @returns {Promise<import('../../shared/contracts/conversation.js').ToolOutcome>} 可靠受理后返回 accepted；受理前失败返回工具失败，不冒充交互已完成。
+   * 登记一个新的前端交互请求（登记成功后立即返回 accepted，不阻塞等待用户作答）。
+   * @param {import('../../shared/contracts/tools.js').InteractionRequest} request 交互请求标识与内容。
+   * @param {AbortSignal} [signal] 当前工具调用的取消信号。
+   * @returns {Promise<import('../../shared/contracts/conversation.js').ToolOutcome>} 工具受理结果（status 为 'accepted'）。
    */
   async request(request, signal) {
     signal?.throwIfAborted()
@@ -237,13 +242,12 @@ export class Interactions {
   }
 
   /**
-   * 接收宿主交互的最终结果，转交对话模块登记并安排后续回复。
-   * 校验已登记请求与宿主来源，重复完成幂等；失败或取消不会制造后续回复。
-   * @param {import('../../shared/contracts/tools.js').InteractionCompletion} completion 宿主最终回调。
-   * @returns {Promise<void>} 已向对话模块登记结果，不代表后续 Turn 已受理。
+   * 提交前端交互的完成结果，并将其转交给对话模块处理后续回复。
+   * @param {import('../../shared/contracts/tools.js').InteractionCompletion} completion 用户交互的完成状态与回答内容。
+   * @returns {Promise<void>}
    */
   async complete(completion) {
-    // 竞争答案在同一身份下串行裁定；只有 accept 成功才锁定答案，入队失败允许相同答案重试。
+    // 多个客户端可能同时提交回答，按 requestId 串行化以确保只采纳第一个成功入队的回答；若相同的回答重复提交则幂等放行。
     return this.queue.run(completion.requestId, async () => {
       const record = this.requests.get(completion.requestId)
       requireValue(record && (await this.isValid(record.registration)), 'interaction_expired')

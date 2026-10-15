@@ -97,7 +97,7 @@ def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: 
 class ProcessWorker:
     """主进程通过轮询管道等待结果，加载模型期间控制接口仍可响应。"""
 
-    def __init__(self, voice: VoiceProfile, pretrained: str, device: str, directory: str) -> None:
+    def __init__(self, voice: VoiceProfile, pretrained: str, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
         """创建受预算约束的单模型进程。"""
         context = multiprocessing.get_context("spawn")
         self.pipe, child = context.Pipe()

@@ -3,44 +3,46 @@ import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '.
 
 /** @typedef {import('../../shared/contracts/presentation.js').Guide} Guide */
 /** @typedef {import('../../shared/contracts/presentation.js').Scene} Scene */
+
 /**
- * @typedef {object} ScheduledGuide 后端计划项，仅含资源引用，不含音频或模型实例。
- * @property {string} id 计划项身份。
- * @property {Guide | null} guide 就绪材料；终态后释放内容，但保留 finish 供等待者查询。
- * @property {string} sequenceId 所属序列。
- * @property {number} readyAt 材料就绪的单调时标；未就绪为 Infinity。
- * @property {number} createdAt 追加时标，补算时不得在追加前开始。
- * @property {number} durationMs 固定计划时长。
- * @property {number | null} startedAt 单调时钟上的计划开始时间。
- * @property {number | null} endsAt 计划截止时间，不随客户端实际播放改变。
- * @property {import('../../shared/contracts/presentation.js').GuideFinish | null} finish 一次固定的终态。
- * @property {Set<(finish: import('../../shared/contracts/presentation.js').GuideFinish) => void>} waiters 等待者，单独取消不删除计划项。
- * @property {boolean} transition 是否为过渡内容，不计入 Turn 普通演出完成条件。
- * @property {boolean} recurring 是否驻留，直到被停止或普通内容抢占。
- * @property {import('../../shared/contracts/presentation.js').ModelStateTarget | null} target 显式状态目标。
- * @property {import('../../shared/contracts/presentation.js').ModelStateEffect[]} [effects] 开始时冻结的状态影响。
- * @property {string} [effectsModel] 开始时的模型材料摘要，防止旧动作改写换装后的状态。
+ * 后端演出计划项记录。
+ * @typedef {object} ScheduledGuide
+ * @property {string} id 计划项唯一 ID。
+ * @property {Guide | null} guide 演出内容材料（结算完成后置为 null 以释放内存）。
+ * @property {string} sequenceId 所属演出序列 ID。
+ * @property {number} readyAt 材料准备就绪的单调时钟时间戳（未就绪时为 Infinity）。
+ * @property {number} createdAt 计划项创建时的单调时钟时间戳。
+ * @property {number} durationMs 计划持续时长（毫秒）。
+ * @property {number | null} startedAt 计划开始播放的单调时钟时间戳。
+ * @property {number | null} endsAt 计划结束的单调时钟时间戳。
+ * @property {import('../../shared/contracts/presentation.js').GuideFinish | null} finish 计划项的结算终态。
+ * @property {Set<(finish: import('../../shared/contracts/presentation.js').GuideFinish) => void>} waiters 等待该计划项结束的回调函数集合。
+ * @property {boolean} transition 是否为过渡动作计划项。
+ * @property {boolean} recurring 是否为持续循环驻留动作（直到被主动停止或被普通台词演出打断）。
+ * @property {import('../../shared/contracts/presentation.js').ModelStateTarget | null} target 显式指定的模型状态切换目标。
+ * @property {import('../../shared/contracts/presentation.js').ModelStateEffect[]} [effects] 演出开始时锁定的模型状态变更效果。
+ * @property {string} [effectsModel] 演出开始时角色模型配置的指纹，用于防止中途换装后旧动作错误修改新模型的状态。
  */
 
 /**
+ * 演出序列的运行时状态。
  * @typedef {object} SequenceState
- * @property {string} id 本次后端运行的序列身份。
- * @property {Scene} scene 当前场景快照。
- * @property {string[]} queue 普通计划项顺序，包含当前项。
- * @property {string[]} transitions 过渡项顺序，普通内容就绪时被清除。
- * @property {string | null} current 当前普通项身份。
- * @property {string | null} transition 当前过渡项身份。
- * @property {number} revision 观察版本，不是持久化版本。
- * @property {boolean} closed 是否已关闭。
- * @property {ReturnType<typeof setTimeout> | null} timer 下一计划截止时间的唤醒句柄。
- * @property {Map<string, import('../../shared/contracts/presentation.js').ModelStateSnapshot>} modelStates 计划状态；未知值保持 null。
- * @property {Map<string, object>} mappings 每个演员位置的模型映射材料。
- * @property {import('../../shared/contracts/presentation.js').PerformanceSelection} defaultPresentation 空闲展示选择。
+ * @property {string} id 演出序列唯一 ID。
+ * @property {Scene} scene 当前场景与演员位置快照。
+ * @property {string[]} queue 普通台词演出计划项 ID 队列（包含当前正在演出的项）。
+ * @property {string[]} transitions 过渡动作计划项 ID 队列（当普通台词演出就绪时会被自动清空）。
+ * @property {string | null} current 当前正在演出的普通计划项 ID。
+ * @property {string | null} transition 当前正在演出的过渡计划项 ID。
+ * @property {number} revision 状态快照递增版本号。
+ * @property {boolean} closed 序列是否已关闭。
+ * @property {ReturnType<typeof setTimeout> | null} timer 驱动下一个计划项结束结算的定时器句柄。
+ * @property {Map<string, import('../../shared/contracts/presentation.js').ModelStateSnapshot>} modelStates 各演员位置的模型状态记录。
+ * @property {Map<string, object>} mappings 各演员位置的模型动作与状态映射配置。
+ * @property {import('../../shared/contracts/presentation.js').PerformanceSelection} defaultPresentation 空闲时的默认动作与表情选择。
  */
 
 /**
- * 后端演出调度：所有 sequence 独立按计划时间推进，不存在前后台或播放控制者。
- * 完成表示计划区间结束，不宣称任何客户端实际播放成功；没有订阅者也照常推进。
+ * 演出时间线与状态管理模块，负责在后端按计划时长推进台词演出、过渡动作与模型状态切换。
  */
 export class Performance {
   /** @type {Map<string, SequenceState>} */
@@ -52,14 +54,14 @@ export class Performance {
   closed = false
 
   /**
-   * 绑定后端计划时钟与模型元数据，不接收客户端播放反馈。
-   * @param {object} [options] 宿主依赖与无声阅读策略。
-   * @param {() => number} [options.now] 毫秒单调时钟，不能用会被校时的墙上时间。
-   * @param {typeof setTimeout} [options.setTimer] 截止时间唤醒能力。
-   * @param {typeof clearTimeout} [options.clearTimer] 取消唤醒能力。
-   * @param {(presentation: import('../../shared/contracts/presentation.js').ModelPresentation) => Promise<object>} [options.resolveModel] 模型映射解析能力。
-   * @param {number} [options.readingMsPerCharacter] 无音频时每字估计阅读时间。
-   * @param {number} [options.minimumReadingMs] 非空文本的最短阅读时间。
+   * 创建一个演出管理器。
+   * @param {object} [options] 创建选项。
+   * @param {() => number} [options.now] 获取当前单调时钟毫秒数的函数（默认使用 perf_hooks.performance.now）。
+   * @param {typeof setTimeout} [options.setTimer] 设置定时器的函数（测试时可替换为虚拟时钟）。
+   * @param {typeof clearTimeout} [options.clearTimer] 清除定时器的函数。
+   * @param {(presentation: import('../../shared/contracts/presentation.js').ModelPresentation) => Promise<object>} [options.resolveModel] 自定义函数，根据模型信息解析动作、表情与状态定义。
+   * @param {number} [options.readingMsPerCharacter] 无语音时，按文本字数估算阅读时长的单字毫秒数，默认 80ms。
+   * @param {number} [options.minimumReadingMs] 无语音时，单句非空台词的最短持续毫秒数，默认 800ms。
    */
   constructor({
     now = () => clock.now(),
@@ -79,21 +81,27 @@ export class Performance {
     })
   }
 
-  /** 运行期身份关闭后失效，不能用旧客户端请求重新创建序列。 */
+  /**
+   * 获取指定 ID 的活动演出序列（若不存在或已关闭则抛出异常）。
+   */
   sequence(id) {
     const sequence = this.sequences.get(id)
     requireValue(sequence && !sequence.closed, 'sequence_unavailable', '演出序列不存在或已经关闭。')
     return sequence
   }
 
-  /** 演员位置必须唯一，后续 guide 和模型状态都用位置身份寻址。 */
+  /**
+   * 校验场景中的演员位置（slot）列表是否合法且 ID 唯一。
+   */
   validateScene(scene) {
     requireValue(scene && Array.isArray(scene.slots))
     requireValue(new Set(scene.slots.map((slot) => slot.id)).size === scene.slots.length)
     for (const slot of scene.slots) requireValue(typeof slot.id === 'string' && slot.id.length > 0)
   }
 
-  /** 音频优先决定发声区间，动作时长可延长计划；无音频才按 Unicode 字符数估算。 */
+  /**
+   * 计算单条演出计划项的持续时长（优先采用音频时长，无音频时按字符数估算，并与动作时长取较大值）。
+   */
   duration(guide) {
     const audioMs = guide.audio?.durationMs
     if (audioMs != null)
@@ -106,9 +114,10 @@ export class Performance {
     return Math.max(audioMs ?? textMs, motionMs)
   }
 
-  /** 建立持续可追加的计划队列；不选择任何客户端的展示位置。
-   * @param {Scene} scene 场景快照。
-   * @returns {Promise<string>} 本次后端运行中的 sequence 身份。
+  /**
+   * 创建一个新的演出序列。
+   * @param {Scene} scene 初始场景与演员位置配置。
+   * @returns {Promise<string>} 新创建的演出序列 ID。
    */
   async createSequence(scene) {
     requireValue(!this.closed, 'backend_closed', '后端已关闭。')
@@ -132,7 +141,9 @@ export class Performance {
     return id
   }
 
-  /** 缺失模型材料降级为空能力，文字与音频仍可继续演出。 */
+  /**
+   * 解析场景中各演员位置的模型映射配置（若某个模型资源缺失则降级为空对象，不阻断字幕与音频演出）。
+   */
   async mappings(scene) {
     const mappings = new Map()
     for (const slot of scene.slots) {
@@ -147,7 +158,10 @@ export class Performance {
     }
     return mappings
   }
-  /** 只接收当前模型声明的状态影响，不把任意动作名当作状态切换指令。 */
+
+  /**
+   * 提取计划项所触发的模型状态变更效果。
+   */
   effects(sequence, record) {
     const mapping = sequence.mappings.get(record.guide.slotId) ?? {}
     const effects = [
@@ -157,7 +171,10 @@ export class Performance {
     if (record.target) effects.push({ state: record.target.state, value: record.target.value })
     return effects.filter((effect) => mapping.states?.[effect.state])
   }
-  /** 动作尚未计划完成时状态设为未知，同时固定模型身份供结算核对。 */
+
+  /**
+   * 在计划项开始演出时记录其状态变更效果，并将受影响的模型状态暂时设为未确定（null），直到动作完整结束时才写入目标状态。
+   */
   startEffects(sequence, record) {
     record.effects = this.effects(sequence, record)
     record.effectsModel = fingerprint(
@@ -175,7 +192,10 @@ export class Performance {
       sequence.modelStates.set(key, state)
     }
   }
-  /** 先构造并校验材料，再由批量追加统一入队，避免失败后留下半批 guide。 */
+
+  /**
+   * 校验并构造单条计划项记录。
+   */
   makeGuide(sequence, guide, transition = false) {
     requireValue(
       sequence.scene.slots.some((slot) => slot.id === guide.slotId),
@@ -211,14 +231,16 @@ export class Performance {
     }
   }
 
-  /** 原子追加普通演出材料；队首未就绪时禁止跳过。
-   * @param {string} sequenceId 目标序列。
-   * @param {Guide[]} guides 有序材料。
-   * @returns {Promise<string[]>} 对应的 guide 身份。
+  /**
+   * 向演出序列末尾批量追加普通台词演出计划项。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @param {Guide[]} guides 按顺序排列的演出内容列表。
+   * @returns {Promise<string[]>} 新追加的各计划项 ID 列表。
    */
   async appendGuides(sequenceId, guides) {
     const sequence = this.sequence(sequenceId)
     requireValue(Array.isArray(guides) && guides.length <= 10000)
+    // 先全部校验并构造完毕再统一入队，防止数组中途某一项校验失败时留下半批已入队的计划项。
     const records = guides.map((guide) => this.makeGuide(sequence, guide))
     for (const record of records) {
       this.guides.set(record.id, record)
@@ -229,10 +251,11 @@ export class Performance {
     return records.map((record) => record.id)
   }
 
-  /** 追加等待普通内容时的过渡计划；正在普通演出时忽略。
-   * @param {string} sequenceId 目标序列。
-   * @param {import('../../shared/contracts/presentation.js').TransitionGuide[]} guides 动作材料。
-   * @returns {Promise<string[]>} 接受的 guide 身份。
+  /**
+   * 在空闲或等待普通台词就绪期间，向序列追加过渡动作计划项（若当前正在播放普通台词则直接忽略并返回空数组）。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @param {import('../../shared/contracts/presentation.js').TransitionGuide[]} guides 过渡动作内容列表。
+   * @returns {Promise<string[]>} 已接受的过渡计划项 ID 列表。
    */
   async appendTransitionGuides(sequenceId, guides) {
     const sequence = this.sequence(sequenceId)
@@ -250,9 +273,9 @@ export class Performance {
   }
 
   /**
-   * 清理全部过渡计划，并结算其等待者。
-   * @param {string} sequenceId 目标序列。
-   * @returns {Promise<void>} 普通计划内容保持不变。
+   * 停止并清空指定序列中的所有过渡动作计划项。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @returns {Promise<void>}
    */
   async stopTransitionGuide(sequenceId) {
     const sequence = this.sequence(sequenceId)
@@ -260,7 +283,10 @@ export class Performance {
     this.publish(sequence)
   }
 
-  /** 普通演出抢占时统一移除过渡项，不能把被打断的目标动作结算为成功。 */
+  /**
+   * 将所有未完成的过渡计划项结算为已移除（removed）。
+   * 当普通台词就绪并抢占演出时调用此方法，避免把半途被打断的过渡动作误判为正常播放完成（completed）。
+   */
   clearTransitions(sequence) {
     for (const id of [...sequence.transitions])
       this.finish(sequence, this.guides.get(id), 'removed')
@@ -268,10 +294,11 @@ export class Performance {
     sequence.transition = null
   }
 
-  /** 将模型逻辑状态设为目标；快照表示计划目标，实际实例状态由各客户端持有。
-   * @param {string} sequenceId 目标序列。
-   * @param {import('../../shared/contracts/presentation.js').ModelStateTarget} target 演员位置、状态键与布尔目标。
-   * @returns {Promise<string | null>} 过渡 guide，或无需新增。
+  /**
+   * 切换指定演员位置的模型布尔状态（如戴面具/摘面具），并排入对应的状态切换过渡动作。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @param {import('../../shared/contracts/presentation.js').ModelStateTarget} target 目标演员位置、状态名称与目标布尔值。
+   * @returns {Promise<string | null>} 排入的过渡计划项 ID；若当前已在目标状态或正在进行普通演出则返回 null。
    */
   async setModelState(sequenceId, target) {
     const sequence = this.sequence(sequenceId)
@@ -280,6 +307,7 @@ export class Performance {
     requireValue(slot?.presentation, 'unsupported_state', '此演员没有模型状态能力。')
     const before = fingerprint(slot.presentation)
     const mapping = await this.resolveModel(copy(slot.presentation))
+    // 异步解析模型配置期间如果演员更换了模型，拒绝本次状态切换，防止用旧模型的动作驱动新模型。
     requireValue(
       !sequence.closed &&
         fingerprint(
@@ -331,10 +359,10 @@ export class Performance {
   }
 
   /**
-   * 为尚未就绪的普通 guide 提供最终音频；迟到材料不能覆盖既有内容。
-   * @param {string} guideId 目标计划项。
-   * @param {import('../../shared/contracts/presentation.js').GuideMaterials} materials 音频或明确的无声结果。
-   * @returns {Promise<boolean>} 本次是否使其就绪；已就绪或终态返回 false。
+   * 为尚未就绪的演出计划项补充合成完毕的音频（或静音降级结果），使其进入可播放就绪状态。
+   * @param {string} guideId 目标计划项 ID。
+   * @param {import('../../shared/contracts/presentation.js').GuideMaterials} materials 音频资源与时长信息（静音时 audio 为 null）。
+   * @returns {Promise<boolean>} 若成功将该计划项更新为就绪则返回 true；若此前已就绪或已结束则返回 false。
    */
   async resolveGuide(guideId, materials) {
     const record = this.guides.get(guideId)
@@ -351,24 +379,27 @@ export class Performance {
   }
 
   /**
-   * 删除目标 guide，包括计划当前句；不根据客户端播放位置判断。
-   * @param {string[]} guideIds 目标集合，重复或已终态项不会重复结算。
-   * @returns {Promise<string[]>} 实际移除的身份。
+   * 从演出序列中移除指定的计划项（包括当前正在演出的计划项）。
+   * @param {string[]} guideIds 要移除的计划项 ID 列表。
+   * @returns {Promise<string[]>} 实际被移除的计划项 ID 列表。
    */
   async removeGuides(guideIds) {
     return this.remove(guideIds, false)
   }
 
   /**
-   * 原子保留操作生效时的计划当前句，删除目标集合中的后续内容。
-   * @param {string[]} guideIds 目标集合。
-   * @returns {Promise<string[]>} 实际移除的身份；当前句不在其中。
+   * 保留序列中当前正在演出的计划项，移除指定列表中其余尚未开始演出的后续计划项。
+   * @param {string[]} guideIds 待清理的计划项 ID 列表。
+   * @returns {Promise<string[]>} 实际被移除的计划项 ID 列表（不包含被保留的当前句）。
    */
   async discardPendingGuides(guideIds) {
     return this.remove(guideIds, true)
   }
 
-  /** 先按当前时钟补算，再判断哪句应保留，避免定时器延迟导致保留错误的旧句。 */
+  /**
+   * 移除计划项的内部实现。
+   * 在判断哪些项属于“当前正在演出”之前先调用 advance 补算时间线，防止因定时器回调延迟而误保留事实上已经到点结束的旧句。
+   */
   remove(ids, preserveCurrent) {
     const sequences = new Set()
     for (const id of ids) {
@@ -393,10 +424,10 @@ export class Performance {
   }
 
   /**
-   * 更新场景快照；不得删除仍被未完成内容使用的位置。
-   * @param {string} sequenceId 目标序列。
-   * @param {Scene} scene 新场景，模型更换会清除旧模型的逻辑状态。
-   * @returns {Promise<void>} 场景已更新并发布。
+   * 更新演出序列的场景配置与演员位置布局（若某个演员更换了模型，会自动清除其旧模型的状态记录）。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @param {Scene} scene 新的场景配置（不能删除仍被未完成计划项占用的演员位置）。
+   * @returns {Promise<void>}
    */
   async setScene(sequenceId, scene) {
     const sequence = this.sequence(sequenceId)
@@ -427,10 +458,10 @@ export class Performance {
   }
 
   /**
-   * 设置空闲或等待材料时的逻辑展示选择。
-   * @param {string} sequenceId 目标序列。
-   * @param {import('../../shared/contracts/presentation.js').PerformanceSelection} selection 动作与表情选择。
-   * @returns {Promise<void>} 默认选择已发布，不新增普通演出内容。
+   * 设置序列在空闲或等待音频就绪时的默认动作与表情选择。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @param {import('../../shared/contracts/presentation.js').PerformanceSelection} selection 默认动作与表情配置。
+   * @returns {Promise<void>}
    */
   async setDefaultPresentation(sequenceId, selection) {
     const sequence = this.sequence(sequenceId)
@@ -438,7 +469,10 @@ export class Performance {
     this.publish(sequence)
   }
 
-  /** 每项只结算一次；被移除的动作不能确认状态已到目标，模型更换后的状态也不能被旧效果覆盖。 */
+  /**
+   * 结算单个计划项并唤醒所有等待该项结束的调用方。
+   * 仅当计划项正常完成（completed）且演员中途未更换模型时，才将状态效果正式写入 modelStates。
+   */
   finish(sequence, record, outcome) {
     if (!record || record.finish) return
     record.finish = { guideId: record.id, outcome, problem: null }
@@ -470,7 +504,9 @@ export class Performance {
     this.publish(sequence, [record.finish])
   }
 
-  /** 按截止时间补算计划；事件循环晚唤醒不能让所有后续句累计延迟。 */
+  /**
+   * 根据当前单调时钟推进序列时间线，结算已到期的计划项并启动下一条已就绪的计划项。
+   */
   advance(sequence) {
     if (sequence.closed) return
     if (sequence.timer) this.clearTimer(sequence.timer)
@@ -486,7 +522,8 @@ export class Performance {
       const next = this.guides.get(sequence.queue[0])
       if (!next?.guide.ready) break
       this.clearTransitions(sequence)
-      // 可以补算连续已就绪内容，但不能把尚未到达的音频或新追加内容回填到过去播放。
+      // 为什么取 anchor、readyAt 和 createdAt 的最大值作为开始时间：
+      // 若 Node.js 事件循环定时器略有延迟，已就绪的后续句可紧接上一句结束时间（anchor）补算推进，避免累计延迟；但绝不能早于该句实际创建或音频就绪的时刻开始。
       next.startedAt = Math.max(anchor, next.readyAt, next.createdAt)
       next.endsAt = next.startedAt + next.durationMs
       this.startEffects(sequence, next)
@@ -522,7 +559,10 @@ export class Performance {
     }
   }
 
-  /** 交付一次时间锚点，客户端据此本地推算逐字进度，不需要每帧请求后端。 */
+  /**
+   * 构造指定演出序列当前的进度快照。
+   * 快照中附带服务端时间戳（serverTimeMs）与已播放时长（elapsedMs），供前端在本地平滑推算逐字字幕进度，无需后端逐帧推送。
+   */
   snapshot(sequence) {
     const now = this.now()
     const progress = (id) => {
@@ -557,16 +597,18 @@ export class Performance {
     }
   }
 
-  /** 版本化完整快照用于重连恢复，finished 只通知本次新结算的项。 */
+  /**
+   * 向订阅者广播序列的最新快照与刚结束的计划项列表。
+   */
   publish(sequence, finished = []) {
     sequence.revision += 1
     this.bus.emit(sequence.id, { snapshot: this.snapshot(sequence), finished, problem: null })
   }
 
   /**
-   * 获取权威计划快照，包含客户端本地计算进度所需的时标与当前材料。
-   * @param {string} sequenceId 目标序列。
-   * @returns {Promise<import('../../shared/contracts/presentation.js').SequenceSnapshot>} 查询时已补算的独立快照。
+   * 获取指定演出序列当前的进度与状态快照。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @returns {Promise<import('../../shared/contracts/presentation.js').SequenceSnapshot>} 序列当前的完整状态快照。
    */
   async getProgress(sequenceId) {
     const sequence = this.sequence(sequenceId)
@@ -575,10 +617,10 @@ export class Performance {
   }
 
   /**
-   * 订阅时立即交付当前快照，之后接收版本化变更；取消监听不改变队列。
-   * @param {string} sequenceId 目标序列。
-   * @param {(update: import('../../shared/contracts/presentation.js').PerformanceUpdate) => void} listener 完整更新接收者。
-   * @returns {() => void} 取消监听。
+   * 订阅指定演出序列的状态更新（订阅时会立即推送一次当前状态快照）。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @param {(update: import('../../shared/contracts/presentation.js').PerformanceUpdate) => void} listener 接收演出更新的回调函数。
+   * @returns {() => void} 取消订阅的函数。
    */
   observe(sequenceId, listener) {
     const sequence = this.sequence(sequenceId)
@@ -591,10 +633,10 @@ export class Performance {
   }
 
   /**
-   * 等待计划终态；取消此等待不删除 guide。
-   * @param {string} guideId 计划项身份。
-   * @param {AbortSignal} [signal] 只取消当前等待。
-   * @returns {Promise<import('../../shared/contracts/presentation.js').GuideFinish>} 完成、移除或关闭终态。
+   * 等待指定的演出计划项播放结束（或被移除、关闭）。
+   * @param {string} guideId 计划项 ID。
+   * @param {AbortSignal} [signal] 控制本次等待的取消信号（取消等待不会移除该计划项本身）。
+   * @returns {Promise<import('../../shared/contracts/presentation.js').GuideFinish>} 计划项的结束状态（completed、removed 或 closed）。
    */
   async waitForGuideFinish(guideId, signal) {
     const record = this.guides.get(guideId)
@@ -614,9 +656,9 @@ export class Performance {
   }
 
   /**
-   * 关闭序列并结算全部等待，重复关闭无副作用。
-   * @param {string} sequenceId 目标序列。
-   * @returns {Promise<void>} 已释放计时器和计划项，旧 guide 身份不再可查询。
+   * 关闭指定的演出序列，清理其定时器并将所有未完成的计划项结算为已关闭（closed）。
+   * @param {string} sequenceId 目标演出序列 ID。
+   * @returns {Promise<void>}
    */
   async closeSequence(sequenceId) {
     const sequence = this.sequences.get(sequenceId)
@@ -631,8 +673,8 @@ export class Performance {
   }
 
   /**
-   * 宿主退出时释放所有定时器与等待，不等待前端。
-   * @returns {Promise<void>} 全部序列关闭，不删除 Chat 存档。
+   * 关闭演出管理器，关闭所有序列并释放全部定时器与订阅。
+   * @returns {Promise<void>}
    */
   async close() {
     this.closed = true

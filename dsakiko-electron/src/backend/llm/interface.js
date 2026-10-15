@@ -9,19 +9,17 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
 
 /**
  * @typedef {object} AgentCharacter
- * @property {string} id 允许发言的角色。
- * @property {string} formId 本次形态。
- * @property {string} displayName 名称快照。
- * @property {string} description 形态描述及语气材料。
- * @property {Pick<import('../../shared/contracts/presentation.js').PerformanceCatalog, 'motions' | 'expressions'>} performances 本次普通演出目录，不包含目标状态能力或状态专用动作。
+ * @property {string} id 角色 ID。
+ * @property {string} formId 当前形态 ID。
+ * @property {string} displayName 角色展示名称。
+ * @property {string} description 角色人设与语气描述。
+ * @property {Pick<import('../../shared/contracts/presentation.js').PerformanceCatalog, 'motions' | 'expressions'>} performances 可供模型选择的普通动作与表情目录。
  */
 
-/** @typedef {Pick<import('../../shared/contracts/conversation.js').CharacterLine, 'id' | 'speakerId' | 'formId' | 'text' | 'translation' | 'emotion' | 'performance'>} ContextLine 历史形态可能因导入缺失而未解析，不伪造形态。 */
+/** @typedef {Pick<import('../../shared/contracts/conversation.js').CharacterLine, 'id' | 'speakerId' | 'formId' | 'text' | 'translation' | 'emotion' | 'performance'>} ContextLine 用于构建历史上下文的角色台词摘要。 */
 
 /**
- * 临时语义投影保留 assistant 分组、reasoning 类别和 callId；不以扁平展示反推历史。
- * 缺图在所属用户内容中追加不可读取说明并保留问题，不伪造图像；附件可用性涵盖本次和历史材料。
- * 摘要投影仅取最后有效 abstract 及其后文，原存档不裁掉。
+ * 用于构建模型提示词的单条上下文消息。
  * @typedef {{ messageId: string } & ({ kind: 'user', source: import('../../shared/contracts/conversation.js').UserMessage['source'], text: string,
  *   attachments: import('../../shared/contracts/conversation.js').Attachment[], unavailableAttachments: string[] }
  *   | { kind: 'assistant', parts: Array<import('../../shared/contracts/conversation.js').ReasoningPart
@@ -30,117 +28,98 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  *   | { kind: 'abstract', text: string })} ContextMessage
  */
 
-/** @typedef {Extract<ContextMessage, { kind: 'user' }>} ContextUserMessage 仅输入消息投影。 */
+/** @typedef {Extract<ContextMessage, { kind: 'user' }>} ContextUserMessage 用户输入消息的上下文结构。 */
 
 /**
- * 保留 Turn 边界，预算裁剪不能拆散响应和对应结果；不传原 Chat 或可写消息对象。
+ * 用于构建模型上下文的单个对话轮次。
  * @typedef {object} ContextTurn
- * @property {string} turnId 来源 Turn 身份。
- * @property {ContextMessage[]} messages 已应用最后有效摘要规则的有序投影。
+ * @property {string} turnId 轮次 ID。
+ * @property {ContextMessage[]} messages 该轮次内的有序消息列表。
  */
 
-/** @typedef {Required<Omit<import('../../shared/contracts/settings.js').GenerationOptions, 'connectionId' | 'modelId'>>} ResolvedGenerationOptions 已解析的生成值，连接与模型仅由 connection 指定。 */
+/** @typedef {Required<Omit<import('../../shared/contracts/settings.js').GenerationOptions, 'connectionId' | 'modelId'>>} ResolvedGenerationOptions 已合并默认值的完整生成配置。 */
 
 /**
  * @typedef {object} GeneratedLine
- * @property {string} id 本次输出稳定句身份，重试不能为已交付句重新生成 ID。
- * @property {string} speakerId 本轮角色。
- * @property {string} formId 本轮形态。
- * @property {string} text 完整合法正文。
- * @property {string | null} translation 翻译。
- * @property {string | null} emotion 合法情绪。
- * @property {import('../../shared/contracts/presentation.js').PerformanceSelection} performance 本轮目录中的演出选择。
+ * @property {string} id 台词唯一 ID。
+ * @property {string} speakerId 发言角色 ID。
+ * @property {string} formId 发言角色的形态 ID。
+ * @property {string} text 台词正文。
+ * @property {string | null} translation 台词翻译。
+ * @property {string | null} emotion 情绪标签。
+ * @property {import('../../shared/contracts/presentation.js').PerformanceSelection} performance 模型选择的动作与表情。
  */
 
 /**
- * 同一次非流式模型响应的有序增量：先接受实际 reasoning/调用，台词完成校验后再追加到同一容器。
- * appendParts 只追加此前未接受的稳定身份；一份响应仅有一个 responseId，不重复交付最终台词。
- * 修复请求是新响应；不能把修复输出伪装成原响应或把失败原文当台词。不是 token 流接口。
+ * 单次模型响应的内容增量通知（包含思考过程、工具调用或最终台词）。
  * @typedef {object} ResponseUpdate
- * @property {string} responseId 稳定响应身份，作为 AssistantMessage.id。
+ * @property {string} responseId 本次模型响应的唯一 ID（对应 AssistantMessage.id）。
  * @property {Array<import('../../shared/contracts/conversation.js').ReasoningPart
- *   | import('../../shared/contracts/conversation.js').ToolCallPart | { id: string, kind: 'dialogue', lines: GeneratedLine[] }>} appendParts 待接受的内容。
- * @property {import('../../shared/contracts/common.js').Metadata} protocol 必要协议材料，限脱敏白名单。
+ *   | import('../../shared/contracts/conversation.js').ToolCallPart | { id: string, kind: 'dialogue', lines: GeneratedLine[] }>} appendParts 本次追加到该响应中的内容片段。
+ * @property {import('../../shared/contracts/common.js').Metadata} protocol 附加协议元数据。
  */
 
 /**
  * @typedef {object} GenerationRequest
- * @property {string} turnId 本次已受理 UUID，用于工具调用去重和来源关联，不授权读取 Chat。
- * @property {import('../../shared/contracts/conversation.js').DialogueMode} mode 编排方式。
- * @property {AgentCharacter[]} characters 一次固定的角色材料。
- * @property {{ displayName: string, description: string } | null} userPersona 从 Chat 固定人格提取，不包含头像/来源/能力。
- * @property {ContextTurn[]} history 当前输入之前的轮次投影，保留完整裁剪单位。
- * @property {{ kind: 'message', message: ContextUserMessage } | { kind: 'scenario' }} input 手动/内部消息投影或主动情景命令。
- * @property {import('../../shared/contracts/settings.js').ScenarioSettings | null} scenario 固定情境，拼入 User Prompt，不伪造存档用户输入。
- * @property {ResolvedGenerationOptions} options 已完整解析的生成设置，不接收模板文本或路径，禁止下层再读全局覆盖。
- * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 后端临时连接快照，与附件准备使用同一作用域。
- * @property {string[]} supplementalContext 允许直接供模型使用的内容，不含检索诊断。
- * @property {import('../../shared/contracts/tools.js').AgentTool[]} tools 已解析依赖和权限且固定的工具，不隐式注入未选择工具。
+ * @property {string} turnId 当前对话轮次 ID。
+ * @property {import('../../shared/contracts/conversation.js').DialogueMode} mode 对话编排模式（单角色聊天或小剧场）。
+ * @property {AgentCharacter[]} characters 本轮参与的角色信息列表。
+ * @property {{ displayName: string, description: string } | null} userPersona 当前用户对话身份的名称与描述。
+ * @property {ContextTurn[]} history 当前轮次之前的历史对话上下文。
+ * @property {{ kind: 'message', message: ContextUserMessage } | { kind: 'scenario' }} input 本轮触发输入（用户消息或小剧场情景指令）。
+ * @property {import('../../shared/contracts/settings.js').ScenarioSettings | null} scenario 小剧场情景设定。
+ * @property {ResolvedGenerationOptions} options 本轮使用的生成参数配置。
+ * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 本轮使用的模型连接与能力快照。
+ * @property {string[]} supplementalContext 额外补充到系统提示词中的背景知识列表。
+ * @property {import('../../shared/contracts/tools.js').AgentTool[]} tools 本轮允许模型调用的工具列表。
  */
 
 /**
- * 依次 await 接受，再继续执行；回调不是可丢弃的 UI 通知。
- * 保存故障后 Conversation 可接受到内存并暂停新受理；拒绝接受时 Agent 停止推进，不重放工具。
- * 世界书诊断由 Conversation 绑定的查询函数单独接收，不增加 Agent 专用诊断通知，也不混入工具结果。
+ * 生成过程中的事件接收器，用于按顺序保存模型响应片段和工具执行结果。
  * @typedef {object} GenerationObserver
- * @property {(update: ResponseUpdate) => Promise<void>} onResponse 接受原分组中的 reasoning、调用及合法台词，包含最终台词。
- * @property {(result: import('../../shared/contracts/conversation.js').ToolResultMessage) => Promise<void>} onToolResult 每个调用唯一结果，所有工具统一通知。
+ * @property {(update: ResponseUpdate) => Promise<void>} onResponse 接收模型输出的思考过程、工具调用或台词。
+ * @property {(result: import('../../shared/contracts/conversation.js').ToolResultMessage) => Promise<void>} onToolResult 接收单次工具调用的执行结果。
  */
 
 /**
  * @typedef {object} TokenUsage
- * @property {number | null} inputTokens 实际输入消耗，供应商未给时 null。
- * @property {number | null} outputTokens 实际输出消耗。
- * @property {number | null} reasoningTokens 实际推理消耗，不能用估算冒充。
+ * @property {number | null} inputTokens 输入 Token 消耗量（服务商未返回时为 null）。
+ * @property {number | null} outputTokens 输出 Token 消耗量。
+ * @property {number | null} reasoningTokens 推理思考 Token 消耗量。
  */
 
 /**
  * @typedef {object} ContextInspection
- * @property {number | null} estimatedInputTokens 包含 system、人格、角色、历史、输入、工具、输出 Schema、附件的估值；无法估计为 null。
- * @property {number} reservedOutputTokens 为生成预留的预算。
- * @property {number | null} modelLimit 已知模型上限，未知为 null。
- * @property {string | null} limitSource 目录、用户覆盖或供应商声明来源。
- * @property {'fits' | 'over-budget' | 'unknown'} fit 是否容纳请求。
- * @property {{ enabled: boolean, abstractMessageId: string | null, retainedTurns: number }} compression 当前有效摘要及压缩设置。
- * @property {TokenUsage | null} lastUsage Conversation 可补充最近实际请求消耗，Agent 预览无已知值时为 null，不冒充本次测量。
- * @property {import('../../shared/contracts/common.js').Problem[]} problems 未知能力、资源缺失或预算问题。
+ * @property {number | null} estimatedInputTokens 预估的输入 Token 数量（包含附件等无法估算内容时为 null）。
+ * @property {number} reservedOutputTokens 为模型输出预留的 Token 预算。
+ * @property {number | null} modelLimit 模型支持的最大上下文 Token 上限。
+ * @property {string | null} limitSource 上下文上限数值的来源说明。
+ * @property {'fits' | 'over-budget' | 'unknown'} fit 当前上下文是否能装入预算范围。
+ * @property {{ enabled: boolean, abstractMessageId: string | null, retainedTurns: number }} compression 当前的上下文压缩配置状态。
+ * @property {TokenUsage | null} lastUsage 最近一次实际请求的 Token 消耗记录。
+ * @property {import('../../shared/contracts/common.js').Problem[]} problems 检查过程中发现的问题列表。
  */
 
 /**
- * 压缩输入由 Conversation 在同一操作内固定，不把可改 Chat 传入 Agent。
  * @typedef {object} CompressionRequest
- * @property {ContextTurn[]} history 旧累计摘要和新增的完整可压缩轮次投影，不包含必须保留的末轮。
- * @property {ResolvedGenerationOptions} options 固定预算及生成参数；摘要模板由 Agent 内部提供，连接与模型由 connection 指定。
- * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 本次连接快照。
+ * @property {ContextTurn[]} history 待压缩的历史轮次与旧摘要列表。
+ * @property {ResolvedGenerationOptions} options 生成参数配置。
+ * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 模型连接快照。
  */
 
-/** @typedef {Omit<GenerationRequest, 'turnId' | 'input'> & { input: GenerationRequest['input'] | null }} ContextInspectionRequest 只读检查无需创建 Turn，null 输入只检查历史和配置。 */
+/** @typedef {Omit<GenerationRequest, 'turnId' | 'input'> & { input: GenerationRequest['input'] | null }} ContextInspectionRequest 上下文预算预览请求参数（input 为 null 时仅检查已有历史与配置）。 */
 
 /**
- * 超预算先由 Conversation 协调自动压缩；失败保留原文/旧摘要。仍需裁剪时只裁完整旧 Turn，
- * 不拆开 assistant 与对应结果，不删本次输入、必需提示或保留末轮；必需材料仍超限则明确失败。
- * Agent 管提示、单轮预算、模型和工具循环；LLM 适配负责供应商参数与协议转换。
- * 内置模板只渲染本次固定材料，渲染前校验输入；执行与上下文预览共用渲染规则。
- * 同响应工具按调用顺序串行：sync 等后端完成，async 等可靠 accepted 后继续，不等待最终交互结果。
- * sync 内部可使用 Promise；需要前端交互的工具必须使用 async，不能挂起当前 Loop 等待用户回答。
- * 重试只重试失败请求，不重放已执行工具或重复通知；同调用去重，显式新 Turn 是新执行。
- * 校验 Schema、角色/形态/语言/情绪/演出目录，格式修复有界；失败原文只留诊断，不进入正式上下文或 Speech。
- * 失败稳定类别至少含 timeout/authentication/rate_limit/quota_exhausted/empty_response/invalid_output/unsupported_input。
- * 仅瞬时错误按上限和退避重试；鉴权、额度及无效配置直接失败，保留脱敏 Problem，原始异常只入诊断。
- * 附件能力同时检查历史与本次材料，区分输入能力和上传能力。未知不能推定支持。
- * 文件引用失效只使实际旧引用失效；同连接快照重新准备，再判断重试安全性，不重跑整个 Loop。
- * 停止/失败后缺结果调用交由 Conversation 结算；已 accepted 的交互不产生第二个协议结果。
- * 已接入 AI SDK；外部供应商模型请求与工具循环均由本接口实现。
- * @see ../../../docs/nunjucks-prompts.md 模板归属、Nunjucks 选型及渲染约定。
+ * LLM 生成与工具调用模块，负责渲染提示词模板、驱动模型多步工具调用循环、校验输出格式以及生成历史摘要。
  */
 export class Agent {
   /**
-   * 绑定模板、私有凭据和模型传输；不读取当前页面或全局对话状态。
-   * @param {object} options 宿主依赖。
-   * @param {(scope: string) => string} options.credential 解析本次固定凭据的后端能力。
-   * @param {typeof generateText} [options.generate] AI SDK 请求入口，测试可替换。
-   * @param {import('../resources/interface.js').MediaAssets} options.assets 内联附件读取能力。
-   * @param {string} [options.templateDirectory] 可信内置模板目录，禁止模型或页面提交模板。
+   * 创建一个 Agent 实例。
+   * @param {object} options 创建选项。
+   * @param {(scope: string) => string} options.credential 根据临时凭据作用域 ID 获取 API 密钥的函数。
+   * @param {typeof generateText} [options.generate] 底层文本生成函数（默认使用 AI SDK 的 generateText，测试时可替换）。
+   * @param {import('../resources/interface.js').MediaAssets} options.assets 媒体资源管理器，用于读取内联发送的图片和文件附件。
+   * @param {string} [options.templateDirectory] Nunjucks 提示词模板所在的目录路径。
    */
   constructor({
     credential,
@@ -178,10 +157,11 @@ export class Agent {
     for (const name of ['system.njk', 'output.njk', 'scenario.njk', 'summary.njk'])
       this.templates.getTemplate(name, true)
   }
+
   /**
-   * 按本次连接快照创建供应商模型适配器。
-   * @param {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 已解析连接，不自行重新读取设置。
-   * @returns {import('ai').LanguageModel} 供实际请求与连接探测共用的模型。
+   * 根据解析后的模型连接快照创建对应的 AI SDK 模型实例。
+   * @param {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 已解析的模型连接快照。
+   * @returns {import('ai').LanguageModel} AI SDK 语言模型实例。
    */
   model(connection) {
     const options = {
@@ -197,7 +177,11 @@ export class Agent {
     )
     return createOpenAICompatible(options).chatModel(connection.modelId)
   }
-  /** 角色描述仅作为模板数据插值，不进行第二次渲染，避免把角色文本当成模板代码。 */
+
+  /**
+   * 渲染系统提示词（System Prompt）。
+   * 角色描述和人设仅作为普通变量插入模板，不对其进行二次模板渲染，防止角色描述中含有的模板语法被意外执行。
+   */
   system(request) {
     return this.templates.render('system.njk', {
       mode: request.mode,
@@ -208,7 +192,10 @@ export class Agent {
       knowledge: JSON.stringify(request.supplementalContext)
     })
   }
-  /** 执行与预算预览共用历史投影；预览可使用附件占位，不触发上传或模型调用。 */
+
+  /**
+   * 将请求中的历史轮次与当前输入转换为 AI SDK 所需的消息数组。
+   */
   async messages(request, inspect = false) {
     const messages = []
     for (const turn of request.history)
@@ -265,7 +252,10 @@ export class Agent {
       messages.push({ role: 'user', content: '请按当前情景开始角色对话。' })
     return messages
   }
-  /** 根据已声明的附件能力投影用户内容，未知能力不推定为可发送。 */
+
+  /**
+   * 组装单条用户消息的文本与附件内容，并校验当前模型连接是否支持相应类型的附件输入。
+   */
   async userContent(message, connection, inspect) {
     const content = [{ type: 'text', text: message.text || '（附件）' }]
     for (const attachment of message.attachments ?? []) {
@@ -279,6 +269,7 @@ export class Agent {
         'unsupported_input',
         '当前连接未声明支持此附件输入。'
       )
+      // 预览上下文预算（inspect 为 true）时使用空字节数组占位，避免为了估算 Token 而把所有附件文件真正读入内存。
       const data = inspect ? new Uint8Array(0) : await this.assets.read(attachment.asset)
       content.push(
         image
@@ -288,7 +279,10 @@ export class Agent {
     }
     return content
   }
-  /** 将固定生成参数映射到 SDK；重试限定于模型请求，不包括已执行的工具。 */
+
+  /**
+   * 将请求中的生成选项转换为 AI SDK 调用参数。
+   */
   parameters(request, signal) {
     const options = request.options
     requireValue(Number.isInteger(options.timeoutMs) && options.timeoutMs > 0)
@@ -328,7 +322,10 @@ export class Agent {
       abortSignal: AbortSignal.any(signals)
     }
   }
-  /** 格式合法后仍校验角色与演出目录，防止模型输出越过本轮提供的能力范围。 */
+
+  /**
+   * 解析并校验模型输出的 JSON 台词结构，确保发言角色、形态、动作和表情均在本轮允许的范围内。
+   */
   lines(text, request) {
     let output
     try {
@@ -376,12 +373,11 @@ export class Agent {
   }
 
   /**
-   * 根据固定输入执行一轮模型与工具循环，交付角色台词、推理记录和工具调用结果。
-   * 所有内容都经 observer 接受，返回值不再重复最终台词。取消不撤销已接受过程及外部副作用。
-   * @param {GenerationRequest} request 固定输入。
-   * @param {GenerationObserver} observer 顺序接收者。
-   * @param {AbortSignal} signal 取消信号。
-   * @returns {Promise<{ status: 'completed' | 'cancelled', usage: TokenUsage | null }>} Loop 结束，不代表 Turn 已 finished；不可恢复错误拒绝。
+   * 执行一轮完整的模型生成与工具调用循环，并通过 observer 逐步回调产出的思考、工具调用及角色台词。
+   * @param {GenerationRequest} request 本轮生成的完整输入与配置参数。
+   * @param {GenerationObserver} observer 按顺序接收响应片段和工具结果的回调对象。
+   * @param {AbortSignal} [signal] 控制本轮生成的取消信号。
+   * @returns {Promise<{ status: 'completed' | 'cancelled', usage: TokenUsage | null }>} 生成循环的完成状态与最近一次模型请求的 Token 消耗。
    */
   async run(request, observer, signal) {
     const inspection = await this.inspectContext(request)
@@ -427,7 +423,8 @@ export class Agent {
           protocol: {}
         })
       }
-      // 调用记录先由对话模块接受，再执行副作用；取消或中断时才有可追溯的调用身份。
+      // 为什么在真正执行工具前先把 tool-call 记录通知给 observer 保存：
+      // 若工具执行中途进程崩溃或被用户取消，对话存档中必须先有对应的 tool-call 记录，后续才能为其补记中断状态并保持历史可追溯。
       if (parts.length) await observer.onResponse({ responseId, appendParts: parts, protocol: {} })
       if (calls.length) {
         const content = calls.map((call) => ({
@@ -491,7 +488,8 @@ export class Agent {
           lines = this.lines(response.text, request)
         } catch (error) {
           if (repairs >= request.options.limits.maxFormatRepairs) throw error
-          // 工具结果已经写入 messages；仅修复台词格式，不从轮次开头重跑工具。
+          // 为什么格式错误时向当前 messages 追加提示继续循环，而不是从头重新发起整轮生成：
+          // 之前的步骤中可能已经执行过具有副作用的工具调用，保留已有工具结果并仅要求模型修正 JSON 格式，可避免重复执行工具。
           repairs += 1
           messages.push({
             role: 'user',
@@ -513,10 +511,9 @@ export class Agent {
   }
 
   /**
-   * 预览本次请求的上下文占用、预算是否足够及模型输入能力问题。
-   * 与 run 共用请求准备规则，估计附件开销但不上传、不调用模型/工具、不压缩或写存档。
-   * @param {ContextInspectionRequest} request 要检查的材料，不创建运行身份。
-   * @returns {Promise<ContextInspection>} 占用和能力诊断。
+   * 预估给定生成请求的上下文 Token 占用，并检查是否超出预算或存在附件能力不兼容问题。
+   * @param {ContextInspectionRequest} request 待检查的上下文与生成配置。
+   * @returns {Promise<ContextInspection>} 上下文 Token 预估结果与能力诊断信息。
    */
   async inspectContext(request) {
     const messages = await this.messages(request, true)
@@ -559,11 +556,10 @@ export class Agent {
   }
 
   /**
-   * 将选定的完整历史轮次和旧摘要压缩为新的累计摘要文本。
-   * 自动压缩也由 Conversation 在当前生成操作内调用并确定插入位置；失败保留原文和旧摘要。
-   * @param {CompressionRequest} request 可压缩的完整材料。
-   * @param {AbortSignal} signal 取消。
-   * @returns {Promise<{ text: string, usage: TokenUsage | null }>} 累计摘要文本，不生成角色台词。
+   * 调用模型将指定的历史对话轮次与旧摘要压缩为一段新的累计摘要文本。
+   * @param {CompressionRequest} request 待压缩的历史轮次、生成配置与模型连接。
+   * @param {AbortSignal} [signal] 控制本次压缩请求的取消信号。
+   * @returns {Promise<{ text: string, usage: TokenUsage | null }>} 生成的摘要文本与 Token 消耗记录。
    */
   async compress(request, signal) {
     const response = await this.generate({

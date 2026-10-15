@@ -1,9 +1,9 @@
 import { fields, requireValue } from './support.js'
 
 /**
- * 校验生成覆盖值；省略仍表示继承，不会在校验时写入默认值。
- * @param {import('../../shared/contracts/settings.js').GenerationOptions} value 待保存或待执行的覆盖值。
- * @returns {void} 非法字段或范围抛出业务错误，不修改输入。
+ * 校验模型生成配置项的字段名与取值范围。
+ * @param {import('../../shared/contracts/settings.js').GenerationOptions} value 待校验的生成配置。
+ * @returns {void}
  */
 export function generationOptions(value) {
   fields(value, [
@@ -60,9 +60,9 @@ export function generationOptions(value) {
 }
 
 /**
- * 校验合成选项，避免把未知设置当作已经应用。
- * @param {import('../../shared/contracts/settings.js').SpeechOptions} value 合成覆盖值。
- * @returns {void} 非法字段或范围抛出业务错误，不修改输入。
+ * 校验语音合成配置项的字段名与取值范围。
+ * @param {import('../../shared/contracts/settings.js').SpeechOptions} value 待校验的语音配置。
+ * @returns {void}
  */
 export function speechOptions(value) {
   fields(value, ['enabled', 'speed', 'sentencePauseMs', 'sampling'])
@@ -95,13 +95,14 @@ export function speechOptions(value) {
 }
 
 /**
- * 校验场景布局；页面不能经设置偷偷增加角色或序列。
- * @param {import('../../shared/contracts/settings.js').ChatPresentationSettings} value 对话展示设置。
- * @param {string[]} characterIds 对话已经固定的角色身份。
- * @returns {void} 越界角色或非法布局抛出业务错误。
+ * 校验对话的 Live2D 场景与角色布局配置。
+ * @param {import('../../shared/contracts/settings.js').ChatPresentationSettings} value 待校验的场景展示配置。
+ * @param {string[]} characterIds 当前对话中包含的角色 ID 列表。
+ * @returns {void}
  */
 export function presentationOptions(value, characterIds) {
   fields(value, ['background', 'characters'])
+  // 限制只能为当前对话已有的角色配置布局，防止通过设置接口越界塞入不属于该对话的角色。
   fields(value.characters, characterIds)
   for (const layout of Object.values(value.characters)) {
     fields(layout, ['x', 'y', 'scale', 'facing'])

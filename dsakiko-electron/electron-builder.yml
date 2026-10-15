@@ -7,6 +7,14 @@ files:
   - out/**
   - package.json
 extraResources:
+  - from: python
+    to: python
+    filter:
+      - '**/*'
+      - '!tests/**'
+      - '!.venv/**'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
   - from: resources
     to: resources
     filter:

@@ -4,6 +4,7 @@ import { setInterval, clearInterval } from 'node:timers'
 import http from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
+import { IMPORT_PURPOSES } from '../shared/contracts/assets.js'
 import { API_METHODS } from '../shared/contracts/api.js'
 import { fingerprint, requireValue, failure, problem } from '../backend/core/support.js'
 
@@ -91,7 +92,8 @@ export async function startHttpServer(
         source &&
           typeof source.base64 === 'string' &&
           typeof source.name === 'string' &&
-          typeof source.mediaType === 'string'
+          typeof source.mediaType === 'string' &&
+          IMPORT_PURPOSES.includes(source.purpose)
       )
       return backend.assets.importAsset(
         {
@@ -100,7 +102,8 @@ export async function startHttpServer(
           mediaType: source.mediaType,
           bytes: Buffer.from(source.base64, 'base64')
         },
-        'upload:' + randomBytes(16).toString('hex')
+        'upload:' + randomBytes(16).toString('hex'),
+        source.purpose
       )
     }
     if (namespace === 'assets' && method === 'access') {
@@ -139,7 +142,10 @@ export async function startHttpServer(
         const grant = grants.get(url.pathname.slice('/api/v1/assets/'.length))
         requireValue(grant && grant.expiresAt > Date.now(), 'asset_access_expired')
         const info = await backend.assets.inspect(grant.asset)
-        const bytes = await backend.assets.read(grant.asset)
+        const bytes = await backend.assets.read(
+          grant.asset,
+          url.searchParams.get('file') ?? undefined
+        )
         const headers = {
           'Content-Type': info.mediaType,
           'Cache-Control': 'private, no-store',

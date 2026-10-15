@@ -1,5 +1,6 @@
 import path from 'node:path'
-import { readFile, writeFile, mkdir, unlink, stat, copyFile, chmod } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rm, stat, copyFile, chmod } from 'node:fs/promises'
+import { containedPath, copyPackage, isWithin, resourcePath } from './files.js'
 import {
   copy,
   requireValue,
@@ -11,83 +12,182 @@ import {
 } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/common.js').AssetRef} AssetRef */
+/** @typedef {import('../../shared/contracts/assets.js').AssetPurpose} AssetPurpose */
+/** @typedef {{root: 'application' | 'library' | 'cache', relativePath: string, entry: string | null}} AssetLocation 资源的内部存储位置。 */
+
+const locations = {
+  'chat-image': ['application', 'files'],
+  avatar: ['application', 'files'],
+  attachment: ['application', 'files'],
+  model: ['library', 'models'],
+  live2d: ['library', 'live2d'],
+  audio: ['library', 'audio'],
+  archive: ['cache', 'assets'],
+  temporary: ['cache', 'assets']
+}
 /** @typedef {import('../../shared/contracts/common.js').AssetOwnerId} AssetOwnerId */
 
 /**
- * 本地导入路径只能由可信宿主提供；远程客户端上传字节，不能让后端读取任意路径。
+ * 资源导入来源（支持二进制字节、本地文件路径或远程 URL）。
  * @typedef {{ kind: 'bytes', name: string, mediaType: string, bytes: Uint8Array }
  *   | { kind: 'local-file', path: string }
+ *   | { kind: 'local-directory', path: string, entry?: string }
  *   | { kind: 'remote-url', url: string }} AssetSource
  */
 
 /**
  * @typedef {object} AssetInfo
- * @property {AssetRef} asset 稳定资源引用。
- * @property {string} name 展示名。
- * @property {string} mediaType 媒体类型。
- * @property {number} sizeBytes 文件长度。
- * @property {number | null} durationMs 可解析的音频或视频时长；其他资源为 null。
+ * @property {AssetRef} asset 资源引用标识。
+ * @property {AssetPurpose} purpose 资源用途。
+ * @property {'file' | 'directory'} kind 文件或完整目录。
+ * @property {string} name 文件展示名称。
+ * @property {string} mediaType MIME 媒体类型。
+ * @property {number} sizeBytes 文件字节大小。
+ * @property {number | null} durationMs 音视频时长（毫秒）；非音视频或未解析时为 null。
  */
 
 /**
  * @typedef {object} AssetIndex
- * @property {Record<string, AssetInfo>} assets 已发布的资源元数据。
- * @property {Record<string, string[]>} owners 不透明所有者到资源身份的引用集合，决定资源是否可回收。
+ * @property {number} version 索引格式版本。
+ * @property {Record<string, AssetLocation>} locations 资源 ID 到内部位置的映射。
+ * @property {Record<string, AssetInfo>} assets 资源 ID 到资源元数据的映射表。
+ * @property {Record<string, string[]>} owners 资源持有者（如对话、草稿、任务）到其所持有资源 ID 列表的映射表，用于垃圾回收判断。
  */
 
 /**
- * 资源模块：导入、下载、寻址和回收文件；对资源进行必要的格式、来源和访问校验。
- * 需要：文件来源、不透明的引用所有者编号、当前访问主体。
- * 不需要：Chat/Turn 结构、角色关系、文件将在哪一句播放、删除历史的业务判断。
- * 大型模型可使用受管理的外部资源目录，不要求复制进安装包或每份存档。
- * 持有者编号由草稿、存档和任务的负责模块生成并管理；引用关系在本模块内部保存，不是用户账号表。
- * 本模块负责应用自己的文件；厂商文件引用及远端删除由 RemoteFiles 管理。
- * 业务实现由宿主注入存储位置与外部能力。
+ * 本地资源管理模块，统一管理图片、音频和模型的导入、读取与持有关系。
  */
 export class MediaAssets {
   /**
-   * 绑定受管理资源目录与可选的访问授权器。
-   * @param {object} options 宿主依赖。
-   * @param {string} options.directory 资源文件及索引的存储目录。
-   * @param {((asset: AssetRef, sessionId: string) => Promise<{url: string, expiresAt: string | null}>) | null} [options.grantAccess] 已授权会话的短期读取地址解析能力。
+   * 创建一个媒体资源管理器。
+   * @param {object} options 创建选项。
+   * @param {string} options.appDataRoot 应用数据根目录，保存统一索引和聊天图片。
+   * @param {string} options.resourceLibraryRoot 模型与保留音频的根目录。
+   * @param {string} options.cacheRoot 临时资源根目录。
+   * @param {((asset: AssetRef, sessionId: string) => Promise<{url: string, expiresAt: string | null}>) | null} [options.grantAccess] 自定义函数，用于为指定会话生成资源的临时访问 URL。
    */
-  constructor({ directory, grantAccess = null }) {
-    this.directory = directory
-    this.index = path.join(directory, 'index.json')
+  constructor({ appDataRoot, resourceLibraryRoot, cacheRoot, grantAccess = null }) {
+    for (const root of [appDataRoot, resourceLibraryRoot, cacheRoot])
+      requireValue(
+        typeof root === 'string' && path.isAbsolute(root),
+        'invalid_data_root',
+        '数据目录必须是绝对路径。'
+      )
+    this.roots = {
+      application: path.join(appDataRoot, 'assets'),
+      library: resourceLibraryRoot,
+      cache: cacheRoot
+    }
+    const roots = [appDataRoot, resourceLibraryRoot, cacheRoot]
+    requireValue(
+      roots.every((root, index) =>
+        roots.every(
+          (other, otherIndex) =>
+            index === otherIndex || (!isWithin(root, other) && !isWithin(other, root))
+        )
+      ),
+      'overlapping_data_roots',
+      '三个数据目录不能重叠。'
+    )
+    this.index = path.join(this.roots.application, 'index.json')
     this.queue = new SerialQueue()
     this.grantAccess = grantAccess
   }
-  /** 读取资源与持有者的同一份索引快照。
-   * @returns {Promise<AssetIndex>} 修改必须在 assets 串行队列内进行。
+
+  /**
+   * 读取资源索引与持有者引用映射。
+   * @returns {Promise<AssetIndex>} 索引状态对象。
    */
   async state() {
-    return readJson(this.index, { assets: {}, owners: {} })
-  }
-  /**
-   * 计算可信后端使用的资源路径；公开传输只交付资源引用和短期 URL。
-   * @param {AssetRef} asset 资源身份；调用前须通过 inspect 确认存在。
-   * @returns {string} 私有绝对路径，不进入 HTTP 路由表。
-   */
-  localPath(asset) {
-    return path.join(this.directory, safeId(asset.id))
+    const state = await readJson(this.index, { version: 2, assets: {}, locations: {}, owners: {} })
+    requireValue(
+      state?.version === 2,
+      'asset_layout_unsupported',
+      '资源索引不是多目录格式；请保留原数据并另行处理兼容，不会自动迁移。'
+    )
+    requireValue(
+      [state.assets, state.locations, state.owners].every(
+        (value) => value && typeof value === 'object' && !Array.isArray(value)
+      ),
+      'invalid_asset_index'
+    )
+    for (const [id, info] of Object.entries(state.assets)) {
+      safeId(id)
+      const location = state.locations[id]
+      requireValue(
+        info?.asset?.id === id &&
+          Object.hasOwn(locations, info.purpose) &&
+          ['file', 'directory'].includes(info.kind),
+        'invalid_asset_index'
+      )
+      requireValue(location && location.root === locations[info.purpose][0], 'invalid_asset_index')
+      requireValue(
+        location.relativePath === locations[info.purpose][1] + '/' + id,
+        'invalid_asset_index'
+      )
+      requireValue(info.kind === 'directory' || location.entry === null, 'invalid_asset_index')
+      resourcePath(this.roots[location.root], location.relativePath)
+      if (location.entry !== null) resourcePath('/package', location.entry)
+    }
+    requireValue(
+      Object.keys(state.locations).every((id) => Object.hasOwn(state.assets, id)) &&
+        Object.values(state.owners).every(
+          (refs) => Array.isArray(refs) && refs.every((id) => Object.hasOwn(state.assets, id))
+        ),
+      'invalid_asset_index'
+    )
+    return state
   }
 
   /**
-   * 导入或下载资源，成功时立即挂到指定所有者，避免在交付结果前被回收。
-   * 取消或失败不得留下可被误认为完成的资源；ownerId 可表示草稿、任务或存档，模块不解析其业务含义。
-   * @param {AssetSource} source 来源。
-   * @param {AssetOwnerId} ownerId 初始资源持有者；导入成功时添加引用，不替换该持有者已有的其他引用。
-   * @param {AbortSignal} [signal] 取消导入。
-   * @returns {Promise<AssetInfo>} 已就绪的资源信息。
+   * 获取指定资源在本地磁盘上的绝对文件路径（仅供后端内部模块访问）。
+   * @param {AssetRef} asset 资源引用。
+   * @param {string} [member] 模型包内的相对文件路径。
+   * @returns {Promise<string>} 已校验的本地路径。
    */
-  async importAsset(source, ownerId, signal) {
+  async localPath(asset, member) {
+    const state = await this.state()
+    requireValue(Object.hasOwn(state.assets, safeId(asset.id)), 'asset_missing', '资源未登记。')
+    const info = state.assets[safeId(asset.id)]
+    requireValue(info, 'asset_missing', '资源未登记。')
+    const location = state.locations[asset.id]
+    const root = this.roots[location.root]
+    const base = resourcePath(root, location.relativePath)
+    try {
+      await containedPath(root, base)
+      const relative = member ?? location.entry
+      if (relative !== null && relative !== undefined) {
+        requireValue(info.kind === 'directory', 'invalid_asset_path')
+        const target = resourcePath(base, relative)
+        return await containedPath(base, target)
+      }
+      return base
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code))
+        requireValue(false, 'asset_unavailable', '资源文件或所在目录不可用。')
+      throw error
+    }
+  }
+
+  /**
+   * 导入一份媒体资源，并将其关联到指定的持有者名下。
+   * @param {AssetSource} source 资源数据来源（字节数组或本地文件路径）。
+   * @param {AssetOwnerId} ownerId 初始持有者标识（例如草稿 ID、任务 ID 或对话 ID），用于防止资源在正式使用前被清理。
+   * @param {AssetPurpose} purpose 资源用途，由调用操作明确指定。
+   * @param {AbortSignal} [signal] 控制本次导入的取消信号。
+   * @returns {Promise<AssetInfo>} 导入后的资源元数据信息。
+   */
+  async importAsset(source, ownerId, purpose, signal) {
     return this.queue.run('assets', async () => {
       signal?.throwIfAborted()
       requireValue(typeof ownerId === 'string' && ownerId.length > 0)
+      requireValue(Object.hasOwn(locations, purpose), 'invalid_asset_purpose')
+      const state = await this.state()
       let bytes
       let name
       let mediaType
       let localFile = null
+      let localDirectory = null
       let sizeBytes = 0
       if (source.kind === 'bytes') {
         bytes = new Uint8Array(source.bytes)
@@ -110,6 +210,17 @@ export class MediaAssets {
             '.webp': 'image/webp',
             '.json': 'application/json'
           }[path.extname(name).toLowerCase()] ?? 'application/octet-stream'
+      } else if (source.kind === 'local-directory') {
+        requireValue(['model', 'live2d'].includes(purpose), 'invalid_asset_purpose')
+        localDirectory = source.path
+        name = path.basename(source.path)
+        mediaType = 'application/octet-stream'
+        if (purpose === 'live2d')
+          requireValue(typeof source.entry === 'string', 'missing_model_entry')
+        if (source.entry) {
+          const entry = resourcePath(source.path, source.entry)
+          requireValue((await stat(entry)).isFile(), 'invalid_model_entry')
+        }
       } else {
         requireValue(false, 'unsupported_source', '远程 URL 需经受控下载适配器导入。')
       }
@@ -121,24 +232,44 @@ export class MediaAssets {
       const asset = { id: uuid() }
       const info = {
         asset,
+        purpose,
+        kind: localDirectory ? 'directory' : 'file',
         name: String(name),
         mediaType: String(mediaType),
         sizeBytes,
         durationMs: null
       }
-      await mkdir(this.directory, { recursive: true })
-      // 权重可很大，本机导入直接复制文件，不把全部内容读入 Node 堆。
-      if (localFile) {
-        await copyFile(localFile, this.localPath(asset))
-        await chmod(this.localPath(asset), 0o600)
-      } else await writeFile(this.localPath(asset), bytes, { flag: 'wx', mode: 0o600, signal })
+      const [root, folder] = locations[purpose]
+      const location = {
+        root,
+        relativePath: folder + '/' + asset.id,
+        entry: localDirectory ? (source.entry ?? null) : null
+      }
+      const destination = resourcePath(this.roots[root], location.relativePath)
+      await mkdir(path.dirname(destination), { recursive: true })
+      const parent = await containedPath(this.roots[root], path.dirname(destination))
+      if (localDirectory) {
+        const sourceRoot = await containedPath(localDirectory, localDirectory)
+        requireValue(
+          !isWithin(sourceRoot, path.join(parent, asset.id)),
+          'invalid_asset_package',
+          '模型源目录不能包含导入目标。'
+        )
+      }
       try {
-        const state = await this.state()
+        // 大文件直接复制，避免将完整模型读入 Node.js 内存。
+        if (localDirectory) info.sizeBytes = await copyPackage(localDirectory, destination, signal)
+        else if (localFile) {
+          await copyFile(localFile, destination)
+          await chmod(destination, 0o600)
+        } else await writeFile(destination, bytes, { flag: 'wx', mode: 0o600, signal })
+        signal?.throwIfAborted()
         state.assets[asset.id] = info
+        state.locations[asset.id] = location
         state.owners[ownerId] = [...new Set([...(state.owners[ownerId] ?? []), asset.id])]
         await writeJson(this.index, state)
       } catch (error) {
-        await unlink(this.localPath(asset)).catch(() => {})
+        await rm(destination, { recursive: true, force: true }).catch(() => {})
         throw error
       }
       return copy(info)
@@ -146,21 +277,22 @@ export class MediaAssets {
   }
 
   /**
-   * 读取资源元数据，不将本机路径暴露给页面。
+   * 查询指定资源的元数据信息。
    * @param {AssetRef} asset 资源引用。
-   * @returns {Promise<AssetInfo>} 资源信息；不存在时拒绝。
+   * @returns {Promise<AssetInfo>} 资源元数据信息（资源不存在时抛出异常）。
    */
   async inspect(asset) {
-    const info = (await this.state()).assets[asset.id]
-    requireValue(info, 'asset_missing', '资源不存在。')
+    const state = await this.state()
+    requireValue(Object.hasOwn(state.assets, safeId(asset.id)), 'asset_missing', '资源不存在。')
+    const info = state.assets[asset.id]
     return copy(info)
   }
 
   /**
-   * 为访问主体解析有限期的可读取地址；桌面可用受限协议，手机可用鉴权 HTTP。
+   * 为指定访问会话生成该资源的临时可读取 URL。
    * @param {AssetRef} asset 资源引用。
-   * @param {string} accessSessionId 已授权的访问会话，不能由客户端自报权限。
-   * @returns {Promise<{ url: string, expiresAt: string | null }>} 访问地址，不能当作持久化引用保存。
+   * @param {string} accessSessionId 已授权的访问会话 ID。
+   * @returns {Promise<{ url: string, expiresAt: string | null }>} 资源的访问 URL 及过期时间。
    */
   async resolveAccess(asset, accessSessionId) {
     await this.inspect(asset)
@@ -169,27 +301,50 @@ export class MediaAssets {
   }
 
   /**
-   * 供后端能力读取资源；大文件实现时应使用流或受控本地访问，此处不开放给浏览器任意读盘。
+   * 读取指定资源的原始文件字节内容。
    * @param {AssetRef} asset 资源引用。
-   * @returns {Promise<Uint8Array>} 文件字节。
+   * @param {string} [member] 模型包内的相对文件路径。
+   * @returns {Promise<Uint8Array>} 文件字节数据。
    */
-  async read(asset) {
-    await this.inspect(asset)
-    return readFile(this.localPath(asset))
+  async read(asset, member) {
+    const file = await this.localPath(asset, member)
+    requireValue((await stat(file)).isFile(), 'asset_not_file')
+    return readFile(file)
   }
 
   /**
-   * 原子替换一个所有者持有的资源集合；传空数组表示释放该所有者的全部引用。
-   * 交接资源时先建立新所有者引用，再释放旧引用；存档写入失败时不能先释放旧资源。
-   * @param {AssetOwnerId} ownerId 资源持有者编号，不是 userId。
-   * @param {AssetRef[]} assets 该所有者需要保留的全部资源。
-   * @returns {Promise<void>} 引用已更新，不立即删除文件。
+   * 校验待持久保存的数据不依赖临时资源，允许保留已登记但暂时缺失的文件引用。
+   * @param {unknown} value 待保存的业务数据。
+   * @returns {Promise<void>}
+   */
+  async assertPersistent(value) {
+    const state = await this.state()
+    function visit(item) {
+      if (!item || typeof item !== 'object') return
+      if (!Array.isArray(item) && Object.keys(item).length === 1 && typeof item.id === 'string') {
+        const location = state.locations[safeId(item.id)]
+        requireValue(location, 'asset_missing')
+        requireValue(
+          location.root !== 'cache',
+          'temporary_asset_reference',
+          '持久数据不能引用临时资源。'
+        )
+      } else Object.values(item).forEach(visit)
+    }
+    visit(value)
+  }
+
+  /**
+   * 更新指定持有者所持有的完整资源列表（传空数组表示释放该持有者的所有资源引用）。
+   * @param {AssetOwnerId} ownerId 资源持有者标识。
+   * @param {AssetRef[]} assets 该持有者当前需要保留的全部资源引用列表。
+   * @returns {Promise<void>}
    */
   async setReferences(ownerId, assets) {
     return this.queue.run('assets', async () => {
       const state = await this.state()
       requireValue(
-        assets.every((asset) => state.assets[asset.id]),
+        assets.every((asset) => Object.hasOwn(state.assets, safeId(asset.id))),
         'asset_missing'
       )
       state.owners[ownerId] = [...new Set(assets.map((asset) => asset.id))]
@@ -198,26 +353,10 @@ export class MediaAssets {
   }
 
   /**
-   * 回收不再被存档、草稿或运行任务引用的受管理资源；不删除外部模型源文件。
-   * @returns {Promise<{ removedCount: number, reclaimedBytes: number }>} 回收结果。
+   * 资源清理暂未开放。
+   * @returns {Promise<void>}
    */
   async collectUnused() {
-    return this.queue.run('assets', async () => {
-      const state = await this.state()
-      const held = new Set(Object.values(state.owners).flat())
-      let removedCount = 0
-      let reclaimedBytes = 0
-      for (const [id, info] of Object.entries(state.assets)) {
-        if (held.has(id)) continue
-        await unlink(this.localPath({ id })).catch((error) => {
-          if (error.code !== 'ENOENT') throw error
-        })
-        delete state.assets[id]
-        removedCount += 1
-        reclaimedBytes += info.sizeBytes
-      }
-      await writeJson(this.index, state)
-      return { removedCount, reclaimedBytes }
-    })
+    requireValue(false, 'cleanup_unavailable', '资源清理暂未开放。')
   }
 }

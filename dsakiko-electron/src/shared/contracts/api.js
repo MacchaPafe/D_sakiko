@@ -69,7 +69,7 @@ export const API_METHODS = {
  * @typedef {object} DesktopHost Electron 专有能力，WebUI 使用自己的授权入口。
  * @property {() => Promise<BackendConnection>} getBackendConnection 获取本次运行的业务连接，不把令牌写入日志或持久 URL。
  * @property {() => Promise<{platform: string, appVersion: string}>} getRuntimeInfo 宿主平台与应用版本。
- * @property {() => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
+ * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
  */
 
 /** @typedef {{ baseUrl: string, token: string }} BackendConnection 仅由可信桌面 bootstrap 或显式 WebUI 授权提供。 */

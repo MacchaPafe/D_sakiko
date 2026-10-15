@@ -16,24 +16,20 @@ import { defaultSettings } from '../core/defaults.js'
 
 /**
  * @typedef {object} SettingsState
- * @property {import('../../shared/contracts/settings.js').GlobalSettings} settings 可公开的共享设置。
- * @property {Record<string, import('../../shared/contracts/models.js').ConnectionDefinition>} connections 连接目录。
- * @property {Record<string, string>} secrets 私有凭据；只在后端文件与内存中存在，不随 settings 返回。
+ * @property {import('../../shared/contracts/settings.js').GlobalSettings} settings 全局设置。
+ * @property {Record<string, import('../../shared/contracts/models.js').ConnectionDefinition>} connections 已配置的模型连接字典。
+ * @property {Record<string, string>} secrets 各连接对应的 API 密钥（仅保存在后端，不随连接列表对外返回）。
  */
 
 /**
- * 全局设置与连接目录负责校验、默认值及格式迁移；不拥有 Chat，也不改变当前执行材料。
- * 全局/Chat/本次同名字段只在 Conversation 开始时解析一次。必需连接和资源缺失明确拒绝。
- * 语音设备/精度/结构/预算下次启动生效；生成默认值下轮生效；BGM 曲目/开关及展示偏好由装配协调。
- * 播放音量由各客户端在前端持久化，本模块不保存、不分发，也不在新客户端连接时提供音量默认值。
- * 旧设置中的 playback 和 bgm.volume 在迁移时丢弃，不导入客户端；客户端无本地值时使用 100%。
+ * 全局设置与模型连接管理模块。
  */
 export class Settings {
   /**
-   * 绑定设置存储和显式连接探测能力。
-   * @param {object} options 宿主依赖。
-   * @param {string} options.directory 私有数据目录。
-   * @param {((connection: import('../../shared/contracts/models.js').ResolvedModelConnection, signal?: AbortSignal) => Promise<unknown>) | null} [options.probe] 主动探测；普通读取不会调用模型。
+   * 创建一个全局设置管理器。
+   * @param {object} options 创建选项。
+   * @param {string} options.directory 设置文件（settings.json）所在的存储目录。
+   * @param {((connection: import('../../shared/contracts/models.js').ResolvedModelConnection, signal?: AbortSignal) => Promise<unknown>) | null} [options.probe] 自定义函数，用于发送最小测试请求以检查模型连接是否可用。
    */
   constructor({ directory, probe = null }) {
     this.file = path.join(directory, 'settings.json')
@@ -42,8 +38,10 @@ export class Settings {
     this.bus = new SnapshotBus()
     this.probe = probe
   }
-  /** 读取私有存储封套，移除旧共享音量；不能把此结果直接交给客户端。
-   * @returns {Promise<SettingsState>} 本次读改写使用的独立材料。
+
+  /**
+   * 读取包含私有密钥的完整存储状态。
+   * @returns {Promise<SettingsState>} 内部设置状态对象。
    */
   async state() {
     const state = await readJson(this.file, {
@@ -51,22 +49,26 @@ export class Settings {
       connections: {},
       secrets: {}
     })
+    // 为什么在读取时删除旧版的 playback 和 bgm.volume 字段：
+    // 播放音量已改为由各前端客户端独立保存，清理旧字段可避免保存设置时因包含未知字段而校验失败。
     delete state.settings.playback
     if (state.settings.bgm) delete state.settings.bgm.volume
     return state
   }
+
   /**
-   * 观察共享设置，首次订阅即发送当前值。
-   * @param {(settings: import('../../shared/contracts/settings.js').GlobalSettings) => void} listener 完整快照接收者。
-   * @returns {Promise<() => void>} 取消观察，不修改设置。
+   * 订阅全局设置的变更通知（订阅时会立即推送一次当前设置）。
+   * @param {(settings: import('../../shared/contracts/settings.js').GlobalSettings) => void} listener 接收最新全局设置的回调函数。
+   * @returns {Promise<() => void>} 取消订阅的函数。
    */
   async observe(listener) {
     return this.bus.subscribe('settings', listener, await this.get())
   }
+
   /**
-   * 取出本次解析固定的凭据；修改连接不改变已经运行的请求。
-   * @param {string} scope resolveConnection 分配的临时作用域。
-   * @returns {string} 仅供供应商适配器使用的凭据，未配置时为空。
+   * 根据临时凭据作用域 ID 获取对应的 API 密钥。
+   * @param {string} scope 由 resolveConnection 分配的临时作用域 ID。
+   * @returns {string} 对应的 API 密钥字符串（未配置密钥时为空字符串）。
    */
   credential(scope) {
     requireValue(this.scopes.has(scope), 'credential_expired')
@@ -74,17 +76,17 @@ export class Settings {
   }
 
   /**
-   * 读取当前全局设置，供设置页面展示及后续执行解析默认值。
-   * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 独立只读配置，不含凭据。
+   * 获取当前的全局设置。
+   * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 全局设置副本。
    */
   async get() {
     return copy((await this.state()).settings)
   }
 
   /**
-   * 校验并保存完整的全局设置。
-   * @param {import('../../shared/contracts/settings.js').GlobalSettings} settings 完整配置及原 revision；未知业务字段拒绝。
-   * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 原子比较递增后的新版本，不修改输入。
+   * 保存并更新全局设置。
+   * @param {import('../../shared/contracts/settings.js').GlobalSettings} settings 完整的全局设置对象（需携带当前所基于的 revision 版本号）。
+   * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 保存成功并递增版本号后的全局设置副本。
    */
   async save(settings) {
     return this.queue.run('settings', async () => {
@@ -132,18 +134,18 @@ export class Settings {
   }
 
   /**
-   * 列出已配置的模型连接及其能力信息，供选择和管理连接。
-   * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition[]>} 连接/能力/凭据存在标记，不返回密钥。
+   * 列出所有已配置的模型连接定义（包含是否已配置密钥的标记，但不包含密钥明文）。
+   * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition[]>} 模型连接定义列表。
    */
   async listConnections() {
     return Object.values((await this.state()).connections).map(copy)
   }
 
   /**
-   * 创建或更新一个模型连接，并按明确指令保留、替换或移除其凭据。
-   * @param {import('../../shared/contracts/models.js').ConnectionDefinition} definition 原版本，0 只用于新建；credentialConfigured 为只读投影。
-   * @param {{ kind: 'keep' } | { kind: 'replace', secret: string } | { kind: 'remove' }} credential 仅受控设置入口可写，不回显、记录或归档 secret。
-   * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition>} 已保存连接及递增版本。
+   * 创建或更新一个模型连接配置及其 API 密钥。
+   * @param {import('../../shared/contracts/models.js').ConnectionDefinition} definition 模型连接配置。新建时 revision 为 0，更新时传入当前版本号。
+   * @param {{ kind: 'keep' } | { kind: 'replace', secret: string } | { kind: 'remove' }} credential 密钥操作指令：keep 保持原密钥不变，replace 替换为新密钥，remove 清除密钥。
+   * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition>} 保存成功并递增版本号后的连接配置副本。
    */
   async saveConnection(definition, credential) {
     return this.queue.run('settings', async () => {
@@ -172,6 +174,7 @@ export class Settings {
         'unsupported_provider'
       )
       const url = new URL(definition.baseUrl)
+      // 禁止在 URL 中内嵌用户名或密码，防止凭据随 baseUrl 泄露到前端。
       requireValue(['http:', 'https:'].includes(url.protocol) && !url.username && !url.password)
       requireValue(
         Array.isArray(definition.models) &&
@@ -195,10 +198,10 @@ export class Settings {
   }
 
   /**
-   * 删除指定的模型连接配置。
-   * @param {string} connectionId 目标。
-   * @param {number} expectedRevision 防止删除较新配置。
-   * @returns {Promise<void>} 已删除；已有请求保留固定材料，后续解析缺失引用明确失败。
+   * 删除指定的模型连接及其保存的密钥。
+   * @param {string} connectionId 要删除的连接 ID。
+   * @param {number} expectedRevision 当前所基于的版本号，用于防止误删已被更新的配置。
+   * @returns {Promise<void>}
    */
   async deleteConnection(connectionId, expectedRevision) {
     return this.queue.run('settings', async () => {
@@ -214,17 +217,17 @@ export class Settings {
   }
 
   /**
-   * 将连接和模型选择解析为一次后端请求可使用的完整连接及能力快照。
-   * 后端专用解析，不向 renderer/归档发送凭据作用域。RemoteFiles 与请求使用同一快照。
-   * @param {{ connectionId: string, modelId: string }} selection 模型选择。
-   * @returns {Promise<import('../../shared/contracts/models.js').ResolvedModelConnection>} 完整临时连接及合并能力来源。
+   * 将连接 ID 和模型 ID 解析为单次请求可直接使用的连接与模型能力快照。
+   * @param {{ connectionId: string, modelId: string }} selection 目标连接 ID 与模型 ID。
+   * @returns {Promise<import('../../shared/contracts/models.js').ResolvedModelConnection>} 解析后的模型连接快照。
    */
   async resolveConnection(selection) {
     const state = await this.state()
     const connection = state.connections[selection.connectionId]
     const model = connection?.models.find((item) => item.id === selection.modelId)
     requireValue(model, 'model_unavailable', '模型连接或模型不存在。')
-    // 作用域保存解析时的 secret，避免进行中的请求因用户换密钥而改变身份。
+    // 为什么分配临时的 credentialScope 而不是直接返回密钥或按 connectionId 实时查密钥：
+    // 一方面避免密钥明文出现在请求配置对象中，另一方面将本次请求使用的密钥冻结在独立作用域内，防止请求进行中用户修改连接密钥导致前后不一致。
     const credentialScope = uuid()
     this.scopes.set(credentialScope, state.secrets[connection.id] ?? '')
     return {
@@ -241,10 +244,10 @@ export class Settings {
   }
 
   /**
-   * 显式连接检查，允许最小真实请求；不执行工具、不写聊天，也不把成功文本请求当作视觉能力证明。
-   * @param {{ connectionId: string, modelId: string }} selection 要检查的连接及模型。
-   * @param {AbortSignal} signal 取消。
-   * @returns {Promise<{ reachable: boolean, problems: import('../../shared/contracts/common.js').Problem[] }>} 脱敏检查结果。
+   * 发送测试请求以检查指定的模型连接是否可正常连通。
+   * @param {{ connectionId: string, modelId: string }} selection 要检查的连接 ID 与模型 ID。
+   * @param {AbortSignal} [signal] 控制本次检查的取消信号。
+   * @returns {Promise<{ reachable: boolean, problems: import('../../shared/contracts/common.js').Problem[] }>} 连通性检查结果及错误信息。
    */
   async checkConnection(selection, signal) {
     try {

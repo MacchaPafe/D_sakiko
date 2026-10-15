@@ -18,6 +18,12 @@ uv sync --python 3.11 --frozen
 
 `uv.lock` 不包含权重、词典数据和系统二进制。新环境还需准备 NLTK/读音库需要的资源；建议首轮先使用现有 Python 环境验证完整流程，再单独验证环境迁移。
 
+## 资源与临时目录
+
+宿主从 `resourceLibraryRoot/models/GPT_SoVITS/pretrained_models/` 读取基础权重，从相邻的 `GPT_SoVITS/text/G2PWModel/` 读取 G2PW 资源。基础运行资源仍需事先准备，本阶段不下载或自动迁移。角色权重和参考音频通过统一资源模块导入资源库，Python 只接受宿主授权目录内的文件。
+
+语音输出放在 `cacheRoot/speech-temp/`，日志放在 `cacheRoot/logs/`。成功音频导入 `resourceLibraryRoot/audio/` 后再交给业务保存。Python 代码在 `.app` 外层 Resources/python 中发布，运行工作目录位于缓存，启动时关闭字节码写入，避免写入安装包。解释器和第三方依赖仍需外部准备。
+
 ## 测试
 
 从 Electron 工程目录执行：
