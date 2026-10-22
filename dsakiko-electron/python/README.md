@@ -18,6 +18,18 @@ uv sync --python 3.11 --frozen
 
 `uv.lock` 不包含权重、词典数据和系统二进制。新环境还需准备 NLTK/读音库需要的资源；建议首轮先使用现有 Python 环境验证完整流程，再单独验证环境迁移。
 
+## 证书安全更新
+
+2026 年 10 月的 eMudhra 中间 CA 私钥事件需要更新应用运行时和 Python 证书包。Electron 44 至少使用 44.9.1，本工程依赖下限为 44.9.3；Python 的 `certifi` 至少使用 2026.10.19，兼容 Python 3.9。修复依据见 [Electron 上游补丁](https://github.com/electron/electron/pull/55126) 和 [Python 官方公告](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576)。
+
+从 Electron 工程目录安装已锁定的依赖：
+
+```sh
+pnpm install --frozen-lockfile
+```
+
+使用本目录独立 Python 环境时，执行上面的 `uv sync --python 3.11 --frozen`。复用已有解释器时，应把 `certifi>=2026.10.19` 安装到 `DSAKIKO_PYTHON` 指向的环境，从而保证安全。
+
 ## 资源与临时目录
 
 宿主从 `resourceLibraryRoot/models/GPT_SoVITS/pretrained_models/` 读取基础权重，从相邻的 `GPT_SoVITS/text/G2PWModel/` 读取 G2PW 资源。基础运行资源仍需事先准备，本阶段不下载或自动迁移。角色权重和参考音频通过统一资源模块导入资源库，Python 只接受宿主授权目录内的文件。

@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "独立进程中的 GPT-SoVITS 原型语音服务"
 requires-python = ">=3.9,<3.12"
 dependencies = [
+  # 防止重新安装时恢复仍信任受损 eMudhra 中间 CA 的证书包。
+  "certifi>=2026.10.19",
   "torch==2.7.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
   "torchaudio==2.7.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
   "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",

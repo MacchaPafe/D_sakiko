@@ -6,6 +6,8 @@ readme = "README.md"
 # macOS 下仅测试了 Python 3.11 可行
 requires-python = ">=3.11, <3.12"
 dependencies = [
+    # Electron 开发配置复用此环境，证书包需包含 eMudhra 事件修复。
+    "certifi>=2026.10.19",
     # Dependencies for GPT-SoVITS
     "av>=11",
     "chardet>=5.2.0",
