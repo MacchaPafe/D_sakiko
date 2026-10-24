@@ -96,10 +96,7 @@ async function fixture(run) {
     },
     { kind: 'replace', secret: 'private-test-secret' }
   )
-  const settings = await backend.settings.get()
-  settings.generation.connectionId = 'local'
-  settings.generation.modelId = 'test'
-  await backend.settings.save(settings)
+  await backend.settings.update({ generation: { connectionId: 'local', modelId: 'test' } })
   const chatId = await backend.conversations.createChat({
     title: 'test',
     characterIds: ['sakiko'],
@@ -240,6 +237,25 @@ test('真实 HTTP/WS 与前端封装；凭据隔离和路由白名单', async ()
   )
   expect(JSON.stringify(await client.settings.listConnections())).not.toContain(
     'private-test-secret'
+  )
+  const settings = await client.settings.get()
+  const changed = await client.settings.set('display.theme', 'dark', {
+    expectedRevision: settings.revision
+  })
+  const updated = await client.settings.update(
+    { generation: { temperature: 0.4 }, display: { frameRate: 30 } },
+    { expectedRevision: changed.revision }
+  )
+  expect(updated.display).toMatchObject({ theme: 'dark', frameRate: 30 })
+  expect(await client.settings.get('generation.temperature')).toBe(0.4)
+  await expect(client.settings.set('generation.temperature', 100)).rejects.toHaveProperty(
+    'problem.code', 'invalid_settings'
+  )
+  await expect(client.settings.set('display.theme', 'light', {
+    expectedRevision: settings.revision
+  })).rejects.toHaveProperty('problem.code', 'revision_conflict')
+  await expect(client.call('settings', 'save', [settings])).rejects.toHaveProperty(
+    'problem.code', 'method_not_found'
   )
   const denied = await fetch(server.baseUrl + '/api/v1/call/settings/get', {
     method: 'POST',

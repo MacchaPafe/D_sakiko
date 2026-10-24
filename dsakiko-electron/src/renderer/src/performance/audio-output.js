@@ -7,6 +7,11 @@
 export function createAudioOutput(client, { Audio: AudioConstructor = globalThis.Audio } = {}) {
   let speech = null
   let bgm = null
+  let speechLease = null
+  let bgmLease = null
+  function releaseAccess(id) {
+    if (id) void client.assets.releaseAccess(id).catch(() => {})
+  }
   // 资源地址查询可能晚于停止或换曲返回，用代次拒绝旧结果，避免重新启动已取消的播放。
   let speechEpoch = 0
   let bgmEpoch = 0
@@ -19,6 +24,8 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
     speech?.pause()
     if (speech) speech.src = ''
     speech = null
+    releaseAccess(speechLease)
+    speechLease = null
   }
   /**
    * 读取短期地址并从指定偏移播放；浏览器拒绝自动播放时交给调用方处理。
@@ -32,9 +39,18 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
     if (!guide.audio) return
     speechMuted = options.silent === true
     const access = await client.assets.access(guide.audio.asset)
-    if (epoch !== speechEpoch) return
+    if (epoch !== speechEpoch) {
+      releaseAccess(access.leaseId)
+      return
+    }
+    speechLease = access.leaseId
     const audio = new AudioConstructor(access.url)
     speech = audio
+    function finishSpeech() {
+      if (speech === audio) stop()
+    }
+    audio.addEventListener('ended', finishSpeech, { once: true })
+    audio.addEventListener('error', finishSpeech, { once: true })
     audio.volume = speechMuted ? 0 : (options.volume ?? volume)
     audio.addEventListener(
       'loadedmetadata',
@@ -47,7 +63,12 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
       },
       { once: true }
     )
-    await audio.play()
+    try {
+      await audio.play()
+    } catch (error) {
+      finishSpeech()
+      throw error
+    }
     if (epoch !== speechEpoch) audio.pause()
   }
   /**
@@ -69,14 +90,34 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
     bgm?.pause()
     if (bgm) bgm.src = ''
     bgm = null
+    releaseAccess(bgmLease)
+    bgmLease = null
     if (!settings?.enabled || !settings.audio) return
     const access = await client.assets.access(settings.audio)
-    if (epoch !== bgmEpoch) return
+    if (epoch !== bgmEpoch) {
+      releaseAccess(access.leaseId)
+      return
+    }
+    bgmLease = access.leaseId
     const audio = new AudioConstructor(access.url)
     bgm = audio
+    function finishBgm() {
+      if (bgm !== audio) return
+      releaseAccess(bgmLease)
+      bgmLease = null
+      bgm = null
+      bgmKey = null
+    }
+    audio.addEventListener('ended', finishBgm, { once: true })
+    audio.addEventListener('error', finishBgm, { once: true })
     audio.volume = bgmVolume
     audio.loop = settings.loop
-    await audio.play()
+    try {
+      await audio.play()
+    } catch (error) {
+      finishBgm()
+      throw error
+    }
     if (epoch !== bgmEpoch) audio.pause()
   }
   return {
@@ -97,6 +138,8 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
       bgm?.pause()
       if (bgm) bgm.src = ''
       bgm = null
+      releaseAccess(bgmLease)
+      bgmLease = null
     }
   }
 }

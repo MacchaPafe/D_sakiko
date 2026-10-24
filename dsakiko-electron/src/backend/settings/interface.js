@@ -1,4 +1,3 @@
-import { generationOptions, speechOptions } from '../core/validation.js'
 import path from 'node:path'
 import {
   copy,
@@ -12,7 +11,23 @@ import {
   problem,
   SnapshotBus
 } from '../core/support.js'
-import { defaultSettings } from '../core/defaults.js'
+import {
+  config,
+  configPath,
+  parseConfig,
+  configPatch,
+  applyConfigPatch,
+  isConfigObject
+} from '../core/config.js'
+import { settingsDefinition, createDefaultSettings } from './definition.js'
+
+const revisionItem = config.number({ integer: true, min: 0, max: Number.MAX_SAFE_INTEGER })
+
+/**
+ * @typedef {object} SettingsWriteOptions
+ * @property {number} [expectedRevision] 当前所基于的设置版本号，用于防止并发修改互相覆盖。如果不传，则直接修改最新的设置。
+ * @property {boolean} [correct] 是否自动修复超出范围或不合法的值，默认不修复并直接报错。
+ */
 
 /**
  * @typedef {object} SettingsState
@@ -28,15 +43,21 @@ export class Settings {
   /**
    * 创建一个全局设置管理器。
    * @param {object} options 创建选项。
+   * @param {import('../resources/interface.js').MediaAssets} options.assets 媒体资源管理器。
    * @param {string} options.directory 设置文件（settings.json）所在的存储目录。
    * @param {((connection: import('../../shared/contracts/models.js').ResolvedModelConnection, signal?: AbortSignal) => Promise<unknown>) | null} [options.probe] 自定义函数，用于发送最小测试请求以检查模型连接是否可用。
    */
-  constructor({ directory, probe = null }) {
+  constructor({ directory, assets, probe = null }) {
     this.file = path.join(directory, 'settings.json')
     this.queue = new SerialQueue()
     this.scopes = new Map()
     this.bus = new SnapshotBus()
     this.probe = probe
+    this.assets = assets
+    assets.registerOwnerReader('settings', async (id) => {
+      requireValue(id === 'global', 'invalid_owner')
+      return this.get()
+    })
   }
 
   /**
@@ -45,14 +66,23 @@ export class Settings {
    */
   async state() {
     const state = await readJson(this.file, {
-      settings: copy(defaultSettings),
+      settings: createDefaultSettings(),
       connections: {},
       secrets: {}
     })
-    // 为什么在读取时删除旧版的 playback 和 bgm.volume 字段：
-    // 播放音量已改为由各前端客户端独立保存，清理旧字段可避免保存设置时因包含未知字段而校验失败。
-    delete state.settings.playback
-    if (state.settings.bgm) delete state.settings.bgm.volume
+    fields(state, ['settings', 'connections', 'secrets'])
+    requireValue(
+      isConfigObject(state.settings) &&
+        isConfigObject(state.connections) &&
+        isConfigObject(state.secrets),
+      'invalid_settings',
+      '设置文件结构无效'
+    )
+    const { revision, ...values } = state.settings
+    state.settings = {
+      revision: revisionItem.parse(revision, 'settings.revision'),
+      ...parseConfig(settingsDefinition, values, { defaults: true })
+    }
     return state
   }
 
@@ -76,58 +106,67 @@ export class Settings {
   }
 
   /**
-   * 获取当前的全局设置。
+   * @overload
    * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 全局设置副本。
    */
-  async get() {
-    return copy((await this.state()).settings)
+  /**
+   * @overload
+   * @param {string} path 点分隔的配置项路径。
+   * @returns {Promise<unknown>} 指定配置项的值副本；未设置的可选项返回 undefined。
+   */
+  /**
+   * 获取当前的配置。如果不传入路径，将返回所有设置项目。传入路径后，只返回该路径下的设置。
+   * @param {string} [path] 点分隔的配置项路径，例如 'generation.temperature'。
+   * @returns {Promise<unknown>} 完整的全局设置副本，或单个配置项的值。
+   */
+  async get(path) {
+    const keys = path === undefined ? [] : configPath(settingsDefinition, path)
+    let value = (await this.state()).settings
+    for (const key of keys) value = value[key]
+    return copy(value)
   }
 
   /**
-   * 保存并更新全局设置。
-   * @param {import('../../shared/contracts/settings.js').GlobalSettings} settings 完整的全局设置对象（需携带当前所基于的 revision 版本号）。
-   * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 保存成功并递增版本号后的全局设置副本。
+   * 修改单个配置项目。
+   * @param {string} path 点分隔的配置项路径，例如 'generation.temperature'。
+   * @param {unknown} value 要设置的新值。
+   * @param {SettingsWriteOptions} [options] 版本号检查与自动修复选项。
+   * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 保存后的完整全局设置副本。
    */
-  async save(settings) {
+  async set(path, value, options = {}) {
+    return this.update(configPatch(settingsDefinition, path, value), options)
+  }
+
+  /**
+   * 批量修改多个配置项目。
+   * @param {import('../../shared/contracts/settings.js').SettingsUpdate} patch 要更新的配置项集合。
+   * @param {SettingsWriteOptions} [options] 版本号检查与自动修复选项。
+   * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 保存后的完整全局设置副本。
+   */
+  async update(patch, options = {}) {
+    fields(options, ['expectedRevision', 'correct'])
+    const { expectedRevision, correct = false } = options
+    requireValue(typeof correct === 'boolean', 'invalid_settings', 'correct 必须为布尔值')
+    if (expectedRevision !== undefined) revisionItem.parse(expectedRevision, 'expectedRevision')
+    // 在进入异步队列前先完成参数校验与深拷贝，避免调用方在排队等待期间修改传入的 patch 对象。
+    const changes = parseConfig(settingsDefinition, patch, {
+      partial: true,
+      deepPartial: true,
+      correct
+    })
     return this.queue.run('settings', async () => {
       const state = await this.state()
-      fields(settings, Object.keys(copy(defaultSettings)))
-      requireValue(settings.revision === state.settings.revision, 'revision_conflict')
-      fields(settings.bgm, ['audio', 'enabled', 'loop'])
-      generationOptions(settings.generation)
-      speechOptions(settings.speech)
-      fields(settings.speechStartup, [
-        'device',
-        'precision',
-        'architecture',
-        'maxConcurrentInferences',
-        'maxResidentModels'
-      ])
+      if (expectedRevision !== undefined)
+        requireValue(expectedRevision === state.settings.revision, 'revision_conflict')
       requireValue(
-        ['cpu', 'cuda', 'mps'].includes(settings.speechStartup.device) &&
-          ['float16', 'float32'].includes(settings.speechStartup.precision)
+        state.settings.revision < Number.MAX_SAFE_INTEGER,
+        'invalid_settings',
+        '设置版本号已达到上限'
       )
-      requireValue(
-        Number.isInteger(settings.speechStartup.maxConcurrentInferences) &&
-          settings.speechStartup.maxConcurrentInferences > 0 &&
-          Number.isInteger(settings.speechStartup.maxResidentModels) &&
-          settings.speechStartup.maxResidentModels > 0
-      )
-      fields(settings.display, ['frameRate', 'theme', 'startInPetMode'])
-      requireValue(
-        Number.isFinite(settings.display.frameRate) &&
-          settings.display.frameRate > 0 &&
-          ['system', 'light', 'dark'].includes(settings.display.theme) &&
-          typeof settings.display.startInPetMode === 'boolean'
-      )
-      requireValue(
-        typeof settings.bgm.enabled === 'boolean' && typeof settings.bgm.loop === 'boolean'
-      )
-      const next = copy(settings)
-      requireValue(next.generation && next.speech && next.speechStartup && next.display)
+      const next = applyConfigPatch(settingsDefinition, state.settings, changes)
       next.revision += 1
       state.settings = next
-      await writeJson(this.file, state)
+      await this.assets.commitReferences('settings:global', next, () => writeJson(this.file, state))
       this.bus.emit('settings', next)
       return copy(next)
     })

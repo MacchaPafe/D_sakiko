@@ -5,6 +5,7 @@ import { problemError } from '../../shared/problems.js'
  * @typedef {object} SpeechConnection
  * @property {string} url Python 语音服务的本地 HTTP 地址。
  * @property {string} token 请求鉴权令牌。
+ * @property {number} [processId] Python 子进程的操作系统 PID。
  * @property {string} runId 当前 Python 进程运行实例的唯一标识。
  */
 
@@ -77,9 +78,10 @@ export class PythonSpeechTransport {
   /**
    * 将合成请求转换为 Python 接口格式并提交任务。
    * @param {import('../../shared/contracts/speech.js').SpeechRequest} request 语音合成请求参数。
+   * @param {string} [expectedRun] 期望的 Python 进程运行 ID。
    * @returns {Promise<string>} Python 服务返回的任务 ID。
    */
-  async submit(request) {
+  async submit(request, expectedRun) {
     const voice = request.voice
     let text = request.text
     for (const override of request.pronunciationOverrides || [])
@@ -106,22 +108,23 @@ export class PythonSpeechTransport {
         seed: request.sampling.seed,
         sample_steps: request.sampling.sampleSteps
       }
-    return (await this.request('POST', '/speech/tasks', body)).task_id
+    return (await this.request('POST', '/speech/tasks', body, expectedRun)).task_id
   }
 
   /**
    * 查询语音任务状态；若任务已合成成功，则先将生成的音频导入媒体资源库再返回。
    * @param {string} taskId 任务 ID。
+   * @param {boolean} [importResult] 任务成功时是否导入生成的音频文件，默认导入。
    * @returns {Promise<import('../../shared/contracts/speech.js').SpeechTaskSnapshot>} 任务状态快照。
    */
-  async getTask(taskId) {
+  async getTask(taskId, importResult = true) {
     const snapshot = await this.request(
       'GET',
       `/speech/tasks/${taskId}`,
       null,
       taskId.split('-')[0]
     )
-    if (snapshot.status === 'succeeded') {
+    if (snapshot.status === 'succeeded' && importResult) {
       if (!this.results.has(taskId)) {
         // 为什么缓存导入过程的 Promise 而不是等导入完成后再缓存结果：
         // 防止多个调用方同时查询同一个刚完成的任务时，触发多次重复的文件导入。

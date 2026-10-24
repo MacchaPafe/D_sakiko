@@ -9,9 +9,9 @@ import { problemError } from '../../shared/problems.js'
 export class SerialQueue {
   tails = new Map()
   /**
-   * 将操作加入指定键的队列末尾，等待同一键的前序操作完成后再执行。
+   * 将操作加入指定键的队列末尾，等待同一个键之前的操作完成后再执行。
    * @template T
-   * @param {string} key 队列分组标识；不同 key 之间的操作互不阻塞。
+   * @param {string} key 队列分组标识；不同 key 之间的操作可以同时进行，相同 key 的多个操作需要排队完成。
    * @param {() => T | Promise<T>} operation 要执行的回调函数。
    * @returns {Promise<T>} 操作的执行结果。
    */
@@ -64,8 +64,14 @@ export async function writeJson(path, value) {
 
 /**
  * 校验 ID 是否可安全用作文件名。
+ * 
+ * 校验标准与安全设计：
+ * 1. 字符白名单：仅允许 Unicode 文字字符（\p{L}，支持中英日韩等各语言字母与汉字）、
+ *    Unicode 数字（\p{N}）、下划线（_）与连字符（-）。
+ * 2. 长度限制：1 至 100 个字符，防止超长文件名溢出文件系统上限（通常为 255 字节），并留出扩展名拼接空间。
+ * 3. 安全防御设计：禁止包含路径分隔符（/ 与 \）和点号（.），从而禁止父级/同级路径穿越（如 ../xxx 的写法）
  * @param {string} id 待校验的 ID 字符串。
- * @returns {string} 校验通过的原 ID（不合法时抛出异常）。
+ * @returns {string} 校验通过的原 ID（类型不符或不满足白名单标准时抛出 invalid_id 异常）。
  */
 export function safeId(id) {
   if (typeof id !== 'string' || !/^[\p{L}\p{N}_-]{1,100}$/u.test(id))

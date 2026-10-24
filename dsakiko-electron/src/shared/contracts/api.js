@@ -40,13 +40,15 @@ export const API_METHODS = {
   },
   settings: {
     get: false,
-    save: true,
+    set: true,
+    update: true,
     listConnections: false,
     saveConnection: true,
     deleteConnection: true,
     checkConnection: false
   },
   characters: {
+    delete: true,
     list: false,
     get: false,
     save: true,
@@ -61,7 +63,20 @@ export const API_METHODS = {
   tools: { list: false },
   interactions: { list: false, complete: true },
   performance: { getProgress: false, setModelState: true },
-  assets: { inspect: false, upload: true, access: false }
+  assets: {
+    inspect: false,
+    upload: true,
+    access: false,
+    renewAccess: false,
+    releaseAccess: false,
+    createDraft: true,
+    renewDraft: false,
+    discardDraft: true,
+    removeDraftAssets: true,
+    commitDraft: true,
+    removeLibraryItem: true,
+    listLibraryItems: false
+  }
 }
 
 /** @typedef {{ code: string, message: string, retryable: boolean }} ApiProblem */
@@ -69,7 +84,7 @@ export const API_METHODS = {
  * @typedef {object} DesktopHost Electron 专有能力，WebUI 使用自己的授权入口。
  * @property {() => Promise<BackendConnection>} getBackendConnection 获取本次运行的业务连接，不把令牌写入日志或持久 URL。
  * @property {() => Promise<{platform: string, appVersion: string}>} getRuntimeInfo 宿主平台与应用版本。
- * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
+ * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string, draftId?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
  */
 
 /** @typedef {{ baseUrl: string, token: string }} BackendConnection 仅由可信桌面 bootstrap 或显式 WebUI 授权提供。 */

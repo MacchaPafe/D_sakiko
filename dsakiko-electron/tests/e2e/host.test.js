@@ -59,9 +59,8 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
   client = createBackendClient(bootstrap.connection)
   const settings = await client.settings.get()
   expect(settings).not.toHaveProperty('playback')
-  const saved = await client.settings.save({
-    ...settings,
-    display: { ...settings.display, theme: 'dark' }
+  const saved = await client.settings.set('display.theme', 'dark', {
+    expectedRevision: settings.revision
   })
   expect(saved.revision).toBe(settings.revision + 1)
   // 从真正的 renderer 发起请求，额外验证 file:// 来源白名单与页面 CSP。

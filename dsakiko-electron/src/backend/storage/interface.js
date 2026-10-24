@@ -1,5 +1,6 @@
+import { extractAssetReferences } from '../resources/references.js'
 import path from 'node:path'
-import { readFile, copyFile } from 'node:fs/promises'
+import { readFile, copyFile, readdir, unlink } from 'node:fs/promises'
 import {
   copy,
   requireValue,
@@ -28,25 +29,11 @@ export class ChatStore {
     this.assets = assets
     this.queue = new SerialQueue()
     this.manifest = path.join(directory, 'index.json')
-  }
-
-  /**
-   * 递归扫描任意数据结构，提取其中引用的所有媒体资源（AssetRef）。
-   * @param {unknown} value 对话对象或备份数据。
-   * @returns {import('../../shared/contracts/common.js').AssetRef[]} 去重后的资源引用数组。
-   */
-  references(value) {
-    const found = new Map()
-    function visit(item) {
-      if (!item || typeof item !== 'object') return
-      // 为什么要求对象仅含唯一键 id 才算 AssetRef：
-      // 对话中的 Message、Turn 等结构也都带有 id 字段，限制仅含单个 id 属性的对象才能精确识别出 AssetRef，避免把普通消息 ID 误当成文件资源。
-      if (!Array.isArray(item) && Object.keys(item).length === 1 && typeof item.id === 'string')
-        found.set(item.id, { id: item.id })
-      else Object.values(item).forEach(visit)
-    }
-    visit(value)
-    return [...found.values()]
+    this.assets.registerOwnerReader('chat', async (id) => {
+      const loaded = await this.loadCurrent(id)
+      requireValue(loaded.status !== 'corrupt', 'corrupt_archive')
+      return loaded.status === 'loaded' ? loaded.chat : null
+    })
   }
 
   file(id) {
@@ -121,6 +108,13 @@ export class ChatStore {
    * @returns {Promise<import('../../shared/contracts/archive.js').ChatLoadResult>} 加载结果（包含正常加载 loaded、不存在 missing 或文件损坏 corrupt 三种状态）。
    */
   async load(chatId) {
+    return this.queue.run('index', () => this.loadCurrent(chatId))
+  }
+
+  /**
+   * 读取指定对话当前已提交的最新版本存档（调用方需已持有 'index' 队列锁）。
+   */
+  async loadCurrent(chatId) {
     const entry = (await this.index()).entries.find((item) => item.id === chatId)
     if (!entry) return { status: 'missing' }
     const raw = await readFile(this.versionFile(entry), 'utf8')
@@ -161,7 +155,7 @@ export class ChatStore {
       // 核对文件指纹，确保待恢复的损坏文件在此期间没有被其他操作更新或恢复过。
       requireValue(
         fingerprint(raw) === recovery.recoveryId &&
-          (await this.load(recovery.chatId)).status === 'corrupt',
+          (await this.loadCurrent(recovery.chatId)).status === 'corrupt',
         'recovery_expired'
       )
       const backupId = uuid()
@@ -170,9 +164,12 @@ export class ChatStore {
       const next = copy(replacement)
       next.revision = entry.revision + 1
       const summary = this.summary(next)
-      await writeJson(this.versionFile(summary), { version: 1, chat: next })
-      index.entries[index.entries.indexOf(entry)] = summary
-      await writeJson(this.manifest, index)
+      await this.assets.commitReferences('chat:' + next.id, next, async () => {
+        await writeJson(this.versionFile(summary), { version: 1, chat: next })
+        index.entries[index.entries.indexOf(entry)] = summary
+        await writeJson(this.manifest, index)
+      })
+      await this.cleanupVersionsUnlocked()
       return { chat: next, backupId }
     })
   }
@@ -220,10 +217,13 @@ export class ChatStore {
       const next = copy(snapshot)
       next.revision += 1
       const entry = this.summary(next)
-      await writeJson(this.versionFile(entry), { version: 1, chat: next })
-      if (previous) index.entries[index.entries.indexOf(previous)] = entry
-      else index.entries.push(entry)
-      await writeJson(this.manifest, index)
+      await this.assets.commitReferences('chat:' + next.id, next, async () => {
+        await writeJson(this.versionFile(entry), { version: 1, chat: next })
+        if (previous) index.entries[index.entries.indexOf(previous)] = entry
+        else index.entries.push(entry)
+        await writeJson(this.manifest, index)
+      })
+      await this.cleanupVersionsUnlocked()
       return copy(next)
     })
   }
@@ -240,7 +240,10 @@ export class ChatStore {
       const entry = index.entries.find((item) => item.id === chatId)
       requireValue(entry && entry.revision === expectedRevision, 'revision_conflict')
       index.entries = index.entries.filter((item) => item.id !== chatId)
-      await writeJson(this.manifest, index)
+      await this.assets.commitReferences('chat:' + chatId, null, () =>
+        writeJson(this.manifest, index)
+      )
+      await this.cleanupVersionsUnlocked()
     })
   }
 
@@ -250,30 +253,45 @@ export class ChatStore {
    * @returns {Promise<import('../../shared/contracts/common.js').AssetRef>} 导出的备份文件资源引用。
    */
   async exportArchive(chatIds) {
+    return this.queue.run('index', () => this.exportCurrent(chatIds))
+  }
+
+  /**
+   * 在持有存档队列锁的情况下读取对话并打包导出资源（防止导出读取期间对话被并发删除）。
+   */
+  async exportCurrent(chatIds) {
     const chats = []
     for (const id of chatIds) {
-      const loaded = await this.load(id)
+      const loaded = await this.loadCurrent(id)
       requireValue(loaded.status === 'loaded', 'archive_unavailable')
       chats.push(loaded.chat)
     }
-    const resources = []
-    for (const ref of this.references(chats)) {
-      const info = await this.assets.inspect(ref)
-      requireValue(
-        info.kind === 'file',
-        'archive_package_unsupported',
-        '当前聊天归档尚不支持模型目录。'
-      )
-      resources.push({ info, bytes: Buffer.from(await this.assets.read(ref)).toString('base64') })
-    }
-    const bytes = Buffer.from(JSON.stringify({ format: 'dsakiko', version: 2, chats, resources }))
-    return (
-      await this.assets.importAsset(
-        { kind: 'bytes', name: 'chats.dsakiko.json', mediaType: 'application/json', bytes },
-        'export:' + uuid(),
-        'archive'
-      )
-    ).asset
+    return this.assets.using(chats, async () => {
+      const resources = []
+      for (const ref of extractAssetReferences(chats)) {
+        const info = await this.assets.inspect(ref)
+        requireValue(
+          info.kind === 'file',
+          'archive_package_unsupported',
+          '当前聊天归档尚不支持模型目录。'
+        )
+        resources.push({ info, bytes: Buffer.from(await this.assets.read(ref)).toString('base64') })
+      }
+      const bytes = Buffer.from(JSON.stringify({ format: 'dsakiko', version: 2, chats, resources }))
+      const owner = await this.assets.createTemporaryOwner('export', [], 10 * 60 * 1000)
+      try {
+        return (
+          await this.assets.importAsset(
+            { kind: 'bytes', name: 'chats.dsakiko.json', mediaType: 'application/json', bytes },
+            owner,
+            'archive'
+          )
+        ).asset
+      } catch (error) {
+        await this.assets.releaseWhenPossible(owner)
+        throw error
+      }
+    })
   }
 
   /**
@@ -282,13 +300,20 @@ export class ChatStore {
    * @returns {Promise<import('../../shared/contracts/archive.js').ArchiveDrafts>} 解析出的对话草稿列表、警告信息及临时资源持有者标识。
    */
   async readArchive(archive) {
+    return this.assets.using(archive, () => this.importArchive(archive))
+  }
+
+  /**
+   * 读取备份文件内容并将其中内嵌的媒体资源导入本地资源库。
+   */
+  async importArchive(archive) {
     const envelope = JSON.parse(Buffer.from(await this.assets.read(archive)).toString('utf8'))
     requireValue(
       envelope.format === 'dsakiko' && envelope.version === 2 && Array.isArray(envelope.chats),
       'invalid_archive'
     )
     envelope.chats.forEach((chat) => this.validate(chat))
-    const resourceOwner = 'import:' + uuid()
+    const resourceOwner = await this.assets.createTemporaryOwner('import')
     const replacements = new Map()
     try {
       for (const resource of envelope.resources ?? []) {
@@ -323,8 +348,39 @@ export class ChatStore {
       return { chats: remap(envelope.chats), warnings: [], resourceOwner }
     } catch (error) {
       // 导入中途失败时立即释放已创建的临时资源引用，方便垃圾回收清理残留文件。
-      await this.assets.setReferences(resourceOwner, [])
+      await this.assets.releaseWhenPossible(resourceOwner)
       throw error
+    }
+  }
+  /**
+   * 清理存档目录中已被新版本取代的旧版存档文件以及中断遗留的临时文件。
+   * @returns {Promise<void>}
+   */
+  async cleanupVersions() {
+    return this.queue.run('index', () => this.cleanupVersionsUnlocked())
+  }
+
+  /**
+   * 根据当前索引记录清理不再使用的历史版本文件与临时文件（调用方需已持有 'index' 队列锁）。
+   */
+  async cleanupVersionsUnlocked() {
+    try {
+      const current = new Set(
+        (await this.index()).entries.map((entry) => path.basename(this.versionFile(entry)))
+      )
+      const files = await readdir(this.directory, { withFileTypes: true })
+      for (const file of files) {
+        if (!file.isFile() || current.has(file.name)) continue
+        const versionFile = /^[\p{L}\p{N}_-]{1,100}\.\d+\.json$/u.test(file.name)
+        const interruptedWrite =
+          /^(?:[\p{L}\p{N}_-]{1,100}\.\d+|index)\.json\.[a-f0-9-]{36}\.tmp$/u.test(file.name)
+        if (!versionFile && !interruptedWrite) continue
+        await unlink(path.join(this.directory, file.name)).catch((error) => {
+          if (error.code !== 'ENOENT') this.assets.reportMaintenance(error)
+        })
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') this.assets.reportMaintenance(error)
     }
   }
 }

@@ -23,19 +23,21 @@ export class CharacterCatalog {
    * 创建一个角色目录。
    * @param {object} options 创建选项。
    * @param {string} options.directory 角色的数据目录，存储角色配置和对话身份信息。
-   * @param {(value: unknown) => Promise<void>} [options.validateResources] 校验持久资源引用。
+   * @param {import('../resources/interface.js').MediaAssets} options.assets 媒体资源管理器。
    * @param {(presentation: import('../../shared/contracts/presentation.js').ModelPresentation) => Promise<object>} [options.resolveModel] 自定义函数，描述如何根据模型文件解析动作、表情和状态等资源。
    */
   constructor({
     directory,
-    validateResources = async () => {},
+    assets,
     resolveModel = async () => ({ motions: {}, expressions: {}, states: {} })
   }) {
     this.file = path.join(directory, 'characters.json')
     this.directory = directory
     this.queue = new SerialQueue()
     this.resolveModel = resolveModel
-    this.validateResources = validateResources
+    this.assets = assets
+    assets.registerOwnerReader('character', (id) => this.get(id))
+    assets.registerOwnerReader('persona', (id) => this.getPersona(id))
   }
 
   /**
@@ -103,13 +105,36 @@ export class CharacterCatalog {
             ? !form.models.length
             : form.models.some((model) => model.id === form.defaultModelId)
         )
-      await this.validateResources(definition)
+      await this.assets.assertPersistent(definition)
       const next = copy(definition)
       next.revision += 1
       state.characters[next.id] = next
       if (!state.order.includes(next.id)) state.order.push(next.id)
-      await writeJson(this.file, state)
+      await this.assets.commitReferences('character:' + next.id, next, () =>
+        writeJson(this.file, state)
+      )
       return copy(next)
+    })
+  }
+
+  /**
+   * 删除指定的角色配置。
+   * @param {string} characterId 要删除的角色 ID。
+   * @param {number} expectedRevision 当前所基于的版本号，用于防止误删已被更新的角色。
+   * @returns {Promise<void>}
+   */
+  async delete(characterId, expectedRevision) {
+    return this.queue.run('catalog', async () => {
+      const state = await this.state()
+      requireValue(
+        state.characters[characterId]?.revision === expectedRevision,
+        'revision_conflict'
+      )
+      delete state.characters[characterId]
+      state.order = state.order.filter((id) => id !== characterId)
+      await this.assets.commitReferences('character:' + characterId, null, () =>
+        writeJson(this.file, state)
+      )
     })
   }
 
@@ -240,7 +265,9 @@ export class CharacterCatalog {
       const previous = await this.getPersona(personaId)
       requireValue(previous?.revision === expectedRevision, 'revision_conflict')
       state.personas = state.personas.filter((id) => id !== personaId)
-      await writeJson(this.file, state)
+      await this.assets.commitReferences('persona:' + personaId, null, () =>
+        writeJson(this.file, state)
+      )
     })
   }
 
@@ -294,14 +321,16 @@ export class CharacterCatalog {
         requireValue(definition.source.kind === 'custom')
         fields(definition.source, ['kind', 'displayName', 'description', 'avatar'])
       }
-      await this.validateResources(definition)
+      await this.assets.assertPersistent(definition)
       const next = copy(definition)
       next.revision += 1
-      await writeJson(this.personaFile(next.id), next)
-      if (!state.personas.includes(next.id)) {
-        state.personas.push(next.id)
-        await writeJson(this.file, state)
-      }
+      await this.assets.commitReferences('persona:' + next.id, next, async () => {
+        await writeJson(this.personaFile(next.id), next)
+        if (!state.personas.includes(next.id)) {
+          state.personas.push(next.id)
+          await writeJson(this.file, state)
+        }
+      })
       return copy(next)
     })
   }

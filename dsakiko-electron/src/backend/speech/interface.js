@@ -1,8 +1,16 @@
+import { extractAssetReferences } from '../resources/references.js'
 import { PythonSpeechTransport } from './python-transport.js'
-import { abortable, requireValue } from '../core/support.js'
+import { abortable, requireValue, fingerprint, SerialQueue } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/speech.js').SpeechTaskId} SpeechTaskId */
 /** @typedef {import('../../shared/contracts/speech.js').SpeechPriority} SpeechPriority */
+/**
+ * @typedef {object} SpeechTaskOwnership
+ * @property {string} inputOwner 合成期间持有输入参考音频与权重的临时持有者 ID。
+ * @property {string} outputOwner 合成结果尚未被调用方接管前，持有输出音频的临时持有者 ID。
+ * @property {boolean} terminal 底层语音任务是否已执行结束。
+ * @property {boolean} released 调用方是否已接管或放弃该任务的结果。
+ */
 
 /**
  * 语音合成任务管理模块，负责向 Python 语音服务提交合成任务、查询结果、调整优先级与取消任务。
@@ -17,14 +25,27 @@ export class Speech {
   constructor({ connect, assets }) {
     this.waiting = new Map()
     this.assets = assets
+    /** @type {Map<string, SpeechTaskOwnership>} */
+    this.tasks = new Map()
+    this.retired = new Set()
+    this.residentOwners = new Set()
+    this.residentModels = new Map()
+    this.lifecycle = new SerialQueue()
+    this.runId = null
+    this.closed = false
+    this.connect = connect
     this.transport = new PythonSpeechTransport(connect, {
       localPath: async (asset) => {
         await assets.inspect(asset)
         return assets.localPath(asset)
       },
-      importAudio: async (file, taskId) =>
-        (await assets.importAsset({ kind: 'local-file', path: file }, 'speech:' + taskId, 'audio'))
-          .asset
+      importAudio: async (file, taskId) => {
+        const task = this.tasks.get(taskId)
+        requireValue(task && !task.released, 'task_unavailable')
+        return (
+          await assets.importAsset({ kind: 'local-file', path: file }, task.outputOwner, 'audio')
+        ).asset
+      }
     })
   }
 
@@ -35,15 +56,66 @@ export class Speech {
    */
   async submit(request) {
     requireValue(Number.isInteger(request.priority) && request.priority >= 0)
+    requireValue(!this.closed, 'backend_closed')
+    const inputOwner = await this.assets.createTemporaryOwner(
+      'speech-input',
+      extractAssetReferences(request.voice)
+    )
+    let outputOwner
+    let runId
+    try {
+      runId = await this.retainModels(request.voice, inputOwner)
+      outputOwner = await this.assets.createTemporaryOwner('speech')
+    } catch (error) {
+      await this.assets.releaseWhenPossible(inputOwner)
+      throw error
+    }
     const languages = { Japanese: 'ja', Chinese: 'zh' }
-    return this.transport.submit({
-      ...request,
-      language: languages[request.language] ?? request.language,
-      voice: {
-        ...request.voice,
-        referenceLanguage:
-          languages[request.voice.referenceLanguage] ?? request.voice.referenceLanguage
+    try {
+      const taskId = await this.transport.submit(
+        {
+          ...request,
+          language: languages[request.language] ?? request.language,
+          voice: {
+            ...request.voice,
+            referenceLanguage:
+              languages[request.voice.referenceLanguage] ?? request.voice.referenceLanguage
+          }
+        },
+        runId
+      )
+      this.tasks.set(taskId, { inputOwner, outputOwner, terminal: false, released: false })
+      return taskId
+    } catch (error) {
+      await this.assets.releaseWhenPossible(outputOwner)
+      // 为什么提交请求报错时不能立即释放 inputOwner：
+      // 网络超时或连接中断时 Python 可能已经收到并开始执行该任务，将 inputOwner 转入驻留集合等到进程结束再释放，可防止 Python 读取输入文件时文件被删。
+      this.residentOwners.add(inputOwner)
+      throw error
+    }
+  }
+
+  /**
+   * 为本次合成使用的模型权重建立进程级驻留保护，确保 Python 进程存活期间权重文件不会被清理。
+   */
+  async retainModels(voice, inputOwner) {
+    return this.lifecycle.run('process', async () => {
+      const connection = await this.connect()
+      await this.assets.bindOwnerProcess(inputOwner, connection.processId)
+      if (this.runId && this.runId !== connection.runId) {
+        for (const owner of this.residentOwners) await this.assets.releaseWhenPossible(owner)
+        this.residentOwners.clear()
+        this.residentModels.clear()
       }
+      this.runId = connection.runId
+      const references = [voice.gptWeights, voice.sovitsWeights]
+      const key = fingerprint(references)
+      if (this.residentModels.has(key)) return connection.runId
+      const owner = await this.assets.createTemporaryOwner('speech-model', references)
+      await this.assets.bindOwnerProcess(owner, connection.processId)
+      this.residentModels.set(key, owner)
+      this.residentOwners.add(owner)
+      return connection.runId
     })
   }
 
@@ -53,7 +125,25 @@ export class Speech {
    * @returns {Promise<import('../../shared/contracts/speech.js').SpeechTaskSnapshot>} 任务当前状态快照（若已成功则包含音频资源引用与时长）。
    */
   async getTask(taskId) {
-    return this.transport.getTask(taskId)
+    requireValue(!this.retired.has(taskId), 'task_unavailable')
+    const task = this.tasks.get(taskId)
+    try {
+      const result = await this.transport.getTask(taskId, !task?.released)
+      if (['succeeded', 'failed', 'cancelled'].includes(result.status) && task) {
+        task.terminal = true
+        await this.assets.releaseWhenPossible(task.inputOwner)
+        if (task.released) await this.finishRelease(taskId, task)
+      }
+      return result
+    } catch (error) {
+      if (task && error.problem?.code === 'task_unavailable') {
+        task.terminal = true
+        task.released = true
+        await this.assets.releaseWhenPossible(task.inputOwner)
+        await this.finishRelease(taskId, task)
+      }
+      throw error
+    }
   }
 
   /**
@@ -67,6 +157,7 @@ export class Speech {
       const poll = async () => {
         let failures = 0
         for (;;) {
+          requireValue(!this.closed, 'backend_closed')
           try {
             const result = await this.getTask(taskId)
             failures = 0
@@ -103,5 +194,56 @@ export class Speech {
    */
   async cancel(taskIds) {
     return this.transport.cancel([...new Set(taskIds)])
+  }
+  /**
+   * 通知语音管理器调用方已处理完该任务的结果（或已放弃等待），可以释放任务占用的临时资源。
+   * @param {SpeechTaskId} taskId 语音任务 ID。
+   * @returns {Promise<void>}
+   */
+  async releaseTask(taskId) {
+    const task = this.tasks.get(taskId)
+    if (!task) return
+    task.released = true
+    if (task.terminal) await this.finishRelease(taskId, task)
+    // 若调用方提前放弃等待但底层任务仍在运行，需等任务真正结束后再释放资源。
+    else void this.waitForResult(taskId).catch((error) => this.assets.reportMaintenance(error))
+  }
+
+  /**
+   * 等待音频导入操作完成后，释放该任务的输出资源持有者并清理任务记录。
+   */
+  async finishRelease(taskId, task) {
+    await this.transport.results.get(taskId)?.catch(() => {})
+    this.transport.results.delete(taskId)
+    await this.assets.releaseWhenPossible(task.outputOwner)
+    this.retired.add(taskId)
+    this.tasks.delete(taskId)
+  }
+
+  /**
+   * 关闭语音管理器，取消所有未完成的语音任务并停止本地轮询等待。
+   * @returns {Promise<void>}
+   */
+  async close() {
+    if (this.closed) return
+    this.closed = true
+    const active = [...this.tasks].filter(([, task]) => !task.terminal).map(([id]) => id)
+    await this.cancel(active).catch((error) => this.assets.reportMaintenance(error))
+    await Promise.allSettled([...this.waiting.values()])
+  }
+
+  /**
+   * 在确认 Python 语音子进程已退出后，释放该进程占用的所有输入音频与驻留模型引用。
+   * @returns {Promise<void>}
+   */
+  async processStopped() {
+    await this.close()
+    for (const [id, task] of this.tasks) {
+      await this.assets.releaseWhenPossible(task.inputOwner)
+      await this.finishRelease(id, task)
+    }
+    for (const owner of this.residentOwners) await this.assets.releaseWhenPossible(owner)
+    this.residentOwners.clear()
+    this.residentModels.clear()
   }
 }

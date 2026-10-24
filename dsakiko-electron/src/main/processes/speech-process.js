@@ -132,7 +132,12 @@ export class SpeechProcess {
           if (value.ready && Number.isInteger(value.port)) {
             settled = true
             clearTimeout(timer)
-            this.connection = { url: `http://127.0.0.1:${value.port}`, token, runId: value.runId }
+            this.connection = {
+              url: `http://127.0.0.1:${value.port}`,
+              token,
+              runId: value.runId,
+              processId: child.pid
+            }
             resolve(this.connection)
           }
         }
@@ -140,8 +145,8 @@ export class SpeechProcess {
     })
   }
   /**
-   * 先请求 Python 清理，超过期限再终止进程，避免阻塞 Electron 退出。
-   * @returns {Promise<void>} 子进程已退出或已收到终止信号。
+   * 关闭 Python 语音子进程（先请求优雅退出，超时未退出时发送终止信号）。
+   * @returns {Promise<void>}
    */
   async close() {
     const child = this.child
@@ -154,14 +159,16 @@ export class SpeechProcess {
         headers: { Authorization: `Bearer ${connection.token}` },
         signal: AbortSignal.timeout(2000)
       }).catch(() => {})
-    if (child.exitCode !== null) return
+    if (child.exitCode !== null || child.signalCode !== null) return
     await new Promise((resolve) => {
+      let forceTimer
       const timer = setTimeout(() => {
         child.kill('SIGTERM')
-        resolve()
+        forceTimer = setTimeout(() => child.kill('SIGKILL'), 2000)
       }, 8000)
       child.once('exit', () => {
         clearTimeout(timer)
+        clearTimeout(forceTimer)
         resolve()
       })
     })

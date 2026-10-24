@@ -1,6 +1,6 @@
 # 数据目录与统一资源访问设计
 
-确认日期：2026-10-14。实现更新：2026-10-15。第一阶段已接入多目录注入与统一资源访问，具体范围和兼容限制见文末。
+确认日期：2026-10-14。实现更新：2026-10-24。多目录注入、统一资源访问、引用生命周期及聊天旧版本清理已接入，具体范围和兼容限制见文末。
 
 第一阶段只拆分可写目录的注入，并由资源模块统一管理不同位置的资源。目录选择界面、迁移、容量查看和选择清理均暂缓，不为这些功能提前增加后端入口。
 
@@ -120,7 +120,7 @@ macOS 正式发布采用标准 `.app` 应用包。运行时不在包内保存设
 
 ## 当前实现与第一阶段范围
 
-[装配入口](../src/backend/create-core-backend.js)现在接收三个独立根目录。`MediaAssets` 在应用数据的 `assets/index.json` 保存版本 2 索引，公开元数据包含用途与文件/目录类型，内部位置另存，不进入 `AssetRef`。[Electron 宿主](../src/main/index.js)将三个位置分别交给后端与语音进程，并在 ready 前把 Chromium 会话目录设为 `cacheRoot/chromium`。
+[装配入口](../src/backend/create-core-backend.js)现在接收三个独立根目录。`MediaAssets` 在应用数据的 `assets/index.json` 保存版本 3 索引，公开元数据包含用途与文件/目录类型，内部位置另存，不进入 `AssetRef`。[Electron 宿主](../src/main/index.js)将三个位置分别交给后端与语音进程，并在 ready 前把 Chromium 会话目录设为 `cacheRoot/chromium`。
 
 第一阶段已完成：
 
@@ -139,9 +139,70 @@ macOS 正式发布采用标准 `.app` 应用包。运行时不在包内保存设
 - 资源导入要求显式 `purpose`：`chat-image`、`avatar`、`attachment` 属于应用数据；`model`、`live2d`、`audio` 属于资源库；`archive`、`temporary` 属于缓存。`temporary` 仅供后端创建。一般附件按应用数据保留，避免未知类型误入缓存。
 - 模型目录支持完整复制与包内文件读取，拒绝符号链接和路径越界。本阶段不实现 ZIP 解包、Live2D 配置生成或外部模型原地挂载。
 - 聊天归档使用版本 2，记录资源用途并在导入时恢复对应位置；旧版本 1 归档明确拒绝。本阶段归档仍只支持文件资源，包含模型目录时明确报不支持，不只导出入口文件而丢掉其余文件。
-- `collectUnused` 暂停执行并明确返回 `cleanup_unavailable`，不加入新的清理入口或自动任务。已有语音任务的临时结果保留期不变。
+- `collectUnused` 暂停执行并明确返回 `cleanup_unavailable`，不加入新的清理入口或自动任务。引用租约到期仅释放 owner，不删除音频等资源文件。
 - Python 代码作为只读资源打包到 `.app/Contents/Resources/python`，运行时使用缓存工作目录并关闭字节码写入；解释器和依赖仍需单独准备。
 
-以上改变不包含目录迁移，也不会搬运或删除现有用户文件。
+以上目录拆分不包含迁移。下面的聊天版本维护会删除受控存档目录中的旧 revision 文件，但不删除媒体资源文件。
 
 实现验收关注：三个根目录可以分别指定；同一 Chat 的图片和音频可分别落盘并通过统一引用读取；持久引用不依赖缓存；资源缺失保留文本与引用；模型包结构完整；业务层不拼接资源路径；运行时不写安装包。
+
+## 引用生命周期与聊天版本清理
+
+资源需要保留，可能是因为用户把它放进了资源库，也可能是角色、聊天或运行任务正在使用。同一个资源可以同时有多个 owner，释放其中一个不影响其他引用。所有引用变更都在 MediaAssets 的同一队列内读取和保存索引，不要求调用方先读取旧集合。
+
+`extractAssetReferences(value)` 是纯函数，只识别项目约定中仅含 `id` 的 AssetRef 对象并去重，不查询索引或文件。增删接口适合草稿和任务，完整替换适合持久保存。例如同一图片出现在两条消息中，删除一条后从剩余聊天重新提取引用，仍会保留该图片。
+
+```js
+await assets.addReferences(owner, [image.asset, audio.asset])
+await assets.removeReferences(owner, [image.asset])
+await assets.replaceReferences(owner, extractAssetReferences(snapshot))
+await assets.releaseOwner(owner)
+```
+
+| 持有者                       | 保留与释放规则                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------ |
+| library                      | 用户主动导入的模型长期保留；分配给角色不释放。明确移除库条目才释放库引用。                 |
+| character、persona、settings | 从已保存内容维护完整引用；更换或删除配置提交后更新。BGM 关闭但配置仍保留时，继续持有音频。 |
+| chat                         | 只持有当前已提交聊天，创建、分支、归档导入和损坏恢复共用 ChatStore 提交流程。              |
+| pending                      | 写业务文件前保护新引用；根据已提交内容完成正式引用交接后移除。                             |
+| draft                        | 附件导入时建立；已保存目标接手后释放对应引用，放弃草稿时释放全部。                         |
+| chat-memory、turn            | 保护内存内容及本轮冻结材料；保存失败时继续保留，聊天关闭或执行结束后释放。                 |
+| speech-input、speech         | 输入保留到真实任务终态，输出保留到接收方建立引用或明确废弃；取消等待不代表任务结束。       |
+| speech-model                 | Python 没有逐模型卸载通知，同一进程、同一组权重只建立一份驻留引用，保守保留到进程退出。    |
+| import、export               | 导入期间保护输入与产物；导出读取期间保护源资源，生成的独立归档另有十分钟保留期。           |
+| use、scene、guide、access    | 分别保护异步读取、场景、演出音频和客户端访问，实际操作结束后释放。                         |
+
+持久保存通过 `commitReferences` 完成：先写 pending 引用与提交日志，再执行业务提交，最后读取权威持久数据，更新正式 owner 并清除日志。业务数据发布后若引用收尾失败，保存仍返回成功，保护日志继续存在。后台维护或下次启动会重试交接；提交失败也按磁盘事实处理，不能假定业务文件尚未发布。维护错误保存在 `assets.maintenanceProblems`，不冒充业务保存失败。
+
+启动恢复只处理提交日志记录的目标，不扫描旧业务数据补建引用。索引版本提升为 3，增加 `temporaryOwners` 和 `commits`；旧版本索引明确拒绝，不自动迁移。临时 owner 记录后端会话，重启后释放上次运行的普通临时引用。语音输入和模型还记录宿主确认的子进程 PID：宿主异常退出后子进程若仍存活，引用继续保留；检查权限不足或 PID 重用时也保守保留。
+
+### 草稿与访问调用
+
+正式 HTTP 客户端通过 `assets.createDraft()` 获得 draftId。普通附件上传必须提供 draftId，本地宿主导入通过 `importFiles({ purpose, draftId })` 传递同一身份。模型可以直接进入资源库；即使先放入草稿，主动导入的模型也会建立独立 library 引用。导入结果的 libraryItemId 用于明确移除库条目，`listLibraryItems()` 可查询现有条目。
+
+```js
+const { draftId } = await client.assets.createDraft()
+const image = await client.assets.upload({
+  draftId,
+  name: 'picture.png',
+  mediaType: 'image/png',
+  base64: imageBase64,
+  purpose: 'chat-image'
+})
+// 将 image.asset 写入业务内容，等待保存或聊天受理成功后再交接。
+await client.assets.commitDraft(draftId, { kind: 'chat', id: chatId })
+// 用户放弃尚未提交的编辑时调用：
+await client.assets.discardDraft(draftId)
+```
+
+`commitDraft` 只释放已由指定目标正式持有的资源，未交接附件继续留在草稿中；它不能替代业务保存。草稿三十分钟过期，访问凭证五分钟过期，正式客户端每分钟续期其活动草稿和访问。使用者在播放结束、停止或模型实例卸载后调用 `releaseAccess(leaseId)`；客户端关闭时释放全部已登记访问和草稿，异常断开以租约过期兜底。HTTP 文件读取另有 use owner，访问凭证释放不会提前结束实际读取。
+
+正式音频输出已接入结束、停止、换曲、失败和迟到访问的释放，后端场景与 guide 也分别持有资源。现有旧 IPC 页面原型没有在本次改造成正式 HTTP 页面；后续页面和 Live2D 渲染器应使用上述约定，不直接修改任意 owner。InputSessions 的录音、识别及完整编辑 UI、RemoteFiles 和 Live2D 压缩包导入器仍不在本次实现范围。
+
+### 聊天只保留当前版本
+
+聊天位于 `<appDataRoot>/chats/`。每次保存先写 `<chatId>.<revision>.json`，再原子替换 index.json；索引发布成功后才删除旧 revision。读取、导出和清理共用存储队列，旧文件不会在读取中途消失。删除聊天先提交索引删除，再清理文件。
+
+保存成功后及时清理，启动时兜底清理中断留下的旧版本与受控临时写入文件，不增加定期扫描聊天目录的任务。只识别存储模块产生的文件名，不删除目录、符号链接、未知文件或 `.backup`。清理失败记录诊断，后续保存或启动重试，不把成功保存改成失败。旧 revision 没有长期资源 owner，损坏备份也不承诺媒体完整可恢复。
+
+这会避免磁盘长期积累聊天完整副本，但每次保存仍需序列化并写入完整聊天，未改为增量存储。

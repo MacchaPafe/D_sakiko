@@ -1,3 +1,4 @@
+import { extractAssetReferences } from '../resources/references.js'
 import { performance as clock } from 'node:perf_hooks'
 import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '../core/support.js'
 
@@ -56,6 +57,7 @@ export class Performance {
   /**
    * 创建一个演出管理器。
    * @param {object} [options] 创建选项。
+   * @param {import('../resources/interface.js').MediaAssets | null} [options.assets] 媒体资源管理器，用于在演出期间保护场景与音频资源。
    * @param {() => number} [options.now] 获取当前单调时钟毫秒数的函数（默认使用 perf_hooks.performance.now）。
    * @param {typeof setTimeout} [options.setTimer] 设置定时器的函数（测试时可替换为虚拟时钟）。
    * @param {typeof clearTimeout} [options.clearTimer] 清除定时器的函数。
@@ -64,6 +66,7 @@ export class Performance {
    * @param {number} [options.minimumReadingMs] 无语音时，单句非空台词的最短持续毫秒数，默认 800ms。
    */
   constructor({
+    assets = null,
     now = () => clock.now(),
     setTimer = setTimeout,
     clearTimer = clearTimeout,
@@ -72,6 +75,7 @@ export class Performance {
     minimumReadingMs = 800
   } = {}) {
     Object.assign(this, {
+      assets,
       now,
       setTimer,
       clearTimer,
@@ -122,10 +126,15 @@ export class Performance {
   async createSequence(scene) {
     requireValue(!this.closed, 'backend_closed', '后端已关闭。')
     this.validateScene(scene)
+    const resourceOwner = await this.assets?.createTemporaryOwner(
+      'scene',
+      extractAssetReferences(scene)
+    )
     const mappings = await this.mappings(scene)
     const id = uuid()
     this.sequences.set(id, {
       id,
+      resourceOwner,
       scene: copy(scene),
       queue: [],
       transitions: [],
@@ -243,6 +252,14 @@ export class Performance {
     // 先全部校验并构造完毕再统一入队，防止数组中途某一项校验失败时留下半批已入队的计划项。
     const records = guides.map((guide) => this.makeGuide(sequence, guide))
     for (const record of records) {
+      record.resourceOwner = await this.assets?.createTemporaryOwner(
+        'guide',
+        extractAssetReferences(record.guide)
+      )
+      if (sequence.closed) {
+        if (record.resourceOwner) await this.assets.releaseWhenPossible(record.resourceOwner)
+        requireValue(false, 'sequence_unavailable')
+      }
       this.guides.set(record.id, record)
       sequence.queue.push(record.id)
     }
@@ -370,7 +387,14 @@ export class Performance {
     if (record.finish || record.guide.ready) return false
     const sequence = this.sequence(record.sequenceId)
     const guide = { ...record.guide, audio: copy(materials.audio), ready: true }
-    record.durationMs = this.duration(guide)
+    const duration = this.duration(guide)
+    if (record.resourceOwner)
+      await this.assets.addReferences(record.resourceOwner, extractAssetReferences(guide))
+    if (record.finish || sequence.closed) {
+      if (record.resourceOwner) await this.assets.releaseWhenPossible(record.resourceOwner)
+      return false
+    }
+    record.durationMs = duration
     record.guide = guide
     record.readyAt = this.now()
     this.advance(sequence)
@@ -452,8 +476,20 @@ export class Performance {
         sequence.modelStates.delete(key)
       }
     }
-    sequence.mappings = await this.mappings(scene)
+    const resourceOwner = await this.assets?.createTemporaryOwner(
+      'scene',
+      extractAssetReferences(scene)
+    )
+    const mappings = await this.mappings(scene)
+    if (sequence.closed) {
+      if (resourceOwner) await this.assets.releaseWhenPossible(resourceOwner)
+      requireValue(false, 'sequence_unavailable')
+    }
+    const previousOwner = sequence.resourceOwner
+    sequence.resourceOwner = resourceOwner
+    sequence.mappings = mappings
     sequence.scene = copy(scene)
+    if (previousOwner) await this.assets.releaseWhenPossible(previousOwner)
     this.publish(sequence)
   }
 
@@ -501,6 +537,7 @@ export class Performance {
     for (const resolve of record.waiters) resolve(copy(record.finish))
     record.waiters.clear()
     record.guide = null
+    if (record.resourceOwner) void this.assets.releaseWhenPossible(record.resourceOwner)
     this.publish(sequence, [record.finish])
   }
 
@@ -668,6 +705,7 @@ export class Performance {
     for (const id of [...sequence.queue, ...sequence.transitions])
       this.finish(sequence, this.guides.get(id), 'closed')
     this.publish(sequence)
+    if (sequence.resourceOwner) await this.assets.releaseWhenPossible(sequence.resourceOwner)
     for (const [id, record] of this.guides)
       if (record.sequenceId === sequenceId) this.guides.delete(id)
   }

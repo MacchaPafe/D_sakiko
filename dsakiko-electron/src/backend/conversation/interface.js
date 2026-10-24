@@ -1,3 +1,4 @@
+import { extractAssetReferences } from '../resources/references.js'
 import { generationOptions, speechOptions, presentationOptions } from '../core/validation.js'
 import {
   copy,
@@ -58,6 +59,7 @@ import { chatSettings } from '../core/defaults.js'
 /**
  * @typedef {object} ConversationState
  * @property {import('../../shared/contracts/conversation.js').Chat} chat 当前权威内容；保存故障时可能领先磁盘。
+ * @property {string} resourceOwner 持有当前内存中对话所引用资源的临时持有者 ID。
  * @property {number} revision 观察版本，与 chat.revision 的持久化版本分开。
  * @property {TurnRun | null} active 当前执行；停止后保留句未结束时仍非空。
  * @property {Map<string, import('../../shared/contracts/conversation.js').TurnExecution>} executions 本次运行已知的轮次状态。
@@ -128,6 +130,8 @@ export class Conversations {
     this.runtimeId = uuid()
     this.closed = false
     this.pendingCompletions = new Map()
+    this.synthesizing = new Set()
+    this.synthesisControllers = new Set()
   }
   /** 同一 Chat 的并发首次访问共享加载，避免创建两个运行时所有者或两条演出序列。 */
   async state(chatId) {
@@ -147,6 +151,10 @@ export class Conversations {
     /** @type {ConversationState} */
     const state = {
       chat: loaded.chat,
+      resourceOwner: await this.assets.createTemporaryOwner(
+        'chat-memory',
+        extractAssetReferences(loaded.chat)
+      ),
       revision: 0,
       active: null,
       executions: new Map(),
@@ -237,17 +245,13 @@ export class Conversations {
   }
   /** 保存失败时内存仍是权威内容；只允许显式 retrySave 再写，不能回滚已发生的工具结果。 */
   async persist(state, retry = false) {
+    await this.assets.replaceReferences(state.resourceOwner, extractAssetReferences(state.chat))
     if (state.persistence.state === 'failed' && !retry) {
       this.publish(state)
       return false
     }
     try {
-      // 建立新引用先于提交，失败只会多保留资源，不能删除仍被磁盘版本引用的资源。
-      const refs = this.store.references(state.chat)
-      await this.assets.setReferences('chat-pending:' + state.chat.id, refs)
       state.chat = await this.store.save(state.chat)
-      await this.assets.setReferences('chat:' + state.chat.id, refs)
-      await this.assets.setReferences('chat-pending:' + state.chat.id, [])
       state.persistence = { state: 'saved', problem: null }
       this.publish(state)
       return true
@@ -390,8 +394,17 @@ export class Conversations {
       supplementalContext: [],
       tools
     }
-    const inspection = await this.agent.inspectContext(request)
-    return { request, speech, generation, capabilities, inspection }
+    const resourceOwner = await this.assets.createTemporaryOwner(
+      'turn',
+      extractAssetReferences({ capabilities, request })
+    )
+    try {
+      const inspection = await this.agent.inspectContext(request)
+      return { request, speech, generation, capabilities, inspection, resourceOwner }
+    } catch (error) {
+      await this.assets.releaseWhenPossible(resourceOwner)
+      throw error
+    }
   }
   /** 在 Chat 串行队列内完成去重、准备和持久受理，再启动执行；调用方负责持有队列。 */
   async admit(
@@ -429,100 +442,102 @@ export class Conversations {
       candidate.turns.pop()
     }
     const prepared = await this.prepare(candidate, input, options)
-    const compression = prepared.generation.compression
-    if (
-      compression.enabled &&
-      (prepared.inspection.fit === 'over-budget' ||
-        prepared.inspection.estimatedInputTokens > compression.thresholdTokens)
-    ) {
-      const count = candidate.turns.length - Math.max(1, compression.retainedTurns)
-      if (count > 0) {
-        const result = await this.agent.compress({
-          history: this.history({ ...candidate, turns: candidate.turns.slice(0, count) }),
-          options: prepared.generation,
-          connection: prepared.request.connection
-        })
-        const covered = candidate.turns[count - 1]
-        covered.messages = covered.messages.filter((message) => message.kind !== 'abstract')
-        covered.messages.push({ id: uuid(), kind: 'abstract', text: result.text, extensions: {} })
-        prepared.request.history = this.history(candidate)
-        prepared.inspection = await this.agent.inspectContext(prepared.request)
-      }
-    }
-    requireValue(
-      prepared.inspection.fit !== 'over-budget',
-      'context_over_budget',
-      '必需上下文超出预算。'
-    )
-    const turnId = uuid()
-    prepared.request.turnId = turnId
-    const turn = {
-      id: turnId,
-      input: input ? { kind: 'message', messageId: input.id } : { kind: 'scenario' },
-      meta: {
-        requestId: options.requestId,
-        generation: prepared.generation,
-        speech: prepared.speech,
-        scenario: copy(candidate.meta.settings.scenario),
-        characters: copy(candidate.meta.settings.characters),
-        tools: prepared.request.tools.map((tool) => tool.name),
-        worldbook: null,
-        worldbookDiagnostics: [],
-        extensions: { requestFingerprint: material }
-      },
-      messages: input ? [copy(input)] : []
-    }
-    candidate.turns.push(turn)
-    candidate.meta.extensions.acceptedRequests ??= {}
-    candidate.meta.extensions.acceptedRequests[options.requestId] = {
-      material,
-      turnId,
-      replaceId,
-      options: copy(options),
-      input: input ? { ...copy(input), id: null } : null
-    }
-    if (delivery) candidate.meta.reminders.find((item) => item.id === delivery).state = 'delivered'
-    const refs = this.store.references(candidate)
-    await this.assets.setReferences('chat-pending:' + candidate.id, refs)
-    // 这是受理点：保存成功之前不替换内存 Chat、消费自动输入或启动 Agent。
-    const saved = await this.store.save(candidate)
-    state.chat = saved
+    let accepted = false
     try {
-      await this.assets.setReferences('chat:' + candidate.id, refs)
-      await this.assets.setReferences('chat-pending:' + candidate.id, [])
-    } catch (error) {
-      state.persistence = { state: 'failed', problem: problem(error) }
+      const compression = prepared.generation.compression
+      if (
+        compression.enabled &&
+        (prepared.inspection.fit === 'over-budget' ||
+          prepared.inspection.estimatedInputTokens > compression.thresholdTokens)
+      ) {
+        const count = candidate.turns.length - Math.max(1, compression.retainedTurns)
+        if (count > 0) {
+          const result = await this.agent.compress({
+            history: this.history({ ...candidate, turns: candidate.turns.slice(0, count) }),
+            options: prepared.generation,
+            connection: prepared.request.connection
+          })
+          const covered = candidate.turns[count - 1]
+          covered.messages = covered.messages.filter((message) => message.kind !== 'abstract')
+          covered.messages.push({ id: uuid(), kind: 'abstract', text: result.text, extensions: {} })
+          prepared.request.history = this.history(candidate)
+          prepared.inspection = await this.agent.inspectContext(prepared.request)
+        }
+      }
+      requireValue(
+        prepared.inspection.fit !== 'over-budget',
+        'context_over_budget',
+        '必需上下文超出预算。'
+      )
+      const turnId = uuid()
+      prepared.request.turnId = turnId
+      const turn = {
+        id: turnId,
+        input: input ? { kind: 'message', messageId: input.id } : { kind: 'scenario' },
+        meta: {
+          requestId: options.requestId,
+          generation: prepared.generation,
+          speech: prepared.speech,
+          scenario: copy(candidate.meta.settings.scenario),
+          characters: copy(candidate.meta.settings.characters),
+          tools: prepared.request.tools.map((tool) => tool.name),
+          worldbook: null,
+          worldbookDiagnostics: [],
+          extensions: { requestFingerprint: material }
+        },
+        messages: input ? [copy(input)] : []
+      }
+      candidate.turns.push(turn)
+      candidate.meta.extensions.acceptedRequests ??= {}
+      candidate.meta.extensions.acceptedRequests[options.requestId] = {
+        material,
+        turnId,
+        replaceId,
+        options: copy(options),
+        input: input ? { ...copy(input), id: null } : null
+      }
+      if (delivery)
+        candidate.meta.reminders.find((item) => item.id === delivery).state = 'delivered'
+      // 这是受理点：保存成功之前不替换内存 Chat、消费自动输入或启动 Agent。
+      const saved = await this.store.save(candidate)
+      state.chat = saved
+      await this.assets
+        .replaceReferences(state.resourceOwner, extractAssetReferences(saved))
+        .catch((error) => this.assets.reportMaintenance(error))
+      if (!automatic || !state.group) {
+        state.group = uuid()
+        state.pending = []
+        this.interactions?.publish()
+      }
+      const execution = { turnId, state: 'running', phase: 'generation', problem: null }
+      /** @type {TurnRun} */
+      const run = {
+        turnId,
+        group: state.group,
+        execution,
+        activity: 'generating',
+        controller: new AbortController(),
+        guides: [],
+        speechTasks: [],
+        pending: [],
+        prepared
+      }
+      state.executions.set(turnId, execution)
+      state.active = run
+      state.problem = null
+      await this.performance.setScene(state.sequenceId, await this.scene(state.chat, false))
+      this.publish(state)
+      accepted = true
+      run.done = Promise.resolve()
+        .then(() => this.execute(state, run))
+        .catch((error) => {
+          state.problem = problem(error)
+          this.publish(state)
+        })
+      return turnId
+    } finally {
+      if (!accepted) await this.assets.releaseWhenPossible(prepared.resourceOwner)
     }
-    if (!automatic || !state.group) {
-      state.group = uuid()
-      state.pending = []
-      this.interactions?.publish()
-    }
-    const execution = { turnId, state: 'running', phase: 'generation', problem: null }
-    /** @type {TurnRun} */
-    const run = {
-      turnId,
-      group: state.group,
-      execution,
-      activity: 'generating',
-      controller: new AbortController(),
-      guides: [],
-      speechTasks: [],
-      pending: [],
-      prepared
-    }
-    state.executions.set(turnId, execution)
-    state.active = run
-    state.problem = null
-    await this.performance.setScene(state.sequenceId, await this.scene(state.chat, false))
-    this.publish(state)
-    run.done = Promise.resolve()
-      .then(() => this.execute(state, run))
-      .catch((error) => {
-        state.problem = problem(error)
-        this.publish(state)
-      })
-    return turnId
   }
   /** 在队列外等待长任务，结果再进入 Chat 队列；否则停止、工具回调会被整轮等待锁住。 */
   async execute(state, run) {
@@ -590,6 +605,7 @@ export class Conversations {
         await this.performance.stopTransitionGuide(state.sequenceId)
         this.publish(state)
       })
+      await this.assets.releaseWhenPossible(run.prepared.resourceOwner)
       this.scheduleDrain(state)
     }
   }
@@ -656,18 +672,42 @@ export class Conversations {
   }
   /** 合成在队列外运行；交付时同时核对句身份、发声材料和合成资格，失败允许无声演出。 */
   async synthesize(state, ref, prepared, run = null, guideId = null) {
+    requireValue(!this.closing && !this.closed, 'backend_closed')
+    const controller = new AbortController()
+    const signal = run
+      ? AbortSignal.any([controller.signal, run.controller.signal])
+      : controller.signal
+    this.synthesisControllers.add(controller)
+    const pending = this.assets.using(prepared.capabilities, () =>
+      this.synthesizeProtected(state, ref, prepared, run, guideId, signal)
+    )
+    this.synthesizing.add(pending)
+    try {
+      return await pending
+    } finally {
+      this.synthesizing.delete(pending)
+      this.synthesisControllers.delete(controller)
+    }
+  }
+
+  /**
+   * 执行单句台词的语音合成，并在合成结果写入对话与演出序列后再释放底层语音任务。
+   */
+  async synthesizeProtected(state, ref, prepared, run, guideId, signal) {
     const token = uuid()
     state.audioTokens.set(ref.lineId, token)
     const original = copy(this.locate(state.chat, ref))
+    let taskId = null
     let audio = null
     let audioProblem = null
     try {
+      signal.throwIfAborted()
       const capability = prepared.capabilities.find(
         (item) => item.id === original.speakerId && item.formId === original.formId
       )
       const voice = await this.characters.resolveVoice(capability, original.emotion)
       requireValue(voice.voice, 'voice_unavailable', '当前形态没有可用声音。')
-      const taskId = await this.speech.submit({
+      taskId = await this.speech.submit({
         speed: prepared.speech.speed,
         sentencePauseMs: prepared.speech.sentencePauseMs,
         sampling: prepared.speech.sampling,
@@ -678,29 +718,35 @@ export class Conversations {
       if (run) {
         run.speechTasks.push(taskId)
         // 停止可能早于 submit 返回；拿到迟到编号后仍须取消真实 Python 任务。
-        if (run.controller.signal.aborted) await this.speech.cancel([taskId])
       }
-      const result = await this.speech.waitForResult(taskId, run?.controller.signal)
+      if (signal.aborted) await this.speech.cancel([taskId])
+      const result = await this.speech.waitForResult(taskId, signal)
       if (result.status === 'succeeded') audio = result.audio
       else if (result.status === 'failed') audioProblem = result.problem
     } catch (error) {
+      if (signal.aborted && taskId) await this.speech.cancel([taskId]).catch(() => {})
       audioProblem = problem(error)
     }
-    await this.queue.run(state.chat.id, async () => {
-      const line = this.locate(state.chat, ref)
-      if (
-        state.deleted ||
-        !line ||
-        state.audioTokens.get(ref.lineId) !== token ||
-        fingerprint(line.spoken) !== fingerprint(original.spoken) ||
-        run?.controller.signal.aborted
-      )
-        return
-      line.audio = audio
-      if (audioProblem) state.audioProblems.push({ line: ref, problem: audioProblem })
-      if (guideId) await this.performance.resolveGuide(guideId, { audio })
-      await this.persist(state)
-    })
+    try {
+      await this.queue.run(state.chat.id, async () => {
+        const line = this.locate(state.chat, ref)
+        if (
+          state.deleted ||
+          !line ||
+          state.audioTokens.get(ref.lineId) !== token ||
+          fingerprint(line.spoken) !== fingerprint(original.spoken) ||
+          signal.aborted
+        )
+          return
+        if (audio) await this.assets.addReferences(state.resourceOwner, [audio.asset])
+        line.audio = audio
+        if (audioProblem) state.audioProblems.push({ line: ref, problem: audioProblem })
+        if (guideId) await this.performance.resolveGuide(guideId, { audio })
+        await this.persist(state)
+      })
+    } finally {
+      if (taskId) await this.speech.releaseTask?.(taskId)
+    }
   }
   /** 为缺结果的调用补记中断；不推断外部副作用未发生，也不自动重试工具。 */
   interruptMissing(chat, onlyTurn = null) {
@@ -746,11 +792,11 @@ export class Conversations {
       else requireValue(state.persistence.state !== 'failed', 'save_failed')
       const candidate = copy(state.chat)
       await mutation(candidate)
-      await this.assets.setReferences('chat-pending:' + chatId, this.store.references(candidate))
       const saved = await this.store.save(candidate)
       state.chat = saved
-      await this.assets.setReferences('chat:' + chatId, this.store.references(candidate))
-      await this.assets.setReferences('chat-pending:' + chatId, [])
+      await this.assets
+        .replaceReferences(state.resourceOwner, extractAssetReferences(saved))
+        .catch((error) => this.assets.reportMaintenance(error))
       if (semantic) {
         state.group = null
         state.pending = []
@@ -915,11 +961,15 @@ export class Conversations {
   async close() {
     if (this.closed) return
     this.closing = true
+    for (const controller of this.synthesisControllers) controller.abort()
     for (const state of this.states.values())
       if (state.active) await this.stopTurn(state.chat.id, state.active.turnId)
     for (const state of this.states.values())
       await this.performance.removeGuides([...state.guides.values()].map((item) => item.guideId))
     await Promise.allSettled([...this.states.values()].map((state) => state.active?.done))
+    await Promise.allSettled([...this.synthesizing])
+    for (const state of this.states.values())
+      await this.assets.releaseWhenPossible(state.resourceOwner)
     this.closed = true
     this.bus.clear()
   }
@@ -1298,7 +1348,11 @@ export class Conversations {
       : null
     const prepared = await this.prepare(copy(state.chat), input, { generation: options })
     if (!submission) prepared.request.input = null
-    return this.agent.inspectContext(prepared.request)
+    try {
+      return await this.agent.inspectContext(prepared.request)
+    } finally {
+      await this.assets.releaseWhenPossible(prepared.resourceOwner)
+    }
   }
 
   /**
@@ -1579,7 +1633,7 @@ export class Conversations {
       await this.performance.closeSequence(state.sequenceId)
       this.states.delete(chatId)
       this.interactions?.publish()
-      await this.assets.setReferences('chat:' + chatId, [])
+      await this.assets.releaseWhenPossible(state.resourceOwner)
     })
   }
 
@@ -1607,7 +1661,7 @@ export class Conversations {
       for (const chat of drafts.chats) chatIds.push(await this.saveCopy(chat))
       return { chatIds, warnings: drafts.warnings }
     } finally {
-      await this.assets.setReferences(drafts.resourceOwner, [])
+      await this.assets.releaseWhenPossible(drafts.resourceOwner)
     }
   }
 
@@ -1645,7 +1699,6 @@ export class Conversations {
       delete turn.meta.extensions.requestFingerprint
     }
     this.interruptMissing(chat)
-    await this.assets.setReferences('chat:' + chat.id, this.store.references(chat))
     await this.store.save(chat)
     return chat.id
   }

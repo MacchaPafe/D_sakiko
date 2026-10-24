@@ -102,4 +102,19 @@
  * @property {{ frameRate: number, theme: 'system' | 'light' | 'dark', startInPetMode: boolean }} display 正帧率及宿主展示偏好；窗口细节由宿主设计。
  */
 
+/**
+ * 全局生成配置的部分更新对象（嵌套分组内只需传入要修改的字段）。
+ * @typedef {Partial<Omit<GenerationOptions, 'reasoning' | 'compression' | 'limits'>> & {reasoning?: Partial<GenerationOptions['reasoning']>, compression?: Partial<GenerationOptions['compression']>, limits?: Partial<GenerationOptions['limits']>}} GenerationUpdate
+ */
+
+/**
+ * 批量更新全局设置时传入的部分配置对象。
+ * @typedef {object} SettingsUpdate
+ * @property {GenerationUpdate} [generation] 要修改的模型生成参数。
+ * @property {Partial<SpeechOptions>} [speech] 要修改的语音合成参数。
+ * @property {Partial<SpeechStartupSettings>} [speechStartup] 要修改的语音服务启动配置（下次启动语音进程时生效）。
+ * @property {Partial<GlobalSettings['bgm']>} [bgm] 要修改的背景音乐设置。
+ * @property {Partial<GlobalSettings['display']>} [display] 要修改的界面显示设置。
+ */
+
 export {}

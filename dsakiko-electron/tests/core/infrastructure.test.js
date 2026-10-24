@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test, vi } from 'vitest'
-import { SerialQueue, readJson, writeJson } from '../../src/backend/core/files.js'
+import { SerialQueue, readJson, writeJson, safeId } from '../../src/backend/core/files.js'
 import { Speech } from '../../src/backend/speech/interface.js'
 import { PythonSpeechTransport } from '../../src/backend/speech/python-transport.js'
 
@@ -53,6 +53,10 @@ test('JSON 发布失败保留旧文件并清理临时文件，损坏 JSON 不能
 function speechFixture(fetcher) {
   const assets = {
     inspect: vi.fn(async () => ({})),
+    createTemporaryOwner: vi.fn(async (kind) => kind + ':test'),
+    releaseWhenPossible: vi.fn(async () => {}),
+    reportMaintenance: vi.fn(),
+    bindOwnerProcess: vi.fn(async () => {}),
     localPath: (asset) => '/managed/' + asset.id,
     importAsset: vi.fn(async () => ({ asset: { id: 'audio' } }))
   }
@@ -103,7 +107,7 @@ test('正式 Speech 接口转换请求，并发查询同一任务只导入一次
   expect(results[0].audio).toEqual({ asset: { id: 'audio' }, durationMs: 1250 })
   expect(assets.importAsset).toHaveBeenCalledExactlyOnceWith(
     { kind: 'local-file', path: '/temporary/result.wav' },
-    'speech:runA-task',
+    'speech:test',
     'audio'
   )
 })
@@ -146,4 +150,50 @@ test('Python 提交通信失败只发送一次，无法确认结果时不自动�
     transport.submit({ text: '你好', language: 'zh', priority: 1, voice: {} })
   ).rejects.toHaveProperty('problem.code', 'speech_unavailable')
   expect(fetcher).toHaveBeenCalledTimes(1)
+})
+
+test('safeId 校验遵循白名单规范，放行有效字符并拒绝越界与不安全文件名', () => {
+  // 合法 ID：支持 ASCII 字母数字、中日文等各语言 Unicode 字符、下划线与连字符
+  expect(safeId('alpha-123_456')).toBe('alpha-123_456')
+  expect(safeId('角色_01')).toBe('角色_01')
+  expect(safeId('キャラ-1')).toBe('キャラ-1')
+  expect(safeId('a'.repeat(100))).toBe('a'.repeat(100))
+
+  // 非法 ID：空字符串、超长字符、非字符串类型
+  expect(() => safeId('')).toThrow()
+  expect(() => safeId('a'.repeat(101))).toThrow()
+  expect(() => safeId(null)).toThrow()
+  expect(() => safeId(12345)).toThrow()
+
+  // 非法 ID：路径穿越、文件系统保留字符、控制字符与空白
+  expect(() => safeId('..')).toThrow()
+  expect(() => safeId('../test')).toThrow()
+  expect(() => safeId('test/item')).toThrow()
+  expect(() => safeId('test\\item')).toThrow()
+  expect(() => safeId('test.json')).toThrow()
+  expect(() => safeId('test id')).toThrow()
+  expect(() => safeId('test:name')).toThrow()
+  expect(() => safeId('test\0null')).toThrow()
+})
+
+test('输入保护绑定进程后若 Python 重启，提交不会发送到新进程', async () => {
+  const fetcher = vi.fn()
+  const { speech, assets, connection } = speechFixture(fetcher)
+  assets.createTemporaryOwner.mockImplementation(async (kind) => {
+    if (kind === 'speech') connection.runId = 'runB'
+    return kind + ':test'
+  })
+  await expect(
+    speech.submit({
+      priority: 1,
+      text: 'hello',
+      language: 'Chinese',
+      voice: {
+        gptWeights: { id: 'gpt' },
+        sovitsWeights: { id: 'sovits' },
+        referenceAudio: { id: 'reference' }
+      }
+    })
+  ).rejects.toHaveProperty('problem.code', 'task_unavailable')
+  expect(fetcher).not.toHaveBeenCalled()
 })

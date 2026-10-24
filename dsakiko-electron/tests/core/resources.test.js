@@ -188,8 +188,10 @@ test('HTTP 上传按已校验用途路由，图片和音频统一授权读取', 
   cleanups.push(() => server.close())
   const client = createBackendClient(server)
   cleanups.push(() => client.close())
+  const { draftId } = await client.assets.createDraft()
   for (const purpose of ['chat-image', 'audio']) {
     const info = await client.assets.upload({
+      draftId,
       name: purpose,
       mediaType: 'application/octet-stream',
       base64: Buffer.from(purpose).toString('base64'),
@@ -274,4 +276,40 @@ test('真实 Python 语音进程在缓存目录启动并完成握手，不加载
   expect(connection.runId).toBeTruthy()
   expect(await readdir(roots.cacheRoot)).toEqual(['logs', 'speech-temp'])
   expect(await readdir(path.join(roots.cacheRoot, 'logs'))).toEqual(['speech.log'])
+})
+
+test('HTTP 草稿交接、访问续期和释放只允许受控身份，不开放任意 owner 修改', async () => {
+  const { assets, store } = await fixture()
+  const server = await startHttpServer({ assets })
+  cleanups.push(() => server.close())
+  const client = createBackendClient(server)
+  cleanups.push(() => client.close())
+  const { draftId } = await client.assets.createDraft()
+  const info = await client.assets.upload({
+    draftId,
+    name: 'image.png',
+    mediaType: 'image/png',
+    base64: Buffer.from('image').toString('base64'),
+    purpose: 'chat-image'
+  })
+  const saved = await store.save(chat([info.asset]))
+  expect(await client.assets.commitDraft(draftId, { kind: 'chat', id: saved.id })).toEqual({
+    released: true
+  })
+  const access = await client.assets.access(info.asset)
+  await store.delete(saved.id, saved.revision)
+  expect(await (await fetch(access.url)).text()).toBe('image')
+  await client.call('assets', 'renewAccess', [access.leaseId])
+  const owners = Object.entries((await assets.state()).owners).filter(([, ids]) =>
+    ids.includes(info.asset.id)
+  )
+  expect(owners).toHaveLength(1)
+  expect(owners[0][0]).toMatch(/^access:/)
+  await client.assets.releaseAccess(access.leaseId)
+  expect((await fetch(access.url)).ok).toBe(false)
+  await expect(client.call('assets', 'releaseOwner', ['chat:chat'])).rejects.toHaveProperty(
+    'code',
+    'method_not_found'
+  )
+  expect(Object.values((await assets.state()).owners).flat()).not.toContain(info.asset.id)
 })

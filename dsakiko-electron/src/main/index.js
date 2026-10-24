@@ -76,14 +76,14 @@ async function startApplication() {
     const imported = []
     for (const path of result.filePaths)
       imported.push(
-        await backend.assets.importAsset(
+        await backend.imports.importAsset(
           {
             kind: options.directory ? 'local-directory' : 'local-file',
             path,
             entry: options.entry
           },
-          'host-import',
-          options.purpose
+          options.purpose,
+          options.draftId ?? null
         )
       )
     return imported
@@ -109,6 +109,7 @@ app.on('before-quit', (event) => {
     .then(() => transport?.close())
     .then(() => backend?.close())
     .then(() => speechProcess?.close())
+    .then(() => backend?.speech.processStopped?.())
     .catch((error) => console.error('退出清理失败', error))
     .finally(() => {
       clearTimeout(deadline)

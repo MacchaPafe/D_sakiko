@@ -1,3 +1,4 @@
+import { ResourceImports } from '../backend/resources/imports.js'
 import { Buffer } from 'node:buffer'
 import { URL } from 'node:url'
 import { setInterval, clearInterval } from 'node:timers'
@@ -15,7 +16,7 @@ import { fingerprint, requireValue, failure, problem } from '../backend/core/sup
  * @property {number} createdAt 本次运行的登记时间；记录不自动过期，以免重试再次执行副作用。
  */
 /** @typedef {{expiresAt: number, origin: string | null}} EventTicket 一次性 WebSocket 握手票据，绑定获取时的页面来源。 */
-/** @typedef {{asset: import('../shared/contracts/common.js').AssetRef, expiresAt: number}} AssetGrant 仅允许读取一个资源的短期凭证。 */
+/** @typedef {{owner: string, asset: import('../shared/contracts/common.js').AssetRef, expiresAt: number}} AssetGrant 仅允许读取一个资源的短期凭证。 */
 /** @typedef {{dispose?: () => void}} ServerSubscription 先占位，再异步取得后端取消能力，防止订阅中途断线漏释放。 */
 
 /** 长度相同后使用恒定时间比较；任何凭证内容都不进入错误说明。 */
@@ -53,6 +54,7 @@ export async function startHttpServer(
 ) {
   /** @type {Map<string, CommandRecord>} */
   const commands = new Map()
+  const imports = backend.imports ?? new ResourceImports(backend.assets)
   /** @type {Map<string, EventTicket>} */
   const tickets = new Map()
   /** @type {Map<string, AssetGrant>} */
@@ -95,24 +97,54 @@ export async function startHttpServer(
           typeof source.mediaType === 'string' &&
           IMPORT_PURPOSES.includes(source.purpose)
       )
-      return backend.assets.importAsset(
+      return imports.importAsset(
         {
           kind: 'bytes',
           name: source.name,
           mediaType: source.mediaType,
           bytes: Buffer.from(source.base64, 'base64')
         },
-        'upload:' + randomBytes(16).toString('hex'),
-        source.purpose
+        source.purpose,
+        source.draftId ?? null
       )
+    }
+    if (
+      namespace === 'assets' &&
+      [
+        'createDraft',
+        'renewDraft',
+        'discardDraft',
+        'removeDraftAssets',
+        'commitDraft',
+        'removeLibraryItem',
+        'listLibraryItems'
+      ].includes(method)
+    )
+      return imports[method](...args)
+    if (namespace === 'assets' && method === 'releaseAccess') {
+      const [ticket] = args
+      const grant = grants.get(ticket)
+      grants.delete(ticket)
+      if (grant) await backend.assets.releaseWhenPossible(grant.owner)
+      return
+    }
+    if (namespace === 'assets' && method === 'renewAccess') {
+      const [ticket] = args
+      const grant = grants.get(ticket)
+      requireValue(grant && grant.expiresAt > Date.now(), 'asset_access_expired')
+      await backend.assets.renewOwner(grant.owner, 5 * 60 * 1000)
+      grant.expiresAt = Date.now() + 5 * 60 * 1000
+      return { expiresAt: new Date(grant.expiresAt).toISOString() }
     }
     if (namespace === 'assets' && method === 'access') {
       const [asset] = args
       await backend.assets.inspect(asset)
       const ticket = randomBytes(24).toString('base64url')
       const expiresAt = Date.now() + 5 * 60 * 1000
-      grants.set(ticket, { asset, expiresAt })
+      const owner = await backend.assets.createTemporaryOwner('access', [asset], 5 * 60 * 1000)
+      grants.set(ticket, { asset, expiresAt, owner })
       return {
+        leaseId: ticket,
         url: baseUrl + '/api/v1/assets/' + ticket,
         expiresAt: new Date(expiresAt).toISOString()
       }
@@ -319,8 +351,12 @@ export async function startHttpServer(
   })
   baseUrl = 'http://127.0.0.1:' + server.address().port
   const cleanup = setInterval(() => {
-    for (const map of [tickets, grants])
-      for (const [key, entry] of map) if (entry.expiresAt <= Date.now()) map.delete(key)
+    for (const [key, entry] of tickets) if (entry.expiresAt <= Date.now()) tickets.delete(key)
+    for (const [key, entry] of grants) {
+      if (entry.expiresAt > Date.now()) continue
+      grants.delete(key)
+      void backend.assets.releaseWhenPossible(entry.owner)
+    }
   }, 30000)
   cleanup.unref()
   return {
@@ -332,6 +368,8 @@ export async function startHttpServer(
     async close() {
       closing = true
       clearInterval(cleanup)
+      for (const grant of grants.values()) await backend.assets.releaseWhenPossible(grant.owner)
+      grants.clear()
       for (const client of ws.clients) client.terminate()
       ws.close()
       server.closeAllConnections()

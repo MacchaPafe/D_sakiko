@@ -77,7 +77,11 @@ test('实际 AI SDK 兼容协议、固定模板、工具串行执行与非流式
       message: { kind: 'user', source: { kind: 'manual' }, text: 'hi', attachments: [] }
     },
     scenario: null,
-    options: structuredClone(defaultSettings.generation),
+    // 此用例的模拟模型不支持推理选项，避免依赖用户可调整的产品默认值。
+    options: {
+      ...structuredClone(defaultSettings.generation),
+      reasoning: { enabled: false, effort: null }
+    },
     connection: {
       provider: 'openai-compatible',
       protocol: 'chat',

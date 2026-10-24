@@ -25,7 +25,7 @@ export function problem(error) {
 }
 
 /**
- * 断言条件成立，不成立时抛出带错误码的业务异常。
+ * 断言条件成立，不成立时抛出带错误码和错误信息的业务异常。
  * @param {unknown} condition 要检查的条件。
  * @param {string} [code] 错误码，默认 'invalid_input'。
  * @param {string} [message] 错误描述信息。

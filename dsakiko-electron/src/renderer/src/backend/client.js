@@ -1,15 +1,29 @@
+/**
+ * @typedef {object} ResourceClient
+ * @property {(asset: import('../../../shared/contracts/common.js').AssetRef) => Promise<import('../../../backend/resources/interface.js').AssetInfo>} inspect 查询指定资源的元数据信息。
+ * @property {(source: {name: string, mediaType: string, base64: string, purpose: import('../../../shared/contracts/assets.js').AssetPurpose, draftId?: string}) => Promise<import('../../../backend/resources/interface.js').AssetInfo>} upload 上传并导入草稿附件或长期模型资源。
+ * @property {(asset: import('../../../shared/contracts/common.js').AssetRef) => Promise<{url: string, expiresAt: string, leaseId: string}>} access 获取资源的临时访问 URL 与租约 ID（客户端存活期间会自动续期）。
+ * @property {(leaseId: string) => Promise<void>} releaseAccess 释放指定的资源访问租约。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['createDraft']} createDraft 创建一个新的资源草稿。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['renewDraft']} renewDraft 延长指定资源草稿的有效期。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['discardDraft']} discardDraft 放弃指定的资源草稿并释放其资源引用。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['removeDraftAssets']} removeDraftAssets 从草稿中移除指定的附件引用。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['commitDraft']} commitDraft 在目标业务数据保存后，提交草稿并完成资源引用交接。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['removeLibraryItem']} removeLibraryItem 从长期资源库中移除指定的条目。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['listLibraryItems']} listLibraryItems 列出长期资源库中的所有条目。
+ */
 import { API_METHODS } from '../../../shared/contracts/api.js'
 
 /** @typedef {import('../../../shared/contracts/api.js').BackendConnection} BackendConnection */
 /**
  * @typedef {object} BackendClient
  * @property {Pick<import('../../../backend/conversation/interface.js').Conversations, 'listChats' | 'getSnapshot' | 'getReplayMaterials' | 'inspectContext' | 'listReminders' | 'getReminder' | 'createChat' | 'createTurn' | 'generateScenario' | 'stopTurn' | 'recreateTurn' | 'editAndRecreateTurn' | 'editHistory' | 'truncateFromTurn' | 'rollback' | 'forkChat' | 'regenerateAudio' | 'compressHistory' | 'retrySave' | 'renameChat' | 'setChatOrder' | 'setScenario' | 'setTools' | 'setWorldbookInfo' | 'setCharacterSelection' | 'setGenerationOptions' | 'setSpeechOptions' | 'setPresentation' | 'removeReminder' | 'deleteChat' | 'exportChats' | 'importChats'> & {observe: (chatId: string, listener: (snapshot: import('../../../shared/contracts/conversation.js').ConversationSnapshot) => void) => () => void}} conversations 仅包含公开业务入口；观察回调保留在客户端。
- * @property {Pick<import('../../../backend/settings/interface.js').Settings, 'get' | 'save' | 'listConnections' | 'saveConnection' | 'deleteConnection'> & {observe: (listener: (snapshot: import('../../../shared/contracts/settings.js').GlobalSettings) => void) => () => void, checkConnection: (selection: {connectionId: string, modelId: string}, signal?: AbortSignal) => ReturnType<import('../../../backend/settings/interface.js').Settings['checkConnection']>}} settings 仅包含公开业务入口；观察回调保留在客户端。
- * @property {Pick<import('../../../backend/characters/interface.js').CharacterCatalog, 'list' | 'get' | 'save' | 'resolveCapabilities' | 'setOrder' | 'deletePersona' | 'listPersonas' | 'getPersona' | 'savePersona' | 'resolvePersona'>} characters 仅包含公开业务入口；观察回调保留在客户端。
+ * @property {Pick<import('../../../backend/settings/interface.js').Settings, 'get' | 'set' | 'update' | 'listConnections' | 'saveConnection' | 'deleteConnection'> & {observe: (listener: (snapshot: import('../../../shared/contracts/settings.js').GlobalSettings) => void) => () => void, checkConnection: (selection: {connectionId: string, modelId: string}, signal?: AbortSignal) => ReturnType<import('../../../backend/settings/interface.js').Settings['checkConnection']>}} settings 仅包含公开业务入口；观察回调保留在客户端。
+ * @property {Pick<import('../../../backend/characters/interface.js').CharacterCatalog, 'list' | 'get' | 'save' | 'delete' | 'resolveCapabilities' | 'setOrder' | 'deletePersona' | 'listPersonas' | 'getPersona' | 'savePersona' | 'resolvePersona'>} characters 仅包含公开业务入口；观察回调保留在客户端。
  * @property {Pick<import('../../../backend/tools/interface.js').ToolCatalog, 'list'>} tools 仅包含公开业务入口；观察回调保留在客户端。
  * @property {Pick<import('../../../backend/tools/interface.js').Interactions, 'list' | 'complete'> & {observe: (listener: (snapshot: import('../../../backend/tools/interface.js').InteractionSnapshot) => void) => () => void}} interactions 仅包含公开业务入口；观察回调保留在客户端。
  * @property {Pick<import('../../../backend/performance/interface.js').Performance, 'getProgress' | 'setModelState'> & {observe: (sequenceId: string, listener: (update: import('../../../shared/contracts/presentation.js').PerformanceUpdate) => void) => () => void}} performance 仅包含公开业务入口；观察回调保留在客户端。
- * @property {{inspect: (asset: import('../../../shared/contracts/common.js').AssetRef) => Promise<import('../../../backend/resources/interface.js').AssetInfo>, upload: (source: {name: string, mediaType: string, base64: string, purpose: import('../../../shared/contracts/assets.js').AssetPurpose}) => Promise<import('../../../backend/resources/interface.js').AssetInfo>, access: (asset: import('../../../shared/contracts/common.js').AssetRef) => Promise<{url: string, expiresAt: string}>}} assets 字节导入与短期读取，不接受本机路径。
+ * @property {ResourceClient} assets 草稿导入与可续期的资源访问。
  * @property {(namespace: string, method: string, args?: unknown[], options?: import('../../../shared/contracts/api.js').CallOptions) => Promise<unknown>} call 需要显式传输重试身份或取消等待时使用。
  * @property {(topic: string, key: string | null, listener: (snapshot: object) => void) => () => void} observe 订阅完整快照。
  * @property {(listener: (state: ConnectionState) => void) => () => void} observeConnection 观察连接状态。
@@ -62,6 +76,9 @@ export function createBackendClient({
   /** @type {Map<string, ClientSubscription>} */
   const subscriptions = new Map()
   const connectionListeners = new Set()
+  const accessLeases = new Set()
+  const resourceDrafts = new Set()
+  let leaseTimer = null
   let socket = null
   let connecting = null
   let retryTimer = null
@@ -80,7 +97,7 @@ export function createBackendClient({
   }
   /** 一次调用对应一次发送，不隐式重试写命令；结果不确定时由调用方复用 requestId。 */
   async function post(route, body, signal) {
-    if (closed)
+    if (closed && !route.endsWith('/releaseAccess') && !route.endsWith('/discardDraft'))
       throw new BackendError({ code: 'client_closed', message: '客户端已关闭。', retryable: false })
     const response = await fetcher(baseUrl + route, {
       method: 'POST',
@@ -237,6 +254,11 @@ export function createBackendClient({
      * @returns {void} 不再自动重连。
      */
     close() {
+      clearInterval(leaseTimer)
+      for (const id of accessLeases) void call('assets', 'releaseAccess', [id]).catch(() => {})
+      for (const id of resourceDrafts) void call('assets', 'discardDraft', [id]).catch(() => {})
+      accessLeases.clear()
+      resourceDrafts.clear()
       closed = true
       clearTimeout(retryTimer)
       subscriptions.clear()
@@ -249,6 +271,52 @@ export function createBackendClient({
     client[namespace] = {}
     for (const method of Object.keys(methods))
       client[namespace][method] = (...args) => call(namespace, method, args)
+  }
+  /**
+   * 启动后台定时器，定期为当前客户端持有的资源访问租约和未提交草稿自动续期。
+   */
+  function ensureLeaseTimer() {
+    if (leaseTimer) return
+    leaseTimer = setInterval(() => {
+      for (const id of accessLeases) void call('assets', 'renewAccess', [id]).catch(() => {})
+      for (const id of resourceDrafts) void call('assets', 'renewDraft', [id]).catch(() => {})
+    }, 60000)
+    leaseTimer.unref?.()
+  }
+  client.assets.access = async (asset) => {
+    const access = await call('assets', 'access', [asset])
+    if (closed) {
+      await call('assets', 'releaseAccess', [access.leaseId]).catch(() => {})
+      throw new BackendError({ code: 'client_closed', message: '客户端已关闭。', retryable: false })
+    }
+    accessLeases.add(access.leaseId)
+    ensureLeaseTimer()
+    return access
+  }
+  client.assets.releaseAccess = async (id) => {
+    accessLeases.delete(id)
+    return call('assets', 'releaseAccess', [id])
+  }
+  client.assets.createDraft = async () => {
+    const draft = await call('assets', 'createDraft')
+    if (closed) {
+      await call('assets', 'discardDraft', [draft.draftId]).catch(() => {})
+      throw new BackendError({ code: 'client_closed', message: '客户端已关闭。', retryable: false })
+    }
+    if (!closed) {
+      resourceDrafts.add(draft.draftId)
+      ensureLeaseTimer()
+    }
+    return draft
+  }
+  client.assets.discardDraft = async (id) => {
+    resourceDrafts.delete(id)
+    return call('assets', 'discardDraft', [id])
+  }
+  client.assets.commitDraft = async (id, target) => {
+    const result = await call('assets', 'commitDraft', [id, target])
+    if (result.released) resourceDrafts.delete(id)
+    return result
   }
   client.conversations.observe = (chatId, listener) => observe('conversation', chatId, listener)
   client.performance.observe = (sequenceId, listener) =>

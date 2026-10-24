@@ -104,6 +104,14 @@ Node 中的 `CharacterCatalog` 是唯一的权威目录。通过目录保存角�
 
 ## 版本信息的使用范围
 
+`Settings.get()` 返回完整设置快照；`get(path)` 按与 `set` 相同的配置项路径返回独立的值副本，未设置的可选项返回 undefined，未知路径或分组路径报错。读取不写盘，也不递增版本。
+
+`Settings.set(path, value, options)` 修改一个点分隔路径的配置项并立即保存；`Settings.update(patch, options)` 批量更新提供的字段，配置分组递归合并，`speech.sampling` 和资源引用等原子项整体替换。两者返回实际保存的完整设置快照。`options.expectedRevision` 用于基于已有快照的编辑，冲突时整批拒绝；省略时，增量按队列顺序应用于最新设置。每次成功调用递增一次 revision，调用方不能通过 patch 修改 revision。
+
+默认值和字段规则统一声明在 `backend/settings/definition.js`，配置项提供 `validate()` 与 `correct()`。`set/update` 默认拒绝非法输入，只有显式传入 `{ correct: true }` 才尝试修复，修复后仍须通过校验。数值项可舍入整数、截断闭区间，但不转换字符串；布尔和枚举项可回退默认值。未知字段和非法资源引用不会被静默删除。新值在入队前校验并复制，整批合法后才进入版本检查、资源引用提交、持久化和通知流程。
+
+读取文件时只补齐缺失且声明了默认值的字段，不自动写回，不修复显式非法值，也不覆盖损坏文件。对话和单轮覆盖复用同一份字段规则但不补默认值，保留“省略表示继承”的含义。
+
 版本只在调用方确实需要提供“基于哪份数据修改”或接收方需要识别迟到快照时公开，不作为所有方法的通用参数。`ChatStore.save(snapshot)`、`CharacterCatalog.save(definition)` 和 `savePersona(definition)` 都从输入对象读取原 revision，由持有数据的模块原子校验并递增，返回新快照；新建使用 0，首次保存为 1，调用方不另传 expectedRevision，也不自己计算新版本。
 
 `ChatStore.delete(chatId, expectedRevision)` 保留预期版本：删除请求只有 ID，没有携带快照；模块自己的最新版本不能表达调用方原本看到哪个版本。`ConversationSnapshot.revision` 和 `SequenceSnapshot.revision` 用于观察更新的排序，`CharacterCapabilities.revision` 标记所采用的配置版本，都不要求业务调用方递增或回传。
@@ -139,7 +147,7 @@ Agent 的 `onResponse` 用稳定 responseId 追加尚未接受的 parts：可先
 
 `Performance.getPlaybackOptions()` 读取本地偏好，`setPlaybackOptions(options)` 在前端保存并即时应用，不发送后端命令。启动及展示端重建读取本端最新值，本地保存和交接按顺序处理，迟到读取不能覆盖更新后的值；保存失败显式报告，不伪装已经持久化。同一 Electron 客户端的普通窗口与桌宠共用本地偏好；独立浏览器或设备互不覆盖。客户端按自己的前端存储空间管理偏好，不按 Chat 保存。
 
-删除 `GlobalSettings.playback` 与 `BgmSettings.volume`；旧后端设置中的这两个字段在迁移时丢弃，不作为新客户端的初值。BGM 的曲目、开关与循环仍属于原共享配置，实际输出音量只在客户端计算。
+`GlobalSettings.playback` 与 `BgmSettings.volume` 不属于当前配置，不提供旧字段迁移。BGM 的曲目、开关与循环仍属于原共享配置，实际输出音量只在客户端计算。
 
 | 内容                                    | 音量规则                                                |
 | --------------------------------------- | ------------------------------------------------------- |
@@ -213,9 +221,9 @@ Performance 复用一次性 transition 调度。普通内容正在播放时忽�
 
 ## 本地资源与厂商文件
 
-本地资源的多目录注入与按用途存储已接入，见[数据目录与统一资源访问设计](data-directories-and-resources.md)。本阶段只保留引用交接，暂不执行本地 `collectUnused`，也不提供资源清理页面或自动清理任务；以下回收规则保留为后续设计。
+本地资源的多目录注入与按用途存储已接入，见[数据目录与统一资源访问设计](data-directories-and-resources.md)。本地持有关系、提交保护和临时租约已经接入，暂不执行本地 `collectUnused`，也不提供资源清理页面。聊天旧 revision 文件在提交后清理，与资源文件回收分别处理；下文厂商文件回收规则仍是后续设计。
 
-`AssetOwnerId` 表示草稿、存档或运行任务等资源持有者，不是用户账号，也不是访问凭据。持有关系由 MediaAssets 内部记录，各业务模块只管理自身的持有者：导入时立即添加引用，`setReferences` 替换该持有者需要保留的完整集合，空集合表示释放；`collectUnused` 才回收无人引用的本地资源。ChatStore 从存档快照维护持久引用，草稿与任务管理临时引用。交接时先建立新引用再释放旧引用，避免发送后清空草稿误删存档附件。
+`AssetOwnerId` 表示草稿、存档或运行任务等资源持有者，不是用户账号，也不是访问凭据。持有关系由 MediaAssets 内部记录，各业务模块只管理自身的持有者：导入时立即添加引用，`addReferences`、`removeReferences` 增删部分引用，`replaceReferences` 声明完整集合，`releaseOwner` 释放持有者；`collectUnused` 才回收无人引用的本地资源。通用纯函数 `extractAssetReferences` 从约定的 JSON 结构提取引用。ChatStore、CharacterCatalog、Settings 从已保存快照维护各自的持久引用，草稿与任务管理临时引用；用户主动导入的模型另外有长期资源库引用。交接时先建立新引用再释放旧引用，避免发送后清空草稿误删存档附件。
 
 `InputSessions.addAttachment` 只把文件导入应用自己的资源存储，草稿的 ready 只代表本地就绪。Chat 的附件保存稳定 AssetRef，原文件用于存档、导出以及远端失效后的重新准备。模型连接配置决定附件使用 file-api 还是 inline；已确认支持 Files API 的 DeepSeek 配置默认前者，其他已确认支持内联图片的配置可采用后者。未知模型不能因为采用 base64 就被视为支持图片；一般文件也不能不检查类型就当作图片发送。
 

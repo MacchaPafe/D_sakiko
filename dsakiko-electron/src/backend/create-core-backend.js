@@ -1,3 +1,4 @@
+import { ResourceImports } from './resources/imports.js'
 import path from 'node:path'
 import { Settings } from './settings/interface.js'
 import { ChatStore } from './storage/interface.js'
@@ -15,6 +16,7 @@ import { failure, uuid } from './core/support.js'
  * @property {Settings} settings 全局设置与模型连接管理。
  * @property {CharacterCatalog} characters 角色与用户对话身份目录。
  * @property {MediaAssets} assets 本地媒体资源管理。
+ * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
  * @property {ChatStore} store 对话存档管理。
  * @property {Performance} performance 演出时间线与状态管理。
  * @property {Speech} speech 语音合成任务管理。
@@ -54,7 +56,8 @@ export async function createCoreBackend({
 } = {}) {
   const assets = new MediaAssets({ appDataRoot, resourceLibraryRoot, cacheRoot })
   await assets.state()
-  const settings = new Settings({ directory: appDataRoot })
+  const imports = new ResourceImports(assets)
+  const settings = new Settings({ directory: appDataRoot, assets })
   const resolveModel = async (presentation) =>
     presentation.mapping
       ? JSON.parse(Buffer.from(await assets.read(presentation.mapping)).toString('utf8'))
@@ -62,10 +65,13 @@ export async function createCoreBackend({
   const characters = new CharacterCatalog({
     directory: appDataRoot,
     resolveModel,
-    validateResources: (value) => assets.assertPersistent(value)
+    assets
   })
   const store = new ChatStore({ directory: path.join(appDataRoot, 'chats'), assets })
-  const performance = injectedPerformance ?? new Performance({ resolveModel })
+  await assets.initialize()
+  await store.cleanupVersions()
+  const performance = injectedPerformance ?? new Performance({ resolveModel, assets })
+  performance.assets ??= assets
   const speech = injectedSpeech ?? new Speech({ connect: connectSpeech, assets })
   const agent =
     injectedAgent ??
@@ -184,7 +190,13 @@ export async function createCoreBackend({
   }
   const timer = scanReminders ? setInterval(() => scan().catch(() => {}), 1000) : null
   timer?.unref()
+  const maintenance = setInterval(
+    () => assets.maintain().catch((error) => assets.reportMaintenance(error)),
+    30000
+  )
+  maintenance.unref()
   return {
+    imports,
     settings,
     characters,
     assets,
@@ -201,9 +213,12 @@ export async function createCoreBackend({
      */
     async close() {
       clearInterval(timer)
+      clearInterval(maintenance)
       await conversations.close()
       interactions.close()
       await performance.close()
+      await speech.close?.()
+      await assets.maintain()
     }
   }
 }
