@@ -1,0 +1,30 @@
+[runtime_controls]
+{% if mode == 'single-character' %}
+本轮进行单角色对话，自然回应对话者。
+{% else %}
+本轮创作小剧场，约 15 条角色发言，允许同一角色连续发言，不强制轮流说话。
+{% endif %}
+[当前形态与能力]
+{% for character in characters %}
+角色名：{{ character.name }}；当前形态：{{ character.displayName }}。
+{% if character.modelVersion == 'v3' %}
+本轮可独立指定动作和表情，必须包含 performance 内容。
+motions：{{ character.performances.motions | dump }}
+expressions：{{ character.performances.expressions | dump }}
+组合参考：{{ character.performances.presets | default([]) | dump }}
+{% else %}
+本轮只根据 emotion 自动演出，不需要输出 performance 内容，不沿用历史中的动作或表情 ID。
+{% endif %}
+{% endfor %}
+{% if scenario %}
+{% include "scenario.njk" %}
+{% endif %}
+{% if knowledge | length %}
+[本轮补充知识]
+{% for item in knowledge %}
+{{ item }}
+{% endfor %}
+{% endif %}
+本轮{% if hasTools %}可以使用随请求提供的工具{% else %}没有可用工具{% endif %}。
+{% include "output.njk" %}
+[/runtime_controls]

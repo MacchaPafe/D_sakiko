@@ -1,1 +1,20 @@
-当前情景：{{ scenario }}
+[当前小剧场要求]
+以下是角色们正在经历的情景，不是对话者说出口的话。
+
+[当前情境或话题]
+{{ scenario.situation }}
+
+{% for character in characters %}
+[{{ character.name }}的说话风格与互动要求]
+{% set direction = scenario.characters[character.id] %}
+{% if direction %}
+说话风格：{{ direction.speakingStyle }}
+互动细节：{{ direction.interaction }}
+{% else %}
+沿用人物设定和已有对话中的说话风格及关系。
+{% endif %}
+{% endfor %}
+
+[篇幅与节奏]
+生成约 15 条角色发言，以完整自然的互动为准，可按语义停顿适当拆分或合并。不强制轮流说话，允许同一角色连续发言；情绪和关系变化通过台词与适量描写自然体现。
+语言、翻译和 JSON 格式均遵循本轮输出约定。

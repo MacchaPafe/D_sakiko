@@ -68,6 +68,7 @@ export class CharacterCatalog {
       return {
         id,
         defaultFormId: form.id,
+        name: character.name ?? form.displayName,
         displayName: form.displayName,
         avatar: copy(form.avatar)
       }
@@ -113,6 +114,22 @@ export class CharacterCatalog {
         )
       await this.assets.assertPersistent(definition)
       const next = copy(definition)
+      const defaultForm = next.forms.find((form) => form.id === next.defaultFormId)
+      requireValue(
+        next.name === undefined || typeof next.name === 'string',
+        'invalid_character_name'
+      )
+      next.name = (next.name ?? state.characters[next.id]?.name ?? defaultForm.displayName).trim()
+      requireValue(next.name.length > 0, 'invalid_character_name', '角色名称不能为空。')
+      for (const other of Object.values(state.characters)) {
+        const otherName =
+          other.name ?? other.forms.find((form) => form.id === other.defaultFormId).displayName
+        requireValue(
+          other.id === next.id || otherName.trim() !== next.name,
+          'duplicate_character_name',
+          '角色名称不能重复。'
+        )
+      }
       next.revision += 1
       state.characters[next.id] = next
       if (!state.order.includes(next.id)) state.order.push(next.id)
@@ -170,6 +187,7 @@ export class CharacterCatalog {
       }
     }
     const states = {}
+    problems.push(...(mapping.problems ?? []))
     const excluded = new Set()
     for (const [key, state] of Object.entries(mapping.states ?? {})) {
       // 每个 model state（比如戴上/摘下面具）必须有对应的 on/off（进入/退出）动作。
@@ -189,11 +207,22 @@ export class CharacterCatalog {
     }
     function descriptions(entries) {
       return Object.entries(entries ?? {})
-        .filter(([key]) => !excluded.has(key))
+        .filter(
+          ([key, value]) =>
+            !excluded.has(key) && (mapping.version === undefined || value.description)
+        )
         .map(([key, value]) => ({ id: key, description: value.description ?? key }))
     }
     return {
       id: character.id,
+      name:
+        character.name ??
+        character.forms.find((item) => item.id === character.defaultFormId).displayName,
+      forms: character.forms.map((item) => ({
+        id: item.id,
+        displayName: item.displayName,
+        description: item.description
+      })),
       revision: character.revision,
       formId: form.id,
       displayName: form.displayName,
@@ -201,10 +230,12 @@ export class CharacterCatalog {
       avatar: copy(form.avatar),
       themeColor: form.themeColor,
       modelId,
+      modelVersion: mapping.version ?? null,
       presentation: copy(model?.presentation ?? null),
       performances: {
         motions: descriptions(mapping.motions),
         expressions: descriptions(mapping.expressions),
+        presets: (mapping.presets ?? []).filter((item) => !excluded.has(item.motion)),
         states: Object.entries(states).map(([id, description]) => ({ id, description }))
       },
       voice: copy(form.voice),

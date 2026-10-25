@@ -1,3 +1,13 @@
-输出语言：{{ language }}。翻译语言：{{ translationLanguage }}。
-最终回复必须是 JSON 对象 {"lines":[{"speakerId":"角色编号","formId":"形态编号","text":"正文","translation":null,"emotion":null,"performance":{"motion":"auto","expression":"auto"}}]}。
-只使用列出的角色、形态、动作和表情。不要输出 Markdown 围栏。可以先调用已提供的工具，再输出台词。
+[本轮输出约定]
+lines 非空且不超过 100 项，每项是一段自然的语义停顿，通常为 1 到 3 句；允许同一角色连续发言。
+speaker 必须逐字使用本轮参与角色的角色名，不使用形态名，不输出 speakerId 或 formId。
+text 是非空角色台词，使用 {{ language }}，必要的括号描写也使用该语言，不把翻译混入正文。
+{% if translationLanguage %}
+translation 必须为对应 text 的非空 {{ translationLanguage }} 翻译，包含必要描写且不额外添加情节。
+{% else %}
+translation 必须为 null。
+{% endif %}
+emotion 必须为 happiness、sadness、anger、surprise、fear、disgust、like 之一。
+仅对上面要求 performance 的角色输出该字段，包含 motion 和 expression：分别从该角色本轮目录选 ID 或 "auto"，可以自由组合；没有合适候选或目录为空时选 "auto"。不得跨角色选取或创造 ID。
+下面是本轮合法结构的具体示例，内容仅用于说明格式，不是本轮你需要说的台词：
+{{ example }}

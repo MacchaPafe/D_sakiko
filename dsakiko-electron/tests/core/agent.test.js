@@ -31,11 +31,10 @@ test('实际 AI SDK 兼容协议、固定模板、工具串行执行与非流式
             content: JSON.stringify({
               lines: [
                 {
-                  speakerId: 'actor',
-                  formId: 'default',
+                  speaker: '角色',
                   text: '你好',
                   translation: null,
-                  emotion: null,
+                  emotion: 'happiness',
                   performance: { motion: 'auto', expression: 'auto' }
                 }
               ]
@@ -80,6 +79,8 @@ test('实际 AI SDK 兼容协议、固定模板、工具串行执行与非流式
     // 此用例的模拟模型不支持推理选项，避免依赖用户可调整的产品默认值。
     options: {
       ...structuredClone(defaultSettings.generation),
+      language: 'Chinese',
+      translationLanguage: null,
       reasoning: { enabled: false, effort: null }
     },
     connection: {
@@ -125,7 +126,16 @@ test('实际 AI SDK 兼容协议、固定模板、工具串行执行与非流式
   expect(toolRuns).toBe(1)
   expect(results).toHaveLength(1)
   expect(requests).toHaveLength(2)
-  expect(requests[0].messages[0].content).toContain('{{ not_a_template }}')
+  expect(requests[0].messages[0].content).not.toContain('{{ not_a_template }}')
+  expect(requests[0].messages[1].content).toContain('{{ not_a_template }}')
+  expect(
+    requests[1].messages.filter(
+      (message) =>
+        message.role === 'user' &&
+        typeof message.content === 'string' &&
+        message.content.startsWith('[runtime_controls]')
+    )
+  ).toHaveLength(1)
   expect(requests[1].messages.some((message) => message.role === 'tool')).toBe(true)
   expect(updates.at(-1).appendParts[0].lines[0].text).toBe('你好')
 })

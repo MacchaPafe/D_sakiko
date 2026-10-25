@@ -9,6 +9,16 @@
 /** @typedef {'stage' | 'desktop-pet'} PresentationMode 普通演出或桌宠展示；作用于整个演出模块，不属于某条 sequence。 */
 
 /**
+ * 基于当前实际模型的演出计划。member 相对于 SceneSlot.presentation.model 资源包，不是本地绝对路径。
+ * @typedef {object} ResolvedPerformance
+ * @property {'v2' | 'v3' | null} version 目标格式。
+ * @property {string} group 使用的情绪或活动动作组。
+ * @property {{id: string, member: string, entry: object} | null} motion 实际方向动作及原始播放元数据。
+ * @property {{id: string, member: string} | null} expression v2 始终为 null，保留动作原有面部表现。
+ * @property {string[]} fallbackReasons 显式选择不可用的通道。
+ */
+
+/**
  * 面向角色的逻辑演出选择，由演出模块解析到具体模型资源。
  * @typedef {object} PerformanceSelection
  * @property {string} motion 动作的逻辑名称，或 'auto'。
@@ -26,6 +36,7 @@
  * @typedef {object} PerformanceCatalog
  * @property {PerformanceOption[]} motions 可供普通演出选择的动作；排除仅供状态切换的动作，允许为空。
  * @property {PerformanceOption[]} expressions 可选表情；允许为空。
+ * @property {object[]} presets 已验证的动作与表情组合，仅供选择参考。
  * @property {PerformanceOption[]} states 支持的布尔状态键及说明；不包含运行值，不作为 Agent 的台词动作候选。
  */
 
@@ -76,7 +87,7 @@
 /**
  * @typedef {object} ModelPresentation
  * @property {AssetRef} model 模型资源入口，由演出模块内部选择 V2/V3 加载方式。
- * @property {AssetRef | null} mapping 逻辑动作、表情及 ModelStateMapping 状态扩展所在的映射文件；null 使用模型默认映射。
+ * @property {AssetRef | null} mapping 可直接引用既有 performance.json，兼容字符串描述及 description 对象；null 自动读取同包同名标注与 performance.shared.json。
  */
 
 /**
@@ -84,7 +95,7 @@
  * @property {string} id 场景内的演员位置编号，guide 只引用这个编号。
  * @property {string} displayName 字幕显示名称。
  * @property {ModelPresentation | null} presentation 无模型时仍可播放语音和显示文本。
- * @property {{ x: number, y: number, scale: number, facing: 'left' | 'right' }} layout 归一化位置与缩放。
+ * @property {{ x: number, y: number, scale: number, facing: 'left' | 'right', direction?: 'C' | 'L' | 'R' }} layout 归一化位置与缩放；方向变体默认 C，facing 不隐式改变动作方向。
  */
 
 /**
@@ -107,6 +118,7 @@
  * @property {string | null} translation 可选翻译，不自动作为语音合成文本。
  * @property {string | null} emotion 演出语义提示，不代表生成过程状态。
  * @property {PerformanceSelection} performance 动作和表情选择；均允许 'auto'。
+ * @property {ResolvedPerformance} [resolvedPerformance] 后端输出的实际资源计划；忽略历史选择时不改写 performance。
  * @property {AudioMaterial | null} audio 没有语音或尚未提供语音时为 null。
  * @property {number} [motionDurationMs] 可选的动作计划时长。
  * @property {boolean} ready 是否允许开始；不携带尚未就绪的原因。
@@ -144,6 +156,8 @@
  * @property {number} serverTimeMs 生成快照时的后端单调时钟，不是客户端墙上时间。
  * @property {Scene} scene 当前场景。
  * @property {PerformanceSelection} defaultPresentation 空闲展示选择。
+ * @property {'idle' | 'thinking' | 'voice-input'} activity 当前宿主活动。
+ * @property {Array<{slotId: string, resolvedPerformance: ResolvedPerformance}>} defaultPerformances 各演员的自动展示资源。
  * @property {'empty' | 'waiting' | 'playing' | 'closed'} state 仅描述演出状态。
  * @property {GuideProgress | null} current 当前普通 guide；等待材料时为 null。
  * @property {GuideProgress | null} transition 当前过渡动作，不影响普通队首 waitingFor。

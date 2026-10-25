@@ -274,6 +274,16 @@ export class MediaAssets {
   }
 
   /**
+   * 返回目录资源的入口相对路径，供模型目录定位同包标注；不公开资源库绝对路径。
+   * @param {AssetRef} asset 资源引用。
+   * @returns {Promise<string | null>} 单文件资源返回 null。
+   */
+  async packageEntry(asset) {
+    await this.inspect(asset)
+    return (await this.state()).locations[asset.id].entry
+  }
+
+  /**
    * 导入一份媒体资源，并将其关联到指定的持有者名下。最大可以导入 64MB 的文件。
    * @param {AssetSource} source 资源数据来源（字节数组或本地文件路径）。
    * @param {AssetOwnerId} ownerId 初始持有者标识（例如草稿 ID、任务 ID 或对话 ID），用于防止资源在正式使用前被清理。

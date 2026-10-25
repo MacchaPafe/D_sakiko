@@ -1,3 +1,4 @@
+import { characterContext } from '../llm/context.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { generationOptions, speechOptions, presentationOptions } from '../core/validation.js'
 import {
@@ -187,6 +188,11 @@ export class Conversations {
       const selection = chat.meta.settings.characters[id] ?? {}
       result.push(await this.characterCapability(owner, id, selection))
     }
+    requireValue(
+      new Set(result.map((character) => character.name)).size === result.length,
+      'duplicate_character_name',
+      '参与对话的角色名称重复，请先在角色目录中修改。'
+    )
     return result
   }
   /** 内部运行路径在角色目录锁内取得引用；只读预览不延长快照生命周期。 */
@@ -361,7 +367,12 @@ export class Conversations {
             outcome: copy(message.outcome)
           })
       }
-      if (messages.length) result.push({ turnId: turn.id, messages })
+      if (messages.length)
+        result.push({
+          turnId: turn.id,
+          characterContext: copy(turn.meta.characterContext ?? null),
+          messages
+        })
     }
     return result
   }
@@ -393,12 +404,16 @@ export class Conversations {
         mode: chat.mode,
         characters: capabilities.map((character) => ({
           id: character.id,
+          name: character.name,
+          forms: copy(character.forms),
+          modelVersion: character.modelVersion,
           formId: character.formId,
           displayName: character.displayName,
           description: character.description,
           performances: {
             motions: character.performances.motions,
-            expressions: character.performances.expressions
+            expressions: character.performances.expressions,
+            presets: character.performances.presets
           }
         })),
         userPersona: chat.userPersona
@@ -496,6 +511,7 @@ export class Conversations {
           speech: prepared.speech,
           scenario: copy(candidate.meta.settings.scenario),
           characters: copy(candidate.meta.settings.characters),
+          characterContext: characterContext(prepared.request),
           tools: prepared.request.tools.map((tool) => tool.name),
           worldbook: null,
           worldbookDiagnostics: [],
@@ -561,6 +577,7 @@ export class Conversations {
   async execute(state, run) {
     const signal = run.controller.signal
     try {
+      await this.performance.setActivity(state.sequenceId, 'thinking')
       const result = await abortable(
         this.agent.run(
           run.prepared.request,
@@ -590,6 +607,7 @@ export class Conversations {
       run.usage = result.usage
       await this.queue.run(state.chat.id, async () => {
         run.activity = 'presenting'
+        await this.performance.setActivity(state.sequenceId, 'idle')
         run.execution.phase = 'speech'
         this.publish(state)
       })
@@ -621,6 +639,7 @@ export class Conversations {
         run.execution.phase = null
         if (state.active === run) state.active = null
         await this.performance.stopTransitionGuide(state.sequenceId)
+        await this.performance.setActivity(state.sequenceId, 'idle')
         this.publish(state)
       })
       await this.assets.releaseWhenPossible(run.prepared.resourceOwner)
@@ -1152,9 +1171,13 @@ export class Conversations {
         .filter((part) => part.kind === 'dialogue')
         .flatMap((part) => part.lines)
     }
+    const scene = await this.scene(state.chat, false)
     return {
-      scene: await this.scene(state.chat, false),
-      guides: lines.map((line) => this.guide(line))
+      scene,
+      guides: await this.performance.resolveGuides(
+        scene,
+        lines.map((line) => this.guide(line))
+      )
     }
   }
 

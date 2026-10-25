@@ -65,7 +65,7 @@ export const API_METHODS = {
   },
   tools: { list: false },
   interactions: { list: false, complete: true },
-  performance: { getProgress: false, setModelState: true },
+  performance: { getProgress: false, setModelState: true, setActivity: true },
   assets: {
     inspect: false,
     collectUnused: false,

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { Settings } from './settings/interface.js'
 import { ChatStore } from './storage/interface.js'
 import { CharacterCatalog } from './characters/interface.js'
+import { resolveModelCatalog } from './characters/model-catalog.js'
 import { MediaAssets } from './resources/interface.js'
 import { Agent } from './llm/interface.js'
 import { Speech } from './speech/interface.js'
@@ -61,22 +62,9 @@ export async function createCoreBackend({
   const imports = new ResourceImports(assets)
   const settings = new Settings({ directory: appDataRoot, assets })
   const speechResources = new SpeechResources({ assets, settings })
-  // presentation.mapping 是动作 -> 语义的映射，类似：
-  // "motions": {
-  //   "nod": { "description": "点头赞同" },
-  //   "shake": { "description": "摇头否决" },
-  //   "mask_on": { "description": "戴上面具动作" },
-  //   "mask_off": { "description": "摘下面具动作" }
-  // },
-  // "expressions": {
-  //   "smile": { "description": "微笑" },
-  //   "angry": { "description": "生气皱眉" },
-  // }
-  // 这些信息会被交给 Performance 模块，用于演出时让 LLM 配合角色说的话选择合适的动作。
-  const resolveModel = async (presentation) =>
-    presentation.mapping
-      ? JSON.parse(Buffer.from(await assets.read(presentation.mapping)).toString('utf8'))
-      : { motions: {}, expressions: {}, states: {} }
+  // mapping 可直接引用 Python 的 performance.json（如 motions.nod = "点头赞同"）。
+  // 模型入口提供真实资源，标注只补充语义；角色能力与演出共用同一个解析器。
+  const resolveModel = (presentation) => resolveModelCatalog(assets, presentation)
   const characters = new CharacterCatalog({
     directory: appDataRoot,
     resolveModel,
@@ -95,7 +83,7 @@ export async function createCoreBackend({
     agent.generate({
       model: agent.model(connection),
       prompt: 'Reply OK.',
-      maxOutputTokens: 8,
+      maxOutputTokens: 500,
       maxRetries: 0,
       abortSignal: signal ?? AbortSignal.timeout(15000)
     })

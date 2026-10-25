@@ -128,6 +128,7 @@
 /**
  * 只保存脱敏的实际执行材料用于诊断，不据此恢复旧执行或决定重生成配置。
  * @typedef {object} TurnMeta
+ * @property {import('./characters.js').CharacterContext} [characterContext] 该轮全部人物资料快照；恢复历史和压缩后重建使用，不包含临时控制消息。
  * @property {string | null} requestId 受理去重身份；导入的旧记录可为 null。
  * @property {import('./settings.js').GenerationOptions} generation 本次解析后的生成值，不保存凭据。
  * @property {import('./settings.js').SpeechOptions} speech 本轮固定的自动语音设置。

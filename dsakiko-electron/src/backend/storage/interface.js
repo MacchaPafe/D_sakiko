@@ -211,6 +211,7 @@ export class ChatStore {
     snapshot = copy(snapshot)
     // 为什么使用统一的 'index' 锁而不是按 chatId 加锁：
     // 所有对话共享同一个 index.json 且需要校验跨对话提醒 ID 唯一性，统一串行化可防止不同对话并发保存时互相覆盖索引。
+    // 此外，存储数据速度是比较快的，所以就算改成串行，应当也不会造成很大的性能损失。
     return this.queue.run('index', async () => {
       this.validate(snapshot)
       await this.assets.assertPersistent(snapshot)

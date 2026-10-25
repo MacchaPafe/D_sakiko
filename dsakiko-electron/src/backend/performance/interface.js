@@ -1,4 +1,5 @@
 import { extractAssetReferences } from '../resources/references.js'
+import { resolvePerformance } from './selection.js'
 import { performance as clock } from 'node:perf_hooks'
 import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '../core/support.js'
 
@@ -40,6 +41,7 @@ import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '.
  * @property {Map<string, import('../../shared/contracts/presentation.js').ModelStateSnapshot>} modelStates 各演员位置的模型状态记录。
  * @property {Map<string, object>} mappings 各演员位置的模型动作与状态映射配置。
  * @property {import('../../shared/contracts/presentation.js').PerformanceSelection} defaultPresentation 空闲时的默认动作与表情选择。
+ * @property {'idle' | 'thinking' | 'voice-input'} activity 当前宿主活动，用于动作组自动选择。
  */
 
 /**
@@ -145,6 +147,7 @@ export class Performance {
       timer: null,
       modelStates: new Map(),
       mappings,
+      activity: 'idle',
       defaultPresentation: { motion: 'auto', expression: 'auto' }
     })
     return id
@@ -173,9 +176,18 @@ export class Performance {
    */
   effects(sequence, record) {
     const mapping = sequence.mappings.get(record.guide.slotId) ?? {}
+    const resolved = this.resolvedGuide(
+      sequence.scene,
+      sequence.mappings,
+      record.guide,
+      record.target
+    ).resolvedPerformance
+    const selection = mapping.version
+      ? { motion: resolved.motion?.id, expression: resolved.expression?.id }
+      : record.guide.performance
     const effects = [
-      ...(mapping.stateEffects?.motions?.[record.guide.performance.motion] ?? []),
-      ...(mapping.stateEffects?.expressions?.[record.guide.performance.expression] ?? [])
+      ...(mapping.stateEffects?.motions?.[selection.motion] ?? []),
+      ...(mapping.stateEffects?.expressions?.[selection.expression] ?? [])
     ]
     if (record.target) effects.push({ state: record.target.state, value: record.target.value })
     return effects.filter((effect) => mapping.states?.[effect.state])
@@ -506,6 +518,45 @@ export class Performance {
   }
 
   /**
+   * 设置宿主活动，v2/v3 均通过模型动作组选择待机、思考和语音输入动作。
+   * @param {string} sequenceId 演出序列。
+   * @param {'idle' | 'thinking' | 'voice-input'} activity 当前活动。
+   * @returns {Promise<void>} 发布更新后的默认演出。
+   */
+  async setActivity(sequenceId, activity) {
+    requireValue(['idle', 'thinking', 'voice-input'].includes(activity))
+    const sequence = this.sequence(sequenceId)
+    sequence.activity = activity
+    this.publish(sequence)
+  }
+
+  /** 将资源路径作为包内 member 输出，绝对磁盘路径不进入演出协议。 */
+  resolvedGuide(scene, mappings, guide, target = null) {
+    const slot = scene.slots.find((item) => item.id === guide.slotId)
+    const catalog = mappings.get(guide.slotId) ?? {}
+    const direction = slot?.layout?.direction ?? 'C'
+    const resolved = resolvePerformance(catalog, guide.performance, guide.emotion, { direction })
+    if (target) {
+      // 状态接口是宿主的显式请求，v2 忽略历史台词选择的规则不应吞掉它。
+      const variants = catalog.motions?.[guide.performance.motion]?.variants
+      const motion = variants?.[direction] ?? variants?.[''] ?? variants?.C
+      if (motion) resolved.motion = { id: guide.performance.motion, ...motion }
+    }
+    return { ...copy(guide), resolvedPerformance: resolved }
+  }
+
+  /**
+   * 为回放解析实际场景的资源，不创建序列或修改台词历史。
+   * @param {Scene} scene 当前回放场景。
+   * @param {Guide[]} guides 原始台词材料。
+   * @returns {Promise<Guide[]>} 附带实际资源选择的回放材料。
+   */
+  async resolveGuides(scene, guides) {
+    const mappings = await this.mappings(scene)
+    return guides.map((guide) => this.resolvedGuide(scene, mappings, guide))
+  }
+
+  /**
    * 结算单个计划项并唤醒所有等待该项结束的调用方。
    * 仅当计划项正常完成（completed）且演员中途未更换模型时，才将状态效果正式写入 modelStates。
    */
@@ -608,7 +659,7 @@ export class Performance {
       return {
         guideId: id,
         slotId: record.guide.slotId,
-        guide: copy(record.guide),
+        guide: this.resolvedGuide(sequence.scene, sequence.mappings, record.guide, record.target),
         startedAtMs: record.startedAt,
         durationMs: record.durationMs,
         elapsedMs: Math.min(record.durationMs, Math.max(0, now - record.startedAt)),
@@ -630,6 +681,24 @@ export class Performance {
       transition: progress(sequence.transition),
       waitingFor: state === 'waiting' ? sequence.queue[0] : null,
       defaultPresentation: copy(sequence.defaultPresentation),
+      activity: sequence.activity,
+      defaultPerformances: sequence.scene.slots.map((slot) => ({
+        slotId: slot.id,
+        resolvedPerformance: resolvePerformance(
+          sequence.mappings.get(slot.id) ?? {},
+          sequence.defaultPresentation,
+          null,
+          {
+            direction: slot.layout?.direction ?? 'C',
+            activity:
+              sequence.activity === 'idle' &&
+              (sequence.defaultPresentation.motion !== 'auto' ||
+                sequence.defaultPresentation.expression !== 'auto')
+                ? null
+                : sequence.activity
+          }
+        )
+      })),
       modelStates: copy([...sequence.modelStates.values()])
     }
   }

@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { characterContext, dialogueProjection } from './context.js'
 import { fileURLToPath } from 'node:url'
 import nunjucks from 'nunjucks'
 import Ajv from 'ajv'
@@ -11,9 +12,12 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * @typedef {object} AgentCharacter
  * @property {string} id 角色 ID。
  * @property {string} formId 当前形态 ID。
- * @property {string} displayName 角色展示名称。
+ * @property {string} name 跨形态角色名。
+ * @property {string} displayName 当前形态名。
+ * @property {Array<{id: string, displayName: string, description: string}>} forms 全部形态的人物资料。
+ * @property {'v2' | 'v3' | null} modelVersion 当前模型格式。
  * @property {string} description 角色人设与语气描述。
- * @property {Pick<import('../../shared/contracts/presentation.js').PerformanceCatalog, 'motions' | 'expressions'>} performances 可供模型选择的普通动作与表情目录。
+ * @property {Pick<import('../../shared/contracts/presentation.js').PerformanceCatalog, 'motions' | 'expressions' | 'presets'>} performances 可供模型选择的普通动作、表情与组合参考。
  */
 
 /** @typedef {Pick<import('../../shared/contracts/conversation.js').CharacterLine, 'id' | 'speakerId' | 'formId' | 'text' | 'translation' | 'emotion' | 'performance'>} ContextLine 用于构建历史上下文的角色台词摘要。 */
@@ -34,6 +38,7 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * 用于构建模型上下文的单个对话轮次。
  * @typedef {object} ContextTurn
  * @property {string} turnId 轮次 ID。
+ * @property {import('./context.js').CharacterContext | null} [characterContext] 该轮人物资料。
  * @property {ContextMessage[]} messages 该轮次内的有序消息列表。
  */
 
@@ -70,7 +75,7 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * @property {import('../../shared/contracts/settings.js').ScenarioSettings | null} scenario 小剧场情景设定。
  * @property {ResolvedGenerationOptions} options 本轮使用的生成参数配置。
  * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 本轮使用的模型连接与能力快照。
- * @property {string[]} supplementalContext 额外补充到系统提示词中的背景知识列表。
+ * @property {string[]} supplementalContext 额外补充到本轮控制消息中的背景知识列表。
  * @property {import('../../shared/contracts/tools.js').AgentTool[]} tools 本轮允许模型调用的工具列表。
  */
 
@@ -142,7 +147,7 @@ export class Agent {
         const status = cause.statusCode
         if (status === 401 || status === 403) throw failure('authentication', '模型连接鉴权失败。')
         if (cause.data?.error?.code === 'insufficient_quota')
-          throw failure('quota_exhausted', '模型连接额度不足。')
+          throw failure('quota_exhausted', '选择模型的余额不足，请充值。')
         if (status === 429) throw failure('rate_limit', '模型服务限流。', true)
         if (status >= 500) throw failure('provider_unavailable', '模型服务暂时不可用。', true)
         if (cause.problem) throw cause
@@ -154,7 +159,14 @@ export class Agent {
       { autoescape: false, throwOnUndefined: true, trimBlocks: true, lstripBlocks: true }
     )
     this.validator = new Ajv({ allErrors: true, strict: false })
-    for (const name of ['system.njk', 'output.njk', 'scenario.njk', 'summary.njk'])
+    for (const name of [
+      'system.njk',
+      'output.njk',
+      'scenario.njk',
+      'summary.njk',
+      'character-context.njk',
+      'runtime-controls.njk'
+    ])
       this.templates.getTemplate(name, true)
   }
 
@@ -179,17 +191,42 @@ export class Agent {
   }
 
   /**
-   * 渲染系统提示词（System Prompt）。
-   * 角色描述和人设仅作为普通变量插入模板，不对其进行二次模板渲染，防止角色描述中含有的模板语法被意外执行。
+   * 渲染固定系统提示词，与人物、形态、语言和模型能力无关。
    */
-  system(request) {
-    return this.templates.render('system.njk', {
+  system() {
+    return this.templates.render('system.njk', {})
+  }
+
+  /** 本轮控制只存在于请求尾部，不写入对话历史。 */
+  controls(request) {
+    const characters = request.characters.map((character) => ({
+      ...character,
+      name: character.name ?? character.displayName
+    }))
+    const examples = characters.map((character) => {
+      const greeting = { Japanese: 'また会えて嬉しい。', Chinese: '很高兴又见到你。' }
+      const line = {
+        speaker: character.name,
+        text: greeting[request.options.language],
+        translation: request.options.translationLanguage
+          ? greeting[request.options.translationLanguage]
+          : null,
+        emotion: 'happiness'
+      }
+      if (character.modelVersion === 'v3')
+        // 示例不把目录首项误当作适合问候的动作，实际回复按语义自由选择。
+        line.performance = { motion: 'auto', expression: 'auto' }
+      return line
+    })
+    return this.templates.render('runtime-controls.njk', {
       mode: request.mode,
+      characters,
       language: request.options.language,
-      translationLanguage: request.options.translationLanguage ?? '无',
-      characters: JSON.stringify(request.characters),
-      persona: JSON.stringify(request.userPersona),
-      knowledge: JSON.stringify(request.supplementalContext)
+      translationLanguage: request.options.translationLanguage,
+      scenario: request.scenario,
+      knowledge: request.supplementalContext,
+      hasTools: request.tools.length > 0,
+      example: JSON.stringify({ lines: examples })
     })
   }
 
@@ -198,7 +235,22 @@ export class Agent {
    */
   async messages(request, inspect = false) {
     const messages = []
-    for (const turn of request.history)
+    const currentContext = characterContext(request)
+    let previousContext = null
+    function sameContext(left, right) {
+      return JSON.stringify(left) === JSON.stringify(right)
+    }
+    const appendContext = (context) => {
+      if (sameContext(previousContext, context)) return
+      messages.push({
+        role: 'user',
+        content: this.templates.render('character-context.njk', context)
+      })
+      previousContext = context
+    }
+    for (const turn of request.history) {
+      const context = turn.characterContext ?? previousContext ?? currentContext
+      appendContext(context)
       for (const message of turn.messages) {
         if (message.kind === 'abstract')
           messages.push({ role: 'user', content: '历史累计摘要：' + message.text })
@@ -212,7 +264,10 @@ export class Agent {
           for (const part of message.parts) {
             if (part.kind === 'reasoning') content.push({ type: 'reasoning', text: part.text })
             if (part.kind === 'dialogue')
-              content.push({ type: 'text', text: JSON.stringify({ lines: part.lines }) })
+              content.push({
+                type: 'text',
+                text: JSON.stringify({ lines: dialogueProjection(part.lines, context) })
+              })
             if (part.kind === 'tool-call')
               content.push({
                 type: 'tool-call',
@@ -236,20 +291,16 @@ export class Agent {
             ]
           })
       }
+    }
+    appendContext(currentContext)
     if (request.input?.kind === 'message')
       messages.push({
         role: 'user',
         content: await this.userContent(request.input.message, request.connection, inspect)
       })
-    if (request.scenario)
-      messages.push({
-        role: 'user',
-        content: this.templates.render('scenario.njk', {
-          scenario: JSON.stringify(request.scenario)
-        })
-      })
     if (request.input?.kind === 'scenario')
       messages.push({ role: 'user', content: '请按当前情景开始角色对话。' })
+    messages.push({ role: 'user', content: this.controls(request) })
     return messages
   }
 
@@ -339,18 +390,28 @@ export class Agent {
     )
     return output.lines.map((line) => {
       const character = request.characters.find(
-        (item) => item.id === line.speakerId && item.formId === line.formId
+        (item) => (item.name ?? item.displayName) === line.speaker
       )
       requireValue(
         character && typeof line.text === 'string' && line.text.trim().length > 0,
         'invalid_output'
       )
       requireValue(
-        line.translation === null || typeof line.translation === 'string',
+        request.options.translationLanguage
+          ? typeof line.translation === 'string' && line.translation.trim().length > 0
+          : line.translation === null,
         'invalid_output'
       )
-      requireValue(line.emotion === null || typeof line.emotion === 'string', 'invalid_output')
-      const performance = line.performance ?? { motion: 'auto', expression: 'auto' }
+      requireValue(
+        ['happiness', 'sadness', 'anger', 'surprise', 'fear', 'disgust', 'like'].includes(
+          line.emotion
+        ),
+        'invalid_output'
+      )
+      const performance =
+        character.modelVersion === 'v3'
+          ? (line.performance ?? { motion: 'auto', expression: 'auto' })
+          : { motion: 'auto', expression: 'auto' }
       for (const [key, catalog] of [
         ['motion', character.performances.motions],
         ['expression', character.performances.expressions]
@@ -362,8 +423,8 @@ export class Agent {
       }
       return {
         id: uuid(),
-        speakerId: line.speakerId,
-        formId: line.formId,
+        speakerId: character.id,
+        formId: character.formId,
         text: line.text,
         translation: line.translation,
         emotion: line.emotion,
@@ -494,7 +555,7 @@ export class Agent {
           messages.push({
             role: 'user',
             content:
-              '上一响应的台词格式不合法。请按系统规定的 JSON 格式重新输出台词，不要重复执行工具。'
+              '上一响应的台词格式不合法。请按本轮 runtime_controls 规定的 JSON 格式重新输出台词，不要重复执行工具。'
           })
           continue
         }

@@ -249,13 +249,17 @@ test('真实 HTTP/WS 与前端封装；凭据隔离和路由白名单', async ()
   expect(updated.display).toMatchObject({ theme: 'dark', frameRate: 30 })
   expect(await client.settings.get('generation.temperature')).toBe(0.4)
   await expect(client.settings.set('generation.temperature', 100)).rejects.toHaveProperty(
-    'problem.code', 'invalid_settings'
+    'problem.code',
+    'invalid_settings'
   )
-  await expect(client.settings.set('display.theme', 'light', {
-    expectedRevision: settings.revision
-  })).rejects.toHaveProperty('problem.code', 'revision_conflict')
+  await expect(
+    client.settings.set('display.theme', 'light', {
+      expectedRevision: settings.revision
+    })
+  ).rejects.toHaveProperty('problem.code', 'revision_conflict')
   await expect(client.call('settings', 'save', [settings])).rejects.toHaveProperty(
-    'problem.code', 'method_not_found'
+    'problem.code',
+    'method_not_found'
   )
   const denied = await fetch(server.baseUrl + '/api/v1/call/settings/get', {
     method: 'POST',
@@ -412,4 +416,87 @@ test('世界书工具注入固定调用来源，不允许模型自报范围或�
   expect(query).toHaveBeenCalledExactlyOnceWith(parameters, { kind: 'tool-query', context }, signal)
   expect(tool.parametersSchema.additionalProperties).toBe(false)
   expect(Object.keys(tool.parametersSchema.properties)).not.toContain('origin')
+})
+
+test('人物编辑和形态切换只影响下一轮，资料快照可保存恢复且无临时控制消息', async () => {
+  let release
+  let entered
+  const started = new Promise((resolve) => {
+    entered = resolve
+  })
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const { backend, chatId, agent } = await fixture(async (request, observer) => {
+    entered()
+    await gate
+    const update = response(request.turnId)
+    update.appendParts[0].lines[0].formId = request.characters[0].formId
+    await observer.onResponse(update)
+    return { status: 'completed', usage: null }
+  })
+  let definition = await backend.characters.get('sakiko')
+  definition.forms[0].displayName = '黑祥'
+  definition.forms[0].description = '原来的设定'
+  definition.forms.push({
+    ...structuredClone(definition.forms[0]),
+    id: 'white',
+    displayName: '白祥',
+    description: '白祥设定'
+  })
+  await backend.characters.save(definition)
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '开始', attachments: [] },
+    { requestId: 'frozen-1' }
+  )
+  await started
+  definition = await backend.characters.get('sakiko')
+  definition.forms[1].description = '新的白祥设定'
+  await backend.characters.save(definition)
+  await backend.conversations.setCharacterSelection(chatId, 'sakiko', {
+    formId: 'white',
+    modelOverrides: {}
+  })
+  const frozen = agent.run.mock.calls[0][0]
+  expect(frozen.characters[0]).toMatchObject({ name: '祥子', formId: 'default' })
+  expect(frozen.characters[0].forms[1].description).toBe('白祥设定')
+  release()
+  await until(async () => (await backend.conversations.getSnapshot(chatId)).admission.canGenerate)
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '继续', attachments: [] },
+    { requestId: 'frozen-2' }
+  )
+  await until(async () => (await backend.conversations.getSnapshot(chatId)).admission.canGenerate)
+  const next = agent.run.mock.calls[1][0]
+  expect(next.characters[0]).toMatchObject({ name: '祥子', formId: 'white' })
+  expect(next.characters[0].forms[1].description).toBe('新的白祥设定')
+  const chat = (await backend.conversations.getSnapshot(chatId)).chat
+  expect(chat.turns[0].meta.characterContext.characters[0].forms[1].description).toBe('白祥设定')
+  expect(chat.turns[1].meta.characterContext.characters[0].forms[1].description).toBe(
+    '新的白祥设定'
+  )
+  expect(JSON.stringify(chat)).not.toContain('runtime_controls')
+  expect(
+    backend.conversations.history(JSON.parse(JSON.stringify(chat)))[1].characterContext
+  ).toEqual(chat.turns[1].meta.characterContext)
+})
+
+test('角色名跨形态保持稳定，添加和修改均拒绝重名', async () => {
+  const { backend } = await fixture()
+  const original = await backend.characters.get('sakiko')
+  await expect(
+    backend.characters.save({ ...original, id: 'other', revision: 0 })
+  ).rejects.toMatchObject({ problem: { code: 'duplicate_character_name' } })
+  const other = await backend.characters.save({
+    ...original,
+    id: 'other',
+    revision: 0,
+    name: '爱音'
+  })
+  await expect(backend.characters.save({ ...other, name: ' 祥子 ' })).rejects.toMatchObject({
+    problem: { code: 'duplicate_character_name' }
+  })
+  expect((await backend.characters.get('other')).name).toBe('爱音')
 })

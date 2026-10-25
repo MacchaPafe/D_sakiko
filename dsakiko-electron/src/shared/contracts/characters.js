@@ -39,6 +39,7 @@
 /**
  * @typedef {object} CharacterDefinition
  * @property {string} id 稳定角色身份，不随显示名变化。
+ * @property {string} name 唯一角色名，所有形态共用；旧调用省略时从默认形态初始化。
  * @property {number} revision 本次基于的版本，0 为新建。
  * @property {string} defaultFormId 必须指向 forms 中一项。
  * @property {CharacterForm[]} forms 非空且 ID 唯一，不限制为两项。
@@ -49,6 +50,8 @@
 /**
  * @typedef {object} CharacterCapabilities
  * @property {string} id 角色身份。
+ * @property {string} name 跨形态稳定的角色名，供 LLM 使用。
+ * @property {Array<{id: string, displayName: string, description: string}>} forms 全部形态的人物资料。
  * @property {number} revision 实际解析版本。
  * @property {string} formId 实际形态。
  * @property {string} displayName 本次名称。
@@ -56,6 +59,7 @@
  * @property {import('./common.js').AssetRef | null} avatar 头像。
  * @property {string | null} themeColor 主题色。
  * @property {string | null} modelId 本次采用的模型。
+ * @property {'v2' | 'v3' | null} modelVersion 实际解析格式；无可用模型为 null。
  * @property {import('./presentation.js').ModelPresentation | null} presentation 经元数据检查的可选材料，不代表已成功加载。
  * @property {import('./presentation.js').PerformanceCatalog} performances 本次逻辑演出目录。
  * @property {FormVoice | null} voice 同次解析的声音配置快照，之后按句情绪选择，不读可变全局目录。
@@ -67,6 +71,13 @@
  * @property {import('./speech.js').VoiceProfile | null} voice 完整权重/音频/文本/语言，不能只返回音频路径。
  * @property {'emotion' | 'default' | 'silent'} selected 先本形态情绪、后默认、最后无声。
  * @property {import('./common.js').Problem[]} problems 降级原因，不能静默换形态。
+ */
+
+/**
+ * 可恢复的人物资料，不包含当前形态、模型目录或本轮控制参数。
+ * @typedef {object} CharacterContext
+ * @property {Array<{id: string, name: string, forms: Array<{id: string, displayName: string, description: string}>}>} characters 全部参与角色及其全部形态。
+ * @property {{displayName: string, description: string} | null} persona 对话者身份。
  */
 
 export {}
