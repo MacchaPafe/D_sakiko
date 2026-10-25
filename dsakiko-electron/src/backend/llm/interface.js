@@ -5,6 +5,8 @@ import nunjucks from 'nunjucks'
 import Ajv from 'ajv'
 import { generateText, jsonSchema } from 'ai'
 import { createModel, reasoningOptions } from './adapters.js'
+import { AttachmentPreparation } from '../remote-files/preparation.js'
+import { rejectedRemoteFiles } from '../remote-files/adapter.js'
 import { normalizeConnection } from './connections.js'
 import {
   responseContent,
@@ -111,6 +113,7 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * @property {{ enabled: boolean, abstractMessageId: string | null, retainedTurns: number }} compression 当前的上下文压缩配置状态。
  * @property {TokenUsage | null} lastUsage 最近一次实际请求的 Token 消耗记录。
  * @property {import('../../shared/contracts/common.js').Problem[]} problems 检查过程中发现的问题列表。
+ * @property {Array<{assetId: string, transport: string, reason: string}>} attachmentDecisions 附件传送选择，不包含厂商引用或凭据。
  */
 
 /**
@@ -133,6 +136,7 @@ export class Agent {
    * @param {typeof generateText} [options.generate] 底层文本生成函数（默认使用 AI SDK 的 generateText，测试时可替换）。
    * @param {typeof fetch} [options.fetch] 可替换的 HTTP 传输，用于协议离线验证。
    * @param {import('../resources/interface.js').MediaAssets} options.assets 媒体资源管理器，用于读取内联发送的图片和文件附件。
+   * @param {import('../remote-files/interface.js').RemoteFiles} [options.remoteFiles] 后端远端文件管理。
    * @param {string} [options.templateDirectory] Nunjucks 提示词模板所在的目录路径。
    */
   constructor({
@@ -140,11 +144,13 @@ export class Agent {
     generate = generateText,
     fetch: transport = fetch,
     assets,
+    remoteFiles,
     templateDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'prompts/templates')
   }) {
     this.credential = credential
     this.assets = assets
     this.transport = transport
+    this.attachments = new AttachmentPreparation({ assets, remoteFiles, credential, transport })
     this.generate = async (options) => {
       try {
         const result = await generate(options)
@@ -168,6 +174,16 @@ export class Agent {
           throw new DOMException('请求已取消', 'AbortError')
         }
         const cause = error.lastError ?? error
+        const remoteRejection = rejectedRemoteFiles(cause)
+        if (remoteRejection) {
+          const rejected = failure(
+            'remote_file_rejected',
+            '模型拒绝了远端附件引用，请重试生成。',
+            true
+          )
+          rejected.remoteRejection = remoteRejection
+          throw rejected
+        }
         const status = cause.statusCode
         if (status === 401 || status === 403) throw failure('authentication', '模型连接鉴权失败。')
         if (cause.data?.error?.code === 'insufficient_quota')
@@ -251,7 +267,7 @@ export class Agent {
   /**
    * 将请求中的历史轮次与当前输入转换为 AI SDK 所需的消息数组。
    */
-  async messages(request, inspect = false) {
+  async messages(request, inspect = false, signal) {
     const messages = []
     const currentContext = characterContext(request)
     let previousContext = null
@@ -280,7 +296,7 @@ export class Agent {
         if (message.kind === 'user')
           messages.push({
             role: 'user',
-            content: await this.userContent(message, request.connection, inspect)
+            content: await this.userContent(message, request, inspect, signal)
           })
         if (message.kind === 'assistant') {
           const replay = restoreReplay(message, request.connection, contextFingerprint)
@@ -342,7 +358,7 @@ export class Agent {
     if (request.input?.kind === 'message')
       messages.push({
         role: 'user',
-        content: await this.userContent(request.input.message, request.connection, inspect)
+        content: await this.userContent(request.input.message, request, inspect, signal)
       })
     if (request.input?.kind === 'scenario')
       messages.push({ role: 'user', content: '请按当前情景开始角色对话。' })
@@ -353,28 +369,8 @@ export class Agent {
   /**
    * 组装单条用户消息的文本与附件内容，并校验当前模型连接是否支持相应类型的附件输入。
    */
-  async userContent(message, connection, inspect) {
-    const content = [{ type: 'text', text: message.text || '（附件）' }]
-    for (const attachment of message.attachments ?? []) {
-      const info = await this.assets.inspect(attachment.asset)
-      const image = info.mediaType.startsWith('image/')
-      const capability = image
-        ? connection.capabilities.imageInput
-        : connection.capabilities.fileInput
-      requireValue(
-        capability?.status === 'supported' && connection.attachmentTransport === 'inline',
-        'unsupported_input',
-        '当前连接未声明支持此附件输入。'
-      )
-      // 预览上下文预算（inspect 为 true）时使用空字节数组占位，避免为了估算 Token 而把所有附件文件真正读入内存。
-      const data = inspect ? new Uint8Array(0) : await this.assets.read(attachment.asset)
-      content.push(
-        image
-          ? { type: 'image', image: data, mediaType: info.mediaType }
-          : { type: 'file', data, mediaType: info.mediaType, filename: info.name }
-      )
-    }
-    return content
+  async userContent(message, request, inspect, signal) {
+    return this.attachments.content(message, request, inspect, signal)
   }
 
   /**
@@ -470,13 +466,43 @@ export class Agent {
    */
   async run(request, observer, signal) {
     // 调用方更新设置不能改变正在进行中的工具循环；工具执行函数单独保留。
-    request = {
+    const fixed = {
       ...copy({ ...request, tools: [] }),
       tools: request.tools.map((tool) => ({ ...tool }))
     }
+    this.attachments.transfer(request, fixed)
+    const execute = async () => {
+      try {
+        const result = await this.runPrepared(fixed, observer, signal)
+        return { ...result, attachmentDecisions: await this.attachments.diagnostics(fixed) }
+      } catch (error) {
+        await this.attachments
+          .invalidateRejected(fixed, error)
+          .catch((failure) => this.assets.reportMaintenance?.(failure))
+        throw error
+      }
+    }
+    // 资源随实际执行结束释放，避免上层取消等待后删除仍在使用的文件。
+    return this.assets.using
+      ? this.assets.using({ history: fixed.history, input: fixed.input }, execute)
+      : execute()
+  }
+
+  /** 已冻结请求的执行过程；上传只在此阶段发生。 */
+  async runPrepared(request, observer, signal) {
     const inspection = await this.inspectContext(request)
     requireValue(inspection.fit !== 'over-budget', 'context_over_budget')
-    const messages = await this.messages(request)
+    const uploadSignals = [AbortSignal.timeout(request.options.timeoutMs)]
+    if (signal) uploadSignals.push(signal)
+    const uploadSignal = AbortSignal.any(uploadSignals)
+    let messages
+    try {
+      messages = await this.messages(request, false, uploadSignal)
+    } catch (error) {
+      if (!signal?.aborted && uploadSignal.aborted && uploadSignal.reason?.name === 'TimeoutError')
+        throw failure('timeout', '附件准备超时，本地附件已保留。', true)
+      throw error
+    }
     const system = this.system(request)
     const contextFingerprint = turnFingerprint(
       request.history,
@@ -677,6 +703,7 @@ export class Agent {
         retainedTurns: request.options.compression.retainedTurns
       },
       lastUsage: null,
+      attachmentDecisions: await this.attachments.diagnostics(request),
       problems: []
     }
   }

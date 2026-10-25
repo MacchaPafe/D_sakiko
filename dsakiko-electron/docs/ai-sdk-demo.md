@@ -29,7 +29,7 @@ node demo.mjs --mode=all --legacy-config=/绝对路径/d_sakiko_config.json
 ## 常见操作
 
 | 操作           | 入口                                                       | 用法                                                                                                                |
-| -------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| --- | --- | --- |
 | 选择供应商     | [`providers.mjs`](../scripts/demos/ai-sdk/providers.mjs)   | `createModel(connection)` 返回绑定凭据和地址的模型；demo 支持 DeepSeek、Anthropic、Google、自定义 OpenAI Compatible |
 | 普通补全       | [`operations.mjs`](../scripts/demos/ai-sdk/operations.mjs) | `generateText({ model, prompt, abortSignal })`，从 `result.text` 取得完整文本                                       |
 | 自动工具循环   | 同上                                                       | `ToolLoopAgent` 注册 `tool({ inputSchema, execute })`，自动执行工具和回传结果                                       |
@@ -94,7 +94,7 @@ const result = await generateText({
 
 尤其不能把“支持上传”合并成一个不区分文件类型的布尔值：`@ai-sdk/deepseek@3.0.61` 的上传实现仅接受 JPEG、PNG、GIF、WebP 图片，并限制大小不超过 64 MiB。离线实验通过统一 `uploadFile` 发送图片，确认 `/files` multipart 请求和 `{ deepseek: 'file-fixture' }` 引用返回；同一 API 发送 PDF 在网络请求前就被拒绝。这里验证的是适配器协议和本地校验，未调用真实上传服务。
 
-`FilesV4` 要求实现上传，元数据读取、下载、删除为可选方法；已核对的这三种直连适配器目前只有上传实现。现有 `RemoteFiles` 所需的作用域隔离、并发复用、处理完成等待、引用失效和删除回收，仍需项目实现，不能因为引入 `uploadFile` 就视为这些职责已经满足。
+`FilesV4` 要求实现上传，元数据读取、下载、删除为可选方法；已核对的这三种直连适配器目前只有上传实现。2026-10-25 已在正式后端接入 RemoteFiles 的作用域隔离、并发复用、持久记录和清理；第一版仅补齐 DeepSeek 删除。Google 的上传后处理等待由当前 SDK 自行完成。参见[远端文件后端说明](remote-files.md)，不能仅以 SDK 上传成功推定模型支持该文件。
 
 ### 现成补充库：优先 Models.dev 官方客户端
 
@@ -121,7 +121,9 @@ const supportsVision = metadata?.modalities.input.includes('image')
 const supportsPdf = metadata?.modalities.input.includes('pdf')
 
 // 查询目录不需要厂商密钥；真实生成仍使用原来的 AI SDK 适配器和凭据。
-const model = createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY })(modelId)
+const model = createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY })(
+  modelId
+)
 ```
 
 `metadata` 缺失时，上面的两个结果为 `undefined`，应按“未知”处理。模型本身的公共元数据与特定供应商的服务配置可能不同，应优先使用匹配供应商的条目；自定义端点通过显式映射引用已知模型，并允许覆盖，不能单凭同名就视为已验证。

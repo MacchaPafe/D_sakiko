@@ -247,7 +247,8 @@ export class Settings {
           /^[a-zA-Z0-9_-]{1,100}$/.test(definition.id) &&
           !['__proto__', 'constructor', 'prototype'].includes(definition.id)
       )
-      requireValue(['inline', 'file-api'].includes(definition.attachmentTransport))
+      definition.attachmentTransport ??= 'auto'
+      requireValue(['auto', 'inline', 'file-api'].includes(definition.attachmentTransport))
       const previous = state.connections[definition.id]
       requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
       definition = normalizeConnection(definition)

@@ -37,7 +37,7 @@
  * @property {string} protocol 协议选择，不能假设所有兼容端点相同。
  * @property {'auto' | 'generic' | 'anthropic'} [behavior] 服务行为策略；anthropic 用于显式声明转发 Claude 的自定义代理。
  * @property {boolean} credentialConfigured 只读凭据存在标记，不返回密钥或可供页面读取的句柄。
- * @property {'inline' | 'file-api'} attachmentTransport 附件传送方案，按模型/协议分别校验。
+ * @property {'auto' | 'inline' | 'file-api'} attachmentTransport 附件传送方案，默认 auto，按模型/协议分别校验。
  * @property {ModelDefinition[]} models 模型列表及准确能力来源。
  */
 
@@ -51,7 +51,7 @@
  * @property {string} protocol 固定协议。
  * @property {'auto' | 'generic' | 'anthropic'} behavior 固定服务行为策略。
  * @property {string} credentialScope 后端内部凭据作用域，实际密钥通过装配的私有能力取得。
- * @property {'inline' | 'file-api'} attachmentTransport 固定传送方案。
+ * @property {'auto' | 'inline' | 'file-api'} attachmentTransport 本次固定传送策略。
  * @property {ModelCapabilities} capabilities 合并且保留来源的能力。
  */
 

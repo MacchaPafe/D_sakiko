@@ -22,7 +22,7 @@
  * @property {Attachment[]} attachments 已完成本地导入的附件，不保存厂商文件 ID。
  */
 
-// 请求组装时，file-api 附件通过 RemoteFiles.ensureUploaded(AssetRef) 取得厂商引用。
+// 请求组装时，auto/file-api 附件通过 RemoteFiles.ensureUploaded(adapter, AssetRef) 取得厂商引用。
 // RemoteFiles 按资源及实际连接作用域维护复用映射；inline 附件直接读取本地资源，不需要厂商文件 ID。
 
 /**

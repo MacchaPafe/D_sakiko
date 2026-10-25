@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "match": { "provider": "deepseek" },
+      "mediaTypes": ["image/jpeg", "image/png", "image/gif", "image/webp"],
+      "transports": {
+        "inline": { "maxBytes": 33554432 },
+        "file-api": { "maxBytes": 67108864 }
+      }
+    }
+  ]
+}

@@ -35,7 +35,13 @@ export function normalizeConnection(connection) {
   const behavior = connection.behavior ?? 'auto'
   requireValue(['auto', 'generic', 'anthropic'].includes(behavior), 'invalid_connection')
   requireValue(behavior !== 'anthropic' || protocol === 'anthropic-messages', 'invalid_connection')
-  return { ...connection, baseUrl, protocol, behavior }
+  return {
+    ...connection,
+    baseUrl,
+    protocol,
+    behavior,
+    attachmentTransport: connection.attachmentTransport ?? 'auto'
+  }
 }
 
 /** 判断是否启用 Claude 官方行为；自定义代理需显式选择，不能靠模型名或 signature 猜测。

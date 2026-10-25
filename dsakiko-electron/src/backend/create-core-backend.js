@@ -1,5 +1,7 @@
 import { SpeechResources } from './speech/resources.js'
 import { ResourceImports } from './resources/imports.js'
+import { RemoteFiles } from './remote-files/interface.js'
+import { createFileAdapter } from './remote-files/adapter.js'
 import path from 'node:path'
 import { Settings } from './settings/interface.js'
 import { ChatStore } from './storage/interface.js'
@@ -18,6 +20,7 @@ import { failure, uuid } from './core/support.js'
  * @property {Settings} settings 全局设置与模型连接管理。
  * @property {CharacterCatalog} characters 角色与用户对话身份目录。
  * @property {MediaAssets} assets 本地媒体资源管理。
+ * @property {RemoteFiles} remoteFiles 后端私有的远端上传与清理记录。
  * @property {SpeechResources} speechResources GPT-SoVITS 显式文件路径与运行引用。
  * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
  * @property {ChatStore} store 对话存档管理。
@@ -42,6 +45,7 @@ import { failure, uuid } from './core/support.js'
  * @param {Speech} [options.speech] 自定义的语音管理实例（通常用于测试替换）。
  * @param {boolean} [options.scanReminders] 是否启动后台定时扫描到期提醒，默认开启。
  * @param {string} [options.templateDirectory] 自定义的提示词模板目录路径。
+ * @param {typeof fetch} [options.fetch] 模型与文件接口共用的网络传输，测试可替换。
  * @returns {Promise<CoreBackend>} 组装完成的后端实例。
  */
 export async function createCoreBackend({
@@ -55,7 +59,8 @@ export async function createCoreBackend({
   performance: injectedPerformance,
   speech: injectedSpeech,
   scanReminders = true,
-  templateDirectory
+  templateDirectory,
+  fetch: transport = fetch
 } = {}) {
   const assets = new MediaAssets({ appDataRoot, resourceLibraryRoot, cacheRoot })
   await assets.state()
@@ -73,12 +78,29 @@ export async function createCoreBackend({
   const store = new ChatStore({ directory: path.join(appDataRoot, 'chats'), assets })
   await assets.initialize()
   await store.cleanupVersions()
+  const remoteFiles = new RemoteFiles({
+    directory: path.join(appDataRoot, 'remote-files'),
+    assets,
+    adapters: async () => {
+      const state = await settings.state()
+      return Object.values(state.connections).map((connection) =>
+        createFileAdapter(connection, state.secrets[connection.id] ?? '', transport)
+      )
+    }
+  })
+  await remoteFiles.initialize()
   const performance = injectedPerformance ?? new Performance({ resolveModel, assets })
   performance.assets ??= assets
   const speech = injectedSpeech ?? new Speech({ connect: connectSpeech, assets })
   const agent =
     injectedAgent ??
-    new Agent({ credential: (scope) => settings.credential(scope), assets, templateDirectory })
+    new Agent({
+      credential: (scope) => settings.credential(scope),
+      assets,
+      remoteFiles,
+      fetch: transport,
+      templateDirectory
+    })
   settings.probe = async (connection, signal) =>
     agent.generate({
       model: agent.model(connection),
@@ -168,6 +190,7 @@ export async function createCoreBackend({
     ]
   })
   conversations = new Conversations({
+    remoteFiles,
     store,
     settings,
     characters,
@@ -199,12 +222,25 @@ export async function createCoreBackend({
   const timer = scanReminders ? setInterval(() => scan().catch(() => {}), 1000) : null
   timer?.unref()
   // 定期（30 秒）维护资源信息，清除过期的所有者信息
-  const maintenance = setInterval(
-    () => assets.maintain().catch((error) => assets.reportMaintenance(error)),
-    30000
-  )
+  let maintenanceTask = null
+  const maintain = () => {
+    if (maintenanceTask) return maintenanceTask
+    maintenanceTask = (async () => {
+      try {
+        await assets.maintain()
+        await remoteFiles.collectUnused()
+      } catch (error) {
+        assets.reportMaintenance(error)
+      } finally {
+        maintenanceTask = null
+      }
+    })()
+    return maintenanceTask
+  }
+  const maintenance = setInterval(maintain, 30000)
   maintenance.unref()
   return {
+    remoteFiles,
     imports,
     speechResources,
     settings,
@@ -225,6 +261,8 @@ export async function createCoreBackend({
       clearInterval(timer)
       clearInterval(maintenance)
       await conversations.close()
+      await remoteFiles.close()
+      await maintenanceTask
       interactions.close()
       await performance.close()
       await speech.close?.()

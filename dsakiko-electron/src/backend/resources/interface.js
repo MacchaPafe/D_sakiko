@@ -324,6 +324,10 @@ export class MediaAssets {
             '.jpg': 'image/jpeg',
             '.jpeg': 'image/jpeg',
             '.webp': 'image/webp',
+            '.gif': 'image/gif',
+            '.pdf': 'application/pdf',
+            '.txt': 'text/plain',
+            '.csv': 'text/csv',
             '.json': 'application/json'
           }[path.extname(name).toLowerCase()] ?? 'application/octet-stream'
       } else if (source.kind === 'local-directory') {
@@ -745,6 +749,24 @@ export class MediaAssets {
     } finally {
       await this.releaseWhenPossible(owner)
     }
+  }
+
+  /** 在引用接纳锁内检查远端清理候选，阻止检查后被新草稿或任务接管。
+   * 此能力仅供后端装配，不通过 HTTP 暴露；operation 必须有网络超时且不能反向操作资源。
+   * @param {AssetRef} asset 待检查资源，已回收的资源同样视为无人持有。
+   * @param {() => Promise<object>} operation 无引用时执行的远端操作。
+   * @returns {Promise<object>} 清理结果或仍在使用的状态。
+   */
+  async withUnusedAsset(asset, operation) {
+    return this.queue.run('assets', async () => {
+      const state = await this.state()
+      if (
+        Object.keys(state.commits).length ||
+        Object.values(state.owners).some((ids) => ids.includes(asset.id))
+      )
+        return { status: 'in_use' }
+      return operation()
+    })
   }
 
   /**

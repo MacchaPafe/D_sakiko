@@ -109,9 +109,20 @@ import { chatSettings } from '../core/defaults.js'
 export class Conversations {
   /**
    * 绑定对话所需能力；运行状态只属于此实例，不读取 Electron 或页面状态。
-   * @param {Pick<import('../create-core-backend.js').CoreBackend, 'store' | 'settings' | 'characters' | 'agent' | 'speech' | 'performance' | 'assets' | 'tools'> & {access: import('../../shared/contracts/tools.js').ToolAccessScope}} dependencies 可信装配提供的模块及工具授权。
+   * @param {Pick<import('../create-core-backend.js').CoreBackend, 'store' | 'settings' | 'characters' | 'agent' | 'speech' | 'performance' | 'assets' | 'tools'> & {remoteFiles?: import('../remote-files/interface.js').RemoteFiles, access: import('../../shared/contracts/tools.js').ToolAccessScope}} dependencies 可信装配提供的模块及工具授权。
    */
-  constructor({ store, settings, characters, agent, speech, performance, assets, tools, access }) {
+  constructor({
+    store,
+    settings,
+    characters,
+    agent,
+    speech,
+    performance,
+    assets,
+    tools,
+    access,
+    remoteFiles
+  }) {
     Object.assign(this, {
       store,
       settings,
@@ -125,6 +136,7 @@ export class Conversations {
     })
     /** @type {Map<string, ConversationState>} */
     this.states = new Map()
+    this.remoteFiles = remoteFiles
     this.loading = new Map()
     this.queue = new SerialQueue()
     this.bus = new SnapshotBus()
@@ -1687,6 +1699,8 @@ export class Conversations {
       this.states.delete(chatId)
       this.interactions?.publish()
       await this.assets.releaseWhenPossible(state.resourceOwner)
+      // 本地删除已成功；远端失败仅保留清理记录，不回滚 Chat。
+      void this.remoteFiles?.collectUnused().catch((error) => this.assets.reportMaintenance(error))
     })
   }
 

@@ -25,14 +25,36 @@ function completionFetch(connection, reasoning, transport) {
  */
 export function createModel(connection, apiKey, reasoning = { enabled: false }, transport = fetch) {
   const value = normalizeConnection(connection)
+  const provider = createProvider(value, apiKey, reasoning, transport)
+  if (value.protocol === 'responses') return provider.responses(value.modelId)
+  if (value.protocol === 'chat-completions' && value.provider === 'openai')
+    return provider.chat(value.modelId)
+  if (value.protocol === 'chat-completions' && value.provider !== 'deepseek')
+    return provider.chatModel(value.modelId)
+  return provider(value.modelId)
+}
+
+/** 上传与生成共用同一厂商选择规则，避免文件引用来自另一个协议适配器。
+ * @param {object} connection 固定连接。
+ * @param {string} apiKey 本次凭据。
+ * @param {object} [reasoning] 思考设置。
+ * @param {typeof fetch} [transport] 网络传输。
+ * @returns {object} SDK 厂商实例。
+ */
+export function createProvider(
+  connection,
+  apiKey,
+  reasoning = { enabled: false },
+  transport = fetch
+) {
+  const value = normalizeConnection(connection)
   const options = { apiKey, baseURL: value.baseUrl, fetch: transport }
-  if (value.protocol === 'responses') return createOpenAI(options).responses(value.modelId)
-  if (value.protocol === 'anthropic-messages') return createAnthropic(options)(value.modelId)
-  if (value.protocol === 'google-generative-ai')
-    return createGoogleGenerativeAI(options)(value.modelId)
-  if (value.provider === 'deepseek') return createDeepSeek(options)(value.modelId)
+  if (value.protocol === 'responses') return createOpenAI(options)
+  if (value.protocol === 'anthropic-messages') return createAnthropic(options)
+  if (value.protocol === 'google-generative-ai') return createGoogleGenerativeAI(options)
+  if (value.provider === 'deepseek') return createDeepSeek(options)
   // 复用已为 Responses 安装的包，处理 OpenAI 的 max_completion_tokens 等 Chat 差异。
-  if (value.provider === 'openai') return createOpenAI(options).chat(value.modelId)
+  if (value.provider === 'openai') return createOpenAI(options)
   return createOpenAICompatible({
     ...options,
     name: 'openaiCompatible',
@@ -66,7 +88,7 @@ export function createModel(connection, apiKey, reasoning = { enabled: false }, 
         }
       }
     }
-  }).chatModel(value.modelId)
+  })
 }
 
 /** 校验通用思考配置并转换为各协议选项；Responses 始终无服务端会话。
