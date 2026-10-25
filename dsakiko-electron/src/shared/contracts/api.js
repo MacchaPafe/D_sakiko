@@ -46,6 +46,7 @@ export const API_METHODS = {
     set: true,
     update: true,
     listConnections: false,
+    listProviderPresets: false,
     saveConnection: true,
     deleteConnection: true,
     checkConnection: false

@@ -16,6 +16,11 @@ export const generationDefinition = {
   maxOutputTokens: config.number({ default: 4096, integer: true, min: 1, max: 3600000 }),
   reasoning: {
     enabled: config.boolean({ default: true }),
+    budgetTokens: new ConfigItem({
+      optional: true,
+      validate: (value) => value === null || (Number.isInteger(value) && value >= 1024),
+      message: '思考预算必须为 null 或不小于 1024 的整数'
+    }),
     effort: new ConfigItem({
       default: null,
       validate: (value) => value === null || typeof value === 'string',

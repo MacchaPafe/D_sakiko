@@ -19,7 +19,7 @@
  * @property {number} [topP] (0, 1]；不支持时报告配置问题。
  * @property {number} [timeoutMs] 单次模型请求的正整数超时。
  * @property {number} [maxOutputTokens] 正整数输出上限。
- * @property {{ enabled: boolean, effort: string | null }} [reasoning] 按模型支持的推理强度校验。
+ * @property {{ enabled: boolean, effort: string | null, budgetTokens?: number | null }} [reasoning] 按模型支持的强度校验；budgetTokens 用于手动思考预算，与 effort 互斥。
  * @property {{ enabled: boolean, thresholdTokens: number, retainedTurns: number }} [compression] 阈值为正，至少保留最后一轮。
  * @property {number} [contextTokenBudget] 完整请求预算。若超过模型上下文上限，自动缩小至上下文上限。
  * @property {{ maxSteps: number, maxRequestRetries: number, maxFormatRepairs: number }} [limits] 单轮有界循环；请求重试与格式修复分别计数，不限制跨轮自动续聊。

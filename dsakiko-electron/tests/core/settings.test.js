@@ -225,6 +225,44 @@ test('等待期间修改调用参数或返回快照，不会绕过校验改变�
   expect((await settings.get()).generation.temperature).toBe(0.5)
 })
 
+test('同协议多个连接独立保存密钥，解析后冻结设置与凭据，并公开无密钥预设', async () => {
+  const { settings } = await fixture()
+  for (const id of ['first', 'second']) {
+    await settings.saveConnection(
+      {
+        id,
+        revision: 0,
+        name: id,
+        provider: 'anthropic-compatible',
+        protocol: 'anthropic-messages',
+        baseUrl: `https://${id}.invalid/v1`,
+        behavior: 'generic',
+        attachmentTransport: 'inline',
+        models: [{ id: 'model', declared: { reasoning: { status: 'supported' } }, overrides: {} }]
+      },
+      { kind: 'replace', secret: `secret-${id}` }
+    )
+  }
+  const snapshot = await settings.resolveConnection({ connectionId: 'first', modelId: 'model' })
+  const first = (await settings.listConnections()).find((item) => item.id === 'first')
+  await settings.saveConnection(
+    { ...first, behavior: 'anthropic' },
+    { kind: 'replace', secret: 'new-secret' }
+  )
+  expect(settings.credential(snapshot.credentialScope)).toBe('secret-first')
+  expect(snapshot.behavior).toBe('generic')
+  expect(
+    settings.credential(
+      (await settings.resolveConnection({ connectionId: 'second', modelId: 'model' }))
+        .credentialScope
+    )
+  ).toBe('secret-second')
+  expect(JSON.stringify(await settings.listConnections())).not.toContain('secret-')
+  expect(settings.listProviderPresets().map((item) => item.id)).toEqual(
+    expect.arrayContaining(['gemini', 'responses-compatible', 'anthropic-compatible', 'volcengine'])
+  )
+})
+
 test('资源提交失败时不保存、不通知，之后仍能更新', async () => {
   const { settings, assets } = await fixture()
   const before = await settings.set('display.theme', 'dark')

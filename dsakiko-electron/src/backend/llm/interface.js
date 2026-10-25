@@ -4,8 +4,16 @@ import { fileURLToPath } from 'node:url'
 import nunjucks from 'nunjucks'
 import Ajv from 'ajv'
 import { generateText, jsonSchema } from 'ai'
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { createDeepSeek } from '@ai-sdk/deepseek'
+import { createModel, reasoningOptions } from './adapters.js'
+import { normalizeConnection } from './connections.js'
+import {
+  responseContent,
+  responseOptions,
+  restoreReplay,
+  saveReplay,
+  semanticHistory,
+  turnFingerprint
+} from './replay.js'
 import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
 
 /**
@@ -123,20 +131,36 @@ export class Agent {
    * @param {object} options 创建选项。
    * @param {(scope: string) => string} options.credential 根据临时凭据作用域 ID 获取 API 密钥的函数。
    * @param {typeof generateText} [options.generate] 底层文本生成函数（默认使用 AI SDK 的 generateText，测试时可替换）。
+   * @param {typeof fetch} [options.fetch] 可替换的 HTTP 传输，用于协议离线验证。
    * @param {import('../resources/interface.js').MediaAssets} options.assets 媒体资源管理器，用于读取内联发送的图片和文件附件。
    * @param {string} [options.templateDirectory] Nunjucks 提示词模板所在的目录路径。
    */
   constructor({
     credential,
     generate = generateText,
+    fetch: transport = fetch,
     assets,
     templateDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'prompts/templates')
   }) {
     this.credential = credential
     this.assets = assets
+    this.transport = transport
     this.generate = async (options) => {
       try {
-        return await generate(options)
+        const result = await generate(options)
+        const unsupported = result.warnings?.find(
+          (warning) =>
+            warning.type !== 'deprecated' &&
+            /reasoning|thinking|signature|tool|image|file/i.test(
+              `${warning.feature ?? ''} ${warning.message ?? ''}`
+            )
+        )
+        requireValue(
+          !unsupported,
+          'unsupported_model_option',
+          '当前 SDK 或模型不能完整处理所选推理、工具或附件能力。'
+        )
+        return result
       } catch (error) {
         if (options.abortSignal?.aborted) {
           if (options.abortSignal.reason?.name === 'TimeoutError')
@@ -175,19 +199,13 @@ export class Agent {
    * @param {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 已解析的模型连接快照。
    * @returns {import('ai').LanguageModel} AI SDK 语言模型实例。
    */
-  model(connection) {
-    const options = {
-      apiKey: this.credential(connection.credentialScope),
-      baseURL: connection.baseUrl,
-      name: connection.provider
-    }
-    if (connection.provider === 'deepseek') return createDeepSeek(options)(connection.modelId)
-    requireValue(connection.provider === 'openai-compatible', 'unsupported_provider')
-    requireValue(
-      ['chat', 'chat-completions', 'openai-compatible'].includes(connection.protocol),
-      'unsupported_protocol'
+  model(connection, reasoning) {
+    return createModel(
+      connection,
+      this.credential(connection.credentialScope),
+      reasoning,
+      this.transport
     )
-    return createOpenAICompatible(options).chatModel(connection.modelId)
   }
 
   /**
@@ -248,8 +266,13 @@ export class Agent {
       })
       previousContext = context
     }
-    for (const turn of request.history) {
+    for (const [turnIndex, turn] of request.history.entries()) {
       const context = turn.characterContext ?? previousContext ?? currentContext
+      const contextFingerprint = turnFingerprint(
+        request.history.slice(0, turnIndex),
+        context,
+        turn.messages.find((message) => message.kind === 'user') ?? null
+      )
       appendContext(context)
       for (const message of turn.messages) {
         if (message.kind === 'abstract')
@@ -260,9 +283,32 @@ export class Agent {
             content: await this.userContent(message, request.connection, inspect)
           })
         if (message.kind === 'assistant') {
+          const replay = restoreReplay(message, request.connection, contextFingerprint)
+          if (replay !== null) {
+            if (replay.length)
+              messages.push({
+                role: 'assistant',
+                content: replay,
+                providerOptions: responseOptions({
+                  providerMetadata: {
+                    openaiCompatible: {
+                      reasoningDetails:
+                        message.protocol.providerOptions?.openaiCompatible?.reasoning_details
+                    }
+                  }
+                })
+              })
+            continue
+          }
           const content = []
           for (const part of message.parts) {
-            if (part.kind === 'reasoning') content.push({ type: 'reasoning', text: part.text })
+            // 旧存档只含明文推理；有来源的回传材料失效后不跨模型转发签名或推理。
+            if (
+              part.kind === 'reasoning' &&
+              !message.protocol?.origin &&
+              normalizeConnection(request.connection).protocol === 'chat-completions'
+            )
+              content.push({ type: 'reasoning', text: part.text })
             if (part.kind === 'dialogue')
               content.push({
                 type: 'text',
@@ -339,36 +385,18 @@ export class Agent {
     requireValue(Number.isInteger(options.timeoutMs) && options.timeoutMs > 0)
     const signals = [AbortSignal.timeout(options.timeoutMs)]
     if (signal) signals.push(signal)
-    const reasoning = options.reasoning
-    let providerOptions
-    if (reasoning.enabled) {
-      requireValue(
-        request.connection.capabilities.reasoning?.status === 'supported',
-        'unsupported_reasoning'
-      )
-      if (reasoning.effort)
-        requireValue(
-          request.connection.capabilities.reasoningEfforts?.includes(reasoning.effort),
-          'unsupported_reasoning'
-        )
-    }
-    if (request.connection.provider === 'deepseek')
-      providerOptions = {
-        deepseek: {
-          thinking: { type: reasoning.enabled ? 'enabled' : 'disabled' },
-          ...(reasoning.effort ? { reasoningEffort: reasoning.effort } : {})
-        }
-      }
-    else if (reasoning.enabled) {
-      requireValue(reasoning.effort, 'unsupported_reasoning', '兼容协议需要明确的推理强度。')
-      providerOptions = { 'openai-compatible': { reasoningEffort: reasoning.effort } }
-    }
+    const providerOptions = reasoningOptions(request.connection, options.reasoning)
+    const protocol = normalizeConnection(request.connection).protocol
+    const fixedSampling =
+      options.reasoning.enabled &&
+      (['responses', 'anthropic-messages'].includes(protocol) ||
+        ['deepseek', 'openai'].includes(request.connection.provider))
     return {
-      model: this.model(request.connection),
+      model: this.model(request.connection, options.reasoning),
       providerOptions,
       maxOutputTokens: options.maxOutputTokens,
-      temperature: options.temperature,
-      topP: options.topP,
+      // 原生推理模型自行控制采样，不发送它们明确不接受的采样参数。
+      ...(!fixedSampling ? { temperature: options.temperature, topP: options.topP } : {}),
       maxRetries: options.limits.maxRequestRetries,
       abortSignal: AbortSignal.any(signals)
     }
@@ -441,10 +469,20 @@ export class Agent {
    * @returns {Promise<{ status: 'completed' | 'cancelled', usage: TokenUsage | null }>} 生成循环的完成状态与最近一次模型请求的 Token 消耗。
    */
   async run(request, observer, signal) {
+    // 调用方更新设置不能改变正在进行中的工具循环；工具执行函数单独保留。
+    request = {
+      ...copy({ ...request, tools: [] }),
+      tools: request.tools.map((tool) => ({ ...tool }))
+    }
     const inspection = await this.inspectContext(request)
     requireValue(inspection.fit !== 'over-budget', 'context_over_budget')
     const messages = await this.messages(request)
     const system = this.system(request)
+    const contextFingerprint = turnFingerprint(
+      request.history,
+      characterContext(request),
+      request.input.kind === 'message' ? request.input.message : null
+    )
     const tools = Object.fromEntries(
       request.tools.map((tool) => [
         tool.name,
@@ -465,42 +503,63 @@ export class Agent {
       usage = {
         inputTokens: response.usage?.inputTokens ?? null,
         outputTokens: response.usage?.outputTokens ?? null,
-        reasoningTokens: response.usage?.reasoningTokens ?? null
+        reasoningTokens:
+          response.usage?.outputTokenDetails?.reasoningTokens ??
+          response.usage?.reasoningTokens ??
+          null
       }
       const responseId = uuid()
+      const content = responseContent(response)
+      const messageOptions = responseOptions(response)
+      const calls = content.filter((part) => part.type === 'tool-call')
+      const text = content
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text)
+        .join('')
+      let lines = null
+      let formatError = null
+      if (text.trim()) {
+        try {
+          lines = this.lines(text, request)
+        } catch (error) {
+          formatError = error
+        }
+      }
       const parts = []
-      if (response.reasoningText)
-        parts.push({ id: uuid(), kind: 'reasoning', text: response.reasoningText, protocol: {} })
-      const calls = response.toolCalls ?? []
-      for (const call of calls) {
-        requireValue(!callIds.has(call.toolCallId), 'duplicate_tool_call')
-        callIds.add(call.toolCallId)
-        parts.push({
-          id: uuid(),
-          kind: 'tool-call',
-          callId: call.toolCallId,
-          toolName: call.toolName,
-          arguments: copy(call.input),
-          protocol: {}
-        })
+      let dialogueAdded = false
+      for (const part of content) {
+        if (part.type === 'reasoning')
+          parts.push({ id: uuid(), kind: 'reasoning', text: part.text, protocol: {} })
+        if (part.type === 'tool-call') {
+          requireValue(!callIds.has(part.toolCallId), 'duplicate_tool_call')
+          callIds.add(part.toolCallId)
+          parts.push({
+            id: uuid(),
+            kind: 'tool-call',
+            callId: part.toolCallId,
+            toolName: part.toolName,
+            arguments: copy(part.input),
+            protocol: {}
+          })
+        }
+        if (part.type === 'text' && lines && !dialogueAdded) {
+          parts.push({ id: uuid(), kind: 'dialogue', lines })
+          dialogueAdded = true
+        }
       }
       // 为什么在真正执行工具前先把 tool-call 记录通知给 observer 保存：
       // 若工具执行中途进程崩溃或被用户取消，对话存档中必须先有对应的 tool-call 记录，后续才能为其补记中断状态并保持历史可追溯。
-      if (parts.length) await observer.onResponse({ responseId, appendParts: parts, protocol: {} })
+      await observer.onResponse({
+        responseId,
+        appendParts: parts,
+        protocol: saveReplay(request.connection, content, parts, contextFingerprint, messageOptions)
+      })
+      // 同一响应只回传一次；保留工具前的文字、空推理签名和原始块顺序。
+      if (content.length)
+        messages.push({ role: 'assistant', content, providerOptions: messageOptions })
       if (calls.length) {
-        const content = calls.map((call) => ({
-          type: 'tool-call',
-          toolCallId: call.toolCallId,
-          toolName: call.toolName,
-          input: call.input
-        }))
-        if (response.reasoningText)
-          content.unshift({ type: 'reasoning', text: response.reasoningText })
-        messages.push({ role: 'assistant', content })
-        const seen = new Set()
+        const results = []
         for (const call of calls) {
-          requireValue(!seen.has(call.toolCallId), 'invalid_output')
-          seen.add(call.toolCallId)
           const tool = request.tools.find((item) => item.name === call.toolName)
           let outcome
           try {
@@ -530,43 +589,31 @@ export class Agent {
             outcome,
             extensions: {}
           })
-          messages.push({
-            role: 'tool',
-            content: [
-              {
-                type: 'tool-result',
-                toolCallId: call.toolCallId,
-                toolName: call.toolName,
-                output: { type: 'json', value: outcome }
-              }
-            ]
+          results.push({
+            type: 'tool-result',
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+            output: { type: 'json', value: outcome }
           })
         }
+        messages.push({ role: 'tool', content: results })
+        // 工具响应中的普通说明不是最终台词 JSON；不能把它当作格式错误开启新 user 轮次。
+        continue
       }
-      if (response.text?.trim()) {
-        let lines
-        try {
-          lines = this.lines(response.text, request)
-        } catch (error) {
-          if (repairs >= request.options.limits.maxFormatRepairs) throw error
-          // 为什么格式错误时向当前 messages 追加提示继续循环，而不是从头重新发起整轮生成：
-          // 之前的步骤中可能已经执行过具有副作用的工具调用，保留已有工具结果并仅要求模型修正 JSON 格式，可避免重复执行工具。
-          repairs += 1
-          messages.push({
-            role: 'user',
-            content:
-              '上一响应的台词格式不合法。请按本轮 runtime_controls 规定的 JSON 格式重新输出台词，不要重复执行工具。'
-          })
-          continue
-        }
-        await observer.onResponse({
-          responseId,
-          appendParts: [{ id: uuid(), kind: 'dialogue', lines }],
-          protocol: {}
+      if (lines) return { status: 'completed', usage }
+      if (formatError) {
+        if (repairs >= request.options.limits.maxFormatRepairs) throw formatError
+        // 为什么格式错误时向当前 messages 追加提示继续循环，而不是从头重新发起整轮生成：
+        // 之前的步骤中可能已经执行过具有副作用的工具调用，保留已有工具结果并仅要求模型修正 JSON 格式，可避免重复执行工具。
+        repairs += 1
+        messages.push({
+          role: 'user',
+          content:
+            '上一响应的台词格式不合法。请按本轮 runtime_controls 规定的 JSON 格式重新输出台词，不要重复执行工具。'
         })
-        if (!calls.length) return { status: 'completed', usage }
-        messages.push({ role: 'assistant', content: response.text })
-      } else if (!calls.length) throw failure('empty_response', '模型返回空响应。')
+        continue
+      }
+      throw failure('empty_response', '模型返回空响应。')
     }
     throw failure('step_limit', '本轮工具循环达到上限。')
   }
@@ -591,9 +638,27 @@ export class Agent {
       ...request.history.flatMap((turn) => turn.messages),
       request.input?.message
     ].some((message) => message?.attachments?.length)
-    const estimatedInputTokens = hasAttachments
-      ? null
-      : Math.ceil(Buffer.byteLength(material, 'utf8') / 3)
+    const hasOpaqueReasoning = messages.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((part) =>
+          Object.values(part.providerOptions ?? {}).some(
+            (options) =>
+              options.signature ||
+              options.redactedData ||
+              options.reasoningEncryptedContent ||
+              options.thoughtSignature
+          )
+        )
+    )
+    // 签名和密文的字节长度不是模型实际读取的 Token 数，不能据此误报超出预算。
+    const hasMessageReasoning = messages.some(
+      (message) => message.providerOptions?.openaiCompatible?.reasoning_details?.length
+    )
+    const estimatedInputTokens =
+      hasAttachments || hasOpaqueReasoning || hasMessageReasoning
+        ? null
+        : Math.ceil(Buffer.byteLength(material, 'utf8') / 3)
     const modelLimit = request.connection.capabilities.contextTokens ?? null
     const budget = Math.min(modelLimit ?? Infinity, request.options.contextTokenBudget)
     let fit = 'unknown'
@@ -626,7 +691,16 @@ export class Agent {
     const response = await this.generate({
       ...this.parameters(request, signal),
       system: this.templates.render('summary.njk', {}),
-      prompt: JSON.stringify(request.history)
+      prompt: JSON.stringify(
+        semanticHistory(request.history).map((turn) => ({
+          ...turn,
+          messages: turn.messages.map((message) =>
+            message.kind === 'assistant'
+              ? { ...message, parts: message.parts.filter((part) => part.kind !== 'reasoning') }
+              : message
+          )
+        }))
+      )
     })
     requireValue(response.text?.trim(), 'empty_response')
     return {
@@ -634,7 +708,10 @@ export class Agent {
       usage: {
         inputTokens: response.usage?.inputTokens ?? null,
         outputTokens: response.usage?.outputTokens ?? null,
-        reasoningTokens: response.usage?.reasoningTokens ?? null
+        reasoningTokens:
+          response.usage?.outputTokenDetails?.reasoningTokens ??
+          response.usage?.reasoningTokens ??
+          null
       }
     }
   }

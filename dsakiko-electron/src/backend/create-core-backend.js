@@ -82,6 +82,10 @@ export async function createCoreBackend({
   settings.probe = async (connection, signal) =>
     agent.generate({
       model: agent.model(connection),
+      providerOptions:
+        connection.protocol === 'responses'
+          ? { openai: { store: false, include: ['reasoning.encrypted_content'] } }
+          : undefined,
       prompt: 'Reply OK.',
       maxOutputTokens: 500,
       maxRetries: 0,
@@ -112,7 +116,8 @@ export async function createCoreBackend({
   })
   const question = {
     name: 'ask_user',
-    description: '向用户提出问题，登记后继续当前对话；答案稍后以新轮次交付。',
+    description:
+      '向用户提出问题，使用该工具后当前对话会立刻继续；在用户回答后，答案后续以新的用户消息交付。',
     dependencies: [],
     mode: 'async',
     parametersSchema: interactions.kinds.question.requestSchema,

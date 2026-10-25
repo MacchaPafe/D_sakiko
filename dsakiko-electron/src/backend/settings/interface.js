@@ -22,6 +22,8 @@ import {
   isConfigObject
 } from '../core/config.js'
 import { settingsDefinition, createDefaultSettings } from './definition.js'
+import { providerPresets } from '../../shared/contracts/llm-providers.js'
+import { normalizeConnection } from '../llm/connections.js'
 
 const revisionItem = config.number({ integer: true, min: 0, max: Number.MAX_SAFE_INTEGER })
 
@@ -210,6 +212,13 @@ export class Settings {
     return Object.values((await this.state()).connections).map(copy)
   }
 
+  /** 列出可用于创建多个独立连接的厂商与协议预设。
+   * @returns {import('../../shared/contracts/llm-providers.js').ProviderPreset[]} 不含凭据的预设副本。
+   */
+  listProviderPresets() {
+    return copy(providerPresets)
+  }
+
   /**
    * 创建或更新一个模型连接配置及其 API 密钥。
    * @param {import('../../shared/contracts/models.js').ConnectionDefinition} definition 模型连接配置。新建时 revision 为 0，更新时传入当前版本号。
@@ -217,6 +226,8 @@ export class Settings {
    * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition>} 保存成功并递增版本号后的连接配置副本。
    */
   async saveConnection(definition, credential) {
+    definition = copy(definition)
+    credential = copy(credential)
     return this.queue.run('settings', async () => {
       const state = await this.state()
       fields(definition, [
@@ -226,6 +237,7 @@ export class Settings {
         'provider',
         'baseUrl',
         'protocol',
+        'behavior',
         'credentialConfigured',
         'attachmentTransport',
         'models'
@@ -238,17 +250,22 @@ export class Settings {
       requireValue(['inline', 'file-api'].includes(definition.attachmentTransport))
       const previous = state.connections[definition.id]
       requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
-      requireValue(
-        ['openai-compatible', 'deepseek'].includes(definition.provider),
-        'unsupported_provider'
-      )
-      const url = new URL(definition.baseUrl)
-      // 禁止在 URL 中内嵌用户名或密码，防止凭据随 baseUrl 泄露到前端。
-      requireValue(['http:', 'https:'].includes(url.protocol) && !url.username && !url.password)
+      definition = normalizeConnection(definition)
       requireValue(
         Array.isArray(definition.models) &&
           new Set(definition.models.map((model) => model.id)).size === definition.models.length
       )
+      for (const model of definition.models) {
+        requireValue(
+          typeof model.id === 'string' && model.id.trim().length > 0,
+          'invalid_connection'
+        )
+        for (const capabilities of [model.declared, model.overrides]) {
+          requireValue(isConfigObject(capabilities), 'invalid_connection')
+          const binding = capabilities.requiresStablePrefixForThinking
+          requireValue(binding === undefined || typeof binding === 'boolean', 'invalid_connection')
+        }
+      }
       requireValue(['keep', 'replace', 'remove'].includes(credential.kind))
       if (credential.kind === 'replace') {
         requireValue(typeof credential.secret === 'string' && credential.secret.length > 0)
@@ -292,7 +309,9 @@ export class Settings {
    */
   async resolveConnection(selection) {
     const state = await this.state()
-    const connection = state.connections[selection.connectionId]
+    const saved = state.connections[selection.connectionId]
+    requireValue(saved, 'model_unavailable', '模型连接不存在。')
+    const connection = normalizeConnection(saved)
     const model = connection?.models.find((item) => item.id === selection.modelId)
     requireValue(model, 'model_unavailable', '模型连接或模型不存在。')
     // 为什么分配临时的 credentialScope 而不是直接返回密钥或按 connectionId 实时查密钥：
@@ -306,6 +325,7 @@ export class Settings {
       provider: connection.provider,
       baseUrl: connection.baseUrl,
       protocol: connection.protocol,
+      behavior: connection.behavior,
       credentialScope,
       attachmentTransport: connection.attachmentTransport,
       capabilities: merge(model.declared, model.overrides)

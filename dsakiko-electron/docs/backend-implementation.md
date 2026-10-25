@@ -2,6 +2,8 @@
 
 更新：2026-10-15。设计依据仍是 `core-interfaces.md`、`python-core-design-review.md` 和 `python-feature-requirements.md`。本文件记录实际实现边界，不能把构建成功或旧原型测试等同于全部需求验收。
 
+2026-10-25 补充：LLM 接入已支持 Completions、Responses、Anthropic Messages 和 Gemini generateContent，增加多连接预设、协议元数据存档与按服务区分的推理回传策略。接口、限制及单次 DeepSeek 实测记录见 [LLM 连接与推理回传](llm-providers.md)。
+
 ## 入口与分层
 
 正式装配入口为 [create-core-backend.js](../src/backend/create-core-backend.js)。业务代码写在原有 `src/backend/*/interface.js` 中，构造函数接收能力，返回值保持普通数据。旧装配入口、扁平对话与业务实现、演出 IPC 代理及对应脚本已经删除。公共文件工具迁入 `backend/core/files.js`，Python 传输整理为 `speech/python-transport.js`，通用错误位于 `shared/problems.js`；正式后端不再依赖旧桌面协议。

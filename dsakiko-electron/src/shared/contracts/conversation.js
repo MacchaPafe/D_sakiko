@@ -98,9 +98,19 @@
 /** @typedef {ReasoningPart | ToolCallPart | DialoguePart} AssistantPart */
 
 /**
+ * @typedef {object} AssistantReplay
+ * @property {1} version 协议存档版本。
+ * @property {{ connectionId: string | null, modelId: string, provider: string, protocol: string, endpoint: string }} origin 回传来源；地址仅保存摘要，不含凭据。
+ * @property {Array<object>} content 按原顺序保存的 SDK text/reasoning/tool-call 块及允许的 providerOptions。
+ * @property {Metadata} providerOptions 消息级协议材料，例如 Completions 的 reasoning_details。
+ * @property {string} projectionFingerprint 业务片段摘要；编辑台词或调用参数后不复用原始响应。
+ * @property {string} contextFingerprint 本轮输入与此前历史摘要；用于检测编辑、压缩和来源变化。
+ */
+
+/**
  * 一次模型响应一个容器，保留 parts 顺序。格式修复的新响应另建容器，不移入旧响应冒充同一批。
  * 原响应中已接受的 reasoning 和调用保留；失败原文只作诊断，不伪造 DialoguePart。
- * @typedef {MessageBase & { kind: 'assistant', parts: AssistantPart[], protocol: Metadata }} AssistantMessage
+ * @typedef {MessageBase & { kind: 'assistant', parts: AssistantPart[], protocol: AssistantReplay | Metadata }} AssistantMessage
  */
 
 /**
