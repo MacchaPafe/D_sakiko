@@ -110,3 +110,38 @@ test('客户端关闭后才返回的访问凭证也会释放', async () => {
   await expect(pending).rejects.toHaveProperty('code', 'client_closed')
   expect(methods).toEqual(['access', 'releaseAccess'])
 })
+
+test('租约失效向调用方报告，停止无效续期，并允许显式申请新草稿保护原资源', async () => {
+  vi.useFakeTimers()
+  const calls = []
+  const client = createBackendClient({
+    baseUrl: 'http://localhost',
+    token: 'test',
+    fetch: async (url, options) => {
+      const method = url.split('/').at(-1)
+      calls.push({ method, args: JSON.parse(options.body).args })
+      if (method === 'renewDraft')
+        return new Response(
+          JSON.stringify({
+            problem: { code: 'lease_expired', message: '草稿过期', retryable: false }
+          })
+        )
+      return new Response(JSON.stringify({ value: { draftId: 'draft' } }))
+    }
+  })
+  outputs.push(client)
+  const observer = vi.fn()
+  const dispose = client.assets.observeLeaseProblems(observer)
+  await client.assets.createDraft([{ id: 'existing' }])
+  await client.assets.renewResources()
+  expect(observer.mock.lastCall[0][0]).toMatchObject({
+    kind: 'draft',
+    id: 'draft',
+    problem: { code: 'lease_expired' }
+  })
+  await vi.advanceTimersByTimeAsync(60000)
+  expect(calls.filter((call) => call.method === 'renewDraft')).toHaveLength(1)
+  await client.assets.createDraft([{ id: 'existing' }])
+  expect(calls.at(-1)).toEqual({ method: 'createDraft', args: [[{ id: 'existing' }]] })
+  dispose()
+})

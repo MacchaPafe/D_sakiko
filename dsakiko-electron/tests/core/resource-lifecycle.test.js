@@ -489,3 +489,37 @@ test('关闭后端取消独立重合成的等待，并释放运行引用', async
   const state = await backend.assets.state()
   expect(Object.keys(state.temporaryOwners)).toEqual([])
 })
+
+test('Python cancelled 不代表推理结束，输入保守保留到进程确认退出', async () => {
+  const { assets } = await fixture()
+  const gptWeights = await imported(assets, 'model')
+  const sovitsWeights = await imported(assets, 'model')
+  const referenceAudio = await imported(assets, 'audio')
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async (url, options) =>
+        new Response(
+          JSON.stringify(
+            options.method === 'POST' ? { task_id: 'run-task' } : { status: 'cancelled' }
+          )
+        )
+    )
+  )
+  const speech = new Speech({
+    assets,
+    connect: async () => ({ url: 'http://localhost', token: '', runId: 'run' })
+  })
+  const task = await speech.submit({
+    priority: 1,
+    text: 'hello',
+    language: 'Chinese',
+    voice: { gptWeights, sovitsWeights, referenceAudio }
+  })
+  await assets.releaseOwner('test-source')
+  await speech.getTask(task)
+  await speech.releaseTask(task)
+  expect((await assets.collectUnused()).deleted).toEqual([])
+  await speech.processStopped()
+  expect((await assets.collectUnused()).deleted).toHaveLength(3)
+})

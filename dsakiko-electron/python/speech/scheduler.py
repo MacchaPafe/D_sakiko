@@ -75,6 +75,7 @@ class Scheduler:
         self.wakeup = asyncio.Event()
         self.closed = False
         self.dispatcher: Optional[asyncio.Task[None]] = None
+        self.close_task: Optional[asyncio.Task[None]] = None
         Path(config.output_directory).mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
@@ -213,13 +214,22 @@ class Scheduler:
             self.wakeup.set()
 
     async def close(self) -> None:
-        """应用退出时终止所有实例，不保留续跑任务。"""
+        """共享完整关闭过程，不能在另一个调用仍等待 worker 时提前报告完成。"""
+        if self.close_task is None:
+            self.close_task = asyncio.create_task(self._close())
+        await asyncio.shield(self.close_task)
+
+    async def _close(self) -> None:
+        """先停止调度，再等待全部 worker 与在途执行，关闭失败必须向上报告。"""
         self.closed = True
         self.wakeup.set()
         for record in self.records.values():
             if record.snapshot.status in ("queued", "running"):
                 record.snapshot = CancelledTask(record.snapshot.task_id)
-        await asyncio.gather(*(resident.worker.close() for resident in list(self.residents)), return_exceptions=True)
+        results = await asyncio.gather(*(resident.worker.close() for resident in list(self.residents)), return_exceptions=True)
         if self.dispatcher is not None:
             await self.dispatcher
-        await asyncio.gather(*self.executions, return_exceptions=True)
+        results.extend(await asyncio.gather(*self.executions, return_exceptions=True))
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result

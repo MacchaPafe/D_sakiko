@@ -1,3 +1,4 @@
+import { processUsesResources } from '../../backend/resources/process.js'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { mkdir, stat } from 'node:fs/promises'
@@ -7,6 +8,9 @@ import { problemError } from '../../shared/problems.js'
 
 /**
  * @typedef {object} SpeechProcessSettings
+ * @property {(confirmedPid?: number | null) => Promise<void>} [releaseResources] 进程退出后释放基础资源。
+ * @property {(pid: number, group?: number) => Promise<void>} [bindResources] 将基础资源引用绑定至真实进程。
+ * @property {import('../../shared/contracts/api.js').HostProbe} [hostProbe] 所属后端的只读探测凭据。
  * @property {string} resourceRoot 只读基础权重和词典目录。
  * @property {string} pythonExecutable 宿主配置的解释器。
  * @property {string} [assetsRoot] 应用管理的角色权重与参考音频目录。
@@ -29,12 +33,15 @@ export class SpeechProcess {
     Object.assign(this, { pythonRoot, cacheRoot, getSettings })
     this.child = null
     this.starting = null
+    this.resourceCleanups = new Set()
+    this.closed = false
   }
   /**
    * 获取就绪连接；并发合成请求共享一次启动，避免启动多个调度器。
    * @returns {Promise<import('../../backend/speech/python-transport.js').SpeechConnection>} 当前 Python 进程的鉴权连接。
    */
   async connect() {
+    if (this.closed) throw problemError('backend_closed', '语音宿主已关闭。')
     if (this.connection) return this.connection
     if (!this.starting)
       this.starting = this.start().finally(() => {
@@ -45,6 +52,26 @@ export class SpeechProcess {
   /** 启动可信解释器并等待握手；端口和运行身份必须来自此次子进程，而非旧缓存。 */
   async start() {
     const settings = await this.getSettings()
+    let cleanup = null
+    const release = (confirmedPid = null) => {
+      if (cleanup) return cleanup
+      cleanup = Promise.resolve()
+        .then(() => settings.releaseResources?.(confirmedPid))
+        .catch((error) => console.error('基础资源释放失败', error))
+      this.resourceCleanups.add(cleanup)
+      void cleanup.finally(() => this.resourceCleanups.delete(cleanup))
+      return cleanup
+    }
+    try {
+      return await this.launch(settings, release)
+    } catch (error) {
+      if (!this.child) release()
+      throw error
+    }
+  }
+
+  /** 资源由启动前创建的 owner 保护，就绪后绑定 PID，退出后再释放。 */
+  async launch(settings, release) {
     if (!settings.resourceRoot) throw problemError('missing_resources', '请配置资源目录。')
     await mkdir(join(this.cacheRoot, 'logs'), { recursive: true })
     if (
@@ -83,31 +110,50 @@ export class SpeechProcess {
         env: {
           ...process.env,
           DSAKIKO_SPEECH_TOKEN: token,
+          DSAKIKO_HOST_PROBE: settings.hostProbe ? JSON.stringify(settings.hostProbe) : '',
           PYTHONUNBUFFERED: '1',
           PYTHONDONTWRITEBYTECODE: '1',
           PYTHONPATH: [this.pythonRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter)
         },
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe']
       }
     )
     this.child = child
-    child.stderr.pipe(log, { end: false })
-    child.once('exit', () => {
-      if (this.child === child) {
-        this.child = null
-        this.connection = null
+    this.childRelease = new Promise((resolve) => {
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        const confirmed = this.treeStopped(child) ? child.pid : null
+        if (!this.child || this.child === child) this.lastConfirmedPid = confirmed
+        if (this.child === child) {
+          this.child = null
+          this.connection = null
+        }
+        void Promise.resolve(release(confirmed)).then(resolve)
       }
-      log.end()
+      child.once('exit', () => {
+        if (this.child === child) {
+          this.child = null
+          this.connection = null
+        }
+        if (process.platform === 'win32') finish()
+      })
+      // POSIX 等待继承管道关闭；spawn 失败没有 exit，也由 close 补齐释放。
+      child.once('close', finish)
     })
+    child.stderr.pipe(log, { end: false })
+    child.once('close', () => log.end())
     return new Promise((resolve, reject) => {
       let buffer = ''
       let settled = false
       const timer = setTimeout(() => fail('Python 启动超时，请检查解释器与语音日志。'), 20000)
-      function fail(message) {
+      const fail = (message) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        child.kill()
+        this.terminate(child, 'SIGTERM')
         reject(problemError('speech_unavailable', message, true))
       }
       child.once('error', () => fail('无法启动 Python，请检查解释器路径。'))
@@ -132,23 +178,69 @@ export class SpeechProcess {
           if (value.ready && Number.isInteger(value.port)) {
             settled = true
             clearTimeout(timer)
-            this.connection = {
+            const connection = {
               url: `http://127.0.0.1:${value.port}`,
               token,
               runId: value.runId,
-              processId: child.pid
+              processId: child.pid,
+              processGroupId: process.platform === 'win32' ? undefined : child.pid
             }
-            resolve(this.connection)
+            Promise.resolve()
+              .then(() => settings.bindResources?.(connection.processId, connection.processGroupId))
+              .then(() => {
+                if (this.child !== child)
+                  throw problemError('speech_unavailable', 'Python 已退出。')
+                this.connection = connection
+                resolve(connection)
+              })
+              .catch((error) => {
+                this.terminate(child, 'SIGTERM')
+                reject(error)
+              })
           }
         }
       })
     })
   }
   /**
-   * 关闭 Python 语音子进程（先请求优雅退出，超时未退出时发送终止信号）。
-   * @returns {Promise<void>}
+   * 请求 Python 关闭并等待实际退出；worker 的退出确认由 Python 完成。
+   * @returns {Promise<number | null>} 已确认退出的进程编号，否则保守保留引用。
    */
   async close() {
+    this.closed = true
+    await this.starting?.catch(() => {})
+    const child = this.child
+    try {
+      await this.stop()
+      if (!child) return this.lastConfirmedPid ?? null
+      if (this.treeStopped(child)) return child.pid
+      return null
+    } finally {
+      await this.childRelease
+      await Promise.allSettled([...this.resourceCleanups])
+    }
+  }
+
+  /** POSIX 继续查询整个进程组；Windows 以主进程退出为资源生命周期终点。 */
+  treeStopped(child) {
+    if (!child.pid) return true
+    if (process.platform === 'win32') return child.exitCode !== null || child.signalCode !== null
+    return !processUsesResources({ processId: child.pid, processGroupId: child.pid })
+  }
+
+  /** 启动失败时终止本次进程；正常关闭交给 Python 自身的退出确认流程。 */
+  terminate(child, signal) {
+    if (!child.pid) return
+    try {
+      if (process.platform === 'win32') child.kill(signal)
+      else process.kill(-child.pid, signal)
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error
+    }
+  }
+
+  /** 关闭请求失败时保留等待，由宿主心跳触发 Python 自主关闭；不提前释放引用。 */
+  async stop() {
     const child = this.child
     if (!child) return
     const connection = this.connection
@@ -159,18 +251,6 @@ export class SpeechProcess {
         headers: { Authorization: `Bearer ${connection.token}` },
         signal: AbortSignal.timeout(2000)
       }).catch(() => {})
-    if (child.exitCode !== null || child.signalCode !== null) return
-    await new Promise((resolve) => {
-      let forceTimer
-      const timer = setTimeout(() => {
-        child.kill('SIGTERM')
-        forceTimer = setTimeout(() => child.kill('SIGKILL'), 2000)
-      }, 8000)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        clearTimeout(forceTimer)
-        resolve()
-      })
-    })
+    await this.childRelease
   }
 }

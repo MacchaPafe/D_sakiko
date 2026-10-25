@@ -146,58 +146,73 @@ export class Conversations {
   }
   /** 仅恢复存档内容；补结算缺失工具结果，不续跑重启前的生成与副作用。 */
   async load(chatId) {
-    const loaded = await this.store.load(chatId)
-    requireValue(loaded.status === 'loaded', 'chat_unavailable', '对话不存在或需要恢复存档。')
-    /** @type {ConversationState} */
-    const state = {
-      chat: loaded.chat,
-      resourceOwner: await this.assets.createTemporaryOwner(
-        'chat-memory',
-        extractAssetReferences(loaded.chat)
-      ),
-      revision: 0,
-      active: null,
-      executions: new Map(),
-      group: null,
-      pending: [],
-      acceptedResults: new Set(),
-      guides: new Map(),
-      audioProblems: [],
-      audioTokens: new Map(),
-      persistence: { state: 'saved', problem: null },
-      problem: null,
-      compressing: false
+    const resourceOwner = await this.assets.createTemporaryOwner('chat-memory')
+    let state
+    try {
+      const loaded = await this.store.loadProtected(chatId, resourceOwner)
+      requireValue(loaded.status === 'loaded', 'chat_unavailable', '对话不存在或需要恢复存档。')
+      /** @type {ConversationState} */
+      state = {
+        chat: loaded.chat,
+        resourceOwner,
+        revision: 0,
+        active: null,
+        executions: new Map(),
+        group: null,
+        pending: [],
+        acceptedResults: new Set(),
+        guides: new Map(),
+        audioProblems: [],
+        audioTokens: new Map(),
+        persistence: { state: 'saved', problem: null },
+        problem: null,
+        compressing: false
+      }
+      state.sequenceId = await this.withScene(state.chat, (scene) =>
+        this.performance.createSequence(scene)
+      )
+      if (this.interruptMissing(state.chat)) await this.persist(state)
+      this.states.set(chatId, state)
+      return state
+    } catch (error) {
+      if (state?.sequenceId) await this.performance.closeSequence(state.sequenceId)
+      await this.assets.releaseWhenPossible(resourceOwner)
+      throw error
     }
-    state.sequenceId = await this.performance.createSequence(await this.scene(state.chat, false))
-    this.states.set(chatId, state)
-    if (this.interruptMissing(state.chat)) await this.persist(state)
-    return state
   }
   /** 在执行准备阶段解析角色选择，后续只使用能力快照。 */
-  async capabilities(chat) {
+  async capabilities(chat, owner = null) {
     const result = []
     for (const id of chat.characterIds) {
       const selection = chat.meta.settings.characters[id] ?? {}
-      result.push(
-        await this.characters.resolveCapabilities(id, {
-          formId: selection.formId,
-          modelId: selection.modelOverrides?.[selection.formId]
-        })
-      )
+      result.push(await this.characterCapability(owner, id, selection))
     }
     return result
   }
+  /** 内部运行路径在角色目录锁内取得引用；只读预览不延长快照生命周期。 */
+  async characterCapability(owner, id, selection) {
+    const options = {
+      formId: selection.formId,
+      modelId: selection.modelOverrides?.[selection.formId]
+    }
+    return owner
+      ? this.characters.acquireCapabilities(owner, id, options)
+      : this.characters.resolveCapabilities(id, options)
+  }
+
+  /** 场景建立独立 owner 后才释放解析快照的临时保护。 */
+  async withScene(chat, operation) {
+    return this.assets.using(chat, async (owner) => operation(await this.scene(chat, false, owner)))
+  }
+
   /** 恢复历史时允许缺模型降级；新设置的严格校验不能静默吞掉角色配置错误。 */
-  async scene(chat, strict = true) {
+  async scene(chat, strict = true, owner = null) {
     const slots = []
     for (const id of chat.characterIds) {
       let capability
       try {
         const selection = chat.meta.settings.characters[id] ?? {}
-        capability = await this.characters.resolveCapabilities(id, {
-          formId: selection.formId,
-          modelId: selection.modelOverrides?.[selection.formId]
-        })
+        capability = await this.characterCapability(owner, id, selection)
       } catch (error) {
         if (strict) throw error
         capability = { displayName: id, presentation: null }
@@ -352,53 +367,54 @@ export class Conversations {
   }
   /** 按全局、对话、本轮顺序解析并固定材料；此阶段失败不算受理，也不执行工具。 */
   async prepare(chat, input, options) {
-    const global = await this.settings.get()
-    const generation = merge(global.generation, chat.meta.settings.generation, options.generation)
-    const speech = merge(global.speech, chat.meta.settings.speech, options.speech)
-    generationOptions(generation)
-    speechOptions(speech)
-    const connection = await this.settings.resolveConnection(generation)
-    const capabilities = await this.capabilities(chat)
-    requireValue(
-      !chat.meta.settings.worldbook.enabled,
-      'worldbook_adapter_required',
-      '世界书查询尚需装配检索适配器。'
-    )
-    const tools = await this.tools.resolve(chat.id, chat.meta.settings.tools, this.access, null)
-    const resolvedOptions = copy(generation)
-    delete resolvedOptions.connectionId
-    delete resolvedOptions.modelId
-    const request = {
-      turnId: '',
-      mode: chat.mode,
-      characters: capabilities.map((character) => ({
-        id: character.id,
-        formId: character.formId,
-        displayName: character.displayName,
-        description: character.description,
-        performances: {
-          motions: character.performances.motions,
-          expressions: character.performances.expressions
-        }
-      })),
-      userPersona: chat.userPersona
-        ? { displayName: chat.userPersona.displayName, description: chat.userPersona.description }
-        : null,
-      history: this.history(chat),
-      input: input
-        ? { kind: 'message', message: this.userProjection(input) }
-        : { kind: 'scenario' },
-      scenario: copy(chat.meta.settings.scenario),
-      options: resolvedOptions,
-      connection,
-      supplementalContext: [],
-      tools
-    }
     const resourceOwner = await this.assets.createTemporaryOwner(
       'turn',
-      extractAssetReferences({ capabilities, request })
+      extractAssetReferences({ chat, input })
     )
     try {
+      const global = await this.settings.get()
+      const generation = merge(global.generation, chat.meta.settings.generation, options.generation)
+      const speech = merge(global.speech, chat.meta.settings.speech, options.speech)
+      generationOptions(generation)
+      speechOptions(speech)
+      const connection = await this.settings.resolveConnection(generation)
+      const capabilities = await this.capabilities(chat, resourceOwner)
+      requireValue(
+        !chat.meta.settings.worldbook.enabled,
+        'worldbook_adapter_required',
+        '世界书查询尚需装配检索适配器。'
+      )
+      const tools = await this.tools.resolve(chat.id, chat.meta.settings.tools, this.access, null)
+      const resolvedOptions = copy(generation)
+      delete resolvedOptions.connectionId
+      delete resolvedOptions.modelId
+      const request = {
+        turnId: '',
+        mode: chat.mode,
+        characters: capabilities.map((character) => ({
+          id: character.id,
+          formId: character.formId,
+          displayName: character.displayName,
+          description: character.description,
+          performances: {
+            motions: character.performances.motions,
+            expressions: character.performances.expressions
+          }
+        })),
+        userPersona: chat.userPersona
+          ? { displayName: chat.userPersona.displayName, description: chat.userPersona.description }
+          : null,
+        history: this.history(chat),
+        input: input
+          ? { kind: 'message', message: this.userProjection(input) }
+          : { kind: 'scenario' },
+        scenario: copy(chat.meta.settings.scenario),
+        options: resolvedOptions,
+        connection,
+        supplementalContext: [],
+        tools
+      }
+
       const inspection = await this.agent.inspectContext(request)
       return { request, speech, generation, capabilities, inspection, resourceOwner }
     } catch (error) {
@@ -525,7 +541,9 @@ export class Conversations {
       state.executions.set(turnId, execution)
       state.active = run
       state.problem = null
-      await this.performance.setScene(state.sequenceId, await this.scene(state.chat, false))
+      await this.withScene(state.chat, (scene) =>
+        this.performance.setScene(state.sequenceId, scene)
+      )
       this.publish(state)
       accepted = true
       run.done = Promise.resolve()
@@ -1000,24 +1018,26 @@ export class Conversations {
         ? options.characterIds.length === 1
         : options.characterIds.length === 2
     )
-    const chat = {
-      id: uuid(),
-      revision: 0,
-      title: options.title,
-      characterIds: copy(options.characterIds),
-      mode: options.mode,
-      userPersona: options.userPersonaId
-        ? await this.characters.resolvePersona(options.userPersonaId)
-        : null,
-      meta: { settings: merge(chatSettings(), options.settings), reminders: [], extensions: {} },
-      turns: []
-    }
-    generationOptions(chat.meta.settings.generation)
-    speechOptions(chat.meta.settings.speech)
-    presentationOptions(chat.meta.settings.presentation, chat.characterIds)
-    await this.capabilities(chat)
-    await this.store.save(chat)
-    return chat.id
+    return this.assets.using(options, async (owner) => {
+      const chat = {
+        id: uuid(),
+        revision: 0,
+        title: options.title,
+        characterIds: copy(options.characterIds),
+        mode: options.mode,
+        userPersona: options.userPersonaId
+          ? await this.characters.acquirePersona(owner, options.userPersonaId)
+          : null,
+        meta: { settings: merge(chatSettings(), options.settings), reminders: [], extensions: {} },
+        turns: []
+      }
+      generationOptions(chat.meta.settings.generation)
+      speechOptions(chat.meta.settings.speech)
+      presentationOptions(chat.meta.settings.presentation, chat.characterIds)
+      await this.capabilities(chat, owner)
+      await this.store.save(chat)
+      return chat.id
+    })
   }
 
   /**
@@ -1301,12 +1321,14 @@ export class Conversations {
    * @returns {Promise<string>} 已保存新 ChatId。
    */
   async forkChat(chatId, throughTurnId) {
-    const original = copy((await this.state(chatId)).chat)
-    const index =
-      throughTurnId === null ? -1 : original.turns.findIndex((turn) => turn.id === throughTurnId)
-    requireValue(throughTurnId === null || index >= 0, 'turn_missing')
-    original.turns = original.turns.slice(0, index + 1)
-    return this.saveCopy(original)
+    return this.queue.run(chatId, async () => {
+      const original = copy((await this.state(chatId)).chat)
+      const index =
+        throughTurnId === null ? -1 : original.turns.findIndex((turn) => turn.id === throughTurnId)
+      requireValue(throughTurnId === null || index >= 0, 'turn_missing')
+      original.turns = original.turns.slice(0, index + 1)
+      return this.saveCopy(original)
+    })
   }
 
   /**
@@ -1322,14 +1344,22 @@ export class Conversations {
       const state = await this.state(chatId)
       const target = this.locate(state.chat, line)
       requireValue(target?.formId, 'line_missing')
-      const capability = await this.characters.resolveCapabilities(target.speakerId, {
-        formId: target.formId
-      })
-      const speech = merge((await this.settings.get()).speech, state.chat.meta.settings.speech)
-      this.synthesize(state, line, { speech, capabilities: [capability] }).catch((error) => {
-        state.problem = problem(error)
-        this.publish(state)
-      })
+      const owner = await this.assets.createTemporaryOwner('speech-preparation')
+      try {
+        const capability = await this.characters.acquireCapabilities(owner, target.speakerId, {
+          formId: target.formId
+        })
+        const speech = merge((await this.settings.get()).speech, state.chat.meta.settings.speech)
+        this.synthesize(state, line, { speech, capabilities: [capability] })
+          .catch((error) => {
+            state.problem = problem(error)
+            this.publish(state)
+          })
+          .finally(() => this.assets.releaseWhenPossible(owner))
+      } catch (error) {
+        await this.assets.releaseWhenPossible(owner)
+        throw error
+      }
     })
   }
 
@@ -1486,7 +1516,7 @@ export class Conversations {
       chat.meta.settings.characters[characterId] = copy(options)
     })
     const state = await this.state(chatId)
-    await this.performance.setScene(state.sequenceId, await this.scene(state.chat, false))
+    await this.withScene(state.chat, (scene) => this.performance.setScene(state.sequenceId, scene))
   }
 
   /**
@@ -1521,7 +1551,7 @@ export class Conversations {
     presentationOptions(options, (await this.state(chatId)).chat.characterIds)
     await this.setting(chatId, 'presentation', options)
     const state = await this.state(chatId)
-    await this.performance.setScene(state.sequenceId, await this.scene(state.chat, false))
+    await this.withScene(state.chat, (scene) => this.performance.setScene(state.sequenceId, scene))
   }
 
   /**

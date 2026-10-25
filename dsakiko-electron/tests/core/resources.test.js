@@ -81,7 +81,7 @@ test('三个目录统一登记，重启后按引用读取，公开信息不包�
     'problem.code',
     'invalid_asset_purpose'
   )
-  await expect(assets.collectUnused()).rejects.toHaveProperty('problem.code', 'cleanup_unavailable')
+  expect((await assets.collectUnused()).deleted).toEqual([])
   expect(Buffer.from(await assets.read(image.asset)).toString()).toBe('picture.png')
 })
 
@@ -256,11 +256,19 @@ test('真实 Python 语音进程在缓存目录启动并完成握手，不加载
   const { roots } = await fixture()
   const modelRoot = path.join(roots.resourceLibraryRoot, 'models')
   await mkdir(path.join(modelRoot, 'GPT_SoVITS/pretrained_models'), { recursive: true })
+  let boundPid
+  let released = false
   const speech = new SpeechProcess(
     fileURLToPath(new URL('../../python', import.meta.url)),
     roots.cacheRoot,
     async () => ({
       resourceRoot: modelRoot,
+      bindResources: async (pid) => {
+        boundPid = pid
+      },
+      releaseResources: async () => {
+        released = true
+      },
       assetsRoot: roots.resourceLibraryRoot,
       pythonExecutable: 'python3',
       precision: 'float32',
@@ -274,8 +282,12 @@ test('真实 Python 语音进程在缓存目录启动并完成握手，不加载
   const connection = await speech.connect()
   expect(connection.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
   expect(connection.runId).toBeTruthy()
+  expect(boundPid).toBe(connection.processId)
+  expect(released).toBe(false)
   expect(await readdir(roots.cacheRoot)).toEqual(['logs', 'speech-temp'])
   expect(await readdir(path.join(roots.cacheRoot, 'logs'))).toEqual(['speech.log'])
+  await speech.close()
+  expect(released).toBe(true)
 })
 
 test('HTTP 草稿交接、访问续期和释放只允许受控身份，不开放任意 owner 修改', async () => {
@@ -312,4 +324,32 @@ test('HTTP 草稿交接、访问续期和释放只允许受控身份，不开放
     'method_not_found'
   )
   expect(Object.values((await assets.state()).owners).flat()).not.toContain(info.asset.id)
+  expect(
+    (await client.assets.collectUnused({ dryRun: true })).candidates.map((item) => item.asset)
+  ).toEqual([info.asset])
+  expect((await client.assets.collectUnused({ resources: [info.asset] })).deleted).toEqual([
+    info.asset
+  ])
+  await expect(client.assets.inspect(info.asset)).rejects.toHaveProperty('code', 'asset_missing')
+})
+
+test('Python 可执行文件缺失时释放启动资源，关闭不等待不存在的进程', async () => {
+  const { roots } = await fixture()
+  const modelRoot = path.join(roots.resourceLibraryRoot, 'models')
+  await mkdir(path.join(modelRoot, 'GPT_SoVITS/pretrained_models'), { recursive: true })
+  let released = false
+  const speech = new SpeechProcess('/unused', roots.cacheRoot, async () => ({
+    resourceRoot: modelRoot,
+    pythonExecutable: path.join(roots.cacheRoot, 'missing-python'),
+    device: 'cpu',
+    maxConcurrent: 1,
+    maxResident: 1,
+    releaseResources: async () => {
+      released = true
+    }
+  }))
+  cleanups.push(() => speech.close())
+  await expect(speech.connect()).rejects.toHaveProperty('problem.code', 'speech_unavailable')
+  await speech.close()
+  expect(released).toBe(true)
 })

@@ -1,3 +1,6 @@
+/** @typedef {{backendRunId: string, status: 'running' | 'stopping'}} BackendHealth 一次后端运行的存活快照。 */
+/** @typedef {{url: string, token: string, backendRunId: string}} HostProbe 仅供子进程探测宿主的受限凭据。 */
+
 /**
  * HTTP 唯一公开方法表；未列出的存储、凭据、工具执行和调度写能力绝不接受远程调用。
  * true 表示命令需要传输层 requestId 去重；false 表示不使用命令缓存，不代表完全没有内部资源分配。
@@ -65,6 +68,8 @@ export const API_METHODS = {
   performance: { getProgress: false, setModelState: true },
   assets: {
     inspect: false,
+    collectUnused: false,
+    addDraftAssets: true,
     upload: true,
     access: false,
     renewAccess: false,

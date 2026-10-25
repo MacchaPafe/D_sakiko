@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer'
 import { URL } from 'node:url'
 import { setInterval, clearInterval } from 'node:timers'
 import http from 'node:http'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { IMPORT_PURPOSES } from '../shared/contracts/assets.js'
 import { API_METHODS } from '../shared/contracts/api.js'
@@ -46,7 +46,7 @@ async function body(request) {
  * 启动仅监听本机的业务 HTTP/WS 服务；不导出任何任意方法调用或磁盘路径入口。
  * @param {import('../backend/create-core-backend.js').CoreBackend} backend 已装配的业务模块，内部能力不会自动暴露。
  * @param {{ port?: number, origins?: string[], token?: string }} [options] 明确允许的页面来源；端口缺省由系统分配。
- * @returns {Promise<{ baseUrl: string, token: string, close: () => Promise<void> }>} 可信宿主 bootstrap 与关闭能力。
+ * @returns {Promise<{ baseUrl: string, token: string, healthProbe: import('../shared/contracts/api.js').HostProbe, close: () => Promise<void> }>} 可信宿主 bootstrap、只读探测凭据与关闭能力。
  */
 export async function startHttpServer(
   backend,
@@ -63,6 +63,8 @@ export async function startHttpServer(
   const sockets = new Set()
   let baseUrl
   let closing = false
+  const backendRunId = randomUUID()
+  const healthToken = randomBytes(32).toString('base64url')
   const ws = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
   function originAllowed(request) {
     return !request.headers.origin || allowedOrigins.has(request.headers.origin)
@@ -115,6 +117,7 @@ export async function startHttpServer(
         'renewDraft',
         'discardDraft',
         'removeDraftAssets',
+        'addDraftAssets',
         'commitDraft',
         'removeLibraryItem',
         'listLibraryItems'
@@ -153,12 +156,29 @@ export async function startHttpServer(
   }
   const server = http.createServer(async (request, response) => {
     try {
-      requireValue(!closing, 'backend_closed')
       const url = new URL(request.url, baseUrl)
       requireValue(
         request.headers.host === new URL(baseUrl).host && originAllowed(request),
         'forbidden_origin'
       )
+      // 探测凭据只能访问此接口，不能用于业务调用、资源读取或事件订阅。
+      if (request.method === 'GET' && url.pathname === '/api/v1/health') {
+        if (
+          !matches('Bearer ' + token, request.headers.authorization) &&
+          !matches('Bearer ' + healthToken, request.headers.authorization)
+        ) {
+          send(
+            response,
+            401,
+            { problem: { code: 'unauthorized', message: '探测凭据无效。', retryable: false } },
+            request
+          )
+          return
+        }
+        send(response, 200, { backendRunId, status: closing ? 'stopping' : 'running' }, request)
+        return
+      }
+      requireValue(!closing, 'backend_closed')
       if (request.method === 'OPTIONS') {
         response.writeHead(204, {
           'Access-Control-Allow-Origin': request.headers.origin ?? '',
@@ -362,6 +382,7 @@ export async function startHttpServer(
   return {
     baseUrl,
     token,
+    healthProbe: { url: baseUrl + '/api/v1/health', token: healthToken, backendRunId },
     /** 停止接收命令并释放 HTTP/WS 连接；业务模块由宿主另外关闭。
      * @returns {Promise<void>} 监听已停止，传输资源已释放。
      */

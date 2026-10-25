@@ -1,3 +1,4 @@
+import { extractAssetReferences } from '../resources/references.js'
 import path from 'node:path'
 import {
   copy,
@@ -203,6 +204,24 @@ export class CharacterCatalog {
       voice: copy(form.voice),
       problems
     }
+  }
+
+  /** 在目录锁内读取并交接能力，防止更换角色资源与清理穿过快照读取。 */
+  async acquireCapabilities(owner, characterId, options) {
+    return this.queue.run('catalog', async () => {
+      const value = await this.resolveCapabilities(characterId, options)
+      await this.assets.addReferences(owner, extractAssetReferences(value))
+      return value
+    })
+  }
+
+  /** 身份可能间接引用角色头像，两者共用目录锁完成快照交接。 */
+  async acquirePersona(owner, personaId) {
+    return this.queue.run('catalog', async () => {
+      const value = await this.resolvePersona(personaId)
+      await this.assets.addReferences(owner, extractAssetReferences(value))
+      return value
+    })
   }
 
   /**

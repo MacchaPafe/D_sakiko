@@ -221,7 +221,7 @@ Performance 复用一次性 transition 调度。普通内容正在播放时忽�
 
 ## 本地资源与厂商文件
 
-本地资源的多目录注入与按用途存储已接入，见[数据目录与统一资源访问设计](data-directories-and-resources.md)。本地持有关系、提交保护和临时租约已经接入，暂不执行本地 `collectUnused`，也不提供资源清理页面。聊天旧 revision 文件在提交后清理，与资源文件回收分别处理；下文厂商文件回收规则仍是后续设计。
+本地资源的多目录注入与按用途存储已接入，见[数据目录与统一资源访问设计](data-directories-and-resources.md)。本地持有关系、提交保护和临时租约已经接入，本地 `collectUnused` 已支持显式即时清理与只读预览，不提供自动清理或资源清理页面。聊天旧 revision 文件在提交后清理，与资源文件回收分别处理；下文厂商文件回收规则仍是后续设计。
 
 `AssetOwnerId` 表示草稿、存档或运行任务等资源持有者，不是用户账号，也不是访问凭据。持有关系由 MediaAssets 内部记录，各业务模块只管理自身的持有者：导入时立即添加引用，`addReferences`、`removeReferences` 增删部分引用，`replaceReferences` 声明完整集合，`releaseOwner` 释放持有者；`collectUnused` 才回收无人引用的本地资源。通用纯函数 `extractAssetReferences` 从约定的 JSON 结构提取引用。ChatStore、CharacterCatalog、Settings 从已保存快照维护各自的持久引用，草稿与任务管理临时引用；用户主动导入的模型另外有长期资源库引用。交接时先建立新引用再释放旧引用，避免发送后清空草稿误删存档附件。
 

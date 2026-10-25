@@ -9,7 +9,7 @@ import sys
 import traceback
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Dict, Tuple, cast
+from typing import Dict, Optional, Tuple, cast
 
 from .contracts import SpeechRequest, VoiceProfile
 
@@ -105,6 +105,7 @@ class ProcessWorker:
         self.process.start()
         child.close()
         self.closing = False
+        self.close_task: Optional[asyncio.Task[None]] = None
 
     async def synthesize(self, request: SpeechRequest, output: Path) -> float:
         """等待完整结果；进程退出时结束等待。"""
@@ -122,14 +123,20 @@ class ProcessWorker:
         raise RuntimeError("推理进程已关闭")
 
     async def close(self) -> None:
-        """强制结束只用于退出或空闲回收，普通任务取消不调用此方法。"""
-        if self.closing:
-            return
+        """所有关闭调用共享退出确认，取消等待者不会取消进程回收。"""
+        if self.close_task is None:
+            self.close_task = asyncio.create_task(self._close())
+        await asyncio.shield(self.close_task)
+
+    async def _close(self) -> None:
+        """先终止再确认退出；升级为 kill 后仍等待真实结束，不把超时当成成功。"""
         self.closing = True
         if self.process.is_alive():
             self.process.terminate()
         await asyncio.to_thread(self.process.join, 5)
         if self.process.is_alive():
             self.process.kill()
-            await asyncio.to_thread(self.process.join, 2)
+            await asyncio.to_thread(self.process.join)
+        if self.process.is_alive() or self.process.exitcode is None:
+            raise RuntimeError("推理进程尚未确认退出")
         self.pipe.close()

@@ -101,10 +101,12 @@ export class Speech {
   async retainModels(voice, inputOwner) {
     return this.lifecycle.run('process', async () => {
       const connection = await this.connect()
-      await this.assets.bindOwnerProcess(inputOwner, connection.processId)
+      await this.assets.bindOwnerProcess(
+        inputOwner,
+        connection.processId,
+        connection.processGroupId
+      )
       if (this.runId && this.runId !== connection.runId) {
-        for (const owner of this.residentOwners) await this.assets.releaseWhenPossible(owner)
-        this.residentOwners.clear()
         this.residentModels.clear()
       }
       this.runId = connection.runId
@@ -112,7 +114,7 @@ export class Speech {
       const key = fingerprint(references)
       if (this.residentModels.has(key)) return connection.runId
       const owner = await this.assets.createTemporaryOwner('speech-model', references)
-      await this.assets.bindOwnerProcess(owner, connection.processId)
+      await this.assets.bindOwnerProcess(owner, connection.processId, connection.processGroupId)
       this.residentModels.set(key, owner)
       this.residentOwners.add(owner)
       return connection.runId
@@ -128,10 +130,12 @@ export class Speech {
     requireValue(!this.retired.has(taskId), 'task_unavailable')
     const task = this.tasks.get(taskId)
     try {
-      const result = await this.transport.getTask(taskId, !task?.released)
+      const result = await this.transport.getTask(taskId, () => !task?.released)
       if (['succeeded', 'failed', 'cancelled'].includes(result.status) && task) {
         task.terminal = true
-        await this.assets.releaseWhenPossible(task.inputOwner)
+        // cancelled 仅表示用户可见终态，Python worker 可能仍在读取输入。
+        if (result.status === 'cancelled') this.residentOwners.add(task.inputOwner)
+        else await this.assets.releaseWhenPossible(task.inputOwner)
         if (task.released) await this.finishRelease(taskId, task)
       }
       return result
@@ -139,7 +143,7 @@ export class Speech {
       if (task && error.problem?.code === 'task_unavailable') {
         task.terminal = true
         task.released = true
-        await this.assets.releaseWhenPossible(task.inputOwner)
+        this.residentOwners.add(task.inputOwner)
         await this.finishRelease(taskId, task)
       }
       throw error
@@ -232,17 +236,26 @@ export class Speech {
     await Promise.allSettled([...this.waiting.values()])
   }
 
+  /** 隔离测试可不提供进程元数据；正式资源模块按进程树事实决定是否释放。 */
+  async releaseProcessOwner(owner, confirmedPid) {
+    if (this.assets.releaseProcessOwner) {
+      await this.assets
+        .releaseProcessOwner(owner, confirmedPid)
+        .catch((error) => this.assets.reportMaintenance(error))
+    } else await this.assets.releaseWhenPossible(owner)
+  }
+
   /**
    * 在确认 Python 语音子进程已退出后，释放该进程占用的所有输入音频与驻留模型引用。
    * @returns {Promise<void>}
    */
-  async processStopped() {
+  async processStopped(confirmedPid = null) {
     await this.close()
     for (const [id, task] of this.tasks) {
-      await this.assets.releaseWhenPossible(task.inputOwner)
+      await this.releaseProcessOwner(task.inputOwner, confirmedPid)
       await this.finishRelease(id, task)
     }
-    for (const owner of this.residentOwners) await this.assets.releaseWhenPossible(owner)
+    for (const owner of this.residentOwners) await this.releaseProcessOwner(owner, confirmedPid)
     this.residentOwners.clear()
     this.residentModels.clear()
   }

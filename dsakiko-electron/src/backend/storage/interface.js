@@ -111,6 +111,16 @@ export class ChatStore {
     return this.queue.run('index', () => this.loadCurrent(chatId))
   }
 
+  /** 在存储锁内把已提交快照交给运行 owner，避免加载与删除之间失去保护。 */
+  async loadProtected(chatId, owner) {
+    return this.queue.run('index', async () => {
+      const loaded = await this.loadCurrent(chatId)
+      if (loaded.status === 'loaded')
+        await this.assets.addReferences(owner, extractAssetReferences(loaded.chat))
+      return loaded
+    })
+  }
+
   /**
    * 读取指定对话当前已提交的最新版本存档（调用方需已持有 'index' 队列锁）。
    */

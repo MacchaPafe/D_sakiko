@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple, cast
 from .contracts import SchedulerConfig, SpeechRequest, SpeechSampling, VoiceProfile
 from .scheduler import RequestError, Scheduler
 from .worker import ProcessWorker
+from .heartbeat import HostProbe, probe_host, watch_host
 
 
 def object_value(value: object) -> Dict[str, object]:
@@ -96,6 +97,12 @@ async def serve(args: argparse.Namespace) -> None:
     if not token:
         raise RuntimeError("缺少宿主访问凭据")
     stopping = asyncio.Event()
+    host = HostProbe.parse(os.environ.get("DSAKIKO_HOST_PROBE", ""))
+
+    async def probe() -> str:
+        """网络探测在独立线程执行，不阻塞调度与关闭请求。"""
+        assert host is not None
+        return await asyncio.to_thread(probe_host, host)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """有限长度、单次请求的 HTTP 处理；任务状态只来自调度器。"""
@@ -110,6 +117,9 @@ async def serve(args: argparse.Namespace) -> None:
             if not hmac.compare_digest(lowered.get("authorization", ""), "Bearer " + token):
                 status = 401
                 raise RequestError("unauthorized", "无效的本机访问凭据")
+            if stopping.is_set() and target != "/shutdown":
+                status = 503
+                raise RequestError("service_unavailable", "语音服务正在关闭")
             length = int(lowered.get("content-length", "0"))
             if length < 0 or length > 1000000:
                 raise RequestError("invalid_request", "请求过大")
@@ -160,9 +170,15 @@ async def serve(args: argparse.Namespace) -> None:
             loop.add_signal_handler(signum, stopping.set)
         except NotImplementedError:
             pass
-    async with server:
-        await stopping.wait()
-    await scheduler.close()
+    heartbeat = asyncio.create_task(watch_host(stopping, probe)) if host is not None else None
+    try:
+        async with server:
+            await stopping.wait()
+    finally:
+        stopping.set()
+        if heartbeat is not None:
+            await heartbeat
+        await scheduler.close()
 
 
 def main() -> None:

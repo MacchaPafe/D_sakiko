@@ -20,8 +20,8 @@ export class ResourceImports {
    * 创建一个新的资源草稿，用于在编辑角色、设置或发送消息前暂存刚导入的附件。
    * @returns {Promise<{draftId: string}>} 新创建的草稿 ID。
    */
-  async createDraft() {
-    const owner = await this.assets.createTemporaryOwner('draft', [], DRAFT_TTL)
+  async createDraft(references = []) {
+    const owner = await this.assets.createTemporaryOwner('draft', references, DRAFT_TTL)
     return { draftId: owner.slice('draft:'.length) }
   }
 
@@ -53,6 +53,18 @@ export class ResourceImports {
   }
 
   /**
+   * 编辑已有资源时，把选中的资源加入有效草稿；过期身份必须显式重建。
+   * @param {string} draftId 草稿编号。
+   * @param {import('../../shared/contracts/common.js').AssetRef[]} references 需要保留的资源。
+   * @returns {Promise<void>}
+   */
+  async addDraftAssets(draftId, references) {
+    return this.queue.run(draftId, async () => {
+      await this.assets.updateReferences('draft:' + safeId(draftId), references, 'add', DRAFT_TTL)
+    })
+  }
+
+  /**
    * 从草稿中移除指定的附件资源引用。
    * @param {string} draftId 草稿 ID。
    * @param {import('../../shared/contracts/common.js').AssetRef[]} references 要从草稿中移除的资源引用列表。
@@ -60,7 +72,12 @@ export class ResourceImports {
    */
   async removeDraftAssets(draftId, references) {
     await this.queue.run(draftId, async () => {
-      await this.assets.removeReferences(await this.owner(draftId), references)
+      await this.assets.updateReferences(
+        'draft:' + safeId(draftId),
+        references,
+        'remove',
+        DRAFT_TTL
+      )
     })
   }
 
@@ -82,7 +99,7 @@ export class ResourceImports {
         try {
           const info = await this.assets.importAsset(source, importing, purpose)
           await this.owner(draftId)
-          await this.assets.addReferences(owner, [info.asset])
+          await this.assets.updateReferences(owner, [info.asset], 'add', DRAFT_TTL)
           if (['model', 'live2d'].includes(purpose)) {
             const itemId = uuid()
             await this.assets.addReferences('library:' + itemId, [info.asset])
@@ -132,20 +149,8 @@ export class ResourceImports {
   async commitDraft(draftId, target) {
     requireValue(['chat', 'character', 'persona', 'settings'].includes(target?.kind))
     const targetOwner = target.kind + ':' + safeId(target.id)
-    return this.queue.run(draftId, async () => {
-      const owner = 'draft:' + safeId(draftId)
-      const state = await this.assets.state()
-      if (!Object.hasOwn(state.owners, owner)) return { released: true }
-      await this.owner(draftId)
-      // 为什么只移除目标对象实际已持有的资源引用，而不是直接清空整个草稿：
-      // 避免客户端在目标尚未真正保存该资源时误调 commitDraft，导致还未绑定到正式数据的草稿资源提前失去保护。
-      requireValue(Object.hasOwn(state.owners, targetOwner), 'handoff_target_missing')
-      const references = state.owners[targetOwner].map((id) => ({ id }))
-      await this.assets.removeReferences(owner, references)
-      const next = await this.assets.state()
-      const released = !next.owners[owner]?.length
-      if (released) await this.assets.releaseWhenPossible(owner)
-      return { released }
-    })
+    return this.queue.run(draftId, () =>
+      this.assets.consumeDraft('draft:' + safeId(draftId), targetOwner, DRAFT_TTL)
+    )
   }
 }

@@ -7,6 +7,10 @@
  * @property {import('../../../backend/resources/imports.js').ResourceImports['createDraft']} createDraft 创建一个新的资源草稿。
  * @property {import('../../../backend/resources/imports.js').ResourceImports['renewDraft']} renewDraft 延长指定资源草稿的有效期。
  * @property {import('../../../backend/resources/imports.js').ResourceImports['discardDraft']} discardDraft 放弃指定的资源草稿并释放其资源引用。
+ * @property {import('../../../backend/resources/imports.js').ResourceImports['addDraftAssets']} addDraftAssets 为已有资源建立草稿引用。
+ * @property {import('../../../backend/resources/interface.js').MediaAssets['collectUnused']} collectUnused 预览或执行即时清理。
+ * @property {() => Promise<object[]>} renewResources 立即核对所有活动租约，供客户端恢复时调用。
+ * @property {(listener: (problems: object[]) => void) => () => void} observeLeaseProblems 观察续期失败，交给未来页面呈现。
  * @property {import('../../../backend/resources/imports.js').ResourceImports['removeDraftAssets']} removeDraftAssets 从草稿中移除指定的附件引用。
  * @property {import('../../../backend/resources/imports.js').ResourceImports['commitDraft']} commitDraft 在目标业务数据保存后，提交草稿并完成资源引用交接。
  * @property {import('../../../backend/resources/imports.js').ResourceImports['removeLibraryItem']} removeLibraryItem 从长期资源库中移除指定的条目。
@@ -17,6 +21,7 @@ import { API_METHODS } from '../../../shared/contracts/api.js'
 /** @typedef {import('../../../shared/contracts/api.js').BackendConnection} BackendConnection */
 /**
  * @typedef {object} BackendClient
+ * @property {(signal?: AbortSignal) => Promise<import('../../../shared/contracts/api.js').BackendHealth>} health 主动探测后端及其运行身份，不依赖 WebSocket 订阅。
  * @property {Pick<import('../../../backend/conversation/interface.js').Conversations, 'listChats' | 'getSnapshot' | 'getReplayMaterials' | 'inspectContext' | 'listReminders' | 'getReminder' | 'createChat' | 'createTurn' | 'generateScenario' | 'stopTurn' | 'recreateTurn' | 'editAndRecreateTurn' | 'editHistory' | 'truncateFromTurn' | 'rollback' | 'forkChat' | 'regenerateAudio' | 'compressHistory' | 'retrySave' | 'renameChat' | 'setChatOrder' | 'setScenario' | 'setTools' | 'setWorldbookInfo' | 'setCharacterSelection' | 'setGenerationOptions' | 'setSpeechOptions' | 'setPresentation' | 'removeReminder' | 'deleteChat' | 'exportChats' | 'importChats'> & {observe: (chatId: string, listener: (snapshot: import('../../../shared/contracts/conversation.js').ConversationSnapshot) => void) => () => void}} conversations 仅包含公开业务入口；观察回调保留在客户端。
  * @property {Pick<import('../../../backend/settings/interface.js').Settings, 'get' | 'set' | 'update' | 'listConnections' | 'saveConnection' | 'deleteConnection'> & {observe: (listener: (snapshot: import('../../../shared/contracts/settings.js').GlobalSettings) => void) => () => void, checkConnection: (selection: {connectionId: string, modelId: string}, signal?: AbortSignal) => ReturnType<import('../../../backend/settings/interface.js').Settings['checkConnection']>}} settings 仅包含公开业务入口；观察回调保留在客户端。
  * @property {Pick<import('../../../backend/characters/interface.js').CharacterCatalog, 'list' | 'get' | 'save' | 'delete' | 'resolveCapabilities' | 'setOrder' | 'deletePersona' | 'listPersonas' | 'getPersona' | 'savePersona' | 'resolvePersona'>} characters 仅包含公开业务入口；观察回调保留在客户端。
@@ -78,6 +83,9 @@ export function createBackendClient({
   const connectionListeners = new Set()
   const accessLeases = new Set()
   const resourceDrafts = new Set()
+  const leaseProblems = new Map()
+  const leaseListeners = new Set()
+  let renewing = null
   let leaseTimer = null
   let socket = null
   let connecting = null
@@ -241,6 +249,37 @@ export function createBackendClient({
     call,
     observe,
     /**
+     * 获取实时存活状态，不复用命令缓存；重启后的重新连接策略由调用方决定。
+     * @param {AbortSignal} [signal] 调用方的取消信号。
+     * @returns {Promise<import('../../../shared/contracts/api.js').BackendHealth>} 当前运行身份与状态。
+     */
+    async health(signal) {
+      if (closed)
+        throw new BackendError({
+          code: 'client_closed',
+          message: '客户端已关闭。',
+          retryable: false
+        })
+      const response = await fetcher(baseUrl + '/api/v1/health', {
+        headers: { Authorization: 'Bearer ' + token },
+        cache: 'no-store',
+        signal: signal ?? AbortSignal.timeout(3000)
+      })
+      const value = await response.json()
+      if (value.problem) throw new BackendError(value.problem)
+      if (
+        !response.ok ||
+        typeof value.backendRunId !== 'string' ||
+        !['running', 'stopping'].includes(value.status)
+      )
+        throw new BackendError({
+          code: 'invalid_response',
+          message: '后端探测响应无效。',
+          retryable: true
+        })
+      return value
+    },
+    /**
      * 观察传输连接状态，供页面展示断线与重连提示。
      * @param {(state: ConnectionState) => void} listener 状态接收者，登记时立即调用。
      * @returns {() => void} 取消观察。
@@ -259,6 +298,8 @@ export function createBackendClient({
       for (const id of resourceDrafts) void call('assets', 'discardDraft', [id]).catch(() => {})
       accessLeases.clear()
       resourceDrafts.clear()
+      leaseListeners.clear()
+      leaseProblems.clear()
       closed = true
       clearTimeout(retryTimer)
       subscriptions.clear()
@@ -275,11 +316,59 @@ export function createBackendClient({
   /**
    * 启动后台定时器，定期为当前客户端持有的资源访问租约和未提交草稿自动续期。
    */
+  function publishLeaseProblems() {
+    const snapshot = [...leaseProblems.values()]
+    for (const listener of leaseListeners) {
+      try {
+        listener(structuredClone(snapshot))
+      } catch {
+        /* 监听失败不影响其他订阅者。 */
+      }
+    }
+    return snapshot
+  }
+  async function renewLease(kind, id) {
+    const key = kind + ':' + id
+    try {
+      await call('assets', kind === 'access' ? 'renewAccess' : 'renewDraft', [id])
+      leaseProblems.delete(key)
+    } catch (error) {
+      if (closed) return
+      const problem = error.problem ?? {
+        code: 'lease_renewal_failed',
+        message: error.message,
+        retryable: true
+      }
+      leaseProblems.set(key, { kind, id, problem })
+      if (['lease_expired', 'asset_access_expired'].includes(problem.code)) {
+        const leases = kind === 'access' ? accessLeases : resourceDrafts
+        leases.delete(id)
+      }
+    }
+  }
+  client.assets.renewResources = async () => {
+    if (closed)
+      throw new BackendError({ code: 'client_closed', message: '客户端已关闭。', retryable: false })
+    if (!renewing) {
+      const jobs = [...accessLeases].map((id) => renewLease('access', id))
+      jobs.push(...[...resourceDrafts].map((id) => renewLease('draft', id)))
+      renewing = Promise.all(jobs)
+        .then(publishLeaseProblems)
+        .finally(() => {
+          renewing = null
+        })
+    }
+    return renewing
+  }
+  client.assets.observeLeaseProblems = (listener) => {
+    leaseListeners.add(listener)
+    listener(structuredClone([...leaseProblems.values()]))
+    return () => leaseListeners.delete(listener)
+  }
   function ensureLeaseTimer() {
     if (leaseTimer) return
     leaseTimer = setInterval(() => {
-      for (const id of accessLeases) void call('assets', 'renewAccess', [id]).catch(() => {})
-      for (const id of resourceDrafts) void call('assets', 'renewDraft', [id]).catch(() => {})
+      void client.assets.renewResources().catch(() => {})
     }, 60000)
     leaseTimer.unref?.()
   }
@@ -295,10 +384,12 @@ export function createBackendClient({
   }
   client.assets.releaseAccess = async (id) => {
     accessLeases.delete(id)
+    leaseProblems.delete('access:' + id)
+    publishLeaseProblems()
     return call('assets', 'releaseAccess', [id])
   }
-  client.assets.createDraft = async () => {
-    const draft = await call('assets', 'createDraft')
+  client.assets.createDraft = async (references = []) => {
+    const draft = await call('assets', 'createDraft', [references])
     if (closed) {
       await call('assets', 'discardDraft', [draft.draftId]).catch(() => {})
       throw new BackendError({ code: 'client_closed', message: '客户端已关闭。', retryable: false })
@@ -311,6 +402,8 @@ export function createBackendClient({
   }
   client.assets.discardDraft = async (id) => {
     resourceDrafts.delete(id)
+    leaseProblems.delete('draft:' + id)
+    publishLeaseProblems()
     return call('assets', 'discardDraft', [id])
   }
   client.assets.commitDraft = async (id, target) => {

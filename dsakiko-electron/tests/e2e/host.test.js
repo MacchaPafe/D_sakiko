@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -27,7 +28,10 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_RENDERER_URL
   const launchOptions = {
-    args: [fileURLToPath(new URL('../../', import.meta.url))],
+    args: [
+      fileURLToPath(new URL('../../', import.meta.url)),
+      '--user-data-dir=' + join(directory, 'desktop')
+    ],
     env
   }
   if (process.env.DSAKIKO_TEST_EXECUTABLE) {
@@ -36,10 +40,47 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
     const loader = fileURLToPath(
       new URL('./lib/server/electron/loader.js', import.meta.resolve('playwright-core'))
     )
-    launchOptions.args = ['-r', loader]
+    launchOptions.args = ['-r', loader, '--user-data-dir=' + join(directory, 'desktop')]
   }
   application = await electron.launch(launchOptions)
   const page = await application.firstWindow()
+  await application.evaluate(({ app, BrowserWindow }) => {
+    globalThis.secondInstanceCount = 0
+    app.on('second-instance', () => {
+      globalThis.secondInstanceCount += 1
+    })
+    const window = BrowserWindow.getAllWindows()[0]
+    window.hide()
+  })
+  const secondArgs = process.env.DSAKIKO_TEST_EXECUTABLE
+    ? []
+    : [fileURLToPath(new URL('../../', import.meta.url))]
+  secondArgs.push('--user-data-dir=' + join(directory, 'desktop'))
+  const second = spawn(application.process().spawnfile, secondArgs, { env, stdio: 'ignore' })
+  const secondExit = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      second.kill()
+      reject(new Error('第二实例没有退出'))
+    }, 10000)
+    second.once('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    second.once('exit', (code) => {
+      clearTimeout(timer)
+      resolve(code)
+    })
+  })
+  expect(secondExit).toBe(0)
+  await expect
+    .poll(() =>
+      application.evaluate(({ BrowserWindow }) => ({
+        received: globalThis.secondInstanceCount,
+        visible: BrowserWindow.getAllWindows()[0].isVisible()
+      }))
+    )
+    .toEqual({ received: 1, visible: true })
+
   // 旧页面仍可能报告缺少原型桥；此测试只验收真实 preload、IPC 和业务传输，不冒充页面验收。
   await page.waitForFunction(() => Boolean(window.dsakikoHost))
   const bootstrap = await page.evaluate(async () => ({
@@ -75,7 +116,9 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
   })
   expect(visible.value.display.theme).toBe('dark')
   for (const purpose of ['chat-image', 'audio']) {
+    const { draftId } = await client.assets.createDraft()
     const imported = await client.assets.upload({
+      draftId,
       name: purpose,
       mediaType: 'application/octet-stream',
       base64: Buffer.from(purpose).toString('base64'),
@@ -86,6 +129,10 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
         ? join(directory, 'app/assets/files')
         : join(directory, 'library/audio')
     expect(await readFile(join(folder, imported.asset.id), 'utf8')).toBe(purpose)
+    await client.assets.discardDraft(draftId)
+    expect((await client.assets.collectUnused({ resources: [imported.asset] })).deleted).toEqual([
+      imported.asset
+    ])
   }
   const modelFile = join(directory, 'model.ckpt')
   await writeFile(modelFile, 'model')

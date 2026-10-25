@@ -1,3 +1,4 @@
+import { SpeechResources } from './speech/resources.js'
 import { ResourceImports } from './resources/imports.js'
 import path from 'node:path'
 import { Settings } from './settings/interface.js'
@@ -16,6 +17,7 @@ import { failure, uuid } from './core/support.js'
  * @property {Settings} settings 全局设置与模型连接管理。
  * @property {CharacterCatalog} characters 角色与用户对话身份目录。
  * @property {MediaAssets} assets 本地媒体资源管理。
+ * @property {SpeechResources} speechResources 基础资源清单与 Python 目录适配。
  * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
  * @property {ChatStore} store 对话存档管理。
  * @property {Performance} performance 演出时间线与状态管理。
@@ -58,6 +60,7 @@ export async function createCoreBackend({
   await assets.state()
   const imports = new ResourceImports(assets)
   const settings = new Settings({ directory: appDataRoot, assets })
+  const speechResources = new SpeechResources({ assets, settings, cacheRoot })
   const resolveModel = async (presentation) =>
     presentation.mapping
       ? JSON.parse(Buffer.from(await assets.read(presentation.mapping)).toString('utf8'))
@@ -190,6 +193,7 @@ export async function createCoreBackend({
   }
   const timer = scanReminders ? setInterval(() => scan().catch(() => {}), 1000) : null
   timer?.unref()
+  // 定期（30 秒）维护资源信息，清除过期的所有者信息
   const maintenance = setInterval(
     () => assets.maintain().catch((error) => assets.reportMaintenance(error)),
     30000
@@ -197,6 +201,7 @@ export async function createCoreBackend({
   maintenance.unref()
   return {
     imports,
+    speechResources,
     settings,
     characters,
     assets,

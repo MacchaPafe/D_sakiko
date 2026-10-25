@@ -1,3 +1,4 @@
+import { extractAssetReferences } from '../resources/references.js'
 import path from 'node:path'
 import {
   copy,
@@ -126,6 +127,22 @@ export class Settings {
     return copy(value)
   }
 
+  /** 在设置锁内交接 Python 启动材料，设置更换不能提前释放旧进程所需资源。 */
+  async acquireSpeechResources() {
+    return this.queue.run('settings', async () => {
+      const startup = (await this.get()).speechStartup
+      const version = startup.resources.versions[startup.architecture]
+      requireValue(version, 'missing_resources', '请先配置当前架构的基础资源清单。')
+      const files = { ...startup.resources.shared, ...version }
+      requireValue(Object.keys(files).length > 0, 'missing_resources')
+      const owner = await this.assets.createTemporaryOwner(
+        'speech-base',
+        extractAssetReferences(files)
+      )
+      return { startup, files, owner }
+    })
+  }
+
   /**
    * 修改单个配置项目。
    * @param {string} path 点分隔的配置项路径，例如 'generation.temperature'。
@@ -139,7 +156,7 @@ export class Settings {
 
   /**
    * 批量修改多个配置项目。
-   * @param {import('../../shared/contracts/settings.js').SettingsUpdate} patch 要更新的配置项集合。
+   * @param {import('../../shared/contracts/settings.js').SettingsUpdate} patch 要更新的配置项集合。只需要输入修改的内容。
    * @param {SettingsWriteOptions} [options] 版本号检查与自动修复选项。
    * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 保存后的完整全局设置副本。
    */
@@ -166,7 +183,16 @@ export class Settings {
       const next = applyConfigPatch(settingsDefinition, state.settings, changes)
       next.revision += 1
       state.settings = next
-      await this.assets.commitReferences('settings:global', next, () => writeJson(this.file, state))
+      await this.assets.commitReferences('settings:global', next, async () => {
+        for (const ref of extractAssetReferences(next.speechStartup.resources)) {
+          const info = await this.assets.inspect(ref)
+          requireValue(
+            info.kind === 'file' && info.purpose === 'model',
+            'invalid_resource_manifest'
+          )
+        }
+        await writeJson(this.file, state)
+      })
       this.bus.emit('settings', next)
       return copy(next)
     })

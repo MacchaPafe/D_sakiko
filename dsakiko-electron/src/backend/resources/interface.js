@@ -1,6 +1,19 @@
+import { processUsesResources } from './process.js'
+import { validSpeechResourcePath } from '../../shared/contracts/speech-resources.js'
+import { AssetCollector } from './collector.js'
 import { extractAssetReferences } from './references.js'
 import path from 'node:path'
-import { readFile, writeFile, mkdir, rm, stat, copyFile, chmod } from 'node:fs/promises'
+import {
+  readFile,
+  writeFile,
+  mkdir,
+  rm,
+  stat,
+  lstat,
+  realpath,
+  copyFile,
+  chmod
+} from 'node:fs/promises'
 import { containedPath, copyPackage, isWithin, resourcePath } from './files.js'
 import {
   copy,
@@ -15,7 +28,7 @@ import {
 
 /** @typedef {import('../../shared/contracts/common.js').AssetRef} AssetRef */
 /** @typedef {import('../../shared/contracts/assets.js').AssetPurpose} AssetPurpose */
-/** @typedef {{root: 'application' | 'library' | 'cache', relativePath: string, entry: string | null}} AssetLocation 资源的内部存储位置。 */
+/** @typedef {{root: 'application' | 'library' | 'cache', relativePath: string, entry: string | null, registered?: boolean}} AssetLocation 资源的内部存储位置。 */
 
 const purpose_to_locations = {
   'chat-image': ['application', 'files'],
@@ -52,7 +65,7 @@ const purpose_to_locations = {
 /**
  * @typedef {object} AssetIndex
  * @property {number} version 索引格式版本。
- * @property {Record<string, {session: string, expiresAt: number | null, processId?: number}>} temporaryOwners 本次运行的临时持有者与租约。
+ * @property {Record<string, {session: string, expiresAt: number | null, processId?: number, processGroupId?: number}>} temporaryOwners 本次运行的临时持有者与租约。
  * @property {Record<string, string>} commits 提交保护 owner 到正式 owner 的恢复日志。
  * @property {Record<string, AssetLocation>} locations 资源 ID 到内部位置的映射。
  * @property {Record<string, AssetInfo>} assets 资源 ID 到资源元数据的映射表。
@@ -136,6 +149,7 @@ export class MediaAssets {
     this.ownerReaders = new Map()
     this.releaseRetries = new Set()
     this.maintenanceProblems = []
+    this.collector = new AssetCollector(this)
   }
 
   /**
@@ -179,7 +193,12 @@ export class MediaAssets {
       )
       requireValue(
         // 确保实际存储路径符合规定前缀（如 "live2d"） + asset id 的样式
-        location.relativePath === purpose_to_locations[info.purpose][1] + '/' + id,
+        location.registered === true
+          ? info.purpose === 'model' &&
+              info.kind === 'file' &&
+              location.relativePath.startsWith('models/') &&
+              validSpeechResourcePath(location.relativePath.slice('models/'.length))
+          : location.relativePath === purpose_to_locations[info.purpose][1] + '/' + id,
         'invalid_asset_index'
       )
       // 如果存储内容为目录，那么必须有一个 entry 标识主要文件，如 live2d 模型的 model3.json
@@ -204,7 +223,9 @@ export class MediaAssets {
           typeof lease?.session === 'string' &&
           (lease.expiresAt === null || Number.isFinite(lease.expiresAt)) &&
           (lease.processId === undefined ||
-            (Number.isInteger(lease.processId) && lease.processId > 0)),
+            (Number.isInteger(lease.processId) && lease.processId > 0)) &&
+          (lease.processGroupId === undefined ||
+            (Number.isInteger(lease.processGroupId) && lease.processGroupId > 0)),
         'invalid_asset_index'
       )
     }
@@ -227,10 +248,11 @@ export class MediaAssets {
   async localPath(asset, member) {
     const state = await this.state()
     requireValue(
-      Object.hasOwn(state.assets, safeId(asset.id)),
+      Object.hasOwn(state.assets, safeId(asset.id)) && !this.collector.blocked.has(asset.id),
       'asset_missing',
       '找不到要求的的资源。'
     )
+    await this.collector.assertAvailable(state, [asset.id], false)
     const info = state.assets[safeId(asset.id)]
     requireValue(info, 'asset_missing', '找不到要求的的资源。')
     const location = state.locations[asset.id]
@@ -369,13 +391,77 @@ export class MediaAssets {
   }
 
   /**
+   * 仅登记已经位于应用资源库中的基础模型文件，不复制、不移动、不接管旧项目目录。
+   * @param {string[]} names 相对于 library/models 的基础资源文件路径。
+   * @param {string} owner 登记期间的保护持有者。
+   * @returns {Promise<Record<string, AssetRef>>} 路径到逐文件引用的映射。
+   */
+  async registerModelFiles(names, owner) {
+    requireValue(
+      Array.isArray(names) && names.every(validSpeechResourcePath),
+      'invalid_resource_manifest'
+    )
+    this.validateOwner(owner)
+    return this.queue.run('assets', async () => {
+      const state = await this.state()
+      const root = await realpath(this.roots.library)
+      const result = {}
+      for (const name of new Set(names)) {
+        const relativePath = 'models/' + name
+        let file = root
+        for (const part of relativePath.split('/')) {
+          file = path.join(file, part)
+          requireValue(!(await lstat(file)).isSymbolicLink(), 'invalid_asset_path')
+        }
+        const metadata = await stat(file)
+        requireValue(metadata.isFile(), 'asset_not_file')
+        const existing = Object.entries(state.locations).find(
+          ([, location]) => location.root === 'library' && location.relativePath === relativePath
+        )
+        const id = existing ? existing[0] : uuid()
+        requireValue(!this.collector.blocked.has(id), 'asset_unavailable')
+        requireValue(
+          !Object.values(state.locations).some(
+            (location) =>
+              location.root === 'library' && relativePath.startsWith(location.relativePath + '/')
+          ),
+          'overlapping_asset'
+        )
+        if (!existing) {
+          state.assets[id] = {
+            asset: { id },
+            purpose: 'model',
+            kind: 'file',
+            name: path.basename(name),
+            mediaType: 'application/octet-stream',
+            sizeBytes: metadata.size,
+            durationMs: null
+          }
+          state.locations[id] = { root: 'library', relativePath, entry: null, registered: true }
+        }
+        result[name] = { id }
+      }
+      state.owners[owner] = [
+        ...new Set([...(state.owners[owner] ?? []), ...Object.values(result).map((ref) => ref.id)])
+      ]
+      await writeJson(this.index, state)
+      return result
+    })
+  }
+
+  /**
    * 查询指定资源的元数据信息。
    * @param {AssetRef} asset 资源引用。
    * @returns {Promise<AssetInfo>} 资源元数据信息（资源不存在时抛出异常）。
    */
   async inspect(asset) {
     const state = await this.state()
-    requireValue(Object.hasOwn(state.assets, safeId(asset.id)), 'asset_missing', '资源不存在。')
+    requireValue(
+      Object.hasOwn(state.assets, safeId(asset.id)) && !this.collector.blocked.has(asset.id),
+      'asset_missing',
+      '资源不存在。'
+    )
+    await this.collector.assertAvailable(state, [asset.id], false)
     const info = state.assets[asset.id]
     return copy(info)
   }
@@ -415,7 +501,7 @@ export class MediaAssets {
     const state = await this.state()
     for (const ref of extractAssetReferences(value)) {
       const location = state.locations[safeId(ref.id)]
-      requireValue(location, 'asset_missing')
+      requireValue(location && !this.collector.blocked.has(ref.id), 'asset_missing')
       requireValue(
         location.root !== 'cache',
         'temporary_asset_reference',
@@ -431,16 +517,13 @@ export class MediaAssets {
    * @param {'add' | 'remove' | 'replace'} mode 操作方式：add 追加引用，remove 移除引用，replace 替换为新的引用列表。
    * @returns {Promise<void>}
    */
-  async updateReferences(ownerId, references, mode) {
+  async updateReferences(ownerId, references, mode, leaseTtl = null) {
     this.validateOwner(ownerId)
     const ids = references.map((asset) => safeId(asset.id))
     return this.queue.run('assets', async () => {
       const state = await this.state()
-      if (mode !== 'remove')
-        requireValue(
-          ids.every((id) => Object.hasOwn(state.assets, id)),
-          'asset_missing'
-        )
+      if (leaseTtl !== null) this.refreshLease(state, ownerId, leaseTtl)
+      if (mode !== 'remove') await this.collector.assertAvailable(state, ids)
       const current = new Set(state.owners[ownerId] ?? [])
       if (mode === 'add') ids.forEach((id) => current.add(id))
       if (mode === 'remove') ids.forEach((id) => current.delete(id))
@@ -450,7 +533,7 @@ export class MediaAssets {
   }
 
   /**
-   * 校验持有者 ID 是否合法。
+   * 校验持有者 ID 是否合法。只检查对象类型，不会确定这个 ID 是否存在。
    * @param {string} ownerId 持有者 ID。
    */
   validateOwner(ownerId) {
@@ -545,10 +628,7 @@ export class MediaAssets {
     await this.queue.run('assets', async () => {
       const state = await this.state()
       const ids = references.map((asset) => safeId(asset.id))
-      requireValue(
-        ids.every((id) => Object.hasOwn(state.assets, id)),
-        'asset_missing'
-      )
+      await this.collector.assertAvailable(state, ids)
       state.owners[owner] = [...new Set(ids)]
       state.temporaryOwners[owner] = {
         session: this.sessionId,
@@ -565,28 +645,34 @@ export class MediaAssets {
    * @param {number} [processId] 子进程 PID。
    * @returns {Promise<void>}
    */
-  async bindOwnerProcess(owner, processId) {
+  async bindOwnerProcess(owner, processId, processGroupId) {
     if (processId === undefined) return
-    requireValue(Number.isInteger(processId) && processId > 0, 'invalid_process')
+    requireValue(
+      Number.isInteger(processId) &&
+        processId > 0 &&
+        (processGroupId === undefined || (Number.isInteger(processGroupId) && processGroupId > 0)),
+      'invalid_process'
+    )
     await this.queue.run('assets', async () => {
       const state = await this.state()
       requireValue(state.temporaryOwners[owner], 'lease_expired')
-      state.temporaryOwners[owner].processId = processId
+      Object.assign(state.temporaryOwners[owner], { processId, processGroupId })
       await writeJson(this.index, state)
     })
   }
 
-  /**
-   * 检查指定 PID 的操作系统进程是否仍在运行。
-   */
-  processAlive(processId) {
-    try {
-      process.kill(processId, 0)
+  /** 仅在进程树确已结束时释放；正常 Windows 退出可由宿主提供已确认的 PID。 */
+  async releaseProcessOwner(owner, confirmedPid = null) {
+    return this.queue.run('assets', async () => {
+      const state = await this.state()
+      const lease = state.temporaryOwners[owner]
+      if (lease?.processId && lease.processId !== confirmedPid && processUsesResources(lease))
+        return false
+      delete state.owners[owner]
+      delete state.temporaryOwners[owner]
+      await writeJson(this.index, state)
       return true
-    } catch (error) {
-      // 仅在系统明确返回 ESRCH（进程不存在）时才判定为已结束；若因权限不足（EPERM）报错，保守视为仍在运行。
-      return error.code !== 'ESRCH'
-    }
+    })
   }
 
   /**
@@ -600,15 +686,39 @@ export class MediaAssets {
     requireValue(Number.isFinite(ttlMs) && ttlMs > 0, 'invalid_lease')
     await this.queue.run('assets', async () => {
       const state = await this.state()
-      const lease = state.temporaryOwners[owner]
-      requireValue(
-        lease &&
-          lease.session === this.sessionId &&
-          (lease.expiresAt === null || lease.expiresAt > Date.now()),
-        'lease_expired'
-      )
-      lease.expiresAt = Date.now() + ttlMs
+      this.refreshLease(state, owner, ttlMs)
       await writeJson(this.index, state)
+    })
+  }
+
+  /** 租约检查与引用变化必须在同一次资源队列操作内完成。 */
+  refreshLease(state, owner, ttlMs) {
+    const lease = state.temporaryOwners[owner]
+    requireValue(
+      lease &&
+        lease.session === this.sessionId &&
+        (lease.expiresAt === null || lease.expiresAt > Date.now()),
+      'lease_expired'
+    )
+    lease.expiresAt = Date.now() + ttlMs
+  }
+
+  /** 从已提交目标的当前引用集合交接草稿，避免检查与释放之间目标再次改变。 */
+  async consumeDraft(owner, targetOwner, ttlMs) {
+    return this.queue.run('assets', async () => {
+      const state = await this.state()
+      if (!Object.hasOwn(state.owners, owner)) return { released: true }
+      this.refreshLease(state, owner, ttlMs)
+      requireValue(Object.hasOwn(state.owners, targetOwner), 'handoff_target_missing')
+      const committed = new Set(state.owners[targetOwner])
+      state.owners[owner] = state.owners[owner].filter((id) => !committed.has(id))
+      const released = !state.owners[owner].length
+      if (released) {
+        delete state.owners[owner]
+        delete state.temporaryOwners[owner]
+      }
+      await writeJson(this.index, state)
+      return { released }
     })
   }
 
@@ -656,9 +766,9 @@ export class MediaAssets {
     const references = extractAssetReferences(value)
     await this.queue.run('assets', async () => {
       const state = await this.state()
-      requireValue(
-        references.every((ref) => Object.hasOwn(state.assets, ref.id)),
-        'asset_missing'
+      await this.collector.assertAvailable(
+        state,
+        references.map((ref) => ref.id)
       )
       if (value === null) delete state.owners[owner]
       else state.owners[owner] = references.map((ref) => ref.id)
@@ -681,6 +791,7 @@ export class MediaAssets {
    * @returns {Promise<T>} 业务写入函数的返回结果。
    */
   async commitReferences(owner, value, operation) {
+    this.validateOwner(owner)
     return this.committing.run(owner, async () => {
       await this.assertPersistent(value)
       const references = extractAssetReferences(value)
@@ -689,9 +800,9 @@ export class MediaAssets {
       // 先在资源索引中锁定新数据引用的资源并记录提交日志，再写入业务文件；这样即使中途崩溃，重启后也能通过日志恢复引用，且新资源不会在业务写盘前被清理。
       await this.queue.run('assets', async () => {
         const state = await this.state()
-        requireValue(
-          references.every((ref) => Object.hasOwn(state.assets, ref.id)),
-          'asset_missing'
+        await this.collector.assertAvailable(
+          state,
+          references.map((ref) => ref.id)
         )
         state.owners[pending] = references.map((ref) => ref.id)
         state.commits[pending] = owner
@@ -720,16 +831,15 @@ export class MediaAssets {
     await this.queue.run('assets', async () => {
       const next = await this.state()
       for (const [owner, lease] of Object.entries(next.temporaryOwners)) {
-        if (
-          lease.session === this.sessionId ||
-          (lease.processId && this.processAlive(lease.processId))
-        )
-          continue
+        if (lease.session === this.sessionId || processUsesResources(lease)) continue
         delete next.owners[owner]
         delete next.temporaryOwners[owner]
       }
       await writeJson(this.index, next)
     })
+    const recovery = await this.collector.collect({}, true)
+    for (const failure of recovery.failed) this.reportMaintenance({ problem: failure.problem })
+    requireValue(!recovery.aborted, 'resource_recovery_failed')
   }
 
   /**
@@ -751,7 +861,7 @@ export class MediaAssets {
       const state = await this.state()
       let changed = false
       for (const [owner, lease] of Object.entries(state.temporaryOwners)) {
-        const processEnded = lease.processId && !this.processAlive(lease.processId)
+        const processEnded = lease.processId && !processUsesResources(lease)
         const expired = lease.expiresAt !== null && lease.expiresAt <= Date.now()
         if (!processEnded && !expired) continue
         delete state.owners[owner]
@@ -763,10 +873,11 @@ export class MediaAssets {
   }
 
   /**
-   * 资源清理暂未开放。
-   * @returns {Promise<void>}
+   * 即时回收零引用资源，将其删除。
+   * @param {{dryRun?: boolean, resources?: AssetRef[]}} [options] 预览或限定候选。
+   * @returns {Promise<import('./collector.js').CollectionResult>} 清理结果与单项错误。
    */
-  async collectUnused() {
-    requireValue(false, 'cleanup_unavailable', '资源清理暂未开放。')
+  async collectUnused(options) {
+    return this.collector.collect(options)
   }
 }

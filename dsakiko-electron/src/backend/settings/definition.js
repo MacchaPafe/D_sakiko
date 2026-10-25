@@ -1,3 +1,4 @@
+import { validSpeechResources } from '../../shared/contracts/speech-resources.js'
 import { ConfigItem, config, isConfigObject, parseConfig } from '../core/config.js'
 
 /** 模型生成参数的字段定义。连接 ID 与模型 ID 无固定默认值，需由用户显式选择。 */
@@ -64,6 +65,12 @@ export const settingsDefinition = {
   generation: generationDefinition,
   speech: speechDefinition,
   speechStartup: {
+    resources: new ConfigItem({
+      default: { shared: {}, versions: {} },
+      validate: validSpeechResources,
+      correct: (value) => value,
+      message: '必须提供由逐文件 AssetRef 组成的 shared 与 versions 清单'
+    }),
     device: config.enum({ default: 'cpu', values: ['cpu', 'cuda', 'mps'] }),
     precision: config.enum({ default: 'float32', values: ['float32', 'float16'] }),
     architecture: config.string({ default: 'v2', minLength: 1 }),
