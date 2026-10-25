@@ -84,11 +84,16 @@
  */
 
 /**
- * @typedef {object} SpeechStartupSettings
- * @property {import('./speech-resources.js').SpeechResourceManifest} resources 共享文件与各版本文件清单。
+ * @typedef {object} GptSovitsStartupSettings
+ * @property {import('./speech-resources.js').GptSovitsResourceManifest} resources 按用途组织的基础资源引用。
  * @property {'cpu' | 'cuda' | 'mps'} device 推理设备，下次进程启动生效。
  * @property {'float32' | 'float16'} precision 按设备与权重兼容性校验。
  * @property {string} architecture 模型结构配置，不能运行中切换。
+ */
+
+/**
+ * @typedef {object} SpeechStartupSettings
+ * @property {GptSovitsStartupSettings} gptSovits 当前本地引擎的专属配置。
  * @property {number} maxConcurrentInferences 正整数并发上限。
  * @property {number} maxResidentModels 正整数驻留实例预算。
  */

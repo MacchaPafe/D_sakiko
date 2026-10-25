@@ -17,7 +17,7 @@ import { failure, uuid } from './core/support.js'
  * @property {Settings} settings 全局设置与模型连接管理。
  * @property {CharacterCatalog} characters 角色与用户对话身份目录。
  * @property {MediaAssets} assets 本地媒体资源管理。
- * @property {SpeechResources} speechResources 基础资源清单与 Python 目录适配。
+ * @property {SpeechResources} speechResources GPT-SoVITS 显式文件路径与运行引用。
  * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
  * @property {ChatStore} store 对话存档管理。
  * @property {Performance} performance 演出时间线与状态管理。
@@ -60,7 +60,19 @@ export async function createCoreBackend({
   await assets.state()
   const imports = new ResourceImports(assets)
   const settings = new Settings({ directory: appDataRoot, assets })
-  const speechResources = new SpeechResources({ assets, settings, cacheRoot })
+  const speechResources = new SpeechResources({ assets, settings })
+  // presentation.mapping 是动作 -> 语义的映射，类似：
+  // "motions": {
+  //   "nod": { "description": "点头赞同" },
+  //   "shake": { "description": "摇头否决" },
+  //   "mask_on": { "description": "戴上面具动作" },
+  //   "mask_off": { "description": "摘下面具动作" }
+  // },
+  // "expressions": {
+  //   "smile": { "description": "微笑" },
+  //   "angry": { "description": "生气皱眉" },
+  // }
+  // 这些信息会被交给 Performance 模块，用于演出时让 LLM 配合角色说的话选择合适的动作。
   const resolveModel = async (presentation) =>
     presentation.mapping
       ? JSON.parse(Buffer.from(await assets.read(presentation.mapping)).toString('utf8'))

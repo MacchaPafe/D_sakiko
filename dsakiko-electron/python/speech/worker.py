@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, cast
 
 from .contracts import SpeechRequest, VoiceProfile
+from .gpt_sovits_resources import GptSovitsResources, configure_text_resources
+from .runtime import remove_runtime_path
 
 
-def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
+def worker_main(pipe: Connection, voice: VoiceProfile, resources: GptSovitsResources, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
     """在隔离进程加载复制的推理代码，仅从外部位置读取权重。"""
     try:
         vendor = Path(__file__).resolve().parents[1] / "vendor" / "gpt_sovits"
@@ -22,13 +24,11 @@ def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: 
         runtime.mkdir(parents=True, exist_ok=True)
         os.chdir(runtime)
         sys.path.insert(0, str(vendor))
-        os.environ["DSAKIKO_PRETRAINED_ROOT"] = pretrained
-        os.environ["DSAKIKO_G2PW_ROOT"] = str(Path(pretrained).parent / "text" / "G2PWModel")
+        configure_text_resources(resources)
         os.environ["MPLCONFIGDIR"] = str(runtime / "matplotlib")
         os.environ["XDG_CACHE_HOME"] = str(runtime / "cache")
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["DSAKIKO_TEXT_CACHE_DIR"] = str(runtime)
-        os.environ["bert_path"] = str(Path(pretrained) / "chinese-roberta-wwm-ext-large")
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         import torch
         import soundfile
@@ -48,12 +48,10 @@ def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: 
             raise RuntimeError("权重结构与固定启动配置不一致")
         if precision == "float16" and device != "cuda":
             raise RuntimeError("当前设备不支持本实现的半精度推理")
-        config = TTS_Config({"custom": {
+        config = TTS_Config({
             "device": device, "is_half": precision == "float16", "version": version,
             "t2s_weights_path": voice.gpt_weights_path, "vits_weights_path": voice.sovits_weights_path,
-            "bert_base_path": str(Path(pretrained) / "chinese-roberta-wwm-ext-large"),
-            "cnhuhbert_base_path": str(Path(pretrained) / "chinese-hubert-base"),
-        }})
+        }, resources)
         pipeline = TTS(config)
         while True:
             item = pipe.recv()
@@ -97,13 +95,25 @@ def worker_main(pipe: Connection, voice: VoiceProfile, pretrained: str, device: 
 class ProcessWorker:
     """主进程通过轮询管道等待结果，加载模型期间控制接口仍可响应。"""
 
-    def __init__(self, voice: VoiceProfile, pretrained: str, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
+    def __init__(self, voice: VoiceProfile, resources: GptSovitsResources, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
         """创建受预算约束的单模型进程。"""
         context = multiprocessing.get_context("spawn")
         self.pipe, child = context.Pipe()
-        self.process = context.Process(target=worker_main, args=(child, voice, pretrained, device, directory, precision, architecture), daemon=True)
-        self.process.start()
-        child.close()
+        self.directory = Path(directory)
+        created = False
+        try:
+            # 只删除本实例新建的独占目录，拒绝接管调用方已有的文件。
+            self.directory.mkdir(parents=True, exist_ok=False)
+            created = True
+            self.process = context.Process(target=worker_main, args=(child, voice, resources, device, directory, precision, architecture), daemon=True)
+            self.process.start()
+        except BaseException:
+            self.pipe.close()
+            if created:
+                remove_runtime_path(self.directory)
+            raise
+        finally:
+            child.close()
         self.closing = False
         self.close_task: Optional[asyncio.Task[None]] = None
 
@@ -140,3 +150,4 @@ class ProcessWorker:
         if self.process.is_alive() or self.process.exitcode is None:
             raise RuntimeError("推理进程尚未确认退出")
         self.pipe.close()
+        await asyncio.to_thread(remove_runtime_path, self.directory)

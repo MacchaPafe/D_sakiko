@@ -33,6 +33,8 @@ export class Speech {
     this.lifecycle = new SerialQueue()
     this.runId = null
     this.closed = false
+    this.operations = new Set()
+    this.closing = null
     this.connect = connect
     this.transport = new PythonSpeechTransport(connect, {
       localPath: async (asset) => {
@@ -55,6 +57,11 @@ export class Speech {
    * @returns {Promise<SpeechTaskId>} Python 语音服务分配的任务 ID。
    */
   async submit(request) {
+    return this.trackOperation(() => this.submitRequest(request))
+  }
+
+  /** 从受理到建立任务归属均属于在途操作，退出时必须等待。 */
+  async submitRequest(request) {
     requireValue(Number.isInteger(request.priority) && request.priority >= 0)
     requireValue(!this.closed, 'backend_closed')
     const inputOwner = await this.assets.createTemporaryOwner(
@@ -127,6 +134,11 @@ export class Speech {
    * @returns {Promise<import('../../shared/contracts/speech.js').SpeechTaskSnapshot>} 任务当前状态快照（若已成功则包含音频资源引用与时长）。
    */
   async getTask(taskId) {
+    return this.trackOperation(() => this.readTask(taskId))
+  }
+
+  /** 查询与音频导入共同完成后，才允许清理 Python 输出目录。 */
+  async readTask(taskId) {
     requireValue(!this.retired.has(taskId), 'task_unavailable')
     const task = this.tasks.get(taskId)
     try {
@@ -229,11 +241,30 @@ export class Speech {
    * @returns {Promise<void>}
    */
   async close() {
-    if (this.closed) return
+    if (!this.closing) this.closing = this.closeOperations()
+    await this.closing
+  }
+
+  /** 拒绝新操作，并等待直接查询、提交和轮询中的文件交接全部结束。 */
+  async closeOperations() {
     this.closed = true
+    await Promise.allSettled([...this.operations])
     const active = [...this.tasks].filter(([, task]) => !task.terminal).map(([id]) => id)
     await this.cancel(active).catch((error) => this.assets.reportMaintenance(error))
     await Promise.allSettled([...this.waiting.values()])
+  }
+
+  /** 所有任务入口共享关闭屏障，不能只等待 waitForResult 发起的轮询。 */
+  trackOperation(operation) {
+    requireValue(!this.closed, 'backend_closed')
+    const pending = Promise.resolve().then(operation)
+    this.operations.add(pending)
+    // 使用双分支移除，避免 finally 派生的拒绝成为未处理异常。
+    pending.then(
+      () => this.operations.delete(pending),
+      () => this.operations.delete(pending)
+    )
+    return pending
   }
 
   /** 隔离测试可不提供进程元数据；正式资源模块按进程树事实决定是否释放。 */

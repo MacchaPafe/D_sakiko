@@ -14,10 +14,11 @@
  */
 
 /**
- * 只保存角色引用，不附带复制的名称、描述、头像或演出能力。
+ * 只保存角色及具体形态引用，不附带复制的名称、描述、头像或演出能力。
  * @typedef {object} CharacterPersonaSource
  * @property {'character'} kind 扮演已有角色。
  * @property {string} characterId 来源角色的稳定身份。
+ * @property {string} formId 明确绑定的形态身份；后续修改角色默认形态不会改变此选择。
  */
 
 /**
@@ -34,6 +35,7 @@
  * @typedef {object} UserPersonaSnapshot
  * @property {string} personaId 来源对话身份编号。
  * @property {string | null} sourceCharacterId 来源角色编号，自定义人格为 null。
+ * @property {string | null} sourceFormId 创建时采用的来源形态编号，自定义人格为 null；仅记录出处。
  * @property {string} displayName 创建时实际采用的名称。
  * @property {string} description 创建时实际采用的人格文本。
  * @property {AssetRef | null} avatar 创建时采用的头像资源，由 Chat 持有引用。
@@ -43,7 +45,7 @@
  * 供选择列表展示的当前摘要，不会写回定义，也不能替代创建 Chat 时的解析。
  * @typedef {object} UserPersonaSummary
  * @property {string} id 对话身份编号。
- * @property {string | null} displayName 当前名称；来源角色缺失时为 null，不伪造一个历史名称。
+ * @property {string | null} displayName 当前名称；来源角色或形态缺失时为 null，不伪造一个历史名称。
  * @property {AssetRef | null} avatar 当前可展示的头像。
  * @property {import('./common.js').Problem | null} problem 来源不可用等问题；单条身份失效不阻止列出其他身份。
  */

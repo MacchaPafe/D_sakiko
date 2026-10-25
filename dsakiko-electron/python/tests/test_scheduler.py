@@ -28,6 +28,7 @@ class FakeWorker:
         """直到测试释放才写出完整结果。"""
         self.pending = asyncio.get_running_loop().create_future()
         if not await self.pending:
+            Path(str(output) + ".tmp.wav").write_bytes(b"partial")
             raise RuntimeError("测试推理失败")
         output.write_bytes(b"RIFF" + b"0" * 100)
         return 1000.0
@@ -135,6 +136,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.workers[0].finish(False)
         await self.until(lambda: self.scheduler.records[second].active)
         self.assertEqual((await self.scheduler.get_task(first)).status, "failed")
+        self.assertFalse((Path(self.directory.name) / f"{first}.wav.tmp.wav").exists())
 
     async def test_result_read_renews_retention(self) -> None:
         """重复查询续期，过期后删除文件并明确报告任务不可用。"""

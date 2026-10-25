@@ -5,6 +5,7 @@ import { problemError } from '../../shared/problems.js'
 
 /**
  * 按分组键（key）串行执行异步操作，避免并发修改同一份数据。
+ * 这相当于一个细粒度锁：所有以同一个 key 运行的任务都在使用同一把锁，串行运行。
  */
 export class SerialQueue {
   tails = new Map()

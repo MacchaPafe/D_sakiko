@@ -1,4 +1,6 @@
 # 原始代码来自：https://github.com/RVC-Boss/GPT-SoVITS/blob/main/GPT_SoVITS/text/chinese2.py
+from speech.gpt_sovits_resources import text_resources
+
 import os
 import re
 
@@ -33,8 +35,8 @@ if is_g2pw:
 
     parent_directory = os.path.dirname(current_file_path)
     g2pw = G2PWPinyin(
-        model_dir=os.environ.get("DSAKIKO_G2PW_ROOT", "text/G2PWModel"),
-        model_source=os.environ.get("bert_path", "pretrained_models/chinese-roberta-wwm-ext-large"),
+        files=text_resources().g2pw,
+        bert_files=text_resources().bert,
         v_to_u=False,
         neutral_tone_with_five=True,
     )

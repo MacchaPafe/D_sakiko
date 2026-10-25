@@ -58,14 +58,19 @@ export class CharacterCatalog {
 
   /**
    * 按目录顺序获取所有角色的摘要列表（使用各角色的默认形态展示名称和头像）。
-   * @returns {Promise<Array<{ id: string, displayName: string, avatar: import('../../shared/contracts/common.js').AssetRef | null }>>} 角色摘要列表。
+   * @returns {Promise<Array<{ id: string, defaultFormId: string, displayName: string, avatar: import('../../shared/contracts/common.js').AssetRef | null }>>} 角色摘要列表，默认形态编号可用于创建明确的身份引用。
    */
   async list() {
     const state = await this.state()
     return state.order.map((id) => {
       const character = state.characters[id]
       const form = character.forms.find((item) => item.id === character.defaultFormId)
-      return { id, displayName: form.displayName, avatar: copy(form.avatar) }
+      return {
+        id,
+        defaultFormId: form.id,
+        displayName: form.displayName,
+        avatar: copy(form.avatar)
+      }
     })
   }
 
@@ -167,6 +172,7 @@ export class CharacterCatalog {
     const states = {}
     const excluded = new Set()
     for (const [key, state] of Object.entries(mapping.states ?? {})) {
+      // 每个 model state（比如戴上/摘下面具）必须有对应的 on/off（进入/退出）动作。
       if (!mapping.motions?.[state.on?.motion] || !mapping.motions?.[state.off?.motion]) {
         problems.push({
           code: 'invalid_model_state',
@@ -306,8 +312,7 @@ export class CharacterCatalog {
           problem: null
         })
       } catch (error) {
-        // 为什么关联角色缺失时不直接抛出异常：
-        // 若某个身份引用的角色被删除，仍保留该身份项并附带错误信息，方便用户在界面上看到并修复或删除它，而不是让整个列表无法加载。
+        // 角色或形态被删除后仍保留失效身份及问题说明，便于修复且不阻断整个列表。
         result.push({ id, displayName: null, avatar: null, problem: problem(error) })
       }
     }
@@ -325,7 +330,7 @@ export class CharacterCatalog {
   }
 
   /**
-   * 创建或更新一个用户对话身份（支持自定义文本或引用某个角色）。
+   * 创建或更新一个用户对话身份（支持自定义文本或引用角色的具体形态）。
    * @param {UserPersonaDefinition} definition 完整的身份定义。新建时 revision 为 0，更新时传入当前版本号。
    * @returns {Promise<UserPersonaDefinition>} 保存成功并递增版本号后的身份定义副本。
    */
@@ -334,9 +339,10 @@ export class CharacterCatalog {
       const state = await this.state()
       const previous = await this.getPersona(definition.id)
       requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
-      // 引用角色时只保存 characterId 而不复制角色的名称和描述，这样角色更新后，新建对话时能自动获取到最新的人设信息。
-      if (definition.source.kind === 'character') fields(definition.source, ['kind', 'characterId'])
-      else {
+      // 固定形态身份但不复制其内容，新建聊天采用该形态的最新设定。
+      if (definition.source.kind === 'character') {
+        await this.resolvePersonaForm(definition.source)
+      } else {
         requireValue(definition.source.kind === 'custom')
         fields(definition.source, ['kind', 'displayName', 'description', 'avatar'])
       }
@@ -355,7 +361,7 @@ export class CharacterCatalog {
   }
 
   /**
-   * 解析指定对话身份的实际名称、人设描述和头像（若身份引用了某个角色，则提取该角色当前默认形态的信息）。
+   * 解析指定对话身份的实际名称、人设描述和头像；角色来源只读取明确绑定的形态。
    * @param {string} personaId 对话身份 ID。
    * @returns {Promise<import('../../shared/contracts/persona.js').UserPersonaSnapshot>} 解析后的实际身份信息快照。
    */
@@ -366,19 +372,36 @@ export class CharacterCatalog {
       return {
         personaId,
         sourceCharacterId: null,
+        sourceFormId: null,
         displayName: definition.source.displayName,
         description: definition.source.description,
         avatar: copy(definition.source.avatar)
       }
-    const character = await this.get(definition.source.characterId)
-    requireValue(character, 'character_missing')
-    const form = character.forms.find((item) => item.id === character.defaultFormId)
+    const form = await this.resolvePersonaForm(definition.source)
     return {
       personaId,
-      sourceCharacterId: character.id,
+      sourceCharacterId: definition.source.characterId,
+      sourceFormId: form.id,
       displayName: form.displayName,
       description: form.description,
       avatar: copy(form.avatar)
     }
+  }
+
+  /**
+   * 保存与解析共用同一形态校验，不允许缺失引用悄悄变成默认形态。
+   * @param {import('../../shared/contracts/persona.js').CharacterPersonaSource} source 明确的角色形态引用。
+   * @returns {Promise<import('../../shared/contracts/characters.js').CharacterForm>} 当前形态定义。
+   */
+  async resolvePersonaForm(source) {
+    fields(source, ['kind', 'characterId', 'formId'])
+    requireValue(source.kind === 'character')
+    requireValue(typeof source.characterId === 'string' && source.characterId.trim().length > 0)
+    requireValue(typeof source.formId === 'string' && source.formId.trim().length > 0)
+    const character = await this.get(source.characterId)
+    requireValue(character, 'character_missing')
+    const form = character.forms.find((item) => item.id === source.formId)
+    requireValue(form, 'form_missing')
+    return form
   }
 }

@@ -103,6 +103,14 @@ class FailingWorker(WaitingWorker):
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     """覆盖重复关闭、取消等待和心跳连续失败的语义。"""
 
+    def setUp(self) -> None:
+        """提供可验证删除时机的独占 worker 目录。"""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.runtime = Path(directory.name) / "worker"
+        self.runtime.mkdir()
+        (self.runtime / "cache").write_bytes(b"cache")
+
     async def test_worker_close_waits_for_actual_exit(self) -> None:
         """并发关闭都等 join，取消一个等待者也不取消实际回收。"""
         process = ControlledProcess()
@@ -112,6 +120,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         worker.pipe = cast(Connection, pipe)
         worker.closing = False
         worker.close_task = None
+        worker.directory = self.runtime
         first = asyncio.create_task(worker.close())
         try:
             self.assertTrue(await asyncio.to_thread(process.waiting.wait, 1))
@@ -122,10 +131,12 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await first
             self.assertFalse(pipe.closed)
+            self.assertTrue(self.runtime.exists())
             process.finished.set()
             await second
             self.assertTrue(process.terminated and process.killed and pipe.closed)
             self.assertFalse(process.is_alive())
+            self.assertFalse(self.runtime.exists())
         finally:
             process.finished.set()
             await worker.close()
@@ -142,12 +153,14 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         worker.pipe = parent_pipe
         worker.closing = False
         worker.close_task = None
+        worker.directory = self.runtime
         try:
             self.assertTrue(await asyncio.to_thread(ready.wait, 3))
             await worker.close()
             self.assertFalse(process.is_alive())
             self.assertIsNotNone(process.exitcode)
             self.assertTrue(parent_pipe.closed)
+            self.assertFalse(self.runtime.exists())
         finally:
             if process.is_alive():
                 process.kill()

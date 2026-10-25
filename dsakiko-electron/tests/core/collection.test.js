@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, expect, test, vi } from 'vitest'
 import { MediaAssets } from '../../src/backend/resources/interface.js'
 import { Settings } from '../../src/backend/settings/interface.js'
+import { gptSovitsShared } from '../helpers/gpt-sovits.js'
 import { SpeechResources } from '../../src/backend/speech/resources.js'
 import { ResourceImports } from '../../src/backend/resources/imports.js'
 import { CharacterCatalog } from '../../src/backend/characters/interface.js'
@@ -259,59 +260,98 @@ test('角色读取与运行引用交接期间更换配置必须等待，旧快�
   expect((await assets.collectUnused()).deleted).toEqual([ref])
 })
 
-test('基础模型逐文件登记、共享与运行持有，取消某版本只回收其独有文件', async () => {
-  const { assets, roots, settings, speechResources } = await fixture()
-  const shared = 'GPT_SoVITS/pretrained_models/shared.bin'
-  const v2 = 'GPT_SoVITS/pretrained_models/v2/model.pth'
-  const v4 = 'GPT_SoVITS/pretrained_models/v4/model.pth'
-  for (const name of [shared, v2, v4]) {
-    const file = path.join(roots.resourceLibraryRoot, 'models', name)
-    await mkdir(path.dirname(file), { recursive: true })
-    await writeFile(file, name)
+test('显式路径不创建视图，设置切换后仍保护运行文件，退出后只回收独有资源', async () => {
+  const { assets, roots, settings, speechResources, resource } = await fixture()
+  const shared = await resource('model')
+  const v2 = await resource('model')
+  const v4 = await resource('model')
+  const manifest = {
+    shared: gptSovitsShared(shared),
+    versions: { v2: { baseSovits: v2 }, v4: { vocoder: v4 } }
   }
-  const saved = await speechResources.registerDirectory({
-    shared: [shared],
-    versions: { v2: [v2], v4: [v4] }
-  })
-  const manifest = saved.speechStartup.resources
+  await settings.set('speechStartup.gptSovits.resources', manifest)
+  await assets.releaseOwner('source')
   expect((await assets.state()).owners['settings:global']).toHaveLength(3)
   const running = await speechResources.acquire()
   cleanups.push(running.releaseResources)
   await running.bindResources(process.pid)
-  expect(await readFile(path.join(running.resourceRoot, v2), 'utf8')).toBe(v2)
-  await settings.set('speechStartup.resources', {
+  expect(running.gptSovits.resources.bert.weights).toBe(await assets.localPath(shared))
+  expect(running.gptSovits.resources.baseSovits).toBe(await assets.localPath(v2))
+  expect(running.gptSovits.resources.vocoder).toBeUndefined()
+  await expect(stat(path.join(roots.cacheRoot, 'speech-resources'))).rejects.toHaveProperty(
+    'code',
+    'ENOENT'
+  )
+  await settings.set('speechStartup.gptSovits.resources', {
     shared: manifest.shared,
     versions: { v4: manifest.versions.v4 }
   })
   expect((await assets.collectUnused()).deleted).toEqual([])
   await running.releaseResources(process.pid)
-  expect((await assets.collectUnused()).deleted).toEqual([manifest.versions.v2[v2]])
+  expect((await assets.collectUnused()).deleted).toEqual([v2])
   expect((await assets.state()).owners['settings:global']).toHaveLength(2)
-  await expect(
-    speechResources.registerDirectory({ shared: ['../outside'], versions: {} })
-  ).rejects.toThrow()
 })
 
-test('错误清单和非文件模型引用不能被保存，未配置基础资源不阻止设置使用', async () => {
+test('未完成的配置可以保存，启动时按用途报错，并拒绝旧格式与非模型引用', async () => {
   const { settings, speechResources, resource } = await fixture()
   await settings.set('display.theme', 'dark')
   await expect(speechResources.acquire()).rejects.toHaveProperty(
     'problem.code',
     'missing_resources'
   )
+  const model = await resource('model')
+  await settings.set('speechStartup.gptSovits.resources', {
+    shared: { bert: { weights: model } },
+    versions: {}
+  })
+  await expect(speechResources.acquire()).rejects.toThrow(/bert.config/)
   const image = await resource()
   await expect(
-    settings.set('speechStartup.resources', {
-      shared: { 'GPT_SoVITS/pretrained_models/w.bin': image },
+    settings.set('speechStartup.gptSovits.resources', {
+      shared: { bert: { weights: image } },
       versions: {}
     })
   ).rejects.toHaveProperty('problem.code', 'invalid_resource_manifest')
   await expect(
-    settings.set('speechStartup.resources', {
-      shared: { 'GPT_SoVITS/pretrained_models/../escape': image },
+    settings.set('speechStartup.gptSovits.resources', {
+      shared: { 'GPT_SoVITS/pretrained_models/w.bin': model },
       versions: {}
     })
   ).rejects.toThrow()
+  await expect(
+    settings.set('speechStartup.resources', { shared: {}, versions: {} })
+  ).rejects.toThrow()
+})
+
+test('路径解析失败时释放临时引用，架构专属资源在启动前验证', async () => {
+  const { assets, settings, speechResources, resource } = await fixture()
+  const model = await resource('model')
+  await settings.set('speechStartup.gptSovits.resources', {
+    shared: gptSovitsShared(model),
+    versions: {}
+  })
+  vi.spyOn(assets, 'localPath').mockRejectedValueOnce(new Error('文件离线'))
+  await expect(speechResources.acquire()).rejects.toThrow('文件离线')
+  expect(Object.keys((await assets.state()).temporaryOwners)).toEqual([])
+  await settings.set('speechStartup.gptSovits.architecture', 'v4')
+  await expect(speechResources.acquire()).rejects.toThrow(/vocoder/)
+  await settings.set('speechStartup.gptSovits.architecture', 'v2ProPlus')
+  await expect(speechResources.acquire()).rejects.toThrow(/speakerEncoder/)
+})
+
+test('库内逐文件登记不依赖 GPT-SoVITS 目录名，仍拒绝越界和符号链接', async () => {
+  const { roots, assets } = await fixture()
+  const name = 'arbitrary/无后缀'
+  const target = path.join(roots.resourceLibraryRoot, 'models', name)
+  await mkdir(path.dirname(target), { recursive: true })
+  await writeFile(target, 'model')
+  const owner = await assets.createTemporaryOwner('registration')
+  const refs = await assets.registerModelFiles([name], owner)
+  expect(await assets.localPath(refs[name])).toBe(target)
+  expect(await assets.registerModelFiles([name], owner)).toEqual(refs)
+  await expect(assets.registerModelFiles(['../outside'], owner)).rejects.toThrow()
+  await symlink(target, target + '-link')
+  await expect(assets.registerModelFiles([name + '-link'], owner)).rejects.toThrow()
 })
 
 test('POSIX 仍检查进程组；Windows 风格的主进程引用在进程消失后可恢复释放', async () => {

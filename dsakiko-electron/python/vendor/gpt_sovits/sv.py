@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import sys
 import os
 import torch
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "eres2net"))
-sv_path = os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "sv/pretrained_eres2netv2w24s4ep4.ckpt")
 from ERes2NetV2 import ERes2NetV2
 import kaldi as Kaldi
 
 
 class SV:
-    def __init__(self, device, is_half):
-        pretrained_state = torch.load(sv_path, map_location="cpu", weights_only=False)
+    def __init__(self, device: torch.device, is_half: bool, weights_path: str) -> None:
+        """从宿主提供的文件加载说话人编码器。"""
+        pretrained_state = torch.load(weights_path, map_location="cpu", weights_only=False)
         embedding_model = ERes2NetV2(baseWidth=24, scale=4, expansion=4)
         embedding_model.load_state_dict(pretrained_state)
         embedding_model.eval()

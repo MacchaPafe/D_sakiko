@@ -17,6 +17,10 @@ Credits
     This code is modified from https://github.com/GitYCC/g2pW
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+from types import ModuleType
 import os
 import re
 
@@ -84,12 +88,12 @@ def tokenize_and_map(tokenizer, text: str):
     return tokens, index_map_from_text_to_token, index_map_from_token_to_text
 
 
-def _load_config(config_path: os.PathLike):
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("__init__", config_path)
-    config = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(config)
+def _load_config(config_path: str) -> ModuleType:
+    """读取受信任的模型配置，不依赖 .py 后缀，也不在模型旁生成字节码。"""
+    config = ModuleType("g2pw_config")
+    config.__file__ = config_path
+    source = Path(config_path).read_text(encoding="utf-8")
+    exec(compile(source, config_path, "exec"), config.__dict__)
     return config
 
 
@@ -130,7 +134,8 @@ default_config_dict = {
 }
 
 
-def load_config(config_path: os.PathLike, use_default: bool = False):
+def load_config(config_path: str, use_default: bool = False) -> ModuleType:
+    """加载模型配置并补齐 G2PW 自带的算法默认值。"""
     config = _load_config(config_path)
     if use_default:
         for attr, val in default_config_dict.items():

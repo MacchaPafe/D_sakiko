@@ -2,6 +2,57 @@
 
 本文与 `interface.py` 描述正式目标契约；`contracts.py` 为可审查的数据声明，兼容 Python 3.9、仅依赖标准库。同目录已有旧快速原型调度器、HTTP 和 worker，不能据此认定符合本设计。2026-10-08 新增的采样字段和启动配置仅为声明，未修改 HTTP/worker 或推理行为。
 
+2026-10-25：当前 HTTP/worker 已接收采样参数，并实现下述 GPT-SoVITS 显式文件启动契约；这不表示本文其余目标能力均已完成。
+
+## GPT-SoVITS 文件启动契约
+
+Electron 启动 `python -B -u -m speech.server --assets-root <资源库> --output <缓存输出> --concurrent N --resident N` 后，通过 stdin 写入一行 JSON 并关闭管道：
+
+```json
+{
+  "architecture": "v2",
+  "device": "cpu",
+  "precision": "float32",
+  "resources": {
+    "bert": {"config": "/绝对路径/甲", "weights": "/另一目录/乙", "tokenizer": "/目录/丙"},
+    "hubert": {"config": "/目录/丁", "weights": "/目录/戊", "featureExtractor": "/目录/己"},
+    "g2pw": {
+      "model": "/目录/庚", "config": "/目录/辛",
+      "polyphonicCharacters": "/目录/壬", "monophonicCharacters": "/目录/癸",
+      "bopomofoToPinyin": "/目录/子", "characterBopomofo": "/目录/丑"
+    },
+    "languageDetector": {"model": "/目录/寅"}
+  }
+}
+```
+
+所有路径必须指向已存在、可读的普通文件，名称和父目录可以任意。v4 还需 `resources.vocoder`，v2Pro/v2ProPlus 还需 `resources.speakerEncoder`；LoRA 在实际加载角色时要求 `resources.baseSovits`。角色 GPT、SoVITS 和参考音频仍按任务传入，HTTP 校验其解析后路径处于 `--assets-root` 内。启动清单来自可信宿主管道，不允许 HTTP 请求重配基础资源。
+
+`gpt_sovits_resources.py` 负责文件契约和 BERT/HuBERT 装配，导入该模块不会加载推理依赖。BERT/HuBERT 当前支持单个 PyTorch 权重文件；BERT 分词器使用 tokenizer.json。配置与权重不匹配时失败，不寻找默认模型或自动下载。G2PW 配置仍是模型附带的受信任 Python 配置，其读取不依赖扩展名，也不生成相邻字节码。文本模块的导入期初始化使用 worker 一次性配置的资源快照，禁止在同一 worker 内切换资源。日志、运行缓存和合成结果使用单独的可写目录。
+
+持久化设置见 [资源文档](../../docs/data-directories-and-resources.md#GPT-SoVITS-显式文件清单)。本次没有旧配置迁移、目录视图、导入向导、下载器或多引擎实现。
+
+## 运行目录清理
+
+`runtime.py` 管理 `<cacheRoot>/speech-temp/run-<UUID>/`。启动时先扫描残留，再创建本次目录和 `.owner.json`，记录宿主 PID、Python PID 及 POSIX 独立进程组；登记成功前不启动 worker。Electron 通过 `DSAKIKO_SPEECH_HOST_PID` 传入自身 PID，独立调试时默认使用 Python 的父 PID。
+
+Electron 正常退出先拒绝新的语音提交和查询，等待在途请求及音频导入结束，此时仍保留宿主心跳接口。随后关闭业务与 Python。Python 收到 `/shutdown` 后，等待全部 worker 和执行任务结束，再删除本次目录。worker 淘汰或失败时独立清理自己的缓存子目录；任务失败后的临时 WAV 只在写入进程结束后删除。关闭确认失败时保留目录；删除失败记录日志，归属记录最后删除，方便重试。
+
+下次语音启动只回收归属有效、宿主和 Python 均已退出且 POSIX 进程组也不存在的目录；存活、查询权限不足、损坏或缺失归属记录、旧无标记目录及运行目录符号链接均保留。不以时间长短推断是否仍在使用。Windows 只检查主进程，不增加完整进程树追踪。若 Python 因信号或心跳自行结束，但宿主仍存活且没有 `/shutdown` 的交接确认，则保留运行目录，防止删除仍在导入的音频，待后续启动回收。
+
+清理仅覆盖本次输出和可重建缓存，不删除模型原件、资源库已导入音频或 `logs/speech.log`。Matplotlib 的直接导入已移入学习率调度器的独立绘图演示；当前第三方 TorchMetrics 仍会间接导入 Matplotlib，因此保留 worker 的缓存重定向，可能产生的字体缓存也在上述清理范围内。
+
+test_`runtime.py`、`test_lifecycle.py` 和 Node 生命周期测试覆盖真实进程异常终止后的回收、正常 HTTP 关闭、活动目录保护、失败重试、worker 删除时机和音频导入与退出并发。
+
+## 文件加载验证
+
+- `python -m unittest discover -s python/tests -v`：标准库契约和生命周期测试；安装推理依赖时也运行真实小型 BERT/HuBERT 网络、分词器与 G2PW 文件装配测试。
+- 可选真实推理测试：设置 `DSAKIKO_TEST_SPEECH_CONFIG` 为 JSON 文件路径，包含 `gptSovits`（上面的启动对象）和 `voice`（任务中的声音配置字段），执行 `python -B -m unittest discover -s python/tests -p test_gpt_sovits_inference.py -v`。
+
+真实推理测试在临时目录中为每个输入文件创建独立的无后缀硬链接，再通过真实 worker 合成中、日文短句并验证 WAV 输出。测试模型与临时目录需位于支持硬链接的同一文件系统；该操作仅用于验证文件位置无关性，不是产品导入功能。Open JTalk 词典需预先安装，或通过 `OPEN_JTALK_DICT_DIR` 指定已有词典位置。
+
+2026-10-25 在 macOS、Python 3.11、CPU/float32 环境下，v2ProPlus 与 v4 均通过上述真实合成测试，输出分别为 32 kHz 和 48 kHz 的非静音单声道 WAV。Python 3.9 完成语法解析检查；Windows、CUDA/MPS 和 LoRA 实际推理尚未验证。
+
 - [contracts.py](contracts.py)：合成输入、任务快照、问题和启动配置。
 - [interface.py](interface.py)：`SpeechScheduler` 的四个异步方法。
 - [Node 客户端](../../src/backend/speech/interface.js)：相同任务能力，以及隐藏轮询的 `waitForResult`。

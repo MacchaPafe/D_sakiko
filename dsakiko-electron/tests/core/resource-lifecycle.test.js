@@ -523,3 +523,71 @@ test('Python cancelled 不代表推理结束，输入保守保留到进程确认
   await speech.processStopped()
   expect((await assets.collectUnused()).deleted).toHaveLength(3)
 })
+
+test('关闭等待直接查询中的音频导入，并阻止新任务和新查询', async () => {
+  const { assets, directory } = await fixture()
+  const gptWeights = await imported(assets, 'model')
+  const sovitsWeights = await imported(assets, 'model')
+  const referenceAudio = await imported(assets, 'audio')
+  const file = path.join(directory, 'pending-output.wav')
+  await writeFile(file, 'audio')
+  let releaseResponse
+  const responseReady = new Promise((resolve) => {
+    releaseResponse = resolve
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url, options) => {
+      if (options.method === 'POST') return new Response(JSON.stringify({ task_id: 'run-task' }))
+      await responseReady
+      return new Response(
+        JSON.stringify({ status: 'succeeded', audio_path: file, duration_ms: 10 })
+      )
+    })
+  )
+  const speech = new Speech({
+    assets,
+    connect: async () => ({ url: 'http://localhost', token: '', runId: 'run' })
+  })
+  const request = {
+    priority: 1,
+    text: 'hello',
+    language: 'Chinese',
+    voice: { gptWeights, sovitsWeights, referenceAudio }
+  }
+  const id = await speech.submit(request)
+  let finishImport
+  const importReady = new Promise((resolve) => {
+    finishImport = resolve
+  })
+  const original = assets.importAsset.bind(assets)
+  const importing = vi.spyOn(assets, 'importAsset').mockImplementation(async (...args) => {
+    await importReady
+    return original(...args)
+  })
+  const query = speech.getTask(id)
+  const closed = vi.fn()
+  const firstClose = speech.close().then(closed)
+  const secondClose = speech.close().then(closed)
+  try {
+    await expect(speech.getTask(id)).rejects.toHaveProperty('problem.code', 'backend_closed')
+    await expect(speech.submit(request)).rejects.toHaveProperty('problem.code', 'backend_closed')
+    expect(closed).not.toHaveBeenCalled()
+    // 关闭开始时 HTTP 查询尚未返回，随后发起的导入也必须等待。
+    releaseResponse()
+    await expect.poll(() => importing.mock.calls.length).toBe(1)
+    expect(closed).not.toHaveBeenCalled()
+    finishImport()
+    const result = await query
+    await Promise.all([firstClose, secondClose])
+    await rm(file)
+    expect(Buffer.from(await assets.read(result.audio.asset)).toString()).toBe('audio')
+    expect(closed).toHaveBeenCalledTimes(2)
+  } finally {
+    releaseResponse()
+    finishImport()
+    await query.catch(() => {})
+    await Promise.all([firstClose, secondClose])
+    await speech.processStopped()
+  }
+})

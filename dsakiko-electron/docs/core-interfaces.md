@@ -84,6 +84,8 @@ flowchart LR
 
 ## 角色目录与对话身份
 
+角色摘要额外提供 `defaultFormId`。现有 React 原型表单在创建角色来源身份或切换角色时填入默认形态 ID，编辑已有身份时保留明确的 `formId`。该原型尚未完成正式客户端接线，本次只同步表单契约。后续单形态隐藏选择、多形态提供选择 UI；隐藏选择不意味着持久化时省略形态 ID。
+
 `CharacterDefinition` 使用非空 `forms` 与 `defaultFormId`，每个形态含名称、描述、头像、主题色、声音、`models` 和 `defaultModelId`。产品明确每个模型配置只属于一个形态，因此模型登记在 `CharacterForm.models` 下，不再保留角色级 `models` 或模型的 `formIds`。模型 ID 在同一角色内唯一；默认指针必须指向本形态的一项，无模型时为 null。不同模型配置仍可引用相同底层资源包，配置归属不要求复制资源或改变包内目录。
 
 Chat 保存当前 formId 及各形态模型覆盖，覆盖值必须属于对应形态；换装不改变形态或目录默认值，切回形态时沿用该形态的模型覆盖。`Live2dImporter` 只产生尚未登记的模型配置和资源，调用方将其放入目标形态后交目录保存。迁移旧平级配置时按形态归入 models；旧配置被多个形态引用时，拆成各形态独立且 ID 不同的配置，修正默认指针和 Chat 覆盖，底层资源可复用。
@@ -94,11 +96,11 @@ Node 中的 `CharacterCatalog` 是唯一的权威目录。通过目录保存角�
 
 对话身份定义由同一个目录模块持久化在 `<用户数据目录>/personas/<personaId>.json`，文件名使用稳定 ID，不随名称改变。`listPersonas` 返回当前选择摘要，`getPersona` 返回可编辑的原始定义，`savePersona` 保存定义并递增自身版本，`resolvePersona` 解析当前实际名称、描述和头像。定义的 revision 表示它本身的版本；关联角色更新不递增这个版本，但后续解析必须采用角色的新配置，不能只用 persona 的 revision 缓存解析结果。
 
-`UserPersonaDefinition.source` 有两种互斥形式：`custom` 保存 `displayName`、`description` 与可选 `avatar`；`character` 只保存 `characterId`，不在绑定时复制角色文本或头像。角色引用失效时仍能读取定义以修复，也会出现在带问题说明的选择列表中；解析时则明确拒绝，不使用过期文本或默认人格掩盖问题。
+`UserPersonaDefinition.source` 有两种互斥形式：`custom` 保存 `displayName`、`description` 与可选 `avatar`；`character` 必须同时保存 `characterId` 与 `formId`，绑定具体角色形态，不在绑定时复制文本或头像。保存时验证角色与形态存在，缺少 `formId` 的旧定义不做兼容。角色或形态删除后仍能读取身份定义以修复，也会出现在带问题说明的选择列表中；解析分别报告 `character_missing` 或 `form_missing`，不使用默认形态代替。修改角色默认形态不会改变已保存的绑定。
 
-普通新建通过 `createChat({ ..., userPersonaId })` 选择身份，省略或 null 表示无自定义人格。Conversation 在创建时调用 `resolvePersona`，将实际采用的完整身份快照保存到 `Chat.userPersona`。关联角色当时默认形态的名称和描述被固定下来；角色缺失时创建失败。目录只负责解析数据，不负责何时创建 Chat，也不解析用户身份的模型、语音或动作能力。
+普通新建通过 `createChat({ ..., userPersonaId })` 选择身份，省略或 null 表示无自定义人格。Conversation 在创建时调用 `resolvePersona`，将实际采用的完整身份快照保存到 `Chat.userPersona`。明确选择的形态在创建时的名称、描述和头像被固定下来，同时记录 `sourceCharacterId` 与 `sourceFormId`；自定义身份的这两个字段为 null。来源角色或形态缺失时创建失败。目录只负责解析数据，不负责何时创建 Chat，也不解析用户身份的模型、语音或动作能力。
 
-例如，角色描述为 A 时创建的 Chat 保留 A；角色描述改为 B 后，新建的 Chat 获得 B。继续已有 Chat、重新生成、分支和归档导入都沿用已固定的身份，不重新解析当前目录；自定义人格修改也只影响后续普通新建。身份快照的来源编号只用于记录出处，不要求导入环境存在原始人格或角色。快照头像由 Chat 持有资源引用并随归档携带；旧存档没有任何身份信息时才使用 null，不能从当前目录补造历史身份。
+例如，所选形态描述为 A 时创建的 Chat 保留 A；该形态描述改为 B 后，新建的 Chat 获得 B。继续已有 Chat、重新生成、分支和归档导入都沿用已固定的身份，不重新解析当前目录；自定义人格修改也只影响后续普通新建。身份快照的来源编号只用于记录出处，不要求导入环境存在原始人格或角色。快照头像由 Chat 持有资源引用并随归档携带；旧存档没有任何身份信息时才使用 null，不能从当前目录补造历史身份。
 
 每次 Agent 请求的 `userPersona` 只从 `Chat.userPersona` 提取名称与描述，不传完整定义、头像或来源编号，也不加入 `characters` 中允许 Agent 生成台词的角色。人格定义编辑、选择列表预览和 Chat 身份固定是不同操作，预览不能提前决定之后创建 Chat 时使用哪份文本。
 

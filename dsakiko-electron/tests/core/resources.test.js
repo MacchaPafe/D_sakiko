@@ -17,6 +17,7 @@ import { MediaAssets } from '../../src/backend/resources/interface.js'
 import { ChatStore } from '../../src/backend/storage/interface.js'
 import { startHttpServer } from '../../src/server/http-server.js'
 import { createBackendClient } from '../../src/renderer/src/backend/client.js'
+import { gptSovitsStartup } from '../helpers/gpt-sovits.js'
 import { SpeechProcess } from '../../src/main/processes/speech-process.js'
 import { resolveDataDirectories, validateDataDirectories } from '../../src/main/data-directories.js'
 
@@ -255,14 +256,16 @@ test('系统默认目录与三个独立覆盖值，安装包和重叠路径被�
 test('真实 Python 语音进程在缓存目录启动并完成握手，不加载模型', async () => {
   const { roots } = await fixture()
   const modelRoot = path.join(roots.resourceLibraryRoot, 'models')
-  await mkdir(path.join(modelRoot, 'GPT_SoVITS/pretrained_models'), { recursive: true })
+  await mkdir(modelRoot, { recursive: true })
+  const modelFile = path.join(modelRoot, '中文 无后缀文件')
+  await writeFile(modelFile, 'model')
   let boundPid
   let released = false
   const speech = new SpeechProcess(
     fileURLToPath(new URL('../../python', import.meta.url)),
     roots.cacheRoot,
     async () => ({
-      resourceRoot: modelRoot,
+      gptSovits: gptSovitsStartup(modelFile),
       bindResources: async (pid) => {
         boundPid = pid
       },
@@ -271,9 +274,6 @@ test('真实 Python 语音进程在缓存目录启动并完成握手，不加载
       },
       assetsRoot: roots.resourceLibraryRoot,
       pythonExecutable: 'python3',
-      precision: 'float32',
-      architecture: 'v2',
-      device: 'cpu',
       maxConcurrent: 1,
       maxResident: 1
     })
@@ -336,12 +336,14 @@ test('HTTP 草稿交接、访问续期和释放只允许受控身份，不开放
 test('Python 可执行文件缺失时释放启动资源，关闭不等待不存在的进程', async () => {
   const { roots } = await fixture()
   const modelRoot = path.join(roots.resourceLibraryRoot, 'models')
-  await mkdir(path.join(modelRoot, 'GPT_SoVITS/pretrained_models'), { recursive: true })
+  await mkdir(modelRoot, { recursive: true })
+  const modelFile = path.join(modelRoot, 'arbitrary-file')
+  await writeFile(modelFile, 'model')
   let released = false
   const speech = new SpeechProcess('/unused', roots.cacheRoot, async () => ({
-    resourceRoot: modelRoot,
+    gptSovits: gptSovitsStartup(modelFile),
+    assetsRoot: roots.resourceLibraryRoot,
     pythonExecutable: path.join(roots.cacheRoot, 'missing-python'),
-    device: 'cpu',
     maxConcurrent: 1,
     maxResident: 1,
     releaseResources: async () => {

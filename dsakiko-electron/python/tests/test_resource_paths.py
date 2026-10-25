@@ -40,25 +40,47 @@ class ResourcePathsTest(unittest.TestCase):
                 "reference_language": "zh",
             }
             body: Dict[str, object] = {"text": "你好", "language": "zh", "priority": 1, "voice": voice}
-            request = request_from_json(body, models, library)
+            request = request_from_json(body, library)
             self.assertEqual(Path(request.voice.reference_audio_path), (audio / "reference").resolve())
             voice["reference_audio_path"] = str(cache / "reference")
             with self.assertRaises(RequestError):
-                request_from_json(body, models, library)
+                request_from_json(body, library)
 
     def test_worker_startup_arguments(self) -> None:
         """将资源路径、临时目录、精度和模型结构传入独立进程。"""
         voice = VoiceProfile("/library/gpt", "/library/sovits", "/library/reference", "参考", "zh")
-        with patch("speech.worker.multiprocessing.get_context") as get_context:
+        resources = MagicMock()
+        with tempfile.TemporaryDirectory() as temporary, patch("speech.worker.multiprocessing.get_context") as get_context:
+            directory = str(Path(temporary) / "worker")
             context = get_context.return_value
             parent = MagicMock()
             child = MagicMock()
             context.Pipe.return_value = (parent, child)
-            ProcessWorker(voice, "/library/pretrained", "cpu", "/cache/worker", "float32", "v2")
+            ProcessWorker(voice, resources, "cpu", directory, "float32", "v2")
             context.Process.assert_called_once_with(
                 target=worker_main,
-                args=(child, voice, "/library/pretrained", "cpu", "/cache/worker", "float32", "v2"),
+                args=(child, voice, resources, "cpu", directory, "float32", "v2"),
                 daemon=True,
             )
             context.Process.return_value.start.assert_called_once()
             child.close.assert_called_once()
+
+    def test_worker_start_failure_cleans_only_new_directory(self) -> None:
+        """spawn 失败回收新目录和管道，已有目录必须原样保留。"""
+        voice = VoiceProfile("g", "s", "r", "参考", "zh")
+        with tempfile.TemporaryDirectory() as temporary, patch("speech.worker.multiprocessing.get_context") as get_context:
+            directory = Path(temporary) / "worker"
+            context = get_context.return_value
+            parent, child = MagicMock(), MagicMock()
+            context.Pipe.return_value = (parent, child)
+            context.Process.return_value.start.side_effect = OSError("spawn")
+            with self.assertRaisesRegex(OSError, "spawn"):
+                ProcessWorker(voice, MagicMock(), "cpu", str(directory))
+            self.assertFalse(directory.exists())
+            parent.close.assert_called_once()
+            child.close.assert_called_once()
+            directory.mkdir()
+            (directory / "kept").write_bytes(b"owned elsewhere")
+            with self.assertRaises(FileExistsError):
+                ProcessWorker(voice, MagicMock(), "cpu", str(directory))
+            self.assertEqual((directory / "kept").read_bytes(), b"owned elsewhere")

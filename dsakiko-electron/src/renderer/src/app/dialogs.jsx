@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { X, FolderOpen, UserRound, Check, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/fields'
+import { selectPersonaCharacter } from '../features/personas/source.js'
 
 /**
  * 原生模态框提供焦点约束和 Escape 行为。
@@ -158,7 +159,7 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
       source:
         kind === 'custom'
           ? { kind, displayName: '', description: '', avatar: null }
-          : { kind, characterId: characters[0]?.id || '' }
+          : selectPersonaCharacter(definition.source, characters[0])
     })
   }
   function changeField(event) {
@@ -166,6 +167,13 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
       ...definition,
       source: { ...definition.source, [event.target.name]: event.target.value }
     })
+  }
+  function changeCharacter(event) {
+    const character = characters.find((item) => item.id === event.target.value)
+    setDefinition((previous) => ({
+      ...previous,
+      source: selectPersonaCharacter(previous.source, character)
+    }))
   }
   async function save(event) {
     event.preventDefault()
@@ -242,7 +250,7 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
       ) : (
         <label className="field-label">
           角色
-          <select name="characterId" value={source.characterId} onChange={changeField}>
+          <select name="characterId" value={source.characterId} onChange={changeCharacter}>
             {characters.map((item) => (
               <option key={item.id} value={item.id}>
                 {item.displayName}
@@ -259,7 +267,12 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
       )}
       <footer className="form-footer">
         <span />
-        <Button type="submit" disabled={pending}>
+        <Button
+          type="submit"
+          disabled={
+            pending || (source.kind === 'character' && (!source.characterId || !source.formId))
+          }
+        >
           {pending ? '正在保存…' : '保存人格'}
         </Button>
       </footer>

@@ -1,6 +1,12 @@
 # 原始代码来自：https://github.com/RVC-Boss/GPT-SoVITS/blob/main/GPT_SoVITS/text/g2pw/g2pw.py
 # This code is modified from https://github.com/mozillazg/pypinyin-g2pW
 
+from __future__ import annotations
+
+from speech.gpt_sovits_resources import BertFiles, G2pwFiles
+
+from typing import Dict, List, cast
+
 import pickle
 import os
 
@@ -12,26 +18,25 @@ from pypinyin.contrib.tone_convert import to_tone
 from .onnx_api import G2PWOnnxConverter
 
 current_file_path = os.path.dirname(__file__)
-CACHE_PATH = os.path.join(current_file_path, "polyphonic.pickle")
-PP_DICT_PATH = os.path.join(current_file_path, "polyphonic.rep")
-PP_FIX_DICT_PATH = os.path.join(current_file_path, "polyphonic-fix.rep")
+PRONUNCIATION_DICT_PATH = os.path.join(current_file_path, "polyphonic.pickle")
 
 
 class G2PWPinyin(Pinyin):
     def __init__(
         self,
-        model_dir="G2PWModel/",
-        model_source=None,
-        enable_non_tradional_chinese=True,
-        v_to_u=False,
-        neutral_tone_with_five=False,
-        tone_sandhi=False,
-        **kwargs,
-    ):
+        files: G2pwFiles,
+        bert_files: BertFiles,
+        enable_non_tradional_chinese: bool = True,
+        v_to_u: bool = False,
+        neutral_tone_with_five: bool = False,
+        tone_sandhi: bool = False,
+        **kwargs: object,
+    ) -> None:
+        """将各用途文件传递给 G2PW，分词器使用同一组 BERT 资源。"""
         self._g2pw = G2PWOnnxConverter(
-            model_dir=model_dir,
+            files=files,
+            bert_files=bert_files,
             style="pinyin",
-            model_source=model_source,
             enable_non_tradional_chinese=enable_non_tradional_chinese,
         )
         self._converter = Converter(
@@ -110,39 +115,10 @@ def _remove_dup_and_empty(lst_list):
     return new_lst_list
 
 
-def cache_dict(polyphonic_dict, file_path):
-    with open(file_path, "wb") as pickle_file:
-        pickle.dump(polyphonic_dict, pickle_file)
-
-
-def get_dict():
-    if os.path.exists(CACHE_PATH):
-        with open(CACHE_PATH, "rb") as pickle_file:
-            polyphonic_dict = pickle.load(pickle_file)
-    else:
-        polyphonic_dict = read_dict()
-        cache_dict(polyphonic_dict, CACHE_PATH)
-
-    return polyphonic_dict
-
-
-def read_dict():
-    polyphonic_dict = {}
-    with open(PP_DICT_PATH, encoding="utf-8") as f:
-        line = f.readline()
-        while line:
-            key, value_str = line.split(":")
-            value = eval(value_str.strip())
-            polyphonic_dict[key.strip()] = value
-            line = f.readline()
-    with open(PP_FIX_DICT_PATH, encoding="utf-8") as f:
-        line = f.readline()
-        while line:
-            key, value_str = line.split(":")
-            value = eval(value_str.strip())
-            polyphonic_dict[key.strip()] = value
-            line = f.readline()
-    return polyphonic_dict
+def get_dict() -> Dict[str, List[str]]:
+    """读取随推理代码发布的静态发音词典，不在只读安装目录重建缓存。"""
+    with open(PRONUNCIATION_DICT_PATH, "rb") as stream:
+        return cast(Dict[str, List[str]], pickle.load(stream))
 
 
 def correct_pronunciation(word, word_pinyins):

@@ -3,6 +3,20 @@ import { copyFile, chmod, lstat, mkdir, readdir, realpath } from 'node:fs/promis
 import { requireValue } from '../core/support.js'
 
 /**
+ * 校验资源库 models 内的文件名；用途由引用方决定，不绑定某个引擎的目录布局。
+ * @param {unknown} value 相对于 models 的路径。
+ * @returns {boolean} 是否为不越界的相对文件路径。
+ */
+export function validModelFilePath(value) {
+  return (
+    typeof value === 'string' &&
+    value.length <= 1000 &&
+    !/[\\:\0]/u.test(value) &&
+    value.split('/').every((part) => part && part !== '.' && part !== '..')
+  )
+}
+
+/**
  * 检查路径是否位于指定目录内。
  * @param {string} root 根目录。
  * @param {string} target 待检查路径。

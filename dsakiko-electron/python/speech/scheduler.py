@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .contracts import CancelledTask, FailedTask, PendingTask, SchedulerConfig, SpeechProblem, SpeechRequest, SucceededTask, TaskSnapshot, VoiceProfile
+from .runtime import remove_temporary_audio
 
 
 class RequestError(Exception):
@@ -207,6 +208,8 @@ class Scheduler:
                 await resident.worker.close()
                 if resident in self.residents:
                     self.residents.remove(resident)
+            # 失败时必须先确认 worker 退出，避免删除仍被 soundfile 写入的文件。
+            remove_temporary_audio(output)
             record.active = False
             record.touched = self.clock()
             resident.busy = False

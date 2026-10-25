@@ -1,7 +1,7 @@
 import { processUsesResources } from '../../backend/resources/process.js'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { join, delimiter } from 'node:path'
 import { problemError } from '../../shared/problems.js'
@@ -11,12 +11,9 @@ import { problemError } from '../../shared/problems.js'
  * @property {(confirmedPid?: number | null) => Promise<void>} [releaseResources] 进程退出后释放基础资源。
  * @property {(pid: number, group?: number) => Promise<void>} [bindResources] 将基础资源引用绑定至真实进程。
  * @property {import('../../shared/contracts/api.js').HostProbe} [hostProbe] 所属后端的只读探测凭据。
- * @property {string} resourceRoot 只读基础权重和词典目录。
+ * @property {{resources: object, precision: string, architecture: string, device: string}} gptSovits 已解析绝对路径的 GPT-SoVITS 启动配置。
  * @property {string} pythonExecutable 宿主配置的解释器。
- * @property {string} [assetsRoot] 应用管理的角色权重与参考音频目录。
- * @property {string} [precision] 模型精度，下次启动进程时生效。
- * @property {string} [architecture] 模型结构，下次启动进程时生效。
- * @property {string} device 推理设备。
+ * @property {string} assetsRoot 应用管理的角色权重与参考音频目录。
  * @property {number} maxConcurrent Python 最大并发推理数。
  * @property {number} maxResident Python 最大驻留模型数。
  */
@@ -25,7 +22,7 @@ import { problemError } from '../../shared/problems.js'
 export class SpeechProcess {
   /**
    * 绑定 Python 入口与启动配置，首次请求连接时才创建子进程。
-   * @param {string} pythonRoot 包含 speech 模块的目录，作为子进程工作目录。
+   * @param {string} pythonRoot 包含 speech 模块的目录，加入子进程模块搜索路径。
    * @param {string} cacheRoot 日志和临时音频目录。
    * @param {() => Promise<SpeechProcessSettings>} getSettings 启动时读取一次的宿主配置。
    */
@@ -72,14 +69,9 @@ export class SpeechProcess {
 
   /** 资源由启动前创建的 owner 保护，就绪后绑定 PID，退出后再释放。 */
   async launch(settings, release) {
-    if (!settings.resourceRoot) throw problemError('missing_resources', '请配置资源目录。')
+    if (!settings.gptSovits?.resources)
+      throw problemError('missing_resources', '请配置 GPT-SoVITS 文件清单。')
     await mkdir(join(this.cacheRoot, 'logs'), { recursive: true })
-    if (
-      !(
-        await stat(join(settings.resourceRoot, 'GPT_SoVITS', 'pretrained_models')).catch(() => null)
-      )?.isDirectory()
-    )
-      throw problemError('missing_resources', '资源库中缺少 GPT-SoVITS 基础模型。')
     const token = randomBytes(32).toString('hex')
     const log = createWriteStream(join(this.cacheRoot, 'logs', 'speech.log'), { flags: 'a' })
     const child = spawn(
@@ -89,17 +81,10 @@ export class SpeechProcess {
         '-u',
         '-m',
         'speech.server',
-        '--root',
-        settings.resourceRoot,
         '--output',
         join(this.cacheRoot, 'speech-temp'),
-        ...(settings.assetsRoot ? ['--assets-root', settings.assetsRoot] : []),
-        '--precision',
-        settings.precision ?? 'float32',
-        '--architecture',
-        settings.architecture ?? 'v2',
-        '--device',
-        settings.device,
+        '--assets-root',
+        settings.assetsRoot,
         '--concurrent',
         String(settings.maxConcurrent),
         '--resident',
@@ -110,16 +95,21 @@ export class SpeechProcess {
         env: {
           ...process.env,
           DSAKIKO_SPEECH_TOKEN: token,
+          DSAKIKO_SPEECH_HOST_PID: String(process.pid),
           DSAKIKO_HOST_PROBE: settings.hostProbe ? JSON.stringify(settings.hostProbe) : '',
           PYTHONUNBUFFERED: '1',
           PYTHONDONTWRITEBYTECODE: '1',
           PYTHONPATH: [this.pythonRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter)
         },
         detached: process.platform !== 'win32',
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe']
       }
     )
     this.child = child
+    // spawn 失败或子进程提前退出时，关闭的 stdin 不能产生未处理的 EPIPE。
+    child.stdin.on('error', () => {})
+    // 通过启动管道传清单，避免命令行和环境变量长度限制，也不落盘模型视图。
+    child.stdin.end(JSON.stringify(settings.gptSovits) + '\n')
     this.childRelease = new Promise((resolve) => {
       let finished = false
       const finish = () => {

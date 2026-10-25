@@ -40,9 +40,6 @@ async function startApplication() {
       hostProbe: transport.healthProbe,
       pythonExecutable: process.env.DSAKIKO_PYTHON || 'python3',
       assetsRoot: directories.resourceLibraryRoot,
-      precision: startup.precision,
-      architecture: startup.architecture,
-      device: startup.device,
       maxConcurrent: startup.maxConcurrentInferences,
       maxResident: startup.maxResidentModels
     }
@@ -103,12 +100,14 @@ async function startApplication() {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else await mainWindow.loadFile(fileURLToPath(new URL('../renderer/index.html', import.meta.url)))
 }
-// 先关闭外部命令入口，再结算业务与 Python；不以固定超时冒充 worker 已退出。
+// 语音先拒绝新任务并完成音频交接；此时保留心跳，避免 Python 抢先清理输出。
 app.on('before-quit', (event) => {
   if (quitting || !instance.primary) return
   event.preventDefault()
   quitting = true
   Promise.resolve()
+    .then(() => backend?.speech.close?.())
+    .catch((error) => console.error('语音交接失败', error))
     .then(() => transport?.close())
     .catch((error) => console.error('传输关闭失败', error))
     .then(() => backend?.close())

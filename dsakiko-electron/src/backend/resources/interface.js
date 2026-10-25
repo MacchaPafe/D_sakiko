@@ -1,5 +1,4 @@
 import { processUsesResources } from './process.js'
-import { validSpeechResourcePath } from '../../shared/contracts/speech-resources.js'
 import { AssetCollector } from './collector.js'
 import { extractAssetReferences } from './references.js'
 import path from 'node:path'
@@ -14,7 +13,7 @@ import {
   copyFile,
   chmod
 } from 'node:fs/promises'
-import { containedPath, copyPackage, isWithin, resourcePath } from './files.js'
+import { containedPath, copyPackage, isWithin, resourcePath, validModelFilePath } from './files.js'
 import {
   copy,
   requireValue,
@@ -197,7 +196,7 @@ export class MediaAssets {
           ? info.purpose === 'model' &&
               info.kind === 'file' &&
               location.relativePath.startsWith('models/') &&
-              validSpeechResourcePath(location.relativePath.slice('models/'.length))
+              validModelFilePath(location.relativePath.slice('models/'.length))
           : location.relativePath === purpose_to_locations[info.purpose][1] + '/' + id,
         'invalid_asset_index'
       )
@@ -398,7 +397,7 @@ export class MediaAssets {
    */
   async registerModelFiles(names, owner) {
     requireValue(
-      Array.isArray(names) && names.every(validSpeechResourcePath),
+      Array.isArray(names) && names.every(validModelFilePath),
       'invalid_resource_manifest'
     )
     this.validateOwner(owner)

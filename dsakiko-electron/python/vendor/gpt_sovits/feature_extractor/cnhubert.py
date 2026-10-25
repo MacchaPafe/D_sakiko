@@ -1,4 +1,8 @@
 # 原始代码来自：https://github.com/RVC-Boss/GPT-SoVITS/blob/main/GPT_SoVITS/feature_extractor/cnhubert.py
+from __future__ import annotations
+
+from speech.gpt_sovits_resources import HubertFiles, load_hubert
+
 import torch
 import os
 from transformers import logging as tf_logging
@@ -16,20 +20,11 @@ from transformers import (
 
 import torch.nn as nn
 
-cnhubert_base_path = None
-
-
 class CNHubert(nn.Module):
-    def __init__(self, base_path: str = None):
+    def __init__(self, files: HubertFiles) -> None:
+        """从独立文件加载 HuBERT，不扫描模型目录。"""
         super().__init__()
-        if base_path is None:
-            base_path = cnhubert_base_path
-        if os.path.exists(base_path):
-            ...
-        else:
-            raise FileNotFoundError(base_path)
-        self.model = HubertModel.from_pretrained(base_path, local_files_only=True)
-        self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(base_path, local_files_only=True)
+        self.model, self.feature_extractor = load_hubert(files)
 
     def forward(self, x):
         input_values = self.feature_extractor(x, return_tensors="pt", sampling_rate=16000).input_values.to(x.device)

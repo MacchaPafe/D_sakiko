@@ -1,4 +1,7 @@
-import { validSpeechResources } from '../../shared/contracts/speech-resources.js'
+import {
+  validGptSovitsResources,
+  gptSovitsArchitectures
+} from '../../shared/contracts/speech-resources.js'
 import { ConfigItem, config, isConfigObject, parseConfig } from '../core/config.js'
 
 /** 模型生成参数的字段定义。连接 ID 与模型 ID 无固定默认值，需由用户显式选择。 */
@@ -65,15 +68,17 @@ export const settingsDefinition = {
   generation: generationDefinition,
   speech: speechDefinition,
   speechStartup: {
-    resources: new ConfigItem({
-      default: { shared: {}, versions: {} },
-      validate: validSpeechResources,
-      correct: (value) => value,
-      message: '必须提供由逐文件 AssetRef 组成的 shared 与 versions 清单'
-    }),
-    device: config.enum({ default: 'cpu', values: ['cpu', 'cuda', 'mps'] }),
-    precision: config.enum({ default: 'float32', values: ['float32', 'float16'] }),
-    architecture: config.string({ default: 'v2', minLength: 1 }),
+    gptSovits: {
+      resources: new ConfigItem({
+        default: { shared: {}, versions: {} },
+        validate: validGptSovitsResources,
+        correct: (value) => value,
+        message: '必须提供按 GPT-SoVITS 文件用途组织的 shared 与 versions 清单'
+      }),
+      device: config.enum({ default: 'cpu', values: ['cpu', 'cuda', 'mps'] }),
+      precision: config.enum({ default: 'float32', values: ['float32', 'float16'] }),
+      architecture: config.enum({ default: 'v2', values: gptSovitsArchitectures })
+    },
     maxConcurrentInferences: config.number({ default: 1, integer: true, min: 1 }),
     maxResidentModels: config.number({ default: 1, integer: true, min: 1 })
   },

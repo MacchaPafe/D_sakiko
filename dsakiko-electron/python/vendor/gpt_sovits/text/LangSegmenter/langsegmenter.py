@@ -1,4 +1,4 @@
-import os
+from speech.gpt_sovits_resources import text_resources
 # 原始代码来自：https://github.com/RVC-Boss/GPT-SoVITS/blob/main/GPT_SoVITS/text/LangSegmenter/langsegmenter.py
 import logging
 import re
@@ -8,9 +8,8 @@ import jieba
 jieba.setLogLevel(logging.CRITICAL)
 
 # 更改fast_langdetect大模型位置
-from pathlib import Path
 import fast_langdetect
-fast_langdetect.infer._default_detector = fast_langdetect.infer.LangDetector(fast_langdetect.infer.LangDetectConfig(custom_model_path=str(Path(os.environ["DSAKIKO_PRETRAINED_ROOT"]) / "fast_langdetect" / "lid.176.bin")))
+fast_langdetect.infer._default_detector = fast_langdetect.infer.LangDetector(fast_langdetect.infer.LangDetectConfig(custom_model_path=text_resources().language_detector))
 
 
 from split_lang import LangSplitter

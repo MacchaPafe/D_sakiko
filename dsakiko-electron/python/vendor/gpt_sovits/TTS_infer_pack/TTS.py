@@ -13,17 +13,14 @@ from dataclasses import dataclass
 import torchaudio
 from tqdm import tqdm
 
-now_dir = os.getcwd()
-sys.path.append(now_dir)
 
-from typing import List, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import ffmpeg
 import librosa
 import numpy as np
 import torch
 import torch.nn.functional as F
-import yaml
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from feature_extractor.cnhubert import CNHubert
 from module.mel_processing import mel_spectrogram_torch, spectrogram_torch
@@ -31,6 +28,7 @@ from module.models import SynthesizerTrn, SynthesizerTrnV3, Generator
 from peft import LoraConfig, get_peft_model
 from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
 from transformers import AutoModelForMaskedLM, AutoTokenizer
+from speech.gpt_sovits_resources import BertFiles, HubertFiles, GptSovitsResources, file_path, load_bert
 
 from tools.audio_sr import AP_BWE
 from tools.i18n.i18n import I18nAuto, scan_language_list
@@ -196,51 +194,6 @@ class SharedFrontendModels:
             torch.mps.empty_cache()
 
 
-# configs/tts_infer.yaml
-"""
-custom:
-  bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
-  cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
-  device: cpu
-  is_half: false
-  t2s_weights_path: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
-  vits_weights_path: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth
-  version: v2
-v1:
-  bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
-  cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
-  device: cpu
-  is_half: false
-  t2s_weights_path: GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt
-  vits_weights_path: GPT_SoVITS/pretrained_models/s2G488k.pth
-  version: v1
-v2:
-  bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
-  cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
-  device: cpu
-  is_half: false
-  t2s_weights_path: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
-  vits_weights_path: GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth
-  version: v2
-v3:
-  bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
-  cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
-  device: cpu
-  is_half: false
-  t2s_weights_path: GPT_SoVITS/pretrained_models/s1v3.ckpt
-  vits_weights_path: GPT_SoVITS/pretrained_models/s2Gv3.pth
-  version: v3
-v4:
-  bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
-  cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
-  device: cpu
-  is_half: false
-  t2s_weights_path: GPT_SoVITS/pretrained_models/s1v3.ckpt
-  version: v4
-  vits_weights_path: GPT_SoVITS/pretrained_models/gsv-v4-pretrained/s2Gv4.pth
-"""
-
-
 def set_seed(seed: int):
     seed = int(seed)
     seed = seed if seed != -1 else random.randint(0, 2**32 - 1)
@@ -292,235 +245,58 @@ def check_cuda_graph_support(device: str = "cuda") -> bool:
 
 
 class TTS_Config:
-    default_configs = {
-        "v1": {
-            "device": "cpu",
-            "is_half": False,
-            "version": "v1",
-            "t2s_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"),
-            "vits_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "s2G488k.pth"),
-            "cnhuhbert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-hubert-base"),
-            "bert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-roberta-wwm-ext-large"),
-        },
-        "v2": {
-            "device": "cpu",
-            "is_half": False,
-            "version": "v2",
-            "t2s_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt"),
-            "vits_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "gsv-v2final-pretrained/s2G2333k.pth"),
-            "cnhuhbert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-hubert-base"),
-            "bert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-roberta-wwm-ext-large"),
-        },
-        "v3": {
-            "device": "cpu",
-            "is_half": False,
-            "version": "v3",
-            "t2s_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "s1v3.ckpt"),
-            "vits_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "s2Gv3.pth"),
-            "cnhuhbert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-hubert-base"),
-            "bert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-roberta-wwm-ext-large"),
-        },
-        "v4": {
-            "device": "cpu",
-            "is_half": False,
-            "version": "v4",
-            "t2s_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "s1v3.ckpt"),
-            "vits_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "gsv-v4-pretrained/s2Gv4.pth"),
-            "cnhuhbert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-hubert-base"),
-            "bert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-roberta-wwm-ext-large"),
-        },
-        "v2Pro": {
-            "device": "cpu",
-            "is_half": False,
-            "version": "v2Pro",
-            "t2s_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "s1v3.ckpt"),
-            "vits_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "v2Pro/s2Gv2Pro.pth"),
-            "cnhuhbert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-hubert-base"),
-            "bert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-roberta-wwm-ext-large"),
-        },
-        "v2ProPlus": {
-            "device": "cpu",
-            "is_half": False,
-            "version": "v2ProPlus",
-            "t2s_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "s1v3.ckpt"),
-            "vits_weights_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "v2Pro/s2Gv2ProPlus.pth"),
-            "cnhuhbert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-hubert-base"),
-            "bert_base_path": os.path.join(os.environ.get("DSAKIKO_PRETRAINED_ROOT", "pretrained_models"), "chinese-roberta-wwm-ext-large"),
-        },
-    }
-    configs: dict = None
-    v1_languages: list = ["auto", "en", "zh", "ja", "all_zh", "all_ja"]
-    v2_languages: list = ["auto", "auto_yue", "en", "zh", "ja", "yue", "ko", "all_zh", "all_ja", "all_yue", "all_ko"]
-    languages: list = v2_languages
-    mute_tokens: dict = {
-        "v1" : 486,
-        "v2" : 486,
-        "v2Pro": 486,
-        "v2ProPlus": 486,
-        "v3" : 486,
-        "v4" : 486,
-    }
-    mute_emb_sim_matrix: torch.Tensor = None
-    # "all_zh",#全部按中文识别
-    # "en",#全部按英文识别#######不变
-    # "all_ja",#全部按日文识别
-    # "all_yue",#全部按中文识别
-    # "all_ko",#全部按韩文识别
-    # "zh",#按中英混合识别####不变
-    # "ja",#按日英混合识别####不变
-    # "yue",#按粤英混合识别####不变
-    # "ko",#按韩英混合识别####不变
-    # "auto",#多语种启动切分识别语种
-    # "auto_yue",#多语种启动切分识别语种
+    """仅承接宿主明确提供的配置，不读写独立 YAML，也不回退到默认模型目录。"""
 
-    def __init__(self, configs: Union[dict, str] = None):
-        # 设置默认配置文件路径
-        configs_base_path: str = "configs/"
-        os.makedirs(configs_base_path, exist_ok=True)
-        self.configs_path: str = os.path.join(configs_base_path, "tts_infer.yaml")
+    v1_languages = ["auto", "en", "zh", "ja", "all_zh", "all_ja"]
+    v2_languages = ["auto", "auto_yue", "en", "zh", "ja", "yue", "ko", "all_zh", "all_ja", "all_yue", "all_ko"]
+    mute_tokens = {version: 486 for version in ("v1", "v2", "v4", "v2Pro", "v2ProPlus")}
 
-        if configs in ["", None]:
-            if not os.path.exists(self.configs_path):
-                self.save_configs()
-                print(f"Create default config file at {self.configs_path}")
-            configs: dict = deepcopy(self.default_configs)
-
-        if isinstance(configs, str):
-            self.configs_path = configs
-            configs: dict = self._load_configs(self.configs_path)
-
-        assert isinstance(configs, dict)
-        configs_ = deepcopy(self.default_configs)
-        configs_.update(configs)
-        self.configs: dict = configs_.get("custom", configs_["v2"])
-        self.default_configs = deepcopy(configs_)
-
-        self.device = self.configs.get("device", torch.device("cpu"))
-        if "cuda" in str(self.device) and not torch.cuda.is_available():
-            print("Warning: CUDA is not available, set device to CPU.")
-            self.device = torch.device("cpu")
-
-        self.is_half = self.configs.get("is_half", False)
-        if str(self.device) == "cpu" and self.is_half:
-            print(f"Warning: Half precision is not supported on CPU, set is_half to False.")
-            self.is_half = False
-
-        version = self.configs.get("version", None)
-        self.version = version
-        assert self.version in ["v1", "v2", "v3", "v4", "v2Pro", "v2ProPlus"], "Invalid version!"
-        self.t2s_weights_path = self.configs.get("t2s_weights_path", None)
-        self.vits_weights_path = self.configs.get("vits_weights_path", None)
-        self.bert_base_path = self.configs.get("bert_base_path", None)
-        self.cnhuhbert_base_path = self.configs.get("cnhuhbert_base_path", None)
-        self.languages = self.v1_languages if self.version == "v1" else self.v2_languages
-
-        self.use_vocoder: bool = False
-
-        if (self.t2s_weights_path in [None, ""]) or (not os.path.exists(self.t2s_weights_path)):
-            self.t2s_weights_path = self.default_configs[version]["t2s_weights_path"]
-            print(f"fall back to default t2s_weights_path: {self.t2s_weights_path}")
-        if (self.vits_weights_path in [None, ""]) or (not os.path.exists(self.vits_weights_path)):
-            self.vits_weights_path = self.default_configs[version]["vits_weights_path"]
-            print(f"fall back to default vits_weights_path: {self.vits_weights_path}")
-        if (self.bert_base_path in [None, ""]) or (not os.path.exists(self.bert_base_path)):
-            self.bert_base_path = self.default_configs[version]["bert_base_path"]
-            print(f"fall back to default bert_base_path: {self.bert_base_path}")
-        if (self.cnhuhbert_base_path in [None, ""]) or (not os.path.exists(self.cnhuhbert_base_path)):
-            self.cnhuhbert_base_path = self.default_configs[version]["cnhuhbert_base_path"]
-            print(f"fall back to default cnhuhbert_base_path: {self.cnhuhbert_base_path}")
-        self.update_configs()
-
+    def __init__(self, configs: Dict[str, object], resources: GptSovitsResources) -> None:
+        """固定角色输入和基础资源，模型加载过程不会改写宿主设置。"""
+        self.resources = resources
+        self.device = torch.device(str(configs["device"]))
+        self.is_half = bool(configs["is_half"])
+        self.version = str(configs["version"])
+        if self.version not in self.mute_tokens:
+            raise ValueError("不支持的 GPT-SoVITS 架构：" + self.version)
+        self.t2s_weights_path = file_path(configs["t2s_weights_path"], "角色 GPT 权重")
+        self.vits_weights_path = file_path(configs["vits_weights_path"], "角色 SoVITS 权重")
+        self.update_version(self.version)
+        self.use_vocoder = False
         self.max_sec = None
-        self.hz: int = 50
-        self.semantic_frame_rate: str = "25hz"
-        self.segment_size: int = 20480
-        self.filter_length: int = 2048
-        self.sampling_rate: int = 32000
-        self.hop_length: int = 640
-        self.win_length: int = 2048
-        self.n_speakers: int = 300
-
-    def _load_configs(self, configs_path: str) -> dict:
-        if os.path.exists(configs_path):
-            ...
-        else:
-            print(i18n("路径不存在,使用默认配置"))
-            self.save_configs(configs_path)
-        with open(configs_path, "r", encoding="utf-8") as f:
-            configs = yaml.load(f, Loader=yaml.FullLoader)
-
-        return configs
-
-    def save_configs(self, configs_path: str = None) -> None:
-        configs = deepcopy(self.default_configs)
-        if self.configs is not None:
-            configs["custom"] = self.update_configs()
-
-        if configs_path is None:
-            configs_path = self.configs_path
-        with open(configs_path, "w") as f:
-            yaml.dump(configs, f)
-
-    def update_configs(self):
-        self.config = {
-            "device": str(self.device),
-            "is_half": self.is_half,
-            "version": self.version,
-            "t2s_weights_path": self.t2s_weights_path,
-            "vits_weights_path": self.vits_weights_path,
-            "bert_base_path": self.bert_base_path,
-            "cnhuhbert_base_path": self.cnhuhbert_base_path,
-        }
-        return self.config
+        self.hz = 50
+        self.semantic_frame_rate = "25hz"
+        self.segment_size = 20480
+        self.filter_length = 2048
+        self.sampling_rate = 32000
+        self.hop_length = 640
+        self.win_length = 2048
+        self.n_speakers = 300
+        self.mute_emb_sim_matrix = None
 
     def update_version(self, version: str) -> None:
+        """根据权重结构选择文本符号表。"""
         self.version = version
-        self.languages = self.v1_languages if self.version == "v1" else self.v2_languages
+        self.languages = self.v1_languages if version == "v1" else self.v2_languages
 
-    def build_share_key_fragment(self) -> tuple[object, ...]:
-        """构造用于共享判定的配置摘要。"""
+    def build_share_key_fragment(self) -> Tuple[object, ...]:
+        """共享判定包含真实资源快照，不依赖目录名。"""
         return (
-            self.version,
-            str(self.device),
-            self.is_half,
-            self.bert_base_path,
-            self.cnhuhbert_base_path,
-            self.use_vocoder,
-            self.sampling_rate,
-            self.hop_length,
-            self.filter_length,
-            self.n_speakers,
+            self.version, str(self.device), self.is_half, self.resources,
+            self.use_vocoder, self.sampling_rate, self.hop_length,
+            self.filter_length, self.n_speakers,
         )
-
-    def __str__(self):
-        self.configs = self.update_configs()
-        string = "TTS Config".center(100, "-") + "\n"
-        for k, v in self.configs.items():
-            string += f"{str(k).ljust(20)}: {str(v)}\n"
-        string += "-" * 100 + "\n"
-        return string
-
-    def __repr__(self):
-        return self.__str__()
-
-    def __hash__(self):
-        return hash(self.configs_path)
-
-    def __eq__(self, other):
-        return isinstance(other, TTS_Config) and self.configs_path == other.configs_path
 
 
 class TTS:
     def __init__(
         self,
-        configs: Union[dict, str, TTS_Config],
+        configs: TTS_Config,
         init_mode: str = "full",
         frontend_models: SharedFrontendModels | None = None,
-    ):
-        if isinstance(configs, TTS_Config):
-            self.configs = configs
-        else:
-            self.configs: TTS_Config = TTS_Config(configs)
+    ) -> None:
+        """使用宿主固定的资源快照装配独立推理实例。"""
+        self.configs = configs
 
         self.t2s_model: Text2SemanticLightningModule = None
         self.vits_model: Union[SynthesizerTrn, SynthesizerTrnV3] = None
@@ -585,21 +361,20 @@ class TTS:
 
     @staticmethod
     def create_frontend_models(
-        bert_base_path: str,
-        cnhuhbert_base_path: str,
+        bert_files: BertFiles,
+        hubert_files: HubertFiles,
         device: torch.device | str,
         is_half: bool,
     ) -> SharedFrontendModels:
         """创建一组可被 TTS 实例持有或共享的前端模型。"""
         target_device = torch.device(device)
-        bert_tokenizer = AutoTokenizer.from_pretrained(bert_base_path)
-        bert_model = AutoModelForMaskedLM.from_pretrained(bert_base_path)
+        bert_tokenizer, bert_model = load_bert(bert_files)
         bert_model = bert_model.eval()
         bert_model = bert_model.to(target_device)
         if is_half and str(target_device) != "cpu":
             bert_model = bert_model.half()
 
-        cnhuhbert_model = CNHubert(cnhuhbert_base_path)
+        cnhuhbert_model = CNHubert(hubert_files)
         cnhuhbert_model = cnhuhbert_model.eval()
         cnhuhbert_model = cnhuhbert_model.to(target_device)
         if is_half and str(target_device) != "cpu":
@@ -641,8 +416,8 @@ class TTS:
             self.attach_frontend_models(self._shared_frontend_models)
             return
         frontend_models = self.create_frontend_models(
-            self.configs.bert_base_path,
-            self.configs.cnhuhbert_base_path,
+            self.configs.resources.bert,
+            self.configs.resources.hubert,
             self.configs.device,
             self.configs.is_half,
         )
@@ -687,16 +462,17 @@ class TTS:
         setattr(self, attr_name, None)
         self.empty_cache()
 
-    def init_cnhuhbert_weights(self, base_path: str):
-        self.cnhuhbert_model = CNHubert(base_path)
+    def init_cnhuhbert_weights(self, files: HubertFiles) -> None:
+        """按显式配套文件加载 HuBERT。"""
+        self.cnhuhbert_model = CNHubert(files)
         self.cnhuhbert_model = self.cnhuhbert_model.eval()
         self.cnhuhbert_model = self.cnhuhbert_model.to(self.configs.device)
         if self.configs.is_half and str(self.configs.device) != "cpu":
             self.cnhuhbert_model = self.cnhuhbert_model.half()
 
-    def init_bert_weights(self, base_path: str):
-        self.bert_tokenizer = AutoTokenizer.from_pretrained(base_path)
-        self.bert_model = AutoModelForMaskedLM.from_pretrained(base_path)
+    def init_bert_weights(self, files: BertFiles) -> None:
+        """按显式配套文件加载 BERT。"""
+        self.bert_tokenizer, self.bert_model = load_bert(files)
         self.bert_model = self.bert_model.eval()
         self.bert_model = self.bert_model.to(self.configs.device)
         if self.configs.is_half and str(self.configs.device) != "cpu":
@@ -705,19 +481,14 @@ class TTS:
     def init_vits_weights(
         self,
         weights_path: str,
-        save: bool = True,
         checkpoint: dict[str, object] | None = None,
-    ):
-        """初始化 SoVITS 权重，可选是否同步保存配置。"""
+    ) -> None:
+        """初始化角色 SoVITS 权重，LoRA 底模从显式资源取得。"""
         self.configs.vits_weights_path = weights_path
         version, model_version, if_lora_v3 = get_sovits_version_from_path_fast(weights_path)
         if "Pro" in model_version:
             self.init_sv_model()
-        path_sovits = self.configs.default_configs[model_version]["vits_weights_path"]
-
-        if if_lora_v3 == True and os.path.exists(path_sovits) == False:
-            info = path_sovits + i18n("SoVITS %s 底模缺失，无法加载相应 LoRA 权重" % model_version)
-            raise FileExistsError(info)
+        path_sovits = self.configs.resources.require("base_sovits") if if_lora_v3 else None
 
         self._dispose_model_attr("vits_model")
         dict_s2 = deepcopy(checkpoint) if checkpoint is not None else load_sovits_new(weights_path)
@@ -771,7 +542,8 @@ class TTS:
             )
             self.configs.use_vocoder = True
             self.init_vocoder(model_version)
-            if "pretrained" not in weights_path and hasattr(vits_model, "enc_q"):
+            # enc_q 是训练用编码器；是否存在应由权重内容决定，重命名不能改变网络。
+            if not any(key.startswith("enc_q.") for key in dict_s2["weight"]) and hasattr(vits_model, "enc_q"):
                 del vits_model.enc_q
 
         self.is_v2pro = model_version in {"v2Pro", "v2ProPlus"}
@@ -799,21 +571,13 @@ class TTS:
         if self.configs.is_half and str(self.configs.device) != "cpu":
             self.vits_model = self.vits_model.half()
 
-        if save:
-            self.configs.save_configs()
-
-
-
     def init_t2s_weights(
         self,
         weights_path: str,
-        save: bool = True,
         checkpoint: dict[str, object] | None = None,
-    ):
-        """初始化 Text2Semantic 权重，可选是否同步保存配置。"""
+    ) -> None:
+        """初始化角色 Text2Semantic 权重，不写回宿主设置。"""
         self.configs.t2s_weights_path = weights_path
-        if save:
-            self.configs.save_configs()
         self.configs.hz = 50
         self._dispose_model_attr("t2s_model")
         self._cuda_graph_runner = None
@@ -835,7 +599,8 @@ class TTS:
         sim_matrix = F.cosine_similarity(mute_emb.float(), codebook.float(), dim=-1)
         self.configs.mute_emb_sim_matrix = sim_matrix
 
-    def init_vocoder(self, version: str):
+    def init_vocoder(self, version: str) -> None:
+        """按架构装配声码器，权重位置由启动资源明确指定。"""
         if version == "v3":
             if self.vocoder is not None and self.vocoder.__class__.__name__ == "BigVGAN":
                 return
@@ -867,7 +632,7 @@ class TTS:
             )
             self.vocoder.remove_weight_norm()
             state_dict_g = torch.load(
-                "%s/pretrained_models/gsv-v4-pretrained/vocoder.pth" % (now_dir,),
+                self.configs.resources.require("vocoder"),
                 map_location="cpu",
                 weights_only=False,
             )
@@ -895,18 +660,14 @@ class TTS:
             print(i18n("你没有下载超分模型的参数，因此不进行超分。如想超分请先参照教程把文件下载好"))
             self.sr_model_not_exist = True
 
-    def init_sv_model(self):
+    def init_sv_model(self) -> None:
+        """加载当前架构需要的说话人编码器，不扫描模型目录。"""
         if self.sv_model is not None:
             return
-        self.sv_model = SV(self.configs.device, self.configs.is_half)
+        self.sv_model = SV(self.configs.device, self.configs.is_half, self.configs.resources.require("speaker_encoder"))
 
-    def enable_half_precision(self, enable: bool = True, save: bool = True):
-        """
-        To enable half precision for the TTS model.
-        Args:
-            enable: bool, whether to enable half precision.
-
-        """
+    def enable_half_precision(self, enable: bool = True) -> None:
+        """切换当前实例精度，共享前端仍遵守已有精度约束。"""
         if str(self.configs.device) == "cpu" and enable:
             print("Half precision is not supported on CPU.")
             return
@@ -916,8 +677,6 @@ class TTS:
 
         self.configs.is_half = enable
         self.precision = torch.float16 if enable else torch.float32
-        if save:
-            self.configs.save_configs()
         if enable:
             if self.t2s_model is not None:
                 self.t2s_model = self.t2s_model.half()
@@ -941,18 +700,12 @@ class TTS:
             if self.vocoder is not None:
                 self.vocoder = self.vocoder.float()
 
-    def set_device(self, device: torch.device, save: bool = True):
-        """
-        To set the device for all models.
-        Args:
-            device: torch.device, the device to use for all models.
-        """
+    def set_device(self, device: torch.device) -> None:
+        """移动当前实例，共享前端仍遵守已有设备约束。"""
         if self._shared_frontend_models is not None and str(self._shared_frontend_models.device) != str(device):
             raise ValueError("当前 TTS 借用了共享前端模型，不能单独移动前端设备。")
 
         self.configs.device = device
-        if save:
-            self.configs.save_configs()
         if self.t2s_model is not None:
             self.t2s_model = self.t2s_model.to(device)
         if self.vits_model is not None:
@@ -1837,20 +1590,8 @@ class TTS:
                     super_sampling if self.configs.use_vocoder and self.configs.version == "v3" else False,
                 )
 
-        except Exception as e:
-            traceback.print_exc()
-            # 必须返回一个空音频, 否则会导致显存不释放。
-            yield 16000, np.zeros(int(16000), dtype=np.int16)
-            # 重置模型, 否则会导致显存释放不完全。
-            del self.t2s_model
-            del self.vits_model
-            self.t2s_model = None
-            self.vits_model = None
-            self._cuda_graph_runner = None
-            self.init_t2s_weights(self.configs.t2s_weights_path)
-            self.init_vits_weights(self.configs.vits_weights_path)
-            raise e
         finally:
+            # worker 会报告失败并回收进程；不能先 yield 静音，让单次取值的调用方误报成功。
             self.empty_cache()
 
     def empty_cache(self):

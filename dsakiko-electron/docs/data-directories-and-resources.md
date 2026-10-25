@@ -12,7 +12,7 @@
 | ---------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
 | 应用数据         | 设置、角色与对话身份定义、聊天文本、资源登记信息、聊天图片                           | 长期保留，本阶段不提供应用内清理功能                       |
 | 资源库           | 所有大型模型，包括 GPT-SoVITS、Embedding、Reranker 等模型；Live2D 模型包；保留的音频 | 独立于安装包和应用数据，可放在其他磁盘；选择清理后续再做   |
-| 缓存与临时文件   | 实际需要的下载中间文件、文件交接暂存、可丢弃的派生文件及运行日志                     | 不作为用户数据的唯一保存位置；不新增缓存管理或自动清理功能 |
+| 缓存与临时文件   | 实际需要的下载中间文件、文件交接暂存、可丢弃的派生文件及运行日志                     | 不作为用户数据的唯一保存位置；语音运行目录按生命周期清理，暂无通用缓存管理 |
 | 随程序发布的文件 | 程序代码、固定提示词模板、图标及其他内置文件                                         | 随安装包发布，运行时只读                                   |
 
 设置缺失时使用默认值，但设置文件损坏不能直接当成首次启动并覆盖。默认值属于程序，用户保存的设置属于应用数据。
@@ -131,6 +131,8 @@ macOS 正式发布采用标准 `.app` 应用包。运行时不在包内保存设
 
 目录迁移、容量统计、资源管理页面、缓存配额与自动清理、外部模型原地挂载均暂缓。`collectUnused` 已提供显式调用，只清理索引中登记且无人持有的资源，不按目录类别整批删除应用数据。
 
+2026-10-25 补充：语音运行目录已有专门的生命周期清理，不属于上述暂缓的通用缓存配额或清理功能。正常退出先完成音频导入、确认 worker 结束，再删除本次运行目录；启动时依据归属记录回收已结束的运行。仍存活、无法确认归属或无标记的旧目录保留，Windows 沿用主进程存活判断。日志、模型原件和资源库中的已保存音频不在此范围。详见 [语音运行目录清理](../python/speech/README.md#运行目录清理)。
+
 ### 启动配置与兼容限制
 
 - `DSAKIKO_DATA_DIR` 对应应用数据，`DSAKIKO_RESOURCE_LIBRARY_DIR` 对应资源库，`DSAKIKO_CACHE_DIR` 对应缓存。开发默认值分别为 `.local/core-v1`、`.local/library`、`.local/cache`。三个根目录不得重叠，打包后的宿主拒绝与安装包重叠的可写位置。
@@ -231,27 +233,27 @@ const result = await client.assets.collectUnused({
 
 `assets.createDraft(references)` 可以直接保护已有资源；编辑中通过 `addDraftAssets` 增加保护。过期草稿不能续期或被隐式复活，需要明确创建新草稿；资源已经被清理时重建会报错。正式客户端提供 `assets.observeLeaseProblems(listener)` 和 `assets.renewResources()`：前者报告续期失败，后者供恢复连接或回到前台时主动核对。过期身份停止自动续期，暂时网络错误继续重试。这里只提供客户端能力，尚未增加页面呈现。
 
-## 基础模型的逐文件清单
+## GPT-SoVITS 显式文件清单
 
-`speechStartup.resources` 保存 `{ shared, versions }`，两层文件集合都是“相对于基础资源根目录的文件名 → AssetRef”。例如版本名称使用 Python 的架构标识 v2ProPlus、v4。设置 owner 持有整个清单；切换 speechStartup.architecture 不会卸载其他已配置版本。删除某版本清单后，只释放不再被共享、其他版本或运行进程持有的文件。
+`speechStartup.gptSovits` 保存 `architecture`、`precision`、`device` 和 `resources`。资源清单仍按 `{ shared, versions }` 组织，但键表示用途，不再表示历史目录路径：
 
-可信后端入口 `backend.speechResources.registerDirectory({ shared, versions }, options)` 接受文件名数组，登记已经位于 `<resourceLibraryRoot>/models/` 中的文件，再提交设置。只允许 `GPT_SoVITS/pretrained_models/` 和 `GPT_SoVITS/text/G2PWModel/` 下的普通文件，拒绝符号链接和越界路径；同一路径重复登记复用已有 ID。登记位置以 locations.registered 标明，仍逐文件受普通 owner 和清理规则管理。这个入口不接收任意外部目录，不复制或移动文件，不通过 HTTP 暴露。
+| 分组 | 文件用途 |
+| --- | --- |
+| `shared.bert` | `config`、`weights`、`tokenizer` |
+| `shared.hubert` | `config`、`weights`、`featureExtractor` |
+| `shared.g2pw` | `model`、`config`、`polyphonicCharacters`、`monophonicCharacters`、`bopomofoToPinyin`、`characterBopomofo` |
+| `shared.languageDetector` | `model` |
+| `versions[architecture]` | 按需提供 `baseSovits`、`vocoder`、`speakerEncoder` |
 
-```js
-await backend.speechResources.registerDirectory({
-  shared: [
-    'GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/config.json'
-    // 按实际模型补齐全部权重、分词器、HuBERT、G2PW 等配套文件。
-  ],
-  versions: {
-    v4: ['GPT_SoVITS/pretrained_models/gsv-v4-pretrained/s2Gv4.pth']
-  }
-})
-```
+每个文件项保存一个 `AssetRef`。设置 owner 持有整个清单，切换架构不卸载其他版本；启动进程仅持有共享文件与当前架构文件。保存时允许缺项，但已有引用必须指向 model 用途的普通文件。启动时共享文件必须齐全，v4 还需要 vocoder，v2Pro/v2ProPlus 需要 speakerEncoder；baseSovits 在加载 LoRA 角色时检查。不支持的 v3/BigVGAN 不进入启动流程。
 
-上例仅展示调用结构，不是完整可推理的模型清单。未配置当前架构时，聊天和设置仍可使用，启动语音才返回 missing_resources。清单也可以引用通过已有文件导入能力获得的模型 AssetRef，保存设置会验证每项都是 model 用途的文件。
+可信后端可通过已有资源导入接口获得引用，也可用 `assets.registerModelFiles(names, owner)` 登记已经位于 `<resourceLibraryRoot>/models/` 内的普通文件。这个内部登记接口拒绝越界和符号链接，但不要求 GPT-SoVITS 目录名。同一路径复用已有 ID。登记后把引用写入 `settings.set('speechStartup.gptSovits.resources', manifest)`，交接期间保留 owner。旧 `registerDirectory` 入口和路径型清单已删除，无迁移或兼容分支。
 
-Python 启动前在设置锁内取得当前版本及共享文件的运行引用，然后在缓存的 speech-resources 中生成原加载器需要的目录视图。支持时使用文件符号链接，不具备权限时生成缓存副本；这是运行适配，不是硬链接导入。进程确认结束后释放引用和视图；异常退出可能留下缓存视图，通用 collectUnused 不扫描这些未登记缓存。迎新流程、旧版目录扫描、硬链接优先导入和安装 UI 均未实现。
+`speechResources.acquire()` 在设置锁内取得引用后，将各文件解析为本机绝对路径。它不建立符号链接、缓存副本或运行时模型目录。Electron 通过 Python stdin 发送一次 JSON 启动配置，再关闭管道；Python 校验文件后把不可变资源快照传给 worker。stdout 仍用于握手与日志，HTTP 仍用于任务提交。角色 GPT/SoVITS 权重与参考音频继续随任务传入，并限制在宿主授权的资源库内。
+
+BERT 支持单个 PyTorch 权重文件、JSON 模型配置及 tokenizer.json；HuBERT 支持单个 PyTorch 权重文件、JSON 模型配置及特征提取配置。这里的文件名仅描述内容格式，物理文件允许任意名称、无后缀、不同父目录。G2PW 的配置、ONNX 和字表也逐项加载；配置读取不依赖 .py 后缀。模型缺失或配置不匹配报错，不寻找相邻文件、不回退默认模型、不自动下载。Python 包随附的静态词典仍随包定位，Open JTalk 等依赖的运行环境需预先准备。
+
+运行引用在确认进程结束后释放，与路径传输方式无关。模型只读，推理输出和运行缓存仍写缓存根目录。未来旧 Python 目录导入（复制/硬链接）和下载应先产生资源库引用，再提交用途清单；来源信息和文件搬运策略不进入推理接口。本次不实现导入向导、下载或多引擎调度，GPT-SoVITS 专属结构也不作为其他引擎的通用契约。
 
 ## 桌面单实例
 

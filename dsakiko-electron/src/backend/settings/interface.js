@@ -1,4 +1,5 @@
 import { extractAssetReferences } from '../resources/references.js'
+import { selectGptSovitsFiles } from '../../shared/contracts/speech-resources.js'
 import path from 'node:path'
 import {
   copy,
@@ -131,10 +132,13 @@ export class Settings {
   async acquireSpeechResources() {
     return this.queue.run('settings', async () => {
       const startup = (await this.get()).speechStartup
-      const version = startup.resources.versions[startup.architecture]
-      requireValue(version, 'missing_resources', '请先配置当前架构的基础资源清单。')
-      const files = { ...startup.resources.shared, ...version }
-      requireValue(Object.keys(files).length > 0, 'missing_resources')
+      const { resources, architecture } = startup.gptSovits
+      const { files, missing } = selectGptSovitsFiles(resources, architecture)
+      requireValue(
+        missing.length === 0,
+        'missing_resources',
+        '缺少 GPT-SoVITS 资源：' + missing.join('、')
+      )
       const owner = await this.assets.createTemporaryOwner(
         'speech-base',
         extractAssetReferences(files)
@@ -184,7 +188,7 @@ export class Settings {
       next.revision += 1
       state.settings = next
       await this.assets.commitReferences('settings:global', next, async () => {
-        for (const ref of extractAssetReferences(next.speechStartup.resources)) {
+        for (const ref of extractAssetReferences(next.speechStartup.gptSovits.resources)) {
           const info = await this.assets.inspect(ref)
           requireValue(
             info.kind === 'file' && info.purpose === 'model',

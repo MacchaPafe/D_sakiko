@@ -2,19 +2,20 @@
 # This code is modified from https://github.com/PaddlePaddle/PaddleSpeech/tree/develop/paddlespeech/t2s/frontend/g2pw
 # This code is modified from https://github.com/GitYCC/g2pW
 
+from __future__ import annotations
+
+from speech.gpt_sovits_resources import BertFiles, G2pwFiles, load_bert_tokenizer
+
 import json
 import os
 import warnings
-import zipfile
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import onnxruntime
-import requests
 import torch
 from opencc import OpenCC
 from pypinyin import Style, pinyin
-from transformers.models.auto.tokenization_auto import AutoTokenizer
 
 from ..zh_normalization.char_convert import tranditional_to_simplified
 from .dataset import get_char_phoneme_labels, get_phoneme_labels, prepare_onnx_input
@@ -31,7 +32,8 @@ warnings.filterwarnings("ignore")
 model_version = "1.1"
 
 
-def predict(session, onnx_input: Dict[str, Any], labels: List[str]) -> Tuple[List[str], List[float]]:
+def predict(session: onnxruntime.InferenceSession, onnx_input: Dict[str, object], labels: List[str]) -> Tuple[List[str], List[float]]:
+    """运行 G2PW 并将输出概率转换为读音标签。"""
     all_preds = []
     all_confidences = []
     probs = session.run(
@@ -56,23 +58,15 @@ def predict(session, onnx_input: Dict[str, Any], labels: List[str]) -> Tuple[Lis
     return all_preds, all_confidences
 
 
-def download_and_decompress(model_dir: str = "G2PWModel/"):
-    if not os.path.exists(model_dir):
-        # 原型把资源目录视为只读，缺失模型由使用者准备，推理期间不下载。
-        raise FileNotFoundError("缺少本机 G2PW 资源：" + model_dir)
-
-    return model_dir
-
-
 class G2PWOnnxConverter:
     def __init__(
         self,
-        model_dir: str = "G2PWModel/",
+        files: G2pwFiles,
+        bert_files: BertFiles,
         style: str = "bopomofo",
-        model_source: str = None,
         enable_non_tradional_chinese: bool = False,
-    ):
-        uncompress_path = download_and_decompress(model_dir)
+    ) -> None:
+        """直接装配 ONNX 与配套映射，路径和文件名不参与模型识别。"""
 
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -80,25 +74,24 @@ class G2PWOnnxConverter:
         sess_options.intra_op_num_threads = 2 if torch.cuda.is_available() else 0
         if "CUDAExecutionProvider" in onnxruntime.get_available_providers():
             self.session_g2pW = onnxruntime.InferenceSession(
-                os.path.join(uncompress_path, "g2pW.onnx"),
+                files.model,
                 sess_options=sess_options,
                 providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
             )
         else:
             self.session_g2pW = onnxruntime.InferenceSession(
-                os.path.join(uncompress_path, "g2pW.onnx"),
+                files.model,
                 sess_options=sess_options,
                 providers=["CPUExecutionProvider"],
             )
-        self.config = load_config(config_path=os.path.join(uncompress_path, "config.py"), use_default=True)
+        self.config = load_config(config_path=files.config, use_default=True)
 
-        self.model_source = model_source if model_source else self.config.model_source
         self.enable_opencc = enable_non_tradional_chinese
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_source)
+        self.tokenizer = load_bert_tokenizer(bert_files)
 
-        polyphonic_chars_path = os.path.join(uncompress_path, "POLYPHONIC_CHARS.txt")
-        monophonic_chars_path = os.path.join(uncompress_path, "MONOPHONIC_CHARS.txt")
+        polyphonic_chars_path = files.polyphonic_characters
+        monophonic_chars_path = files.monophonic_characters
         self.polyphonic_chars = [
             line.split("\t") for line in open(polyphonic_chars_path, encoding="utf-8").read().strip().split("\n")
         ]
@@ -147,14 +140,14 @@ class G2PWOnnxConverter:
 
         self.pos_tags = ["UNK", "A", "C", "D", "I", "N", "P", "T", "V", "DE", "SHI"]
 
-        with open(os.path.join(uncompress_path, "bopomofo_to_pinyin_wo_tune_dict.json"), "r", encoding="utf-8") as fr:
+        with open(files.bopomofo_to_pinyin, "r", encoding="utf-8") as fr:
             self.bopomofo_convert_dict = json.load(fr)
         self.style_convert_func = {
             "bopomofo": lambda x: x,
             "pinyin": self._convert_bopomofo_to_pinyin,
         }[style]
 
-        with open(os.path.join(uncompress_path, "char_bopomofo_dict.json"), "r", encoding="utf-8") as fr:
+        with open(files.character_bopomofo, "r", encoding="utf-8") as fr:
             self.char_bopomofo_dict = json.load(fr)
 
         if self.enable_opencc:
