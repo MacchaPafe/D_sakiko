@@ -150,3 +150,35 @@ def test_result_replaces_only_bound_chat(gui, switched, save_ok):
         assert gui.current_chat.message_list[0].text == "另一段剧本"
     assert gui.display_live2d_message.called == (save_ok and not switched)
     assert not gui.pending_turn_uids
+
+
+@pytest.mark.parametrize("valid_audio,save_ok", [(False, True), (True, False), (True, True)])
+def test_regeneration_callback_preserves_old_audio_on_failure(gui, tmp_path, valid_audio, save_ok):
+    """重生成失败与写盘失败都释放编辑器锁，成功才替换并裁剪保存的编排。"""
+    import soundfile as sf
+    message = gui.current_chat.message_list[0]
+    original_path = message.audio_path
+    message.performance_timeline = {"characters": {"A": {"motions": [
+        {"at_ms": 500, "resource": {"file_name": "test"}}], "expressions": []}}}
+    original_timeline = copy.deepcopy(message.performance_timeline)
+    context = (gui.current_chat, message, message.text, original_path, object())
+    gui._audio_regeneration = context
+    callback = Mock()
+    gui._audio_regeneration_callback = callback
+    gui.message_queue = Queue()
+    gui.performance_editor = object()
+    gui.finish_audio_regeneration = MethodType(ViewerGUI.finish_audio_regeneration, gui)
+    gui._save_chat.return_value = save_ok
+    path = tmp_path / "new.wav"
+    if valid_audio:
+        sf.write(str(path), [0.0] * 4000, 8000)
+    ViewerGUI.replace_audio_path(gui, [str(path)], context)
+    callback.assert_called_once()
+    assert callback.call_args.args[0] == (valid_audio and save_ok)
+    assert gui._audio_regeneration is None
+    if valid_audio and save_ok:
+        assert message.audio_path == str(path)
+        assert message.performance_timeline["characters"]["A"]["motions"] == []
+    else:
+        assert message.audio_path == original_path
+        assert message.performance_timeline == original_timeline

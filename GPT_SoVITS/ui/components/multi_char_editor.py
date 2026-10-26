@@ -10,7 +10,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QObject, QMimeData, QPointF, QRectF, QTimer, QSize, pyqtSignal
 from PyQt5.QtGui import QColor, QDrag, QFont, QIcon, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QTabBar,
-                             QLineEdit, QListWidget, QListWidgetItem, QListView, QPushButton,
+                             QLineEdit, QPlainTextEdit, QListWidget, QListWidgetItem, QListView, QPushButton,
                              QMessageBox, QDoubleSpinBox, QSlider, QApplication, QStyle, QSizePolicy)
 
 from performance_types import trim_timeline, sort_timeline_events, timeline_tracks, valid_timeline_events
@@ -179,6 +179,8 @@ class MultiCharEditor(QObject):
         self.seek_resume = None
         self.selection = None
         self.stage_available = True
+        self.audio_busy = False
+        self.text_editing = False
         self.expression_dialog = None
         self.resource_window = EditorWindow(self)
         self.timeline_window = EditorWindow(self, True)
@@ -259,11 +261,13 @@ class MultiCharEditor(QObject):
     def update_navigation(self):
         """首尾禁用对应切句按钮，消息被删除时禁用两端。"""
         index = self.message_index()
-        self.previous.setEnabled(index > 0)
-        self.next.setEnabled(0 <= index < len(self.chat.message_list) - 1)
+        self.previous.setEnabled(not self.audio_busy and index > 0)
+        self.next.setEnabled(not self.audio_busy and 0 <= index < len(self.chat.message_list) - 1)
 
     def switch_message(self, step):
         """处理当前草稿后原位切句，更新音频与四轨并隔离旧预览回执。"""
+        if self.audio_busy or not self.resolve_text_draft():
+            return
         index = self.message_index()
         target_index = index + step
         if index < 0 or not 0 <= target_index < len(self.chat.message_list):
@@ -323,6 +327,7 @@ class MultiCharEditor(QObject):
         if target.translation:
             text += f"<div style='color:#6B7C96;'>{html.escape(target.translation)}</div>"
         self.dialogue_label.setText(text)
+        self.show_saved_text()
         self.update_navigation()
         self.read_waveform()
         self.view.rebuild()
@@ -367,6 +372,36 @@ class MultiCharEditor(QObject):
         label.setTextFormat(Qt.RichText)
         label.setWordWrap(True)
         card_layout.addWidget(label)
+        self.original_input = QPlainTextEdit()
+        self.original_input.setObjectName("multiCharOriginalInput")
+        self.original_input.setPlaceholderText("原文")
+        self.translation_input = QPlainTextEdit()
+        self.translation_input.setObjectName("multiCharTranslationInput")
+        self.translation_input.setPlaceholderText("中文翻译")
+        for field in (self.original_input, self.translation_input):
+            field.setFixedHeight(round(self.resource_window.font().pixelSize() * 3.8))
+            card_layout.addWidget(field)
+            field.hide()
+        text_actions = QHBoxLayout()
+        self.previous = QPushButton("上一句")
+        self.previous.clicked.connect(lambda: self.switch_message(-1))
+        text_actions.addWidget(self.previous)
+        self.next = QPushButton("下一句")
+        self.next.clicked.connect(lambda: self.switch_message(1))
+        text_actions.addWidget(self.next)
+        text_actions.addStretch(1)
+        self.discard_text_button = QPushButton("放弃编辑")
+        self.discard_text_button.setProperty("discardAction", True)
+        self.discard_text_button.clicked.connect(self.discard_text_edit)
+        text_actions.addWidget(self.discard_text_button)
+        self.discard_text_button.hide()
+        self.text_button = QPushButton("编辑文本")
+        self.text_button.clicked.connect(self.toggle_text_edit)
+        text_actions.addWidget(self.text_button)
+        self.regenerate_button = QPushButton("重新生成音频")
+        self.regenerate_button.clicked.connect(self.regenerate_audio)
+        text_actions.addWidget(self.regenerate_button)
+        card_layout.addLayout(text_actions)
         root.addWidget(card)
         self.characters = QTabBar()
         self.characters.setObjectName("multiCharCharacters")
@@ -395,12 +430,6 @@ class MultiCharEditor(QObject):
         self.list.setObjectName("multiCharResourceList")
         root.addWidget(self.list, 1)
         footer = QHBoxLayout()
-        self.previous = QPushButton("上一句")
-        self.previous.clicked.connect(lambda: self.switch_message(-1))
-        footer.addWidget(self.previous)
-        self.next = QPushButton("下一句")
-        self.next.clicked.connect(lambda: self.switch_message(1))
-        footer.addWidget(self.next)
         footer.addStretch(1)
         self.custom = QPushButton("自定义表情…")
         self.custom.clicked.connect(self.custom_expression)
@@ -421,6 +450,142 @@ class MultiCharEditor(QObject):
         self.characters.currentChanged.connect(self.refresh_resources)
         self.types.currentChanged.connect(self.refresh_resources)
         self.search.textChanged.connect(self.refresh_resources)
+
+    def show_saved_text(self):
+        """恢复台词只读展示，不回滚已保存文本或时间轴草稿。"""
+        self.text_editing = False
+        self.text_button.setText("编辑文本")
+        self.text_button.setObjectName("multiCharControl")
+        self.text_button.style().unpolish(self.text_button)
+        self.text_button.style().polish(self.text_button)
+        self.discard_text_button.hide()
+        self.original_input.hide()
+        self.translation_input.hide()
+        self.dialogue_label.show()
+        text = f"<div style='color:#243046;'>{html.escape(self.message.text or '')}</div>"
+        if self.message.translation:
+            text += f"<div style='color:#6B7C96;'>{html.escape(self.message.translation)}</div>"
+        self.dialogue_label.setText(text)
+
+    def discard_text_edit(self):
+        """丢弃未保存的文本输入，恢复已保存内容，不改动时间轴或音频。"""
+        if self.audio_busy:
+            return
+        self.original_input.setPlainText(self.message.text or "")
+        self.translation_input.setPlainText(self.message.translation or "")
+        self.show_saved_text()
+
+    def toggle_text_edit(self):
+        """同一按钮在编辑文本和保存文本之间切换。"""
+        if self.audio_busy:
+            return
+        if self.text_editing:
+            self.save_text()
+            return
+        self.prepare_edit()
+        self.text_editing = True
+        self.original_input.setPlainText(self.message.text or "")
+        self.translation_input.setPlainText(self.message.translation or "")
+        self.dialogue_label.hide()
+        self.original_input.show()
+        self.translation_input.show()
+        self.text_button.setText("保存文本")
+        self.text_button.setObjectName("multiCharSave")
+        self.text_button.style().unpolish(self.text_button)
+        self.text_button.style().polish(self.text_button)
+        self.discard_text_button.show()
+        self.original_input.setFocus()
+
+    def save_text(self, ask_audio=True):
+        """独立保存文本；无声句按新文字长度校验已保存编排和当前草稿。"""
+        if self.audio_busy:
+            return False
+        old_text = self.message.text
+        old_translation = self.message.translation
+        old_timeline = self.message.performance_timeline
+        new_text = self.original_input.toPlainText()
+        self.message.text = new_text
+        self.message.translation = self.translation_input.toPlainText()
+        span = audio_span(self.message.audio_path, new_text)
+        if not self.message.audio_path:
+            self.message.performance_timeline, _ = trim_timeline(old_timeline, span.duration_ms)
+        if not self.owner._save_chat():
+            self.message.text = old_text
+            self.message.translation = old_translation
+            self.message.performance_timeline = old_timeline
+            return False
+        self.show_saved_text()
+        self.refresh_sentence_span()
+        self.owner.refresh_chat_display()
+        self.owner.refresh_chat_list()
+        if ask_audio and new_text != old_text:
+            answer = QMessageBox.question(self.resource_window, "重新生成音频",
+                                          "检测到原文修改，是否重新生成音频？",
+                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes:
+                self.regenerate_audio()
+        return True
+
+    def resolve_text_draft(self, ask_audio=True):
+        """切句、退出或合成前处理文本草稿，取消时保留编辑状态。"""
+        if not self.text_editing:
+            return True
+        changed = (self.original_input.toPlainText() != (self.message.text or "")
+                   or self.translation_input.toPlainText() != (self.message.translation or ""))
+        if changed:
+            answer = QMessageBox.question(self.resource_window, "文本尚未保存", "是否保存本次文本修改？",
+                                          QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+            if answer == QMessageBox.Save:
+                return self.save_text(ask_audio=ask_audio) and not self.audio_busy
+            if answer != QMessageBox.Discard:
+                return False
+        self.show_saved_text()
+        return True
+
+    def refresh_sentence_span(self):
+        """新文本或音频生效后更新时长波形，独立保留尚未保存的时间轴草稿。"""
+        self.stop()
+        self.span = audio_span(self.message.audio_path, self.message.text)
+        self.baseline = deepcopy(self.message.performance_timeline)
+        if not self.span.missing:
+            self.draft, _ = trim_timeline(self.draft, self.span.duration_ms)
+        self.select_event(None)
+        self.view.selection = None
+        self.time_input.setRange(0, max(0, (self.span.duration_ms - 1) / 1000))
+        self.read_waveform()
+        self.view.rebuild()
+        self.update_clock()
+
+    def set_audio_busy(self, busy):
+        """合成期间锁定切句、文本及时间轴保存退出，完成或失败后恢复。"""
+        self.audio_busy = busy
+        self.update_navigation()
+        self.text_button.setEnabled(not busy)
+        self.discard_text_button.setEnabled(not busy)
+        self.regenerate_button.setEnabled(not busy)
+        self.original_input.setEnabled(not busy)
+        self.translation_input.setEnabled(not busy)
+        self.timeline_window.setEnabled(not busy)
+        self.resource_window.setEnabled(not busy)
+
+    def regenerate_audio(self):
+        """保存或放弃文本草稿后，复用主控制台合成并立即持久更新音频。"""
+        if self.audio_busy or not self.resolve_text_draft(ask_audio=False):
+            return
+        self.stop()
+        self.set_audio_busy(True)
+        self.status.setText("正在生成音频…")
+        started = self.owner.regenerate_audio(self.message_index(), on_complete=self.audio_regenerated)
+        if not started:
+            self.set_audio_busy(False)
+            self.status.setText("未开始音频合成，原音频已保留。")
+
+    def audio_regenerated(self, success, reason):
+        """成功时重载时长与裁剪后基线，失败仅解锁而不改音频和编排。"""
+        self.set_audio_busy(False)
+        if success:
+            self.refresh_sentence_span()
+        self.status.setText(reason)
 
     def build_timeline(self):
         """将波形、四轨及一体式胶囊控制栏放入无标题栏窗口。"""
@@ -518,10 +683,13 @@ class MultiCharEditor(QObject):
         bar.addWidget(zoom_group)
 
         bar.addWidget(self.status, 1)
-        discard = QPushButton("放弃修改")
+        discard = QPushButton("放弃本次时间轴修改")
+        discard.setProperty("discardAction", True)
+        self.discard_button = discard
         discard.clicked.connect(self.discard)
         bar.addWidget(discard)
         save = QPushButton("保存")
+        self.save_button = save
         save.clicked.connect(self.save)
         bar.addWidget(save)
         root.addWidget(toolbar)
@@ -778,6 +946,8 @@ class MultiCharEditor(QObject):
 
     def save_current(self):
         """按实际时长校验后保存原消息，写盘失败回滚消息但保留草稿。"""
+        if self.audio_busy:
+            return False
         if not any(message is self.message for message in self.chat.message_list):
             QMessageBox.warning(self.resource_window, "无法保存", "原消息已删除。")
             return False
@@ -799,16 +969,20 @@ class MultiCharEditor(QObject):
 
     def save(self):
         """保存当前消息并关闭整个编排会话。"""
+        if self.audio_busy or not self.resolve_text_draft():
+            return
         if self.save_current():
             self.finish()
 
     def discard(self):
         """放弃草稿，保留进入时已持久保存的时间轴。"""
+        if self.audio_busy or not self.resolve_text_draft():
+            return
         self.finish()
 
     def request_close(self):
         """两个窗口共用一次未保存确认，取消时保留完整编辑会话。"""
-        if self.closing:
+        if self.closing or self.audio_busy or not self.resolve_text_draft():
             return
         self.closing = True
         self.send("pause")
@@ -825,7 +999,7 @@ class MultiCharEditor(QObject):
 
     def finish(self):
         """结束预览、关闭两个新窗口并恢复原双窗口布局，不改变 BGM。"""
-        if self.closed:
+        if self.closed or self.audio_busy:
             return
         self.closed = True
         self.send("exit")

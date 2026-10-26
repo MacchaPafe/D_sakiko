@@ -48,7 +48,7 @@ QLabel#multiCharDialogue {
 
 /* multiCharHint：资源窗口底部居中的拖动提示，平时隐藏并保留位置，避免拖动时窗口跳动。
    multiCharStatus：时间轴校验信息，比操作正文小一级。
-   上一句/下一句复用 multiCharControl 样式，位于资源窗口左下角。 */
+   上一句/下一句复用 multiCharControl 样式，位于台词卡片操作行左侧。 */
 QLabel#multiCharHint, QLabel#multiCharStatus {
     font-size: @SMALL_PX@px;
     color: #7C8CA6;
@@ -61,6 +61,16 @@ QLabel#multiCharStatus {
 }
 
 /* ================= 3. 角色与动作/表情导航切换 ================= */
+/* multiCharOriginalInput / multiCharTranslationInput：顶部原文与翻译草稿输入区。
+   仅编辑文本时显示，独立保存，不随时间轴放弃操作回滚。 */
+QPlainTextEdit#multiCharOriginalInput, QPlainTextEdit#multiCharTranslationInput {
+    background-color: #FFFFFF;
+    color: #33415C;
+    border: 1px solid #C8D5E8;
+    border-radius: 6px;
+    padding: @PAD_Y@px;
+}
+
 /* multiCharCharacters：云母浅灰蓝凹槽 + 纯白悬浮胶囊选中卡 */
 QTabBar#multiCharCharacters {
     background-color: #E4ECF7;
@@ -282,6 +292,8 @@ QGraphicsView#multiCharTimeline {
 }
 
 /* ================= 7. 按钮与缩放滑块 ================= */
+/* multiCharSave：时间轴保存与编辑状态的“保存文本”共用蓝底。
+   multiCharControl：普通操作按钮，含只读状态的“编辑文本”和仅编辑时显示的“放弃编辑”。 */
 QPushButton#multiCharSave, QPushButton#multiCharControl {
     padding: @PAD_Y@px @PAD_X@px;
     border: 1px solid #D4E0F0;
@@ -312,6 +324,12 @@ QPushButton#multiCharControl:disabled {
     background-color: #EDF1F7;
     border-color: #DFEAFA;
     color: #A6B3C7;
+}
+
+/* discardAction：放弃文本编辑和放弃本次时间轴修改使用红字；
+   仅覆盖可用状态的文字颜色，禁用状态继续沿用灰色。 */
+QPushButton#multiCharControl[discardAction="true"]:enabled {
+    color: #C53B45;
 }
 
 QPushButton#multiCharSave {

@@ -652,7 +652,7 @@ class InteractiveChatBrowser(QTextBrowser):
     regenerate_signal=pyqtSignal(int)
     performance_signal = pyqtSignal(int)
     def contextMenuEvent(self, event):
-        """为台词链接提供内容编辑、语音重生成及演出编排入口。"""
+        """为台词链接提供语音重生成及演出编排入口。"""
         # 1. 获取鼠标位置下的链接地址
         # anchorAt 是 Qt 5.10+ 引入的，非常方便
         link = self.anchorAt(event.pos())
@@ -662,8 +662,6 @@ class InteractiveChatBrowser(QTextBrowser):
             # 创建右键菜单
             menu = QMenu(self)
 
-            # 添加 "编辑此条数据" 动作
-            edit_action = menu.addAction("编辑此条数据")
             performance_action = menu.addAction("演出编排")
 
             # 添加 "重新播放" 动作 (可选)
@@ -676,9 +674,7 @@ class InteractiveChatBrowser(QTextBrowser):
             try:
                 index = int(link.split(":")[1])
 
-                if action == edit_action:
-                    self.edit_signal.emit(index)  # 发送信号给主窗口
-                elif action == regen_action:
+                if action == regen_action:
                     self.regenerate_signal.emit(index)
                 elif action == performance_action:
                     self.performance_signal.emit(index)
@@ -1185,11 +1181,11 @@ class ViewerGUI(QWidget):
         self.top_layout.addWidget(self.btn_close,0)
 
         # === 3. 底部大按钮 (Generate Button) ===
-        self.replay_full_btn = QPushButton("⏪ 回放当前对话")
+        self.replay_full_btn = QPushButton("回放当前对话")
         self.replay_full_btn.setCursor(Qt.PointingHandCursor)
         self.replay_full_btn.clicked.connect(self.replay_current_chat)
 
-        self.generate_btn = QPushButton("▶ 生成对话")
+        self.generate_btn = QPushButton("▶ 生成新对话")
         self.generate_btn.setCursor(Qt.PointingHandCursor)
         self.generate_btn.clicked.connect(self.start_generation)
 
@@ -2564,17 +2560,22 @@ class ViewerGUI(QWidget):
 
         self.update_replay_button_visibility()
 
-    def regenerate_audio(self, index: int) -> None:
+    def regenerate_audio(self, index: int, on_complete=None) -> bool:
         """捕获原聊天、消息及输入快照，合成回填不使用当前聊天下标。"""
         worker = getattr(self, "generate_thread", None)
         if worker is not None and worker.isRunning():
             QMessageBox.information(self, "正在合成", "请等待当前音频生成完成。")
-            return
+            return False
         self.audio_gen_module.audio_language_choice = "日英混合"
         if self.current_chat is None or not (0 <= index < len(self.current_chat.message_list)):
-            return
+            return False
 
         message = self.current_chat.message_list[index]
+        voice_character = self._find_character_by_name(message.character_name)
+        if voice_character is None or not voice_character.has_valid_voice_model():
+            QMessageBox.information(self, "无法合成", "当前角色未配置可用的语音模型。")
+            return False
+        self._audio_regeneration_callback = on_complete
         self.regenerate_text = message.text
         self.regenerate_emotion = (
             message.emotion.as_string()
@@ -2590,6 +2591,7 @@ class ViewerGUI(QWidget):
                 break
         self.regenerate_character = self.character_list[char_index]
         self.regenerate_audio_continue()
+        return True
 
     def regenerate_audio_continue(self):
         """启动已捕获消息的语音合成，并固定本次回填上下文。"""
@@ -2605,22 +2607,36 @@ class ViewerGUI(QWidget):
         self.generate_thread.synthesis_complete_signal.connect(
             lambda paths, target=context: self.replace_audio_path(paths, target)
         )
+        self.generate_thread.synthesis_failed_signal.connect(
+            lambda reason, target=context: self.finish_audio_regeneration(target, False, reason)
+        )
         self.generate_thread.start()
 
+    def finish_audio_regeneration(self, context, success, reason):
+        """统一结束重生成任务，通知编排器解锁并保留失败前的数据。"""
+        if context is not self._audio_regeneration:
+            return
+        callback = getattr(self, "_audio_regeneration_callback", None)
+        self._audio_regeneration = None
+        self._audio_regeneration_callback = None
+        self.message_queue.put(reason)
+        if callback is not None:
+            callback(success, reason)
+
     def replace_audio_path(self, audio_path, context=None):
-        """只替换仍有效的原消息，并按真实新时长裁剪所有角色编排。"""
-        if context is None or context is not self._audio_regeneration or not audio_path:
+        """只替换有效原消息，持久保存新音频并校验全部角色轨道。"""
+        if context is None or context is not self._audio_regeneration:
             return
         chat, message, text, previous_path, token = context
-        if not any(item is message for item in chat.message_list):
-            return
-        if message.text != text or message.audio_path != previous_path:
+        if (not any(item is message for item in chat.message_list)
+                or message.text != text or message.audio_path != previous_path):
+            self.finish_audio_regeneration(context, False, "原消息已变化，未替换音频。")
             return
         from live2d_support.multi_char_resources import audio_span
         from performance_types import trim_timeline
-        span = audio_span(str(audio_path[0] or ""), text)
+        span = audio_span(str(audio_path[0] or "") if audio_path else "", text)
         if not span.path:
-            self.message_queue.put("音频生成失败，原音频与编排已保留")
+            self.finish_audio_regeneration(context, False, "音频生成失败，原音频与编排已保留")
             return
         old_timeline = message.performance_timeline
         new_timeline, removed = trim_timeline(old_timeline, span.duration_ms)
@@ -2629,9 +2645,10 @@ class ViewerGUI(QWidget):
         if not self._save_chat():
             message.audio_path = previous_path
             message.performance_timeline = old_timeline
+            self.finish_audio_regeneration(context, False, "音频保存失败，原音频与编排已保留")
             return
-        self._audio_regeneration = None
-        self.message_queue.put(f"生成完毕；已移除 {removed} 个越界编排事件" if removed else "生成完毕")
+        self.finish_audio_regeneration(context, True,
+                                       f"生成完毕；已移除 {removed} 个越界编排事件" if removed else "生成完毕")
         if self.current_chat is chat and self.performance_editor is None:
             self.sync_live2d_active_slots()
             self.display_live2d_message([message.as_dict()], preserve_playback=False)

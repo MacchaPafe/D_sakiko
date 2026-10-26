@@ -32,6 +32,9 @@ class Owner(QWidget):
         self.performance_editor = None
         self.saved = 0
         self.fail = False
+        self.refresh_chat_display = Mock()
+        self.refresh_chat_list = Mock()
+        self.regenerate_audio = Mock(return_value=True)
 
     def _save_chat(self):
         """记录保存调用，不写入任何用户文件。"""
@@ -178,6 +181,121 @@ def test_switch_initializes_new_message_and_ignores_old_feedback(editor):
     assert editor.position == 0 and not editor.playing
     editor.switch_message(-1)
     assert editor.message is original
+
+
+def test_text_save_is_independent_of_timeline_discard(editor, monkeypatch):
+    """保存文本更新无声时长并裁剪越界，随后放弃时间轴不会撤回文本。"""
+    from PyQt5.QtWidgets import QMessageBox
+    question = Mock(return_value=QMessageBox.No)
+    monkeypatch.setattr(QMessageBox, "question", question)
+    event = {"at_ms": 800, "resource": {"file_name": "missing"}}
+    editor.message.performance_timeline["characters"]["B"]["motions"].append(deepcopy(event))
+    editor.draft["characters"]["B"]["motions"].append(event)
+    editor.toggle_text_edit()
+    assert editor.text_button.text() == "保存文本"
+    editor.original_input.setPlainText("短")
+    editor.translation_input.setPlainText("新翻译")
+    assert editor.save_text()
+    question.assert_called_once()
+    assert editor.span.duration_ms == 600
+    assert editor.draft["characters"]["B"]["motions"] == []
+    assert editor.message.performance_timeline["characters"]["B"]["motions"] == []
+    assert editor.text_button.text() == "编辑文本"
+    editor.discard()
+    assert editor.message.text == "短"
+    assert editor.message.translation == "新翻译"
+
+
+def test_translation_only_save_does_not_prompt_audio(editor, monkeypatch):
+    """仅改翻译不询问合成，也不丢失未保存的编排事件。"""
+    from PyQt5.QtWidgets import QMessageBox
+    question = Mock()
+    monkeypatch.setattr(QMessageBox, "question", question)
+    editor.draft["characters"]["A"]["motions"].append({"at_ms": 20, "resource": {"file_name": "missing"}})
+    editor.toggle_text_edit()
+    editor.translation_input.setPlainText("只改翻译")
+    assert editor.save_text()
+    question.assert_not_called()
+    assert editor.draft["characters"]["A"]["motions"]
+    assert not editor.message.performance_timeline["characters"]["A"]["motions"]
+
+
+def test_text_save_keeps_existing_audio_duration(editor, tmp_path, monkeypatch):
+    """已有音频时修改原文且拒绝合成，仍以旧音频长度作为时间轴范围。"""
+    import soundfile as sf
+    from PyQt5.QtWidgets import QMessageBox
+    path = tmp_path / "old.wav"
+    sf.write(str(path), [0.0] * 16000, 8000)
+    editor.message.audio_path = str(path)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.No)
+    editor.toggle_text_edit()
+    editor.original_input.setPlainText("短")
+    assert editor.save_text()
+    assert editor.span.duration_ms == 2000
+    assert editor.message.audio_path == str(path)
+    editor.owner.regenerate_audio.assert_not_called()
+
+
+def test_failed_text_save_keeps_editable_draft(editor):
+    """写盘失败回滚消息并保留输入草稿，不触发合成。"""
+    original = editor.message.text
+    editor.toggle_text_edit()
+    editor.original_input.setPlainText("未能保存")
+    editor.owner.fail = True
+    assert not editor.save_text()
+    assert editor.message.text == original
+    assert editor.text_editing
+    assert editor.original_input.toPlainText() == "未能保存"
+    editor.owner.regenerate_audio.assert_not_called()
+
+
+def test_synthesis_locks_navigation_and_exit_then_unlocks_on_failure(editor):
+    """音频合成期间不可切句或关闭，失败后旧数据不变并恢复按钮。"""
+    editor.chat.message_list.append(Message.from_dict({"character_name": "B", "text": "下一句"}))
+    original = editor.message
+    editor.regenerate_audio()
+    assert editor.audio_busy
+    assert not editor.next.isEnabled()
+    editor.switch_message(1)
+    editor.save()
+    editor.discard()
+    editor.request_close()
+    assert editor.message is original and not editor.closed
+    callback = editor.owner.regenerate_audio.call_args.kwargs["on_complete"]
+    callback(False, "合成失败")
+    assert not editor.audio_busy
+    assert editor.next.isEnabled()
+    assert editor.message.audio_path == original.audio_path
+
+
+def test_synthesis_refreshes_both_baseline_and_draft(editor, tmp_path):
+    """新音频即时生效，裁剪独立草稿后仍保留有效的未保存动作。"""
+    import soundfile as sf
+    path = tmp_path / "new.wav"
+    sf.write(str(path), [0.0] * 4000, 8000)
+    editor.draft["characters"]["A"]["motions"] = [
+        {"at_ms": at, "resource": {"file_name": "missing"}} for at in (100, 700)]
+    editor.regenerate_audio()
+    editor.message.audio_path = str(path)
+    editor.audio_regenerated(True, "生成完毕")
+    assert editor.span.duration_ms == 500
+    assert len(editor.draft["characters"]["A"]["motions"]) == 1
+    assert not editor.baseline["characters"]["A"]["motions"]
+    editor.discard()
+    assert editor.message.audio_path == str(path)
+
+
+def test_unsaved_text_cancel_blocks_navigation(editor, monkeypatch):
+    """文本草稿选择取消后留在原句，不静默丢弃输入。"""
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Cancel)
+    editor.chat.message_list.append(Message.from_dict({"character_name": "B", "text": "下一句"}))
+    original = editor.message
+    editor.toggle_text_edit()
+    editor.original_input.setPlainText("未保存")
+    editor.switch_message(1)
+    assert editor.message is original
+    assert editor.original_input.toPlainText() == "未保存"
 
 
 @pytest.mark.parametrize("choice,fail,switched,saved", [
