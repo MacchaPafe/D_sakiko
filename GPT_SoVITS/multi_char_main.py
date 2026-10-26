@@ -1185,6 +1185,10 @@ class ViewerGUI(QWidget):
         self.replay_full_btn.setCursor(Qt.PointingHandCursor)
         self.replay_full_btn.clicked.connect(self.replay_current_chat)
 
+        self.edit_script_btn = QPushButton("剧本编排")
+        self.edit_script_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_script_btn.clicked.connect(lambda: self.open_performance_editor(0))
+
         self.generate_btn = QPushButton("▶ 生成新对话")
         self.generate_btn.setCursor(Qt.PointingHandCursor)
         self.generate_btn.clicked.connect(self.start_generation)
@@ -1195,11 +1199,13 @@ class ViewerGUI(QWidget):
         # 动态计算大按钮高度
         gen_btn_height = int(self.scr_h * 0.03)
         self.replay_full_btn.setMinimumHeight(gen_btn_height)
+        self.edit_script_btn.setMinimumHeight(gen_btn_height)
         self.generate_btn.setMinimumHeight(gen_btn_height)
 
         bottom_action_layout = QHBoxLayout()
         bottom_action_layout.setSpacing(int(self.scr_w * 0.01))
         bottom_action_layout.addWidget(self.replay_full_btn, 1)
+        bottom_action_layout.addWidget(self.edit_script_btn, 1)
         bottom_action_layout.addWidget(self.generate_btn, 1)
 
         # 不需要再手动 setStyleSheet 了！
@@ -1327,9 +1333,10 @@ class ViewerGUI(QWidget):
         self.update_chat_panel_toggle_button()
 
     def update_replay_button_visibility(self) -> None:
-        """仅当当前对话存在消息时显示“回放当前对话”按钮。"""
+        """当前对话有剧本时显示回放与编排入口，空剧本时同时隐藏。"""
         has_messages = self.current_chat is not None and len(self.current_chat.message_list) > 0
         self.replay_full_btn.setVisible(has_messages)
+        self.edit_script_btn.setVisible(has_messages)
 
     def replay_current_chat(self) -> None:
         """回放当前对话的全部消息。"""

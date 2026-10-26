@@ -41,11 +41,13 @@ class ResourceList(QListWidget):
         self.column_timer = QTimer(self)
         self.column_timer.setSingleShot(True)
         self.column_timer.timeout.connect(self.update_columns)
-        self.setDragEnabled(True)
         self.setViewMode(QListView.IconMode)
         self.setFlow(QListView.LeftToRight)
         self.setWrapping(True)
         self.setMovement(QListView.Static)
+        # Static 会关闭 dragEnabled；布局选项设置后再开启跨窗口拖出，
+        # 同时禁止资源列表接收拖入，避免改变资源顺序。
+        self.setDragDropMode(QListView.DragOnly)
         self.setResizeMode(QListView.Adjust)
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)

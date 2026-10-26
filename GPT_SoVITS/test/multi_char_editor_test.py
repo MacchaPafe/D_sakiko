@@ -126,6 +126,56 @@ def test_resources_use_two_columns_and_one_scrollbar(editor, app):
     assert editor.drag_hint.isHidden()
 
 
+@pytest.mark.parametrize("column,kind,row", [(0, "motions", 0), (1, "expressions", 1)])
+def test_resource_mouse_drag_reaches_timeline(editor, app, monkeypatch, column, kind, row):
+    """实际鼠标拖动必须触发 QDrag，两列动作/表情都能携带资源落入时间轴。"""
+    from PyQt5.QtCore import QEvent, QPoint
+    from PyQt5.QtGui import QMouseEvent, QDragEnterEvent
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QListWidgetItem, QListView
+    import ui.components.multi_char_editor as module
+    editor.resources["A"].version = "v3"
+    editor.list.clear()
+    for index in range(2):
+        item = QListWidgetItem(f"resource_{index}")
+        item.setData(Qt.UserRole, {"character": "A", "kind": kind,
+                                  "resource": {"file_name": f"resource_{index}"}})
+        editor.list.addItem(item)
+    editor.list.update_columns()
+    QTest.qWait(30)
+    assert editor.list.dragEnabled()
+    assert editor.list.dragDropMode() == QListView.DragOnly
+    drag = Mock()
+
+    def drop(actions):
+        """模拟系统传递同一个 MIME 到真实时间轴，校验落下产生的事件。"""
+        assert not editor.drag_hint.isHidden()
+        mime = drag.setMimeData.call_args.args[0]
+        point = QPoint(round(editor.view.x_at(100)), round(editor.view.top + row * editor.view.row_height + 15))
+        enter = QDragEnterEvent(point, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+        editor.view.dragEnterEvent(enter)
+        assert enter.isAccepted()
+        event = QDropEvent(QPointF(point), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+        editor.view.dropEvent(event)
+        assert event.isAccepted()
+        return Qt.CopyAction
+
+    drag.exec_.side_effect = drop
+    monkeypatch.setattr(module, "QDrag", Mock(return_value=drag))
+    point = editor.list.visualItemRect(editor.list.item(column)).center()
+    QTest.mousePress(editor.list.viewport(), Qt.LeftButton, pos=point)
+    for distance in (2, QApplication.startDragDistance() + 5, QApplication.startDragDistance() + 20):
+        moved = point + QPoint(distance, 0)
+        event = QMouseEvent(QEvent.MouseMove, QPointF(moved), Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(editor.list.viewport(), event)
+        if drag.exec_.called:
+            break
+    QTest.mouseRelease(editor.list.viewport(), Qt.LeftButton, pos=point)
+    drag.exec_.assert_called_once()
+    assert editor.draft["characters"]["A"][kind][0]["resource"]["file_name"] == f"resource_{column}"
+    assert editor.drag_hint.isHidden()
+
+
 def test_two_columns_stay_stable_across_scrollbar_visibility(editor, app):
     """有、无滚动条反复切换后，连续事件循环始终两列且不再重排闪烁。"""
     from PyQt5.QtTest import QTest
