@@ -438,6 +438,7 @@ class DisplayTalkText(QThread):
 
 class WaitUntilAudioGenModuleSynthesisComplete(QThread):
     synthesis_complete_signal = pyqtSignal(list)
+    synthesis_failed_signal = pyqtSignal(str)
     def __init__(self, audio_gen_module, char_texts_list, character, sakiko_state, audio_language_choice,
                  char_emotions_list=None):
         super().__init__()
@@ -449,6 +450,15 @@ class WaitUntilAudioGenModuleSynthesisComplete(QThread):
         self.char_emotions_list = char_emotions_list or []
 
     def run(self):
+        """合成角色台词并返回音频，异常时报告失败以保留旧剧本。"""
+        try:
+            self.synthesize()
+        except Exception:
+            logger.exception("小剧场语音合成失败")
+            self.synthesis_failed_signal.emit("语音合成失败，原剧本已保留。")
+
+    def synthesize(self):
+        """依次合成角色台词，全部完成后发送结果。"""
         char_text_audio_path_list = []
         for index, text in enumerate(self.char_texts_list):
             emotion = self.char_emotions_list[index] if index < len(self.char_emotions_list) else None
@@ -479,13 +489,14 @@ class DragDropListWidget(QListWidget):
         self.order_changed.emit()  # 在拖拽完成后发出信号
 
 
-class MoreInfoDialog(QWidget):
+class MoreInfoDialog(QDialog):
     """编辑小剧场场景和角色细节配置的对话框。"""
 
     info_committed = pyqtSignal(dict)
 
-    def __init__(self, char_name_0: str, char_name_1: str, initial_meta: Dict[str, Any]):
-        super().__init__()
+    def __init__(self, char_name_0: str, char_name_1: str, initial_meta: Dict[str, Any], parent=None, replacing=False):
+        """展示设定副本，只有开始生成才提交；取消不改变设定或剧本。"""
+        super().__init__(parent)
         self.setWindowTitle("写一些细节信息吧（也可以都不填）")
         self.screen = QDesktopWidget().screenGeometry()
         self.resize(int(0.35 * self.screen.width()), int(0.5 * self.screen.height()))
@@ -547,17 +558,25 @@ class MoreInfoDialog(QWidget):
         layout_sit.addWidget(self.situation_input)
         main_layout.addWidget(group_sit)
 
-        # 完成按钮
-        self.commit_btn = QPushButton("完成")
+        if replacing:
+            warning = QLabel("生成成功后将替换当前剧本，包括音频与演出编排。取消或生成失败会保留原剧本。")
+            warning.setWordWrap(True)
+            main_layout.addWidget(warning)
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(cancel_btn)
+        self.commit_btn = QPushButton("开始生成！")
         self.commit_btn.clicked.connect(self.commit_info)
         self.commit_btn.setObjectName("PrimaryBtn")
-        main_layout.addWidget(self.commit_btn)
+        buttons.addWidget(self.commit_btn)
+        main_layout.addLayout(buttons)
 
         self.setLayout(main_layout)
 
         # 针对性的 QSS 美化
         self.setStyleSheet(fluent_css)
-        self.initial_meta = initial_meta if isinstance(initial_meta, dict) else {}
+        self.initial_meta = copy.deepcopy(initial_meta) if isinstance(initial_meta, dict) else {}
         character_0 = self.initial_meta.get("character_0", {})
         character_1 = self.initial_meta.get("character_1", {})
 
@@ -568,7 +587,10 @@ class MoreInfoDialog(QWidget):
         self.situation_input.setText(self.initial_meta.get("situation", ""))
 
     def commit_info(self) -> None:
-        """提交配置并通过信号回传给主界面。"""
+        """仅提交草稿；主界面保存并成功投递请求后才关闭窗口。"""
+        if not self.commit_btn.isEnabled():
+            return
+        self.commit_btn.setEnabled(False)
         payload = {
             "character_0": {
                 "talk_style": self.char_0_talk_style.text(),
@@ -581,7 +603,6 @@ class MoreInfoDialog(QWidget):
             "situation": self.situation_input.text(),
         }
         self.info_committed.emit(payload)
-        self.close()
 
 
 class ElementEditorDialog(QDialog):
@@ -852,6 +873,7 @@ class NewTheaterChatDialog(QDialog):
 
 class SettingsDialog(QDialog):
     def __init__(self, parent, character_names: List[str], screen_geo, audio_gen_module):
+        """构建小剧场角色、渲染及音频设置，并连接主控制台操作。"""
         super().__init__(parent)
         self.setWindowTitle("小剧场控制台")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
@@ -887,11 +909,7 @@ class SettingsDialog(QDialog):
         self.btn_change_char = QPushButton("更换角色组合")
         self.btn_change_char.setMinimumHeight(btn_h)
 
-        self.btn_detail_info = QPushButton("填写详细设定")
-        self.btn_detail_info.setMinimumHeight(btn_h)
-
         char_layout.addWidget(self.btn_change_char, 0, 0, 1, 2)
-        char_layout.addWidget(self.btn_detail_info, 1, 0, 1, 2)
         char_group.setLayout(char_layout)
 
         # === 分组 2: 祥子状态控制 ===
@@ -937,7 +955,6 @@ class SettingsDialog(QDialog):
         self.btn_motion_facing = QPushButton(self.parent_gui.motion_facing_mode_button_text() if self.parent_gui else "对话朝向：正常")
         self.btn_motion_facing.setMinimumHeight(btn_h)
         live2d_render_layout.addWidget(self.btn_live2d_fps)
-        live2d_render_layout.addWidget(self.btn_set_bgm)
         live2d_render_layout.addWidget(self.btn_motion_facing)
         live2d_render_group.setLayout(live2d_render_layout)
         layout.addWidget(live2d_render_group)
@@ -988,6 +1005,7 @@ class SettingsDialog(QDialog):
         self.bgm_volume_slider.setValue(30)
         bgm_volume_layout.addWidget(self.bgm_volume_label)
         bgm_volume_layout.addWidget(self.bgm_volume_slider)
+        bgm_volume_layout.addWidget(self.btn_set_bgm)
         audio_talk_layout.addLayout(talk_speed_layout)
         audio_talk_layout.addLayout(pause_second_layout)
         audio_talk_speed_group.setLayout(audio_talk_layout)
@@ -999,7 +1017,6 @@ class SettingsDialog(QDialog):
         # === 绑定信号 ===
         if self.parent_gui:
             self.btn_change_char.clicked.connect(self.parent_gui._change_character)
-            self.btn_detail_info.clicked.connect(self.parent_gui.config_more_info)
             self.btn_sakiko_state.clicked.connect(self.parent_gui.convert_sakiko_state)
             self.btn_sakiko_model.setMenu(self.parent_gui.create_mask_menu())
             self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
@@ -1100,6 +1117,7 @@ class ViewerGUI(QWidget):
         self.chat_display.performance_signal.connect(self.open_performance_editor)
         self.performance_editor = None
         self._audio_regeneration = None
+        self._generation_context = None
 
         # 消息框高度自适应 (屏幕高度的 6%)
         self.messages_box = QTextBrowser()
@@ -1124,6 +1142,7 @@ class ViewerGUI(QWidget):
 
         # 创建工具按钮的辅助函数
         def create_tool_btn(tooltip, callback):
+            """创建沿用顶部工具栏尺寸和悬停样式的图标入口。"""
             btn = QToolButton()
 
             btn.setToolTip(tooltip)
@@ -1635,8 +1654,9 @@ class ViewerGUI(QWidget):
             return audio_list[pointer]
         return None
 
-    def _build_playlist_queue(self) -> List[Dict[str, Any]]:
+    def _build_playlist_queue(self, indices=None) -> List[Dict[str, Any]]:
         """将模型返回的原始对话与音频结果组装为播放列表。"""
+        indices = self.current_char_index if indices is None else indices
         char_0_text_pointer = 0
         char_1_text_pointer = 0
         playlist_queue: List[Dict[str, Any]] = []
@@ -1650,12 +1670,12 @@ class ViewerGUI(QWidget):
                 text = self.char_0_talk_texts[char_0_text_pointer]
                 audio_path = self._safe_get_audio_path(self.char_0_audio_path_list, char_0_text_pointer)
                 char_0_text_pointer += 1
-                char_name = self.character_list[self.current_char_index[0]].character_name
+                char_name = self.character_list[indices[0]].character_name
             elif self.char_talk_texts_match_original_response_indices[i] == 'char_1':
                 text = self.char_1_talk_texts[char_1_text_pointer]
                 audio_path = self._safe_get_audio_path(self.char_1_audio_path_list, char_1_text_pointer)
                 char_1_text_pointer += 1
-                char_name = self.character_list[self.current_char_index[1]].character_name
+                char_name = self.character_list[indices[1]].character_name
             else:
                 text = turn.get('text', '')
                 audio_path = None
@@ -1892,22 +1912,6 @@ class ViewerGUI(QWidget):
                 self.display_timer.setSingleShot(True)
                 self.display_timer.start(2500)
 
-
-    def config_more_info(self):
-        current_meta = self._ensure_current_chat_theater_meta().to_dict()
-        self.conf_win = MoreInfoDialog(
-            self.character_list[self.current_char_index[0]].character_name,
-            self.character_list[self.current_char_index[1]].character_name,
-            current_meta,
-        )
-        self.conf_win.info_committed.connect(self.on_more_info_committed)
-        self.conf_win.show()
-
-    def on_more_info_committed(self, data: Dict[str, Any]) -> None:
-        """接收 MoreInfoDialog 的配置并持久化到当前 Chat。"""
-        if self.current_chat is None:
-            return
-        self.current_chat.update_theater_meta(data)
 
     def _handle_bgm_error(self, error: QMediaPlayer.Error) -> None:
         """处理 Qt 媒体后端报告的背景音乐播放错误。"""
@@ -2220,26 +2224,45 @@ class ViewerGUI(QWidget):
 
 
     def start_generation(self) -> None:
-        """发起一次剧情生成，并将参数投递到 `dp_local_multi_char.py`。"""
-        if self.current_chat is not None and self.current_chat.message_list:
-            box = QMessageBox(QMessageBox.Question, "重新生成对话", "重新生成对话将清空当前对话内容，是否继续？", QMessageBox.No | QMessageBox.Yes, self)
-            box.button(QMessageBox.Yes).setText("确定")
-            box.button(QMessageBox.No).setText("取消")
-            reply = box.exec_()
-            if reply == QMessageBox.Yes:
-                self.current_chat.clear_message_list()
-                self.refresh_chat_display()
-            else:
-                return
+        """主页生成入口只打开设定副本，不清空剧本或发送请求。"""
+        if self.current_chat is None or self._generation_context is not None:
+            return
+        chat = self.current_chat
+        indices = list(self.current_char_index)
+        meta = copy.deepcopy(chat.meta.theater.to_dict())
+        if not meta.get("situation"):
+            meta["situation"] = chat.start_message or ""
+        dialog = MoreInfoDialog(
+            self.character_list[indices[0]].character_name,
+            self.character_list[indices[1]].character_name,
+            meta, self, replacing=bool(chat.message_list),
+        )
+        dialog.info_committed.connect(lambda data: self.submit_generation(dialog, chat, indices, data))
+        dialog.exec_()
+        dialog.deleteLater()
 
+    def submit_generation(self, dialog, chat, indices, data) -> None:
+        """设定窗口唯一提交入口，保存设定后绑定原对话发送 LLM 请求。"""
+        if self._generation_context is not None:
+            dialog.commit_btn.setEnabled(True)
+            return
+        old_meta = copy.deepcopy(chat.meta.theater)
+        old_start = chat.start_message
+        chat.update_theater_meta(data)
+        if not self._save_chat():
+            chat.meta.theater = old_meta
+            chat.start_message = old_start
+            dialog.commit_btn.setEnabled(True)
+            return
+        self._generation_context = {
+            "chat": chat, "indices": list(indices), "sakiko_state": self.sakiko_state,
+            "audio": self.can_generate_audio_for_current_chat,
+        }
         self.generate_btn.setEnabled(False)
-
-        # 从当前对话元数据构造给 dp 模块的输入。
-        temporary_input = self._build_dp_user_input()
-
+        temporary_input = copy.deepcopy(data)
         # 这里必须用原始角色名判断，不能用 two_char_names（可能带“黑祥/白祥”后缀）。
-        char_0_name = self.character_list[self.current_char_index[0]].character_name
-        char_1_name = self.character_list[self.current_char_index[1]].character_name
+        char_0_name = self.character_list[indices[0]].character_name
+        char_1_name = self.character_list[indices[1]].character_name
         sakiko_suffix = "（此时祥子为黑祥）" if self.sakiko_state else "（此时祥子为白祥）"
 
         if char_0_name == "祥子":
@@ -2253,29 +2276,45 @@ class ViewerGUI(QWidget):
             )
             self.audio_gen_module.sakiko_which_state = self.sakiko_state
 
-        self.qt2dp_queue.put({
-            "char_index": self.current_char_index,
+        request = {
+            "char_index": indices,
             "user_input": temporary_input,
             "performance_models": {
                 str(slot.get("character_name")): slot.get("model_json_path")
                 for slot in self._build_active_slots_payload().get("slots", [])
                 if isinstance(slot, dict)
             },
-        })
+        }
+        try:
+            self.qt2dp_queue.put(request)
+        except (OSError, ValueError) as error:
+            self.generation_failed(f"请求未能发送，原剧本已保留：{error}")
+            dialog.commit_btn.setEnabled(True)
+            return
+        dialog.accept()
 
-
+    def generation_failed(self, message) -> None:
+        """生成或解析失败时释放入口，保留当前与原目标对话的全部消息。"""
+        self._generation_context = None
+        self.generate_btn.setEnabled(True)
+        self.messages_box.setText(message)
 
     def handle_response(self,response):
+        """验证整份生成结果后进入合成，失败时保留旧剧本并释放生成入口。"""
+        if self._generation_context is None:
+            return
         if response=='error':
-            self.generate_btn.setEnabled(True)
-            self.display_timer.setSingleShot(True)
-            self.display_timer.start(2500)
+            self.generation_failed("生成失败，原剧本已保留。")
             return
 
-        self.original_response=self.robust_json_parse(response)
+        self.original_response = self.robust_json_parse(response) if isinstance(response, str) else []
         # self.display_timer.setSingleShot(True)
         # self.display_timer.start(1000)
-        if not self.original_response:
+        if (not isinstance(self.original_response, list) or not self.original_response
+                or any(not isinstance(turn, dict) or not isinstance(turn.get("speaker"), str)
+                       or not isinstance(turn.get("text"), str) or not turn["text"].strip()
+                       for turn in self.original_response)):
+            self.generation_failed("生成结果格式无效，原剧本已保留。")
             return
         self.char_0_talk_texts=[]
         self.char_0_talk_emotions=[]
@@ -2284,8 +2323,7 @@ class ViewerGUI(QWidget):
         self.char_1_talk_texts=[]
         self.char_1_talk_emotions=[]
         self.char_1_audio_path_list=[]
-        idx_0 = self.current_char_index[0]
-        idx_1 = self.current_char_index[1]
+        idx_0, idx_1 = self._generation_context["indices"]
         for i,turn in enumerate(self.original_response):
             speaker_name_from_llm = turn.get('speaker', '').strip()  # 去除首尾空格
             text = turn.get('text', '')
@@ -2306,12 +2344,13 @@ class ViewerGUI(QWidget):
                 # 两个都没匹配上（比如大模型突然输出了“旁白”或者幻觉出了第三个人）
                 self.char_talk_texts_match_original_response_indices.append('skipped')
                 logger.warning("无法识别说话人 '%s'，已跳过该句，内容：%s", speaker_name_from_llm, text)
+                self.generation_failed("生成结果含未知角色，原剧本已保留。")
                 return
 
         self._generation_serial += 1
         self.audio_gen_module.audio_language_choice="日英混合"
 
-        if not self.can_generate_audio_for_current_chat:
+        if not self._generation_context["audio"]:
             self.char_0_audio_path_list = []
             self.char_1_audio_path_list = []
             self.messages_box.setText("缺少语音模型，跳过语音生成，直接展示文本")
@@ -2321,50 +2360,81 @@ class ViewerGUI(QWidget):
         self.handle_response_continue()
 
     def handle_response_continue(self):
-        self.messages_box.setText(f"生成 {self.character_list[self.current_char_index[0]].character_name} 的语音..")
+        """使用提交时绑定的第一名角色合成，避免切换对话后角色串位。"""
+        context = self._generation_context
+        self.messages_box.setText(f"生成 {self.character_list[context['indices'][0]].character_name} 的语音..")
         self.audio_gen_generate_audio_thread_0 = WaitUntilAudioGenModuleSynthesisComplete(
             self.audio_gen_module,
             self.char_0_talk_texts,
-            self.character_list[self.current_char_index[0]],
-            self.sakiko_state,
+            self.character_list[context["indices"][0]],
+            context["sakiko_state"],
             self.audio_gen_module.audio_language_choice,
             self.char_0_talk_emotions,
         )
         self.audio_gen_generate_audio_thread_0.synthesis_complete_signal.connect(self.handle_response_continue_1)
+        self.audio_gen_generate_audio_thread_0.synthesis_failed_signal.connect(self.generation_failed)
         self.audio_gen_generate_audio_thread_0.start()
 
     def handle_response_continue_1(self,char_0_audio_path_list):
+        """接收第一名角色音频并继续合成第二名角色。"""
         self.char_0_audio_path_list=char_0_audio_path_list
         self.handle_response_continue_2()
 
     def handle_response_continue_2(self):
-        self.messages_box.setText(f"生成 {self.character_list[self.current_char_index[1]].character_name} 的语音..")
+        """使用提交时绑定的第二名角色完成语音合成。"""
+        context = self._generation_context
+        self.messages_box.setText(f"生成 {self.character_list[context['indices'][1]].character_name} 的语音..")
         self.audio_gen_generate_audio_thread_1 = WaitUntilAudioGenModuleSynthesisComplete(
             self.audio_gen_module,
             self.char_1_talk_texts,
-            self.character_list[self.current_char_index[1]],
-            self.sakiko_state,
+            self.character_list[context["indices"][1]],
+            context["sakiko_state"],
             self.audio_gen_module.audio_language_choice,
             self.char_1_talk_emotions,
         )
         self.audio_gen_generate_audio_thread_1.synthesis_complete_signal.connect(self.final_handle_response)
+        self.audio_gen_generate_audio_thread_1.synthesis_failed_signal.connect(self.generation_failed)
         self.audio_gen_generate_audio_thread_1.start()
     def final_handle_response(self,char_1_audio_path_list=None):
-        """合成完成后提交正式播放队列，由常驻回执线程接收各句结果。"""
+        """整份结果可用后一次替换原目标剧本；保存失败回滚，不污染其他对话。"""
+        context = self._generation_context
+        if context is None:
+            return
+        target = context["chat"]
+        if not any(chat is target for chat in self.chat_manager.chat_list):
+            self.generation_failed("原对话已删除，生成结果未写入其他对话。")
+            return
         self.char_1_audio_path_list = char_1_audio_path_list or []
+        try:
+            playlist = self._build_playlist_queue(context["indices"])
+            messages = [self._message_from_turn_dict(turn) for turn in playlist]
+        except (ValueError, TypeError, KeyError) as error:
+            logger.warning("生成结果转换失败：%s", error)
+            self.generation_failed("生成结果无效，原剧本已保留。")
+            return
+        old_messages = target.message_list
+        old_meta = copy.deepcopy(target.meta)
+        target.message_list = []
+        target.clear_message_list()
+        target.message_list = messages
+        if not self._save_chat():
+            target.message_list = old_messages
+            target.meta = old_meta
+            self.generation_failed("新剧本保存失败，原剧本已保留。")
+            return
+        self._generation_context = None
         self.messages_box.setText(f"对话生成完毕")
         self.display_timer.setSingleShot(True)
         self.display_timer.start(1000)
         self.generate_btn.setEnabled(True)
 
-        self.playlist_queue = self._build_playlist_queue()
-        self.pending_turn_uids = {
-            turn_uid
-            for turn in self.playlist_queue
-            for turn_uid in [turn.get("turn_uid")]
-            if isinstance(turn_uid, str) and turn_uid
-        }
-        self.display_live2d_message(self.playlist_queue, preserve_playback=False)
+        # 已整份保存，不再通过舞台逐句回执追加消息。
+        self.pending_turn_uids.clear()
+        self.refresh_chat_list()
+        if self.current_chat is target:
+            self.playlist_queue = playlist
+            self.refresh_chat_display()
+            self.display_live2d_message(playlist, preserve_playback=False)
 
     def display_this_turn_text(self,this_turn_elements):
         """分发预览回执；只有正式播放的新消息进入聊天记录。"""

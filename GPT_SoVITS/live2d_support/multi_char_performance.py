@@ -91,6 +91,11 @@ class MultiCharPerformance:
             self.resources[key] = TheaterResources(model.model_json_path, direction)
         return self.resources[key]
 
+    def is_managed_model(self, model):
+        """按对象身份判断模型是否由编排接管，不要求模型对象可哈希。"""
+        return any(name in self.managed and bound is model
+                   for name, bound in self.bindings().items())
+
     def reset(self, name, motion=True, expression=True):
         """重置指定角色通道，其他角色及独立表情不受动作重置影响。"""
         model = self.bindings().get(name)

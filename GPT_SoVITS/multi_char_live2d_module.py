@@ -1493,9 +1493,8 @@ class Live2DModule:
                     and not audio_is_playing
                     and time.time() > max(idle_recover_timer, next_turn_earliest_start_at) + 2.5):
                 # 编排角色保持尾帧；下次动作、显式空轨或预览复位再接管。
-                managed_models = {performance.bindings().get(name) for name in performance.managed}
                 for slot_index, idle_model in enumerate(model_group):
-                    if (idle_model is not None and idle_model not in managed_models
+                    if (idle_model is not None and not performance.is_managed_model(idle_model)
                             and idle_model.performance_state is not None):
                         idle_model.reset_performance()
                         idle_model.StartRandomMotion(

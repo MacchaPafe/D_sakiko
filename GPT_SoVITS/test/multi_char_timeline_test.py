@@ -164,6 +164,35 @@ def test_finished_motion_does_not_start_idle():
     model.StartRandomMotion.assert_not_called()
 
 
+def test_playlist_end_handles_unhashable_models():
+    """执行真实播放循环的无声收尾分支，空编排和编排模型均不能触发哈希异常。"""
+    import ast
+    import time
+    source = Path(__file__).resolve().parents[1] / "multi_char_live2d_module.py"
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+    branch = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
+                  and "idle_recover_timer" in ast.unparse(node.test))
+    code = compile(ast.Module(body=[branch], type_ignores=[]), str(source), "exec")
+    model = SimpleNamespace(performance_state=object(), reset_performance=Mock(), StartRandomMotion=Mock())
+    player = MultiCharPerformance(lambda: [model], lambda: [{"character_name": "A"}], Mock(), Mock())
+    host = SimpleNamespace(playlist=[{}], playlist_pointer=1, _active_model_versions=Mock(return_value=[]),
+                           _motion_position_for_slot=Mock(return_value="C"))
+    context = dict(performance=player, self=host, audio_is_playing=False, time=time,
+                   idle_recover_timer=0, next_turn_earliest_start_at=0,
+                   model_group=[model], active_motion_facing_mode="screen")
+    exec(code, context)
+    model.reset_performance.assert_called_once()
+    model.StartRandomMotion.assert_called_once()
+    model.reset_performance.reset_mock()
+    model.StartRandomMotion.reset_mock()
+    player.managed.add("A")
+    exec(code, context)
+    model.reset_performance.assert_not_called()
+    model.StartRandomMotion.assert_not_called()
+    # 内容相等的另一个对象不能被当成当前槽位的模型。
+    assert not player.is_managed_model(SimpleNamespace(**vars(model)))
+
+
 def test_missing_motion_does_not_reset_expression():
     """换装缺失动作跳过，不用无效事件清理前一句表情。"""
     model = Mock()
