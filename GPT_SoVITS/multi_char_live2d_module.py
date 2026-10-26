@@ -920,6 +920,7 @@ class Live2DModule:
                     change_char_queue,
                     to_live2d_module_queue,
                     tell_qt_this_turn_finish_queue, playback_idle_value=None):
+        """运行独立双模型舞台，统一处理正式播放、编排预览和窗口命令。"""
 
         # print("正在开启Live2D模块")
         # 只在 Windows 下处理高DPI问题，因为 MacOS 下 PyQt 根本就没有模糊问题
@@ -1059,6 +1060,9 @@ class Live2DModule:
             return (
                 self.playlist_pointer == len(self.playlist)
                 and to_live2d_module_queue.empty()
+                and not queued_playlist
+                and not performance.preview
+                and not performance.playing
                 and not pygame.mixer.music.get_busy()
                 and (not waiting_between_turns or time.time() >= next_turn_earliest_start_at)
             )
@@ -1188,6 +1192,22 @@ class Live2DModule:
             layout_dirty_slots.discard(layout_selected_slot)
             show_layout_edit_overlay()
 
+        from live2d_support.multi_char_performance import MultiCharPerformance
+        from live2d_support.expression_preview import ExpressionPreviewSession
+        def timeline_direction(name):
+            """按当前槽位和面对面设置选择编排动作方向。"""
+            slot = next((index for index, value in enumerate(self.active_slots)
+                         if value["character_name"] == name), 0)
+            return self._motion_position_for_slot(slot, self._active_model_versions(), active_motion_facing_mode)
+
+        performance = MultiCharPerformance(
+            lambda: model_group, lambda: self.active_slots,
+            tell_qt_this_turn_finish_queue.put, pygame.mixer.music, timeline_direction,
+        )
+        expression_preview = ExpressionPreviewSession()
+        from pygame._sdl2.video import Window
+        stage_window = Window.from_display_module()
+        stage_geometry = None
         refresh_model_notice()
 
         while self.run:
@@ -1275,7 +1295,42 @@ class Live2DModule:
 
                 try:
                     # 统一按 type 分发，避免旧字符串协议带来的解析歧义
-                    if message_type == "set_active_slots":
+                    if message_type == "multi_char_preview":
+                        action = x.get("action")
+                        valid_session = performance.preview and x.get("session") == performance.session
+                        if action == "enter":
+                            stage_geometry = (stage_window.position, stage_window.size)
+                        elif valid_session and action == "window_geometry":
+                            px, py, width, height = x["geometry"]
+                            stage_window.position = (px, py)
+                            stage_window.size = (width, height)
+                        elif valid_session and action == "window_minimize":
+                            if x.get("minimized"):
+                                stage_window.minimize()
+                            else:
+                                stage_window.restore()
+                        elif valid_session and action == "exit":
+                            expression_preview.close()
+                            if sys.platform != "win32" and stage_geometry:
+                                stage_window.position, stage_window.size = stage_geometry
+                        performance.command(x)
+                        if action == "enter":
+                            self._clear_eye_reopen_state()
+                            lip_sync_model = None
+                            tell_qt_this_turn_finish_queue.put({
+                                "type": "multi_char_window", "session": x.get("session"),
+                                "handle": pygame.display.get_wm_info().get("window"),
+                                "geometry": list(stage_window.position) + list(stage_window.size),
+                            })
+                    elif message_type == "expression_editor":
+                        character_name = x.get("character")
+                        model = performance.bindings().get(character_name)
+                        tell_qt_this_turn_finish_queue.put(expression_preview.execute(model, x))
+                    elif message_type == "set_active_slots":
+                        expression_preview.close()
+                        performance.resources.clear()
+                        if performance.preview:
+                            performance.command({"action": "stop", "session": performance.session})
                         if layout_editing:
                             exit_layout_edit_mode()
                         apply_slots_payload(x)
@@ -1307,9 +1362,16 @@ class Live2DModule:
                         logger.warning("忽略未知消息类型：%s", message_type)
                 except Exception:
                     logger.exception("处理 change_char_queue 消息失败")
+                    if message_type == "multi_char_preview":
+                        tell_qt_this_turn_finish_queue.put({
+                            "type": "multi_char_preview", "session": x.get("session"),
+                            "error": "预览命令执行失败，请检查模型或音频。", "playing": False,
+                        })
                 continue
 
-            if not to_live2d_module_queue.empty():
+            performance.tick()
+
+            if not performance.preview and not to_live2d_module_queue.empty():
                 data = to_live2d_module_queue.get()
                 if data == "STOP":
                     stop_on_next_sentence = True
@@ -1320,7 +1382,9 @@ class Live2DModule:
                     preserve_playback = bool(data.get("preserve_playback", False))
                     # 开启 preserve_playback 时，将传入内容添加到播放队列，等待当前播放完再切换
                     # 否则，在本句话播放完成后立刻切换到新内容，清空播放队列
-                    if self.playlist_pointer==len(self.playlist):
+                    if (self.playlist_pointer == len(self.playlist)
+                            and not pygame.mixer.music.get_busy() and not performance.playing
+                            and (not waiting_between_turns or time.time() >= next_turn_earliest_start_at)):
                         self.playlist = data.get("playlist", [])
                         self.performance_round += 1
                         self.playlist_pointer = 0
@@ -1335,34 +1399,26 @@ class Live2DModule:
                         queued_playlist.append(data.get("playlist", []))
 
             audio_is_playing = pygame.mixer.music.get_busy()
-            if self.playlist_pointer < len(self.playlist):
-                now = time.time()
-
-                # 检测“有音频的一句”从播放中 -> 已结束 的时刻。
-                # 一旦检测到结束，启动 0.5 秒冷却，防止句子衔接过快。
-                if previous_frame_audio_playing and (not audio_is_playing) and current_turn_has_audio:
+            now = time.time()
+            if not performance.preview:
+                # 出队并不代表句子结束；最后一句也必须完成时钟、冷却和队列交接。
+                if previous_frame_audio_playing and not audio_is_playing and current_turn_has_audio:
                     next_turn_earliest_start_at = now + WAIT_SECONDS
                     waiting_between_turns = True
-
-                # 记录本帧状态，供下一帧做“边沿检测”。
                 previous_frame_audio_playing = audio_is_playing
-
-                # STOP 语义：不打断正在播放的音频；在“当前句结束且音频空闲”时切断。
-                if stop_on_next_sentence and not audio_is_playing:
+                turn_finished = not audio_is_playing and not performance.playing
+                if stop_on_next_sentence and turn_finished:
                     self.playlist_pointer = len(self.playlist)
                     stop_on_next_sentence = False
-
+                can_advance = turn_finished and (not waiting_between_turns or now >= next_turn_earliest_start_at)
+                if self.playlist_pointer >= len(self.playlist) and queued_playlist and can_advance:
+                    self.playlist = queued_playlist.popleft()
+                    self.playlist_pointer = 0
+                    self.performance_round += 1
                     waiting_between_turns = False
-                    next_turn_earliest_start_at = 0.0
-                    previous_frame_audio_playing = False
                     current_turn_has_audio = False
 
-                    if len(queued_playlist) > 0:
-                        self.playlist = queued_playlist.popleft()
-                        self.performance_round += 1
-                        self.playlist_pointer = 0
-                    continue
-
+            if not performance.preview and self.playlist_pointer < len(self.playlist):
                 # 统一的“是否可以开下一句”判定：
                 # - 音频仍在播放：不可开下一句
                 # - 正处于句间冷却且未到时刻：不可开下一句
@@ -1402,17 +1458,25 @@ class Live2DModule:
 
                     has_audio_file = self._start_turn_audio(str(audio_path))
                     current_turn_has_audio = has_audio_file
-                    self._try_start_emotion_motion(
-                        model=this_turn_model,
-                        emotion=str(emotion),
-                        performance=this_turn_elements.get("performance"),
-                        context=self.performance_round,
-                        position=self._motion_position_for_slot(
-                            speaker_slot,
-                            self._active_model_versions(),
-                            active_motion_facing_mode,
-                        ),
-                    )
+                    previous_frame_audio_playing = has_audio_file
+                    if this_turn_elements.get("performance_timeline") is not None:
+                        self._clear_eye_reopen_state()
+                        performance.begin(this_turn_elements)
+                    else:
+                        performance.cursor = None
+                        performance.playing = False
+                        if speaker_name in performance.managed:
+                            performance.reset(speaker_name)
+                            performance.managed.discard(speaker_name)
+                        self._try_start_emotion_motion(
+                            model=this_turn_model,
+                            emotion=str(emotion),
+                            performance=this_turn_elements.get("performance"),
+                            context=self.performance_round,
+                            position=self._motion_position_for_slot(
+                                speaker_slot, self._active_model_versions(), active_motion_facing_mode,
+                            ),
+                        )
 
                     tell_qt_this_turn_finish_queue.put(this_turn_elements)
                     overlay.set_text(speaker_name, text + '\n' + translation)
@@ -1424,11 +1488,15 @@ class Live2DModule:
                         waiting_between_turns = True
                         previous_frame_audio_playing = False
 
-            if (self.playlist and self.playlist_pointer >= len(self.playlist)
+            if (not performance.preview and not performance.playing
+                    and self.playlist and self.playlist_pointer >= len(self.playlist)
                     and not audio_is_playing
                     and time.time() > max(idle_recover_timer, next_turn_earliest_start_at) + 2.5):
+                # 编排角色保持尾帧；下次动作、显式空轨或预览复位再接管。
+                managed_models = {performance.bindings().get(name) for name in performance.managed}
                 for slot_index, idle_model in enumerate(model_group):
-                    if idle_model is not None and idle_model.performance_state is not None:
+                    if (idle_model is not None and idle_model not in managed_models
+                            and idle_model.performance_state is not None):
                         idle_model.reset_performance()
                         idle_model.StartRandomMotion(
                             "idle_motion", 3,
@@ -1448,10 +1516,23 @@ class Live2DModule:
 
             for model in model_group:
                 if model is not None:
-                    model.Update()
+                    frozen = performance.preview and performance.paused
+                    frozen = frozen or (expression_preview.static and expression_preview.model is model)
+                    if frozen:
+                        model._last_update_time = time.monotonic()
+                    else:
+                        model.Update()
+            expression_preview.after_update()
             if self.force_eyes_open and self.last_motion_model is not None:
                 self._force_model_eyes_open(self.last_motion_model)
                 self._clear_eye_reopen_state()
+            # 编辑工作区改变窗口尺寸时，整个舞台等比缩放并留边，不拉伸角色。
+            window_width, window_height = pygame.display.get_window_size()
+            ratio = min(window_width / display[0], window_height / display[1])
+            viewport_width = round(display[0] * ratio)
+            viewport_height = round(display[1] * ratio)
+            glViewport((window_width - viewport_width) // 2, (window_height - viewport_height) // 2,
+                       viewport_width, viewport_height)
             # 渲染背景图片
             # 强制恢复OpenGL状态，确保背景和UI的渲染不受Live2D的影响
             # 因为多模型下，不知道为什么，live2d-py 库渲染模型时会修改 OpenGL 上下文，抢走了纹理的绑定。
@@ -1461,7 +1542,14 @@ class Live2DModule:
             glColor4f(1, 1, 1, 1)
 
             BackgroundRen.blit(*self.BACKGROUND_POSITION)
-            if self.wavHandler.Update() and lip_sync_model is not None:  # 控制说话时的嘴型
+            mouth_restore = None
+            preview_mouth = performance.mouth()
+            if preview_mouth is not None:
+                mouth_model, rms = preview_mouth
+                mouth_restore = (mouth_model, mouth_model.get_parameter_value("mouth_open_y", 0.0))
+                mouth_model.set_parameter_value("mouth_open_y", rms * self.lipSyncN)
+            if not performance.preview and audio_is_playing and self.wavHandler.Update() and lip_sync_model is not None:  # 控制说话时的嘴型
+                mouth_restore = (lip_sync_model, lip_sync_model.get_parameter_value("mouth_open_y", 0.0))
                 lip_sync_model.set_parameter_value("mouth_open_y", self.wavHandler.GetRms() * self.lipSyncN)
 
                 idle_recover_timer = time.time()
@@ -1470,6 +1558,8 @@ class Live2DModule:
                 if model is not None:
                     model.Draw()
 
+            if mouth_restore is not None:
+                mouth_restore[0].set_parameter_value("mouth_open_y", mouth_restore[1])
             if layout_editing:
                 show_layout_edit_overlay()
                 self._draw_layout_edit_selection_mask(layout_selected_slot)
@@ -1480,7 +1570,7 @@ class Live2DModule:
             # 4、pygame刷新
             pygame.display.flip()
             if playback_idle_value is not None:
-                playback_idle_value.value = is_dialogue_idle()
+                playback_idle_value.value = is_dialogue_idle() and not performance.preview and not performance.playing
             frame_clock.tick(target_fps)
 
         try:
@@ -1513,6 +1603,7 @@ class Live2DModule:
         except Exception:
             pass
         pygame.quit()
+        tell_qt_this_turn_finish_queue.put("EXIT")
 
 
 def run_live2d_process(change_char_queue, to_live2d_module_queue, tell_qt_this_turn_finish_queue, logging_queue, playback_idle_value=None):

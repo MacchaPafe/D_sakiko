@@ -190,6 +190,8 @@ class Message:
     # 真实用户消息入队时冻结的世界书上下文；旧消息为空。
     worldbook_snapshot: WorldbookTurnSnapshot | None = None
     performance: PerformanceSelection | None = None
+    # 原样保留视觉编排；校验只作用于编辑/播放投影，不修写旧存档。
+    performance_timeline: object = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Message":
@@ -218,6 +220,7 @@ class Message:
             attachments=attachments,
             worldbook_snapshot=worldbook_snapshot,
             performance=PerformanceSelection.from_value(data.get("performance")),
+            performance_timeline=copy.deepcopy(data.get("performance_timeline")),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -236,6 +239,8 @@ class Message:
             data["worldbook_snapshot"] = self.worldbook_snapshot.model_dump(mode="json")
         if self.performance is not None:
             data["performance"] = self.performance.as_dict()
+        if self.performance_timeline is not None:
+            data["performance_timeline"] = copy.deepcopy(self.performance_timeline)
         return data
 
     @property

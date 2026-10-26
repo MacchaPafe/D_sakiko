@@ -4,17 +4,17 @@ import sys, os,json,re,ast
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
 if __name__ == "__main__":
     from maintenance.bootstrap import recover_before_startup
     recover_before_startup(Path(__file__).resolve().parents[1])
 
 from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(script_dir)
-if script_dir not in sys.path:
-    sys.path.insert(0, script_dir)
 
 from qconfig import DEFAULT_MULTI_CHAR_BGM_PATH, d_sakiko_config
 from ui_main.components.custom_bgm_dialog import (
@@ -420,14 +420,18 @@ class CommunicateThreadDP2QT(QThread):
 
 class DisplayTalkText(QThread):
     talk_text_signal=pyqtSignal(dict)
+    stage_closed = pyqtSignal()
     def __init__(self,tell_qt_this_turn_finish_queue):
+        """建立唯一舞台回执消费者，区分正常消息和前台退出。"""
         super().__init__()
         self.tell_qt_this_turn_finish_queue=tell_qt_this_turn_finish_queue
 
     def run(self):
+        """持续传回舞台事件，进程退出通知编辑器保留草稿。"""
         while True:
             x=self.tell_qt_this_turn_finish_queue.get()
             if x=='EXIT':
+                self.stage_closed.emit()
                 break
             self.talk_text_signal.emit(x)
 
@@ -612,6 +616,7 @@ class ElementEditorDialog(QDialog):
     def get_new_data(self):
         """返回修改后的字典"""
         return {
+            **self.data,
             "character_name": self.data.get('character_name', ''),
             "text": self.text_edit.text(),
             "emotion": self.emotion_edit.text(),
@@ -624,7 +629,9 @@ class InteractiveChatBrowser(QTextBrowser):
     # 定义一个信号：当用户点击"编辑"时，发送该链接对应的索引号
     edit_signal = pyqtSignal(int)
     regenerate_signal=pyqtSignal(int)
+    performance_signal = pyqtSignal(int)
     def contextMenuEvent(self, event):
+        """为台词链接提供内容编辑、语音重生成及演出编排入口。"""
         # 1. 获取鼠标位置下的链接地址
         # anchorAt 是 Qt 5.10+ 引入的，非常方便
         link = self.anchorAt(event.pos())
@@ -636,6 +643,7 @@ class InteractiveChatBrowser(QTextBrowser):
 
             # 添加 "编辑此条数据" 动作
             edit_action = menu.addAction("编辑此条数据")
+            performance_action = menu.addAction("演出编排")
 
             # 添加 "重新播放" 动作 (可选)
             regen_action = menu.addAction("重新生成这条音频")
@@ -651,6 +659,8 @@ class InteractiveChatBrowser(QTextBrowser):
                     self.edit_signal.emit(index)  # 发送信号给主窗口
                 elif action == regen_action:
                     self.regenerate_signal.emit(index)
+                elif action == performance_action:
+                    self.performance_signal.emit(index)
 
             except ValueError:
                 pass
@@ -1065,6 +1075,7 @@ class ViewerGUI(QWidget):
                  tell_qt_this_turn_finish_queue,
                  playback_idle_value=None,
                  ):
+        """构建小剧场控制台、消息通道及共享舞台编排入口。"""
         super().__init__()
         self.playback_idle_value = playback_idle_value
 
@@ -1086,6 +1097,9 @@ class ViewerGUI(QWidget):
         self.chat_display.anchorClicked.connect(self.on_link_clicked)  # 绑定点击信号
         self.chat_display.edit_signal.connect(self.open_editor) #右键
         self.chat_display.regenerate_signal.connect(self.regenerate_audio)
+        self.chat_display.performance_signal.connect(self.open_performance_editor)
+        self.performance_editor = None
+        self._audio_regeneration = None
 
         # 消息框高度自适应 (屏幕高度的 6%)
         self.messages_box = QTextBrowser()
@@ -1227,6 +1241,10 @@ class ViewerGUI(QWidget):
         self.to_live2d_module_queue=to_live2d_module_queue
         self.to_live2d_change_character_queue=to_live2d_change_character_queue
         self.tell_qt_this_turn_finish_queue=tell_qt_this_turn_finish_queue
+        self.display_text_thread = DisplayTalkText(self.tell_qt_this_turn_finish_queue)
+        self.display_text_thread.talk_text_signal.connect(self.display_this_turn_text)
+        self.display_text_thread.stage_closed.connect(self.on_stage_closed)
+        self.display_text_thread.start()
         self.mes_thread=CommunicateThreadMessages(self.message_queue)
         self.mes_thread.message_signal.connect(self.handle_messages)
         self.mes_thread.start()
@@ -1504,6 +1522,9 @@ class ViewerGUI(QWidget):
             "emotion": turn_data.get("emotion", "normal"),
             "audio_path": turn_data.get("audio_path", ""),
             "performance": turn_data.get("performance"),
+            "performance_timeline": turn_data.get("performance_timeline"),
+            "attachments": turn_data.get("attachments", []),
+            "worldbook_snapshot": turn_data.get("worldbook_snapshot"),
         })
 
     def _character_indices_from_names(self, character_names: List[str]) -> List[int]:
@@ -2329,6 +2350,7 @@ class ViewerGUI(QWidget):
         self.audio_gen_generate_audio_thread_1.synthesis_complete_signal.connect(self.final_handle_response)
         self.audio_gen_generate_audio_thread_1.start()
     def final_handle_response(self,char_1_audio_path_list=None):
+        """合成完成后提交正式播放队列，由常驻回执线程接收各句结果。"""
         self.char_1_audio_path_list = char_1_audio_path_list or []
         self.messages_box.setText(f"对话生成完毕")
         self.display_timer.setSingleShot(True)
@@ -2343,12 +2365,13 @@ class ViewerGUI(QWidget):
             if isinstance(turn_uid, str) and turn_uid
         }
         self.display_live2d_message(self.playlist_queue, preserve_playback=False)
-        self.display_text_thread=DisplayTalkText(self.tell_qt_this_turn_finish_queue)
-        self.display_text_thread.talk_text_signal.connect(self.display_this_turn_text)
-        self.display_text_thread.start()
 
     def display_this_turn_text(self,this_turn_elements):
-        """将一条新生成消息追加到当前对话并刷新显示。"""
+        """分发预览回执；只有正式播放的新消息进入聊天记录。"""
+        if this_turn_elements.get("type") in ("multi_char_preview", "multi_char_window", "expression_editor"):
+            if self.performance_editor is not None:
+                self.performance_editor.receive(this_turn_elements)
+            return
         if self.current_chat is None:
             return
 
@@ -2398,6 +2421,37 @@ class ViewerGUI(QWidget):
         self.sync_live2d_active_slots()
         self.display_live2d_message([replay_payload], preserve_playback=False)
 
+    def on_stage_closed(self) -> None:
+        """Live2D 退出时保留编排草稿，让用户仍可保存或放弃。"""
+        if self.performance_editor is not None:
+            self.performance_editor.stage_closed()
+
+    def open_performance_editor(self, index: int) -> None:
+        """空闲时进入双窗口编排，初始化失败不留下半开的编辑会话。"""
+        if self.performance_editor is not None:
+            self.performance_editor.resource_window.raise_()
+            return
+        if self.current_chat is None or not 0 <= index < len(self.current_chat.message_list):
+            return
+        worker = getattr(self, "generate_thread", None)
+        busy = not self.generate_btn.isEnabled() or bool(self.pending_turn_uids)
+        busy = busy or (worker is not None and worker.isRunning())
+        busy = busy or (self.playback_idle_value is not None and not self.playback_idle_value.value)
+        if busy:
+            QMessageBox.information(self, "演出编排", "请等待生成、合成或当前播放结束后再进入编排。")
+            return
+        from ui.components.multi_char_editor import MultiCharEditor
+        payload = self._build_active_slots_payload(preserve_playback=True)
+        self.sync_live2d_active_slots(preserve_playback=True)
+        try:
+            self.performance_editor = MultiCharEditor(
+                self, self.current_chat, self.current_chat.message_list[index],
+                payload["slots"], payload["motion_facing_mode"],
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            self.setEnabled(True)
+            QMessageBox.warning(self, "无法进入编排", str(error))
+
     def open_editor(self, index: int) -> None:
         """打开编辑器，修改当前对话中的指定消息。"""
         if self.current_chat is None or not (0 <= index < len(self.current_chat.message_list)):
@@ -2409,6 +2463,7 @@ class ViewerGUI(QWidget):
             return
 
         new_data = dialog.get_new_data()
+        # 台词编辑保留原编排；正常无声只在演出编辑器保存时清理越界。
         self.current_chat.message_list[index] = self._message_from_turn_dict(new_data)
         self.refresh_chat_display()
         self.refresh_chat_list()
@@ -2440,6 +2495,11 @@ class ViewerGUI(QWidget):
         self.update_replay_button_visibility()
 
     def regenerate_audio(self, index: int) -> None:
+        """捕获原聊天、消息及输入快照，合成回填不使用当前聊天下标。"""
+        worker = getattr(self, "generate_thread", None)
+        if worker is not None and worker.isRunning():
+            QMessageBox.information(self, "正在合成", "请等待当前音频生成完成。")
+            return
         self.audio_gen_module.audio_language_choice = "日英混合"
         if self.current_chat is None or not (0 <= index < len(self.current_chat.message_list)):
             return
@@ -2453,7 +2513,7 @@ class ViewerGUI(QWidget):
         )
         this_char_name = message.character_name
         char_index=0
-        self.replace_audio_index = index
+        self._audio_regeneration = (self.current_chat, message, message.text, message.audio_path, object())
         for i,char in enumerate(self.character_list):
             if this_char_name==char.character_name:
                 char_index=i
@@ -2462,6 +2522,7 @@ class ViewerGUI(QWidget):
         self.regenerate_audio_continue()
 
     def regenerate_audio_continue(self):
+        """启动已捕获消息的语音合成，并固定本次回填上下文。"""
         self.generate_thread = WaitUntilAudioGenModuleSynthesisComplete(
             self.audio_gen_module,
             [self.regenerate_text],
@@ -2470,22 +2531,40 @@ class ViewerGUI(QWidget):
             self.audio_gen_module.audio_language_choice,
             [self.regenerate_emotion],
         )
-        self.generate_thread.synthesis_complete_signal.connect(self.replace_audio_path)
+        context = self._audio_regeneration
+        self.generate_thread.synthesis_complete_signal.connect(
+            lambda paths, target=context: self.replace_audio_path(paths, target)
+        )
         self.generate_thread.start()
 
-    def replace_audio_path(self,audio_path):
-        """替换被重生成消息的音频路径，并立即回放该消息。"""
-        if self.current_chat is None or not (0 <= self.replace_audio_index < len(self.current_chat.message_list)):
+    def replace_audio_path(self, audio_path, context=None):
+        """只替换仍有效的原消息，并按真实新时长裁剪所有角色编排。"""
+        if context is None or context is not self._audio_regeneration or not audio_path:
             return
-
-        self.message_queue.put("生成完毕")
-        self.current_chat.message_list[self.replace_audio_index].audio_path = audio_path[0]
-
-        replay_payload = self._turn_dict_from_message(
-            self.current_chat.message_list[self.replace_audio_index]
-        )
-        self.sync_live2d_active_slots()
-        self.display_live2d_message([replay_payload], preserve_playback=False)
+        chat, message, text, previous_path, token = context
+        if not any(item is message for item in chat.message_list):
+            return
+        if message.text != text or message.audio_path != previous_path:
+            return
+        from live2d_support.multi_char_resources import audio_span
+        from performance_types import trim_timeline
+        span = audio_span(str(audio_path[0] or ""), text)
+        if not span.path:
+            self.message_queue.put("音频生成失败，原音频与编排已保留")
+            return
+        old_timeline = message.performance_timeline
+        new_timeline, removed = trim_timeline(old_timeline, span.duration_ms)
+        message.audio_path = span.path
+        message.performance_timeline = new_timeline
+        if not self._save_chat():
+            message.audio_path = previous_path
+            message.performance_timeline = old_timeline
+            return
+        self._audio_regeneration = None
+        self.message_queue.put(f"生成完毕；已移除 {removed} 个越界编排事件" if removed else "生成完毕")
+        if self.current_chat is chat and self.performance_editor is None:
+            self.sync_live2d_active_slots()
+            self.display_live2d_message([message.as_dict()], preserve_playback=False)
 
     def _save_chat(self) -> bool:
         """保存失败时提示用户，并让调用者停止后续成功流程。"""
@@ -2508,6 +2587,11 @@ class ViewerGUI(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """关闭前保存，失败时允许重试、放弃或继续留在程序中。"""
+        if self.performance_editor is not None:
+            self.performance_editor.request_close()
+            if self.performance_editor is not None:
+                event.ignore()
+                return
         from runtime.storage_ui import save_before_close
         if not save_before_close(self.chat_manager, self):
             event.ignore()
