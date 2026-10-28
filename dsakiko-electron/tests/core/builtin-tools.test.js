@@ -244,10 +244,7 @@ test('工作文件拒绝路径与符号链接；读取默认不限，配置 root
   await settings.update({ tools: { files: { readableRoots: [directory] } } })
   expect((await call('read_file_content', { file_path: external })).value.content).toBe('outside')
   await assets.writeWorkspaceFile(chatId, 'doc.pdf', Buffer.from('%PDF-1.4'), 'chat:test')
-  await expect(call('read_file_content', { file_path: 'doc.pdf' })).rejects.toHaveProperty(
-    'problem.code',
-    'unsupported_file_format'
-  )
+  expect((await call('read_file_content', { file_path: 'doc.pdf' })).value.content).toBe('%PDF-1.4')
 })
 
 test('抽签创建后重启仍可开始，多客户端重复开始只保存一个结果并自动回复一次', async () => {
@@ -523,4 +520,106 @@ test('服装工具只列可解析模型，保存选择并排除其他角色与�
   expect(
     (await backend.store.load(chatId)).chat.meta.settings.characters.actor.modelOverrides.default
   ).toBe('second')
+})
+
+test.each([
+  { kind: 'answered', answer: 'A' },
+  { kind: 'answered', answer: '我想选择选项之外的答案' },
+  { kind: 'skipped' }
+])('问题结构化结果进入后续轮次及存档：%j', async (value) => {
+  const { backend, chatId, agent } = await fixture(async (request, observer, signal) => {
+    if (request.input.message.source.kind === 'manual')
+      await invoke(request, observer, signal, 'ask_user', {
+        question: '选哪个？',
+        choices: ['A', 'B']
+      })
+    return { status: 'completed', usage: null }
+  })
+  await backend.conversations.setTools(chatId, { enabled: ['ask_user'] })
+  const turnId = await backend.conversations.createTurn(
+    chatId,
+    { text: '问我', attachments: [] },
+    { requestId: 'ask' }
+  )
+  await until(async () => (await backend.interactions.list()).pending.length === 1)
+  const requestId = turnId + ':call'
+  for (const invalid of [
+    '旧字符串',
+    { kind: 'answered', answer: '' },
+    { kind: 'answered', answer: ' \n\t　' },
+    { kind: 'answered', answer: 'a'.repeat(4001) },
+    { kind: 'answered' },
+    { kind: 'skipped', answer: 'A' }
+  ]) {
+    await expect(
+      backend.interactions.complete({ requestId, status: 'succeeded', value: invalid })
+    ).rejects.toHaveProperty('problem.code', 'invalid_interaction_result')
+  }
+  expect((await backend.interactions.list()).pending).toHaveLength(1)
+  const completion = { requestId, status: 'succeeded', value }
+  await backend.interactions.complete(completion)
+  await backend.interactions.complete(completion)
+  await until(async () => (await backend.conversations.getSnapshot(chatId)).chat.turns.length === 2)
+  await idle(backend, chatId)
+  expect((await backend.interactions.list()).pending).toHaveLength(0)
+  expect(agent.run).toHaveBeenCalledTimes(2)
+  const stored = await backend.store.load(chatId)
+  const input = stored.chat.turns[1].messages[0]
+  expect(input.source.kind).toBe('async')
+  expect(input.results).toMatchObject([
+    {
+      requestId,
+      toolName: 'ask_user',
+      request: { question: '选哪个？', choices: ['A', 'B'] },
+      result: value
+    }
+  ])
+  const projection = backend.conversations.userProjection(input)
+  expect(projection.text).toContain(JSON.stringify(value))
+  expect(projection.text).toContain('不代表同意、否定或默认选择')
+  const other = value.kind === 'skipped' ? { kind: 'answered', answer: 'A' } : { kind: 'skipped' }
+  await expect(
+    backend.interactions.complete({ requestId, status: 'succeeded', value: other })
+  ).rejects.toHaveProperty('problem.code', 'interaction_resolved')
+})
+
+test('系统取消不产生回答，失效问题不能通过跳过重新进入对话', async () => {
+  const { backend, chatId, agent } = await fixture(async (request, observer, signal) => {
+    if (request.input.message.source.kind === 'manual')
+      await invoke(request, observer, signal, 'ask_user', { question: '要继续吗？' })
+    return { status: 'completed', usage: null }
+  })
+  await backend.conversations.setTools(chatId, { enabled: ['ask_user'] })
+  const first = await backend.conversations.createTurn(
+    chatId,
+    { text: '问我', attachments: [] },
+    { requestId: 'first' }
+  )
+  await until(async () => (await backend.interactions.list()).pending.length === 1)
+  await backend.interactions.complete({ requestId: first + ':call', status: 'cancelled' })
+  await idle(backend, chatId)
+  expect((await backend.interactions.list()).pending).toHaveLength(0)
+  expect((await backend.conversations.getSnapshot(chatId)).chat.turns).toHaveLength(1)
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '换个问题', attachments: [] },
+    { requestId: 'second' }
+  )
+  await until(async () => (await backend.interactions.list()).pending.length === 1)
+  const pending = (await backend.interactions.list()).pending[0]
+  await idle(backend, chatId)
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '换个话题', attachments: [] },
+    { requestId: 'third' }
+  )
+  await expect(
+    backend.interactions.complete({
+      requestId: pending.requestId,
+      status: 'succeeded',
+      value: { kind: 'skipped' }
+    })
+  ).rejects.toHaveProperty('problem.code', 'interaction_expired')
+  await idle(backend, chatId)
+  expect(agent.run).toHaveBeenCalledTimes(3)
 })

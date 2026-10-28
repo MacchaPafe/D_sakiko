@@ -390,7 +390,7 @@ export class Conversations {
           JSON.stringify(files.map((item) => ({ name: item.name, asset: item.asset })))
     } else if (message.source.kind === 'async') {
       text =
-        '[async_tool_results]\n以下为此前异步工具（提问或抽签）完成的返回结果，不是对话者新说出口的台词，请据此自然继续回应：\n' +
+        '[async_tool_results]\n以下为此前异步工具（提问或抽签）完成的返回结果，不是对话者新说出口的台词，请据此自然继续回应。提问结果 kind=skipped 表示对方主动跳过、未提供答案，不代表同意、否定或默认选择，请勿将其当作授权或反复追问：\n' +
         JSON.stringify(message.results) +
         '\n[/async_tool_results]'
     } else {
@@ -1198,7 +1198,7 @@ export class Conversations {
       const state = await this.state(registration.chatId)
       requireValue(this.validInteraction(registration), 'interaction_expired')
       if (state.acceptedResults.has(completion.requestId)) return
-      // 只有成功的交互结果才会触发后续自动回复；失败或取消仅标记已处理。
+      // 正常完成的交互（包括用户主动跳过问题）进入后续自动回复；失败或系统取消仅标记已处理。
       if (completion.status === 'succeeded')
         state.pending.push({
           requestId: completion.requestId,
@@ -1270,9 +1270,7 @@ export class Conversations {
   async listToolModels(chatId, character) {
     const chat = (await this.state(chatId)).chat
     const definitions = await Promise.all(chat.characterIds.map((id) => this.characters.get(id)))
-    const selected = character
-      ? definitions.filter((item) => item.name === character)
-      : definitions
+    const selected = character ? definitions.filter((item) => item.name === character) : definitions
     requireValue(selected.length > 0, 'character_unavailable')
     const result = []
     for (const definition of selected) {

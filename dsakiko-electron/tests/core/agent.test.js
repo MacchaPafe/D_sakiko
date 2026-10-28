@@ -1,12 +1,13 @@
 import http from 'node:http'
 import { afterEach, expect, test } from 'vitest'
 import { Agent } from '../../src/backend/llm/interface.js'
+import { decodeText } from '../../src/backend/tools/text-file.js'
 import { defaultSettings } from '../../src/backend/core/defaults.js'
 const cleanups = []
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
-test('实际 AI SDK 兼容协议、固定模板、工具串行执行与非流式台词校验', async () => {
+test.each([false, true])('AI SDK 工具结果交付（编码预览：%s）', async (encodingError) => {
   const requests = []
   let toolRuns = 0
   const server = http.createServer(async (request, response) => {
@@ -106,6 +107,7 @@ test('实际 AI SDK 兼容协议、固定模板、工具串行执行与非流式
         },
         execute: async (value) => {
           toolRuns += 1
+          if (encodingError) decodeText(Buffer.from([0xd6, 0xd0, 0xce, 0xc4]))
           return { status: 'succeeded', value }
         }
       }
@@ -136,6 +138,16 @@ test('实际 AI SDK 兼容协议、固定模板、工具串行执行与非流式
         message.content.startsWith('[runtime_controls]')
     )
   ).toHaveLength(1)
-  expect(requests[1].messages.some((message) => message.role === 'tool')).toBe(true)
+  const toolMessage = requests[1].messages.find((message) => message.role === 'tool')
+  expect(toolMessage).toBeTruthy()
+  if (encodingError) {
+    const outcome = JSON.parse(toolMessage.content)
+    expect(outcome.status).toBe('failed')
+    expect(outcome.problem.code).toBe('ambiguous_text_encoding')
+    expect(outcome.problem.candidates).toContainEqual(
+      expect.objectContaining({ encoding: 'gb18030', preview: '中文' })
+    )
+    expect(outcome).toEqual(results[0].outcome)
+  }
   expect(updates.at(-1).appendParts[0].lines[0].text).toBe('你好')
 })

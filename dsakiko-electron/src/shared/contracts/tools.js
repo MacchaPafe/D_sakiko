@@ -43,8 +43,15 @@
  */
 
 /**
+ * @typedef {{kind: 'answered', answer: string} | {kind: 'skipped'}} QuestionResult
+ * 问题交互的成功结果；回答可来自候选项或自由输入（1–4000 字符且非纯空白）。
+ * skipped 表示用户主动跳过，不代表任何候选项；系统取消仍使用外层 cancelled。
+ */
+
+/**
  * @typedef {{ requestId: string } & ({ status: 'succeeded', value: import('./common.js').JsonValue }
  *   | { status: 'failed', problem: import('./common.js').Problem } | { status: 'cancelled' })} InteractionCompletion
+ * question 类型成功时 value 必须为 QuestionResult，不接受旧字符串结果。
  */
 
 export {}

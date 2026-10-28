@@ -207,8 +207,16 @@ test('多客户端回答同一交互，只有一个答案进入自动轮', async
   await until(async () => (await backend.interactions.list()).pending.length === 1)
   const requestId = turnId + ':call-one'
   const results = await Promise.allSettled([
-    backend.interactions.complete({ requestId, status: 'succeeded', value: 'A' }),
-    backend.interactions.complete({ requestId, status: 'succeeded', value: 'B' })
+    backend.interactions.complete({
+      requestId,
+      status: 'succeeded',
+      value: { kind: 'answered', answer: 'A' }
+    }),
+    backend.interactions.complete({
+      requestId,
+      status: 'succeeded',
+      value: { kind: 'answered', answer: 'B' }
+    })
   ])
   expect(results.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
   await until(async () => (await backend.conversations.getSnapshot(chatId)).chat.turns.length === 2)

@@ -1,9 +1,17 @@
 import path from 'node:path'
-import { constants } from 'node:fs'
-import { open, realpath, readdir, stat } from 'node:fs/promises'
+import { realpath, readdir, stat } from 'node:fs/promises'
 import { isWithin } from '../resources/files.js'
 import { requireValue } from '../core/support.js'
 import { parameters, syncTool, textParameter } from './definition.js'
+import { readTextFile } from './text-file.js'
+
+const encodingParameter = {
+  type: 'string',
+  minLength: 1,
+  maxLength: 64,
+  description:
+    '文本编码，默认 auto（BOM、UTF-8 校验或统计识别）；也可指定 gb18030、gbk、utf-16le、big5、shift_jis 等。推测编码可能不准确；乱码或识别失败时请明确指定，翻页时建议沿用上次返回的 encoding。'
+}
 
 /**
  * 文件工具统一执行读取策略，写入则由对话绑定回调强制落到 workspace。
@@ -25,39 +33,14 @@ export function fileTools({ settings, assets, write }) {
     }
     return { target, policy }
   }
-  async function read(chatId, filename, signal) {
-    const { target, policy } = await resolve(chatId, filename)
-    signal?.throwIfAborted()
-    const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW)
-    try {
-      const info = await file.stat()
-      requireValue(info.isFile(), 'file_not_regular')
-      requireValue(info.size <= policy.maxReadBytes, 'file_too_large', '文件超过文本工具读取上限。')
-      const bytes = Buffer.alloc(Math.min(info.size + 1, policy.maxReadBytes + 1))
-      let length = 0
-      while (length < bytes.length) {
-        signal?.throwIfAborted()
-        const result = await file.read(bytes, length, bytes.length - length, length)
-        if (!result.bytesRead) break
-        length += result.bytesRead
-      }
-      requireValue(length <= policy.maxReadBytes, 'file_too_large')
-      const data = bytes.subarray(0, length)
-      requireValue(
-        !data.includes(0) && !/^\.(pdf|docx?|pptx?|xlsx?|zip)$/i.test(path.extname(target)),
-        'unsupported_file_format',
-        '当前工具仅支持文本和代码，尚未支持此文档格式。'
-      )
-      let text
-      try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(data)
-      } catch {
-        requireValue(false, 'unsupported_text_encoding', '当前仅支持 UTF-8 文本。')
-      }
-      return { target, text }
-    } finally {
-      await file.close()
-    }
+  async function read(chatId, input, signal) {
+    const { target, policy } = await resolve(chatId, input.file_path)
+    const decoded = await readTextFile(
+      target,
+      { maxBytes: policy.maxReadBytes, encoding: input.encoding },
+      signal
+    )
+    return { target, ...decoded }
   }
   return [
     syncTool(
@@ -75,7 +58,8 @@ export function fileTools({ settings, assets, write }) {
           offset: {
             type: 'integer',
             minimum: 0,
-            description: '分页起始偏移量（默认 0；若上次返回 nextOffset 非空，可传入该值继续翻页）。'
+            description:
+              '分页起始偏移量（默认 0；若上次返回 nextOffset 非空，可传入该值继续翻页）。'
           }
         })
       },
@@ -103,7 +87,7 @@ export function fileTools({ settings, assets, write }) {
       {
         name: 'read_file_content',
         description:
-          '按行分页读取 UTF-8 文本或代码文件（单次最多返回 200 行或 12000 字符；不支持解析 PDF、Word、PPT、Excel、ZIP 等二进制格式）。相对路径以当前对话 workspace 为基准。',
+          '按行分页尝试读取文本或代码文件，不限制扩展名，支持自动识别或指定编码（单次最多返回 200 行或 12000 字符；不解析 PDF、Word、PPT、Excel、ZIP 等文档或压缩格式）。相对路径以当前对话 workspace 为基准。',
         requiredCapabilities: ['files'],
         parametersSchema: parameters(
           {
@@ -111,6 +95,7 @@ export function fileTools({ settings, assets, write }) {
               ...textParameter,
               description: '要读取的文件路径（相对路径以当前对话 workspace 为基准）。'
             },
+            encoding: encodingParameter,
             start_line: {
               type: 'integer',
               minimum: 1,
@@ -133,7 +118,7 @@ export function fileTools({ settings, assets, write }) {
         )
       },
       async ({ chatId }, input, source, signal) => {
-        const { target, text } = await read(chatId, input.file_path, signal)
+        const { target, text, encoding, encodingSource } = await read(chatId, input, signal)
         const lines = text.split('\n')
         const start = (input.start_line ?? 1) - 1
         let line = start
@@ -155,6 +140,8 @@ export function fileTools({ settings, assets, write }) {
         return {
           file: target,
           content,
+          encoding,
+          encodingSource,
           totalLines: lines.length,
           next: line < lines.length ? { start_line: line + 1, start_column: column } : null
         }
@@ -164,7 +151,7 @@ export function fileTools({ settings, assets, write }) {
       {
         name: 'grep_search_in_file',
         description:
-          '在单个 UTF-8 文本文件内按字面关键词搜索匹配行（单次最多返回 30 条匹配及上下文片段；不支持正则表达式）。',
+          '在单个文本文件内按字面关键词搜索匹配行，支持自动识别或指定编码（单次最多返回 30 条匹配及上下文片段；不支持正则表达式）。',
         requiredCapabilities: ['files'],
         parametersSchema: parameters(
           {
@@ -180,6 +167,7 @@ export function fileTools({ settings, assets, write }) {
               type: 'boolean',
               description: '是否区分大小写（默认 false）。'
             },
+            encoding: encodingParameter,
             start_line: {
               type: 'integer',
               minimum: 1,
@@ -191,7 +179,7 @@ export function fileTools({ settings, assets, write }) {
         )
       },
       async ({ chatId }, input, source, signal) => {
-        const { text } = await read(chatId, input.file_path, signal)
+        const { text, encoding, encodingSource } = await read(chatId, input, signal)
         const lines = text.split('\n')
         const query = input.case_sensitive ? input.query : input.query.toLowerCase()
         const matches = []
@@ -210,20 +198,25 @@ export function fileTools({ settings, assets, write }) {
             break
           }
         }
-        return { matches, nextLine: index < lines.length ? index + 1 : null }
+        return {
+          matches,
+          encoding,
+          encodingSource,
+          nextLine: index < lines.length ? index + 1 : null
+        }
       }
     ),
     syncTool(
       {
         name: 'export_document',
         description:
-          '在当前对话 workspace 中创建或覆盖 UTF-8 文本/代码文件，并生成供对方下载的资源引用。只能指定纯文件名；修改已有文件需设 overwrite=true。',
+          '在当前对话 workspace 中创建或覆盖 UTF-8 文本/代码文件，并生成供用户下载的资源引用。只能指定纯文件名；修改已有文件需设 overwrite=true。',
         requiredCapabilities: ['files'],
         parametersSchema: parameters(
           {
             filename: {
               ...textParameter,
-              description: '要保存的纯文件名（如 "notes.md"，不得包含目录路径或斜杠）。'
+              description: '要保存的文件名（如 "notes.md"，不得包含目录路径或斜杠）。'
             },
             content: {
               type: 'string',
@@ -232,7 +225,8 @@ export function fileTools({ settings, assets, write }) {
             },
             overwrite: {
               type: 'boolean',
-              description: '若同名工作文件已存在，是否允许覆盖（默认 false；修改已有文件时必须传 true）。'
+              description:
+                '若同名工作文件已存在，是否允许覆盖（默认 false；修改已有文件时必须传 true）。'
             }
           },
           ['filename', 'content']

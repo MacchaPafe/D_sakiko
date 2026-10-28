@@ -16,12 +16,24 @@
  */
 
 /**
+ * @typedef {object} TextEncodingGuess
+ * @property {string} encoding 候选编码名。
+ * @property {number} confidence 识别器分数，不是正确概率。
+ */
+
+/**
+ * @typedef {TextEncodingGuess & {preview: string, alternatives: TextEncodingGuess[]}} TextEncodingPreview
+ * 严格解码后的最多 200 码点片段；相同完整解码结果的其他候选归入 alternatives。
+ */
+
+/**
  * 可向调用方报告的问题，不包含异常堆栈、凭据或内部对象。
  * 方法抛出或拒绝时使用带 problem 属性的 Error；传输层仅发送此数据，由本地代理重建错误。
  * @typedef {object} Problem
  * @property {string} code 稳定的问题类别，供调用方决定是否重试或降级。
  * @property {string} message 可展示的说明。
  * @property {boolean} retryable 是否允许重试所指失败步骤；不授权重放整个 Turn 或已成功的工具副作用。
+ * @property {TextEncodingPreview[]} [candidates] 仅编码不确定错误携带，最多三组、总预览最多 600 码点，内容来自本次已授权读取的文件。
  */
 
 export {}
