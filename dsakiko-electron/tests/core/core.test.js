@@ -229,6 +229,16 @@ test('真实 HTTP/WS 与前端封装；凭据隔离和路由白名单', async ()
   cleanups.push(() => server.close())
   const client = createBackendClient({ ...server, WebSocket })
   cleanups.push(() => client.close())
+  expect(await client.recognition.getState()).toMatchObject({ state: 'idle', requestId: null })
+  expect(await client.recognition.cancel('nonexistent')).toBe(false)
+  await expect(client.recognition.prepare()).rejects.toHaveProperty(
+    'problem.code',
+    'recognition_model_missing'
+  )
+  await expect(client.call('recognition', 'startChild', ['/tmp/model'])).rejects.toHaveProperty(
+    'problem.code',
+    'method_not_found'
+  )
   const snapshots = []
   const stop = client.conversations.observe(chatId, (snapshot) => snapshots.push(snapshot))
   cleanups.push(stop)

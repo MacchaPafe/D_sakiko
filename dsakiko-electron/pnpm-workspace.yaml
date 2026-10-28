@@ -3,6 +3,9 @@ packages: []
 # 使用普通依赖目录，方便 Electron 安装包收集运行时依赖。
 nodeLinker: hoisted
 allowBuilds:
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true
   electron: true
   esbuild: true
   '@tailwindcss/oxide': true

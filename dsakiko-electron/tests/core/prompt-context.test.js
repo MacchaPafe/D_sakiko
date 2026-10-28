@@ -3,6 +3,7 @@ import { Agent } from '../../src/backend/llm/interface.js'
 import { characterContext } from '../../src/backend/llm/context.js'
 import { Conversations } from '../../src/backend/conversation/interface.js'
 import { defaultSettings } from '../../src/backend/core/defaults.js'
+import { trimHistory } from '../../src/backend/llm/context-budget.js'
 
 function request(version = 'v2', formId = 'black') {
   const forms = [
@@ -44,6 +45,78 @@ function request(version = 'v2', formId = 'black') {
   }
 }
 const agent = new Agent({ credential: () => '', assets: {} })
+
+test('已知大窗口覆盖兜底预算、90% 阈值跟随；未知窗口保留 300000/270000', async () => {
+  const input = request()
+  const unknown = await agent.inspectContext(input)
+  expect(unknown).toMatchObject({
+    modelLimit: null,
+    effectiveBudget: 300000,
+    thresholdTokens: 270000
+  })
+  input.connection.capabilities = { contextTokens: 1000000, outputTokens: 2000 }
+  expect(await agent.inspectContext(input)).toMatchObject({
+    effectiveBudget: 1000000,
+    thresholdTokens: 900000,
+    reservedOutputTokens: 2000
+  })
+  input.connection.capabilities.inputTokens = 20
+  expect(await agent.inspectContext(input)).toMatchObject({
+    fit: 'over-budget',
+    thresholdTokens: 20
+  })
+  input.connection.capabilities = { contextTokens: 128000 }
+  expect(await agent.inspectContext(input)).toMatchObject({
+    effectiveBudget: 128000,
+    thresholdTokens: 115200
+  })
+})
+
+test('兜底整轮移除工具链，保留摘要、连续后缀、当时人物快照与原存档', async () => {
+  const input = request()
+  const initial = await agent.inspectContext(input)
+  input.connection.capabilities.contextTokens =
+    initial.estimatedInputTokens + input.options.maxOutputTokens + 350
+  input.history = [
+    {
+      ...turn(input),
+      turnId: 'summary',
+      messages: [{ kind: 'abstract', text: '必须保留的累计记忆' }]
+    },
+    {
+      ...turn(input),
+      turnId: 'old',
+      messages: [
+        { kind: 'user', text: '旧输入'.repeat(3000), attachments: [] },
+        {
+          kind: 'assistant',
+          parts: [{ kind: 'tool-call', callId: 'call', toolName: 'echo', arguments: {} }]
+        },
+        {
+          kind: 'tool-result',
+          callId: 'call',
+          toolName: 'echo',
+          outcome: { status: 'succeeded', value: '旧结果' }
+        }
+      ]
+    },
+    { ...turn(input, '最近的输入'), turnId: 'recent' }
+  ]
+  const archived = input.history
+  const before = structuredClone(archived)
+  const result = await trimHistory(input, (value) => agent.inspectContext(value))
+  expect(result.removedTurnIds).toEqual(['old'])
+  expect(input.history.map((item) => item.turnId)).toEqual(['summary', 'recent'])
+  expect(archived).toEqual(before)
+  const messages = await agent.messages(input)
+  expect(JSON.stringify(messages)).toContain('必须保留的累计记忆')
+  expect(JSON.stringify(messages)).toContain('黑祥的设定')
+  expect(JSON.stringify(messages)).not.toContain('旧结果')
+  input.connection.capabilities.contextTokens = 10
+  const impossible = await trimHistory(input, (value) => agent.inspectContext(value))
+  expect(impossible.inspection.fit).toBe('over-budget')
+  expect(input.history[0].messages[0].kind).toBe('abstract')
+})
 function contextMessages(messages) {
   return messages.filter(
     (message) =>

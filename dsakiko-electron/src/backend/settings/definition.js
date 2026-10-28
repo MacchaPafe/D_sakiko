@@ -30,7 +30,7 @@ export const generationDefinition = {
   },
   compression: {
     enabled: config.boolean({ default: true }),
-    thresholdTokens: config.number({ default: 258000, integer: true, min: 1 }),
+    thresholdTokens: config.number({ default: 270000, integer: true, min: 1 }),
     retainedTurns: config.number({ default: 2, integer: true, min: 1 })
   },
   contextTokenBudget: config.number({ default: 300000, integer: true, min: 1, max: 3600000 }),

@@ -8,8 +8,66 @@ import { systemTool } from '../../src/backend/tools/system.js'
 import { weatherTool } from '../../src/backend/tools/weather.js'
 import { webSearchTool } from '../../src/backend/tools/web-search.js'
 import { fetchJson } from '../../src/backend/tools/network.js'
+import { Agent } from '../../src/backend/llm/interface.js'
 
 const cleanups = []
+
+test('对话工具开关只改变允许集合，目录和声明顺序始终一致', async () => {
+  const { backend, chatId, agent } = await fixture()
+  const selections = [[], ['create_reminder'], ['get_current_datetime', 'create_reminder'], []]
+  for (const [index, enabled] of selections.entries()) {
+    await backend.conversations.setTools(chatId, { enabled })
+    await backend.conversations.createTurn(
+      chatId,
+      { text: '工具状态', attachments: [] },
+      { requestId: 'select-' + index }
+    )
+    await idle(backend, chatId)
+  }
+  const requests = agent.run.mock.calls.map((call) => call[0])
+  for (const request of requests)
+    expect(request.toolDefinitions).toEqual(requests[0].toolDefinitions)
+  const names = requests[0].toolDefinitions.map((tool) => tool.name)
+  expect(names).toHaveLength(13)
+  expect(names).toEqual([...names].sort())
+  expect(requests[1].tools.map((tool) => tool.name)).toEqual([
+    'create_reminder',
+    'get_current_datetime'
+  ])
+  expect(requests[3].tools).toEqual([])
+})
+
+test('自动摘要失败后照常受理，整轮裁剪投影而不删除历史存档', async () => {
+  const { backend, chatId, agent } = await fixture()
+  for (let index = 0; index < 3; index++) {
+    await backend.conversations.createTurn(
+      chatId,
+      { text: '旧记录'.repeat(4000), attachments: [] },
+      { requestId: 'old-' + index }
+    )
+    await idle(backend, chatId)
+  }
+  const real = new Agent({ credential: () => '', assets: backend.assets })
+  agent.inspectContext = (request) => real.inspectContext(request)
+  agent.compress = vi.fn(async () => {
+    throw Error('摘要服务失败')
+  })
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '继续聊天', attachments: [] },
+    { requestId: 'new' }
+  )
+  await idle(backend, chatId)
+  expect(agent.compress).toHaveBeenCalledOnce()
+  expect(agent.run.mock.calls.at(-1)[0].history).toEqual([])
+  const chat = (await backend.conversations.getSnapshot(chatId)).chat
+  expect(chat.turns).toHaveLength(4)
+  expect(chat.turns[0].messages[0].content.text).toContain('旧记录')
+  expect(chat.turns.at(-1).meta.extensions.contextPreparation.removedTurnIds).toHaveLength(3)
+  expect(
+    chat.turns.flatMap((turn) => turn.messages).filter((message) => message.kind === 'abstract')
+  ).toEqual([])
+})
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })

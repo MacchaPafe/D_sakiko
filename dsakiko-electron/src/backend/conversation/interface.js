@@ -1,4 +1,5 @@
 import { characterContext } from '../llm/context.js'
+import { contextBudget, trimHistory } from '../llm/context-budget.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { generationOptions, speechOptions, presentationOptions } from '../core/validation.js'
 import {
@@ -523,6 +524,8 @@ export class Conversations {
       await this.prepareWorkFiles(chat, input, resourceOwner, preview)
       const global = await this.settings.get()
       const generation = merge(global.generation, chat.meta.settings.generation, options.generation)
+      if (generation.compression.thresholdTokens === 258000)
+        generation.compression.thresholdTokens = 270000
       const speech = merge(global.speech, chat.meta.settings.speech, options.speech)
       generationOptions(generation)
       speechOptions(speech)
@@ -577,7 +580,8 @@ export class Conversations {
                 '当前工作文件：' + JSON.stringify(workspaceFiles)
               ]
             : [],
-        tools
+        tools,
+        toolDefinitions: await this.tools.list()
       }
 
       const inspection = await this.agent.inspectContext(request)
@@ -637,26 +641,41 @@ export class Conversations {
     const prepared = await this.prepare(candidate, input, options)
     let accepted = false
     try {
+      let compressionProblem = null
       const compression = prepared.generation.compression
       if (
         compression.enabled &&
         (prepared.inspection.fit === 'over-budget' ||
-          prepared.inspection.estimatedInputTokens > compression.thresholdTokens)
+          prepared.inspection.estimatedInputTokens >
+            contextBudget(prepared.request).thresholdTokens)
       ) {
         const count = candidate.turns.length - Math.max(1, compression.retainedTurns)
         if (count > 0) {
-          const result = await this.agent.compress({
-            history: this.history({ ...candidate, turns: candidate.turns.slice(0, count) }),
-            options: prepared.generation,
-            connection: prepared.request.connection
-          })
-          const covered = candidate.turns[count - 1]
-          covered.messages = covered.messages.filter((message) => message.kind !== 'abstract')
-          covered.messages.push({ id: uuid(), kind: 'abstract', text: result.text, extensions: {} })
-          prepared.request.history = this.history(candidate)
-          prepared.inspection = await this.agent.inspectContext(prepared.request)
+          try {
+            const result = await this.agent.compress({
+              history: this.history({ ...candidate, turns: candidate.turns.slice(0, count) }),
+              options: prepared.generation,
+              connection: prepared.request.connection
+            })
+            const covered = candidate.turns[count - 1]
+            covered.messages = covered.messages.filter((message) => message.kind !== 'abstract')
+            covered.messages.push({
+              id: uuid(),
+              kind: 'abstract',
+              text: result.text,
+              extensions: {}
+            })
+            prepared.request.history = this.history(candidate)
+            prepared.inspection = await this.agent.inspectContext(prepared.request)
+          } catch (error) {
+            compressionProblem = problem(error)
+          }
         }
       }
+      const trimmed = await trimHistory(prepared.request, (request) =>
+        this.agent.inspectContext(request)
+      )
+      prepared.inspection = trimmed.inspection
       requireValue(
         prepared.inspection.fit !== 'over-budget',
         'context_over_budget',
@@ -677,7 +696,10 @@ export class Conversations {
           tools: prepared.request.tools.map((tool) => tool.name),
           worldbook: null,
           worldbookDiagnostics: [],
-          extensions: { requestFingerprint: material }
+          extensions: {
+            requestFingerprint: material,
+            contextPreparation: { removedTurnIds: trimmed.removedTurnIds, compressionProblem }
+          }
         },
         messages: input ? [copy(input)] : []
       }

@@ -6,6 +6,17 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   main: {
+    build: {
+      rollupOptions: {
+        input: {
+          index: fileURLToPath(new URL('./src/main/index.js', import.meta.url)),
+          'recognition-worker': fileURLToPath(
+            new URL('./src/backend/recognition/worker.js', import.meta.url)
+          )
+        },
+        output: { entryFileNames: '[name].js' }
+      }
+    },
     plugins: [
       {
         name: 'fixed-prompts',

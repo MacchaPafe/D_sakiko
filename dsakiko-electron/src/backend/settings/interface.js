@@ -51,13 +51,14 @@ export class Settings {
    * @param {string} options.directory 设置文件（settings.json）所在的存储目录。
    * @param {((connection: import('../../shared/contracts/models.js').ResolvedModelConnection, signal?: AbortSignal) => Promise<unknown>) | null} [options.probe] 自定义函数，用于发送最小测试请求以检查模型连接是否可用。
    */
-  constructor({ directory, assets, probe = null }) {
+  constructor({ directory, assets, probe = null, modelCatalog = null }) {
     this.file = path.join(directory, 'settings.json')
     this.queue = new SerialQueue()
     this.scopes = new Map()
     this.bus = new SnapshotBus()
     this.probe = probe
     this.assets = assets
+    this.modelCatalog = modelCatalog
     assets.registerOwnerReader('settings', async (id) => {
       requireValue(id === 'global', 'invalid_owner')
       return this.get()
@@ -83,6 +84,8 @@ export class Settings {
       '设置文件结构无效'
     )
     const { revision, ...values } = state.settings
+    if (values.generation?.compression?.thresholdTokens === 258000)
+      values.generation.compression.thresholdTokens = 270000
     state.settings = {
       revision: revisionItem.parse(revision, 'settings.revision'),
       ...parseConfig(settingsDefinition, values, { defaults: true })
@@ -288,12 +291,28 @@ export class Settings {
           new Set(definition.models.map((model) => model.id)).size === definition.models.length
       )
       for (const model of definition.models) {
+        if (model.catalogMapping != null) {
+          fields(model.catalogMapping, ['provider', 'model'])
+          requireValue(
+            ['provider', 'model'].every(
+              (key) =>
+                typeof model.catalogMapping[key] === 'string' && model.catalogMapping[key].trim()
+            ),
+            'invalid_connection'
+          )
+        }
         requireValue(
           typeof model.id === 'string' && model.id.trim().length > 0,
           'invalid_connection'
         )
         for (const capabilities of [model.declared, model.overrides]) {
           requireValue(isConfigObject(capabilities), 'invalid_connection')
+          for (const key of ['contextTokens', 'inputTokens', 'outputTokens'])
+            requireValue(
+              capabilities[key] == null ||
+                (Number.isSafeInteger(capabilities[key]) && capabilities[key] > 0),
+              'invalid_connection'
+            )
           const binding = capabilities.requiresStablePrefixForThinking
           requireValue(binding === undefined || typeof binding === 'boolean', 'invalid_connection')
         }
@@ -346,6 +365,15 @@ export class Settings {
     const connection = normalizeConnection(saved)
     const model = connection?.models.find((item) => item.id === selection.modelId)
     requireValue(model, 'model_unavailable', '模型连接或模型不存在。')
+    const catalog = (await this.modelCatalog?.lookup(connection, model)) ?? {}
+    const capabilities = merge(catalog, model.declared, model.overrides)
+    // 空的旧声明不应遮住目录中已知的数值；明确的正整数覆盖则始终优先。
+    for (const key of ['contextTokens', 'inputTokens', 'outputTokens'])
+      capabilities[key] = model.overrides[key] ?? model.declared[key] ?? catalog[key] ?? null
+    if (model.overrides.contextTokens != null) capabilities.contextSource = 'manual-override'
+    else if (model.declared.contextTokens != null)
+      capabilities.contextSource = model.declared.contextSource ?? 'declared'
+    else capabilities.contextSource = catalog.contextSource ?? null
     // 为什么分配临时的 credentialScope 而不是直接返回密钥或按 connectionId 实时查密钥：
     // 一方面避免密钥明文出现在请求配置对象中，另一方面将本次请求使用的密钥冻结在独立作用域内，防止请求进行中用户修改连接密钥导致前后不一致。
     const credentialScope = uuid()
@@ -360,7 +388,7 @@ export class Settings {
       behavior: connection.behavior,
       credentialScope,
       attachmentTransport: connection.attachmentTransport,
-      capabilities: merge(model.declared, model.overrides)
+      capabilities
     }
   }
 

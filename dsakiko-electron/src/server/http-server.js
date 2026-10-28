@@ -90,6 +90,10 @@ export async function startHttpServer(
   }
   /** 仅分派已由路由白名单核准的方法；资源上传将传输数据转换为后端材料。 */
   async function dispatch(namespace, method, args) {
+    if (namespace === 'recognition') {
+      requireValue(args.length === (['prepare', 'getState'].includes(method) ? 0 : 1))
+      return backend.recognition[method](...args)
+    }
     if (namespace === 'assets' && method === 'upload') {
       const [source] = args
       requireValue(

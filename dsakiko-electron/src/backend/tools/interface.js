@@ -44,7 +44,7 @@ export class ToolCatalog {
    * @returns {Promise<import('../../shared/contracts/tools.js').ToolDefinition[]>} 工具定义列表。
    */
   async list() {
-    return [...this.entries.values()].map((entry) => copy(entry.definition))
+    return [...this.entries.keys()].sort().map((name) => copy(this.entries.get(name).definition))
   }
 
   /**
@@ -138,7 +138,12 @@ export class ToolCatalog {
           value: await queryWorldbook(parameters, { kind: 'tool-query', context }, signal)
         })
       })
-    return result
+    // 勾选顺序和依赖遍历顺序不应改变模型输入；使用不受系统语言影响的名称字典序。
+    return result.sort((left, right) => {
+      if (left.name < right.name) return -1
+      if (left.name > right.name) return 1
+      return 0
+    })
   }
 }
 

@@ -15,6 +15,9 @@
  * @property {string[]} reasoningEfforts 支持的强度枚举。
  * @property {boolean} [requiresStablePrefixForThinking] Claude 官方规则下的显式前缀绑定能力；兼容服务不据此自动启用官方策略。
  * @property {number | null} contextTokens 已知上下文上限。
+ * @property {number | null} [inputTokens] 独立输入上限。
+ * @property {number | null} [outputTokens] 独立输出上限。
+ * @property {number} [catalogFetchedAt] 目录获取时间；过期仍可作为有效上限。
  * @property {string | null} contextSource 上限来源。
  * @property {string[]} mediaTypes 已声明支持的附件类型。
  */

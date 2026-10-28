@@ -26,5 +26,6 @@ expressions：{{ character.performances.expressions | dump }}
 {% endfor %}
 {% endif %}
 本轮{% if hasTools %}可以使用随请求提供的工具（若需调用工具，请先完成所有工具调用，最后再输出台词 JSON）{% else %}没有可用工具{% endif %}。
+本轮允许调用的工具名称：{{ allowedTools | dump }}。目录中其余工具本轮均禁用，不得调用。收到 tool_disabled 时不要重试该工具。
 {% include "output.njk" %}
 [/runtime_controls]

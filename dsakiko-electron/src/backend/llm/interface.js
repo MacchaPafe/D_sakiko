@@ -8,6 +8,7 @@ import { createModel, reasoningOptions } from './adapters.js'
 import { AttachmentPreparation } from '../remote-files/preparation.js'
 import { rejectedRemoteFiles } from '../remote-files/adapter.js'
 import { normalizeConnection } from './connections.js'
+import { contextBudget } from './context-budget.js'
 import {
   responseContent,
   responseOptions,
@@ -87,6 +88,7 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * @property {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 本轮使用的模型连接与能力快照。
  * @property {string[]} supplementalContext 额外补充到本轮控制消息中的背景知识列表。
  * @property {import('../../shared/contracts/tools.js').AgentTool[]} tools 本轮允许模型调用的工具列表。
+ * @property {import('../../shared/contracts/tools.js').ToolDefinition[]} [toolDefinitions] 固定能力目录；声明存在不代表本轮获准执行。
  */
 
 /**
@@ -108,6 +110,8 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * @property {number | null} estimatedInputTokens 预估的输入 Token 数量（包含附件等无法估算内容时为 null）。
  * @property {number} reservedOutputTokens 为模型输出预留的 Token 预算。
  * @property {number | null} modelLimit 模型支持的最大上下文 Token 上限。
+ * @property {number} effectiveBudget 模型已知窗口或未知时的应用兜底预算。
+ * @property {number} thresholdTokens 本轮有效摘要阈值。
  * @property {string | null} limitSource 上下文上限数值的来源说明。
  * @property {'fits' | 'over-budget' | 'unknown'} fit 当前上下文是否能装入预算范围。
  * @property {{ enabled: boolean, abstractMessageId: string | null, retainedTurns: number }} compression 当前的上下文压缩配置状态。
@@ -231,7 +235,8 @@ export class Agent {
     return this.templates.render('system.njk', {})
   }
 
-  /** 本轮控制只存在于请求尾部，不写入对话历史。 */
+  /** 生成控制消息，即向模型说明本轮该如何回复的消息。
+   * 控制消息只存在于请求尾部，只会在当前轮次中存在，不会写入历史中。 */
   controls(request) {
     const characters = request.characters.map((character) => ({
       ...character,
@@ -247,9 +252,7 @@ export class Agent {
           : null,
         emotion: 'happiness'
       }
-      if (character.modelVersion === 'v3')
-        // 示例不把目录首项误当作适合问候的动作，实际回复按语义自由选择。
-        line.performance = { motion: 'auto', expression: 'auto' }
+      if (character.modelVersion === 'v3') line.performance = { motion: 'auto', expression: 'auto' }
       return line
     })
     return this.templates.render('runtime-controls.njk', {
@@ -260,6 +263,7 @@ export class Agent {
       scenario: request.scenario,
       knowledge: request.supplementalContext,
       hasTools: request.tools.length > 0,
+      allowedTools: request.tools.map((tool) => tool.name).sort(),
       example: JSON.stringify({ lines: examples })
     })
   }
@@ -390,7 +394,7 @@ export class Agent {
     return {
       model: this.model(request.connection, options.reasoning),
       providerOptions,
-      maxOutputTokens: options.maxOutputTokens,
+      maxOutputTokens: contextBudget(request).reservedOutputTokens,
       // 原生推理模型自行控制采样，不发送它们明确不接受的采样参数。
       ...(!fixedSampling ? { temperature: options.temperature, topP: options.topP } : {}),
       maxRetries: options.limits.maxRequestRetries,
@@ -510,7 +514,7 @@ export class Agent {
       request.input.kind === 'message' ? request.input.message : null
     )
     const tools = Object.fromEntries(
-      request.tools.map((tool) => [
+      (request.toolDefinitions ?? request.tools).map((tool) => [
         tool.name,
         { description: tool.description, inputSchema: jsonSchema(tool.parametersSchema) }
       ])
@@ -520,6 +524,13 @@ export class Agent {
     const callIds = new Set()
     for (let step = 0; step < request.options.limits.maxSteps; step += 1) {
       signal?.throwIfAborted()
+      // 工具执行后只检查，不再更换历史前缀或重跑已完成的副作用。
+      const current = await this.inspectContext(request, messages)
+      requireValue(
+        current.fit !== 'over-budget',
+        'context_over_budget',
+        '本轮新增工具结果或修复消息超出上下文预算，已执行记录已保留。'
+      )
       const response = await this.generate({
         ...this.parameters(request, signal),
         system,
@@ -591,7 +602,12 @@ export class Agent {
           let outcome
           try {
             requireValue(
-              tool && this.validator.compile(tool.parametersSchema)(call.input),
+              tool,
+              'tool_disabled',
+              '该工具本轮未获准使用，请勿重试；请使用允许的工具或直接回答。'
+            )
+            requireValue(
+              this.validator.compile(tool.parametersSchema)(call.input),
               'invalid_tool_input'
             )
             outcome = await tool.execute(
@@ -650,12 +666,12 @@ export class Agent {
    * @param {ContextInspectionRequest} request 待检查的上下文与生成配置。
    * @returns {Promise<ContextInspection>} 上下文 Token 预估结果与能力诊断信息。
    */
-  async inspectContext(request) {
-    const messages = await this.messages(request, true)
+  async inspectContext(request, preparedMessages = null) {
+    const messages = preparedMessages ?? (await this.messages(request, true))
     const material = JSON.stringify({
       system: this.system(request),
       messages,
-      tools: request.tools.map((tool) => ({
+      tools: (request.toolDefinitions ?? request.tools).map((tool) => ({
         name: tool.name,
         description: tool.description,
         parametersSchema: tool.parametersSchema
@@ -687,14 +703,16 @@ export class Agent {
         ? null
         : Math.ceil(Buffer.byteLength(material, 'utf8') / 3)
     const modelLimit = request.connection.capabilities.contextTokens ?? null
-    const budget = Math.min(modelLimit ?? Infinity, request.options.contextTokenBudget)
+    const { budget, reservedOutputTokens, inputBudget, thresholdTokens } = contextBudget(request)
     let fit = 'unknown'
     if (estimatedInputTokens !== null)
-      fit =
-        estimatedInputTokens + request.options.maxOutputTokens <= budget ? 'fits' : 'over-budget'
+      fit = estimatedInputTokens <= inputBudget ? 'fits' : 'over-budget'
+    if (inputBudget < 0) fit = 'over-budget'
     return {
       estimatedInputTokens,
-      reservedOutputTokens: request.options.maxOutputTokens,
+      reservedOutputTokens,
+      effectiveBudget: budget,
+      thresholdTokens,
       modelLimit,
       limitSource: request.connection.capabilities.contextSource ?? null,
       fit,
@@ -716,19 +734,28 @@ export class Agent {
    * @returns {Promise<{ text: string, usage: TokenUsage | null }>} 生成的摘要文本与 Token 消耗记录。
    */
   async compress(request, signal) {
+    const system = this.templates.render('summary.njk', {})
+    const prompt = JSON.stringify(
+      semanticHistory(request.history).map((turn) => ({
+        ...turn,
+        messages: turn.messages.map((message) =>
+          message.kind === 'assistant'
+            ? { ...message, parts: message.parts.filter((part) => part.kind !== 'reasoning') }
+            : message
+        )
+      }))
+    )
+    // 摘要请求也有自己的窗口，已知超限直接交给普通历史裁剪兜底。
+    const estimate = Math.ceil(Buffer.byteLength(JSON.stringify({ system, prompt }), 'utf8') / 3)
+    requireValue(
+      estimate <= contextBudget(request).inputBudget,
+      'context_over_budget',
+      '待摘要材料超出模型输入预算。'
+    )
     const response = await this.generate({
       ...this.parameters(request, signal),
-      system: this.templates.render('summary.njk', {}),
-      prompt: JSON.stringify(
-        semanticHistory(request.history).map((turn) => ({
-          ...turn,
-          messages: turn.messages.map((message) =>
-            message.kind === 'assistant'
-              ? { ...message, parts: message.parts.filter((part) => part.kind !== 'reasoning') }
-              : message
-          )
-        }))
-      )
+      system,
+      prompt
     })
     requireValue(response.text?.trim(), 'empty_response')
     return {

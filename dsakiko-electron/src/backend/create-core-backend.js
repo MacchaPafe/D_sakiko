@@ -9,6 +9,8 @@ import { CharacterCatalog } from './characters/interface.js'
 import { resolveModelCatalog } from './characters/model-catalog.js'
 import { MediaAssets } from './resources/interface.js'
 import { Agent } from './llm/interface.js'
+import { ModelCatalog } from './llm/model-catalog.js'
+import { Recognition } from './recognition/interface.js'
 import { Speech } from './speech/interface.js'
 import { Performance } from './performance/interface.js'
 import { Conversations } from './conversation/interface.js'
@@ -27,6 +29,7 @@ import { failure, uuid } from './core/support.js'
  * @property {ChatStore} store 对话存档管理。
  * @property {Performance} performance 演出时间线与状态管理。
  * @property {Speech} speech 语音合成任务管理。
+ * @property {Recognition} recognition 本地 WAV 语音识别与模型进程管理。
  * @property {Agent} agent LLM 文本生成与工具调用。
  * @property {Conversations} conversations 对话业务管理。
  * @property {ToolCatalog} tools 可用工具目录。
@@ -47,6 +50,8 @@ import { failure, uuid } from './core/support.js'
  * @param {boolean} [options.scanReminders] 是否启动后台扫描到期提醒与待交付抽签结果，默认开启。
  * @param {string} [options.templateDirectory] 自定义的提示词模板目录路径。
  * @param {typeof fetch} [options.fetch] 模型、文件与联网工具共用的网络传输，测试可替换。
+ * @param {string} [options.recognitionModelDirectory] 宿主准备好的本地 Whisper Small q8 目录。
+ * @param {string} [options.recognitionWorkerPath] 打包后的识别工作进程入口。
  * @returns {Promise<CoreBackend>} 组装完成的后端实例。
  */
 export async function createCoreBackend({
@@ -61,12 +66,24 @@ export async function createCoreBackend({
   speech: injectedSpeech,
   scanReminders = true,
   templateDirectory,
+  recognitionModelDirectory,
+  recognitionWorkerPath,
   fetch: transport = fetch
 } = {}) {
   const assets = new MediaAssets({ appDataRoot, resourceLibraryRoot, cacheRoot })
   await assets.state()
   const imports = new ResourceImports(assets)
-  const settings = new Settings({ directory: appDataRoot, assets })
+  const recognition = new Recognition({
+    assets,
+    modelDirectory:
+      recognitionModelDirectory ?? path.join(resourceLibraryRoot, 'asr/whisper-small'),
+    workerPath: recognitionWorkerPath
+  })
+  const modelCatalog = new ModelCatalog({
+    directory: path.join(cacheRoot, 'model-catalog'),
+    fetch: transport
+  })
+  const settings = new Settings({ directory: appDataRoot, assets, modelCatalog })
   const speechResources = new SpeechResources({ assets, settings })
   // mapping 可直接引用 Python 的 performance.json（如 motions.nod = "点头赞同"）。
   // 模型入口提供真实资源，标注只补充语义；角色能力与演出共用同一个解析器。
@@ -197,6 +214,7 @@ export async function createCoreBackend({
   const maintenance = setInterval(maintain, 30000)
   maintenance.unref()
   return {
+    recognition,
     remoteFiles,
     imports,
     speechResources,
@@ -218,6 +236,8 @@ export async function createCoreBackend({
       clearInterval(timer)
       clearInterval(maintenance)
       await conversations.close()
+      await recognition.close()
+      await modelCatalog.close()
       await remoteFiles.close()
       await maintenanceTask
       interactions.close()

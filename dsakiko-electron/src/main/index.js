@@ -46,6 +46,12 @@ async function startApplication() {
   })
   backend = await createCoreBackend({
     ...directories,
+    recognitionModelDirectory:
+      process.env.DSAKIKO_ASR_MODEL ||
+      (app.isPackaged
+        ? join(directories.resourceLibraryRoot, 'asr/whisper-small')
+        : join(app.getAppPath(), '.local/models/whisper-small')),
+    recognitionWorkerPath: join(app.getAppPath(), 'out/main/recognition-worker.js'),
     connectSpeech: () => speechProcess.connect(),
     templateDirectory: join(app.getAppPath(), 'out/main/prompts')
   })

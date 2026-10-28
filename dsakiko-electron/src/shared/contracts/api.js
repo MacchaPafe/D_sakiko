@@ -7,6 +7,7 @@
  * @type {Record<string, Record<string, boolean>>}
  */
 export const API_METHODS = {
+  recognition: { prepare: false, transcribe: false, getState: false, cancel: false },
   conversations: {
     listChats: false,
     getSnapshot: false,

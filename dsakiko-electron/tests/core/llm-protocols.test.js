@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { Agent } from '../../src/backend/llm/interface.js'
 import { characterContext } from '../../src/backend/llm/context.js'
 import {
@@ -9,6 +9,87 @@ import { defaultSettings } from '../../src/backend/core/defaults.js'
 
 const answer = JSON.stringify({
   lines: [{ speaker: '角色', text: '测试完成', translation: null, emotion: 'happiness' }]
+})
+
+test('禁用后工具报文不变，调用被拒绝且无副作用，并交付匹配的失败结果继续回答', async () => {
+  const requests = []
+  const input = requestFor('openai-compatible', 'chat-completions', 'test')
+  const execute = vi.fn(async () => ({ status: 'succeeded', value: 'ok' }))
+  input.tools[0].execute = execute
+  input.toolDefinitions = input.tools.map(({ name, description, parametersSchema }) => ({
+    name,
+    description,
+    parametersSchema
+  }))
+  const agent = new Agent({
+    credential: () => 'fixture',
+    assets: {},
+    fetch: async (_, init) => {
+      const body = JSON.parse(init.body)
+      requests.push(body)
+      if (body.messages.at(-1).role === 'tool') return json(completion({ content: answer }))
+      return json(
+        completion({
+          content: '',
+          tool_calls: [
+            {
+              id: 'one',
+              type: 'function',
+              function: { name: 'echo', arguments: '{"value":"hello"}' }
+            }
+          ]
+        })
+      )
+    }
+  })
+  const enabled = recorder(input)
+  await agent.run(input, enabled.observer)
+  expect(execute).toHaveBeenCalledTimes(1)
+  input.tools = []
+  const disabled = recorder(input)
+  await agent.run(input, disabled.observer)
+  expect(execute).toHaveBeenCalledTimes(1)
+  expect(requests[0].tools).toEqual(requests[2].tools)
+  expect(disabled.turn.messages.find((message) => message.kind === 'tool-result')).toMatchObject({
+    callId: 'one',
+    outcome: { status: 'failed', problem: { code: 'tool_disabled', retryable: false } }
+  })
+  expect(requests[3].messages.at(-1)).toMatchObject({ role: 'tool', tool_call_id: 'one' })
+})
+
+test('工具结果令本轮超限时不发第二次请求，不重跑工具，保留调用与结果', async () => {
+  const input = requestFor('openai-compatible', 'chat-completions', 'test')
+  const execute = vi.fn(async () => ({ status: 'succeeded', value: '巨大结果'.repeat(5000) }))
+  input.tools[0].execute = execute
+  const transport = vi.fn(async () =>
+    json(
+      completion({
+        content: '',
+        tool_calls: [
+          {
+            id: 'one',
+            type: 'function',
+            function: { name: 'echo', arguments: '{"value":"hello"}' }
+          }
+        ]
+      })
+    )
+  )
+  const agent = new Agent({ credential: () => 'fixture', assets: {}, fetch: transport })
+  const initial = await agent.inspectContext(input)
+  input.connection.capabilities.contextTokens =
+    initial.estimatedInputTokens + initial.reservedOutputTokens + 300
+  const saved = recorder(input)
+  await expect(agent.run(input, saved.observer)).rejects.toHaveProperty(
+    'problem.code',
+    'context_over_budget'
+  )
+  expect(transport).toHaveBeenCalledTimes(1)
+  expect(execute).toHaveBeenCalledTimes(1)
+  expect(saved.turn.messages.at(-1)).toMatchObject({
+    kind: 'tool-result',
+    outcome: { status: 'succeeded' }
+  })
 })
 
 function requestFor(provider, protocol, modelId) {
