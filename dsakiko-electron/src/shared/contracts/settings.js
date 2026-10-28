@@ -99,8 +99,16 @@
  */
 
 /**
+ * @typedef {object} BuiltinToolSettings
+ * @property {{readMode: 'all' | 'roots', readableRoots: string[], maxReadBytes: number}} files 全局读取范围与文本大小上限，workspace 始终可读；写入范围不由此放宽。
+ * @property {{provider: string, baseUrl: string, timeoutMs: number, maxResults: number}} webSearch 搜索厂商与请求上限，密钥另存且不对外读取。
+ * @property {{city: string, ipLocation: boolean}} weather 城市为空时可使用后端出口 IP 定位。
+ */
+
+/**
  * @typedef {object} GlobalSettings
  * @property {number} revision 原子保存版本，新配置为 0。
+ * @property {BuiltinToolSettings} tools 内置工具的全局配置。
  * @property {GenerationOptions} generation 生成默认值；执行前校验必需值完整，不猜连接。
  * @property {SpeechOptions} speech 语音默认值。
  * @property {SpeechStartupSettings} speechStartup 下次启动生效，不能改变在途任务。

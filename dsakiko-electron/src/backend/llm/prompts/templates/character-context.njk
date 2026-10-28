@@ -1,9 +1,9 @@
 [character_context]
 以下为完整有效的人物资料，替代此前版本。你不应当使用此前相同名称的形态信息。
 {% for character in characters %}
-角色名：{{ character.name }}
+### 角色名：{{ character.name }}
 {% for form in character.forms %}
-形态：{{ form.displayName }}
+- 形态【{{ form.displayName }}】：
 {{ form.description }}
 {% endfor %}
 {% endfor %}

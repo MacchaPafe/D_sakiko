@@ -100,17 +100,37 @@ export class ToolCatalog {
     if (queryWorldbook)
       result.push({
         name: 'query_worldbook',
-        description: '查询本轮已授权世界书',
+        description:
+          '当对话涉及拿不准的作品设定、过往事件、人物想法或人际关系时，按指定角色的认知视角检索本轮已授权的世界书知识。',
         mode: 'sync',
         parametersSchema: {
           type: 'object',
           properties: {
-            perspectiveCharacterId: { type: 'string' },
-            kind: { enum: ['event', 'thought', 'relation', 'setting'] },
-            text: { type: 'string' },
-            tokenBudget: { type: 'integer', minimum: 1 }
+            character: {
+              type: 'string',
+              minLength: 1,
+              description:
+                '查询视角的角色名（必须使用本轮参与角色的角色名，仅检索该角色可知范围内的信息）。'
+            },
+            kind: {
+              enum: ['event', 'thought', 'relation', 'setting'],
+              description:
+                '检索的知识类别：event（过往事件与经历）、thought（人物内心想法与态度）、relation（人物关系与称呼）、setting（世界观与背景设定）。'
+            },
+            text: {
+              type: 'string',
+              minLength: 1,
+              description: '要检索的关键词、问题或相关主题描述。'
+            },
+            tokenBudget: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 4000,
+              description:
+                '本次检索返回内容的最大 Token 预算（建议按需填写 200 到 1000 之间的正整数）。'
+            }
           },
-          required: ['perspectiveCharacterId', 'kind', 'text', 'tokenBudget'],
+          required: ['character', 'kind', 'text', 'tokenBudget'],
           additionalProperties: false
         },
         execute: async (parameters, context, signal) => ({

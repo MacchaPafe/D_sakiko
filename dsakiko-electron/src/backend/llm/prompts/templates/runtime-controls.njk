@@ -1,6 +1,6 @@
 [runtime_controls]
 {% if mode == 'single-character' %}
-本轮进行单角色对话，自然回应对话者。
+本轮进行单角色对话，自然回应对话者（日常回复通常按语义停顿拆分为 1 到 5 条角色发言）。
 {% else %}
 本轮创作小剧场，约 15 条角色发言，允许同一角色连续发言，不强制轮流说话。
 {% endif %}
@@ -11,7 +11,7 @@
 本轮可独立指定动作和表情，必须包含 performance 内容。
 motions：{{ character.performances.motions | dump }}
 expressions：{{ character.performances.expressions | dump }}
-组合参考：{{ character.performances.presets | default([]) | dump }}
+常用动作与表情搭配参考（选用时请将其中的 motion 与 expression ID 分别填入 performance）：{{ character.performances.presets | default([]) | dump }}
 {% else %}
 本轮只根据 emotion 自动演出，不需要输出 performance 内容，不沿用历史中的动作或表情 ID。
 {% endif %}
@@ -25,6 +25,6 @@ expressions：{{ character.performances.expressions | dump }}
 {{ item }}
 {% endfor %}
 {% endif %}
-本轮{% if hasTools %}可以使用随请求提供的工具{% else %}没有可用工具{% endif %}。
+本轮{% if hasTools %}可以使用随请求提供的工具（若需调用工具，请先完成所有工具调用，最后再输出台词 JSON）{% else %}没有可用工具{% endif %}。
 {% include "output.njk" %}
 [/runtime_controls]

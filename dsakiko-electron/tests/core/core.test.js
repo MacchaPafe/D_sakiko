@@ -405,7 +405,7 @@ test('世界书工具注入固定调用来源，不允许模型自报范围或�
   )
   const tool = tools[0]
   const parameters = {
-    perspectiveCharacterId: 'sakiko',
+    character: '祥子',
     kind: 'event',
     text: '问题',
     tokenBudget: 100

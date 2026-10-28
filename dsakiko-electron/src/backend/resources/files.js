@@ -2,6 +2,33 @@ import path from 'node:path'
 import { copyFile, chmod, lstat, mkdir, readdir, realpath } from 'node:fs/promises'
 import { requireValue } from '../core/support.js'
 
+/** 工作文件只使用跨平台有效的单个文件名，拒绝静默截断用户指定的路径。 */
+export function validWorkspaceFilename(name) {
+  return (
+    typeof name === 'string' &&
+    name.length > 0 &&
+    Buffer.byteLength(name) <= 180 &&
+    !/[\\/<>:"|?*]/u.test(name) &&
+    ![...name].some((character) => character.charCodeAt(0) < 32) &&
+    !/[. ]$/u.test(name) &&
+    name !== '.' &&
+    name !== '..' &&
+    !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(name)
+  )
+}
+
+/** 资源索引中的工作文件位置必须包含受校验的对话 ID 和文件名。 */
+export function validWorkspaceLocation(relative) {
+  if (typeof relative !== 'string') return false
+  const parts = relative.split('/')
+  return (
+    parts.length === 3 &&
+    parts[0] === 'workspaces' &&
+    /^[\p{L}\p{N}_-]{1,100}$/u.test(parts[1]) &&
+    validWorkspaceFilename(parts[2])
+  )
+}
+
 /**
  * 校验资源库 models 内的文件名；用途由引用方决定，不绑定某个引擎的目录布局。
  * @param {unknown} value 相对于 models 的路径。

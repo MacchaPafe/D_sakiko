@@ -241,9 +241,9 @@ export class Agent {
       const greeting = { Japanese: 'また会えて嬉しい。', Chinese: '很高兴又见到你。' }
       const line = {
         speaker: character.name,
-        text: greeting[request.options.language],
+        text: greeting[request.options.language] ?? greeting.Chinese,
         translation: request.options.translationLanguage
-          ? greeting[request.options.translationLanguage]
+          ? (greeting[request.options.translationLanguage] ?? greeting.Chinese)
           : null,
         emotion: 'happiness'
       }
@@ -544,7 +544,8 @@ export class Agent {
         .join('')
       let lines = null
       let formatError = null
-      if (text.trim()) {
+      // 存在工具调用时本步仍在收集信息，不将伴随输出当作最终台词 JSON 解析。
+      if (!calls.length && text.trim()) {
         try {
           lines = this.lines(text, request)
         } catch (error) {

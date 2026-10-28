@@ -11,9 +11,18 @@ import {
   lstat,
   realpath,
   copyFile,
+  rename,
   chmod
 } from 'node:fs/promises'
-import { containedPath, copyPackage, isWithin, resourcePath, validModelFilePath } from './files.js'
+import {
+  containedPath,
+  copyPackage,
+  isWithin,
+  resourcePath,
+  validModelFilePath,
+  validWorkspaceLocation,
+  validWorkspaceFilename
+} from './files.js'
 import {
   copy,
   requireValue,
@@ -33,6 +42,7 @@ const purpose_to_locations = {
   'chat-image': ['application', 'files'],
   avatar: ['application', 'files'],
   attachment: ['application', 'files'],
+  workspace: ['application', 'workspaces'],
   model: ['library', 'models'],
   live2d: ['library', 'live2d'],
   audio: ['library', 'audio'],
@@ -190,16 +200,16 @@ export class MediaAssets {
         location && location.root === purpose_to_locations[info.purpose][0],
         'invalid_asset_index'
       )
-      requireValue(
-        // 确保实际存储路径符合规定前缀（如 "live2d"） + asset id 的样式
-        location.registered === true
-          ? info.purpose === 'model' &&
-              info.kind === 'file' &&
-              location.relativePath.startsWith('models/') &&
-              validModelFilePath(location.relativePath.slice('models/'.length))
-          : location.relativePath === purpose_to_locations[info.purpose][1] + '/' + id,
-        'invalid_asset_index'
-      )
+      let validLocation = location.relativePath === purpose_to_locations[info.purpose][1] + '/' + id
+      if (info.purpose === 'workspace')
+        validLocation = info.kind === 'file' && validWorkspaceLocation(location.relativePath)
+      if (location.registered === true)
+        validLocation =
+          info.purpose === 'model' &&
+          info.kind === 'file' &&
+          location.relativePath.startsWith('models/') &&
+          validModelFilePath(location.relativePath.slice('models/'.length))
+      requireValue(validLocation, 'invalid_asset_index')
       // 如果存储内容为目录，那么必须有一个 entry 标识主要文件，如 live2d 模型的 model3.json
       requireValue(info.kind === 'directory' || location.entry === null, 'invalid_asset_index')
       // 检查资源存储路径是否真的在规定路径中
@@ -259,6 +269,13 @@ export class MediaAssets {
     const base = resourcePath(root, location.relativePath)
     try {
       await containedPath(root, base)
+      if (info.purpose === 'workspace') {
+        let directory = await realpath(root)
+        for (const part of location.relativePath.split('/')) {
+          directory = path.join(directory, part)
+          requireValue(!(await lstat(directory)).isSymbolicLink(), 'invalid_workspace_file')
+        }
+      }
       const relative = member ?? location.entry
       if (relative !== null && relative !== undefined) {
         requireValue(info.kind === 'directory', 'invalid_asset_path')
@@ -292,6 +309,7 @@ export class MediaAssets {
    * @returns {Promise<AssetInfo>} 导入后的资源元数据信息。
    */
   async importAsset(source, ownerId, purpose, signal) {
+    requireValue(purpose !== 'workspace', 'invalid_asset_purpose')
     return this.queue.run('assets', async () => {
       signal?.throwIfAborted()
       this.validateOwner(ownerId)
@@ -476,7 +494,107 @@ export class MediaAssets {
     )
     await this.collector.assertAvailable(state, [asset.id], false)
     const info = state.assets[asset.id]
-    return copy(info)
+    const result = copy(info)
+    if (info.purpose === 'workspace')
+      result.sizeBytes = (await stat(await this.localPath(asset))).size
+    return result
+  }
+
+  /** 返回受管工作目录；逐级拒绝符号链接，模型不能改变文件的写入根。 */
+  async workspaceDirectory(chatId) {
+    safeId(chatId)
+    await mkdir(this.roots.application, { recursive: true })
+    let directory = await realpath(this.roots.application)
+    for (const part of ['workspaces', chatId]) {
+      directory = path.join(directory, part)
+      await mkdir(directory).catch((error) => {
+        if (error.code !== 'EEXIST') throw error
+      })
+      const info = await lstat(directory)
+      requireValue(info.isDirectory() && !info.isSymbolicLink(), 'invalid_workspace')
+    }
+    return directory
+  }
+
+  /**
+   * 写入并登记可变工作文件；相同路径保留 AssetRef，下载总是读取最新内容。
+   * @param {string} chatId 所属对话。
+   * @param {string} filename 单个文件名。
+   * @param {Uint8Array} bytes 文件内容。
+   * @param {string} owner 写入到保存对话之间的保护持有者。
+   * @param {{overwrite?: boolean, renameOnConflict?: boolean, mediaType?: string, signal?: AbortSignal}} options 写入策略。
+   * @returns {Promise<AssetInfo>} 已登记的资源信息。
+   */
+  async writeWorkspaceFile(chatId, filename, bytes, owner, options = {}) {
+    requireValue(validWorkspaceFilename(filename), 'invalid_filename', '只允许文件名，不允许路径。')
+    requireValue(bytes.byteLength <= 64 * 1024 * 1024, 'asset_too_large')
+    this.validateOwner(owner)
+    return this.queue.run('assets', async () => {
+      options.signal?.throwIfAborted()
+      const directory = await this.workspaceDirectory(chatId)
+      const state = await this.state()
+      let name = filename
+      let target
+      let existing
+      let available = false
+      for (let attempt = 0; attempt < 10000; attempt++) {
+        target = path.join(directory, name)
+        existing = Object.entries(state.locations).find(
+          ([, location]) =>
+            location.root === 'application' &&
+            location.relativePath === `workspaces/${chatId}/${name}`
+        )
+        const metadata = await lstat(target).catch((error) => {
+          if (error.code === 'ENOENT') return null
+          throw error
+        })
+        requireValue(
+          !metadata || (metadata.isFile() && !metadata.isSymbolicLink()),
+          'invalid_workspace_file'
+        )
+        if (options.overwrite || (!metadata && !existing)) {
+          available = true
+          break
+        }
+        requireValue(
+          options.renameOnConflict !== false,
+          'workspace_name_conflict',
+          '同名文件已存在，修改需要 overwrite=true。'
+        )
+        const extension = path.extname(filename)
+        name = `${path.basename(filename, extension)} (${attempt + 2})${extension}`
+        requireValue(validWorkspaceFilename(name), 'invalid_filename')
+      }
+      requireValue(available, 'workspace_name_conflict')
+      const id = existing?.[0] ?? uuid()
+      requireValue(!this.collector.blocked.has(id), 'asset_unavailable')
+      const temporary = path.join(directory, '.' + uuid() + '.tmp')
+      try {
+        await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600, signal: options.signal })
+        options.signal?.throwIfAborted()
+        await rename(temporary, target)
+        const info = {
+          asset: { id },
+          purpose: 'workspace',
+          kind: 'file',
+          name,
+          mediaType: options.mediaType ?? state.assets[id]?.mediaType ?? 'application/octet-stream',
+          sizeBytes: bytes.byteLength,
+          durationMs: null
+        }
+        state.assets[id] = info
+        state.locations[id] = {
+          root: 'application',
+          relativePath: `workspaces/${chatId}/${name}`,
+          entry: null
+        }
+        state.owners[owner] = [...new Set([...(state.owners[owner] ?? []), id])]
+        await writeJson(this.index, state)
+        return copy(info)
+      } finally {
+        await rm(temporary, { force: true })
+      }
+    })
   }
 
   /**

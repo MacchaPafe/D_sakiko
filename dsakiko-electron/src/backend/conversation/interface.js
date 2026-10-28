@@ -14,6 +14,7 @@ import {
   abortable
 } from '../core/support.js'
 import { chatSettings } from '../core/defaults.js'
+import { randomInt } from 'node:crypto'
 
 /** @typedef {import('../../shared/contracts/conversation.js').UserSubmission} UserSubmission */
 /** @typedef {import('../../shared/contracts/conversation.js').LineRef} LineRef */
@@ -377,9 +378,27 @@ export class Conversations {
     let attachments = []
     if (message.source.kind === 'manual') {
       text = message.content.text
-      attachments = message.content.attachments
-    } else if (message.source.kind === 'async') text = JSON.stringify(message.results)
-    else text = message.text
+      attachments = message.content.attachments.filter((item) =>
+        item.mediaType.startsWith('image/')
+      )
+      const files = message.content.attachments.filter(
+        (item) => !item.mediaType.startsWith('image/')
+      )
+      if (files.length)
+        text +=
+          '\n工作文件（内容尚未读取，请使用文件工具）：' +
+          JSON.stringify(files.map((item) => ({ name: item.name, asset: item.asset })))
+    } else if (message.source.kind === 'async') {
+      text =
+        '[async_tool_results]\n以下为此前异步工具（提问或抽签）完成的返回结果，不是对话者新说出口的台词，请据此自然继续回应：\n' +
+        JSON.stringify(message.results) +
+        '\n[/async_tool_results]'
+    } else {
+      text =
+        '[scheduled_reminder]\n以下为定时提醒到期的触发指令，不是对话者说出口的台词，请按提醒内容主动向对方开口：\n' +
+        message.text +
+        '\n[/scheduled_reminder]'
+    }
     return {
       messageId: message.id,
       kind: 'user',
@@ -453,6 +472,41 @@ export class Conversations {
     return result
   }
 
+  /** 将手动输入中的非图片资源转成可编辑工作文件；只读预览不落盘。 */
+  async prepareWorkFiles(chat, message, resourceOwner, preview = false) {
+    if (message?.source.kind === 'manual') {
+      for (const attachment of message.content.attachments) {
+        const info = await this.assets.inspect(attachment.asset)
+        attachment.mediaType = info.mediaType
+        attachment.name = info.name
+        if (!info.mediaType.startsWith('image/') && !preview) {
+          requireValue(
+            info.kind === 'file' && info.sizeBytes <= 64 * 1024 * 1024,
+            'unsupported_work_file'
+          )
+          chat.meta.workspaceFiles ??= []
+          let existing = chat.meta.workspaceFiles.find((file) => file.asset.id === info.asset.id)
+          if (!existing) {
+            const imported = await this.assets.writeWorkspaceFile(
+              chat.id,
+              info.name,
+              await this.assets.read(info.asset),
+              resourceOwner,
+              { mediaType: info.mediaType }
+            )
+            existing = {
+              asset: imported.asset,
+              name: imported.name,
+              mediaType: imported.mediaType
+            }
+            chat.meta.workspaceFiles.push(existing)
+          }
+          Object.assign(attachment, copy(existing))
+        }
+      }
+    }
+  }
+
   /**
    * 合并全局设置、对话设置与本轮覆盖选项，解析模型连接、角色能力与工具列表，并构造生成请求与上下文占用检查结果。
    * @param {import('../../shared/contracts/conversation.js').Chat} chat 对话数据。
@@ -460,12 +514,13 @@ export class Conversations {
    * @param {Partial<TurnOptions>} options 本轮的覆盖配置。
    * @returns {Promise<PreparedTurn & {resourceOwner: string}>} 准备就绪的轮次执行材料及临时资源持有者 ID。
    */
-  async prepare(chat, input, options) {
+  async prepare(chat, input, options, preview = false) {
     const resourceOwner = await this.assets.createTemporaryOwner(
       'turn',
       extractAssetReferences({ chat, input })
     )
     try {
+      await this.prepareWorkFiles(chat, input, resourceOwner, preview)
       const global = await this.settings.get()
       const generation = merge(global.generation, chat.meta.settings.generation, options.generation)
       const speech = merge(global.speech, chat.meta.settings.speech, options.speech)
@@ -482,6 +537,12 @@ export class Conversations {
       const resolvedOptions = copy(generation)
       delete resolvedOptions.connectionId
       delete resolvedOptions.modelId
+      const workspaceFiles = (chat.meta.workspaceFiles ?? []).map((file) => file.name)
+      const hasFileTools = tools.some((tool) =>
+        ['list_directory', 'read_file_content', 'grep_search_in_file', 'export_document'].includes(
+          tool.name
+        )
+      )
       const request = {
         turnId: '',
         mode: chat.mode,
@@ -509,7 +570,13 @@ export class Conversations {
         scenario: copy(chat.meta.settings.scenario),
         options: resolvedOptions,
         connection,
-        supplementalContext: [],
+        supplementalContext:
+          hasFileTools || workspaceFiles.length > 0
+            ? [
+                '文件工具的相对路径以本对话 workspace 为基准。仅能向 workspace 写入文件；工作文件并未作为模型附件发送，必须使用工具读取。',
+                '当前工作文件：' + JSON.stringify(workspaceFiles)
+              ]
+            : [],
         tools
       }
 
@@ -533,7 +600,7 @@ export class Conversations {
     state,
     input,
     options,
-    { replaceId = null, automatic = false, delivery = null } = {}
+    { replaceId = null, automatic = false, delivery = null, lotteryDelivery = null } = {}
   ) {
     fields(options, ['requestId', 'generation', 'speech'])
     requireValue(
@@ -541,6 +608,9 @@ export class Conversations {
         options.requestId.length > 0 &&
         !['__proto__', 'constructor', 'prototype'].includes(options.requestId)
     )
+    // 只保留原始提交的摘要，避免去重账本继续持有已复制到 workspace 的临时上传原件。
+    const submissionFingerprint =
+      input?.source.kind === 'manual' ? fingerprint(input.content) : null
     const material = fingerprint({
       input: input ? { ...input, id: null } : null,
       options,
@@ -559,6 +629,7 @@ export class Conversations {
     }
     this.assertIdle(state)
     const candidate = copy(state.chat)
+    if (!automatic) for (const lottery of candidate.meta.lotteries ?? []) lottery.cancelled = true
     if (replaceId) {
       requireValue(candidate.turns.at(-1)?.id === replaceId, 'not_last_turn')
       candidate.turns.pop()
@@ -617,10 +688,14 @@ export class Conversations {
         turnId,
         replaceId,
         options: copy(options),
-        input: input ? { ...copy(input), id: null } : null
+        input: input ? { ...copy(input), id: null } : null,
+        submissionFingerprint
       }
       if (delivery)
         candidate.meta.reminders.find((item) => item.id === delivery).state = 'delivered'
+      if (lotteryDelivery)
+        candidate.meta.lotteries.find((item) => item.id === lotteryDelivery).deliveredTurnId =
+          turnId
       // 这是受理点：保存成功之前不替换内存 Chat、消费自动输入或启动 Agent。
       const saved = await this.store.save(candidate)
       state.chat = saved
@@ -726,6 +801,9 @@ export class Conversations {
         run.controller.abort()
         await this.performance.discardPendingGuides(run.guides)
         if (run.speechTasks.length) this.speech.cancel(run.speechTasks).catch(() => {})
+        for (const lottery of state.chat.meta.lotteries ?? []) {
+          if (lottery.source.turnId === run.turnId) lottery.cancelled = true
+        }
         this.interruptMissing(state.chat, run.turnId)
         await this.persist(state)
       })
@@ -979,6 +1057,7 @@ export class Conversations {
       else requireValue(state.persistence.state !== 'failed', 'save_failed')
       const candidate = copy(state.chat)
       await mutation(candidate)
+      if (semantic) for (const lottery of candidate.meta.lotteries ?? []) lottery.cancelled = true
       const saved = await this.store.save(candidate)
       state.chat = saved
       await this.assets
@@ -1015,6 +1094,7 @@ export class Conversations {
    */
   scheduleDrain(state) {
     if (this.closed || this.closing) return
+    void this.deliverLotteries(state.chat.id).catch((error) => this.assets.reportMaintenance(error))
     setTimeout(
       () =>
         this.queue
@@ -1131,6 +1211,233 @@ export class Conversations {
         })
       state.acceptedResults.add(completion.requestId)
       this.scheduleDrain(state)
+    })
+  }
+
+  /** 校验副作用来自本对话中实际运行的指定工具调用。 */
+  async requireToolSource(chatId, source, toolName) {
+    const registration = await this.qualifyInteraction({ source })
+    requireValue(
+      registration?.chatId === chatId && registration.toolName === toolName,
+      'execution_expired'
+    )
+  }
+
+  /** 写入工作文件并把下载引用保存到对话，运行持有者覆盖保存失败期间。 */
+  async writeToolFile(chatId, input, source, signal) {
+    return this.queue.run(chatId, async () => {
+      await this.requireToolSource(chatId, source, 'export_document')
+      const state = await this.state(chatId)
+      requireValue(state.persistence.state !== 'failed', 'save_failed')
+      const calls = (state.chat.meta.extensions.fileCalls ??= {})
+      const key = source.turnId + ':' + source.callId
+      const material = fingerprint(input)
+      if (calls[key]) {
+        requireValue(calls[key].material === material, 'request_conflict')
+        return copy(calls[key].file)
+      }
+      const info = await this.assets.writeWorkspaceFile(
+        chatId,
+        input.filename,
+        Buffer.from(input.content, 'utf8'),
+        state.resourceOwner,
+        {
+          overwrite: input.overwrite === true,
+          renameOnConflict: false,
+          mediaType: 'text/plain',
+          signal
+        }
+      )
+      const file = { asset: info.asset, name: info.name, mediaType: info.mediaType }
+      state.chat.meta.workspaceFiles ??= []
+      const index = state.chat.meta.workspaceFiles.findIndex(
+        (item) => item.asset.id === info.asset.id
+      )
+      if (index < 0) state.chat.meta.workspaceFiles.push(file)
+      else state.chat.meta.workspaceFiles[index] = file
+      calls[key] = { material, file }
+      requireValue(await this.persist(state), 'save_failed')
+      return copy(file)
+    })
+  }
+
+  /** 返回当前对话可下载的工作文件列表。 */
+  async listWorkspaceFiles(chatId) {
+    return copy((await this.state(chatId)).chat.meta.workspaceFiles ?? [])
+  }
+
+  /** 只列出本对话当前角色形态下可解析的服装，不泄露模型磁盘路径或内部角色与形态 ID。 */
+  async listToolModels(chatId, character) {
+    const chat = (await this.state(chatId)).chat
+    const definitions = await Promise.all(chat.characterIds.map((id) => this.characters.get(id)))
+    const selected = character
+      ? definitions.filter((item) => item.name === character)
+      : definitions
+    requireValue(selected.length > 0, 'character_unavailable')
+    const result = []
+    for (const definition of selected) {
+      const id = definition.id
+      const selection = chat.meta.settings.characters[id] ?? { formId: definition.defaultFormId }
+      const form = definition.forms.find((item) => item.id === selection.formId)
+      requireValue(form, 'form_unavailable')
+      const models = []
+      for (const model of form.models) {
+        try {
+          const capabilities = await this.characters.resolveCapabilities(id, {
+            formId: form.id,
+            modelId: model.id
+          })
+          if (!capabilities.modelVersion) continue
+          models.push({
+            modelId: model.id,
+            name: model.name ?? model.id,
+            selected: model.id === (selection.modelOverrides?.[form.id] ?? form.defaultModelId)
+          })
+        } catch {
+          /* 失效资源不作为可选服装提供给模型。 */
+        }
+      }
+      result.push({ character: definition.name, form: form.displayName, models })
+    }
+    return { characters: result }
+  }
+
+  /** 工具只能切换当前形态的服装，不借助服装接口改变角色形态。 */
+  async changeToolModel(chatId, input, source) {
+    let resolvedName = input.character
+    await this.update(chatId, async (chat) => {
+      await this.requireToolSource(chatId, source, 'change_character_live2d')
+      const definitions = await Promise.all(chat.characterIds.map((id) => this.characters.get(id)))
+      const definition = definitions.find((item) => item.name === input.character)
+      requireValue(definition, 'character_unavailable')
+      resolvedName = definition.name
+      const selection = copy(
+        chat.meta.settings.characters[definition.id] ?? {
+          formId: definition.defaultFormId,
+          modelOverrides: {}
+        }
+      )
+      const capabilities = await this.characters.resolveCapabilities(definition.id, {
+        formId: selection.formId,
+        modelId: input.modelId
+      })
+      requireValue(capabilities.modelVersion, 'model_unavailable', '服装资源当前不可用。')
+      selection.modelOverrides ??= {}
+      selection.modelOverrides[selection.formId] = input.modelId
+      chat.meta.settings.characters[definition.id] = selection
+    })
+    const state = await this.state(chatId)
+    await this.withScene(state.chat, (scene) => this.performance.setScene(state.sequenceId, scene))
+    return { character: resolvedName, modelId: input.modelId, state: 'saved' }
+  }
+
+  /** 创建持久抽签请求，实际随机抽取等待客户端明确调用 drawLottery。 */
+  async createLottery(chatId, input, source) {
+    return this.queue.run(chatId, async () => {
+      await this.requireToolSource(chatId, source, 'start_lottery')
+      const state = await this.state(chatId)
+      requireValue(state.persistence.state !== 'failed', 'save_failed')
+      const options = [...new Set(input.options.map((item) => item.trim()).filter(Boolean))]
+      requireValue(options.length >= 2 && options.length <= 30, 'invalid_lottery')
+      state.chat.meta.lotteries ??= []
+      const material = fingerprint({ title: input.title, options })
+      let item = state.chat.meta.lotteries.find(
+        (item) => item.source.turnId === source.turnId && item.source.callId === source.callId
+      )
+      if (item) requireValue(item.material === material, 'request_conflict')
+      else {
+        item = {
+          id: uuid(),
+          title: input.title,
+          options,
+          source: copy(source),
+          material,
+          result: null,
+          drawnAt: null,
+          deliveredTurnId: null,
+          cancelled: false
+        }
+        state.chat.meta.lotteries.push(item)
+        requireValue(await this.persist(state), 'save_failed')
+      }
+      return { status: 'accepted', requestId: item.id }
+    })
+  }
+
+  /** 多客户端通过快照或此接口查看同一份持久抽签状态。 */
+  async listLotteries(chatId) {
+    return copy((await this.state(chatId)).chat.meta.lotteries ?? [])
+  }
+
+  /** 抽签结果保存成功才返回；重复点击不会重抽或重复触发回复。 */
+  async drawLottery(chatId, lotteryId) {
+    const result = await this.queue.run(chatId, async () => {
+      const state = await this.state(chatId)
+      requireValue(state.persistence.state !== 'failed', 'save_failed')
+      const item = state.chat.meta.lotteries?.find((item) => item.id === lotteryId)
+      requireValue(item, 'lottery_missing')
+      if (item.result) return copy(item)
+      requireValue(!item.cancelled && this.lotterySourceExists(state.chat, item), 'lottery_expired')
+      const index = randomInt(item.options.length)
+      item.result = { index, option: item.options[index] }
+      item.drawnAt = new Date().toISOString()
+      requireValue(await this.persist(state), 'save_failed')
+      return copy(item)
+    })
+    void this.deliverLotteries(chatId).catch((error) => this.assets.reportMaintenance(error))
+    return result
+  }
+
+  /** 持久来源必须仍存在且已成功受理；重启中断的工具调用不可继续交付。 */
+  lotterySourceExists(chat, item) {
+    const turn = chat.turns.find((turn) => turn.id === item.source.turnId)
+    return Boolean(
+      turn?.messages.some(
+        (message) =>
+          message.kind === 'tool-result' &&
+          message.callId === item.source.callId &&
+          message.outcome.status === 'accepted' &&
+          message.outcome.requestId === item.id
+      )
+    )
+  }
+
+  /** 结果交付与动画无关；当前生成或演出结束后继续调度，受理账本保证至多一次。 */
+  async deliverLotteries(chatId) {
+    if (this.closed || this.closing) return
+    return this.queue.run(chatId, async () => {
+      const state = await this.state(chatId)
+      if (state.active || state.compressing || state.persistence.state === 'failed') return
+      const item = state.chat.meta.lotteries?.find(
+        (item) =>
+          item.result &&
+          !item.cancelled &&
+          !item.deliveredTurnId &&
+          this.lotterySourceExists(state.chat, item)
+      )
+      if (!item) return
+      await this.admit(
+        state,
+        {
+          id: uuid(),
+          kind: 'user',
+          source: { kind: 'async' },
+          results: [
+            {
+              requestId: item.id,
+              sourceTurnId: item.source.turnId,
+              callId: item.source.callId,
+              toolName: 'start_lottery',
+              status: 'succeeded',
+              request: { title: item.title, options: item.options },
+              result: copy(item.result)
+            }
+          ],
+          extensions: {}
+        },
+        { requestId: 'lottery:' + item.id },
+        { automatic: true, lotteryDelivery: item.id }
+      )
     })
   }
 
@@ -1293,14 +1600,17 @@ export class Conversations {
       if (!run || run.turnId !== turnId) {
         // 即使该轮已经生成完毕，对最后一轮调用停止也会作废其尚未消费的异步交互组。
         if (state.chat.turns.at(-1)?.id === turnId) {
+          for (const lottery of state.chat.meta.lotteries ?? []) lottery.cancelled = true
           state.group = null
           state.pending = []
           this.interactions?.publish()
+          await this.persist(state)
         }
         return
       }
       run.execution.state = 'terminated'
       run.controller.abort()
+      for (const lottery of state.chat.meta.lotteries ?? []) lottery.cancelled = true
       if (state.group === run.group) {
         state.group = null
         state.pending = []
@@ -1393,7 +1703,8 @@ export class Conversations {
         requireValue(
           receipt.replaceId === turnId &&
             fingerprint(receipt.options) === fingerprint(options) &&
-            fingerprint(receipt.input?.content) === fingerprint(submission),
+            (receipt.submissionFingerprint ?? fingerprint(receipt.input?.content)) ===
+              fingerprint(submission),
           'request_conflict'
         )
         return receipt.turnId
@@ -1428,7 +1739,7 @@ export class Conversations {
   async editHistory(chatId, edit) {
     return this.update(
       chatId,
-      (chat) => {
+      async (chat) => {
         let index
         if (edit.kind === 'user') {
           this.validateSubmission(edit.content)
@@ -1436,6 +1747,7 @@ export class Conversations {
           const message = chat.turns[index]?.messages.find((item) => item.id === edit.messageId)
           requireValue(message?.source?.kind === 'manual', 'not_manual_input')
           message.content = copy(edit.content)
+          await this.prepareWorkFiles(chat, message, (await this.state(chatId)).resourceOwner)
         } else {
           requireValue(edit.kind === 'line' && typeof edit.text === 'string')
           const line = this.locate(chat, edit.line)
@@ -1554,7 +1866,7 @@ export class Conversations {
     const input = submission
       ? { id: uuid(), kind: 'user', source: { kind: 'manual' }, content: copy(submission) }
       : null
-    const prepared = await this.prepare(copy(state.chat), input, { generation: options })
+    const prepared = await this.prepare(copy(state.chat), input, { generation: options }, true)
     if (!submission) prepared.request.input = null
     try {
       return await this.agent.inspectContext(prepared.request)
@@ -1895,12 +2207,40 @@ export class Conversations {
     })
     delete chat.meta.extensions.acceptedRequests
     delete chat.meta.extensions.reminderCalls
+    delete chat.meta.extensions.fileCalls
+    chat.meta.lotteries = []
     for (const turn of chat.turns) {
       turn.meta.requestId = null
       delete turn.meta.extensions.requestFingerprint
     }
     this.interruptMissing(chat)
-    await this.store.save(chat)
+    await this.assets.using(original, async (owner) => {
+      const assets = new Map()
+      for (const file of chat.meta.workspaceFiles ?? []) {
+        const info = await this.assets.inspect(file.asset)
+        requireValue(info.sizeBytes <= 64 * 1024 * 1024, 'asset_too_large')
+        const imported = await this.assets.writeWorkspaceFile(
+          chat.id,
+          file.name,
+          await this.assets.read(file.asset),
+          owner,
+          { mediaType: file.mediaType }
+        )
+        assets.set(file.asset.id, imported.asset.id)
+      }
+      function remapAssets(value) {
+        if (Array.isArray(value)) return value.map(remapAssets)
+        if (value && typeof value === 'object') {
+          if (Object.keys(value).length === 1 && assets.has(value.id))
+            return { id: assets.get(value.id) }
+          return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, remapAssets(item)])
+          )
+        }
+        return value
+      }
+      await this.store.save(remapAssets(chat))
+    })
     return chat.id
   }
 }

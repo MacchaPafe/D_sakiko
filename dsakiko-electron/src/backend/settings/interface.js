@@ -109,6 +109,37 @@ export class Settings {
     return this.scopes.get(scope)
   }
 
+  /** 保存工具厂商密钥；公开设置与查询结果不包含密钥值。 */
+  async saveToolCredential(provider, credential) {
+    requireValue(provider === 'bocha', 'tool_provider_unavailable')
+    requireValue(['keep', 'replace', 'remove'].includes(credential?.kind), 'invalid_credential')
+    return this.queue.run('settings', async () => {
+      const state = await this.state()
+      const key = 'tool:' + provider
+      if (credential.kind === 'replace') {
+        requireValue(
+          typeof credential.secret === 'string' && credential.secret.trim(),
+          'invalid_credential'
+        )
+        state.secrets[key] = credential.secret
+      }
+      if (credential.kind === 'remove') delete state.secrets[key]
+      await writeJson(this.file, state)
+      return { configured: Boolean(state.secrets[key]) }
+    })
+  }
+
+  /** 仅供后端工具取得私有凭据，不能公开到 HTTP 方法表。 */
+  async toolCredential(provider) {
+    return (await this.state()).secrets['tool:' + provider] ?? ''
+  }
+
+  /** 查询工具配置状态，不返回凭据。 */
+  async getToolCredentialStatus(provider) {
+    requireValue(provider === 'bocha', 'tool_provider_unavailable')
+    return { configured: Boolean(await this.toolCredential(provider)) }
+  }
+
   /**
    * @overload
    * @returns {Promise<import('../../shared/contracts/settings.js').GlobalSettings>} 全局设置副本。

@@ -329,7 +329,7 @@ export class ChatStore {
     try {
       for (const resource of envelope.resources ?? []) {
         requireValue(
-          ['chat-image', 'avatar', 'attachment', 'audio', 'model', 'live2d'].includes(
+          ['chat-image', 'avatar', 'attachment', 'workspace', 'audio', 'model', 'live2d'].includes(
             resource.info?.purpose
           ) && resource.info.kind === 'file',
           'invalid_archive'
@@ -342,7 +342,7 @@ export class ChatStore {
             bytes: Buffer.from(resource.bytes, 'base64')
           },
           resourceOwner,
-          resource.info.purpose
+          resource.info.purpose === 'workspace' ? 'attachment' : resource.info.purpose
         )
         replacements.set(resource.info.asset.id, info.asset.id)
       }

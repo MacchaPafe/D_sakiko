@@ -172,9 +172,28 @@
  */
 
 /**
+ * @typedef {{asset: import('./common.js').AssetRef, name: string, mediaType: string}} WorkspaceFile 可变工作文件；下载引用始终读取最新内容，不是厂商附件。
+ */
+
+/**
+ * @typedef {object} LotteryRequest
+ * @property {string} id 后端生成的持久抽签身份。
+ * @property {string} title 展示标题。
+ * @property {string[]} options 去重后的候选项。
+ * @property {import('./tools.js').ToolExecutionContext} source 创建请求的工具调用。
+ * @property {string} material 幂等校验材料。
+ * @property {{index: number, option: string} | null} result 用户开始后由后端随机确定的结果。
+ * @property {string | null} drawnAt 结果确定时间。
+ * @property {string | null} deliveredTurnId 后续回复轮次，与受理同时保存。
+ * @property {boolean} cancelled 停止或修改历史后不再接受开始、交付。
+ */
+
+/**
  * @typedef {object} ChatMeta
  * @property {import('./settings.js').ChatSettings} settings 类型明确的对话设置。
  * @property {Reminder[]} reminders 持久化提醒，普通 async 组失效不删除提醒。
+ * @property {WorkspaceFile[]} [workspaceFiles] 当前对话工作文件，旧存档缺省为空。
+ * @property {LotteryRequest[]} [lotteries] 持久抽签请求，旧存档缺省为空。
  * @property {Metadata} extensions 未知扩展字段。
  */
 

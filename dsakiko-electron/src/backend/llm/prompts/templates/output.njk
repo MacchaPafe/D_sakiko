@@ -1,6 +1,6 @@
 [本轮输出约定]
 lines 非空且不超过 100 项，每项是一段自然的语义停顿，通常为 1 到 3 句；允许同一角色连续发言。
-speaker 必须逐字使用本轮参与角色的角色名，不使用形态名，不输出 speakerId 或 formId。
+speaker 必须逐字使用本轮参与角色的角色名，不使用形态名。
 text 是非空角色台词，使用 {{ language }}，必要的括号描写也使用该语言，不把翻译混入正文。
 {% if translationLanguage %}
 translation 必须为对应 text 的非空 {{ translationLanguage }} 翻译，包含必要描写且不额外添加情节。

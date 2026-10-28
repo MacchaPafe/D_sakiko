@@ -484,15 +484,15 @@ test('删除期间新资源持有者等待，显式删除失败后不再复用�
   })
 })
 
-test('Anthropic 通过 SDK 上传 PDF 后以 document 引用，不依赖 DeepSeek 分支', async () => {
+test('Anthropic 通过 SDK 上传图片后引用，不依赖 DeepSeek 分支', async () => {
   const bodies = []
   const f = await fixture(async (url, init) => {
     if (String(url).endsWith('/files'))
       return Response.json({
         id: 'file_anthropic',
         type: 'file',
-        filename: 'document.pdf',
-        mime_type: 'application/pdf',
+        filename: 'image.png',
+        mime_type: 'image/png',
         size_bytes: 12,
         created_at: '2026-10-25T00:00:00Z'
       })
@@ -511,9 +511,9 @@ test('Anthropic 通过 SDK 上传 PDF 后以 document 引用，不依赖 DeepSee
   const info = await f.assets.importAsset(
     {
       kind: 'bytes',
-      bytes: Buffer.from('%PDF-1.4\n'),
-      name: 'document.pdf',
-      mediaType: 'application/pdf'
+      bytes: png,
+      name: 'image.png',
+      mediaType: 'image/png'
     },
     'chat:first',
     'attachment'
@@ -530,7 +530,7 @@ test('Anthropic 通过 SDK 上传 PDF 后以 document 引用，不依赖 DeepSee
     Array.isArray(item.content) ? item.content : []
   )
   expect(
-    parts.some((item) => item.type === 'document' && item.source?.file_id === 'file_anthropic')
+    parts.some((item) => item.type === 'image' && item.source?.file_id === 'file_anthropic')
   ).toBe(true)
 })
 
@@ -570,12 +570,7 @@ test('规则按类型、大小、模型和路径组合匹配，配置未限制�
     'attachment'
   )
   await writeFile(f.remoteFiles.rulesFile, JSON.stringify({ version: 1, rules: [] }))
-  await expect(
-    f.agent.run(
-      requestFor({ asset: pdf.asset, name: pdf.name, mediaType: pdf.mediaType }),
-      observer
-    )
-  ).rejects.toHaveProperty('problem.code', 'file_upload_failed')
+  await expect(f.remoteFiles.ensureUploaded(f.adapter(), pdf.asset)).rejects.toThrow()
   await writeFile(f.remoteFiles.file, '{broken')
   await expect(f.remoteFiles.ensureUploaded(f.adapter(), f.attachment.asset)).rejects.toThrow()
   expect(await readFile(f.remoteFiles.file, 'utf8')).toBe('{broken')
@@ -700,4 +695,29 @@ test('上传等待超时报 timeout，底层共享任务迟到成功仍持久保
   await Promise.all([...f.remoteFiles.flights.values()])
   expect((await f.remoteFiles.state()).records[0].status).toBe('ready')
   expect(Buffer.from(await f.assets.read(f.attachment.asset))).toEqual(png)
+})
+
+test('对话请求仅发送图片，即使底层适配器支持文档也不上传 PDF', async () => {
+  const calls = []
+  const f = await fixture(async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(init.body) })
+    return completion()
+  })
+  const info = await f.assets.importAsset(
+    {
+      kind: 'bytes',
+      bytes: Buffer.from('%PDF-1.4\n'),
+      name: 'work.pdf',
+      mediaType: 'application/pdf'
+    },
+    'chat:first',
+    'attachment'
+  )
+  await f.agent.run(
+    requestFor({ asset: info.asset, name: info.name, mediaType: info.mediaType }),
+    observer
+  )
+  expect(calls).toHaveLength(1)
+  expect(calls[0].url).toContain('/chat/completions')
+  expect(JSON.stringify(calls[0].body)).not.toContain('application/pdf')
 })

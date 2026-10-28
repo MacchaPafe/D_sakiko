@@ -1,5 +1,7 @@
 # 后端首批实现与调用方式
 
+2026-10-26 补充：内置工具拆分并扩展为 13 项，新增对话 workspace、工作文件下载与持久抽签。调用与限制见[内置工具与对话工作目录](backend-tools.md)。
+
 更新：2026-10-15。设计依据仍是 `core-interfaces.md`、`python-core-design-review.md` 和 `python-feature-requirements.md`。本文件记录实际实现边界，不能把构建成功或旧原型测试等同于全部需求验收。
 
 2026-10-25 补充：LLM 接入已支持 Completions、Responses、Anthropic Messages 和 Gemini generateContent，增加多连接预设、协议元数据存档与按服务区分的推理回传策略。接口、限制及单次 DeepSeek 实测记录见 [LLM 连接与推理回传](llm-providers.md)。

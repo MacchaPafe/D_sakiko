@@ -13,6 +13,7 @@ import { Speech } from './speech/interface.js'
 import { Performance } from './performance/interface.js'
 import { Conversations } from './conversation/interface.js'
 import { ToolCatalog, Interactions, ReminderWriter } from './tools/interface.js'
+import { createBuiltinTools, interactionKinds } from './tools/builtins.js'
 import { failure, uuid } from './core/support.js'
 
 /**
@@ -43,9 +44,9 @@ import { failure, uuid } from './core/support.js'
  * @param {Agent} [options.agent] 自定义的 Agent 实例（通常用于测试替换）。
  * @param {Performance} [options.performance] 自定义的演出管理实例（通常用于测试替换）。
  * @param {Speech} [options.speech] 自定义的语音管理实例（通常用于测试替换）。
- * @param {boolean} [options.scanReminders] 是否启动后台定时扫描到期提醒，默认开启。
+ * @param {boolean} [options.scanReminders] 是否启动后台扫描到期提醒与待交付抽签结果，默认开启。
  * @param {string} [options.templateDirectory] 自定义的提示词模板目录路径。
- * @param {typeof fetch} [options.fetch] 模型与文件接口共用的网络传输，测试可替换。
+ * @param {typeof fetch} [options.fetch] 模型、文件与联网工具共用的网络传输，测试可替换。
  * @returns {Promise<CoreBackend>} 组装完成的后端实例。
  */
 export async function createCoreBackend({
@@ -121,73 +122,25 @@ export async function createCoreBackend({
     isValid: (registration) => conversations.validInteraction(registration),
     accept: (completion, registration, request) =>
       conversations.queueInteraction(completion, registration, request),
-    kinds: {
-      question: {
-        requestSchema: {
-          type: 'object',
-          properties: {
-            question: { type: 'string', minLength: 1 },
-            choices: { type: 'array', items: { type: 'string' } }
-          },
-          required: ['question'],
-          additionalProperties: false
-        },
-        resultSchema: { type: 'string', minLength: 1 }
-      }
-    }
+    kinds: interactionKinds
   })
-  const question = {
-    name: 'ask_user',
-    description:
-      '向用户提出问题，使用该工具后当前对话会立刻继续；在用户回答后，答案后续以新的用户消息交付。',
-    dependencies: [],
-    mode: 'async',
-    parametersSchema: interactions.kinds.question.requestSchema,
-    resultSchema: { type: 'string' },
-    requiredCapabilities: ['interactions']
-  }
-  const reminder = {
-    name: 'create_reminder',
-    description: '创建到期后主动回复的提醒。',
-    dependencies: [],
-    mode: 'sync',
-    parametersSchema: {
-      type: 'object',
-      properties: { dueAt: { type: 'string' }, instruction: { type: 'string', minLength: 1 } },
-      required: ['dueAt', 'instruction'],
-      additionalProperties: false
-    },
-    resultSchema: { type: 'object' },
-    requiredCapabilities: ['reminders']
-  }
   const tools = new ToolCatalog({
     interactions,
     reminders: (chatId) =>
       new ReminderWriter((options, source) =>
         conversations.createReminder(chatId, options, source)
       ),
-    entries: [
-      {
-        definition: question,
-        frontend: true,
-        bind:
-          ({ interactions: bound }) =>
-          async (payload, source, signal) =>
-            bound.request(
-              { requestId: source.turnId + ':' + source.callId, kind: 'question', source, payload },
-              signal
-            )
+    entries: createBuiltinTools({
+      settings,
+      assets,
+      transport,
+      writeFile: (...args) => conversations.writeToolFile(...args),
+      live2d: {
+        list: (...args) => conversations.listToolModels(...args),
+        change: (...args) => conversations.changeToolModel(...args)
       },
-      {
-        definition: reminder,
-        bind:
-          ({ reminders }) =>
-          async (options, source) => ({
-            status: 'succeeded',
-            value: await reminders.create(options, source)
-          })
-      }
-    ]
+      lottery: { create: (...args) => conversations.createLottery(...args) }
+    })
   })
   conversations = new Conversations({
     remoteFiles,
@@ -202,7 +155,7 @@ export async function createCoreBackend({
     access: {
       readableRoots: [],
       outputLocation: uuid(),
-      hostCapabilities: ['interactions', 'reminders']
+      hostCapabilities: ['interactions', 'reminders', 'files', 'system', 'network', 'live2d']
     }
   })
   conversations.interactions = interactions
@@ -212,6 +165,10 @@ export async function createCoreBackend({
     if (scanning) return
     scanning = true
     try {
+      for (const chat of await conversations.listChats())
+        await conversations
+          .deliverLotteries(chat.id)
+          .catch((error) => assets.reportMaintenance(error))
       for (const item of await conversations.listReminders())
         if (item.state === 'enabled')
           await conversations.deliverReminder(item.chatId, item.id, item.id).catch(() => {})

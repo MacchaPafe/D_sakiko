@@ -45,6 +45,8 @@ export class AttachmentPreparation {
     for (const attachment of message.attachments) {
       signal?.throwIfAborted()
       const metadata = await this.assets.inspect(attachment.asset)
+      // 文档只通过工作文件工具读取；此处是防止旧记录或自定义调用绕过对话分流的最后一道检查。
+      if (!normalizeMediaType(metadata.mediaType).startsWith('image/')) continue
       requireValue(
         metadata.kind !== 'directory',
         'unsupported_input',

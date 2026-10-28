@@ -3,6 +3,7 @@ import {
   gptSovitsArchitectures
 } from '../../shared/contracts/speech-resources.js'
 import { ConfigItem, config, isConfigObject, parseConfig } from '../core/config.js'
+import path from 'node:path'
 
 /** 模型生成参数的字段定义。连接 ID 与模型 ID 无固定默认值，需由用户显式选择。 */
 export const generationDefinition = {
@@ -70,6 +71,42 @@ export const speechDefinition = {
 
 /** 全局设置项的字段定义（不包含版本号、连接列表与密钥）。 */
 export const settingsDefinition = {
+  tools: {
+    files: {
+      readMode: config.enum({ default: 'all', values: ['all', 'roots'] }),
+      readableRoots: new ConfigItem({
+        default: [],
+        validate: (value) =>
+          Array.isArray(value) &&
+          value.every((item) => typeof item === 'string' && path.isAbsolute(item)),
+        message: '必须为绝对目录路径数组'
+      }),
+      maxReadBytes: config.number({
+        default: 2 * 1024 * 1024,
+        integer: true,
+        min: 1024,
+        max: 32 * 1024 * 1024
+      })
+    },
+    webSearch: {
+      provider: config.string({ default: 'bocha', minLength: 1 }),
+      baseUrl: new ConfigItem({
+        default: 'https://api.bocha.cn',
+        validate: (value) => {
+          try {
+            const url = new URL(value)
+            return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password
+          } catch {
+            return false
+          }
+        },
+        message: '必须为不含凭据的 HTTP(S) 地址'
+      }),
+      timeoutMs: config.number({ default: 12000, integer: true, min: 100, max: 60000 }),
+      maxResults: config.number({ default: 5, integer: true, min: 1, max: 20 })
+    },
+    weather: { city: config.string({ default: '' }), ipLocation: config.boolean({ default: true }) }
+  },
   generation: generationDefinition,
   speech: speechDefinition,
   speechStartup: {

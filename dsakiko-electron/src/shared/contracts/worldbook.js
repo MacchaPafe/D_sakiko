@@ -24,7 +24,7 @@
 
 /**
  * @typedef {object} WorldbookQuery
- * @property {string} perspectiveCharacterId 本次范围内的应用角色，必须明确查询视角。
+ * @property {string} character 本次范围内的应用角色名，必须明确查询视角。
  * @property {'event' | 'thought' | 'relation' | 'setting'} kind 查询类别。
  * @property {string} text 检索文本。
  * @property {number} tokenBudget 正整数输出预算，不扩大知识权限。
