@@ -1,0 +1,381 @@
+/* ================= 1. 窗口与全局字号基准 ================= */
+/* 两个编辑窗口及其子控件：字号依据所在屏幕的逻辑高度计算，
+   @FONT_PX@ 由加载器替换，避免全局点字号在高 DPI 下挤坏布局。 */
+QWidget#multiCharResourceWindow, QWidget#multiCharResourceWindow QWidget,
+QWidget#multiCharTimelineWindow, QWidget#multiCharTimelineWindow QWidget {
+    font-size: @FONT_PX@px;
+}
+
+/* 晴空云母雾白底色（Porcelain Mist），与左上 Live2D 舞台及白色系统标题栏自然衔接 */
+QWidget#multiCharResourceWindow, QWidget#multiCharTimelineWindow {
+    background-color: #F2F5FB;
+    color: #2C3A52;
+}
+
+QWidget#multiCharTimelineWindow {
+    border: 1px solid #D5E0F0;
+}
+
+QLabel {
+    background-color: transparent;
+    color: #5A6B85;
+    padding: 0px;
+    border: none;
+}
+
+/* ================= 2. 台词卡片与角色胶囊铭牌 ================= */
+/* 呼应左上舞台内的纯白圆角对话框 + 角色胶囊铭牌 */
+QFrame#multiCharDialogueCard {
+    background-color: #FFFFFF;
+    border: 1px solid #DCE5F2;
+    border-radius: 10px;
+}
+
+QLabel#multiCharSpeaker {
+    color: #FFFFFF;
+    background-color: #F06292;
+    border-radius: 8px;
+    padding: 2px 12px;
+    font-size: @SMALL_PX@px;
+    font-weight: bold;
+}
+
+QLabel#multiCharDialogue {
+    color: #243046;
+    font-size: @SMALL_PX@px;
+    padding: 0px;
+}
+
+/* multiCharHint：资源窗口底部居中的拖动提示，平时隐藏并保留位置，避免拖动时窗口跳动。
+   multiCharStatus：时间轴校验信息，比操作正文小一级。
+   上一句/下一句复用 multiCharControl 样式，位于台词卡片操作行左侧。 */
+QLabel#multiCharHint, QLabel#multiCharStatus {
+    font-size: @SMALL_PX@px;
+    color: #7C8CA6;
+}
+
+QLabel#multiCharStatus {
+    color: #D96B27;
+    font-weight: bold;
+    padding: 0 6px;
+}
+
+/* ================= 3. 角色与动作/表情导航切换 ================= */
+/* multiCharOriginalInput / multiCharTranslationInput：顶部原文与翻译草稿输入区。
+   仅编辑文本时显示，独立保存，不随时间轴放弃操作回滚。 */
+QPlainTextEdit#multiCharOriginalInput, QPlainTextEdit#multiCharTranslationInput {
+    background-color: #FFFFFF;
+    color: #33415C;
+    border: 1px solid #C8D5E8;
+    border-radius: 6px;
+    padding: @PAD_Y@px;
+}
+
+/* multiCharCharacters：云母浅灰蓝凹槽 + 纯白悬浮胶囊选中卡 */
+QTabBar#multiCharCharacters {
+    background-color: #E4ECF7;
+    border: 1px solid #D6E1F0;
+    border-radius: 8px;
+}
+
+QTabBar#multiCharCharacters::tab {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: @PAD_Y@px @PAD_X@px;
+    margin: 2px;
+    color: #5E708D;
+    background-color: transparent;
+}
+
+QTabBar#multiCharCharacters::tab:hover:!selected {
+    color: #2C3A52;
+    background-color: rgba(255, 255, 255, 0.55);
+}
+
+QTabBar#multiCharCharacters::tab:selected {
+    color: #243046;
+    background-color: #FFFFFF;
+    border: 1px solid #D0DDF0;
+    font-weight: bold;
+}
+
+/* multiCharKinds：二级动作/表情圆角糖果胶囊 */
+QTabBar#multiCharKinds {
+    background-color: transparent;
+    border: none;
+}
+
+QTabBar#multiCharKinds::tab {
+    border: 1px solid #D8E2F1;
+    border-radius: 7px;
+    padding: @PAD_Y@px @PAD_X@px;
+    margin-right: 5px;
+    color: #5A6B85;
+    background-color: #FFFFFF;
+}
+
+QTabBar#multiCharKinds::tab:hover:!selected:!disabled {
+    color: #243046;
+    background-color: #F5F8FD;
+    border-color: #B8CBE8;
+}
+
+QTabBar#multiCharKinds::tab:selected {
+    color: #FFFFFF;
+    background-color: #5A7FE7;
+    border: 1px solid #4A6FD8;
+    font-weight: bold;
+}
+
+QTabBar#multiCharKinds::tab:disabled {
+    color: #A6B3C7;
+    background-color: #EDF1F8;
+    border-color: #DFE6F2;
+}
+
+/* ================= 4. 搜索框与精确时间输入 ================= */
+/* 底部一体式悬浮中控卡片与胶囊分组 */
+QFrame#multiCharToolbarCard {
+    background-color: #FFFFFF;
+    border: 1px solid #D6E1F0;
+    border-radius: 10px;
+}
+
+QFrame#multiCharTransportGroup, QFrame#multiCharPillGroup {
+    background-color: #F2F6FC;
+    border: 1px solid #DCE6F4;
+    border-radius: 8px;
+}
+
+QLabel#multiCharFieldTag {
+    background: transparent;
+    color: #5C6F8C;
+    font-weight: bold;
+    padding: 0 2px;
+}
+
+QLineEdit#multiCharSearch, QDoubleSpinBox#multiCharStartTime {
+    background-color: #FFFFFF;
+    color: #243046;
+    border: 1px solid #D4E0F0;
+    border-radius: 6px;
+    padding: @PAD_Y@px 8px;
+    selection-background-color: #DCE8FD;
+    selection-color: #1E3A8A;
+}
+
+QLineEdit#multiCharSearch:hover, QDoubleSpinBox#multiCharStartTime:hover:!disabled {
+    background-color: #FFFFFF;
+    border-color: #A8C0E4;
+}
+
+QLineEdit#multiCharSearch:focus, QDoubleSpinBox#multiCharStartTime:focus {
+    background-color: #FFFFFF;
+    border: 1px solid #5A7FE7;
+}
+
+QDoubleSpinBox#multiCharStartTime {
+    font-family: "Consolas", "Cascadia Mono", "Microsoft YaHei UI";
+    font-weight: bold;
+}
+
+QDoubleSpinBox#multiCharStartTime:disabled {
+    color: #93A3BC;
+    background-color: #EBF1FA;
+    border-color: #D8E2F2;
+}
+
+/* 播放时间码柔和胶囊徽标（内嵌于播放胶囊组右侧） */
+QLabel#multiCharClock {
+    background-color: #E5EEFB;
+    color: #284782;
+    border: 1px solid #CEDDF3;
+    border-radius: 6px;
+    padding: @PAD_Y@px 10px;
+    font-family: "Consolas", "Cascadia Mono", "Microsoft YaHei UI";
+    font-weight: bold;
+}
+
+/* ================= 5. 资源列表与滚动条 ================= */
+QListWidget#multiCharResourceList {
+    background-color: #FFFFFF;
+    border: 1px solid #DCE5F2;
+    border-radius: 10px;
+    padding: 5px;
+    outline: none;
+    selection-background-color: #EAF2FF;
+    selection-color: #1E3A8A;
+}
+
+QListWidget#multiCharResourceList::item {
+    padding: @PAD_Y@px @PAD_X@px;
+    margin: 1px 2px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    color: #33415C;
+}
+
+QListWidget#multiCharResourceList::item:hover {
+    background-color: #F3F7FD;
+    color: #1E293B;
+}
+
+QListWidget#multiCharResourceList::item:selected {
+    background-color: #EAF2FF;
+    border: 1px solid #B4CEFB;
+    color: #254EDB;
+    font-weight: bold;
+}
+
+QAbstractScrollArea::corner {
+    background: transparent;
+    border: none;
+}
+
+QScrollBar:vertical {
+    border: none;
+    background: transparent;
+    width: 8px;
+    margin: 2px 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #C8D5E8;
+    min-height: 24px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #A6B8D4;
+}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: transparent;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical,
+QScrollBar::left-arrow:horizontal, QScrollBar::right-arrow:horizontal {
+    height: 0px;
+    width: 0px;
+    border: none;
+    background: transparent;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background: transparent;
+    height: 8px;
+    margin: 0 2px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #C8D5E8;
+    min-width: 24px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #A6B8D4;
+}
+
+/* ================= 6. 时间轴绘图视口 ================= */
+QGraphicsView#multiCharTimeline {
+    alternate-background-color: #EAF0F9;
+    selection-background-color: #5A7FE7;
+    background-color: #EAF0F9;
+    color: #2C3A52;
+    border: none;
+    border-radius: 10px;
+}
+
+/* ================= 7. 按钮与缩放滑块 ================= */
+/* multiCharSave：时间轴保存与编辑状态的“保存文本”共用蓝底。
+   multiCharControl：普通操作按钮，含只读状态的“编辑文本”和仅编辑时显示的“放弃编辑”。 */
+QPushButton#multiCharSave, QPushButton#multiCharControl {
+    padding: @PAD_Y@px @PAD_X@px;
+    border: 1px solid #D4E0F0;
+    border-radius: 8px;
+    background-color: #FFFFFF;
+    color: #364763;
+}
+
+QFrame#multiCharTransportGroup QPushButton#multiCharControl {
+    padding: @PAD_Y@px 8px;
+    border-radius: 6px;
+    border: 1px solid #D8E3F2;
+    background-color: #FFFFFF;
+}
+
+QPushButton#multiCharControl:hover {
+    background-color: #F4F8FE;
+    border-color: #B4C7E6;
+    color: #1E293B;
+}
+
+QPushButton#multiCharControl:pressed {
+    background-color: #E9F0FA;
+    border-color: #A8BEE0;
+}
+
+QPushButton#multiCharControl:disabled {
+    background-color: #EDF1F7;
+    border-color: #DFEAFA;
+    color: #A6B3C7;
+}
+
+/* discardAction：放弃文本编辑和放弃本次时间轴修改使用红字；
+   仅覆盖可用状态的文字颜色，禁用状态继续沿用灰色。 */
+QPushButton#multiCharControl[discardAction="true"]:enabled {
+    color: #C53B45;
+}
+
+QPushButton#multiCharSave {
+    background-color: #5A7FE7;
+    border: 1px solid #4A6FD8;
+    color: #FFFFFF;
+    font-weight: bold;
+}
+
+QPushButton#multiCharSave:hover {
+    background-color: #4B70DD;
+    border-color: #3D62CE;
+}
+
+QPushButton#multiCharSave:pressed {
+    background-color: #3D60C7;
+    border-color: #3252B3;
+}
+
+QSlider#multiCharZoom {
+    background: transparent;
+    min-height: 22px;
+}
+
+QSlider#multiCharZoom::groove:horizontal {
+    height: 5px;
+    background: #DCE5F2;
+    border: none;
+    border-radius: 2px;
+}
+
+QSlider#multiCharZoom::sub-page:horizontal {
+    background: #7295F2;
+    border-radius: 2px;
+}
+
+QSlider#multiCharZoom::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+    background: #FFFFFF;
+    border: 2px solid #5A7FE7;
+}
+
+QSlider#multiCharZoom::handle:horizontal:hover {
+    background: #F0F5FF;
+    border-color: #4368D6;
+}
