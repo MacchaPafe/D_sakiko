@@ -1,4 +1,5 @@
-# 配置 LLM（大语言模型）API 相关的配置 UI
+"""使用 Fluent 卡片组织聊天连接、额度和高级生成参数。"""
+from __future__ import annotations
 import contextlib
 import os
 
@@ -13,7 +14,8 @@ from ..custom_widgets.custom_switch_setting_card import SwitchSettingCard
 # 设置这个变量来缩短 litellm 的加载时间，禁止其请求网络
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 import litellm
-from PyQt5.QtWidgets import QVBoxLayout, QStackedWidget, QWidget, QHBoxLayout, QDialog
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QVBoxLayout, QStackedWidget, QWidget, QDialog, QSizePolicy
 
 from qconfig import (
     d_sakiko_config,
@@ -28,11 +30,15 @@ from log import get_logger
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
-    ListWidget, ToolTipFilter, FluentIcon
+    ListWidget, ToolTipFilter, FluentIcon, HeaderCardWidget, CaptionLabel
 
 from ..custom_widgets.float_range_setting_card import FloatRangeSettingCard
 from ..custom_widgets.request_timeout_setting_card import RequestTimeoutSettingCard
+from ..custom_widgets.setting_card_layout import configure_wrapping_setting_card
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
+from chat.api_usage import ApiTarget, OFFICIAL_BASES, normalize_base
+from .api_usage_settings import ApiUsageSettingsWidget, form_field
+from ..custom_widgets.collapsible_settings_card import CollapsibleSettingsCard
 
 logger = get_logger(__name__)
 
@@ -98,6 +104,12 @@ class AdaptiveStackedWidget(QStackedWidget):
         super().__init__()
         # Update geometry when the current page changes
         self.currentChanged.connect(self.updateGeometry)
+        self.currentChanged.connect(self._fit_current_page)
+
+    def _fit_current_page(self, _index: int) -> None:
+        """避免隐藏的自定义地址表单撑高普通服务商页面。"""
+        if self.currentWidget() is not None:
+            self.setFixedHeight(self.currentWidget().sizeHint().height())
 
     def sizeHint(self):
         """Return the size hint of the currently active widget."""
@@ -113,203 +125,141 @@ class AdaptiveStackedWidget(QStackedWidget):
 
 
 class LLMAPIArea(TransparentScrollArea):
-    def __init__(self, parent):
+    """通过连接卡片和渐进展开的设置区编辑大模型配置。"""
+
+    def __init__(self, parent: QWidget | None) -> None:
+        """保留原有服务商保存逻辑，以统一 Fluent 组件构建设置页。"""
         super().__init__(parent)
-
         self.v_box_layout = QVBoxLayout(self.view)
-
-        # LLM Provider Selection
-        self.llm_provider_combobox = ComboBox()
-        self.v_box_layout.addWidget(self.llm_provider_combobox)
-
-        # Stacked Widget for different provider settings
-        # Use AdaptiveStackedWidget to resize based on content
+        self.v_box_layout.setContentsMargins(2, 12, 2, 16)
+        self.v_box_layout.setSpacing(16)
+        self.v_box_layout.setAlignment(Qt.AlignTop)
+        self.connection_card = HeaderCardWidget("API 连接", self.view)
+        self.connection_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.connection_card.viewLayout.setContentsMargins(24, 18, 24, 20)
+        connection = QVBoxLayout()
+        connection.setSpacing(16)
+        self.connection_card.viewLayout.addLayout(connection)
+        hint = CaptionLabel("选择聊天使用的服务商、模型与密钥。", self.connection_card)
+        hint.setWordWrap(True)
+        connection.addWidget(hint)
+        self.llm_provider_combobox = ComboBox(self.connection_card)
+        connection.addWidget(form_field("服务商", self.llm_provider_combobox, self.connection_card))
         self.llm_stack = AdaptiveStackedWidget()
-        self.v_box_layout.addWidget(self.llm_stack)
+        connection.addWidget(self.llm_stack)
+        self.v_box_layout.addWidget(self.connection_card)
 
-        # Page 0: Up's DeepSeek API (No config needed)
-
-        # 用于放入 stacked widget 的空白 widget
         self.page_up_api = QWidget()
         self.page_up_api.setObjectName("page_up_api")
-        # 当前分栏的 layout
-        layout_up = QVBoxLayout()
-        up_hint_label = BodyLabel(self.tr("使用 Up 主提供的 DeepSeek API (DeepSeek V4 Flash)，无需额外配置。"), self.page_up_api)
-        up_hint_label.setMinimumHeight(30)
-        layout_up.addWidget(up_hint_label)
-        self.page_up_api.setLayout(layout_up)
-        # 添加到 stacked widget
+        layout_up = QVBoxLayout(self.page_up_api)
+        layout_up.setContentsMargins(0, 0, 0, 0)
+        hint_up = BodyLabel("使用作者提供的 DeepSeek API，无需填写密钥。", self.page_up_api)
+        hint_up.setWordWrap(True)
+        layout_up.addWidget(hint_up)
         self.llm_stack.addWidget(self.page_up_api)
 
-        # Page 1: 自定义 API (包含自定义 Base URL, 模型, API Key)
         self.page_custom_api = QWidget()
         self.page_custom_api.setObjectName("page_custom_api")
-        layout_custom = QVBoxLayout()
-        layout_custom.setContentsMargins(0, 20, 0, 20)
-        layout_custom.setSpacing(10)
-
-        self.custom_url_input = LineEdit()
-        self.custom_url_input.setMinimumWidth(300)
-        self.custom_url_input.setPlaceholderText("https://api.your-llm-provider.com/v1")
-        self.custom_model_input = LineEdit()
-        self.custom_model_input.setMinimumWidth(300)
-        self.custom_model_input.setPlaceholderText("openai/gpt-5")
-        self.custom_model_input.setToolTip("请输入完整的模型名称，例如 openai/gpt-5、gemini/gemini-2.5-pro 等。")
-        self.custom_model_input.installEventFilter(ToolTipFilter(self.custom_model_input))
-
-        # Custom API Key Input
-        self.custom_key_layout = QHBoxLayout()
-        self.custom_key_input = PasswordLineEdit()
-        self.custom_key_input.setMinimumWidth(260)
-        self.custom_key_layout.addWidget(self.custom_key_input)
-
-        # Row 1: URL
-        h_layout_1 = QHBoxLayout()
-        label_1 = BodyLabel(self.tr("API URL:"), self.page_custom_api)
-        label_1.setFixedWidth(110)
-        h_layout_1.addWidget(label_1)
-        h_layout_1.addWidget(self.custom_url_input)
-        layout_custom.addLayout(h_layout_1)
-
-        # Row 2: Model
-        h_layout_2 = QHBoxLayout()
-        label_2 = BodyLabel(self.tr("模型名称:"), self.page_custom_api)
-        label_2.setFixedWidth(110)
-        h_layout_2.addWidget(label_2)
-        h_layout_2.addWidget(self.custom_model_input)
-        layout_custom.addLayout(h_layout_2)
-
-        # Row 3: Key
-        label_3 = BodyLabel(self.tr("API Key:"), self.page_custom_api)
-        label_3.setFixedWidth(110)
-        self.custom_key_layout.insertWidget(0, label_3)
-        layout_custom.addLayout(self.custom_key_layout)
-
-        layout_custom.addStretch(1)
-        self.page_custom_api.setLayout(layout_custom)
+        layout_custom = self._page_layout(self.page_custom_api)
+        self.custom_url_input = LineEdit(self.page_custom_api)
+        self.custom_url_input.setPlaceholderText("https://api.example.com/v1")
+        self.custom_model_input = LineEdit(self.page_custom_api)
+        self.custom_model_input.setPlaceholderText("填写服务商提供的完整模型名称")
+        self.custom_key_input = PasswordLineEdit(self.page_custom_api)
+        self.custom_key_input.setPlaceholderText("填写 API Key")
+        layout_custom.addWidget(form_field("API 地址", self.custom_url_input, self.page_custom_api))
+        layout_custom.addWidget(form_field("模型", self.custom_model_input, self.page_custom_api))
+        layout_custom.addWidget(form_field("API Key", self.custom_key_input, self.page_custom_api))
         self.llm_stack.addWidget(self.page_custom_api)
 
-        # Page 2: Standard API (Model, Key)
         self.page_standard_api = QWidget()
         self.page_standard_api.setObjectName("page_standard_api")
-        layout_standard = QVBoxLayout()
-        layout_standard.setContentsMargins(0, 20, 0, 20)
-        layout_standard.setSpacing(10)
-
-        self.standard_model_combo = EditableComboBox()
-        self.standard_model_combo.setMinimumWidth(300)
-        self.standard_model_combo.setToolTip("点击下拉框最右侧可以从模型列表中选择。不要选择非文本输出类模型！")
+        layout_standard = self._page_layout(self.page_standard_api)
+        self.standard_model_combo = EditableComboBox(self.page_standard_api)
+        self.standard_model_combo.setToolTip("选择文本对话模型，也可以直接输入模型名称。")
         self.standard_model_combo.installEventFilter(ToolTipFilter(self.standard_model_combo))
-
-        # Standard API Key with Toggle
-        self.standard_key_layout = QHBoxLayout()
-        self.standard_key_input = PasswordLineEdit()
-        self.standard_key_input.setMinimumWidth(260)
-        self.standard_key_layout.addWidget(self.standard_key_input)
-
-        # Row 1: Model
-        h_layout_s1 = QHBoxLayout()
-        label_s1 = BodyLabel(self.tr("模型名称:"), self.page_standard_api)
-        label_s1.setFixedWidth(110)
-        h_layout_s1.addWidget(label_s1)
-        h_layout_s1.addWidget(self.standard_model_combo)
-        layout_standard.addLayout(h_layout_s1)
-
-        # Row 2: Key
-        label_s2 = BodyLabel(self.tr("API Key:"), self.page_standard_api)
-        label_s2.setFixedWidth(110)
-        self.standard_key_layout.insertWidget(0, label_s2)
-        layout_standard.addLayout(self.standard_key_layout)
-
-        layout_standard.addStretch(1)
-        self.page_standard_api.setLayout(layout_standard)
+        self.standard_key_input = PasswordLineEdit(self.page_standard_api)
+        self.standard_key_input.setPlaceholderText("填写 API Key")
+        layout_standard.addWidget(form_field("模型", self.standard_model_combo, self.page_standard_api))
+        layout_standard.addWidget(form_field("API Key", self.standard_key_input, self.page_standard_api))
         self.llm_stack.addWidget(self.page_standard_api)
 
-        # Page 3: Third-party OpenAI-compatible preset (Model (plain input), Key)
         self.page_third_party_api = QWidget()
         self.page_third_party_api.setObjectName("page_third_party_api")
-        layout_third_party = QVBoxLayout()
-        layout_third_party.setContentsMargins(0, 20, 0, 20)
-        layout_third_party.setSpacing(10)
-
-        self.third_party_model_input = LineEdit()
-        self.third_party_model_input.setMinimumWidth(300)
-        self.third_party_model_input.setPlaceholderText("deepseek-ai/DeepSeek-V3.2")
-        self.third_party_model_input.setToolTip(
-            "请输入网页中看到的完整模型标识（如 deepseek-ai/DeepSeek-V3.2）。"
-        )
-        self.third_party_model_input.installEventFilter(ToolTipFilter(self.third_party_model_input))
-
-        self.third_party_key_layout = QHBoxLayout()
-        self.third_party_key_input = PasswordLineEdit()
-        self.third_party_key_input.setMinimumWidth(260)
-        self.third_party_key_layout.addWidget(self.third_party_key_input)
-
-        # Row 1: Model
-        h_layout_t1 = QHBoxLayout()
-        label_t1 = BodyLabel(self.tr("模型名称:"), self.page_third_party_api)
-        label_t1.setFixedWidth(110)
-        h_layout_t1.addWidget(label_t1)
-        h_layout_t1.addWidget(self.third_party_model_input)
-        layout_third_party.addLayout(h_layout_t1)
-
-        # Row 2: Key
-        label_t2 = BodyLabel(self.tr("API Key:"), self.page_third_party_api)
-        label_t2.setFixedWidth(110)
-        self.third_party_key_layout.insertWidget(0, label_t2)
-        layout_third_party.addLayout(self.third_party_key_layout)
-
-        layout_third_party.addStretch(1)
-        self.page_third_party_api.setLayout(layout_third_party)
+        layout_third = self._page_layout(self.page_third_party_api)
+        self.third_party_model_input = LineEdit(self.page_third_party_api)
+        self.third_party_model_input.setPlaceholderText("填写服务商提供的完整模型标识")
+        self.third_party_key_input = PasswordLineEdit(self.page_third_party_api)
+        self.third_party_key_input.setPlaceholderText("填写 API Key")
+        layout_third.addWidget(form_field("模型", self.third_party_model_input, self.page_third_party_api))
+        layout_third.addWidget(form_field("API Key", self.third_party_key_input, self.page_third_party_api))
         self.llm_stack.addWidget(self.page_third_party_api)
-
-        # 加载模型选择框的内容
         self.populate_llm_combobox()
         self.llm_provider_combobox.currentIndexChanged.connect(self.on_llm_provider_changed)
+        self.load_config_to_ui()
 
+        self.api_usage_settings = ApiUsageSettingsWidget(self._usage_draft_target, self)
+        self.v_box_layout.addWidget(self.api_usage_settings)
+        self.llm_provider_combobox.currentIndexChanged.connect(self.api_usage_settings.load_target)
+        self.custom_url_input.editingFinished.connect(self.api_usage_settings.load_target)
+        for control in (self.standard_key_input, self.custom_key_input, self.third_party_key_input,
+                        self.custom_url_input):
+            control.textChanged.connect(self.api_usage_settings.target_edited)
+
+        self.generation_card = CollapsibleSettingsCard("生成与请求设置", self.view)
+        advanced = QVBoxLayout()
+        advanced.setSpacing(10)
+        self.generation_card.viewLayout.setContentsMargins(12, 12, 12, 12)
+        self.generation_card.viewLayout.addLayout(advanced)
         self.display_unformatted_message_card = SwitchSettingCard(
-            FluentIcon.MESSAGE,
-            self.tr("显示无法解析的模型原文"),
-            self.tr("即使模型返回不合格式，仍然展示返回内容（可能导致语音合成异常）"),
-            d_sakiko_config.display_unformatted_llm_response,
-            parent=self,
+            FluentIcon.MESSAGE, "显示无法解析的模型原文",
+            "保留不合格式的响应；可能影响语音合成。",
+            d_sakiko_config.display_unformatted_llm_response, parent=self,
         )
         self.llm_temperature_card = FloatRangeSettingCard(
-            d_sakiko_config.llm_temperature,
-            FluentIcon.CALORIES,
-            self.tr("模型温度"),
-            self.tr("设置模型对话的温度（temperature）\n温度越高，模型编写的内容越发散"),
-            parent=self,
-            single_step=0.05,
-            decimals=2,
+            d_sakiko_config.llm_temperature, FluentIcon.CALORIES, "模型温度",
+            "较高的温度让回复更发散。", parent=self, single_step=0.05, decimals=2,
         )
         self.llm_top_p_card = FloatRangeSettingCard(
-            d_sakiko_config.llm_top_p,
-            FluentIcon.TILES,
-            self.tr("模型核采样"),
-            self.tr("设置模型对话的核采样（top-p）\n请不要同时修改温度与核采样"),
-            parent=self,
-            single_step=0.05,
-            decimals=2,
+            d_sakiko_config.llm_top_p, FluentIcon.TILES, "模型核采样",
+            "与温度二选一调整。", parent=self, single_step=0.05, decimals=2,
         )
-        self.llm_temperature_card.slider.setFixedWidth(150)
-        self.llm_top_p_card.slider.setFixedWidth(150)
-        self.v_box_layout.addWidget(self.display_unformatted_message_card)
-        self.v_box_layout.addWidget(self.llm_temperature_card)
-        self.v_box_layout.addWidget(self.llm_top_p_card)
-        self.timeout_cards = []
+        for card in (self.llm_temperature_card, self.llm_top_p_card):
+            card.slider.setFixedWidth(130)
+        for card in (self.display_unformatted_message_card, self.llm_temperature_card, self.llm_top_p_card):
+            configure_wrapping_setting_card(card)
+            advanced.addWidget(card)
+        self.timeout_cards: list[RequestTimeoutSettingCard] = []
         for item, title, content in (
-            (d_sakiko_config.llm_request_timeout_seconds, "大模型请求超时",
-             "控制所有对话模式的大模型请求超时，包括桌面端、桌宠、WebUI。"),
-            (d_sakiko_config.theater_request_timeout_seconds, "小剧场请求超时",
-             "控制小剧场生成角色对话时的大模型请求超时。"),
+            (d_sakiko_config.llm_request_timeout_seconds, "对话请求超时", "适用于桌面、桌宠与 WebUI。"),
+            (d_sakiko_config.theater_request_timeout_seconds, "小剧场请求超时", "适用于小剧场的角色对话。"),
         ):
-            card = RequestTimeoutSettingCard(item, self.tr(title), self.tr(content), self)
+            card = RequestTimeoutSettingCard(item, title, content, self)
             self.timeout_cards.append(card)
-            self.v_box_layout.addWidget(card)
+            advanced.addWidget(card)
+        self.v_box_layout.addWidget(self.generation_card)
 
-        # 加载初始内容
-        self.load_config_to_ui()
+    @staticmethod
+    def _page_layout(page: QWidget) -> QVBoxLayout:
+        """提供一致的字段间距，让服务商切换后卡片自然收缩。"""
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        return layout
+
+    def _usage_draft_target(self) -> ApiTarget:
+        """额度测试读取表单草稿，不先保存或切换正在使用的聊天 API。"""
+        provider = self.llm_provider_combobox.currentData()
+        if provider == "deepseek_up":
+            return ApiTarget("deepseek_up", "", shared=True)
+        if provider == "custom":
+            return ApiTarget("custom", normalize_base(self.custom_url_input.text()), self.custom_key_input.text())
+        if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
+            base = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP[provider]["base_url"]
+            return ApiTarget(provider, base, self.third_party_key_input.text())
+        bases = d_sakiko_config.llm_api_base_url.value or {}
+        return ApiTarget(provider or "", normalize_base(bases.get(provider) or OFFICIAL_BASES.get(provider, "")),
+                         self.standard_key_input.text())
 
     def update_model_list(self, provider: str) -> None:
         """
@@ -533,6 +483,8 @@ class LLMAPIArea(TransparentScrollArea):
                 self.llm_stack.setCurrentIndex(3)
             else:
                 self.llm_stack.setCurrentIndex(2)
+        if hasattr(self, "api_usage_settings"):
+            self.api_usage_settings.load_target(force=True)
 
     def reset_error_indicators(self):
         """Reset error indicators on input fields."""
@@ -544,6 +496,14 @@ class LLMAPIArea(TransparentScrollArea):
         self.third_party_key_input.setError(False)
 
     def save_ui_to_config(self) -> bool:
+        """先验证额度草稿，再保存 API 和额度配置。"""
+        if not self.api_usage_settings.validate_draft():
+            return False
+        if not self._save_api_settings_to_config():
+            return False
+        return self.api_usage_settings.save()
+
+    def _save_api_settings_to_config(self) -> bool:
         """
         将当前 ui 的设置存储到 d_sakiko_config 中
 
