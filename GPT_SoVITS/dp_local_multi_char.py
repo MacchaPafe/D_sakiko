@@ -85,6 +85,7 @@ class DSLocalAndVoiceGen:
 					   qt2dp_queue,
 					   message_queue,
 					   ):
+		"""消费小剧场生成请求，仅向主界面提交未被截断的模型输出。"""
 		import litellm
 		from litellm import completion, ModelResponse
 		while True:
@@ -159,6 +160,7 @@ class DSLocalAndVoiceGen:
 						api_key=self.model,
 						stream=False,
 						timeout=llm_timeout,
+						max_tokens=16384,
 						temperature=temperature,
 						top_p=top_p,
 						drop_params=True
@@ -175,6 +177,7 @@ class DSLocalAndVoiceGen:
 						base_url=d_sakiko_config.custom_llm_api_url.value,
 						stream=False,
 						timeout=llm_timeout,
+						max_tokens=16384,
 						temperature=temperature,
 						top_p=top_p,
 						drop_params=True
@@ -193,6 +196,7 @@ class DSLocalAndVoiceGen:
 							api_key=api_key,
 							stream=False,
 							timeout=llm_timeout,
+							max_tokens=16384,
 							base_url=base_url,
 							temperature=temperature,
 							top_p=top_p,
@@ -205,6 +209,7 @@ class DSLocalAndVoiceGen:
 							api_key=api_key,
 							stream=False,
 							timeout=llm_timeout,
+							max_tokens=16384,
 							temperature = temperature,
 							top_p = top_p,
 							drop_params = True
@@ -270,6 +275,15 @@ class DSLocalAndVoiceGen:
 				import traceback
 				traceback.print_exc()
 
+				continue
+
+			# 截断响应不能当成完整剧本解析，沿用失败通知保留当前剧本。
+			if isinstance(response, ModelResponse) and response.choices[0].finish_reason == "length":
+				self.report_message_to_main_ui(
+					message_queue,
+					text_queue,
+					"剧本输出达到模型或接口的长度上限，内容已被截断。当前剧本未更改，请减少对话轮数或更换模型后重试。"
+				)
 				continue
 
 			if not isinstance(response, ModelResponse) or response.choices[0].message.content is None:

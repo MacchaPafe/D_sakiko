@@ -1,0 +1,139 @@
+{
+  "description": "小剧场功能入口 SVG 来源；保留原始路径，仅移除网页属性并统一颜色。",
+  "date": "2026-10-31",
+  "colors": {
+    "normal": "#7799CC",
+    "discard": "#C53B45",
+    "on_blue": "#FFFFFF"
+  },
+  "assets": [
+    {
+      "file": "multi_char_clapperboard.svg",
+      "iconfont_id": 34218695,
+      "author": "Adalyn",
+      "collection": "多媒体应用图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43805"
+    },
+    {
+      "file": "multi_char_play.svg",
+      "iconfont_id": 34218689,
+      "author": "Adalyn",
+      "collection": "多媒体应用图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43805"
+    },
+    {
+      "file": "multi_char_pause.svg",
+      "iconfont_id": 34218769,
+      "author": "Adalyn",
+      "collection": "多媒体应用图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43805"
+    },
+    {
+      "file": "multi_char_stop.svg",
+      "iconfont_id": 34218746,
+      "author": "Adalyn",
+      "collection": "多媒体应用图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43805"
+    },
+    {
+      "file": "multi_char_mute.svg",
+      "iconfont_id": 34218721,
+      "author": "Adalyn",
+      "collection": "多媒体应用图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43805"
+    },
+    {
+      "file": "multi_char_audio.svg",
+      "iconfont_id": 34218729,
+      "author": "Adalyn",
+      "collection": "多媒体应用图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43805"
+    },
+    {
+      "file": "multi_char_background.svg",
+      "iconfont_id": 34218755,
+      "author": "Adalyn",
+      "collection": "多媒体应用图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43805"
+    },
+    {
+      "file": "multi_char_previous.svg",
+      "iconfont_id": 34202234,
+      "author": "Adalyn",
+      "collection": "系统常用图标线性",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43793"
+    },
+    {
+      "file": "multi_char_next.svg",
+      "iconfont_id": 34202279,
+      "author": "Adalyn",
+      "collection": "系统常用图标线性",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43793"
+    },
+    {
+      "file": "multi_char_discard.svg",
+      "iconfont_id": 34202236,
+      "author": "Adalyn",
+      "collection": "系统常用图标线性",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43793"
+    },
+    {
+      "file": "multi_char_add.svg",
+      "iconfont_id": 34202310,
+      "author": "Adalyn",
+      "collection": "系统常用图标线性",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43793"
+    },
+    {
+      "file": "multi_char_search.svg",
+      "iconfont_id": 34202295,
+      "author": "Adalyn",
+      "collection": "系统常用图标线性",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43793"
+    },
+    {
+      "file": "multi_char_edit.svg",
+      "iconfont_id": 34220431,
+      "author": "Adalyn",
+      "collection": "文件类图形图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43807"
+    },
+    {
+      "file": "multi_char_folder.svg",
+      "iconfont_id": 34220441,
+      "author": "Adalyn",
+      "collection": "文件类图形图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43807"
+    },
+    {
+      "file": "multi_char_actors.svg",
+      "iconfont_id": 34222200,
+      "author": "Adalyn",
+      "collection": "用户类图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43808"
+    },
+    {
+      "file": "multi_char_expression.svg",
+      "iconfont_id": 34222197,
+      "author": "Adalyn",
+      "collection": "用户类图标",
+      "source": "https://www.iconfont.cn/collections/detail?cid=43808"
+    },
+    {
+      "file": "multi_char_transition.svg",
+      "iconfont_id": 39247975,
+      "title": "contrast-2-line",
+      "source": "https://www.iconfont.cn/search/index?searchType=icon&q=contrast-2-line"
+    },
+    {
+      "file": "multi_char_save_white.svg",
+      "source": "save.svg",
+      "note": "复用项目已有软盘图形，仅改为蓝底按钮使用的白色。"
+    },
+    {
+      "file": "multi_char_add_white.svg",
+      "source": "multi_char_add.svg",
+      "note": "添加按钮蓝底状态使用的白色变体。"
+    }
+  ]
+}

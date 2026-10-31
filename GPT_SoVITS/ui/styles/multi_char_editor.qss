@@ -2,12 +2,14 @@
 /* 两个编辑窗口及其子控件：字号依据所在屏幕的逻辑高度计算，
    @FONT_PX@ 由加载器替换，避免全局点字号在高 DPI 下挤坏布局。 */
 QWidget#multiCharResourceWindow, QWidget#multiCharResourceWindow QWidget,
-QWidget#multiCharTimelineWindow, QWidget#multiCharTimelineWindow QWidget {
+QWidget#multiCharTimelineWindow, QWidget#multiCharTimelineWindow QWidget,
+QDialog#multiCharInsertDialog, QDialog#multiCharInsertDialog QWidget {
     font-size: @FONT_PX@px;
 }
 
 /* 晴空云母雾白底色（Porcelain Mist），与左上 Live2D 舞台及白色系统标题栏自然衔接 */
-QWidget#multiCharResourceWindow, QWidget#multiCharTimelineWindow {
+QWidget#multiCharResourceWindow, QWidget#multiCharTimelineWindow,
+QDialog#multiCharInsertDialog {
     background-color: #F2F5FB;
     color: #2C3A52;
 }
@@ -46,18 +48,99 @@ QLabel#multiCharDialogue {
     padding: 0px;
 }
 
-/* multiCharHint：资源窗口底部居中的拖动提示，平时隐藏并保留位置，避免拖动时窗口跳动。
-   multiCharStatus：时间轴校验信息，比操作正文小一级。
-   上一句/下一句复用 multiCharControl 样式，位于台词卡片操作行左侧。 */
+/* multiCharHint：叠在资源列表底边的拖动提示，平时隐藏，不单独占行。
+   multiCharStatus：时间轴校验信息，比操作正文小一级。 */
 QLabel#multiCharHint, QLabel#multiCharStatus {
     font-size: @SMALL_PX@px;
     color: #7C8CA6;
+}
+
+QLabel#multiCharHint {
+    background-color: rgba(247, 250, 255, 235);
+    border: 1px solid #E5ECF6;
+    border-radius: 5px;
+    padding: 3px 8px;
 }
 
 QLabel#multiCharStatus {
     color: #D96B27;
     font-weight: bold;
     padding: 0 6px;
+}
+
+/* multiCharNavigation：说话人右侧的上一句、下一句图标按钮，以及“＋ 添加台词”文字入口。
+   multiCharMessageCount：导航中间的当前句 / 总句数。 */
+QToolButton#multiCharNavigation {
+    color: #7799CC;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: @PAD_Y@px;
+}
+
+/* 导航焦点只描边；悬浮底色随鼠标离开消失，避免切句或关闭菜单后持续亮起。 */
+QToolButton#multiCharNavigation:focus:enabled {
+    border-color: #DCE5F2;
+}
+
+QToolButton#multiCharNavigation:hover:enabled {
+    background-color: #EEF4FC;
+    border-color: #DCE5F2;
+}
+
+QToolButton#multiCharNavigation:pressed:enabled {
+    background-color: #E3EDFA;
+}
+
+QToolButton#multiCharNavigation:disabled {
+    color: #AFBDCF;
+}
+
+QLabel#multiCharMessageCount {
+    color: #7C8CA6;
+    font-size: @SMALL_PX@px;
+    padding: 0 3px;
+}
+
+/* multiCharTextAction：台词卡下方的编辑文本、重新生成音频文字按钮。
+   multiCharMuteAction：同行的本句静音开关，选中时用淡蓝底表示状态。
+   multiCharTextEditActions：仅编辑时显示的保存 / 放弃操作容器。 */
+QPushButton#multiCharTextAction, QToolButton#multiCharMuteAction {
+    color: #687D9A;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QPushButton#multiCharTextAction:hover:enabled,
+QPushButton#multiCharTextAction:focus:enabled,
+QToolButton#multiCharMuteAction:hover:enabled,
+QToolButton#multiCharMuteAction:focus:enabled {
+    color: #365C97;
+    background-color: #F2F6FC;
+    border-color: #E5ECF6;
+}
+
+QPushButton#multiCharTextAction:pressed:enabled,
+QToolButton#multiCharMuteAction:pressed:enabled {
+    background-color: #E6EFFB;
+}
+
+QToolButton#multiCharMuteAction:checked {
+    color: #365C97;
+    background-color: #EAF2FF;
+    border-color: #C6D9F3;
+}
+
+QPushButton#multiCharTextAction:disabled,
+QToolButton#multiCharMuteAction:disabled {
+    color: #A6B3C7;
+    background: transparent;
+}
+
+QWidget#multiCharTextEditActions {
+    background: transparent;
 }
 
 /* ================= 3. 角色与动作/表情导航切换 ================= */
@@ -139,6 +222,21 @@ QFrame#multiCharToolbarCard {
     background-color: #FFFFFF;
     border: 1px solid #D6E1F0;
     border-radius: 10px;
+}
+
+/* multiCharTrash：拖动已有条块时撑满底栏中央可用宽度的纯文字删除投放区，不响应点击。
+   dropActive：鼠标进入投放范围后加深底色，松开才删除。 */
+QToolButton#multiCharTrash {
+    color: #BE123C;
+    background-color: #FFF1F2;
+    border: 1px dashed #FDA4AF;
+    border-radius: 6px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QToolButton#multiCharTrash[dropActive="true"] {
+    background-color: #FFE4E6;
+    border: 1px solid #F43F5E;
 }
 
 QFrame#multiCharTransportGroup, QFrame#multiCharPillGroup {
@@ -292,8 +390,8 @@ QGraphicsView#multiCharTimeline {
 }
 
 /* ================= 7. 按钮与缩放滑块 ================= */
-/* multiCharSave：时间轴保存与编辑状态的“保存文本”共用蓝底。
-   multiCharControl：普通操作按钮，含只读状态的“编辑文本”和仅编辑时显示的“放弃编辑”。 */
+/* multiCharSave：时间轴保存与输入框下方的“保存文本”共用蓝底。
+   multiCharControl：时间轴普通操作、文本放弃和插句表单按钮。 */
 QPushButton#multiCharSave, QPushButton#multiCharControl {
     padding: @PAD_Y@px @PAD_X@px;
     border: 1px solid #D4E0F0;
@@ -326,7 +424,7 @@ QPushButton#multiCharControl:disabled {
     color: #A6B3C7;
 }
 
-/* discardAction：放弃文本编辑和放弃本次时间轴修改使用红字；
+/* discardAction：放弃文本编辑、放弃本次时间轴修改及取消插句使用红字；
    仅覆盖可用状态的文字颜色，禁用状态继续沿用灰色。 */
 QPushButton#multiCharControl[discardAction="true"]:enabled {
     color: #C53B45;
@@ -378,4 +476,265 @@ QSlider#multiCharZoom::handle:horizontal {
 QSlider#multiCharZoom::handle:horizontal:hover {
     background: #F0F5FF;
     border-color: #4368D6;
+}
+
+/* ================= 8. 场景即时设置与插句表单 ================= */
+/* multiCharSceneCard：可折叠的本句场景卡片。
+   multiCharSceneLabel：出场角色 / 背景 / 转场三行的固定标签列。
+   multiCharSceneIcon：场景标签前的 SVG 图标，不承担点击操作。 */
+QFrame#multiCharSceneCard {
+    background-color: #FFFFFF;
+    border: 1px solid #DCE5F2;
+    border-radius: 10px;
+}
+
+QLabel#multiCharSceneLabel {
+    color: #5A6B85;
+    padding-right: 6px;
+}
+
+QLabel#multiCharSceneIcon {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+/* multiCharSceneToggle：本句场景标题和展开箭头，点击切换三行设置。
+   multiCharSceneSummary：折叠时显示出场、背景及黑场摘要。
+   multiCharSceneBody：展开后的三行设置容器，沿用卡片白底。 */
+QToolButton#multiCharSceneToggle {
+    color: #526884;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: @PAD_Y@px 3px;
+    font-weight: bold;
+}
+
+QToolButton#multiCharSceneToggle:hover,
+QToolButton#multiCharSceneToggle:focus {
+    color: #365C97;
+    background-color: #F2F6FC;
+}
+
+QToolButton#multiCharSceneToggle:pressed {
+    background-color: #E6EFFB;
+}
+
+QLabel#multiCharSceneSummary {
+    color: #8191A8;
+    font-size: @SMALL_PX@px;
+    padding: 0 4px;
+}
+
+QWidget#multiCharSceneBody {
+    background: transparent;
+}
+
+/* multiCharVisiblePill：角色上场胶囊开关，允许全部关闭。
+   characterSlot：选中时保留对应角色的主题原色，与轨道头一致；文字按底色明暗适配。 */
+QPushButton#multiCharVisiblePill {
+    color: #8191A8;
+    background-color: #F5F7FB;
+    border: 1px solid #DCE4F0;
+    border-radius: @FONT_PX@px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QPushButton#multiCharVisiblePill:hover:!checked {
+    color: #526884;
+    background-color: #EDF3FC;
+    border-color: #BDD0EA;
+}
+
+QPushButton#multiCharVisiblePill[characterSlot="0"]:checked {
+    color: @ROLE_0_TEXT@;
+    background-color: @ROLE_0_COLOR@;
+    border-color: @ROLE_0_COLOR@;
+}
+
+QPushButton#multiCharVisiblePill[characterSlot="1"]:checked {
+    color: @ROLE_1_TEXT@;
+    background-color: @ROLE_1_COLOR@;
+    border-color: @ROLE_1_COLOR@;
+}
+
+QPushButton#multiCharVisiblePill:focus {
+    border-color: #7799CC;
+}
+
+QPushButton#multiCharVisiblePill[characterSlot="0"]:checked:focus,
+QPushButton#multiCharVisiblePill[characterSlot="1"]:checked:focus {
+    border-color: #526884;
+}
+
+QPushButton#multiCharVisiblePill:disabled,
+QPushButton#multiCharVisiblePill[characterSlot="0"]:checked:disabled,
+QPushButton#multiCharVisiblePill[characterSlot="1"]:checked:disabled {
+    color: #A6B3C7;
+    background-color: #EDF1F7;
+    border-color: #DFE6F2;
+}
+
+/* multiCharVisibilityHelp：出场人物旁的问号图标按钮。
+   悬浮或点击显示沿用规则，平时不占用说明文字的宽度。 */
+QToolButton#multiCharVisibilityHelp {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px;
+}
+
+QToolButton#multiCharVisibilityHelp:hover, QToolButton#multiCharVisibilityHelp:focus {
+    background-color: #F0F5FF;
+    border-color: #D4E0F0;
+}
+
+QToolButton#multiCharVisibilityHelp:pressed {
+    background-color: #E4ECF7;
+}
+
+/* multiCharMuted：插句表单中的静音复选框，与出场名单独立。
+   multiCharBackground：本句背景覆盖开关。
+   multiCharBlack：本句句前黑场开关，首句禁用。 */
+QCheckBox#multiCharMuted,
+QCheckBox#multiCharBackground, QCheckBox#multiCharBlack {
+    color: #364763;
+    background: transparent;
+    spacing: 5px;
+    padding: 2px 0;
+}
+
+QCheckBox#multiCharMuted:disabled,
+QCheckBox#multiCharBackground:disabled, QCheckBox#multiCharBlack:disabled {
+    color: #A6B3C7;
+}
+
+/* multiCharMuted / multiCharBackground / multiCharBlack：统一勾选框，未勾选时保留边界。 */
+QCheckBox#multiCharMuted::indicator,
+QCheckBox#multiCharBackground::indicator, QCheckBox#multiCharBlack::indicator {
+    width: @FONT_PX@px;
+    height: @FONT_PX@px;
+    border: 1px solid #B4C7E6;
+    border-radius: 3px;
+    background-color: #FFFFFF;
+}
+
+QCheckBox#multiCharMuted::indicator:checked,
+QCheckBox#multiCharBackground::indicator:checked, QCheckBox#multiCharBlack::indicator:checked {
+    background-color: #5A7FE7;
+    border-color: #4A6FD8;
+    image: url("@CHECK_ICON@");
+}
+
+QCheckBox#multiCharMuted::indicator:disabled,
+QCheckBox#multiCharBackground::indicator:disabled, QCheckBox#multiCharBlack::indicator:disabled {
+    background-color: #DFE6F2;
+    border-color: #CDD8E9;
+}
+
+/* multiCharInsertSpeaker：添加台词表单的两名角色及“无”下拉选择。 */
+QComboBox#multiCharInsertSpeaker {
+    color: #364763;
+    background-color: #FFFFFF;
+    border: 1px solid #D4E0F0;
+    border-radius: 6px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+/* multiCharBlackDuration：横向调节黑场总时长的细轨滑块，蓝色填充显示当前值。
+   multiCharBlackDurationLabel：滑块右侧实时秒数，拖动松开时才保存配置。 */
+QSlider#multiCharBlackDuration {
+    background: transparent;
+    min-height: 22px;
+}
+
+QSlider#multiCharBlackDuration::groove:horizontal {
+    height: 4px;
+    background-color: #DCE5F2;
+    border: none;
+    border-radius: 2px;
+}
+
+QSlider#multiCharBlackDuration::sub-page:horizontal {
+    background-color: #7295F2;
+    border-radius: 2px;
+}
+
+QSlider#multiCharBlackDuration::handle:horizontal {
+    width: 12px;
+    height: 12px;
+    margin: -5px 0;
+    background-color: #FFFFFF;
+    border: 2px solid #5A7FE7;
+    border-radius: 7px;
+}
+
+QSlider#multiCharBlackDuration::handle:horizontal:hover {
+    background-color: #F0F5FF;
+    border-color: #4368D6;
+}
+
+QSlider#multiCharBlackDuration::sub-page:horizontal:disabled {
+    background-color: #C8D5E8;
+}
+
+QSlider#multiCharBlackDuration::handle:horizontal:disabled {
+    background-color: #EDF1F7;
+    border-color: #BDCBE1;
+}
+
+QLabel#multiCharBlackDurationLabel {
+    color: #536C9C;
+    background: transparent;
+}
+
+QLabel#multiCharBlackDurationLabel:disabled {
+    color: #A6B3C7;
+}
+
+/* multiCharRefresh：搜索框右侧仅图标的当前角色资源刷新入口。
+   multiCharCustomExpression：刷新旁的添加表情图标，仅表情页显示。
+   multiCharTransitionPreview：独立演示句前阶段，不开始本句音频。
+   multiCharBackgroundFile：当前背景文件名，点击重新选择图片。 */
+QToolButton#multiCharRefresh, QToolButton#multiCharCustomExpression,
+QToolButton#multiCharTransitionPreview,
+QToolButton#multiCharBackgroundFile {
+    color: #536C9C;
+    background-color: #FFFFFF;
+    border: 1px solid #D4E0F0;
+    border-radius: 6px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QToolButton#multiCharRefresh:hover, QToolButton#multiCharCustomExpression:hover,
+QToolButton#multiCharTransitionPreview:hover,
+QToolButton#multiCharBackgroundFile:hover {
+    color: #254EDB;
+    background-color: #F4F8FE;
+    border-color: #B4C7E6;
+}
+
+QToolButton#multiCharTransitionPreview:disabled,
+QToolButton#multiCharCustomExpression:disabled {
+    color: #A6B3C7;
+    background-color: #EDF1F7;
+    border-color: #DFEAFA;
+}
+
+/* multiCharInsertMenu：添加台词按钮旁的本句上方/下方菜单。 */
+QMenu#multiCharInsertMenu {
+    color: #364763;
+    background-color: #FFFFFF;
+    border: 1px solid #D4E0F0;
+    padding: 4px;
+}
+
+QMenu#multiCharInsertMenu::item {
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QMenu#multiCharInsertMenu::item:selected {
+    color: #254EDB;
+    background-color: #EAF2FF;
 }

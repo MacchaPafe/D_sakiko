@@ -192,6 +192,10 @@ class Message:
     performance: PerformanceSelection | None = None
     # 原样保留视觉编排；校验只作用于编辑/播放投影，不修写旧存档。
     performance_timeline: object = None
+    # 小剧场本句开始前的舞台变化；缺省沿用前句，不自动迁移旧消息。
+    scene_before: object = None
+    # 静音只影响本句语音和口型，保留音频路径及其原有时长。
+    muted: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Message":
@@ -221,6 +225,8 @@ class Message:
             worldbook_snapshot=worldbook_snapshot,
             performance=PerformanceSelection.from_value(data.get("performance")),
             performance_timeline=copy.deepcopy(data.get("performance_timeline")),
+            scene_before=copy.deepcopy(data.get("scene_before")),
+            muted=data.get("muted") is True,
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -241,6 +247,10 @@ class Message:
             data["performance"] = self.performance.as_dict()
         if self.performance_timeline is not None:
             data["performance_timeline"] = copy.deepcopy(self.performance_timeline)
+        if self.scene_before is not None:
+            data["scene_before"] = copy.deepcopy(self.scene_before)
+        if self.muted:
+            data["muted"] = True
         return data
 
     @property

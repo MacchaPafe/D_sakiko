@@ -7,28 +7,49 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QObject, QMimeData, QPointF, QRectF, QTimer, QSize, pyqtSignal
-from PyQt5.QtGui import QColor, QDrag, QFont, QIcon, QPainter, QPainterPath, QPixmap
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QTabBar,
+from PyQt5.QtCore import Qt, QObject, QMimeData, QPoint, QTimer, QSize, pyqtSignal
+from PyQt5.QtGui import QColor, QDrag, QFont, QIcon, QImageReader
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedLayout, QFrame, QLabel, QTabBar,
                              QLineEdit, QPlainTextEdit, QListWidget, QListWidgetItem, QListView, QPushButton,
-                             QMessageBox, QDoubleSpinBox, QSlider, QApplication, QStyle, QSizePolicy)
+                             QMessageBox, QDoubleSpinBox, QSlider, QApplication, QStyle, QSizePolicy,
+                             QCheckBox, QFileDialog, QMenu, QToolButton, QToolTip, QDialog)
 
+from chat.chat import Message
 from performance_types import trim_timeline, sort_timeline_events, timeline_tracks, valid_timeline_events
 from live2d_support.multi_char_resources import TheaterResources, audio_span, assign_colors
-from ui.components.multi_char_timeline import MultiCharTimeline, MIME
+from live2d_support.multi_char_scene import (
+    SceneTiming, background_root, background_path, resolve_scene, transition_from_total,
+)
+from ui.components.multi_char_insert_dialog import MultiCharInsertDialog
+from ui.components.multi_char_icons import multi_char_icon, set_button_icon
+from ui.components.multi_char_timeline import MultiCharTimeline, MIME, _character_pill_color
 from ui.components.multi_char_windows import MultiCharWindowLayout
 from ui_constants import char_info_json
 
 
 def character_badge_color(name):
-    """将角色代表色调整为适合搭配白字的柔彩胶囊底色，呼应舞台对话框铭牌。"""
-    raw = QColor(char_info_json.get(name, {}).get("theme_color", "#F06292"))
-    if not raw.isValid():
-        raw = QColor("#F06292")
-    h, s, l, _ = raw.getHsl()
-    if h < 0:
-        return QColor.fromHsl(-1, 0, 115)
-    return QColor.fromHsl(h, min(200, max(135, s)), min(142, max(108, l)))
+    """让说话人标签与出场胶囊、轨道头使用同一角色配置原色。"""
+    return _character_pill_color(name)
+
+
+def character_badge_text_color(background):
+    """根据背景亮度选择深色或白色文字，不为适配文字改动主题色。"""
+    brightness = background.red() * 0.299 + background.green() * 0.587 + background.blue() * 0.114
+    return "#334155" if brightness >= 145 else "#FFFFFF"
+
+
+class SceneSummaryLabel(QLabel):
+    """单行场景摘要按可用宽度省略，悬浮时显示完整内容。"""
+
+    def set_summary(self, text):
+        """同时更新完整提示与当前宽度下的摘要。"""
+        self.setToolTip(text)
+        self.setText(self.fontMetrics().elidedText(text, Qt.ElideRight, self.width()))
+
+    def resizeEvent(self, event):
+        """窗口宽度变化时重新省略摘要，不增加卡片高度。"""
+        super().resizeEvent(event)
+        self.set_summary(self.toolTip())
 
 
 class ResourceList(QListWidget):
@@ -55,11 +76,24 @@ class ResourceList(QListWidget):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setSpacing(0)
         self.itemClicked.connect(self.preview)
+        self.drag_hint = QLabel("可拖入下方轨道编排演出", self.viewport())
+        self.drag_hint.setObjectName("multiCharHint")
+        self.drag_hint.setAlignment(Qt.AlignCenter)
+        self.drag_hint.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.drag_hint.hide()
 
     def resizeEvent(self, event):
         """合并视口尺寸变化，在本轮 Qt 布局结束后更新两列。"""
         super().resizeEvent(event)
         self.column_timer.start(0)
+        self.position_drag_hint()
+
+    def position_drag_hint(self):
+        """将提示叠在视口底边，不占资源行且不截获拖放鼠标事件。"""
+        height = self.drag_hint.sizeHint().height()
+        viewport = self.viewport()
+        self.drag_hint.setGeometry(0, max(0, viewport.height() - height), viewport.width(), height)
+        self.drag_hint.raise_()
 
     def update_columns(self):
         """始终预留右侧滚动条宽度，消除显隐引起的两列布局反馈循环。"""
@@ -127,6 +161,12 @@ class EditorWindow(QWidget):
         style = style.replace("@SMALL_PX@", str(round(font_pixels * 0.85)))
         style = style.replace("@PAD_Y@", str(round(font_pixels * 0.25)))
         style = style.replace("@PAD_X@", str(round(font_pixels * 0.6)))
+        for index, name in enumerate(session.names):
+            color = _character_pill_color(name)
+            style = style.replace(f"@ROLE_{index}_COLOR@", color.name())
+            style = style.replace(f"@ROLE_{index}_TEXT@", character_badge_text_color(color))
+        check_icon = Path(__file__).parents[2] / "icons" / "multi_char_check.svg"
+        style = style.replace("@CHECK_ICON@", check_icon.as_posix())
         self.setStyleSheet(session.owner.styleSheet() + "\n" + style)
 
     def closeEvent(self, event):
@@ -176,6 +216,7 @@ class MultiCharEditor(QObject):
         self.closed = False
         self.closing = False
         self.playing = False
+        self.transition_playing = False
         self.can_resume = False
         self.position = 0
         self.seek_resume = None
@@ -190,7 +231,8 @@ class MultiCharEditor(QObject):
         self.build_timeline()
         for window in (self.resource_window, self.timeline_window):
             for button in window.findChildren(QPushButton):
-                button.setObjectName("multiCharSave" if button.text() == "保存" else "multiCharControl")
+                if not button.objectName():
+                    button.setObjectName("multiCharSave" if button.text() == "保存" else "multiCharControl")
                 button.style().unpolish(button)
                 button.style().polish(button)
         self.layout = MultiCharWindowLayout(owner, self.resource_window, self.timeline_window, self.send)
@@ -209,14 +251,7 @@ class MultiCharEditor(QObject):
     def initialize_message(self, message):
         """校验目标消息并持久初始化首次编排，失败时保留原消息。"""
         if message.performance_timeline is None:
-            timeline = {"characters": {name: {"motions": [], "expressions": []} for name in self.names}}
-            if message.character_name in self.resources:
-                performance = message.performance.as_dict() if message.performance else None
-                timeline["characters"][message.character_name] = self.resources[message.character_name].defaults(
-                    performance, message.emotion.as_string(),
-                )
-            assign_colors(timeline, self.palette)
-            message.performance_timeline = timeline
+            message.performance_timeline = self.initial_timeline(message)
             if not self.owner._save_chat():
                 message.performance_timeline = None
                 raise RuntimeError("时间轴初始化未能保存")
@@ -232,28 +267,20 @@ class MultiCharEditor(QObject):
             ):
                 raise ValueError(f"{name} 的轨道格式损坏；已保留原数据。")
 
+    def initial_timeline(self, message):
+        """沿用原自动演出生成首次双人轨道，无角色消息从空轨道开始。"""
+        timeline = {"characters": {name: {"motions": [], "expressions": []} for name in self.names}}
+        if message.character_name in self.resources:
+            performance = message.performance.as_dict() if message.performance else None
+            timeline["characters"][message.character_name] = self.resources[message.character_name].defaults(
+                performance, message.emotion.as_string(),
+            )
+        assign_colors(timeline, self.palette)
+        return timeline
+
     def _transport_icon(self, kind):
-        """绘制圆润抗锯齿矢量播放与停止图标，契合浅色卡片风格。"""
-        pixmap = QPixmap(32, 32)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#5A7FE7" if kind == "pause" else "#415882"))
-        if kind == "play":
-            path = QPainterPath()
-            path.moveTo(QPointF(9, 6))
-            path.lineTo(QPointF(25, 16))
-            path.lineTo(QPointF(9, 26))
-            path.closeSubpath()
-            painter.drawPath(path)
-        elif kind == "pause":
-            painter.drawRoundedRect(QRectF(8, 6, 5.5, 20), 2.5, 2.5)
-            painter.drawRoundedRect(QRectF(18.5, 6, 5.5, 20), 2.5, 2.5)
-        else:
-            painter.drawRoundedRect(QRectF(8, 8, 16, 16), 3.5, 3.5)
-        painter.end()
-        return QIcon(pixmap)
+        """复用主题蓝 SVG 图标表示播放、暂停和停止状态。"""
+        return multi_char_icon(kind)
 
     def message_index(self):
         """按对象身份定位当前句，避免内容相同的消息被误认为同一句。"""
@@ -265,16 +292,13 @@ class MultiCharEditor(QObject):
         index = self.message_index()
         self.previous.setEnabled(not self.audio_busy and index > 0)
         self.next.setEnabled(not self.audio_busy and 0 <= index < len(self.chat.message_list) - 1)
+        self.add_message_button.setEnabled(not self.audio_busy and index >= 0)
+        self.message_count.setText(f"{index + 1 if index >= 0 else 0}/{len(self.chat.message_list)}")
 
-    def switch_message(self, step):
-        """处理当前草稿后原位切句，更新音频与四轨并隔离旧预览回执。"""
+    def resolve_message_drafts(self):
+        """切句或插句前处理文本与时间轴草稿，取消时留在原句。"""
         if self.audio_busy or not self.resolve_text_draft():
-            return
-        index = self.message_index()
-        target_index = index + step
-        if index < 0 or not 0 <= target_index < len(self.chat.message_list):
-            self.update_navigation()
-            return
+            return False
         self.prepare_edit()
         if self.draft != self.baseline:
             dialog = QMessageBox(self.resource_window)
@@ -287,10 +311,23 @@ class MultiCharEditor(QObject):
             chosen = dialog.clickedButton()
             if chosen is save:
                 if not self.save_current():
-                    return
+                    return False
             elif chosen is not discard:
-                return
-        target = self.chat.message_list[target_index]
+                return False
+        return True
+
+    def switch_message(self, step):
+        """处理当前草稿后原位切句，更新音频与四轨并隔离旧预览回执。"""
+        index = self.message_index()
+        target_index = index + step
+        if index < 0 or not 0 <= target_index < len(self.chat.message_list):
+            self.update_navigation()
+            return
+        if self.resolve_message_drafts():
+            self.show_message(self.chat.message_list[target_index])
+
+    def show_message(self, target):
+        """在现有两个窗口中切换已确认的消息，保持同一舞台编辑会话。"""
         try:
             self.initialize_message(target)
         except (OSError, ValueError, RuntimeError) as error:
@@ -307,6 +344,7 @@ class MultiCharEditor(QObject):
         self.sequence = 0
         self.position = 0
         self.playing = False
+        self.transition_playing = False
         self.can_resume = False
         self.seek_resume = None
         self.select_event(None)
@@ -319,17 +357,8 @@ class MultiCharEditor(QObject):
         self.time_input.setRange(0, max(0, (self.span.duration_ms - 1) / 1000))
         self.time_input.setValue(0)
         self.status.clear()
-        self.speaker_label.setText(target.character_name)
-        badge = character_badge_color(target.character_name)
-        self.speaker_label.setStyleSheet(
-            f"background-color: {badge.name()}; color: #FFFFFF;"
-            "border-radius: 8px; padding: 2px 12px; font-weight: bold;"
-        )
-        text = f"<div style='color:#243046;'>{html.escape(target.text or '')}</div>"
-        if target.translation:
-            text += f"<div style='color:#6B7C96;'>{html.escape(target.translation)}</div>"
-        self.dialogue_label.setText(text)
         self.show_saved_text()
+        self.sync_scene_controls()
         self.update_navigation()
         self.read_waveform()
         self.view.rebuild()
@@ -339,6 +368,44 @@ class MultiCharEditor(QObject):
         if self.span.missing:
             self.status.setText("音频缺失/损坏：临时无声预览，保留所有原编排。")
         self.send("enter")
+
+    def show_insert_menu(self):
+        """在添加按钮旁选择插入位置，不增加常驻的两组按钮。"""
+        if self.audio_busy:
+            return
+        menu = QMenu(self.resource_window)
+        menu.setObjectName("multiCharInsertMenu")
+        above = menu.addAction("本句之前")
+        below = menu.addAction("本句之后")
+        anchor = self.add_message_button.mapToGlobal(QPoint(0, self.add_message_button.height()))
+        chosen = menu.exec_(anchor)
+        if chosen is above or chosen is below:
+            self.insert_message(after=chosen is below)
+
+    def insert_message(self, after):
+        """确认草稿和表单后插入普通消息，保存成功才切到新台词。"""
+        if self.audio_busy or self.message_index() < 0 or not self.resolve_message_drafts():
+            return
+        dialog = MultiCharInsertDialog(self.names, self.message.character_name, self.resource_window)
+        try:
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            data = dialog.message_data()
+        finally:
+            dialog.deleteLater()
+        if not data["text"].strip():
+            return
+        index = self.message_index() + (1 if after else 0)
+        target = Message.from_dict(data)
+        # 新句沿用首次编排的初始化规则，场景保持缺省，从前句自然继承。
+        target.performance_timeline = self.initial_timeline(target)
+        self.chat.message_list.insert(index, target)
+        if not self.owner._save_chat():
+            self.chat.message_list.pop(index)
+            return
+        self.owner.refresh_chat_display()
+        self.owner.refresh_chat_list()
+        self.show_message(target)
 
     def build_resources(self):
         """搭建紧凑资源窗口，省去逐行预览/插入/替换按钮。"""
@@ -356,12 +423,41 @@ class MultiCharEditor(QObject):
         self.speaker_label = title
         title.setObjectName("multiCharSpeaker")
         title.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        title.setVisible(bool(self.message.character_name))
         badge_bg = character_badge_color(self.message.character_name)
         title.setStyleSheet(
-            f"background-color: {badge_bg.name()}; color: #FFFFFF;"
+            f"background-color: {badge_bg.name()}; color: {character_badge_text_color(badge_bg)};"
             "border-radius: 8px; padding: 2px 12px; font-weight: bold;"
         )
-        card_layout.addWidget(title)
+        header = QHBoxLayout()
+        header.addWidget(title)
+        header.addStretch(1)
+        self.previous = QToolButton()
+        self.next = QToolButton()
+        self.add_message_button = QToolButton()
+        navigation = (
+            (self.previous, "previous", "上一句", lambda: self.switch_message(-1)),
+            (self.next, "next", "下一句", lambda: self.switch_message(1)),
+            (self.add_message_button, "add", "添加台词", self.show_insert_menu),
+        )
+        for button, icon, description, callback in navigation:
+            button.setObjectName("multiCharNavigation")
+            button.setToolTip(description)
+            button.setAccessibleName(description)
+            button.setCursor(Qt.PointingHandCursor)
+            set_button_icon(button, icon, self.resource_window)
+            button.clicked.connect(callback)
+        self.add_message_button.setText("添加台词")
+        self.add_message_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.message_count = QLabel()
+        self.message_count.setObjectName("multiCharMessageCount")
+        self.message_count.setAlignment(Qt.AlignCenter)
+        self.message_count.setAccessibleName("当前台词位置")
+        header.addWidget(self.previous)
+        header.addWidget(self.message_count)
+        header.addWidget(self.next)
+        header.addWidget(self.add_message_button)
+        card_layout.addLayout(header)
         text_html = f"<div style='color:#243046; line-height:1.25;'>{html.escape(self.message.text or '')}</div>"
         if self.message.translation:
             text_html += (
@@ -384,27 +480,45 @@ class MultiCharEditor(QObject):
             field.setFixedHeight(round(self.resource_window.font().pixelSize() * 3.8))
             card_layout.addWidget(field)
             field.hide()
-        text_actions = QHBoxLayout()
-        self.previous = QPushButton("上一句")
-        self.previous.clicked.connect(lambda: self.switch_message(-1))
-        text_actions.addWidget(self.previous)
-        self.next = QPushButton("下一句")
-        self.next.clicked.connect(lambda: self.switch_message(1))
-        text_actions.addWidget(self.next)
-        text_actions.addStretch(1)
+        self.text_edit_actions = QWidget()
+        self.text_edit_actions.setObjectName("multiCharTextEditActions")
+        self.text_edit_layout = QHBoxLayout(self.text_edit_actions)
+        self.text_edit_layout.setContentsMargins(0, 0, 0, 0)
         self.discard_text_button = QPushButton("放弃编辑")
+        self.discard_text_button.setObjectName("multiCharControl")
+        set_button_icon(self.discard_text_button, "discard", self.resource_window)
         self.discard_text_button.setProperty("discardAction", True)
         self.discard_text_button.clicked.connect(self.discard_text_edit)
-        text_actions.addWidget(self.discard_text_button)
+        self.text_edit_layout.addWidget(self.discard_text_button)
+        self.text_edit_layout.addStretch(1)
         self.discard_text_button.hide()
+        card_layout.addWidget(self.text_edit_actions)
+        self.text_edit_actions.hide()
+        self.text_actions = QHBoxLayout()
         self.text_button = QPushButton("编辑文本")
+        self.text_button.setObjectName("multiCharTextAction")
+        set_button_icon(self.text_button, "edit", self.resource_window)
         self.text_button.clicked.connect(self.toggle_text_edit)
-        text_actions.addWidget(self.text_button)
+        self.text_actions.addWidget(self.text_button)
         self.regenerate_button = QPushButton("重新生成音频")
+        self.regenerate_button.setObjectName("multiCharTextAction")
+        set_button_icon(self.regenerate_button, "audio", self.resource_window)
+        self.regenerate_button.setEnabled(bool(self.message.character_name))
         self.regenerate_button.clicked.connect(self.regenerate_audio)
-        text_actions.addWidget(self.regenerate_button)
-        card_layout.addLayout(text_actions)
+        self.text_actions.addWidget(self.regenerate_button)
+        self.muted_check = QToolButton()
+        self.muted_check.setText("本句静音")
+        self.muted_check.setObjectName("multiCharMuteAction")
+        self.muted_check.setCheckable(True)
+        self.muted_check.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.muted_check.setToolTip("仅静音本句，保留原音频和时长")
+        set_button_icon(self.muted_check, "mute", self.resource_window)
+        self.muted_check.toggled.connect(self.change_mute)
+        self.text_actions.addWidget(self.muted_check)
+        self.text_actions.addStretch(1)
+        card_layout.addLayout(self.text_actions)
         root.addWidget(card)
+        root.addWidget(self.build_scene_settings())
         self.characters = QTabBar()
         self.characters.setObjectName("multiCharCharacters")
         self.characters.setDrawBase(False)
@@ -426,44 +540,353 @@ class MultiCharEditor(QObject):
         self.search.setObjectName("multiCharSearch")
         self.search.setPlaceholderText("搜索名称、文件名、描述")
         self.search.setClearButtonEnabled(True)
+        self.search.addAction(multi_char_icon("search"), QLineEdit.LeadingPosition)
         bar.addWidget(self.search, 1)
+        self.refresh_button = QToolButton()
+        self.refresh_button.setObjectName("multiCharRefresh")
+        self.refresh_button.setToolTip("刷新资源")
+        self.refresh_button.setAccessibleName("刷新资源")
+        icon_path = Path(__file__).parents[2] / "icons" / "refresh.svg"
+        self.refresh_button.setIcon(QIcon(str(icon_path)))
+        icon_size = round(self.resource_window.font().pixelSize() * 1.15)
+        self.refresh_button.setIconSize(QSize(icon_size, icon_size))
+        self.refresh_button.clicked.connect(self.reload_resources)
+        bar.addWidget(self.refresh_button)
+        self.custom = QToolButton()
+        self.custom.setObjectName("multiCharCustomExpression")
+        self.custom.setToolTip("自定义表情")
+        self.custom.setAccessibleName("自定义表情")
+        set_button_icon(self.custom, "add", self.resource_window)
+        self.custom.clicked.connect(self.custom_expression)
+        bar.addWidget(self.custom)
         root.addLayout(bar)
         self.list = ResourceList(self)
         self.list.setObjectName("multiCharResourceList")
         root.addWidget(self.list, 1)
-        footer = QHBoxLayout()
-        footer.addStretch(1)
-        self.custom = QPushButton("自定义表情…")
-        self.custom.clicked.connect(self.custom_expression)
-        footer.addWidget(self.custom)
-        refresh = QPushButton("刷新")
-        refresh.clicked.connect(self.reload_resources)
-        footer.addWidget(refresh)
-        root.addLayout(footer)
-        self.drag_hint = QLabel("可拖入下方轨道编排演出")
-        self.drag_hint.setObjectName("multiCharHint")
-        self.drag_hint.setAlignment(Qt.AlignCenter)
-        policy = self.drag_hint.sizePolicy()
-        policy.setRetainSizeWhenHidden(True)
-        self.drag_hint.setSizePolicy(policy)
-        root.addWidget(self.drag_hint)
-        self.drag_hint.hide()
+        self.drag_hint = self.list.drag_hint
         self.update_navigation()
         self.characters.currentChanged.connect(self.refresh_resources)
         self.types.currentChanged.connect(self.refresh_resources)
         self.search.textChanged.connect(self.refresh_resources)
 
+    def build_scene_settings(self):
+        """建立默认折叠的场景卡；展开后三行控件按固定标签列对齐。"""
+        card = QFrame()
+        card.setObjectName("multiCharSceneCard")
+        root = QVBoxLayout(card)
+        pad = round(self.resource_window.font().pixelSize() * 0.35)
+        root.setContentsMargins(pad, pad, pad, pad)
+        root.setSpacing(pad)
+        header = QHBoxLayout()
+        self.scene_toggle = QToolButton()
+        self.scene_toggle.setObjectName("multiCharSceneToggle")
+        self.scene_toggle.setText("场景配置")
+        self.scene_toggle.setCheckable(True)
+        self.scene_toggle.setArrowType(Qt.RightArrow)
+        self.scene_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.scene_toggle.setToolTip("展开本句场景设置")
+        self.scene_toggle.toggled.connect(self.toggle_scene_details)
+        header.addWidget(self.scene_toggle, 0, Qt.AlignLeft)
+        self.scene_summary = SceneSummaryLabel()
+        self.scene_summary.setObjectName("multiCharSceneSummary")
+        self.scene_summary.setTextFormat(Qt.PlainText)
+        self.scene_summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        header.addWidget(self.scene_summary, 1)
+        root.addLayout(header)
+        self.scene_body = QWidget()
+        self.scene_body.setObjectName("multiCharSceneBody")
+        grid = QGridLayout(self.scene_body)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(pad * 2)
+        grid.setVerticalSpacing(pad)
+        grid.setColumnStretch(1, 1)
+        for row, (text, icon) in enumerate((
+                ("出场角色", "actors"), ("切换背景", "background"), ("句前转场", "transition"))):
+            label_row = QHBoxLayout()
+            image = QLabel()
+            image.setObjectName("multiCharSceneIcon")
+            icon_size = round(self.resource_window.fontMetrics().height() * 0.85)
+            image.setPixmap(multi_char_icon(icon).pixmap(icon_size, icon_size))
+            label = QLabel(text)
+            label.setObjectName("multiCharSceneLabel")
+            label_row.addWidget(image)
+            label_row.addWidget(label)
+            label_row.addStretch(1)
+            grid.addLayout(label_row, row, 0)
+        visible_row = QHBoxLayout()
+        visible_row.setSpacing(pad)
+        self.visible_checks = {}
+        for index, name in enumerate(self.names):
+            check = QPushButton(name)
+            check.setObjectName("multiCharVisiblePill")
+            check.setProperty("characterSlot", str(index))
+            check.setCheckable(True)
+            check.setCursor(Qt.PointingHandCursor)
+            check.toggled.connect(self.change_visible_characters)
+            self.visible_checks[name] = check
+            visible_row.addWidget(check)
+        self.visibility_help = QToolButton()
+        self.visibility_help.setObjectName("multiCharVisibilityHelp")
+        self.visibility_help.setAccessibleName("出场角色沿用规则")
+        self.visibility_help.setAutoRaise(True)
+        help_icon = Path(__file__).parents[2] / "icons" / "multi_char_help.svg"
+        self.visibility_help.setIcon(QIcon(str(help_icon)))
+        icon_size = round(self.resource_window.font().pixelSize() * 1.15)
+        self.visibility_help.setIconSize(QSize(icon_size, icon_size))
+        self.visibility_help.setToolTip(
+            "本句的出场角色设置会延续到后面的所有台词，直到后面的某句再次设置。\n"
+            "但本句之前的台词不会受影响。"
+        )
+        self.visibility_help.clicked.connect(self.show_visibility_help)
+        visible_row.addWidget(self.visibility_help)
+        visible_row.addStretch(1)
+        grid.addLayout(visible_row, 0, 1)
+
+        background_row = QHBoxLayout()
+        background_row.setSpacing(pad * 2)
+        self.background_check = QCheckBox("选择图片")
+        self.background_check.setObjectName("multiCharBackground")
+        self.background_check.toggled.connect(self.change_background_enabled)
+        background_row.addWidget(self.background_check)
+        self.background_file = QToolButton()
+        set_button_icon(self.background_file, "background", self.resource_window)
+        self.background_file.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.background_file.setObjectName("multiCharBackgroundFile")
+        self.background_file.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.background_file.setToolTip("重新选择背景图片")
+        self.background_file.clicked.connect(self.choose_background)
+        background_row.addWidget(self.background_file, 1)
+        grid.addLayout(background_row, 1, 1)
+
+        transition_row = QHBoxLayout()
+        transition_row.setSpacing(pad * 2)
+        self.black_check = QCheckBox("黑场过渡")
+        self.black_check.setObjectName("multiCharBlack")
+        self.black_check.toggled.connect(self.change_black_enabled)
+        transition_row.addWidget(self.black_check)
+        self.black_duration = QSlider(Qt.Horizontal)
+        self.black_duration.setObjectName("multiCharBlackDuration")
+        self.black_duration.setRange(500, 4000)
+        self.black_duration.setSingleStep(100)
+        self.black_duration.setPageStep(500)
+        self.black_duration.setValue(2000)
+        self.black_duration.setFixedWidth(round(self.resource_window.font().pixelSize() * 9))
+        self.black_duration.setToolTip("黑场总时长，包含淡出、全黑和淡入")
+        self.black_duration.valueChanged.connect(self.update_black_duration_label)
+        self.black_duration.sliderReleased.connect(self.commit_black_duration)
+        transition_row.addWidget(self.black_duration)
+        self.black_duration_label = QLabel("2.0 秒")
+        self.black_duration_label.setObjectName("multiCharBlackDurationLabel")
+        self.black_duration_label.setMinimumWidth(round(self.resource_window.font().pixelSize() * 3.5))
+        transition_row.addWidget(self.black_duration_label)
+        transition_row.addStretch(1)
+        self.transition_preview = QToolButton()
+        self.transition_preview.setObjectName("multiCharTransitionPreview")
+        self.transition_preview.setText("预览")
+        self.transition_preview.setToolTip("预览整体效果")
+        set_button_icon(self.transition_preview, "play", self.resource_window)
+        self.transition_preview.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.transition_preview.clicked.connect(self.preview_transition)
+        transition_row.addWidget(self.transition_preview)
+        grid.addLayout(transition_row, 2, 1)
+        root.addWidget(self.scene_body)
+        self.scene_body.hide()
+        self.sync_scene_controls()
+        return card
+
+    def toggle_scene_details(self, expanded):
+        """切换场景卡详细控件与摘要，不修改数据或打断正在进行的预览。"""
+        self.scene_body.setVisible(expanded)
+        self.scene_summary.setVisible(not expanded)
+        self.scene_toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.scene_toggle.setToolTip("折叠本句场景设置" if expanded else "展开本句场景设置")
+
+    def show_visibility_help(self):
+        """点击问号时主动弹出与悬浮相同的出场角色沿用说明。"""
+        button = self.visibility_help
+        position = button.mapToGlobal(QPoint(0, button.height() + 4))
+        QToolTip.showText(position, button.toolTip(), button)
+
+    def sync_scene_controls(self):
+        """只投影当前句的覆盖配置和继承后的上场状态，不自动补写字段。"""
+        scene = self.message.scene_before if isinstance(self.message.scene_before, dict) else {}
+        effective = resolve_scene(self.chat.message_list, self.message_index(), self.names)
+        for name, check in self.visible_checks.items():
+            check.blockSignals(True)
+            check.setChecked(name in effective["visible_characters"])
+            check.blockSignals(False)
+        self.muted_check.blockSignals(True)
+        self.muted_check.setChecked(self.message.muted)
+        self.muted_check.blockSignals(False)
+        filename = scene.get("background", "")
+        self.background_check.blockSignals(True)
+        self.background_check.setChecked(bool(filename))
+        self.background_check.blockSignals(False)
+        self.background_file.setText(filename)
+        self.background_file.setToolTip(f"重新选择背景图片\n{filename}" if filename else "重新选择背景图片")
+        self.background_file.setVisible(bool(filename))
+        transition = scene.get("transition")
+        transition = transition if isinstance(transition, dict) else {}
+        enabled = transition.get("type") == "black"
+        first = self.message_index() == 0
+        self.black_check.blockSignals(True)
+        self.black_check.setChecked(enabled)
+        self.black_check.setEnabled(not first)
+        self.black_check.setToolTip("首句不能添加黑场过渡" if first else "")
+        self.black_check.blockSignals(False)
+        self.black_duration.blockSignals(True)
+        duration = SceneTiming.from_scene(scene).duration_ms
+        self.black_duration.setValue(duration if enabled else 2000)
+        self.black_duration.setVisible(enabled)
+        self.black_duration.setEnabled(enabled and not first)
+        self.black_duration.blockSignals(False)
+        self.black_duration_label.setText(f"{self.black_duration.value() / 1000:.1f} 秒")
+        self.black_duration_label.setVisible(enabled)
+        self.black_duration_label.setEnabled(enabled and not first)
+        self.transition_preview.setEnabled(not first and self.stage_available)
+        self.regenerate_button.setEnabled(not self.audio_busy and bool(self.message.character_name))
+        self.regenerate_button.setToolTip("本句是无角色消息，未指定语音角色" if not self.message.character_name else "")
+        visible_names = "、".join(effective["visible_characters"]) or "无"
+        background = filename or "沿用"
+        black = f"黑场 {duration / 1000:.1f}s" if enabled and not first else "无"
+        if first and enabled:
+            black = "首句不可用"
+        self.scene_summary.set_summary(f"出场：{visible_names} ｜ 背景图片：{background} ｜ 转场：{black}")
+
+    def save_scene_value(self, key, value):
+        """立即保存单项场景覆盖，失败回滚该次写入，不触碰时间轴草稿。"""
+        old = self.message.scene_before
+        scene = deepcopy(old) if isinstance(old, dict) else {}
+        if value is None:
+            scene.pop(key, None)
+        else:
+            scene[key] = value
+        self.message.scene_before = scene or None
+        if not self.owner._save_chat():
+            self.message.scene_before = old
+            self.sync_scene_controls()
+            return False
+        self.sync_scene_controls()
+        self.owner.refresh_chat_display()
+        self.apply_scene_preview()
+        return True
+
+    def apply_scene_preview(self):
+        """取消正在进行的预览并显示新目标场景，保留游标且不自动续播。"""
+        self.playing = False
+        self.transition_playing = False
+        self.can_resume = False
+        self.seek_resume = None
+        self.send("scene", position=self.position)
+        self.update_clock()
+
+    def change_visible_characters(self, *_):
+        """保存明确的上场名单，全部取消时保留空数组表示零人。"""
+        names = [name for name, check in self.visible_checks.items() if check.isChecked()]
+        self.save_scene_value("visible_characters", names)
+
+    def change_mute(self, checked):
+        """立即切换本句静音，保留原音频和时间轴并取消当前预览。"""
+        old = self.message.muted
+        self.message.muted = checked
+        if not self.owner._save_chat():
+            self.message.muted = old
+            self.sync_scene_controls()
+            return
+        self.owner.refresh_chat_display()
+        self.apply_scene_preview()
+
+    def change_background_enabled(self, checked):
+        """勾选时打开系统选择器，取消勾选恢复继承背景。"""
+        if checked:
+            self.choose_background()
+        else:
+            self.save_scene_value("background", None)
+
+    def choose_background(self):
+        """校验根目录、图片类型与解码结果，只持久保存背景文件名。"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self.resource_window, "选择背景图片", str(background_root()), "背景图片 (*.png *.jpg)",
+        )
+        if not filename:
+            self.sync_scene_controls()
+            return
+        try:
+            selected = Path(filename).resolve()
+            if selected.parent != background_root().resolve():
+                raise ValueError("请选择 live2d_related 根目录内的 PNG/JPG 图片。")
+            path = background_path(selected.name)
+            if QImageReader(str(path)).read().isNull():
+                raise ValueError("图片无法读取，请选择有效的 PNG/JPG 图片。")
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self.resource_window, "背景图片不可用", str(error))
+            self.sync_scene_controls()
+            return
+        self.save_scene_value("background", selected.name)
+
+    def change_black_enabled(self, checked):
+        """仅配置句前黑场，不因勾选而自动演示过渡。"""
+        if self.message_index() == 0:
+            return
+        value = transition_from_total(self.black_duration.value()) if checked else None
+        self.save_scene_value("transition", value)
+
+    def update_black_duration_label(self, milliseconds):
+        """拖动时仅实时更新秒数；键盘和滑轨点击完成一次调整后保存。"""
+        self.black_duration_label.setText(f"{milliseconds / 1000:.1f} 秒")
+        if not self.black_duration.isSliderDown():
+            self.change_black_duration(milliseconds)
+
+    def commit_black_duration(self):
+        """拖动释放后一次提交黑场时长，避免拖动期间反复保存或停止预览。"""
+        self.change_black_duration(self.black_duration.value())
+
+    def change_black_duration(self, milliseconds):
+        """以 100ms 为步长保存三阶段总时长，相同数值不重复写盘。"""
+        if self.black_check.isChecked() and self.message_index() > 0:
+            milliseconds = round(milliseconds / 100) * 100
+            value = transition_from_total(milliseconds)
+            self.black_duration.blockSignals(True)
+            self.black_duration.setValue(milliseconds)
+            self.black_duration.blockSignals(False)
+            self.black_duration_label.setText(f"{milliseconds / 1000:.1f} 秒")
+            current = self.message.scene_before or {}
+            if current.get("transition") != value:
+                self.save_scene_value("transition", value)
+
+    def preview_transition(self):
+        """只演示上一句场景到本句的句前阶段，结束后不启动本句语音。"""
+        if self.audio_busy or not self.stage_available or self.message_index() <= 0:
+            return
+        self.playing = False
+        self.can_resume = False
+        self.transition_playing = True
+        self.send("transition", position=self.position)
+        self.update_clock()
+
     def show_saved_text(self):
         """恢复台词只读展示，不回滚已保存文本或时间轴草稿。"""
         self.text_editing = False
+        self.text_edit_layout.removeWidget(self.text_button)
+        self.text_actions.insertWidget(0, self.text_button)
         self.text_button.setText("编辑文本")
-        self.text_button.setObjectName("multiCharControl")
+        self.text_button.setIcon(multi_char_icon("edit"))
+        self.text_button.setObjectName("multiCharTextAction")
         self.text_button.style().unpolish(self.text_button)
         self.text_button.style().polish(self.text_button)
+        self.text_button.show()
         self.discard_text_button.hide()
+        self.text_edit_actions.hide()
         self.original_input.hide()
         self.translation_input.hide()
         self.dialogue_label.show()
+        self.speaker_label.setText(self.message.character_name)
+        self.speaker_label.setVisible(bool(self.message.character_name))
+        badge = character_badge_color(self.message.character_name)
+        self.speaker_label.setStyleSheet(
+            f"background-color: {badge.name()}; color: {character_badge_text_color(badge)};"
+            "border-radius: 8px; padding: 2px 12px; font-weight: bold;"
+        )
         text = f"<div style='color:#243046;'>{html.escape(self.message.text or '')}</div>"
         if self.message.translation:
             text += f"<div style='color:#6B7C96;'>{html.escape(self.message.translation)}</div>"
@@ -478,7 +901,7 @@ class MultiCharEditor(QObject):
         self.show_saved_text()
 
     def toggle_text_edit(self):
-        """同一按钮在编辑文本和保存文本之间切换。"""
+        """将编辑按钮移入输入框下方作为保存入口，退出编辑时移回操作行。"""
         if self.audio_busy:
             return
         if self.text_editing:
@@ -491,11 +914,16 @@ class MultiCharEditor(QObject):
         self.dialogue_label.hide()
         self.original_input.show()
         self.translation_input.show()
+        self.text_actions.removeWidget(self.text_button)
+        self.text_edit_layout.insertWidget(1, self.text_button)
         self.text_button.setText("保存文本")
+        self.text_button.setIcon(multi_char_icon("save_white"))
         self.text_button.setObjectName("multiCharSave")
         self.text_button.style().unpolish(self.text_button)
         self.text_button.style().polish(self.text_button)
         self.discard_text_button.show()
+        self.text_button.show()
+        self.text_edit_actions.show()
         self.original_input.setFocus()
 
     def save_text(self, ask_audio=True):
@@ -520,7 +948,7 @@ class MultiCharEditor(QObject):
         self.refresh_sentence_span()
         self.owner.refresh_chat_display()
         self.owner.refresh_chat_list()
-        if ask_audio and new_text != old_text:
+        if ask_audio and new_text != old_text and self.message.character_name:
             answer = QMessageBox.question(self.resource_window, "重新生成音频",
                                           "检测到原文修改，是否重新生成音频？",
                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -564,7 +992,7 @@ class MultiCharEditor(QObject):
         self.update_navigation()
         self.text_button.setEnabled(not busy)
         self.discard_text_button.setEnabled(not busy)
-        self.regenerate_button.setEnabled(not busy)
+        self.regenerate_button.setEnabled(not busy and bool(self.message.character_name))
         self.original_input.setEnabled(not busy)
         self.translation_input.setEnabled(not busy)
         self.timeline_window.setEnabled(not busy)
@@ -572,7 +1000,7 @@ class MultiCharEditor(QObject):
 
     def regenerate_audio(self):
         """保存或放弃文本草稿后，复用主控制台合成并立即持久更新音频。"""
-        if self.audio_busy or not self.resolve_text_draft(ask_audio=False):
+        if self.audio_busy or not self.message.character_name or not self.resolve_text_draft(ask_audio=False):
             return
         self.stop()
         self.set_audio_busy(True)
@@ -684,13 +1112,35 @@ class MultiCharEditor(QObject):
         zg_lay.addWidget(zoom)
         bar.addWidget(zoom_group)
 
-        bar.addWidget(self.status, 1)
+        # 复用底栏中央空白，拖动时替换状态提示，不挤动两端的播放与保存控件。
+        feedback = QWidget()
+        feedback_stack = QStackedLayout(feedback)
+        feedback_stack.setContentsMargins(0, 0, 0, 0)
+        feedback_stack.addWidget(self.status)
+        trash_page = QWidget()
+        trash_layout = QHBoxLayout(trash_page)
+        trash_layout.setContentsMargins(0, 0, 0, 0)
+        trash = QToolButton()
+        trash.setObjectName("multiCharTrash")
+        trash.setText("拖动至此删除")
+        trash.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        trash.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        trash.setFocusPolicy(Qt.NoFocus)
+        # 此控件只是投放提示，鼠标释放继续由时间轴处理，点击本身不执行删除。
+        trash.setAttribute(Qt.WA_TransparentForMouseEvents)
+        trash_layout.addWidget(trash)
+        feedback_stack.addWidget(trash_page)
+        self.view.trash_target = trash
+        self.view.dragging.connect(lambda active: feedback_stack.setCurrentIndex(int(active)))
+        bar.addWidget(feedback, 1)
         discard = QPushButton("放弃本次时间轴修改")
+        set_button_icon(discard, "discard", self.timeline_window)
         discard.setProperty("discardAction", True)
         self.discard_button = discard
         discard.clicked.connect(self.discard)
         bar.addWidget(discard)
         save = QPushButton("保存")
+        set_button_icon(save, "save_white", self.timeline_window)
         self.save_button = save
         save.clicked.connect(self.save)
         bar.addWidget(save)
@@ -702,6 +1152,13 @@ class MultiCharEditor(QObject):
 
     def send(self, action, **payload):
         """发送同一编辑会话的命令，避免旧窗口消息干扰新会话。"""
+        if action in ("enter", "play", "seek", "stop", "scene", "transition", "resource"):
+            payload["scene_context"] = {
+                "messages": [message.as_dict() for message in self.chat.message_list],
+                "index": self.message_index(),
+            }
+        if action in ("enter", "scene", "transition"):
+            payload["turn"] = self.turn()
         self.sequence += 1
         self.owner.to_live2d_change_character_queue.put(
             dict(payload, type="multi_char_preview", action=action, session=self.session_id, sequence=self.sequence)
@@ -722,14 +1179,21 @@ class MultiCharEditor(QObject):
             return
         if result.get("session") != self.session_id:
             return
+        if result.get("notice"):
+            self.status.setText(result["notice"])
+            return
         if result.get("error"):
             self.status.setText(result["error"])
             self.playing = False
             self.can_resume = False
+            self.transition_playing = False
             self.update_clock()
             return
         if result.get("type") == "multi_char_window":
             self.layout.bind(result.get("handle"), result.get("geometry"))
+        elif result.get("type") == "multi_char_transition":
+            if result.get("sequence", self.sequence) == self.sequence:
+                self.transition_playing = bool(result.get("playing"))
         elif self.seek_resume is None and result.get("sequence", self.sequence) == self.sequence:
             self.position = min(self.span.duration_ms, max(0, int(result.get("position", 0))))
             self.playing = bool(result.get("playing"))
@@ -743,6 +1207,7 @@ class MultiCharEditor(QObject):
         resources = self.resources[name]
         self.types.setTabEnabled(1, resources.version == "v3")
         kind = "motions" if self.types.currentIndex() == 0 else "expressions"
+        self.custom.setVisible(resources.version == "v3" and kind == "expressions")
         self.custom.setEnabled(self.stage_available and resources.version == "v3" and kind == "expressions")
         term = self.search.text().strip().casefold()
         self.list.clear()
@@ -764,24 +1229,37 @@ class MultiCharEditor(QObject):
             self.view.rebuild()
 
     def reload_resources(self):
-        """保存表情或手动刷新后重新解析资源及失效标志。"""
-        self.stop()
-        for name, old in list(self.resources.items()):
-            self.resources[name] = TheaterResources(str(old.path) if old.path else "", old.direction)
-        self.send("refresh")
+        """仅重读当前角色资源，保留预览、游标、筛选和可恢复的列表选中项。"""
+        name = self.names[self.characters.currentIndex()]
+        old = self.resources[name]
+        current = self.list.currentItem()
+        selected = current.data(Qt.UserRole) if current else None
+        scroll = self.list.verticalScrollBar().value()
+        self.resources[name] = TheaterResources(str(old.path) if old.path else "", old.direction)
+        self.send("refresh", character=name)
         self.refresh_resources()
-        self.view.rebuild()
+        for index in range(self.list.count()):
+            item = self.list.item(index)
+            if item.data(Qt.UserRole) == selected:
+                self.list.setCurrentItem(item)
+                break
+        self.list.verticalScrollBar().setValue(scroll)
+        self.show_validation()
 
     def preview_resource(self, payload):
         """清理整句预览，独占试播当前资源并保留游标。"""
         self.playing = False
+        self.transition_playing = False
         self.can_resume = False
         self.send("resource", position=self.position, **payload)
         self.update_clock()
 
     def prepare_edit(self):
         """修改前暂停并保留游标，修改后使用定位规则重新开始。"""
-        if self.playing:
+        if self.transition_playing:
+            self.send("scene", position=self.position)
+            self.transition_playing = False
+        elif self.playing:
             self.send("pause")
         self.playing = False
         self.can_resume = False
@@ -865,6 +1343,7 @@ class MultiCharEditor(QObject):
 
     def toggle_play(self):
         """普通暂停恢复保留模型进度，编辑/定位后的播放重建事件游标。"""
+        self.transition_playing = False
         if self.playing:
             self.send("pause")
             self.playing = False
@@ -885,6 +1364,7 @@ class MultiCharEditor(QObject):
         self.send("stop")
         self.position = 0
         self.playing = False
+        self.transition_playing = False
         self.can_resume = False
         self.update_clock()
 
@@ -943,6 +1423,7 @@ class MultiCharEditor(QObject):
         self.can_resume = False
         self.play.setEnabled(False)
         self.custom.setEnabled(False)
+        self.transition_preview.setEnabled(False)
         self.status.setText("Live2D 前台已关闭；编排仍可保存或放弃。")
         self.update_clock()
 

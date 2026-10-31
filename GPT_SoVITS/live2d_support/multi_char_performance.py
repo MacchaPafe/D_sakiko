@@ -8,6 +8,7 @@ from pathlib import Path
 
 from performance_types import timeline_tracks, valid_timeline_events
 from live2d_support.multi_char_resources import TheaterResources, audio_span
+from live2d_support.multi_char_resource_playback import RefreshedPlayback
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,9 @@ class MultiCharPerformance:
         self.sample_rate = 0
         self.pause_position = 0
         self.managed = set()
+        self.visible = lambda name: True
+        self.refreshed_names = set()
+        self.refreshed_playback = RefreshedPlayback()
 
     def bindings(self):
         """按角色名绑定模型，不把左右位置当作角色身份。"""
@@ -116,13 +120,13 @@ class MultiCharPerformance:
             model._restore_default_expression()
 
     def reset_all(self):
-        """停止双人演出并清理旧回调，定位与退出共用。"""
+        """停止双人演出并清理旧回调，新回放、定位与退出共用。"""
         for name in self.bindings():
             self.reset(name)
         self.cursor = None
 
     def begin(self, turn, preview=False, offset=0):
-        """开始本句事件调度，正式播放的音频由宿主启动。"""
+        """开始本句调度；正式播放的双空轨延续姿态，独立预览仍从默认状态开始。"""
         self.turn = turn
         self.span = audio_span(str(turn.get("audio_path") or ""), str(turn.get("text") or ""))
         self.offset = offset
@@ -138,12 +142,18 @@ class MultiCharPerformance:
             self.cursor = TimelineCursor(turn.get("performance_timeline"), self.span.duration_ms, offset)
         elif offset == 0:
             for name, tracks in timeline_tracks(turn.get("performance_timeline")).items():
-                self.reset(name, motion=tracks.get("motions") == [], expression=tracks.get("expressions") == [])
+                if tracks.get("motions") == [] and tracks.get("expressions") == []:
+                    # 整个角色未编排时只延续运行时状态，不回放或重建历史动作。
+                    continue
+                if self.visible(name):
+                    self.reset(name, motion=tracks.get("motions") == [], expression=tracks.get("expressions") == [])
         if not preview:
             self.tick()
 
     def event(self, name, kind, event):
         """精确播放有效引用；缺失资源跳过且不重置上句状态。"""
+        if not self.visible(name):
+            return
         model = self.bindings().get(name)
         resources = self.catalog(name)
         if model is None or resources is None:
@@ -160,11 +170,17 @@ class MultiCharPerformance:
             logger.warning("跳过失效编排资源 %s %s", name, resource)
             return
         if kind == "expressions":
-            if model.SetExpression(item["resource"]["logical_id"]):
+            if name in self.refreshed_names:
+                applied = self.play_refreshed(model, kind, resources, item)
+            else:
+                applied = model.SetExpression(item["resource"]["logical_id"])
+            if applied:
                 model.performance_expression_active = True
                 self.expression_set.add(name)
             return
-        if model.version == "v3":
+        if name in self.refreshed_names:
+            started = self.play_refreshed(model, kind, resources, item)
+        elif model.version == "v3":
             asset = resources.catalog.motion(item["resource"]["logical_id"], resources.direction)
             started = model._start_performance_motion(item["file"], asset.entry if asset else {}, None)
         else:
@@ -174,6 +190,22 @@ class MultiCharPerformance:
                 self.reset(name, motion=False)
             self.handoff.add(name)
 
+    def play_refreshed(self, model, kind, resources, item):
+        """下一次资源触发时加载新版本；失败仅跳过本事件。"""
+        try:
+            asset = resources.catalog.motion(item["resource"]["logical_id"], resources.direction)
+            started = self.refreshed_playback.play(
+                model, kind, resources.path.parent / item["file"], asset.entry if asset else {})
+            if started and kind == "expressions":
+                logical_id = item["resource"]["logical_id"]
+                owners = resources.catalog.config.get("custom_expressions", {})
+                model._custom_expression_active = logical_id in owners
+                model._default_expression_active = logical_id == model.default_expression_id
+            return started
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("播放已刷新资源失败：%s", exc)
+            return False
+
     def position(self):
         """读取本句主时钟，暂停时使用冻结时刻。"""
         if self.span is None:
@@ -181,7 +213,7 @@ class MultiCharPerformance:
         if self.paused:
             return self.pause_position
         now = time.monotonic()
-        if self.span.path:
+        if self.span.path and not self.turn.get("muted"):
             elapsed = self.music.get_pos()
             if elapsed >= 0:
                 return self.offset + elapsed
@@ -216,7 +248,7 @@ class MultiCharPerformance:
         """用内存 WAV 从定位点播放，兼容 pygame 对 WAV 不支持 start 的限制。"""
         self.music.stop()
         self.samples = None
-        if not self.span.path or offset >= self.span.duration_ms:
+        if self.turn.get("muted") or not self.span.path or offset >= self.span.duration_ms:
             return
         import soundfile as sf
         with sf.SoundFile(self.span.path) as audio:
@@ -240,7 +272,9 @@ class MultiCharPerformance:
         if not len(segment):
             return None
         model = self.bindings().get(self.turn.get("character_name"))
-        return (model, float(np.sqrt(np.mean(segment * segment)))) if model else None
+        if model is None or not self.visible(self.turn.get("character_name")):
+            return None
+        return model, float(np.sqrt(np.mean(segment * segment)))
 
     def command(self, command):
         """处理带编辑会话标识的独占预览命令，丢弃旧窗口请求。"""
@@ -280,13 +314,23 @@ class MultiCharPerformance:
                 self.started += delay
                 self.paused = False
                 self.music.unpause()
-        elif action in ("stop", "exit", "resource", "refresh"):
+        elif action == "refresh":
+            name = command.get("character")
+            self.resources = {key: value for key, value in self.resources.items() if key[0] != name}
+            self.refreshed_names.add(name)
+        elif action in ("stop", "exit", "resource", "scene", "transition"):
             self.music.stop()
             self.playing = False
             self.paused = False
-            self.reset_all()
-            if action == "stop":
+            if action in ("scene", "transition"):
+                # 句前变化只停止调度；留场者的动作和表情继续，入场者由舞台复位。
+                self.cursor = None
+            else:
+                self.reset_all()
+            if action in ("stop", "scene", "transition"):
                 self.offset = 0
+            if action in ("scene", "transition"):
+                self.offset = int(command.get("position", 0))
             if action == "resource":
                 self.offset = int(command.get("position", self.offset))
                 self.expression_set.clear()
@@ -295,5 +339,3 @@ class MultiCharPerformance:
             if action == "exit":
                 self.preview = False
                 self.session = ""
-            if action == "refresh":
-                self.resources.clear()

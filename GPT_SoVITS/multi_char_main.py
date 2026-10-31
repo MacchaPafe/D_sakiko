@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys, os,json,re,ast
+from html import escape
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -43,6 +44,7 @@ from live2d_support.model_catalog import Live2DModelOption
 from live2d_support.motion_capabilities import get_live2d_motion_capabilities
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
+from ui.components.multi_char_icons import set_button_icon
 
 
 logger = get_logger(__name__)
@@ -1185,7 +1187,8 @@ class ViewerGUI(QWidget):
         self.replay_full_btn.setCursor(Qt.PointingHandCursor)
         self.replay_full_btn.clicked.connect(self.replay_current_chat)
 
-        self.edit_script_btn = QPushButton("剧本编排")
+        self.edit_script_btn = QPushButton("进入剧本编排")
+        set_button_icon(self.edit_script_btn, "clapperboard", self)
         self.edit_script_btn.setCursor(Qt.PointingHandCursor)
         self.edit_script_btn.clicked.connect(lambda: self.open_performance_editor(0))
 
@@ -1536,15 +1539,17 @@ class ViewerGUI(QWidget):
 
     @staticmethod
     def _message_from_turn_dict(turn_data: Dict[str, Any]) -> Message:
-        """将回放字典恢复为 Message 对象。"""
+        """恢复完整台词数据，运行时场景上下文不进入消息存档。"""
         return Message.from_dict({
-            "character_name": turn_data.get("character_name", "未知角色"),
+            "character_name": turn_data.get("character_name", ""),
             "text": turn_data.get("text", ""),
             "translation": turn_data.get("translation", ""),
             "emotion": turn_data.get("emotion", "normal"),
             "audio_path": turn_data.get("audio_path", ""),
             "performance": turn_data.get("performance"),
             "performance_timeline": turn_data.get("performance_timeline"),
+            "scene_before": turn_data.get("scene_before"),
+            "muted": turn_data.get("muted", False),
             "attachments": turn_data.get("attachments", []),
             "worldbook_snapshot": turn_data.get("worldbook_snapshot"),
         })
@@ -1571,11 +1576,11 @@ class ViewerGUI(QWidget):
     def _chat_character_names(self, chat: Chat) -> List[str]:
         """优先从 Prompt 配置读取对话角色名，若缺失则回退到消息中提取。"""
         if isinstance(chat.prompt_generator, SmallTheaterPromptGenerator):
-            names = [name for name in chat.prompt_generator.character_names if name != "User"]
+            names = [name for name in chat.prompt_generator.character_names if name and name != "User"]
             if len(names) >= 2:
                 return names[:2]
 
-        names = [name for name in chat.involved_characters if name != "User"]
+        names = [name for name in chat.involved_characters if name and name != "User"]
         return names[:2]
 
     def _ensure_current_chat_theater_meta(self) -> TheaterMeta:
@@ -1595,7 +1600,9 @@ class ViewerGUI(QWidget):
         return "未知角色"
 
     def _find_character_by_name(self, character_name: str):
-        """按角色名获取角色对象。"""
+        """按非空角色名精确匹配角色；无角色消息不绑定占位声线。"""
+        if not character_name:
+            return None
         for char in self.character_list:
             if char.character_name == character_name:
                 return char
@@ -1838,15 +1845,18 @@ class ViewerGUI(QWidget):
 
     @staticmethod
     def render_message_html(index: int, msg: Message) -> Tuple[str, str]:
-        """构造单条消息对应的 HTML 片段。第一个返回值为文本内容的 HTML，第二个返回值为翻译内容的 HTML。"""
+        """渲染可回放的原文与翻译；无角色台词直接显示文本。"""
+        name_prefix = f"★{escape(msg.character_name)}：" if msg.character_name else ""
+        original = escape(msg.text).replace("\n", "<br>")
         text_html = (
             f'<a href="replay:{index}" style="text-decoration: none; color: #7799CC;">'
-            f'★{msg.character_name}：{msg.text}'
+            f'{name_prefix}{original}'
             "</a>"
         )
+        translation = escape(msg.translation).replace("\n", "<br>")
         translation_html = (
-            f'<span style="color: #B3D1F2; font-style: italic;">{msg.translation}</span><br>'
-        )
+            f'<span style="color: #B3D1F2; font-style: italic;">{translation}</span><br>'
+        ) if translation else ""
         return text_html, translation_html
 
     def switch_chat(self, chat: Chat) -> None:
@@ -2441,7 +2451,11 @@ class ViewerGUI(QWidget):
 
     def display_this_turn_text(self,this_turn_elements):
         """分发预览回执；只有正式播放的新消息进入聊天记录。"""
-        if this_turn_elements.get("type") in ("multi_char_preview", "multi_char_window", "expression_editor"):
+        if this_turn_elements.get("type") == "multi_char_scene_error":
+            self.message_queue.put(this_turn_elements.get("error", "场景加载失败。"))
+            return
+        if this_turn_elements.get("type") in (
+                "multi_char_preview", "multi_char_transition", "multi_char_window", "expression_editor"):
             if self.performance_editor is not None:
                 self.performance_editor.receive(this_turn_elements)
             return
@@ -2487,12 +2501,19 @@ class ViewerGUI(QWidget):
         if not (0 <= index < len(self.current_chat.message_list)):
             return
 
-        replay_message = self.current_chat.message_list[index]
-        replay_payload = self._turn_dict_from_message(replay_message)
+        replay_payload = self._single_replay_payload(index)
 
         # 回放前按当前对话角色同步 Live2D 双模型，避免角色错位。
         self.sync_live2d_active_slots()
         self.display_live2d_message([replay_payload], preserve_playback=False)
+
+    def _single_replay_payload(self, index: int) -> Dict[str, Any]:
+        """携带整段场景配置，单句回放可从默认舞台解析到目标句。"""
+        messages = [message.as_dict() for message in self.current_chat.message_list]
+        # 当前句与上下文使用独立字典，避免形成递归引用或写入消息存档。
+        turn = self.current_chat.message_list[index].as_dict()
+        turn["scene_context"] = {"messages": messages, "index": index}
+        return turn
 
     def on_stage_closed(self) -> None:
         """Live2D 退出时保留编排草稿，让用户仍可保存或放弃。"""
@@ -2578,6 +2599,9 @@ class ViewerGUI(QWidget):
             return False
 
         message = self.current_chat.message_list[index]
+        if not message.character_name:
+            QMessageBox.information(self, "无法合成", "这句台词未选择语音角色，无法生成音频。")
+            return False
         voice_character = self._find_character_by_name(message.character_name)
         if voice_character is None or not voice_character.has_valid_voice_model():
             QMessageBox.information(self, "无法合成", "当前角色未配置可用的语音模型。")
@@ -2589,14 +2613,8 @@ class ViewerGUI(QWidget):
             if hasattr(message.emotion, "as_string")
             else str(message.emotion or "happiness")
         )
-        this_char_name = message.character_name
-        char_index=0
         self._audio_regeneration = (self.current_chat, message, message.text, message.audio_path, object())
-        for i,char in enumerate(self.character_list):
-            if this_char_name==char.character_name:
-                char_index=i
-                break
-        self.regenerate_character = self.character_list[char_index]
+        self.regenerate_character = voice_character
         self.regenerate_audio_continue()
         return True
 
@@ -2657,8 +2675,9 @@ class ViewerGUI(QWidget):
         self.finish_audio_regeneration(context, True,
                                        f"生成完毕；已移除 {removed} 个越界编排事件" if removed else "生成完毕")
         if self.current_chat is chat and self.performance_editor is None:
+            index = next(index for index, item in enumerate(chat.message_list) if item is message)
             self.sync_live2d_active_slots()
-            self.display_live2d_message([message.as_dict()], preserve_playback=False)
+            self.display_live2d_message([self._single_replay_payload(index)], preserve_playback=False)
 
     def _save_chat(self) -> bool:
         """保存失败时提示用户，并让调用者停止后续成功流程。"""

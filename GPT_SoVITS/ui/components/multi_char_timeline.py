@@ -5,68 +5,21 @@ import json
 from copy import deepcopy
 
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt5.QtGui import (QColor, QPen, QBrush, QLinearGradient, QPainter,
+from PyQt5.QtGui import (QColor, QPen, QBrush, QPainter,
                          QPainterPath, QPalette, QPolygonF, QFontMetrics)
-from PyQt5.QtWidgets import QGraphicsObject, QGraphicsScene, QGraphicsView, QApplication, QStyle
+from PyQt5.QtWidgets import QGraphicsObject, QGraphicsScene, QGraphicsView, QApplication
 
 from performance_types import valid_timeline_events, sort_timeline_events
 from ui_constants import char_info_json
 
 MIME = "application/x-dsakiko-multi-char-resource"
 
-_MOTION_HUES = (216, 188, 252, 162, 230, 198)
-_EXPRESSION_HUES = (340, 18, 322, 352, 28, 330)
-
-
-def _stable_hue_choice(text, choices):
-    """根据条目名称稳定选取色相，保证同一动作或表情在重绘时色调一致。"""
-    seed = sum((idx + 1) * ord(ch) for idx, ch in enumerate(str(text or "")))
-    return choices[seed % len(choices)]
-
-
-def _pastel_palette(color_str, row=0, name=""):
-    """将事件颜色转化为分轨冷暖区分的高级瓷感渐变、柔光阴影、圆点徽标与深色文字。"""
-    is_expression = (row % 2 == 1)
-    fallback = "#F06292" if is_expression else "#5A7FE7"
-    raw = QColor(color_str) if color_str else QColor(fallback)
-    if not raw.isValid():
-        raw = QColor(fallback)
-    h, s, _, _ = raw.getHsl()
-    if h < 0:
-        return {
-            "top": QColor("#F6F8FC"),
-            "bottom": QColor("#E9EEF6"),
-            "border": QColor("#BCC8DC"),
-            "selected": QColor("#4A6FD8"),
-            "dot": QColor("#7B8DA8"),
-            "text": QColor("#334155"),
-        }
-    # 动作轨倾向清透冷色/宝石色系，表情轨倾向柔美暖粉/珊瑚色系，避免全屏同色粉块
-    if not is_expression and (h < 32 or h > 320):
-        h = _stable_hue_choice(name, _MOTION_HUES)
-    elif is_expression and 75 <= h <= 270:
-        h = _stable_hue_choice(name, _EXPRESSION_HUES)
-
-    sat = min(200, max(145, s))
-    return {
-        "top": QColor.fromHsl(h, min(155, sat), 245),
-        "bottom": QColor.fromHsl(h, min(178, sat), 229),
-        "border": QColor.fromHsl(h, min(172, sat), 176),
-        "selected": QColor.fromHsl(h, min(220, sat + 25), 112),
-        "dot": QColor.fromHsl(h, min(215, sat + 20), 132),
-        "text": QColor.fromHsl(h, min(165, sat), 48),
-    }
-
-
 def _character_pill_color(name):
-    """提取角色代表色并柔化为清爽的粉彩糖果色竖条。"""
+    """保留角色配置原色，避免相近色相的角色丢失明暗差异。"""
     raw = QColor(char_info_json.get(name, {}).get("theme_color", "#5A7FE7"))
     if not raw.isValid():
         raw = QColor("#5A7FE7")
-    h, s, l, _ = raw.getHsl()
-    if h < 0:
-        return QColor("#7E92B2")
-    return QColor.fromHsl(h, min(200, max(140, s)), min(152, max(112, l)))
+    return raw
 
 
 class MotionBlock(QGraphicsObject):
@@ -87,84 +40,42 @@ class MotionBlock(QGraphicsObject):
         self.setAcceptedMouseButtons(Qt.NoButton)
 
     def boundingRect(self):
-        """返回包含边框与底部柔光阴影的条块绘制区域。"""
+        """返回条块及拖动时尾部轮廓的绘制区域。"""
         return QRectF(0, 0, self.width, self.height)
 
     def paint(self, painter, option, widget=None):
-        """以带柔光微阴影的大圆角瓷感胶囊与左端宝石圆点徽标展示事件。"""
+        """以事件原色和小圆角矩形绘制条块，边框区分选中与资源缺失。"""
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setFont(self.scene().font())
-        tones = _pastel_palette(self.color.name(), self.row, self.name)
-        solid = QRectF(0, 0, self.solid_width, self.height)
-        box = solid.adjusted(1.5, 1.0, -1.5, -3.0)
-        radius = min(box.height() * 0.44, max(5.0, box.width() * 0.44))
-
-        # 多层柔光环境微阴影，消除原生绘图扁平剪纸感
-        if box.width() > 10 and box.height() > 10:
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(28, 48, 88, 12))
-            painter.drawRoundedRect(box.adjusted(0.5, 2.2, -0.5, 2.2), radius, radius)
-            painter.setBrush(QColor(28, 48, 88, 18))
-            painter.drawRoundedRect(box.adjusted(0.2, 1.1, -0.2, 1.1), radius, radius)
-
-        grad = QLinearGradient(0, box.top(), 0, box.bottom())
-        if self.available:
-            grad.setColorAt(0.0, tones["top"])
-            grad.setColorAt(1.0, tones["bottom"])
-        else:
-            grad.setColorAt(0.0, QColor("#FFF1F2"))
-            grad.setColorAt(1.0, QColor("#FFE4E6"))
-
-        painter.setBrush(QBrush(grad))
-        if self.selected:
-            painter.setPen(QPen(tones["selected"] if self.available else QColor("#E11D48"), 2.4))
-        else:
-            painter.setPen(
-                QPen(
-                    tones["border"] if self.available else QColor("#FDA4AF"),
-                    1.35,
-                    Qt.SolidLine if self.available else Qt.DashLine,
-                )
-            )
+        fill = QColor(self.color)
+        fill.setAlpha(255)
+        border = QColor("#4776B8") if self.available else QColor("#C53B45")
+        box = QRectF(0, 0, self.solid_width, self.height).adjusted(1.5, 1.5, -1.5, -1.5)
+        radius = min(3.0, box.width() / 2, box.height() / 2)
+        painter.setBrush(fill)
+        painter.setPen(QPen(
+            border, 2.0 if self.selected else 1.0,
+            Qt.SolidLine if self.available else Qt.DashLine,
+        ))
         painter.drawRoundedRect(box, radius, radius)
 
-        # 内部顶边瓷感高光环
-        if box.width() > 16 and box.height() > 14:
-            inner = box.adjusted(1.3, 1.3, -1.3, -1.3)
-            painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(QColor(255, 255, 255, 210), 1.15))
-            painter.drawRoundedRect(inner, max(2.0, radius - 1.2), max(2.0, radius - 1.2))
-
-        # 与半圆左端同心呼应的圆润宝石圆点徽标（取代原本与圆弧冲突的直竖线）
-        dot_d = min(11.0, max(6.5, round(box.height() * 0.24)))
-        dot_inset = max(7.5, round(radius * 0.52))
-        if self.solid_width >= dot_inset + dot_d + 18:
-            dot_y = box.top() + (box.height() - dot_d) * 0.5
-            dot_rect = QRectF(box.left() + dot_inset, dot_y, dot_d, dot_d)
-            painter.setPen(QPen(QColor(255, 255, 255, 215), 1.2))
-            painter.setBrush(tones["dot"] if self.available else QColor("#F43F5E"))
-            painter.drawEllipse(dot_rect)
-            left_pad = round(dot_inset + dot_d + max(6.0, box.height() * 0.14))
-        else:
-            left_pad = 8
-
+        # 仅拖动时保留被下一事件截断的淡色尾部轮廓。
         if self.solid_width < self.width:
             tail_box = QRectF(self.solid_width, box.top(), self.width - self.solid_width, box.height())
-            tail_fill = QColor(tones["bottom"])
-            tail_fill.setAlpha(110)
-            painter.setBrush(tail_fill)
-            painter.setPen(QPen(tones["border"], 1.2, Qt.DashLine))
+            tail_border = QColor(border)
+            tail_border.setAlpha(110)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(tail_border, 1.0, Qt.DashLine))
             painter.drawRoundedRect(tail_box, radius, radius)
 
-        painter.setPen(tones["text"] if self.available else QColor("#BE123C"))
+        # 深色条块用白字，浅色条块用深色字，保证纯色背景下名称可读。
+        brightness = fill.red() * 0.299 + fill.green() * 0.587 + fill.blue() * 0.114
+        painter.setPen(QColor("#FFFFFF" if brightness < 145 else "#334155"))
+        text_box = box.adjusted(6, 0, -6, 0)
         text = painter.fontMetrics().elidedText(
-            self.name, Qt.ElideRight, max(1, int(self.solid_width - left_pad - 8))
+            self.name, Qt.ElideRight, max(1, int(text_box.width()))
         )
-        painter.drawText(
-            QRectF(box.left() + left_pad, box.top(), max(1.0, box.width() - left_pad - 6.0), box.height()),
-            Qt.AlignVCenter,
-            text,
-        )
+        painter.drawText(text_box, Qt.AlignVCenter, text)
 
 
 class MultiCharTimeline(QGraphicsView):
@@ -203,6 +114,7 @@ class MultiCharTimeline(QGraphicsView):
         self.ruler_drag = False
         self.snap_x = None
         self.trash_hover = False
+        self.trash_target = None
         self.waveform = []
         self.rebuild()
 
@@ -565,14 +477,26 @@ class MultiCharTimeline(QGraphicsView):
             block.solid_width = max(8, (min(end, next_start) - start) * self.pixels)
             block.update()
 
-    def trash_rect(self):
-        """返回场景中的临时垃圾桶热区，覆盖在右下角而不挤动布局。"""
-        corner = self.mapToScene(self.viewport().rect().bottomRight())
-        unit = self.session.timeline_window.font().pixelSize()
-        return QRectF(corner.x() - unit * 7, corner.y() - unit * 2.5, unit * 6.5, unit * 2)
+    def over_trash(self, global_pos):
+        """按屏幕坐标命中底栏删除区，不受时间轴缩放和滚动影响。"""
+        target = self.trash_target
+        return bool(self.drag and target is not None and target.isVisible()
+                    and target.rect().contains(target.mapFromGlobal(global_pos)))
+
+    def set_trash_hover(self, active):
+        """更新底栏删除区的投放提示和高亮，结束拖动时恢复普通状态。"""
+        if self.trash_hover == active:
+            return
+        self.trash_hover = active
+        if self.trash_target is not None:
+            self.trash_target.setText("松开即可删除" if active else "拖动至此删除")
+            self.trash_target.setProperty("dropActive", active)
+            self.trash_target.style().unpolish(self.trash_target)
+            self.trash_target.style().polish(self.trash_target)
+            self.trash_target.update()
 
     def drawForeground(self, painter, rect):
-        """绘制樱桃粉顶帽游标、大圆角拖拽预览、吸附线及浮动垃圾桶。"""
+        """绘制樱桃粉顶帽游标、拖拽预览和吸附线，删除区独立放在底栏。"""
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setFont(self.scene().font())
         unit = max(14.0, float(self.scene().font().pixelSize()))
@@ -615,25 +539,13 @@ class MultiCharTimeline(QGraphicsView):
             visible = min(full_length, min(later, default=at + full_length) - at)
             y = self.row_y(row) + self.row_padding
             height = self.row_height - 2 * self.row_padding
-            radius = min(height * 0.44, max(5.0, visible * self.pixels * 0.44))
+            radius = min(3.0, height / 2)
             painter.drawRoundedRect(QRectF(self.x_at(at), y, max(12, visible * self.pixels), height), radius, radius)
             if visible < full_length:
                 painter.setBrush(Qt.NoBrush)
                 painter.drawRoundedRect(
                     QRectF(self.x_at(at + visible), y, (full_length - visible) * self.pixels, height), radius, radius
                 )
-        if self.drag:
-            area = self.trash_rect()
-            painter.setPen(QPen(QColor("#F43F5E" if self.trash_hover else "#FDA4AF"), 1.8 if self.trash_hover else 1.2))
-            painter.setBrush(QColor("#FFE4E6") if self.trash_hover else QColor(255, 241, 242, 240))
-            painter.drawRoundedRect(area, 8, 8)
-            icon = self.style().standardIcon(QStyle.SP_TrashIcon)
-            icon.paint(painter, int(area.left() + 8), int(area.top() + (area.height() - 18) / 2), 18, 18)
-            painter.setPen(QColor("#BE123C"))
-            painter.drawText(
-                area.adjusted(26, 0, -4, 0), Qt.AlignCenter,
-                "松开删除" if self.trash_hover else "删除",
-            )
 
     def payload(self, mime):
         """读取本应用的资源拖拽负载，不接收外部任意路径。"""
@@ -731,13 +643,17 @@ class MultiCharTimeline(QGraphicsView):
                 self.drag = self.press
                 self.dragging.emit(True)
             if self.drag:
-                self.trash_hover = self.trash_rect().contains(pos)
+                self.set_trash_hover(self.over_trash(event.globalPos()))
                 for block in self.blocks:
                     if block.event is item:
                         block.setOpacity(0.3)
-                at, valid = self.candidate(row, item, self.time_at(pos.x() - offset), event.modifiers())
-                valid = valid and self.row_at(pos.y()) == row
-                self.ghost = (row, item, at, valid)
+                if self.trash_hover:
+                    self.ghost = None
+                    self.snap_x = None
+                else:
+                    at, valid = self.candidate(row, item, self.time_at(pos.x() - offset), event.modifiers())
+                    valid = valid and self.row_at(pos.y()) == row
+                    self.ghost = (row, item, at, valid)
                 self.show_overlap()
                 self.viewport().update()
         else:
@@ -753,7 +669,7 @@ class MultiCharTimeline(QGraphicsView):
             _, row, item, _ = self.drag
             name, kind = self.rows[row]
             events = self.session.draft["characters"][name][kind]
-            if self.trash_rect().contains(pos):
+            if self.over_trash(event.globalPos()):
                 events[:] = [other for other in events if other is not item]
                 self.selection = None
                 self.selected.emit(None)
@@ -766,13 +682,14 @@ class MultiCharTimeline(QGraphicsView):
         self.press = self.drag = self.ghost = None
         self.dragging.emit(False)
         self.snap_x = None
-        self.trash_hover = False
+        self.set_trash_hover(False)
         self.rebuild()
 
     def keyPressEvent(self, event):
         """Esc 仅取消进行中的拖动，不误关闭两个编辑窗口。"""
         if event.key() == Qt.Key_Escape:
             self.dragging.emit(False)
+            self.set_trash_hover(False)
             self.press = self.drag = self.ghost = None
             self.snap_x = None
             self.rebuild()

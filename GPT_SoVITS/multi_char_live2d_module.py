@@ -226,6 +226,7 @@ class TextOverlay:
             self.is_typing = False
 
     def _render_texture(self):
+        """重绘字幕纹理，无角色消息收起姓名区域而不保留空行。"""
         char_name = self.current_char_name
         text = self.current_text  # <--- 关键：画的是截取后的部分文本
         self.rect_surface.fill((0, 0, 0, 0))
@@ -234,7 +235,7 @@ class TextOverlay:
 
         # 1. 布局定位
         # 主框向下偏移，给名字框留出位置（正好等于名字框高度）
-        main_box_offset_y = self.ui_name_box_h
+        main_box_offset_y = self.ui_name_box_h if char_name else self.ui_border_thick // 2
 
         main_rect = pygame.Rect(
             self.ui_border_thick // 2,
@@ -881,13 +882,15 @@ class Live2DModule:
                 logger.exception("小剧场 slot=%d 模型加载失败：%s", slot, model_path)
 
     def live2D_initialize(self, characters):
+        """准备双角色身份及应用背景目录中的默认背景。"""
         if len(characters)<2:
             raise ValueError("至少需要两个角色...")
         self.character_list = characters
         self.active_slots = self._build_default_active_slots()
 
-        back_img_png = glob.glob(os.path.join("../live2d_related", f"*.png"))
-        back_img_jpg = glob.glob(os.path.join("../live2d_related", f"*.jpg"))
+        from live2d_support.multi_char_scene import background_root
+        back_img_png = list(background_root().glob("*.png"))
+        back_img_jpg = list(background_root().glob("*.jpg"))
         if not (back_img_png + back_img_jpg):
             raise FileNotFoundError("没有找到背景图片文件(.png/.jpg)，自带的也被删了吗...")
         self.BACK_IMAGE = max((back_img_jpg + back_img_png), key=os.path.getmtime)
@@ -991,32 +994,23 @@ class Live2DModule:
         glEnable(GL_TEXTURE_2D)
 
         # texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
-        texture = BackgroundRen.render(pygame.image.load(self.BACK_IMAGE).convert_alpha())
-        glBindTexture(GL_TEXTURE_2D, texture)
+        from live2d_support.multi_char_stage_render import StageBackgrounds, ActorCompositor, draw_quad
+        backgrounds = StageBackgrounds(Path(self.BACK_IMAGE).name, display)
+        actor_compositor = ActorCompositor()
 
         global idle_recover_timer
 
         logger.info("当前 Live2D 界面渲染硬件：%s", glGetString(GL_RENDERER).decode())
         this_turn_model: Live2DModelAdapter | None = None
         lip_sync_model: Live2DModelAdapter | None = None
-        # ===== 句间等待策略（固定规则） =====
-        # 1) 有音频：音频播放结束后，再等待 0.5 秒进入下一句
-        # 2) 无音频：当前句展示后，每个字等待 0.1 秒，等所有字展示完后，再等待 1.5 秒进入下一句
-        WAIT_SECONDS = 0.5
-        WAIT_AFTER_NO_AUDIO_RATIO = 0.1
-
-        # 下一句最早可开始的绝对时间戳（time.time()）
+        # 台词时钟由 performance 统一管理，句前阶段由 stage 独立管理。
+        # 此时间仅供播完后的待机恢复使用，不参与下一句调度。
         next_turn_earliest_start_at = 0.0
-        # 当前是否处于“句间冷却”阶段
-        waiting_between_turns = False
-        # 上一帧是否检测到 pygame 音频正在播放
-        previous_frame_audio_playing = False
-        # 当前句是否有有效音频文件（用于判断“音频结束后冷却”逻辑）
-        current_turn_has_audio = False
+        preparing_sentence = False
+        transition_preview = False
 
         stop_on_next_sentence = False  # 是否在下一句开始时停止（用于外部发送 STOP 命令的响应）
         queued_playlist: deque[dict] = deque()  # 用于存储外部发送的新播放列表，等当前播放完再切换
-        last_speaker_slot = 1
         active_motion_facing_mode = "screen"
         layout_editing = False
         layout_dragging = False
@@ -1044,13 +1038,8 @@ class Live2DModule:
         def present_models() -> None:
             """提交当前槽位画面，加载前让旧模型立即从窗口消失。"""
             glClear(GL_COLOR_BUFFER_BIT)
-            glUseProgram(0)
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, texture)
-            BackgroundRen.blit(*self.BACKGROUND_POSITION)
-            for visible_model in model_group:
-                if visible_model is not None:
-                    visible_model.Draw()
+            backgrounds.draw()
+            draw_stage_actors()
             model_notice_overlay.draw()
             overlay.draw()
             pygame.display.flip()
@@ -1064,7 +1053,8 @@ class Live2DModule:
                 and not performance.preview
                 and not performance.playing
                 and not pygame.mixer.music.get_busy()
-                and (not waiting_between_turns or time.time() >= next_turn_earliest_start_at)
+                and not stage.busy
+                and not preparing_sentence
             )
 
         def apply_idle_facing_motion_if_dialogue_idle(slots: set[int] | None = None) -> None:
@@ -1087,6 +1077,7 @@ class Live2DModule:
             """按角色及路径差异独立切换槽位，失败后保持空槽位。"""
             nonlocal active_motion_facing_mode, this_turn_model, lip_sync_model
             normalized_slots = self._normalize_slots_payload(payload.get("slots"))
+            names_changed = [slot["character_name"] for slot in normalized_slots] != self._active_character_names()
             changed_slot = payload.get("changed_slot")
             changed_slots = {
                 slot for slot in (0, 1)
@@ -1104,6 +1095,7 @@ class Live2DModule:
                         lip_sync_model = None
                     if self.last_motion_model is previous:
                         self._clear_eye_reopen_state()
+                    performance.refreshed_playback.discard(previous)
                     previous.dispose()
                     model_group[slot] = None
             self.active_slots = normalized_slots
@@ -1113,6 +1105,10 @@ class Live2DModule:
             })
             present_models()
             self._load_models(model_group, model_layouts, win_w_and_h, changed_slots, session)
+            if names_changed:
+                stage.show(stage.base_state())
+            elif changed_slots:
+                stage.actors = stage.actor_targets(stage.state)
             refresh_model_notice()
             apply_idle_facing_motion_if_dialogue_idle(None if old_facing != active_motion_facing_mode else changed_slots)
 
@@ -1167,6 +1163,7 @@ class Live2DModule:
             layout_dragging = False
             layout_last_mouse_pos = None
             pygame.display.set_caption(window_caption)
+            stage.actors = stage.actor_targets(stage.state)
             overlay.set_text(f"{self.active_slots[0]['character_name']} & {self.active_slots[1]['character_name']}", "...")
 
         def reset_selected_layout() -> None:
@@ -1204,6 +1201,109 @@ class Live2DModule:
             lambda: model_group, lambda: self.active_slots,
             tell_qt_this_turn_finish_queue.put, pygame.mixer.music, timeline_direction,
         )
+        from live2d_support.multi_char_stage import MultiCharStage
+
+        def stage_offsets():
+            """读取双人原始布局，独立于上下场的临时居中和位移动画。"""
+            return {
+                value["character_name"]: (
+                    self.model_pos_offset[index][0] + model_layouts[index].offset_x,
+                    self.model_pos_offset[index][1] + model_layouts[index].offset_y,
+                ) for index, value in enumerate(self.active_slots)
+            }
+
+        def report_scene_error(message):
+            """把背景加载失败告知控制台，编排中仅显示提示而不修改播放状态。"""
+            if performance.preview:
+                tell_qt_this_turn_finish_queue.put({
+                    "type": "multi_char_preview", "session": performance.session,
+                    "sequence": performance.sequence, "notice": message,
+                })
+            else:
+                tell_qt_this_turn_finish_queue.put({"type": "multi_char_scene_error", "error": message})
+
+        stage = MultiCharStage(self._active_character_names, stage_offsets, backgrounds,
+                               performance.reset, report_scene_error)
+        performance.visible = stage.visible
+
+        def draw_stage_actors():
+            """使用临时站位绘制可见模型，布局编辑时继续使用用户原始站位。"""
+            for index, model in enumerate(model_group):
+                if model is None:
+                    continue
+                name = self.active_slots[index]["character_name"]
+                opacity, x, y = stage.actors.get(name, (0.0, 0.0, 0.0))
+                if layout_editing:
+                    x, y = stage_offsets()[name]
+                    opacity = 1.0
+                model.SetOffset(x, y)
+                actor_compositor.draw(model, opacity)
+
+        def show_preview_scene(command):
+            """定位目标句的完整舞台；普通预览跳过句前阶段，专用入口演示过渡。"""
+            nonlocal transition_preview
+            context = command.get("scene_context") or {}
+            messages = context.get("messages") or [command.get("turn", {})]
+            index = context.get("index", 0)
+            action = command.get("action")
+            transition_preview = False
+            if action == "transition":
+                stage.show(stage.resolve(messages, index - 1))
+                target = stage.resolve(messages, index)
+                stage.begin(target, messages[index].get("scene_before"), first=index == 0)
+                transition_preview = stage.busy
+                tell_qt_this_turn_finish_queue.put({
+                    "type": "multi_char_transition", "session": performance.session,
+                    "sequence": performance.sequence, "playing": transition_preview,
+                })
+            else:
+                stage.show(stage.resolve(messages, index))
+                turn = command.get("turn") or messages[index]
+                overlay.set_text(str(turn.get("character_name") or ""),
+                                 str(turn.get("text") or "") + "\n" + str(turn.get("translation") or ""))
+
+        def begin_playlist(playlist):
+            """新回放统一复位双人姿态与舞台，连续句间的双空轨则保持原状态。"""
+            nonlocal preparing_sentence
+            self.playlist = playlist
+            self.playlist_pointer = 0
+            self.performance_round += 1
+            preparing_sentence = False
+            performance.reset_all()
+            performance.managed.clear()
+            stage.new_playback()
+
+        def begin_sentence(turn):
+            """在句前阶段结束后启动语音、字幕与句内时钟，空角色不借用口型。"""
+            nonlocal lip_sync_model, this_turn_model, next_turn_earliest_start_at
+            speaker = str(turn.get("character_name") or "")
+            speaker_slot = next((index for index, value in enumerate(self.active_slots)
+                                 if value["character_name"] == speaker), None)
+            this_turn_model = model_group[speaker_slot] if speaker_slot is not None else None
+            if not stage.visible(speaker):
+                this_turn_model = None
+            lip_sync_model = this_turn_model if not turn.get("muted") else None
+            if not turn.get("muted"):
+                self._start_turn_audio(str(turn.get("audio_path") or ""))
+            else:
+                pygame.mixer.music.stop()
+            performance.begin(turn)
+            if turn.get("performance_timeline") is not None:
+                self._clear_eye_reopen_state()
+            elif this_turn_model is not None:
+                if speaker in performance.managed:
+                    performance.reset(speaker)
+                    performance.managed.discard(speaker)
+                self._try_start_emotion_motion(
+                    model=this_turn_model, emotion=str(turn.get("emotion") or "normal"),
+                    performance=turn.get("performance"), context=self.performance_round,
+                    position=timeline_direction(speaker),
+                )
+            next_turn_earliest_start_at = time.time() + performance.span.duration_ms / 1000
+            tell_qt_this_turn_finish_queue.put(turn)
+            overlay.set_text(speaker, str(turn.get("text") or "") + "\n" + str(turn.get("translation") or ""))
+            self.playlist_pointer += 1
+
         expression_preview = ExpressionPreviewSession()
         from pygame._sdl2.video import Window
         stage_window = Window.from_display_module()
@@ -1299,7 +1399,9 @@ class Live2DModule:
                         action = x.get("action")
                         valid_session = performance.preview and x.get("session") == performance.session
                         if action == "enter":
-                            stage_geometry = (stage_window.position, stage_window.size)
+                            if not performance.preview:
+                                stage_geometry = (stage_window.position, stage_window.size)
+                            stage.enter_editor()
                         elif valid_session and action == "window_geometry":
                             px, py, width, height = x["geometry"]
                             stage_window.position = (px, py)
@@ -1313,7 +1415,21 @@ class Live2DModule:
                             expression_preview.close()
                             if sys.platform != "win32" and stage_geometry:
                                 stage_window.position, stage_window.size = stage_geometry
+                        if valid_session and action in ("play", "seek", "resource"):
+                            show_preview_scene(x)
                         performance.command(x)
+                        if action == "enter" or valid_session:
+                            if action in ("enter", "scene", "transition"):
+                                show_preview_scene(x)
+                            elif action == "stop":
+                                transition_preview = False
+                                if "scene_context" in x:
+                                    show_preview_scene(x)
+                                else:
+                                    stage.show(stage.state)
+                            elif action == "exit":
+                                transition_preview = False
+                                stage.exit_editor()
                         if action == "enter":
                             self._clear_eye_reopen_state()
                             lip_sync_model = None
@@ -1331,6 +1447,7 @@ class Live2DModule:
                         performance.resources.clear()
                         if performance.preview:
                             performance.command({"action": "stop", "session": performance.session})
+                        stage.cancel()
                         if layout_editing:
                             exit_layout_edit_mode()
                         apply_slots_payload(x)
@@ -1369,130 +1486,63 @@ class Live2DModule:
                         })
                 continue
 
+            stage.tick()
             performance.tick()
+            if transition_preview and not stage.busy:
+                transition_preview = False
+                tell_qt_this_turn_finish_queue.put({
+                    "type": "multi_char_transition", "session": performance.session,
+                    "sequence": performance.sequence, "playing": False,
+                })
 
             if not performance.preview and not to_live2d_module_queue.empty():
                 data = to_live2d_module_queue.get()
                 if data == "STOP":
                     stop_on_next_sentence = True
-                else:
-                    if not isinstance(data, dict):
-                        logger.warning("忽略不支持的 to_live2d_module_queue 消息：%s", data)
-                        continue
-                    preserve_playback = bool(data.get("preserve_playback", False))
-                    # 开启 preserve_playback 时，将传入内容添加到播放队列，等待当前播放完再切换
-                    # 否则，在本句话播放完成后立刻切换到新内容，清空播放队列
-                    if (self.playlist_pointer == len(self.playlist)
+                elif isinstance(data, dict):
+                    if (self.playlist_pointer >= len(self.playlist)
                             and not pygame.mixer.music.get_busy() and not performance.playing
-                            and (not waiting_between_turns or time.time() >= next_turn_earliest_start_at)):
-                        self.playlist = data.get("playlist", [])
-                        self.performance_round += 1
-                        self.playlist_pointer = 0
-                        waiting_between_turns = False
-                        next_turn_earliest_start_at = 0.0
-                        previous_frame_audio_playing = False
-                        current_turn_has_audio = False
+                            and not stage.busy and not preparing_sentence):
+                        begin_playlist(data.get("playlist", []))
                     else:
-                        if not preserve_playback:
-                            stop_on_next_sentence = True  # 否则等当前播放完再切换
-                            queued_playlist.clear()  # 清空队列，丢弃之前 preserve_playback=True 添加但未播放的内容
+                        if not data.get("preserve_playback", False):
+                            stop_on_next_sentence = True
+                            queued_playlist.clear()
                         queued_playlist.append(data.get("playlist", []))
+                else:
+                    logger.warning("忽略不支持的 to_live2d_module_queue 消息：%s", data)
 
             audio_is_playing = pygame.mixer.music.get_busy()
-            now = time.time()
             if not performance.preview:
-                # 出队并不代表句子结束；最后一句也必须完成时钟、冷却和队列交接。
-                if previous_frame_audio_playing and not audio_is_playing and current_turn_has_audio:
-                    next_turn_earliest_start_at = now + WAIT_SECONDS
-                    waiting_between_turns = True
-                previous_frame_audio_playing = audio_is_playing
-                turn_finished = not audio_is_playing and not performance.playing
-                if stop_on_next_sentence and turn_finished:
+                sentence_finished = not audio_is_playing and not performance.playing
+                if stop_on_next_sentence and sentence_finished:
+                    stage.cancel()
+                    stage.show(stage.state)
+                    preparing_sentence = False
                     self.playlist_pointer = len(self.playlist)
                     stop_on_next_sentence = False
-                can_advance = turn_finished and (not waiting_between_turns or now >= next_turn_earliest_start_at)
-                if self.playlist_pointer >= len(self.playlist) and queued_playlist and can_advance:
-                    self.playlist = queued_playlist.popleft()
-                    self.playlist_pointer = 0
-                    self.performance_round += 1
-                    waiting_between_turns = False
-                    current_turn_has_audio = False
-
-            if not performance.preview and self.playlist_pointer < len(self.playlist):
-                # 统一的“是否可以开下一句”判定：
-                # - 音频仍在播放：不可开下一句
-                # - 正处于句间冷却且未到时刻：不可开下一句
-                # - 其余情况：可以开始下一句
-                if audio_is_playing:
-                    pass
-                elif waiting_between_turns and now < next_turn_earliest_start_at:
-                    pass
-                else:
-                    waiting_between_turns = False
-
-                    this_turn_elements = self.playlist[self.playlist_pointer]
-
-                    speaker_name = this_turn_elements.get('character_name', '未知角色')
-                    emotion = this_turn_elements.get('emotion', 'normal')
-                    audio_path = this_turn_elements.get('audio_path', '')
-                    text = this_turn_elements.get('text', '')
-                    translation = this_turn_elements.get('translation', '')
-
-                    if 'character_name' not in this_turn_elements:
-                        this_turn_elements['character_name'] = speaker_name
-
-                    if speaker_name == self.active_slots[0]["character_name"]:
-                        speaker_slot = 0
-                        last_speaker_slot = 0
-                    elif speaker_name == self.active_slots[1]["character_name"]:
-                        speaker_slot = 1
-                        last_speaker_slot = 1
-                    else:
-                        # 保留布局位置；未知说话者的视觉通道在下方跳过。
-                        speaker_slot = last_speaker_slot
-
-                    this_turn_model = model_group[speaker_slot]
-                    if speaker_name not in {slot["character_name"] for slot in self.active_slots}:
-                        this_turn_model = None
-                    lip_sync_model = this_turn_model
-
-                    has_audio_file = self._start_turn_audio(str(audio_path))
-                    current_turn_has_audio = has_audio_file
-                    previous_frame_audio_playing = has_audio_file
-                    if this_turn_elements.get("performance_timeline") is not None:
-                        self._clear_eye_reopen_state()
-                        performance.begin(this_turn_elements)
-                    else:
-                        performance.cursor = None
-                        performance.playing = False
-                        if speaker_name in performance.managed:
-                            performance.reset(speaker_name)
-                            performance.managed.discard(speaker_name)
-                        self._try_start_emotion_motion(
-                            model=this_turn_model,
-                            emotion=str(emotion),
-                            performance=this_turn_elements.get("performance"),
-                            context=self.performance_round,
-                            position=self._motion_position_for_slot(
-                                speaker_slot, self._active_model_versions(), active_motion_facing_mode,
-                            ),
-                        )
-
-                    tell_qt_this_turn_finish_queue.put(this_turn_elements)
-                    overlay.set_text(speaker_name, text + '\n' + translation)
-                    self.playlist_pointer += 1
-
-                    # 无音频句子：不依赖 pygame 的“播放结束事件”，直接进入 1.5 秒冷却。
-                    if not has_audio_file:
-                        next_turn_earliest_start_at = now + WAIT_AFTER_NO_AUDIO_RATIO * len(text) + WAIT_SECONDS
-                        waiting_between_turns = True
-                        previous_frame_audio_playing = False
+                if self.playlist_pointer >= len(self.playlist) and queued_playlist and sentence_finished:
+                    begin_playlist(queued_playlist.popleft())
+                if self.playlist_pointer < len(self.playlist) and sentence_finished:
+                    turn = self.playlist[self.playlist_pointer]
+                    if not preparing_sentence:
+                        # 单条回放带整段上下文，但只应用目标状态，不补播前面的句间阶段。
+                        context = turn.get("scene_context") or {}
+                        messages = context.get("messages") or self.playlist
+                        index = context.get("index", self.playlist_pointer)
+                        target = stage.resolve(messages, index)
+                        stage.begin(target, turn.get("scene_before"), first=self.playlist_pointer == 0)
+                        preparing_sentence = True
+                    if not stage.busy:
+                        begin_sentence(turn)
+                        preparing_sentence = False
+                        audio_is_playing = pygame.mixer.music.get_busy()
 
             if (not performance.preview and not performance.playing
                     and self.playlist and self.playlist_pointer >= len(self.playlist)
                     and not audio_is_playing
                     and time.time() > max(idle_recover_timer, next_turn_earliest_start_at) + 2.5):
-                # 编排角色保持尾帧；下次动作、显式空轨或预览复位再接管。
+                # 编排角色保持尾帧；后续非空编排或显式预览复位再接管。
                 for slot_index, idle_model in enumerate(model_group):
                     if (idle_model is not None and not performance.is_managed_model(idle_model)
                             and idle_model.performance_state is not None):
@@ -1535,12 +1585,7 @@ class Live2DModule:
             # 渲染背景图片
             # 强制恢复OpenGL状态，确保背景和UI的渲染不受Live2D的影响
             # 因为多模型下，不知道为什么，live2d-py 库渲染模型时会修改 OpenGL 上下文，抢走了纹理的绑定。
-            glUseProgram(0)
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, texture)
-            glColor4f(1, 1, 1, 1)
-
-            BackgroundRen.blit(*self.BACKGROUND_POSITION)
+            backgrounds.draw()
             mouth_restore = None
             preview_mouth = performance.mouth()
             if preview_mouth is not None:
@@ -1553,9 +1598,7 @@ class Live2DModule:
 
                 idle_recover_timer = time.time()
 
-            for model in model_group:
-                if model is not None:
-                    model.Draw()
+            draw_stage_actors()
 
             if mouth_restore is not None:
                 mouth_restore[0].set_parameter_value("mouth_open_y", mouth_restore[1])
@@ -1565,6 +1608,8 @@ class Live2DModule:
             model_notice_overlay.draw()
             overlay.update()
             overlay.draw()
+            if stage.black > 0:
+                draw_quad(alpha=stage.black)
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()
@@ -1592,7 +1637,8 @@ class Live2DModule:
         except Exception:
             pass
         try:
-            glDeleteTextures([texture])
+            actor_compositor.dispose()
+            backgrounds.dispose()
         except Exception:
             pass
         session.close()

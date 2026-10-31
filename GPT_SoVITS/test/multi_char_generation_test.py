@@ -182,3 +182,55 @@ def test_regeneration_callback_preserves_old_audio_on_failure(gui, tmp_path, val
     else:
         assert message.audio_path == original_path
         assert message.performance_timeline == original_timeline
+
+
+@pytest.mark.parametrize("route", ["default", "custom", "provider_url", "provider"])
+@pytest.mark.parametrize("finish_reason, content", [
+    ("length", '[{"text":"半句'),
+    ("length", None),
+    ("stop", '[{"text":"完整台词"}]'),
+])
+def test_generation_output_budget_and_truncation(monkeypatch, route, finish_reason, content):
+    """各接口分支传入统一预算，截断响应通知失败而不交付残缺剧本。"""
+    import litellm
+    import dp_local_multi_char as module
+
+    config = SimpleNamespace(reload_from_disk=Mock())
+    values = {
+        "use_default_deepseek_api": route == "default",
+        "enable_custom_llm_api_provider": route == "custom",
+        "custom_llm_api_model": "test-model",
+        "custom_llm_api_key": "test-key",
+        "custom_llm_api_url": "https://example.invalid/v1",
+        "llm_api_provider": "openai",
+        "llm_api_model": {"openai": "test-model"},
+        "llm_api_key": {"openai": "test-key"},
+        "llm_api_base_url": {"openai": "https://example.invalid/v1"} if route == "provider_url" else {},
+        "llm_temperature": 1,
+        "llm_top_p": 1,
+    }
+    for name, value in values.items():
+        setattr(config, name, SimpleNamespace(value=value))
+    monkeypatch.setattr(module, "d_sakiko_config", config)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    response = litellm.ModelResponse(choices=[{
+        "finish_reason": finish_reason,
+        "message": {"role": "assistant", "content": content},
+    }])
+    completion = Mock(return_value=response)
+    monkeypatch.setattr(litellm, "completion", completion)
+    worker = module.DSLocalAndVoiceGen.__new__(module.DSLocalAndVoiceGen)
+    worker.character_list = [SimpleNamespace(character_name=name, character_description="角色描述") for name in ("A", "B")]
+    worker.base_prompt = "剧本生成"
+    worker.model = "test-key"
+    requests, output, notices = Queue(), Queue(), Queue()
+    requests.put({"char_index": [0, 1], "user_input": None})
+    requests.put("EXIT")
+    worker.text_generator(output, requests, notices)
+    assert completion.call_args.kwargs["max_tokens"] == 16384
+    assert output.get_nowait() == ("error" if finish_reason == "length" else content)
+    assert output.empty()
+    messages = []
+    while not notices.empty():
+        messages.append(notices.get_nowait())
+    assert any("内容已被截断" in message for message in messages) == (finish_reason == "length")

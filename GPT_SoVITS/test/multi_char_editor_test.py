@@ -104,8 +104,73 @@ def test_editor_does_not_change_bgm_state(editor):
     assert editor.owner.bgm_player.mock_calls == []
 
 
+@pytest.mark.parametrize("release_action", ["delete", "escape", "old_track_corner"])
+def test_drag_delete_uses_bottom_toolbar_without_moving_controls(editor, app, release_action):
+    """缩放横滚后只在底栏投放删除，取消或旧轨道热区不误删且两端控件不移动。"""
+    from PyQt5.QtCore import QEvent, QPoint
+    from PyQt5.QtGui import QKeyEvent, QMouseEvent
+
+    editor.layout.timer.stop()
+    editor.timeline_window.setGeometry(20, 20, 1600, 400)
+    view = editor.view
+    event = {"at_ms": 200, "resource": {"file_name": "missing"}}
+    events = editor.draft["characters"]["A"]["motions"]
+    events.append(event)
+    view.zoom = 2.0
+    view.rebuild()
+    app.processEvents()
+    view.horizontalScrollBar().setValue(100)
+    assert view.horizontalScrollBar().value() > 0
+    viewport = view.viewport()
+    target = view.trash_target
+
+    def send_mouse(event_type, global_position, button, buttons):
+        """用真实屏幕与视口坐标发送鼠标事件，模拟跨控件拖动时的鼠标抓取。"""
+        local_position = viewport.mapFromGlobal(global_position)
+        mouse = QMouseEvent(event_type, QPointF(local_position), QPointF(global_position),
+                            button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(viewport, mouse)
+        app.processEvents()
+
+    def control_positions():
+        """记录底栏两端按钮的屏幕位置和尺寸以检查拖动提示不挤动布局。"""
+        return [(button.mapToGlobal(QPoint()), button.size())
+                for button in (editor.play, editor.discard_button, editor.save_button)]
+
+    baseline = control_positions()
+    assert not target.isVisible()
+    block = next(block for block in view.blocks if block.event is event)
+    start = viewport.mapToGlobal(view.mapFromScene(block.sceneBoundingRect().center()))
+    send_mouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+    send_mouse(QEvent.MouseMove, start + QPoint(QApplication.startDragDistance() + 5, 0),
+               Qt.NoButton, Qt.LeftButton)
+    assert view.drag and target.isVisible()
+    assert control_positions() == baseline
+    assert target.mapToGlobal(QPoint()).y() > viewport.mapToGlobal(viewport.rect().bottomLeft()).y()
+
+    if release_action == "old_track_corner":
+        unit = editor.timeline_window.font().pixelSize()
+        destination = viewport.mapToGlobal(viewport.rect().bottomRight() - QPoint(unit * 3, unit))
+    else:
+        destination = target.mapToGlobal(target.rect().center())
+    send_mouse(QEvent.MouseMove, destination, Qt.NoButton, Qt.LeftButton)
+    assert view.trash_hover == (release_action != "old_track_corner")
+    if release_action == "escape":
+        QApplication.sendEvent(view, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        app.processEvents()
+        assert not target.isVisible()
+        assert not view.trash_hover
+    send_mouse(QEvent.MouseButtonRelease, destination, Qt.LeftButton, Qt.NoButton)
+    assert bool(events) == (release_action != "delete")
+    if events:
+        assert events[0]["at_ms"] == 200
+    assert not target.isVisible()
+    assert not view.trash_hover
+    assert control_positions() == baseline
+
+
 def test_resources_use_two_columns_and_one_scrollbar(editor, app):
-    """几十条同类型资源均分行内两列，只允许最右侧的纵向滚动。"""
+    """资源保持两列单滚动条，拖动提示覆盖列表底边且不挤占或拦截资源。"""
     from PyQt5.QtWidgets import QListWidgetItem
     for index in range(50):
         editor.list.addItem(QListWidgetItem(f"motion_{index}"))
@@ -119,9 +184,16 @@ def test_resources_use_two_columns_and_one_scrollbar(editor, app):
     assert third.top() > first.top()
     assert editor.list.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
     assert editor.list.verticalScrollBar().maximum() > 0
+    assert editor.drag_hint.parentWidget() is editor.list.viewport()
+    assert editor.drag_hint.testAttribute(Qt.WA_TransparentForMouseEvents)
+    assert editor.resource_window.layout().indexOf(editor.drag_hint) == -1
+    viewport_size = editor.list.viewport().size()
     assert editor.drag_hint.isHidden()
     editor.view.dragging.emit(True)
+    app.processEvents()
     assert not editor.drag_hint.isHidden()
+    assert editor.list.viewport().size() == viewport_size
+    assert editor.drag_hint.geometry().bottom() == editor.list.viewport().height() - 1
     editor.view.dragging.emit(False)
     assert editor.drag_hint.isHidden()
 
@@ -218,6 +290,7 @@ def test_switch_initializes_new_message_and_ignores_old_feedback(editor):
     editor.chat.message_list.append(second)
     editor.update_navigation()
     assert not editor.previous.isEnabled() and editor.next.isEnabled()
+    assert editor.message_count.text() == "1/2"
     old_session = editor.session_id
     windows = (editor.resource_window, editor.timeline_window)
     editor.view.waveform = [1.0]
@@ -227,10 +300,12 @@ def test_switch_initializes_new_message_and_ignores_old_feedback(editor):
     assert editor.view.waveform == []
     assert windows == (editor.resource_window, editor.timeline_window)
     assert editor.previous.isEnabled() and not editor.next.isEnabled()
+    assert editor.message_count.text() == "2/2"
     editor.receive({"session": old_session, "position": 300, "playing": True})
     assert editor.position == 0 and not editor.playing
     editor.switch_message(-1)
     assert editor.message is original
+    assert editor.message_count.text() == "1/2"
 
 
 def test_text_save_is_independent_of_timeline_discard(editor, monkeypatch):
@@ -241,8 +316,15 @@ def test_text_save_is_independent_of_timeline_discard(editor, monkeypatch):
     event = {"at_ms": 800, "resource": {"file_name": "missing"}}
     editor.message.performance_timeline["characters"]["B"]["motions"].append(deepcopy(event))
     editor.draft["characters"]["B"]["motions"].append(event)
+    readonly_parent = editor.text_button.parentWidget()
+    assert editor.text_edit_actions.isHidden()
     editor.toggle_text_edit()
     assert editor.text_button.text() == "保存文本"
+    assert editor.text_button.parentWidget() is editor.text_edit_actions
+    assert editor.discard_text_button.parentWidget() is editor.text_edit_actions
+    assert editor.text_edit_actions.isVisible()
+    assert editor.original_input.isVisible() and editor.translation_input.isVisible()
+    assert editor.dialogue_label.isHidden()
     editor.original_input.setPlainText("短")
     editor.translation_input.setPlainText("新翻译")
     assert editor.save_text()
@@ -251,6 +333,16 @@ def test_text_save_is_independent_of_timeline_discard(editor, monkeypatch):
     assert editor.draft["characters"]["B"]["motions"] == []
     assert editor.message.performance_timeline["characters"]["B"]["motions"] == []
     assert editor.text_button.text() == "编辑文本"
+    assert editor.text_button.parentWidget() is readonly_parent
+    assert editor.text_edit_actions.isHidden()
+    editor.toggle_text_edit()
+    editor.original_input.setPlainText("本次放弃的文本")
+    editor.discard_text_edit()
+    assert editor.message.text == "短"
+    assert editor.original_input.toPlainText() == "短"
+    assert editor.text_button.parentWidget() is readonly_parent
+    assert editor.text_edit_actions.isHidden()
+    assert editor.dialogue_label.isVisible()
     editor.discard()
     assert editor.message.text == "短"
     assert editor.message.translation == "新翻译"
@@ -306,6 +398,8 @@ def test_synthesis_locks_navigation_and_exit_then_unlocks_on_failure(editor):
     editor.regenerate_audio()
     assert editor.audio_busy
     assert not editor.next.isEnabled()
+    assert not editor.previous.isEnabled() and not editor.add_message_button.isEnabled()
+    assert editor.message_count.text() == "1/2"
     editor.switch_message(1)
     editor.save()
     editor.discard()
@@ -315,6 +409,8 @@ def test_synthesis_locks_navigation_and_exit_then_unlocks_on_failure(editor):
     callback(False, "合成失败")
     assert not editor.audio_busy
     assert editor.next.isEnabled()
+    assert editor.add_message_button.isEnabled()
+    assert editor.message_count.text() == "1/2"
     assert editor.message.audio_path == original.audio_path
 
 
