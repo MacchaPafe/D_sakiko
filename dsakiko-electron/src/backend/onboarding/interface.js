@@ -3,6 +3,27 @@ import { fileURLToPath } from 'node:url'
 import { readJson, writeJson, requireValue, SerialQueue, SnapshotBus } from '../core/support.js'
 import { installBuiltinConnection } from '../setup/bindings.js'
 
+/**
+ * @typedef {object} BuiltinForm
+ * @property {string} id 稳定形态身份。
+ * @property {string} directory 模型目录相对于内置包的位置。
+ * @property {string} entry 模型目录内的入口文件。
+ * @property {string} [displayName] 形态显示名，省略时沿用角色名。
+ * @property {string} [description] 本形态人设，省略时沿用角色人设。
+ * @property {string} [modelName] 模型展示名，省略时为“默认”。
+ */
+/**
+ * @typedef {object} BuiltinCharacter
+ * @property {string} id 稳定角色身份。
+ * @property {string} name 角色名。
+ * @property {string} description 兼容旧清单的共用人设。
+ * @property {string | null} themeColor 角色主题色。
+ * @property {string} [defaultFormId] 正式默认形态，旧清单省略时使用第一项。
+ * @property {string} [previewFormId] 欢迎页只读预览形态，不写入正式角色选择。
+ * @property {BuiltinForm[]} forms 内置形态与各自的模型。
+ */
+/** @typedef {{version: 1, characters: BuiltinCharacter[]}} BuiltinManifest 内置资源清单，不包含文件哈希。 */
+
 /** 初始化状态与可选资源任务相互独立，跳过下载后仍可使用文字对话。 */
 export class Onboarding {
   constructor({
@@ -95,6 +116,7 @@ export class Onboarding {
 
   /** 释放缺失内置角色，已有身份或同名角色保持原样，不暴露手动补齐接口。 */
   async ensureBuiltins() {
+    /** @type {BuiltinManifest} */
     const manifest = await readJson(path.join(this.builtinDirectory, 'manifest.json'))
     requireValue(
       manifest?.version === 1,
@@ -122,12 +144,16 @@ export class Onboarding {
           )
           forms.push({
             id: form.id,
-            displayName: role.name,
-            description: role.description,
+            displayName: form.displayName ?? role.name,
+            description: form.description ?? role.description,
             avatar: null,
             themeColor: role.themeColor,
             models: [
-              { id: form.id + '-model', name: '默认', presentation: { model: imported.asset } }
+              {
+                id: form.id + '-model',
+                name: form.modelName ?? '默认',
+                presentation: { model: imported.asset }
+              }
             ],
             defaultModelId: form.id + '-model',
             voice: null
@@ -137,7 +163,8 @@ export class Onboarding {
           id: role.id,
           name: role.name,
           revision: 0,
-          defaultFormId: forms[0].id,
+          // 预览形态只属于欢迎页；正式默认形态不随清单排序或预览选择改变。
+          defaultFormId: role.defaultFormId ?? forms[0].id,
           forms,
           knowledgeMappings: [],
           extensions: {}

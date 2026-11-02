@@ -11,3 +11,6 @@ coverage
 
 python/vendor/
 src/renderer/public/
+
+# 保持第三方模型原始内容，避免批量格式化资源文件。
+resources/builtin-characters/

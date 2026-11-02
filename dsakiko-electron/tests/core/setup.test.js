@@ -102,6 +102,9 @@ async function done(setup, id) {
 
 test('快速初始化幂等释放三个角色，语音保持可选，UP 凭据不进入公开状态', async () => {
   const { backend } = await fixture({ builtinConnection: { secret: 'builtin-test-secret' } })
+  await backend.onboarding.getState()
+  expect(await backend.characters.list()).toEqual([])
+  expect(Object.keys((await backend.assets.state()).assets)).toHaveLength(0)
   const initial = await backend.onboarding.begin({ path: 'quick' })
   expect(initial.stage).toBe('optional-resources')
   expect(await backend.characters.list()).toHaveLength(3)
@@ -110,13 +113,82 @@ test('快速初始化幂等释放三个角色，语音保持可选，UP 凭据�
     'white'
   ])
   expect((await backend.characters.get('anon')).forms[0].voice).toBeNull()
+  const sakiko = await backend.characters.get('sakiko')
+  expect(sakiko.defaultFormId).toBe('black')
+  expect(sakiko.forms.find((form) => form.id === 'white').description).toContain('当前形态：白祥')
+  expect(sakiko.forms.find((form) => form.id === 'black').description).toContain('当前形态：黑祥')
+  for (const id of ['sakiko', 'anon', 'soyo']) {
+    const character = await backend.characters.get(id)
+    for (const form of character.forms) {
+      const asset = form.models[0].presentation.model
+      const filename = await backend.assets.localPath(asset)
+      expect(filename).toMatch(/\.model3\.json$/)
+      expect(filename).not.toContain('_mask')
+      const capabilities = await backend.characters.resolveCapabilities(id, { formId: form.id })
+      expect(capabilities.modelVersion).toBe('v3')
+      expect(capabilities.problems).toEqual([])
+    }
+  }
   await backend.onboarding.finish()
   await backend.onboarding.begin({ path: 'quick' })
   expect(await backend.characters.list()).toHaveLength(3)
+  expect(Object.keys((await backend.assets.state()).assets)).toHaveLength(4)
   expect(JSON.stringify(await backend.onboarding.getState())).not.toContain('builtin-test-secret')
   expect((await backend.settings.get()).generation.connectionId).toBe('builtin-up')
   expect((await backend.onboarding.acknowledgeNotice()).notice).toBeNull()
 }, 15000)
+
+test('内置形态元数据不依赖排序，旧清单仍沿用首形态和共用人设', async () => {
+  const { root, backend } = await fixture()
+  const directory = path.join(root, 'builtin')
+  await put(directory, 'model/model.model3.json', JSON.stringify({ Version: 3 }))
+  const model = { directory: 'model', entry: 'model.model3.json' }
+  await put(
+    directory,
+    'manifest.json',
+    JSON.stringify({
+      version: 1,
+      characters: [
+        {
+          id: 'forms',
+          name: '双形态',
+          description: '共用描述',
+          themeColor: null,
+          defaultFormId: 'black',
+          previewFormId: 'white',
+          forms: [
+            {
+              id: 'white',
+              ...model,
+              displayName: '白祥',
+              description: '白祥语气',
+              modelName: '常服'
+            },
+            { id: 'black', ...model, description: '黑祥语气' }
+          ]
+        },
+        {
+          id: 'old',
+          name: '旧格式',
+          description: '旧人设',
+          themeColor: null,
+          forms: [{ id: 'first', ...model }]
+        }
+      ]
+    })
+  )
+  backend.onboarding.builtinDirectory = directory
+  await backend.onboarding.begin({ path: 'quick' })
+  const character = await backend.characters.get('forms')
+  expect(character.defaultFormId).toBe('black')
+  expect(character.forms[0]).toMatchObject({ displayName: '白祥', description: '白祥语气' })
+  expect(character.forms[0].models[0].name).toBe('常服')
+  expect(character.forms[1]).toMatchObject({ displayName: '双形态', description: '黑祥语气' })
+  const old = await backend.characters.get('old')
+  expect(old.defaultFormId).toBe('first')
+  expect(old.forms[0]).toMatchObject({ displayName: '旧格式', description: '旧人设' })
+  expect(old.forms[0].models[0].name).toBe('默认')
+})
 
 test('旧版扫描、导入、重启重试不重复角色和聊天，密钥只留私有配置', async () => {
   const { root, roots, backend } = await fixture()

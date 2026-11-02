@@ -21,3 +21,5 @@ python/vendor/**/__pycache__/
 !python/vendor/**/LICENSE
 
 .pnpm-store/**
+# 大的角色文件不该提交到 git
+resources/builtin-characters/**
