@@ -1,0 +1,228 @@
+{
+  "voices": {
+    "schemaVersion": 1,
+    "packageId": "character-voices",
+    "version": "1.0.0",
+    "createdAt": "2026-11-01T15:22:00.323Z",
+    "components": [
+      {
+        "id": "voice.anon",
+        "version": "1.0.0",
+        "metadata": "anon/voice.json",
+        "requires": [
+          "gsv.shared",
+          "gsv.v2ProPlus",
+          "gsv.runtime"
+        ]
+      },
+      {
+        "id": "voice.soyo",
+        "version": "1.0.0",
+        "metadata": "soyo/voice.json",
+        "requires": [
+          "gsv.shared",
+          "gsv.v2ProPlus",
+          "gsv.runtime"
+        ]
+      },
+      {
+        "id": "voice.sakiko",
+        "version": "1.0.0",
+        "metadata": "sakiko/voice.json",
+        "requires": [
+          "gsv.shared",
+          "gsv.v2ProPlus",
+          "gsv.runtime"
+        ]
+      }
+    ],
+    "files": [
+      {
+        "path": "anon/anon_X.wav_0008742720_0008876160.wav",
+        "sizeBytes": 266924,
+        "sha256": "513d40f5e7554f3eecfc5d79c47dc8022e6fffbd9d69efb8a965e0fc75813a28"
+      },
+      {
+        "path": "anon/GPT-SoVITS_models/anon_v2pp_e8_s392.pth",
+        "sizeBytes": 172765363,
+        "sha256": "3ac1987a6e3eaae6f2b30a98e591e806ceab4238713bc22e9aea86e4d154c05e"
+      },
+      {
+        "path": "anon/GPT-SoVITS_models/anon_v2pp-e15.ckpt",
+        "sizeBytes": 155313312,
+        "sha256": "24a306c8cd1817ceda7b644739c9f92ecd2a2d53ea8d7f861b093475a5b93197"
+      },
+      {
+        "path": "anon/voice.json",
+        "sizeBytes": 1995,
+        "sha256": "60ec51e79d747f161c80bf79e63829da03b3a39028e6e980a31f4a14afcf0be2"
+      },
+      {
+        "path": "sakiko/black_sakiko.wav",
+        "sizeBytes": 427564,
+        "sha256": "451e721bacb1fda40960e61b3d35277b31840fabe4031322d7ed16fbfafae342"
+      },
+      {
+        "path": "sakiko/GPT-SoVITS_models/sakiko_v2pp_e8_s520.pth",
+        "sizeBytes": 172765363,
+        "sha256": "69d7a2e9163467099151acb16b09fab2b56ee04057fda38446b868bd1abb759d"
+      },
+      {
+        "path": "sakiko/GPT-SoVITS_models/sakiko_v2pp-e15.ckpt",
+        "sizeBytes": 155313075,
+        "sha256": "da684e318fe5f6b6746429d544063db6fd46a61e8e482c8c73c1fe23e56b00f1"
+      },
+      {
+        "path": "sakiko/voice.json",
+        "sizeBytes": 768,
+        "sha256": "54eefa2a83bdeb463b4b7082eb7711c65f7cd8d95018e2b4d197ba1661d73af4"
+      },
+      {
+        "path": "sakiko/white_sakiko.wav",
+        "sizeBytes": 388524,
+        "sha256": "ab64e1a9fed1f144c00ff80d427dd6d91f014b19bd69a421eedaa32bed2a3dc2"
+      },
+      {
+        "path": "soyo/GPT-SoVITS_models/soyo_v2pp_e8_s560.pth",
+        "sizeBytes": 172765363,
+        "sha256": "dbf2a1707046e79011ac3323b170b7f6be63f6eeee3e2fc10d88f75713635d87"
+      },
+      {
+        "path": "soyo/GPT-SoVITS_models/soyo_v2pp-e15.ckpt",
+        "sizeBytes": 155313312,
+        "sha256": "569caaf62a51400b31bef6a123e151db9b71fede2c82ec01633439ccd7eb64d7"
+      },
+      {
+        "path": "soyo/soyo (12).wav2.wav",
+        "sizeBytes": 357804,
+        "sha256": "3e0dd8cbdd5ab853b09cad93b68b18eee07fd868b075d984d502f8cc43bd3eaf"
+      },
+      {
+        "path": "soyo/soyo (62).wav",
+        "sizeBytes": 407724,
+        "sha256": "4bc07353b706f565f702c3bc0c33b4991266c821f06e39d8a5325f5849403fc4"
+      },
+      {
+        "path": "soyo/voice.json",
+        "sizeBytes": 2490,
+        "sha256": "a411814a1ad78b373843ce379c332aafb64ca27de9e02facff35697ef37af955"
+      }
+    ],
+    "totalPayloadBytes": 986089581,
+    "note": "路径相对于本声明所在目录；files 不包含 release.json 本身。"
+  },
+  "asr": {
+    "schemaVersion": 1,
+    "packageId": "asr.whisper-small-q8",
+    "version": "1.0.0",
+    "createdAt": "2026-11-01T15:22:00.499Z",
+    "components": [
+      {
+        "id": "asr.whisper-small-q8",
+        "version": "1.0.0",
+        "requires": [
+          "asr.runtime"
+        ]
+      }
+    ],
+    "files": [
+      {
+        "path": "added_tokens.json",
+        "sizeBytes": 34604,
+        "sha256": "9715fd2243b6f06a5858b5e32950d2853f73dd5bc201aafcf76f5082a2d8acd1"
+      },
+      {
+        "path": "config.json",
+        "sizeBytes": 2227,
+        "sha256": "457854d452f17661e197d74aee12b8e74fb75ba30ebfaa7426d0d61ea1e08a18"
+      },
+      {
+        "path": "generation_config.json",
+        "sizeBytes": 3893,
+        "sha256": "f538b28220c6a6d6f1af1458d4141cacb4ef4963df3de98a19490440c412ddf0"
+      },
+      {
+        "path": "merges.txt",
+        "sizeBytes": 493869,
+        "sha256": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6"
+      },
+      {
+        "path": "normalizer.json",
+        "sizeBytes": 52666,
+        "sha256": "bf1c507dc8724ca9cf9903640dacfb69dae2f00edee4f21ceba106a7392f26dd"
+      },
+      {
+        "path": "onnx/decoder_model_merged_quantized.onnx",
+        "sizeBytes": 156750845,
+        "sha256": "ec07c3cbb64172c39791e26ee870a65ac22b458c36722bfe2776b3dbf741e0c9"
+      },
+      {
+        "path": "onnx/encoder_model_quantized.onnx",
+        "sizeBytes": 92326160,
+        "sha256": "a43a83f3c5361cd591cfa7c36f14b43cf7cb22f47a415cc14a8d557be800fa92"
+      },
+      {
+        "path": "preprocessor_config.json",
+        "sizeBytes": 339,
+        "sha256": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d"
+      },
+      {
+        "path": "provenance/APACHE-2.0.txt",
+        "sizeBytes": 11358,
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      {
+        "path": "provenance/OPENAI_WHISPER_LICENSE.txt",
+        "sizeBytes": 1063,
+        "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+      },
+      {
+        "path": "provenance/UPSTREAM_MODEL_CARD.md",
+        "sizeBytes": 20153,
+        "sha256": "967fa44eefe5d3436e040b0f171fc54da67aad96923bae10af37dac9be5bb6b0"
+      },
+      {
+        "path": "provenance/UPSTREAM_ONNX_README.md",
+        "sizeBytes": 533,
+        "sha256": "32beef908082737f4f48dc6cdbbf7774667a7e48740ce6bf0f686d37e4cfab81"
+      },
+      {
+        "path": "quantize_config.json",
+        "sizeBytes": 10126,
+        "sha256": "6e0e27f293a5c17ff2ca8046f06079c0120aa2ede6456faac8ec4b3203471a55"
+      },
+      {
+        "path": "README.md",
+        "sizeBytes": 721,
+        "sha256": "ac8858a2e74542718eaa22dc188072ab6f9fccbcc07df2e48037f5e74f911ef4"
+      },
+      {
+        "path": "source.json",
+        "sizeBytes": 883,
+        "sha256": "0313ed173a99f6f5f9c992ba5a4f3ff36b8dd09c89813a60d07b707d56de2bac"
+      },
+      {
+        "path": "special_tokens_map.json",
+        "sizeBytes": 2194,
+        "sha256": "e67ae3a0aaa99abcd9f187138e12db1f65c16a14761c50ef10eef2c174a7a691"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "sizeBytes": 282683,
+        "sha256": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce"
+      },
+      {
+        "path": "tokenizer.json",
+        "sizeBytes": 2480466,
+        "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566"
+      },
+      {
+        "path": "vocab.json",
+        "sizeBytes": 1036584,
+        "sha256": "50d6a919f0a0601d56a04eb583c780d18553aa388254ba3158eb6a00f13e2c1a"
+      }
+    ],
+    "totalPayloadBytes": 253511367,
+    "note": "路径相对于本声明所在目录；files 不包含 release.json 本身。"
+  }
+}

@@ -9,14 +9,19 @@ import sys
 import traceback
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Dict, Optional, Tuple, cast
+from typing import Dict, Optional, Tuple, Union, cast
 
 from .contracts import SpeechRequest, VoiceProfile
-from .gpt_sovits_resources import GptSovitsResources, configure_text_resources
+from .gpt_sovits_resources import GptSovitsResources, GptSovitsResourceSet, configure_text_resources
 from .runtime import remove_runtime_path
 
 
-def worker_main(pipe: Connection, voice: VoiceProfile, resources: GptSovitsResources, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
+def prohibit_nltk_download(*args: object, **kwargs: object) -> bool:
+    """离线推理不得隐式联网，缺少词典时交给资源模块重新准备。"""
+    raise RuntimeError("缺少 NLTK 语言资源，请在附加资源页面重新准备语音合成资源")
+
+
+def worker_main(pipe: Connection, voice: VoiceProfile, resources: Union[GptSovitsResources, GptSovitsResourceSet], device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
     """在隔离进程加载复制的推理代码，仅从外部位置读取权重。"""
     try:
         vendor = Path(__file__).resolve().parents[1] / "vendor" / "gpt_sovits"
@@ -24,7 +29,6 @@ def worker_main(pipe: Connection, voice: VoiceProfile, resources: GptSovitsResou
         runtime.mkdir(parents=True, exist_ok=True)
         os.chdir(runtime)
         sys.path.insert(0, str(vendor))
-        configure_text_resources(resources)
         os.environ["MPLCONFIGDIR"] = str(runtime / "matplotlib")
         os.environ["XDG_CACHE_HOME"] = str(runtime / "cache")
         os.environ["HF_HUB_OFFLINE"] = "1"
@@ -33,9 +37,16 @@ def worker_main(pipe: Connection, voice: VoiceProfile, resources: GptSovitsResou
         import torch
         import soundfile
         import pyopenjtalk
+        import nltk
+        nltk.download = prohibit_nltk_download
+        nltk_directory = os.environ.get("NLTK_DATA")
+        if nltk_directory:
+            nltk.data.path[:] = [nltk_directory]
+        dictionary = os.environ.get("OPEN_JTALK_DICT_DIR")
+        if dictionary:
+            pyopenjtalk.OPEN_JTALK_DICT_DIR = os.fsencode(dictionary)
         if not Path(os.fsdecode(pyopenjtalk.OPEN_JTALK_DICT_DIR)).is_dir():
             raise RuntimeError("Python 环境缺少 Open JTalk 字典，请先准备日语词典再启动语音")
-        from TTS_infer_pack.TTS import TTS, TTS_Config
         from process_ckpt import get_sovits_version_from_path_fast
 
         torch.set_num_threads(2)
@@ -44,8 +55,12 @@ def worker_main(pipe: Connection, voice: VoiceProfile, resources: GptSovitsResou
         if device == "mps" and not torch.backends.mps.is_available():
             raise RuntimeError("配置了 MPS，但设备不可用")
         version = get_sovits_version_from_path_fast(voice.sovits_weights_path)[1]
-        if version != architecture:
+        if isinstance(resources, GptSovitsResourceSet):
+            resources = resources.select(version)
+        elif version != architecture:
             raise RuntimeError("权重结构与固定启动配置不一致")
+        configure_text_resources(resources)
+        from TTS_infer_pack.TTS import TTS, TTS_Config
         if precision == "float16" and device != "cuda":
             raise RuntimeError("当前设备不支持本实现的半精度推理")
         config = TTS_Config({
@@ -95,7 +110,7 @@ def worker_main(pipe: Connection, voice: VoiceProfile, resources: GptSovitsResou
 class ProcessWorker:
     """主进程通过轮询管道等待结果，加载模型期间控制接口仍可响应。"""
 
-    def __init__(self, voice: VoiceProfile, resources: GptSovitsResources, device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
+    def __init__(self, voice: VoiceProfile, resources: Union[GptSovitsResources, GptSovitsResourceSet], device: str, directory: str, precision: str = "float32", architecture: str = "v2") -> None:
         """创建受预算约束的单模型进程。"""
         context = multiprocessing.get_context("spawn")
         self.pipe, child = context.Pipe()

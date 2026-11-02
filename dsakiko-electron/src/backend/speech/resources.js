@@ -10,8 +10,8 @@ export class SpeechResources {
    * 取得本次启动的文件快照；不创建目录视图，也不复制模型。
    * @returns {Promise<object>} 启动配置、显式文件清单和进程引用回调。
    */
-  async acquire() {
-    const { startup, files, owner } = await this.settings.acquireSpeechResources()
+  async acquire(options = {}) {
+    const { startup, files, owner } = await this.settings.acquireSpeechResources(options)
     const releaseResources = (confirmedPid = null) =>
       this.assets.releaseProcessOwner(owner, confirmedPid)
     const resolve = async (value) => {
@@ -25,9 +25,25 @@ export class SpeechResources {
       return Object.fromEntries(entries)
     }
     try {
+      let resolved
+      if (options.allArchitectures) {
+        resolved = { shared: await resolve(files.shared), versions: {} }
+        for (const [version, entries] of Object.entries(files.versions)) {
+          try {
+            resolved.versions[version] = await resolve(entries)
+          } catch (error) {
+            this.assets.reportMaintenance(error)
+          }
+        }
+        requireValue(
+          Object.keys(resolved.versions).length > 0,
+          'missing_resources',
+          '可用的 GPT-SoVITS 架构资源已离线，请重新准备。'
+        )
+      } else resolved = await resolve(files)
       return {
         ...startup,
-        gptSovits: { ...startup.gptSovits, resources: await resolve(files) },
+        gptSovits: { ...startup.gptSovits, resources: resolved },
         releaseResources,
         bindResources: (pid, group) => this.assets.bindOwnerProcess(owner, pid, group)
       }

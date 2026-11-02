@@ -1,4 +1,4 @@
-# 单包工程也使用此文件保存 pnpm 11 的项目设置。
+# 单包工程也使用此文件保存 pnpm 的项目设置。
 packages: []
 # 使用普通依赖目录，方便 Electron 安装包收集运行时依赖。
 nodeLinker: hoisted

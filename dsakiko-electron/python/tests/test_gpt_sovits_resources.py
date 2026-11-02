@@ -17,7 +17,7 @@ sys.path.insert(0, str(PYTHON_ROOT))
 sys.path.insert(0, str(PYTHON_ROOT / "vendor" / "gpt_sovits"))
 
 from speech.gpt_sovits_resources import (
-    GptSovitsResources, load_bert, load_hubert,
+    GptSovitsResources, GptSovitsResourceSet, load_bert, load_hubert,
 )
 
 
@@ -46,6 +46,28 @@ def manifest_at(root: Path) -> Dict[str, object]:
 
 class ResourceManifestTests(unittest.TestCase):
     """无需推理依赖即可在启动前报告明确的资源问题。"""
+
+    def test_multi_architecture_selection_and_partial_availability(self) -> None:
+        """同一资源快照可分别支持 v4 和 v2ProPlus，缺失一组不会串用另一组。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shared = manifest_at(root)
+            vocoder = root / "vocoder"
+            encoder = root / "speaker_encoder"
+            vocoder.write_bytes(b"v4")
+            encoder.write_bytes(b"v2ProPlus")
+            manifest: Dict[str, object] = {
+                "shared": shared,
+                "versions": {"v4": {"vocoder": str(vocoder)}, "v2ProPlus": {"speakerEncoder": str(encoder)}},
+            }
+            resources = GptSovitsResourceSet.parse(manifest)
+            self.assertEqual(resources.select("v4").vocoder, str(vocoder.resolve()))
+            self.assertEqual(resources.select("v2ProPlus").speaker_encoder, str(encoder.resolve()))
+            vocoder.unlink()
+            partial = GptSovitsResourceSet.parse(manifest)
+            self.assertEqual(partial.select("v2ProPlus").speaker_encoder, str(encoder.resolve()))
+            with self.assertRaisesRegex(ValueError, "缺少 v4"):
+                partial.select("v4")
 
     def test_scattered_files_and_optional_architecture_resources(self) -> None:
         """清单不要求共同目录，额外架构文件按需求检查。"""

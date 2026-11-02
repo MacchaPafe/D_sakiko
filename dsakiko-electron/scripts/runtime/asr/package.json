@@ -1,0 +1,14 @@
+{
+  "name": "dsakiko-asr-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "allowScripts": {
+    "onnxruntime-node": true,
+    "protobufjs": true,
+    "sharp": true
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1",
+    "onnxruntime-node": "1.21.0"
+  }
+}

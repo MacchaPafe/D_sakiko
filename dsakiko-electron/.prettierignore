@@ -5,6 +5,7 @@ LICENSE.md
 LICENSE
 python/uv.lock
 node_modules
+.runtime-build
 test-results
 coverage
 

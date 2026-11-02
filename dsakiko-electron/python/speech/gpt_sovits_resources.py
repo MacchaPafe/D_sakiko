@@ -72,6 +72,44 @@ class G2pwFiles:
 
 
 @dataclass(frozen=True)
+class GptSovitsResourceSet:
+    """固定启动时可用的多架构资源，角色权重在独立 worker 中选择对应集合。"""
+
+    versions: Dict[str, GptSovitsResources]
+
+    @classmethod
+    def parse(cls, value: object) -> GptSovitsResourceSet:
+        """逐个验证架构，缺失 v4 配套资源不会阻止已完整的 v2ProPlus。"""
+        manifest = object_value(value, "manifest")
+        if set(manifest) != {"shared", "versions"}:
+            raise ValueError("GPT-SoVITS 多架构清单字段无效")
+        shared = object_value(manifest["shared"], "shared")
+        versions = object_value(manifest["versions"], "versions")
+        parsed: Dict[str, GptSovitsResources] = {}
+        for architecture, resources in versions.items():
+            if architecture not in ("v1", "v2", "v2Pro", "v2ProPlus", "v4"):
+                raise ValueError("不支持的 GPT-SoVITS 架构")
+            combined = dict(shared)
+            version_files = object_value(resources, architecture)
+            if set(version_files) - {"baseSovits", "vocoder", "speakerEncoder"}:
+                raise ValueError("GPT-SoVITS 架构资源包含未知用途")
+            combined.update(version_files)
+            try:
+                parsed[architecture] = GptSovitsResources.parse(combined, architecture)
+            except ValueError:
+                continue
+        if not parsed:
+            raise ValueError("没有完整可用的 GPT-SoVITS 架构资源")
+        return cls(parsed)
+
+    def select(self, architecture: str) -> GptSovitsResources:
+        """只使用实际权重对应的资源，禁止猜测或回退到另一架构。"""
+        if architecture not in self.versions:
+            raise ValueError(f"缺少 {architecture} 配套资源，请先下载语音合成资源")
+        return self.versions[architecture]
+
+
+@dataclass(frozen=True)
 class GptSovitsResources:
     """一个进程固定的资源快照，角色权重仍随任务提供。"""
 

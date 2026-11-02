@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple, cast
 from .contracts import SchedulerConfig, SpeechRequest, SpeechSampling, VoiceProfile
 from .scheduler import RequestError, Scheduler
 from .worker import ProcessWorker
-from .gpt_sovits_resources import GptSovitsResources
+from .gpt_sovits_resources import GptSovitsResources, GptSovitsResourceSet
 from .heartbeat import HostProbe, probe_host, watch_host
 from .runtime import RunDirectory, process_exists
 
@@ -96,7 +96,7 @@ async def serve(args: argparse.Namespace) -> None:
         raise ValueError("GPT-SoVITS 设备或精度无效")
     if precision == "float16" and device != "cuda":
         raise ValueError("当前设备不支持本实现的半精度推理")
-    resources = GptSovitsResources.parse(startup["resources"], architecture)
+    resources = GptSovitsResourceSet.parse(startup["resources"]) if architecture == "auto" else GptSovitsResources.parse(startup["resources"], architecture)
     host_pid = int(os.environ.get("DSAKIKO_SPEECH_HOST_PID", str(os.getppid())))
     runtime = RunDirectory.create(Path(args.output), host_pid)
     output = runtime.path

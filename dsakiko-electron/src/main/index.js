@@ -1,6 +1,8 @@
 import { installSingleInstance } from './single-instance.js'
 import { app, dialog, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+import { readJson } from '../backend/core/support.js'
 import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { resolveDataDirectories, validateDataDirectories } from './data-directories.js'
@@ -33,12 +35,34 @@ function checkSender(event) {
 async function startApplication() {
   app.setName('D_Sakiko')
   const pythonRoot = join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'python')
+  const resourcesRoot = join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'resources')
+  const builtinConnection = await readJson(join(resourcesRoot, 'builtin-connection.json'))
   speechProcess = new SpeechProcess(pythonRoot, directories.cacheRoot, async () => {
-    const startup = await backend.speechResources.acquire()
+    const runtime =
+      process.env.DSAKIKO_PYTHON && !app.isPackaged
+        ? null
+        : await backend.setup.acquireRuntime('gsv')
+    let startup
+    try {
+      startup = await backend.speechResources.acquire({ allArchitectures: true })
+    } catch (error) {
+      await runtime?.releaseResources()
+      throw error
+    }
     return {
       ...startup,
+      runtimeEnvironment: runtime?.environment ?? {},
+      managedRuntime: !!runtime,
+      bindResources: async (pid, group) => {
+        await startup.bindResources(pid, group)
+        await runtime?.bindResources(pid, group)
+      },
+      releaseResources: async (pid) => {
+        await startup.releaseResources(pid)
+        await runtime?.releaseResources(pid)
+      },
       hostProbe: transport.healthProbe,
-      pythonExecutable: process.env.DSAKIKO_PYTHON || 'python3',
+      pythonExecutable: runtime?.pythonExecutable ?? process.env.DSAKIKO_PYTHON,
       assetsRoot: directories.resourceLibraryRoot,
       maxConcurrent: startup.maxConcurrentInferences,
       maxResident: startup.maxResidentModels
@@ -46,11 +70,17 @@ async function startApplication() {
   })
   backend = await createCoreBackend({
     ...directories,
-    recognitionModelDirectory:
-      process.env.DSAKIKO_ASR_MODEL ||
-      (app.isPackaged
-        ? join(directories.resourceLibraryRoot, 'asr/whisper-small')
-        : join(app.getAppPath(), '.local/models/whisper-small')),
+    setupOptions: { catalogDirectory: join(resourcesRoot, 'setup') },
+    builtinDirectory: join(resourcesRoot, 'builtin-characters'),
+    builtinConnection,
+    recognitionModelDirectory: app.isPackaged
+      ? undefined
+      : process.env.DSAKIKO_ASR_MODEL || join(app.getAppPath(), '.local/models/whisper-small'),
+    recognitionDependencyEntry: app.isPackaged
+      ? undefined
+      : createRequire(import.meta.url)
+          .resolve('@huggingface/transformers')
+          .replace(/\.cjs$/, '.mjs'),
     recognitionWorkerPath: join(app.getAppPath(), 'out/main/recognition-worker.js'),
     connectSpeech: () => speechProcess.connect(),
     templateDirectory: join(app.getAppPath(), 'out/main/prompts')
@@ -62,6 +92,15 @@ async function startApplication() {
   ipcMain.handle('host:backend-connection', (event) => {
     checkSender(event)
     return { baseUrl: transport.baseUrl, token: transport.token }
+  })
+  ipcMain.handle('host:select-legacy-directory', async (event) => {
+    checkSender(event)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+      title: '选择 Python 旧版本文件夹'
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    return backend.setup.grantLegacySource(result.filePaths[0])
   })
   ipcMain.handle('host:runtime-info', (event) => {
     checkSender(event)

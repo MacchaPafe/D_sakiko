@@ -1,4 +1,7 @@
 import { SpeechResources } from './speech/resources.js'
+import { ResourceSetup } from './setup/interface.js'
+import { Onboarding } from './onboarding/interface.js'
+import { PythonChatImporter } from './storage/python-import-interface.js'
 import { ResourceImports } from './resources/imports.js'
 import { RemoteFiles } from './remote-files/interface.js'
 import { createFileAdapter } from './remote-files/adapter.js'
@@ -26,6 +29,8 @@ import { failure, uuid } from './core/support.js'
  * @property {RemoteFiles} remoteFiles 后端私有的远端上传与清理记录。
  * @property {SpeechResources} speechResources GPT-SoVITS 显式文件路径与运行引用。
  * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
+ * @property {ResourceSetup} setup 附加资源计划、持久任务、旧版导入与独立运行环境。
+ * @property {Onboarding} onboarding 初始化路径、内置角色释放和主页提示状态。
  * @property {ChatStore} store 对话存档管理。
  * @property {Performance} performance 演出时间线与状态管理。
  * @property {Speech} speech 语音合成任务管理。
@@ -68,6 +73,10 @@ export async function createCoreBackend({
   templateDirectory,
   recognitionModelDirectory,
   recognitionWorkerPath,
+  recognitionDependencyEntry,
+  setupOptions = {},
+  builtinDirectory,
+  builtinConnection,
   fetch: transport = fetch
 } = {}) {
   const assets = new MediaAssets({ appDataRoot, resourceLibraryRoot, cacheRoot })
@@ -94,7 +103,45 @@ export async function createCoreBackend({
     assets
   })
   const store = new ChatStore({ directory: path.join(appDataRoot, 'chats'), assets })
+  const pythonImporter = new PythonChatImporter({ assets, store, characters })
+  const setup = new ResourceSetup({
+    appDataRoot,
+    resourceLibraryRoot,
+    cacheRoot,
+    assets,
+    settings,
+    characters,
+    store,
+    fetch: transport,
+    builtinConnection,
+    ...setupOptions,
+    importChats: async (scan, refs, mapping, signal) => {
+      const drafts = await pythonImporter.read(scan, refs, mapping, signal)
+      for (const chat of drafts.chats) {
+        signal.throwIfAborted()
+        await store.save(chat)
+      }
+      return drafts
+    }
+  })
+  const onboarding = new Onboarding({
+    appDataRoot,
+    setup,
+    assets,
+    settings,
+    characters,
+    builtinDirectory,
+    builtinConnection
+  })
+  recognition.acquireRuntime = recognitionModelDirectory
+    ? async () => ({
+        modelDirectory: recognitionModelDirectory,
+        entry: recognitionDependencyEntry,
+        releaseResources: async () => {}
+      })
+    : () => setup.acquireRuntime('asr')
   await assets.initialize()
+  await setup.initialize()
   await store.cleanupVersions()
   const remoteFiles = new RemoteFiles({
     directory: path.join(appDataRoot, 'remote-files'),
@@ -202,6 +249,7 @@ export async function createCoreBackend({
     maintenanceTask = (async () => {
       try {
         await assets.maintain()
+        await setup.maintain()
         await remoteFiles.collectUnused()
       } catch (error) {
         assets.reportMaintenance(error)
@@ -214,6 +262,8 @@ export async function createCoreBackend({
   const maintenance = setInterval(maintain, 30000)
   maintenance.unref()
   return {
+    setup,
+    onboarding,
     recognition,
     remoteFiles,
     imports,
@@ -235,6 +285,8 @@ export async function createCoreBackend({
     async close() {
       clearInterval(timer)
       clearInterval(maintenance)
+      await setup.close()
+      await onboarding.close()
       await conversations.close()
       await recognition.close()
       await modelCatalog.close()

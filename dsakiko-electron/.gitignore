@@ -13,6 +13,8 @@ test-results/
 __pycache__/
 *.pyc
 .local/
+.runtime-build/
+/resources/builtin-connection.json
 
 python/vendor/**/__pycache__/
 !LICENSE

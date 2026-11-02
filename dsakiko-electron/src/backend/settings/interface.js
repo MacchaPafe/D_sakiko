@@ -165,11 +165,24 @@ export class Settings {
   }
 
   /** 在设置锁内交接 Python 启动材料，设置更换不能提前释放旧进程所需资源。 */
-  async acquireSpeechResources() {
+  async acquireSpeechResources({ allArchitectures = false } = {}) {
     return this.queue.run('settings', async () => {
       const startup = (await this.get()).speechStartup
       const { resources, architecture } = startup.gptSovits
-      const { files, missing } = selectGptSovitsFiles(resources, architecture)
+      let { files, missing } = selectGptSovitsFiles(resources, architecture)
+      if (allArchitectures) {
+        const available = Object.keys(resources.versions).filter(
+          (version) => selectGptSovitsFiles(resources, version).missing.length === 0
+        )
+        requireValue(available.length > 0, 'missing_resources', '尚未准备可用的 GPT-SoVITS 资源。')
+        files = {
+          shared: resources.shared,
+          versions: Object.fromEntries(
+            available.map((version) => [version, resources.versions[version]])
+          )
+        }
+        missing = []
+      }
       requireValue(
         missing.length === 0,
         'missing_resources',
@@ -179,7 +192,13 @@ export class Settings {
         'speech-base',
         extractAssetReferences(files)
       )
-      return { startup, files, owner }
+      return {
+        startup: allArchitectures
+          ? { ...startup, gptSovits: { ...startup.gptSovits, architecture: 'auto' } }
+          : startup,
+        files,
+        owner
+      }
     })
   }
 

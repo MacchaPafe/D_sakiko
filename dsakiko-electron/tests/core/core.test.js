@@ -233,7 +233,7 @@ test('真实 HTTP/WS 与前端封装；凭据隔离和路由白名单', async ()
   expect(await client.recognition.cancel('nonexistent')).toBe(false)
   await expect(client.recognition.prepare()).rejects.toHaveProperty(
     'problem.code',
-    'recognition_model_missing'
+    'runtime_not_installed'
   )
   await expect(client.call('recognition', 'startChild', ['/tmp/model'])).rejects.toHaveProperty(
     'problem.code',

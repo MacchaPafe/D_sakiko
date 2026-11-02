@@ -90,6 +90,13 @@ export class Recognition {
   async startChild(signal) {
     await this.stopping
     if (this.child) return
+    await this.runtime?.releaseResources?.()
+    this.runtime = null
+    if (this.acquireRuntime) {
+      this.runtime = await this.acquireRuntime()
+      this.modelDirectory = this.runtime.modelDirectory
+      this.dependencyEntry = this.runtime.entry
+    }
     requireValue(
       path.isAbsolute(this.modelDirectory),
       'recognition_model_missing',
@@ -106,11 +113,12 @@ export class Recognition {
     }
     signal.throwIfAborted()
     const child = fork(this.workerPath, [], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_PATH: '', NODE_OPTIONS: '' },
       execArgv: [],
       stdio: ['ignore', 'ignore', 'ignore', 'ipc']
     })
     this.child = child
+    await this.runtime?.bindResources?.(child.pid)
     child.on('error', () => {})
     child.once('exit', () => {
       if (this.child === child) this.child = null
@@ -155,9 +163,18 @@ export class Recognition {
       child.once('error', failed)
       child.once('exit', exited)
       signal.addEventListener('abort', aborted, { once: true })
-      child.send({ id, kind, modelDirectory: this.modelDirectory, ...payload }, (error) => {
-        if (error) failed()
-      })
+      child.send(
+        {
+          id,
+          kind,
+          modelDirectory: this.modelDirectory,
+          dependencyEntry: this.dependencyEntry,
+          ...payload
+        },
+        (error) => {
+          if (error) failed()
+        }
+      )
     })
   }
 
@@ -217,13 +234,19 @@ export class Recognition {
     const child = this.child
     this.child = null
     this.progress = null
-    if (!child) return
+    if (!child) {
+      await this.runtime?.releaseResources?.()
+      this.runtime = null
+      return
+    }
     this.stopping = new Promise((resolve) => {
       if (child.exitCode !== null || child.signalCode !== null) return resolve()
       child.once('exit', resolve)
       child.kill('SIGKILL')
     })
     await this.stopping
+    await this.runtime?.releaseResources?.(child.pid)
+    this.runtime = null
     this.stopping = null
     if (!this.closed) this.state = 'idle'
   }

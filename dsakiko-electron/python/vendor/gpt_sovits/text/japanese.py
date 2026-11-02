@@ -1,5 +1,7 @@
 # 原始代码来自：https://github.com/RVC-Boss/GPT-SoVITS/blob/main/GPT_SoVITS/text/japanese.py
 # modified from https://github.com/CjangCjengh/vits/blob/main/text/japanese.py
+from __future__ import annotations
+
 import re
 import os
 import hashlib
@@ -58,10 +60,18 @@ try:
     USERDIC_CSV_PATH = os.path.join(current_file_path, "ja_userdic", "userdict.csv")
     USERDIC_BIN_PATH = os.path.join(current_file_path, "ja_userdic", "user.dict")
     USERDIC_HASH_PATH = os.path.join(current_file_path, "ja_userdic", "userdict.md5")
+    # 应用源码只读；各 worker 的用户词典编译产物写入自己的缓存目录。
+    userdict_cache = os.environ.get("DSAKIKO_TEXT_CACHE_DIR")
+    if userdict_cache:
+        userdict_cache = os.path.join(userdict_cache, "ja_userdic")
+        os.makedirs(userdict_cache, exist_ok=True)
+        USERDIC_BIN_PATH = os.path.join(userdict_cache, "user.dict")
+        USERDIC_HASH_PATH = os.path.join(userdict_cache, "userdict.md5")
     # 如果没有用户词典，就生成一个；如果有，就检查md5，如果不一样，就重新生成
     if os.path.exists(USERDIC_CSV_PATH):
         if (
             not os.path.exists(USERDIC_BIN_PATH)
+            or not os.path.exists(USERDIC_HASH_PATH)
             or get_hash(USERDIC_CSV_PATH) != open(USERDIC_HASH_PATH, "r", encoding="utf-8").read()
         ):
             pyopenjtalk.mecab_dict_index(USERDIC_CSV_PATH, USERDIC_BIN_PATH)

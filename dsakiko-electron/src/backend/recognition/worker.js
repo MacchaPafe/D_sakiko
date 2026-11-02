@@ -1,10 +1,7 @@
 import { readFile } from 'node:fs/promises'
-import { pipeline, env } from '@huggingface/transformers'
+import { pathToFileURL } from 'node:url'
 import { decodeAudio } from './audio.js'
 
-env.allowRemoteModels = false
-env.allowLocalModels = true
-env.useFSCache = false
 let transcriber
 
 /** 子进程只接收父进程已解析的本地文件；宿主断开时立即退出，避免孤儿推理进程。 */
@@ -30,6 +27,10 @@ process.on('message', async (request) => {
       }
     }
     if (!transcriber) {
+      const { pipeline, env } = await import(pathToFileURL(request.dependencyEntry).href)
+      env.allowRemoteModels = false
+      env.allowLocalModels = true
+      env.useFSCache = false
       send({ kind: 'state', state: 'loading' })
       transcriber = await pipeline('automatic-speech-recognition', request.modelDirectory, {
         device: 'cpu',

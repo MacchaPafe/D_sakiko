@@ -7,6 +7,22 @@
  * @type {Record<string, Record<string, boolean>>}
  */
 export const API_METHODS = {
+  onboarding: {
+    getState: false,
+    begin: true,
+    prepareOptionalResources: true,
+    finish: true,
+    acknowledgeNotice: true
+  },
+  setup: {
+    getCatalog: false,
+    scanLegacy: false,
+    createPlan: true,
+    start: true,
+    getJob: false,
+    listJobs: false,
+    controlJob: true
+  },
   recognition: { prepare: false, transcribe: false, getState: false, cancel: false },
   conversations: {
     listChats: false,
@@ -97,6 +113,7 @@ export const API_METHODS = {
  * @property {() => Promise<BackendConnection>} getBackendConnection 获取本次运行的业务连接，不把令牌写入日志或持久 URL。
  * @property {() => Promise<{platform: string, appVersion: string}>} getRuntimeInfo 宿主平台与应用版本。
  * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string, draftId?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
+ * @property {() => Promise<{sourceId: string, name: string} | null>} selectLegacyDirectory 只授权扫描旧版目录，不复制整个目录。
  */
 
 /** @typedef {{ baseUrl: string, token: string }} BackendConnection 仅由可信桌面 bootstrap 或显式 WebUI 授权提供。 */

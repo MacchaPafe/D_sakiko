@@ -8,5 +8,8 @@
     <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
+    <!-- 外置 ASR 运行包包含独立发布的原生库，由资源清单校验后在 Node 子进程加载。 -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
   </dict>
 </plist>

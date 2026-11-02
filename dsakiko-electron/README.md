@@ -6,7 +6,7 @@
 
 ## 本机开发
 
-需要 Node.js 22.12+、pnpm 11。语音推理另需可运行 GPT-SoVITS 的 Python 环境；未配置语音环境时仍可开发、测试 Node 后端。
+需要 Node.js 22.12+、pnpm 12 或更高版本。语音推理另需可运行 GPT-SoVITS 的 Python 环境；未配置语音环境时仍可开发、测试 Node 后端。附加运行环境包的构建与 Windows 操作说明见 [运行环境包构建](docs/runtime-package-build.md)。
 
 ```sh
 cd dsakiko-electron

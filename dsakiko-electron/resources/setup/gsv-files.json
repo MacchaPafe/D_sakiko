@@ -1,0 +1,194 @@
+[
+  {
+    "source": "gsv",
+    "path": "pretrained_models/chinese-hubert-base/config.json",
+    "sizeBytes": 1449,
+    "sha256": "c3e5060a1277e0f078cc6be9da4528a605dba6ece93018981fe2c820e5c7b103"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/chinese-hubert-base/preprocessor_config.json",
+    "sizeBytes": 212,
+    "sha256": "dcd684124d06722947939d41ea6ae58dbf10968c60a11a29f23ddc602c64a29b"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/chinese-hubert-base/pytorch_model.bin",
+    "sizeBytes": 188811417,
+    "sha256": "24164f129c66499d1346e2aa55f183250c223161ec2770c0da3d3b08cf432d3c"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/chinese-roberta-wwm-ext-large/config.json",
+    "sizeBytes": 963,
+    "sha256": "3d57de2fd7e80d0e5c8ff194f0bbb6baa10df7e43fc262a0cc71298a78b0a3e5"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin",
+    "sizeBytes": 651225145,
+    "sha256": "e53a693acc59ace251d143d068096ae0d7b79e4b1b503fa84c9dcf576448c1d8"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/chinese-roberta-wwm-ext-large/tokenizer.json",
+    "sizeBytes": 268962,
+    "sha256": "173796956820ea27bd14f76bf28162607ff4254807e2948253eb5b46f5bb643b"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/fast_langdetect/lid.176.bin",
+    "sizeBytes": 131266198,
+    "sha256": "7e69ec5451bc261cc7844e49e4792a85d7f09c06789ec800fc4a44aec362764e"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/gsv-v4-pretrained/s2Gv4.pth",
+    "sizeBytes": 769025545,
+    "sha256": "906fe22f48c3e037a389df291d4d32a9414e15dbb8f9628643e83aaced109ea4"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/gsv-v4-pretrained/vocoder.pth",
+    "sizeBytes": 57781109,
+    "sha256": "4d611913df7b12d49e8976c944558d2d096816365edfc6c35a9e85b67dd14ed9"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt",
+    "sizeBytes": 107528697,
+    "sha256": "4f5a0bf73c61eb41b174e1bb54e7ee3c83233892be8e0af1f187024e8e581a35"
+  },
+  {
+    "source": "gsv",
+    "path": "pretrained_models/v2Pro/s2Gv2ProPlus.pth",
+    "sizeBytes": 200125741,
+    "sha256": "d42a22bbbf65fb2bbdd45ad6a66841156977db45c7aabe0a6992ff378d9c7d3b"
+  },
+  {
+    "source": "gsv",
+    "path": "G2PWModel.zip",
+    "sizeBytes": 588856634,
+    "sha256": "46292be0374a49308069233cd5c147ae4c41806558e4781a2467a31a4d8099da",
+    "archive": "zip",
+    "expandedBytes": 637376962,
+    "members": [
+      {
+        "path": "G2PWModel/config.py",
+        "sizeBytes": 347
+      },
+      {
+        "path": "G2PWModel/g2pW.onnx",
+        "sizeBytes": 635212732
+      },
+      {
+        "path": "G2PWModel/char_bopomofo_dict.json",
+        "sizeBytes": 1851143
+      },
+      {
+        "path": "G2PWModel/MONOPHONIC_CHARS.txt",
+        "sizeBytes": 120744
+      },
+      {
+        "path": "G2PWModel/bopomofo_to_pinyin_wo_tune_dict.json",
+        "sizeBytes": 7739
+      },
+      {
+        "path": "G2PWModel/POLYPHONIC_CHARS.txt",
+        "sizeBytes": 102444
+      }
+    ]
+  },
+  {
+    "source": "gsv",
+    "path": "nltk_data.zip",
+    "sizeBytes": 9924448,
+    "sha256": "eb3ec26ace3f9ccbb08a6d333e26f0941c47e230ece0717dc992bdb7e99808dd",
+    "archive": "zip",
+    "expandedBytes": 20628995,
+    "members": [
+      {
+        "path": "nltk_data/taggers/averaged_perceptron_tagger_eng.zip",
+        "sizeBytes": 1539115
+      },
+      {
+        "path": "nltk_data/taggers/averaged_perceptron_tagger/averaged_perceptron_tagger.pickle",
+        "sizeBytes": 6138625
+      },
+      {
+        "path": "nltk_data/taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.weights.json",
+        "sizeBytes": 5677744
+      },
+      {
+        "path": "nltk_data/taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.classes.json",
+        "sizeBytes": 285
+      },
+      {
+        "path": "nltk_data/taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.tagdict.json",
+        "sizeBytes": 25788
+      },
+      {
+        "path": "nltk_data/taggers/averaged_perceptron_tagger.zip",
+        "sizeBytes": 2526731
+      },
+      {
+        "path": "nltk_data/corpora/cmudict.zip",
+        "sizeBytes": 896069
+      },
+      {
+        "path": "nltk_data/corpora/cmudict/cmudict",
+        "sizeBytes": 3820830
+      },
+      {
+        "path": "nltk_data/corpora/cmudict/README",
+        "sizeBytes": 3808
+      }
+    ]
+  },
+  {
+    "source": "gsv",
+    "path": "open_jtalk_dic_utf_8-1.11.tar.gz",
+    "sizeBytes": 23646843,
+    "sha256": "fe6ba0e43542cef98339abdffd903e062008ea170b04e7e2a35da805902f382a",
+    "archive": "tar.gz",
+    "expandedBytes": 107304813,
+    "members": [
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/matrix.bin",
+        "sizeBytes": 3792262
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/right-id.def",
+        "sizeBytes": 77672
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/pos-id.def",
+        "sizeBytes": 1923
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/COPYING",
+        "sizeBytes": 5865
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/rewrite.def",
+        "sizeBytes": 7457
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/left-id.def",
+        "sizeBytes": 77672
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/sys.dic",
+        "sizeBytes": 103073776
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/char.bin",
+        "sizeBytes": 262496
+      },
+      {
+        "path": "open_jtalk_dic_utf_8-1.11/unk.dic",
+        "sizeBytes": 5690
+      }
+    ]
+  }
+]

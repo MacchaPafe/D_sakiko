@@ -94,12 +94,16 @@ export class SpeechProcess {
         cwd: this.cacheRoot,
         env: {
           ...process.env,
+          ...settings.runtimeEnvironment,
           DSAKIKO_SPEECH_TOKEN: token,
           DSAKIKO_SPEECH_HOST_PID: String(process.pid),
           DSAKIKO_HOST_PROBE: settings.hostProbe ? JSON.stringify(settings.hostProbe) : '',
           PYTHONUNBUFFERED: '1',
           PYTHONDONTWRITEBYTECODE: '1',
-          PYTHONPATH: [this.pythonRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter)
+          PYTHONNOUSERSITE: '1',
+          PYTHONPATH: [this.pythonRoot, settings.managedRuntime ? null : process.env.PYTHONPATH]
+            .filter(Boolean)
+            .join(delimiter)
         },
         detached: process.platform !== 'win32',
         stdio: ['pipe', 'pipe', 'pipe']

@@ -323,6 +323,25 @@ test('未完成的配置可以保存，启动时按用途报错，并拒绝旧�
   ).rejects.toThrow()
 })
 
+test('多架构启动同时保护 v4 与 v2ProPlus，某个版本离线不妨碍其他版本', async () => {
+  const { assets, settings, speechResources, resource } = await fixture()
+  const shared = await resource('model')
+  const vocoder = await resource('model')
+  const encoder = await resource('model')
+  await settings.set('speechStartup.gptSovits.resources', {
+    shared: gptSovitsShared(shared),
+    versions: { v4: { vocoder }, v2ProPlus: { speakerEncoder: encoder } }
+  })
+  const running = await speechResources.acquire({ allArchitectures: true })
+  expect(running.gptSovits.architecture).toBe('auto')
+  expect(Object.keys(running.gptSovits.resources.versions)).toEqual(['v4', 'v2ProPlus'])
+  await running.releaseResources()
+  await rm(await assets.localPath(vocoder))
+  const available = await speechResources.acquire({ allArchitectures: true })
+  expect(Object.keys(available.gptSovits.resources.versions)).toEqual(['v2ProPlus'])
+  await available.releaseResources()
+})
+
 test('路径解析失败时释放临时引用，架构专属资源在启动前验证', async () => {
   const { assets, settings, speechResources, resource } = await fixture()
   const model = await resource('model')
