@@ -96,8 +96,8 @@ class MultiCharTimeline(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
-        self.setMinimumHeight(200)
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.margin = 140
         self.top = 56
         self.row_height = 38
@@ -117,6 +117,36 @@ class MultiCharTimeline(QGraphicsView):
         self.trash_target = None
         self.waveform = []
         self.rebuild()
+
+    def font_layout_metrics(self):
+        """从字体计算可读的轨道尺寸，不读取尚未布局或已拉伸的视口大小。"""
+        metrics = QFontMetrics(self.session.timeline_window.font())
+        padding = max(4, round(metrics.height() * 0.16))
+        top = max(52, round(metrics.height() * 2.35))
+        row_height = max(round(metrics.height() * 1.42), metrics.height() + 2 * padding)
+        group_gap = max(12, round(metrics.height() * 0.6))
+        return metrics, top, row_height, group_gap, padding
+
+    def intrinsic_height(self, *, all_tracks=True):
+        """按四轨或一轨计算自然高度，预留缩放横滚条，避免把默认视口当内容尺寸。"""
+        _, top, row_height, group_gap, _ = self.font_layout_metrics()
+        row_count = len(self.rows) if all_tracks else 1
+        gap = group_gap if all_tracks and row_count > 2 else 0
+        return top + row_count * row_height + gap + 4 + 2 * self.frameWidth() + self.horizontalScrollBar().sizeHint().height()
+
+    def sizeHint(self):
+        """默认布局按字体容纳四轨，实际窗口放大后再由 rebuild 均分剩余高度。"""
+        hint = super().sizeHint()
+        if hasattr(self, "rows"):
+            hint.setHeight(self.intrinsic_height())
+        return hint
+
+    def minimumSizeHint(self):
+        """小屏只要求标尺和一轨可见，其余轨道通过纵向滚动访问。"""
+        hint = super().minimumSizeHint()
+        if hasattr(self, "rows"):
+            hint.setHeight(self.intrinsic_height(all_tracks=False))
+        return hint
 
     def x_at(self, ms):
         """将毫秒转换到场景坐标。"""
@@ -158,12 +188,12 @@ class MultiCharTimeline(QGraphicsView):
         """根据草稿重绘分组圆角轨道槽、角色双轨名牌、波形和胶囊条块。"""
         self.scene().clear()
         self.scene().setFont(self.session.timeline_window.font())
-        metrics = QFontMetrics(self.scene().font())
-        self.top = max(52, round(metrics.height() * 2.35))
-        self.group_gap = 12
-        self.row_height = max(round(metrics.height() * 1.42),
+        metrics, self.top, minimum_row_height, self.group_gap, self.row_padding = self.font_layout_metrics()
+        minimum_height = self.intrinsic_height(all_tracks=False)
+        if self.minimumHeight() != minimum_height:
+            self.setMinimumHeight(minimum_height)
+        self.row_height = max(minimum_row_height,
                               (self.viewport().height() - self.top - self.group_gap - 4) // len(self.rows))
-        self.row_padding = max(4, round(metrics.height() * 0.16))
         self.margin = max(145, max(metrics.horizontalAdvance(name + " · 表情")
                                    for name in self.session.names) + round(metrics.height() * 1.35))
         self.blocks = []

@@ -34,6 +34,18 @@ def audio_span(path: str, text: str) -> AudioSpan:
     return AudioSpan(100 * len(text) + 500, missing=bool(path))
 
 
+def initial_message_timeline(message, names, resources, palette) -> dict:
+    """统一首次双人编排：当前说话人使用默认演出，无角色消息从空轨道开始。"""
+    timeline = {"characters": {name: {"motions": [], "expressions": []} for name in names}}
+    if message.character_name in resources:
+        performance = message.performance.as_dict() if message.performance else None
+        timeline["characters"][message.character_name] = resources[message.character_name].defaults(
+            performance, message.emotion.as_string(),
+        )
+    assign_colors(timeline, palette)
+    return timeline
+
+
 class TheaterResources:
     """将当前服装实际资源转为两种运行时共用的编辑和匹配信息。"""
 

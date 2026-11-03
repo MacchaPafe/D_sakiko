@@ -4,7 +4,6 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from queue import Queue
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -14,7 +13,7 @@ import pytest
 from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtCore import Qt, QPointF, QMimeData
 from PyQt5.QtGui import QDropEvent
-from chat.chat import Message
+from chat.chat import Chat, Message
 from ui.components.multi_char_editor import MultiCharEditor
 from ui.components.multi_char_timeline import MIME
 
@@ -35,6 +34,7 @@ class Owner(QWidget):
         self.refresh_chat_display = Mock()
         self.refresh_chat_list = Mock()
         self.regenerate_audio = Mock(return_value=True)
+        self.performance_editor_finished = Mock()
 
     def _save_chat(self):
         """记录保存调用，不写入任何用户文件。"""
@@ -54,7 +54,7 @@ def editor(app):
     owner = Owner()
     owner.setGeometry(350, 100, 400, 500)
     message = Message.from_dict({"character_name": "A", "text": "测试台词", "emotion": "normal"})
-    chat = SimpleNamespace(message_list=[message])
+    chat = Chat(message_list=[message])
     slots = [{"character_name": name, "model_json_path": None} for name in ("A", "B")]
     session = MultiCharEditor(owner, chat, message, slots)
     owner.performance_editor = session
@@ -102,6 +102,50 @@ def test_editor_does_not_change_bgm_state(editor):
     """进入与退出编辑不暂停、停止或重启主界面 BGM。"""
     editor.finish()
     assert editor.owner.bgm_player.mock_calls == []
+
+
+def test_editor_exit_restores_stage_before_rebuilding_formal_script(editor):
+    """退出先发预览结束命令并恢复布局，再通知主控重建最新正式剧本。"""
+    queue = editor.owner.to_live2d_change_character_queue
+    while not queue.empty():
+        queue.get_nowait()
+    events = []
+    original_restore = editor.layout.restore
+
+    def restore():
+        """记录恢复步骤，仍执行真实窗口恢复。"""
+        events.append("restore")
+        original_restore()
+
+    def finished(chat):
+        """验证回调发生在预览退出命令之后，且传递当前剧本对象。"""
+        assert chat is editor.chat
+        commands = []
+        while not queue.empty():
+            commands.append(queue.get_nowait())
+        assert any(command.get("action") == "exit" for command in commands)
+        assert editor.owner.performance_editor is None
+        events.append("reload")
+
+    editor.layout.restore = restore
+    editor.owner.performance_editor_finished.side_effect = finished
+    editor.finish()
+    editor.finish()
+    assert events == ["restore", "reload"]
+    editor.owner.performance_editor_finished.assert_called_once_with(editor.chat)
+
+
+def test_cancel_close_keeps_formal_script_unchanged(editor, monkeypatch):
+    """用户取消关闭时保持编排，不重置正式播放起点。"""
+    from PyQt5.QtWidgets import QMessageBox
+    editor.draft["characters"]["A"]["motions"].append({
+        "at_ms": 0, "resource": {"file_name": "changed.motion3.json"},
+    })
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Cancel)
+    editor.request_close()
+    assert not editor.closed
+    assert editor.owner.performance_editor is editor
+    editor.owner.performance_editor_finished.assert_not_called()
 
 
 @pytest.mark.parametrize("release_action", ["delete", "escape", "old_track_corner"])
@@ -308,6 +352,202 @@ def test_switch_initializes_new_message_and_ignores_old_feedback(editor):
     assert editor.message_count.text() == "1/2"
 
 
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_delete_selects_next_or_previous_and_rejects_old_preview(editor, monkeypatch, index):
+    """删除首中末句均只保存一次，停旧预览并选正确邻句，旧回执不能恢复已删句。"""
+    confirm = Mock(return_value=True)
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    messages = [editor.message] + [Message.from_dict({"character_name": "B", "text": "同文台词"})
+                                   for _ in range(2)]
+    for message in messages:
+        message.performance_timeline = deepcopy(editor.baseline)
+    editor.chat.message_list[:] = messages
+    editor.show_message(messages[index])
+    deleted = editor.message
+    target = messages[index + 1] if index < 2 else messages[index - 1]
+    old_session = editor.session_id
+    saved = editor.owner.saved
+    queue = editor.owner.to_live2d_change_character_queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    def refresh():
+        assert editor.message is target
+        assert any(message is editor.message for message in editor.chat.message_list)
+
+    editor.owner.refresh_chat_display.side_effect = refresh
+    editor.delete_message()
+    confirm.assert_called_once_with(editor.resource_window, deleted, discard_drafts=True)
+    assert editor.message is target and all(message is not deleted for message in editor.chat.message_list)
+    assert editor.owner.saved == saved + 1
+    assert editor.message_count.text() == ("1/2" if index == 0 else "2/2")
+    assert editor.session_id != old_session
+    editor.receive({"session": old_session, "position": 999, "playing": True})
+    assert editor.position == 0 and not editor.playing
+    commands = []
+    while not queue.empty():
+        commands.append(queue.get_nowait())
+    assert [command["action"] for command in commands] == ["stop", "enter"]
+    assert commands[0]["scene_context"]["index"] == index
+    assert len(commands[0]["scene_context"]["messages"]) == 3
+    assert len(commands[1]["scene_context"]["messages"]) == 2
+    editor.owner.refresh_chat_display.assert_called_once()
+    editor.owner.refresh_chat_list.assert_called_once()
+
+
+def test_delete_prepares_next_timeline_in_same_save_and_recomputes_inherited_scene(editor, monkeypatch):
+    """下一句首次初始化与删除一并落盘；被删场景不迁移，新首句跳过原黑场。"""
+    from live2d_support.multi_char_scene import SceneTiming, resolve_scene, transition_from_total
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    editor.message.scene_before = {"background": "deleted.png", "visible_characters": []}
+    next_message = Message.from_dict({"character_name": "B", "text": "下一句",
+                                      "scene_before": {"transition": transition_from_total()}})
+    original_scene = deepcopy(next_message.scene_before)
+    editor.chat.message_list.append(next_message)
+    saves = []
+
+    def save():
+        saves.append([message.as_dict() for message in editor.chat.message_list])
+        return True
+
+    editor.owner._save_chat = save
+    editor.delete_message()
+    assert len(saves) == 1 and len(saves[0]) == 1
+    assert saves[0][0]["performance_timeline"] is not None
+    assert next_message.scene_before == original_scene
+    assert resolve_scene(editor.chat.message_list, 0, editor.names) == {
+        "visible_characters": editor.names, "background": "",
+    }
+    assert SceneTiming.from_scene(next_message.scene_before, first=True).duration_ms == 0
+    assert not editor.black_check.isEnabled()
+
+
+def test_delete_only_sentence_discards_drafts_and_finishes_empty_chat(editor, monkeypatch, tmp_path):
+    """删最后一条不保存草稿、不删除音频文件，关闭编排并让主控装载空剧本。"""
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    old = editor.message
+    audio = tmp_path / "keep.wav"
+    audio.write_bytes(b"keep")
+    old.audio_path = str(audio)
+    editor.toggle_text_edit()
+    editor.original_input.setPlainText("未保存文本")
+    editor.draft["characters"]["A"]["motions"].append({"at_ms": 0, "resource": {"file_name": "draft"}})
+    editor.delete_message()
+    assert editor.chat.message_list == []
+    assert editor.closed and editor.owner.isEnabled()
+    assert old.text == "测试台词" and not old.performance_timeline["characters"]["A"]["motions"]
+    assert audio.read_bytes() == b"keep"
+    editor.owner.performance_editor_finished.assert_called_once_with(editor.chat)
+
+
+def test_cancel_delete_preserves_text_timeline_and_preview(editor, monkeypatch):
+    """取消唯一确认时草稿和正在预览的位置全部保留，不触发切句或保存提示。"""
+    confirm = Mock(return_value=False)
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    editor.toggle_text_edit()
+    editor.original_input.setPlainText("未保存文本")
+    editor.draft["characters"]["A"]["motions"].append({"at_ms": 10, "resource": {"file_name": "draft"}})
+    editor.position = 200
+    editor.playing = True
+    saved = editor.owner.saved
+    editor.delete_message()
+    assert editor.position == 200 and editor.playing and not editor.closed
+    assert editor.original_input.toPlainText() == "未保存文本"
+    assert editor.draft["characters"]["A"]["motions"]
+    assert editor.owner.saved == saved
+    assert len(editor.chat.message_list) == 1
+    confirm.assert_called_once()
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_delete_failure_restores_neighbor_initialization_and_keeps_drafts(editor, monkeypatch, raises):
+    """删除存档失败回滚邻句首次编排和消息列表，仍可继续当前句文本及时间轴草稿。"""
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    monkeypatch.setattr(QMessageBox, "warning", Mock())
+    old = editor.message
+    next_message = Message.from_dict({"character_name": "B", "text": "下一句"})
+    editor.chat.message_list.append(next_message)
+    original_meta = editor.chat.meta
+    editor.toggle_text_edit()
+    editor.original_input.setPlainText("未保存文本")
+    editor.draft["characters"]["A"]["motions"].append({"at_ms": 10, "resource": {"file_name": "draft"}})
+    save = Mock(return_value=False, side_effect=OSError("存档失败") if raises else None)
+    editor.owner._save_chat = save
+    editor.delete_message()
+    assert editor.message is old and editor.chat.message_list[0] is old
+    assert len(editor.chat.message_list) == 2 and editor.chat.message_list[1] is next_message
+    assert editor.chat.meta is original_meta
+    assert next_message.performance_timeline is None
+    assert editor.text_editing and editor.original_input.toPlainText() == "未保存文本"
+    assert editor.draft["characters"]["A"]["motions"] and not editor.closed
+    editor.owner.refresh_chat_display.assert_not_called()
+    save.assert_called_once()
+
+
+def test_delete_rejects_corrupt_neighbor_before_saving_or_stopping(editor, monkeypatch):
+    """目标句轨道损坏时提前拒绝，原句及预览均不动，避免删除后才发现无法切句。"""
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    warning = Mock()
+    monkeypatch.setattr(QMessageBox, "warning", warning)
+    next_message = Message.from_dict({"character_name": "B", "text": "损坏轨道"})
+    next_message.performance_timeline = "broken"
+    editor.chat.message_list.append(next_message)
+    old = editor.message
+    editor.playing = True
+    save = Mock()
+    editor.owner._save_chat = save
+    editor.delete_message()
+    assert editor.message is old and editor.playing
+    assert len(editor.chat.message_list) == 2 and next_message.performance_timeline == "broken"
+    save.assert_not_called()
+    warning.assert_called_once()
+
+
+def test_audio_busy_disables_and_blocks_sentence_deletion(editor, monkeypatch):
+    """生成音频时隐藏或直接调用入口都不能删除，解除忙碌恢复按钮。"""
+    confirm = Mock()
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    editor.set_audio_busy(True)
+    assert not editor.delete_message_button.isEnabled()
+    editor.delete_message()
+    confirm.assert_not_called()
+    assert len(editor.chat.message_list) == 1
+    editor.set_audio_busy(False)
+    assert editor.delete_message_button.isEnabled()
+
+
+@pytest.mark.parametrize("change", ["close", "busy", "switch", "remove"])
+def test_delete_rechecks_target_after_confirmation_events(editor, monkeypatch, change):
+    """确认窗口的嵌套事件若关闭、切句或改变目标，不继续删除过期目标。"""
+    old = editor.message
+    next_message = Message.from_dict({"character_name": "B", "text": "下一句"})
+    next_message.performance_timeline = deepcopy(editor.baseline)
+    editor.chat.message_list.append(next_message)
+    save = Mock(return_value=True)
+    editor.owner._save_chat = save
+
+    def confirm(*args, **kwargs):
+        if change == "close":
+            editor.finish()
+        elif change == "busy":
+            editor.set_audio_busy(True)
+        elif change == "switch":
+            editor.show_message(next_message)
+        else:
+            editor.chat.delete_message_at(0)
+        return True
+
+    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    editor.delete_message()
+    save.assert_not_called()
+    assert any(message is next_message for message in editor.chat.message_list)
+    assert any(message is old for message in editor.chat.message_list) == (change != "remove")
+    if change == "busy":
+        editor.set_audio_busy(False)
+
+
 def test_text_save_is_independent_of_timeline_discard(editor, monkeypatch):
     """保存文本更新无声时长并裁剪越界，随后放弃时间轴不会撤回文本。"""
     from PyQt5.QtWidgets import QMessageBox
@@ -474,11 +714,13 @@ def test_empty_save_and_failure(editor):
     editor.owner.fail = True
     editor.save()
     assert not editor.closed
+    editor.owner.performance_editor_finished.assert_not_called()
     assert editor.message.performance_timeline["characters"]["B"]["motions"] == []
     editor.owner.fail = False
     editor.draft["characters"]["B"]["motions"].clear()
     editor.save()
     assert editor.closed
+    editor.owner.performance_editor_finished.assert_called_once_with(editor.chat)
 
 
 def test_cross_window_drop_role_validation(editor):

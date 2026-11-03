@@ -5,7 +5,7 @@ import ctypes
 import sys
 from ctypes import wintypes
 
-from PyQt5.QtCore import QRect, QTimer
+from PyQt5.QtCore import QRect, QSize, QTimer
 from PyQt5.QtWidgets import QApplication, QWidget
 
 
@@ -24,13 +24,22 @@ class MonitorInfo(ctypes.Structure):
                 ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
 
 
-def workspace_rects(stage, control, available, timeline_height, gap=0):
+def workspace_rects(stage, control, available, timeline_height, gap=0,
+                    minimum_control=None, minimum_timeline_height=0):
     """优先只上移；空间不足时缩小上方高度，返回三个逻辑外框矩形。"""
-    timeline_height = min(timeline_height, max(140, available.height() // 2))
+    minimum_control = minimum_control or QSize(0, 0)
+    budget = max(1, available.height() - gap)
+    minimum_top = max(1, minimum_control.height())
+    minimum_bottom = max(1, minimum_timeline_height)
+    timeline_height = max(minimum_bottom, min(
+        timeline_height, max(140, available.height() // 2),
+        max(minimum_bottom, budget - minimum_top),
+    ))
     total = min(stage.width() + control.width(), available.width())
-    control_width = min(control.width(), max(180, round(total * 0.45)))
+    control_width = max(minimum_control.width(), min(control.width(), max(180, round(total * 0.45))))
+    total = max(total, control_width + 1)
     stage_width = total - control_width
-    top_height = min(max(stage.height(), control.height()), available.height() - timeline_height - gap)
+    top_height = max(minimum_top, min(max(stage.height(), control.height()), budget - timeline_height))
     left = max(available.left(), min(control.left() - stage_width, available.right() + 1 - total))
     desired_top = min(stage.top(), control.top())
     overflow = max(0, desired_top + top_height + gap + timeline_height - available.bottom() - 1)
@@ -79,6 +88,14 @@ def set_outer_geometry(window, rect):
     window.setGeometry(rect.adjusted(left, top, -right, -bottom))
 
 
+def minimum_outer_size(window):
+    """布局最小客户区加实际可见标题栏，避免 Qt 拒绝缩小时覆盖相邻窗口。"""
+    minimum = window.minimumSizeHint().expandedTo(window.minimumSize())
+    frame, client = visible_geometry(window), window.geometry()
+    return QSize(max(0, minimum.width()) + max(0, frame.width() - client.width()),
+                 max(0, minimum.height()) + max(0, frame.height() - client.height()))
+
+
 class MultiCharWindowLayout:
     """资源窗口作为工作区锚点，时间轴不单独移动或抢占全局置顶。"""
 
@@ -98,6 +115,7 @@ class MultiCharWindowLayout:
         self.closed = False
         self.syncing = False
         self.previous_rect = None
+        self.previous_layout_key = None
         self.stage_width = 0
         self.ready = False
         self.timer = QTimer(resources)
@@ -170,14 +188,17 @@ class MultiCharWindowLayout:
         elif geometry:
             stage = QRect(*geometry)
         timeline_height = self.timeline.property("preferredHeight") or self.timeline.minimumSizeHint().height()
-        timeline_height = max(timeline_height, round(available.height() * 0.26))
-        timeline_height = min(timeline_height, round(available.height() * 0.45))
-        stage, control, bottom = workspace_rects(stage, control, available, timeline_height)
+        stage, control, bottom = workspace_rects(
+            stage, control, available, timeline_height,
+            minimum_control=minimum_outer_size(self.resources),
+            minimum_timeline_height=minimum_outer_size(self.timeline).height(),
+        )
         self.stage_width = stage.width()
         self.resources.showNormal()
         set_outer_geometry(self.resources, control)
         self.timeline.setGeometry(bottom)
         self.previous_rect = None
+        self.previous_layout_key = None
         self.ready = bool(handle or geometry)
         self.follow()
         self.timer.start()
@@ -188,30 +209,53 @@ class MultiCharWindowLayout:
             return
         frame = visible_geometry(self.resources)
         native = self.read_native()
+        available = (self.resources.screen() or QApplication.primaryScreen()).availableGeometry()
+        minimum_control = minimum_outer_size(self.resources)
+        minimum_timeline = minimum_outer_size(self.timeline).height()
+        preferred = self.timeline.property("preferredHeight") or self.timeline.minimumSizeHint().height()
+        layout_key = (available.getRect(), self.resources.devicePixelRatioF(),
+                      minimum_control.width(), minimum_control.height(), minimum_timeline, preferred)
         if native and self.last_native and native != self.last_native and frame == self.previous_rect:
             stage = self.stage_visible_geometry(native)
             self.stage_width = stage.width()
             frame = QRect(stage.right() + 1, stage.top(), frame.width(), stage.height())
-        if frame == self.previous_rect:
+        if frame == self.previous_rect and layout_key == self.previous_layout_key:
             return
         self.syncing = True
-        available = (self.resources.screen() or QApplication.primaryScreen()).availableGeometry()
-        stage = QRect(frame.left() - self.stage_width, frame.top(), self.stage_width, frame.height())
-        stage, frame, bottom = workspace_rects(stage, frame, available, self.timeline.height())
-        self.stage_width = stage.width()
-        set_outer_geometry(self.resources, frame)
-        self.previous_rect = visible_geometry(self.resources)
-        set_outer_geometry(self.owner, self.previous_rect)
-        self.timeline.setGeometry(bottom)
-        if self.handle and native:
-            x, y, width, height = self.to_native(stage)
-            left, top, right, bottom = native_frame_insets(self.handle)
-            target = (x - left, y - top, width + left + right, height + top + bottom)
-            ctypes.windll.user32.SetWindowPos(self.handle, None, *target, 0x0014)
-            self.last_native = self.read_native()
-        elif self.ready:
-            self.send("window_geometry", geometry=[stage.x(), stage.y(), stage.width(), stage.height()])
-        self.syncing = False
+        try:
+            stage = QRect(frame.left() - self.stage_width, frame.top(), self.stage_width, frame.height())
+            stage, frame, bottom = workspace_rects(
+                stage, frame, available, preferred,
+                minimum_control=minimum_control, minimum_timeline_height=minimum_timeline,
+            )
+            set_outer_geometry(self.resources, frame)
+            actual = visible_geometry(self.resources)
+            if actual != frame:
+                # 窗口管理器或新展开的控件可提高下限，以实际外框再规划一次。
+                minimum_control = minimum_control.expandedTo(actual.size())
+                stage, frame, bottom = workspace_rects(
+                    stage, actual, available, preferred,
+                    minimum_control=minimum_control, minimum_timeline_height=minimum_timeline,
+                )
+                set_outer_geometry(self.resources, frame)
+                actual = visible_geometry(self.resources)
+            self.stage_width = stage.width()
+            stage = QRect(actual.left() - self.stage_width, actual.top(), self.stage_width, actual.height())
+            bottom = QRect(stage.left(), actual.bottom() + 1, stage.width() + actual.width(), bottom.height())
+            self.previous_rect = actual
+            self.previous_layout_key = layout_key
+            set_outer_geometry(self.owner, actual)
+            self.timeline.setGeometry(bottom)
+            if self.handle and native:
+                x, y, width, height = self.to_native(stage)
+                left, top, right, bottom = native_frame_insets(self.handle)
+                target = (x - left, y - top, width + left + right, height + top + bottom)
+                ctypes.windll.user32.SetWindowPos(self.handle, None, *target, 0x0014)
+                self.last_native = self.read_native()
+            elif self.ready:
+                self.send("window_geometry", geometry=[stage.x(), stage.y(), stage.width(), stage.height()])
+        finally:
+            self.syncing = False
 
     def minimize_stage(self, minimized):
         """资源窗口最小化时同步舞台，恢复时不抢占系统全局置顶。"""

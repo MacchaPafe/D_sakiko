@@ -16,12 +16,14 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSt
 
 from chat.chat import Message
 from performance_types import trim_timeline, sort_timeline_events, timeline_tracks, valid_timeline_events
-from live2d_support.multi_char_resources import TheaterResources, audio_span, assign_colors
+from live2d_support.multi_char_resources import TheaterResources, audio_span, assign_colors, initial_message_timeline
 from live2d_support.multi_char_scene import (
     SceneTiming, background_root, background_path, resolve_scene, transition_from_total,
 )
 from ui.components.multi_char_insert_dialog import MultiCharInsertDialog
-from ui.components.multi_char_icons import multi_char_icon, set_button_icon
+from ui.components.multi_char_icons import DELETE_COLOR, delete_message_icon, multi_char_icon, set_button_icon
+from ui.components.multi_char_message_edit import confirm_message_deletion, delete_saved_message, insert_saved_message
+from ui.components.multi_char_style import editor_stylesheet
 from ui.components.multi_char_timeline import MultiCharTimeline, MIME, _character_pill_color
 from ui.components.multi_char_windows import MultiCharWindowLayout
 from ui_constants import char_info_json
@@ -155,18 +157,8 @@ class EditorWindow(QWidget):
         font = QFont(session.owner.font())
         font.setPixelSize(font_pixels)
         self.setFont(font)
-        stylesheet = Path(__file__).parents[1] / "styles" / "multi_char_editor.qss"
         # 使用逻辑像素，由 Qt 负责 DPI 缩放，避免继承全局大号点字体。
-        style = stylesheet.read_text(encoding="utf-8-sig").replace("@FONT_PX@", str(font_pixels))
-        style = style.replace("@SMALL_PX@", str(round(font_pixels * 0.85)))
-        style = style.replace("@PAD_Y@", str(round(font_pixels * 0.25)))
-        style = style.replace("@PAD_X@", str(round(font_pixels * 0.6)))
-        for index, name in enumerate(session.names):
-            color = _character_pill_color(name)
-            style = style.replace(f"@ROLE_{index}_COLOR@", color.name())
-            style = style.replace(f"@ROLE_{index}_TEXT@", character_badge_text_color(color))
-        check_icon = Path(__file__).parents[2] / "icons" / "multi_char_check.svg"
-        style = style.replace("@CHECK_ICON@", check_icon.as_posix())
+        style = editor_stylesheet(font_pixels, session.names)
         self.setStyleSheet(session.owner.styleSheet() + "\n" + style)
 
     def closeEvent(self, event):
@@ -235,6 +227,7 @@ class MultiCharEditor(QObject):
                     button.setObjectName("multiCharSave" if button.text() == "保存" else "multiCharControl")
                 button.style().unpolish(button)
                 button.style().polish(button)
+        self.update_timeline_preferred_height()
         self.layout = MultiCharWindowLayout(owner, self.resource_window, self.timeline_window, self.send)
         owner.setEnabled(False)
         self.resource_window.show()
@@ -250,14 +243,24 @@ class MultiCharEditor(QObject):
 
     def initialize_message(self, message):
         """校验目标消息并持久初始化首次编排，失败时保留原消息。"""
+        timeline = self.prepare_message_timeline(message)
         if message.performance_timeline is None:
-            message.performance_timeline = self.initial_timeline(message)
-            if not self.owner._save_chat():
+            message.performance_timeline = timeline
+            try:
+                if not self.owner._save_chat():
+                    raise RuntimeError("时间轴初始化未能保存")
+            except Exception:
                 message.performance_timeline = None
-                raise RuntimeError("时间轴初始化未能保存")
-        if not isinstance(message.performance_timeline, dict):
+                raise
+
+    def prepare_message_timeline(self, message):
+        """只生成或校验目标时间轴，不修改消息和存档，供删除事务预先检查。"""
+        timeline = message.performance_timeline
+        if timeline is None:
+            timeline = self.initial_timeline(message)
+        if not isinstance(timeline, dict):
             raise ValueError("时间轴格式损坏；已保留原数据，请先修复存档。")
-        groups = message.performance_timeline.get("characters", {})
+        groups = timeline.get("characters", {})
         if not isinstance(groups, dict):
             raise ValueError("角色轨道格式损坏；已保留原数据。")
         for name in self.names:
@@ -266,17 +269,11 @@ class MultiCharEditor(QObject):
                 not isinstance(tracks.get(kind, []), list) for kind in ("motions", "expressions")
             ):
                 raise ValueError(f"{name} 的轨道格式损坏；已保留原数据。")
+        return timeline
 
     def initial_timeline(self, message):
         """沿用原自动演出生成首次双人轨道，无角色消息从空轨道开始。"""
-        timeline = {"characters": {name: {"motions": [], "expressions": []} for name in self.names}}
-        if message.character_name in self.resources:
-            performance = message.performance.as_dict() if message.performance else None
-            timeline["characters"][message.character_name] = self.resources[message.character_name].defaults(
-                performance, message.emotion.as_string(),
-            )
-        assign_colors(timeline, self.palette)
-        return timeline
+        return initial_message_timeline(message, self.names, self.resources, self.palette)
 
     def _transport_icon(self, kind):
         """复用主题蓝 SVG 图标表示播放、暂停和停止状态。"""
@@ -293,6 +290,7 @@ class MultiCharEditor(QObject):
         self.previous.setEnabled(not self.audio_busy and index > 0)
         self.next.setEnabled(not self.audio_busy and 0 <= index < len(self.chat.message_list) - 1)
         self.add_message_button.setEnabled(not self.audio_busy and index >= 0)
+        self.delete_message_button.setEnabled(not self.audio_busy and index >= 0)
         self.message_count.setText(f"{index + 1 if index >= 0 else 0}/{len(self.chat.message_list)}")
 
     def resolve_message_drafts(self):
@@ -326,14 +324,15 @@ class MultiCharEditor(QObject):
         if self.resolve_message_drafts():
             self.show_message(self.chat.message_list[target_index])
 
-    def show_message(self, target):
+    def show_message(self, target, *, stop_preview=True):
         """在现有两个窗口中切换已确认的消息，保持同一舞台编辑会话。"""
         try:
             self.initialize_message(target)
         except (OSError, ValueError, RuntimeError) as error:
             QMessageBox.warning(self.resource_window, "无法切换台词", str(error))
             return
-        self.send("stop")
+        if stop_preview:
+            self.send("stop")
         self.message = target
         self.span = audio_span(target.audio_path, target.text)
         self.baseline = deepcopy(target.performance_timeline)
@@ -384,28 +383,84 @@ class MultiCharEditor(QObject):
 
     def insert_message(self, after):
         """确认草稿和表单后插入普通消息，保存成功才切到新台词。"""
-        if self.audio_busy or self.message_index() < 0 or not self.resolve_message_drafts():
+        if self.audio_busy or self.closed or self.message_index() < 0:
             return
-        dialog = MultiCharInsertDialog(self.names, self.message.character_name, self.resource_window)
+        anchor = self.message
+        if not self.resolve_message_drafts():
+            return
+        if self.audio_busy or self.closed or self.message is not anchor or self.message_index() < 0:
+            return
+        dialog = MultiCharInsertDialog(self.names, anchor.character_name, self.resource_window)
         try:
             if dialog.exec_() != QDialog.Accepted:
                 return
             data = dialog.message_data()
         finally:
             dialog.deleteLater()
-        if not data["text"].strip():
+        if (self.audio_busy or self.closed or self.message is not anchor or self.message_index() < 0
+                or not data["text"].strip()):
             return
-        index = self.message_index() + (1 if after else 0)
-        target = Message.from_dict(data)
-        # 新句沿用首次编排的初始化规则，场景保持缺省，从前句自然继承。
-        target.performance_timeline = self.initial_timeline(target)
-        self.chat.message_list.insert(index, target)
-        if not self.owner._save_chat():
-            self.chat.message_list.pop(index)
+        try:
+            target = Message.from_dict(data)
+            # 新句沿用首次编排的初始化规则，场景保持缺省，从前句自然继承。
+            target.performance_timeline = self.initial_timeline(target)
+            inserted = insert_saved_message(self.chat, anchor, target, after, self.owner._save_chat)
+        except Exception as error:
+            QMessageBox.warning(self.resource_window, "无法添加台词", str(error))
             return
+        if not inserted:
+            return
+        self.show_message(target)
+        # 主界面刷新可能处理 Qt 事件；先切到已经保存的新句，避免重入旧句草稿。
         self.owner.refresh_chat_display()
         self.owner.refresh_chat_list()
-        self.show_message(target)
+
+    def delete_message(self):
+        """删除当前句及其草稿；保存成功后切到邻句，空剧本则结束编排。"""
+        index = self.message_index()
+        if self.audio_busy or self.closed or index < 0:
+            return
+        message = self.message
+        if not confirm_message_deletion(self.resource_window, message, discard_drafts=True):
+            return
+        if self.audio_busy or self.closed or self.message is not message:
+            return
+        index = self.message_index()
+        if index < 0:
+            return
+        messages = self.chat.message_list
+        target = messages[index + 1] if index + 1 < len(messages) else (messages[index - 1] if index else None)
+        old_timeline = target.performance_timeline if target is not None else None
+        try:
+            timeline = self.prepare_message_timeline(target) if target is not None else None
+        except (OSError, ValueError, RuntimeError) as error:
+            QMessageBox.warning(self.resource_window, "无法删除本句", f"相邻台词无法打开：{error}")
+            return
+        # 在消息还在列表时停止旧预览，避免发送失效的句序号。
+        self.stop()
+        deleted = False
+        failure = None
+        try:
+            if target is not None:
+                target.performance_timeline = timeline
+            deleted = delete_saved_message(self.chat, message, self.owner._save_chat)
+        except Exception as error:
+            failure = error
+        finally:
+            if not deleted and target is not None:
+                target.performance_timeline = old_timeline
+        if failure is not None:
+            QMessageBox.warning(self.resource_window, "无法删除本句", str(failure))
+        if not deleted:
+            return
+        owner = self.owner
+        if target is None:
+            self.finish()
+        else:
+            self.show_message(target, stop_preview=False)
+        # 刷新主界面可能处理 Qt 事件，必须先脱离已删除对象再允许重入。
+        owner.refresh_chat_display()
+        owner.refresh_chat_list()
 
     def build_resources(self):
         """搭建紧凑资源窗口，省去逐行预览/插入/替换按钮。"""
@@ -435,6 +490,7 @@ class MultiCharEditor(QObject):
         self.previous = QToolButton()
         self.next = QToolButton()
         self.add_message_button = QToolButton()
+        self.delete_message_button = QToolButton()
         navigation = (
             (self.previous, "previous", "上一句", lambda: self.switch_message(-1)),
             (self.next, "next", "下一句", lambda: self.switch_message(1)),
@@ -449,6 +505,16 @@ class MultiCharEditor(QObject):
             button.clicked.connect(callback)
         self.add_message_button.setText("添加台词")
         self.add_message_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.delete_message_button.setObjectName("multiCharNavigation")
+        self.delete_message_button.setText("删除本句")
+        self.delete_message_button.setToolTip("删除本句及其编排和句前场景变化")
+        self.delete_message_button.setAccessibleName("删除本句")
+        self.delete_message_button.setCursor(Qt.PointingHandCursor)
+        self.delete_message_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.delete_message_button.setIcon(delete_message_icon())
+        self.delete_message_button.setIconSize(self.add_message_button.iconSize())
+        self.delete_message_button.setStyleSheet(f"QToolButton:enabled {{ color: {DELETE_COLOR}; }}")
+        self.delete_message_button.clicked.connect(self.delete_message)
         self.message_count = QLabel()
         self.message_count.setObjectName("multiCharMessageCount")
         self.message_count.setAlignment(Qt.AlignCenter)
@@ -457,6 +523,7 @@ class MultiCharEditor(QObject):
         header.addWidget(self.message_count)
         header.addWidget(self.next)
         header.addWidget(self.add_message_button)
+        header.addWidget(self.delete_message_button)
         card_layout.addLayout(header)
         text_html = f"<div style='color:#243046; line-height:1.25;'>{html.escape(self.message.text or '')}</div>"
         if self.message.translation:
@@ -1038,6 +1105,7 @@ class MultiCharEditor(QObject):
 
         font_px = self.timeline_window.font().pixelSize()
         toolbar = QFrame()
+        self.timeline_toolbar = toolbar
         toolbar.setObjectName("multiCharToolbarCard")
         bar = QHBoxLayout(toolbar)
         pad_x = round(font_px * 0.45)
@@ -1146,9 +1214,15 @@ class MultiCharEditor(QObject):
         bar.addWidget(save)
         root.addWidget(toolbar)
         self.update_clock()
-        desired_view_height = self.view.top + len(self.view.rows) * self.view.row_height + self.view.group_gap + 16
-        controls_height = root.minimumSize().height() - self.view.minimumHeight()
-        self.timeline_window.setProperty("preferredHeight", desired_view_height + controls_height)
+
+    def update_timeline_preferred_height(self):
+        """在按钮样式确定后计算自然高度，不从默认视口或窗口当前尺寸反推。"""
+        self.timeline_toolbar.ensurePolished()
+        root = self.timeline_window.layout()
+        margins = root.contentsMargins()
+        controls_height = max(self.timeline_toolbar.sizeHint().height(), self.timeline_toolbar.minimumSizeHint().height())
+        preferred = self.view.intrinsic_height() + controls_height + margins.top() + margins.bottom() + root.spacing()
+        self.timeline_window.setProperty("preferredHeight", preferred)
 
     def send(self, action, **payload):
         """发送同一编辑会话的命令，避免旧窗口消息干扰新会话。"""
@@ -1161,7 +1235,9 @@ class MultiCharEditor(QObject):
             payload["turn"] = self.turn()
         self.sequence += 1
         self.owner.to_live2d_change_character_queue.put(
-            dict(payload, type="multi_char_preview", action=action, session=self.session_id, sequence=self.sequence)
+            dict(payload, type="multi_char_preview", action=action, session=self.session_id, sequence=self.sequence,
+                 script_session=getattr(self.owner, "_playback_session", None),
+                 script_revision=getattr(self.owner, "_playback_revision", None))
         )
 
     def turn(self):
@@ -1492,6 +1568,7 @@ class MultiCharEditor(QObject):
         self.owner.setEnabled(True)
         self.owner.raise_()
         self.owner.performance_editor = None
+        self.owner.performance_editor_finished(self.chat)
         self.resource_window.deleteLater()
         self.timeline_window.deleteLater()
         self.deleteLater()

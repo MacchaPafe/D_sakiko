@@ -45,10 +45,13 @@ def host():
                         for name in ("A", "B")],
         audio_gen_module=SimpleNamespace(audio_language_choice=""),
         sync_live2d_active_slots=Mock(), display_live2d_message=Mock(),
+        playback_available=Mock(return_value=True), send_playback_command=Mock(),
+        set_playback_block=Mock(),
         message_queue=Queue(), performance_editor=None,
         _save_chat=Mock(return_value=True), regenerate_audio_continue=Mock(),
     )
-    for name in ("_single_replay_payload", "_find_character_by_name", "finish_audio_regeneration"):
+    for name in ("_single_replay_payload", "_find_character_by_name", "finish_audio_regeneration",
+                 "request_sentence_playback"):
         setattr(result, name, MethodType(getattr(ViewerGUI, name), result))
     return result
 
@@ -70,13 +73,16 @@ def test_single_replay_keeps_prior_scene_and_current_target(host):
     """回放无角色消息仍发送台词，并带上前句舞台及正确的整段下标。"""
     before = [message.as_dict() for message in host.current_chat.message_list]
     ViewerGUI.on_link_clicked(host, QUrl("replay:1"))
-    payload = host.display_live2d_message.call_args.args[0][0]
+    assert host.send_playback_command.call_args.args == ("single",)
+    command = host.send_playback_command.call_args.kwargs
+    payload = command["messages"][command["index"]]
     assert payload["character_name"] == ""
-    assert payload["scene_context"] == {"messages": before, "index": 1}
-    assert payload["scene_context"]["messages"][0]["scene_before"]["background"] == "school.png"
+    assert command["index"] == 1 and command["messages"] == before
+    assert command["messages"][0]["scene_before"]["background"] == "school.png"
     assert [message.as_dict() for message in host.current_chat.message_list] == before
-    assert all("scene_context" not in message for message in payload["scene_context"]["messages"])
-    host.sync_live2d_active_slots.assert_called_once()
+    assert all("scene_context" not in message for message in command["messages"])
+    host.sync_live2d_active_slots.assert_not_called()
+    host.display_live2d_message.assert_not_called()
 
 
 @pytest.mark.parametrize("speaker,expected", [("", "夜色 <渐深>。"), ("A", "★A：夜色 <渐深>。")])
@@ -155,7 +161,9 @@ def test_new_audio_preserves_scene_and_mute_and_replays_with_context(host, tmp_p
     assert message.audio_path == str(audio_path)
     assert message.muted
     assert message.scene_before == old_scene
-    payload = host.display_live2d_message.call_args.args[0][0]
-    assert payload["scene_context"]["index"] == 1
+    assert host.send_playback_command.call_args.args == ("single",)
+    command = host.send_playback_command.call_args.kwargs
+    payload = command["messages"][command["index"]]
+    assert command["index"] == 1
     assert payload["muted"]
     assert payload["audio_path"] == str(audio_path)

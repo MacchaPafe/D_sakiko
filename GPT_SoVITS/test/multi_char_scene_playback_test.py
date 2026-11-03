@@ -2,7 +2,6 @@
 import ast
 import logging
 import sys
-from collections import deque
 from copy import deepcopy
 from pathlib import Path
 from queue import Queue
@@ -16,6 +15,7 @@ from live2d_support.multi_char_performance import MultiCharPerformance
 from live2d_support.multi_char_resources import audio_span
 from live2d_support.multi_char_scene import transition_from_total
 from live2d_support.multi_char_stage import MultiCharStage
+from live2d_support.multi_char_playback import MultiCharPlayback
 
 
 class Clock:
@@ -82,7 +82,7 @@ def scheduler_code():
     tree = ast.parse(source.read_text(encoding="utf-8-sig"))
     player = next(node for node in ast.walk(tree)
                   if isinstance(node, ast.FunctionDef) and node.name == "play_live2d")
-    names = {"begin_playlist", "begin_sentence", "is_dialogue_idle", "show_preview_scene"}
+    names = {"reset_playback_round", "begin_sentence", "is_dialogue_idle", "show_preview_scene"}
     functions = [node for node in player.body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(functions) == len(names)
     loop = next(node for node in player.body if isinstance(node, ast.While))
@@ -129,23 +129,34 @@ class Playback:
             "time": SimpleNamespace(time=self.clock, monotonic=self.clock),
             "model_group": self.models, "timeline_direction": lambda name: "C",
             "overlay": Mock(), "tell_qt_this_turn_finish_queue": sender,
-            "to_live2d_module_queue": Queue(), "queued_playlist": deque(),
-            "preparing_sentence": False, "transition_preview": False,
-            "stop_on_next_sentence": False, "lip_sync_model": None,
+            "to_live2d_module_queue": Queue(), "transition_preview": False,
+            "lip_sync_model": None,
             "this_turn_model": None, "next_turn_earliest_start_at": 0,
             "logger": logging.getLogger(__name__),
         }
         definitions, self.frame = scheduler_code()
         exec(definitions, self.context)
+        self.show_hint = Mock()
+        self.controller = MultiCharPlayback(
+            self.stage, self.performance, self.music, self.context["begin_sentence"],
+            self.context["reset_playback_round"], self.record, lambda: self.performance.preview,
+            show_hint=self.show_hint, clock=self.clock,
+        )
+        self.context["playback"] = self.controller
 
     def record(self, payload):
         """记录实际启动台词或预览反馈的时间，数据保存为独立副本。"""
         self.sent.append((round(self.clock() * 1000), deepcopy(payload)))
 
-    def load(self, turns):
-        """按正式 IPC 路径提交播放列表并执行首帧。"""
-        self.context["to_live2d_module_queue"].put({"playlist": turns})
-        self.step(0)
+    def load(self, turns, at=0):
+        """已有场景用例显式从首句自动播放，新控制用例单独验证待播。"""
+        self.clock.now = at / 1000
+        self.controller.command({"action": "load", "session": "test",
+                                 "revision": self.controller.revision + 1,
+                                 "messages": turns, "preserve_scene": True})
+        self.controller.command({"action": "auto_from", "session": "test",
+                                 "revision": self.controller.revision, "index": 0})
+        self.step(at)
 
     def step(self, milliseconds):
         """推进指定绝对时刻的一帧，包含主循环的队列、停止与下一句调度。"""
@@ -158,7 +169,8 @@ class Playback:
 
     def started(self):
         """过滤反馈，只返回实际启动台词的时间和文本。"""
-        return [(at, message["text"]) for at, message in self.sent if "text" in message]
+        return [(at, message["turn"]["text"]) for at, message in self.sent
+                if message.get("type") == "multi_char_playback_turn"]
 
 
 @pytest.fixture
@@ -552,8 +564,7 @@ def test_new_playback_resets_both_roles_before_empty_first_sentence(playback, si
         messages = [target]
     else:
         messages = [target, line("后")]
-    playback.context["to_live2d_module_queue"].put({"playlist": messages})
-    playback.step(1000)
+    playback.load(messages, at=1000)
     assert [(visual.motion, visual.expression) for visual in visuals] == [
         ("default", "default"), ("default", "default"),
     ]

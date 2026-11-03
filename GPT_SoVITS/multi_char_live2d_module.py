@@ -7,7 +7,7 @@ from OpenGL.GL import *
 import glob, os,time
 from random import randint
 import sys
-from collections import deque
+from queue import Empty
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
@@ -973,7 +973,9 @@ class Live2DModule:
         pygame.init()
 
         display = (int(win_w_and_h*1.33), win_w_and_h)
-        pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+        # 工作区通过原生窗口 API 缩放和恢复舞台；固定尺寸 SDL 窗口会拒绝这些请求。
+        # 保留同一 OpenGL 上下文，实际画面由每帧的等比 viewport 适配。
+        pygame.display.set_mode(display, DOUBLEBUF | OPENGL | pygame.RESIZABLE)
         session = Live2DRuntimeSession()
         frame_clock = pygame.time.Clock()
         target_fps = 60
@@ -988,6 +990,8 @@ class Live2DModule:
         self._load_models(model_group, model_layouts, win_w_and_h, {0, 1}, session)
 
         overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h), self._active_character_names())
+        from live2d_support.multi_char_playback import PLAYBACK_HELP_TEXT
+        overlay.set_text("", PLAYBACK_HELP_TEXT)
         model_notice_overlay = ModelLoadNoticeOverlay(display)
         # if self.if_sakiko:
         #     model.SetExpression('serious')
@@ -1006,21 +1010,29 @@ class Live2DModule:
         # 台词时钟由 performance 统一管理，句前阶段由 stage 独立管理。
         # 此时间仅供播完后的待机恢复使用，不参与下一句调度。
         next_turn_earliest_start_at = 0.0
-        preparing_sentence = False
         transition_preview = False
-
-        stop_on_next_sentence = False  # 是否在下一句开始时停止（用于外部发送 STOP 命令的响应）
-        queued_playlist: deque[dict] = deque()  # 用于存储外部发送的新播放列表，等当前播放完再切换
         active_motion_facing_mode = "screen"
         layout_editing = False
         layout_dragging = False
         layout_selected_slot = 0
         layout_dirty_slots: set[int] = set()
         layout_last_mouse_pos: tuple[int, int] | None = None
+        layout_dialogue = None
+        editor_dialogue = None
+        space_held = False
+
+        def stage_viewport():
+            """绘制和鼠标拖动共用等比视口，窗口缩放后仍以实际画面像素定位。"""
+            width, height = pygame.display.get_window_size()
+            ratio = min(width / display[0], height / display[1])
+            viewport_width = max(1, round(display[0] * ratio))
+            viewport_height = max(1, round(display[1] * ratio))
+            return ((width - viewport_width) // 2, (height - viewport_height) // 2,
+                    viewport_width, viewport_height)
 
         def slot_from_mouse_x(mouse_x: int) -> int:
             """根据鼠标横坐标判断正在编辑的小剧场槽位。"""
-            return 0 if mouse_x < display[0] / 2 else 1
+            return 0 if mouse_x < pygame.display.get_window_size()[0] / 2 else 1
 
         def apply_slot_layout(slot: int) -> None:
             """将指定槽位当前布局应用到对应模型。"""
@@ -1045,17 +1057,8 @@ class Live2DModule:
             pygame.display.flip()
 
         def is_dialogue_idle() -> bool:
-            """判断小剧场当前是否没有正在播放或等待推进的对话句。"""
-            return (
-                self.playlist_pointer == len(self.playlist)
-                and to_live2d_module_queue.empty()
-                and not queued_playlist
-                and not performance.preview
-                and not performance.playing
-                and not pygame.mixer.music.get_busy()
-                and not stage.busy
-                and not preparing_sentence
-            )
+            """待播也是空闲；句前阶段、临时回放及编辑预约均视为占用。"""
+            return playback.idle
 
         def apply_idle_facing_motion_if_dialogue_idle(slots: set[int] | None = None) -> None:
             """空闲时立即把两个可见模型切到当前朝向对应的 IDLE 动作。"""
@@ -1144,11 +1147,15 @@ class Live2DModule:
 
         def enter_layout_edit_mode(selected_slot: int) -> None:
             """进入小剧场 Live2D 布局编辑模式。"""
-            nonlocal layout_editing, layout_dragging, layout_selected_slot, layout_last_mouse_pos
+            nonlocal layout_editing, layout_dragging, layout_selected_slot, layout_last_mouse_pos, layout_dialogue
+            if not playback.idle:
+                return
             if model_group[selected_slot] is None:
                 show_hidden_slot_overlay(selected_slot)
                 return
+            playback.cancel_hint()
             layout_editing = True
+            layout_dialogue = (overlay.current_char_name, overlay.full_text)
             layout_dragging = False
             layout_selected_slot = selected_slot
             layout_last_mouse_pos = None
@@ -1157,14 +1164,16 @@ class Live2DModule:
 
         def exit_layout_edit_mode() -> None:
             """退出小剧场 Live2D 布局编辑模式，并保存已修改布局。"""
-            nonlocal layout_editing, layout_dragging, layout_last_mouse_pos
+            nonlocal layout_editing, layout_dragging, layout_last_mouse_pos, layout_dialogue
             save_dirty_layouts()
             layout_editing = False
             layout_dragging = False
             layout_last_mouse_pos = None
             pygame.display.set_caption(window_caption)
             stage.actors = stage.actor_targets(stage.state)
-            overlay.set_text(f"{self.active_slots[0]['character_name']} & {self.active_slots[1]['character_name']}", "...")
+            if layout_dialogue is not None:
+                overlay.set_text(*layout_dialogue)
+                layout_dialogue = None
 
         def reset_selected_layout() -> None:
             """重置当前选中模型的小剧场布局。"""
@@ -1262,16 +1271,12 @@ class Live2DModule:
                 overlay.set_text(str(turn.get("character_name") or ""),
                                  str(turn.get("text") or "") + "\n" + str(turn.get("translation") or ""))
 
-        def begin_playlist(playlist):
-            """新回放统一复位双人姿态与舞台，连续句间的双空轨则保持原状态。"""
-            nonlocal preparing_sentence
-            self.playlist = playlist
-            self.playlist_pointer = 0
+        def reset_playback_round():
+            """新正式起点或临时回放复位双人，不在普通句间清理姿态。"""
             self.performance_round += 1
-            preparing_sentence = False
             performance.reset_all()
             performance.managed.clear()
-            stage.new_playback()
+            self._clear_eye_reopen_state()
 
         def begin_sentence(turn):
             """在句前阶段结束后启动语音、字幕与句内时钟，空角色不借用口型。"""
@@ -1300,77 +1305,37 @@ class Live2DModule:
                     position=timeline_direction(speaker),
                 )
             next_turn_earliest_start_at = time.time() + performance.span.duration_ms / 1000
-            tell_qt_this_turn_finish_queue.put(turn)
+            tell_qt_this_turn_finish_queue.put({
+                "type": "multi_char_playback_turn", "session": playback.session,
+                "revision": playback.revision, "index": playback.current_index,
+                "single": playback.single, "turn": turn,
+            })
             overlay.set_text(speaker, str(turn.get("text") or "") + "\n" + str(turn.get("translation") or ""))
-            self.playlist_pointer += 1
+            self.playlist_pointer = playback.pending_index
 
         expression_preview = ExpressionPreviewSession()
+        from live2d_support.multi_char_playback import MultiCharPlayback
+
+        def playback_occupied():
+            return performance.preview or layout_editing or bool(expression_preview.session_id)
+
+        playback = MultiCharPlayback(
+            stage, performance, pygame.mixer.music, begin_sentence, reset_playback_round,
+            tell_qt_this_turn_finish_queue.put, playback_occupied,
+            show_hint=lambda: overlay.set_text("", PLAYBACK_HELP_TEXT),
+        )
         from pygame._sdl2.video import Window
         stage_window = Window.from_display_module()
         stage_geometry = None
         refresh_model_notice()
 
         while self.run:
-            for event in pygame.event.get():  # 退出程序逻辑
-                if event.type == pygame.QUIT:
-                    if layout_editing:
-                        exit_layout_edit_mode()
-                    self.run = False
-                    break
-                elif event.type == pygame.KEYDOWN and layout_editing:
-                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
-                        exit_layout_edit_mode()
-                    elif event.key == pygame.K_r:
-                        reset_selected_layout()
-                elif event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 3:
-                        if layout_editing:
-                            exit_layout_edit_mode()
-                        else:
-                            enter_layout_edit_mode(slot_from_mouse_x(event.pos[0]))
-                    elif layout_editing and event.button == 1:
-                        clicked_slot = slot_from_mouse_x(event.pos[0])
-                        if model_group[clicked_slot] is None:
-                            show_hidden_slot_overlay(clicked_slot)
-                            continue
-                        layout_selected_slot = clicked_slot
-                        layout_dragging = True
-                        layout_last_mouse_pos = event.pos
-                        show_layout_edit_overlay()
-                    elif layout_editing and event.button in (4, 5):
-                        model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].zoomed(
-                            1 if event.button == 4 else -1
-                        )
-                        apply_slot_layout(layout_selected_slot)
-                        layout_dirty_slots.add(layout_selected_slot)
-                        show_layout_edit_overlay()
-                elif event.type == pygame.MOUSEBUTTONUP and layout_editing and event.button == 1:
-                    layout_dragging = False
-                    layout_last_mouse_pos = None
-                elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
-                    if layout_last_mouse_pos is not None:
-                        last_x, last_y = layout_last_mouse_pos
-                        current_x, current_y = event.pos
-                        model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].moved_by_pixels(
-                            current_x - last_x,
-                            current_y - last_y,
-                            display[0],
-                            display[1],
-                        )
-                        apply_slot_layout(layout_selected_slot)
-                        layout_dirty_slots.add(layout_selected_slot)
-                        show_layout_edit_overlay()
-                    layout_last_mouse_pos = event.pos
-                elif event.type == pygame.MOUSEWHEEL and layout_editing:
-                    model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].zoomed(int(event.y))
-                    apply_slot_layout(layout_selected_slot)
-                    layout_dirty_slots.add(layout_selected_slot)
-                    show_layout_edit_overlay()
-                else:
-                    pass
-
-            if not change_char_queue.empty():
-                x = change_char_queue.get()
+            # 先消化同一控制队列，避免点击抢在换剧本或编辑预约前执行。
+            try:
+                x = change_char_queue.get_nowait()
+            except Empty:
+                x = None
+            if x is not None:
                 if x == "EXIT":
                     if layout_editing:
                         exit_layout_edit_mode()
@@ -1390,17 +1355,48 @@ class Live2DModule:
                     message_type == "set_active_slots"
                     and not bool(x.get("preserve_playback", False))
                 )
-                if should_stop_current_playlist and self.playlist_pointer != len(self.playlist):
-                    stop_on_next_sentence = True
+                if should_stop_current_playlist:
+                    playback.stop()
 
                 try:
                     # 统一按 type 分发，避免旧字符串协议带来的解析歧义
-                    if message_type == "multi_char_preview":
+                    if message_type == "multi_char_playback":
+                        if x.get("action") == "load" and playback.accepts_load(x):
+                            if performance.preview:
+                                performance.command({"action": "exit", "session": performance.session})
+                                stage.exit_editor()
+                                transition_preview = False
+                            expression_preview.close()
+                            if layout_editing:
+                                exit_layout_edit_mode()
+                            # 装载和模型目标按同一消息原子处理，旧版本不会换模型。
+                            slots_payload = x.get("slots_payload")
+                            if isinstance(slots_payload, dict):
+                                playback.stop()
+                                performance.resources.clear()
+                                apply_slots_payload(slots_payload)
+                            if not x.get("preserve_scene", False) and playback.revision >= 0:
+                                overlay.set_text("", "")
+                        playback.command(x)
+                    elif message_type == "multi_char_preview":
                         action = x.get("action")
+                        if (x.get("script_session") is not None and not playback.matches(
+                                x.get("script_session"), x.get("script_revision"))):
+                            continue
                         valid_session = performance.preview and x.get("session") == performance.session
                         if action == "enter":
+                            # 编排器原位切句会重建预览 session，既有预约继续覆盖整个会话。
+                            if (playback.active or playback.auto or playback.blocks or layout_editing
+                                    or (expression_preview.session_id and not performance.preview)):
+                                tell_qt_this_turn_finish_queue.put({
+                                    "type": "multi_char_preview", "session": x.get("session"),
+                                    "error": "请等待当前播放结束", "playing": False,
+                                })
+                                continue
                             if not performance.preview:
                                 stage_geometry = (stage_window.position, stage_window.size)
+                                editor_dialogue = (overlay.current_char_name, overlay.full_text)
+                            playback.cancel_hint()
                             stage.enter_editor()
                         elif valid_session and action == "window_geometry":
                             px, py, width, height = x["geometry"]
@@ -1430,6 +1426,9 @@ class Live2DModule:
                             elif action == "exit":
                                 transition_preview = False
                                 stage.exit_editor()
+                                if editor_dialogue is not None:
+                                    overlay.set_text(*editor_dialogue)
+                                    editor_dialogue = None
                         if action == "enter":
                             self._clear_eye_reopen_state()
                             lip_sync_model = None
@@ -1439,9 +1438,18 @@ class Live2DModule:
                                 "geometry": list(stage_window.position) + list(stage_window.size),
                             })
                     elif message_type == "expression_editor":
+                        if x.get("action") == "begin" and not performance.preview and not playback.idle:
+                            tell_qt_this_turn_finish_queue.put({
+                                "type": "expression_editor", "session_id": x.get("session_id"),
+                                "sequence": x.get("sequence"), "action": "begin", "ok": False,
+                                "message": "请等待当前播放结束",
+                            })
+                            continue
                         character_name = x.get("character")
                         model = performance.bindings().get(character_name)
                         tell_qt_this_turn_finish_queue.put(expression_preview.execute(model, x))
+                        if expression_preview.session_id:
+                            playback.cancel_hint()
                     elif message_type == "set_active_slots":
                         expression_preview.close()
                         performance.resources.clear()
@@ -1484,7 +1492,87 @@ class Live2DModule:
                             "type": "multi_char_preview", "session": x.get("session"),
                             "error": "预览命令执行失败，请检查模型或音频。", "playing": False,
                         })
+                    elif message_type == "multi_char_playback":
+                        error = "播放操作失败，请检查模型或音频。"
+                        if x.get("action") == "load":
+                            playback.fail_load(x, error)
+                        else:
+                            playback.report(action=x.get("action"), request_id=x.get("request_id"),
+                                            accepted=False, error=error)
+                playback.report()
+                if playback_idle_value is not None:
+                    playback_idle_value.value = is_dialogue_idle()
                 continue
+
+            for event in pygame.event.get():  # 退出程序逻辑
+                if event.type == pygame.QUIT:
+                    if layout_editing:
+                        exit_layout_edit_mode()
+                    self.run = False
+                    break
+                elif event.type == getattr(pygame, "WINDOWFOCUSLOST", -1):
+                    space_held = False
+                elif event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
+                    space_held = False
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                    was_held = space_held
+                    space_held = True
+                    if not was_held and not getattr(event, "repeat", False) and pygame.key.get_focused():
+                        playback.toggle_auto()
+                elif event.type == pygame.KEYDOWN and layout_editing:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                        exit_layout_edit_mode()
+                    elif event.key == pygame.K_r:
+                        reset_selected_layout()
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 3:
+                        if layout_editing:
+                            exit_layout_edit_mode()
+                        else:
+                            enter_layout_edit_mode(slot_from_mouse_x(event.pos[0]))
+                    elif layout_editing and event.button == 1:
+                        clicked_slot = slot_from_mouse_x(event.pos[0])
+                        if model_group[clicked_slot] is None:
+                            show_hidden_slot_overlay(clicked_slot)
+                            continue
+                        layout_selected_slot = clicked_slot
+                        layout_dragging = True
+                        layout_last_mouse_pos = event.pos
+                        show_layout_edit_overlay()
+                    elif layout_editing and event.button in (4, 5):
+                        model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].zoomed(
+                            1 if event.button == 4 else -1
+                        )
+                        apply_slot_layout(layout_selected_slot)
+                        layout_dirty_slots.add(layout_selected_slot)
+                        show_layout_edit_overlay()
+                    elif event.button == 1 and pygame.key.get_focused():
+                        playback.click()
+                elif event.type == pygame.MOUSEBUTTONUP and layout_editing and event.button == 1:
+                    layout_dragging = False
+                    layout_last_mouse_pos = None
+                elif event.type == pygame.MOUSEMOTION and layout_editing and layout_dragging:
+                    if layout_last_mouse_pos is not None:
+                        last_x, last_y = layout_last_mouse_pos
+                        current_x, current_y = event.pos
+                        _, _, viewport_width, viewport_height = stage_viewport()
+                        model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].moved_by_pixels(
+                            current_x - last_x,
+                            current_y - last_y,
+                            viewport_width,
+                            viewport_height,
+                        )
+                        apply_slot_layout(layout_selected_slot)
+                        layout_dirty_slots.add(layout_selected_slot)
+                        show_layout_edit_overlay()
+                    layout_last_mouse_pos = event.pos
+                elif event.type == pygame.MOUSEWHEEL and layout_editing:
+                    model_layouts[layout_selected_slot] = model_layouts[layout_selected_slot].zoomed(int(event.y))
+                    apply_slot_layout(layout_selected_slot)
+                    layout_dirty_slots.add(layout_selected_slot)
+                    show_layout_edit_overlay()
+                else:
+                    pass
 
             stage.tick()
             performance.tick()
@@ -1495,48 +1583,17 @@ class Live2DModule:
                     "sequence": performance.sequence, "playing": False,
                 })
 
+            # 旧播放队列只保留停止兼容；旧快照不得自动排队抢占正式播放。
             if not performance.preview and not to_live2d_module_queue.empty():
                 data = to_live2d_module_queue.get()
                 if data == "STOP":
-                    stop_on_next_sentence = True
-                elif isinstance(data, dict):
-                    if (self.playlist_pointer >= len(self.playlist)
-                            and not pygame.mixer.music.get_busy() and not performance.playing
-                            and not stage.busy and not preparing_sentence):
-                        begin_playlist(data.get("playlist", []))
-                    else:
-                        if not data.get("preserve_playback", False):
-                            stop_on_next_sentence = True
-                            queued_playlist.clear()
-                        queued_playlist.append(data.get("playlist", []))
+                    playback.stop()
                 else:
-                    logger.warning("忽略不支持的 to_live2d_module_queue 消息：%s", data)
-
+                    logger.warning("忽略旧播放队列消息，请使用 multi_char_playback 协议")
+            playback.tick()
+            self.playlist = playback.messages
+            self.playlist_pointer = playback.pending_index
             audio_is_playing = pygame.mixer.music.get_busy()
-            if not performance.preview:
-                sentence_finished = not audio_is_playing and not performance.playing
-                if stop_on_next_sentence and sentence_finished:
-                    stage.cancel()
-                    stage.show(stage.state)
-                    preparing_sentence = False
-                    self.playlist_pointer = len(self.playlist)
-                    stop_on_next_sentence = False
-                if self.playlist_pointer >= len(self.playlist) and queued_playlist and sentence_finished:
-                    begin_playlist(queued_playlist.popleft())
-                if self.playlist_pointer < len(self.playlist) and sentence_finished:
-                    turn = self.playlist[self.playlist_pointer]
-                    if not preparing_sentence:
-                        # 单条回放带整段上下文，但只应用目标状态，不补播前面的句间阶段。
-                        context = turn.get("scene_context") or {}
-                        messages = context.get("messages") or self.playlist
-                        index = context.get("index", self.playlist_pointer)
-                        target = stage.resolve(messages, index)
-                        stage.begin(target, turn.get("scene_before"), first=self.playlist_pointer == 0)
-                        preparing_sentence = True
-                    if not stage.busy:
-                        begin_sentence(turn)
-                        preparing_sentence = False
-                        audio_is_playing = pygame.mixer.music.get_busy()
 
             if (not performance.preview and not performance.playing
                     and self.playlist and self.playlist_pointer >= len(self.playlist)
@@ -1576,12 +1633,7 @@ class Live2DModule:
                 self._force_model_eyes_open(self.last_motion_model)
                 self._clear_eye_reopen_state()
             # 编辑工作区改变窗口尺寸时，整个舞台等比缩放并留边，不拉伸角色。
-            window_width, window_height = pygame.display.get_window_size()
-            ratio = min(window_width / display[0], window_height / display[1])
-            viewport_width = round(display[0] * ratio)
-            viewport_height = round(display[1] * ratio)
-            glViewport((window_width - viewport_width) // 2, (window_height - viewport_height) // 2,
-                       viewport_width, viewport_height)
+            glViewport(*stage_viewport())
             # 渲染背景图片
             # 强制恢复OpenGL状态，确保背景和UI的渲染不受Live2D的影响
             # 因为多模型下，不知道为什么，live2d-py 库渲染模型时会修改 OpenGL 上下文，抢走了纹理的绑定。
@@ -1614,7 +1666,7 @@ class Live2DModule:
             # 4、pygame刷新
             pygame.display.flip()
             if playback_idle_value is not None:
-                playback_idle_value.value = is_dialogue_idle() and not performance.preview and not performance.playing
+                playback_idle_value.value = is_dialogue_idle()
             frame_clock.tick(target_fps)
 
         try:

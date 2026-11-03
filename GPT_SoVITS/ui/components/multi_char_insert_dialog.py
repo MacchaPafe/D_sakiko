@@ -1,9 +1,11 @@
 """小剧场新增台词表单：只收集消息字段，不请求 LLM 或合成音频。"""
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-    QPlainTextEdit, QVBoxLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+    QPlainTextEdit, QVBoxLayout, QWidget,
 )
 from ui.components.multi_char_icons import set_button_icon
+from ui.components.multi_char_style import editor_stylesheet
 
 
 class MultiCharInsertDialog(QDialog):
@@ -14,8 +16,16 @@ class MultiCharInsertDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("multiCharInsertDialog")
         self.setWindowTitle("添加台词")
-        self.setFont(parent.font())
-        self.setStyleSheet(parent.styleSheet())
+        # 主控和编排器使用同一表单主题，避免主控的大号字体改变弹窗布局。
+        screen = QWidget.screen(parent) if parent is not None else QApplication.primaryScreen()
+        screen = screen or QApplication.primaryScreen()
+        font_pixels = max(14, min(36, round(screen.availableGeometry().height() * 0.016)))
+        font = QFont(QApplication.font())
+        font.setPixelSize(font_pixels)
+        self.setFont(font)
+        self.setStyleSheet(editor_stylesheet(font_pixels, names))
+        # 先应用自己的 QSS，再据字体计算固定输入框与图标尺寸，防止沿用父窗字号。
+        self.ensurePolished()
         self.resize(round(self.fontMetrics().height() * 25), 0)
         root = QVBoxLayout(self)
         form = QFormLayout()

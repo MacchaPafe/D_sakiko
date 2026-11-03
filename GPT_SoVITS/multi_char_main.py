@@ -27,6 +27,7 @@ from ui_main.components.custom_bgm_dialog import (
 
 import time,copy
 import threading
+import uuid
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QGridLayout, QApplication, QLabel, QGroupBox, QDialog, QMessageBox, QMenu, QFormLayout, QDialogButtonBox, \
@@ -44,7 +45,7 @@ from live2d_support.model_catalog import Live2DModelOption
 from live2d_support.motion_capabilities import get_live2d_motion_capabilities
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
-from ui.components.multi_char_icons import set_button_icon
+from ui.components.multi_char_icons import set_button_icon, delete_message_icon, multi_char_icon
 
 
 logger = get_logger(__name__)
@@ -653,8 +654,17 @@ class InteractiveChatBrowser(QTextBrowser):
     edit_signal = pyqtSignal(int)
     regenerate_signal=pyqtSignal(int)
     performance_signal = pyqtSignal(int)
+    auto_from_signal = pyqtSignal(int)
+    delete_signal = pyqtSignal(int)
+    insert_signal = pyqtSignal(int, bool)
+
+    def __init__(self, parent=None):
+        """菜单打开和命令执行各自检查舞台状态，避免旧菜单绕过互斥。"""
+        super().__init__(parent)
+        self.playback_available = lambda: False
+
     def contextMenuEvent(self, event):
-        """为台词链接提供语音重生成及演出编排入口。"""
+        """为台词链接提供播放、语音重生成、编排及增删入口。"""
         # 1. 获取鼠标位置下的链接地址
         # anchorAt 是 Qt 5.10+ 引入的，非常方便
         link = self.anchorAt(event.pos())
@@ -664,10 +674,20 @@ class InteractiveChatBrowser(QTextBrowser):
             # 创建右键菜单
             menu = QMenu(self)
 
+            auto_action = menu.addAction("从此句自动播放")
+            auto_action.setEnabled(self.playback_available())
+
             performance_action = menu.addAction("演出编排")
 
             # 添加 "重新播放" 动作 (可选)
             regen_action = menu.addAction("重新生成这条音频")
+            insert_menu = menu.addMenu(multi_char_icon("add"), "添加台词")
+            insert_menu.setEnabled(self.playback_available())
+            insert_before = insert_menu.addAction("本句之前")
+            insert_after = insert_menu.addAction("本句之后")
+            menu.addSeparator()
+            delete_action = menu.addAction(delete_message_icon(), "删除本句")
+            delete_action.setEnabled(self.playback_available())
 
             # 显示菜单并等待用户选择
             action = menu.exec_(self.mapToGlobal(event.pos()))
@@ -680,6 +700,12 @@ class InteractiveChatBrowser(QTextBrowser):
                     self.regenerate_signal.emit(index)
                 elif action == performance_action:
                     self.performance_signal.emit(index)
+                elif action == auto_action:
+                    self.auto_from_signal.emit(index)
+                elif action == delete_action:
+                    self.delete_signal.emit(index)
+                elif action == insert_before or action == insert_after:
+                    self.insert_signal.emit(index, action == insert_after)
 
             except ValueError:
                 pass
@@ -1093,6 +1119,13 @@ class ViewerGUI(QWidget):
         """构建小剧场控制台、消息通道及共享舞台编排入口。"""
         super().__init__()
         self.playback_idle_value = playback_idle_value
+        self._playback_revision = 0
+        self._playback_session = ""
+        self._playback_status = {"busy": True}
+        self._playback_pending = set()
+        self._playback_stage_available = True
+        self._playback_blocked_reasons = set()
+        self._editor_request = None
 
         self.setWindowTitle("数字小祥 小剧场")
         self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
@@ -1113,6 +1146,10 @@ class ViewerGUI(QWidget):
         self.chat_display.edit_signal.connect(self.open_editor) #右键
         self.chat_display.regenerate_signal.connect(self.regenerate_audio)
         self.chat_display.performance_signal.connect(self.open_performance_editor)
+        self.chat_display.auto_from_signal.connect(self.start_playback_from)
+        self.chat_display.delete_signal.connect(self.delete_sentence)
+        self.chat_display.insert_signal.connect(self.insert_sentence)
+        self.chat_display.playback_available = self.playback_available
         self.performance_editor = None
         self._audio_regeneration = None
         self._generation_context = None
@@ -1183,10 +1220,6 @@ class ViewerGUI(QWidget):
         self.top_layout.addWidget(self.btn_close,0)
 
         # === 3. 底部大按钮 (Generate Button) ===
-        self.replay_full_btn = QPushButton("回放当前对话")
-        self.replay_full_btn.setCursor(Qt.PointingHandCursor)
-        self.replay_full_btn.clicked.connect(self.replay_current_chat)
-
         self.edit_script_btn = QPushButton("进入剧本编排")
         set_button_icon(self.edit_script_btn, "clapperboard", self)
         self.edit_script_btn.setCursor(Qt.PointingHandCursor)
@@ -1201,13 +1234,11 @@ class ViewerGUI(QWidget):
 
         # 动态计算大按钮高度
         gen_btn_height = int(self.scr_h * 0.03)
-        self.replay_full_btn.setMinimumHeight(gen_btn_height)
         self.edit_script_btn.setMinimumHeight(gen_btn_height)
         self.generate_btn.setMinimumHeight(gen_btn_height)
 
         bottom_action_layout = QHBoxLayout()
         bottom_action_layout.setSpacing(int(self.scr_w * 0.01))
-        bottom_action_layout.addWidget(self.replay_full_btn, 1)
         bottom_action_layout.addWidget(self.edit_script_btn, 1)
         bottom_action_layout.addWidget(self.generate_btn, 1)
 
@@ -1321,7 +1352,7 @@ class ViewerGUI(QWidget):
             self._recover_bgm_after_failure(initial_bgm, "文件不存在或无法载入")
 
         self.update_chat_panel_toggle_button()
-        self.update_replay_button_visibility()
+        self.update_script_button_visibility()
 
     def update_chat_panel_toggle_button(self) -> None:
         """同步更新右侧面板显隐按钮的图标与提示文案。"""
@@ -1335,20 +1366,10 @@ class ViewerGUI(QWidget):
         self.chat_manage_panel.setVisible(not self.chat_manage_panel.isVisible())
         self.update_chat_panel_toggle_button()
 
-    def update_replay_button_visibility(self) -> None:
-        """当前对话有剧本时显示回放与编排入口，空剧本时同时隐藏。"""
+    def update_script_button_visibility(self) -> None:
+        """当前对话有剧本时显示编排入口，正式播放由舞台输入启动。"""
         has_messages = self.current_chat is not None and len(self.current_chat.message_list) > 0
-        self.replay_full_btn.setVisible(has_messages)
         self.edit_script_btn.setVisible(has_messages)
-
-    def replay_current_chat(self) -> None:
-        """回放当前对话的全部消息。"""
-        if self.current_chat is None or not self.current_chat.message_list:
-            return
-
-        replay_payload = [self._turn_dict_from_message(msg) for msg in self.current_chat.message_list]
-        self.sync_live2d_active_slots()
-        self.display_live2d_message(replay_payload, preserve_playback=False)
 
     def theater_chats(self) -> List[Chat]:
         """返回全部小剧场模式对话。"""
@@ -1793,20 +1814,113 @@ class ViewerGUI(QWidget):
         self._refresh_open_settings_dialog()
 
     def display_live2d_message(self, msg: list[dict], preserve_playback: bool = False) -> None:
-        """
-        将数条消息发送 Live2D 子进程播放。
+        """兼容旧调用入口，正式剧本以已保存消息为准，装载后等待用户启动。"""
+        self.load_playback_script()
 
-        :param msg: 每条消息包含角色名称、文本内容、表情等信息的字典列表。
-        :param preserve_playback: 设置为 True 时，传入的内容会进入队列排队，在前面已有内容播放完后再播放；
-        设置为 False 时，当前正在播放的内容播放完一整句后会被立刻打断，立即播放传入的内容。（此时队列缓存的待播放内容也会被清空）
-        """
-        if self.playback_idle_value is not None and msg:
-            self.playback_idle_value.value = False
-        payload = {
-            "playlist": msg,
-            "preserve_playback": preserve_playback,
-        }
-        self.to_live2d_module_queue.put(payload)
+    def send_playback_command(self, action: str, **payload) -> str:
+        """通过同一控制通道有序发送命令；明确回执前不放行新的播放操作。"""
+        request_id = uuid.uuid4().hex
+        if not self._playback_stage_available:
+            return ""
+        self._playback_pending.add(request_id)
+        self.to_live2d_change_character_queue.put(dict(
+            payload, type="multi_char_playback", action=action,
+            session=self._playback_session, revision=self._playback_revision,
+            request_id=request_id,
+        ))
+        return request_id
+
+    def load_playback_script(self, preserve_scene: bool = False) -> None:
+        """原子同步角色和最新剧本，旧回执失效；编辑退出仅更新待播起点。"""
+        self._playback_revision += 1
+        self._playback_session = self.current_chat.chat_id if self.current_chat else ""
+        self._playback_pending.clear()
+        self._editor_request = None
+        self._playback_status = {"busy": True}
+        messages = [message.as_dict() for message in self.current_chat.message_list] if self.current_chat else []
+        payload = {"messages": messages, "preserve_scene": preserve_scene,
+                   "blocked_reasons": sorted(self._playback_blocked_reasons)}
+        if not preserve_scene and self.current_chat is not None:
+            slots = self._build_active_slots_payload(preserve_playback=True)
+            for slot in slots["slots"]:
+                path = slot.get("model_json_path")
+                if path:
+                    self._prepare_live2d_model_for_switch(path, "加载小剧场 Live2D 模型")
+            payload["slots_payload"] = slots
+        self.send_playback_command("load", **payload)
+
+    def set_playback_block(self, reason: str, blocked: bool) -> None:
+        """生成或合成期间阻止舞台启动正式播放，换剧本时仍保留占用原因。"""
+        if blocked:
+            self._playback_blocked_reasons.add(reason)
+        else:
+            self._playback_blocked_reasons.discard(reason)
+        self.send_playback_command("block" if blocked else "unblock", reason=reason)
+
+    def playback_available(self) -> bool:
+        """待播也可操作；本地任务、在途请求及舞台实际忙碌分别校验。"""
+        worker = getattr(self, "generate_thread", None)
+        return bool(
+            self._playback_stage_available
+            and not self._playback_pending
+            and not self._playback_blocked_reasons
+            and not self._playback_status.get("busy", True)
+            and not self._playback_status.get("auto", False)
+            and self.performance_editor is None
+            and self._editor_request is None
+            and self._generation_context is None
+            and self._audio_regeneration is None
+            and not (worker is not None and worker.isRunning())
+            and (self.playback_idle_value is None or self.playback_idle_value.value)
+        )
+
+    def request_sentence_playback(self, index: int, automatic: bool = False) -> bool:
+        """空闲时执行指定句操作；不把忙碌请求排队到本句结束后。"""
+        if self.current_chat is None or not 0 <= index < len(self.current_chat.message_list):
+            return False
+        if not self.playback_available():
+            self.message_queue.put("请等待当前播放结束" if self._playback_stage_available else "演出窗口已关闭，无法播放。")
+            return False
+        self.send_playback_command(
+            "auto_from" if automatic else "single", index=index,
+            messages=[message.as_dict() for message in self.current_chat.message_list],
+        )
+        return True
+
+    def start_playback_from(self, index: int) -> None:
+        """台词右键入口：从所选句建立一轮新的自动演出。"""
+        self.request_sentence_playback(index, automatic=True)
+
+    def receive_playback_state(self, result: dict) -> None:
+        """接收当前剧本版本的状态和回执，预约成功后继续对应的编辑操作。"""
+        if (result.get("session") != self._playback_session
+                or result.get("revision") != self._playback_revision):
+            return
+        self._playback_pending.discard(result.get("request_id"))
+        self._playback_status = result
+        if result.get("error"):
+            self.message_queue.put(result["error"])
+        if result.get("action") != "reserve_editor":
+            return
+        request = self._editor_request
+        if request is None or result.get("request_id") != request["request_id"]:
+            if result.get("accepted"):
+                self.send_playback_command("release_editor", reservation_id=result.get("request_id"))
+            return
+        self._editor_request = None
+        if not result.get("accepted"):
+            return
+        if request.get("kind") == "delete":
+            self._delete_reserved_sentence(request)
+        elif request.get("kind") == "insert":
+            self._insert_reserved_sentence(request)
+        else:
+            self._open_reserved_editor(request)
+
+    def performance_editor_finished(self, chat: Chat) -> None:
+        """关闭编辑器后重建最新剧本，恢复的舞台保持到用户正式启动为止。"""
+        if self.current_chat is chat:
+            self.load_playback_script(preserve_scene=True)
 
     def _on_live2d_model_changed(
         self,
@@ -1875,12 +1989,12 @@ class ViewerGUI(QWidget):
         if 'dp_module' in globals():
             setattr(dp_module, "if_generate_audio", self.can_generate_audio_for_current_chat)
 
-        if len(self.current_char_index) == 2:
-            self.sync_live2d_active_slots(indices=self.current_char_index)
+        self.load_playback_script()
+        self._refresh_open_settings_dialog()
         self.set_two_char_names()
         self.messages_box.setText(f"当前对话：{chat.name}")
 
-        self.update_replay_button_visibility()
+        self.update_script_button_visibility()
 
     def display_timer_timeout(self):
         self.set_two_char_names()
@@ -2126,7 +2240,7 @@ class ViewerGUI(QWidget):
                         self.character_list[self.current_char_index[0]].character_name,
                         self.character_list[self.current_char_index[1]].character_name,
                     ]
-                self.sync_live2d_active_slots(indices=self.current_char_index)
+                self.load_playback_script()
                 self.display_timer.setSingleShot(True)
                 self.display_timer.start(2500)
 
@@ -2142,7 +2256,7 @@ class ViewerGUI(QWidget):
         if self.current_chat is None or not any(self.character_list[index].character_folder_name == "sakiko" for index in self.current_char_index):
             self.message_queue.put("祥子好像不在…")
             return
-        if not self.generate_btn.isEnabled() or self.pending_turn_uids or (self.playback_idle_value is not None and not self.playback_idle_value.value):
+        if not self.playback_available():
             self.message_queue.put("请等待生成和播放完成后切换形态。")
             return
         previous = self.current_chat.get_character_form()
@@ -2157,7 +2271,7 @@ class ViewerGUI(QWidget):
         self.sakiko_state = self.current_chat.get_character_form() == "black"
         self.set_two_char_names()
         self.audio_gen_module.sakiko_which_state = self.sakiko_state
-        self.sync_live2d_active_slots()
+        self.load_playback_script()
         self.message_queue.put(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]}")
 
     def create_mask_menu(self):
@@ -2271,6 +2385,7 @@ class ViewerGUI(QWidget):
             "chat": chat, "indices": list(indices), "sakiko_state": self.sakiko_state,
             "audio": self.can_generate_audio_for_current_chat,
         }
+        self.set_playback_block("generation", True)
         self.generate_btn.setEnabled(False)
         temporary_input = copy.deepcopy(data)
         # 这里必须用原始角色名判断，不能用 two_char_names（可能带“黑祥/白祥”后缀）。
@@ -2309,6 +2424,7 @@ class ViewerGUI(QWidget):
     def generation_failed(self, message) -> None:
         """生成或解析失败时释放入口，保留当前与原目标对话的全部消息。"""
         self._generation_context = None
+        self.set_playback_block("generation", False)
         self.generate_btn.setEnabled(True)
         self.messages_box.setText(message)
 
@@ -2436,6 +2552,7 @@ class ViewerGUI(QWidget):
             self.generation_failed("新剧本保存失败，原剧本已保留。")
             return
         self._generation_context = None
+        self.set_playback_block("generation", False)
         self.messages_box.setText(f"对话生成完毕")
         self.display_timer.setSingleShot(True)
         self.display_timer.start(1000)
@@ -2447,10 +2564,15 @@ class ViewerGUI(QWidget):
         if self.current_chat is target:
             self.playlist_queue = playlist
             self.refresh_chat_display()
-            self.display_live2d_message(playlist, preserve_playback=False)
+            self.load_playback_script()
 
     def display_this_turn_text(self,this_turn_elements):
-        """分发预览回执；只有正式播放的新消息进入聊天记录。"""
+        """分发舞台状态和预览回执，正式回放不再通过回执追加存档。"""
+        if this_turn_elements.get("type") == "multi_char_playback":
+            self.receive_playback_state(this_turn_elements)
+            return
+        if this_turn_elements.get("type") == "multi_char_playback_turn":
+            return
         if this_turn_elements.get("type") == "multi_char_scene_error":
             self.message_queue.put(this_turn_elements.get("error", "场景加载失败。"))
             return
@@ -2459,30 +2581,7 @@ class ViewerGUI(QWidget):
             if self.performance_editor is not None:
                 self.performance_editor.receive(this_turn_elements)
             return
-        if self.current_chat is None:
-            return
-
-        turn_uid = this_turn_elements.get("turn_uid")
-        if turn_uid:
-            if turn_uid not in self.pending_turn_uids:
-                return
-            self.pending_turn_uids.discard(turn_uid)
-
-        message = self._message_from_turn_dict(this_turn_elements)
-
-        # 回放旧消息时（旧数据可能没有 turn_uid），按内容签名去重。
-        if not turn_uid:
-            incoming_signature = self._message_signature_from_dict(this_turn_elements)
-            existing_signatures = {
-                self._message_signature_from_dict(self._turn_dict_from_message(msg))
-                for msg in self.current_chat.message_list
-            }
-            if incoming_signature in existing_signatures:
-                return
-
-        self.current_chat.add_message(message)
-        self.refresh_chat_display()
-        self.refresh_chat_list()
+        # 剧本已在生成成功时整份保存，旧播放进程的裸台词回执也不能写入当前对话。
 
     def on_link_clicked(self, url: QUrl) -> None:
         """处理聊天区链接点击：支持单条消息回放。"""
@@ -2501,11 +2600,7 @@ class ViewerGUI(QWidget):
         if not (0 <= index < len(self.current_chat.message_list)):
             return
 
-        replay_payload = self._single_replay_payload(index)
-
-        # 回放前按当前对话角色同步 Live2D 双模型，避免角色错位。
-        self.sync_live2d_active_slots()
-        self.display_live2d_message([replay_payload], preserve_playback=False)
+        self.request_sentence_playback(index)
 
     def _single_replay_payload(self, index: int) -> Dict[str, Any]:
         """携带整段场景配置，单句回放可从默认舞台解析到目标句。"""
@@ -2517,33 +2612,171 @@ class ViewerGUI(QWidget):
 
     def on_stage_closed(self) -> None:
         """Live2D 退出时保留编排草稿，让用户仍可保存或放弃。"""
+        self._playback_stage_available = False
+        self._playback_pending.clear()
+        self._editor_request = None
         if self.performance_editor is not None:
             self.performance_editor.stage_closed()
 
     def open_performance_editor(self, index: int) -> None:
-        """空闲时进入双窗口编排，初始化失败不留下半开的编辑会话。"""
+        """先由舞台确认空闲并占用输入，再创建编排窗口。"""
         if self.performance_editor is not None:
             self.performance_editor.resource_window.raise_()
             return
         if self.current_chat is None or not 0 <= index < len(self.current_chat.message_list):
             return
-        worker = getattr(self, "generate_thread", None)
-        busy = not self.generate_btn.isEnabled() or bool(self.pending_turn_uids)
-        busy = busy or (worker is not None and worker.isRunning())
-        busy = busy or (self.playback_idle_value is not None and not self.playback_idle_value.value)
-        if busy:
+        if not self.playback_available():
             QMessageBox.information(self, "演出编排", "请等待生成、合成或当前播放结束后再进入编排。")
+            return
+        request_id = self.send_playback_command("reserve_editor")
+        self._editor_request = {"request_id": request_id, "chat": self.current_chat,
+                                "message": self.current_chat.message_list[index]}
+        QTimer.singleShot(10000, lambda: self._expire_editor_request(request_id))
+
+    def _expire_editor_request(self, request_id: str) -> None:
+        """舞台未确认时取消占用申请，迟到确认不能执行失效的编辑操作。"""
+        request = self._editor_request
+        if request is not None and request["request_id"] == request_id:
+            self._editor_request = None
+            self._playback_pending.discard(request_id)
+            self.send_playback_command("release_editor", reservation_id=request_id)
+            operation = {"delete": "删除本句", "insert": "添加台词"}.get(request.get("kind"), "进入编排")
+            self.message_queue.put(f"演出窗口未响应，请稍后重试{operation}。")
+
+    def delete_sentence(self, index: int) -> None:
+        """删除前预留空闲舞台，确认期间也不允许正式播放启动。"""
+        if self.current_chat is None or not 0 <= index < len(self.current_chat.message_list):
+            return
+        if not self.playback_available():
+            self.message_queue.put("请等待生成、合成或当前播放结束后再删除台词。")
+            return
+        request_id = self.send_playback_command("reserve_editor")
+        self._editor_request = {"request_id": request_id, "kind": "delete",
+                                "chat": self.current_chat,
+                                "message": self.current_chat.message_list[index],
+                                "session": self._playback_session, "revision": self._playback_revision}
+        QTimer.singleShot(10000, lambda: self._expire_editor_request(request_id))
+
+    def _delete_reserved_sentence(self, request: dict) -> None:
+        """确认并持久删除原消息，只有成功保存才重建正式剧本。"""
+        from ui.components.multi_char_message_edit import confirm_message_deletion, delete_saved_message
+
+        chat, message = request["chat"], request["message"]
+
+        def still_current():
+            """模态确认也会处理事件，保存前再次验证原聊天和任务状态。"""
+            worker = getattr(self, "generate_thread", None)
+            return (self._playback_stage_available
+                    and self._playback_session == request["session"]
+                    and self._playback_revision == request["revision"]
+                    and self.current_chat is chat
+                    and any(item is message for item in chat.message_list)
+                    and self._generation_context is None and self._audio_regeneration is None
+                    and self.performance_editor is None
+                    and not self._playback_blocked_reasons
+                    and not (worker is not None and worker.isRunning()))
+
+        try:
+            if not still_current() or not confirm_message_deletion(self, message):
+                return
+            if not still_current():
+                return
+            if not delete_saved_message(chat, message, self._save_chat):
+                return
+            # 先刷新运行时身份，再渲染文本；渲染可能处理迟到的 Qt 回执。
+            self.load_playback_script(preserve_scene=True)
+            self.refresh_chat_display()
+            self.refresh_chat_list()
+        except Exception as error:
+            QMessageBox.warning(self, "无法删除本句", str(error))
+        finally:
+            self.send_playback_command("release_editor", reservation_id=request["request_id"])
+
+    def insert_sentence(self, index: int, after: bool) -> None:
+        """在所选句前后添加台词；填写表单前先由舞台确认空闲并占用输入。"""
+        if self.current_chat is None or not 0 <= index < len(self.current_chat.message_list):
+            return
+        if not self.playback_available():
+            self.message_queue.put("请等待生成、合成或当前播放结束后再添加台词。")
+            return
+        request_id = self.send_playback_command("reserve_editor")
+        self._editor_request = {"request_id": request_id, "kind": "insert", "after": after,
+                                "chat": self.current_chat,
+                                "message": self.current_chat.message_list[index],
+                                "session": self._playback_session, "revision": self._playback_revision}
+        QTimer.singleShot(10000, lambda: self._expire_editor_request(request_id))
+
+    def _insert_reserved_sentence(self, request: dict) -> None:
+        """复用编排器填写表单与新句初始化，保存成功后重建正式待播剧本。"""
+        from live2d_support.multi_char_resources import TheaterResources, initial_message_timeline
+        from ui.components.multi_char_insert_dialog import MultiCharInsertDialog
+        from ui.components.multi_char_message_edit import insert_saved_message
+        from ui_constants import char_info_json
+
+        chat, anchor = request["chat"], request["message"]
+
+        def still_current():
+            """表单处理事件期间可能换剧本或启动其他任务，不能再沿用旧目标。"""
+            worker = getattr(self, "generate_thread", None)
+            return (self._playback_stage_available
+                    and self._playback_session == request["session"]
+                    and self._playback_revision == request["revision"]
+                    and self.current_chat is chat
+                    and any(item is anchor for item in chat.message_list)
+                    and self._generation_context is None and self._audio_regeneration is None
+                    and self.performance_editor is None
+                    and not self._playback_blocked_reasons
+                    and not (worker is not None and worker.isRunning()))
+
+        try:
+            if not still_current():
+                return
+            payload = self._build_active_slots_payload(preserve_playback=True)
+            slots = payload["slots"]
+            names = [slot["character_name"] for slot in slots]
+            dialog = MultiCharInsertDialog(names, anchor.character_name, self)
+            try:
+                if dialog.exec_() != QDialog.Accepted:
+                    return
+                data = dialog.message_data()
+            finally:
+                dialog.deleteLater()
+            if not still_current() or not data["text"].strip():
+                return
+            target = Message.from_dict(data)
+            resources = {}
+            for index, slot in enumerate(slots):
+                direction = ("L" if index == 0 else "R") if payload.get("motion_facing_mode") == "face_to_face" else "C"
+                resources[slot["character_name"]] = TheaterResources(slot.get("model_json_path"), direction)
+            palette = [item["theme_color"] for item in char_info_json.values() if item.get("theme_color")]
+            target.performance_timeline = initial_message_timeline(target, names, resources, palette)
+            if not insert_saved_message(chat, anchor, target, request["after"], self._save_chat):
+                return
+            self.load_playback_script(preserve_scene=True)
+            self.refresh_chat_display()
+            self.refresh_chat_list()
+        except Exception as error:
+            QMessageBox.warning(self, "无法添加台词", str(error))
+        finally:
+            self.send_playback_command("release_editor", reservation_id=request["request_id"])
+
+    def _open_reserved_editor(self, request: dict) -> None:
+        """使用申请时绑定的消息对象，初始化失败时释放舞台占用。"""
+        chat, message = request["chat"], request["message"]
+        if (self.current_chat is not chat or not any(item is message for item in chat.message_list)
+                or self._generation_context is not None or self._audio_regeneration is not None):
+            self.send_playback_command("release_editor", reservation_id=request["request_id"])
             return
         from ui.components.multi_char_editor import MultiCharEditor
         payload = self._build_active_slots_payload(preserve_playback=True)
-        self.sync_live2d_active_slots(preserve_playback=True)
         try:
             self.performance_editor = MultiCharEditor(
-                self, self.current_chat, self.current_chat.message_list[index],
+                self, chat, message,
                 payload["slots"], payload["motion_facing_mode"],
             )
         except (OSError, ValueError, RuntimeError) as error:
             self.setEnabled(True)
+            self.send_playback_command("release_editor", reservation_id=request["request_id"])
             QMessageBox.warning(self, "无法进入编排", str(error))
 
     def open_editor(self, index: int) -> None:
@@ -2586,13 +2819,16 @@ class ViewerGUI(QWidget):
         else:
             scroll_bar.setValue(saved_position)
 
-        self.update_replay_button_visibility()
+        self.update_script_button_visibility()
 
     def regenerate_audio(self, index: int, on_complete=None) -> bool:
         """捕获原聊天、消息及输入快照，合成回填不使用当前聊天下标。"""
         worker = getattr(self, "generate_thread", None)
         if worker is not None and worker.isRunning():
             QMessageBox.information(self, "正在合成", "请等待当前音频生成完成。")
+            return False
+        if self.performance_editor is None and not self.playback_available():
+            self.message_queue.put("请等待当前播放结束")
             return False
         self.audio_gen_module.audio_language_choice = "日英混合"
         if self.current_chat is None or not (0 <= index < len(self.current_chat.message_list)):
@@ -2614,6 +2850,7 @@ class ViewerGUI(QWidget):
             else str(message.emotion or "happiness")
         )
         self._audio_regeneration = (self.current_chat, message, message.text, message.audio_path, object())
+        self.set_playback_block("audio", True)
         self.regenerate_character = voice_character
         self.regenerate_audio_continue()
         return True
@@ -2644,6 +2881,7 @@ class ViewerGUI(QWidget):
         callback = getattr(self, "_audio_regeneration_callback", None)
         self._audio_regeneration = None
         self._audio_regeneration_callback = None
+        self.set_playback_block("audio", False)
         self.message_queue.put(reason)
         if callback is not None:
             callback(success, reason)
@@ -2676,8 +2914,9 @@ class ViewerGUI(QWidget):
                                        f"生成完毕；已移除 {removed} 个越界编排事件" if removed else "生成完毕")
         if self.current_chat is chat and self.performance_editor is None:
             index = next(index for index, item in enumerate(chat.message_list) if item is message)
-            self.sync_live2d_active_slots()
-            self.display_live2d_message([self._single_replay_payload(index)], preserve_playback=False)
+            # unblock 与 single 在同一队列中有序执行，使用保存后的快照且不覆盖正式游标。
+            self.send_playback_command("single", index=index,
+                                       messages=[item.as_dict() for item in chat.message_list])
 
     def _save_chat(self) -> bool:
         """保存失败时提示用户，并让调用者停止后续成功流程。"""
@@ -2897,6 +3136,16 @@ if __name__ == "__main__":
                 int(screen_h_mid - 0.35 * QDesktopWidget().screenGeometry().height()))  # 因为窗口高度设置的是0.7倍桌面宽
 
     live2d_process.start()
+    stage_monitor = QTimer(window)
+
+    def check_stage_process():
+        """原生渲染异常退出也解除在途请求，保留可保存的编排草稿。"""
+        if live2d_process.exitcode is not None:
+            stage_monitor.stop()
+            tell_qt_this_turn_finish_queue.put("EXIT")
+
+    stage_monitor.timeout.connect(check_stage_process)
+    stage_monitor.start(1000)
     dp_thread.start()
     window.show()
     app.exec_()

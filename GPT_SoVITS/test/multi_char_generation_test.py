@@ -39,6 +39,7 @@ def gui():
         qt2dp_queue=Queue(), _save_chat=Mock(return_value=True),
         _build_active_slots_payload=Mock(return_value={"slots": []}),
         refresh_chat_list=Mock(), refresh_chat_display=Mock(), display_live2d_message=Mock(),
+        load_playback_script=Mock(), set_playback_block=Mock(), playback_available=Mock(return_value=True),
         match_speaker_index=lambda name, indices: {"A": 0, "B": 1}.get(name),
         _message_from_turn_dict=Message.from_dict,
     )
@@ -125,6 +126,7 @@ def test_failed_generation_preserves_script(gui, response):
     gui.handle_response(response)
     assert gui.current_chat.message_list is original
     assert gui._generation_context is None
+    gui.load_playback_script.assert_not_called()
     gui.display_live2d_message.assert_not_called()
 
 
@@ -148,7 +150,8 @@ def test_result_replaces_only_bound_chat(gui, switched, save_ok):
         assert target.message_list is original
     if switched:
         assert gui.current_chat.message_list[0].text == "另一段剧本"
-    assert gui.display_live2d_message.called == (save_ok and not switched)
+    assert gui.load_playback_script.called == (save_ok and not switched)
+    gui.display_live2d_message.assert_not_called()
     assert not gui.pending_turn_uids
 
 
