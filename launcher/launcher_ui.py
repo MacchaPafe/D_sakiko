@@ -330,7 +330,7 @@ class LauncherWindow(QDialog):
         if self.logo.source_pixmap.isNull():
             self.logo.setObjectName("heading")
         brand.addWidget(self.logo)
-        self.chinese_logo = LogoLabel(self.root / "GPT_SoVITS/assets/logo/zh-v2-transparent.png",
+        self.chinese_logo = LogoLabel(self.root / "launcher/assets/logo_zh.png",
                                       "数字小祥", 28)
         self.chinese_logo.setObjectName("chineseLogo")
         brand.addWidget(self.chinese_logo)
