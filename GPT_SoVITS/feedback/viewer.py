@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import json
-from typing import cast
+from typing import Optional, cast
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -120,7 +120,7 @@ class FeedbackDetailView(QWidget):
         payload = cast(dict[str, Json], detail["payload"])
         validate_payload(payload)
         self.clear()
-        conversation = cast(dict[str, Json] | None, payload["conversation"])
+        conversation = cast(Optional[dict[str, Json]], payload["conversation"])
         self.target = int(payload["target"]) if payload["target"] is not None else None
         self.heading.setText(str(conversation["name"]) if conversation else "意见建议")
         target_text = f"针对第 {self.target + 1} 条消息" if self.target is not None else ("针对整段对话" if conversation else "未附带对话")

@@ -4,20 +4,61 @@ from __future__ import annotations
 from pathlib import Path
 import random
 
-from PyQt5.QtCore import Qt, QTimer, QUrl, QVariantAnimation, QEasingCurve, QRectF, QSettings
-from PyQt5.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QColor, QPalette
+from PyQt5.QtCore import Qt, QTimer, QUrl, QVariantAnimation, QEasingCurve, QRectF, QSettings, QSize
+from PyQt5.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QColor, QPalette, QLinearGradient, QRadialGradient, QRegion, QBitmap
 from PyQt5.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel,
-    QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFrame, QHBoxLayout, QLabel,
+    QMessageBox, QPushButton, QVBoxLayout, QWidget, QSizePolicy,
 )
 
 from launcher_actions import ENTRY_BY_KEY, LauncherProcesses, preferred_font
 
 MODES = {
     "desktop": ("桌面端&桌宠", "日常小助手", "启动"),
-    "webui": ("WebUI", "全新界面 · 通过局域网在手机或平板上体验数字小祥", "启动"),
-    "theater": ("小剧场模式", "自由编排两名角色的互动剧情", "启动"),
+    "webui": ("WebUI", "通过局域网在手机或平板上体验数字小祥", "启动"),
+    "theater": ("小剧场模式", "方便且自由地编排两名角色的互动剧情", "启动"),
 }
+
+class LogoLabel(QLabel):
+    """用逻辑尺寸直接绘制原图，避免切换不同缩放屏幕后重复缩放位图。"""
+
+    def __init__(self, path: Path, text: str, height: int):
+        super().__init__()
+        self.source_pixmap = QPixmap(str(path))
+        if not self.source_pixmap.isNull() and self.source_pixmap.hasAlphaChannel():
+            # 只在显示时裁掉透明留白；阈值掩码忽略几乎不可见的残留像素。
+            mask = self.source_pixmap.toImage().createAlphaMask(Qt.ThresholdDither)
+            bounds = QRegion(QBitmap.fromImage(mask)).boundingRect()
+            if not bounds.isEmpty():
+                self.source_pixmap = self.source_pixmap.copy(bounds)
+        self.setText(text)
+        self.setAccessibleName(text)
+        self.setAlignment(Qt.AlignCenter)
+        self.setFixedHeight(height)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    def sizeHint(self):
+        if self.source_pixmap.isNull():
+            return super().sizeHint()
+        return QSize(round(self.height() * self.source_pixmap.width()
+                           / self.source_pixmap.height()), self.height())
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, event):
+        if self.source_pixmap.isNull():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        aspect = self.source_pixmap.width() / self.source_pixmap.height()
+        height = min(self.height(), self.width() / aspect)
+        width = height * aspect
+        target = QRectF((self.width() - width) / 2, (self.height() - height) / 2,
+                        width, height)
+        painter.drawPixmap(target, self.source_pixmap, QRectF(self.source_pixmap.rect()))
+
 
 class WatermarkOverlay(QWidget):
     """位于按钮之上的水印层；不接收鼠标、键盘焦点。"""
@@ -75,20 +116,20 @@ class LauncherWindow(QDialog):
 
         self.setWindowTitle("数字小祥启动器")
         self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
-        self.setMinimumSize(680, 520)
-        self.resize(760, 560)
+        self.setMinimumSize(680, 560)
+        self.resize(760, 600)
         self.setWindowIcon(QIcon(str(self.root / "live2d_related/sakiko/sakiko_icon.png")))
 
         # 固定启动器的浅色调色板，包括禁用和失焦状态；不改变主程序主题。
         palette = self.palette()
         for group in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
             for role, color in (
-                (QPalette.Window, "#F7F8FC"), (QPalette.Base, "#FFFFFF"),
+                (QPalette.Window, "#F2F8FD"), (QPalette.Base, "#FFFFFF"),
                 (QPalette.AlternateBase, "#EEF1F7"), (QPalette.Button, "#F0F3F9"),
                 (QPalette.WindowText, "#000000"), (QPalette.Text, "#000000"),
                 (QPalette.ButtonText, "#26324A"), (QPalette.Highlight, "#DCE5F5"),
                 (QPalette.HighlightedText, "#000000"), (QPalette.Link, "#365A91"),
-                (QPalette.LinkVisited, "#64518A"), (QPalette.ToolTipBase, "#F7F8FC"),
+                (QPalette.LinkVisited, "#64518A"), (QPalette.ToolTipBase, "#F2F8FD"),
                 (QPalette.ToolTipText, "#26324A"),
             ):
                 palette.setColor(group, role, QColor(color))
@@ -98,7 +139,7 @@ class LauncherWindow(QDialog):
 
         self.setStyleSheet("""
             QDialog {
-                background: #F7F8FC;
+                background: #F2F8FD;
                 color: #000000;
             }
             QLabel {
@@ -122,7 +163,7 @@ class LauncherWindow(QDialog):
                 background: #BCCAE3;
             }
             QToolTip {
-                background: #F7F8FC;
+                background: #F2F8FD;
                 color: #26324A;
                 border: 1px solid #CBD3E1;
             }
@@ -145,6 +186,15 @@ class LauncherWindow(QDialog):
                 border-color: #6775A8;
             }
 
+            QFrame#card {
+                background: transparent;
+                border: none;
+            }
+            QFrame#accent {
+                background: #6FB4E3;
+                border: none;
+                border-radius: 1px;
+            }
             QLabel#heading {
                 font-size: 30px;
                 font-weight: 700;
@@ -152,10 +202,10 @@ class LauncherWindow(QDialog):
                 letter-spacing: 2px;
             }
             QLabel#latin {
-                font-size: 13px;
+                font-size: 12.5px;
                 font-weight: 600;
-                letter-spacing: 4px;
-                color: #8C96AE;
+                letter-spacing: 6px;
+                color: #8A9BB5;
             }
 
             /* 当前选中的模式标题与描述 */
@@ -194,11 +244,11 @@ class LauncherWindow(QDialog):
                 background: #FFFFFF;
                 color: #434F78;
                 font-weight: 700;
-                border: 1.5px solid #5B6B9E;
+                border: 1.5px solid #6FB4E3;
             }
 
             QPushButton#launch {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #6775A8, stop:1 #525E8C);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #6FB4E3, stop:1 #4C93C9);
                 color: #FFFFFF;
                 border: 1px solid rgba(255, 255, 255, 0.4);
                 border-radius: 16px;
@@ -208,11 +258,11 @@ class LauncherWindow(QDialog):
                 padding: 15px 36px;
             }
             QPushButton#launch:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7483BA, stop:1 #5C699C);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #82C0EA, stop:1 #5BA0D4);
                 border: 1px solid rgba(255, 255, 255, 0.8);
             }
             QPushButton#launch:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4A5580, stop:1 #3F486E);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C93C9, stop:1 #3F7FB2);
                 padding-top: 17px;
                 padding-bottom: 13px;
             }
@@ -270,25 +320,28 @@ class LauncherWindow(QDialog):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 22, 32, 12)
+        layout.setContentsMargins(32, 24, 32, 12)
         layout.setSpacing(8)
 
-        title = QLabel("数字小祥启动器")
-        title.setObjectName("heading")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-
-        latin = QLabel("DSakiko")
-        latin.setObjectName("latin")
-        latin.setAlignment(Qt.AlignCenter)
-        layout.addWidget(latin)
-        layout.addSpacing(24)
+        brand = QVBoxLayout()
+        brand.setSpacing(10)
+        self.logo = LogoLabel(self.root / "launcher/assets/logo.png", "DSakiko", 58)
+        self.logo.setObjectName("logo")
+        if self.logo.source_pixmap.isNull():
+            self.logo.setObjectName("heading")
+        brand.addWidget(self.logo)
+        self.chinese_logo = LogoLabel(self.root / "GPT_SoVITS/assets/logo/zh-v2-transparent.png",
+                                      "数字小祥", 28)
+        self.chinese_logo.setObjectName("chineseLogo")
+        brand.addWidget(self.chinese_logo)
+        layout.addLayout(brand)
+        layout.addSpacing(18)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(10)
         mode_row.addStretch()
         for key, (name, _, _) in MODES.items():
-            button = QPushButton(name)
+            button = QPushButton(name.replace("&", "&&"))
             button.setCheckable(True)
             button.setProperty("mode", True)
             button.setAccessibleName(f"选择{name}")
@@ -299,30 +352,51 @@ class LauncherWindow(QDialog):
         layout.addLayout(mode_row)
         layout.addSpacing(6)
 
+        card = self.card = QFrame()
+        card.setObjectName("card")
+        card.setMaximumWidth(460)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(28, 14, 28, 10)
+        card_layout.setSpacing(8)
+
         self.mode_title = QLabel()
         self.mode_title.setObjectName("modeTitle")
         self.mode_title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.mode_title)
+        card_layout.addWidget(self.mode_title)
+
+        accent = QFrame()
+        accent.setObjectName("accent")
+        accent.setFixedSize(36, 3)
+        card_layout.addSpacing(4)
+        card_layout.addWidget(accent, 0, Qt.AlignHCenter)
+        card_layout.addSpacing(2)
 
         self.description = QLabel()
         self.description.setObjectName("description")
         self.description.setAlignment(Qt.AlignCenter)
         self.description.setWordWrap(True)
-        layout.addWidget(self.description)
-        layout.addSpacing(8)
+        card_layout.addWidget(self.description)
+        card_layout.addSpacing(8)
 
         self.launch_button = QPushButton()
         self.launch_button.setObjectName("launch")
-        self.launch_button.setMinimumWidth(160)
+        self.launch_button.setMinimumWidth(200)
+        self.launch_button.setCursor(Qt.PointingHandCursor)
         self.launch_button.clicked.connect(lambda: self.launch(self.selected_mode))
-        layout.addWidget(self.launch_button, 0, Qt.AlignHCenter)
+        card_layout.addWidget(self.launch_button, 0, Qt.AlignHCenter)
 
         self.status = QLabel()
         self.status.setObjectName("status")
         self.status.setAlignment(Qt.AlignCenter)
         self.status.setWordWrap(True)
-        self.status.setMinimumHeight(42)
-        layout.addWidget(self.status)
+        self.status.setMinimumHeight(34)
+        card_layout.addWidget(self.status)
+
+        card_row = QHBoxLayout()
+        card_row.addStretch()
+        card_row.addWidget(card, 1)
+        card_row.addStretch()
+        layout.addLayout(card_row)
         layout.addStretch(1)
 
         tools = QHBoxLayout()
@@ -387,7 +461,28 @@ class LauncherWindow(QDialog):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor("#F7F8FC"))
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0.0, QColor("#E9F4FD"))
+        gradient.setColorAt(0.55, QColor("#F4F8FD"))
+        gradient.setColorAt(1.0, QColor("#FBF7FA"))
+        painter.fillRect(self.rect(), gradient)
+        # 内容区背后的柔光：中心略亮、边缘渐隐为全透明，没有任何可见边界。
+        card = getattr(self, "card", None)
+        if card is not None and card.isVisible():
+            area = card.geometry()
+            cx, cy = area.center().x(), area.center().y()
+            radius = max(area.width(), 1) * 0.72
+            glow = QRadialGradient(0, 0, radius)
+            glow.setColorAt(0.0, QColor(255, 255, 255, 170))
+            glow.setColorAt(0.6, QColor(255, 255, 255, 90))
+            glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.save()
+            painter.translate(cx, cy)
+            painter.scale(1.0, max(area.height(), 1) * 0.9 / radius)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(QRectF(-radius, -radius, radius * 2, radius * 2))
+            painter.restore()
         painter.end()
 
     def resizeEvent(self, event) -> None:
@@ -519,7 +614,7 @@ class LauncherWindow(QDialog):
         for key, button in self.mode_buttons.items():
             item = self.processes.running.get(key)
             running = item is not None and item.process.poll() is None
-            button.setText(MODES[key][0] + (" · 运行中" if running else ""))
+            button.setText(MODES[key][0].replace("&", "&&") + (" · 运行中" if running else ""))
             button.setChecked(key == self.selected_mode)
             button.setToolTip(self.processes.blocked_reason(key) or MODES[key][1])
         name, description, launch_text = MODES[self.selected_mode]
@@ -559,7 +654,7 @@ def run(root: Path) -> int:
     screen = app.primaryScreen()
     if screen:
         area = screen.availableGeometry()
-        window.resize(min(760, area.width() - 40), min(560, area.height() - 60))
+        window.resize(min(760, area.width() - 40), min(600, area.height() - 60))
         window.move(area.center() - window.rect().center())
     window.show()
     QTimer.singleShot(0, window.activate_on_startup)

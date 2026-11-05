@@ -7,7 +7,7 @@ import os
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Optional, cast
 from urllib.parse import urlsplit
 
 import requests
@@ -357,7 +357,7 @@ class FeedbackAdminDialog(QDialog):
     def _show_list(self, result: object) -> None:
         data = cast(dict[str, Json], result)
         self.items = cast(list[dict[str, Json]], data["items"])
-        self.cursor = cast(str | None, data["cursor"])
+        self.cursor = cast(Optional[str], data["cursor"])
         self.detail = None
         self.viewer.clear()
         self.source_status.clear()

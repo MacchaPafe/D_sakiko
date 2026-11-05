@@ -12,12 +12,16 @@ PRIVATE_LAN_NETWORKS = (
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
 )
+# 补充 is_private 未覆盖的内网地址段；后续按需在此追加 IPv4Network。
+EXTRA_LAN_NETWORKS = (
+    ipaddress.IPv4Network("100.64.0.0/10"),  # 校园网等使用的共享地址空间
+)
 TUNNEL_INTERFACE_PREFIXES = ("utun", "tun", "tap", "wg")
 
 
 @dataclass(frozen=True)
 class NetworkAddress:
-    """描述一个可用于手机访问的私有 IPv4 地址。"""
+    """描述一个可用于手机访问的候选内网 IPv4 地址。"""
 
     address: str
     interface_name: str
@@ -65,7 +69,10 @@ def select_network_addresses(
             continue
         if (
             not isinstance(address, ipaddress.IPv4Address)
-            or not address.is_private
+            or not (
+                address.is_private
+                or any(address in network for network in EXTRA_LAN_NETWORKS)
+            )
             or address.is_loopback
             or address.is_link_local
             or address.is_unspecified
@@ -90,7 +97,7 @@ def select_network_addresses(
 
 
 def discover_network_addresses() -> list[NetworkAddress]:
-    """枚举启用网卡上的私有 IPv4，并按局域网适用性返回。"""
+    """枚举启用网卡上的私有及额外白名单 IPv4，按局域网适用性返回。"""
     stats = psutil.net_if_stats()
     candidates: list[tuple[str, str]] = []
     for interface_name, addresses in psutil.net_if_addrs().items():

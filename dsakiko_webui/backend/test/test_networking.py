@@ -8,6 +8,30 @@ from dsakiko_webui.backend.networking import select_network_addresses
 class NetworkAddressTest(unittest.TestCase):
     """验证局域网 IPv4 地址的筛选和排序。"""
 
+    def test_campus_shared_address_is_discovered(self) -> None:
+        """共享地址虽不属于 is_private，也应作为内网连接候选。"""
+        result = select_network_addresses([
+            ("WLAN 4", "100.77.244.186"),
+            ("en0", "8.8.8.8"),
+        ], "100.77.244.186")
+        self.assertEqual([item.address for item in result], ["100.77.244.186"])
+        self.assertTrue(result[0].is_default)
+
+    def test_shared_address_allowlist_boundaries(self) -> None:
+        """额外白名单包含整个 /10，但不放行相邻公网地址。"""
+        result = select_network_addresses([
+            ("en0", "100.63.255.255"),
+            ("en0", "100.64.0.0"),
+            ("en0", "100.127.255.255"),
+            ("en0", "100.128.0.0"),
+            ("lo0", "127.0.0.1"),
+            ("en0", "169.254.1.2"),
+            ("en0", "::1"),
+        ], None)
+        self.assertEqual({item.address for item in result}, {
+            "100.64.0.0", "100.127.255.255",
+        })
+
     def test_home_lan_precedes_default_tunnel_address(self) -> None:
         """192.168 非隧道地址应排在默认路由对应的隧道地址之前。"""
         result = select_network_addresses([
