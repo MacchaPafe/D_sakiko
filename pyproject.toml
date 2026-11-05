@@ -80,6 +80,7 @@ dependencies = [
     "requests>=2.32.5",
     "jsonschema>=4.23",
     "keyring>=25.6,<26",
+    "quickjs==1.19.4",
     "platformdirs>=4.5.1",
     "rapidfuzz>=3.14.3",
     # 世界书运行时派生索引

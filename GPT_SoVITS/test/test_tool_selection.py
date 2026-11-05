@@ -76,6 +76,23 @@ def test_menu_catalog_covers_all_registered_general_tools() -> None:
     assert {schema["function"]["name"] for schema in registry.build_tools_schema()} == TOOL_NAMES
 
 
+def test_api_usage_tool_obeys_menu_switch() -> None:
+    """新增的额度工具必须能单独关闭，且关闭后不出现在模型可见 schema 中。"""
+
+    registry = build_default_tool_registry()
+    assert registry.has_tool("get_api_usage")
+    enabled = ChatMeta.from_dict({}).enabled_tool_names()
+    assert "get_api_usage" in enabled
+    assert "get_api_usage" in {schema["function"]["name"]
+                               for schema in registry.with_enabled_general_tools(enabled).build_tools_schema()}
+    meta = ChatMeta.from_dict({})
+    meta.set_tool_enabled("get_api_usage", False)
+    disabled = meta.enabled_tool_names()
+    assert "get_api_usage" not in disabled
+    assert "get_api_usage" not in {schema["function"]["name"]
+                                   for schema in registry.with_enabled_general_tools(disabled).build_tools_schema()}
+
+
 @pytest.fixture
 def chip() -> Iterator[ToolSelectionChip]:
     """提供不启动主程序或调用模型的真实 Qt 工具控件。"""
