@@ -220,6 +220,22 @@ def test_audio_block_inside_preview_does_not_stop_preview_or_change_stage(player
     assert not player.idle()
 
 
+def test_audio_fill_blocks_stage_between_sentences_and_across_reload(player):
+    """单句解锁后整批占用仍阻止舞台鼠标、空格及回放请求。"""
+    load(player, [line("原剧本")])
+    assert command(player, "block", reason="audio_fill")
+    assert command(player, "block", reason="audio")
+    assert command(player, "unblock", reason="audio")
+    assert not player.controller.click()
+    assert not player.controller.toggle_auto()
+    assert not command(player, "single", index=0)
+    assert not command(player, "reserve_editor")
+    load(player, [line("补齐后")], blocked_reasons=["audio_fill"], preserve_scene=True)
+    assert not player.controller.click()
+    assert command(player, "unblock", reason="audio_fill")
+    assert player.controller.click()
+
+
 def test_generation_block_stops_current_and_load_retains_block_until_unblock(player):
     load(player, [line("甲"), line("乙")])
     player.controller.toggle_auto()

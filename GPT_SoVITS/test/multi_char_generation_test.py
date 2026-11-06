@@ -12,9 +12,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
+from PyQt5.QtGui import QColor, QPalette
 from chat.chat import Chat, Message
-from multi_char_main import MoreInfoDialog, ViewerGUI
+from multi_char_main import MoreInfoDialog, ViewerGUI, WaitUntilAudioGenModuleSynthesisComplete
 
 
 @pytest.fixture(scope="module")
@@ -49,9 +50,10 @@ def gui():
     return host
 
 
-def submit(gui):
+def submit(gui, auto_audio=True):
     """模拟设定窗口提交，返回可检查关闭状态的窗口替身。"""
-    dialog = SimpleNamespace(commit_btn=Mock(), accept=Mock())
+    dialog = SimpleNamespace(commit_btn=Mock(), accept=Mock(),
+                             auto_synthesize_audio=Mock(isChecked=Mock(return_value=auto_audio)))
     data = copy.deepcopy(gui.current_chat.meta.theater.to_dict())
     data["situation"] = "新设定"
     gui.submit_generation(dialog, gui.current_chat, [0, 1], data)
@@ -84,6 +86,99 @@ def test_dialog_submit_is_single_shot(app):
     dialog.commit_info()
     callback.assert_called_once()
     dialog.deleteLater()
+
+
+@pytest.mark.parametrize("options", [None, {"speed_factor": 0.9, "fragment_interval": 0.3}])
+def test_synthesis_thread_snapshots_options_without_changing_defaults(app, options):
+    """任务创建时复制参数，后续调整不影响已开始任务，未设置仍走默认值。"""
+    module = SimpleNamespace(generate_audio_for_character_sync=Mock(return_value="test.wav"))
+    expected = dict(options or {})
+    worker = WaitUntilAudioGenModuleSynthesisComplete(module, ["一", "二"], object(), False,
+                                                    "日英混合", generation_options=options)
+    if options:
+        options["speed_factor"] = 1.4
+    worker.synthesize()
+    assert module.generate_audio_for_character_sync.call_count == 2
+    for call in module.generate_audio_for_character_sync.call_args_list:
+        assert call.kwargs["generation_options"] == expected
+    worker.deleteLater()
+
+
+def test_script_synthesis_uses_latest_options_for_bound_character(app, monkeypatch):
+    """完整剧本的两个角色合成都读取任务启动时的设置，不按左右槽位绑定参数。"""
+    import multi_char_main
+    workers = []
+
+    def factory(*args, **kwargs):
+        worker = WaitUntilAudioGenModuleSynthesisComplete(*args, **kwargs)
+        worker.start = Mock()
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(multi_char_main, "WaitUntilAudioGenModuleSynthesisComplete", factory)
+    module = SimpleNamespace(audio_language_choice="日英混合",
+                             generate_audio_for_character_sync=Mock(return_value="test.wav"))
+    host = SimpleNamespace(
+        _generation_context={"indices": [1, 0], "sakiko_state": False},
+        character_list=[SimpleNamespace(character_name="A", character_folder_name="id_a"),
+                        SimpleNamespace(character_name="B", character_folder_name="id_b")],
+        _theater_voice_options={"id_a": {"speed_factor": 0.8, "fragment_interval": 0.2},
+                               "id_b": {"speed_factor": 1.1, "fragment_interval": 0.6}},
+        messages_box=Mock(), audio_gen_module=module,
+        char_0_talk_texts=["B台词"], char_1_talk_texts=["A台词"],
+        char_0_talk_emotions=[], char_1_talk_emotions=[],
+        handle_response_continue_1=Mock(), final_handle_response=Mock(), generation_failed=Mock(),
+    )
+    ViewerGUI.handle_response_continue(host)
+    # LLM 等待或上一角色合成期间修改设置，后启动的角色任务读取最新值。
+    host._theater_voice_options["id_a"]["speed_factor"] = 1.2
+    ViewerGUI.handle_response_continue_2(host)
+    for worker in workers:
+        worker.synthesize()
+    calls = module.generate_audio_for_character_sync.call_args_list
+    assert calls[0].args[1].character_folder_name == "id_b"
+    assert calls[0].kwargs["generation_options"] == {"speed_factor": 1.1, "fragment_interval": 0.6}
+    assert calls[1].args[1].character_folder_name == "id_a"
+    assert calls[1].kwargs["generation_options"] == {"speed_factor": 1.2, "fragment_interval": 0.2}
+    for worker in workers:
+        worker.deleteLater()
+
+
+@pytest.mark.parametrize("replacing", [False, True])
+def test_audio_option_available_with_or_without_script(app, replacing):
+    """两种生成入口均默认自动合成，替换现有剧本时使用红色提示。"""
+    dialog = MoreInfoDialog("A", "B", {}, replacing=replacing)
+    assert dialog.auto_synthesize_audio.text() == "拿到剧本后自动合成所有音频"
+    assert dialog.auto_synthesize_audio.isChecked()
+    dialog.auto_synthesize_audio.setChecked(False)
+    assert not dialog.auto_synthesize_audio.isChecked()
+    warnings = [label for label in dialog.findChildren(QLabel)
+                if label.text().startswith("生成成功后将替换当前剧本")]
+    assert len(warnings) == int(replacing)
+    if warnings:
+        warnings[0].ensurePolished()
+        assert warnings[0].palette().color(QPalette.WindowText) == QColor("#D9534F")
+    dialog.deleteLater()
+
+
+@pytest.mark.parametrize("existing_script", [False, True])
+@pytest.mark.parametrize("auto_audio,models_available", [(False, True), (True, True), (True, False)])
+def test_generation_respects_audio_choice(gui, existing_script, auto_audio, models_available):
+    """提交时冻结音频选择，无论是否替换旧剧本都按选择进入合成或保存文本。"""
+    if not existing_script:
+        gui.current_chat.message_list.clear()
+    gui.can_generate_audio_for_current_chat = models_available
+    gui.handle_response_continue = Mock()
+    submit(gui, auto_audio=auto_audio)
+    assert gui._generation_context["auto_audio"] == auto_audio
+    gui.handle_response(json.dumps([{"speaker": "A", "text": "新剧本"}]))
+    if auto_audio and models_available:
+        gui.handle_response_continue.assert_called_once()
+    else:
+        gui.handle_response_continue.assert_not_called()
+        assert gui.current_chat.message_list[0].text == "新剧本"
+        assert not gui.current_chat.message_list[0].audio_path
+        assert gui._generation_context is None
 
 
 def test_main_generate_only_opens_dialog(gui, monkeypatch):

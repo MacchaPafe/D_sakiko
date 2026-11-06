@@ -113,7 +113,7 @@ class MultiCharPlayback:
         self.load_failed = True
         reasons = command.get("blocked_reasons")
         if isinstance(reasons, list):
-            self.blocks = {reason for reason in reasons if reason in ("generation", "audio")}
+            self.blocks = {reason for reason in reasons if reason in ("generation", "audio", "audio_fill")}
         return self._ack(command, False, error)
 
     def command(self, command):
@@ -137,7 +137,7 @@ class MultiCharPlayback:
                 self.auto = False
                 self.reservation = None
                 self.blocks = {reason for reason in command.get("blocked_reasons", self.blocks)
-                               if reason in ("generation", "audio")}
+                               if reason in ("generation", "audio", "audio_fill")}
                 self._fresh_start = True
                 self._restore_scene = None
                 self.load_failed = False
@@ -163,7 +163,7 @@ class MultiCharPlayback:
                     self._start(index, first=True)
             elif action == "block":
                 reason = command.get("reason")
-                if reason not in ("generation", "audio"):
+                if reason not in ("generation", "audio", "audio_fill"):
                     return self._ack(command, False, "未知的播放占用原因")
                 self._hint_due = None
                 # 编排内部音频合成也占用正式输入，不取消它自己的预览或场景。

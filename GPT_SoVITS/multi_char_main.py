@@ -31,7 +31,7 @@ import uuid
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QGridLayout, QApplication, QLabel, QGroupBox, QDialog, QMessageBox, QMenu, QFormLayout, QDialogButtonBox, \
-    QToolButton, QStyle, QSlider, QListWidget, QListWidgetItem, QInputDialog, QComboBox, QTextEdit, QListView, QStyledItemDelegate
+    QToolButton, QStyle, QSlider, QListWidget, QListWidgetItem, QInputDialog, QComboBox, QTextEdit, QListView, QStyledItemDelegate, QCheckBox
 
 from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
@@ -46,7 +46,8 @@ from live2d_support.motion_capabilities import get_live2d_motion_capabilities
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
 from ui_small_theater.multi_char_icons import set_button_icon, delete_message_icon, multi_char_icon
-
+from ui_small_theater.multi_char_menu import fit_menu_to_contents
+from ui_qt.components.change_ref_audio import ChangeReferenceAudioWindow
 
 logger = get_logger(__name__)
 faulthandler.enable(open("faulthandler_log.txt", "w"), all_threads=True)
@@ -439,11 +440,16 @@ class DisplayTalkText(QThread):
             self.talk_text_signal.emit(x)
 
 
+def theater_voice_options(owner, character):
+    """按稳定角色 ID 读取本窗口的最新合成设置，未设置时沿用合成器默认值。"""
+    return getattr(owner, "_theater_voice_options", {}).get(character.character_folder_name, {})
+
+
 class WaitUntilAudioGenModuleSynthesisComplete(QThread):
     synthesis_complete_signal = pyqtSignal(list)
     synthesis_failed_signal = pyqtSignal(str)
     def __init__(self, audio_gen_module, char_texts_list, character, sakiko_state, audio_language_choice,
-                 char_emotions_list=None):
+                 char_emotions_list=None, generation_options=None):
         super().__init__()
         self.audio_gen_module = audio_gen_module
         self.char_texts_list = char_texts_list
@@ -451,6 +457,7 @@ class WaitUntilAudioGenModuleSynthesisComplete(QThread):
         self.sakiko_state = sakiko_state
         self.audio_language_choice = audio_language_choice
         self.char_emotions_list = char_emotions_list or []
+        self.generation_options = dict(generation_options or {})
 
     def run(self):
         """合成角色台词并返回音频，异常时报告失败以保留旧剧本。"""
@@ -472,6 +479,7 @@ class WaitUntilAudioGenModuleSynthesisComplete(QThread):
                     self.sakiko_state,
                     self.audio_language_choice,
                     emotion=emotion,
+                    generation_options=self.generation_options,
                 )
             )
         self.synthesis_complete_signal.emit(char_text_audio_path_list)
@@ -562,9 +570,14 @@ class MoreInfoDialog(QDialog):
         main_layout.addWidget(group_sit)
 
         if replacing:
-            warning = QLabel("生成成功后将替换当前剧本，包括音频与演出编排。取消或生成失败会保留原剧本。")
+            warning = QLabel("生成成功后将替换当前剧本，包括音频与演出编排。\n点击左下角取消或生成失败会保留原剧本。")
             warning.setWordWrap(True)
+            warning.setStyleSheet("color: #D9534F;")
             main_layout.addWidget(warning)
+        self.auto_synthesize_audio = QCheckBox("拿到剧本后自动合成所有音频")
+        self.auto_synthesize_audio.setStyleSheet("color: #7799CC")
+        self.auto_synthesize_audio.setChecked(True)
+        main_layout.addWidget(self.auto_synthesize_audio)
         buttons = QHBoxLayout()
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.reject)
@@ -674,22 +687,23 @@ class InteractiveChatBrowser(QTextBrowser):
             # 创建右键菜单
             menu = QMenu(self)
 
-            auto_action = menu.addAction("从此句自动播放")
+            auto_action = menu.addAction(multi_char_icon("play"), "从此句自动播放")
             auto_action.setEnabled(self.playback_available())
 
-            performance_action = menu.addAction("演出编排")
+            performance_action = menu.addAction(multi_char_icon("clapperboard"), "演出编排")
 
             # 添加 "重新播放" 动作 (可选)
-            regen_action = menu.addAction("重新生成这条音频")
+            regen_action = menu.addAction(multi_char_icon("audio"), "重新生成这条音频")
             insert_menu = menu.addMenu(multi_char_icon("add"), "添加台词")
             insert_menu.setEnabled(self.playback_available())
-            insert_before = insert_menu.addAction("本句之前")
-            insert_after = insert_menu.addAction("本句之后")
+            insert_before = insert_menu.addAction(multi_char_icon("previous"), "本句之前")
+            insert_after = insert_menu.addAction(multi_char_icon("next"), "本句之后")
             menu.addSeparator()
             delete_action = menu.addAction(delete_message_icon(), "删除本句")
             delete_action.setEnabled(self.playback_available())
 
             # 显示菜单并等待用户选择
+            fit_menu_to_contents(menu)
             action = menu.exec_(self.mapToGlobal(event.pos()))
 
             # 解析索引 ID
@@ -752,7 +766,7 @@ class CharacterSelectDialog(QDialog):
 
             btn = QPushButton(char_name)
             btn.setCheckable(True)  # 设置为可选中模式
-            btn.setFixedWidth(int(scr_w * 0.04))
+            btn.setFixedWidth(int(scr_w * 0.06))
             btn.setFixedHeight(int(scr_h * 0.03))
 
             # 如果该角色在当前的 selected_indices 里，设为选中状态
@@ -908,7 +922,7 @@ class SettingsDialog(QDialog):
         self.all_characters = character.GetCharacterAttributes().character_class_list
         # 1. 动态设置窗口大小 (宽20%，高25%)
         if screen_geo:
-            self.resize(int(screen_geo.width() * 0.2), int(screen_geo.height() * 0.35))
+            self.resize(int(screen_geo.width() * 0.3), int(screen_geo.height() * 0.35))
             # 动态计算字体大小
             base_font_size = max(12, int(screen_geo.height() * 0.01))
             self.setStyleSheet(f"font-size: {base_font_size}px;")
@@ -957,30 +971,34 @@ class SettingsDialog(QDialog):
         live2d_group = QGroupBox("Live2D 模型切换")
         live2d_layout = QHBoxLayout()
 
-        self.btn_character_0_model = QPushButton(character_names[0] if len(character_names) >= 2 else "角色 A 模型")
+        self.btn_character_0_model = QPushButton(character_names[1] if len(character_names) >= 2 else "角色 A 模型")
         self.btn_character_0_model.setMinimumHeight(btn_h)
-        self.btn_character_1_model = QPushButton(character_names[1] if len(character_names) >= 2 else "角色 B 模型")
+        self.btn_character_1_model = QPushButton(character_names[0] if len(character_names) >= 2 else "角色 B 模型")
         self.btn_character_1_model.setMinimumHeight(btn_h)
-        self.btn_character_0_model.clicked.connect(lambda: self.change_live2d_model(0))
-        self.btn_character_1_model.clicked.connect(lambda: self.change_live2d_model(1))
+        self.btn_character_0_model.clicked.connect(lambda: self.change_live2d_model(1))
+        self.btn_character_1_model.clicked.connect(lambda: self.change_live2d_model(0))
         live2d_layout.addWidget(self.btn_character_0_model)
         live2d_layout.addWidget(self.btn_character_1_model)
         live2d_group.setLayout(live2d_layout)
 
         layout.addWidget(live2d_group)
 
-        live2d_render_group = QGroupBox("Live2D 渲染设置")
+        live2d_render_group = QGroupBox("Live2D 设置")
+        live2d_render_layout_top=QVBoxLayout()
         live2d_render_layout = QHBoxLayout()
         current_fps = self.parent_gui.get_current_l2d_fps() if self.parent_gui else 60
         self.btn_live2d_fps = QPushButton(f"Live2D渲染帧率：{current_fps}")
         self.btn_live2d_fps.setMinimumHeight(btn_h)
+        self.label_model_move_info=QLabel("Tip: 右键点击角色模型可进行移动/缩放操作")
         self.btn_set_bgm = QPushButton("设置背景音乐")
         self.btn_set_bgm.setMinimumHeight(btn_h)
         self.btn_motion_facing = QPushButton(self.parent_gui.motion_facing_mode_button_text() if self.parent_gui else "对话朝向：正常")
         self.btn_motion_facing.setMinimumHeight(btn_h)
         live2d_render_layout.addWidget(self.btn_live2d_fps)
         live2d_render_layout.addWidget(self.btn_motion_facing)
-        live2d_render_group.setLayout(live2d_render_layout)
+        live2d_render_layout_top.addLayout(live2d_render_layout)
+        live2d_render_layout_top.addWidget(self.label_model_move_info)
+        live2d_render_group.setLayout(live2d_render_layout_top)
         layout.addWidget(live2d_render_group)
 
         if self.parent_gui is None or not self.parent_gui.is_motion_facing_mode_available():
@@ -1001,26 +1019,74 @@ class SettingsDialog(QDialog):
             self.btn_sakiko_state.hide()
             self.btn_sakiko_model.hide()
 
-        audio_talk_speed_group=QGroupBox('调节语速和间隔时间')
-        audio_talk_layout=QVBoxLayout()
-        talk_speed_layout=QHBoxLayout()
-        self.talk_speed_label = QLabel(f"语速调节：{self.audio_gen_module.speed}")  # 此时的数值不是真实的，audio_gen还没有初始化完成
-        self.talk_speed_label.setToolTip("调整生成语音的语速，数值越大语速越快。如果觉得生成质量不佳，适当调整一下。")
-        self.talk_speed_slider=QSlider(Qt.Horizontal)
-        self.talk_speed_slider.setRange(60, 140)
-        self.talk_speed_slider.setValue(88)
-        self.talk_speed_slider.valueChanged.connect(self.set_talk_speed)
-        talk_speed_layout.addWidget(self.talk_speed_label)
-        talk_speed_layout.addWidget(self.talk_speed_slider)
-        pause_second_layout=QHBoxLayout()
-        self.pause_second_label = QLabel(f"句间停顿时间(s)：{self.audio_gen_module.pause_second}")
-        self.pause_second_label.setToolTip("调整句子之间的停顿时间，数值越大停顿越久。如果觉得生成质量不佳，适当调整一下。")
-        self.pause_second_slider = QSlider(Qt.Horizontal)
-        self.pause_second_slider.valueChanged.connect(self.set_pause_second)
-        self.pause_second_slider.setRange(10, 80)
-        self.pause_second_slider.setValue(50)
-        pause_second_layout.addWidget(self.pause_second_label)
-        pause_second_layout.addWidget(self.pause_second_slider)
+        audio_talk_speed_group = QGroupBox("语音合成管理")
+        audio_talk_layout = QHBoxLayout(audio_talk_speed_group)
+        # 设置窗口关闭后仍保留角色参数，左右交换及换装不会改变归属。
+        if not hasattr(parent, "_theater_voice_options"):
+            parent._theater_voice_options = {}
+        self.voice_cards = {}
+        for name in self.character_names:
+            voice_character = next(char for char in self.all_characters if char.character_name == name)
+            options = parent._theater_voice_options.setdefault(
+                voice_character.character_folder_name,
+                {
+                    "speed_factor": self.audio_gen_module.speed,
+                    "fragment_interval": self.audio_gen_module.pause_second,
+                },
+            )
+            card = QGroupBox(name, self)
+            card_layout = QVBoxLayout(card)
+            parameters = (
+                (
+                    "语速", "speed_factor", 60, 140, "",
+                    "调整角色说话的语速，数值越大语速越快。",
+                ),
+                (
+                    "句间停顿时间", "fragment_interval", 10, 80, " s",
+                    "控制一次合成音频中，语气间的停顿时长。",
+                ),
+            )
+            for title, key, minimum, maximum, unit, tooltip in parameters:
+                label = QLabel(card)
+                slider = QSlider(Qt.Horizontal, card)
+                slider.setRange(minimum, maximum)
+                slider.setValue(round(options[key] * 100))
+                label.setText(f"{title}：{slider.value() / 100:.2f}{unit}")
+                label.setToolTip(tooltip)
+                slider.setToolTip(tooltip)
+                # 固定当前角色和参数，避免循环闭包把两张卡片绑定到同一项。
+                slider.valueChanged.connect(
+                    lambda value, target=options, field=key: target.__setitem__(field, value / 100)
+                )
+                slider.valueChanged.connect(
+                    lambda value, target=label, text=title, suffix=unit: target.setText(
+                        f"{text}：{value / 100:.2f}{suffix}"
+                    )
+                )
+                card_layout.addWidget(label)
+                card_layout.addWidget(slider)
+            reference_button = QPushButton("配置参考音频", card)
+            reference_button.clicked.connect(
+                lambda checked=False, char=voice_character: ChangeReferenceAudioWindow(
+                    char, self.audio_gen_module, QDesktopWidget().screenGeometry()
+                ).exec_()
+            )
+            card_layout.addWidget(reference_button)
+            self.voice_cards[name] = card
+            audio_talk_layout.addWidget(card, 1)
+        layout.addWidget(audio_talk_speed_group)
+
+        more_function_group=QGroupBox("更多高级设置")
+        more_function_layout=QVBoxLayout()
+        btn_open_global_settings=QPushButton("大模型/启动参数配置")
+        btn_open_motion_editor=QPushButton("编辑角色的动作表情")
+        btn_open_global_settings.clicked.connect(self.open_global_settings)
+        btn_open_motion_editor.clicked.connect(self.open_motion_editor)
+        more_function_layout.addWidget(btn_open_global_settings)
+        more_function_layout.addWidget(btn_open_motion_editor)
+        more_function_group.setLayout(more_function_layout)
+        layout.addWidget(more_function_group)
+
         bgm_volume_layout=QHBoxLayout()
         self.bgm_volume_label=QLabel(f"BGM音量调节：30")
         self.bgm_volume_slider=QSlider(Qt.Horizontal)
@@ -1030,10 +1096,6 @@ class SettingsDialog(QDialog):
         bgm_volume_layout.addWidget(self.bgm_volume_label)
         bgm_volume_layout.addWidget(self.bgm_volume_slider)
         bgm_volume_layout.addWidget(self.btn_set_bgm)
-        audio_talk_layout.addLayout(talk_speed_layout)
-        audio_talk_layout.addLayout(pause_second_layout)
-        audio_talk_speed_group.setLayout(audio_talk_layout)
-        layout.addWidget(audio_talk_speed_group)
         layout.addLayout(bgm_volume_layout)
 
         self.setLayout(layout)
@@ -1046,6 +1108,26 @@ class SettingsDialog(QDialog):
             self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
             self.btn_set_bgm.clicked.connect(self.parent_gui.set_bgm)
             self.btn_motion_facing.clicked.connect(self.change_motion_facing_mode)
+
+    def open_global_settings(self) -> None:
+        """启动大模型和启动参数配置界面，并关闭小剧场设置窗口。"""
+        import subprocess
+
+        try:
+            subprocess.Popen([sys.executable, "dsakiko_configuration.py", "DSakikoConfigArea"])
+        except Exception:
+            logger.exception("启动配置窗口失败")
+        self.close()
+
+    def open_motion_editor(self) -> None:
+        """启动角色动作表情编辑器，并关闭小剧场设置窗口。"""
+        import subprocess
+
+        try:
+            subprocess.Popen([sys.executable, "live2d_viewer.py"])
+        except Exception:
+            logger.exception("启动 Live2D 动作编辑器失败")
+        self.close()
 
     def refresh_motion_facing_button(self) -> None:
         """根据当前模型组合刷新动作朝向按钮的显隐和文案。"""
@@ -1073,16 +1155,6 @@ class SettingsDialog(QDialog):
                 form=self.parent_gui.current_chat.get_character_form(folder_path),
             )
             dialog.exec()
-
-    def set_talk_speed(self):
-        speed_value = self.talk_speed_slider.value()
-        self.audio_gen_module.speed = speed_value / 100
-        self.talk_speed_label.setText(f"语速调节：{self.audio_gen_module.speed:.2f}")
-
-    def set_pause_second(self):
-        pause_second_value = self.pause_second_slider.value()
-        self.audio_gen_module.pause_second = pause_second_value / 100
-        self.pause_second_label.setText(f"句间停顿时间(s)：{self.audio_gen_module.pause_second:.2f}")
 
     def change_bgm_volume(self):
         value=self.bgm_volume_slider.value()
@@ -1152,6 +1224,7 @@ class ViewerGUI(QWidget):
         self.chat_display.playback_available = self.playback_available
         self.performance_editor = None
         self._audio_regeneration = None
+        self._audio_fill = None
         self._generation_context = None
 
         # 消息框高度自适应 (屏幕高度的 6%)
@@ -1221,9 +1294,12 @@ class ViewerGUI(QWidget):
 
         # === 3. 底部大按钮 (Generate Button) ===
         self.edit_script_btn = QPushButton("进入剧本编排")
-        set_button_icon(self.edit_script_btn, "clapperboard", self)
+        #set_button_icon(self.edit_script_btn, "clapperboard", self)
         self.edit_script_btn.setCursor(Qt.PointingHandCursor)
         self.edit_script_btn.clicked.connect(lambda: self.open_performance_editor(0))
+
+        self.fill_audio_btn = QPushButton("补齐音频")
+        self.fill_audio_btn.clicked.connect(self.fill_missing_audio)
 
         self.generate_btn = QPushButton("▶ 生成新对话")
         self.generate_btn.setCursor(Qt.PointingHandCursor)
@@ -1235,11 +1311,13 @@ class ViewerGUI(QWidget):
         # 动态计算大按钮高度
         gen_btn_height = int(self.scr_h * 0.03)
         self.edit_script_btn.setMinimumHeight(gen_btn_height)
+        self.fill_audio_btn.setMinimumHeight(gen_btn_height)
         self.generate_btn.setMinimumHeight(gen_btn_height)
 
         bottom_action_layout = QHBoxLayout()
         bottom_action_layout.setSpacing(int(self.scr_w * 0.01))
         bottom_action_layout.addWidget(self.edit_script_btn, 1)
+        bottom_action_layout.addWidget(self.fill_audio_btn, 1)
         bottom_action_layout.addWidget(self.generate_btn, 1)
 
         # 不需要再手动 setStyleSheet 了！
@@ -1370,6 +1448,8 @@ class ViewerGUI(QWidget):
         """当前对话有剧本时显示编排入口，正式播放由舞台输入启动。"""
         has_messages = self.current_chat is not None and len(self.current_chat.message_list) > 0
         self.edit_script_btn.setVisible(has_messages)
+        if hasattr(self, "fill_audio_btn"):
+            self.fill_audio_btn.setEnabled(has_messages and getattr(self, "_audio_fill", None) is None)
 
     def theater_chats(self) -> List[Chat]:
         """返回全部小剧场模式对话。"""
@@ -1503,6 +1583,8 @@ class ViewerGUI(QWidget):
         self.messages_box.setText("已重命名当前对话")
 
     def create_new_chat(self) -> None:
+        if getattr(self, "_audio_fill", None) is not None:
+            return
         dialog = NewTheaterChatDialog(self.character_list, self)
         if dialog.exec_() != QDialog.Accepted:
             return
@@ -1525,6 +1607,8 @@ class ViewerGUI(QWidget):
             return
 
     def delete_current_chat(self) -> None:
+        if getattr(self, "_audio_fill", None) is not None:
+            return
         if self.current_chat is None:
             return
 
@@ -1870,6 +1954,7 @@ class ViewerGUI(QWidget):
             and self._editor_request is None
             and self._generation_context is None
             and self._audio_regeneration is None
+            and getattr(self, "_audio_fill", None) is None
             and not (worker is not None and worker.isRunning())
             and (self.playback_idle_value is None or self.playback_idle_value.value)
         )
@@ -1975,6 +2060,8 @@ class ViewerGUI(QWidget):
 
     def switch_chat(self, chat: Chat) -> None:
         """切换当前对话，并同步文本渲染与 Live2D 角色。"""
+        if getattr(self, "_audio_fill", None) is not None:
+            return
         self.current_chat = chat
         self.sakiko_state = chat.get_character_form() == "black"
         self._ensure_current_chat_theater_meta()
@@ -2002,6 +2089,8 @@ class ViewerGUI(QWidget):
 
     def open_settings_dialog(self):
         """打开设置面板"""
+        if getattr(self, "_audio_fill", None) is not None:
+            return
         if self.settings_dialog is not None and self.settings_dialog.isVisible():
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()
@@ -2352,6 +2441,8 @@ class ViewerGUI(QWidget):
 
     def start_generation(self) -> None:
         """主页生成入口只打开设定副本，不清空剧本或发送请求。"""
+        if getattr(self, "_audio_fill", None) is not None:
+            return
         if self.current_chat is None or self._generation_context is not None:
             return
         chat = self.current_chat
@@ -2370,7 +2461,7 @@ class ViewerGUI(QWidget):
 
     def submit_generation(self, dialog, chat, indices, data) -> None:
         """设定窗口唯一提交入口，保存设定后绑定原对话发送 LLM 请求。"""
-        if self._generation_context is not None:
+        if self._generation_context is not None or getattr(self, "_audio_fill", None) is not None:
             dialog.commit_btn.setEnabled(True)
             return
         old_meta = copy.deepcopy(chat.meta.theater)
@@ -2384,6 +2475,7 @@ class ViewerGUI(QWidget):
         self._generation_context = {
             "chat": chat, "indices": list(indices), "sakiko_state": self.sakiko_state,
             "audio": self.can_generate_audio_for_current_chat,
+            "auto_audio": dialog.auto_synthesize_audio.isChecked(),
         }
         self.set_playback_block("generation", True)
         self.generate_btn.setEnabled(False)
@@ -2479,10 +2571,12 @@ class ViewerGUI(QWidget):
         self._generation_serial += 1
         self.audio_gen_module.audio_language_choice="日英混合"
 
-        if not self._generation_context["audio"]:
+        if not self._generation_context["audio"] or not self._generation_context["auto_audio"]:
             self.char_0_audio_path_list = []
             self.char_1_audio_path_list = []
-            self.messages_box.setText("缺少语音模型，跳过语音生成，直接展示文本")
+            self.messages_box.setText("缺少语音模型，跳过语音生成，直接展示文本"
+                                      if self._generation_context["auto_audio"]
+                                      else "已关闭自动合成音频，直接展示文本")
             self.final_handle_response([])
             return
 
@@ -2499,6 +2593,7 @@ class ViewerGUI(QWidget):
             context["sakiko_state"],
             self.audio_gen_module.audio_language_choice,
             self.char_0_talk_emotions,
+            generation_options=theater_voice_options(self, self.character_list[context["indices"][0]]),
         )
         self.audio_gen_generate_audio_thread_0.synthesis_complete_signal.connect(self.handle_response_continue_1)
         self.audio_gen_generate_audio_thread_0.synthesis_failed_signal.connect(self.generation_failed)
@@ -2520,6 +2615,7 @@ class ViewerGUI(QWidget):
             context["sakiko_state"],
             self.audio_gen_module.audio_language_choice,
             self.char_1_talk_emotions,
+            generation_options=theater_voice_options(self, self.character_list[context["indices"][1]]),
         )
         self.audio_gen_generate_audio_thread_1.synthesis_complete_signal.connect(self.final_handle_response)
         self.audio_gen_generate_audio_thread_1.synthesis_failed_signal.connect(self.generation_failed)
@@ -2781,6 +2877,8 @@ class ViewerGUI(QWidget):
 
     def open_editor(self, index: int) -> None:
         """打开编辑器，修改当前对话中的指定消息。"""
+        if getattr(self, "_audio_fill", None) is not None:
+            return
         if self.current_chat is None or not (0 <= index < len(self.current_chat.message_list)):
             return
 
@@ -2821,13 +2919,118 @@ class ViewerGUI(QWidget):
 
         self.update_script_button_visibility()
 
-    def regenerate_audio(self, index: int, on_complete=None) -> bool:
+    def fill_missing_audio(self) -> None:
+        """确认缺失范围后逐句复用单句合成，已有音频不覆盖。"""
+        if self.current_chat is None or not self.current_chat.message_list or not self.playback_available():
+            return
+        from live2d_support.multi_char_resources import audio_span
+        chat = self.current_chat
+        pending, existing, skipped = [], 0, 0
+        for message in chat.message_list:
+            if audio_span(message.audio_path or "", message.text).path:
+                existing += 1
+                continue
+            character = self._find_character_by_name(message.character_name) if message.character_name else None
+            if message.muted or not message.text.strip() or character is None or not character.has_valid_voice_model():
+                skipped += 1
+            else:
+                pending.append(message)
+        summary = f"待补齐 {len(pending)} 句，已有音频 {existing} 句，跳过 {skipped} 句。"
+        if not pending:
+            QMessageBox.information(self, "补齐音频", summary + "\n没有可补齐的音频。")
+            return
+        snapshot = [(message, message.as_dict()) for message in chat.message_list]
+        box = QMessageBox(QMessageBox.Question, "补齐音频", summary +
+                          "\n无角色、静音或缺少可用语音模型的台词会跳过。是否开始？",
+                          QMessageBox.Yes | QMessageBox.No, self)
+        box.button(QMessageBox.Yes).setText("开始补齐")
+        box.button(QMessageBox.No).setText("取消")
+        box.setDefaultButton(QMessageBox.No)
+        if box.exec_() != QMessageBox.Yes:
+            return
+        if (self.current_chat is not chat or not self.playback_available()
+                or len(snapshot) != len(chat.message_list)
+                or any(old is not new or old.as_dict() != data
+                       for (old, data), new in zip(snapshot, chat.message_list))):
+            return
+        widgets = [self.fill_audio_btn, self.generate_btn, self.edit_script_btn,
+                   self.chat_manage_panel, self.chat_display, self.btn_settings]
+        if self.settings_dialog is not None:
+            widgets.append(self.settings_dialog)
+        task = {"chat": chat, "pending": pending, "success": 0, "failed": 0,
+                "skipped": skipped, "stop": False,
+                "widgets": [(widget, widget.isEnabled()) for widget in widgets]}
+        self._audio_fill = task
+        self.display_timer.stop()
+        self.set_playback_block("audio_fill", True)
+        for widget, _ in task["widgets"]:
+            widget.setEnabled(False)
+        self._advance_audio_fill(task)
+
+    def _advance_audio_fill(self, task) -> None:
+        """上一句线程退出后再启动下一句，整批期间保持播放占用。"""
+        if task is not self._audio_fill:
+            return
+        if not task["pending"] or task["stop"]:
+            self._finish_audio_fill(task)
+            return
+        message = task["pending"].pop(0)
+        task["thread_finished"] = False
+        index = next((i for i, item in enumerate(task["chat"].message_list) if item is message), -1)
+        try:
+            started = self.regenerate_audio(index,
+                lambda success, reason: self._record_audio_fill(task, success),
+                autoplay=False, batch_task=task)
+        except Exception:
+            logger.exception("启动补齐音频失败")
+            task["stop"] = True
+            started = False
+        if not started:
+            if self._audio_regeneration is not None:
+                self.finish_audio_regeneration(self._audio_regeneration, False, "未能启动音频合成。")
+            else:
+                task["failed"] += 1
+            self._finish_audio_fill(task)
+
+    def _audio_fill_thread_finished(self, task) -> None:
+        """保存失败弹框可能先收到线程退出；等待该句回填完成再继续。"""
+        if task is self._audio_fill:
+            task["thread_finished"] = True
+            if self._audio_regeneration is None:
+                self._advance_audio_fill(task)
+
+    def _record_audio_fill(self, task, success) -> None:
+        """只计数，下一句由线程 finished 信号调度。"""
+        if task is self._audio_fill:
+            task["success" if success else "failed"] += 1
+
+    def _finish_audio_fill(self, task) -> None:
+        """释放整批操作占用，重新装载已保存剧本并弹框汇总。"""
+        if task is not self._audio_fill:
+            return
+        self.refresh_chat_display()
+        self.load_playback_script(preserve_scene=True)
+        self._audio_fill = None
+        self.set_playback_block("audio_fill", False)
+        for widget, enabled in task["widgets"]:
+            widget.setEnabled(enabled)
+        title = "音频补齐已停止" if task["pending"] or task["stop"] else "音频补齐完成"
+        result = f"成功 {task['success']} 句，失败 {task['failed']} 句，跳过 {task['skipped']} 句。"
+        if task["pending"]:
+            result += f"\n剩余 {len(task['pending'])} 句未处理，可再次点击补齐音频。"
+        self.messages_box.setText(title)
+        QMessageBox.information(self, title, result)
+
+    def regenerate_audio(self, index: int, on_complete=None, *, autoplay=True, batch_task=None) -> bool:
         """捕获原聊天、消息及输入快照，合成回填不使用当前聊天下标。"""
+        batch = getattr(self, "_audio_fill", None)
+        if batch is not None and batch_task is not batch:
+            return False
         worker = getattr(self, "generate_thread", None)
         if worker is not None and worker.isRunning():
             QMessageBox.information(self, "正在合成", "请等待当前音频生成完成。")
             return False
-        if self.performance_editor is None and not self.playback_available():
+        if batch is None and self.performance_editor is None and not self.playback_available():
             self.message_queue.put("请等待当前播放结束")
             return False
         self.audio_gen_module.audio_language_choice = "日英混合"
@@ -2843,6 +3046,7 @@ class ViewerGUI(QWidget):
             QMessageBox.information(self, "无法合成", "当前角色未配置可用的语音模型。")
             return False
         self._audio_regeneration_callback = on_complete
+        self._audio_regeneration_autoplay = autoplay
         self.regenerate_text = message.text
         self.regenerate_emotion = (
             message.emotion.as_string()
@@ -2864,6 +3068,7 @@ class ViewerGUI(QWidget):
             self.sakiko_state,
             self.audio_gen_module.audio_language_choice,
             [self.regenerate_emotion],
+            generation_options=theater_voice_options(self, self.regenerate_character),
         )
         context = self._audio_regeneration
         self.generate_thread.synthesis_complete_signal.connect(
@@ -2872,19 +3077,27 @@ class ViewerGUI(QWidget):
         self.generate_thread.synthesis_failed_signal.connect(
             lambda reason, target=context: self.finish_audio_regeneration(target, False, reason)
         )
+        batch = getattr(self, "_audio_fill", None)
+        if batch is not None:
+            self.generate_thread.finished.connect(lambda target=batch: self._audio_fill_thread_finished(target))
         self.generate_thread.start()
 
-    def finish_audio_regeneration(self, context, success, reason):
+    def finish_audio_regeneration(self, context, success, reason, *, stop_batch=False):
         """统一结束重生成任务，通知编排器解锁并保留失败前的数据。"""
         if context is not self._audio_regeneration:
             return
         callback = getattr(self, "_audio_regeneration_callback", None)
         self._audio_regeneration = None
         self._audio_regeneration_callback = None
+        if stop_batch and getattr(self, "_audio_fill", None) is not None:
+            self._audio_fill["stop"] = True
         self.set_playback_block("audio", False)
         self.message_queue.put(reason)
         if callback is not None:
             callback(success, reason)
+        batch = getattr(self, "_audio_fill", None)
+        if batch is not None and batch.get("thread_finished"):
+            QTimer.singleShot(0, lambda target=batch: self._advance_audio_fill(target))
 
     def replace_audio_path(self, audio_path, context=None):
         """只替换有效原消息，持久保存新音频并校验全部角色轨道。"""
@@ -2908,11 +3121,12 @@ class ViewerGUI(QWidget):
         if not self._save_chat():
             message.audio_path = previous_path
             message.performance_timeline = old_timeline
-            self.finish_audio_regeneration(context, False, "音频保存失败，原音频与编排已保留")
+            self.finish_audio_regeneration(context, False, "音频保存失败，原音频与编排已保留", stop_batch=True)
             return
+        autoplay = getattr(self, "_audio_regeneration_autoplay", True)
         self.finish_audio_regeneration(context, True,
                                        f"生成完毕；已移除 {removed} 个越界编排事件" if removed else "生成完毕")
-        if self.current_chat is chat and self.performance_editor is None:
+        if autoplay and self.current_chat is chat and self.performance_editor is None:
             index = next(index for index, item in enumerate(chat.message_list) if item is message)
             # unblock 与 single 在同一队列中有序执行，使用保存后的快照且不覆盖正式游标。
             self.send_playback_command("single", index=index,
@@ -2939,6 +3153,10 @@ class ViewerGUI(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """关闭前保存，失败时允许重试、放弃或继续留在程序中。"""
+        if getattr(self, "_audio_fill", None) is not None:
+            QMessageBox.information(self, "正在补齐音频", "请等待音频补齐完成后再退出。")
+            event.ignore()
+            return
         if self.performance_editor is not None:
             self.performance_editor.request_close()
             if self.performance_editor is not None:

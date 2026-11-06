@@ -23,6 +23,7 @@ from live2d_support.multi_char_scene import (
 from ui_small_theater.multi_char_insert_dialog import MultiCharInsertDialog
 from ui_small_theater.multi_char_icons import DELETE_COLOR, delete_message_icon, multi_char_icon, set_button_icon
 from ui_small_theater.multi_char_message_edit import confirm_message_deletion, delete_saved_message, insert_saved_message
+from ui_small_theater.multi_char_menu import fit_menu_to_contents
 from ui_small_theater.multi_char_style import editor_stylesheet
 from ui_small_theater.multi_char_timeline import MultiCharTimeline, MIME, _character_pill_color
 from ui_small_theater.multi_char_windows import MultiCharWindowLayout
@@ -374,8 +375,9 @@ class MultiCharEditor(QObject):
             return
         menu = QMenu(self.resource_window)
         menu.setObjectName("multiCharInsertMenu")
-        above = menu.addAction("本句之前")
-        below = menu.addAction("本句之后")
+        above = menu.addAction(multi_char_icon("previous"), "本句之前")
+        below = menu.addAction(multi_char_icon("next"), "本句之后")
+        fit_menu_to_contents(menu)
         anchor = self.add_message_button.mapToGlobal(QPoint(0, self.add_message_button.height()))
         chosen = menu.exec_(anchor)
         if chosen is above or chosen is below:
