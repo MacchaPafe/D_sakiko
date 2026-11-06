@@ -15,8 +15,8 @@ sys.path.insert(0, str(ROOT))
 
 from repair.repair_checker import FetchedManifest, RepairCandidate, RepairCheckResult
 from repair.repair_manifest import RepairFileEntry, RepairManifest
-from ui_main.components.repair_dialog import RepairDialog
-from ui_main.theme import derive_theme_palette
+from ui_qt.components.repair_dialog import RepairDialog
+from ui_qt.theme import derive_theme_palette
 
 
 class RepairDialogTest(unittest.TestCase):

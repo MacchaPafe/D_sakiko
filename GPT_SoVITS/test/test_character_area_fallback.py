@@ -13,7 +13,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 from character import CharacterAttributes
-from ui.interfaces.character_area import (
+from ui_fluent_widget.interfaces.character_area import (
     CharacterArea,
     CharacterCreationDialog,
     SystemCharacterDetailView,
@@ -70,11 +70,11 @@ class CharacterAreaFallbackTestCase(unittest.TestCase):
 
         with (
             patch(
-                "ui.interfaces.character_area.GetCharacterAttributes",
+                "ui_fluent_widget.interfaces.character_area.GetCharacterAttributes",
                 return_value=FakeCharacterManager(),
             ),
             patch(
-                "ui.interfaces.character_area.discover_complete_character_records",
+                "ui_fluent_widget.interfaces.character_area.discover_complete_character_records",
                 return_value=[],
             ),
         ):

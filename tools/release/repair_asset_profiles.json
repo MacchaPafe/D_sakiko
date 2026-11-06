@@ -11,6 +11,7 @@
       "GPT_SoVITS/**/*.json",
       "GPT_SoVITS/*.jinja",
       "GPT_SoVITS/**/*.jinja",
+      "GPT_SoVITS/ui_small_theater/styles/*.qss",
       "GPT_SoVITS/icons/*.svg",
       "GPT_SoVITS/icons/*.png",
       "GPT_SoVITS/assets/char_headprof/*.png",

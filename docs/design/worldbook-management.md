@@ -310,7 +310,7 @@ class EntryTypeModule:
 
 ## 10. 查看器
 
-世界书查看器实现为 `GPT_SoVITS/ui/interfaces/worldbook_area.py` 中的 `WorldbookArea`，注册到 `DSakikoConfigWindow` 的顶层导航；主程序“更多功能”增加入口，通过 `dsakiko_configuration.py WorldbookArea` 直接打开该页面。它复用现有配置应用的 FluentWindow、interface 注册和跨进程启动方式，不另建独立窗口框架，也不复用开发侧 NiceGUI 标注编辑器。
+世界书查看器实现为 `GPT_SoVITS/ui_fluent_widget/interfaces/worldbook_area.py` 中的 `WorldbookArea`，注册到 `DSakikoConfigWindow` 的顶层导航；主程序“更多功能”增加入口，通过 `dsakiko_configuration.py WorldbookArea` 直接打开该页面。它复用现有配置应用的 FluentWindow、interface 注册和跨进程启动方式，不另建独立窗口框架，也不复用开发侧 NiceGUI 标注编辑器。
 
 默认展示合并后真正会进入索引的有效条目，而不是把官方、Override、用户扩展和 tombstone 四层并列暴露。页面顶部使用 ComboBox 选择根世界书；下方左侧集中放置条目类型、添加入口、搜索、来源筛选和条目列表，右侧展示当前有效条目的类型化表单。来源筛选缩减为“全部条目、官方条目、我的内容”：“我的内容”包含普通 Override、孤立 Override 和用户扩展，单纯隐藏但没有 Override 的官方条目仍属于“官方条目”；“显示隐藏内容”独立控制带 tombstone 的官方身份。默认“全部条目”不展示孤立 Override，只有“我的内容”展示它们。筛选状态只在当前会话保留。当前根世界书依赖闭包中存在孤立 Override 时，筛选区旁显示“n 条修改需处理”的紧凑警告徽标；数量覆盖闭包内全部条目类型，没有孤立 Override 时隐藏徽标。点击徽标后切换到“我的内容”、切换到按稳定顺序排列的第一条孤立 Override 所属类型并直接打开该条目；导航顺序优先当前直接选中根包中可以立即处理的孤立 Override，再展示依赖包中的只读项，同一所有权层级内按条目类型、现有业务排序和 UUID 保持确定性。处理后立即刷新数量，再次点击可以定位下一条。孤立 Override 不参与有效内容和索引，因此该提示不把包或世界书索引降级。底部只在同步进行或失败时展示面向用户的状态，并把普通对账和破坏性全量重建明确区分。
 

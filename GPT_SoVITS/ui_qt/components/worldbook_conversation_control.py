@@ -36,8 +36,8 @@ from rag.worldbook.runtime.conversation import (
 )
 from rag.worldbook.runtime.diagnostics import WorldbookDiagnosticStore
 from rag.worldbook.runtime.models import WorldbookRootOption
-from ui_main.components.input_option_chips import SplitToggleChip
-from ui_main.theme import ThemePalette
+from ui_qt.components.input_option_chips import SplitToggleChip
+from ui_qt.theme import ThemePalette
 
 
 WORLDBOOK_DIAGNOSTICS_UI_ENV = "D_SAKIKO_WORLDBOOK_DIAGNOSTICS_UI"

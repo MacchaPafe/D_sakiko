@@ -11,12 +11,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication, QDialog
 
-from ui_main.components.context_usage_indicator import (
+from ui_qt.components.context_usage_indicator import (
     ContextUsageIndicator,
     ContextUsageSizing,
     resolve_context_usage_sizing,
 )
-from ui_main.theme import derive_theme_palette
+from ui_qt.theme import derive_theme_palette
 
 
 class ContextUsageSizingTestCase(unittest.TestCase):
@@ -123,10 +123,10 @@ class ContextUsageThresholdTestCase(unittest.TestCase):
         indicator = ContextUsageIndicator(derive_theme_palette("#7799CC"))
         with (
             mock.patch(
-                "ui_main.components.context_usage_indicator.RollingSummaryPromptDialog"
+                "ui_qt.components.context_usage_indicator.RollingSummaryPromptDialog"
             ) as dialog_class,
             mock.patch(
-                "ui_main.components.context_usage_indicator.save_rolling_summary_prompt"
+                "ui_qt.components.context_usage_indicator.save_rolling_summary_prompt"
             ) as save_prompt,
         ):
             dialog = dialog_class.return_value

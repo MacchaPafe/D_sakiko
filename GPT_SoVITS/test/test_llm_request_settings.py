@@ -67,7 +67,7 @@ def qapp():
 
 def test_numeric_card_saves_and_tracks_configuration(monkeypatch, qapp):
     from qfluentwidgets import ConfigItem
-    from ui.custom_widgets import request_timeout_setting_card as module
+    from ui_fluent_widget.custom_widgets import request_timeout_setting_card as module
     item = ConfigItem('test', 'seconds', 30)
     writer = Mock(side_effect=lambda target, value: setattr(target, 'value', value))
     monkeypatch.setattr(module, 'd_sakiko_config', SimpleNamespace(set=writer))

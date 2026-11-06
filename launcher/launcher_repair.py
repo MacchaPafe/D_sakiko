@@ -10,8 +10,8 @@ from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushBut
 
 from repair.repair_checker import get_configured_repair_base_urls
 from repair.repair_launcher import launch_repair_process
-from ui_main.components.repair_dialog import RepairDialog
-from ui_main.threads.repair_controller import RepairCheckThread, RepairPrepareThread
+from ui_qt.components.repair_dialog import RepairDialog
+from ui_qt.threads.repair_controller import RepairCheckThread, RepairPrepareThread
 
 
 class LauncherRepairDialog(QDialog):

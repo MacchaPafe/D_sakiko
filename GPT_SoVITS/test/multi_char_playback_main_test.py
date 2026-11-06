@@ -213,7 +213,7 @@ def test_auto_from_menu_has_busy_gate_and_callback_rechecks_state(host, app, mon
 
 def test_editor_opens_only_after_matching_reservation(host, app, monkeypatch):
     """请求发出时不先创建窗口，当前舞台确认占用后才绑定原消息进入编排。"""
-    from ui.components import multi_char_editor
+    from ui_small_theater import multi_char_editor
     factory = Mock()
     monkeypatch.setattr(multi_char_editor, "MultiCharEditor", factory)
     host.open_performance_editor(1)
@@ -230,7 +230,7 @@ def test_editor_opens_only_after_matching_reservation(host, app, monkeypatch):
 @pytest.mark.parametrize("changed", ["chat", "message", "generation"])
 def test_reservation_cannot_open_invalidated_editor(host, app, monkeypatch, changed):
     """预留期间换会话、删除消息或开始生成，回执不能再打开旧编辑器。"""
-    from ui.components import multi_char_editor
+    from ui_small_theater import multi_char_editor
     factory = Mock()
     monkeypatch.setattr(multi_char_editor, "MultiCharEditor", factory)
     host.open_performance_editor(1)
@@ -250,7 +250,7 @@ def test_reservation_cannot_open_invalidated_editor(host, app, monkeypatch, chan
 
 def test_expired_reservation_rejects_late_acceptance(host, app, monkeypatch):
     """舞台迟到确认不能复活已超时的编辑器申请，释放命令绑定原申请。"""
-    from ui.components import multi_char_editor
+    from ui_small_theater import multi_char_editor
     factory = Mock()
     monkeypatch.setattr(multi_char_editor, "MultiCharEditor", factory)
     host.open_performance_editor(0)

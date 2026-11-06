@@ -4,8 +4,8 @@ from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QPlainTextEdit, QVBoxLayout, QWidget,
 )
-from ui.components.multi_char_icons import set_button_icon
-from ui.components.multi_char_style import editor_stylesheet
+from ui_small_theater.multi_char_icons import set_button_icon
+from ui_small_theater.multi_char_style import editor_stylesheet
 
 
 class MultiCharInsertDialog(QDialog):

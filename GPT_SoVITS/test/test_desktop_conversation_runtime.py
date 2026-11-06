@@ -439,7 +439,7 @@ class ConversationTests(unittest.TestCase):
         from chat.chat import Message
         from qtUI import ChatGUI
         from runtime.single_character_performance import SingleCharacterPerformance
-        from ui_main.components.chat_display import ChatDisplay
+        from ui_qt.components.chat_display import ChatDisplay
 
         for path in ("", "NO_AUDIO", "/missing/silent_audio/silence.wav"):
             with self.subTest(path=path):
@@ -547,8 +547,8 @@ class SegmentDisplayTests(unittest.TestCase):
         from emotion_enum import EmotionEnum
         from qtUI import ChatGUI
         from runtime.single_character_performance import SingleCharacterPerformance
-        from ui_main.components.chat_display import ChatDisplay
-        from ui_main.theme import derive_theme_palette
+        from ui_qt.components.chat_display import ChatDisplay
+        from ui_qt.theme import derive_theme_palette
 
         chat = Chat(chat_id="a")
         manager = Mock()

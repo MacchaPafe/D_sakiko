@@ -16,8 +16,8 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMenu, QPushButton, QScrollArea, QWidget
 
 from qtUI import ChatGUI, MoreFunctionWindow, SettingWindow
-from ui_main.custom_widgets.scrollable_dialog import ScrollableDialog
-from ui_main.theme import derive_theme_palette
+from ui_qt.custom_widgets.scrollable_dialog import ScrollableDialog
+from ui_qt.theme import derive_theme_palette
 
 
 class SettingsParent(QWidget):

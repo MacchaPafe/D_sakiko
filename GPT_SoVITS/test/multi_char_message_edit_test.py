@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from chat.chat import Chat, Message
 from chat.chat_meta import ToolCallRecordMeta
 from chat.rolling_summary import get_rolling_summary, set_rolling_summary
-from ui.components.multi_char_message_edit import confirm_message_deletion, delete_saved_message
+from ui_small_theater.multi_char_message_edit import confirm_message_deletion, delete_saved_message
 
 
 def deletion_chat():

@@ -14,8 +14,8 @@ from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtCore import Qt, QPointF, QMimeData
 from PyQt5.QtGui import QDropEvent
 from chat.chat import Chat, Message
-from ui.components.multi_char_editor import MultiCharEditor
-from ui.components.multi_char_timeline import MIME
+from ui_small_theater.multi_char_editor import MultiCharEditor
+from ui_small_theater.multi_char_timeline import MIME
 
 
 class Owner(QWidget):
@@ -249,7 +249,7 @@ def test_resource_mouse_drag_reaches_timeline(editor, app, monkeypatch, column, 
     from PyQt5.QtGui import QMouseEvent, QDragEnterEvent
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QListWidgetItem, QListView
-    import ui.components.multi_char_editor as module
+    import ui_small_theater.multi_char_editor as module
     editor.resources["A"].version = "v3"
     editor.list.clear()
     for index in range(2):
@@ -296,7 +296,7 @@ def test_two_columns_stay_stable_across_scrollbar_visibility(editor, app):
     """有、无滚动条反复切换后，连续事件循环始终两列且不再重排闪烁。"""
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QListWidgetItem
-    from ui.components.multi_char_editor import ResourceList
+    from ui_small_theater.multi_char_editor import ResourceList
     resources = ResourceList(editor)
     resources.setObjectName("multiCharResourceList")
     resources.setStyleSheet(editor.resource_window.styleSheet())
@@ -356,7 +356,7 @@ def test_switch_initializes_new_message_and_ignores_old_feedback(editor):
 def test_delete_selects_next_or_previous_and_rejects_old_preview(editor, monkeypatch, index):
     """删除首中末句均只保存一次，停旧预览并选正确邻句，旧回执不能恢复已删句。"""
     confirm = Mock(return_value=True)
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", confirm)
     messages = [editor.message] + [Message.from_dict({"character_name": "B", "text": "同文台词"})
                                    for _ in range(2)]
     for message in messages:
@@ -398,7 +398,7 @@ def test_delete_selects_next_or_previous_and_rejects_old_preview(editor, monkeyp
 def test_delete_prepares_next_timeline_in_same_save_and_recomputes_inherited_scene(editor, monkeypatch):
     """下一句首次初始化与删除一并落盘；被删场景不迁移，新首句跳过原黑场。"""
     from live2d_support.multi_char_scene import SceneTiming, resolve_scene, transition_from_total
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
     editor.message.scene_before = {"background": "deleted.png", "visible_characters": []}
     next_message = Message.from_dict({"character_name": "B", "text": "下一句",
                                       "scene_before": {"transition": transition_from_total()}})
@@ -424,7 +424,7 @@ def test_delete_prepares_next_timeline_in_same_save_and_recomputes_inherited_sce
 
 def test_delete_only_sentence_discards_drafts_and_finishes_empty_chat(editor, monkeypatch, tmp_path):
     """删最后一条不保存草稿、不删除音频文件，关闭编排并让主控装载空剧本。"""
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
     old = editor.message
     audio = tmp_path / "keep.wav"
     audio.write_bytes(b"keep")
@@ -443,7 +443,7 @@ def test_delete_only_sentence_discards_drafts_and_finishes_empty_chat(editor, mo
 def test_cancel_delete_preserves_text_timeline_and_preview(editor, monkeypatch):
     """取消唯一确认时草稿和正在预览的位置全部保留，不触发切句或保存提示。"""
     confirm = Mock(return_value=False)
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", confirm)
     editor.toggle_text_edit()
     editor.original_input.setPlainText("未保存文本")
     editor.draft["characters"]["A"]["motions"].append({"at_ms": 10, "resource": {"file_name": "draft"}})
@@ -463,7 +463,7 @@ def test_cancel_delete_preserves_text_timeline_and_preview(editor, monkeypatch):
 def test_delete_failure_restores_neighbor_initialization_and_keeps_drafts(editor, monkeypatch, raises):
     """删除存档失败回滚邻句首次编排和消息列表，仍可继续当前句文本及时间轴草稿。"""
     from PyQt5.QtWidgets import QMessageBox
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
     monkeypatch.setattr(QMessageBox, "warning", Mock())
     old = editor.message
     next_message = Message.from_dict({"character_name": "B", "text": "下一句"})
@@ -488,7 +488,7 @@ def test_delete_failure_restores_neighbor_initialization_and_keeps_drafts(editor
 def test_delete_rejects_corrupt_neighbor_before_saving_or_stopping(editor, monkeypatch):
     """目标句轨道损坏时提前拒绝，原句及预览均不动，避免删除后才发现无法切句。"""
     from PyQt5.QtWidgets import QMessageBox
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", lambda *args, **kwargs: True)
     warning = Mock()
     monkeypatch.setattr(QMessageBox, "warning", warning)
     next_message = Message.from_dict({"character_name": "B", "text": "损坏轨道"})
@@ -508,7 +508,7 @@ def test_delete_rejects_corrupt_neighbor_before_saving_or_stopping(editor, monke
 def test_audio_busy_disables_and_blocks_sentence_deletion(editor, monkeypatch):
     """生成音频时隐藏或直接调用入口都不能删除，解除忙碌恢复按钮。"""
     confirm = Mock()
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", confirm)
     editor.set_audio_busy(True)
     assert not editor.delete_message_button.isEnabled()
     editor.delete_message()
@@ -539,7 +539,7 @@ def test_delete_rechecks_target_after_confirmation_events(editor, monkeypatch, c
             editor.chat.delete_message_at(0)
         return True
 
-    monkeypatch.setattr("ui.components.multi_char_editor.confirm_message_deletion", confirm)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.confirm_message_deletion", confirm)
     editor.delete_message()
     save.assert_not_called()
     assert any(message is next_message for message in editor.chat.message_list)
@@ -745,7 +745,7 @@ def test_cross_window_drop_role_validation(editor):
 def test_workspace_uses_available_area_and_moves_only_needed():
     """布局优先上移且底部不压住任务栏，小屏才缩小上方。"""
     from PyQt5.QtCore import QRect
-    from ui.components.multi_char_windows import workspace_rects
+    from ui_small_theater.multi_char_windows import workspace_rects
     stage = QRect(100, 160, 800, 700)
     control = QRect(900, 160, 600, 700)
     available = QRect(0, 0, 1920, 1040)

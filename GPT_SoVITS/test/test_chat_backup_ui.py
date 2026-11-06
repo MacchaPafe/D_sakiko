@@ -12,8 +12,8 @@ from PyQt5.QtWidgets import QApplication, QDialog
 from chat.chat import Chat, Message
 from emotion_enum import EmotionEnum
 from qtUI import ChatBackupExportOptionsDialog, ChatBackupMultiExportDialog, ChatGUI
-from ui_main.components.chat_display import ChatDisplay
-from ui_main.theme import derive_theme_palette
+from ui_qt.components.chat_display import ChatDisplay
+from ui_qt.theme import derive_theme_palette
 
 
 class ChatBackupDialogTestCase(unittest.TestCase):

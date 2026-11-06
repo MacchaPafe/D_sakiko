@@ -20,7 +20,7 @@ from character_creation import read_character_creation_order
 from qconfig import d_sakiko_config
 from log import get_logger
 from emotion_enum import EmotionEnum
-from ui_main.theme import DEFAULT_CHARACTER_THEME_SEED, resolve_character_theme_seed
+from ui_qt.theme import DEFAULT_CHARACTER_THEME_SEED, resolve_character_theme_seed
 
 
 logger = get_logger(__name__)

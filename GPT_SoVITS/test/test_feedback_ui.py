@@ -31,8 +31,8 @@ from chat.chat import ChatManager
 from chat.system_prompt import compose_system_prompt
 from test.test_feedback import MemorySecrets, sample_chat, sample_character
 from test import test_feedback as feedback_test_cases
-from ui_main.components.chat_display import ChatDisplay
-from ui_main.theme import derive_theme_palette
+from ui_qt.components.chat_display import ChatDisplay
+from ui_qt.theme import derive_theme_palette
 
 
 class FeedbackUiTests(unittest.TestCase):

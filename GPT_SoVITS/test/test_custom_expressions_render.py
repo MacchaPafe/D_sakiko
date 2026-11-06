@@ -26,8 +26,8 @@ def test_real_expression_roundtrip_and_dialog(tmp_path: Path) -> None:
     from live2d_support.custom_expressions import CustomExpressionStore, expression_document
     from live2d_support.expression_preview import ExpressionPreviewSession
     from live2d_support.runtime_session import Live2DRuntimeSession
-    from ui.components.live2d_expression_editor import CustomExpressionDialog
-    from ui.components.live2d_viewer_widgets import VIEWER_STYLE
+    from ui_motion_editor.live2d_expression_editor import CustomExpressionDialog
+    from ui_motion_editor.live2d_viewer_widgets import VIEWER_STYLE
 
     root = Path(__file__).resolve().parents[2]
     source = root / "live2d_related/tomori/extra_model/adv_live2d_tomori_001_casual_spring_01_extracted"

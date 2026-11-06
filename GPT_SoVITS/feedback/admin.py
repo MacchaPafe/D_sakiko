@@ -21,7 +21,7 @@ from feedback.dialogs import NetworkJob
 from feedback.importing import find_imported_chat, source_of, source_status_text
 from feedback.viewer import FeedbackDetailView, RATINGS, plain_label
 from feedback.protocol import Json, MAX_BODY, export_backup, validate_payload
-from ui_main.theme import ThemePalette, build_dialog_theme_stylesheet
+from ui_qt.theme import ThemePalette, build_dialog_theme_stylesheet
 
 CallableOperation = Callable[[], object]
 CallableResult = Callable[[object], None]

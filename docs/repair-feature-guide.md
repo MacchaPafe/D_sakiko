@@ -64,7 +64,7 @@
 | 复核、签名和上传 | `tools/release/upload_repair_assets.py`、`tools/release/sign_patch_asset.py` |
 | manifest 格式和路径安全 | `GPT_SoVITS/repair/repair_manifest.py`、`repair_security.py` |
 | 客户端检查和下载 | `GPT_SoVITS/repair/repair_checker.py` |
-| UI 后台任务 | `GPT_SoVITS/ui_main/threads/repair_controller.py` |
+| UI 后台任务 | `GPT_SoVITS/ui_qt/threads/repair_controller.py` |
 | 启动独立修复进程 | `GPT_SoVITS/repair/repair_launcher.py` |
 | 事务替换、备份和回滚 | `tools/apply_repair.py` |
 

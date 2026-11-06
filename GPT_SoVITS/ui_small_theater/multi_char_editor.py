@@ -20,12 +20,12 @@ from live2d_support.multi_char_resources import TheaterResources, audio_span, as
 from live2d_support.multi_char_scene import (
     SceneTiming, background_root, background_path, resolve_scene, transition_from_total,
 )
-from ui.components.multi_char_insert_dialog import MultiCharInsertDialog
-from ui.components.multi_char_icons import DELETE_COLOR, delete_message_icon, multi_char_icon, set_button_icon
-from ui.components.multi_char_message_edit import confirm_message_deletion, delete_saved_message, insert_saved_message
-from ui.components.multi_char_style import editor_stylesheet
-from ui.components.multi_char_timeline import MultiCharTimeline, MIME, _character_pill_color
-from ui.components.multi_char_windows import MultiCharWindowLayout
+from ui_small_theater.multi_char_insert_dialog import MultiCharInsertDialog
+from ui_small_theater.multi_char_icons import DELETE_COLOR, delete_message_icon, multi_char_icon, set_button_icon
+from ui_small_theater.multi_char_message_edit import confirm_message_deletion, delete_saved_message, insert_saved_message
+from ui_small_theater.multi_char_style import editor_stylesheet
+from ui_small_theater.multi_char_timeline import MultiCharTimeline, MIME, _character_pill_color
+from ui_small_theater.multi_char_windows import MultiCharWindowLayout
 from ui_constants import char_info_json
 
 
@@ -613,7 +613,7 @@ class MultiCharEditor(QObject):
         self.refresh_button.setObjectName("multiCharRefresh")
         self.refresh_button.setToolTip("刷新资源")
         self.refresh_button.setAccessibleName("刷新资源")
-        icon_path = Path(__file__).parents[2] / "icons" / "refresh.svg"
+        icon_path = Path(__file__).parents[1] / "icons" / "refresh.svg"
         self.refresh_button.setIcon(QIcon(str(icon_path)))
         icon_size = round(self.resource_window.font().pixelSize() * 1.15)
         self.refresh_button.setIconSize(QSize(icon_size, icon_size))
@@ -696,7 +696,7 @@ class MultiCharEditor(QObject):
         self.visibility_help.setObjectName("multiCharVisibilityHelp")
         self.visibility_help.setAccessibleName("出场角色沿用规则")
         self.visibility_help.setAutoRaise(True)
-        help_icon = Path(__file__).parents[2] / "icons" / "multi_char_help.svg"
+        help_icon = Path(__file__).parents[1] / "icons" / "multi_char_help.svg"
         self.visibility_help.setIcon(QIcon(str(help_icon)))
         icon_size = round(self.resource_window.font().pixelSize() * 1.15)
         self.visibility_help.setIconSize(QSize(icon_size, icon_size))
@@ -1468,8 +1468,8 @@ class MultiCharEditor(QObject):
 
     def custom_expression(self):
         """复用现有表情编辑器，实时参数发送给同一舞台的目标角色。"""
-        from ui.components.live2d_expression_editor import CustomExpressionDialog
-        from ui.components.live2d_performance_editor import confirm_description_changes
+        from ui_motion_editor.live2d_expression_editor import CustomExpressionDialog
+        from ui_motion_editor.live2d_performance_editor import confirm_description_changes
         self.stop()
         name = self.names[self.characters.currentIndex()]
         resources = self.resources[name]

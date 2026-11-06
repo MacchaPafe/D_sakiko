@@ -38,7 +38,7 @@ from rag.worldbook.models import (
 )
 from rag.worldbook.runtime.readiness import WorldbookIndexReadinessState
 from rag.worldbook.user_state import WorldbookUserStateRepository
-from ui.components.worldbook_editor import (
+from ui_fluent_widget.components.worldbook_editor import (
     EntryEditorHost,
     MultiSelectDialog,
     MultiSelectField,
@@ -48,12 +48,12 @@ from ui.components.worldbook_editor import (
     TagEditor,
     _character_options,
 )
-from ui.interfaces.worldbook_area import (
+from ui_fluent_widget.interfaces.worldbook_area import (
     StoryEventDeletionBox,
     UnsavedChangesBox,
     WorldbookArea,
 )
-from ui.controllers.worldbook_sync_controller import WorldbookSyncController
+from ui_fluent_widget.controllers.worldbook_sync_controller import WorldbookSyncController
 
 
 class WorldbookUiTest(unittest.TestCase):
@@ -181,7 +181,7 @@ class WorldbookUiTest(unittest.TestCase):
             if isinstance(row, QWidget):
                 self.assertIn("我添加的", row.findChild(CaptionLabel).text())
 
-            with patch("ui.interfaces.worldbook_area.MessageBox") as message_box:
+            with patch("ui_fluent_widget.interfaces.worldbook_area.MessageBox") as message_box:
                 message_box.return_value.exec.return_value = True
                 area._delete_current_extension()
             message_box.assert_called_once_with(
@@ -292,7 +292,7 @@ class WorldbookUiTest(unittest.TestCase):
                 ],
             )
 
-            with patch("ui.interfaces.worldbook_area.MessageBox") as message_box:
+            with patch("ui_fluent_widget.interfaces.worldbook_area.MessageBox") as message_box:
                 message_box.return_value.exec.return_value = True
                 area._delete_current_extension()
             self.app.processEvents()
@@ -344,7 +344,7 @@ class WorldbookUiTest(unittest.TestCase):
             deletion_box.close()
 
             with patch(
-                "ui.interfaces.worldbook_area.StoryEventDeletionBox.exec",
+                "ui_fluent_widget.interfaces.worldbook_area.StoryEventDeletionBox.exec",
                 return_value=1,
             ):
                 area._delete_current_extension()
@@ -479,13 +479,13 @@ class WorldbookUiTest(unittest.TestCase):
                 1,
             )
             with patch(
-                "ui.interfaces.worldbook_area.show_file_in_manager"
+                "ui_fluent_widget.interfaces.worldbook_area.show_file_in_manager"
             ) as show_file:
                 area._show_user_state_location()
             show_file.assert_called_once_with(repository.path_for("test.package"))
             with (
                 patch.object(area, "_resolve_unsaved_changes", return_value=False),
-                patch("ui.interfaces.worldbook_area.MessageBox") as message_box,
+                patch("ui_fluent_widget.interfaces.worldbook_area.MessageBox") as message_box,
                 patch.object(
                     area._edit_service, "confirm_current_base"
                 ) as confirm_current_base,

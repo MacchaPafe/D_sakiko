@@ -9,8 +9,8 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 # 延迟到用户点击更新时导入；不加载 qtUI、配置或模型。
-from ui_main.components.update_dialog import UpdateDialog
-from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
+from ui_qt.components.update_dialog import UpdateDialog
+from ui_qt.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
 from update.update_checker import get_configured_index_urls
 from update.update_launcher import launch_update_process
 

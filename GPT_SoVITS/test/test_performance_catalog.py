@@ -162,7 +162,7 @@ def test_native_dedup_single_play_and_stale_callback(tmp_path: Path) -> None:
 def test_editor_saves_two_presets_for_same_motion(tmp_path: Path) -> None:
     """编辑器允许同动作的多个表情组合，配置无需重载渲染器。"""
     from PyQt5.QtWidgets import QApplication
-    from ui.components.live2d_performance_editor import Live2DPerformanceEditor, PerformancePresetDialog
+    from ui_motion_editor.live2d_performance_editor import Live2DPerformanceEditor, PerformancePresetDialog
 
     app = QApplication.instance() or QApplication([])
     path = make_model(tmp_path)

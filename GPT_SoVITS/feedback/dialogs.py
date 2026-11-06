@@ -9,7 +9,7 @@ from PyQt5.QtGui import QCloseEvent
 from PyQt5.QtWidgets import QButtonGroup, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget, QMessageBox
 
 from feedback.client import FeedbackClient, Receipt, ReceiptStore, configured_endpoint, recipient_notice
-from ui_main.theme import ThemePalette, build_dialog_theme_stylesheet
+from ui_qt.theme import ThemePalette, build_dialog_theme_stylesheet
 
 
 class NetworkJob(QThread):

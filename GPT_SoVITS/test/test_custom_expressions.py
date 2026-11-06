@@ -25,7 +25,7 @@ from live2d_support.model_normalizer import normalize_model3_for_project
 from live2d_support.model_importer import import_live2d_model
 from live2d_support.performance_catalog import load_performance_catalog, performance_config_path
 from live2d_support.runtime_adapter import Live2DModelAdapter
-from ui.components.live2d_expression_editor import CustomExpressionDialog, ParameterRow
+from ui_motion_editor.live2d_expression_editor import CustomExpressionDialog, ParameterRow
 
 SPECS = [ExpressionParameter("ParamEyeLOpen", "左眼开合", 0, 1, 1),
          ExpressionParameter("ParamMouthForm", "嘴形", -1, 1, 0)]
@@ -319,10 +319,10 @@ def test_dialog_deletion_requires_confirmation(app: QApplication, model_path: Pa
                                     lambda _parent, _save: True, parent)
     dialog.receive({"session_id": dialog.session_id, "action": "begin", "ok": True,
                     "parameters": [item.payload() for item in SPECS]})
-    with patch("ui.components.live2d_expression_editor.QMessageBox.question", return_value=QMessageBox.No):
+    with patch("ui_motion_editor.live2d_expression_editor.QMessageBox.question", return_value=QMessageBox.No):
         dialog.delete_expression()
     assert store.target("smile").exists()
-    with patch("ui.components.live2d_expression_editor.QMessageBox.question", return_value=QMessageBox.Yes):
+    with patch("ui_motion_editor.live2d_expression_editor.QMessageBox.question", return_value=QMessageBox.Yes):
         dialog.delete_expression()
     assert not store.target("smile").exists() and dialog.selected == ""
     assert "original" in dialog.catalog.expressions

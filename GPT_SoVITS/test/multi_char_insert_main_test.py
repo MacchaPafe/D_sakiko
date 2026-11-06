@@ -31,7 +31,7 @@ def host(playback_host, app, monkeypatch):
 def dialog(monkeypatch):
     """替换表单交互，真实消息初始化和持久化事务仍执行生产代码。"""
     import multi_char_main
-    from ui.components import multi_char_insert_dialog
+    from ui_small_theater import multi_char_insert_dialog
     data = {"character_name": "B", "text": "  插入的新台词  ", "translation": "translation",
             "muted": False, "emotion": "normal", "audio_path": ""}
     value = Mock()

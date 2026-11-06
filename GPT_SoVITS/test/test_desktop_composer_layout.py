@@ -14,7 +14,7 @@ from PyQt5.QtTest import QTest
 from desktop_pet.window import PetWindow
 from runtime.drafts import DraftStore
 from runtime.voice_input import VoiceInputService
-from ui_main.theme import derive_theme_palette
+from ui_qt.theme import derive_theme_palette
 
 
 class ComposerLayoutTests(TestCase):

@@ -13,14 +13,14 @@ DELETE_COLOR = "#D9534F"
 @lru_cache(maxsize=None)
 def multi_char_icon(name):
     """缓存小剧场 SVG 图标，播放时切换图标不反复解析文件。"""
-    path = Path(__file__).parents[2] / "icons" / f"multi_char_{name}.svg"
+    path = Path(__file__).parents[1] / "icons" / f"multi_char_{name}.svg"
     return QIcon(str(path))
 
 
 @lru_cache(maxsize=1)
 def delete_message_icon():
     """复用原删除 SVG 的透明轮廓，动态染红并缓存常用 DPI 尺寸。"""
-    renderer = QSvgRenderer(str(Path(__file__).parents[2] / "icons" / "delete.svg"))
+    renderer = QSvgRenderer(str(Path(__file__).parents[1] / "icons" / "delete.svg"))
     icon = QIcon()
     for size in (16, 20, 24, 32, 48, 64):
         pixmap = QPixmap(size, size)

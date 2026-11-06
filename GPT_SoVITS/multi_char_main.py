@@ -18,7 +18,7 @@ from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 from qconfig import DEFAULT_MULTI_CHAR_BGM_PATH, d_sakiko_config
-from ui_main.components.custom_bgm_dialog import (
+from ui_qt.components.custom_bgm_dialog import (
     BGM_DIRECTORY,
     SUPPORTED_BGM_SUFFIXES,
     CustomBGMDialog,
@@ -45,7 +45,7 @@ from live2d_support.model_catalog import Live2DModelOption
 from live2d_support.motion_capabilities import get_live2d_motion_capabilities
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
-from ui.components.multi_char_icons import set_button_icon, delete_message_icon, multi_char_icon
+from ui_small_theater.multi_char_icons import set_button_icon, delete_message_icon, multi_char_icon
 
 
 logger = get_logger(__name__)
@@ -2659,7 +2659,7 @@ class ViewerGUI(QWidget):
 
     def _delete_reserved_sentence(self, request: dict) -> None:
         """确认并持久删除原消息，只有成功保存才重建正式剧本。"""
-        from ui.components.multi_char_message_edit import confirm_message_deletion, delete_saved_message
+        from ui_small_theater.multi_char_message_edit import confirm_message_deletion, delete_saved_message
 
         chat, message = request["chat"], request["message"]
 
@@ -2709,8 +2709,8 @@ class ViewerGUI(QWidget):
     def _insert_reserved_sentence(self, request: dict) -> None:
         """复用编排器填写表单与新句初始化，保存成功后重建正式待播剧本。"""
         from live2d_support.multi_char_resources import TheaterResources, initial_message_timeline
-        from ui.components.multi_char_insert_dialog import MultiCharInsertDialog
-        from ui.components.multi_char_message_edit import insert_saved_message
+        from ui_small_theater.multi_char_insert_dialog import MultiCharInsertDialog
+        from ui_small_theater.multi_char_message_edit import insert_saved_message
         from ui_constants import char_info_json
 
         chat, anchor = request["chat"], request["message"]
@@ -2767,7 +2767,7 @@ class ViewerGUI(QWidget):
                 or self._generation_context is not None or self._audio_regeneration is not None):
             self.send_playback_command("release_editor", reservation_id=request["request_id"])
             return
-        from ui.components.multi_char_editor import MultiCharEditor
+        from ui_small_theater.multi_char_editor import MultiCharEditor
         payload = self._build_active_slots_payload(preserve_playback=True)
         try:
             self.performance_editor = MultiCharEditor(

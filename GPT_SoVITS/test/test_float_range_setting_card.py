@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import ConfigItem, FluentIcon, RangeConfigItem, RangeValidator, qconfig
 
-from ui.custom_widgets.float_range_setting_card import FloatRangeSettingCard
+from ui_fluent_widget.custom_widgets.float_range_setting_card import FloatRangeSettingCard
 
 
 class FloatRangeSettingCardTestCase(unittest.TestCase):

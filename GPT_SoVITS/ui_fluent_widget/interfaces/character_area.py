@@ -34,7 +34,7 @@ from qfluentwidgets import (
 
 from ..components.fluent_icon import MyFluentIcon
 from ..custom_widgets.transparent_scroll_area import TransparentScrollArea
-from ..file_manager import show_file_in_manager
+from ui_qt.file_manager import show_file_in_manager
 
 try:
     from character import CharacterAttributes, GetCharacterAttributes, find_default_l2d_json

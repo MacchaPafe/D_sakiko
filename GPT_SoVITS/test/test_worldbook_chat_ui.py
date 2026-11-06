@@ -29,8 +29,8 @@ from rag.models import CharacterId
 from rag.worldbook.runtime.catalog import WorldbookRootCatalog
 from rag.worldbook.runtime.diagnostics import WorldbookDiagnosticStore
 from rag.worldbook.runtime.models import WorldbookRootOption, WorldbookTurnSnapshot
-from ui.components.custom_setting_area import CustomSettingArea
-from ui_main.components.worldbook_conversation_control import (
+from ui_fluent_widget.components.custom_setting_area import CustomSettingArea
+from ui_qt.components.worldbook_conversation_control import (
     WORLDBOOK_DIAGNOSTICS_UI_ENV,
     WorldbookConversationControl,
 )
@@ -276,7 +276,7 @@ class WorldbookConversationControlTest(unittest.TestCase):
         ).menu()
         self.assertIsNotNone(episode_menu)
         with mock.patch(
-            "ui_main.components.worldbook_conversation_control.QMessageBox.warning"
+            "ui_qt.components.worldbook_conversation_control.QMessageBox.warning"
         ) as warning:
             episode_menu.actions()[2].trigger()
 
@@ -299,7 +299,7 @@ class WorldbookConversationControlTest(unittest.TestCase):
         box.exec_.return_value = message_box_class.No
         box.button.return_value = mock.Mock()
         with mock.patch(
-            "ui_main.components.worldbook_conversation_control.QMessageBox",
+            "ui_qt.components.worldbook_conversation_control.QMessageBox",
             message_box_class,
         ):
             self.control.button.click()
@@ -419,11 +419,11 @@ class WorldbookConversationControlTest(unittest.TestCase):
         self.control.bind(self.chat, self.character)
         with (
             mock.patch(
-                "ui_main.components.worldbook_conversation_control.QInputDialog.getItem",
+                "ui_qt.components.worldbook_conversation_control.QInputDialog.getItem",
                 return_value=("素世（soyo）", True),
             ) as get_item,
             mock.patch(
-                "ui_main.components.worldbook_conversation_control.QMessageBox.question",
+                "ui_qt.components.worldbook_conversation_control.QMessageBox.question",
                 return_value=QMessageBox.Yes,
             ) as question,
         ):
@@ -451,11 +451,11 @@ class WorldbookConversationControlTest(unittest.TestCase):
         self.control.bind(self.chat, self.character)
         with (
             mock.patch(
-                "ui_main.components.worldbook_conversation_control.QInputDialog.getItem",
+                "ui_qt.components.worldbook_conversation_control.QInputDialog.getItem",
                 return_value=("素世（soyo）", True),
             ),
             mock.patch(
-                "ui_main.components.worldbook_conversation_control.QMessageBox.question",
+                "ui_qt.components.worldbook_conversation_control.QMessageBox.question",
                 return_value=QMessageBox.Cancel,
             ),
         ):
@@ -477,11 +477,11 @@ class WorldbookConversationControlTest(unittest.TestCase):
         output_path = Path("/tmp/worldbook-ui-test.zip")
         with (
             mock.patch(
-                "ui_main.components.worldbook_conversation_control.QFileDialog.getSaveFileName",
+                "ui_qt.components.worldbook_conversation_control.QFileDialog.getSaveFileName",
                 return_value=(str(output_path), "ZIP 压缩包 (*.zip)"),
             ),
             mock.patch(
-                "ui_main.components.worldbook_conversation_control.QMessageBox.information"
+                "ui_qt.components.worldbook_conversation_control.QMessageBox.information"
             ),
         ):
             _menu_action(

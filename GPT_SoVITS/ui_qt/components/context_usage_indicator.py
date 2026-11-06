@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
 )
 
 from chat.rolling_summary import load_rolling_summary_prompt, save_rolling_summary_prompt
-from ui_main.theme import ThemePalette, build_dialog_theme_stylesheet
+from ui_qt.theme import ThemePalette, build_dialog_theme_stylesheet
 
 
 MIN_SUMMARY_THRESHOLD_PERCENT = 70

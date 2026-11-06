@@ -66,9 +66,9 @@ from rag.worldbook.package_loader import WorldbookPackageLoader
 from rag.worldbook.paths import WorldbookPaths
 from rag.worldbook.time_coordinates import OPEN_ENDED_TIME, decode_story_time
 from rag.worldbook.user_state import WorldbookUserStateRepository
-from ui.components.worldbook_editor import EntryEditorHost
-from ui.controllers.worldbook_sync_controller import WorldbookSyncController
-from ui.file_manager import show_file_in_manager
+from ui_fluent_widget.components.worldbook_editor import EntryEditorHost
+from ui_fluent_widget.controllers.worldbook_sync_controller import WorldbookSyncController
+from ui_qt.file_manager import show_file_in_manager
 
 
 _ENTRY_TYPE_LABELS: tuple[tuple[EntryType, str], ...] = (

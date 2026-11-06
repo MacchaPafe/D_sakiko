@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from live2d_support.performance_catalog import read_config, save_config, performance_config_path
 from live2d_support.runtime_adapter import Live2DModelAdapter, NullLive2DModel
 from live2d_support.viewer_preview import execute_viewer_preview
-from ui.components.live2d_performance_editor import Live2DPerformanceEditor, PerformancePresetDialog
-from ui.components.live2d_viewer_widgets import show_v3_intro_once, preview_desktop_size
+from ui_motion_editor.live2d_performance_editor import Live2DPerformanceEditor, PerformancePresetDialog
+from ui_motion_editor.live2d_viewer_widgets import show_v3_intro_once, preview_desktop_size
 from live2d_viewer import ViewerGUI
 from qconfig import DSakikoConfig
 
@@ -61,7 +61,7 @@ def test_intro_only_for_first_v3_and_persists(app: QApplication, tmp_path: Path)
     config.live2d_viewer_v3_intro_seen.value = False
     parent = Live2DPerformanceEditor(lambda _command: None)
     try:
-        with patch("ui.components.live2d_viewer_widgets.QMessageBox.information", return_value=QMessageBox.Ok) as show:
+        with patch("ui_motion_editor.live2d_viewer_widgets.QMessageBox.information", return_value=QMessageBox.Ok) as show:
             assert not show_v3_intro_once(parent, "v2", config)
             assert not show_v3_intro_once(parent, None, config)
             show.assert_not_called()
@@ -153,7 +153,7 @@ def test_model_specific_pages_and_cancelled_navigation(app: QApplication, models
         assert intro.call_count == 1
         window.performance_editor.descriptions["motions"].setPlainText("还未保存")
         with patch.object(window.performance_editor, "save_descriptions", return_value=False), \
-                patch("ui.components.live2d_performance_editor.confirm_description_changes", return_value=False):
+                patch("ui_motion_editor.live2d_performance_editor.confirm_description_changes", return_value=False):
             assert not window.select_character(0)
             assert window.current_char_index == 1
             assert not window.close()
@@ -196,7 +196,7 @@ def test_scaled_work_area_keeps_editor_controls_reachable(
                 for button in buttons + [window.btn_change_char, window.btn_change_costume, window.details_button]:
                     assert button.isVisible()
                     assert window.rect().contains(QRect(button.mapTo(window, button.rect().topLeft()), button.size()))
-            with patch("ui.components.live2d_viewer_widgets.sys.platform", "win32"):
+            with patch("ui_motion_editor.live2d_viewer_widgets.sys.platform", "win32"):
                 assert preview_desktop_size(screen) == QSize(1920, 1080)
             if version == 1:
                 dialog_bounds = []
@@ -259,17 +259,17 @@ def test_preset_switch_preserves_edits_on_cancel_or_save_failure(app: QApplicati
     assert dialog.save_preset()
     saved_id = dialog._selected_id
     dialog.name.setText("修改中的第一组")
-    with patch("ui.components.live2d_performance_editor.confirm_description_changes", return_value=False):
+    with patch("ui_motion_editor.live2d_performance_editor.confirm_description_changes", return_value=False):
         dialog.items.setCurrentRow(0)
     assert dialog._selected_id == saved_id
     assert dialog.items.currentItem().data(Qt.UserRole) == saved_id
     assert dialog.name.text() == "修改中的第一组"
-    with patch("ui.components.live2d_performance_editor.confirm_description_changes", side_effect=lambda _parent, save: save()), \
-            patch("ui.components.live2d_performance_editor.save_config", side_effect=OSError("写入失败")):
+    with patch("ui_motion_editor.live2d_performance_editor.confirm_description_changes", side_effect=lambda _parent, save: save()), \
+            patch("ui_motion_editor.live2d_performance_editor.save_config", side_effect=OSError("写入失败")):
         dialog.items.setCurrentRow(0)
     assert dialog._dirty
     assert dialog._selected_id == saved_id
-    with patch("ui.components.live2d_performance_editor.confirm_description_changes", side_effect=lambda _parent, save: save()):
+    with patch("ui_motion_editor.live2d_performance_editor.confirm_description_changes", side_effect=lambda _parent, save: save()):
         dialog.items.setCurrentRow(0)
     assert dialog._selected_id == ""
     assert dialog.items.currentRow() == 0
@@ -328,8 +328,8 @@ def test_failed_autosave_keeps_draft_and_restore_fills_immediately(app: QApplica
     inherited = field.toPlainText()
     field.setPlainText("本地覆盖")
     assert editor.save_descriptions()
-    with patch("ui.components.live2d_performance_editor.save_config", side_effect=OSError("写入失败")), \
-            patch("ui.components.live2d_performance_editor.QMessageBox.warning") as warning:
+    with patch("ui_motion_editor.live2d_performance_editor.save_config", side_effect=OSError("写入失败")), \
+            patch("ui_motion_editor.live2d_performance_editor.QMessageBox.warning") as warning:
         field.setPlainText("待保存草稿")
         QTest.qWait(850)
         assert warning.call_count == 1

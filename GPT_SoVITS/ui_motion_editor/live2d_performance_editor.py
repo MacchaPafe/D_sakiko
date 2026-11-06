@@ -177,7 +177,7 @@ class Live2DPerformanceEditor(QWidget):
         """固定入口打开模态编辑器，并在退出后刷新资源及描述。"""
         if self.catalog is None or self.catalog.version != "v3" or not self.confirm_leave():
             return
-        from ui.components.live2d_expression_editor import CustomExpressionDialog
+        from ui_motion_editor.live2d_expression_editor import CustomExpressionDialog
 
         dialog = CustomExpressionDialog(self.catalog.model_path, self.selected_id("expressions"),
                                         self.send_preview, confirm_description_changes, self)

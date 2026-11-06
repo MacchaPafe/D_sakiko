@@ -13,12 +13,12 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QToolButton, QWidget
 
-from ui_main.components.input_option_chips import (
+from ui_qt.components.input_option_chips import (
     ChoiceChip,
     SplitToggleChip,
     ToggleChip,
 )
-from ui_main.theme import derive_theme_palette
+from ui_qt.theme import derive_theme_palette
 
 
 class InputOptionChipTest(unittest.TestCase):

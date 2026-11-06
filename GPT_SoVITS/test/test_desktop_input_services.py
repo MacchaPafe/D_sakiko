@@ -9,8 +9,8 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtTest import QTest
 from runtime.drafts import DraftStore, DraftBinding
 from runtime.voice_input import VoiceInputService
-from ui_main.components.message_input import MessageInput
-from ui_main.theme import derive_theme_palette
+from ui_qt.components.message_input import MessageInput
+from ui_qt.theme import derive_theme_palette
 
 
 class InputTests(unittest.TestCase):

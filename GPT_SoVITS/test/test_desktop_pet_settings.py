@@ -17,7 +17,7 @@ from qfluentwidgets import InfoBarIcon
 
 from dsakiko_configuration import DSakikoConfigArea
 from qconfig import DSakikoConfig
-from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
+from ui_fluent_widget.custom_widgets.transparent_scroll_area import TransparentScrollArea
 
 
 class PlaceholderSettings(TransparentScrollArea):
@@ -53,9 +53,9 @@ class DesktopPetSettingsTests(TestCase):
         self.config.start_in_pet_mode.value = False
         self.config.unload_voice_models_when_pet_idle.value = True
         for target, replacement in (
-            ("ui.components.desktop_pet_setting_area.d_sakiko_config", self.config),
+            ("ui_fluent_widget.components.desktop_pet_setting_area.d_sakiko_config", self.config),
             (
-                "ui.custom_widgets.custom_switch_setting_card.d_sakiko_config",
+                "ui_fluent_widget.custom_widgets.custom_switch_setting_card.d_sakiko_config",
                 self.config,
             ),
             ("dsakiko_configuration.LLMAPIArea", PlaceholderSettings),

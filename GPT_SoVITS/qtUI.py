@@ -59,7 +59,7 @@ project_root = os.path.dirname(script_dir)
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-from ui_main.threads.get_model_limit_thread import GetModelLimitThread
+from ui_qt.threads.get_model_limit_thread import GetModelLimitThread
 from ui_constants import dialogWindowDefaultCss,char_info_json,tool_name_chi_mapping,SINGLE_CHAT_COMBO_CSS,SINGLE_CHAT_COMBO_VIEW_CSS,SINGLE_CHAT_DIALOG_CSS
 from log import get_logger
 from qconfig import THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS, d_sakiko_config
@@ -93,37 +93,37 @@ from chat.rolling_summary import (
     invalidate_rolling_summary_from_message_index,
 )
 from emotion_enum import EmotionEnum
-from ui_main.components.chat_display import ChatDisplay
-from ui_main.components.chat_sidebar import ChatSidebarMode, ChatSidebarToolbar, ChatSidebarView
-from ui_main.components.context_usage_indicator import (
+from ui_qt.components.chat_display import ChatDisplay
+from ui_qt.components.chat_sidebar import ChatSidebarMode, ChatSidebarToolbar, ChatSidebarView
+from ui_qt.components.context_usage_indicator import (
     ContextUsageIndicator,
     ContextUsageSnapshot,
     resolve_context_usage_sizing,
 )
-from ui_main.components.message_input import MessageInput
-from ui_main.components.input_option_chips import ChoiceChip
-from ui_main.components.tool_selection_chip import ToolSelectionChip
-from ui_main.custom_widgets.scrollable_dialog import ResponsiveButtonLayout, ScrollableDialog
+from ui_qt.components.message_input import MessageInput
+from ui_qt.components.input_option_chips import ChoiceChip
+from ui_qt.components.tool_selection_chip import ToolSelectionChip
+from ui_qt.custom_widgets.scrollable_dialog import ResponsiveButtonLayout, ScrollableDialog
 
 if TYPE_CHECKING:
     from audio_generator import AudioGenerate
 
-from ui_main.theme import (
+from ui_qt.theme import (
     DEFAULT_CHARACTER_THEME_SEED,
     ThemePalette,
     build_character_theme_stylesheet,
     build_dialog_theme_stylesheet,
     derive_theme_palette,
 )
-from ui_main.components.update_dialog import UpdateDialog
-from ui_main.components.repair_dialog import RepairDialog
-from ui_main.components.worldbook_conversation_control import (
+from ui_qt.components.update_dialog import UpdateDialog
+from ui_qt.components.repair_dialog import RepairDialog
+from ui_qt.components.worldbook_conversation_control import (
     WorldbookConversationControl,
 )
-from ui_main.threads.repair_controller import RepairCheckThread, RepairPrepareThread
-from ui_main.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
-from ui_main.threads.update_config_thread import notify_config_reload
-from ui.file_manager import show_file_in_manager
+from ui_qt.threads.repair_controller import RepairCheckThread, RepairPrepareThread
+from ui_qt.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
+from ui_qt.threads.update_config_thread import notify_config_reload
+from ui_qt.file_manager import show_file_in_manager
 from update.update_checker import get_configured_index_urls, read_current_version
 from update.update_launcher import build_restart_command, launch_update_process
 from update.update_models import DownloadedPatch, UpdatePlan
@@ -2365,7 +2365,7 @@ class ChatGUI(QWidget):
         QTimer.singleShot(0, self.show_last_update_failure_if_needed)
         QTimer.singleShot(0, self.show_last_repair_failure_if_needed)
         # 世界书暂不发布，启动时不运行索引同步，也不要求附带 embedding 模型。
-        # from ui.controllers.worldbook_sync_controller import WorldbookSyncController
+        # from ui_fluent_widget.controllers.worldbook_sync_controller import WorldbookSyncController
         # self.worldbook_sync_controller = WorldbookSyncController(
         #     Path(get_app_root()),
         #     self,

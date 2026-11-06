@@ -10,7 +10,7 @@ if __name__ == "__main__":
     from maintenance.bootstrap import recover_before_startup
     recover_before_startup(Path(project_root))
 
-from ui_main.threads.update_config_thread import UpdateConfigThread
+from ui_qt.threads.update_config_thread import UpdateConfigThread
 
 from queue import Queue, Empty
 import threading

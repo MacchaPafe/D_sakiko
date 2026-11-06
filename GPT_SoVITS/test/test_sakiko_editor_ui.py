@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import QApplication, QPushButton
 import live2d_viewer
 from test.test_sakiko_forms import write_model
 from live2d_support.mask_actions import mask_actions
-from ui.components.live2d_mask_editor import MaskActionsDialog
+from ui_motion_editor.live2d_mask_editor import MaskActionsDialog
 
 
 @pytest.fixture(scope="session")

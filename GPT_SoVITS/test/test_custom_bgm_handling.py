@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import QApplication
 
 import multi_char_main
 from qconfig import d_sakiko_config
-from ui_main.components.custom_bgm_dialog import CustomBGMDialog
+from ui_qt.components.custom_bgm_dialog import CustomBGMDialog
 
 
 class FakeBGMPlayer:

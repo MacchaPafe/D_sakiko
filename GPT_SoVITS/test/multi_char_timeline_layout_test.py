@@ -14,8 +14,8 @@ from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import QApplication, QWidget
 from chat.chat import Chat, Message
 from live2d_support.multi_char_resources import TheaterResources, audio_span
-from ui.components.multi_char_editor import MultiCharEditor
-from ui.components.multi_char_timeline import MultiCharTimeline
+from ui_small_theater.multi_char_editor import MultiCharEditor
+from ui_small_theater.multi_char_timeline import MultiCharTimeline
 
 
 @pytest.fixture(scope="module")
@@ -102,7 +102,7 @@ def test_small_viewport_keeps_four_tracks_accessible_by_vertical_scroll(timeline
 @pytest.fixture
 def editor_factory(app, monkeypatch):
     """创建真实编排控件，屏蔽三窗自动移动以单独检查初始尺寸。"""
-    monkeypatch.setattr("ui.components.multi_char_editor.MultiCharWindowLayout", Mock())
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.MultiCharWindowLayout", Mock())
     sessions = []
 
     def create():

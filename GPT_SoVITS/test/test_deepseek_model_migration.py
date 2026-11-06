@@ -17,7 +17,7 @@ from qfluentwidgets import EditableComboBox
 from chat import attachments
 from deepseek_models import DEEPSEEK_DEPRECATED_MODEL_ALIASES
 from qconfig import DSakikoConfig, normalize_deepseek_model_config
-from ui.components import llm_api_area
+from ui_fluent_widget.components import llm_api_area
 
 
 class DeepSeekModelMigrationTestCase(unittest.TestCase):

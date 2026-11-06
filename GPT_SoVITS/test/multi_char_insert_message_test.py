@@ -11,8 +11,8 @@ from chat.chat import Chat, Message
 from chat.chat_meta import ToolCallRecordMeta
 from chat.rolling_summary import get_rolling_summary, set_rolling_summary
 from live2d_support.multi_char_resources import initial_message_timeline
-from ui.components.multi_char_insert_dialog import MultiCharInsertDialog
-from ui.components.multi_char_message_edit import insert_saved_message
+from ui_small_theater.multi_char_insert_dialog import MultiCharInsertDialog
+from ui_small_theater.multi_char_message_edit import insert_saved_message
 
 
 def insert_chat():
@@ -129,7 +129,7 @@ def test_editor_insert_rechecks_anchor_after_nested_dialogs(editor, monkeypatch,
     editor.chat.message_list.append(next_message)
     dialog = accepted_dialog()
     factory = Mock(return_value=dialog)
-    monkeypatch.setattr("ui.components.multi_char_editor.MultiCharInsertDialog", factory)
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.MultiCharInsertDialog", factory)
     saved = editor.owner.saved
 
     def change_state():
@@ -169,7 +169,7 @@ def test_editor_insert_resolves_anchor_identity_then_selects_before_refresh(edit
         return QDialog.Accepted
 
     dialog.exec_.side_effect = confirm
-    monkeypatch.setattr("ui.components.multi_char_editor.MultiCharInsertDialog", Mock(return_value=dialog))
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.MultiCharInsertDialog", Mock(return_value=dialog))
 
     def refresh():
         assert editor.message.text == "新增台词"
@@ -188,7 +188,7 @@ def test_editor_insert_save_exception_preserves_anchor_and_metadata(editor, monk
     original = editor.message
     editor.chat.meta.tool_call_records = [ToolCallRecordMeta(message_index=0)]
     original_meta = editor.chat.meta
-    monkeypatch.setattr("ui.components.multi_char_editor.MultiCharInsertDialog", Mock(return_value=accepted_dialog()))
+    monkeypatch.setattr("ui_small_theater.multi_char_editor.MultiCharInsertDialog", Mock(return_value=accepted_dialog()))
     warning = Mock()
     monkeypatch.setattr(QMessageBox, "warning", warning)
     editor.owner._save_chat = Mock(side_effect=OSError("写入失败"))

@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import QAction, QTextBrowser, QWidget
 
 from chat.attachments import resolve_attachment_path
 from chat.chat import Chat, Message, SingleCharacterPromptGenerator
-from ui_main.theme import ThemePalette
+from ui_qt.theme import ThemePalette
 
 
 @dataclass(frozen=True)

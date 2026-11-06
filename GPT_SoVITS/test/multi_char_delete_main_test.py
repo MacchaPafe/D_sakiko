@@ -29,7 +29,7 @@ def host(playback_host, app, monkeypatch):
 def dialogs(monkeypatch):
     """确认框不进入用户桌面；删除及保存事务仍执行生产代码。"""
     import multi_char_main
-    from ui.components import multi_char_message_edit
+    from ui_small_theater import multi_char_message_edit
     confirmation, warning = Mock(return_value=True), Mock()
     monkeypatch.setattr(multi_char_message_edit, "confirm_message_deletion", confirmation)
     monkeypatch.setattr(multi_char_main.QMessageBox, "warning", warning)

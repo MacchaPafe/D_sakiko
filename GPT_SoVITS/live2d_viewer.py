@@ -20,8 +20,8 @@ import time
 
 from qtUI import ChangeL2DModelWindow
 from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
-from ui.components.live2d_performance_editor import Live2DPerformanceEditor
-from ui.components.live2d_viewer_widgets import (
+from ui_motion_editor.live2d_performance_editor import Live2DPerformanceEditor
+from ui_motion_editor.live2d_viewer_widgets import (
     CharacterPicker, VIEWER_STYLE, V3_INTRO_TITLE, V3_INTRO_TEXT, show_v3_intro_once,
     configure_viewer_dpi, place_viewer_window, preview_desktop_size,
 )
@@ -669,7 +669,7 @@ class ViewerGUI(QWidget):
     def open_mask_actions(self):
         if not self.current_model_json_path or not self.performance_editor.confirm_leave():
             return
-        from ui.components.live2d_mask_editor import MaskActionsDialog
+        from ui_motion_editor.live2d_mask_editor import MaskActionsDialog
         dialog = MaskActionsDialog(self.current_model_json_path, self.send_preview, self)
         dialog.exec_()
         dialog.deleteLater()

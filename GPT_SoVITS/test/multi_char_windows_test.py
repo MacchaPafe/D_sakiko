@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 from PyQt5.QtCore import QPoint, QRect, QSize, Qt
 from PyQt5.QtWidgets import QApplication, QVBoxLayout, QWidget
-from ui.components.multi_char_windows import MultiCharWindowLayout, workspace_rects
-import ui.components.multi_char_windows as windows
+from ui_small_theater.multi_char_windows import MultiCharWindowLayout, workspace_rects
+import ui_small_theater.multi_char_windows as windows
 
 
 @pytest.fixture(scope="module")

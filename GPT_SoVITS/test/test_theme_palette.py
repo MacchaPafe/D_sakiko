@@ -19,12 +19,12 @@ from PyQt5.QtWidgets import QApplication, QMenu, QStyle, QStyleOptionViewItem, Q
 from chat.chat import Message
 from emotion_enum import EmotionEnum
 from ui_constants import char_info_json
-from ui_main.components.chat_display import ChatDisplay
-from ui_main.components.message_input import MessageInput
-from ui_main.components.chat_sidebar import ChatSidebarDelegate, ChatSidebarRow
-from ui_main.components.input_option_chips import ChoiceChip
-from ui_main.components.tool_selection_chip import ToolSelectionChip
-from ui_main.theme import (
+from ui_qt.components.chat_display import ChatDisplay
+from ui_qt.components.message_input import MessageInput
+from ui_qt.components.chat_sidebar import ChatSidebarDelegate, ChatSidebarRow
+from ui_qt.components.input_option_chips import ChoiceChip
+from ui_qt.components.tool_selection_chip import ToolSelectionChip
+from ui_qt.theme import (
     DEFAULT_CHARACTER_THEME_SEED,
     ThemePalette,
     build_character_theme_stylesheet,

@@ -104,7 +104,7 @@ def test_new_character_flatten_references_and_description(tmp_path):
 @pytest.mark.parametrize("missing_color", [False, True])
 def test_new_character_theme_from_character_table(tmp_path, monkeypatch, missing_color):
     from live2d_download.hosted.catalog import CHARACTERS
-    from ui_main.theme import resolve_character_theme_seed
+    from ui_qt.theme import resolve_character_theme_seed
 
     if missing_color:
         monkeypatch.delitem(CHARACTERS["arale"], "theme_color")

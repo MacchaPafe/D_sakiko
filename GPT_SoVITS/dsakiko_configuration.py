@@ -20,14 +20,14 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
 
 from log import setup_logging, shutdown_logging
-from ui.components.custom_setting_area import CustomSettingArea
-from ui.components.desktop_pet_setting_area import DesktopPetSettingArea
-from ui.components.gpt_sovits_area import GPTSoVITSArea
-from ui.components.llm_api_area import LLMAPIArea
-from ui.custom_widgets.transparent_scroll_area import TransparentScrollArea
-from ui.interfaces.character_area import CharacterArea
-from ui.interfaces.worldbook_area import WorldbookArea
-from ui_main.threads.update_config_thread import notify_config_reload
+from ui_fluent_widget.components.custom_setting_area import CustomSettingArea
+from ui_fluent_widget.components.desktop_pet_setting_area import DesktopPetSettingArea
+from ui_fluent_widget.components.gpt_sovits_area import GPTSoVITSArea
+from ui_fluent_widget.components.llm_api_area import LLMAPIArea
+from ui_fluent_widget.custom_widgets.transparent_scroll_area import TransparentScrollArea
+from ui_fluent_widget.interfaces.character_area import CharacterArea
+from ui_fluent_widget.interfaces.worldbook_area import WorldbookArea
+from ui_qt.threads.update_config_thread import notify_config_reload
 
 
 class DSakikoConfigArea(TransparentScrollArea):

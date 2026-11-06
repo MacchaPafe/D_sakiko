@@ -29,7 +29,7 @@ from chat.chat import (
     UserPersonaSnapshot,
 )
 from emotion_enum import EmotionEnum
-from ui_main.components.chat_display import ChatDisplay
+from ui_qt.components.chat_display import ChatDisplay
 
 
 class ChatTestCase(unittest.TestCase):

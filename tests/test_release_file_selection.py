@@ -11,6 +11,49 @@ from tools.release.file_selection import FileSelectionRules, collect_selected_fi
 class ReleaseFileSelectionTest(unittest.TestCase):
     """验证更新与修复共用的文件规则求值语义。"""
 
+    def test_migrated_ui_code_and_styles_ship_in_update_and_repair(self) -> None:
+        """四个新 UI 包及编排 QSS 在两平台均纳入发布，缓存仍排除。"""
+        from tools.build_diff_patch import (
+            DEFAULT_IGNORE_PATTERNS, DEFAULT_HARD_EXCLUDE_PATTERNS,
+            PLATFORM_IGNORE_PATTERNS, read_gitignore_patterns,
+        )
+        from tools.release.build_repair_manifest import load_profile
+
+        root = Path(__file__).resolve().parents[1]
+        profile_dir = root / "tools" / "release"
+        profiles = json.loads((profile_dir / "update_patch_profiles.json").read_text(encoding="utf-8"))
+        defaults = profiles["defaults"]
+        paths = {
+            path.relative_to(root).as_posix()
+            for package in ("ui_fluent_widget", "ui_qt", "ui_motion_editor", "ui_small_theater")
+            for path in (root / "GPT_SoVITS" / package).rglob("*")
+            if path.is_file() and path.suffix in (".py", ".qss") and "__pycache__" not in path.parts
+        }
+        self.assertIn("GPT_SoVITS/ui_small_theater/styles/multi_char_editor.qss", paths)
+        self.assertIn("GPT_SoVITS/ui_qt/components/message_input.py", paths)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = Path(temp_dir)
+            caches = {f"GPT_SoVITS/{package}/__pycache__/probe.pyc" for package in (
+                "ui_fluent_widget", "ui_qt", "ui_motion_editor", "ui_small_theater")}
+            for relative in paths | caches:
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"fixture")
+            for name in ("macos-arm64", "windows-x64"):
+                profile = profiles["profiles"][name]
+                update_rules = FileSelectionRules(
+                    include=tuple(defaults["include"] + profile.get("include", [])),
+                    exclude=tuple(DEFAULT_IGNORE_PATTERNS + PLATFORM_IGNORE_PATTERNS[profile["platform"]]
+                                  + read_gitignore_patterns(root) + defaults["ignore"] + profile.get("ignore", [])),
+                    hard_exclude=tuple(DEFAULT_HARD_EXCLUDE_PATTERNS + defaults["hard_exclude"]
+                                       + profile.get("hard_exclude", [])),
+                )
+                for kind, rules in (("update", update_rules), ("repair", load_profile(
+                        profile_dir / "repair_asset_profiles.json", name).rules)):
+                    with self.subTest(profile=name, kind=kind):
+                        result = select_files(fixture, paths | caches, rules, tracked_candidates=paths | caches)
+                        self.assertEqual(result.selected, frozenset(paths))
+
     def test_default_profiles_ship_repair_choices_and_loader(self) -> None:
         """两平台的更新和修复规则都纳入新增列表及读取模块。"""
         from tools.build_diff_patch import DEFAULT_IGNORE_PATTERNS, PLATFORM_IGNORE_PATTERNS

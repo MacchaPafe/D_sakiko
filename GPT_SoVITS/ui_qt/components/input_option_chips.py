@@ -6,7 +6,7 @@ from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QToolButton, QWidget
 
-from ui_main.theme import ThemePalette
+from ui_qt.theme import ThemePalette
 
 
 def _check_state_icon(color: str, size: int = 14) -> QIcon:

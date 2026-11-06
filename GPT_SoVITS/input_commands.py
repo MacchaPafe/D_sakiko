@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from ui_main.theme import ThemePalette
+from ui_qt.theme import ThemePalette
 
 
 # 命令是否可见于命令栏

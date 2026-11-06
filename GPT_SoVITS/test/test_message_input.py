@@ -29,8 +29,8 @@ from emotion_enum import EmotionEnum
 from input_commands import InputCommandMatcher, InputCommandPalette, build_default_input_command_specs
 import qtUI
 from qtUI import ChatGUI, MessageEditDialog
-from ui_main.components.message_input import MessageInput, trim_surrounding_blank_lines
-from ui_main.theme import derive_theme_palette
+from ui_qt.components.message_input import MessageInput, trim_surrounding_blank_lines
+from ui_qt.theme import derive_theme_palette
 
 
 TEST_THEME_PALETTE = derive_theme_palette("#7799CC")

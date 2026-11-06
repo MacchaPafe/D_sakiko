@@ -24,8 +24,8 @@ from PyQt5.QtWidgets import (
 )
 
 from chat.chat import Chat
-from ui_main.components.character_avatar import build_initial_avatar
-from ui_main.theme import ThemePalette
+from ui_qt.components.character_avatar import build_initial_avatar
+from ui_qt.theme import ThemePalette
 
 
 ChatSidebarMode = Literal["flat", "folded"]

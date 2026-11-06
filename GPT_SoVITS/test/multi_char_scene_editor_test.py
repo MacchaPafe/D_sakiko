@@ -12,8 +12,8 @@ from PyQt5.QtWidgets import QDialog, QFileDialog, QGraphicsPathItem, QMessageBox
 from GPT_SoVITS.test.multi_char_editor_test import Owner, app, editor
 from chat.chat import Message
 from live2d_support.multi_char_resources import TheaterResources
-from ui.components.multi_char_editor import MultiCharEditor
-from ui.components.multi_char_insert_dialog import MultiCharInsertDialog
+from ui_small_theater.multi_char_editor import MultiCharEditor
+from ui_small_theater.multi_char_insert_dialog import MultiCharInsertDialog
 
 
 def last_command(editor):
@@ -237,7 +237,7 @@ def test_black_slider_keyboard_change_saves_one_step(editor):
 
 def test_background_picker_only_accepts_decodable_direct_child(editor, monkeypatch, tmp_path):
     """系统选择器不能通过扩展名或初始目录绕过根目录及图片解码校验。"""
-    import ui.components.multi_char_editor as module
+    import ui_small_theater.multi_char_editor as module
     root = tmp_path / "live2d_related"
     root.mkdir()
     valid = root / "school.png"
@@ -269,7 +269,7 @@ def test_background_picker_only_accepts_decodable_direct_child(editor, monkeypat
 
 def test_insert_message_keeps_next_scene_and_existing_audio(editor, monkeypatch):
     """在黑场目标句之前插入台词，黑场仍附在原句，旧音频和事件不串句。"""
-    import ui.components.multi_char_editor as module
+    import ui_small_theater.multi_char_editor as module
     first = editor.message
     first.audio_path = "first.wav"
     second = Message.from_dict({"character_name": "B", "text": "后句", "audio_path": "second.wav",
@@ -297,7 +297,7 @@ def test_insert_message_keeps_next_scene_and_existing_audio(editor, monkeypatch)
 
 def test_insert_cancel_busy_and_save_failure_do_not_change_script(editor, monkeypatch):
     """取消表单、合成锁定、落盘失败均不得遗留消息或改变当前句。"""
-    import ui.components.multi_char_editor as module
+    import ui_small_theater.multi_char_editor as module
     original = editor.message
     dialog = Mock()
     factory = Mock(return_value=dialog)
@@ -338,7 +338,7 @@ def test_insert_form_defaults_and_required_text(editor):
 
 def test_refresh_current_character_does_not_change_preview_or_other_resources(editor, monkeypatch):
     """刷新只替换当前资源目录，保留播放时钟、角色选择、筛选与所有编排。"""
-    import ui.components.multi_char_editor as module
+    import ui_small_theater.multi_char_editor as module
     old_b = editor.resources["B"]
     old_a = editor.resources["A"]
     old_draft = deepcopy(editor.draft)

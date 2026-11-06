@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 )
 
 from repair.repair_checker import RepairCheckResult
-from ui_main.components.update_dialog import format_size
+from ui_qt.components.update_dialog import format_size
 
 
 class RepairDialog(QDialog):

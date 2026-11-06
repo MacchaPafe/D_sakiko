@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (
 
 from chat.attachments import SUPPORTED_IMAGE_MIME_TYPES, detect_image_mime_type
 from chat.chat import MessageAttachment
-from ui_main.theme import ThemePalette
+from ui_qt.theme import ThemePalette
 
 
 def trim_surrounding_blank_lines(text: str) -> str:

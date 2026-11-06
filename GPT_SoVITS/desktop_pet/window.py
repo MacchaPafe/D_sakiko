@@ -31,8 +31,8 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QTextBrowser,
 )
-from ui_main.components.message_input import MessageInput
-from ui_main.theme import ThemePalette, build_menu_theme_stylesheet
+from ui_qt.components.message_input import MessageInput
+from ui_qt.theme import ThemePalette, build_menu_theme_stylesheet
 from runtime.drafts import DraftBinding
 from desktop_pet.renderer import PetRenderer
 from desktop_pet.focus import create_pet_focus

@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QAction, QMenu, QWidget
 
 from chat.chat_meta import ChatMeta
 from chat.tool_options import TOOL_NAMES, TOOL_OPTIONS
-from ui_main.components.input_option_chips import SplitToggleChip
+from ui_qt.components.input_option_chips import SplitToggleChip
 
 
 class ToolSelectionChip(SplitToggleChip):

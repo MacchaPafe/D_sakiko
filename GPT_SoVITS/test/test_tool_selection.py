@@ -22,8 +22,8 @@ from chat.tool_calling import (
     register_reminder_tool,
 )
 from chat.tool_options import TOOL_NAMES
-from ui_main.components.tool_selection_chip import ToolSelectionChip
-from ui_main.theme import derive_theme_palette
+from ui_qt.components.tool_selection_chip import ToolSelectionChip
+from ui_qt.theme import derive_theme_palette
 
 
 @pytest.mark.parametrize("name,dependency", [

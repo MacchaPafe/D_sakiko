@@ -626,7 +626,7 @@ query_budget_notice
 - `GPT_SoVITS/rag/pipeline/stage3_review_workbench.py`
 - `GPT_SoVITS/rag/pipeline/stage3_review_workspace.py`
 - `GPT_SoVITS/rag/worldbook/editing.py`
-- `GPT_SoVITS/ui/components/worldbook_editor.py`
+- `GPT_SoVITS/ui_fluent_widget/components/worldbook_editor.py`
 - 相关 Stage 3、editing 和 Qt UI 测试
 
 ### 15.3 正式世界书与索引
