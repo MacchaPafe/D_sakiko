@@ -113,8 +113,8 @@ class SegmentSyncTests(TestCase):
                     self.assertFalse(self.player.segment_motion_complete)
                     self.assertFalse(self.player.segment_text_complete)
 
-    def test_long_audio_repeats_twice_without_restarting_audio_or_text(self):
-        """长语音保留原动作加两次追加，最后动作晚于声音结束时仍阻止下一段。"""
+    def test_long_audio_repeats_once_without_restarting_audio_or_text(self):
+        """长语音保留原动作加一次追加，最后动作晚于声音结束时仍阻止下一段。"""
         for version in ("v2", "v3"):
             with self.subTest(version=version):
                 self.player.stop()
@@ -132,41 +132,36 @@ class SegmentSyncTests(TestCase):
                 self.motions[0][0]()
                 self.motions[0][1]()
                 self.advance(101.0)
-                self.advance(103.4)
+                self.advance(103.9)
                 self.assertEqual(len(self.motions), 1)
-                self.advance(103.5)
+                self.advance(104.0)
                 self.assertEqual(len(self.motions), 2)
                 self.motions[1][0]()
-                self.motions[1][1]()
-                self.advance(104.0)
-                self.advance(106.5)
-                self.assertEqual(len(self.motions), 3)
-                self.motions[2][0]()
                 self.audio.assert_called_once()
                 self.assertEqual(self.subtitles, ["text1"])
                 self.assertEqual([e["type"] for e in self.events], ["playback_started"])
                 self.sound = False
                 self.advance(107.0)
                 self.assertEqual(self.player.active_segment["segment_id"], 1)
-                self.motions[2][1]()
+                self.motions[1][1]()
                 self.advance(108.0)
                 self.assertIsNone(self.player.active_segment)
                 self.advance(108.1)
                 self.assertEqual(self.player.active_segment["segment_id"], 2)
 
     def test_repeat_limit_and_cancel_ignore_late_callbacks(self):
-        """两次追加后不再循环，取消后的旧动作不能重播声音或结束新段。"""
+        """一次追加后不再循环，取消后的旧动作不能重播声音或结束新段。"""
         self.player._get_audio_duration_seconds.return_value = 40.0
         self.player.command(self.segment(1), self.model)
         self.advance(100.0)
-        for index, value in enumerate((101.0, 105.0, 109.0)):
+        for index, value in enumerate((101.0, 105.0)):
             self.motions[index][0]()
             self.motions[index][1]()
             self.advance(value)
-            self.advance(value + 2.5)
-        self.assertEqual(len(self.motions), 3)
+            self.advance(value + 3.0)
+        self.assertEqual(len(self.motions), 2)
         self.advance(130.0)
-        self.assertEqual(len(self.motions), 3)
+        self.assertEqual(len(self.motions), 2)
         old = self.motions[-1]
         self.player.command(dict(type="cancel_turn", chat_id="chat", turn_id="turn"), self.model)
         self.sound = False
