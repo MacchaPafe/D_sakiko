@@ -1,0 +1,58 @@
+name: Compile app icon
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - assets/app-icon/**
+      - .github/workflows/compile_app_icon.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compile-app-icon-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    if: github.repository == 'yan-xiaoo/D_sakiko'
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compile Icon Composer asset
+        shell: bash
+        run: bash assets/app-icon/compile.sh "$RUNNER_TEMP/dsakiko-icon-output"
+
+      - name: Upload icon resources
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-icon-macos-${{ github.sha }}
+          path: ${{ runner.temp }}/dsakiko-icon-output/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write summary
+        shell: bash
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          已编译支持 Default / Dark 外观的 macOS 图标资源。
+
+          请在本次运行的 Artifacts 中下载 `app-icon-macos-<commit>`，其中包含：
+
+          - `Assets.car`：系统外观图标资源。
+          - `Icon.icns`：传统图标资源。
+          - `assetcatalog_generated_info.plist`：编译器生成的配置。
+          - `app.icon.zip`：可继续编辑的 Icon Composer 工程。
+
+          本次仅编译图标，没有构建 Electron 应用。
+          EOF
