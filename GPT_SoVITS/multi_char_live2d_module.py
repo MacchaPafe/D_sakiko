@@ -21,6 +21,7 @@ with open(os.devnull, 'w') as devnull:
 
 
 from log import get_logger
+from ui_qt.app_icon import set_pygame_window_icon
 from live2d_support.layout import (
     Live2DLayout,
     format_live2d_layout_status,
@@ -979,7 +980,7 @@ class Live2DModule:
         session = Live2DRuntimeSession()
         frame_clock = pygame.time.Clock()
         target_fps = 60
-        pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko/sakiko_icon.png"))
+        set_pygame_window_icon()
         window_caption = "数字小祥 小剧场"
         pygame.display.set_caption(window_caption)
         model_layouts = [

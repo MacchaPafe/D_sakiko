@@ -23,6 +23,7 @@ import queue
 from multi_char_live2d_module import TextOverlay, ModelLoadNoticeOverlay
 from qconfig import d_sakiko_config, qconfig
 from log import setup_worker_logging, get_logger
+from ui_qt.app_icon import set_pygame_window_icon
 from live2d_support.runtime_adapter import (
     Live2DModelAdapter,
     Live2DModelProtocol,
@@ -242,10 +243,7 @@ class Live2DModule(SingleCharacterPerformance):
         frame_clock = pygame.time.Clock()
         self.target_fps = 60
 
-        initial_icon_path = self.current_character.icon_path
-        if not initial_icon_path or not os.path.exists(initial_icon_path):
-            initial_icon_path = "../live2d_related/sakiko/sakiko_icon.png"
-        pygame.display.set_icon(pygame.image.load(initial_icon_path))
+        set_pygame_window_icon()
 
         if self.if_sakiko and self.sakiko_state and isinstance(model, Live2DModelAdapter):
             model.SetSemanticExpression('serious')
@@ -552,8 +550,6 @@ class Live2DModule(SingleCharacterPerformance):
                         else:
                             model.SetSemanticExpression('idle')
                         model.StartRandomMotion("change_character",3,self.onStartCallback,self.onFinishCallback, position="C")
-                        if self.current_character.icon_path is not None:
-                            pygame.display.set_icon(pygame.image.load(self.current_character.icon_path))
                         logger.debug("Live2D模型切换成功：%s", self.PATH_JSON)
                     else:
                         current_layout_model_path = None

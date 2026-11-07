@@ -123,6 +123,7 @@ from ui_qt.threads.repair_controller import RepairCheckThread, RepairPrepareThre
 from ui_qt.threads.update_controller import ReleaseNotesThread, UpdateCheckThread, UpdateDownloadThread
 from ui_qt.threads.update_config_thread import notify_config_reload
 from ui_qt.file_manager import show_file_in_manager
+from ui_qt.app_icon import application_icon
 from update.update_checker import get_configured_index_urls, read_current_version
 from update.update_launcher import build_restart_command, launch_update_process
 from update.update_models import DownloadedPatch, UpdatePlan
@@ -1538,7 +1539,7 @@ class ChatGUI(QWidget):
             "xhigh": "极高",
         }
         self.setWindowTitle("数字小祥")
-        self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
+        self.setWindowIcon(application_icon())
         self.screen = QDesktopWidget().screenGeometry()
         self.input_tool_button_height = int(self.screen.height()*0.027)
         self.resize(int(0.4 * self.screen.width()), int(0.7 * self.screen.height()))
@@ -1720,9 +1721,6 @@ class ChatGUI(QWidget):
         self.repair_workflow_active = False
         self._load_tool_call_records_cache()
         QTimer.singleShot(0, self._start_attachment_startup_cleanup)
-
-        if self.current_character.icon_path is not None:  # noqa
-            self.setWindowIcon(QIcon(self.current_character.icon_path))  # noqa
 
         self.setStyleSheet(build_character_theme_stylesheet(self._theme_palette))
         if not self.current_character.has_valid_voice_model():
@@ -3149,8 +3147,6 @@ class ChatGUI(QWidget):
         self._apply_character_theme(derive_theme_palette(self.current_character.theme_seed))
         self._load_tool_call_records_cache()
         self._refresh_input_option_buttons()
-        if self.current_character.icon_path is not None:
-            self.setWindowIcon(QIcon(self.current_character.icon_path))
         self.talk_speed_reset()
         self.pause_second_reset()
         self.dp_chat.if_generate_audio = (

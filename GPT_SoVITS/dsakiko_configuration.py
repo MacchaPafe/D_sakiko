@@ -208,6 +208,8 @@ if __name__ == '__main__':
 
     try:
         app = QApplication(sys.argv)
+        from ui_qt.app_icon import application_icon
+        app.setWindowIcon(application_icon())
         w = DSakikoConfigWindow(sys.argv[1] if len(sys.argv) > 1 else "")
 
         w.show()

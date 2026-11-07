@@ -48,6 +48,7 @@ from live2d_support.runtime_adapter import detect_live2d_runtime_version
 from ui_small_theater.multi_char_icons import set_button_icon, delete_message_icon, multi_char_icon
 from ui_small_theater.multi_char_menu import fit_menu_to_contents
 from ui_qt.components.change_ref_audio import ChangeReferenceAudioWindow
+from ui_qt.app_icon import application_icon
 
 logger = get_logger(__name__)
 faulthandler.enable(open("faulthandler_log.txt", "w"), all_threads=True)
@@ -1200,7 +1201,7 @@ class ViewerGUI(QWidget):
         self._editor_request = None
 
         self.setWindowTitle("数字小祥 小剧场")
-        self.setWindowIcon(QIcon("../live2d_related/sakiko/sakiko_icon.png"))
+        self.setWindowIcon(application_icon())
         self.screen = QDesktopWidget().screenGeometry()
         self.scr_w = self.screen.width()
         self.scr_h = self.screen.height()
@@ -3326,6 +3327,7 @@ if __name__ == "__main__":
         daemon=True,
     )
     app = QApplication(sys.argv)
+    app.setWindowIcon(application_icon())
 
     window = ViewerGUI(
         get_char_attr.character_class_list,

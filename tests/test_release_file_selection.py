@@ -55,7 +55,7 @@ class ReleaseFileSelectionTest(unittest.TestCase):
                         self.assertEqual(result.selected, frozenset(paths))
 
     def test_default_profiles_ship_repair_choices_and_loader(self) -> None:
-        """两平台的更新和修复规则都纳入新增列表及读取模块。"""
+        """两平台的更新和修复规则都纳入修复入口资源及程序图标。"""
         from tools.build_diff_patch import DEFAULT_IGNORE_PATTERNS, PLATFORM_IGNORE_PATTERNS
         from tools.release.build_repair_manifest import load_profile
 
@@ -64,6 +64,7 @@ class ReleaseFileSelectionTest(unittest.TestCase):
         profiles = json.loads((profile_dir / "update_patch_profiles.json").read_text(encoding="utf-8"))
         defaults = profiles["defaults"]
         paths = {"tools/repair.py", "tools/repair_versions.py", "tools/repair_versions.json"}
+        paths.update({"launcher/assets/logo_thumb.svg", "launcher/assets/logo_thumb.png"})
         for name in ("macos-arm64", "windows-x64"):
             with self.subTest(profile=name):
                 profile = profiles["profiles"][name]

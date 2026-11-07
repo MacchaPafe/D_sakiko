@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="512" height="512">
+  <defs>
+    <mask id="dstar-cutout-light">
+      <rect width="120" height="120" fill="white" />
+      <circle cx="90" cy="25" r="16" fill="black" />
+    </mask>
+  </defs>
+
+  <!-- 浅色模式圆角方形底板（Squircle） -->
+  <rect x="2" y="2" width="116" height="116" rx="26" fill="#EEF7FD" stroke="#77BBDD" stroke-width="2" stroke-opacity="0.5" />
+
+  <!-- 左侧祥子蓝胶囊竖条 -->
+  <rect x="20" y="22" width="20" height="76" rx="10" fill="#77BBDD" />
+
+  <!-- 右侧 D 环主体（深海藏青，带左下 45° 对话气泡内切角，右上角通过 mask 镂空让位给粉星） -->
+  <g mask="url(#dstar-cutout-light)">
+    <path d="M45 22 H62 C85 22 100 37 100 60 C100 83 85 98 62 98 H45 V79 H58 C71 79 80 71 80 60 C80 49 71 41 58 41 H45 Z" fill="#141E2E" />
+    <!-- 内部左下 45° 气泡切角与外延小尖角 -->
+    <polygon points="45,79 59,65 59,79" fill="#EEF7FD" />
+    <polygon points="45,79 59,79 45,93" fill="#141E2E" />
+  </g>
+
+  <!-- 右上角圆润胖五角星 -->
+  <path d="M90 13 L93.4 20.4 L101.5 21.4 L95.5 26.9 L97.1 34.9 L90 30.9 L82.9 34.9 L84.5 26.9 L78.5 21.4 L86.6 20.4 Z" fill="#F06A8A" stroke="#F06A8A" stroke-width="3.5" stroke-linejoin="round" />
+</svg>

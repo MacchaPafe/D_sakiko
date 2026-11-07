@@ -141,9 +141,12 @@ def test_model_specific_pages_and_cancelled_navigation(app: QApplication, models
         window = ViewerGUI(characters, motions, changes, results)
         window.show()
         app.processEvents()
+        assert not window.windowIcon().isNull()
+        app_icon_key = window.windowIcon().cacheKey()
         assert window.pages.currentWidget() is window.groups_panel
         intro.assert_not_called()
         assert window.select_character(1)
+        assert window.windowIcon().cacheKey() == app_icon_key
         app.processEvents()
         assert window.pages.currentWidget() is window.performance_editor
         assert window.details_button.isVisible()
@@ -159,6 +162,7 @@ def test_model_specific_pages_and_cancelled_navigation(app: QApplication, models
             assert not window.close()
         assert window.performance_editor.drafts
         assert window.select_character(0)
+        assert window.windowIcon().cacheKey() == app_icon_key
         assert read_config(performance_config_path(models[1]))["motions"]["mtn_idle"] == "还未保存"
         assert window.pages.currentWidget() is window.groups_panel
         assert window.details_button.isVisible()

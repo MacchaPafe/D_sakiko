@@ -118,7 +118,7 @@ class LauncherWindow(QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
         self.setMinimumSize(680, 560)
         self.resize(760, 600)
-        self.setWindowIcon(QIcon(str(self.root / "live2d_related/sakiko/sakiko_icon.png")))
+        self.setWindowIcon(QIcon(str(self.root / "launcher/assets/logo_thumb.png")))
 
         # 固定启动器的浅色调色板，包括禁用和失焦状态；不改变主程序主题。
         palette = self.palette()
@@ -647,6 +647,7 @@ def run(root: Path) -> int:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
     app = QApplication([])
+    app.setWindowIcon(QIcon(str(root / "launcher/assets/logo_thumb.png")))
     font_id = QFontDatabase.addApplicationFont(str(preferred_font(root)))
     families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
     app.setFont(QFont(families[0] if families else "Microsoft YaHei", 10))

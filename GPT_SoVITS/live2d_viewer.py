@@ -19,6 +19,7 @@ if script_dir not in sys.path:
 import time
 
 from qtUI import ChangeL2DModelWindow
+from ui_qt.app_icon import application_icon, set_pygame_window_icon
 from live2d_support.model_catalog import Live2DModelCatalog, Live2DModelOption
 from ui_motion_editor.live2d_performance_editor import Live2DPerformanceEditor
 from ui_motion_editor.live2d_viewer_widgets import (
@@ -35,7 +36,7 @@ import glob,os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout, \
     QApplication, QLabel, QStackedWidget, QToolButton, QMenu, QDialog, QMessageBox, QComboBox, QListView, QStyleFactory
 
-from PyQt5.QtGui import QFontDatabase, QFont, QIcon, QCloseEvent, QShowEvent
+from PyQt5.QtGui import QFontDatabase, QFont, QCloseEvent, QShowEvent
 
 import character
 from log import get_logger, setup_logging, shutdown_logging, setup_worker_logging, get_log_queue
@@ -176,7 +177,7 @@ class Live2DModule:
         session = Live2DRuntimeSession()
         expression_session = ExpressionPreviewSession()
         model_notice = ModelLoadNoticeOverlay(display, slot_count=1)
-        #pygame.display.set_icon(pygame.image.load("../live2d_related/sakiko_icon.png"))
+        set_pygame_window_icon()
 
         viewer_layout: Live2DLayout = Live2DLayout(scale=1.0, offset_x=0.0, offset_y=0.0)
         layout_editing = False
@@ -339,8 +340,6 @@ class Live2DModule:
                     self.change_character()
                     model = switch_model_runtime(model, self.PATH_JSON)
 
-                    if self.character_list[self.current_character_num].icon_path is not None:
-                        pygame.display.set_icon(pygame.image.load(self.character_list[self.current_character_num].icon_path))
                 elif isinstance(x, dict) and x.get("type") == "select_character":
                     index = x.get("index")
                     if isinstance(index, int) and 0 <= index < len(self.character_list):
@@ -349,8 +348,6 @@ class Live2DModule:
                         self.if_sakiko = selected.character_name == "祥子"
                         self.PATH_JSON = x.get("model_path")
                         model = switch_model_runtime(model, self.PATH_JSON)
-                        if selected.icon_path:
-                            pygame.display.set_icon(pygame.image.load(selected.icon_path))
                 # 传入一个路径，表示要求加载同角色一个新的 live2d 模型
                 elif isinstance(x, str):
                     model = switch_model_runtime(model, x)
@@ -400,6 +397,7 @@ class ViewerGUI(QWidget):
         """按模型版本展示编辑流程，并将预览、角色选择和保存状态分层。"""
         super().__init__()
         self.setWindowTitle("Live2D 演出编辑器")
+        self.setWindowIcon(application_icon())
         self.setStyleSheet(VIEWER_STYLE)
         self.character_list = characters
         self.current_char_index = 0
@@ -807,8 +805,6 @@ class ViewerGUI(QWidget):
         if not self.performance_editor.confirm_leave():
             return False
         self.current_char_index = index
-        icon = getattr(self.character_list[index], "icon_path", None)
-        self.setWindowIcon(QIcon(icon) if icon else QIcon())
         self.message_box.clear()
         self.load_suitable_model()
         self.change_char_queue.put({"type": "select_character", "index": index,
@@ -1211,6 +1207,7 @@ if __name__ == "__main__":
 
     configure_viewer_dpi()
     app = QApplication(sys.argv)
+    app.setWindowIcon(application_icon())
 
     # 如果出现加载字体问题，则忽略设置字体
     font_path = os.path.join(project_root, "font", "ft.ttf")

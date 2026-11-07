@@ -23,6 +23,8 @@ def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
     app = QApplication(sys.argv)
+    from ui_qt.app_icon import application_icon
+    app.setWindowIcon(application_icon())
     from character import GetCharacterAttributes
     characters = GetCharacterAttributes().character_class_list
     font_id = QFontDatabase.addApplicationFont(str(PROJECT_ROOT / "font/msyh.ttc"))
