@@ -1619,6 +1619,8 @@ select:focus-visible {
   inset: 0;
   pointer-events: none;
   background: rgba(255, 255, 255, 0.9);
+  /* Disabled animations must leave the overlay transparent. */
+  opacity: 0;
   animation: view-wash-out 360ms ease-in-out both;
 }
 
@@ -1840,9 +1842,5 @@ select:focus-visible {
   .view-transition-wash {
     animation: none !important;
   }
-
-  .session-drawer.is-closing,
-  .session-drawer-backdrop.is-closing {
-    animation: none !important;
-  }
+  /* Drawer closing keeps the 0.01ms animation so animationend still fires. */
 }
