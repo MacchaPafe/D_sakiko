@@ -20,8 +20,10 @@ extraResources:
     filter:
       - '**/*'
       - '!*.md'
+      - '!builtin-characters/models/**'
 asar: true
 win:
+  icon: build/icon.ico
   executableName: dsakiko
   target:
     - nsis
@@ -29,6 +31,12 @@ nsis:
   artifactName: dsakiko-${version}-windows-${arch}-setup.${ext}
   shortcutName: 数字小祥
 mac:
+  icon: build/macos-icon/Icon.icns
+  extendInfo:
+    CFBundleIconName: Icon
+  extraResources:
+    - from: build/macos-icon/Assets.car
+      to: Assets.car
   category: public.app-category.entertainment
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
@@ -36,4 +44,5 @@ mac:
     - dmg
     - zip
 dmg:
+  icon: build/macos-icon/Icon.icns
   artifactName: dsakiko-${version}-macos-${arch}.${ext}

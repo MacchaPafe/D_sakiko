@@ -113,3 +113,9 @@ install_brew.sh
 # 下载器开发文档与迭代资料仅保留在本地，源码正常跟踪。
 /GPT_SoVITS/live2d_download/hosted/开发说明.md
 /下载器v2迭代/
+
+# 仓库根目录的本地 pnpm 缓存。
+/.pnpm-store/
+
+# 完整 Electron 应用 CI 的本地草稿，启用前不提交。
+/.github/workflows/build_electron_macos.yml

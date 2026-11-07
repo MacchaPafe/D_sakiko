@@ -126,6 +126,7 @@ export async function createCoreBackend({
   })
   const onboarding = new Onboarding({
     appDataRoot,
+    cacheRoot,
     setup,
     assets,
     settings,

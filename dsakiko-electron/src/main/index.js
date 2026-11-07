@@ -134,6 +134,10 @@ async function startApplication() {
     return imported
   })
   mainWindow = createMainWindow()
+  // 解压与页面加载并行；失败留给欢迎页重试，不阻止窗口打开。
+  void backend.onboarding
+    .prepareStartupPreview()
+    .catch((error) => backend.assets.reportMaintenance(error))
   mainWindow.once('ready-to-show', instance.windowReady)
   mainWindow.on('close', (event) => {
     if (!quitting) {

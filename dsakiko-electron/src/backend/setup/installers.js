@@ -11,7 +11,7 @@ import { requireValue, failure } from '../core/support.js'
 import { relativeFile, sourcePath } from './files.js'
 
 /** 解包仅接受普通文件/目录；拒绝链接、路径穿越、大小超额和同名覆盖。 */
-export async function extractArchive(file, directory, format, limit, signal) {
+export async function extractArchive(file, directory, format, limit, signal, include = () => true) {
   await mkdir(directory, { recursive: true })
   let total = 0
   const names = new Set()
@@ -31,6 +31,7 @@ export async function extractArchive(file, directory, format, limit, signal) {
       const mode = (item.externalFileAttributes >>> 16) & 0xf000
       requireValue(mode === 0 || mode === 0x8000 || mode === 0x4000, 'archive_link_denied')
       const name = entry(item.path, item.uncompressedSize, item.type)
+      if (!include(name)) continue
       const destination = path.join(directory, name)
       if (item.type === 'Directory') {
         await mkdir(destination, { recursive: true })
@@ -77,7 +78,8 @@ export async function extractArchive(file, directory, format, limit, signal) {
       strict: true,
       preservePaths: false,
       noChmod: true,
-      noMtime: true
+      noMtime: true,
+      filter: (name) => include(name.replace(/\/$/, ''))
     })
     signal?.throwIfAborted()
   }

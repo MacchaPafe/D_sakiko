@@ -23,3 +23,7 @@ python/vendor/**/__pycache__/
 .pnpm-store/**
 # 大的角色文件不该提交到 git
 resources/builtin-characters/**
+
+# 图标的分层导出与预览是中间素材；原始 SVG、.icon 工程和最终资源继续跟踪。
+/build/icon-source/composer/
+/build/icon-source/preview.png

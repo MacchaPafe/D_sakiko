@@ -2,6 +2,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readJson, writeJson, requireValue, SerialQueue, SnapshotBus } from '../core/support.js'
 import { installBuiltinConnection } from '../setup/bindings.js'
+import { BuiltinResources } from './builtin-resources.js'
 
 /**
  * @typedef {object} BuiltinForm
@@ -21,13 +22,16 @@ import { installBuiltinConnection } from '../setup/bindings.js'
  * @property {string} [defaultFormId] 正式默认形态，旧清单省略时使用第一项。
  * @property {string} [previewFormId] 欢迎页只读预览形态，不写入正式角色选择。
  * @property {BuiltinForm[]} forms 内置形态与各自的模型。
+ * @property {string} [archive] 相对于内置目录的角色 tar.gz 归档。
+ * @property {number} [expandedBytes] 角色包内文件的总大小，限制解压空间。
  */
-/** @typedef {{version: 1, characters: BuiltinCharacter[]}} BuiltinManifest 内置资源清单，不包含文件哈希。 */
+/** @typedef {{version: 1, contentVersion?: string, characters: BuiltinCharacter[]}} BuiltinManifest 内置资源清单；内容版本独立于格式版本，不包含文件哈希。 */
 
 /** 初始化状态与可选资源任务相互独立，跳过下载后仍可使用文字对话。 */
 export class Onboarding {
   constructor({
     appDataRoot,
+    cacheRoot,
     setup,
     assets,
     characters,
@@ -46,6 +50,7 @@ export class Onboarding {
       builtinConnection
     })
     this.file = path.join(appDataRoot, 'onboarding.json')
+    this.builtinResources = new BuiltinResources({ cacheRoot })
     this.queue = new SerialQueue()
     this.bus = new SnapshotBus()
     this.closed = false
@@ -78,6 +83,59 @@ export class Onboarding {
   async save(state) {
     await writeJson(this.file, state)
     this.bus.emit('state', await this.getState())
+  }
+
+  /** @returns {Promise<BuiltinManifest>} 读取清单，不扫描模型内容或计算哈希。 */
+  async readBuiltins() {
+    const manifest = await readJson(path.join(this.builtinDirectory, 'manifest.json'))
+    requireValue(
+      manifest?.version === 1 && Array.isArray(manifest.characters),
+      'builtin_resources_missing',
+      '内置角色资源缺失，请重新安装主程序。'
+    )
+    return manifest
+  }
+
+  /**
+   * 宿主在窗口创建后异步预热白祥；完成初始化的日常启动只清理遗留缓存。
+   * @returns {Promise<{characterId: string, formId: string, directory: string, entry: string} | null>} 后端内部的预览来源，不能作为磁盘路径接口向页面开放。
+   */
+  async prepareStartupPreview() {
+    return this.queue.run('state', async () => {
+      requireValue(!this.closed, 'onboarding_closed')
+      if ((await this.state()).initialized) {
+        await this.builtinResources.clear()
+        return null
+      }
+      return this.prepareBuiltinPreview()
+    })
+  }
+
+  /**
+   * 按需准备欢迎页角色，调用者可等待启动预热中的同一缓存；不影响正式默认形态。
+   * @param {string} [characterId] 预览角色，默认祥子。
+   * @returns {Promise<{characterId: string, formId: string, directory: string, entry: string}>} 本机内部预览来源，文件保留到后端关闭。
+   */
+  async prepareBuiltinPreview(characterId = 'sakiko') {
+    requireValue(!this.closed, 'onboarding_closed')
+    const manifest = await this.readBuiltins()
+    const role = manifest.characters.find((item) => item.id === characterId)
+    requireValue(role, 'builtin_character_missing')
+    const form = role.forms.find((item) => item.id === (role.previewFormId ?? role.forms[0]?.id))
+    requireValue(form, 'builtin_form_missing')
+    return this.builtinResources.usingForm(
+      this.builtinDirectory,
+      manifest,
+      role,
+      form,
+      async (directory) => ({
+        characterId: role.id,
+        formId: form.id,
+        directory,
+        entry: form.entry
+      }),
+      true
+    )
   }
 
   /** 开始快速初始化，或绑定一个已经确认的旧版导入计划。
@@ -116,13 +174,7 @@ export class Onboarding {
 
   /** 释放缺失内置角色，已有身份或同名角色保持原样，不暴露手动补齐接口。 */
   async ensureBuiltins() {
-    /** @type {BuiltinManifest} */
-    const manifest = await readJson(path.join(this.builtinDirectory, 'manifest.json'))
-    requireValue(
-      manifest?.version === 1,
-      'builtin_resources_missing',
-      '内置角色资源缺失，请重新安装主程序。'
-    )
+    const manifest = await this.readBuiltins()
     for (const role of manifest.characters) {
       if (
         (await this.characters.list()).some(
@@ -133,14 +185,17 @@ export class Onboarding {
       await this.assets.using({}, async (owner) => {
         const forms = []
         for (const form of role.forms) {
-          const imported = await this.assets.importAsset(
-            {
-              kind: 'local-directory',
-              path: path.join(this.builtinDirectory, form.directory),
-              entry: form.entry
-            },
-            owner,
-            'live2d'
+          const imported = await this.builtinResources.usingForm(
+            this.builtinDirectory,
+            manifest,
+            role,
+            form,
+            (directory) =>
+              this.assets.importAsset(
+                { kind: 'local-directory', path: directory, entry: form.entry },
+                owner,
+                'live2d'
+              )
           )
           forms.push({
             id: form.id,
@@ -219,5 +274,6 @@ export class Onboarding {
   async close() {
     this.closed = true
     await this.queue.run('state', async () => this.bus.clear())
+    await this.builtinResources.close((await this.state()).initialized)
   }
 }
