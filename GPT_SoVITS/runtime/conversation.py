@@ -121,6 +121,9 @@ class ConversationRuntime:
         worldbook_snapshot=None,
     ):
         with self._lock:
+            storage_error = getattr(self.chat_manager, "storage_error", None)
+            if isinstance(storage_error, str) and storage_error:
+                raise RuntimeError(storage_error)
             if self._closed or self.active is not None:
                 raise RuntimeError("请等待当前回复或播放完成。")
             if self.chat_manager.get_chat_by_id(chat_id) is None:
@@ -397,6 +400,7 @@ class ConversationRuntime:
                     segment_id=self._sequence,
                     character_name=payload["character_name"],
                     message_index=segment.get("message_index", -1),
+                    line_id=segment.get("line_id"),
                     text=str(segment.get("text") or ""),
                     translation=str(segment.get("translation") or ""),
                     emotion=str(segment.get("emotion") or "LABEL_0"),
@@ -405,6 +409,10 @@ class ConversationRuntime:
                 )
                 chat = self.chat_manager.get_chat_by_id(payload["chat_id"])
                 message_index = event["message_index"]
+                if chat is not None and event.get("line_id"):
+                    message_index = next((index for index, message in enumerate(chat.message_list)
+                                          if getattr(message, "id", "") == event["line_id"]), -1)
+                    event["message_index"] = message_index
                 if (
                     chat is not None
                     and isinstance(message_index, int)

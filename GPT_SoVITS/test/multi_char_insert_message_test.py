@@ -16,7 +16,7 @@ from ui_small_theater.multi_char_message_edit import insert_saved_message
 
 
 def insert_chat():
-    """同文消息仍具有不同对象身份，摘要覆盖前两句。"""
+    """同文消息仍具有不同对象身份，摘要扩大到完整轮次。"""
     chat = Chat(message_list=[Message.from_dict({"character_name": "A", "text": "同文"}) for _ in range(3)])
     chat.meta.tool_call_records = [
         ToolCallRecordMeta(tool_call_id=str(index), message_index=index) for index in range(3)
@@ -29,6 +29,7 @@ def insert_chat():
 def test_insert_uses_identity_and_maintains_indices_and_summary(anchor_index, after):
     """各插入点正确顺移工具索引，只有插入摘要覆盖区才使摘要失效。"""
     chat = insert_chat()
+    boundary = get_rolling_summary(chat).summary_until_message_index
     original = list(chat.message_list)
     original[1].scene_before = {"visible_characters": [], "background": "keep.png"}
     original_data = [deepcopy(message.as_dict()) for message in original]
@@ -47,7 +48,7 @@ def test_insert_uses_identity_and_maintains_indices_and_summary(anchor_index, af
     assert [record.message_index for record in chat.meta.tool_call_records] == [
         position + int(position >= index) for position in range(3)
     ]
-    assert (get_rolling_summary(chat) is None) == (index <= 1)
+    assert (get_rolling_summary(chat) is None) == (index <= boundary)
     assert target.scene_before is None
 
 

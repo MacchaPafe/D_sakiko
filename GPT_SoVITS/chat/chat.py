@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Optional, List, Union, Any, Iterable, Literal, Sequence
+from .archive import Timeline, VisibleMessages, legacy_archive, python_meta, object_dict
 import json
 import threading
 
@@ -31,7 +32,7 @@ from rag.worldbook.runtime.models import WorldbookTurnSnapshot
 
 
 from runtime.conversation_storage import (
-    CorruptConversation, backup_corrupt, conversation_lock, read_document, write_document,
+    CorruptConversation, backup_corrupt, conversation_lock, read_document, write_document, migrate_document,
 )
 from runtime.runtime_lock import other_mode_running
 
@@ -196,6 +197,56 @@ class Message:
     scene_before: object = None
     # 静音只影响本句语音和口型，保留音频路径及其原有时长。
     muted: bool = False
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """兼容旧界面字段编辑，同时立即更新稳定身份对应的存档节点。"""
+        previous = getattr(self, name, None)
+        binding = getattr(self, "_archive_binding", None)
+        if binding is not None and name in {"text", "translation", "emotion", "performance"}:
+            binding[0].check_editable()
+        object.__setattr__(self, name, value)
+        binding = getattr(self, "_archive_binding", None)
+        if binding is not None and not name.startswith("_"):
+            timeline, identifier = binding
+            if previous != value and name in {"text", "translation", "emotion", "performance"}:
+                timeline.invalidate_from(identifier)
+            raw = self.as_dict()
+            timeline.entries()
+            selected = timeline._entry_index.get(identifier)
+            if selected is not None and selected[1].get("kind") == "assistant":
+                for field in ("emotion", "performance"):
+                    if name != field:
+                        raw[field] = copy.deepcopy(selected[2].get(field))
+            timeline.write_view(identifier, raw)
+
+    @property
+    def id(self) -> str:
+        """返回已入档台词或输入的稳定身份，未入档草稿为空。"""
+        binding = getattr(self, "_archive_binding", None)
+        return str(binding[1]) if binding is not None else ""
+
+    def __deepcopy__(self, memo: dict[int, object]) -> Message:
+        """复制成未绑定草稿，避免复制整份历史及其线程锁。"""
+        duplicate = Message.from_dict(copy.deepcopy(self.as_dict(), memo))
+        memo[id(self)] = duplicate
+        return duplicate
+
+    def restore_failed_edit(self, snapshot: dict[str, object]) -> None:
+        """恢复未落盘的历史编辑，绕过新编辑门禁并让界面继续保留草稿。"""
+        restored = Message.from_dict(snapshot)
+        for field in dataclasses.fields(restored):
+            object.__setattr__(self, field.name, getattr(restored, field.name))
+        binding = getattr(self, "_archive_binding", None)
+        if binding is not None:
+            timeline, identifier = binding
+            with timeline.lock:
+                raw = self.as_dict()
+                timeline.entries()
+                selected = timeline._entry_index.get(identifier)
+                if selected is not None and selected[1].get("kind") == "assistant":
+                    for field in ("emotion", "performance"):
+                        raw[field] = copy.deepcopy(selected[2].get(field))
+                timeline.write_view(identifier, raw)
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Message":
@@ -770,6 +821,129 @@ class Chat:
         # 作为最后的手段，从 name 字段推断
         return self.name if self.name != "新对话" else None
 
+    @property
+    def turns(self) -> list[dict[str, object]]:
+        """暴露权威轮次供模型投影和只读界面使用。"""
+        return self._timeline.turns
+
+    @property
+    def message_list(self) -> VisibleMessages:
+        """将嵌套历史投影给旧界面，不维护第二份平面历史。"""
+        if self._timeline.visible_proxy is None:
+            self._timeline.visible_proxy = VisibleMessages(self._timeline)
+        return self._timeline.visible_proxy
+
+    @message_list.setter
+    def message_list(self, values: Sequence[Message]) -> None:
+        """兼容整体历史替换，仅此操作重建可见消息对应的节点。"""
+        values = list(values)
+        old = {"chat_id": self.chat_id, "name": self.name, "type": self.type.value,
+               "prompt_config": self.prompt_generator.to_dict(), "start_message": self.start_message,
+               "meta": self.meta.to_dict(), "message_list": [message.as_dict() for message in values]}
+        data, _warnings = legacy_archive(old)
+        python_meta(data).pop("migration", None)
+        self._timeline = Timeline(data)
+        for value, entry in zip(values, self._timeline.entries()):
+            if getattr(value, "_archive_binding", None) is not None:
+                value = Message.from_dict(value.as_dict())
+            identifier = str(entry[2]["id"])
+            object.__setattr__(value, "_archive_binding", (self._timeline, identifier))
+            self._timeline.views[identifier] = value
+
+    def record_model_response(self, result: object) -> None:
+        """把一次完整模型响应写入当前轮次，台词后续按验收结果关联。"""
+        with self._timeline.lock:
+            self._timeline.append_response(result)
+
+    def record_tool_result(self, payload: dict[str, object]) -> None:
+        """保存完整工具结果；显示策略不影响其历史身份。"""
+        with self._timeline.lock:
+            self._timeline.append_tool_result(payload)
+
+    def response_message_id(self, result: object) -> str | None:
+        """按原响应材料找到归属，避免异步过渡台词挂到下一次响应。"""
+        protocol = object_dict(getattr(result, "protocol", None))
+        calls = {call.get("id") for call in getattr(result, "tool_calls", [])}
+        with self._timeline.lock:
+            for turn in reversed(self.turns):
+                for message in reversed(turn["messages"]):
+                    if message.get("kind") != "assistant":
+                        continue
+                    saved = object_dict(message.get("protocol"))
+                    saved_calls = {part.get("callId") for part in message.get("parts", []) if part.get("kind") == "tool-call"}
+                    if (saved.get("contextFingerprint") == protocol.get("contextFingerprint")
+                            and saved.get("origin") == protocol.get("origin") and saved_calls == calls
+                            and object_dict(message.get("extensions")).get("rawText") == getattr(result, "text", None)):
+                        return str(message["id"])
+        return None
+
+    def remember_runtime_controls(self, messages: list[dict[str, object]]) -> None:
+        """保留本轮实际控制信息的位置，避免下一轮改写此前输入前缀。"""
+        if not self.turns:
+            return
+        controls = [copy.deepcopy(message) for message in messages
+                    if message.get("role") == "user" and "<runtime_controls>" in str(message.get("content", ""))]
+        if controls:
+            meta = object_dict(self.turns[-1].get("meta"))
+            extensions = meta.setdefault("extensions", {})
+            extensions["pythonRuntimeControls"] = controls[-1:]
+        if self.turns:
+            meta = object_dict(self.turns[-1].get("meta"))
+            extensions = meta.setdefault("extensions", {})
+            extensions.setdefault("pythonSystemPrompt", next((str(message.get("content", ""))
+                                  for message in messages if message.get("role") == "system"), ""))
+
+    def _build_nested_llm_query(self, perspective: str,
+                                attachment_context: AttachmentSerializationContext | None) -> list[dict[str, object]]:
+        """按响应与工具的原有顺序投影历史，协议复用由后端再次校验。"""
+        from .archive import records
+        history: list[dict[str, object]] = []
+        system = self.prompt_generator.generate(perspective=perspective)
+        if system:
+            history.append({"role": "system", "content": system})
+        if self.start_message:
+            history.append({"role": "user", "content": self.start_message})
+        visible = {entry[2]["id"]: self.message_list[index] for index, entry in enumerate(self._timeline.entries())}
+        for turn in self.turns:
+            controls = object_dict(object_dict(turn.get("meta")).get("extensions")).get("pythonRuntimeControls", [])
+            inserted_controls = False
+            for message in records(turn.get("messages")):
+                kind = message.get("kind")
+                if kind == "user":
+                    view = visible.get(message["id"])
+                    if view is not None:
+                        history.append({"role": "user", "content": view.to_llm_content("user", self._llm_character_name_for_message(view, "user"), attachment_context), "_turn": turn["id"]})
+                elif kind == "assistant":
+                    if not inserted_controls:
+                        history.extend(dict(control, _turn=turn["id"]) for control in records(controls))
+                        inserted_controls = True
+                    protocol = object_dict(message.get("protocol"))
+                    if object_dict(message.get("extensions")).get("rejectedDialogue"):
+                        continue
+                    lines = [line for part in records(message.get("parts")) for line in records(part.get("lines"))]
+                    text = str(object_dict(message.get("extensions")).get("rawText", ""))
+                    if protocol.get("invalidated") or not text:
+                        payload = [json.loads(visible[line["id"]].to_llm_query("assistant"))
+                                   for line in lines if line["id"] in visible]
+                        text = json.dumps(payload, ensure_ascii=False) if payload else ""
+                    calls = [{"id": part["callId"], "type": "function", "function": {
+                        "name": part["toolName"], "arguments": json.dumps(part.get("arguments", {}), ensure_ascii=False)}}
+                        for part in records(message.get("parts")) if part.get("kind") == "tool-call"]
+                    if text or calls or protocol:
+                        item: dict[str, object] = {"role": "assistant", "content": text, "_turn": turn["id"]}
+                        if calls:
+                            item["tool_calls"] = calls
+                        if protocol:
+                            item["_replay"] = copy.deepcopy(protocol)
+                        history.append(item)
+                elif kind == "tool-result":
+                    outcome = object_dict(message.get("outcome"))
+                    value = outcome.get("value", object_dict(outcome.get("problem")).get("message", "工具未完成。"))
+                    history.append({"role": "tool", "tool_call_id": message.get("callId"),
+                                    "content": value if isinstance(value, str) else json.dumps(value, ensure_ascii=False),
+                                    "_turn": turn["id"]})
+        return history
+
     def __repr__(self) -> str:
         return f"Chat(name={self.name}, messages={self.message_list})"
 
@@ -869,9 +1043,12 @@ class Chat:
         )
         invalidate_rolling_summary_from_message_index(self, start)
         deleted_messages = list(self.message_list[start:end])
+        truncate_after = self.message_list[start - 1].id if start > 0 and end == len(self.message_list) else ""
         deleted_user_count = sum(1 for message in deleted_messages if message.character_name == "User")
         deleted_character_count = len(deleted_messages) - deleted_user_count
         del self.message_list[start:end]
+        if truncate_after:
+            self._timeline.truncate_after(truncate_after)
         self._shift_tool_call_records_after_delete(start, end)
 
         return DeleteMessagesResult(
@@ -910,21 +1087,48 @@ class Chat:
         """
         将此 Chat 实例转换为存储字典
         """
-        return {
-            "chat_id": self.chat_id,
-            "name": self.name,
-            "prompt_config": self.prompt_generator.to_dict(),
-            "type": self.type.value,
-            "message_list": [msg.as_dict() for msg in self.message_list],
-            "start_message": self.start_message,
-            "meta": self.meta.to_dict()
-        }
+        with self._timeline.lock:
+            return self._archive_dict()
+
+    def _archive_dict(self) -> dict[str, object]:
+        """锁内序列化唯一历史，避免后台过渡台词写入一半时保存。"""
+        # 嵌套附件对象可能由上传管理器原地更新，落盘前将其同步到绑定节点。
+        for identifier, view in list(self._timeline.views.items()):
+            raw = view.as_dict()
+            self._timeline.entries()
+            selected = self._timeline._entry_index.get(identifier)
+            if selected is not None and selected[1].get("kind") == "assistant":
+                raw["emotion"] = selected[2].get("emotion")
+                raw["performance"] = copy.deepcopy(selected[2].get("performance"))
+            self._timeline.write_view(identifier, raw)
+        data = self._timeline.data
+        for record in self.meta.tool_call_records:
+            self._timeline.sync_tool_display(record.to_dict())
+        data.update(id=self.chat_id, title=self.name,
+                    mode="scripted-dialogue" if self.type == ChatType.SMALL_THEATER else "single-character")
+        extra = python_meta(data)
+        settings = self.meta.to_dict()
+        settings.pop("tool_call_records", None)
+        settings.pop("rolling_summary", None)
+        extra.update(promptConfig=self.prompt_generator.to_dict(), startMessage=self.start_message, chatType=self.type.value,
+                     settings=settings)
+        self._timeline.validate()
+        return copy.deepcopy(data)
 
     @classmethod
     def from_dict(cls, data: Dict) -> "Chat":
         """
         从存储字典中加载一个 Chat 实例
         """
+        canonical = data if "turns" in data else None
+        if canonical is not None:
+            Timeline(canonical).validate()
+            extra = python_meta(canonical)
+            data = {"chat_id": canonical["id"], "name": canonical.get("title", "新对话"),
+                    "type": extra.get("chatType", 2 if canonical.get("mode") == "scripted-dialogue" else 1),
+                    "prompt_config": extra.get("promptConfig", {"type": "static", "prompt_content": ""}),
+                    "start_message": extra.get("startMessage", ""),
+                    "meta": extra.get("settings", {}), "message_list": []}
         prompt_config = data.get("prompt_config", {})
         generator_type = prompt_config.get("type", "static")
         
@@ -939,7 +1143,7 @@ class Chat:
             # 兼容旧数据或 static 类型
             generator = StaticPromptGenerator.from_dict(prompt_config)
 
-        return cls(
+        chat = cls(
             name=data["name"],
             prompt_generator=generator,
             type_ =ChatType(data["type"]),
@@ -948,6 +1152,21 @@ class Chat:
             meta=data.get("meta", {}),
             chat_id=data.get("chat_id")
         )
+        if canonical is not None:
+            chat._timeline = Timeline(copy.deepcopy(canonical))
+            chat._timeline.validate_replay()
+            if chat._timeline.settle_pending():
+                chat.meta.extra.setdefault("load_warnings", []).append("已将上次运行未确认的工具结果标记为中断，不会自动重跑。")
+            from .rolling_summary import get_rolling_summary
+            state = get_rolling_summary(chat)
+            if state is not None:
+                chat.meta.extra["rolling_summary"] = state.to_dict()
+            chat.meta.tool_call_records = [ToolCallRecordMeta.from_dict(display)
+                                           for display in chat._timeline.tool_displays()]
+        else:
+            converted, _warnings = legacy_archive(data)
+            chat._timeline = Timeline(converted)
+        return chat
 
     def get_theater_meta(self) -> TheaterMeta:
         """
@@ -1272,6 +1491,9 @@ class Chat:
         :param include_translation: 简化 assistant 消息时是否保留 translation 字段
         :returns: 用于 LLM 的对话历史列表
         """
+        if any(message.get("protocol") or message.get("kind") == "tool-result"
+               for turn in self.turns for message in turn["messages"]):
+            return self._build_nested_llm_query(perspective, attachment_context)
         llm_history = []
         system_prompt_content = self.prompt_generator.generate(perspective=perspective)
         if system_prompt_content:
@@ -1476,13 +1698,17 @@ class Chat:
                     return True
         return False
 
-    def add_message(self, message: Message) -> None:
+    def add_message(self, message: Message, *, assistant_message_id: str | None = None) -> None:
         """
         向当前对话中添加一条消息
 
         :param message: 需要添加的消息
         """
-        self.message_list.append(message)
+        with self._timeline.lock:
+            if assistant_message_id is not None:
+                self.message_list.append_to_response(message, assistant_message_id)
+            else:
+                self.message_list.append(message)
 
     def clear_message_list(self) -> None:
         """
@@ -1539,6 +1765,17 @@ class _ChatBackupExportContext:
             chat_name: str,
     ) -> None:
         """将 Chat 字典中的本地资源路径改写为备份资源引用。"""
+        if "turns" in chat_payload:
+            temporary = Chat.from_dict(chat_payload)
+            legacy = {"message_list": [message.as_dict() for message in temporary.message_list]}
+            self.rewrite_chat_payload_for_export(backup_file, legacy, chat_name)
+            for index, raw in enumerate(legacy["message_list"]):
+                entry = temporary._timeline.entries()[index][2]
+                temporary._timeline.write_view(str(entry["id"]), raw)
+            temporary._timeline.views.clear()
+            chat_payload.clear()
+            chat_payload.update(temporary.to_dict())
+            return
         raw_messages = chat_payload.get("message_list")
         if not isinstance(raw_messages, list):
             return
@@ -1823,12 +2060,17 @@ class ChatManager:
         self.storage_notices: list[str] = []
         self.storage_error: str | None = None
         self._storage_metadata: dict[str, object] = {}
+        import weakref
+        for chat in self.chat_list:
+            chat._timeline.storage_owner = weakref.ref(self)
 
     def add_chat(self, chat: Chat) -> None:
         """
         添加一个对话到管理器中。如果该对话已经存在，则忽略。
         """
         if chat not in self.chat_list:
+            import weakref
+            chat._timeline.storage_owner = weakref.ref(self)
             self.chat_list.append(chat)
 
     def add_chats(self, chats: Iterable[Chat]) -> None:
@@ -1938,6 +2180,12 @@ class ChatManager:
             include_audio: bool = True,
     ) -> ChatBackupExportResult:
         """将指定对话导出为 zip 对话备份包。"""
+        if not str(output_path).lower().endswith(".zip"):
+            from .portable import export_archive
+            selected = [self.get_chat_by_id(identifier) for identifier in chat_ids]
+            selected = [chat for chat in selected if chat is not None]
+            result = export_archive([chat.to_dict() for chat in selected], Path(output_path), include_audio=include_audio)
+            return ChatBackupExportResult(len(selected), int(result["attachments"]), int(result["audio"]), list(result["warnings"]))
         export_context = _ChatBackupExportContext(include_audio=include_audio)
         backup_id = uuid.uuid4().hex
         exported_at = _now_iso_text()
@@ -1979,6 +2227,17 @@ class ChatManager:
 
     def import_chats_from_backup(self, input_path: Union[str, Path]) -> ChatBackupImportResult:
         """从 zip 对话备份包导入对话，并追加到当前管理器末尾。"""
+        if not zipfile.is_zipfile(input_path):
+            from .portable import import_archive
+            payloads, warnings = import_archive(Path(input_path), _project_root_dir() / "reference_audio" / "chat_imports")
+            chats = [Chat.from_dict(payload) for payload in payloads]
+            imported = [chat for chat in chats if self.write_scope is None or chat.type == self.write_scope]
+            for chat in imported:
+                chat.name = self._unique_chat_name(chat.name + "（导入）")
+                self.chat_list.append(chat)
+            if len(imported) != len(chats):
+                warnings.append("部分对话属于另一种运行模式，未加入当前列表。")
+            return ChatBackupImportResult(imported, 0, 0, 0, warnings)
         imported_chats: list[Chat] = []
         warnings_list: list[str] = []
         restored_attachment_count = 0
@@ -2454,6 +2713,7 @@ class ChatManager:
         """
         return {
             **self._storage_metadata,
+            "conversation_schema_version": 1,
             "chat_list": [chat.to_dict() for chat in self.chat_list]
         }
 
@@ -2485,7 +2745,7 @@ class ChatManager:
             #         return chat_obj
         # 没有找到，创建新的
         new_chat = Chat.new_single_chat(character, name=character.character_name)
-        self.chat_list.append(new_chat)
+        self.add_chat(new_chat)
         return new_chat
 
     def _storage_notice(self, message: str) -> None:
@@ -2504,9 +2764,14 @@ class ChatManager:
         target = Path(file).resolve()
         try:
             with self._save_lock, conversation_lock(target):
+                import weakref
+                for chat in self.chat_list:
+                    chat._timeline.storage_owner = weakref.ref(self)
                 snapshot = self.to_dict()
                 try:
-                    latest = read_document(target)
+                    latest, migration_notice = migrate_document(target, read_document(target))
+                    if migration_notice:
+                        self._storage_notice(migration_notice)
                     # 同时校验内部会话结构，不能把结构损坏当成正常存档合并。
                     ChatManager.from_dict(latest)
                 except (CorruptConversation, KeyError, ValueError, TypeError, AttributeError):
@@ -2517,17 +2782,27 @@ class ChatManager:
                         f"已备份损坏存档至 {backup}，并从当前内存恢复保存；另一类会话可能不是最新版本。"
                     )
                     return
+                previous_revisions = {str(payload.get("id", "")): payload.get("revision", 0)
+                                      for payload in latest["chat_list"]}
+                for payload in snapshot["chat_list"]:
+                    previous = previous_revisions.get(str(payload.get("id", "")), 0)
+                    payload["revision"] = max(int(payload.get("revision", 0)), int(previous)) + 1
                 if self.write_scope is None:
                     latest = snapshot
                 else:
                     latest["chat_list"] = [
                         chat for chat in latest["chat_list"]
-                        if chat.get("type") != self.write_scope.value
+                        if (2 if chat.get("mode") == "scripted-dialogue" else chat.get("type", 1)) != self.write_scope.value
                     ] + [
                         chat for chat in snapshot["chat_list"]
-                        if chat.get("type") == self.write_scope.value
+                        if (2 if chat.get("mode") == "scripted-dialogue" else chat.get("type", 1)) == self.write_scope.value
                     ]
+                latest["conversation_schema_version"] = 1
                 write_document(target, latest)
+                revisions = {payload["id"]: payload.get("revision", 0) for payload in latest["chat_list"]}
+                for chat in self.chat_list:
+                    if chat.chat_id in revisions:
+                        chat._timeline.data["revision"] = revisions[chat.chat_id]
                 self.storage_error = None
         except Exception as exc:
             self.storage_error = f"聊天记录保存失败，未保存内容仍在内存中，请重试：{exc}"
@@ -2543,10 +2818,13 @@ class ChatManager:
         :raises FileNotFoundError: 如果指定的文件不存在
         :raises json.JSONDecodeError: 如果文件格式不正确，无法解析为 JSON
         """
-        with open(file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        return cls.from_dict(data)
+        target = Path(file).resolve()
+        with conversation_lock(target):
+            data, notice = migrate_document(target, read_document(target))
+            manager = cls.from_dict(data)
+            if notice:
+                manager._storage_notice(notice)
+            return manager
 
 
 _global_chat_manager = None
@@ -2625,7 +2903,9 @@ def get_chat_manager(write_scope: ChatType | None = None) -> ChatManager:
         recovered = False
         notice = ""
         try:
-            manager = ChatManager.from_dict(read_document(target))
+            document, migration_notice = migrate_document(target, read_document(target))
+            manager = ChatManager.from_dict(document)
+            notice = migration_notice
         except (CorruptConversation, KeyError, ValueError, TypeError, AttributeError) as exc:
             if write_scope is not None and other_mode_running(
                 target.parent, write_scope == ChatType.SMALL_THEATER,
@@ -2634,9 +2914,7 @@ def get_chat_manager(write_scope: ChatType | None = None) -> ChatManager:
                     "聊天存档损坏，另一模式正在运行。请先在该模式保存并正常退出，再重新启动。"
                 ) from exc
             backup = backup_corrupt(target)
-            manager = ChatManager()
-            recovered = True
-            notice = f"损坏存档已备份至 {backup}，已创建新的空白存档。"
+            raise RuntimeError(f"聊天存档加载或转换失败，原文件未替换；备份：{backup}") from exc
 
         legacy_llm = target.parent / "history_messages_dp.json"
         legacy_qt = target.parent / "history_messages_qt.json"

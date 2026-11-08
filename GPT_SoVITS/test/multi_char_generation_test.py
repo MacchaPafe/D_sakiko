@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from queue import Queue
 from types import MethodType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -227,7 +227,7 @@ def test_failed_generation_preserves_script(gui, response):
 
 @pytest.mark.parametrize("switched,save_ok", [(False, True), (True, True), (False, False)])
 def test_result_replaces_only_bound_chat(gui, switched, save_ok):
-    """新结果一次写回原目标；切换对话不串写，保存失败回滚旧剧本。"""
+    """新结果一次写回原目标；切换对话不串写，保存失败保留新剧本在内存。"""
     target = gui.current_chat
     original = target.message_list
     submit(gui)
@@ -242,7 +242,7 @@ def test_result_replaces_only_bound_chat(gui, switched, save_ok):
         assert target.message_list[0].character_name == "A"
         assert target.message_list[0].performance_timeline is None
     else:
-        assert target.message_list is original
+        assert target.message_list[0].text == "新剧本"
     if switched:
         assert gui.current_chat.message_list[0].text == "另一段剧本"
     assert gui.load_playback_script.called == (save_ok and not switched)
@@ -315,8 +315,8 @@ def test_generation_output_budget_and_truncation(monkeypatch, route, finish_reas
         "finish_reason": finish_reason,
         "message": {"role": "assistant", "content": content},
     }])
-    completion = Mock(return_value=response)
-    monkeypatch.setattr(litellm, "completion", completion)
+    completion = AsyncMock(return_value=response)
+    monkeypatch.setattr(litellm, "acompletion", completion)
     worker = module.DSLocalAndVoiceGen.__new__(module.DSLocalAndVoiceGen)
     worker.character_list = [SimpleNamespace(character_name=name, character_description="角色描述") for name in ("A", "B")]
     worker.base_prompt = "剧本生成"
@@ -326,7 +326,11 @@ def test_generation_output_budget_and_truncation(monkeypatch, route, finish_reas
     requests.put("EXIT")
     worker.text_generator(output, requests, notices)
     assert completion.call_args.kwargs["max_tokens"] == 16384
-    assert output.get_nowait() == ("error" if finish_reason == "length" else content)
+    received = output.get_nowait()
+    if finish_reason == "length":
+        assert received == "error"
+    else:
+        assert json.loads(received)["result"]["text"] == content
     assert output.empty()
     messages = []
     while not notices.empty():

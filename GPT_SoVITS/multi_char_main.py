@@ -2462,6 +2462,11 @@ class ViewerGUI(QWidget):
 
     def submit_generation(self, dialog, chat, indices, data) -> None:
         """设定窗口唯一提交入口，保存设定后绑定原对话发送 LLM 请求。"""
+        storage_error = getattr(self.chat_manager, "storage_error", None)
+        if isinstance(storage_error, str) and storage_error:
+            QMessageBox.warning(self, "保存失败", storage_error)
+            dialog.commit_btn.setEnabled(True)
+            return
         if self._generation_context is not None or getattr(self, "_audio_fill", None) is not None:
             dialog.commit_btn.setEnabled(True)
             return
@@ -2529,6 +2534,19 @@ class ViewerGUI(QWidget):
             self.generation_failed("生成失败，原剧本已保留。")
             return
 
+        parsed = self.robust_json_parse(response) if isinstance(response, str) else None
+        if isinstance(parsed, dict) and parsed.get("kind") == "llm-result":
+            from llm.types import LLMResult
+            result = LLMResult(**parsed["result"])
+            self._generation_context["llm_result"] = result
+            from chat.archive import legacy_turn
+            target = self._generation_context["chat"]
+            target.turns.append(legacy_turn())
+            target.record_model_response(result)
+            if not self._save_chat():
+                self.generation_failed("响应保留在内存中，保存成功后才能继续生成。")
+                return
+            response = result.text
         self.original_response = self.robust_json_parse(response) if isinstance(response, str) else []
         # self.display_timer.setSingleShot(True)
         # self.display_timer.start(1000)
@@ -2638,15 +2656,20 @@ class ViewerGUI(QWidget):
             logger.warning("生成结果转换失败：%s", error)
             self.generation_failed("生成结果无效，原剧本已保留。")
             return
-        old_messages = target.message_list
-        old_meta = copy.deepcopy(target.meta)
         target.message_list = []
         target.clear_message_list()
-        target.message_list = messages
+        result = context.get("llm_result")
+        if result is not None:
+            target.record_model_response(result)
+        for message in messages:
+            target.add_message(message)
+            binding = getattr(message, "_archive_binding", None)
+            if binding:
+                timeline, identifier = binding
+                entry = next(item[2] for item in timeline.entries() if item[2]["id"] == identifier)
+                entry["spoken"]["language"] = "ja"
         if not self._save_chat():
-            target.message_list = old_messages
-            target.meta = old_meta
-            self.generation_failed("新剧本保存失败，原剧本已保留。")
+            self.generation_failed("新剧本保留在内存中，保存成功后才能继续操作。")
             return
         self._generation_context = None
         self.set_playback_block("generation", False)

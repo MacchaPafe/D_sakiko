@@ -136,7 +136,7 @@ class ConcurrentStorageTest(unittest.TestCase):
         stale = ChatManager.load(self.target)
         stale.write_scope = ChatType.SMALL_THEATER
         latest = json.loads(self.target.read_text())
-        latest["chat_list"][0]["name"] = "new-single"
+        latest["chat_list"][0]["title"] = "new-single"
         latest["future_metadata"] = "keep"
         self.target.write_text(json.dumps(latest))
         local = stale.chat_list[1]
@@ -144,7 +144,7 @@ class ConcurrentStorageTest(unittest.TestCase):
         stale.save(self.target)
         result = json.loads(self.target.read_text())
         self.assertEqual(result["future_metadata"], "keep")
-        self.assertEqual([item["name"] for item in result["chat_list"]], ["new-single", "new-theater"])
+        self.assertEqual([item["title"] for item in result["chat_list"]], ["new-single", "new-theater"])
         self.assertIs(stale.chat_list[1], local)
 
     def test_running_recovery_and_backup_failure(self) -> None:
@@ -161,7 +161,7 @@ class ConcurrentStorageTest(unittest.TestCase):
         self.assertIn("另一类", manager.storage_notices[-1])
 
     def test_startup_corruption_with_and_without_other_mode(self) -> None:
-        """另一模式运行时拒绝恢复；独占运行时备份并立即创建空存档。"""
+        """另一模式运行时拒绝恢复；独占运行时也只备份和报告错误，不覆盖原文件。"""
         self.target.write_bytes(b"")
         other = acquire_runtime_lock(self.root, "web")
         try:
@@ -173,9 +173,9 @@ class ConcurrentStorageTest(unittest.TestCase):
         finally:
             other.release()
         with contextlib.chdir(self.root / "GPT_SoVITS"):
-            manager = get_chat_manager(ChatType.SMALL_THEATER)
-        self.assertEqual(manager.chat_list, [])
-        self.assertEqual(json.loads(self.target.read_text()), {"chat_list": []})
+            with self.assertRaisesRegex(RuntimeError, "原文件未替换"):
+                get_chat_manager(ChatType.SMALL_THEATER)
+        self.assertEqual(self.target.read_bytes(), b"")
         self.assertTrue(list((self.target.parent / "backup").iterdir()))
 
     def test_import_filters_before_restoring_resources(self) -> None:

@@ -189,7 +189,7 @@ class ChatTestCase(unittest.TestCase):
         disabled_chat = Chat(meta={"tool_calling_enabled": False})
         self.assertFalse(disabled_chat.meta.tool_calling_enabled)
         self.assertEqual(
-            disabled_chat.to_dict().get("meta", {}).get("tool_calling_enabled"),
+            disabled_chat.to_dict()["meta"]["extensions"]["python"]["settings"].get("tool_calling_enabled"),
             False,
         )
 
@@ -520,10 +520,11 @@ class ChatTestCase(unittest.TestCase):
         """
         chat = Chat.load_from_main_record(self.llm_dialog_history, self.qt_dialog_history)
         data = chat.to_dict()
-        self.assertIn("chat_id", data)
+        self.assertIn("id", data)
 
-        legacy_data = dict(data)
-        legacy_data.pop("chat_id")
+        legacy_data = {"name": chat.name, "type": chat.type.value,
+                       "prompt_config": chat.prompt_generator.to_dict(),
+                       "message_list": [message.as_dict() for message in chat.message_list]}
         restored = Chat.from_dict(legacy_data)
 
         self.assertIsInstance(restored.chat_id, str)
@@ -776,7 +777,7 @@ class ChatTestCase(unittest.TestCase):
 
         data = chat.to_dict()
         self.assertEqual(
-            data["prompt_config"]["user_persona"],
+            data["meta"]["extensions"]["python"]["promptConfig"]["user_persona"],
             {
                 "persona_id": "persona-1",
                 "name": "小春",
@@ -1106,7 +1107,7 @@ class ChatTestCase(unittest.TestCase):
 
             with zipfile.ZipFile(backup_path, "r") as backup_file:
                 manifest = json.loads(backup_file.read("manifest.json").decode("utf-8"))
-            exported_audio_path = manifest["chats"][0]["chat"]["message_list"][0]["audio_path"]
+            exported_audio_path = Chat.from_dict(manifest["chats"][0]["chat"]).message_list[0].audio_path
             self.assertTrue(exported_audio_path.startswith("backup-resource://audio/"))
 
     def test_import_backup_renames_conflicting_audio(self):
@@ -1187,10 +1188,10 @@ class ChatTestCase(unittest.TestCase):
             self.assertTrue(result.warnings)
             with zipfile.ZipFile(backup_path, "r") as backup_file:
                 manifest = json.loads(backup_file.read("manifest.json").decode("utf-8"))
-            exported_attachment_path = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]["path"]
+            exported_attachment_path = Chat.from_dict(manifest["chats"][0]["chat"]).message_list[0].attachments[0].path
             self.assertEqual(exported_attachment_path, missing_attachment_path)
-            exported_attachment = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]
-            self.assertNotIn("remote_refs", exported_attachment)
+            exported_attachment = Chat.from_dict(manifest["chats"][0]["chat"]).message_list[0].attachments[0].as_dict()
+            self.assertFalse(exported_attachment.get("remote_refs"))
 
     def test_save_preserves_existing_file_when_serialization_fails(self):
         with tempfile.TemporaryDirectory() as directory:

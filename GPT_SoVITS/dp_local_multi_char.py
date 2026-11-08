@@ -7,7 +7,7 @@ import time,os
 
 from qconfig import d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm_model_utils import ensure_openai_compatible_model
-from llm_request_settings import request_timeout
+from llm.errors import LLMError
 from character import CharacterAttributes
 
 
@@ -87,7 +87,6 @@ class DSLocalAndVoiceGen:
 					   ):
 		"""消费小剧场生成请求，仅向主界面提交未被截断的模型输出。"""
 		import litellm
-		from litellm import completion, ModelResponse
 		while True:
 			while True:
 				if not qt2dp_queue.empty():
@@ -150,70 +149,18 @@ class DSLocalAndVoiceGen:
 			d_sakiko_config.reload_from_disk()
 			temperature = d_sakiko_config.llm_temperature.value
 			top_p = d_sakiko_config.llm_top_p.value
-			llm_timeout = request_timeout(d_sakiko_config, theater=True)
 			time.sleep(2)
 			try:
-				if d_sakiko_config.use_default_deepseek_api.value:
-					response = completion(
-						model="deepseek/deepseek-flash",
-						messages=user_this_turn_msg,
-						api_key=self.model,
-						stream=False,
-						timeout=llm_timeout,
-						max_tokens=16384,
-						temperature=temperature,
-						top_p=top_p,
-						drop_params=True
-					)
-				# 第二优先级是检查自定义 API Url
-				# 只要存在自定义 API，就使用自定义 API
-				elif d_sakiko_config.enable_custom_llm_api_provider.value:
-					response = completion(
-						# 自定义 API 与 OpenAI 兼容，litellm 需要通过 openai/ 前缀路由
-						model=ensure_openai_compatible_model(d_sakiko_config.custom_llm_api_model.value),
-						messages=user_this_turn_msg,
-						api_key=d_sakiko_config.custom_llm_api_key.value,
-						# 自定义 API 地址
-						base_url=d_sakiko_config.custom_llm_api_url.value,
-						stream=False,
-						timeout=llm_timeout,
-						max_tokens=16384,
-						temperature=temperature,
-						top_p=top_p,
-						drop_params=True
-					)
-				# 最后：使用选择的预定义 API 提供商
-				else:
-					provider = d_sakiko_config.llm_api_provider.value
-					model = d_sakiko_config.llm_api_model.value.get(provider, "")
-					api_key = d_sakiko_config.llm_api_key.value.get(provider, "")
-					base_url = d_sakiko_config.llm_api_base_url.value.get(provider)
-
-					if base_url:
-						response = completion(
-							model=self.normalize_model_for_provider(provider, model),
-							messages=user_this_turn_msg,
-							api_key=api_key,
-							stream=False,
-							timeout=llm_timeout,
-							max_tokens=16384,
-							base_url=base_url,
-							temperature=temperature,
-							top_p=top_p,
-							drop_params=True
-						)
-					else:
-						response = completion(
-							model=self.normalize_model_for_provider(provider, model),
-							messages=user_this_turn_msg,
-							api_key=api_key,
-							stream=False,
-							timeout=llm_timeout,
-							max_tokens=16384,
-							temperature = temperature,
-							top_p = top_p,
-							drop_params = True
-						)
+				from llm.client import generate
+				from llm.configuration import resolve_config
+				from llm.types import LLMRequest
+				response = generate(
+					LLMRequest(user_this_turn_msg, options={"temperature": temperature, "top_p": top_p, "max_tokens": 16384}),
+					resolve_config(d_sakiko_config, str(self.model or ""), theater=True),
+				)
+			except LLMError as error:
+				self.report_message_to_main_ui(message_queue, text_queue, str(error))
+				continue
 			except litellm.exceptions.Timeout:
 				self.report_message_to_main_ui(
 					message_queue,
@@ -277,26 +224,12 @@ class DSLocalAndVoiceGen:
 
 				continue
 
-			# 截断响应不能当成完整剧本解析，沿用失败通知保留当前剧本。
-			if isinstance(response, ModelResponse) and response.choices[0].finish_reason == "length":
-				self.report_message_to_main_ui(
-					message_queue,
-					text_queue,
-					"剧本输出达到模型或接口的长度上限，内容已被截断。当前剧本未更改，请减少对话轮数或更换模型后重试。"
-				)
+			if not response.text.strip():
+				self.report_message_to_main_ui(message_queue, text_queue, "模型返回内容为空，请重试。")
 				continue
-
-			if not isinstance(response, ModelResponse) or response.choices[0].message.content is None:
-				self.report_message_to_main_ui(
-					message_queue,
-					text_queue,
-					"模型API返回内容为空，请检查网络，然后重试一下吧"
-				)
-				continue
-
-			# 去掉多余的字符，使用正则表达式
-			response_json=response.choices[0].message.content.strip()
-			text_queue.put(response_json)
+			import json
+			from dataclasses import asdict
+			text_queue.put(json.dumps({"kind": "llm-result", "result": asdict(response)}, ensure_ascii=False))
 
 if __name__ == "__main__":
 	import sys

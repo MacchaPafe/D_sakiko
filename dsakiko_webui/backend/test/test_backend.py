@@ -401,7 +401,7 @@ class BackendTest(unittest.TestCase):
             delete_chat_attachment_dir(chat.chat_id)
             uploads.close()
 
-    def test_runtime_rolls_back_persisted_user_message_after_llm_failure(self) -> None:
+    def test_runtime_preserves_persisted_user_message_after_llm_failure(self) -> None:
         from chat.chat import Message
         from emotion_enum import EmotionEnum
 
@@ -425,10 +425,10 @@ class BackendTest(unittest.TestCase):
 
         try:
             runtime._rollback_failed_user_message(chat.chat_id, "turn_failed")
-            self.assertEqual(chat.message_list, [])
-            self.assertEqual(chat.meta.extra["webui_messages"], [])
-            self.assertNotIn((chat.chat_id, "client_failed"), runtime._client_message_turns)
-            self.assertTrue(saves)
+            self.assertEqual(chat.message_list[0].text, "失败消息")
+            self.assertEqual(len(chat.meta.extra["webui_messages"]), 1)
+            self.assertIn((chat.chat_id, "client_failed"), runtime._client_message_turns)
+            self.assertFalse(saves)
         finally:
             runtime.uploads.close()
 

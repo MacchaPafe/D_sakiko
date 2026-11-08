@@ -146,33 +146,21 @@ class DeepSeekMultimodalTransportTestCase(unittest.TestCase):
         service = self.subject._current_deepseek_file_service()
         self.assertIsNotNone(service)
         assert service is not None
-        fake_response = SimpleNamespace(choices=[])
-        fake_client = mock.Mock()
+        fake_response = {"model": "deepseek-flash", "choices": [{"finish_reason": "stop", "message": {"content": "hello"}}]}
+        fake_client = mock.AsyncMock()
+        fake_client.__aenter__.return_value = fake_client
         fake_client.chat.completions.create.return_value = fake_response
         with (
-            mock.patch("openai.OpenAI", return_value=fake_client) as openai_client,
+            mock.patch("openai.AsyncOpenAI", return_value=fake_client) as openai_client,
             mock.patch.object(dp_local2, "log_prompt_cache_usage"),
         ):
             result = self.subject._openai_deepseek_chat_completion(
-                {
-                    "model": "deepseek/deepseek-flash",
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "api_key": "hidden",
-                    "base_url": "https://api.deepseek.com",
-                    "timeout": 15,
-                    "thinking": {"type": "enabled"},
-                    "reasoning_effort": "xhigh",
-                    dp_local2.CACHE_DEBUG_PHASE_KEY: "test",
-                },
-                service,
-            )
-        self.assertIs(result, fake_response)
-        openai_client.assert_called_once_with(
-            api_key="sk-test",
-            base_url="https://api.deepseek.com",
-            timeout=15,
-            max_retries=0,
-        )
+                {"model": "deepseek/deepseek-flash", "messages": [{"role": "user", "content": "hello"}],
+                 "api_key": "hidden", "base_url": "https://api.deepseek.com", "timeout": 15,
+                 "thinking": {"type": "enabled"}, "reasoning_effort": "xhigh",
+                 dp_local2.CACHE_DEBUG_PHASE_KEY: "test"}, service)
+        self.assertEqual(result.text, "hello")
+        openai_client.assert_called_once_with(api_key="sk-test", base_url="https://api.deepseek.com", timeout=15, max_retries=0)
         request = fake_client.chat.completions.create.call_args.kwargs
         self.assertEqual(request["model"], "deepseek-flash")
         self.assertEqual(request["extra_body"]["thinking"], {"type": "enabled"})

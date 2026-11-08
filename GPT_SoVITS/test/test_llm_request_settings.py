@@ -106,11 +106,11 @@ def test_theater_all_provider_branches_use_independent_timeout(monkeypatch, prov
     monkeypatch.setattr(module.time, 'sleep', lambda _: None)
     captured = []
 
-    def completion(**kwargs):
-        captured.append(kwargs)
+    def completion(request, connection, cancel=None):
+        captured.append({'timeout': connection.timeout})
         raise SystemExit('request captured without network')
 
-    monkeypatch.setattr(litellm, 'completion', completion)
+    monkeypatch.setattr('llm.client.generate', completion)
     subject = module.DSLocalAndVoiceGen.__new__(module.DSLocalAndVoiceGen)
     subject.model = 'test-key'
     subject.base_prompt = 'test'

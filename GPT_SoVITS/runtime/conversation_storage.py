@@ -60,6 +60,52 @@ def write_document(target: Path, data: Mapping[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def migrate_document(target: Path, data: dict[str, object]) -> tuple[dict[str, object], str]:
+    """锁内备份并一次迁移旧消息列表；任何错误都不覆盖原文件。"""
+    from chat.archive import Timeline, legacy_archive
+    raw_chats = data.get("chat_list", [])
+    if not isinstance(raw_chats, list):
+        raise ValueError("聊天存档缺少 chat_list。")
+    version = data.get("conversation_schema_version", 0)
+    if not isinstance(version, int) or version > 1:
+        raise RuntimeError("聊天存档来自较新版本，不能覆盖。")
+    if all(isinstance(chat, dict) and "turns" in chat for chat in raw_chats):
+        for chat in raw_chats:
+            Timeline(chat).validate()
+        return data, ""
+    backup_dir = target.parent / "backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / (target.name + ".before-timeline-" + uuid.uuid4().hex + ".bak")
+    if target.exists():
+        with target.open("rb") as source, backup.open("xb") as destination:
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+    report_path = target.with_name(target.name + ".migration-report.json")
+    report: dict[str, object] = {"status": "failed", "backup": str(backup), "chats": []}
+    try:
+        converted = []
+        for original in raw_chats:
+            if not isinstance(original, dict):
+                raise ValueError("聊天列表包含无效条目。")
+            if "turns" in original:
+                Timeline(original).validate()
+                chat, warnings = original, []
+            else:
+                chat, warnings = legacy_archive(original)
+            converted.append(chat)
+            report["chats"].append({"chatId": chat["id"], "title": chat.get("title"), "warnings": warnings})
+        migrated = {**data, "conversation_schema_version": 1, "chat_list": converted}
+        report["status"] = "completed"
+        write_document(report_path, report)
+        write_document(target, migrated)
+        return migrated, f"聊天存档已迁移，原文件备份：{backup}；迁移报告：{report_path}"
+    except Exception as exc:
+        report.update(status="failed", error=str(exc))
+        write_document(report_path, report)
+        raise RuntimeError(f"聊天存档迁移失败，原文件已保留。报告：{report_path}") from exc
+
+
 def save_before_terminal_close(save: Callable[[], None]) -> None:
     """终端正常关闭前重试保存，只有明确放弃才忽略写入失败。"""
     while True:

@@ -606,7 +606,10 @@ class SegmentDisplayTests(unittest.TestCase):
             clock.return_value = 107.0
             player.update_playback(model)
             self.assertEqual(player.active_segment["segment_id"], 1)
-            QTest.qWait(180)
+            for _ in range(100):
+                if not host.chat_display.is_streaming():
+                    break
+                QTest.qWait(20)
             drain()
             self.assertTrue(player.segment_text_complete)
             self.assertIn("甲", host.chat_display.toPlainText())
@@ -615,7 +618,10 @@ class SegmentDisplayTests(unittest.TestCase):
             player.update_playback(model)
             drain()
             self.assertEqual(player.active_segment["segment_id"], 2)
-            QTest.qWait(180)
+            for _ in range(100):
+                if not host.chat_display.is_streaming():
+                    break
+                QTest.qWait(20)
             drain()
             clock.return_value = 114.0
             player.update_playback(model)

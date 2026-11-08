@@ -95,7 +95,8 @@ def is_supported_image_file(path: str | Path) -> bool:
     return detect_image_mime_type(path) is not None
 
 
-def model_supports_image_upload(model: str, *, use_default_deepseek_api: bool = False) -> bool:
+def model_supports_image_upload(model: str, *, use_default_deepseek_api: bool = False,
+                                allow_unknown: bool = False) -> bool:
     """判断当前模型是否允许上传图片附件。"""
     if use_default_deepseek_api:
         return False
@@ -104,7 +105,7 @@ def model_supports_image_upload(model: str, *, use_default_deepseek_api: bool = 
 
     if _litellm_supports_vision(model):
         return True
-    return model_image_upload_is_force_allowed(model)
+    return model_image_upload_is_force_allowed(model) or allow_unknown
 
 
 def model_can_force_allow_image_upload(model: str, *, use_default_deepseek_api: bool = False) -> bool:

@@ -1,4 +1,5 @@
 # 配置 LLM（大语言模型）API 相关的配置 UI
+from __future__ import annotations
 import contextlib
 import os
 
@@ -28,7 +29,7 @@ from log import get_logger
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
-    ListWidget, ToolTipFilter, FluentIcon
+    ListWidget, ToolTipFilter, FluentIcon, InfoBarIcon
 
 from ..custom_widgets.float_range_setting_card import FloatRangeSettingCard
 from ..custom_widgets.request_timeout_setting_card import RequestTimeoutSettingCard
@@ -263,6 +264,11 @@ class LLMAPIArea(TransparentScrollArea):
         self.page_third_party_api.setLayout(layout_third_party)
         self.llm_stack.addWidget(self.page_third_party_api)
 
+        from .chatgpt_account_area import ChatGPTAccountArea
+        self.chatgpt_area = ChatGPTAccountArea(self)
+        self.llm_stack.addWidget(self.chatgpt_area)
+        self.chatgpt_area.activated.connect(self._select_chatgpt_provider)
+
         # 加载模型选择框的内容
         self.populate_llm_combobox()
         self.llm_provider_combobox.currentIndexChanged.connect(self.on_llm_provider_changed)
@@ -374,20 +380,34 @@ class LLMAPIArea(TransparentScrollArea):
 
         self.standard_model_combo.blockSignals(False)
 
+    def _select_chatgpt_provider(self) -> None:
+        """订阅选择已自动保存，只同步页面显示而不覆盖其他配置草稿。"""
+        self.llm_provider_combobox.blockSignals(True)
+        self.llm_provider_combobox.setCurrentIndex(self.llm_provider_combobox.findData("chatgpt"))
+        self.llm_provider_combobox.blockSignals(False)
+        self.llm_stack.setCurrentIndex(4)
+        self.llm_temperature_card.setEnabled(False)
+        self.llm_top_p_card.setEnabled(False)
+
     def load_settings_for_provider(self, provider):
         """
         Load settings (API Key, Model, URL) for the specified provider from config.
         """
+        if provider == "chatgpt":
+            self.chatgpt_area.load()
+            return
         if provider == "deepseek_up":
             return
 
         keys = d_sakiko_config.llm_api_key.value
         models = d_sakiko_config.llm_api_model.value
 
-        if provider == "custom":
-            self.custom_url_input.setText(d_sakiko_config.custom_llm_api_url.value)
-            self.custom_model_input.setText(d_sakiko_config.custom_llm_api_model.value)
-            self.custom_key_input.setText(d_sakiko_config.custom_llm_api_key.value)
+        if provider in {"custom", "custom_responses"}:
+            prefix = "custom_responses" if provider == "custom_responses" else "custom_llm_api"
+            self.custom_url_input.setText(getattr(d_sakiko_config, prefix + "_url").value)
+            self.custom_model_input.setText(getattr(d_sakiko_config, prefix + "_model").value)
+            self.custom_key_input.setText(getattr(d_sakiko_config, prefix + "_key").value)
+            self.custom_model_input.setPlaceholderText("gpt-5" if provider == "custom_responses" else "openai/gpt-5")
         elif provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
             meta = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.get(provider, {})
             placeholder = meta.get("model_placeholder")
@@ -426,6 +446,7 @@ class LLMAPIArea(TransparentScrollArea):
         """
         self.llm_provider_combobox.clear()
         self.llm_provider_combobox.addItem("Up 的 DeepSeek API", userData="deepseek_up")
+        self.llm_provider_combobox.addItem("ChatGPT 订阅（登录 ChatGPT）", userData="chatgpt")
 
         # Add third-party OpenAI-compatible presets (fixed base_url)
         for endpoint in THIRD_PARTY_OPENAI_COMPAT_ENDPOINTS:
@@ -436,11 +457,16 @@ class LLMAPIArea(TransparentScrollArea):
             friendly_name = PROVIDER_FRIENDLY_NAME_MAP.get(provider, provider)
             self.llm_provider_combobox.addItem(friendly_name, userData=provider)
 
-        self.llm_provider_combobox.addItem("自定义 API（与 OpenAI 兼容的任意网站）", userData="custom")
+        self.llm_provider_combobox.addItem("自定义 API（OpenAI Completion 协议）", userData="custom")
+        self.llm_provider_combobox.addItem("自定义 API（OpenAI Responses 协议）", userData="custom_responses")
         self.llm_provider_combobox.addItem("更多...", userData="more")
 
     def on_llm_provider_changed(self, index):
         data = self.llm_provider_combobox.itemData(index)
+        for name in ("llm_temperature_card", "llm_top_p_card"):
+            card = getattr(self, name, None)
+            if card is not None:
+                card.setEnabled(data != "chatgpt")
 
         # Handle "More..." selection
         if data == "more":
@@ -487,10 +513,12 @@ class LLMAPIArea(TransparentScrollArea):
         # Standard logic for switching pages
         if data == "deepseek_up":
             self.llm_stack.setCurrentIndex(0)
-        elif data == "custom":
+        elif data in {"custom", "custom_responses"}:
             self.llm_stack.setCurrentIndex(1)
         elif data in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
             self.llm_stack.setCurrentIndex(3)
+        elif data == "chatgpt":
+            self.llm_stack.setCurrentIndex(4)
         else:
             self.llm_stack.setCurrentIndex(2)
 
@@ -505,7 +533,7 @@ class LLMAPIArea(TransparentScrollArea):
         target_data = "deepseek_up"
         if not use_up:
             if enable_custom:
-                target_data = "custom"
+                target_data = "custom_responses" if d_sakiko_config.custom_llm_api_protocol.value == "responses" else "custom"
             else:
                 target_data = provider
                 # Ensure provider exists in combobox
@@ -527,10 +555,14 @@ class LLMAPIArea(TransparentScrollArea):
 
             if target_data == "deepseek_up":
                 self.llm_stack.setCurrentIndex(0)
-            elif target_data == "custom":
+            elif target_data in {"custom", "custom_responses"}:
                 self.llm_stack.setCurrentIndex(1)
             elif target_data in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
                 self.llm_stack.setCurrentIndex(3)
+            elif target_data == "chatgpt":
+                self.llm_stack.setCurrentIndex(4)
+                self.llm_temperature_card.setEnabled(False)
+                self.llm_top_p_card.setEnabled(False)
             else:
                 self.llm_stack.setCurrentIndex(2)
 
@@ -558,6 +590,18 @@ class LLMAPIArea(TransparentScrollArea):
         index = self.llm_provider_combobox.currentIndex()
         provider_data = self.llm_provider_combobox.itemData(index)
 
+        if provider_data == "chatgpt":
+            try:
+                account = self.chatgpt_area.session.store.get(self.chatgpt_area.selected_id())
+                model = str(d_sakiko_config.chatgpt_model.value or "")
+                if not account.sharing or not model:
+                    raise ValueError("请先登录、授权并手动选择 ChatGPT 模型。")
+                self.chatgpt_area._commit(account.id, model)
+                return True
+            except Exception as exc:
+                self.chatgpt_area.show_status(str(exc), InfoBarIcon.ERROR)
+                return False
+
         if provider_data == "deepseek_up":
             # 只更新这个“是否使用 Up 的 DeepSeek API”选项
             d_sakiko_config.set(d_sakiko_config.use_default_deepseek_api, True)
@@ -565,7 +609,7 @@ class LLMAPIArea(TransparentScrollArea):
             self.reset_error_indicators()
             return True
 
-        elif provider_data == "custom":
+        elif provider_data in {"custom", "custom_responses"}:
             if (
                     not self.custom_url_input.text()
                     or not self.custom_model_input.text()
@@ -589,11 +633,12 @@ class LLMAPIArea(TransparentScrollArea):
                 # 启用自定义 OpenAI 兼容 API 提供商
                 # 这会覆盖其他已经启用的标准提供商
                 cfg.set(cfg.enable_custom_llm_api_provider, True)
-                cfg.set(cfg.custom_llm_api_url, self.custom_url_input.text())
-                cfg.set(cfg.custom_llm_api_model, self.custom_model_input.text())
-
-                # Update key in the dictionary
-                cfg.set(cfg.custom_llm_api_key, self.custom_key_input.text())
+                responses = provider_data == "custom_responses"
+                cfg.set(cfg.custom_llm_api_protocol, "responses" if responses else "chat-completions")
+                prefix = "custom_responses" if responses else "custom_llm_api"
+                cfg.set(getattr(cfg, prefix + "_url"), self.custom_url_input.text().strip())
+                cfg.set(getattr(cfg, prefix + "_model"), self.custom_model_input.text().strip())
+                cfg.set(getattr(cfg, prefix + "_key"), self.custom_key_input.text().strip())
 
             self.reset_error_indicators()
             return True

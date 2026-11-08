@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from chat.chat import AttachmentSerializationContext, Chat
@@ -118,6 +118,21 @@ def _build_summary_system_prompt() -> str:
 
 def get_rolling_summary(chat: Chat) -> RollingSummaryState | None:
     """读取并校验对话中的滚动摘要状态。"""
+    if hasattr(chat, "_timeline"):
+        entries = chat._timeline.entries()
+        for turn in reversed(chat.turns):
+            abstract = next((message for message in reversed(turn["messages"])
+                             if message.get("kind") == "abstract"), None)
+            if abstract is not None:
+                boundary = max((index for index, entry in enumerate(entries) if entry[0] is turn), default=-1)
+                if boundary < 0:
+                    return None
+                details = abstract.get("extensions", {}).get("pythonSummary", {})
+                return RollingSummaryState(str(abstract["text"]), boundary,
+                    int(details.get("reserved_recent_rounds", RESERVED_RECENT_ROUNDS)),
+                    str(details.get("updated_at", "")), str(details.get("model", "")))
+        if chat._timeline.summary_invalidated:
+            return None
     meta = getattr(chat, "meta", None)
     extra = getattr(meta, "extra", None)
     if not isinstance(extra, dict):
@@ -170,6 +185,10 @@ def set_rolling_summary(
     if reserved_recent_rounds <= 0:
         raise ValueError("保留的最近对话轮数必须大于 0。")
 
+    if hasattr(chat, "_timeline"):
+        entries = chat._timeline.entries()
+        covered_turn = entries[summary_until_message_index][0]
+        summary_until_message_index = max(index for index, entry in enumerate(entries) if entry[0] is covered_turn)
     state = RollingSummaryState(
         text=normalized_text,
         summary_until_message_index=summary_until_message_index,
@@ -178,12 +197,25 @@ def set_rolling_summary(
         model=model.strip(),
     )
     chat.meta.extra[ROLLING_SUMMARY_META_KEY] = state.to_dict()
+    if hasattr(chat, "_timeline"):
+        from chat.archive import new_id
+        covered_turn["messages"] = [message for message in covered_turn["messages"] if message.get("kind") != "abstract"]
+        covered_turn["messages"].append({"id": new_id(), "kind": "abstract", "text": state.text,
+                                        "extensions": {"pythonSummary": state.to_dict()}})
+        chat._timeline.summary_invalidated = False
     return state
 
 
 def clear_rolling_summary(chat: Chat) -> bool:
     """清除对话中的滚动摘要，并返回此前是否存在相关状态。"""
-    return chat.meta.extra.pop(ROLLING_SUMMARY_META_KEY, None) is not None
+    existed = chat.meta.extra.pop(ROLLING_SUMMARY_META_KEY, None) is not None
+    if hasattr(chat, "_timeline"):
+        for turn in chat.turns:
+            before = len(turn["messages"])
+            turn["messages"] = [message for message in turn["messages"] if message.get("kind") != "abstract"]
+            existed = existed or len(turn["messages"]) != before
+        chat._timeline.summary_invalidated = True
+    return existed
 
 
 def invalidate_rolling_summary_from_message_index(chat: Chat, first_changed_index: int) -> bool:
@@ -272,10 +304,15 @@ def build_llm_query_with_rolling_summary(
             attachment_context=attachment_context,
         )
 
-    request_chat = copy.copy(chat)
-    request_chat.message_list = list(
-        chat.message_list[state.summary_until_message_index + 1:]
-    )
+    if hasattr(chat, "_timeline"):
+        from chat.chat import Chat
+        data = chat.to_dict()
+        covered = {entry[0]["id"] for entry in chat._timeline.entries()[:state.summary_until_message_index + 1]}
+        data["turns"] = [turn for turn in data["turns"] if turn["id"] not in covered]
+        request_chat = Chat.from_dict(data)
+    else:
+        request_chat = copy.copy(chat)
+        request_chat.message_list = list(chat.message_list[state.summary_until_message_index + 1:])
     summary_block = _format_summary_context(state.text)
     if chat.start_message:
         request_chat.start_message = f"{chat.start_message}\n\n{summary_block}"
@@ -317,6 +354,7 @@ def build_rolling_summary_update(
         return None
 
     source_messages: list[dict[str, object]] = []
+    canonical_traces = _canonical_summary_tool_traces(chat, source_start, recent_window_start)
     tool_records_by_message_index: dict[int, list[object]] = {}
     for record in getattr(getattr(chat, "meta", None), "tool_call_records", []):
         message_index = getattr(record, "message_index", -1)
@@ -334,6 +372,8 @@ def build_rolling_summary_update(
         if image_placeholder:
             content = f"{content}\n{image_placeholder}"
         tool_trace = _format_tool_trace(tool_records_by_message_index.get(message_index, []))
+        if message_index in canonical_traces:
+            tool_trace = canonical_traces[message_index]
         if tool_trace:
             content = _append_text_to_content(content, tool_trace)
         source_messages.append({
@@ -369,6 +409,39 @@ def build_rolling_summary_update(
         summary_until_message_index=recent_window_start - 1,
         reserved_recent_rounds=reserved_recent_rounds,
     )
+
+
+def _canonical_summary_tool_traces(chat: Chat, start: int, end: int) -> dict[int, str]:
+    """从共同历史读取所有工具，摘要不依赖界面是否隐藏该记录。"""
+    from chat.archive import object_dict, records
+    timeline = getattr(chat, "_timeline", None)
+    if timeline is None:
+        return {}
+    entries = timeline.entries()
+    indices: dict[str, list[int]] = {}
+    for index in range(start, end):
+        indices.setdefault(str(entries[index][0]["id"]), []).append(index)
+    output: dict[int, str] = {}
+    for turn in chat.turns:
+        positions = indices.get(str(turn["id"]))
+        if not positions:
+            continue
+        calls = {part.get("callId"): part for message in records(turn.get("messages"))
+                 for part in records(message.get("parts")) if part.get("kind") == "tool-call"}
+        traces: list[str] = []
+        for message in records(turn.get("messages")):
+            if message.get("kind") != "tool-result":
+                continue
+            call = calls.get(message.get("callId"), {})
+            outcome = object_dict(message.get("outcome"))
+            value = outcome.get("value", object_dict(outcome.get("problem")).get("message", ""))
+            arguments = _redact_sensitive_text(json.dumps(call.get("arguments", {}), ensure_ascii=False))[:2000]
+            result = _redact_sensitive_text(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))[:6000]
+            traces.append(f"<tool_call>\nname: {call.get('toolName', 'unknown')}\narguments: {arguments}\n"
+                          f"status: {outcome.get('status')}\nresult: {result}\n</tool_call>")
+        if traces:
+            output[positions[-1]] = "\n".join(traces)
+    return output
 
 
 def _format_summary_context(text: str) -> str:
@@ -420,6 +493,9 @@ def trim_messages_for_emergency(
     if not over_limit(working):
         return working
 
+    if any(message.get("_turn") for message in working):
+        return _trim_complete_turns(working, over_limit)
+
     hard_protected = _hard_protected_message_indices(working)
     recent_user_indices = [
         index
@@ -464,6 +540,9 @@ def trim_messages_with_sliding_window(
         payload_size = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
         return payload_size > UNKNOWN_MODEL_MAX_BYTES
 
+    if any(message.get("_turn") for message in working):
+        return _trim_complete_turns(working, over_limit)
+
     while len(working) > 1 and over_limit(working):
         removable_index = next(
             (index for index, message in enumerate(working) if message.get("role") != "system"),
@@ -472,6 +551,21 @@ def trim_messages_with_sliding_window(
         if removable_index is None:
             break
         del working[removable_index]
+    return working
+
+
+def _trim_complete_turns(messages: list[dict[str, object]],
+                         over_limit: Callable[[list[dict[str, object]]], bool]) -> list[dict[str, object]]:
+    """只移除完整旧轮次，始终保留最新轮次的调用和结果配对。"""
+    from llm.errors import LLMError
+    working = list(messages)
+    turns = list(dict.fromkeys(str(message["_turn"]) for message in working if message.get("_turn")))
+    for identifier in turns[:-1]:
+        if not over_limit(working):
+            break
+        working = [message for message in working if message.get("_turn") != identifier]
+    if over_limit(working):
+        raise LLMError("context_too_long", "当前完整轮次超过模型上下文容量，请缩短输入或更换模型。")
     return working
 
 

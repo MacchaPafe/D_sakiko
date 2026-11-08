@@ -999,8 +999,13 @@ class MultiCharEditor(QObject):
         """独立保存文本；无声句按新文字长度校验已保存编排和当前草稿。"""
         if self.audio_busy:
             return False
+        try:
+            self.chat._timeline.check_editable()
+        except RuntimeError as error:
+            self.status.setText(str(error))
+            return False
+        snapshot = self.message.as_dict()
         old_text = self.message.text
-        old_translation = self.message.translation
         old_timeline = self.message.performance_timeline
         new_text = self.original_input.toPlainText()
         self.message.text = new_text
@@ -1009,9 +1014,7 @@ class MultiCharEditor(QObject):
         if not self.message.audio_path:
             self.message.performance_timeline, _ = trim_timeline(old_timeline, span.duration_ms)
         if not self.owner._save_chat():
-            self.message.text = old_text
-            self.message.translation = old_translation
-            self.message.performance_timeline = old_timeline
+            self.message.restore_failed_edit(snapshot)
             return False
         self.show_saved_text()
         self.refresh_sentence_span()

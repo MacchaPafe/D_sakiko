@@ -298,6 +298,7 @@ class ToolCallingAgentRuntime:
         max_tool_rounds: int = 15,
         max_tool_errors: int = 3,
         debug: bool = True,
+        on_tool_result: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         """
         创建一个工具调用循环组件。
@@ -313,6 +314,7 @@ class ToolCallingAgentRuntime:
         self.max_tool_rounds = max_tool_rounds
         self.max_tool_errors = max_tool_errors
         self.debug = debug
+        self.on_tool_result = on_tool_result
         # 最多并行两个工具运行
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
@@ -431,14 +433,19 @@ class ToolCallingAgentRuntime:
             # 如果存在过渡文本，则使用回调将其显示到 UI 界面中（并触发语音合成）。
             if visible_tool_calls and interim_text and on_interim_message is not None:
                 # 异步执行回调（这通常会把文本塞进队列，触发 TTS 和前端更新），并保存句柄
-                def _invoke_callback():
+                def _invoke_callback(current_response: object = response) -> object:
+                    """冻结当前响应，后台回调不能借用下一次循环的响应身份。"""
                     try:
-                        return on_interim_message(interim_text, visible_tool_calls, interim_is_placeholder)
+                        return on_interim_message(interim_text, visible_tool_calls, interim_is_placeholder,
+                                                  response=current_response)
                     except TypeError:
                         try:
-                            return on_interim_message(interim_text, visible_tool_calls)
+                            return on_interim_message(interim_text, visible_tool_calls, interim_is_placeholder)
                         except TypeError:
-                            return on_interim_message(interim_text)
+                            try:
+                                return on_interim_message(interim_text, visible_tool_calls)
+                            except TypeError:
+                                return on_interim_message(interim_text)
 
                 pending_interim_future = self._executor.submit(_invoke_callback)
 
@@ -483,6 +490,10 @@ class ToolCallingAgentRuntime:
                 # 按照 DeepSeek V4 文档的要求，在 assistant 消息中附加 reasoning_content 字段。
                 assistant_message["reasoning_content"] = reasoning_content
 
+            from llm.types import LLMResult
+            if isinstance(response, LLMResult):
+                assistant_message["content"] = response.text
+                assistant_message["_replay"] = response.protocol
             history.append(assistant_message)
 
             # 遍历并执行所有工具调用，将结果转化为 tool 消息压入历史中供下一轮循环读取
@@ -535,6 +546,9 @@ class ToolCallingAgentRuntime:
                     )
                 )
 
+                if self.on_tool_result is not None:
+                    self.on_tool_result({"tool_call_id": call.tool_call_id, "tool_name": call.name,
+                                         "content": tool_output, "ok": ok})
                 history.append(
                     {
                         "role": "tool",
@@ -614,7 +628,12 @@ class ToolCallingAgentRuntime:
         统一解析支持多后端返回内容格式差异（字典/对象），
         提取助理回复内容（assistant_content）、期间文本（interim_message）及工具调用请求（tool_calls）供架构处理。
         """
-        # 兼容 dict / LiteLLM ModelResponse 两种返回结构。
+        from llm.types import LLMResult
+        if isinstance(response, LLMResult):
+            response = {"model": response.model, "choices": [{"finish_reason": response.finish_reason,
+                        "message": {"content": response.text, "reasoning_content": response.reasoning,
+                                    "tool_calls": response.tool_calls}}]}
+        # 兼容旧的注入式调用和工具运行时测试替身。
         message: Any = None
         finish_reason: Optional[str] = None
         model: Optional[str] = None

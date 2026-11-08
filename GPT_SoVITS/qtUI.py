@@ -1794,6 +1794,10 @@ class ChatGUI(QWidget):
 
         layout.addLayout(top_layout)
         layout.addWidget(self.update_banner)
+        from ui_qt.components.chatgpt_announcement import ChatGPTAnnouncement
+        self.chatgpt_announcement = ChatGPTAnnouncement(self)
+        self.chatgpt_announcement.configure_requested.connect(self._open_chatgpt_configuration)
+        layout.addWidget(self.chatgpt_announcement)
         self.recovery_banner = QFrame(self)
         self.recovery_banner.setObjectName("recoveryBanner")
         self.recovery_banner.setStyleSheet("QFrame#recoveryBanner { border: 1px solid #c75b39; border-radius: 6px; }")
@@ -2754,30 +2758,30 @@ class ChatGUI(QWidget):
     @staticmethod
     def _chat_backup_save_file_filter() -> str:
         """返回对话备份包保存文件筛选器。"""
-        return "D_sakiko 对话备份 (*.dsakiko-chat.zip);;Zip 文件 (*.zip)"
+        return "D_sakiko 共同对话包 (*.dsakiko.json);;旧版 Zip 备份 (*.zip)"
 
     @staticmethod
     def _chat_backup_open_file_filter() -> str:
         """返回对话备份包打开文件筛选器。"""
-        return "D_sakiko 对话备份 (*.dsakiko-chat.zip *.zip);;Zip 文件 (*.zip)"
+        return "D_sakiko 对话包 (*.dsakiko.json *.json *.dsakiko-chat.zip *.zip)"
 
     @staticmethod
     def _ensure_chat_backup_extension(output_path: str) -> str:
         """确保导出路径带有对话备份包扩展名。"""
-        if output_path.endswith(".dsakiko-chat.zip") or output_path.endswith(".zip"):
+        if output_path.endswith((".dsakiko.json", ".json", ".zip")):
             return output_path
-        return f"{output_path}.dsakiko-chat.zip"
+        return f"{output_path}.dsakiko.json"
 
     @classmethod
     def _default_single_chat_backup_filename(cls, chat: Chat) -> str:
         """生成单条对话导出的默认文件名。"""
         safe_name = cls._safe_backup_filename_part(chat.name.strip() or "未命名对话")
-        return f"{safe_name}_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko-chat.zip"
+        return f"{safe_name}_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko.json"
 
     @staticmethod
     def _default_multi_chat_backup_filename() -> str:
         """生成多条对话导出的默认文件名。"""
-        return f"D_sakiko_对话备份_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko-chat.zip"
+        return f"D_sakiko_对话备份_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko.json"
 
     @staticmethod
     def _safe_backup_filename_part(text: str) -> str:
@@ -2981,6 +2985,10 @@ class ChatGUI(QWidget):
 
     def _ensure_delete_operation_allowed(self, action_text: str = "重试") -> bool:
         """检查当前是否允许执行消息操作。"""
+        storage_error = getattr(getattr(self, "chat_manager", None), "storage_error", None)
+        if isinstance(storage_error, str) and storage_error:
+            QMessageBox.warning(self, "请先保存聊天记录", storage_error)
+            return False
         if self.is_chat_busy():
             self.messages_box.clear()
             self.messages_box.append(f"请等待当前回复完成后再{action_text}。")
@@ -3557,20 +3565,10 @@ class ChatGUI(QWidget):
         )
 
     def _current_litellm_model_name(self) -> str:
-        """按照当前配置解析 LiteLLM 实际使用的模型名称。"""
-        if d_sakiko_config.use_default_deepseek_api.value:
-            return "deepseek/deepseek-flash"
-        if d_sakiko_config.enable_custom_llm_api_provider.value:
-            custom_model = str(d_sakiko_config.custom_llm_api_model.value or "")
-            return ensure_openai_compatible_model(custom_model)
-
-        provider = str(d_sakiko_config.llm_api_provider.value or "")
-        configured_models = d_sakiko_config.llm_api_model.value
-        model_name = str(configured_models.get(provider, "") if isinstance(configured_models, dict) else "")
-        if provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
-            return ensure_openai_compatible_model(model_name)
-        return self._concat_provider_and_model(provider, model_name)
-
+        """与生成请求共用模型连接解析，避免配置页和运行时选择不同模型。"""
+        from llm.configuration import resolve_config
+        connection = resolve_config(d_sakiko_config)
+        return ensure_openai_compatible_model(connection.model) if connection.protocol == "responses" else connection.model
     @staticmethod
     def _concat_provider_and_model(provider: str, model: str) -> str:
         """将 provider 和 model 合并为 LiteLLM 常用的 provider/model 形式。"""
@@ -3585,13 +3583,23 @@ class ChatGUI(QWidget):
     def _current_model_supports_vision(self) -> bool:
         """判断当前选择的大模型是否支持视觉输入。"""
         model = self._current_litellm_model_name()
+        from llm.configuration import resolve_config
         return model_supports_image_upload(
             model,
             use_default_deepseek_api=bool(d_sakiko_config.use_default_deepseek_api.value),
+            allow_unknown=(resolve_config(d_sakiko_config).protocol == "responses" or bool(d_sakiko_config.enable_custom_llm_api_provider.value)
+                           and getattr(getattr(d_sakiko_config, "custom_llm_api_protocol", None), "value", "") == "responses"),
         )
 
     def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
         """从当前 UI 配置解析 DeepSeek Files 服务作用域。"""
+        from llm.configuration import resolve_config
+        if resolve_config(d_sakiko_config).protocol == "responses":
+            return None
+        if (bool(d_sakiko_config.enable_custom_llm_api_provider.value)
+                and getattr(getattr(d_sakiko_config, "custom_llm_api_protocol", None), "value", "") == "responses"):
+            return None
+
         if d_sakiko_config.use_default_deepseek_api.value:
             return None
         if d_sakiko_config.enable_custom_llm_api_provider.value:
@@ -4117,13 +4125,17 @@ class ChatGUI(QWidget):
         self.schedule_context_usage_refresh()
         self._refresh_send_button_state()
 
-    def _open_llm_configuration(self) -> None:
+    def _open_chatgpt_configuration(self) -> None:
+        """登录功能横幅只跳转配置页，不在主程序内执行 OAuth。"""
+        self._open_llm_configuration("ChatGPTArea")
+
+    def _open_llm_configuration(self, initial_interface: str = "DSakikoConfigArea") -> None:
         """打开独立的大模型 API 配置窗口。"""
         try:
             import subprocess
 
             subprocess.Popen(
-                [sys.executable, os.path.join(script_dir, "dsakiko_configuration.py"), "DSakikoConfigArea"],
+                [sys.executable, os.path.join(script_dir, "dsakiko_configuration.py"), initial_interface],
                 cwd=script_dir,
             )
         except Exception:

@@ -238,23 +238,28 @@ class HeadlessRuntime:
                 if isinstance(client_message_id, str) and isinstance(turn_id, str):
                     self._client_message_turns[(chat.chat_id, client_message_id)] = turn_id
 
-    def _message_meta(self, chat: Any) -> list[dict[str, Any]]:
+    def _message_meta(self, chat: object) -> list[dict[str, object]]:
+        """按稳定消息身份恢复客户端元数据，位置变化不再串绑另一条消息。"""
         raw = chat.meta.extra.get("webui_messages")
-        if not isinstance(raw, list):
-            raw = []
-            chat.meta.extra["webui_messages"] = raw
-        while len(raw) < len(chat.message_list):
-            index = len(raw)
-            message = chat.message_list[index]
-            raw.append({
-                "id": f"msg_{chat.chat_id}_{index}",
-                "created_at": 0,
-                "turn_id": None,
-                "client_message_id": None,
-                "sequence": 0,
-                "role": "user" if message.character_name == "User" else "assistant",
-            })
-        return raw
+        old = raw if isinstance(raw, list) else []
+        indexed = {str(item.get("id")): item for item in old if isinstance(item, dict)}
+        rebuilt = []
+        for index, message in enumerate(chat.message_list):
+            stable_id = getattr(message, "id", "")
+            previous = indexed.get(stable_id, {}) if stable_id else (old[index] if index < len(old) else {})
+            record = dict(previous)
+            record.setdefault("created_at", 0)
+            record.setdefault("turn_id", None)
+            record.setdefault("client_message_id", None)
+            record.setdefault("sequence", 0)
+            record["id"] = stable_id or record.get("id") or f"msg_{chat.chat_id}_{index}"
+            record["role"] = "user" if message.character_name == "User" else "assistant"
+            rebuilt.append(record)
+        if isinstance(raw, list):
+            raw[:] = rebuilt
+            return raw
+        chat.meta.extra["webui_messages"] = rebuilt
+        return rebuilt
 
     def _persona_entity(self, chat: Any) -> dict[str, str]:
         snapshot = getattr(chat.prompt_generator, "user_persona", None)
@@ -403,6 +408,10 @@ class HeadlessRuntime:
                     raise ProtocolError("CHAT_SAVE_FAILED", str(exc), True) from exc
                 self._last_storage_notice = None
             return {"saved": True}, []
+        storage_error = getattr(self.chat_manager, "storage_error", None)
+        if (isinstance(storage_error, str) and storage_error
+                and command_type in {"send_message", "create_chat", "set_character_form", "select_live2d_model"}):
+            raise ProtocolError("CHAT_SAVE_FAILED", storage_error, True)
         if command_type == "get_chat_list":
             return {"accepted": True}, [self._local_event("chat_list_snapshot", self.chat_list_snapshot())]
         if command_type == "ping":
@@ -727,7 +736,7 @@ class HeadlessRuntime:
         chat.add_message(user_message)
         meta = self._message_meta(chat)
         meta[-1] = {
-            "id": f"msg_{uuid.uuid4().hex}",
+            "id": getattr(user_message, "id", "") or f"msg_{uuid.uuid4().hex}",
             "created_at": int(time.time()),
             "turn_id": turn_id,
             "client_message_id": client_message_id,
@@ -737,11 +746,6 @@ class HeadlessRuntime:
         try:
             self.chat_manager.save()
         except Exception as exc:
-            chat.message_list.pop()
-            if len(meta) > len(chat.message_list):
-                meta.pop()
-            for attachment in imported_attachments:
-                resolve_attachment_path(attachment.path).unlink(missing_ok=True)
             raise ProtocolError("INTERNAL_ERROR", "消息保存失败，请重试。", True) from exc
 
         self.uploads.discard(upload_ids)
@@ -917,33 +921,8 @@ class HeadlessRuntime:
         ))
 
     def _rollback_failed_user_message(self, chat_id: str | None, turn_id: str | None) -> None:
-        """推理未产生角色回复时，仅从持久记录中撤回本轮 WebUI 用户消息。"""
-        if not chat_id or not turn_id or self._turn_segment_count(chat_id, turn_id):
-            return
-        with self._lock:
-            chat = self.chat_manager.get_chat_by_id(chat_id)
-            if chat is None:
-                return
-            meta = self._message_meta(chat)
-            index = next((
-                index
-                for index, item in enumerate(meta)
-                if item.get("turn_id") == turn_id and item.get("role") == "user"
-            ), None)
-            if index is None or index >= len(chat.message_list):
-                return
-
-            from chat.attachments import resolve_attachment_path
-
-            message = chat.message_list[index]
-            client_message_id = meta[index].get("client_message_id")
-            for attachment in message.attachments:
-                resolve_attachment_path(attachment.path).unlink(missing_ok=True)
-            chat.delete_message_at(index)
-            meta.pop(index)
-            if isinstance(client_message_id, str):
-                self._client_message_turns.pop((chat_id, client_message_id), None)
-            self.chat_manager.save()
+        """模型失败后保留已接纳输入和工具过程，不再撤回用户消息。"""
+        return
 
     def _avatar_snapshot(self, character_id: str) -> dict[str, Any]:
         character = self.character_by_id.get(character_id)
@@ -1122,6 +1101,9 @@ class HeadlessRuntime:
             if not isinstance(segment, dict) or self.dp_chat.is_turn_cancelled(chat_id, turn_id):
                 break
             message_index = segment.get("message_index")
+            if segment.get("line_id"):
+                message_index = next((index for index, item in enumerate(chat.message_list)
+                                      if getattr(item, "id", "") == segment["line_id"]), -1)
             if not isinstance(message_index, int) or not 0 <= message_index < len(chat.message_list):
                 continue
             message = chat.message_list[message_index]

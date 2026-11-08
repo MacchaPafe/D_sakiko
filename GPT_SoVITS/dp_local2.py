@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from rag.worldbook.runtime.service import WorldbookConversationService
 
 from qconfig import create_d_sakiko_config_snapshot, d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
+from llm.errors import LLMError
 from llm_model_utils import ensure_openai_compatible_model
 from llm_request_settings import request_timeout
 from character import CharacterAttributes
@@ -116,56 +117,25 @@ class _TextGeneratingQueue(Protocol):
 
 
 def completion(**kwargs: object) -> object:
-    """
-    调用 litellm 的 completion 接口。
-    如果模型属于 DeepSeek 模型，进行一次特殊的参数修改：
-    将推理强度从 reasoning_effort 参数转换为 extra_body，因为 reasoning_effort 参数在 litellm 的 DeepSeek 实现中会被忽略。
-    将 thinking 参数转换为 extra_body 中的 thinking 字段，格式为 {"type": "enabled"} 或 {"type": "disabled"}，因为 litellm 会忽略 thinking="disabled" 参数。
-    """
-    import litellm
-
-    cache_debug_phase = str(kwargs.pop(CACHE_DEBUG_PHASE_KEY, "unknown") or "unknown")
-    if "model" in kwargs and isinstance(kwargs["model"], str):
-        # 只查找 deepseek 系列模型
-        # 这里没有检验 base url，但愿第三方 API 提供 deepseek 的时候遵循和官网一样的 extra_body 协议……
-        # 理论上讲，第三方 API 的行为应该和官方一样才对
-        if "deepseek" in kwargs["model"].lower():
-            extra_body = kwargs.get("extra_body")
-            if not isinstance(extra_body, dict):
-                extra_body = {}
-            else:
-                extra_body = dict(extra_body)
-
-            # 记录是否禁用了推理
-            thinking_disabled = False
-            if "thinking" in kwargs:
-                thinking_value = kwargs.pop("thinking", None)
-                if isinstance(thinking_value, dict):
-                    thinking_type = thinking_value.get("type")
-                    thinking_disabled = thinking_type != "enabled"
-                    extra_body["thinking"] = {
-                        "type": "enabled" if thinking_type == "enabled" else "disabled"
-                    }
-
-            if "reasoning_effort" in kwargs:
-                reasoning_effort = kwargs.pop("reasoning_effort")
-                # 如果没有启用推理，不能加入 reasoning_effort 参数
-                if not thinking_disabled:
-                    if reasoning_effort == "xhigh":
-                        # DeepSeek 官方文档推荐用 max 代替 xhigh 强度
-                        reasoning_effort = "max"
-                    extra_body["reasoning_effort"] = reasoning_effort
-            # 保证不启用推理时一定没传入 reasoning_effort 参数
-            if thinking_disabled:
-                extra_body.pop("reasoning_effort", None)
-            if extra_body:
-                kwargs["extra_body"] = extra_body
-
-    request_kwargs_for_log = dict(kwargs)
-    request_kwargs_for_log[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
-    response = litellm.completion(**kwargs)
-    log_prompt_cache_usage(response, request_kwargs_for_log, logger)
-    return response
+    """兼容现有调用点，把显式请求转换为统一 LLM 接口。"""
+    from llm.client import generate
+    from llm.types import CancellationToken, LLMConfig, LLMRequest
+    phase = str(kwargs.pop(CACHE_DEBUG_PHASE_KEY, "unknown"))
+    provider = str(kwargs.pop("_provider_id", "custom"))
+    protocol = str(kwargs.pop("_protocol", "chat-completions"))
+    cancel = kwargs.pop("_cancel", None)
+    config = LLMConfig(provider, str(kwargs.pop("model", "")), str(kwargs.pop("api_key", "")),
+                       str(kwargs.pop("base_url", "") or ""), protocol,
+                       float(kwargs.pop("timeout", 30)), bool(kwargs.pop("_sdk_chat", False)),
+                       route=str(kwargs.pop("_route", "standard")), account_id=str(kwargs.pop("_account_id", "")))
+    conversation_id = str(kwargs.pop("_conversation_id", ""))
+    messages = kwargs.pop("messages", [])
+    tools = kwargs.pop("tools", None)
+    choice = kwargs.pop("tool_choice", "auto")
+    request = LLMRequest(messages, tools or [], choice, dict(kwargs), conversation_id=conversation_id)
+    result = generate(request, config, cancel if isinstance(cancel, CancellationToken) else None)
+    log_prompt_cache_usage(result, {"model": config.model, CACHE_DEBUG_PHASE_KEY: phase}, logger)
+    return result
 
 
 class DSLocalAndVoiceGen:
@@ -201,6 +171,7 @@ class DSLocalAndVoiceGen:
         # 这样成功将 LLM 内部具体请求格式和 Agent 工具调用逻辑解耦。
         self.tool_runtime = ToolCallingAgentRuntime(
             llm_completion=self._completion_with_current_config,
+            on_tool_result=self._persist_tool_result,
             debug=True,
         )
         # 仅在世界书实际启用时延迟加载的聊天检索服务。
@@ -222,6 +193,11 @@ class DSLocalAndVoiceGen:
         self._cancelled_turns_lock = threading.Lock()
         self._rollback_user_message_on_error = True
         self.initial()
+
+    def _persist_tool_result(self, payload: dict[str, object]) -> None:
+        """立即保存工具结果，存档失败时阻止下一次模型请求。"""
+        self.current_chat.record_tool_result(payload)
+        self.chat_manager.save()
 
     def initial(self):
         # 聊天记录已经由 ChatManager 在初始化时加载完成，无需再从旧版 JSON 文件读取
@@ -361,25 +337,8 @@ class DSLocalAndVoiceGen:
         is_text_generating_queue: _TextGeneratingQueue,
         rollback_user_message: bool,
     ) -> None:
-        """
-        清理失败轮次的生成标志，并按需回滚最新用户消息。
-        """
+        """清理生成标志；已接纳的输入及附件始终保留在历史中。"""
         self._clear_text_generating_flag_if_needed(is_text_generating_queue)
-        if rollback_user_message and self.current_chat.message_list:
-            removed_message = self.current_chat.message_list.pop()
-            for attachment in removed_message.attachments:
-                try:
-                    attachment_path = resolve_attachment_path(attachment.path)
-                    expected_root = chat_attachment_dir(self.current_chat.chat_id).resolve()
-                    attachment_path.resolve().relative_to(expected_root)
-                    attachment_path.unlink(missing_ok=True)
-                except (OSError, ValueError):
-                    logger.warning("回滚消息时未能删除本地附件：%s", attachment.path)
-            service = self._current_deepseek_file_service()
-            self.remote_attachment_manager.submit_reconcile_and_cleanup(
-                self._formal_attachments(),
-                [service] if service is not None else [],
-            )
 
     @staticmethod
     def _truncate_error_detail(text: str, limit: int = 1800) -> str:
@@ -471,7 +430,7 @@ class DSLocalAndVoiceGen:
         self._emit_turn_error(dp2qt_queue, chat_id, turn_id, ui_message)
         self._clear_failed_turn_state(
             is_text_generating_queue,
-            rollback_user_message=self._rollback_user_message_on_error,
+            rollback_user_message=False,
         )
 
     def _build_runtime_system_instruction(self) -> str:
@@ -826,6 +785,13 @@ class DSLocalAndVoiceGen:
     def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
         """从本轮冻结配置中解析 DeepSeek Files 服务作用域。"""
         config = getattr(self, "d_sakiko_config", None)
+        from llm.configuration import resolve_config
+        if config is not None and resolve_config(config).protocol == "responses":
+            return None
+        if (bool(self.d_sakiko_config.enable_custom_llm_api_provider.value)
+                and getattr(getattr(self.d_sakiko_config, "custom_llm_api_protocol", None), "value", "") == "responses"):
+            return None
+
         if config is None:
             return None
         if config.use_default_deepseek_api.value:
@@ -1070,14 +1036,8 @@ class DSLocalAndVoiceGen:
         provider_id: str,
         completion_kwargs: dict[str, object],
     ) -> object:
-        """
-        按内部 provider id 选择补全请求策略。
-        """
-        if provider_id == "modelscope":
-            return DSLocalAndVoiceGen._completion_with_modelscope_rate_limit_policy(
-                completion_kwargs
-            )
-        return completion(**completion_kwargs)
+        """通过统一入口执行，供应商重试仅由请求模块负责。"""
+        return completion(_provider_id=provider_id, **completion_kwargs)
 
     @staticmethod
     def _modelscope_quota_exhausted_message(
@@ -1128,53 +1088,11 @@ class DSLocalAndVoiceGen:
             completion_kwargs: dict[str, object],
             service: DeepSeekFileServiceConfig,
     ) -> object:
-        """把统一补全参数转换为 OpenAI SDK 的 DeepSeek 请求。"""
-        from openai import OpenAI
-
-        request_kwargs = dict(completion_kwargs)
-        request_kwargs.pop("api_key", None)
-        request_kwargs.pop("base_url", None)
-        request_kwargs.pop(CACHE_DEBUG_PHASE_KEY, None)
-        timeout = request_kwargs.pop("timeout", request_timeout(d_sakiko_config))
-        request_kwargs.pop("max_retries", None)
-        request_kwargs["model"] = service.model
-
-        extra_body = request_kwargs.get("extra_body")
-        normalized_extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
-        thinking = request_kwargs.pop("thinking", None)
-        if isinstance(thinking, dict):
-            thinking_type = str(thinking.get("type") or "disabled")
-            normalized_extra_body["thinking"] = {
-                "type": "enabled" if thinking_type == "enabled" else "disabled"
-            }
-        reasoning_effort = request_kwargs.pop("reasoning_effort", None)
-        thinking_body = normalized_extra_body.get("thinking")
-        thinking_disabled = (
-            isinstance(thinking_body, dict)
-            and thinking_body.get("type") == "disabled"
-        )
-        if reasoning_effort is not None and not thinking_disabled:
-            normalized_extra_body["reasoning_effort"] = (
-                "max" if reasoning_effort == "xhigh" else reasoning_effort
-            )
-        if thinking_disabled:
-            normalized_extra_body.pop("reasoning_effort", None)
-        if normalized_extra_body:
-            request_kwargs["extra_body"] = normalized_extra_body
-        else:
-            request_kwargs.pop("extra_body", None)
-
-        client = OpenAI(
-            api_key=service.api_key,
-            base_url=service.api_base,
-            timeout=timeout,
-            max_retries=0,
-        )
-        response = client.chat.completions.create(**request_kwargs)
-        request_for_log = dict(request_kwargs)
-        request_for_log["api_base"] = service.api_base
-        log_prompt_cache_usage(response, request_for_log, logger)
-        return response
+        """统一入口内采用 SDK 聊天适配，保留现有文件修复编排。"""
+        options = dict(completion_kwargs)
+        options.update(model=service.model, api_key=service.api_key, base_url=service.api_base)
+        options.pop("_provider_id", None)
+        return completion(_provider_id="deepseek", _sdk_chat=True, **options)
 
     @staticmethod
     def _is_invalid_deepseek_file_error(exc: BaseException) -> bool:
@@ -1278,119 +1196,76 @@ class DSLocalAndVoiceGen:
         tool_choice: object = "auto",
         **kwargs: object,
     ) -> object:
-        """
-        runtime 发起 LLM 请求的底层入口。
-
-        在进行请求时，此函数会根据当前 chat 的设置，传入是否启用推理以及推理强度设定。如果 kwargs 中已经包含了相关设定，则以 kwargs 中的为准。
-        :param model: 当前请求使用的模型名称
-        :param messages: 请求发送的所有信息
-        :param tools: 请求提供的 tool
-        :param tool_choice: 工具选择策略，默认为 "auto"，表示由模型决定使用哪个工具；也可以指定为特定工具的名称，强制使用该工具（前提是 tools 中有这个工具）。
-        :param kwargs: 其他传递给 litellm.completion 的参数。请注意如下参数在 kwargs 中传入时不会生效：
-        model, messages, api_key, base_url, tools, tool_choice
-        """
-        # 提取运行时参数，避免后续和显式传参重复。
-        runtime_kwargs: dict[str, object] = dict(kwargs)
-        stream = runtime_kwargs.pop("stream", False)
-        timeout = runtime_kwargs.pop("timeout", getattr(
-            self, "_turn_request_timeout", request_timeout(self.d_sakiko_config)))
-        reasoning_snapshot_locked = bool(runtime_kwargs.pop("_reasoning_snapshot_locked", False))
-        cache_debug_phase = str(runtime_kwargs.pop(CACHE_DEBUG_PHASE_KEY, model) or model)
-        # 不允许通过 kwargs 手动指定这些参数；这些参数只能在本函数内构建
-        for protected_key in ("model", "messages", "api_key", "base_url", "tools", "tool_choice"):
-            runtime_kwargs.pop(protected_key, None)
-
-        # 根据当前 API 配置选择模型、鉴权信息和可选 base_url。
-        if self.d_sakiko_config.use_default_deepseek_api.value:
-            provider_id = "deepseek_up"
-            logger.debug("正在使用 UP 的 DeepSeek API")
-            completion_kwargs: dict[str, object] = {
-                "model": "deepseek/deepseek-flash",
-                "messages": messages,
-                "api_key": self.model,
-                "stream": stream,
-                "timeout": timeout,
-            }
-        elif self.d_sakiko_config.enable_custom_llm_api_provider.value:
-            provider_id = "custom"
-            logger.debug("正在使用自定义大模型 API")
-            logger.debug("API Base: %s", self.d_sakiko_config.custom_llm_api_url.value)
-            logger.debug("API Model: %s", self.d_sakiko_config.custom_llm_api_model.value)
-            completion_kwargs = {
-                "model": ensure_openai_compatible_model(self.d_sakiko_config.custom_llm_api_model.value),
-                "messages": messages,
-                "api_key": self.d_sakiko_config.custom_llm_api_key.value,
-                "base_url": self.d_sakiko_config.custom_llm_api_url.value,
-                "stream": stream,
-                "timeout": timeout,
-            }
-        else:
-            logger.debug("正在使用预定义大模型 API")
-            logger.debug("Provider: %s", self.d_sakiko_config.llm_api_provider.value)
-            logger.debug("Model: %s", self.d_sakiko_config.llm_api_model.value[self.d_sakiko_config.llm_api_provider.value])
-            provider = self.d_sakiko_config.llm_api_provider.value
-            provider_id = str(provider)
-            model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
-            api_key = self.d_sakiko_config.llm_api_key.value.get(provider, "")
-            base_url = self.d_sakiko_config.llm_api_base_url.value.get(provider)
-
-            completion_kwargs = {
-                "model": self.normalize_model_for_provider(provider, model_name),
-                "messages": messages,
-                "api_key": api_key,
-                "stream": stream,
-                "timeout": timeout,
-            }
-            if base_url:
-                completion_kwargs["base_url"] = base_url
-
+        """把回合的配置快照转换为统一请求；不接管工具循环。"""
+        from llm.configuration import resolve_config, setting
+        from llm.types import CancellationToken, LLMResult
+        manager = getattr(self, "chat_manager", None)
+        if manager is not None and manager.storage_error:
+            raise LLMError("storage_failed", manager.storage_error)
+        connection = resolve_config(self.d_sakiko_config, str(getattr(self, "model", "") or ""))
+        options = dict(kwargs)
+        options.pop("stream", None)
+        locked = bool(options.pop("_reasoning_snapshot_locked", False))
+        phase = str(options.pop(CACHE_DEBUG_PHASE_KEY, model))
+        timeout = options.pop("timeout", getattr(self, "_turn_request_timeout", connection.timeout))
+        for key in ("model", "messages", "api_key", "base_url", "tools", "tool_choice"):
+            options.pop(key, None)
+        if not locked and not any(key in options for key in ("thinking", "reasoning_effort", "extra_body")):
+            reasoning = self.current_chat.meta.llm_reasoning
+            if reasoning.enabled != "auto":
+                options["thinking"] = {"type": "enabled" if reasoning.enabled == "on" else "disabled"}
+            if reasoning.effort != "default":
+                options["reasoning_effort"] = reasoning.effort
+        options.setdefault("temperature", setting(self.d_sakiko_config, "llm_temperature", 1.0))
+        options.setdefault("top_p", setting(self.d_sakiko_config, "llm_top_p", 1.0))
+        chat_id = getattr(self, "_request_chat_id", "")
+        turn_id = getattr(self, "_request_turn_id", "")
+        cancel = CancellationToken(lambda: bool(turn_id and self.is_turn_cancelled(chat_id, turn_id)))
+        request_kwargs = dict(options, model=connection.model, messages=messages,
+                              api_key=connection.api_key, stream=False, timeout=timeout,
+                              _protocol=connection.protocol, _cancel=cancel, _route=connection.route,
+                              _account_id=connection.account_id, _conversation_id=str(chat_id))
+        if connection.route == "chatgpt-subscription" and turn_id and getattr(self, "_chatgpt_lease_turn", None) != turn_id:
+            old_lease = getattr(self, "_chatgpt_turn_lease", None)
+            if old_lease is not None:
+                old_lease.close()
+            from llm.chatgpt.storage import AccountStore
+            self._chatgpt_turn_lease = AccountStore().lease(connection.account_id)
+            self._chatgpt_lease_turn = turn_id
+        if connection.base_url:
+            request_kwargs["base_url"] = connection.base_url
         if tools is not None:
-            completion_kwargs["tools"] = tools
-            completion_kwargs["tool_choice"] = tool_choice
-
-        # 如果调用方没有显式传入推理相关参数，则根据当前 Chat 的配置补充。
-        extra_body = runtime_kwargs.get("extra_body")
-        extra_body_has_reasoning = (
-            isinstance(extra_body, dict)
-            and ("thinking" in extra_body or "reasoning_effort" in extra_body)
-        )
-        has_explicit_reasoning = (
-            reasoning_snapshot_locked
-            or "thinking" in runtime_kwargs
-            or "reasoning_effort" in runtime_kwargs
-            or extra_body_has_reasoning
-        )
-        if not has_explicit_reasoning:
-            reasoning_meta = self.current_chat.meta.llm_reasoning
-            if reasoning_meta.enabled == "on":
-                runtime_kwargs["thinking"] = {"type": "enabled"}
-            elif reasoning_meta.enabled == "off":
-                runtime_kwargs["thinking"] = {"type": "disabled"}
-
-            if reasoning_meta.effort != "default":
-                runtime_kwargs["reasoning_effort"] = reasoning_meta.effort
-
-        if not runtime_kwargs.get("temperature"):
-            completion_kwargs["temperature"] = self.d_sakiko_config.llm_temperature.value
-        if not runtime_kwargs.get("top_p"):
-            completion_kwargs["top_p"] = self.d_sakiko_config.llm_top_p.value
-
-        # 合并运行时参数并发起请求。runtime_kwargs 不允许覆盖上面确定的核心请求字段。
-        completion_kwargs.update(runtime_kwargs)
-        completion_kwargs[CACHE_DEBUG_PHASE_KEY] = cache_debug_phase
-        deepseek_file_service = self._current_deepseek_file_service()
-        if (
-                deepseek_file_service is not None
-                and Chat.messages_contain_image_content(messages)
-        ):
-            return self._execute_deepseek_multimodal_completion(
-                completion_kwargs,
-                deepseek_file_service,
-            )
-        return self._execute_completion_with_provider_policy(
-            provider_id,
-            completion_kwargs,
-        )
+            request_kwargs.update(tools=tools, tool_choice=tool_choice)
+        request_kwargs[CACHE_DEBUG_PHASE_KEY] = phase
+        service = self._current_deepseek_file_service() if connection.protocol == "chat-completions" else None
+        if service is not None and Chat.messages_contain_image_content(messages):
+            result = self._execute_deepseek_multimodal_completion(request_kwargs, service)
+        else:
+            result = self._execute_completion_with_provider_policy(connection.provider, request_kwargs)
+        if isinstance(result, LLMResult) and model != "rolling-summary":
+            # 旧模型可能把调用写在 JSON 正文中；先固定其调用身份，再交给原有业务循环。
+            if not result.tool_calls:
+                parsed = ToolCallingAgentRuntime._parse_llm_response(result)
+                for call in parsed.get("tool_calls", []):
+                    result.tool_calls.append({"id": call.tool_call_id, "type": "function", "function": {
+                        "name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False)}})
+                    result.content.append({"type": "tool-call", "toolCallId": call.tool_call_id,
+                                           "toolName": call.name, "input": call.arguments, "providerOptions": {}})
+                    result.protocol["invalidated"] = True
+                if result.tool_calls:
+                    result.diagnostics.append("工具调用来自旧版 JSON 正文协议，按本地统一结构回传。")
+            if turn_id and self.current_chat.turns:
+                self.current_chat.turns[-1]["id"] = turn_id
+            self.current_chat.remember_runtime_controls(messages)
+            if self.current_chat.turns:
+                meta = self.current_chat.turns[-1]["meta"]
+                if not meta.get("generation"):
+                    meta["generation"] = {"modelId": connection.model, "timeoutMs": int(float(timeout) * 1000),
+                                          "temperature": options.get("temperature"), "topP": options.get("top_p")}
+                    meta["tools"] = [str(tool.get("function", tool).get("name", "")) for tool in tools or []]
+            self.current_chat.record_model_response(result)
+            self.chat_manager.save()
+        return result
 
     @staticmethod
     def _wait_audio_turn_complete(is_audio_play_complete):
@@ -1444,9 +1319,18 @@ class DSLocalAndVoiceGen:
         }
 
     def _emit_turn_complete(self, dp2qt_queue, chat_id: str, turn_id: str, status: str = "ok") -> None:
-        """
-        通知 UI 某一轮对话已经结束。
-        """
+        """结算本轮隐藏过程并通知 UI，保存失败仍保留内存中的完整结果。"""
+        if getattr(self, "_chatgpt_lease_turn", None) == turn_id:
+            self._chatgpt_turn_lease.close()
+            self._chatgpt_turn_lease = None
+            self._chatgpt_lease_turn = None
+        chat = self.chat_manager.get_chat_by_id(chat_id)
+        if chat is not None and chat.turns and chat.turns[-1]["id"] == turn_id:
+            chat._timeline.finish_turn(status)
+            try:
+                self.chat_manager.save()
+            except Exception:
+                logger.exception("轮次结束时保存失败，内存内容保留并阻止后续生成。")
         dp2qt_queue.put({
             "type": "assistant_turn_complete",
             "chat_id": chat_id,
@@ -1509,6 +1393,7 @@ class DSLocalAndVoiceGen:
         """
         return {
             "message_index": message_index,
+            "line_id": message.id,
             "text": message.text,
             "translation": message.translation,
             "emotion": message.emotion.as_label(),
@@ -1532,6 +1417,9 @@ class DSLocalAndVoiceGen:
         """
         从 LiteLLM/OpenAI 风格响应中提取 assistant content。
         """
+        from llm.types import LLMResult
+        if isinstance(response, LLMResult):
+            return response.text
         message: object = None
         if isinstance(response, dict):
             choices = response.get("choices")
@@ -1650,6 +1538,9 @@ class DSLocalAndVoiceGen:
                 audio_path="NO_AUDIO" if force_no_audio else ("" if self.if_generate_audio else "NO_AUDIO"),
             )
             self.current_chat.add_message(msg)
+            if msg.id:
+                entry = next(entry for _, _, entry in self.current_chat._timeline.entries() if entry["id"] == msg.id)
+                entry["spoken"]["language"] = "ja" if self.audio_language_choice == "日英混合" else "zh"
             added_msg_indices.append(len(self.current_chat.message_list) - 1)
         return added_msg_indices
 
@@ -1686,7 +1577,7 @@ class DSLocalAndVoiceGen:
                     tool_choice="none",
                     **request_kwargs,
                 )
-            except litellm.exceptions.BadRequestError as exc:
+            except (litellm.exceptions.BadRequestError, LLMError) as exc:
                 if use_json_mode and self._is_response_format_unsupported(exc):
                     logger.warning("当前模型或服务不支持 JSON Mode，降级为普通补全。")
                     use_json_mode = False
@@ -1752,6 +1643,8 @@ class DSLocalAndVoiceGen:
         使用 LiteLLM 的模型参数表判断当前配置是否应尝试 JSON Mode。
         """
         import litellm
+        if getattr(getattr(self.d_sakiko_config, "custom_llm_api_protocol", None), "value", "") == "responses" and self.d_sakiko_config.enable_custom_llm_api_provider.value:
+            return True
 
         get_supported_params = getattr(litellm, "get_supported_openai_params", None)
         if not callable(get_supported_params):
@@ -1767,24 +1660,20 @@ class DSLocalAndVoiceGen:
         return isinstance(params, list) and "response_format" in params
 
     def _current_litellm_model_name(self) -> str:
-        """
-        根据当前配置解析 LiteLLM 实际收到的 model 字符串。
-        """
-        if self.d_sakiko_config.use_default_deepseek_api.value:
-            return "deepseek/deepseek-flash"
-        if self.d_sakiko_config.enable_custom_llm_api_provider.value:
-            return ensure_openai_compatible_model(self.d_sakiko_config.custom_llm_api_model.value)
-
-        provider = self.d_sakiko_config.llm_api_provider.value
-        model_name = self.d_sakiko_config.llm_api_model.value.get(provider, "")
-        return self.normalize_model_for_provider(provider, model_name)
+        """与生成请求共用模型连接解析，避免配置页和运行时选择不同模型。"""
+        from llm.configuration import resolve_config
+        connection = resolve_config(self.d_sakiko_config)
+        return ensure_openai_compatible_model(connection.model) if connection.protocol == "responses" else connection.model
 
     def _current_model_supports_vision(self) -> bool:
         """判断当前 LiteLLM 模型是否支持视觉输入。"""
         model = self._current_litellm_model_name()
+        from llm.configuration import resolve_config
         return model_supports_image_upload(
             model,
             use_default_deepseek_api=bool(self.d_sakiko_config.use_default_deepseek_api.value),
+            allow_unknown=(resolve_config(self.d_sakiko_config).protocol == "responses" or bool(self.d_sakiko_config.enable_custom_llm_api_provider.value)
+                           and getattr(getattr(self.d_sakiko_config, "custom_llm_api_protocol", None), "value", "") == "responses"),
         )
 
     @staticmethod
@@ -1929,6 +1818,19 @@ class DSLocalAndVoiceGen:
         )
         return self._parse_model_segments_payload(retry_content, strict_mode)
 
+    def _reject_current_dialogue(self, raw: str) -> None:
+        """不合格的台词只留诊断，不能作为已验收回复重新进入模型历史。"""
+        turns = getattr(self.current_chat, "turns", None)
+        if not isinstance(turns, list):
+            return
+        for turn in reversed(turns):
+            for message in reversed(turn["messages"]):
+                extensions = message.get("extensions", {})
+                if message.get("kind") == "assistant" and extensions.get("rawText") == raw:
+                    extensions["rejectedDialogue"] = True
+                    message.get("protocol", {})["invalidated"] = True
+                    return
+
     def _run_final_json_completion(
         self,
         runtime_messages: list[dict[str, object]],
@@ -1946,6 +1848,7 @@ class DSLocalAndVoiceGen:
             try:
                 return self._parse_model_segments_payload(candidate)
             except (json.JSONDecodeError, ValueError) as exc:
+                self._reject_current_dialogue(candidate)
                 logger.debug("工具循环最终候选格式不合格，改用最终 JSON 收口请求。原因：%s", exc)
 
         generated, used_json_mode = self._run_json_completion_with_empty_retry(
@@ -1956,6 +1859,7 @@ class DSLocalAndVoiceGen:
         try:
             return self._parse_model_segments_payload(generated)
         except json.JSONDecodeError:
+            self._reject_current_dialogue(generated)
             try:
                 return self._retry_model_segments_format(
                     invalid_content=generated,
@@ -1966,6 +1870,7 @@ class DSLocalAndVoiceGen:
             except ValueError:
                 return generated
         except ValueError as exc:
+            self._reject_current_dialogue(generated)
             # 最多两次纠正格式错误的请求
             try:
                 return self._retry_model_segments_format(
@@ -2054,7 +1959,9 @@ class DSLocalAndVoiceGen:
                 break
 
     def _build_interim_message_callback(self, text_queue, is_audio_play_complete, is_text_generating_queue, dp2qt_queue, chat_id: str, turn_id: str):
-        def _callback(interim_text: str, tool_calls=None, is_placeholder: bool = False):
+        def _callback(interim_text: str, tool_calls: object = None, is_placeholder: bool = False,
+                      *, response: object = None) -> None:
+            """把过渡台词按原模型响应身份入档，再交给已有语音链路。"""
             #print("------------\n\n\n","收到 interim callback，文本内容：", interim_text)
             # 如果收到取消信息，则不再让 LLM 生成，直接返回。
             if self.is_turn_cancelled(chat_id, turn_id):
@@ -2066,6 +1973,8 @@ class DSLocalAndVoiceGen:
                 cleaned = "..."
             if not cleaned:
                 return
+
+            response_id = self.current_chat.response_message_id(response) if response is not None else None
 
             fallback_no_audio = has_tool_calls and bool(is_placeholder)
             character_name = self.get_current_character().character_name
@@ -2088,7 +1997,7 @@ class DSLocalAndVoiceGen:
                             emotion=EmotionEnum.from_string(item.get('emotion', 'happiness')),
                             audio_path="NO_AUDIO" if fallback_no_audio else ("" if self.if_generate_audio else "NO_AUDIO")
                         )
-                        self.current_chat.add_message(msg)
+                        self.current_chat.add_message(msg, assistant_message_id=response_id)
                         added_msg_indices.append(len(self.current_chat.message_list) - 1)
                 elif isinstance(parsed_data, dict):
                     msg = Message(
@@ -2098,7 +2007,7 @@ class DSLocalAndVoiceGen:
                         emotion=EmotionEnum.from_string(parsed_data.get('emotion', 'happiness')),
                         audio_path="NO_AUDIO" if fallback_no_audio else ("" if self.if_generate_audio else "NO_AUDIO")
                     )
-                    self.current_chat.add_message(msg)
+                    self.current_chat.add_message(msg, assistant_message_id=response_id)
                     added_msg_indices.append(len(self.current_chat.message_list) - 1)
                 else:
                     raise ValueError("Unexpected JSON type")
@@ -2110,7 +2019,7 @@ class DSLocalAndVoiceGen:
                     emotion=EmotionEnum.HAPPINESS,
                     audio_path="NO_AUDIO" if fallback_no_audio else ("" if self.if_generate_audio else "NO_AUDIO")
                 )
-                self.current_chat.add_message(assistant_msg)
+                self.current_chat.add_message(assistant_msg, assistant_message_id=response_id)
                 added_msg_indices.append(len(self.current_chat.message_list) - 1)
 
             if has_tool_calls and added_msg_indices:
@@ -2332,7 +2241,7 @@ class DSLocalAndVoiceGen:
                        AudioGenerator):
         import litellm
         # 允许静默丢弃部分参数（比如对 GPT-5 系列的推理模型，允许静默的丢弃温度设置）
-        litellm.drop_params = True
+        # 能力未知不能当作不支持；由统一请求层返回可处理的明确错误。
 
         # --- 定时提醒功能支持 ---
         from chat.reminder_manager import ReminderManager
@@ -2462,6 +2371,12 @@ class DSLocalAndVoiceGen:
             active_chat_id = chat.chat_id
             live2d_tool_context["chat_id"] = active_chat_id
             live2d_tool_context["turn_id"] = turn_id
+            self._request_chat_id = active_chat_id
+            self._request_turn_id = turn_id
+            if self.chat_manager.storage_error:
+                self._emit_turn_error(dp2qt_queue, active_chat_id, turn_id, self.chat_manager.storage_error)
+                self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
             # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
             # 不过一般人手速没这么快吧（
             if self.is_turn_cancelled(active_chat_id, turn_id):
@@ -2562,6 +2477,7 @@ class DSLocalAndVoiceGen:
                     worldbook_snapshot=turn_worldbook_snapshot,
                 )
                 self.current_chat.add_message(user_msg)
+                self.current_chat.turns[-1]["id"] = turn_id
                 did_append_real_user_message = Chat.is_real_user_message(user_msg)
                 if imported_attachments:
                     try:
@@ -2727,6 +2643,15 @@ class DSLocalAndVoiceGen:
                         )
                     )
 
+            except LLMError as e:
+                if e.code == "cancelled":
+                    self._clear_text_generating_flag_if_needed(is_text_generating_queue)
+                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
+                else:
+                    self._report_model_exception(dp2qt_queue, active_chat_id, turn_id,
+                                                 is_text_generating_queue, str(e), e)
+                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                continue
             except litellm.exceptions.Timeout as e:
                 self._report_model_exception(
                     dp2qt_queue,

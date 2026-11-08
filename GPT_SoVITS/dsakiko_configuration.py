@@ -185,9 +185,19 @@ class DSakikoConfigWindow(FluentWindow):
 
         initial_widget = self.object_name_to_interface.get(initial_interface, self.config_area)
         self.switchTo(initial_widget)
+        if initial_interface == "ChatGPTArea":
+            area = self.config_area.llm_api_area
+            area.llm_provider_combobox.setCurrentIndex(area.llm_provider_combobox.findData("chatgpt"))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """关闭配置窗口前处理世界书页面尚未保存的修改。"""
+
+        account_area = self.config_area.llm_api_area.chatgpt_area
+        if account_area.is_busy():
+            account_area.cancel()
+            event.ignore()
+            QTimer.singleShot(100, self.close)
+            return
 
         if not self.worldbook_area.resolve_pending_changes():
             event.ignore()
