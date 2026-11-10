@@ -558,6 +558,8 @@ class Live2DModule(SingleCharacterPerformance):
                 elif command_type == "switch_l2d_fps":
                     fps = int(x.get("fps"))
                     self.target_fps = fps
+                    self.mouth_update_interval = {30: 3, 60: 6, 120: 12}.get(fps, 6)
+                    self.mouth_update_count = is_update_mouth_sync = 0
                     logger.info("已切换 Live2D 渲染帧率为 %d fps", self.target_fps)
 
                 elif command_type == "toggle_l2d_layout_edit":
@@ -662,7 +664,7 @@ class Live2DModule(SingleCharacterPerformance):
             # 渲染背景图片
             render_background(texture)
             # 渲染live2d到屏幕
-            if not self.structured_mode and self.wavHandler.Update() and is_update_mouth_sync % 3==0:  # 控制说话时的嘴型
+            if not self.structured_mode and self.wavHandler.Update() and is_update_mouth_sync % self.mouth_update_interval == 0:  # 控制说话时的嘴型
                 mouth_keep_open_value=self.wavHandler.GetRms() * self.lipSyncN
                 self.idle_recover_timer = time.time()
             if self.structured_mode:

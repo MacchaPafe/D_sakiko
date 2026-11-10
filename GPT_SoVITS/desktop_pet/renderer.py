@@ -197,6 +197,8 @@ class PetRenderer(QOpenGLWidget):
             elif kind == "stop_talking":
                 self.model.StartRandomMotion("idle_motion", 1, position="C")
             elif kind == "switch_l2d_fps":
+                self.performance.mouth_update_interval = {30: 3, 60: 6, 120: 12}.get(int(event.get("fps", 30)), 6)
+                self.performance.mouth_update_count = 0
                 self.timer.setInterval(
                     max(8, 1000 // max(1, int(event.get("fps", 30))))
                 )

@@ -15,6 +15,29 @@ class PerformanceTests(unittest.TestCase):
         self.subtitles = []
         self.player.on_subtitle = self.subtitles.append
 
+    def test_mouth_holds_for_configured_frame_interval_and_clears_after_audio(self):
+        """30/60/120 FPS 分别保持 3/6/12 帧，无声后下一段立即取样。"""
+        for interval in (3, 6, 12):
+            with self.subTest(interval=interval):
+                player = SingleCharacterPerformance()
+                player._performance_model = self.model
+                player.mouth_update_interval = interval
+                player.audio_busy = Mock(return_value=True)
+                player.wavHandler.Update = Mock(return_value=True)
+                player.wavHandler.GetRms = Mock(side_effect=[0.2, 0.8, 0.4])
+                for _ in range(interval):
+                    player.update_playback(self.model)
+                    self.assertAlmostEqual(self.model.set_parameter_value.call_args.args[1], 0.28)
+                player.wavHandler.GetRms.assert_called_once()
+                player.update_playback(self.model)
+                self.assertAlmostEqual(self.model.set_parameter_value.call_args.args[1], 1.12)
+                player.audio_busy.return_value = False
+                player.update_playback(self.model)
+                self.assertEqual(self.model.set_parameter_value.call_args.args[1], 0.0)
+                player.audio_busy.return_value = True
+                player.update_playback(self.model)
+                self.assertAlmostEqual(self.model.set_parameter_value.call_args.args[1], 0.56)
+
     def segment(self, number, turn="t", audio="NO_AUDIO"):
         return dict(
             type="play_segment",

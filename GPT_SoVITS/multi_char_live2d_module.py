@@ -980,6 +980,10 @@ class Live2DModule:
         session = Live2DRuntimeSession()
         frame_clock = pygame.time.Clock()
         target_fps = 60
+        mouth_update_interval = 6
+        is_update_mouth_sync = 0
+        mouth_keep_open_value = 0.0
+        mouth_source = None
         set_pygame_window_icon()
         window_caption = "数字小祥 小剧场"
         pygame.display.set_caption(window_caption)
@@ -1476,6 +1480,8 @@ class Live2DModule:
                         fps = int(x.get("fps"))
                         if fps in (30, 60, 120):
                             target_fps = fps
+                            mouth_update_interval = {30: 3, 60: 6, 120: 12}[fps]
+                            is_update_mouth_sync = 0
                             logger.info("已切换小剧场 Live2D 渲染帧率为 %d fps", target_fps)
                         else:
                             logger.warning("忽略不支持的小剧场 Live2D 帧率：%s", fps)
@@ -1640,16 +1646,27 @@ class Live2DModule:
             # 因为多模型下，不知道为什么，live2d-py 库渲染模型时会修改 OpenGL 上下文，抢走了纹理的绑定。
             backgrounds.draw()
             mouth_restore = None
+            mouth_model = None
             preview_mouth = performance.mouth()
             if preview_mouth is not None:
                 mouth_model, rms = preview_mouth
-                mouth_restore = (mouth_model, mouth_model.get_parameter_value("mouth_open_y", 0.0))
-                mouth_model.set_parameter_value("mouth_open_y", rms * self.lipSyncN)
-            if not performance.preview and audio_is_playing and self.wavHandler.Update() and lip_sync_model is not None:  # 控制说话时的嘴型
-                mouth_restore = (lip_sync_model, lip_sync_model.get_parameter_value("mouth_open_y", 0.0))
-                lip_sync_model.set_parameter_value("mouth_open_y", self.wavHandler.GetRms() * self.lipSyncN)
-
+            elif not performance.preview and audio_is_playing and self.wavHandler.Update() and lip_sync_model is not None:
+                mouth_model, rms = lip_sync_model, self.wavHandler.GetRms()
                 idle_recover_timer = time.time()
+            if mouth_model is not None:
+                source = (id(mouth_model), performance.started, performance.preview)
+                if source != mouth_source:  # 换句、定位或恢复预览后立即取新嘴型。
+                    mouth_source = source
+                    is_update_mouth_sync = 0
+                if is_update_mouth_sync % mouth_update_interval == 0:
+                    mouth_keep_open_value = rms * self.lipSyncN
+                is_update_mouth_sync += 1
+                mouth_restore = (mouth_model, mouth_model.get_parameter_value("mouth_open_y", 0.0))
+                mouth_model.set_parameter_value("mouth_open_y", mouth_keep_open_value)
+            else:
+                mouth_source = None
+                is_update_mouth_sync = 0
+                mouth_keep_open_value = 0.0
 
             draw_stage_actors()
 

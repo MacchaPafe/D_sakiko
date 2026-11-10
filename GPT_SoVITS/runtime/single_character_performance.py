@@ -25,6 +25,9 @@ class SingleCharacterPerformance:
         self.motion_is_over = False
         self.wavHandler = WavHandler()
         self.lipSyncN: float = 1.4
+        self.mouth_update_interval = 6  # 30/60/120 FPS 分别每 3/6/12 帧更新。
+        self.mouth_update_count = 0
+        self.mouth_keep_open_value = 0.0
         self.live2d_this_turn_motion_complete = True
         self.think_motion_is_over = True
         self.run = True
@@ -266,6 +269,7 @@ class SingleCharacterPerformance:
     def update_playback(self, model: Live2DModelProtocol) -> None:
         """每帧推进本段，声音、动作和文字均完成后才释放下一段。"""
         if self._performance_model is not model:
+            self.mouth_update_count = 0
             self._reset_visual_performance()
             self._performance_model = model
             # 换装或渲染失败后旧模型不会再回调，声音和文字仍可完成。
@@ -378,9 +382,15 @@ class SingleCharacterPerformance:
             self._update_eye_open_transition(model)
         mouth = 0.0
         if self.audio_busy() and self.wavHandler.Update():
-            mouth = self.wavHandler.GetRms() * self.lipSyncN
-            if not __import__("math").isfinite(mouth):
-                mouth = 0.0
+            if self.mouth_update_count % self.mouth_update_interval == 0:
+                self.mouth_keep_open_value = self.wavHandler.GetRms() * self.lipSyncN
+                if not __import__("math").isfinite(self.mouth_keep_open_value):
+                    self.mouth_keep_open_value = 0.0
+            mouth = self.mouth_keep_open_value
+            self.mouth_update_count += 1
+        else:
+            self.mouth_update_count = 0
+            self.mouth_keep_open_value = 0.0
         if not self.independent_performance or self.audio_busy():
             model.set_parameter_value("mouth_open_y", mouth)
 
@@ -417,6 +427,8 @@ class SingleCharacterPerformance:
         self._reset_eye_open_transition()
 
     def onStartCallback_emotion_version(self, audio_file_path, *args):
+        self.mouth_update_count = 0
+        self.mouth_keep_open_value = 0.0
         if not self.independent_performance:
             self.motion_is_over = False
         self._reset_eye_open_transition()
