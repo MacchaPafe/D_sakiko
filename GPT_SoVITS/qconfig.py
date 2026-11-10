@@ -259,6 +259,12 @@ class DSakikoConfig(QConfig):
         validator=OptionsValidator(["screen", "face_to_face"]),
     )
 
+    # 小剧场舞台字幕显示偏好，独立于剧本保存。
+    multi_char_subtitle_mode = OptionsConfigItem(
+        "ui_state", "multi_char_subtitle_mode", "both",
+        validator=OptionsValidator(["original", "translation", "both"]),
+    )
+
     # 颜色主题默认信息
     theme_color = ConfigItem("theme_color_setting", "theme_color", [
         {

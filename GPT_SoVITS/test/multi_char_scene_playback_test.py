@@ -18,6 +18,80 @@ from live2d_support.multi_char_stage import MultiCharStage
 from live2d_support.multi_char_playback import MultiCharPlayback
 
 
+@pytest.fixture
+def subtitle_overlay():
+    """执行真实字幕方法，隔离需要 OpenGL 上下文的纹理绘制。"""
+    source = Path(__file__).resolve().parents[1] / "multi_char_live2d_module.py"
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+    overlay_class = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                         and node.name == "TextOverlay")
+    overlay_class.body = [node for node in overlay_class.body if isinstance(node, ast.FunctionDef)
+                          and node.name in ("set_text", "set_subtitle_mode", "update")]
+    namespace = {}
+    exec(compile(ast.Module(body=[overlay_class], type_ignores=[]), str(source), "exec"), namespace)
+    overlay = namespace["TextOverlay"]()
+    overlay.subtitle_mode = "both"
+    overlay.content = ("", "", None)
+    overlay.full_text = overlay.current_text = overlay.current_char_name = ""
+    overlay.char_pointer = 0.0
+    overlay.typing_speed = 2
+    overlay.is_typing = False
+    overlay._render_texture = Mock()
+    return overlay
+
+
+@pytest.mark.parametrize("mode,original,translation,expected", [
+    ("both", "原文", "译文", "原文\n译文"),
+    ("original", "原文", "译文", "原文"),
+    ("translation", "原文", "译文", "译文"),
+    ("translation", "原文", "  ", "原文"),
+    ("both", "原文", "", "原文"),
+    ("both", "", "译文", "译文"),
+])
+def test_subtitle_modes_and_missing_translation(subtitle_overlay, mode, original, translation, expected):
+    """三种显示方式、翻译缺失回退和空内容均不留下多余空行。"""
+    overlay = subtitle_overlay
+    overlay.set_subtitle_mode(mode)
+    overlay.set_text("A", original, translation)
+    assert overlay.full_text == expected
+    assert overlay.content == ("A", original, translation)
+
+
+def test_subtitle_switch_completes_current_text_and_next_line_types(subtitle_overlay):
+    """中途切换立即显示当前整句，下一句仍按原打字效果推进。"""
+    overlay = subtitle_overlay
+    overlay.set_text("A", "abcdef", "翻译")
+    overlay.update()
+    assert overlay.current_text == "ab"
+    overlay.set_subtitle_mode("translation")
+    assert overlay.current_text == "翻译"
+    assert not overlay.is_typing
+    overlay.set_text("A", "下一句", "uvwxyz")
+    overlay.update()
+    assert overlay.current_text == "uv"
+    assert overlay.is_typing
+
+
+def test_subtitle_restore_uses_latest_mode_and_help_is_unfiltered(subtitle_overlay):
+    """编辑快照保存原始双语，恢复遵循最新偏好；系统提示不被过滤。"""
+    overlay = subtitle_overlay
+    overlay.set_text("", "原文", "译文")
+    saved = overlay.content
+    overlay.set_text("", "操作提示")
+    overlay.update()
+    shown = overlay.current_text
+    overlay.set_subtitle_mode("translation")
+    assert overlay.full_text == "操作提示"
+    assert overlay.current_text == shown
+    overlay.set_text(*saved)
+    assert overlay.full_text == "译文"
+    assert overlay.current_char_name == ""
+    overlay.set_subtitle_mode("both")
+    assert overlay.current_text == "原文\n译文"
+    overlay.set_subtitle_mode("invalid")
+    assert overlay.subtitle_mode == "both"
+
+
 class Clock:
     """为真实调度器提供同一个可控单调时钟。"""
 
@@ -330,7 +404,7 @@ def test_unowned_message_is_played_and_has_no_speaker_placeholder(playback):
     """无角色台词正常完成公式时长，字幕使用空姓名且不绑定任何模型。"""
     playback.load([line("夜色渐深。", character_name="", muted=True)])
     assert playback.started() == [(0, "夜色渐深。")]
-    playback.context["overlay"].set_text.assert_called_once_with("", "夜色渐深。\n")
+    playback.context["overlay"].set_text.assert_called_once_with("", "夜色渐深。", "")
     assert playback.context["this_turn_model"] is None
     assert playback.context["lip_sync_model"] is None
     playback.step(1200)
@@ -379,7 +453,7 @@ def test_plain_editor_preview_shows_resolved_target_without_transition(playback)
     assert playback.stage.state == {"visible_characters": [], "background": "night.png"}
     assert not playback.stage.busy
     assert playback.stage.black == 0
-    playback.context["overlay"].set_text.assert_called_with("A", "目标\n")
+    playback.context["overlay"].set_text.assert_called_with("A", "目标", "")
 
 
 def test_transition_preview_ends_without_starting_sentence(playback):

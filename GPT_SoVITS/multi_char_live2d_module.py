@@ -161,6 +161,8 @@ class TextOverlay:
         self.typing_speed = 2  # 打字速度：每帧显示的字符数
         self.current_char_name = ""  # 当前角色名 (用于重绘)
         self.is_typing = False  # 是否正在打字中
+        self.subtitle_mode = "both"
+        self.content = ("", "", None)  # 姓名、原文或系统提示、译文；None 标记系统提示。
 
         try:
             raw_star = pygame.image.load('./icons/star.png').convert_alpha()
@@ -175,11 +177,16 @@ class TextOverlay:
         else:
             self.set_text(f"{char_names[0]} & {char_names[1]}", "...")
 
-    def set_text(self, char_name, text):
-        """
-        【功能变更】这里只负责设置目标，不再直接渲染
-        当外部队列传来新的一句话时调用此方法
-        """
+    def set_text(self, char_name, text, translation=None):
+        """设置打字目标；提供译文时按字幕偏好组合，否则作为系统提示显示。"""
+        self.content = (char_name, text, translation)
+        if translation is not None:
+            if self.subtitle_mode == "original":
+                text = text.strip()
+            elif self.subtitle_mode == "translation":
+                text = translation.strip() or text.strip()
+            else:
+                text = "\n".join(part.strip() for part in (text, translation) if part.strip())
         # 如果文本没变，就不重置（防止重复调用导致闪烁）
         if text == self.full_text and char_name == self.current_char_name:
             return
@@ -192,6 +199,18 @@ class TextOverlay:
 
         # 立即渲染第一帧（空的或者只有名字），避免黑屏
         self._render_texture()
+
+    def set_subtitle_mode(self, mode):
+        """切换显示偏好；当前台词完整重绘，系统提示不受影响。"""
+        if mode not in ("original", "translation", "both") or mode == self.subtitle_mode:
+            return
+        self.subtitle_mode = mode
+        if self.content[2] is not None:
+            self.set_text(*self.content)
+            self.current_text = self.full_text
+            self.char_pointer = float(len(self.full_text))
+            self.is_typing = False
+            self._render_texture()
 
     def update(self):
         """
@@ -995,6 +1014,8 @@ class Live2DModule:
         self._load_models(model_group, model_layouts, win_w_and_h, {0, 1}, session)
 
         overlay = TextOverlay((int(win_w_and_h*1.33), win_w_and_h), self._active_character_names())
+        from qconfig import d_sakiko_config
+        overlay.set_subtitle_mode(d_sakiko_config.multi_char_subtitle_mode.value)
         from live2d_support.multi_char_playback import PLAYBACK_HELP_TEXT
         overlay.set_text("", PLAYBACK_HELP_TEXT)
         model_notice_overlay = ModelLoadNoticeOverlay(display)
@@ -1160,7 +1181,7 @@ class Live2DModule:
                 return
             playback.cancel_hint()
             layout_editing = True
-            layout_dialogue = (overlay.current_char_name, overlay.full_text)
+            layout_dialogue = overlay.content
             layout_dragging = False
             layout_selected_slot = selected_slot
             layout_last_mouse_pos = None
@@ -1274,7 +1295,7 @@ class Live2DModule:
                 stage.show(stage.resolve(messages, index))
                 turn = command.get("turn") or messages[index]
                 overlay.set_text(str(turn.get("character_name") or ""),
-                                 str(turn.get("text") or "") + "\n" + str(turn.get("translation") or ""))
+                                 str(turn.get("text") or ""), str(turn.get("translation") or ""))
 
         def reset_playback_round():
             """新正式起点或临时回放复位双人，不在普通句间清理姿态。"""
@@ -1315,7 +1336,7 @@ class Live2DModule:
                 "revision": playback.revision, "index": playback.current_index,
                 "single": playback.single, "turn": turn,
             })
-            overlay.set_text(speaker, str(turn.get("text") or "") + "\n" + str(turn.get("translation") or ""))
+            overlay.set_text(speaker, str(turn.get("text") or ""), str(turn.get("translation") or ""))
             self.playlist_pointer = playback.pending_index
 
         expression_preview = ExpressionPreviewSession()
@@ -1400,7 +1421,7 @@ class Live2DModule:
                                 continue
                             if not performance.preview:
                                 stage_geometry = (stage_window.position, stage_window.size)
-                                editor_dialogue = (overlay.current_char_name, overlay.full_text)
+                                editor_dialogue = overlay.content
                             playback.cancel_hint()
                             stage.enter_editor()
                         elif valid_session and action == "window_geometry":
@@ -1476,6 +1497,8 @@ class Live2DModule:
                                 if file:
                                     model.StartMotionFile(str(Path(model.model_json_path).resolve().parent / file), 3,
                                                           on_finish=self.onFinishCallback_motion, auto_expression=False)
+                    elif message_type == "set_subtitle_mode":
+                        overlay.set_subtitle_mode(x.get("mode"))
                     elif message_type == "switch_l2d_fps":
                         fps = int(x.get("fps"))
                         if fps in (30, 60, 120):

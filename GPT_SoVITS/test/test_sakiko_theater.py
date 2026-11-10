@@ -17,7 +17,7 @@ def app():
 
 
 def theater(chat):
-    return SimpleNamespace(
+    gui = SimpleNamespace(
         current_chat=chat,
         character_list=[SimpleNamespace(character_name="祥子", character_folder_name="sakiko"),
                         SimpleNamespace(character_name="爱音", character_folder_name="anon")],
@@ -26,10 +26,12 @@ def theater(chat):
         playback_idle_value=SimpleNamespace(value=True), message_queue=Queue(),
         _save_chat=Mock(return_value=True), set_two_char_names=Mock(),
         audio_gen_module=SimpleNamespace(sakiko_which_state=True),
-        sync_live2d_active_slots=Mock(), two_char_names=["祥子", "爱音"],
+        sync_live2d_active_slots=Mock(), load_playback_script=Mock(), two_char_names=["祥子", "爱音"],
         _character_name_from_index=lambda index: ("祥子", "爱音")[index],
         _model_paths_support_motion_facing=lambda paths: True,
     )
+    gui.playback_available = lambda: gui.playback_idle_value.value
+    return gui
 
 
 def test_theater_form_switch_updates_model_voice_and_preserves_other_form():
@@ -39,7 +41,7 @@ def test_theater_form_switch_updates_model_voice_and_preserves_other_form():
     assert chat.get_character_form() == "white"
     assert gui.sakiko_state is False
     assert gui.audio_gen_module.sakiko_which_state is False
-    assert gui.sync_live2d_active_slots.call_count == 1
+    gui.load_playback_script.assert_called_once_with()
     payload = ViewerGUI._build_active_slots_payload(gui)
     assert payload["slots"][0]["model_json_path"] == "white-v3"
     assert payload["slots"][0]["sakiko_state"] is False
@@ -62,8 +64,14 @@ def test_theater_cannot_change_form_during_last_audio_or_failed_save():
 
 def test_theater_settings_exposes_sakiko_model_configuration(app, monkeypatch):
     import multi_char_main
-    monkeypatch.setattr(multi_char_main.character, "GetCharacterAttributes", lambda: SimpleNamespace(character_class_list=[]))
+    monkeypatch.setattr(multi_char_main.character, "GetCharacterAttributes", lambda: SimpleNamespace(
+        character_class_list=theater(Chat()).character_list))
+    config = multi_char_main.d_sakiko_config
+    monkeypatch.setattr(config.multi_char_subtitle_mode, "value", "translation")
+    save = Mock()
+    monkeypatch.setattr(config, "set", save)
     parent = QWidget()
+    parent.to_live2d_change_character_queue = Queue()
     for name in ("_change_character", "config_more_info", "convert_sakiko_state", "set_bgm"):
         setattr(parent, name, Mock())
     parent.get_current_l2d_fps = lambda: 60
@@ -76,6 +84,13 @@ def test_theater_settings_exposes_sakiko_model_configuration(app, monkeypatch):
         assert not dialog.btn_character_0_model.isHidden()
         assert not dialog.btn_character_1_model.isHidden()
         assert dialog.btn_sakiko_model.menu() is not None
+        assert dialog.subtitle_mode_combo.currentData() == "translation"
+        assert [dialog.subtitle_mode_combo.itemData(i) for i in range(3)] == [
+            "original", "translation", "both"]
+        dialog.subtitle_mode_combo.setCurrentIndex(0)
+        save.assert_called_once_with(config.multi_char_subtitle_mode, "original")
+        assert parent.to_live2d_change_character_queue.get_nowait() == {
+            "type": "set_subtitle_mode", "mode": "original"}
     finally:
         dialog.close()
         parent.close()

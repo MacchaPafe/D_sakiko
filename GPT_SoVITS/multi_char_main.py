@@ -999,6 +999,16 @@ class SettingsDialog(QDialog):
         live2d_render_layout.addWidget(self.btn_live2d_fps)
         live2d_render_layout.addWidget(self.btn_motion_facing)
         live2d_render_layout_top.addLayout(live2d_render_layout)
+        subtitle_layout = QHBoxLayout()
+        subtitle_layout.addWidget(QLabel("字幕显示"))
+        self.subtitle_mode_combo = QComboBox()
+        for label, mode in (("仅原文", "original"), ("仅翻译", "translation"), ("原文与翻译", "both")):
+            self.subtitle_mode_combo.addItem(label, mode)
+        self.subtitle_mode_combo.setCurrentIndex(self.subtitle_mode_combo.findData(
+            d_sakiko_config.multi_char_subtitle_mode.value))
+        self.subtitle_mode_combo.currentIndexChanged.connect(self.change_subtitle_mode)
+        subtitle_layout.addWidget(self.subtitle_mode_combo, 1)
+        live2d_render_layout_top.addLayout(subtitle_layout)
         live2d_render_layout_top.addWidget(self.label_model_move_info)
         live2d_render_group.setLayout(live2d_render_layout_top)
         layout.addWidget(live2d_render_group)
@@ -1162,6 +1172,15 @@ class SettingsDialog(QDialog):
         value=self.bgm_volume_slider.value()
         self.parent_gui.bgm_player.setVolume(value)
         self.bgm_volume_label.setText(f"BGM音量调节：{value}")
+
+    def change_subtitle_mode(self, _index):
+        """保存显示偏好，并通知舞台立即刷新字幕。"""
+        mode = self.subtitle_mode_combo.currentData()
+        d_sakiko_config.set(d_sakiko_config.multi_char_subtitle_mode, mode)
+        if self.parent_gui is not None:
+            self.parent_gui.to_live2d_change_character_queue.put({
+                "type": "set_subtitle_mode", "mode": mode,
+            })
 
     def change_l2d_fps(self):
         if not self.parent_gui:

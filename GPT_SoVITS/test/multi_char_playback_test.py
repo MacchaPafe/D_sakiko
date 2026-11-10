@@ -407,7 +407,7 @@ def test_auto_end_hint_waits_ten_seconds_from_final_sentence_end_and_runs_once(p
     player.show_hint.assert_not_called()
     player.step(1700)
     assert player.controller.phase == "ended"
-    assert player.context["overlay"].set_text.call_args.args == ("A", "乙\n")
+    assert player.context["overlay"].set_text.call_args.args == ("A", "乙", "")
     player.step(11699)
     player.show_hint.assert_not_called()
     player.step(11700)
