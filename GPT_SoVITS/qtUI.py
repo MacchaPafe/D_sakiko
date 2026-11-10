@@ -89,6 +89,7 @@ from chat.remote_attachments import (
     remote_reference_is_fresh,
 )
 from chat.rolling_summary import (
+    build_llm_query_with_rolling_summary,
     invalidate_rolling_summary_from_message_index,
 )
 from emotion_enum import EmotionEnum
@@ -4012,6 +4013,48 @@ class ChatGUI(QWidget):
             logger.exception("写入图片上传白名单失败：model=%s", model)
             return False
 
+    def _confirm_image_input_before_send(self, view, image_source_paths) -> bool:
+        """在提交草稿前统一确认新增图片与实际历史中的图片输入。"""
+        if self._current_model_supports_vision():
+            return True
+        has_images = bool(image_source_paths)
+        if not has_images:
+            try:
+                if d_sakiko_config.enable_rolling_summary.value:
+                    messages = build_llm_query_with_rolling_summary(
+                        self.current_chat, perspective=self.current_character.character_name,
+                        is_simplify=True,
+                    )
+                else:
+                    messages = self.current_chat.build_llm_query(
+                        perspective=self.current_character.character_name, is_simplify=True,
+                    )
+                has_images = Chat.messages_contain_image_content(messages)
+            except Exception:
+                logger.exception("检查发送历史中的图片失败")
+                view.show_error("无法检查对话中的图片，请稍后重试。")
+                return False
+        if not has_images:
+            return True
+        if not self._current_model_can_force_image_upload():
+            view.show_error("当前模型无法图片输入，需要切换至支持视觉的模型后继续。")
+            return False
+        model = self._current_litellm_model_name()
+        prompt = QMessageBox(self)
+        prompt.setIcon(QMessageBox.Question)
+        prompt.setWindowTitle("确认图片输入")
+        prompt.setText(f"无法确认当前模型「{model}」是否支持图片输入。")
+        prompt.setInformativeText("本次请求包含图片（可能聊天记录中有发送过），请确认当前模型具备图片输入能力。确认后下次将不会弹出本提示。")
+        send_button = prompt.addButton("确认支持并发送", QMessageBox.AcceptRole)
+        prompt.addButton("取消", QMessageBox.RejectRole)
+        prompt.exec_()
+        if prompt.clickedButton() is not send_button:
+            return False
+        if not self._force_allow_current_model_image_upload(model):
+            view.show_error("保存图片上传白名单失败，尚未发送，请重试。")
+            return False
+        return True
+
     def refresh_current_chat_display(self):
         """从当前 Chat 数据重新渲染聊天显示。"""
         chat = self.current_chat
@@ -5479,8 +5522,10 @@ class ChatGUI(QWidget):
         if self.is_chat_busy():
             QMessageBox.information(self, "请稍等", "请等待当前回复完成后再发送消息。")
             return
-        if image_source_paths and not self._current_model_supports_vision():
-            view.show_error("当前模型不支持图片输入，请切换支持视觉的模型或删除图片附件。")
+        # 命令不发送给模型，避免历史图片阻止清理或切换等本地操作。
+        if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
+            return
+        if not self._confirm_image_input_before_send(view, image_source_paths):
             return
         if image_source_paths and not self._prepare_draft_uploads_for_send():
             block_reason = view.draft_upload_block_reason()
@@ -5492,9 +5537,6 @@ class ChatGUI(QWidget):
         failed_image_paths = view.validate_pending_images()
         if failed_image_paths:
             view.show_error(f"图片不存在或无法读取：{os.path.basename(failed_image_paths[0])}")
-            return
-        # 存在换行符时，不处理输入框中的命令
-        if "\n" not in raw_user_input and self._handle_command_before_send(user_this_turn_input):
             return
         optimistic_attachments = view.optimistic_image_attachments()
         draft_attachments = view.pending_draft_payloads()

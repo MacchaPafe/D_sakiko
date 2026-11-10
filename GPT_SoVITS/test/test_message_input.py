@@ -4,7 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
+from pathlib import Path
+from types import MethodType, SimpleNamespace
 from typing import Callable
 from unittest import mock
 
@@ -24,7 +25,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QToolButton, QWidget
 
-from chat.chat import Message
+from chat.chat import Chat, Message
 from emotion_enum import EmotionEnum
 from input_commands import InputCommandMatcher, InputCommandPalette, build_default_input_command_specs
 import qtUI
@@ -211,6 +212,129 @@ class ContextUsageSnapshotTestCase(unittest.TestCase):
         self.assertEqual(snapshot.used_tokens, 393)
         self.assertEqual(snapshot.token_limit, 1000)
         estimator.assert_called_once_with("角色")
+
+
+class SendImageCapabilityTestCase(unittest.TestCase):
+    """模型切换后，新增与历史图片在提交前使用同一个确认入口。"""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        image_path = os.path.join(self.folder.name, "history.png")
+        image = QImage(2, 2, QImage.Format_RGB32)
+        image.fill(Qt.white)
+        self.assertTrue(image.save(image_path))
+        self.chat = Chat(message_list=[Message.from_dict({
+            "character_name": "User", "text": "看这张图片",
+            "attachments": [{"type": "image", "path": image_path, "mime_type": "image/png"}],
+        })])
+        self.view = mock.Mock()
+        self.view.toPlainText.return_value = "继续"
+        self.view.prepared_message.return_value = "继续"
+        self.view.pending_image_source_paths.return_value = []
+        self.view.validate_pending_images.return_value = []
+        self.view.optimistic_image_attachments.return_value = []
+        self.view.pending_draft_payloads.return_value = []
+        self.host = SimpleNamespace(
+            current_chat=self.chat, current_character=SimpleNamespace(character_name="AI"),
+            _current_model_supports_vision=mock.Mock(return_value=False),
+            _current_model_can_force_image_upload=mock.Mock(return_value=True),
+            _current_litellm_model_name=lambda: "openai/custom-vision",
+            _force_allow_current_model_image_upload=mock.Mock(return_value=True),
+            setWindowTitle=mock.Mock(), is_chat_busy=lambda: False,
+            _handle_command_before_send=mock.Mock(return_value=False),
+            _prepare_draft_uploads_for_send=mock.Mock(return_value=True),
+            _confirm_and_mark_unrecoverable_attachments=mock.Mock(return_value=True),
+            _send_user_message_payload=mock.Mock(), chat_display=mock.Mock(),
+        )
+        self.host._confirm_image_input_before_send = MethodType(
+            ChatGUI._confirm_image_input_before_send, self.host)
+        self.config = SimpleNamespace(enable_rolling_summary=SimpleNamespace(value=False))
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(qtUI, "d_sakiko_config", self.config).start()
+        dialog = mock.patch.object(qtUI, "QMessageBox").start()
+        self.dialog = dialog.return_value
+        self.send_button = object()
+        self.dialog.addButton.side_effect = [self.send_button, object()]
+        self.dialog.clickedButton.return_value = self.send_button
+
+    def test_history_image_confirmation_continues_same_send(self):
+        ChatGUI.handle_user_input(self.host, self.view)
+        self.dialog.exec_.assert_called_once()
+        self.host._force_allow_current_model_image_upload.assert_called_once_with("openai/custom-vision")
+        self.host._send_user_message_payload.assert_called_once_with("继续", draft_attachments=[])
+
+    def test_cancel_preserves_draft_and_history_without_starting_send(self):
+        self.dialog.clickedButton.return_value = None
+        ChatGUI.handle_user_input(self.host, self.view)
+        self.host._send_user_message_payload.assert_not_called()
+        self.host._prepare_draft_uploads_for_send.assert_not_called()
+        self.view.clear_after_send.assert_not_called()
+        self.host._force_allow_current_model_image_upload.assert_not_called()
+        self.assertEqual(len(self.chat.message_list), 1)
+
+    def test_existing_draft_image_is_confirmed_after_model_switch(self):
+        self.chat.clear_message_list()
+        self.view.pending_image_source_paths.return_value = ["draft.png"]
+        ChatGUI.handle_user_input(self.host, self.view)
+        self.dialog.exec_.assert_called_once()
+        self.host._prepare_draft_uploads_for_send.assert_called_once()
+        self.host._send_user_message_payload.assert_called_once()
+
+    def test_whitelist_save_failure_does_not_send_or_clear(self):
+        self.host._force_allow_current_model_image_upload.return_value = False
+        ChatGUI.handle_user_input(self.host, self.view)
+        self.host._send_user_message_payload.assert_not_called()
+        self.view.clear_after_send.assert_not_called()
+        self.view.show_error.assert_called_once()
+
+    def test_blocked_model_cannot_be_overridden(self):
+        self.host._current_model_can_force_image_upload.return_value = False
+        ChatGUI.handle_user_input(self.host, self.view)
+        self.dialog.exec_.assert_not_called()
+        self.host._force_allow_current_model_image_upload.assert_not_called()
+        self.host._send_user_message_payload.assert_not_called()
+
+    def test_recognized_model_and_text_only_history_do_not_prompt(self):
+        self.host._current_model_supports_vision.return_value = True
+        self.assertTrue(self.host._confirm_image_input_before_send(self.view, []))
+        self.host._current_model_supports_vision.return_value = False
+        self.chat.clear_message_list()
+        self.chat.add_message(Message.from_dict({"character_name": "User", "text": "文字"}))
+        self.assertTrue(self.host._confirm_image_input_before_send(self.view, []))
+        self.dialog.exec_.assert_not_called()
+
+    def test_summarized_and_unavailable_images_do_not_prompt(self):
+        from chat.rolling_summary import set_rolling_summary
+        set_rolling_summary(self.chat, text="用户发送过图片", summary_until_message_index=0, model="test")
+        self.chat.add_message(Message.from_dict({"character_name": "User", "text": "最近文字"}))
+        self.config.enable_rolling_summary.value = True
+        self.assertTrue(self.host._confirm_image_input_before_send(self.view, []))
+        self.config.enable_rolling_summary.value = False
+        self.chat.message_list[0].attachments[0].availability = "unavailable"
+        self.assertTrue(self.host._confirm_image_input_before_send(self.view, []))
+        self.dialog.exec_.assert_not_called()
+
+    def test_local_commands_are_not_blocked_by_image_history(self):
+        self.host._handle_command_before_send.return_value = True
+        ChatGUI.handle_user_input(self.host, self.view)
+        self.dialog.exec_.assert_not_called()
+        self.host._send_user_message_payload.assert_not_called()
+
+    def test_confirmation_persists_allowlist_and_backend_recognizes_it(self):
+        from chat import attachments
+        model = "openai/custom-vision"
+        mock.patch.object(attachments, "_MODEL_ATTACHMENT_CAPABILITIES_PATH",
+                          Path(self.folder.name) / "capabilities.json").start()
+        mock.patch.object(attachments, "_litellm_supports_vision", return_value=False).start()
+        self.host._current_model_supports_vision.side_effect = lambda: attachments.model_supports_image_upload(model)
+        self.host._force_allow_current_model_image_upload = MethodType(
+            ChatGUI._force_allow_current_model_image_upload, self.host)
+        self.assertFalse(attachments.model_supports_image_upload(model))
+        self.assertTrue(self.host._confirm_image_input_before_send(self.view, []))
+        self.assertTrue(attachments.model_supports_image_upload(model))
+        self.assertTrue(self.host._confirm_image_input_before_send(self.view, []))
+        self.dialog.exec_.assert_called_once()
 
 
 class MessageInputTestCase(unittest.TestCase):
@@ -469,7 +593,7 @@ class MessageInputTestCase(unittest.TestCase):
 
         self.assertEqual(
             self.input.toPlainText(),
-            'before "/tmp/first file.txt" "/tmp/second.txt" after',
+            f'before "{os.path.normpath("/tmp/first file.txt")}" "{os.path.normpath("/tmp/second.txt")}" after',
         )
 
     def test_file_drop_does_not_leave_stale_visual_cursor(self) -> None:
