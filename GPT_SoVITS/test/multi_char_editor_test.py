@@ -569,7 +569,7 @@ def test_text_save_is_independent_of_timeline_discard(editor, monkeypatch):
     editor.translation_input.setPlainText("新翻译")
     assert editor.save_text()
     question.assert_called_once()
-    assert editor.span.duration_ms == 600
+    assert editor.span.duration_ms == 720
     assert editor.draft["characters"]["B"]["motions"] == []
     assert editor.message.performance_timeline["characters"]["B"]["motions"] == []
     assert editor.text_button.text() == "编辑文本"
@@ -784,7 +784,8 @@ def test_snap_endpoints_and_alt(editor):
     editor.draft['characters']['A']['motions'] = [existing]
     new = {"resource": {"file_name": "new"}}
     view.playhead = 200
-    for raw, expected in [(1, 0), (201, 200), (301, 300), (501, 500), (801, 800)]:
+    for raw, expected in [(1, 0), (201, 200), (301, 300), (501, 500),
+                          (editor.span.duration_ms - 99, editor.span.duration_ms - 100)]:
         at, valid = view.candidate(0, new, raw, Qt.NoModifier)
         assert (at, valid) == (expected, True)
     assert view.candidate(0, new, 201, Qt.AltModifier)[0] == 201

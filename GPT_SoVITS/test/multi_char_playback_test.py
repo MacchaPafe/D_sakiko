@@ -14,7 +14,20 @@ from live2d_support.multi_char_scene import transition_from_total
 
 
 @pytest.fixture
-def player(monkeypatch):
+def player(monkeypatch, tmp_path):
+    """控制状态机用例使用显式音频时长，无声公式由场景集成用例验证。"""
+    original_line = line
+
+    def timed_line(text, **changes):
+        if not changes.get("audio_path"):
+            duration = 100 * len(text) + 500
+            folder = tmp_path / str(duration)
+            folder.mkdir(exist_ok=True)
+            changes["audio_path"] = make_audio(folder, duration)
+            changes.setdefault("muted", True)
+        return original_line(text, **changes)
+
+    monkeypatch.setattr(sys.modules[__name__], "line", timed_line)
     return Playback(monkeypatch)
 
 

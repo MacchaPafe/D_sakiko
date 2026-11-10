@@ -47,6 +47,7 @@ from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
 from ui_small_theater.multi_char_icons import set_button_icon, delete_message_icon, multi_char_icon
 from ui_small_theater.multi_char_menu import fit_menu_to_contents
+from ui_small_theater.multi_char_playback_highlight import PlaybackHighlight
 from ui_qt.components.change_ref_audio import ChangeReferenceAudioWindow
 from ui_qt.app_icon import application_icon
 
@@ -575,7 +576,7 @@ class MoreInfoDialog(QDialog):
             warning.setWordWrap(True)
             warning.setStyleSheet("color: #D9534F;")
             main_layout.addWidget(warning)
-        self.auto_synthesize_audio = QCheckBox("拿到剧本后自动合成所有音频")
+        self.auto_synthesize_audio = QCheckBox("拿到剧本后立即合成所有音频")
         self.auto_synthesize_audio.setStyleSheet("color: #7799CC")
         self.auto_synthesize_audio.setChecked(True)
         main_layout.addWidget(self.auto_synthesize_audio)
@@ -1212,6 +1213,7 @@ class ViewerGUI(QWidget):
         }
 
         self.chat_display = InteractiveChatBrowser()
+        self._playback_highlight = PlaybackHighlight(self.chat_display)
         self.chat_display.setPlaceholderText("这里显示对话记录...")
         self.chat_display.setOpenExternalLinks(False)  # 禁止自动打开浏览器
         self.chat_display.setOpenLinks(False)
@@ -1544,7 +1546,7 @@ class ViewerGUI(QWidget):
 
     def show_chat_list_menu(self, pos) -> None:
         """
-        在对话列表项上右键时显示菜单，提供重命名和删除选项。
+        在对话列表项上右键时显示菜单，复制仅在正式演出空闲时允许。
         """
         item = self.chat_list.itemAt(pos)
         if item is None:
@@ -1552,14 +1554,61 @@ class ViewerGUI(QWidget):
 
         menu = QMenu(self)
         rename_action = menu.addAction("重命名")
+        clone_action = menu.addAction("复制剧本")
+        clone_action.setEnabled(self.playback_available())
         delete_action = menu.addAction("删除")
+        fit_menu_to_contents(menu)
         selected_action = menu.exec_(self.chat_list.mapToGlobal(pos))
 
         if selected_action == rename_action:
             self.rename_chat(item)
+        elif selected_action == clone_action:
+            self.clone_theater_chat(item.data(Qt.UserRole))
         elif selected_action == delete_action:
             self.chat_list.setCurrentItem(item)
             self.delete_current_chat()
+
+    def clone_theater_chat(self, source: Chat) -> None:
+        """预留空闲舞台后再复制，防止保存和切换副本期间启动播放。"""
+        if (not any(chat is source for chat in self.chat_manager.chat_list)
+                or source.type != ChatType.SMALL_THEATER or not self.playback_available()):
+            return
+        request_id = self.send_playback_command("reserve_editor")
+        self._editor_request = {"kind": "clone", "request_id": request_id, "chat": source,
+                                "active_chat": self.current_chat,
+                                "session": self._playback_session, "revision": self._playback_revision}
+        QTimer.singleShot(10000, lambda: self._expire_editor_request(request_id))
+
+    def _clone_reserved_chat(self, request: dict) -> None:
+        """复用 ChatManager 复制及命名；保存成功才切换，失败撤回新增对话。"""
+        try:
+            worker = getattr(self, "generate_thread", None)
+            source = request["chat"]
+            if (not self._playback_stage_available
+                    or self._playback_session != request["session"]
+                    or self._playback_revision != request["revision"]
+                    or self.current_chat is not request["active_chat"]
+                    or not any(chat is source for chat in self.chat_manager.chat_list)
+                    or self._generation_context is not None or self._audio_regeneration is not None
+                    or self._playback_blocked_reasons or self.performance_editor is not None
+                    or (worker is not None and worker.isRunning())):
+                return
+            original_chats = list(self.chat_manager.chat_list)
+            saved = False
+            try:
+                cloned = self.chat_manager.clone_chat(source.chat_id)
+                saved = bool(self._save_chat())
+            except Exception:
+                logger.exception("复制小剧场剧本失败")
+                QMessageBox.warning(self, "复制失败", "复制剧本失败，原剧本已保留。")
+            finally:
+                if not saved:
+                    self.chat_manager.chat_list[:] = original_chats
+            if saved:
+                self.switch_chat(cloned)
+                self.messages_box.setText(f"已复制剧本：{cloned.name}")
+        finally:
+            self.send_playback_command("release_editor", reservation_id=request["request_id"])
 
     def rename_chat(self, item: QListWidgetItem) -> None:
         chat = item.data(Qt.UserRole)
@@ -1917,6 +1966,9 @@ class ViewerGUI(QWidget):
 
     def load_playback_script(self, preserve_scene: bool = False) -> None:
         """原子同步角色和最新剧本，旧回执失效；编辑退出仅更新待播起点。"""
+        highlight = getattr(self, "_playback_highlight", None)
+        if highlight is not None:
+            highlight.reset()
         self._playback_revision += 1
         self._playback_session = self.current_chat.chat_id if self.current_chat else ""
         self._playback_pending.clear()
@@ -1984,6 +2036,9 @@ class ViewerGUI(QWidget):
             return
         self._playback_pending.discard(result.get("request_id"))
         self._playback_status = result
+        highlight = getattr(self, "_playback_highlight", None)
+        if highlight is not None:
+            highlight.update_state(result)
         if result.get("error"):
             self.message_queue.put(result["error"])
         if result.get("action") != "reserve_editor":
@@ -2000,6 +2055,8 @@ class ViewerGUI(QWidget):
             self._delete_reserved_sentence(request)
         elif request.get("kind") == "insert":
             self._insert_reserved_sentence(request)
+        elif request.get("kind") == "clone":
+            self._clone_reserved_chat(request)
         else:
             self._open_reserved_editor(request)
 
@@ -2120,7 +2177,7 @@ class ViewerGUI(QWidget):
 
     def handle_messages(self,msg):
         self.messages_box.setText(msg)
-        if (msg not in ['调用大模型生成文本中...']) and ('整理语言' not in msg):
+        if (msg not in ['调用大模型生成剧本中...']) and ('整理语言' not in msg):
             try:
                 self.display_timer.setSingleShot(True)
                 self.display_timer.start(2500)
@@ -2732,6 +2789,9 @@ class ViewerGUI(QWidget):
 
     def on_stage_closed(self) -> None:
         """Live2D 退出时保留编排草稿，让用户仍可保存或放弃。"""
+        highlight = getattr(self, "_playback_highlight", None)
+        if highlight is not None:
+            highlight.reset()
         self._playback_stage_available = False
         self._playback_pending.clear()
         self._editor_request = None
@@ -2760,7 +2820,7 @@ class ViewerGUI(QWidget):
             self._editor_request = None
             self._playback_pending.discard(request_id)
             self.send_playback_command("release_editor", reservation_id=request_id)
-            operation = {"delete": "删除本句", "insert": "添加台词"}.get(request.get("kind"), "进入编排")
+            operation = {"delete": "删除本句", "insert": "添加台词", "clone": "复制剧本"}.get(request.get("kind"), "进入编排")
             self.message_queue.put(f"演出窗口未响应，请稍后重试{operation}。")
 
     def delete_sentence(self, index: int) -> None:
@@ -2923,6 +2983,12 @@ class ViewerGUI(QWidget):
         saved_position = scroll_bar.value()
         was_at_bottom = saved_position == scroll_bar.maximum()
 
+        highlight = getattr(self, "_playback_highlight", None)
+        chat_id = self.current_chat.chat_id if self.current_chat else None
+        ranges = []
+        if highlight is not None:
+            highlight.set_ranges([], chat_id)
+
         self.chat_display.clear()
 
         if self.current_chat is not None:
@@ -2930,9 +2996,12 @@ class ViewerGUI(QWidget):
                 # 必须分两次添加，先添加文本再添加翻译，才能正确显示换行
                 # 一次添加时，即使文本-翻译之间有换行，文本和翻译也会被挤在一起显示，无法区分
                 text_html, translation_html = self.render_message_html(index, msg)
+                document = self.chat_display.document()
+                start = document.characterCount() - 1 + int(not document.isEmpty())
                 self.chat_display.append(text_html)
                 if translation_html.strip():
                     self.chat_display.append(translation_html)
+                ranges.append((start, document.characterCount() - 1))
 
         QApplication.processEvents()
 
@@ -2942,6 +3011,8 @@ class ViewerGUI(QWidget):
             scroll_bar.setValue(saved_position)
 
         self.update_script_button_visibility()
+        if highlight is not None:
+            highlight.set_ranges(ranges, chat_id)
 
     def fill_missing_audio(self) -> None:
         """确认缺失范围后逐句复用单句合成，已有音频不覆盖。"""

@@ -70,7 +70,9 @@ def test_scene_survives_chat_backup(tmp_path):
     with patch("chat.chat._reference_audio_dir", return_value=tmp_path):
         ChatManager([chat]).export_chats_to_backup([chat.chat_id], backup)
         restored = ChatManager().import_chats_from_backup(backup).imported_chats[0]
-    assert restored.message_list[0].as_dict() == message.as_dict()
+    restored_data = restored.message_list[0].as_dict()
+    assert restored_data.pop("performance") == {"motion": "auto", "expression": "auto"}
+    assert restored_data == message.as_dict()
 
 
 def test_scene_resolves_from_fixed_base_and_never_inherits_black():
@@ -169,7 +171,7 @@ def test_normal_gap_is_separate_and_preserves_actor_buffer():
     assert timing.black_opacity(100) == 0
     assert not timing.finished(499)
     assert timing.finished(500)
-    assert audio_span("", "字" * 20).duration_ms + timing.duration_ms == 3000
+    assert audio_span("", "字" * 20).duration_ms + timing.duration_ms == 3500
 
 
 def test_black_gap_uses_one_clock_and_changes_only_under_black():
@@ -187,7 +189,7 @@ def test_black_gap_uses_one_clock_and_changes_only_under_black():
     assert timing.actors_progress(900) == 1
     assert not timing.finished(1999)
     assert timing.finished(2000)
-    assert audio_span("", "字" * 20).duration_ms + timing.duration_ms == 4500
+    assert audio_span("", "字" * 20).duration_ms + timing.duration_ms == 5000
 
 
 @pytest.mark.parametrize("total", [1, 500, 501, 502, 1000, 2000, 4000, 5000])

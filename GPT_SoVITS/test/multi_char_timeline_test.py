@@ -52,7 +52,7 @@ def test_corrupt_events_do_not_mean_expression_reset():
 
 def test_audio_missing_and_silence(tmp_path):
     """正常无声和原音频丢失必须区别，文字长度不计译文。"""
-    assert audio_span("", "你好").duration_ms == 700
+    assert audio_span("", "你好").duration_ms == 840
     assert not audio_span("", "你好").missing
     assert audio_span(str(tmp_path / "missing.wav"), "你好").missing
     import soundfile as sf

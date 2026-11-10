@@ -195,42 +195,42 @@ def make_audio(tmp_path, duration_ms):
 
 
 def test_legacy_silent_sentence_finishes_full_formula_then_separate_gap(playback):
-    """旧未编排的 20 字无声台词到 2500ms 才结束，下一句从 3000ms 开始。"""
+    """旧未编排的 20 字无声台词到 3000ms 才结束，下一句从 3500ms 开始。"""
     playback.load([line("字" * 20), line("下一句", character_name="B")])
     assert playback.started() == [(0, "字" * 20)]
-    playback.step(2499)
+    playback.step(2999)
     assert playback.performance.playing
     assert not playback.stage.busy
-    playback.step(2500)
+    playback.step(3000)
     assert not playback.performance.playing
     assert playback.stage.busy
     assert not playback.idle()
-    playback.step(2999)
+    playback.step(3499)
     assert len(playback.started()) == 1
-    playback.step(3000)
-    assert playback.started() == [(0, "字" * 20), (3000, "下一句")]
+    playback.step(3500)
+    assert playback.started() == [(0, "字" * 20), (3500, "下一句")]
 
 
-def test_silent_sentence_then_black_starts_next_at_4500(playback):
-    """黑场完全发生在 2500ms 台词之后，下一句从 4500ms 开始且不再叠加间隔。"""
+def test_silent_sentence_then_black_starts_next_at_5000(playback):
+    """黑场完全发生在 3000ms 台词之后，下一句从 5000ms 开始且不再叠加间隔。"""
     next_line = line("B", scene_before={
         "visible_characters": ["B"], "background": "night.png",
         "transition": transition_from_total(),
     })
     playback.load([line("字" * 20), next_line])
-    playback.step(2500)
+    playback.step(3000)
     assert playback.stage.busy
-    playback.step(2800)
+    playback.step(3300)
     assert playback.stage.black == pytest.approx(0.5)
     assert playback.stage.state["background"] == "default.png"
-    playback.step(3200)
+    playback.step(3700)
     assert playback.stage.black == 1
     assert playback.stage.state["background"] == "night.png"
     assert len(playback.started()) == 1
-    playback.step(4499)
+    playback.step(4999)
     assert len(playback.started()) == 1
-    playback.step(4500)
-    assert playback.started() == [(0, "字" * 20), (4500, "B")]
+    playback.step(5000)
+    assert playback.started() == [(0, "字" * 20), (5000, "B")]
     assert not playback.stage.busy
     assert playback.stage.black == 0
 
@@ -282,17 +282,17 @@ def test_single_replay_resolves_full_context_without_replaying_earlier_phases(pl
 
 
 def test_final_silent_sentence_does_not_report_idle_when_pointer_already_at_end(playback):
-    """播放指针在开始时递增，末句仍须完整播放到 2500ms 才能报告空闲。"""
+    """播放指针在开始时递增，末句仍须完整播放到 3000ms 才能报告空闲。"""
     playback.load([line("字" * 20)])
     assert playback.context["self"].playlist_pointer == 1
     assert not playback.idle()
-    playback.step(2499)
+    playback.step(2999)
     assert not playback.idle()
-    playback.step(2500)
+    playback.step(3000)
     assert playback.idle()
 
 
-@pytest.mark.parametrize("stop_at", [2800, 3200])
+@pytest.mark.parametrize("stop_at", [3300, 3700])
 def test_stop_during_black_clears_mask_and_does_not_start_next_sentence(playback, stop_at):
     """淡出或全黑时收到 STOP 会取消句前阶段，不播后句且不遗留黑幕或忙碌。"""
     playback.load([
@@ -301,7 +301,7 @@ def test_stop_during_black_clears_mask_and_does_not_start_next_sentence(playback
             "visible_characters": ["B"], "transition": transition_from_total(),
         }),
     ])
-    playback.step(2500)
+    playback.step(3000)
     playback.context["to_live2d_module_queue"].put("STOP")
     playback.step(stop_at)
     assert playback.stage.black == 0
@@ -333,7 +333,7 @@ def test_unowned_message_is_played_and_has_no_speaker_placeholder(playback):
     playback.context["overlay"].set_text.assert_called_once_with("", "夜色渐深。\n")
     assert playback.context["this_turn_model"] is None
     assert playback.context["lip_sync_model"] is None
-    playback.step(1000)
+    playback.step(1200)
     assert playback.idle()
 
 
@@ -523,7 +523,7 @@ def test_two_empty_sentences_keep_pose_until_next_valid_events(playback):
         model.model.ResetAllParameters.call_count,
         model.model.ResetExpressions.call_count,
     )
-    for instant in (600, 1100, 1700, 2200, 2800, 3300, 3499):
+    for instant in (720, 1220, 1940, 2440, 3160, 3660, 3859):
         playback.step(instant)
         assert (visuals[0].motion, visuals[0].expression) == ("wave.motion3.json", "smile")
         assert (
@@ -531,10 +531,10 @@ def test_two_empty_sentences_keep_pose_until_next_valid_events(playback):
             model.model.ResetAllParameters.call_count,
             model.model.ResetExpressions.call_count,
         ) == reset_counts
-    assert playback.started() == [(0, "甲"), (1100, "乙"), (2200, "丙"), (3300, "丁")]
+    assert playback.started() == [(0, "甲"), (1220, "乙"), (2440, "丙"), (3660, "丁")]
     model._start_performance_motion.assert_called_once_with("wave.motion3.json", {}, None)
     model.SetExpression.assert_called_once_with("smile")
-    playback.step(3500)
+    playback.step(3860)
     assert (visuals[0].motion, visuals[0].expression) == ("nod.motion3.json", "sad")
     assert model._start_performance_motion.call_count == 2
     assert model.SetExpression.call_count == 2
@@ -548,7 +548,7 @@ def test_new_playback_resets_both_roles_before_empty_first_sentence(playback, si
         name: role_timeline("wave", "smile") for name in ("A", "B")
     }})
     playback.load([previous])
-    playback.step(600)
+    playback.step(720)
     assert playback.idle()
     assert [(visual.motion, visual.expression) for visual in visuals] == [
         ("wave.motion3.json", "smile"), ("wave.motion3.json", "smile"),
@@ -590,8 +590,8 @@ def test_only_one_empty_track_keeps_existing_reset_rule(playback, empty_kind):
     model = playback.models[0]
     before_motion_resets = model.model.ResetAllParameters.call_count
     before_expression_resets = model.model.ResetExpressions.call_count
-    playback.step(600)
-    playback.step(1100)
+    playback.step(720)
+    playback.step(1220)
     if empty_kind == "motions":
         assert (visuals[0].motion, visuals[0].expression) == ("default", "smile")
         assert model.model.ResetAllParameters.call_count == before_motion_resets + 1
@@ -600,6 +600,6 @@ def test_only_one_empty_track_keeps_existing_reset_rule(playback, empty_kind):
         assert (visuals[0].motion, visuals[0].expression) == ("wave.motion3.json", "default")
         assert model.model.ResetAllParameters.call_count == before_motion_resets
         assert model.model.ResetExpressions.call_count == before_expression_resets + 1
-    playback.step(1300)
+    playback.step(1420)
     expected = ("default", "sad") if empty_kind == "motions" else ("nod.motion3.json", "default")
     assert (visuals[0].motion, visuals[0].expression) == expected

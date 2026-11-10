@@ -31,7 +31,7 @@ def audio_span(path: str, text: str) -> AudioSpan:
                 return AudioSpan(round(info.frames * 1000 / info.samplerate), path)
         except (OSError, RuntimeError):
             pass
-    return AudioSpan(100 * len(text) + 500, missing=bool(path))
+    return AudioSpan(120 * len(text) + 600, missing=bool(path))
 
 
 def initial_message_timeline(message, names, resources, palette) -> dict:

@@ -148,7 +148,7 @@ def test_script_synthesis_uses_latest_options_for_bound_character(app, monkeypat
 def test_audio_option_available_with_or_without_script(app, replacing):
     """两种生成入口均默认自动合成，替换现有剧本时使用红色提示。"""
     dialog = MoreInfoDialog("A", "B", {}, replacing=replacing)
-    assert dialog.auto_synthesize_audio.text() == "拿到剧本后自动合成所有音频"
+    assert dialog.auto_synthesize_audio.text() == "拿到剧本后立即合成所有音频"
     assert dialog.auto_synthesize_audio.isChecked()
     dialog.auto_synthesize_audio.setChecked(False)
     assert not dialog.auto_synthesize_audio.isChecked()
