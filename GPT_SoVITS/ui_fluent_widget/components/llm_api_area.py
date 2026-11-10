@@ -29,7 +29,9 @@ from log import get_logger
 
 with contextlib.redirect_stdout(None):
     from qfluentwidgets import ComboBox, BodyLabel, LineEdit, PasswordLineEdit, EditableComboBox, MessageBoxBase, \
-    ListWidget, ToolTipFilter, FluentIcon, InfoBarIcon
+    ListWidget, ToolTipFilter, FluentIcon, InfoBarIcon, DoubleSpinBox
+
+from chat.model_token_usage import custom_context_limit_key
 
 from ..custom_widgets.float_range_setting_card import FloatRangeSettingCard
 from ..custom_widgets.request_timeout_setting_card import RequestTimeoutSettingCard
@@ -185,6 +187,26 @@ class LLMAPIArea(TransparentScrollArea):
         label_3.setFixedWidth(110)
         self.custom_key_layout.insertWidget(0, label_3)
         layout_custom.addLayout(self.custom_key_layout)
+
+        context_row = QHBoxLayout()
+        context_label = BodyLabel("输入上下文上限", self.page_custom_api)
+        context_label.setFixedWidth(110)
+        context_row.addWidget(context_label)
+        self.custom_context_limit = DoubleSpinBox(self.page_custom_api)
+        self.custom_context_limit.setRange(0, 1000000)
+        self.custom_context_limit.setDecimals(3)
+        self.custom_context_limit.setSpecialValueText("0")
+        self.custom_context_unit = ComboBox(self.page_custom_api)
+        self.custom_context_unit.addItem("千（k）", userData=1000)
+        self.custom_context_unit.addItem("百万（M）", userData=1000000)
+        context_row.addWidget(self.custom_context_limit, 1)
+        context_row.addWidget(self.custom_context_unit)
+        layout_custom.addLayout(context_row)
+        context_hint = BodyLabel("1k=1000 tokens，1M=100万 tokens；设为 0 时程序自动识别。", self.page_custom_api)
+        context_hint.setWordWrap(True)
+        layout_custom.addWidget(context_hint)
+        self.custom_url_input.textChanged.connect(self.load_custom_context_limit)
+        self.custom_model_input.textChanged.connect(self.load_custom_context_limit)
 
         layout_custom.addStretch(1)
         self.page_custom_api.setLayout(layout_custom)
@@ -389,6 +411,18 @@ class LLMAPIArea(TransparentScrollArea):
         self.llm_temperature_card.setEnabled(False)
         self.llm_top_p_card.setEnabled(False)
 
+    def load_custom_context_limit(self, *_args):
+        """切换协议、地址或模型时加载对应值，不沿用其他连接的上限。"""
+        provider = self.llm_provider_combobox.currentData()
+        protocol = "responses" if provider == "custom_responses" else "chat-completions"
+        key = custom_context_limit_key(protocol, self.custom_url_input.text(), self.custom_model_input.text())
+        limits = d_sakiko_config.custom_model_input_token_limits.value
+        value = limits.get(key, 0) if isinstance(limits, dict) else 0
+        value = value if type(value) is int and value > 0 else 0
+        unit = 1000000 if value >= 1000000 and value % 1000 == 0 else 1000
+        self.custom_context_unit.setCurrentIndex(self.custom_context_unit.findData(unit))
+        self.custom_context_limit.setValue(value / unit)
+
     def load_settings_for_provider(self, provider):
         """
         Load settings (API Key, Model, URL) for the specified provider from config.
@@ -408,6 +442,7 @@ class LLMAPIArea(TransparentScrollArea):
             self.custom_model_input.setText(getattr(d_sakiko_config, prefix + "_model").value)
             self.custom_key_input.setText(getattr(d_sakiko_config, prefix + "_key").value)
             self.custom_model_input.setPlaceholderText("gpt-5" if provider == "custom_responses" else "openai/gpt-5")
+            self.load_custom_context_limit()
         elif provider in THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS:
             meta = THIRD_PARTY_OPENAI_COMPAT_ENDPOINT_MAP.get(provider, {})
             placeholder = meta.get("model_placeholder")
@@ -639,6 +674,17 @@ class LLMAPIArea(TransparentScrollArea):
                 cfg.set(getattr(cfg, prefix + "_url"), self.custom_url_input.text().strip())
                 cfg.set(getattr(cfg, prefix + "_model"), self.custom_model_input.text().strip())
                 cfg.set(getattr(cfg, prefix + "_key"), self.custom_key_input.text().strip())
+                limits = dict(cfg.custom_model_input_token_limits.value)
+                key = custom_context_limit_key(
+                    "responses" if responses else "chat-completions",
+                    self.custom_url_input.text(), self.custom_model_input.text(),
+                )
+                tokens = round(self.custom_context_limit.value() * self.custom_context_unit.currentData())
+                if tokens > 0:
+                    limits[key] = tokens
+                else:
+                    limits.pop(key, None)
+                cfg.set(cfg.custom_model_input_token_limits, limits)
 
             self.reset_error_indicators()
             return True

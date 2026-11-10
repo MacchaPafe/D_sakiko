@@ -45,7 +45,7 @@ from chat.remote_attachments import (
     build_deepseek_file_service_config,
 )
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
-from chat.model_token_usage import count_message_tokens, get_model_input_token_limit
+from chat.model_token_usage import count_message_tokens, get_model_input_token_limit, configured_input_token_limit
 from chat.rolling_summary import (
     DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO,
     SUMMARY_FAILURE_COOLDOWN_SECONDS,
@@ -278,7 +278,8 @@ class DSLocalAndVoiceGen:
     def _prepare_runtime_messages(self, messages: list[dict[str, object]]) -> list[dict[str, object]]:
         """根据上下文管理模式为主请求构造只读副本。"""
         model = self._current_litellm_model_name()
-        token_limit = get_model_input_token_limit(model)
+        token_limit = get_model_input_token_limit(model, configured_input_token_limit(
+            getattr(self, "d_sakiko_config", None), model))
         trim_func = (
             trim_messages_for_emergency
             if self._rolling_summary_enabled()
@@ -880,7 +881,8 @@ class DSLocalAndVoiceGen:
         if not self._rolling_summary_enabled():
             return False
         model = self._current_litellm_model_name()
-        token_limit = get_model_input_token_limit(model)
+        token_limit = get_model_input_token_limit(model, configured_input_token_limit(
+            getattr(self, "d_sakiko_config", None), model))
         if token_limit is None:
             logger.debug("模型 %s 的上下文上限未知，跳过滚动摘要检查。", model)
             return False

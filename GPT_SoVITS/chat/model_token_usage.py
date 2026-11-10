@@ -69,8 +69,11 @@ def _sanitize_file_blocks(value: object) -> tuple[object, int]:
 
 
 @lru_cache(maxsize=256)
-def get_model_input_token_limit(model: str) -> int | None:
-    """获取模型输入上下文 token 上限，优先使用 LiteLLM，缺失时查本地补充表。"""
+def get_model_input_token_limit(model: str, configured_limit: int = 0) -> int | None:
+    """依次使用用户设置、LiteLLM 和本地补充表中的输入上限。"""
+    manual_limit = _as_positive_int(configured_limit)
+    if manual_limit is not None:
+        return manual_limit
     normalized_model = model.strip()
     if not normalized_model:
         return None
@@ -83,6 +86,31 @@ def get_model_input_token_limit(model: str) -> int | None:
     if litellm_limit is not None:
         return litellm_limit
     return local_override
+
+
+def custom_context_limit_key(protocol: str, url: str, model: str) -> str:
+    """同一自定义连接及模型共享设置，两个协议分别保存。"""
+    from llm_model_utils import ensure_openai_compatible_model
+    return json.dumps([protocol, url.strip().rstrip("/"),
+                       ensure_openai_compatible_model(model.strip())], ensure_ascii=False)
+
+
+def configured_input_token_limit(settings: object, model: str) -> int:
+    """从本轮配置中读取当前自定义模型的手动上限，其他路由保持自动。"""
+    from llm.configuration import setting
+    from llm_model_utils import ensure_openai_compatible_model
+    if setting(settings, "use_default_deepseek_api", True) or not setting(settings, "enable_custom_llm_api_provider", False):
+        return 0
+    protocol = str(setting(settings, "custom_llm_api_protocol", "chat-completions"))
+    prefix = "custom_responses" if protocol == "responses" else "custom_llm_api"
+    raw_model = str(setting(settings, prefix + "_model", ""))
+    if ensure_openai_compatible_model(model.strip()) != ensure_openai_compatible_model(raw_model.strip()):
+        return 0
+    limits = setting(settings, "custom_model_input_token_limits", {})
+    if not isinstance(limits, Mapping):
+        return 0
+    key = custom_context_limit_key(protocol, str(setting(settings, prefix + "_url", "")), raw_model)
+    return _as_positive_int(limits.get(key)) or 0
 
 
 def _get_litellm_model_input_token_limit(

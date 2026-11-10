@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -17,6 +18,33 @@ class ModelTokenUsageTestCase(unittest.TestCase):
     def setUp(self) -> None:
         """清理带缓存的模型上限查询，避免测试互相影响。"""
         model_token_usage.get_model_input_token_limit.cache_clear()
+
+    def test_manual_limit_has_priority_and_zero_restores_automatic_lookup(self):
+        with mock.patch.object(model_token_usage, "_get_litellm_model_input_token_limit", return_value=64000) as lookup:
+            self.assertEqual(model_token_usage.get_model_input_token_limit("openai/custom", 128000), 128000)
+            lookup.assert_not_called()
+            self.assertEqual(model_token_usage.get_model_input_token_limit("openai/custom", 0), 64000)
+            self.assertEqual(model_token_usage.get_model_input_token_limit("openai/custom", 1500000), 1500000)
+
+    def test_manual_limit_is_scoped_by_protocol_url_and_model(self):
+        settings = SimpleNamespace(**{name: SimpleNamespace(value=value) for name, value in {
+            "use_default_deepseek_api": False, "enable_custom_llm_api_provider": True,
+            "custom_llm_api_protocol": "chat-completions",
+            "custom_llm_api_url": "https://example.test/v1/", "custom_llm_api_model": "custom",
+            "custom_responses_url": "https://example.test/v1", "custom_responses_model": "custom",
+            "custom_model_input_token_limits": {
+                model_token_usage.custom_context_limit_key("chat-completions", "https://example.test/v1", "custom"): 128000,
+                model_token_usage.custom_context_limit_key("responses", "https://example.test/v1", "custom"): 1500000,
+            },
+        }.items()})
+        self.assertEqual(model_token_usage.configured_input_token_limit(settings, "openai/custom"), 128000)
+        self.assertEqual(model_token_usage.configured_input_token_limit(settings, "openai/other"), 0)
+        settings.custom_llm_api_url.value = "https://other.test/v1"
+        self.assertEqual(model_token_usage.configured_input_token_limit(settings, "custom"), 0)
+        settings.custom_llm_api_protocol.value = "responses"
+        self.assertEqual(model_token_usage.configured_input_token_limit(settings, "openai/custom"), 1500000)
+        settings.enable_custom_llm_api_provider.value = False
+        self.assertEqual(model_token_usage.configured_input_token_limit(settings, "custom"), 0)
 
     def test_litellm_limit_takes_precedence(self) -> None:
         """LiteLLM 能返回上限时，应优先使用 LiteLLM 的结果。"""

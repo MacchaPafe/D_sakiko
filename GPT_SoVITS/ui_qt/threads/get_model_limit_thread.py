@@ -18,9 +18,11 @@ class GetModelLimitThread(QObject):
         model = self.model
 
         def run():
-            from chat.model_token_usage import get_model_input_token_limit
+            from chat.model_token_usage import get_model_input_token_limit, configured_input_token_limit
+            from qconfig import create_d_sakiko_config_snapshot
 
-            result = get_model_input_token_limit(model)
+            result = get_model_input_token_limit(model, configured_input_token_limit(
+                create_d_sakiko_config_snapshot(), model))
             try:
                 if model == self.model:
                     self.model_input_token_limit.emit(result)

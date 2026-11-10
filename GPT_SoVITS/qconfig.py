@@ -119,6 +119,7 @@ class DSakikoConfig(QConfig):
     custom_responses_url = ConfigItem("llm_setting", "custom_responses_url", "https://api.openai.com/v1")
     custom_responses_model = ConfigItem("llm_setting", "custom_responses_model", "")
     custom_responses_key = ConfigItem("llm_setting", "custom_responses_key", "")
+    custom_model_input_token_limits = ConfigItem("llm_setting", "custom_model_input_token_limits", {})
     chatgpt_account_id = ConfigItem("llm_setting", "chatgpt_account_id", "")
     chatgpt_model = ConfigItem("llm_setting", "chatgpt_model", "")
     chatgpt_announcement_seen = ConfigItem("llm_setting", "chatgpt_announcement_seen", False)
