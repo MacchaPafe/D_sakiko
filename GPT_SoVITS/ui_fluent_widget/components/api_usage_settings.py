@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, ComboBox, DoubleSpinBox, FluentIcon, HeaderCardWidget,
-    LineEdit, PasswordLineEdit, PlainTextEdit, PrimaryPushButton, SpinBox,
+    LineEdit, MessageBox, PasswordLineEdit, PlainTextEdit, PrimaryPushButton, SpinBox,
     SwitchButton, TransparentPushButton,
 )
 
@@ -67,6 +67,7 @@ class ApiUsageSettingsWidget(HeaderCardWidget):
         self.subscription_help.setFixedWidth(32)
         self.subscription_help.setAccessibleName("订阅额度查询说明")
         self.subscription_help.setToolTip(CHATGPT_USAGE_NOTICE)
+        self.subscription_help.clicked.connect(self._show_subscription_help)
         subscription_layout.addWidget(self.subscription_help)
         subscription_layout.addStretch(1)
         self.viewLayout.addWidget(self.subscription_info)
@@ -167,6 +168,13 @@ class ApiUsageSettingsWidget(HeaderCardWidget):
             control.textChanged.connect(self._update_connection_hint)
         for control in (self.timeout, self.interval, self.scale):
             control.valueChanged.connect(self._invalidate_test)
+
+    def _show_subscription_help(self) -> None:
+        """弹出 ChatGPT 订阅额度查询说明。"""
+        dialog = MessageBox("ChatGPT 订阅额度查询说明", CHATGPT_USAGE_NOTICE, self.window())
+        dialog.yesButton.setText("知道了")
+        dialog.cancelButton.hide()
+        dialog.exec_()
 
     def _toggle_advanced(self, expanded: bool) -> None:
         """按需展开覆盖项，保留正在编辑的值。"""

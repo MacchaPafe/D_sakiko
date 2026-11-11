@@ -73,12 +73,11 @@ class ChatGPTComplianceDialog(MessageBoxBase):
         sections = (
             (
                 "1. 官方 OAuth 授权协议，非反代",
-                "数字小祥采用 OpenAI 官方提供的 Sign in with ChatGPT 标准协议接入。",
-                "该协议由 OpenAI 开放给所有开源 Agent 使用，是正常的接入流程",
+                "数字小祥采用 OpenAI 官方提供的 Sign in with ChatGPT 标准协议接入。该协议由 OpenAI 开放给所有开源 Agent 使用，是正常的接入流程。",
             ),
             (
                 "2. 可以随时退出登录",
-                "您可以随时在账户卡片上退出登录，或前往 ChatGPT 官网的「设置 → 使用情况和计费」页面查看额度消耗并随时断开授权。",
+                "您可以随时在账户卡片上退出登录，或前往 ChatGPT 官网的「设置 → 使用情况和计费」页面查看额度消耗并随时取消授权。",
             ),
         )
         for heading, content in sections:
@@ -94,7 +93,7 @@ class ChatGPTComplianceDialog(MessageBoxBase):
 
         self.widget.setMinimumWidth(460)
         self.yesButton.setText("知道了")
-        self.cancelButton.setText("管理官网用量")
+        self.cancelButton.setText("管理用量...")
         self.cancelButton.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(USAGE_URL)))
 
 
@@ -163,7 +162,7 @@ class AccountCard(CardWidget):
         self.logout_button.setToolTip("退出登录")
         self.logout_button.installEventFilter(ToolTipFilter(self.logout_button))
         self.logout_button.setEnabled(account.status == "connected" or bool(account.credential_store))
-        self.logout_button.clicked.connect(lambda: self.logout_requested.emit(self.account.id))
+        self.logout_button.clicked.connect(self._confirm_logout)
 
         self.more_button = TransparentToolButton(FluentIcon.MORE, self)
         self.more_button.setToolTip("更多操作")
@@ -180,6 +179,24 @@ class AccountCard(CardWidget):
         layout.addLayout(actions_layout)
 
         self.clicked.connect(lambda: self.selected.emit(self.account.id))
+
+    def _confirm_logout(self) -> None:
+        """确认当前卡片的账户后才发出退出登录请求。"""
+        account_name = self.account.email or f"账户 {self.account.id[:6]}"
+        dialog = MessageBox(
+            "确认退出登录？",
+            f"退出 {account_name} 后，需要重新登录才能继续使用此账户的 ChatGPT 订阅。",
+            self.window(),
+        )
+        dialog.contentLabel.setTextFormat(Qt.PlainText)
+        dialog.yesButton.setText("退出登录")
+        dialog.cancelButton.setText("取消")
+        dialog.cancelButton.setDefault(True)
+        dialog.cancelButton.setFocus()
+        confirmed = dialog.exec_()
+        dialog.deleteLater()
+        if confirmed:
+            self.logout_requested.emit(self.account.id)
 
     def show_more_menu(self) -> None:
         """弹出该账户的更多操作菜单（重新登录、用量管理）。"""
@@ -504,7 +521,6 @@ class ChatGPTAccountArea(QWidget):
             config.set(config.enable_custom_llm_api_provider, False)
             config.set(config.llm_api_provider, "chatgpt")
         notify_config_reload()
-        self.show_status("已自动保存，正在使用 ChatGPT 订阅；从下一轮生成生效。", InfoBarIcon.SUCCESS)
         self.activated.emit()
 
     def _account_changed(self) -> None:
