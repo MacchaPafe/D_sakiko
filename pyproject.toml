@@ -81,6 +81,7 @@ dependencies = [
     "jsonschema>=4.23",
     "keyring>=25.6,<26",
     "PyJWT[crypto]>=2.10,<3",
+    "quickjs==1.19.4",
     "platformdirs>=4.5.1",
     "rapidfuzz>=3.14.3",
     # 世界书运行时派生索引
