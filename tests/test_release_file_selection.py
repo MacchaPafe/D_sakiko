@@ -67,6 +67,9 @@ class ReleaseFileSelectionTest(unittest.TestCase):
         paths.update({"launcher/assets/logo_thumb.svg", "launcher/assets/logo_thumb.png"})
         for name in ("macos-arm64", "windows-x64"):
             with self.subTest(profile=name):
+                expected = paths.copy()
+                if name == "macos-arm64":
+                    expected.add("launcher/assets/logo_thumb_macos_dock.png")
                 profile = profiles["profiles"][name]
                 update_rules = FileSelectionRules(
                     include=tuple(defaults["include"] + profile.get("include", [])),
@@ -76,8 +79,8 @@ class ReleaseFileSelectionTest(unittest.TestCase):
                 )
                 repair_rules = load_profile(profile_dir / "repair_asset_profiles.json", name).rules
                 for rules in (update_rules, repair_rules):
-                    result = select_files(repo_root, paths, rules, tracked_candidates=paths)
-                    self.assertEqual(result.selected, frozenset(paths))
+                    result = select_files(repo_root, expected, rules, tracked_candidates=expected)
+                    self.assertEqual(result.selected, frozenset(expected))
 
     def test_include_overrides_exclude_but_not_hard_exclude(self) -> None:
         """普通排除可被 include 覆盖，最终排除不可被覆盖。"""

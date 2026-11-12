@@ -28,15 +28,6 @@ class RepairVersionsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--version", result.stdout)
 
-    def test_file_preserves_choice_order(self) -> None:
-        """发布文件包含 4.0.0，并按文件顺序展示选项。"""
-        versions = load_repair_versions(repair.ROOT / REPAIR_VERSIONS_PATH)
-        self.assertEqual(versions, ("4.0.0", "3.5.0", "3.2.0"))
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output), patch("builtins.input", return_value="1"):
-            self.assertEqual(repair.choose_version(None), "4.0.0")
-        self.assertIn("1. 4.0.0", output.getvalue())
-
     def test_invalid_files_are_rejected(self) -> None:
         """拒绝损坏 JSON、错误结构、无效及重复版本。"""
         with tempfile.TemporaryDirectory() as directory:

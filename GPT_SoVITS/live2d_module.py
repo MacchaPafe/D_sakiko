@@ -243,7 +243,7 @@ class Live2DModule(SingleCharacterPerformance):
         frame_clock = pygame.time.Clock()
         self.target_fps = 60
 
-        set_pygame_window_icon()
+        set_pygame_window_icon(for_dock=True)
 
         if self.if_sakiko and self.sakiko_state and isinstance(model, Live2DModelAdapter):
             model.SetSemanticExpression('serious')

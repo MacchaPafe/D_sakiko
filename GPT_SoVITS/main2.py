@@ -366,7 +366,7 @@ if __name__=='__main__':
     QSurfaceFormat.setDefaultFormat(gl_format)
     qt_app = QApplication(sys.argv)
     from ui_qt.app_icon import application_icon
-    qt_app.setWindowIcon(application_icon())
+    qt_app.setWindowIcon(application_icon(for_dock=True))
     qt_app.setQuitOnLastWindowClosed(False)
     from PyQt5.QtWidgets import QDesktopWidget  # 设置qt窗口位置，与live2d对齐
 

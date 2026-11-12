@@ -91,7 +91,8 @@
       "arch": "arm64",
       "include": [
         "*.command",
-        "install_brew.sh"
+        "install_brew.sh",
+        "launcher/assets/logo_thumb_macos_dock.png"
       ],
       "exclude": [
         "*.bat"
