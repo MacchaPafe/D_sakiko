@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 from types import SimpleNamespace
@@ -45,6 +48,34 @@ class ModelTokenUsageTestCase(unittest.TestCase):
         self.assertEqual(model_token_usage.configured_input_token_limit(settings, "openai/custom"), 1500000)
         settings.enable_custom_llm_api_provider.value = False
         self.assertEqual(model_token_usage.configured_input_token_limit(settings, "custom"), 0)
+
+    def test_subscription_prefers_current_account_catalog_and_reads_refreshes(self) -> None:
+        """订阅预算读取当前账户默认窗口，并跟随目录刷新或账户切换。"""
+        settings = SimpleNamespace(
+            use_default_deepseek_api=SimpleNamespace(value=False),
+            llm_api_provider=SimpleNamespace(value="chatgpt"),
+            chatgpt_model=SimpleNamespace(value="gpt-6.1-sol"),
+            chatgpt_account_id=SimpleNamespace(value="account-one"),
+        )
+        model = "openai/gpt-6.1-sol"
+        with TemporaryDirectory() as directory:
+            models = Path(directory) / "models"
+            models.mkdir()
+            path = models / "account-one.json"
+            entry = {"slug": "gpt-6.1-sol", "context_window": 500_000, "max_context_window": 872_000}
+            path.write_text(json.dumps({"models": [entry]}), encoding="utf-8")
+            with (
+                mock.patch("llm.chatgpt.session.default_directory", return_value=Path(directory)),
+                mock.patch.object(model_token_usage, "get_model_input_token_limit", return_value=None) as fallback,
+            ):
+                self.assertEqual(model_token_usage.resolve_model_input_token_limit(settings, model), 500_000)
+                entry["max_input_tokens"] = 400_000
+                path.write_text(json.dumps({"models": [entry]}), encoding="utf-8")
+                self.assertEqual(model_token_usage.resolve_model_input_token_limit(settings, model), 400_000)
+                fallback.assert_not_called()
+                settings.chatgpt_account_id.value = "account-two"
+                self.assertIsNone(model_token_usage.resolve_model_input_token_limit(settings, model))
+                fallback.assert_called_once_with(model, 0)
 
     def test_litellm_limit_takes_precedence(self) -> None:
         """LiteLLM 能返回上限时，应优先使用 LiteLLM 的结果。"""

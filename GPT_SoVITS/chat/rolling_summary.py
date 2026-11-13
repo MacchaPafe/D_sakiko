@@ -19,7 +19,6 @@ RESERVED_RECENT_ROUNDS = 10
 ROLLING_SUMMARY_TOKEN_BUDGET_RATIO = 0.10
 ROLLING_SUMMARY_MIN_CHARS = 8
 EMERGENCY_CONTEXT_RATIO = 0.90
-UNKNOWN_MODEL_MAX_BYTES = 340 * 1024
 SUMMARY_FAILURE_COOLDOWN_SECONDS = 60
 ROLLING_SUMMARY_PROMPT_PATH = Path(__file__).with_name("rolling_summary_prompt.txt")
 
@@ -464,38 +463,24 @@ def trim_messages_for_emergency(
     reserved_recent_user_messages: int = RESERVED_RECENT_ROUNDS,
 ) -> list[dict[str, object]]:
     """仅裁剪请求副本，避免摘要失败时让主请求直接超过上下文上限。"""
-    working = copy.deepcopy(messages)
-    if len(working) <= 1:
-        return working
+    if len(messages) <= 1 or token_limit is None or token_limit <= 0:
+        return copy.deepcopy(messages)
+    target = min(
+        max(1, int(token_limit * EMERGENCY_CONTEXT_RATIO)),
+        max(1, token_limit - rolling_summary_token_budget(token_limit)),
+    )
+    return _trim_messages_to_token_budget(
+        messages, model=model, token_limit=target, file_token_cost=file_token_cost,
+        reserved_recent_user_messages=reserved_recent_user_messages,
+    )
 
-    def over_limit(candidate: list[dict[str, object]]) -> bool:
-        if token_limit is not None and token_limit > 0:
-            try:
-                from chat.model_token_usage import count_message_tokens
 
-                summary_budget = rolling_summary_token_budget(token_limit)
-                target = min(
-                    max(1, int(token_limit * EMERGENCY_CONTEXT_RATIO)),
-                    max(1, token_limit - summary_budget),
-                )
-                if file_token_cost is None:
-                    return count_message_tokens(model, candidate) > target
-                return count_message_tokens(
-                    model,
-                    candidate,
-                    file_token_cost=file_token_cost,
-                ) > target
-            except Exception:
-                pass
-        payload_size = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
-        return payload_size > UNKNOWN_MODEL_MAX_BYTES
-
-    if not over_limit(working):
-        return working
-
-    if any(message.get("_turn") for message in working):
-        return _trim_complete_turns(working, over_limit)
-
+def _trim_legacy_emergency_messages(
+    working: list[dict[str, object]],
+    over_limit: Callable[[list[dict[str, object]]], bool],
+    reserved_recent_user_messages: int,
+) -> list[dict[str, object]]:
+    """按原有保护规则裁剪未带轮次标记的历史消息。"""
     hard_protected = _hard_protected_message_indices(working)
     recent_user_indices = [
         index
@@ -526,31 +511,55 @@ def trim_messages_with_sliding_window(
     file_token_cost: int | None = None,
 ) -> list[dict[str, object]]:
     """保留 system 消息，并从最旧的非 system 消息开始裁剪请求副本。"""
+    return _trim_messages_to_token_budget(
+        messages, model=model, token_limit=token_limit, file_token_cost=file_token_cost,
+    )
+
+
+class _TokenEstimateUnavailable(Exception):
+    """本次裁剪无法取得可靠的本地 token 估算。"""
+
+
+def _trim_messages_to_token_budget(
+    messages: list[dict[str, object]],
+    *,
+    model: str,
+    token_limit: int | None,
+    file_token_cost: int | None,
+    reserved_recent_user_messages: int | None = None,
+) -> list[dict[str, object]]:
+    """仅在上限和估算均可用时裁剪，估算中途失败则保留整份输入。"""
+    from chat.model_token_usage import count_message_tokens
+
     working = copy.deepcopy(messages)
+    if token_limit is None or token_limit <= 0:
+        return working
 
     def over_limit(candidate: list[dict[str, object]]) -> bool:
-        if token_limit is not None and token_limit > 0:
-            try:
-                from chat.model_token_usage import count_message_tokens
+        """比较输入 token 数，仅标记计数本身的异常。"""
+        try:
+            estimate = count_message_tokens(model, candidate, file_token_cost=file_token_cost)
+        except Exception as exc:
+            raise _TokenEstimateUnavailable from exc
+        return estimate > token_limit
 
-                kwargs = {} if file_token_cost is None else {"file_token_cost": file_token_cost}
-                return count_message_tokens(model, candidate, **kwargs) > token_limit
-            except Exception:
-                pass
-        payload_size = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
-        return payload_size > UNKNOWN_MODEL_MAX_BYTES
-
-    if any(message.get("_turn") for message in working):
-        return _trim_complete_turns(working, over_limit)
-
-    while len(working) > 1 and over_limit(working):
-        removable_index = next(
-            (index for index, message in enumerate(working) if message.get("role") != "system"),
-            None,
-        )
-        if removable_index is None:
-            break
-        del working[removable_index]
+    try:
+        if any(message.get("_turn") for message in working):
+            return _trim_complete_turns(working, over_limit)
+        if reserved_recent_user_messages is not None:
+            if over_limit(working):
+                return _trim_legacy_emergency_messages(working, over_limit, reserved_recent_user_messages)
+            return working
+        while len(working) > 1 and over_limit(working):
+            removable_index = next(
+                (index for index, message in enumerate(working) if message.get("role") != "system"),
+                None,
+            )
+            if removable_index is None:
+                break
+            del working[removable_index]
+    except _TokenEstimateUnavailable:
+        return copy.deepcopy(messages)
     return working
 
 

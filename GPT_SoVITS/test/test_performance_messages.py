@@ -121,12 +121,15 @@ def test_token_preview_does_not_replace_inflight_controls() -> None:
     subject.audio_language_choice = "中英混合"
     subject.current_chat_id = "chat"
     subject.chat_manager = Mock()
-    subject.current_chat.build_llm_query.return_value = [{"role": "system", "content": "角色设定"}]
+    chat = subject.current_chat
+    chat.chat_id = "chat"
+    chat.build_llm_query.return_value = [{"role": "system", "content": "角色设定"}]
     subject._turn_runtime_controls = "已发送的 V3 协议"
     with (patch.object(subject, "_current_deepseek_file_service", return_value=None),
           patch.object(subject, "_rolling_summary_enabled", return_value=False),
           patch.object(subject, "_build_turn_runtime_controls", return_value="新模型 V2 协议"),
-          patch.object(subject, "_prepare_runtime_messages", side_effect=lambda messages: messages),
+          patch.object(subject, "_prepare_runtime_messages", side_effect=lambda messages, **_: messages) as prepare,
           patch.object(subject, "_count_current_request_tokens", return_value=42)):
         assert subject.estimate_current_context_tokens("灯") == 42
+    assert prepare.call_args.kwargs == {"preview_chat_id": "chat"}
     assert subject._turn_runtime_controls == "已发送的 V3 协议"

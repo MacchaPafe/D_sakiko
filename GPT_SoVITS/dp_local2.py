@@ -45,7 +45,7 @@ from chat.remote_attachments import (
     build_deepseek_file_service_config,
 )
 from chat.chat_meta import ToolCallHistoryRecordMeta, ToolCallRecordMeta
-from chat.model_token_usage import count_message_tokens, get_model_input_token_limit, configured_input_token_limit
+from chat.model_token_usage import count_message_tokens, resolve_model_input_token_limit
 from chat.rolling_summary import (
     DEFAULT_ROLLING_SUMMARY_TRIGGER_RATIO,
     SUMMARY_FAILURE_COOLDOWN_SECONDS,
@@ -132,7 +132,10 @@ def completion(**kwargs: object) -> object:
     messages = kwargs.pop("messages", [])
     tools = kwargs.pop("tools", None)
     choice = kwargs.pop("tool_choice", "auto")
-    request = LLMRequest(messages, tools or [], choice, dict(kwargs), conversation_id=conversation_id)
+    request = LLMRequest(
+        messages, tools or [], choice, dict(kwargs),
+        conversation_id=conversation_id, cache_debug_phase=phase,
+    )
     result = generate(request, config, cancel if isinstance(cancel, CancellationToken) else None)
     log_prompt_cache_usage(result, {"model": config.model, CACHE_DEBUG_PHASE_KEY: phase}, logger)
     return result
@@ -275,27 +278,47 @@ class DSLocalAndVoiceGen:
         with self._cancelled_turns_lock:
             self._cancelled_turns.discard((chat_id, turn_id))
 
-    def _prepare_runtime_messages(self, messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    def _prepare_runtime_messages(
+        self, messages: list[dict[str, object]], *, preview_chat_id: str | None = None,
+    ) -> list[dict[str, object]]:
         """根据上下文管理模式为主请求构造只读副本。"""
         model = self._current_litellm_model_name()
-        token_limit = get_model_input_token_limit(model, configured_input_token_limit(
-            getattr(self, "d_sakiko_config", None), model))
+        token_limit = resolve_model_input_token_limit(getattr(self, "d_sakiko_config", None), model)
         trim_func = (
             trim_messages_for_emergency
             if self._rolling_summary_enabled()
             else trim_messages_with_sliding_window
         )
+        file_token_cost = self._current_file_token_cost()
         prepared = trim_func(
             messages,
             model=model,
             token_limit=token_limit,
-            file_token_cost=self._current_file_token_cost(),
+            file_token_cost=file_token_cost,
         )
         if len(prepared) < len(messages):
+            source = "preview" if preview_chat_id is not None else "request"
+            chat_id = preview_chat_id
+            if chat_id is None:
+                chat_id = getattr(self, "_request_chat_id", "") or getattr(self, "current_chat_id", "")
+            estimates: list[int | str] = []
+            for candidate in (messages, prepared):
+                try:
+                    estimates.append(count_message_tokens(model, candidate, file_token_cost=file_token_cost))
+                except Exception:
+                    estimates.append("n/a")
             logger.warning(
-                "主请求上下文超过当前模式限制，已仅对本次请求执行裁剪：%d -> %d 条消息。",
+                "主请求上下文超过当前模式限制，已仅对本次请求执行裁剪：%d -> %d 条消息。"
+                " chat_id=%s source=%s model=%s estimated_tokens_before=%s estimated_tokens_after=%s"
+                " model_input_limit=%s",
                 len(messages),
                 len(prepared),
+                chat_id or "n/a",
+                source,
+                model,
+                estimates[0],
+                estimates[1],
+                token_limit if token_limit is not None else "n/a",
             )
         return prepared
 
@@ -707,10 +730,14 @@ class DSLocalAndVoiceGen:
             runtime += "\n\n" + self._worldbook_runtime_instruction()
         return base, runtime
 
-    def _build_llm_messages_for_chat_turn(self, character_name: str, *, remember_controls: bool = True) -> list[dict[str, object]]:
+    def _build_llm_messages_for_chat_turn(
+        self, character_name: str, *, remember_controls: bool = True, chat: Chat | None = None,
+    ) -> list[dict[str, object]]:
         """
         基于当前对话构造发送给 LLM 的请求副本。
         """
+        if chat is None:
+            chat = self.current_chat
         service = self._current_deepseek_file_service()
         attachment_context = (
             AttachmentSerializationContext(
@@ -723,14 +750,14 @@ class DSLocalAndVoiceGen:
         )
         if self._rolling_summary_enabled():
             query_messages = build_llm_query_with_rolling_summary(
-                self.current_chat,
+                chat,
                 perspective=character_name,
                 is_simplify=True,
                 include_translation=self.audio_language_choice == '日英混合',
                 attachment_context=attachment_context,
             )
         else:
-            query_messages = self.current_chat.build_llm_query(
+            query_messages = chat.build_llm_query(
                 perspective=character_name,
                 is_simplify=True,
                 include_translation=self.audio_language_choice == '日英混合',
@@ -779,8 +806,9 @@ class DSLocalAndVoiceGen:
 
     def estimate_current_context_tokens(self, character_name: str) -> int:
         """估算当前对话下一次实际请求携带的 token 数，供 UI 预览使用。"""
-        messages = self._build_llm_messages_for_chat_turn(character_name, remember_controls=False)
-        prepared_messages = self._prepare_runtime_messages(messages)
+        chat = self.current_chat
+        messages = self._build_llm_messages_for_chat_turn(character_name, remember_controls=False, chat=chat)
+        prepared_messages = self._prepare_runtime_messages(messages, preview_chat_id=chat.chat_id)
         return self._count_current_request_tokens(prepared_messages)
 
     def _current_deepseek_file_service(self) -> DeepSeekFileServiceConfig | None:
@@ -881,8 +909,7 @@ class DSLocalAndVoiceGen:
         if not self._rolling_summary_enabled():
             return False
         model = self._current_litellm_model_name()
-        token_limit = get_model_input_token_limit(model, configured_input_token_limit(
-            getattr(self, "d_sakiko_config", None), model))
+        token_limit = resolve_model_input_token_limit(getattr(self, "d_sakiko_config", None), model)
         if token_limit is None:
             logger.debug("模型 %s 的上下文上限未知，跳过滚动摘要检查。", model)
             return False

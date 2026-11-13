@@ -13,6 +13,7 @@ import webbrowser
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
@@ -20,7 +21,7 @@ from filelock import FileLock, Timeout
 
 from ..errors import LLMError, response_error, redact_error
 from ..types import CancellationToken
-from .storage import Account, AccountStore, Tokens, write_private_json
+from .storage import Account, AccountStore, Tokens, default_directory, write_private_json
 
 ISSUER = "https://auth.openai.com"
 RESOURCE = "https://api.openai.com/v1"
@@ -28,6 +29,19 @@ AUTHORIZE = ISSUER + "/api/accounts/authorize"
 TOKEN = ISSUER + "/api/accounts/oauth/token"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
 USAGE_URL = "https://chatgpt.com/settings/usage"
+
+
+def read_cached_models(identifier: str, *, directory: Path | None = None) -> list[dict[str, object]]:
+    """只读取指定账户的本地模型目录，缓存缺失或损坏时返回空列表。"""
+    if not identifier or Path(identifier).name != identifier:
+        return []
+    path = (directory or default_directory()) / "models" / (identifier + ".json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entries = data.get("models", [])
+        return [item for item in entries if isinstance(item, dict) and isinstance(item.get("slug"), str)]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return []
 
 
 def user_agent() -> str:
@@ -294,16 +308,7 @@ class ChatGPTSession:
 
     def cached_models(self, identifier: str) -> list[dict[str, object]]:
         """读取账户自己的目录缓存，刷新失败不伪造其他账户可用模型。"""
-        path = self.store.directory / "models" / (identifier + ".json")
-        if not path.exists():
-            return []
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            entries = data.get("models", [])
-            return [item for item in entries if isinstance(item, dict) and isinstance(item.get("slug"), str)]
-        except (OSError, ValueError, AttributeError, TypeError):
-            # 目录属于可重建缓存，不允许其损坏阻止修复账户或重新登录。
-            return []
+        return read_cached_models(identifier, directory=self.store.directory)
 
     async def sign_out(self, identifier: str) -> str:
         """忙碌时拒绝注销；清理本地秘密并始终保留注册以供下次登录。"""

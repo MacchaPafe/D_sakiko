@@ -88,6 +88,28 @@ def get_model_input_token_limit(model: str, configured_limit: int = 0) -> int | 
     return local_override
 
 
+def resolve_model_input_token_limit(settings: object, model: str) -> int | None:
+    """订阅优先使用当前账户的缓存目录，其余来源沿用原有上限解析。"""
+    from llm.configuration import resolve_config
+
+    connection = resolve_config(settings)
+    slug = model.strip().removeprefix("openai/")
+    if connection.route == "chatgpt-subscription" and slug == connection.model:
+        from llm.chatgpt.session import read_cached_models
+
+        for entry in read_cached_models(connection.account_id):
+            if entry.get("slug") != slug:
+                continue
+            limits = [
+                limit for key in ("max_input_tokens", "context_window")
+                if (limit := _as_positive_int(entry.get(key))) is not None
+            ]
+            if limits:
+                return min(limits)
+            break
+    return get_model_input_token_limit(model, configured_input_token_limit(settings, model))
+
+
 def custom_context_limit_key(protocol: str, url: str, model: str) -> str:
     """同一自定义连接及模型共享设置，两个协议分别保存。"""
     from llm_model_utils import ensure_openai_compatible_model

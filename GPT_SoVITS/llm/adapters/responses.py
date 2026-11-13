@@ -4,10 +4,17 @@ from __future__ import annotations
 import json
 from typing import cast
 
+import httpx
+
 from ..errors import LLMError, response_error
 from ..response_routes import response_route
 from ..replay import compatible, make_replay
 from ..types import LLMConfig, LLMRequest, LLMResult
+
+
+_OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1"
+# https://developers.openai.com/api/docs/guides/images-vision#image-input-requirements
+_OPENAI_IMAGE_REQUEST_MAX_BYTES = 512_000_000
 
 
 def mapping(value: object) -> dict[str, object]:
@@ -201,17 +208,46 @@ def prepare_body(request: LLMRequest, config: LLMConfig) -> tuple[dict[str, obje
     return response_route(config.route).prepare(options)
 
 
+def _has_image_input(body: dict[str, object]) -> bool:
+    """识别最终 Responses 请求中的内联图片。"""
+    items = body.get("input")
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        content = item.get("content") if isinstance(item, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "input_image" for part in content
+        ):
+            return True
+    return False
+
+
+async def _validate_openai_image_request_size(request: httpx.Request) -> None:
+    """在发送前检查 SDK 已序列化的图片请求体大小。"""
+    if len(request.content) > _OPENAI_IMAGE_REQUEST_MAX_BYTES:
+        raise LLMError("request_too_large", "OpenAI 图片请求体过大，请减少附件或压缩图片。")
+
+
 async def execute(request: LLMRequest, config: LLMConfig, *,
                   prepared: tuple[dict[str, object], list[str]] | None = None) -> LLMResult:
     """内部消费 SSE 至完成；相同编解码和终止规则用于两种计费路由。"""
-    from openai import AsyncOpenAI
+    from openai import AsyncOpenAI, DefaultAsyncHttpxClient
     body, diagnostics = prepared if prepared is not None else prepare_body(request, config)
     headers = request.options.get("_response_headers", {})
-    async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url or "https://api.openai.com/v1",
-                           timeout=config.timeout, max_retries=0) as client:
+    base_url = config.base_url or _OPENAI_RESPONSES_BASE_URL
+    client_options: dict[str, httpx.AsyncClient] = {}
+    if base_url.rstrip("/") == _OPENAI_RESPONSES_BASE_URL and _has_image_input(body):
+        client_options["http_client"] = DefaultAsyncHttpxClient(
+            event_hooks={"request": [_validate_openai_image_request_size]},
+        )
+    async with AsyncOpenAI(api_key=config.api_key, base_url=base_url,
+                           timeout=config.timeout, max_retries=0, **client_options) as client:
         try:
             stream = await client.responses.create(**body, **({"extra_headers": headers} if headers else {}))
         except Exception as exc:
+            cause = exc.__cause__
+            if isinstance(cause, LLMError) and cause.code == "request_too_large":
+                raise cause from None
             response = getattr(exc, "response", None)
             if response is not None:
                 try:
@@ -226,6 +262,9 @@ async def execute(request: LLMRequest, config: LLMConfig, *,
                 if kind == "response.completed":
                     result = parse_response(event.response, request, config)
                     result.diagnostics.extend(diagnostics)
+                    if config.route == "chatgpt-subscription":
+                        from ..chatgpt.prompt_cache_debug import log_prompt_cache
+                        log_prompt_cache(body, request, config, result)
                     return result
                 if kind in {"response.failed", "response.incomplete", "error"}:
                     payload = mapping(getattr(event, "response", None)) or mapping(event)

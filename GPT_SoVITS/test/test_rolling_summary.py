@@ -116,6 +116,55 @@ class RollingSummaryTestCase(unittest.TestCase):
             {"role": "user", "content": "latest-user"},
         ])
 
+    def test_trimming_warning_identifies_preview_and_request(self) -> None:
+        """区分预览与正式请求，估算失败仍然返回已裁剪的消息。"""
+        subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
+        subject.current_chat_id = "visible-chat"
+        subject._request_chat_id = "active-request"
+        messages: list[dict[str, object]] = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "private-old-content" * 100, "_turn": "old"},
+            {"role": "user", "content": "latest-user", "_turn": "latest"},
+        ]
+        with (
+            mock.patch.object(subject, "_current_litellm_model_name", return_value="openai/gpt-6.1-sol"),
+            mock.patch.object(dp_local2, "resolve_model_input_token_limit", return_value=250),
+            mock.patch("chat.model_token_usage.count_message_tokens", side_effect=lambda _model, items, **_: len(items) * 100),
+            mock.patch.object(dp_local2, "count_message_tokens", side_effect=[300, 200, ValueError("bad count"), 200]),
+            mock.patch.object(dp_local2.logger, "warning") as warning,
+        ):
+            preview = subject._prepare_runtime_messages(messages, preview_chat_id="preview-chat")
+            request = subject._prepare_runtime_messages(messages)
+
+        self.assertEqual(len(messages), 3)
+        self.assertEqual(preview, request)
+        self.assertEqual(request, [messages[0], messages[2]])
+        preview_log, request_log = [call.args[0] % call.args[1:] for call in warning.call_args_list]
+        self.assertIn("chat_id=preview-chat source=preview", preview_log)
+        self.assertIn("estimated_tokens_before=300 estimated_tokens_after=200 model_input_limit=250", preview_log)
+        self.assertIn("chat_id=active-request source=request", request_log)
+        self.assertIn("estimated_tokens_before=n/a estimated_tokens_after=200", request_log)
+        self.assertNotIn("private-old-content", preview_log + request_log)
+
+    def test_large_image_history_is_trimmed_only_with_a_token_budget_and_estimate(self) -> None:
+        """字节体积不参与裁剪，候选估算失败后恢复原始历史。"""
+        messages: list[dict[str, object]] = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": [{"type": "image_url", "image_url": "data:image/png;base64," + "A" * 400_000}],
+             "_turn": "old"},
+            {"role": "user", "content": "latest-user", "_turn": "latest"},
+        ]
+        for trim in (trim_messages_for_emergency, trim_messages_with_sliding_window):
+            with self.subTest(trim=trim.__name__):
+                with mock.patch("chat.model_token_usage.count_message_tokens", return_value=6176) as count:
+                    self.assertEqual(trim(messages, model="openai/test", token_limit=None), messages)
+                    count.assert_not_called()
+                    self.assertEqual(trim(messages, model="openai/test", token_limit=500_000), messages)
+                with mock.patch("chat.model_token_usage.count_message_tokens", side_effect=[7000, ValueError]):
+                    self.assertEqual(trim(messages, model="openai/test", token_limit=6500), messages)
+                with mock.patch("chat.model_token_usage.count_message_tokens", side_effect=[7000, 4905]):
+                    self.assertEqual(trim(messages, model="openai/test", token_limit=6500), [messages[0], messages[2]])
+
     def test_disabled_summary_skips_background_compaction(self) -> None:
         subject = dp_local2.DSLocalAndVoiceGen.__new__(dp_local2.DSLocalAndVoiceGen)
         subject.d_sakiko_config = SimpleNamespace(
@@ -153,7 +202,7 @@ class RollingSummaryTestCase(unittest.TestCase):
                 "_completion_with_current_config",
                 return_value=completion_response,
             ) as completion_mock,
-            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "resolve_model_input_token_limit", return_value=1000),
             mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             updated = subject._maybe_update_rolling_summary(
@@ -205,7 +254,7 @@ class RollingSummaryTestCase(unittest.TestCase):
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_current_deepseek_file_service", return_value=object()),
             mock.patch.object(subject, "_completion_with_current_config", return_value=completion_response),
-            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "resolve_model_input_token_limit", return_value=1000),
             mock.patch.object(dp_local2, "count_message_tokens", return_value=800) as count_mock,
         ):
             updated = subject._maybe_update_rolling_summary(
@@ -249,7 +298,7 @@ class RollingSummaryTestCase(unittest.TestCase):
         with (
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config") as completion_mock,
-            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "resolve_model_input_token_limit", return_value=1000),
             mock.patch.object(dp_local2, "count_message_tokens", return_value=799),
         ):
             updated = subject._maybe_update_rolling_summary(
@@ -274,7 +323,7 @@ class RollingSummaryTestCase(unittest.TestCase):
                 "_completion_with_current_config",
                 side_effect=TimeoutError("summary timeout"),
             ) as completion_mock,
-            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "resolve_model_input_token_limit", return_value=1000),
             mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             first = subject._maybe_update_rolling_summary(
@@ -303,7 +352,7 @@ class RollingSummaryTestCase(unittest.TestCase):
         with (
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config") as completion_mock,
-            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "resolve_model_input_token_limit", return_value=1000),
             mock.patch.object(dp_local2, "count_message_tokens", return_value=749),
         ):
             updated = subject._maybe_update_rolling_summary(
@@ -330,7 +379,7 @@ class RollingSummaryTestCase(unittest.TestCase):
         with (
             mock.patch.object(subject, "_current_litellm_model_name", return_value="test/model"),
             mock.patch.object(subject, "_completion_with_current_config", return_value=response),
-            mock.patch.object(dp_local2, "get_model_input_token_limit", return_value=1000),
+            mock.patch.object(dp_local2, "resolve_model_input_token_limit", return_value=1000),
             mock.patch.object(dp_local2, "count_message_tokens", return_value=800),
         ):
             updated = subject._maybe_update_rolling_summary(
@@ -469,7 +518,7 @@ class RollingSummaryTestCase(unittest.TestCase):
 
         with mock.patch(
             "chat.model_token_usage.count_message_tokens",
-            side_effect=lambda _model, candidate: sum(
+            side_effect=lambda _model, candidate, **_: sum(
                 len(str(message.get("content") or "")) for message in candidate
             ),
         ):

@@ -56,6 +56,50 @@ def test_responses_inline_image_and_completed_stream() -> None:
     assert "test-key" not in json.dumps(result.protocol)
 
 
+def test_openai_image_size_limit_checks_serialized_request_before_sending() -> None:
+    """通过真实 SDK 和内存传输验证图片请求体超限时不会发送。"""
+    calls: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        """记录任何实际进入传输的请求。"""
+        calls.append(request)
+        return httpx.Response(413)
+
+    def http_client(**kwargs: object) -> httpx.AsyncClient:
+        """保留真实的请求事件钩子，并替换底层 HTTP 传输。"""
+        return httpx.AsyncClient(**kwargs, transport=httpx.MockTransport(handle))
+
+    request = LLMRequest([{"role": "user", "content": [
+        {"type": "image_url", "image_url": "data:image/png;base64," + "A" * 2048},
+    ]}])
+    connection = replace(config(), base_url="https://api.openai.com/v1", route="chatgpt-subscription")
+    with (
+        patch("openai.DefaultAsyncHttpxClient", side_effect=http_client),
+        patch("llm.adapters.responses._OPENAI_IMAGE_REQUEST_MAX_BYTES", 1024),
+        pytest.raises(LLMError, match="减少附件或压缩图片") as caught,
+    ):
+        asyncio.run(execute(request, connection))
+    assert caught.value.code == "request_too_large"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [(400, {"error": {"code": "context_length_exceeded"}}, "context_too_long"),
+     (413, {"detail": "body too large"}, "request_too_large")],
+)
+def test_responses_distinguishes_context_and_transport_limits(
+    status: int, body: dict[str, object], expected: str,
+) -> None:
+    """让服务端明确返回的上下文与请求体错误得到不同提示。"""
+    from llm.errors import response_error
+
+    error = response_error(status, body, "req-test")
+    assert error.code == expected
+    assert error.status_code == status
+    assert error.request_id == "req-test"
+
+
 def test_reasoning_and_tool_replay_requires_matching_origin_and_prefix() -> None:
     """加密推理和调用顺序可回传，来源切换或历史修改后不复用密文。"""
     request = LLMRequest([{"role": "user", "content": "查询"}])

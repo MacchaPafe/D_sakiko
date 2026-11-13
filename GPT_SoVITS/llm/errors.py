@@ -4,6 +4,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
+_CONTEXT_TOO_LONG = "模型上下文超限，请缩短输入或为自定义模型设置正确的输入上限。"
+_REQUEST_TOO_LARGE = "请求体超过服务商允许的大小，请减少附件或压缩图片。"
+
+
 class LLMError(RuntimeError):
     """保留可处理的类别与服务端状态，不在错误中保存凭据。"""
 
@@ -52,6 +56,10 @@ def response_error(status: int, data: object, request_id: str = "") -> LLMError:
     elif provider_code == "subscription_sharing_unsupported_capability":
         code = "unsupported_parameter"
         message += " 参数：" + str(error.get("param") or "未知")
+    elif status == 413:
+        code, message = "request_too_large", _REQUEST_TOO_LARGE
+    elif provider_code == "context_length_exceeded":
+        code, message = "context_too_long", _CONTEXT_TOO_LONG
     elif status == 503 or provider_code in {"subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable"}:
         action = "retry_later"
     return LLMError(code, message, status_code=status, provider_code=provider_code,
@@ -65,9 +73,14 @@ def normalize_error(error: Exception) -> LLMError:
         return error
     name = type(error).__name__.lower()
     status = getattr(error, "status_code", None)
+    provider_code = str(getattr(error, "code", "") or "")
     message = str(error)
     code = "request_failed"
-    if "timeout" in name:
+    if status == 413:
+        code, message = "request_too_large", _REQUEST_TOO_LARGE
+    elif "contextwindowexceeded" in name or provider_code == "context_length_exceeded":
+        code, message = "context_too_long", _CONTEXT_TOO_LONG
+    elif "timeout" in name:
         code = "timeout"
     elif status == 401 or "authentication" in name:
         code = "authentication"
@@ -84,4 +97,4 @@ def normalize_error(error: Exception) -> LLMError:
     elif "connection" in name:
         code = "connection"
     return LLMError(code, message, status_code=status if isinstance(status, int) else None,
-                    provider_code=str(getattr(error, "code", "") or ""), original=error)
+                    provider_code=provider_code, original=error)

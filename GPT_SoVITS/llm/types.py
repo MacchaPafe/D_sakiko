@@ -31,6 +31,7 @@ class LLMRequest:
     tool_choice: object = "auto"
     options: dict[str, object] = field(default_factory=dict)
     conversation_id: str = ""
+    cache_debug_phase: str = "unknown"
 
 
 @dataclass

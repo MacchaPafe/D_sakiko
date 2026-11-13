@@ -312,6 +312,78 @@ def test_actual_sdk_preserves_admission_and_sse_errors(failure: str) -> None:
         assert caught.value.param == "tools"
 
 
+@pytest.mark.parametrize(
+    ("debug_value", "route"),
+    [(None, "chatgpt-subscription"), ("true", "chatgpt-subscription"),
+     ("1", "standard"), ("1", "chatgpt-subscription")],
+)
+def test_cache_diagnostics_read_completed_usage_without_changing_requests(
+    monkeypatch: pytest.MonkeyPatch, debug_value: str | None, route: str,
+) -> None:
+    """经过 SDK 的完整 SSE 验证开关、用量、首个差异以及日志内容。"""
+    from openai import AsyncOpenAI
+    from llm.adapters.responses import execute
+
+    key = "D_SAKIKO_CHATGPT_PROMPT_CACHE_DEBUG"
+    if debug_value is None:
+        monkeypatch.delenv(key, raising=False)
+    else:
+        monkeypatch.setenv(key, debug_value)
+    requests: list[dict[str, object]] = []
+    usage_details = [{"cached_tokens": 8000, "cache_write_tokens": 500},
+                     {"cached_tokens": 0}, {}]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        """模拟每轮成功事件，记录请求总数和实际发送的字段。"""
+        assert request.url.path == "/v1/responses"
+        details = usage_details[len(requests)]
+        requests.append(json.loads(request.content))
+        response = {"id": "r1", "status": "completed", "model": "returned-model", "output": [],
+                    "usage": {"input_tokens": 10000, "input_tokens_details": details,
+                              "output_tokens": 10, "total_tokens": 10010}}
+        event = {"type": "response.completed", "sequence_number": 1, "response": response}
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                              text="event: response.completed\ndata: " + json.dumps(event) + "\n\n")
+
+    def client(**kwargs: object) -> AsyncOpenAI:
+        """使用 SDK 序列化和解析，通过内存传输发送请求。"""
+        return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+
+    initial = LLMRequest(
+        [{"role": "system", "content": "private-system-text"}, {"role": "user", "content": "private-user-text"}],
+        conversation_id="private-conversation-id", cache_debug_phase="final_json",
+    )
+    appended = replace(initial, messages=[*initial.messages, {"role": "user", "content": "private-new-text"}])
+    changed = replace(appended,
+                      messages=[{"role": "system", "content": "private-edited-text"}, *appended.messages[1:]],
+                      options={"reasoning_effort": "low"})
+    config = LLMConfig("chatgpt", "model", "private-access-token", RESOURCE, "responses",
+                       route=route, account_id="private-account-id")
+    with patch("openai.AsyncOpenAI", side_effect=client), patch("llm.chatgpt.prompt_cache_debug.logger") as logger:
+        for request in (initial, appended, changed):
+            result = asyncio.run(execute(request, config))
+            assert result.usage["input_tokens"] == 10000
+
+    assert len(requests) == 3
+    assert requests[0]["input"][0]["role"] == "developer"
+    assert requests[2]["reasoning"] == {"effort": "low"}
+    for body in requests:
+        assert not {"cache_debug_phase", "prompt_cache_options"} & body.keys()
+    if debug_value != "1" or route != "chatgpt-subscription":
+        logger.info.assert_not_called()
+        return
+
+    records = [call.args[0] % call.args[1:] for call in logger.info.call_args_list]
+    assert len(records) == 6
+    assert "model=returned-model phase=final_json input=10000 cached=8000 hit_rate=80.00% cache_write=500" in records[0]
+    assert "change=baseline" in records[1]
+    assert "cached=0 hit_rate=0.00%" in records[2]
+    assert "shared_items=2 change=append_only appended_items=1 settings_changed=none" in records[3]
+    assert "cached=n/a hit_rate=n/a cache_write=n/a" in records[4]
+    assert "first_changed=input[0] role=developer settings_changed=reasoning" in records[5]
+    assert all("private-" not in line for line in records)
+
+
 @pytest.mark.parametrize('failure', ['expired', 'quota'])
 def test_subscription_runtime_recovery_and_headers(tmp_path: Path, failure: str) -> None:
     """仅令牌失效可重试一次；使用自己的关联头且保持稳定连接身份。"""
