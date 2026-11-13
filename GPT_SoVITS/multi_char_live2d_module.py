@@ -1549,7 +1549,13 @@ class Live2DModule:
                     was_held = space_held
                     space_held = True
                     if not was_held and not getattr(event, "repeat", False) and pygame.key.get_focused():
-                        playback.toggle_auto()
+                        if performance.preview:
+                            tell_qt_this_turn_finish_queue.put({
+                                "type": "multi_char_preview", "session": performance.session,
+                                "action": "toggle_play",
+                            })
+                        else:
+                            playback.toggle_auto()
                 elif event.type == pygame.KEYDOWN and layout_editing:
                     if event.key in (pygame.K_ESCAPE, pygame.K_q):
                         exit_layout_edit_mode()

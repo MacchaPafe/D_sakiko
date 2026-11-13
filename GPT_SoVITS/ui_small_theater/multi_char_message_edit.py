@@ -25,13 +25,14 @@ def _restore_history(chat: Chat, data: dict[str, object], messages: list[Message
     chat.meta = meta
 
 
-def insert_saved_message(chat: Chat, anchor: Message, target: Message, after: bool,
+def insert_saved_message(chat: Chat, anchor: Message | None, target: Message, after: bool,
                          save: Callable[[], bool]) -> bool:
     """按锚点身份插句并同步索引、摘要；失败恢复原列表和元数据对象。"""
-    index = next((index for index, item in enumerate(chat.message_list) if item is anchor), -1)
+    index = (0 if anchor is None and not chat.message_list else
+             next((index for index, item in enumerate(chat.message_list) if item is anchor), -1))
     if index < 0 or any(item is target for item in chat.message_list):
         return False
-    index += 1 if after else 0
+    index += 1 if after and anchor is not None else 0
     original_messages = list(chat.message_list)
     original_meta = chat.meta
     original_data = deepcopy(chat._timeline.data)

@@ -7,7 +7,7 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QObject, QMimeData, QPoint, QTimer, QSize, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, QMimeData, QPoint, QTimer, QSize, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QDrag, QFont, QIcon, QImageReader
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedLayout, QFrame, QLabel, QTabBar,
                              QLineEdit, QPlainTextEdit, QListWidget, QListWidgetItem, QListView, QPushButton,
@@ -241,6 +241,18 @@ class MultiCharEditor(QObject):
             self.status.setText("音频缺失/损坏：临时无声预览，保留所有原编排。")
         else:
             self.show_validation()
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        """编排窗口共用空格播放，输入文字或操作模态弹窗时保留原行为。"""
+        if (event.type() == QEvent.KeyPress and event.key() == Qt.Key_Space
+                and event.modifiers() == Qt.NoModifier
+                and QApplication.activeModalWidget() is None
+                and not isinstance(QApplication.focusWidget(), (QLineEdit, QPlainTextEdit))):
+            if not event.isAutoRepeat():
+                self.toggle_play()
+            return True
+        return super().eventFilter(watched, event)
 
     def initialize_message(self, message):
         """校验目标消息并持久初始化首次编排，失败时保留原消息。"""
@@ -1328,6 +1340,9 @@ class MultiCharEditor(QObject):
             return
         if result.get("session") != self.session_id:
             return
+        if result.get("action") == "toggle_play":
+            self.toggle_play()
+            return
         if result.get("notice"):
             self.status.setText(result["notice"])
             return
@@ -1634,6 +1649,7 @@ class MultiCharEditor(QObject):
         if self.closed or self.audio_busy:
             return
         self.closed = True
+        QApplication.instance().removeEventFilter(self)
         self.send("exit")
         self.layout.restore()
         self.resource_window.close()

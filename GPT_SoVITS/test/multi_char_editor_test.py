@@ -813,3 +813,34 @@ def test_capsule_controls_allow_empty_text_and_keep_settings_when_disabled(edito
     editor.capsule_check.setChecked(True)
     assert editor.capsule_text.text() == "很长的标题" * 20
     assert editor.capsule_duration.minimum() == 500 and editor.capsule_duration.maximum() == 5000
+
+
+@pytest.mark.parametrize("focus", ["resource_window", "timeline_window", "play", "black_check"])
+def test_space_in_editor_windows_calls_timeline_play_slot(editor, monkeypatch, app, focus):
+    from PyQt5.QtTest import QTest
+    toggle = Mock(wraps=editor.toggle_play)
+    monkeypatch.setattr(editor, "toggle_play", toggle)
+    widget = getattr(editor, focus)
+    widget.setFocusPolicy(Qt.StrongFocus)
+    widget.window().activateWindow()
+    widget.setFocus()
+    app.processEvents()
+    QTest.keyClick(widget, Qt.Key_Space)
+    toggle.assert_called_once_with()
+    assert editor.playing
+
+
+def test_space_typing_and_stage_request_use_correct_editor_behavior(editor, monkeypatch, app):
+    from PyQt5.QtTest import QTest
+    toggle = Mock(wraps=editor.toggle_play)
+    monkeypatch.setattr(editor, "toggle_play", toggle)
+    editor.resource_window.activateWindow()
+    editor.search.setFocus()
+    editor.search.setText("left")
+    app.processEvents()
+    QTest.keyClick(editor.search, Qt.Key_Space)
+    assert editor.search.text() == "left "
+    toggle.assert_not_called()
+    editor.receive({"type": "multi_char_preview", "session": editor.session_id, "action": "toggle_play"})
+    toggle.assert_called_once_with()
+    assert editor.playing

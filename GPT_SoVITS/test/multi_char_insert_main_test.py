@@ -43,6 +43,50 @@ def dialog(monkeypatch):
     return SimpleNamespace(value=value, factory=factory, warning=warning, data=data)
 
 
+@pytest.mark.parametrize("outcome", ["success", "cancel", "save_false", "save_error"])
+def test_empty_script_adds_first_sentence_or_stays_empty(host, dialog, monkeypatch, outcome):
+    """空舞台共用原预约和保存流程，只有成功时才进入首句待播。"""
+    from multi_char_scene_playback_test import Playback
+    host.current_chat.clear_message_list()
+    host.add_first_sentence_btn = Mock()
+    host.edit_script_btn = Mock()
+    ViewerGUI.update_script_button_visibility(host)
+    host.add_first_sentence_btn.setVisible.assert_called_with(True)
+    player = Playback(monkeypatch)
+    player.controller.send = host.receive_playback_state
+    player.controller.command({"action": "load", "session": host._playback_session,
+                               "revision": host._playback_revision, "messages": []})
+    assert player.controller.phase == "empty"
+    if outcome == "cancel":
+        dialog.value.exec_.return_value = QDialog.Rejected
+    elif outcome == "save_false":
+        host._save_chat.return_value = False
+    elif outcome == "save_error":
+        host._save_chat.side_effect = OSError("disk unavailable")
+    host.insert_sentence(0, False)
+    reserve = take_command(host)
+    assert player.controller.command(reserve)
+    dialog.factory.assert_called_once_with(["A", "B"], "A", host)
+    for command in remaining_commands(host):
+        assert player.controller.command(command)
+    assert player.controller.reservation is None
+    ViewerGUI.update_script_button_visibility(host)
+    if outcome == "success":
+        assert len(host.current_chat.message_list) == 1
+        assert host.current_chat.message_list[0].text == dialog.data["text"]
+        assert (player.controller.phase, player.controller.pending_index) == ("ready", 0)
+        assert not player.controller.auto
+        host.add_first_sentence_btn.setVisible.assert_called_with(False)
+        host.current_chat.clear_message_list()
+        ViewerGUI.update_script_button_visibility(host)
+        host.add_first_sentence_btn.setVisible.assert_called_with(True)
+    else:
+        assert not host.current_chat.message_list
+        assert player.controller.phase == "empty"
+        host.add_first_sentence_btn.setVisible.assert_called_with(True)
+    host.regenerate_audio.assert_not_called()
+
+
 @pytest.mark.parametrize("after", [False, True])
 @pytest.mark.parametrize("speaker,muted", [("B", False), ("", True)])
 def test_insert_before_or_after_keeps_fields_and_does_not_migrate_anchor_scene(host, dialog, after, speaker, muted):

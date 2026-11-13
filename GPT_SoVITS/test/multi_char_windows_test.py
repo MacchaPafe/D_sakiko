@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import sys
+import ctypes
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -163,3 +164,44 @@ def test_bind_uses_content_height_without_screen_percentage_floor(workspace, app
     workspace.layout.timer.stop()
     assert workspace.timeline.height() == 100
     assert windows.visible_geometry(workspace.resources).bottom() < workspace.timeline.geometry().top()
+
+
+@pytest.mark.parametrize("foreground", [101, 102, 103])
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 原生窗口激活联动")
+def test_activating_any_member_restores_and_raises_group_without_changing_focus(monkeypatch, foreground):
+    layout = object.__new__(MultiCharWindowLayout)
+    layout.resources = SimpleNamespace(winId=lambda: 101)
+    layout.timeline = SimpleNamespace(winId=lambda: 102)
+    layout.handle = windows.wintypes.HWND(103)
+    layout.last_foreground = None
+    user = Mock()
+    user.GetForegroundWindow.return_value = foreground
+    user.IsIconic.side_effect = lambda handle: handle.value != foreground
+    monkeypatch.setattr(ctypes.windll, "user32", user)
+    layout.follow_activation()
+    assert [call.args[0].value for call in user.ShowWindow.call_args_list] == [
+        handle for handle in (101, 102, 103) if handle != foreground]
+    assert all(call.args[1] == 4 for call in user.ShowWindow.call_args_list)
+    raised = user.SetWindowPos.call_args_list
+    assert {call.args[0].value for call in raised} == {101, 102, 103}
+    assert raised[-1].args[0].value == foreground
+    assert all(call.args[1:] == (None, 0, 0, 0, 0, 0x0013) for call in raised)
+    user.SetForegroundWindow.assert_not_called()
+    layout.follow_activation()
+    assert user.SetWindowPos.call_count == 3
+    user.GetForegroundWindow.return_value = 999
+    layout.follow_activation()
+    assert user.SetWindowPos.call_count == 3
+    user.GetForegroundWindow.return_value = foreground
+    layout.follow_activation()
+    assert user.SetWindowPos.call_count == 6
+
+
+def test_minimized_workspace_still_checks_group_activation(workspace, app, monkeypatch):
+    workspace.resources.showMinimized()
+    app.processEvents()
+    activate = Mock(side_effect=workspace.resources.showNormal)
+    monkeypatch.setattr(workspace.layout, "follow_activation", activate)
+    workspace.layout.follow()
+    activate.assert_called_once()
+    assert not workspace.resources.isMinimized()

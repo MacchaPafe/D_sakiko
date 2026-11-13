@@ -510,7 +510,7 @@ class MoreInfoDialog(QDialog):
     def __init__(self, char_name_0: str, char_name_1: str, initial_meta: Dict[str, Any], parent=None, replacing=False):
         """展示设定副本，只有开始生成才提交；取消不改变设定或剧本。"""
         super().__init__(parent)
-        self.setWindowTitle("写一些细节信息吧（也可以都不填）")
+        self.setWindowTitle("写一些细节信息，引导大模型生成更符合预期的剧本吧（也可以都不填")
         self.screen = QDesktopWidget().screenGeometry()
         self.resize(int(0.35 * self.screen.width()), int(0.5 * self.screen.height()))
 
@@ -536,7 +536,7 @@ class MoreInfoDialog(QDialog):
         h_layout_0_2 = QHBoxLayout()
         h_layout_0_2.addWidget(QLabel("互动细节:"), 1)
         self.char_0_inter_details = QLineEdit()
-        self.char_0_inter_details.setPlaceholderText(f"如：称爱音方为'あのんちゃん'（小爱音）")
+        self.char_0_inter_details.setPlaceholderText(f"如：称爱音为'あのんちゃん'（小爱音）")
         h_layout_0_2.addWidget(self.char_0_inter_details, 4)
         layout_0.addLayout(h_layout_0_2)
 
@@ -577,6 +577,7 @@ class MoreInfoDialog(QDialog):
             warning.setStyleSheet("color: #D9534F;")
             main_layout.addWidget(warning)
         self.auto_synthesize_audio = QCheckBox("拿到剧本后立即合成所有音频")
+        self.auto_synthesize_audio.setToolTip("勾选后将花费更多时间来进行语音合成，一步到位。\n如果不勾选，将直接展示无声的剧本，之后你也能够一键补全所有未合成的音频。")
         self.auto_synthesize_audio.setStyleSheet("color: #7799CC")
         self.auto_synthesize_audio.setChecked(True)
         main_layout.addWidget(self.auto_synthesize_audio)
@@ -585,6 +586,7 @@ class MoreInfoDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(cancel_btn)
         self.commit_btn = QPushButton("开始生成！")
+        self.commit_btn.setToolTip("约消耗 1.2w-1.5w token")
         self.commit_btn.clicked.connect(self.commit_info)
         self.commit_btn.setObjectName("PrimaryBtn")
         buttons.addWidget(self.commit_btn)
@@ -1233,7 +1235,16 @@ class ViewerGUI(QWidget):
 
         self.chat_display = InteractiveChatBrowser()
         self._playback_highlight = PlaybackHighlight(self.chat_display)
-        self.chat_display.setPlaceholderText("这里显示对话记录...")
+        self.add_first_sentence_btn = QPushButton("＋ 添加第一句台词")
+        self.add_first_sentence_btn.setCursor(Qt.PointingHandCursor)
+        self.add_first_sentence_btn.setStyleSheet("""
+            QPushButton { background: transparent; border: none; border-radius: 6px;
+                          color: #7799CC; padding: 12px 20px; }
+            QPushButton:hover { background: #D0E2F0; }
+        """)
+        self.add_first_sentence_btn.clicked.connect(lambda: self.insert_sentence(0, False))
+        empty_layout = QVBoxLayout(self.chat_display.viewport())
+        empty_layout.addWidget(self.add_first_sentence_btn, 0, Qt.AlignCenter)
         self.chat_display.setOpenExternalLinks(False)  # 禁止自动打开浏览器
         self.chat_display.setOpenLinks(False)
         self.chat_display.anchorClicked.connect(self.on_link_clicked)  # 绑定点击信号
@@ -1320,10 +1331,10 @@ class ViewerGUI(QWidget):
         self.edit_script_btn.setCursor(Qt.PointingHandCursor)
         self.edit_script_btn.clicked.connect(lambda: self.open_performance_editor(0))
 
-        self.fill_audio_btn = QPushButton("补齐音频")
+        self.fill_audio_btn = QPushButton("补全未合成的音频")
         self.fill_audio_btn.clicked.connect(self.fill_missing_audio)
 
-        self.generate_btn = QPushButton("▶ 生成新对话")
+        self.generate_btn = QPushButton("▶ 剧本生成")
         self.generate_btn.setCursor(Qt.PointingHandCursor)
         self.generate_btn.clicked.connect(self.start_generation)
 
@@ -1469,9 +1480,12 @@ class ViewerGUI(QWidget):
     def update_script_button_visibility(self) -> None:
         """当前对话有剧本时显示编排入口，正式播放由舞台输入启动。"""
         has_messages = self.current_chat is not None and len(self.current_chat.message_list) > 0
+        self.add_first_sentence_btn.setVisible(self.current_chat is not None and not has_messages)
         self.edit_script_btn.setVisible(has_messages)
         if hasattr(self, "fill_audio_btn"):
             self.fill_audio_btn.setEnabled(has_messages and getattr(self, "_audio_fill", None) is None)
+            self.fill_audio_btn.setVisible(has_messages and getattr(self, "_audio_fill", None) is None)
+
 
     def theater_chats(self) -> List[Chat]:
         """返回全部小剧场模式对话。"""
@@ -2036,7 +2050,7 @@ class ViewerGUI(QWidget):
         if self.current_chat is None or not 0 <= index < len(self.current_chat.message_list):
             return False
         if not self.playback_available():
-            self.message_queue.put("请等待当前播放结束" if self._playback_stage_available else "演出窗口已关闭，无法播放。")
+            self.message_queue.put("需要等待当前播放结束" if self._playback_stage_available else "演出窗口已关闭，无法播放。")
             return False
         self.send_playback_command(
             "auto_from" if automatic else "single", index=index,
@@ -2054,6 +2068,8 @@ class ViewerGUI(QWidget):
                 or result.get("revision") != self._playback_revision):
             return
         self._playback_pending.discard(result.get("request_id"))
+        if result.get("auto", False) != self._playback_status.get("auto", False):
+            self.message_queue.put("自动播放已开启" if result.get("auto") else "自动播放已关闭")
         self._playback_status = result
         highlight = getattr(self, "_playback_highlight", None)
         if highlight is not None:
@@ -2892,8 +2908,9 @@ class ViewerGUI(QWidget):
             self.send_playback_command("release_editor", reservation_id=request["request_id"])
 
     def insert_sentence(self, index: int, after: bool) -> None:
-        """在所选句前后添加台词；填写表单前先由舞台确认空闲并占用输入。"""
-        if self.current_chat is None or not 0 <= index < len(self.current_chat.message_list):
+        """添加首句或在所选句前后插句；填写表单前先预约空闲舞台。"""
+        if self.current_chat is None or (self.current_chat.message_list
+                                        and not 0 <= index < len(self.current_chat.message_list)):
             return
         if not self.playback_available():
             self.message_queue.put("请等待生成、合成或当前播放结束后再添加台词。")
@@ -2901,7 +2918,7 @@ class ViewerGUI(QWidget):
         request_id = self.send_playback_command("reserve_editor")
         self._editor_request = {"request_id": request_id, "kind": "insert", "after": after,
                                 "chat": self.current_chat,
-                                "message": self.current_chat.message_list[index],
+                                "message": self.current_chat.message_list[index] if self.current_chat.message_list else None,
                                 "session": self._playback_session, "revision": self._playback_revision}
         QTimer.singleShot(10000, lambda: self._expire_editor_request(request_id))
 
@@ -2921,7 +2938,7 @@ class ViewerGUI(QWidget):
                     and self._playback_session == request["session"]
                     and self._playback_revision == request["revision"]
                     and self.current_chat is chat
-                    and any(item is anchor for item in chat.message_list)
+                    and (not chat.message_list if anchor is None else any(item is anchor for item in chat.message_list))
                     and self._generation_context is None and self._audio_regeneration is None
                     and self.performance_editor is None
                     and not self._playback_blocked_reasons
@@ -2933,7 +2950,7 @@ class ViewerGUI(QWidget):
             payload = self._build_active_slots_payload(preserve_playback=True)
             slots = payload["slots"]
             names = [slot["character_name"] for slot in slots]
-            dialog = MultiCharInsertDialog(names, anchor.character_name, self)
+            dialog = MultiCharInsertDialog(names, anchor.character_name if anchor is not None else names[0], self)
             try:
                 if dialog.exec_() != QDialog.Accepted:
                     return

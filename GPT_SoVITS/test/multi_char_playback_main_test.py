@@ -337,3 +337,18 @@ def test_failed_new_load_ack_reaches_qt_and_allows_retry(host):
     assert controller.command(take_command(host)) is True
     assert not host._playback_pending
     assert host._playback_status["phase"] == "ready"
+
+
+def test_auto_state_changes_show_only_two_messages_and_ignore_stale_receipts(host):
+    receipt = {"session": host._playback_session, "revision": host._playback_revision,
+               "phase": "playing", "busy": True, "auto": True}
+    host.receive_playback_state(dict(receipt, revision=host._playback_revision - 1))
+    assert host.message_queue.empty()
+    host.receive_playback_state(receipt)
+    assert host.message_queue.get_nowait() == "自动播放已开启"
+    host.receive_playback_state(receipt)
+    assert host.message_queue.empty()
+    host.receive_playback_state(dict(receipt, auto=False))
+    assert host.message_queue.get_nowait() == "自动播放已关闭"
+    host.receive_playback_state(dict(receipt, auto=False))
+    assert host.message_queue.empty()

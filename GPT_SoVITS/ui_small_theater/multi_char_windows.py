@@ -118,6 +118,7 @@ class MultiCharWindowLayout:
         self.previous_layout_key = None
         self.stage_width = 0
         self.ready = False
+        self.last_foreground = None
         self.timer = QTimer(resources)
         self.timer.setInterval(150)
         self.timer.timeout.connect(self.follow)
@@ -205,7 +206,10 @@ class MultiCharWindowLayout:
 
     def follow(self):
         """统一约束三窗到可用区域，鼠标拖拽期间不重排窗口。"""
-        if self.closed or self.syncing or QApplication.mouseButtons() or self.resources.isMinimized():
+        if self.closed or self.syncing or QApplication.mouseButtons():
+            return
+        self.follow_activation()
+        if self.resources.isMinimized():
             return
         frame = visible_geometry(self.resources)
         native = self.read_native()
@@ -257,10 +261,29 @@ class MultiCharWindowLayout:
         finally:
             self.syncing = False
 
+    def follow_activation(self):
+        """Windows 三窗任一被激活时一起恢复、置前，保留用户点击窗口的焦点。"""
+        if not self.handle:
+            return
+        user = ctypes.windll.user32
+        user.GetForegroundWindow.restype = wintypes.HWND
+        foreground = user.GetForegroundWindow()
+        if foreground == self.last_foreground:
+            return
+        self.last_foreground = foreground
+        handles = [int(self.resources.winId()), int(self.timeline.winId()), self.handle.value]
+        if foreground not in handles:
+            return
+        for handle in [value for value in handles if value != foreground] + [foreground]:
+            native = wintypes.HWND(handle)
+            if user.IsIconic(native):
+                user.ShowWindow(native, 4)  # SW_SHOWNOACTIVATE：恢复但不抢走焦点。
+            user.SetWindowPos(native, None, 0, 0, 0, 0, 0x0013)  # 置前，不移动、缩放或激活。
+
     def minimize_stage(self, minimized):
         """资源窗口最小化时同步舞台，恢复时不抢占系统全局置顶。"""
         if self.handle and self.read_native():
-            ctypes.windll.user32.ShowWindow(self.handle, 6 if minimized else 9)
+            ctypes.windll.user32.ShowWindow(self.handle, 6 if minimized else 4)
         elif self.ready:
             self.send("window_minimize", minimized=minimized)
 

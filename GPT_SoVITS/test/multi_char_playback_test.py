@@ -369,7 +369,8 @@ def test_pygame_space_repeat_focus_and_layout_do_not_cross_input_boundaries(play
     pg = SimpleNamespace(**constants, event=SimpleNamespace(get=lambda: events),
                          key=SimpleNamespace(get_focused=lambda: focused[0]))
     context = dict(pygame=pg, playback=player.controller, space_held=False, layout_editing=False,
-                   self=SimpleNamespace(run=True))
+                   self=SimpleNamespace(run=True), performance=SimpleNamespace(preview=False),
+                   tell_qt_this_turn_finish_queue=Mock())
     player.controller.occupied = lambda: context["layout_editing"]
     code = event_handler()
 
@@ -393,6 +394,14 @@ def test_pygame_space_repeat_focus_and_layout_do_not_cross_input_boundaries(play
     push("KEYUP", key=pg.K_SPACE)
     context["layout_editing"] = True
     push("KEYDOWN", key=pg.K_SPACE)
+    assert not player.controller.auto
+    push("KEYUP", key=pg.K_SPACE)
+    context["layout_editing"] = False
+    context["performance"] = SimpleNamespace(preview=True, session="editor")
+    push("KEYDOWN", key=pg.K_SPACE)
+    push("KEYDOWN", key=pg.K_SPACE, repeat=True)
+    context["tell_qt_this_turn_finish_queue"].put.assert_called_once_with({
+        "type": "multi_char_preview", "session": "editor", "action": "toggle_play"})
     assert not player.controller.auto
 
 
