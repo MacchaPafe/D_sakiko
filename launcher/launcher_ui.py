@@ -14,9 +14,9 @@ from PyQt5.QtWidgets import (
 from launcher_actions import ENTRY_BY_KEY, LauncherProcesses, preferred_font
 
 MODES = {
-    "desktop": ("桌面端&桌宠", "日常小助手", "启动"),
-    "webui": ("WebUI", "通过局域网在手机或平板上体验数字小祥", "启动"),
-    "theater": ("小剧场模式", "方便且自由地编排两名角色的互动剧情", "启动"),
+    "desktop": ("桌面端&桌宠", "桌面助手伙伴，随时语音聊天", "启动"),
+    "webui": ("WebUI", "扫码即用，手机上也能聊天", "启动"),
+    "theater": ("小剧场模式", "一键生成剧本与配音，自由编排角色间的剧情演出", "启动"),
 }
 
 class LogoLabel(QLabel):
