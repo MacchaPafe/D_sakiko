@@ -3,6 +3,8 @@
 /docs/
 !/docs/
 /docs/*
+!/docs/*.png
+/docs/*_old.png
 !/docs/repair-feature-guide.md
 !/docs/desktop-pet.md
 !/docs/agents/
