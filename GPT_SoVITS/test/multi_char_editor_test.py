@@ -791,3 +791,25 @@ def test_snap_endpoints_and_alt(editor):
     assert view.candidate(0, new, 201, Qt.AltModifier)[0] == 201
     assert not view.candidate(0, new, 400, Qt.AltModifier)[1]
     assert not view.candidate(0, new, -100, Qt.AltModifier)[1]
+
+
+def test_capsule_controls_allow_empty_text_and_keep_settings_when_disabled(editor):
+    """首句标题可留空、滑动只改停留时长，关闭后仍保留内容供再次启用。"""
+    assert editor.message_index() == 0
+    editor.capsule_check.setChecked(True)
+    assert editor.message.scene_before["capsule"] == {"enabled": True, "text": "", "hold_ms": 2500}
+    assert editor.transition_preview.isEnabled()
+    assert not editor.black_check.isEnabled()
+    editor.capsule_text.setText("很长的标题" * 20)
+    editor.capsule_save.click()
+    assert editor.message.scene_before["capsule"]["text"] == "很长的标题" * 20
+    editor.capsule_duration.setValue(5000)
+    assert editor.message.scene_before["capsule"]["hold_ms"] == 5000
+    editor.preview_transition()
+    assert editor.transition_playing
+    editor.capsule_check.setChecked(False)
+    assert editor.message.scene_before["capsule"] == {
+        "enabled": False, "text": "很长的标题" * 20, "hold_ms": 5000}
+    editor.capsule_check.setChecked(True)
+    assert editor.capsule_text.text() == "很长的标题" * 20
+    assert editor.capsule_duration.minimum() == 500 and editor.capsule_duration.maximum() == 5000

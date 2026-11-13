@@ -5,7 +5,7 @@ from OpenGL.GL import *
 from live2d_support.multi_char_scene import background_path
 
 
-def draw_quad(texture=0, alpha=1.0, premultiplied=False):
+def draw_quad(texture=0, alpha=1.0, premultiplied=False, bounds=(-1, -1, 1, 1)):
     """在当前视口绘制背景纹理或黑幕，不依赖 Live2D 留下的着色器状态。"""
     program = int(glGetIntegerv(GL_CURRENT_PROGRAM))
     glPushAttrib(GL_ALL_ATTRIB_BITS)
@@ -40,8 +40,9 @@ def draw_quad(texture=0, alpha=1.0, premultiplied=False):
         glDisable(GL_TEXTURE_2D)
         glColor4f(0.0, 0.0, 0.0, alpha)
     glBegin(GL_QUADS)
-    for uv, point in (((0, 0), (-1, -1)), ((1, 0), (1, -1)),
-                      ((1, 1), (1, 1)), ((0, 1), (-1, 1))):
+    left, bottom, right, top = bounds
+    for uv, point in (((0, 0), (left, bottom)), ((1, 0), (right, bottom)),
+                      ((1, 1), (right, top)), ((0, 1), (left, top))):
         glTexCoord2f(*uv)
         glVertex2f(*point)
     glEnd()
@@ -53,6 +54,61 @@ def draw_quad(texture=0, alpha=1.0, premultiplied=False):
     glPopAttrib()
     # Shader program 不属于 glPushAttrib 保存的状态。
     glUseProgram(program)
+
+
+class CapsuleOverlay:
+    """缓存胶囊纹理；运动进度由舞台时钟提供。"""
+
+    def __init__(self, font_loader):
+        self.font_loader = font_loader
+        self.texture = 0
+        self.key = None
+
+    def render_surface(self, text, viewport_size):
+        """双倍尺寸绘制圆角与文字，长标题按字数分档缩小后再检查实际宽度。"""
+        width, height = viewport_size
+        w, h = max(80, round(width * 0.55)), max(28, round(height * 0.09))
+        surface = pygame.Surface((w * 2, h * 2), pygame.SRCALPHA)
+        pygame.draw.rect(surface, (255, 59, 113, 245), (0, h // 4, w * 2, h * 7 // 4), border_radius=h)
+        inset = max(4, h // 6)
+        pygame.draw.rect(surface, (255, 255, 255, 255),
+                         (inset * 2, 0, (w - inset * 2) * 2, h * 3 // 2), border_radius=h)
+        base = max(16, round(height * 0.033))
+        # 英文约按半个全角字计数，避免同样宽度的英文标题过早缩小。
+        units = sum(1 if char.isascii() else 2 for char in text)
+        steps = max(0, (units - 48 + 15) // 16)
+        font = self.font_loader(max(8, base - steps * max(1, round(height / 360))) * 2)
+        label = font.render(text, True, (60, 60, 60))
+        available = max(1, (w - inset * 4) * 2)
+        if label.get_width() > available:
+            label = pygame.transform.smoothscale(label, (available, max(1, round(
+                label.get_height() * available / label.get_width()))))
+        surface.blit(label, label.get_rect(center=(w, h * 3 // 4)))
+        return surface
+
+    def draw(self, text, offset, viewport_size):
+        key = (text, viewport_size)
+        if key != self.key:
+            surface = self.render_surface(text, viewport_size)
+            if not self.texture:
+                self.texture = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, self.texture)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, *surface.get_size(), 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, pygame.image.tostring(surface, "RGBA", True))
+            self.key = key
+            self.size = (surface.get_width() / 2, surface.get_height() / 2)
+        width, height = viewport_size
+        half_w, half_h = self.size[0] / width, self.size[1] / height
+        center = offset * (1 + half_w)
+        draw_quad(self.texture, bounds=(center - half_w, -half_h, center + half_w, half_h))
+
+    def dispose(self):
+        if self.texture:
+            glDeleteTextures([self.texture])
+            self.texture = 0
+        self.key = None
 
 
 class StageBackgrounds:

@@ -89,56 +89,73 @@ def transition_from_total(total_ms: int = BLACK_DEFAULT_MS) -> dict:
 
 @dataclass(frozen=True)
 class SceneTiming:
-    """独立于句内时钟的句前阶段；位置变化从 change_at_ms 开始并持续 300ms。"""
+    """句前共用时钟：黑场、胶囊运动与人物显现，不占用句内时间轴。"""
 
     duration_ms: int
     change_at_ms: int = 0
     fade_out_ms: int = 0
     hold_ms: int = 0
     fade_in_ms: int = 0
+    capsule_hold_ms: int = 0
+    capsule_text: str = ""
+
+    @property
+    def black_duration_ms(self) -> int:
+        return self.fade_out_ms + self.hold_ms + self.fade_in_ms
+
+    @property
+    def capsule_end_ms(self) -> int:
+        return self.black_duration_ms + 800 + self.capsule_hold_ms
 
     @classmethod
-    def from_scene(cls, scene_before: object, first: bool = False) -> "SceneTiming":
-        """创建首句直达、普通 500ms 或黑场阶段；不修改存档中的原配置。"""
-        if first:
-            return cls(duration_ms=0)
+    def from_scene(cls, scene_before: object, first: bool = False, actors: bool = True) -> "SceneTiming":
+        """黑场先于胶囊，首句跳过黑场但允许胶囊标题。"""
         scene = scene_before if isinstance(scene_before, dict) else {}
         transition = scene.get("transition")
-        if not isinstance(transition, dict) or transition.get("type") != "black":
-            return cls(duration_ms=SCENE_GAP_MS)
-        parts = [transition.get(key) for key in ("fade_out_ms", "hold_ms", "fade_in_ms")]
-        if all(type(part) in (int, float) and isfinite(part) and part >= 0 for part in parts):
-            total = sum(parts)
-        else:
-            total = BLACK_DEFAULT_MS
-        normalized = transition_from_total(total)
-        fade_out = normalized["fade_out_ms"]
-        hold = normalized["hold_ms"]
-        fade_in = normalized["fade_in_ms"]
-        return cls(
-            duration_ms=fade_out + hold + fade_in,
-            change_at_ms=fade_out,
-            fade_out_ms=fade_out,
-            hold_ms=hold,
-            fade_in_ms=fade_in,
-        )
+        black = {}
+        if not first and isinstance(transition, dict) and transition.get("type") == "black":
+            parts = [transition.get(key) for key in ("fade_out_ms", "hold_ms", "fade_in_ms")]
+            total = sum(parts) if all(type(part) in (int, float) and isfinite(part) and part >= 0
+                                      for part in parts) else BLACK_DEFAULT_MS
+            black = transition_from_total(total)
+        fade_out, hold, fade_in = [black.get(key, 0) for key in ("fade_out_ms", "hold_ms", "fade_in_ms")]
+        black_duration = fade_out + hold + fade_in
+        capsule = scene.get("capsule") or {}
+        if capsule.get("enabled"):
+            capsule_hold = max(500, min(5000, int(capsule.get("hold_ms", 2500))))
+            return cls(duration_ms=black_duration + 800 + capsule_hold + (ACTOR_TRANSITION_MS if actors else 0),
+                       change_at_ms=fade_out, fade_out_ms=fade_out, hold_ms=hold, fade_in_ms=fade_in,
+                       capsule_hold_ms=capsule_hold, capsule_text=str(capsule.get("text", "")))
+        if first:
+            return cls(0)
+        return cls(black_duration or SCENE_GAP_MS, fade_out, fade_out, hold, fade_in)
+
+    def capsule_offset(self, elapsed_ms: float) -> float | None:
+        """右侧画外为 1，居中为 0，左侧画外为 -1；不在胶囊阶段返回 None。"""
+        position = elapsed_ms - self.black_duration_ms
+        if not self.capsule_hold_ms or position < 0 or position >= 800 + self.capsule_hold_ms:
+            return None
+        if position < 400:
+            return 1 - position / 400
+        return -max(0.0, (position - 400 - self.capsule_hold_ms) / 400)
 
     def black_opacity(self, elapsed_ms: float) -> float:
         """返回覆盖整个画面的黑幕透明度，普通间隔和阶段结束时均为零。"""
-        if not self.fade_out_ms or elapsed_ms <= 0 or elapsed_ms >= self.duration_ms:
+        if not self.fade_out_ms or elapsed_ms <= 0 or elapsed_ms >= self.black_duration_ms:
             return 0.0
         if elapsed_ms < self.fade_out_ms:
             return elapsed_ms / self.fade_out_ms
         fade_in_start = self.fade_out_ms + self.hold_ms
         if elapsed_ms < fade_in_start:
             return 1.0
-        return (self.duration_ms - elapsed_ms) / self.fade_in_ms
+        return (self.black_duration_ms - elapsed_ms) / self.fade_in_ms
 
     def actors_progress(self, elapsed_ms: float) -> float:
-        """返回并行上下场与站位平移进度；首句无需动画，直接呈现目标舞台。"""
+        """普通阶段并行调整人物；启用胶囊后延至滑出结束再统一显现。"""
         if self.duration_ms == 0:
             return 1.0
-        return max(0.0, min(1.0, (elapsed_ms - self.change_at_ms) / ACTOR_TRANSITION_MS))
+        start = self.capsule_end_ms if self.capsule_hold_ms else self.change_at_ms
+        return max(0.0, min(1.0, (elapsed_ms - start) / ACTOR_TRANSITION_MS))
 
     def finished(self, elapsed_ms: float) -> bool:
         """判断句前阶段是否结束；结束后才允许启动本句音频与句内时间轴。"""

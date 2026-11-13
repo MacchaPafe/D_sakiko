@@ -160,7 +160,7 @@ class MultiCharPlayback:
                 else:
                     self.auto = True
                     self._restore_scene = None
-                    self._start(index, first=True)
+                    self._start(index, first=True, skip_transition=True)
             elif action == "block":
                 reason = command.get("reason")
                 if reason not in ("generation", "audio", "audio_fill"):
@@ -241,7 +241,7 @@ class MultiCharPlayback:
             self._restore_scene = None
         self._start(self.pending_index, first=self._fresh_start)
 
-    def _start(self, index, first=False):
+    def _start(self, index, first=False, skip_transition=False):
         self._hint_due = None
         if first:
             self.reset_round()
@@ -255,7 +255,8 @@ class MultiCharPlayback:
         scene_index = context.get("index", index)
         target = self.stage.resolve(messages, scene_index)
         self.phase = "transition"
-        self.stage.begin(target, turn.get("scene_before"), first=first)
+        # 首句胶囊是开场标题，指定句播放也保留；中间句仍跳过句前阶段。
+        self.stage.begin(target, None if skip_transition and scene_index > 0 else turn.get("scene_before"), first=first)
         if not self.stage.busy:
             self._begin_sentence()
 
@@ -272,7 +273,7 @@ class MultiCharPlayback:
         self._single_return = (self.phase, self.current_index, self.pending_index, self._fresh_start, scene)
         self.single = True
         self.auto = False
-        self._start(index, first=True)
+        self._start(index, first=True, skip_transition=True)
 
     def _finish_single(self):
         self.single = False

@@ -20,6 +20,7 @@ class MultiCharStage:
         self.state = self.base_state()
         self.actors = self.actor_targets(self.state)
         self.black = 0.0
+        self.capsule = None
         self.timing = None
         self.started = 0.0
         self.changed = False
@@ -95,11 +96,11 @@ class MultiCharStage:
         self.state = deepcopy(self.target)
 
     def begin(self, target, scene_before, first=False):
-        """启动一次句前阶段；首句直接就位，不追加等待或黑场。"""
+        """启动句前阶段；首句跳过黑场，胶囊仍按配置执行。"""
         self.cancel()
         self.target = deepcopy(target)
         self.source_actors = dict(self.actors)
-        self.timing = SceneTiming.from_scene(scene_before, first=first)
+        self.timing = SceneTiming.from_scene(scene_before, first=first, actors=bool(target["visible_characters"]))
         self.started = self.clock()
         self.changed = False
         self.tick()
@@ -110,6 +111,8 @@ class MultiCharStage:
             return
         elapsed = (self.clock() - self.started) * 1000
         self.black = self.timing.black_opacity(elapsed)
+        offset = self.timing.capsule_offset(elapsed)
+        self.capsule = (self.timing.capsule_text, offset) if offset is not None else None
         if elapsed >= self.timing.change_at_ms:
             if not self.changed:
                 self.apply_target()
@@ -117,6 +120,9 @@ class MultiCharStage:
             progress = self.timing.actors_progress(elapsed)
             targets = self.actor_targets(self.target)
             for name, target in targets.items():
+                if self.timing.capsule_hold_ms:
+                    self.actors[name] = (target[0] * progress, target[1], target[2])
+                    continue
                 source = self.source_actors.get(name, target)
                 # 新入场者从最终站位渐显，退场者原地渐隐；只有留场者平移。
                 if source[0] == 0:
@@ -134,6 +140,7 @@ class MultiCharStage:
         """取消过渡并清除黑幕；调用方随后应用目标场景或恢复现场。"""
         self.timing = None
         self.black = 0.0
+        self.capsule = None
 
     def enter_editor(self):
         """首次进入保存实际舞台，切句重新建立预览会话时不覆盖快照。"""

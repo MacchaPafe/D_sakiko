@@ -252,7 +252,7 @@ QLabel#multiCharFieldTag {
     padding: 0 2px;
 }
 
-QLineEdit#multiCharSearch, QDoubleSpinBox#multiCharStartTime {
+QLineEdit#multiCharSearch, QLineEdit#multiCharCapsuleText, QDoubleSpinBox#multiCharStartTime {
     background-color: #FFFFFF;
     color: #243046;
     border: 1px solid #D4E0F0;
@@ -262,12 +262,12 @@ QLineEdit#multiCharSearch, QDoubleSpinBox#multiCharStartTime {
     selection-color: #1E3A8A;
 }
 
-QLineEdit#multiCharSearch:hover, QDoubleSpinBox#multiCharStartTime:hover:!disabled {
+QLineEdit#multiCharSearch:hover, QLineEdit#multiCharCapsuleText:hover, QDoubleSpinBox#multiCharStartTime:hover:!disabled {
     background-color: #FFFFFF;
     border-color: #A8C0E4;
 }
 
-QLineEdit#multiCharSearch:focus, QDoubleSpinBox#multiCharStartTime:focus {
+QLineEdit#multiCharSearch:focus, QLineEdit#multiCharCapsuleText:focus, QDoubleSpinBox#multiCharStartTime:focus {
     background-color: #FFFFFF;
     border: 1px solid #5A7FE7;
 }
@@ -598,7 +598,7 @@ QToolButton#multiCharVisibilityHelp:pressed {
    multiCharBackground：本句背景覆盖开关。
    multiCharBlack：本句句前黑场开关，首句禁用。 */
 QCheckBox#multiCharMuted,
-QCheckBox#multiCharBackground, QCheckBox#multiCharBlack {
+QCheckBox#multiCharBackground, QCheckBox#multiCharBlack, QCheckBox#multiCharCapsule {
     color: #364763;
     background: transparent;
     spacing: 5px;
@@ -606,13 +606,13 @@ QCheckBox#multiCharBackground, QCheckBox#multiCharBlack {
 }
 
 QCheckBox#multiCharMuted:disabled,
-QCheckBox#multiCharBackground:disabled, QCheckBox#multiCharBlack:disabled {
+QCheckBox#multiCharBackground:disabled, QCheckBox#multiCharBlack:disabled, QCheckBox#multiCharCapsule:disabled {
     color: #A6B3C7;
 }
 
 /* multiCharMuted / multiCharBackground / multiCharBlack：统一勾选框，未勾选时保留边界。 */
 QCheckBox#multiCharMuted::indicator,
-QCheckBox#multiCharBackground::indicator, QCheckBox#multiCharBlack::indicator {
+QCheckBox#multiCharBackground::indicator, QCheckBox#multiCharBlack::indicator, QCheckBox#multiCharCapsule::indicator {
     width: @FONT_PX@px;
     height: @FONT_PX@px;
     border: 1px solid #B4C7E6;
@@ -621,14 +621,14 @@ QCheckBox#multiCharBackground::indicator, QCheckBox#multiCharBlack::indicator {
 }
 
 QCheckBox#multiCharMuted::indicator:checked,
-QCheckBox#multiCharBackground::indicator:checked, QCheckBox#multiCharBlack::indicator:checked {
+QCheckBox#multiCharBackground::indicator:checked, QCheckBox#multiCharBlack::indicator:checked, QCheckBox#multiCharCapsule::indicator:checked {
     background-color: #5A7FE7;
     border-color: #4A6FD8;
     image: url("@CHECK_ICON@");
 }
 
 QCheckBox#multiCharMuted::indicator:disabled,
-QCheckBox#multiCharBackground::indicator:disabled, QCheckBox#multiCharBlack::indicator:disabled {
+QCheckBox#multiCharBackground::indicator:disabled, QCheckBox#multiCharBlack::indicator:disabled, QCheckBox#multiCharCapsule::indicator:disabled {
     background-color: #DFE6F2;
     border-color: #CDD8E9;
 }
@@ -644,24 +644,24 @@ QComboBox#multiCharInsertSpeaker {
 
 /* multiCharBlackDuration：横向调节黑场总时长的细轨滑块，蓝色填充显示当前值。
    multiCharBlackDurationLabel：滑块右侧实时秒数，拖动松开时才保存配置。 */
-QSlider#multiCharBlackDuration {
+QSlider#multiCharBlackDuration, QSlider#multiCharCapsuleDuration {
     background: transparent;
     min-height: 22px;
 }
 
-QSlider#multiCharBlackDuration::groove:horizontal {
+QSlider#multiCharBlackDuration::groove:horizontal, QSlider#multiCharCapsuleDuration::groove:horizontal {
     height: 4px;
     background-color: #DCE5F2;
     border: none;
     border-radius: 2px;
 }
 
-QSlider#multiCharBlackDuration::sub-page:horizontal {
+QSlider#multiCharBlackDuration::sub-page:horizontal, QSlider#multiCharCapsuleDuration::sub-page:horizontal {
     background-color: #7295F2;
     border-radius: 2px;
 }
 
-QSlider#multiCharBlackDuration::handle:horizontal {
+QSlider#multiCharBlackDuration::handle:horizontal, QSlider#multiCharCapsuleDuration::handle:horizontal {
     width: 12px;
     height: 12px;
     margin: -5px 0;
@@ -670,26 +670,26 @@ QSlider#multiCharBlackDuration::handle:horizontal {
     border-radius: 7px;
 }
 
-QSlider#multiCharBlackDuration::handle:horizontal:hover {
+QSlider#multiCharBlackDuration::handle:horizontal:hover, QSlider#multiCharCapsuleDuration::handle:horizontal:hover {
     background-color: #F0F5FF;
     border-color: #4368D6;
 }
 
-QSlider#multiCharBlackDuration::sub-page:horizontal:disabled {
+QSlider#multiCharBlackDuration::sub-page:horizontal:disabled, QSlider#multiCharCapsuleDuration::sub-page:horizontal:disabled {
     background-color: #C8D5E8;
 }
 
-QSlider#multiCharBlackDuration::handle:horizontal:disabled {
+QSlider#multiCharBlackDuration::handle:horizontal:disabled, QSlider#multiCharCapsuleDuration::handle:horizontal:disabled {
     background-color: #EDF1F7;
     border-color: #BDCBE1;
 }
 
-QLabel#multiCharBlackDurationLabel {
+QLabel#multiCharBlackDurationLabel, QLabel#multiCharCapsuleDurationLabel {
     color: #536C9C;
     background: transparent;
 }
 
-QLabel#multiCharBlackDurationLabel:disabled {
+QLabel#multiCharBlackDurationLabel:disabled, QLabel#multiCharCapsuleDurationLabel:disabled {
     color: #A6B3C7;
 }
 

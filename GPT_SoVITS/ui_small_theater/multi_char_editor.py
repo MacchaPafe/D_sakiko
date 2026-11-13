@@ -758,6 +758,45 @@ class MultiCharEditor(QObject):
         self.transition_preview.clicked.connect(self.preview_transition)
         transition_row.addWidget(self.transition_preview)
         grid.addLayout(transition_row, 2, 1)
+        capsule_row = QVBoxLayout()
+        self.capsule_check = QCheckBox("胶囊转场")
+        self.capsule_check.setObjectName("multiCharCapsule")
+        self.capsule_check.toggled.connect(self.save_capsule)
+        capsule_row.addWidget(self.capsule_check)
+        capsule_text_line=QHBoxLayout()
+        capsule_text_line.setSpacing(24)
+        capsule_text_line.setContentsMargins(0,6,0,6)
+        self.capsule_text_info=QLabel("转场文本")
+        capsule_text_line.addWidget(self.capsule_text_info)
+        self.capsule_text = QLineEdit()
+        self.capsule_text.setObjectName("multiCharCapsuleText")
+        self.capsule_text.editingFinished.connect(self.save_capsule)
+        capsule_text_line.addWidget(self.capsule_text)
+        self.capsule_save = QPushButton("保存")
+        self.capsule_save.setObjectName("multiCharSave")
+        self.capsule_save.clicked.connect(self.save_capsule)
+        capsule_text_line.addWidget(self.capsule_save)
+        capsule_row.addLayout(capsule_text_line)
+        grid.addLayout(capsule_row, 3, 1)
+        self.capsule_duration_row = QWidget()
+        capsule_duration_layout = QHBoxLayout(self.capsule_duration_row)
+        capsule_duration_layout.setSpacing(24)
+        capsule_duration_layout.setContentsMargins(0, 0, 0, 0)
+        capsule_duration_layout.addWidget(QLabel("居中停留"))
+        self.capsule_duration = QSlider(Qt.Horizontal)
+        self.capsule_duration.setObjectName("multiCharCapsuleDuration")
+        self.capsule_duration.setRange(500, 5000)
+        self.capsule_duration.setSingleStep(100)
+        self.capsule_duration.setPageStep(500)
+        self.capsule_duration.setValue(2500)
+        self.capsule_duration.setToolTip("滑入和滑出固定 0.4 秒，你可以调整居中停留的时间")
+        self.capsule_duration.valueChanged.connect(self.update_capsule_duration)
+        self.capsule_duration.sliderReleased.connect(self.save_capsule)
+        capsule_duration_layout.addWidget(self.capsule_duration, 1)
+        self.capsule_duration_label = QLabel("2.5 秒")
+        self.capsule_duration_label.setObjectName("multiCharCapsuleDurationLabel")
+        capsule_duration_layout.addWidget(self.capsule_duration_label)
+        grid.addWidget(self.capsule_duration_row, 4, 1)
         root.addWidget(self.scene_body)
         self.scene_body.hide()
         self.sync_scene_controls()
@@ -804,7 +843,7 @@ class MultiCharEditor(QObject):
         self.black_check.setToolTip("首句不能添加黑场过渡" if first else "")
         self.black_check.blockSignals(False)
         self.black_duration.blockSignals(True)
-        duration = SceneTiming.from_scene(scene).duration_ms
+        duration = SceneTiming.from_scene(scene).black_duration_ms
         self.black_duration.setValue(duration if enabled else 2000)
         self.black_duration.setVisible(enabled)
         self.black_duration.setEnabled(enabled and not first)
@@ -812,7 +851,21 @@ class MultiCharEditor(QObject):
         self.black_duration_label.setText(f"{self.black_duration.value() / 1000:.1f} 秒")
         self.black_duration_label.setVisible(enabled)
         self.black_duration_label.setEnabled(enabled and not first)
-        self.transition_preview.setEnabled(not first and self.stage_available)
+        capsule = scene.get("capsule") or {}
+        capsule_enabled = bool(capsule.get("enabled"))
+        self.capsule_check.blockSignals(True)
+        self.capsule_check.setChecked(capsule_enabled)
+        self.capsule_check.blockSignals(False)
+        self.capsule_text.setText(str(capsule.get("text", "")))
+        self.capsule_text.setVisible(capsule_enabled)
+        self.capsule_save.setVisible(capsule_enabled)
+        self.capsule_text_info.setVisible(capsule_enabled)
+        self.capsule_duration.blockSignals(True)
+        self.capsule_duration.setValue(capsule.get("hold_ms", 2500))
+        self.capsule_duration.blockSignals(False)
+        self.capsule_duration_label.setText(f"{self.capsule_duration.value() / 1000:.1f} 秒")
+        self.capsule_duration_row.setVisible(capsule_enabled)
+        self.transition_preview.setEnabled((not first or capsule_enabled) and self.stage_available)
         self.regenerate_button.setEnabled(not self.audio_busy and bool(self.message.character_name))
         self.regenerate_button.setToolTip("本句是无角色消息，未指定语音角色" if not self.message.character_name else "")
         visible_names = "、".join(effective["visible_characters"]) or "无"
@@ -820,6 +873,9 @@ class MultiCharEditor(QObject):
         black = f"黑场 {duration / 1000:.1f}s" if enabled and not first else "无"
         if first and enabled:
             black = "首句不可用"
+        if capsule_enabled:
+            caption = self.capsule_text.text()
+            black = (black + " → " if enabled and not first else "") + f"胶囊「{caption}」停留 {self.capsule_duration.value() / 1000:.1f}s"
         self.scene_summary.set_summary(f"出场：{visible_names} ｜ 背景图片：{background} ｜ 转场：{black}")
 
     def save_scene_value(self, key, value):
@@ -923,9 +979,21 @@ class MultiCharEditor(QObject):
             if current.get("transition") != value:
                 self.save_scene_value("transition", value)
 
+    def save_capsule(self, *_args):
+        """沿用句前配置保存，停用时保留标题与停留时间。"""
+        value = {"enabled": self.capsule_check.isChecked(), "text": self.capsule_text.text(),
+                 "hold_ms": round(self.capsule_duration.value() / 100) * 100}
+        if (self.message.scene_before or {}).get("capsule") != value:
+            self.save_scene_value("capsule", value)
+
+    def update_capsule_duration(self, milliseconds):
+        self.capsule_duration_label.setText(f"{milliseconds / 1000:.1f} 秒")
+        if not self.capsule_duration.isSliderDown():
+            self.save_capsule()
+
     def preview_transition(self):
         """只演示上一句场景到本句的句前阶段，结束后不启动本句语音。"""
-        if self.audio_busy or not self.stage_available or self.message_index() <= 0:
+        if self.audio_busy or not self.stage_available or (self.message_index() == 0 and not self.capsule_check.isChecked()):
             return
         self.playing = False
         self.can_resume = False

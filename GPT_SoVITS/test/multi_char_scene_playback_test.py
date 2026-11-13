@@ -268,6 +268,110 @@ def make_audio(tmp_path, duration_ms):
     return str(path)
 
 
+@pytest.mark.parametrize("black", [False, True])
+@pytest.mark.parametrize("visible", [["B"], ["A", "B"], []])
+def test_capsule_follows_black_then_reveals_all_target_actors(playback, black, visible):
+    """黑场独立结束、胶囊只配目标背景，最后按最终站位显现全部目标人物。"""
+    scene = {"background": "night.png", "visible_characters": visible,
+             "capsule": {"enabled": True, "text": "", "hold_ms": 2500}}
+    if black:
+        scene["transition"] = transition_from_total(2000)
+    playback.load([line("前"), line("后", scene_before=scene)])
+    playback.step(720)
+    start = 720 + (2000 if black else 0)
+    if black:
+        playback.step(1320)
+        assert playback.stage.black == 1
+        assert playback.stage.state["background"] == "night.png"
+        assert playback.stage.capsule is None
+    for elapsed, offset in [(0, 1), (200, 0.5), (400, 0), (2900, 0), (3100, -0.5)]:
+        playback.step(start + elapsed)
+        assert playback.stage.black == 0
+        assert playback.stage.capsule == ("", pytest.approx(offset))
+        assert all(actor[0] == 0 for actor in playback.stage.actors.values())
+        assert len(playback.started()) == 1
+    playback.step(start + 3300)
+    assert playback.stage.capsule is None
+    if visible:
+        assert playback.stage.busy
+        playback.step(start + 3450)
+        for name in visible:
+            assert playback.stage.actors[name][0] == pytest.approx(0.5)
+        playback.step(start + 3600)
+    assert not playback.stage.busy
+    assert playback.started()[-1] == (start + (3600 if visible else 3300), "后")
+    if visible == ["B"]:
+        assert playback.stage.actors["B"] == (1, 0, playback.stage.actors["B"][2])
+
+
+def test_first_capsule_plays_on_normal_start_and_explicit_replays(playback):
+    message = line("首句", scene_before={"transition": transition_from_total(),
+                   "capsule": {"enabled": True, "text": "翌日清晨", "hold_ms": 500}})
+    controller = playback.controller
+    def load():
+        controller.command({"action": "load", "session": "capsule", "revision": controller.revision + 1,
+                            "messages": [message]})
+    load()
+    assert controller.click()
+    assert playback.stage.black == 0 and playback.stage.capsule == ("翌日清晨", 1)
+    assert playback.started() == []
+    playback.step(1600)
+    assert playback.started() == [(1600, "首句")]
+    for action in ("single", "auto_from"):
+        load()
+        started = len(playback.started())
+        assert controller.command({"action": action, "session": controller.session,
+                                   "revision": controller.revision, "index": 0})
+        assert playback.stage.busy and playback.stage.capsule == ("翌日清晨", 1)
+        assert playback.stage.black == 0 and len(playback.started()) == started
+        playback.step(round(playback.clock() * 1000) + 1601)
+        assert len(playback.started()) == started + 1
+
+
+@pytest.mark.parametrize("action", ["single", "auto_from"])
+@pytest.mark.parametrize("with_context", [False, True])
+def test_middle_capsule_is_still_skipped_when_starting_from_that_sentence(playback, action, with_context):
+    message = line("中间句", scene_before={"capsule": {"enabled": True, "text": "标题", "hold_ms": 2500}})
+    messages = [line("首句"), message]
+    index = 1
+    if with_context:
+        message["scene_context"] = {"messages": deepcopy(messages), "index": 1}
+        messages, index = [message], 0
+    controller = playback.controller
+    controller.command({"action": "load", "session": "capsule", "revision": 1, "messages": messages})
+    assert controller.command({"action": action, "session": controller.session,
+                               "revision": controller.revision, "index": index})
+    assert not playback.stage.busy and playback.stage.capsule is None
+    assert playback.started() == [(0, "中间句")]
+
+
+def test_capsule_preview_cancel_restores_saved_stage(playback):
+    stage = playback.stage
+    original = deepcopy(stage.actors)
+    stage.enter_editor()
+    stage.begin({"visible_characters": ["B"], "background": "night.png"},
+                {"capsule": {"enabled": True, "text": "很长的场景标题", "hold_ms": 5000}})
+    assert stage.capsule is not None and stage.busy
+    stage.exit_editor()
+    assert stage.capsule is None and not stage.busy and stage.black == 0
+    assert stage.actors == original
+
+
+def test_auto_off_during_capsule_finishes_transition_and_sentence(playback):
+    playback.load([line("前"), line("后", scene_before={
+        "capsule": {"enabled": True, "text": "标题", "hold_ms": 2500}}), line("末")])
+    playback.step(720)
+    playback.step(1000)
+    assert playback.controller.toggle_auto()
+    assert not playback.controller.auto
+    playback.step(4320)
+    assert playback.started() == [(0, "前"), (4320, "后")]
+    playback.step(5040)
+    assert playback.controller.phase == "ready"
+    playback.step(10000)
+    assert len(playback.started()) == 2
+
+
 def test_legacy_silent_sentence_finishes_full_formula_then_separate_gap(playback):
     """旧未编排的 20 字无声台词到 3000ms 才结束，下一句从 3500ms 开始。"""
     playback.load([line("字" * 20), line("下一句", character_name="B")])

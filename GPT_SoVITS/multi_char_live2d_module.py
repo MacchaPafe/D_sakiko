@@ -1024,9 +1024,10 @@ class Live2DModule:
         glEnable(GL_TEXTURE_2D)
 
         # texture_thinking=BackgroundRen.render(pygame.image.load('X:\\D_Sakiko2.0\\live2d_related\\costumeBG.png').convert_alpha())    #想做背景切换功能，但无论如何都会有bug
-        from live2d_support.multi_char_stage_render import StageBackgrounds, ActorCompositor, draw_quad
+        from live2d_support.multi_char_stage_render import StageBackgrounds, ActorCompositor, CapsuleOverlay, draw_quad
         backgrounds = StageBackgrounds(Path(self.BACK_IMAGE).name, display)
         actor_compositor = ActorCompositor()
+        capsule_overlay = CapsuleOverlay(_load_cjk_font)
 
         global idle_recover_timer
 
@@ -1698,11 +1699,14 @@ class Live2DModule:
             if layout_editing:
                 show_layout_edit_overlay()
                 self._draw_layout_edit_selection_mask(layout_selected_slot)
-            model_notice_overlay.draw()
             overlay.update()
-            overlay.draw()
+            if not (stage.timing and stage.timing.capsule_hold_ms):
+                model_notice_overlay.draw()
+                overlay.draw()
             if stage.black > 0:
                 draw_quad(alpha=stage.black)
+            if stage.capsule is not None:
+                capsule_overlay.draw(*stage.capsule, stage_viewport()[2:])
             glUseProgram(0)
             # 4、pygame刷新
             pygame.display.flip()
@@ -1731,6 +1735,7 @@ class Live2DModule:
             pass
         try:
             actor_compositor.dispose()
+            capsule_overlay.dispose()
             backgrounds.dispose()
         except Exception:
             pass
