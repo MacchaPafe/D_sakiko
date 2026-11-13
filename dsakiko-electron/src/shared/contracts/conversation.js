@@ -234,6 +234,10 @@
  */
 
 /**
+ * @typedef {{code: 'missing-characters' | 'ambiguous-theater-characters', characters: Array<{id: string, name: string | null}>}} ParticipantIssue
+ */
+
+/**
  * @typedef {object} ConversationSnapshot
  * @property {Chat} chat 只读权威内容，保存失败时可包含尚未落盘的内容。
  * @property {number} revision 运行态观察版本，与 chat.revision 分开。
@@ -243,6 +247,7 @@
  * @property {{ state: 'saved' | 'saving' | 'failed', problem: import('./common.js').Problem | null }} persistence 保存状态，与执行成功失败分开。
  * @property {{ canGenerate: boolean, canEditHistory: boolean, reasons: string[] }} admission 实际受理限制，包含忙碌、停止后保留句尚未逻辑结束、压缩和保存故障；不依据客户端播放状态。
  * @property {string} runtimeId 本次后端运行身份，用于重连时区分快照版本序列。
+ * @property {ParticipantIssue | null} participantIssue 历史阅读状态及缺失角色的存档名称。
  * @property {{ sequenceId: string, lines: Array<{ line: LineRef, guideId: string }> }} presentation 句与后端 guide 的关联；逐字进度由各客户端计算，terminated 时客户端全文展示。
  * @property {Array<{ line: LineRef, problem: import('./common.js').Problem }>} audioProblems 单句错误不取消整个轮次组。
  * @property {import('./common.js').Problem | null} problem 最近需要处理的问题。
@@ -253,6 +258,8 @@
  * @property {string} id 对话身份。
  * @property {string} title 标题。
  * @property {string[]} characterIds 参与角色。
+ * @property {Record<string, string | null>} [characterNames] 存档中的角色名称。
+ * @property {ParticipantIssue | null} [participantIssue] 当前目录下的历史阅读状态。
  * @property {DialogueMode} mode 编排方式。
  */
 

@@ -27,6 +27,7 @@
  * @property {string} id 稳定对话身份编号，不由显示名推导，也不与来源角色 ID 混用。
  * @property {number} revision 定义自身的非负整数版本；新建为 0，保存时由目录递增，来源角色更新不改变此版本。
  * @property {CustomPersonaSource | CharacterPersonaSource} source 自定义文本或角色引用。
+ * @property {{pythonImport: {source: string}}} [extensions] 旧版导入来源，供失败后核对持久化结果。
  */
 
 /**

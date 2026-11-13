@@ -9,13 +9,16 @@
 export const API_METHODS = {
   onboarding: {
     getState: false,
+    getBuiltinPreview: false,
     begin: true,
+    skipLegacyImport: true,
     prepareOptionalResources: true,
     finish: true,
     acknowledgeNotice: true
   },
   setup: {
     getCatalog: false,
+    getFeatureState: false,
     scanLegacy: false,
     createPlan: true,
     start: true,
@@ -32,6 +35,7 @@ export const API_METHODS = {
     listReminders: false,
     getReminder: false,
     createChat: true,
+    createChatWithTurn: true,
     createTurn: true,
     generateScenario: true,
     stopTurn: true,
@@ -114,6 +118,10 @@ export const API_METHODS = {
  * @property {() => Promise<{platform: string, appVersion: string}>} getRuntimeInfo 宿主平台与应用版本。
  * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string, draftId?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
  * @property {() => Promise<{sourceId: string, name: string} | null>} selectLegacyDirectory 只授权扫描旧版目录，不复制整个目录。
+ * @property {() => Promise<'tray' | 'quit' | null>} getWindowCloseBehavior 读取 Windows 关闭窗口偏好。
+ * @property {(behavior: 'tray' | 'quit') => Promise<'tray' | 'quit'>} setWindowCloseBehavior 保存 Windows 关闭窗口偏好。
+ * @property {() => Promise<boolean>} getWindowVisibility 读取主窗口是否可见且未最小化。
+ * @property {(listener: (visible: boolean) => void) => () => void} onWindowVisibility 订阅窗口可见性变更。
  */
 
 /** @typedef {{ baseUrl: string, token: string }} BackendConnection 仅由可信桌面 bootstrap 或显式 WebUI 授权提供。 */

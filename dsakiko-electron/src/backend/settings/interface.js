@@ -75,7 +75,7 @@ export class Settings {
       connections: {},
       secrets: {}
     })
-    fields(state, ['settings', 'connections', 'secrets'])
+    fields(state, ['settings', 'connections', 'secrets', 'voicePreference'])
     requireValue(
       isConfigObject(state.settings) &&
         isConfigObject(state.connections) &&
@@ -100,6 +100,25 @@ export class Settings {
    */
   async observe(listener) {
     return this.bus.subscribe('settings', listener, await this.get())
+  }
+
+  /** 自动语音只适用于仍与下载意图一致的用户偏好版本。 */
+  async voicePreference() {
+    return (await this.state()).voicePreference ?? { revision: 0, enabled: {} }
+  }
+
+  async enablePreparedVoice(characterId, revision) {
+    return this.queue.run('settings', async () => {
+      const state = await this.state()
+      const preference = state.voicePreference ?? { revision: 0, enabled: {} }
+      if (preference.revision !== revision) return false
+      if (preference.enabled[characterId] !== true) {
+        preference.enabled[characterId] = true
+        state.voicePreference = preference
+        await writeJson(this.file, state)
+      }
+      return true
+    })
   }
 
   /**
@@ -240,6 +259,12 @@ export class Settings {
         '设置版本号已达到上限'
       )
       const next = applyConfigPatch(settingsDefinition, state.settings, changes)
+      if (Object.hasOwn(changes.speech ?? {}, 'enabled')) {
+        state.voicePreference = {
+          revision: (state.voicePreference?.revision ?? 0) + 1,
+          enabled: {}
+        }
+      }
       next.revision += 1
       state.settings = next
       await this.assets.commitReferences('settings:global', next, async () => {

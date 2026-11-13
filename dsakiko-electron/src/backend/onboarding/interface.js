@@ -72,13 +72,23 @@ export class Onboarding {
     const connection = (await this.settings.listConnections()).find(
       (item) => item.id === generation.connectionId
     )
-    const configured = !!connection?.models.some((model) => model.id === generation.modelId)
+    const requiresCredential =
+      connection && !['openai-compatible', 'ollama', 'vllm'].includes(connection.provider)
+    const configured =
+      !!connection?.models.some((model) => model.id === generation.modelId) &&
+      (!requiresCredential || connection.credentialConfigured)
+    const connectionState = configured
+      ? connection.id === 'builtin-up'
+        ? 'builtin'
+        : 'configured'
+      : 'missing'
     let notice = null
     if (!state.noticeAcknowledged) {
       if (!configured) notice = 'model-connection-missing'
-      else if (state.path === 'quick') notice = 'configure-model-connection'
+      else if (connectionState === 'builtin' && state.path === 'quick')
+        notice = 'configure-model-connection'
     }
-    return { ...state, notice }
+    return { ...state, notice, connectionState }
   }
   async save(state) {
     await writeJson(this.file, state)
@@ -149,24 +159,56 @@ export class Onboarding {
       if (state.initialized) return this.getState()
       requireValue(['quick', 'legacy'].includes(options?.path), 'invalid_onboarding_path')
       requireValue(!state.path || state.path === options.path, 'onboarding_already_started')
+      if (state.stage === 'optional-resources') return this.getState()
       state.path = options.path
       if (options.path === 'legacy') {
         const job = await this.setup.getJob(options.planId)
         requireValue(job.kind === 'legacy', 'invalid_onboarding_job')
+        if (state.jobId && state.jobId !== job.id)
+          requireValue(
+            (await this.setup.getJob(state.jobId)).status !== 'running',
+            'legacy_import_running'
+          )
         state.jobId = job.id
         state.stage = 'importing'
         await this.save(state)
         await this.setup.start(job.id)
+      } else await this.prepareQuick(state)
+      return this.getState()
+    })
+  }
+
+  async prepareQuick(state) {
+    state.path = 'quick'
+    state.stage = 'preparing'
+    state.jobId = null
+    await this.save(state)
+    await this.ensureBuiltins()
+    if (this.builtinConnection)
+      await this.settings.update({
+        generation: await installBuiltinConnection(this.settings, this.builtinConnection)
+      })
+    state.stage = 'optional-resources'
+    await this.save(state)
+  }
+
+  /** 导入异常页确认保留已有内容并继续。 */
+  async skipLegacyImport() {
+    return this.queue.run('state', async () => {
+      requireValue(!this.closed, 'onboarding_closed')
+      const state = await this.state()
+      if (state.initialized || state.stage === 'optional-resources') return this.getState()
+      if (state.path === 'quick' && state.stage === 'preparing') {
+        await this.prepareQuick(state)
       } else {
-        state.stage = 'preparing'
-        await this.save(state)
-        await this.ensureBuiltins()
-        if (this.builtinConnection)
-          await this.settings.update({
-            generation: await installBuiltinConnection(this.settings, this.builtinConnection)
-          })
-        state.stage = 'optional-resources'
-        await this.save(state)
+        requireValue(state.path === 'legacy' && state.jobId, 'invalid_onboarding_job')
+        if (await this.setup.skipLegacy(state.jobId)) {
+          await this.ensureBuiltins()
+          state.stage = 'optional-resources'
+          await this.save(state)
+        } else {
+          await this.prepareQuick(state)
+        }
       }
       return this.getState()
     })
@@ -233,7 +275,12 @@ export class Onboarding {
     return this.queue.run('state', async () => {
       requireValue(!this.closed, 'onboarding_closed')
       const state = await this.state()
+      if (state.initialized || state.stage === 'optional-resources') return this.getState()
       requireValue(state.path, 'onboarding_not_started')
+      if (state.path === 'quick') {
+        await this.prepareQuick(state)
+        return this.getState()
+      }
       if (state.path === 'legacy')
         requireValue(
           (await this.setup.getJob(state.jobId)).status === 'succeeded',

@@ -8,6 +8,17 @@ import { WebSocketServer } from 'ws'
 import { IMPORT_PURPOSES } from '../shared/contracts/assets.js'
 import { API_METHODS } from '../shared/contracts/api.js'
 import { fingerprint, requireValue, failure, problem } from '../backend/core/support.js'
+import { containedPath, resourcePath } from '../backend/resources/files.js'
+import { readFile, stat } from 'node:fs/promises'
+import { extname } from 'node:path'
+
+const previewContentTypes = {
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp'
+}
 
 /**
  * @typedef {object} CommandRecord
@@ -59,6 +70,7 @@ export async function startHttpServer(
   const tickets = new Map()
   /** @type {Map<string, AssetGrant>} */
   const grants = new Map()
+  const previews = new Map()
   const allowedOrigins = new Set(origins)
   const sockets = new Set()
   let baseUrl
@@ -90,6 +102,20 @@ export async function startHttpServer(
   }
   /** 仅分派已由路由白名单核准的方法；资源上传将传输数据转换为后端材料。 */
   async function dispatch(namespace, method, args) {
+    if (namespace === 'onboarding' && method === 'getBuiltinPreview') {
+      const [characterId] = args
+      const preview = await backend.onboarding.prepareBuiltinPreview(characterId)
+      const ticket = randomBytes(24).toString('base64url')
+      const expiresAt = Date.now() + 5 * 60 * 1000
+      previews.set(ticket, { directory: preview.directory, expiresAt })
+      const entry = preview.entry.split('/').map(encodeURIComponent).join('/')
+      return {
+        characterId: preview.characterId,
+        formId: preview.formId,
+        url: baseUrl + '/api/v1/previews/' + ticket + '/' + entry,
+        expiresAt: new Date(expiresAt).toISOString()
+      }
+    }
     if (namespace === 'recognition') {
       requireValue(args.length === (['prepare', 'getState'].includes(method) ? 0 : 1))
       return backend.recognition[method](...args)
@@ -191,6 +217,25 @@ export async function startHttpServer(
           Vary: 'Origin'
         })
         response.end()
+        return
+      }
+      if (request.method === 'GET' && url.pathname.startsWith('/api/v1/previews/')) {
+        const [ticket, ...segments] = url.pathname.slice('/api/v1/previews/'.length).split('/')
+        const grant = previews.get(ticket)
+        requireValue(grant && grant.expiresAt > Date.now(), 'asset_access_expired')
+        const member = segments.map(decodeURIComponent).join('/')
+        const file = await containedPath(grant.directory, resourcePath(grant.directory, member))
+        requireValue((await stat(file)).isFile(), 'asset_not_file')
+        const bytes = await readFile(file)
+        const headers = {
+          'Content-Type':
+            previewContentTypes[extname(member).toLowerCase()] ?? 'application/octet-stream',
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff'
+        }
+        if (request.headers.origin) headers['Access-Control-Allow-Origin'] = request.headers.origin
+        response.writeHead(200, headers)
+        response.end(bytes)
         return
       }
       // 浏览器 Audio 无法附加 Bearer 请求头；资源 URL 只授予一个资源的短期读取权。
@@ -351,6 +396,8 @@ export async function startHttpServer(
         let dispose
         if (command.topic === 'conversation')
           dispose = await backend.conversations.observe(command.key, listener)
+        else if (command.topic === 'characters')
+          dispose = backend.characters.observeMembership(listener)
         else if (command.topic === 'performance')
           dispose = await backend.performance.observe(command.key, listener)
         else if (command.topic === 'settings') dispose = await backend.settings.observe(listener)
@@ -380,6 +427,7 @@ export async function startHttpServer(
   baseUrl = 'http://127.0.0.1:' + server.address().port
   const cleanup = setInterval(() => {
     for (const [key, entry] of tickets) if (entry.expiresAt <= Date.now()) tickets.delete(key)
+    for (const [key, entry] of previews) if (entry.expiresAt <= Date.now()) previews.delete(key)
     for (const [key, entry] of grants) {
       if (entry.expiresAt > Date.now()) continue
       grants.delete(key)
@@ -399,6 +447,7 @@ export async function startHttpServer(
       clearInterval(cleanup)
       for (const grant of grants.values()) await backend.assets.releaseWhenPossible(grant.owner)
       grants.clear()
+      previews.clear()
       for (const client of ws.clients) client.terminate()
       ws.close()
       server.closeAllConnections()

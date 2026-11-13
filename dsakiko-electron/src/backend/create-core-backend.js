@@ -115,15 +115,18 @@ export async function createCoreBackend({
     fetch: transport,
     builtinConnection,
     ...setupOptions,
-    importChats: async (scan, refs, mapping, signal) => {
+    importChats: async (scan, refs, mapping, signal, onSaved) => {
       const drafts = await pythonImporter.read(scan, refs, mapping, signal)
       for (const chat of drafts.chats) {
         signal.throwIfAborted()
         await store.save(chat)
+        await onSaved(chat)
       }
       return drafts
     }
   })
+  setup.managedSpeech = setupOptions.managedSpeech === true
+  setup.localRecognition = recognitionModelDirectory || null
   const onboarding = new Onboarding({
     appDataRoot,
     cacheRoot,
@@ -208,6 +211,7 @@ export async function createCoreBackend({
     })
   })
   conversations = new Conversations({
+    setup,
     remoteFiles,
     store,
     settings,

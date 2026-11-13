@@ -104,6 +104,61 @@ async function fixture(run) {
   })
   return { backend, chatId, agent, directory }
 }
+test('首轮受理失败不产生空聊天，成功后重试复用同一轮', async () => {
+  const { backend, agent } = await fixture()
+  const chat = { title: '首轮', mode: 'single-character', characterIds: ['sakiko'] }
+  const submission = { text: '你好', attachments: [] }
+  await expect(
+    backend.conversations.createChatWithTurn(
+      { ...chat, settings: { generation: { connectionId: 'missing' } } },
+      submission,
+      { requestId: 'failed-first' }
+    )
+  ).rejects.toHaveProperty('problem.code', 'model_unavailable')
+  expect(await backend.conversations.listChats()).toHaveLength(1)
+  const options = { requestId: 'new-first' }
+  const first = await backend.conversations.createChatWithTurn(chat, submission, options)
+  expect(await backend.conversations.createChatWithTurn(chat, submission, options)).toEqual(first)
+  expect(await backend.conversations.listChats()).toHaveLength(2)
+  await until(async () => !(await backend.conversations.getSnapshot(first.chatId)).activeTurnId)
+  expect(agent.run).toHaveBeenCalledTimes(1)
+})
+
+test('删除角色后已受理轮次完成，历史保留原名，原 ID 恢复后可续聊', async () => {
+  let finish
+  const ready = new Promise((resolve) => {
+    finish = resolve
+  })
+  const { backend, chatId } = await fixture(async (request, observer) => {
+    await ready
+    await observer.onResponse(response(request.turnId))
+    return { status: 'completed', usage: null }
+  })
+  const role = await backend.characters.get('sakiko')
+  const submission = { text: '你好', attachments: [] }
+  const turnId = await backend.conversations.createTurn(chatId, submission, {
+    requestId: 'before-delete'
+  })
+  try {
+    await backend.characters.delete(role.id, role.revision)
+    expect((await backend.conversations.getSnapshot(chatId)).participantIssue).toBeNull()
+  } finally {
+    finish()
+  }
+  await until(async () => !(await backend.conversations.getSnapshot(chatId)).activeTurnId)
+  const ended = await backend.conversations.getSnapshot(chatId)
+  expect(ended.executions).toContainEqual(expect.objectContaining({ turnId, state: 'finished' }))
+  expect(ended.participantIssue).toEqual({
+    code: 'missing-characters',
+    characters: [{ id: 'sakiko', name: '祥子' }]
+  })
+  await expect(
+    backend.conversations.createTurn(chatId, submission, { requestId: 'after-delete' })
+  ).rejects.toHaveProperty('problem.code', 'character_missing')
+  await backend.characters.save({ ...role, revision: 0 })
+  await until(async () => !(await backend.conversations.getSnapshot(chatId)).participantIssue)
+})
+
 test('无客户端继续推进；持久受理身份防止重复执行', async () => {
   const { backend, chatId, agent, directory } = await fixture()
   const submission = { text: '你好', attachments: [] }

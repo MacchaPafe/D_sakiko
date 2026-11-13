@@ -1,5 +1,6 @@
 import { merge, fingerprint } from '../core/support.js'
 import { providerPresets } from '../../shared/contracts/llm-providers.js'
+import { normalizeConnection } from '../llm/connections.js'
 
 const sharedFiles = {
   'chinese-roberta-wwm-ext-large/config.json': ['bert', 'config'],
@@ -52,18 +53,18 @@ export async function bindGsv(settings, refs) {
 }
 
 /** 将扫描材料中的文件身份替换成统一媒体引用。 */
-export function characterDefinition(role, refs) {
+export function characterDefinition(role, refs, name = role.name, source = null) {
   function reference(value) {
     return { ...value, audio: refs[value.audio] }
   }
   return {
     id: role.id,
-    name: role.name,
+    name,
     revision: 0,
     defaultFormId: role.forms[0].id,
     forms: role.forms.map((form) => ({
       id: form.id,
-      displayName: form.displayName,
+      displayName: form.displayName === role.name ? name : form.displayName,
       description: form.description,
       avatar: refs[role.avatar] ?? null,
       themeColor: role.themeColor,
@@ -85,12 +86,12 @@ export function characterDefinition(role, refs) {
         : null
     })),
     knowledgeMappings: [],
-    extensions: {}
+    extensions: source ? { pythonImport: { source, roleId: role.id } } : {}
   }
 }
 
 /** 仅转换明确的当前配置字段；未支持项留在后端导入记录，不将密钥发给调用者。 */
-export async function importConnections(settings, config, builtinConnection) {
+export function legacyConnections(config) {
   const legacy = config?.llm_setting ?? {}
   const candidates = [
     {
@@ -111,7 +112,7 @@ export async function importConnections(settings, config, builtinConnection) {
     }
   ]
   const pending = []
-  let selected = null
+  const definitions = []
   for (const item of candidates) {
     if (!item.model && !item.secret && !item.baseUrl) continue
     let model = String(item.model ?? '')
@@ -135,35 +136,56 @@ export async function importConnections(settings, config, builtinConnection) {
       provider ??= aliases[prefix]
     }
     const preset = providerPresets.find((value) => value.id === provider)
-    if (!preset || !model) {
+    if (!preset || !model.trim() || (item.baseUrl && typeof item.baseUrl !== 'string')) {
       pending.push(item)
       continue
     }
-    const id = 'legacy-' + fingerprint({ provider, baseUrl: item.baseUrl, model }).slice(0, 24)
     try {
-      const existing = (await settings.listConnections()).find((connection) => connection.id === id)
-      if (!existing)
-        await settings.saveConnection(
-          {
-            id,
-            revision: 0,
-            name: item.name,
-            provider,
-            protocol: preset.protocol,
-            baseUrl: item.baseUrl || preset.baseUrl,
-            behavior: 'auto',
-            models: [{ id: model, declared: {}, overrides: {} }]
-          },
-          item.secret ? { kind: 'replace', secret: item.secret } : { kind: 'remove' }
-        )
-      if (item.selected) selected = { connectionId: id, modelId: model }
+      const id = 'legacy-' + fingerprint({ provider, baseUrl: item.baseUrl, model }).slice(0, 24)
+      const definition = normalizeConnection({
+        id,
+        revision: 0,
+        name: item.name,
+        provider,
+        protocol: preset.protocol,
+        baseUrl: item.baseUrl || preset.baseUrl,
+        behavior: 'auto',
+        models: [{ id: model, declared: {}, overrides: {} }]
+      })
+      definitions.push({ definition, secret: item.secret, selected: item.selected })
     } catch (error) {
       if (!error.problem) throw error
       pending.push(item)
     }
   }
-  if (legacy.use_default_deepseek_api && builtinConnection)
+  return { definitions, pending, useBuiltin: legacy.use_default_deepseek_api === true }
+}
+
+/** 连接配置写入私有设置后才计为已迁移。 */
+export async function importConnections(settings, config, builtinConnection, onSaved) {
+  const { definitions, pending, useBuiltin } = legacyConnections(config)
+  let selected = null
+  for (const { definition, secret, selected: use } of definitions) {
+    const { id, models } = definition
+    try {
+      const existing = (await settings.listConnections()).find((connection) => connection.id === id)
+      if (!existing)
+        await settings.saveConnection(
+          definition,
+          secret ? { kind: 'replace', secret } : { kind: 'remove' }
+        )
+    } catch (error) {
+      if (!error.problem) throw error
+      pending.push({ name: definition.name })
+      continue
+    }
+    await onSaved(id)
+    if (use) selected = { connectionId: id, modelId: models[0].id }
+  }
+  if (useBuiltin && builtinConnection) {
     selected = await installBuiltinConnection(settings, builtinConnection)
+    await onSaved(selected.connectionId)
+  }
   if (selected) await settings.update({ generation: selected })
   return { pending, selected }
 }

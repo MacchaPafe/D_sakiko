@@ -20,8 +20,35 @@ import { scanLegacyDirectory, validateLegacySource } from './legacy.js'
 import { checkSpace, copyNew, sourcePath, stamp, walk } from './files.js'
 import { downloadFile } from './download.js'
 import { extractArchive, prepareRuntime } from './installers.js'
-import { bindGsv, characterDefinition, importConnections } from './bindings.js'
+import { bindGsv, characterDefinition, importConnections, legacyConnections } from './bindings.js'
 import { selectGptSovitsFiles } from '../../shared/contracts/speech-resources.js'
+import { pythonChatId } from '../storage/python-import-interface.js'
+
+const legacyGroups = ['characters', 'chats', 'connections', 'gsv']
+
+function downloadFiles(components) {
+  return [
+    ...new Map(
+      components.flatMap((component) => component.files.map((file) => [file.sha256, file]))
+    ).values()
+  ]
+}
+
+function legacySummary(scan, builtinConnection) {
+  const { definitions, pending, useBuiltin } = legacyConnections(scan.config)
+  const connectionCount = new Set(definitions.map(({ definition }) => definition.id)).size
+  return {
+    characters: scan.roles.length + (scan.personas?.length ?? 0),
+    chats: scan.chats.length,
+    connections: connectionCount + Number(useBuiltin && !!builtinConnection),
+    pendingConnections: pending.length + Number(useBuiltin && !builtinConnection),
+    gsv: Object.values(scan.gsv).filter(Boolean).length
+  }
+}
+
+function legacyPersonaId(persona) {
+  return 'legacy-persona-' + fingerprint(persona.persona_id ?? persona).slice(0, 24)
+}
 
 /**
  * @typedef {object} SetupJob
@@ -93,6 +120,8 @@ export class ResourceSetup {
       if (job.status === 'running') {
         job.status = 'paused'
         job.phase = 'interrupted'
+        const item = job.items?.[job.currentItem]
+        if (item?.status === 'committing') item.status = 'paused'
         await this.save(job)
       }
       if (job.phase === 'planning' || (job.status === 'planned' && job.expiresAt < Date.now()))
@@ -135,6 +164,7 @@ export class ResourceSetup {
     const root = this.sources.get(sourceId)
     requireValue(root, 'legacy_source_not_authorized', '请通过目录选择器重新选择旧版本文件夹。')
     const scan = await scanLegacyDirectory(root)
+    const summary = legacySummary(scan, this.builtinConnection)
     const scanId = uuid()
     await writeJson(path.join(this.directory, 'scans', scanId + '.json'), scan)
     return {
@@ -146,8 +176,13 @@ export class ResourceSetup {
         voice: role.forms.some((form) => !!form.voice)
       })),
       chatCount: scan.chats.length,
-      hasConnections: !!scan.config?.llm_setting,
-      gsvFileCount: Object.keys(scan.gsv).length,
+      hasConnections: summary.connections > 0 || summary.pendingConnections > 0,
+      connectionCount: summary.connections,
+      pendingConnectionCount: summary.pendingConnections,
+      gsvFileCount: summary.gsv,
+      personaCount: scan.personas.length,
+      availableCategories: Object.fromEntries(legacyGroups.map((key) => [key, summary[key] > 0])),
+      canImport: legacyGroups.some((key) => summary[key] > 0),
       warnings: scan.warnings,
       logicalBytes: Object.values(scan.files).reduce((sum, file) => sum + file.sizeBytes, 0)
     }
@@ -155,11 +190,12 @@ export class ResourceSetup {
 
   async componentReady(component, installed) {
     if (component.kind === 'voice') {
-      const role = await this.characters.get(component.characterId)
+      const role = await this.voiceTarget(component.characterId)
       if (role?.forms.length && role.forms.every((form) => form.voice)) {
         const usable = await Promise.all(role.forms.map((form) => this.voiceReady(form.voice)))
         if (usable.every(Boolean)) return true
       }
+      return false
     }
     const item = installed[component.id]
     if (!item || item.status !== 'ready' || (component.target && item.target !== component.target))
@@ -174,16 +210,22 @@ export class ResourceSetup {
   }
 
   /** 返回三个产品分组及整体可选性，不暴露内部组件开关。
-   * @param {{refresh?: boolean, accelerator?: 'cpu'|'cuda'}} options 是否刷新固定声明及目标加速方式。
+   * @param {{refresh?: boolean, accelerator?: 'cpu'|'cuda', selection?: import('../../shared/contracts/setup.js').ResourceChoice[]}} options 清单刷新、加速方式和用于估算的选择。
    * @returns {Promise<object>} 三组资源的可用性、已准备状态和空间提示。
    */
   async getCatalog(options = {}) {
     const components = await this.catalog.components(options)
+    if (options.selection !== undefined)
+      await this.catalog.select(options.selection, { ...options, refresh: false })
     const installed = await this.installations()
     const groups = copy(setupGroups)
+    const selectedForEstimate = []
+    let selectionAvailable = true
     for (const group of groups)
       for (const option of group.options) {
         const selected = await this.catalog.select([option.id], { ...options, refresh: false })
+        const voice = selected.find((component) => component.kind === 'voice')
+        const target = voice ? await this.voiceTarget(voice.characterId) : null
         const missing = []
         for (const component of selected)
           if (!(await this.componentReady(component, installed))) {
@@ -192,18 +234,29 @@ export class ResourceSetup {
             missing.push(component)
           }
         option.ready = missing.length === 0
-        option.available = missing.every((item) => item.available)
-        option.sizeKnown = missing.every((item) => item.available)
+        option.available = (!voice || !!target) && missing.every((item) => item.available)
+        option.sizeKnown = option.available
         option.unavailableReason =
           missing.find((item) => !item.available)?.unavailableReason ?? null
-        option.downloadBytes = missing.reduce(
-          (sum, item) => sum + item.files.reduce((size, file) => size + file.sizeBytes, 0),
-          0
-        )
-        if (group.id === 'voices') option.requiresSelection = 'gsv'
+        option.downloadBytes = downloadFiles(missing).reduce((sum, file) => sum + file.sizeBytes, 0)
+        if (voice) {
+          option.characterId = target?.id ?? null
+          if (!target) option.unavailableReason = '角色不存在，无法安装这份语音。'
+          option.requiresSelection = missing.some((item) => item.id.startsWith('gsv.'))
+            ? 'gsv'
+            : null
+        }
+        if (options.selection?.includes(option.id)) {
+          selectedForEstimate.push(...missing)
+          selectionAvailable &&= option.available
+        }
       }
     return {
       groups,
+      selectionDownloadBytes:
+        options.selection && selectionAvailable
+          ? downloadFiles(selectedForEstimate).reduce((sum, file) => sum + file.sizeBytes, 0)
+          : null,
       platform: this.catalog.platform,
       arch: this.catalog.arch,
       accelerator: options.accelerator ?? 'cpu',
@@ -266,14 +319,29 @@ export class ResourceSetup {
             ['characters', 'connections', 'chats', 'gsv'].includes(key)
           ) && Object.values(selection).every((value) => typeof value === 'boolean')
         )
+        const summary = legacySummary(scan, this.builtinConnection)
+        requireValue(
+          legacyGroups.some((key) => selection[key] && summary[key] > 0),
+          'legacy_nothing_to_import',
+          '所选类别中没有可导入的资料。'
+        )
         job.options.include = selection
+        job.items = Object.fromEntries(
+          legacyGroups.map((key) => [
+            key,
+            {
+              total: summary[key],
+              completed: 0,
+              status: selection[key] ? 'waiting' : 'skipped'
+            }
+          ])
+        )
         const keys = new Set()
         if (selection.characters) {
           for (const persona of scan.personas ?? []) if (persona.avatar) keys.add(persona.avatar)
-          const existingRoles = await this.characters.list()
+          const existingIds = new Set((await this.characters.list()).map((role) => role.id))
           for (const role of scan.roles) {
-            if (existingRoles.some((item) => item.id === role.id || item.name === role.name))
-              continue
+            if (existingIds.has(role.id)) continue
             for (const form of role.forms) {
               for (const model of form.models) keys.add(model.key)
             }
@@ -281,9 +349,7 @@ export class ResourceSetup {
             if (role.avatar) keys.add(role.avatar)
           }
           // 外部引用参考音频也属于角色资料，不要求与角色目录相邻。
-          for (const role of scan.roles.filter(
-            (role) => !existingRoles.some((item) => item.id === role.id || item.name === role.name)
-          ))
+          for (const role of scan.roles.filter((role) => !existingIds.has(role.id)))
             for (const form of role.forms)
               if (form.voice) {
                 keys.add(form.voice.defaultReference.audio)
@@ -328,9 +394,16 @@ export class ResourceSetup {
         }
       } else {
         const installed = await this.installations()
+        job.options.selection = copy(options.selection)
+        job.voicePreferenceRevision = (await this.settings.voicePreference()).revision
         for (const component of await this.catalog.select(options.selection, {
           accelerator: options.accelerator ?? 'cpu'
         })) {
+          if (component.kind === 'voice') {
+            const target = await this.voiceTarget(component.characterId)
+            requireValue(target, 'character_missing', '请先完成角色初始化，再下载角色语音。')
+            component.targetCharacterId = target.id
+          }
           if (await this.componentReady(component, installed)) continue
           requireValue(
             component.available,
@@ -341,12 +414,15 @@ export class ResourceSetup {
             await this.reuseGsv(component, installed['gsv.models'], job)
           job.selected.push(component)
           for (const file of component.files) {
-            job.planBytes.download += file.sizeBytes
             job.planBytes.added += file.expandedBytes ?? file.sizeBytes
             job.planBytes.logical += file.expandedBytes ?? file.sizeBytes
           }
           job.planBytes.added += component.installBytes ?? 0
         }
+        job.planBytes.download = downloadFiles(job.selected).reduce(
+          (sum, file) => sum + file.sizeBytes,
+          0
+        )
         job.planBytes.cache = job.planBytes.download
       }
       job.volumes = await this.space(job)
@@ -380,6 +456,7 @@ export class ResourceSetup {
       .reduce((sum, file) => sum + file.sizeBytes, 0)
     let library = remaining.reduce((sum, file) => sum + file.sizeBytes, 0) - application
     let cache = 0
+    const missingDownloads = new Set()
     for (const component of job.selected.filter(
       (item) => !job.completed.includes(item.id) && !job.prepared?.[item.id]
     )) {
@@ -387,8 +464,14 @@ export class ResourceSetup {
       for (const file of component.files) {
         library += file.expandedBytes ?? file.sizeBytes
         if (component.kind === 'voice' && /\.(wav|mp3)$/i.test(file.path)) library += file.sizeBytes
-        const existing = await stat(path.join(this.cache, file.sha256)).catch(() => null)
-        if (existing?.size !== file.sizeBytes) cache += file.sizeBytes
+        if (missingDownloads.has(file.sha256)) continue
+        const destination = path.join(this.cache, file.sha256)
+        const existing = await stat(destination).catch(() => null)
+        if (existing?.size === file.sizeBytes) continue
+        missingDownloads.add(file.sha256)
+        const partial = await stat(destination + '.part').catch(() => null)
+        const reusable = partial && partial.size <= file.sizeBytes ? partial.size : 0
+        cache += file.sizeBytes - reusable
       }
     }
     return checkSpace([
@@ -398,6 +481,9 @@ export class ResourceSetup {
     ])
   }
   snapshot(job) {
+    const downloaded = Object.values(job.downloaded ?? {}).reduce((sum, bytes) => sum + bytes, 0)
+    const rate =
+      job.status === 'running' && job.phase === 'downloading' ? (job.downloadRate ?? null) : null
     return {
       id: job.id,
       kind: job.kind,
@@ -413,6 +499,32 @@ export class ResourceSetup {
         reusedFiles: Object.values(job.files).filter((file) => file.mode === 'reuse').length
       },
       results: job.results,
+      items: job.items ?? null,
+      download:
+        job.kind === 'download'
+          ? {
+              bytes: downloaded,
+              totalBytes: job.planBytes.download,
+              bytesPerSecond: rate,
+              remainingSeconds: rate
+                ? Math.ceil(Math.max(0, job.planBytes.download - downloaded) / rate)
+                : null,
+              components: job.selected.map((item) => ({
+                id: item.id,
+                status: job.completed.includes(item.id)
+                  ? 'ready'
+                  : job.progress?.component === item.id
+                    ? job.status === 'running'
+                      ? job.phase
+                      : job.status
+                    : 'waiting',
+                problem:
+                  job.progress?.component === item.id && job.status === 'failed'
+                    ? job.problem
+                    : null
+              }))
+            }
+          : null,
       warnings: job.warnings,
       problem: job.problem ?? null
     }
@@ -456,7 +568,14 @@ export class ResourceSetup {
         'setup_plan_expired',
         '计划已过期，请重新扫描或选择资源。'
       )
-      await this.space(job)
+      try {
+        job.volumes = await this.space(job)
+      } catch (error) {
+        job.status = 'failed'
+        job.problem = problem(error)
+        await this.save(job)
+        throw error
+      }
       job.status = 'running'
       job.problem = null
       await this.save(job)
@@ -467,6 +586,11 @@ export class ResourceSetup {
         .catch(async (error) => {
           job.status = controller.signal.aborted ? 'paused' : 'failed'
           job.problem = controller.signal.aborted ? null : problem(error)
+          const item = job.items?.[job.currentItem]
+          if (item) {
+            item.status = job.status === 'paused' ? 'paused' : item.completed ? 'partial' : 'failed'
+            item.problem = job.problem
+          }
           await this.save(job)
           if (controller.signal.aborted && active.action === 'cancel') await this.cancel(job)
         })
@@ -482,23 +606,97 @@ export class ResourceSetup {
   async controlJob(id, action) {
     requireValue(['pause', 'resume', 'cancel'].includes(action))
     if (action === 'resume') return this.start(id)
-    const active = this.running.get(id)
-    if (active) {
-      active.action = action
-      active.controller.abort()
-      await active.done
-    } else if (action === 'cancel') {
-      const job = await this.readJob(id)
-      requireValue(job, 'setup_job_missing')
-      await this.cancel(job)
+    return this.queue.run('admission', async () => {
+      const active = this.running.get(id)
+      if (active) {
+        active.action = action
+        active.controller.abort()
+        await active.done
+      } else if (action === 'cancel') {
+        const job = await this.readJob(id)
+        requireValue(job, 'setup_job_missing')
+        await this.cancel(job)
+      }
+      return this.getJob(id)
+    })
+  }
+
+  /** 结束引导绑定的导入，先核对真实提交，再释放剩余准备资源。 */
+  async skipLegacy(id) {
+    return this.queue.run('admission', async () => {
+      requireValue(!this.closed, 'setup_closed')
+      let job = await this.readJob(id)
+      requireValue(job?.kind === 'legacy', 'invalid_onboarding_job')
+      requireValue(job.status !== 'running', 'legacy_import_running')
+      const active = this.running.get(id)
+      if (active) {
+        await active.done
+        job = await this.readJob(id)
+      }
+      if (job.keptLegacy !== undefined) return job.keptLegacy
+      if (job.status === 'succeeded') return true
+      job.keptLegacy = await this.hasLegacyData(job)
+      if (job.status === 'cancelled') await this.save(job)
+      else await this.cancel(job)
+      return job.keptLegacy
+    })
+  }
+
+  async hasLegacyData(job) {
+    const { scan, options, refs } = job
+    const selection = options.include
+    if (selection.characters) {
+      for (const role of scan.roles) {
+        const saved = await this.characters.get(role.id)
+        if (saved?.extensions?.pythonImport?.source === scan.identity) return true
+      }
+      for (const persona of scan.personas ?? []) {
+        const saved = await this.characters.getPersona(legacyPersonaId(persona))
+        if (saved?.extensions?.pythonImport?.source === scan.identity) return true
+      }
     }
-    return this.getJob(id)
+    if (selection.chats) {
+      for (const original of scan.chats) {
+        const saved = await this.store.load(pythonChatId(original))
+        if (saved.chat?.meta.extensions?.pythonImport?.source === scan.identity) return true
+      }
+    }
+    if (selection.connections) {
+      const { definitions, useBuiltin } = legacyConnections(scan.config)
+      const ids = new Set(definitions.map(({ definition }) => definition.id))
+      if (
+        useBuiltin &&
+        this.builtinConnection &&
+        (job.connectionIds?.includes('builtin-up') || job.hadBuiltinConnection === false)
+      )
+        ids.add('builtin-up')
+      if ((await this.settings.listConnections()).some((item) => ids.has(item.id))) return true
+    }
+    if (selection.gsv) {
+      const record = (await this.installations())['gsv.models']
+      if (record?.legacySource === scan.identity && Object.keys(record.refs).length) return true
+      const candidates = new Set(Object.values(scan.gsv).map((key) => refs[key]?.id))
+      const resources = await this.settings.get('speechStartup.gptSovits.resources')
+      if (extractAssetReferences(resources).some((ref) => candidates.has(ref.id))) return true
+    }
+    // 兼容引入来源标记前，已经写入完成记录的任务。
+    for (const item of job.results) {
+      if (item.kind === 'character' && (await this.characters.get(item.id))) return true
+      if (item.kind === 'chat' && (await this.store.load(item.id)).status === 'loaded') return true
+    }
+    return false
   }
   async cancel(job) {
     requireValue(job.status !== 'succeeded', 'setup_job_finished')
+    if (job.status === 'cancelled') return
     const planning = job.phase === 'planning'
+    if (job.kind === 'legacy' && job.status !== 'planned' && job.keptLegacy === undefined)
+      job.keptLegacy = await this.hasLegacyData(job)
     job.status = 'cancelled'
     job.phase = 'cancelled'
+    for (const item of Object.values(job.items ?? {}))
+      if (['waiting', 'committing', 'paused'].includes(item.status))
+        item.status = item.completed ? 'partial' : 'skipped'
     for (const [key, file] of Object.entries(job.files))
       if (file.purpose === 'model' && !job.refs[key])
         await rm(this.modelDestination(job.id, key, file.name), { force: true })
@@ -511,14 +709,33 @@ export class ResourceSetup {
 
   async execute(job, signal) {
     if (job.kind === 'legacy') await this.importLegacy(job, signal)
-    else
+    else {
+      job.downloaded = {}
+      for (const file of downloadFiles(job.selected)) {
+        const destination = path.join(this.cache, file.sha256)
+        const cached = await stat(destination).catch((error) => {
+          if (error.code !== 'ENOENT') throw error
+          return null
+        })
+        if (cached?.size === file.sizeBytes) job.downloaded[file.sha256] = file.sizeBytes
+        else {
+          const partial = await stat(destination + '.part').catch((error) => {
+            if (error.code !== 'ENOENT') throw error
+            return null
+          })
+          if (partial?.size <= file.sizeBytes) job.downloaded[file.sha256] = partial.size
+        }
+      }
       for (const component of job.selected) {
         signal.throwIfAborted()
         if (job.completed.includes(component.id)) continue
         await this.installComponent(job, component, signal)
         job.completed.push(component.id)
+        await this.enablePreparedVoices(job)
         await this.save(job)
       }
+      await this.enablePreparedVoices(job)
+    }
     signal.throwIfAborted()
     job.status = 'succeeded'
     job.phase = 'complete'
@@ -592,40 +809,58 @@ export class ResourceSetup {
     await validateLegacySource(job.scan)
     job.phase = 'committing'
     await this.save(job)
+    job.items ??= Object.fromEntries(
+      legacyGroups.map((key) => [
+        key,
+        {
+          total: legacySummary(job.scan, this.builtinConnection)[key],
+          completed: 0,
+          status: job.options.include[key] ? 'waiting' : 'skipped'
+        }
+      ])
+    )
     const mapping = Object.create(null)
-    if (job.options.include.characters)
+    const namesInUse = new Set((await this.characters.list()).map((item) => item.name.trim()))
+    if (job.options.include.characters) {
+      await this.updateLegacyItem(job, 'characters', 'committing', 0)
       for (const role of job.scan.roles) {
         signal.throwIfAborted()
-        const existing = (await this.characters.list()).find(
-          (item) => item.id === role.id || item.name === role.name
-        )
-        if (existing) {
-          mapping[role.id] = existing.id
+        if (await this.characters.get(role.id)) {
+          await this.updateLegacyItem(
+            job,
+            'characters',
+            'committing',
+            job.items.characters.completed + 1
+          )
           continue
         }
-        await this.characters.save(characterDefinition(role, job.refs))
-        mapping[role.id] = role.id
+        const original = role.name.trim()
+        let name = original
+        for (let number = 1; namesInUse.has(name); number += 1) name = `${original}_${number}`
+        await this.characters.save(characterDefinition(role, job.refs, name, job.scan.identity))
+        namesInUse.add(name)
         job.results.push({ kind: 'character', id: role.id, status: 'imported' })
-        await this.save(job)
+        await this.updateLegacyItem(
+          job,
+          'characters',
+          'committing',
+          job.items.characters.completed + 1
+        )
       }
-    for (const role of job.scan.roles)
-      mapping[role.name] =
-        mapping[role.id] ??
-        (await this.characters.list()).find(
-          (item) => item.id === role.id || item.name === role.name
-        )?.id ??
-        role.id
+    }
+    for (const role of job.scan.roles) mapping[role.name] = role.id
     for (const [name, id] of Object.entries({ 爱音: 'anon', 素世: 'soyo', 祥子: 'sakiko' }))
       mapping[name] ??= (await this.characters.list()).find((role) => role.name === name)?.id ?? id
     if (job.options.include.gsv) {
+      await this.updateLegacyItem(job, 'gsv', 'committing', 0)
       const refs = Object.fromEntries(
         Object.entries(job.scan.gsv)
           .filter(([, key]) => job.refs[key])
           .map(([name, key]) => [name, job.refs[key]])
       )
-      await bindGsv(this.settings, refs)
-      const resources = await this.settings.get('speechStartup.gptSovits.resources')
       if (Object.keys(refs).length) {
+        await bindGsv(this.settings, refs)
+        const resources = await this.settings.get('speechStartup.gptSovits.resources')
         const complete =
           ['v4', 'v2ProPlus'].every(
             (version) => selectGptSovitsFiles(resources, version).missing.length === 0
@@ -635,26 +870,51 @@ export class ResourceSetup {
         const record = {
           id: 'gsv.models',
           status: complete ? 'ready' : 'partial',
+          legacySource: job.scan.identity,
           version: 'legacy',
           refs,
           directory: path.join(this.library, 'models', 'setup', job.id, 'legacy', 'GPT_SoVITS')
         }
         await this.activate(record)
       }
+      const record = (await this.installations())['gsv.models']
+      await this.updateLegacyItem(
+        job,
+        'gsv',
+        record?.status === 'partial' && Object.keys(refs).length ? 'partial' : 'ready',
+        Object.keys(refs).length
+      )
     }
     if (job.options.include.connections && !job.completed.includes('connections')) {
+      job.hadBuiltinConnection ??= (await this.settings.listConnections()).some(
+        (item) => item.id === 'builtin-up'
+      )
+      await this.updateLegacyItem(job, 'connections', 'committing', job.connectionIds?.length ?? 0)
       const imported = await importConnections(
         this.settings,
         job.scan.config,
-        this.builtinConnection
+        this.builtinConnection,
+        async (id) => {
+          job.connectionIds ??= []
+          if (!job.connectionIds.includes(id)) {
+            job.connectionIds.push(id)
+            await this.updateLegacyItem(job, 'connections', 'committing', job.connectionIds.length)
+          }
+        }
       )
       job.pendingConnections = imported.pending
       if (imported.pending.length)
         job.warnings.push({ code: 'legacy_connections_pending', count: imported.pending.length })
       job.completed.push('connections')
-      await this.save(job)
+      await this.updateLegacyItem(
+        job,
+        'connections',
+        imported.pending.length ? 'partial' : 'ready',
+        job.connectionIds?.length ?? 0
+      )
     }
     if (job.options.include.characters) {
+      await this.updateLegacyItem(job, 'characters', 'committing', job.items.characters.completed)
       const names = job.scan.config?.character_setting?.character_order?.character_names ?? []
       const order = [
         ...new Set([
@@ -664,10 +924,19 @@ export class ResourceSetup {
       ]
       if (order.length) await this.characters.setOrder(order)
       for (const persona of job.scan.personas ?? []) {
-        const id = 'legacy-persona-' + fingerprint(persona.persona_id ?? persona).slice(0, 24)
-        if (await this.characters.getPersona(id)) continue
+        signal.throwIfAborted()
+        const id = legacyPersonaId(persona)
+        if (await this.characters.getPersona(id)) {
+          await this.updateLegacyItem(
+            job,
+            'characters',
+            'committing',
+            job.items.characters.completed + 1
+          )
+          continue
+        }
         const roleId =
-          mapping[persona.user_as_character_folder_name] ?? mapping[persona.user_as_character_name]
+          persona.user_as_character_folder_name || mapping[persona.user_as_character_name]
         const role = roleId ? await this.characters.get(roleId) : null
         const source = role
           ? { kind: 'character', characterId: role.id, formId: role.defaultFormId }
@@ -677,20 +946,119 @@ export class ResourceSetup {
               description: persona.description ?? '',
               avatar: job.refs[persona.avatar] ?? null
             }
-        await this.characters.savePersona({ id, revision: 0, source })
+        await this.characters.savePersona({
+          id,
+          revision: 0,
+          source,
+          extensions: { pythonImport: { source: job.scan.identity } }
+        })
+        await this.updateLegacyItem(
+          job,
+          'characters',
+          'committing',
+          job.items.characters.completed + 1
+        )
       }
+      await this.updateLegacyItem(job, 'characters', 'ready', job.items.characters.completed)
     }
     if (job.options.include.chats) {
-      const imported = await this.importChats(job.scan, job.refs, mapping, signal)
+      await this.updateLegacyItem(job, 'chats', 'committing', 0)
+      const imported = await this.importChats(job.scan, job.refs, mapping, signal, async (chat) => {
+        job.results.push({ kind: 'chat', id: chat.id, status: 'imported' })
+        await this.updateLegacyItem(job, 'chats', 'committing', job.items.chats.completed + 1)
+      })
       job.warnings.push(...imported.warnings)
-      job.results.push(
-        ...imported.chats.map((chat) => ({ kind: 'chat', id: chat.id, status: 'imported' }))
+      await this.updateLegacyItem(
+        job,
+        'chats',
+        imported.warnings.length ? 'partial' : 'ready',
+        job.items.chats.total
       )
-      await this.save(job)
     }
   }
 
+  async updateLegacyItem(job, key, status, completed) {
+    job.currentItem = key
+    job.items[key] = { ...job.items[key], status, completed, problem: null }
+    await this.save(job)
+  }
+
+  /** 当前安装记录与角色形态同时可用时才接受自动启用意图。 */
+  async enablePreparedVoices(job) {
+    if (job.voicePreferenceRevision === undefined) return
+    const installed = await this.installations()
+    for (const id of job.options.selection.filter((choice) => choice.startsWith('voice.'))) {
+      const component = job.selected.find((item) => item.id === id)
+      if (component && !job.completed.includes(id)) continue
+      const role = await this.voiceTarget(id.slice('voice.'.length))
+      if (!role) continue
+      const characterId = role.id
+      const ready = await Promise.all(
+        role.forms.map((form) => this.speechReady(characterId, form.voice, installed))
+      )
+      if (ready.some(Boolean))
+        await this.settings.enablePreparedVoice(characterId, job.voicePreferenceRevision)
+    }
+  }
+
+  /** 判定已安装的语音材料能否供指定形态使用。 */
+  async speechReady(characterId, voice, installed = null) {
+    installed ??= await this.installations()
+    const records = Object.values(installed)
+    const voicePackage = records.find((item) => item.characterId === characterId)
+    if (installed['gsv.runtime']?.status !== 'ready' || installed['gsv.models']?.status !== 'ready')
+      return false
+    const resources = await this.settings.get('speechStartup.gptSovits.resources')
+    const versions = voicePackage?.architecture ? [voicePackage.architecture] : ['v4', 'v2ProPlus']
+    if (!versions.some((version) => selectGptSovitsFiles(resources, version).missing.length === 0))
+      return false
+    try {
+      const executable = installed['gsv.runtime'].runtime?.pythonExecutable
+      if (!executable || !(await stat(executable)).isFile()) return false
+      for (const file of Object.values(installed['gsv.runtime'].runtime)) await stat(file)
+      for (const ref of extractAssetReferences(installed['gsv.models'].refs))
+        await this.assets.localPath(ref)
+      return this.voiceReady(voice)
+    } catch {
+      return false
+    }
+  }
+
+  /** 返回主页所需的资源状态，语音识别与角色语音独立。 */
+  async getFeatureState() {
+    const installed = await this.installations()
+    let asrReady =
+      (await this.componentReady({ id: 'asr.runtime' }, installed)) &&
+      (await this.componentReady({ id: 'asr.models' }, installed))
+    if (this.localRecognition) {
+      const files = ['encoder_model_quantized.onnx', 'decoder_model_merged_quantized.onnx']
+      const checks = await Promise.allSettled(
+        files.map((file) => stat(path.join(this.localRecognition, 'onnx', file)))
+      )
+      asrReady = checks.every((check) => check.status === 'fulfilled' && check.value.isFile())
+    }
+    const preference = await this.settings.voicePreference()
+    const characters = []
+    for (const summary of await this.characters.list()) {
+      const role = await this.characters.get(summary.id)
+      if (!role) continue
+      for (const form of role.forms) {
+        const ready = await this.speechReady(role.id, form.voice, installed)
+        characters.push({
+          characterId: role.id,
+          formId: form.id,
+          ready,
+          autoEnabled: ready && preference.enabled[role.id] === true
+        })
+      }
+    }
+    return { asrReady, characters }
+  }
+
   async installComponent(job, component, signal) {
+    job.phase = 'installing'
+    job.progress = { component: component.id, completed: 0, total: 0 }
+    await this.save(job)
     const base = path.join(
       this.library,
       'models',
@@ -708,20 +1076,38 @@ export class ResourceSetup {
       for (const file of component.files) {
         signal.throwIfAborted()
         job.phase = 'downloading'
-        job.progress = { component: component.id, completed: 0, total: file.sizeBytes }
+        job.progress = {
+          component: component.id,
+          completed: job.downloaded[file.sha256] ?? 0,
+          total: file.sizeBytes
+        }
+        job.downloadRate = null
         await this.save(job)
-        let last = 0
+        let last = Date.now()
+        let sampledBytes = null
         const cached = await downloadFile(file, this.cache, {
           fetch: this.transport,
           signal,
           progress: (bytes) => {
-            if (Date.now() - last > 250) {
-              last = Date.now()
-              job.progress.completed = bytes
-              this.bus.emit(job.id, this.snapshot(job))
-            }
+            const now = Date.now()
+            job.downloaded[file.sha256] = bytes
+            job.progress.completed = bytes
+            if (sampledBytes === null) sampledBytes = bytes
+            if (now - last < 250) return
+            job.downloadRate =
+              Math.max(0, Math.round(((bytes - sampledBytes) * 1000) / (now - last))) || null
+            last = now
+            sampledBytes = bytes
+            this.bus.emit(job.id, this.snapshot(job))
           }
+        }).catch(async (error) => {
+          const partial = await stat(path.join(this.cache, file.sha256 + '.part')).catch(() => null)
+          job.downloaded[file.sha256] = Math.min(file.sizeBytes, partial?.size ?? 0)
+          job.progress.completed = job.downloaded[file.sha256]
+          throw error
         })
+        job.downloaded[file.sha256] = file.sizeBytes
+        job.progress.completed = file.sizeBytes
         job.phase = 'installing'
         await this.save(job)
         if (file.archive)
@@ -794,7 +1180,8 @@ export class ResourceSetup {
         if (/\.(wav|mp3)$/i.test(name)) await rm(path.join(destination, name), { force: true })
     }
     if (component.kind === 'gsv') await bindGsv(this.settings, prepared)
-    if (component.kind === 'voice') await this.bindVoice(component, prepared, destination)
+    const voice =
+      component.kind === 'voice' ? await this.bindVoice(component, prepared, destination) : null
     const record = {
       id: component.id,
       status: 'ready',
@@ -802,7 +1189,8 @@ export class ResourceSetup {
       target: component.target ?? null,
       refs: prepared,
       directory: destination,
-      runtime: job.prepared[component.id].runtime
+      runtime: job.prepared[component.id].runtime,
+      ...voice
     }
     await this.activate(record)
     if (component.id === 'gsv.runtime')
@@ -884,7 +1272,9 @@ export class ResourceSetup {
         ['v4', 'v2ProPlus'].includes(voice.architecture),
       'voice_manifest_invalid'
     )
-    const role = await this.characters.get(component.characterId)
+    const role = component.targetCharacterId
+      ? await this.characters.get(component.targetCharacterId)
+      : await this.voiceTarget(component.characterId)
     requireValue(role, 'character_missing', '请先完成角色初始化，再下载角色语音。')
     const prefix = component.characterId + '/'
     function asset(name) {
@@ -914,6 +1304,17 @@ export class ResourceSetup {
       }
     }
     await this.characters.save(role)
+    return { characterId: role.id, architecture: voice.architecture }
+  }
+
+  async voiceTarget(characterId) {
+    const canonical = await this.characters.get(characterId)
+    if (canonical) return canonical
+    const displayName = setupGroups
+      .find((group) => group.id === 'voices')
+      .options.find((option) => option.id === 'voice.' + characterId)?.name
+    const summary = (await this.characters.list()).find((role) => role.name === displayName)
+    return summary ? this.characters.get(summary.id) : null
   }
 
   async voiceReady(voice) {

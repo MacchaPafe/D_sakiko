@@ -1,7 +1,51 @@
-import { fingerprint } from '../core/support.js'
+import { fingerprint, safeId } from '../core/support.js'
 import { chatSettings, defaultSettings } from '../core/defaults.js'
 import wavefile from 'wavefile'
 import { legacyRelative } from '../setup/legacy.js'
+
+/** 旧版聊天重试沿用原有的存档身份。 */
+export function pythonChatId(original) {
+  return (
+    'python-' + fingerprint(`python-chat:${original.chat_id ?? fingerprint(original)}`).slice(0, 32)
+  )
+}
+
+function modelFolder(root, value) {
+  try {
+    const [directory, id, ...parts] = legacyRelative(root, value).split('/')
+    return directory === 'live2d_related' && parts.length ? safeId(id) : null
+  } catch {
+    return null
+  }
+}
+
+function resolveParticipants(original, scan, mapping) {
+  const names =
+    original.prompt_config?.character_names ??
+    [original.prompt_config?.character_name].filter(Boolean)
+  const meta = original.meta ?? {}
+  const metadataIds = new Set()
+  for (const id of [
+    ...Object.keys(meta.character_forms ?? {}),
+    ...Object.keys(meta.live2d_form_models ?? {})
+  ]) {
+    try {
+      metadataIds.add(safeId(id))
+    } catch {
+      // 无效的形态键不能作为角色身份。
+    }
+  }
+  return names.map((name) => {
+    const candidates = scan.roles.filter((role) => role.name === name)
+    const modelId = modelFolder(scan.root, meta.live2d_models?.[name])
+    const matchingIds = candidates.filter((role) => metadataIds.has(role.id))
+    let id = names.filter((item) => item === name).length === 1 ? modelId : null
+    if (!id && matchingIds.length === 1) id = matchingIds[0].id
+    if (!id && names.length === 1 && metadataIds.size === 1) id = [...metadataIds][0]
+    id ??= mapping[name] ?? 'missing-' + fingerprint(name).slice(0, 16)
+    return { id, name, role: scan.roles.find((item) => item.id === id) }
+  })
+}
 
 /** 当前 Python chat_list 的一次性转换器；不执行工具，不恢复提醒和进行中的轮次。 */
 export class PythonChatImporter {
@@ -16,15 +60,11 @@ export class PythonChatImporter {
     for (const [index, original] of scan.chats.entries()) {
       signal?.throwIfAborted()
       const identity = `python-chat:${original.chat_id ?? fingerprint(original)}`
-      const id = 'python-' + fingerprint(identity).slice(0, 32)
+      const id = pythonChatId(original)
       if ((await this.store.load(id)).status !== 'missing') continue
       const stable = (suffix) => fingerprint(identity + ':' + suffix).slice(0, 32)
-      const names =
-        original.prompt_config?.character_names ??
-        [original.prompt_config?.character_name].filter(Boolean)
-      const roleIds = names.map(
-        (name) => mapping[name] ?? 'missing-' + fingerprint(name).slice(0, 16)
-      )
+      const participants = resolveParticipants(original, scan, mapping)
+      const roleIds = participants.map((role) => role.id)
       const chat = {
         id,
         revision: 0,
@@ -35,15 +75,16 @@ export class PythonChatImporter {
         meta: {
           settings: chatSettings(),
           reminders: [],
-          extensions: { pythonImport: { source: scan.identity, chatId: original.chat_id ?? null } }
+          extensions: {
+            characterNames: Object.fromEntries(participants.map(({ id, name }) => [id, name])),
+            pythonImport: { source: scan.identity, chatId: original.chat_id ?? null }
+          }
         },
         turns: []
       }
       const persona = original.prompt_config?.user_persona
-      for (const name of names) {
-        const role = scan.roles.find((item) => item.name === name)
+      for (const { name, role, id: roleId } of participants) {
         if (!role) continue
-        const roleId = mapping[name] ?? role.id
         const actual = await this.characters.get(roleId)
         const selected = original.meta?.character_forms?.[role.id]
         const form = role.forms.find((item) => item.id === selected) ?? role.forms[0]
@@ -68,10 +109,12 @@ export class PythonChatImporter {
             warnings.push({ code: 'legacy_chat_model_unavailable', chatId: id })
           }
         }
-        let formId = form.id
-        if (actual && !actual.forms.some((item) => item.id === form.id))
-          formId = actual.defaultFormId
-        chat.meta.settings.characters[roleId] = { formId, modelOverrides: overrides }
+        if (actual) {
+          const formId = actual.forms.some((item) => item.id === form.id)
+            ? form.id
+            : actual.defaultFormId
+          chat.meta.settings.characters[roleId] = { formId, modelOverrides: overrides }
+        }
       }
       if (original.type === 2) {
         const theater = original.meta?.theater ?? {}
@@ -157,11 +200,16 @@ export class PythonChatImporter {
           })
         } else {
           turn ??= newTurn(position)
+          const participant = participants.findLast((item) => item.name === speaker)
           const speakerId =
+            participant?.id ??
             mapping[speaker] ??
-            roleIds[0] ??
+            (!speaker ? roleIds[0] : null) ??
             'missing-' + fingerprint(speaker ?? 'unknown').slice(0, 16)
-          if (!chat.characterIds.includes(speakerId)) chat.characterIds.push(speakerId)
+          if (!chat.characterIds.includes(speakerId)) {
+            chat.characterIds.push(speakerId)
+            chat.meta.extensions.characterNames[speakerId] = speaker ?? null
+          }
           const audioRef = refs[scan.media[message.audio_path]]
           let audio = null
           if (audioRef) {
@@ -177,7 +225,7 @@ export class PythonChatImporter {
               warnings.push({ code: 'legacy_audio_not_playable', chatId: id })
             }
           }
-          const role = scan.roles.find((item) => item.name === speaker)
+          const role = participant?.role ?? scan.roles.find((item) => item.id === speakerId)
           let formId = null
           if (role?.forms.length === 1) formId = role.forms[0].id
           if (
@@ -198,7 +246,7 @@ export class PythonChatImporter {
               expression: message.performance?.expression ?? null
             },
             audio,
-            extensions: {}
+            extensions: { legacySpeakerName: speaker ?? null }
           }
           turn.messages.push({
             id: stable('message:' + position),

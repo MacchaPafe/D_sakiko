@@ -344,3 +344,13 @@ test('全局批量更新复用规则，对话覆盖保持稀疏且采样组必�
   await settings.set('generation.translationLanguage', null)
   expect((await settings.get()).generation.translationLanguage).toBeNull()
 })
+
+test('下载期间显式关闭语音会使旧的自动启用意图失效', async () => {
+  const { settings } = await fixture()
+  const { revision } = await settings.voicePreference()
+  await settings.set('display.theme', 'dark')
+  expect(await settings.enablePreparedVoice('sakiko', revision)).toBe(true)
+  await settings.set('speech.enabled', false)
+  expect(await settings.enablePreparedVoice('anon', revision)).toBe(false)
+  expect(await settings.voicePreference()).toEqual({ revision: revision + 1, enabled: {} })
+})

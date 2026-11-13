@@ -1,4 +1,5 @@
 import { characterContext } from '../llm/context.js'
+import { historicalCharacterNames, participantIssue, requireParticipants } from './participants.js'
 import { contextBudget, trimHistory } from '../llm/context-budget.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { generationOptions, speechOptions, presentationOptions } from '../core/validation.js'
@@ -41,6 +42,7 @@ import { randomInt } from 'node:crypto'
  * @property {import('../../shared/contracts/settings.js').GenerationOptions} generation 本轮生效的生成参数。
  * @property {import('../../shared/contracts/settings.js').SpeechOptions} speech 本轮生效的语音合成参数。
  * @property {import('../../shared/contracts/characters.js').CharacterCapabilities[]} capabilities 本轮参与角色的能力快照（包含声音与形态信息），不随角色目录后续修改而改变。
+ * @property {Set<string>} voicedCharacters 本轮可合成语音的角色。
  * @property {import('../llm/interface.js').ContextInspection} inspection 受理前的上下文预算与模型能力检查结果。
  */
 
@@ -75,6 +77,7 @@ import { randomInt } from 'node:crypto'
  * @property {import('../../shared/contracts/conversation.js').ConversationSnapshot['persistence']} persistence 当前存档保存状态与错误信息。
  * @property {import('../../shared/contracts/common.js').Problem | null} problem 最近一次发生的业务错误。
  * @property {boolean} compressing 是否正在执行历史上下文压缩。
+ * @property {import('../../shared/contracts/conversation.js').ParticipantIssue | null} participantIssue 当前历史阅读状态。
  * @property {string} sequenceId 该对话在演出模块中对应的演出序列 ID。
  * @property {import('../../shared/contracts/conversation.js').ConversationSnapshot} [published] 最近一次对外发布的完整快照。
  * @property {boolean} [deleted] 标记该对话是否已被删除，用于拦截迟到的异步任务回写。
@@ -107,7 +110,8 @@ export class Conversations {
     assets,
     tools,
     access,
-    remoteFiles
+    remoteFiles,
+    setup
   }) {
     Object.assign(this, {
       store,
@@ -123,6 +127,7 @@ export class Conversations {
     /** @type {Map<string, ConversationState>} */
     this.states = new Map()
     this.remoteFiles = remoteFiles
+    this.setup = setup
     this.loading = new Map()
     this.queue = new SerialQueue()
     this.bus = new SnapshotBus()
@@ -131,6 +136,30 @@ export class Conversations {
     this.pendingCompletions = new Map()
     this.synthesizing = new Set()
     this.synthesisControllers = new Set()
+    this.stopObservingCharacters = this.characters.observeMembership((id) =>
+      this.refreshParticipantIssues(id).catch((error) => this.assets.reportMaintenance(error))
+    )
+  }
+
+  async checkParticipants(chat) {
+    const ids = new Set((await this.characters.list()).map((character) => character.id))
+    return participantIssue(chat, ids, historicalCharacterNames(chat))
+  }
+
+  async refreshParticipantIssues(id) {
+    // 加载途中角色变更时，等该对话进入状态表后再发布。
+    await Promise.allSettled(this.loading.values())
+    for (const [chatId, state] of this.states) {
+      if (!state.chat.characterIds.includes(id)) continue
+      await this.queue.run(chatId, async () => {
+        if (this.closing || state.deleted || state.active) return
+        state.participantIssue = await this.checkParticipants(state.chat)
+        await this.withScene(state.chat, (scene) =>
+          this.performance.setScene(state.sequenceId, scene)
+        ).catch((error) => this.assets.reportMaintenance(error))
+        this.publish(state)
+      })
+    }
   }
 
   /**
@@ -155,11 +184,13 @@ export class Conversations {
    * @param {string} chatId 对话 ID。
    * @returns {Promise<ConversationState>} 初始化完成的运行时状态对象。
    */
-  async load(chatId) {
+  async load(chatId, initialChat = null) {
     const resourceOwner = await this.assets.createTemporaryOwner('chat-memory')
     let state
     try {
-      const loaded = await this.store.loadProtected(chatId, resourceOwner)
+      const loaded = initialChat
+        ? { status: 'loaded', chat: initialChat }
+        : await this.store.loadProtected(chatId, resourceOwner)
       requireValue(loaded.status === 'loaded', 'chat_unavailable', '对话不存在或需要恢复存档。')
       /** @type {ConversationState} */
       state = {
@@ -176,6 +207,7 @@ export class Conversations {
         audioTokens: new Map(),
         persistence: { state: 'saved', problem: null },
         problem: null,
+        participantIssue: await this.checkParticipants(loaded.chat),
         compressing: false
       }
       state.sequenceId = await this.withScene(state.chat, (scene) =>
@@ -183,7 +215,7 @@ export class Conversations {
       )
       // 重启后只恢复存档记录，不自动续跑中断前的生成任务；若有缺少结果的工具调用，直接补记为已中断。
       if (this.interruptMissing(state.chat)) await this.persist(state)
-      this.states.set(chatId, state)
+      if (!initialChat) this.states.set(chatId, state)
       return state
     } catch (error) {
       if (state?.sequenceId) await this.performance.closeSequence(state.sequenceId)
@@ -248,16 +280,22 @@ export class Conversations {
    * @param {string | null} [owner] 关联的临时资源持有者 ID。
    * @returns {Promise<import('../../shared/contracts/presentation.js').Scene>} 演出场景配置对象。
    */
-  async scene(chat, strict = true, owner = null) {
+  async scene(chat, strict = true, owner = null, capabilities = null) {
     const slots = []
-    for (const id of chat.characterIds) {
+    const names = historicalCharacterNames(chat)
+    for (const id of new Set(chat.characterIds)) {
       let capability
       try {
         const selection = chat.meta.settings.characters[id] ?? {}
-        capability = await this.characterCapability(owner, id, selection)
+        capability =
+          capabilities?.find((item) => item.id === id) ??
+          (await this.characterCapability(owner, id, selection))
       } catch (error) {
         if (strict) throw error
-        capability = { displayName: id, presentation: null }
+        capability = {
+          displayName: Object.hasOwn(names, id) ? (names[id] ?? id) : id,
+          presentation: null
+        }
       }
       slots.push({
         id,
@@ -286,6 +324,7 @@ export class Conversations {
       reasons.push(state.active.execution.state === 'terminated' ? 'retained-guide' : 'running')
     if (state.compressing) reasons.push('compressing')
     if (state.persistence.state === 'failed') reasons.push('save-failed')
+    if (state.participantIssue) reasons.push(state.participantIssue.code)
     return {
       runtimeId: this.runtimeId,
       chat: copy(state.chat),
@@ -295,6 +334,7 @@ export class Conversations {
       executions: [...state.executions.values()].map(copy),
       persistence: copy(state.persistence),
       admission: { canGenerate: !reasons.length, canEditHistory: !reasons.length, reasons },
+      participantIssue: copy(state.participantIssue),
       presentation: { sequenceId: state.sequenceId, lines: [...state.guides.values()].map(copy) },
       audioProblems: copy(state.audioProblems),
       problem: copy(state.problem)
@@ -516,6 +556,7 @@ export class Conversations {
    * @returns {Promise<PreparedTurn & {resourceOwner: string}>} 准备就绪的轮次执行材料及临时资源持有者 ID。
    */
   async prepare(chat, input, options, preview = false) {
+    requireParticipants(await this.checkParticipants(chat))
     const resourceOwner = await this.assets.createTemporaryOwner(
       'turn',
       extractAssetReferences({ chat, input })
@@ -531,6 +572,16 @@ export class Conversations {
       speechOptions(speech)
       const connection = await this.settings.resolveConnection(generation)
       const capabilities = await this.capabilities(chat, resourceOwner)
+      const override = options.speech?.enabled ?? chat.meta.settings.speech.enabled
+      const voicePreference =
+        override === undefined && !speech.enabled ? await this.settings.voicePreference() : null
+      const voicedCharacters = new Set()
+      for (const role of capabilities) {
+        if (speech.enabled || voicePreference?.enabled[role.id] === true) {
+          if (speech.enabled && !this.setup.managedSpeech) voicedCharacters.add(role.id)
+          else if (await this.setup.speechReady(role.id, role.voice)) voicedCharacters.add(role.id)
+        }
+      }
       requireValue(
         !chat.meta.settings.worldbook.enabled,
         'worldbook_adapter_required',
@@ -585,7 +636,15 @@ export class Conversations {
       }
 
       const inspection = await this.agent.inspectContext(request)
-      return { request, speech, generation, capabilities, inspection, resourceOwner }
+      return {
+        request,
+        speech,
+        generation,
+        capabilities,
+        voicedCharacters,
+        inspection,
+        resourceOwner
+      }
     } catch (error) {
       await this.assets.releaseWhenPossible(resourceOwner)
       throw error
@@ -719,7 +778,9 @@ export class Conversations {
         candidate.meta.lotteries.find((item) => item.id === lotteryDelivery).deliveredTurnId =
           turnId
       // 这是受理点：保存成功之前不替换内存 Chat、消费自动输入或启动 Agent。
-      const saved = await this.store.save(candidate)
+      const saved = await this.characters.withExistingCharacters(candidate.characterIds, () =>
+        this.store.save(candidate)
+      )
       state.chat = saved
       await this.assets
         .replaceReferences(state.resourceOwner, extractAssetReferences(saved))
@@ -745,9 +806,10 @@ export class Conversations {
       state.executions.set(turnId, execution)
       state.active = run
       state.problem = null
-      await this.withScene(state.chat, (scene) =>
-        this.performance.setScene(state.sequenceId, scene)
-      )
+      state.participantIssue = null
+      await this.scene(state.chat, false, prepared.resourceOwner, prepared.capabilities)
+        .then((scene) => this.performance.setScene(state.sequenceId, scene))
+        .catch((error) => this.assets.reportMaintenance(error))
       this.publish(state)
       accepted = true
       run.done = Promise.resolve()
@@ -836,6 +898,15 @@ export class Conversations {
         if (run.execution.state === 'running') run.execution.state = 'finished'
         run.execution.phase = null
         if (state.active === run) state.active = null
+        try {
+          state.participantIssue = await this.checkParticipants(state.chat)
+          if (state.participantIssue)
+            await this.withScene(state.chat, (scene) =>
+              this.performance.setScene(state.sequenceId, scene)
+            )
+        } catch (error) {
+          this.assets.reportMaintenance(error)
+        }
         await this.performance.stopTransitionGuide(state.sequenceId)
         await this.performance.setActivity(state.sequenceId, 'idle')
         this.publish(state)
@@ -881,13 +952,13 @@ export class Conversations {
         line.audio = null
         line.extensions = {}
         const ref = { turnId: turn.id, messageId: message.id, partId: part.id, lineId: line.id }
+        const voiced = run.prepared.voicedCharacters.has(line.speakerId)
         const [guideId] = await this.performance.appendGuides(state.sequenceId, [
-          this.guide(line, !run.prepared.speech.enabled)
+          this.guide(line, !voiced)
         ])
         run.guides.push(guideId)
         state.guides.set(line.id, { line: ref, guideId })
-        if (run.prepared.speech.enabled)
-          run.pending.push(this.synthesize(state, ref, run.prepared, run, guideId))
+        if (voiced) run.pending.push(this.synthesize(state, ref, run.prepared, run, guideId))
       }
     }
     await this.persist(state)
@@ -1075,8 +1146,10 @@ export class Conversations {
   async update(chatId, mutation, semantic = false) {
     return this.queue.run(chatId, async () => {
       const state = await this.state(chatId)
-      if (semantic) this.assertIdle(state, true)
-      else requireValue(state.persistence.state !== 'failed', 'save_failed')
+      if (semantic) {
+        this.assertIdle(state, true)
+        requireParticipants(await this.checkParticipants(state.chat))
+      } else requireValue(state.persistence.state !== 'failed', 'save_failed')
       const candidate = copy(state.chat)
       await mutation(candidate)
       if (semantic) for (const lottery of candidate.meta.lotteries ?? []) lottery.cancelled = true
@@ -1505,6 +1578,7 @@ export class Conversations {
   async close() {
     if (this.closed) return
     this.closing = true
+    this.stopObservingCharacters()
     for (const controller of this.synthesisControllers) controller.abort()
     for (const state of this.states.values())
       if (state.active) await this.stopTurn(state.chat.id, state.active.turnId)
@@ -1523,7 +1597,20 @@ export class Conversations {
    * @returns {Promise<import('../../shared/contracts/conversation.js').ChatSummary[]>} 按显示顺序排列的对话摘要列表。
    */
   async listChats() {
-    return this.store.list()
+    const [chats, characters] = await Promise.all([this.store.list(), this.characters.list()])
+    const ids = new Set(characters.map((role) => role.id))
+    return Promise.all(
+      chats.map(async (chat) => {
+        const active = this.states.get(chat.id)?.active
+        let issue = active ? null : participantIssue(chat, ids, chat.characterNames ?? {})
+        if (issue?.code === 'missing-characters' && !chat.characterNames) {
+          const loaded = await this.store.load(chat.id)
+          if (loaded.status === 'loaded')
+            issue = participantIssue(chat, ids, historicalCharacterNames(loaded.chat))
+        }
+        return { ...chat, participantIssue: issue }
+      })
+    )
   }
 
   /**
@@ -1532,6 +1619,14 @@ export class Conversations {
    * @returns {Promise<string>} 新创建的对话 ID。
    */
   async createChat(options) {
+    return this.assets.using(options, async (owner) => {
+      const chat = await this.newChat(options, uuid(), owner)
+      await this.characters.withExistingCharacters(chat.characterIds, () => this.store.save(chat))
+      return chat.id
+    })
+  }
+
+  async newChat(options, id, owner) {
     requireValue(
       Array.isArray(options.characterIds) &&
         options.characterIds.length > 0 &&
@@ -1543,26 +1638,68 @@ export class Conversations {
         ? options.characterIds.length === 1
         : options.characterIds.length === 2
     )
-    return this.assets.using(options, async (owner) => {
-      const chat = {
-        id: uuid(),
-        revision: 0,
-        title: options.title,
-        characterIds: copy(options.characterIds),
-        mode: options.mode,
-        userPersona: options.userPersonaId
-          ? await this.characters.acquirePersona(owner, options.userPersonaId)
-          : null,
-        meta: { settings: merge(chatSettings(), options.settings), reminders: [], extensions: {} },
-        turns: []
+    const chat = {
+      id,
+      revision: 0,
+      title: options.title,
+      characterIds: copy(options.characterIds),
+      mode: options.mode,
+      userPersona: options.userPersonaId
+        ? await this.characters.acquirePersona(owner, options.userPersonaId)
+        : null,
+      meta: { settings: merge(chatSettings(), options.settings), reminders: [], extensions: {} },
+      turns: []
+    }
+    generationOptions(chat.meta.settings.generation)
+    speechOptions(chat.meta.settings.speech)
+    presentationOptions(chat.meta.settings.presentation, chat.characterIds)
+    const capabilities = await this.capabilities(chat, owner)
+    chat.meta.extensions.characterNames = Object.fromEntries(
+      capabilities.map((role) => [role.id, role.name])
+    )
+    return chat
+  }
+
+  /** 用同一业务请求标识创建对话并持久受理首轮。 */
+  async createChatWithTurn(chatOptions, submission, options) {
+    this.validateSubmission(submission)
+    requireValue(typeof options?.requestId === 'string' && options.requestId.length > 0)
+    const chatId = 'first-' + fingerprint(options.requestId).slice(0, 32)
+    const material = fingerprint({ chatOptions, submission, options })
+    return this.queue.run(chatId, async () => {
+      const loaded = await this.store.load(chatId)
+      if (loaded.status !== 'missing') {
+        const receipt = loaded.chat?.meta.extensions?.firstTurn
+        requireValue(receipt?.material === material, 'request_conflict')
+        const accepted = loaded.chat.meta.extensions.acceptedRequests?.[options.requestId]
+        requireValue(accepted, 'chat_unavailable')
+        return { chatId, turnId: accepted.turnId }
       }
-      generationOptions(chat.meta.settings.generation)
-      speechOptions(chat.meta.settings.speech)
-      presentationOptions(chat.meta.settings.presentation, chat.characterIds)
-      await this.capabilities(chat, owner)
-      await this.store.save(chat)
-      return chat.id
+      return this.assets.using(chatOptions, async (owner) => {
+        const chat = await this.newChat(chatOptions, chatId, owner)
+        chat.meta.extensions.firstTurn = { material }
+        const state = await this.load(chatId, chat)
+        try {
+          const turnId = await this.admit(state, this.manualInput(submission), options)
+          this.states.set(chatId, state)
+          return { chatId, turnId }
+        } catch (error) {
+          await this.performance.closeSequence(state.sequenceId)
+          await this.assets.releaseWhenPossible(state.resourceOwner)
+          throw error
+        }
+      })
     })
+  }
+
+  manualInput(submission) {
+    return {
+      id: uuid(),
+      kind: 'user',
+      source: { kind: 'manual' },
+      content: copy(submission),
+      extensions: {}
+    }
   }
 
   /**
@@ -1575,17 +1712,7 @@ export class Conversations {
   async createTurn(chatId, submission, options) {
     this.validateSubmission(submission)
     return this.queue.run(chatId, async () =>
-      this.admit(
-        await this.state(chatId),
-        {
-          id: uuid(),
-          kind: 'user',
-          source: { kind: 'manual' },
-          content: copy(submission),
-          extensions: {}
-        },
-        options
-      )
+      this.admit(await this.state(chatId), this.manualInput(submission), options)
     )
   }
 
@@ -1852,6 +1979,7 @@ export class Conversations {
   async regenerateAudio(chatId, line) {
     return this.queue.run(chatId, async () => {
       const state = await this.state(chatId)
+      requireParticipants(await this.checkParticipants(state.chat))
       const target = this.locate(state.chat, line)
       requireValue(target?.formId, 'line_missing')
       const owner = await this.assets.createTemporaryOwner('speech-preparation')
@@ -1906,6 +2034,7 @@ export class Conversations {
     let throughTurnId
     await this.queue.run(chatId, async () => {
       this.assertIdle(state)
+      requireParticipants(await this.checkParticipants(state.chat))
       const generation = merge(
         (await this.settings.get()).generation,
         state.chat.meta.settings.generation

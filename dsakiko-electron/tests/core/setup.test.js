@@ -22,6 +22,8 @@ import { validateRelease } from '../../src/backend/setup/catalog.js'
 import { scanLegacyDirectory } from '../../src/backend/setup/legacy.js'
 import { prepareRuntime, extractArchive } from '../../src/backend/setup/installers.js'
 import { writeJson } from '../../src/backend/core/support.js'
+import { startHttpServer } from '../../src/server/http-server.js'
+import { createBackendClient } from '../../src/renderer/src/backend/client.js'
 
 const cleanups = []
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -190,6 +192,22 @@ test('内置形态元数据不依赖排序，旧清单仍沿用首形态和共�
   expect(old.forms[0].models[0].name).toBe('默认')
 })
 
+test('欢迎页预览允许读取同一模型的相对资源且不写入角色目录', async () => {
+  const { backend } = await fixture()
+  const server = await startHttpServer(backend)
+  cleanups.push(() => server.close())
+  const client = createBackendClient(server)
+  cleanups.push(() => client.close())
+  const preview = await client.onboarding.getBuiltinPreview('sakiko')
+  expect(preview).toMatchObject({ characterId: 'sakiko', formId: 'white' })
+  const model = await fetch(preview.url)
+  expect(model.headers.get('content-type')).toBe('application/json')
+  const definition = await model.json()
+  expect((await fetch(new URL(definition.FileReferences.Moc, preview.url))).ok).toBe(true)
+  expect((await fetch(new URL('../unknown', preview.url))).ok).toBe(false)
+  expect(await backend.characters.list()).toEqual([])
+})
+
 test('旧版扫描、导入、重启重试不重复角色和聊天，密钥只留私有配置', async () => {
   const { root, roots, backend } = await fixture()
   const source = await legacy(root)
@@ -220,6 +238,95 @@ test('旧版扫描、导入、重启重试不重复角色和聊天，密钥只�
   expect(await resumed.store.list()).toHaveLength(1)
   expect((await resumed.characters.get('anon')).revision).toBe(1)
 }, 15000)
+
+test('同名角色分别保留身份，旧聊天优先使用存档中的目录身份', async () => {
+  const { root, backend } = await fixture()
+  const source = await legacy(root)
+  await put(source, 'live2d_related/anon-copy/name.txt', '爱音')
+  await put(source, 'live2d_related/anon-copy/character_description.txt', '另一份人设')
+  const chat = (id, names, meta = {}) => ({
+    chat_id: id,
+    name: id,
+    type: names.length === 2 ? 2 : 1,
+    prompt_config: { character_names: names },
+    meta,
+    message_list: [{ character_name: '爱音', text: '原台词' }]
+  })
+  await put(
+    source,
+    'reference_audio/all_conversation.json',
+    JSON.stringify({
+      chat_list: [
+        chat('explicit', ['爱音'], { character_forms: { anon: 'default' } }),
+        chat('name-only', ['爱音']),
+        chat('theater', ['爱音', '爱音'])
+      ]
+    })
+  )
+  const scan = await backend.setup.scanLegacy(
+    (await backend.setup.grantLegacySource(source)).sourceId
+  )
+  expect(scan).toMatchObject({ canImport: true, connectionCount: 1, pendingConnectionCount: 0 })
+  const importOnce = async () => {
+    const plan = await backend.setup.createPlan({ kind: 'legacy', scanId: scan.scanId })
+    await backend.setup.start(plan.id)
+    expect(await done(backend.setup, plan.id)).toMatchObject({ status: 'succeeded' })
+  }
+  await importOnce()
+  const renamed = await backend.characters.get('anon-copy')
+  expect(renamed).toMatchObject({ name: '爱音_1', forms: [{ description: '另一份人设' }] })
+  const summaries = await backend.conversations.listChats()
+  expect(summaries.find((item) => item.title === 'explicit').characterIds).toEqual(['anon'])
+  expect(summaries.find((item) => item.title === 'name-only').characterIds).toEqual(['anon-copy'])
+  const theater = summaries.find((item) => item.title === 'theater')
+  const history = await backend.conversations.getSnapshot(theater.id)
+  expect(history.participantIssue.code).toBe('ambiguous-theater-characters')
+  await expect(
+    backend.conversations.createTurn(
+      theater.id,
+      { text: '继续', attachments: [] },
+      { requestId: 'ambiguous' }
+    )
+  ).rejects.toHaveProperty('problem.code', 'ambiguous_theater_characters')
+  const replay = await backend.conversations.getReplayMaterials(theater.id, {
+    kind: 'turn',
+    turnId: history.chat.turns[0].id
+  })
+  expect(replay.guides[0].text).toBe('原台词')
+  await backend.characters.save({ ...renamed, name: '我的爱音' })
+  await importOnce()
+  expect(await backend.characters.get('anon-copy')).toMatchObject({ name: '我的爱音', revision: 2 })
+  expect(await backend.store.list()).toHaveLength(3)
+})
+
+test.each([false, true])('跳过失败导入按落盘数据继续，已保存聊天=%s', async (saved) => {
+  const { root, backend } = await fixture({ builtinConnection: { secret: 'builtin-test-secret' } })
+  const source = await legacy(root)
+  const scan = await backend.setup.scanLegacy(
+    (await backend.setup.grantLegacySource(source)).sourceId
+  )
+  const plan = await backend.setup.createPlan({
+    kind: 'legacy',
+    scanId: scan.scanId,
+    include: { chats: true }
+  })
+  const save = backend.store.save.bind(backend.store)
+  const intercept = vi.spyOn(backend.store, 'save').mockImplementationOnce(async (chat) => {
+    if (saved) await save(chat)
+    throw new Error('模拟写入结果前中断')
+  })
+  await backend.onboarding.begin({ path: 'legacy', planId: plan.id })
+  expect(await done(backend.setup, plan.id)).toMatchObject({ status: 'failed', results: [] })
+  intercept.mockRestore()
+  const next = await backend.onboarding.skipLegacyImport()
+  expect(next).toMatchObject({ path: saved ? 'legacy' : 'quick', stage: 'optional-resources' })
+  expect(await backend.onboarding.skipLegacyImport()).toEqual(next)
+  expect(await backend.store.list()).toHaveLength(Number(saved))
+  expect((await backend.onboarding.finish()).initialized).toBe(true)
+  expect((await backend.settings.get()).generation.connectionId).toBe(
+    saved ? undefined : 'builtin-up'
+  )
+})
 
 test('计划实际保留硬链接、空间扣除大权重，取消不更改源权限或内容', async () => {
   const { root, backend } = await fixture()

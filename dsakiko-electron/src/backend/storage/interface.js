@@ -1,4 +1,5 @@
 import { extractAssetReferences } from '../resources/references.js'
+import { historicalCharacterNames } from '../conversation/participants.js'
 import path from 'node:path'
 import { readFile, copyFile, readdir, unlink } from 'node:fs/promises'
 import {
@@ -76,6 +77,7 @@ export class ChatStore {
       title: chat.title,
       revision: chat.revision,
       characterIds: copy(chat.characterIds),
+      characterNames: historicalCharacterNames(chat),
       mode: chat.mode,
       turnCount: chat.turns.length,
       reminderIds: chat.meta.reminders.map((item) => item.id)

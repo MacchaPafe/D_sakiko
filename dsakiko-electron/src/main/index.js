@@ -1,5 +1,5 @@
 import { installSingleInstance } from './single-instance.js'
-import { app, dialog, ipcMain } from 'electron'
+import { app, dialog, ipcMain, Menu, Tray } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { readJson } from '../backend/core/support.js'
@@ -11,6 +11,7 @@ import { createCoreBackend } from '../backend/create-core-backend.js'
 import { startHttpServer } from '../server/http-server.js'
 import { SpeechProcess } from './processes/speech-process.js'
 import { createMainWindow } from './windows/main-window.js'
+import { installWindowCloseBehavior } from './windows/close-behavior.js'
 import { requireValue } from '../backend/core/support.js'
 
 let mainWindow = null
@@ -70,7 +71,10 @@ async function startApplication() {
   })
   backend = await createCoreBackend({
     ...directories,
-    setupOptions: { catalogDirectory: join(resourcesRoot, 'setup') },
+    setupOptions: {
+      catalogDirectory: join(resourcesRoot, 'setup'),
+      managedSpeech: app.isPackaged || !process.env.DSAKIKO_PYTHON
+    },
     builtinDirectory: join(resourcesRoot, 'builtin-characters'),
     builtinConnection,
     recognitionModelDirectory: app.isPackaged
@@ -134,17 +138,34 @@ async function startApplication() {
     return imported
   })
   mainWindow = createMainWindow()
+  const closeBehavior = installWindowCloseBehavior({
+    app,
+    window: mainWindow,
+    dialog,
+    Menu,
+    Tray,
+    icon: join(resourcesRoot, 'icon.png'),
+    file: join(directories.appDataRoot, 'window-preferences.json'),
+    platform: process.platform,
+    isQuitting: () => quitting
+  })
+  ipcMain.handle('host:get-window-close-behavior', (event) => {
+    checkSender(event)
+    return closeBehavior.getBehavior()
+  })
+  ipcMain.handle('host:set-window-close-behavior', (event, behavior) => {
+    checkSender(event)
+    return closeBehavior.setBehavior(behavior)
+  })
+  ipcMain.handle('host:get-window-visibility', (event) => {
+    checkSender(event)
+    return mainWindow.isVisible() && !mainWindow.isMinimized()
+  })
   // 解压与页面加载并行；失败留给欢迎页重试，不阻止窗口打开。
   void backend.onboarding
     .prepareStartupPreview()
     .catch((error) => backend.assets.reportMaintenance(error))
   mainWindow.once('ready-to-show', instance.windowReady)
-  mainWindow.on('close', (event) => {
-    if (!quitting) {
-      event.preventDefault()
-      app.quit()
-    }
-  })
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL)
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else await mainWindow.loadFile(fileURLToPath(new URL('../renderer/index.html', import.meta.url)))

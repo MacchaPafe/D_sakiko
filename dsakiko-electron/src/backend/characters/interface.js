@@ -8,7 +8,8 @@ import {
   writeJson,
   SerialQueue,
   problem,
-  safeId
+  safeId,
+  SnapshotBus
 } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/persona.js').UserPersonaDefinition} UserPersonaDefinition */
@@ -35,6 +36,7 @@ export class CharacterCatalog {
     this.file = path.join(directory, 'characters.json')
     this.directory = directory
     this.queue = new SerialQueue()
+    this.changes = new SnapshotBus()
     this.resolveModel = resolveModel
     this.assets = assets
     assets.registerOwnerReader('character', (id) => this.get(id))
@@ -81,7 +83,26 @@ export class CharacterCatalog {
    * @returns {Promise<CharacterDefinition | null>} 角色配置对象；角色不存在时返回 null。
    */
   async get(characterId) {
-    return copy((await this.state()).characters[characterId] ?? null)
+    const { characters } = await this.state()
+    return Object.hasOwn(characters, characterId) ? copy(characters[characterId]) : null
+  }
+
+  /** 在角色增删后通知依赖当前目录的对话状态。 */
+  observeMembership(listener) {
+    return this.changes.subscribe('membership', listener)
+  }
+
+  /** 将新轮次的保存与角色删除串行化。 */
+  async withExistingCharacters(ids, operation) {
+    return this.queue.run('catalog', async () => {
+      const { characters } = await this.state()
+      requireValue(
+        ids.every((id) => Object.hasOwn(characters, id)),
+        'character_missing',
+        '对话关联的角色已不存在。'
+      )
+      return operation()
+    })
   }
 
   /**
@@ -136,6 +157,7 @@ export class CharacterCatalog {
       await this.assets.commitReferences('character:' + next.id, next, () =>
         writeJson(this.file, state)
       )
+      if (definition.revision === 0) this.changes.emit('membership', next.id)
       return copy(next)
     })
   }
@@ -158,6 +180,7 @@ export class CharacterCatalog {
       await this.assets.commitReferences('character:' + characterId, null, () =>
         writeJson(this.file, state)
       )
+      this.changes.emit('membership', characterId)
     })
   }
 

@@ -47,7 +47,9 @@
 
 不迁移旧 ASR、旧 Python 环境、世界书/embedding、缓存。参考材料兼容当前文本文件和 reference_audio_and_text.json。连接进行协议与已知前缀转换，密钥仅写入后端私有存储，无法自动转换的连接保留为待配置记录，不为了导入调用付费接口。
 
-重复身份/同名角色静默跳过并记录来源映射。缺语音或 Live2D 不阻止保存角色资料；历史音频缺失不删除文本。所选目录之外的引用报告缺失/越界，不递归扫描任意位置。
+角色目录名用作角色 ID。已存在的 ID 沿用已保存的角色资料。ID 不同的同名角色按固定的目录名顺序导入，显示名冲突时依次尝试 `_1`、`_2`，重试沿用已有名称。缺少语音或 Live2D 时仍可保存角色资料。所选目录之外的引用报告为缺失或越界。
+
+旧聊天优先按可确定的原角色 ID 关联。只有显示名时，使用固定顺序中的最后一个同名旧角色。每段对话保留自己的存档身份和消息。关联角色缺失时允许阅读和播放已存语音。双人小剧场的两个位置若解析为同一角色，也保留历史和已有语音，并停用续写。
 
 ## 硬链接与空间计划
 
@@ -111,10 +113,14 @@
 2. 旧版导入先通过 preload 的 `selectLegacyDirectory()` 获得 `{ sourceId, name }`，再调用 `setup.scanLegacy(sourceId)`。扫描结果包含 `scanId`、角色摘要、聊天数、GSV 文件数和告警，不含密钥或绝对目录。
 3. `setup.createPlan({ kind: 'legacy', scanId, include: { characters: true, connections: true, chats: true, gsv: true } })` 返回计划快照。省略 `include` 表示全部导入。确认后调用 `onboarding.begin({ path: 'legacy', planId })`。
 4. 通过 `setup.getJob(id)` 或 WS `topic: 'setup', key: id` 观察任务。重连/重启可调用 `setup.listJobs()`。`setup.controlJob(id, 'pause' | 'resume' | 'cancel')` 控制任务。任务逐项提交，暂停不会回滚已完成的内容；任务失败后可继续或重新规划。
-5. 导入成功后调用 `onboarding.prepareOptionalResources()`，补齐内置角色并进入下载阶段。
+5. 导入成功后调用 `onboarding.prepareOptionalResources()`，补齐内置角色并进入下载阶段。异常页的“跳过并继续”调用 `onboarding.skipLegacyImport()`。后端核对实际落盘的角色、聊天、连接和基础资源。有持久结果时保留结果和旧版路径。零提交时复用快速开始的角色及连接准备，再进入同一可选资源页。
 6. `setup.getCatalog({ refresh: true, accelerator: 'cpu' })` 刷新固定来源声明。首版只接受 `asr`、`gsv`、`voice.anon`、`voice.soyo`、`voice.sakiko` 五个产品选择。返回三个组；`sizeKnown: false` 表示不能将已知部分下载量当作完整大小。
 7. `setup.createPlan({ kind: 'download', selection: ['asr', 'gsv', 'voice.anon'], accelerator: 'cpu' })` 自动展开依赖，只准备缺失内容。角色包会自动补齐 GSV 依赖；存在完整自定义角色语音时直接复用。确认后调用 `setup.start(plan.id)`。
-8. 完成或跳过下载后调用 `onboarding.finish()`；进入主页后展示 `notice`，展示确认后调用 `onboarding.acknowledgeNotice()`。初始化也可订阅 WS `topic: 'onboarding'`。
+8. 下载期间或跳过下载后均可调用 `onboarding.finish()`。进入主页时读取 `notice` 和 `connectionState`，提示确认后调用 `onboarding.acknowledgeNotice()`。初始化也可订阅 WS `topic: 'onboarding'`。
+
+欢迎页通过 `onboarding.getBuiltinPreview(characterId)` 获取临时模型 URL，贴图和动作沿用相对引用。扫描摘要中的 `canImport` 表示存在可执行的导入内容，`connectionCount` 和 `pendingConnectionCount` 分别表示可迁移和待配置连接数。
+
+任务快照的 `items` 提供旧版四类的提交状态，`download` 提供累计下载字节、可用的速度与剩余时间估计、各组件的安装状态。资源选择页可把当前选项传给 `setup.getCatalog({ selection })`，读取去重后的 `selectionDownloadBytes`。主页可通过 `setup.getFeatureState()` 读取 ASR 和各角色形态的可用状态，并在资源任务变化后刷新。角色语音的自动启用按下载时的用户偏好版本保存，在后续轮次开始时检查角色语音和基础环境是否就绪。
 
 `space.logical` 是选中本地内容/待准备组件的逻辑大小；`space.added` 是预计新增资源占用；`space.download` 与 `space.cache` 分别表示下载量和下载缓存预算。`volumes` 按实际文件系统合并执行时需求，含解包、环境安装和音频交接的峰值，并扣除已完成内容。硬链接和已复用文件不重复计算内容大小。计划有效期 24 小时，未完成的规划在重启时清理；已暂停任务不按计划有效期删除。
 

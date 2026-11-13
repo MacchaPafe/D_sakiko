@@ -85,7 +85,7 @@ export async function scanLegacyDirectory(root) {
     }
   }
   const config = await document('d_sakiko_config.json')
-  const chats = await document('reference_audio/all_conversation.json')
+  let chats = await document('reference_audio/all_conversation.json')
   if (!config && !chats) {
     const older = [
       'dsakiko_config.json',
@@ -97,11 +97,13 @@ export async function scanLegacyDirectory(root) {
       if (await optionalText(root, name))
         warnings.push({ code: 'legacy_upgrade_required', file: name })
   }
-  requireValue(
-    !chats || Array.isArray(chats.chat_list),
-    'legacy_upgrade_required',
-    '请先使用较新的 Python 版本打开并保存聊天记录。'
-  )
+  if (chats && !Array.isArray(chats.chat_list)) {
+    warnings.push({
+      code: 'legacy_upgrade_required',
+      file: 'reference_audio/all_conversation.json'
+    })
+    chats = null
+  }
   const roles = []
   const roots = await readdir(path.join(root, 'live2d_related'), { withFileTypes: true }).catch(
     (error) => {
@@ -109,6 +111,7 @@ export async function scanLegacyDirectory(root) {
       throw error
     }
   )
+  roots.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))
   for (const folder of roots.filter(
     (entry) => entry.isDirectory() && !entry.name.startsWith('.')
   )) {
@@ -333,7 +336,7 @@ export async function scanLegacyDirectory(root) {
     personas.push({ ...persona, avatar })
   }
   requireValue(
-    config || chats || roles.length || warnings.length,
+    config || chats || roles.length || warnings.length || Object.values(gsv).some(Boolean),
     'legacy_directory_invalid',
     '所选目录中没有可识别的 Python 版本资料。'
   )
