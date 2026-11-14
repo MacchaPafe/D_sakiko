@@ -1,6 +1,8 @@
 import { SpeechResources } from './speech/resources.js'
 import { ResourceSetup } from './setup/interface.js'
 import { Onboarding } from './onboarding/interface.js'
+import { Notices } from './notices/interface.js'
+import { readNoticeSources } from './notices/sources.js'
 import { PythonChatImporter } from './storage/python-import-interface.js'
 import { ResourceImports } from './resources/imports.js'
 import { RemoteFiles } from './remote-files/interface.js'
@@ -31,6 +33,7 @@ import { failure, uuid } from './core/support.js'
  * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
  * @property {ResourceSetup} setup 附加资源计划、持久任务、旧版导入与独立运行环境。
  * @property {Onboarding} onboarding 初始化路径、内置角色释放和主页提示状态。
+ * @property {Notices} notices 持久通知、来源去重与关闭确认。
  * @property {ChatStore} store 对话存档管理。
  * @property {Performance} performance 演出时间线与状态管理。
  * @property {Speech} speech 语音合成任务管理。
@@ -146,6 +149,23 @@ export async function createCoreBackend({
     : () => setup.acquireRuntime('asr')
   await assets.initialize()
   await setup.initialize()
+  const notices = new Notices({
+    appDataRoot,
+    readSources: () => readNoticeSources({ onboarding, setup, settings, characters })
+  })
+  const refreshNotices = async () => {
+    try {
+      await notices.list()
+    } catch (error) {
+      // 来源已由业务模块持久保存；恢复和周期维护会补写，不能回滚业务提交。
+      assets.reportMaintenance(error)
+    }
+  }
+  onboarding.onNoticeChange = refreshNotices
+  setup.onNoticeChange = refreshNotices
+  const stopNoticeSettings = await settings.observe(refreshNotices)
+  const stopNoticeCharacters = characters.observeChanges(refreshNotices)
+  await refreshNotices()
   await store.cleanupVersions()
   const remoteFiles = new RemoteFiles({
     directory: path.join(appDataRoot, 'remote-files'),
@@ -256,6 +276,7 @@ export async function createCoreBackend({
         await assets.maintain()
         await setup.maintain()
         await remoteFiles.collectUnused()
+        await refreshNotices()
       } catch (error) {
         assets.reportMaintenance(error)
       } finally {
@@ -269,6 +290,7 @@ export async function createCoreBackend({
   return {
     setup,
     onboarding,
+    notices,
     recognition,
     remoteFiles,
     imports,
@@ -290,6 +312,8 @@ export async function createCoreBackend({
     async close() {
       clearInterval(timer)
       clearInterval(maintenance)
+      stopNoticeSettings()
+      stopNoticeCharacters()
       await setup.close()
       await onboarding.close()
       await conversations.close()
@@ -297,6 +321,8 @@ export async function createCoreBackend({
       await modelCatalog.close()
       await remoteFiles.close()
       await maintenanceTask
+      await refreshNotices()
+      await notices.close()
       interactions.close()
       await performance.close()
       await speech.close?.()

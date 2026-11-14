@@ -21,6 +21,9 @@ import { API_METHODS } from '../../../shared/contracts/api.js'
 /** @typedef {import('../../../shared/contracts/api.js').BackendConnection} BackendConnection */
 /**
  * @typedef {object} BackendClient
+ * @property {Pick<import('../../../backend/notices/interface.js').Notices, 'list' | 'dismiss'> & {observe: (listener: (snapshot: import('../../../shared/contracts/notices.js').NoticeSnapshot) => void) => () => void}} notices 持久通知查询、关闭与完整快照观察。
+ * @property {Pick<import('../../../backend/onboarding/interface.js').Onboarding, 'getState' | 'begin' | 'skipLegacyImport' | 'prepareOptionalResources' | 'finish'> & {getBuiltinPreview: (characterId?: string) => Promise<{characterId: string, formId: string, url: string, expiresAt: string}>}} onboarding 初始化和受控预览，不再包含通知确认状态。
+ * @property {Pick<import('../../../backend/setup/interface.js').ResourceSetup, 'getCatalog' | 'getFeatureState' | 'scanLegacy' | 'createPlan' | 'start' | 'getJob' | 'listJobs' | 'controlJob'>} setup 资源准备与任务查询。
  * @property {{prepare: () => Promise<void>, transcribe: (request: import('../../../backend/recognition/interface.js').RecognitionRequest) => Promise<import('../../../backend/recognition/interface.js').RecognitionResult>, getState: () => Promise<import('../../../backend/recognition/interface.js').RecognitionState>, cancel: (requestId: string) => Promise<boolean>}} recognition 识别候选文本；取消后端任务须显式调用 cancel，取消 HTTP 等待不等于停止推理。
  * @property {(signal?: AbortSignal) => Promise<import('../../../shared/contracts/api.js').BackendHealth>} health 主动探测后端及其运行身份，不依赖 WebSocket 订阅。
  * @property {Pick<import('../../../backend/conversation/interface.js').Conversations, 'listChats' | 'getSnapshot' | 'getReplayMaterials' | 'inspectContext' | 'listReminders' | 'getReminder' | 'createChat' | 'createTurn' | 'generateScenario' | 'stopTurn' | 'recreateTurn' | 'editAndRecreateTurn' | 'editHistory' | 'truncateFromTurn' | 'rollback' | 'forkChat' | 'regenerateAudio' | 'compressHistory' | 'retrySave' | 'renameChat' | 'setChatOrder' | 'setScenario' | 'setTools' | 'setWorldbookInfo' | 'setCharacterSelection' | 'setGenerationOptions' | 'setSpeechOptions' | 'setPresentation' | 'removeReminder' | 'deleteChat' | 'exportChats' | 'importChats'> & {observe: (chatId: string, listener: (snapshot: import('../../../shared/contracts/conversation.js').ConversationSnapshot) => void) => () => void}} conversations 仅包含公开业务入口；观察回调保留在客户端。
@@ -418,6 +421,7 @@ export function createBackendClient({
   client.settings.checkConnection = (selection, signal) =>
     call('settings', 'checkConnection', [selection], { signal })
   client.settings.observe = (listener) => observe('settings', null, listener)
+  client.notices.observe = (listener) => observe('notices', null, listener)
   client.interactions.observe = (listener) => observe('interactions', null, listener)
   return /** @type {BackendClient} */ (client)
 }

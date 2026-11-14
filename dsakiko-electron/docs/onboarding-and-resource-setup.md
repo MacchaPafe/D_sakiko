@@ -1,5 +1,7 @@
 # 初始化、附加资源下载与 Python 旧版导入
 
+当前前端接入范围、页面状态归属及新增通知模块见 [Electron 前端实现设计](frontend-design.md)。本文继续定义资源准备和旧版导入的后端规则。
+
 确认日期：2026-11-02。本文件记录本轮确认的产品约定和后端接入设计，优先于 frontend-and-resource-plan.md 中较早的目录选择、硬链接选项与发布签名建议。前端和 Figma 不在本轮实现范围内。文末单独记录实际实现与验证范围，不以设计描述代替验收。
 
 ## 初始化
@@ -78,7 +80,7 @@
 
 ## 契约和恢复
 
-前端入口：onboarding.getState/begin/finish/acknowledgeNotice；setup.getCatalog/scanLegacy/createPlan/start/getJob/controlJob。宿主另提供受限来源授权，订阅通过现有 WebSocket。
+前端入口：onboarding.getState/begin/finish；setup.getCatalog/scanLegacy/createPlan/start/getJob/controlJob；notices.list/dismiss。宿主另提供受限来源授权，订阅通过现有 WebSocket。
 
 发布声明、安装记录、来源映射、操作计划、任务记录、初始化状态分别持久化。任务分阶段报告扫描、获取文件、校验、安装、提交、验证。以角色/聊天/组件为提交单位，成功项保留。计划到任务一一对应，跨重启重试不能重复导入。暂停/取消在安全节点生效；页面关闭不取消，应用退出保存恢复信息，下次由用户继续。
 
@@ -114,9 +116,9 @@
 3. `setup.createPlan({ kind: 'legacy', scanId, include: { characters: true, connections: true, chats: true, gsv: true } })` 返回计划快照。省略 `include` 表示全部导入。确认后调用 `onboarding.begin({ path: 'legacy', planId })`。
 4. 通过 `setup.getJob(id)` 或 WS `topic: 'setup', key: id` 观察任务。重连/重启可调用 `setup.listJobs()`。`setup.controlJob(id, 'pause' | 'resume' | 'cancel')` 控制任务。任务逐项提交，暂停不会回滚已完成的内容；任务失败后可继续或重新规划。
 5. 导入成功后调用 `onboarding.prepareOptionalResources()`，补齐内置角色并进入下载阶段。异常页的“跳过并继续”调用 `onboarding.skipLegacyImport()`。后端核对实际落盘的角色、聊天、连接和基础资源。有持久结果时保留结果和旧版路径。零提交时复用快速开始的角色及连接准备，再进入同一可选资源页。
-6. `setup.getCatalog({ refresh: true, accelerator: 'cpu' })` 刷新固定来源声明。首版只接受 `asr`、`gsv`、`voice.anon`、`voice.soyo`、`voice.sakiko` 五个产品选择。返回三个组；`sizeKnown: false` 表示不能将已知部分下载量当作完整大小。
+6. `setup.getCatalog({ refresh: true, accelerator: 'cpu' })` 刷新固定来源声明。首版只接受 `asr`、`gsv`、`voice.anon`、`voice.soyo`、`voice.sakiko` 五个产品选择。返回三个组；`sizeKnown: false` 表示不能将已知部分下载量当作完整大小。单项 `downloadBytes` 表示该项自身待下载量：角色语音不含公共 GPT-SoVITS 依赖，`gsv` 包含运行环境和公共模型。`selectionDownloadBytes` 则包含所选项目及依赖，并去重计算。
 7. `setup.createPlan({ kind: 'download', selection: ['asr', 'gsv', 'voice.anon'], accelerator: 'cpu' })` 自动展开依赖，只准备缺失内容。角色包会自动补齐 GSV 依赖；存在完整自定义角色语音时直接复用。确认后调用 `setup.start(plan.id)`。
-8. 下载期间或跳过下载后均可调用 `onboarding.finish()`。进入主页时读取 `notice` 和 `connectionState`，提示确认后调用 `onboarding.acknowledgeNotice()`。初始化也可订阅 WS `topic: 'onboarding'`。
+8. 下载期间或跳过下载后均可调用 `onboarding.finish()`；完成时间保存为 `completedAt`。进入主页时读取 `connectionState` 判断发送能力，通过 `notices.list()` 和 WS `topic: 'notices'` 获取持久通知，确认后调用 `notices.dismiss(id)`。初始化进度继续订阅 WS `topic: 'onboarding'`。通知关闭不改变连接状态。
 
 欢迎页通过 `onboarding.getBuiltinPreview(characterId)` 获取临时模型 URL，贴图和动作沿用相对引用。扫描摘要中的 `canImport` 表示存在可执行的导入内容，`connectionCount` 和 `pendingConnectionCount` 分别表示可迁移和待配置连接数。
 

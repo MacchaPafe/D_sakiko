@@ -137,7 +137,9 @@ test('快速初始化幂等释放三个角色，语音保持可选，UP 凭据�
   expect(Object.keys((await backend.assets.state()).assets)).toHaveLength(4)
   expect(JSON.stringify(await backend.onboarding.getState())).not.toContain('builtin-test-secret')
   expect((await backend.settings.get()).generation.connectionId).toBe('builtin-up')
-  expect((await backend.onboarding.acknowledgeNotice()).notice).toBeNull()
+  const notice = (await backend.notices.list()).notices[0]
+  expect(notice).toMatchObject({ kind: 'connection', data: { connectionState: 'builtin' } })
+  expect((await backend.notices.dismiss(notice.id)).notices).toEqual([])
 }, 15000)
 
 test('内置形态元数据不依赖排序，旧清单仍沿用首形态和共用人设', async () => {
@@ -225,7 +227,7 @@ test('旧版扫描、导入、重启重试不重复角色和聊天，密钥只�
   const chat = await backend.store.load((await backend.store.list())[0].id)
   expect(chat.chat.turns[0].messages[1].parts[0].lines[0].text).toBe('こんにちは')
   expect((await backend.settings.get()).generation.connectionId).toMatch(/^legacy-/)
-  expect((await backend.onboarding.getState()).notice).toBeNull()
+  expect((await backend.notices.list()).notices).toEqual([])
   await backend.close()
   const resumed = await createCoreBackend({ ...roots, scanReminders: false })
   cleanups.push(() => resumed.close())
@@ -397,6 +399,43 @@ test('分组只展示五个选择，运行包未发布时不能伪造整组安�
   await expect(
     backend.setup.createPlan({ kind: 'download', selection: ['asr.models'] })
   ).rejects.toMatchObject({ problem: { code: 'invalid_resource_selection' } })
+})
+
+test('角色语音容量排除公共引擎，多选总量仍包含依赖且只计一次', async () => {
+  const { backend } = await fixture({
+    setupOptions: {
+      platform: 'darwin',
+      arch: 'arm64',
+      runtimes: {
+        'gsv.darwin-arm64-cpu': {
+          available: true,
+          version: 'test',
+          files: [{ source: 'runtimes', path: 'gsv.zip', sizeBytes: 123, sha256: 'a'.repeat(64) }]
+        }
+      }
+    }
+  })
+  await backend.onboarding.begin({ path: 'quick' })
+  const components = await backend.setup.catalog.components()
+  const voiceBytes = (id) =>
+    components.find((item) => item.id === id).files.reduce((sum, file) => sum + file.sizeBytes, 0)
+  const anonBytes = voiceBytes('voice.anon')
+  const soyoBytes = voiceBytes('voice.soyo')
+  const catalog = await backend.setup.getCatalog({ selection: ['gsv', 'voice.anon', 'voice.soyo'] })
+  const options = catalog.groups.flatMap((group) => group.options)
+  const gsvBytes = options.find((item) => item.id === 'gsv').downloadBytes
+  expect(anonBytes).toBeGreaterThan(0)
+  expect(soyoBytes).toBeGreaterThan(0)
+  expect(gsvBytes).toBeGreaterThan(123)
+  expect(options.find((item) => item.id === 'voice.anon')).toMatchObject({
+    downloadBytes: anonBytes,
+    sizeKnown: true,
+    requiresSelection: 'gsv'
+  })
+  expect(options.find((item) => item.id === 'voice.soyo').downloadBytes).toBe(soyoBytes)
+  expect(catalog.selectionDownloadBytes).toBe(gsvBytes + anonBytes + soyoBytes)
+  const single = await backend.setup.getCatalog({ selection: ['voice.anon'] })
+  expect(single.selectionDownloadBytes).toBe(gsvBytes + anonBytes)
 })
 
 test('固定来源下载断点续传，哈希不符删除分片，拒绝任意重定向', async () => {

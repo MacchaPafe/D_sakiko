@@ -35,6 +35,10 @@ function checkSender(event) {
 /** 先装配业务和本机传输，再创建窗口；后端不依赖 React 是否加载成功。 */
 async function startApplication() {
   app.setName('D_Sakiko')
+  // 开发启动使用 Electron 自身的应用包，需单独设置 Dock 图标。
+  // 正式包保留 Assets.car 的系统外观选择，不用静态 PNG 覆盖它。
+  if (process.platform === 'darwin' && !app.isPackaged)
+    app.dock.setIcon(join(app.getAppPath(), 'build/macos-icon/Dock.png'))
   const pythonRoot = join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'python')
   const resourcesRoot = join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'resources')
   const builtinConnection = await readJson(join(resourcesRoot, 'builtin-connection.json'))
@@ -89,7 +93,9 @@ async function startApplication() {
     connectSpeech: () => speechProcess.connect(),
     templateDirectory: join(app.getAppPath(), 'out/main/prompts')
   })
-  const origins = ['null']
+  // Electron 的 file 页面 fetch 来源为 null，跨域 Image 纹理来源为 file://。
+  // 两者仍需业务凭据或短期资源票据，不向任意网页开放本机后端。
+  const origins = ['null', 'file://']
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL)
     origins.push(new URL(process.env.ELECTRON_RENDERER_URL).origin)
   transport = await startHttpServer(backend, { origins })

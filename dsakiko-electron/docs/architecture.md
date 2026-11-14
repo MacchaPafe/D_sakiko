@@ -25,6 +25,8 @@ preload 构建为独立 CommonJS 文件，窗口启用 contextIsolation 和 sand
 | backend/characters                    | 角色、形态与人格目录                              |
 | backend/llm                           | 固定 Nunjucks 模板、模型请求和工具循环            |
 | backend/settings                      | 共享设置、模型连接及后端私有凭据                  |
+| backend/onboarding、backend/setup      | 初始化、旧版导入、资源计划与持久任务              |
+| backend/notices                       | 连接与语音就绪通知、来源核对、持久关闭及去重      |
 | backend/storage                       | 原子存档索引、不可变版本文件、归档导入导出        |
 | backend/resources                     | 受管理资源与引用交接                              |
 | backend/speech                        | 正式语音接口及 Python 协议适配器                  |
@@ -37,11 +39,15 @@ preload 构建为独立 CommonJS 文件，窗口启用 contextIsolation 和 sand
 
 其他尚未实现的接口声明继续保留，具体边界见 [后端实现说明](backend-implementation.md)。不要根据存在接口文件就推断模块已实现。
 
-`renderer/src/app`、`components`、`features`、`runtime` 和原有 Live2D/舞台显示代码仍用于未替换的 React 原型；其中旧通信协议不再有后端接收者。保留这些文件是为了后续页面工作，正式业务封装不依赖它们。
+`renderer/src/app/App.jsx` 装配应用级 `features/setup/SetupFlow`，按后端初始化阶段恢复欢迎页或资源准备页。该模块持有任务身份、完整快照订阅、资源选择与命令受理；卸载只关闭连接，不取消后台任务。资源页面组合 shadcn/ui Button、Checkbox、Progress，下载字节、安装状态与功能就绪分别表达。`features/onboarding/CharacterPreview` 封装只读模型生命周期，`host/desktop.js` 获取受限宿主能力，`performance/live2d-preview.js` 负责绘制、鼠标追踪和释放。`App` 在稳定的公共容器中挂载舞台，欢迎页、资源选择与下载页共用同一实例，延续所选角色与鼠标追踪；页面只提供右侧内容，参考宽度变化仅更新构图。
+
+当前接通快速开始及资源下载，尚不调用 `onboarding.finish()`，旧版导入和主页入口禁用。原有 dialogs、runtime 和聊天舞台仍待后续迁移，当前入口不导入它们。桌面 HTTP/WS 票据仅在宿主明确允许 `null` 和 `file://` 时归一化 Electron 文件页面的来源差异（fetch 也可能不发送 Origin）；仍要求 Bearer 票据申请、单次使用及普通网页来源精确匹配。
 
 ## 生命周期与维护
 
 Conversation 是每个 Chat 的唯一运行时修改所有者。运行材料在受理时固定，页面切换和断线不决定生成是否存活。后端 Performance 只确认计划进度；实际音频、模型实例、回放与音量属于各客户端。
+
+Notices 从 Onboarding、ResourceSetup 等模块的持久业务结果生成通知，在应用数据目录 `notices.json` 保存稳定顺序与关闭证据。前端只通过 `notices.list()`、`notices.dismiss(id)` 和 WS `topic: 'notices'` 读取／确认完整快照，不发布任意通知。启动、业务变化和周期维护补齐通知；通知存储失败不回滚已完成业务。下载进度仍由 Setup 快照提供，展示文案和卡片展开状态仍由前端持有。
 
 普通业务方法返回数据，不透传后端实例给页面。需要跨层访问时注入窄能力；不为单纯转发重复建立第二套业务实现。核心数据结构使用中文 JSDoc `@typedef`，公开入口说明参数和返回值，内部关键位置解释去重、时序、取消和资源所有权。
 

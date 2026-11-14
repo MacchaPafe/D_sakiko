@@ -126,6 +126,9 @@ export class ResourceSetup {
       }
       if (job.phase === 'planning' || (job.status === 'planned' && job.expiresAt < Date.now()))
         await this.cancel(job)
+      // 安装提交成功但任务检查点尚未写入时，依靠安装来源补齐就绪里程碑。
+      if (job.kind === 'download' && job.startedAt && job.status !== 'cancelled')
+        await this.enablePreparedVoices(job)
     }
     await this.maintainRuntimes()
   }
@@ -238,7 +241,12 @@ export class ResourceSetup {
         option.sizeKnown = option.available
         option.unavailableReason =
           missing.find((item) => !item.available)?.unavailableReason ?? null
-        option.downloadBytes = downloadFiles(missing).reduce((sum, file) => sum + file.sizeBytes, 0)
+        // 公共引擎已单列展示，角色行只计自身语音；底部总量仍按完整依赖去重。
+        const ownMissing = voice ? missing.filter((item) => item.id === voice.id) : missing
+        option.downloadBytes = downloadFiles(ownMissing).reduce(
+          (sum, file) => sum + file.sizeBytes,
+          0
+        )
         if (voice) {
           option.characterId = target?.id ?? null
           if (!target) option.unavailableReason = '角色不存在，无法安装这份语音。'
@@ -396,6 +404,7 @@ export class ResourceSetup {
         const installed = await this.installations()
         job.options.selection = copy(options.selection)
         job.voicePreferenceRevision = (await this.settings.voicePreference()).revision
+        job.voiceTargets = {}
         for (const component of await this.catalog.select(options.selection, {
           accelerator: options.accelerator ?? 'cpu'
         })) {
@@ -403,6 +412,7 @@ export class ResourceSetup {
             const target = await this.voiceTarget(component.characterId)
             requireValue(target, 'character_missing', '请先完成角色初始化，再下载角色语音。')
             component.targetCharacterId = target.id
+            job.voiceTargets[component.id] = target.id
           }
           if (await this.componentReady(component, installed)) continue
           requireValue(
@@ -577,6 +587,7 @@ export class ResourceSetup {
         throw error
       }
       job.status = 'running'
+      job.startedAt ??= Date.now()
       job.problem = null
       await this.save(job)
       const controller = new AbortController()
@@ -987,18 +998,56 @@ export class ResourceSetup {
   async enablePreparedVoices(job) {
     if (job.voicePreferenceRevision === undefined) return
     const installed = await this.installations()
+    let changed = false
     for (const id of job.options.selection.filter((choice) => choice.startsWith('voice.'))) {
       const component = job.selected.find((item) => item.id === id)
-      if (component && !job.completed.includes(id)) continue
-      const role = await this.voiceTarget(id.slice('voice.'.length))
+      if (component && !job.completed.includes(id) && installed[id]?.jobId !== job.id) continue
+      const targetId = job.voiceTargets?.[id] ?? component?.targetCharacterId
+      const role = targetId
+        ? await this.characters.get(targetId)
+        : await this.voiceTarget(id.slice('voice.'.length))
       if (!role) continue
       const characterId = role.id
       const ready = await Promise.all(
         role.forms.map((form) => this.speechReady(characterId, form.voice, installed))
       )
-      if (ready.some(Boolean))
+      if (ready.some(Boolean)) {
         await this.settings.enablePreparedVoice(characterId, job.voicePreferenceRevision)
+        job.voiceNotices ??= []
+        const formIds = role.forms.filter((_form, index) => ready[index]).map((form) => form.id)
+        const previous = job.voiceNotices.find((item) => item.characterId === characterId)
+        if (!previous) {
+          job.voiceNotices.push({ characterId, formIds, createdAt: Date.now() })
+          changed = true
+        } else {
+          const merged = [...new Set([...previous.formIds, ...formIds])]
+          if (merged.length !== previous.formIds.length) {
+            previous.formIds = merged
+            changed = true
+          }
+        }
+      }
     }
+    if (changed) {
+      // 先保存任务来源，再通知展示模块；通知存储故障不能使已成功的安装失败。
+      await this.save(job)
+      await this.onNoticeChange?.()
+    }
+  }
+
+  /**
+   * 读取已持久提交的通知来源，不把未执行计划或当前进度误当作就绪事件。
+   * @returns {Promise<Array<{jobId: string, characterId: string, formIds: string[], createdAt: number}>>} 后端内部里程碑，不暴露任务私有材料。
+   */
+  async listVoiceNoticeMilestones() {
+    const result = []
+    for (const name of await readdir(path.join(this.directory, 'jobs'))) {
+      if (!/^[a-zA-Z0-9-]+\.json$/.test(name)) continue
+      const job = await readJson(path.join(this.directory, 'jobs', name))
+      for (const milestone of job.voiceNotices ?? [])
+        result.push({ ...copy(milestone), jobId: job.id })
+    }
+    return result
   }
 
   /** 判定已安装的语音材料能否供指定形态使用。 */
@@ -1184,6 +1233,7 @@ export class ResourceSetup {
       component.kind === 'voice' ? await this.bindVoice(component, prepared, destination) : null
     const record = {
       id: component.id,
+      jobId: job.id,
       status: 'ready',
       version: component.version ?? '1',
       target: component.target ?? null,

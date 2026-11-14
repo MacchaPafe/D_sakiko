@@ -2,7 +2,7 @@
 
 正式后端已按接口设计实现首批能力：对话与存档、角色与设置、Agent、工具交互、后端演出计划、Python 语音及 HTTP/WebSocket 传输。具体完成范围与限制见 [实现说明](docs/backend-implementation.md)，设计依据见 [核心接口](docs/core-interfaces.md)。
 
-**当前 React 页面仍是旧原型，尚未接入新后端，不能作为可用聊天界面。** 旧原型业务后端及对应验证脚本已清理；页面、显示层和所需的旧共享协议暂留，等待后续 UI 工作。正式前端封装位于 `src/renderer/src/backend/client.js`，不依赖 React。
+**当前已接通欢迎页 → 快速开始 → 可选资源 → 下载与准备。** 启动恢复后端阶段和下载任务；支持选择依赖、实时进度、暂停、重启后手动继续、失败重试和重新选择。欢迎页保留三角色预览与鼠标追踪，后续页面为白祥待机。旧版导入、ASR 下载与进入主页的按钮仍禁用，不提前完成引导。正式前端封装位于 `src/renderer/src/backend/client.js`，不依赖 React。范围与交互见[前端设计](docs/frontend-design.md)。
 
 ## 本机开发
 
@@ -15,7 +15,7 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 启动 Electron 宿主、本机业务服务和保留的原型页面，不代表页面适配已经完成。开发环境分别使用 `.local/core-v1/`、`.local/library/` 和 `.local/cache/`。正式环境的应用数据位于 macOS Application Support 或 Windows LocalAppData 下，资源库与缓存单独配置，见[数据目录设计](docs/data-directories-and-resources.md)。旧单目录资源索引不会自动迁移或覆盖。
+`pnpm dev` 启动 Electron 宿主、本机业务服务和欢迎页。依赖已安装时也可运行 `npm run dev`，启动脚本直接使用本地 electron-vite。真实预览需要 `resources/builtin-characters/` 中的内置清单和归档；缺少资源时页面显示错误并允许重试。开发环境分别使用 `.local/core-v1/`、`.local/library/` 和 `.local/cache/`。正式环境的应用数据位于 macOS Application Support 或 Windows LocalAppData 下，资源库与缓存单独配置，见[数据目录设计](docs/data-directories-and-resources.md)。旧单目录资源索引不会自动迁移或覆盖。
 
 `DSAKIKO_DATA_DIR`、`DSAKIKO_RESOURCE_LIBRARY_DIR`、`DSAKIKO_CACHE_DIR` 分别覆盖三个根目录，均使用绝对路径且不能重叠。`DSAKIKO_PYTHON` 指定解释器。旧 `DSAKIKO_RESOURCE_ROOT` 已停用，仍配置该变量时启动会明确报错；更新配置需同时准备新资源库，程序不搬运原文件。具体依赖与限制见 [Python 运行时](python/README.md)。不要把 API 密钥放入 `.env.local` 或日志；模型连接通过正式 Settings 接口配置。
 
@@ -39,6 +39,6 @@ pnpm dev
 | `pnpm lint` / `pnpm format:check` | 代码与格式检查                                                             |
 | `pnpm build`                      | 构建 main、preload 和 renderer                                             |
 | `pnpm test:python`                | 无需真实权重的 Python 调度与 HTTP 协议测试                                 |
-| `pnpm test:smoke`                 | 构建并启动真实 Electron，验证新宿主 IPC、HTTP 和退出清理；不验收旧页面功能 |
+| `pnpm test:smoke`                 | 构建并启动真实 Electron，验证宿主、通信与退出；内置资源存在时同时验证欢迎页模型、追踪、切换和失败恢复 |
 
 `scripts/demos/` 是独立的技术验证材料，按各自说明运行，不是原型业务后端的运行依赖。构建脚本保留 Windows/macOS 打包入口，安装包和真实设备推理仍须单独验证。

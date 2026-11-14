@@ -27,7 +27,7 @@ import { BuiltinResources } from './builtin-resources.js'
  */
 /** @typedef {{version: 1, contentVersion?: string, characters: BuiltinCharacter[]}} BuiltinManifest 内置资源清单；内容版本独立于格式版本，不包含文件哈希。 */
 
-/** 初始化状态与可选资源任务相互独立，跳过下载后仍可使用文字对话。 */
+/** 初始化状态与可选资源任务相互独立，通知确认由 Notices 单独持有。 */
 export class Onboarding {
   constructor({
     appDataRoot,
@@ -62,10 +62,10 @@ export class Onboarding {
       stage: 'welcome',
       jobId: null,
       initialized: false,
-      noticeAcknowledged: false
+      completedAt: null
     })
   }
-  /** @returns {Promise<import('../../shared/contracts/setup.js').OnboardingState>} 初始化进度与主页提示，不含连接凭据。 */
+  /** @returns {Promise<import('../../shared/contracts/setup.js').OnboardingState>} 初始化进度与连接配置状态，不含连接凭据或通知确认副本。 */
   async getState() {
     const state = await this.state()
     const { generation } = await this.settings.get()
@@ -82,17 +82,15 @@ export class Onboarding {
         ? 'builtin'
         : 'configured'
       : 'missing'
-    let notice = null
-    if (!state.noticeAcknowledged) {
-      if (!configured) notice = 'model-connection-missing'
-      else if (connectionState === 'builtin' && state.path === 'quick')
-        notice = 'configure-model-connection'
-    }
-    return { ...state, notice, connectionState }
+    // 未发布原型的确认字段不再参与公开契约或后续写入。
+    delete state.noticeAcknowledged
+    return { ...state, connectionState }
   }
   async save(state) {
+    delete state.noticeAcknowledged
     await writeJson(this.file, state)
     this.bus.emit('state', await this.getState())
+    await this.onNoticeChange?.()
   }
 
   /** @returns {Promise<BuiltinManifest>} 读取清单，不扫描模型内容或计算哈希。 */
@@ -302,15 +300,7 @@ export class Onboarding {
       const state = await this.state()
       state.stage = 'complete'
       state.initialized = true
-      await this.save(state)
-      return this.getState()
-    })
-  }
-  async acknowledgeNotice() {
-    return this.queue.run('state', async () => {
-      requireValue(!this.closed, 'onboarding_closed')
-      const state = await this.state()
-      state.noticeAcknowledged = true
+      state.completedAt ??= Date.now()
       await this.save(state)
       return this.getState()
     })

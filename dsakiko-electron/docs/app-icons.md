@@ -6,7 +6,7 @@
 
 本地继续使用 `pnpm build:mac`，图标处理不调用 actool，无需安装完整 Xcode。Windows 程序使用 `build/icon.ico`，Windows/Linux 窗口使用 `resources/icon.png`。`Assets.car` 仅随 macOS 应用发布，现有 Python 和内置角色资源规则保留。
 
-macOS 窗口代码不会通过 `app.dock.setIcon()` 覆盖系统图标，以便系统选择浅色、深色外观。
+macOS 正式包不会通过 `app.dock.setIcon()` 覆盖系统图标，以便系统选择浅色、深色外观。开发运行（`dev` / `start`）借用的是 Electron 应用包，因此在主进程启动时使用 `build/macos-icon/Dock.png` 设置 Dock 图标。该 PNG 从同次编译的 `Icon.icns` 导出，显示静态浅色外观；系统深浅色变体仍由正式包的 `Assets.car` 提供。Electron 的 `nativeImage` 不能直接读取此 ICNS，因此单独保留 PNG。
 
 ## 设计源文件
 
@@ -25,6 +25,7 @@ macOS 窗口代码不会通过 `app.dock.setIcon()` 覆盖系统图标，以便�
 1. 在独立的 Icon Composer 中编辑并保存 `build/app.icon`。
 2. 将工程同步到 fork 的 `assets/app-icon/app.icon` 并推送 master，或在 **Actions → Compile app icon → Run workflow** 手动运行。
 3. 下载该次运行的 Artifact，将 `Assets.car`、`Icon.icns` 和 `assetcatalog_generated_info.plist` 一起替换到 `build/macos-icon/`。
+   在 `dsakiko-electron` 目录执行 `sips -s format png build/macos-icon/Icon.icns --out build/macos-icon/Dock.png`，同步生成开发运行的图标。
 4. 更新 [预编译资源来源记录](../build/macos-icon/README.md)，并将源工程与新编译文件一起提交。
 
 修改源工程后必须重新编译，原有二进制不会自动更新。云端 Artifact 保留 14 天；打包依赖的编译文件保存在版本库中，不依赖 Artifact 长期可下载。

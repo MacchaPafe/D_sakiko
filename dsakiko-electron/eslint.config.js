@@ -58,7 +58,7 @@ export default [
               message: '前端通过 runtime 调用宿主能力。'
             },
             {
-              group: ['**/backend/**', '**/main/**', '**/preload/**'],
+              group: ['**/backend/**', '!@/backend/**', '**/main/**', '**/preload/**'],
               message: '前端只共享 contracts 数据约定。'
             }
           ]

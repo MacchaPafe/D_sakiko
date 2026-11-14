@@ -92,12 +92,22 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
   expect(bootstrap.methods.sort()).toEqual([
     'getBackendConnection',
     'getRuntimeInfo',
-    'importFiles'
+    'getWindowCloseBehavior',
+    'getWindowVisibility',
+    'importFiles',
+    'onWindowVisibility',
+    'selectLegacyDirectory',
+    'setWindowCloseBehavior'
   ])
   expect(bootstrap.nodeVisible).toBe(false)
   expect(bootstrap.runtime.platform).toBe(process.platform)
   expect(bootstrap.connection.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
   client = createBackendClient(bootstrap.connection)
+  expect(await client.notices.list()).toMatchObject({
+    runtimeId: expect.any(String),
+    revision: 0,
+    notices: []
+  })
   const settings = await client.settings.get()
   expect(settings).not.toHaveProperty('playback')
   const saved = await client.settings.set('display.theme', 'dark', {

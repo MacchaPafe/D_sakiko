@@ -29,8 +29,7 @@
  * @property {'welcome'|'preparing'|'importing'|'optional-resources'|'complete'} stage 当前阶段。
  * @property {string|null} jobId 旧版导入任务。
  * @property {boolean} initialized 是否已允许进入主页。
- * @property {boolean} noticeAcknowledged 是否已确认连接配置提示。
+ * @property {number|null} completedAt 首次完成初始化的时间；旧内部数据可能尚无该字段。
  * @property {'builtin'|'configured'|'missing'} connectionState 当前选中连接及模型的本地配置状态。
- * @property {'configure-model-connection'|'model-connection-missing'|null} notice 主页需展示的提示。
  */
 export {}

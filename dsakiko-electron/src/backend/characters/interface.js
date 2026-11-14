@@ -92,6 +92,11 @@ export class CharacterCatalog {
     return this.changes.subscribe('membership', listener)
   }
 
+  /** @param {(characterId: string) => void} listener 角色资料变化观察者。 @returns {() => void} 取消观察；编辑也会触发，以便刷新通知名称与能力。 */
+  observeChanges(listener) {
+    return this.changes.subscribe('definition', listener)
+  }
+
   /** 将新轮次的保存与角色删除串行化。 */
   async withExistingCharacters(ids, operation) {
     return this.queue.run('catalog', async () => {
@@ -158,6 +163,7 @@ export class CharacterCatalog {
         writeJson(this.file, state)
       )
       if (definition.revision === 0) this.changes.emit('membership', next.id)
+      this.changes.emit('definition', next.id)
       return copy(next)
     })
   }
@@ -181,6 +187,7 @@ export class CharacterCatalog {
         writeJson(this.file, state)
       )
       this.changes.emit('membership', characterId)
+      this.changes.emit('definition', characterId)
     })
   }
 

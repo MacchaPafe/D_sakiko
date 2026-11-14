@@ -13,9 +13,9 @@ export const API_METHODS = {
     begin: true,
     skipLegacyImport: true,
     prepareOptionalResources: true,
-    finish: true,
-    acknowledgeNotice: true
+    finish: true
   },
+  notices: { list: false, dismiss: true },
   setup: {
     getCatalog: false,
     getFeatureState: false,

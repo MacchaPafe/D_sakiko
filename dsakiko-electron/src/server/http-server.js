@@ -81,6 +81,18 @@ export async function startHttpServer(
   function originAllowed(request) {
     return !request.headers.origin || allowedOrigins.has(request.headers.origin)
   }
+  function eventOrigin(request) {
+    const origin = request.headers.origin ?? null
+    // Electron 的 file 页面 fetch 可能不带 Origin 或发送 null，WS 则发送 file://。
+    // 仅在宿主明确允许两种文件来源时归一化；票据仍须 Bearer 凭据，普通网页来源仍精确匹配。
+    if (
+      (origin === null || origin === 'null') &&
+      allowedOrigins.has('null') &&
+      allowedOrigins.has('file://')
+    )
+      return 'file://'
+    return origin
+  }
   function send(response, status, value, request) {
     const headers = {
       'Content-Type': 'application/json; charset=utf-8',
@@ -102,6 +114,10 @@ export async function startHttpServer(
   }
   /** 仅分派已由路由白名单核准的方法；资源上传将传输数据转换为后端材料。 */
   async function dispatch(namespace, method, args) {
+    if (namespace === 'notices') {
+      requireValue(args.length === (method === 'list' ? 0 : 1))
+      return backend.notices[method](...args)
+    }
     if (namespace === 'onboarding' && method === 'getBuiltinPreview') {
       const [characterId] = args
       const preview = await backend.onboarding.prepareBuiltinPreview(characterId)
@@ -278,7 +294,7 @@ export async function startHttpServer(
         const ticket = randomBytes(24).toString('base64url')
         tickets.set(ticket, {
           expiresAt: Date.now() + 15000,
-          origin: request.headers.origin ?? null
+          origin: eventOrigin(request)
         })
         send(
           response,
@@ -354,7 +370,7 @@ export async function startHttpServer(
           originAllowed(request)
       )
       requireValue(
-        entry && entry.expiresAt > Date.now() && entry.origin === (request.headers.origin ?? null),
+        entry && entry.expiresAt > Date.now() && entry.origin === eventOrigin(request),
         'unauthorized'
       )
       tickets.delete(ticket)
@@ -405,7 +421,10 @@ export async function startHttpServer(
           dispose = await backend.setup.observe(command.key, listener)
         else if (command.topic === 'onboarding')
           dispose = await backend.onboarding.observe(listener)
-        else if (command.topic === 'interactions')
+        else if (command.topic === 'notices') {
+          requireValue(command.key == null, 'invalid_notice_subscription')
+          dispose = await backend.notices.observe(listener)
+        } else if (command.topic === 'interactions')
           dispose = await backend.interactions.observe(listener)
         else throw failure('topic_unavailable', '订阅主题不存在。')
         if (client.readyState !== 1 || subscriptions.get(command.id) !== registration) dispose()

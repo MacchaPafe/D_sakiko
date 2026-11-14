@@ -1,5 +1,7 @@
 # Electron 前端重写与资源管理初步规划
 
+2026-11-14 的内部开发 checkpoint 范围、前端模块设计及轻量通知后端补充见 [Electron 前端实现设计](frontend-design.md)。当前前端实现范围以该文档为准。
+
 初始化、附加资源下载和 Python 旧版导入的最新约定及后端接口见 [初始化与资源准备设计](onboarding-and-resource-setup.md)。相关内容以该文档为准。
 
 整理日期：2026-10-29。

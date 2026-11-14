@@ -4,6 +4,7 @@
 
 - `Assets.car`：包含 Aqua、DarkAqua 外观及三个前景图层的系统图标资源。
 - `Icon.icns`：同次编译生成的传统图标，供应用回退和 DMG 卷图标使用。
+- `Dock.png`：从 `Icon.icns` 导出的浅色图标，仅供未打包的 macOS 开发进程设置 Dock 图标；正式包不覆盖系统图标。更新 ICNS 时按[应用图标说明](../../docs/app-icons.md)重新导出。
 - `assetcatalog_generated_info.plist`：编译器输出的参考配置，不复制进应用。
 
 来源：[fork 提交 8def0d2](https://github.com/yan-xiaoo/D_sakiko/commit/8def0d270385b5b816bee39c8e93be0fc2d6caab)、[成功的编译运行](https://github.com/yan-xiaoo/D_sakiko/actions/runs/42368788113)。源工程为该提交中的 `assets/app-icon/app.icon`，已核对其 JSON 和图层 PNG 与本地 `build/app.icon` 一致。
