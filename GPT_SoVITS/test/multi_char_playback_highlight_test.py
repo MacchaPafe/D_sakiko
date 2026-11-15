@@ -85,13 +85,15 @@ def test_manual_scroll_suspends_follow_until_next_playback_start(host):
     assert highlight.follow and bar.value() > 0
 
 
-def test_single_replay_returns_highlight_to_formal_progress(host):
+def test_single_keeps_highlight_at_selected_sentence_for_auto_start(host):
     highlight = host._playback_highlight
     highlight.update_state(state(3, phase="ready", auto=False))
     highlight.update_state(state(35, auto=False, single=True))
     assert "第35句" in host.chat_display.extraSelections()[0].cursor.selectedText()
-    highlight.update_state(state(3, phase="ready", auto=False))
-    assert "第3句" in host.chat_display.extraSelections()[0].cursor.selectedText()
+    highlight.update_state(state(35, phase="ready", auto=False))
+    assert "第35句" in host.chat_display.extraSelections()[0].cursor.selectedText()
+    highlight.update_state(state(35, auto=True))
+    assert "第35句" in host.chat_display.extraSelections()[0].cursor.selectedText()
 
 
 def test_refresh_remaps_ranges_without_resuming_manual_scroll(host):

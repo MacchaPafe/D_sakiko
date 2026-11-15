@@ -3259,7 +3259,7 @@ class ViewerGUI(QWidget):
                                        f"生成完毕；已移除 {removed} 个越界编排事件" if removed else "生成完毕")
         if autoplay and self.current_chat is chat and self.performance_editor is None:
             index = next(index for index, item in enumerate(chat.message_list) if item is message)
-            # unblock 与 single 在同一队列中有序执行，使用保存后的快照且不覆盖正式游标。
+            # unblock 与 single 有序执行，使用保存后的快照并将播放位置设为本句。
             self.send_playback_command("single", index=index,
                                        messages=[item.as_dict() for item in chat.message_list])
 

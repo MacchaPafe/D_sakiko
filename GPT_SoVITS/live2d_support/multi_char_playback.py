@@ -9,7 +9,7 @@ PLAYBACK_HELP_TEXT = "按空格键自动播放，鼠标单击播放本句"
 
 
 class MultiCharPlayback:
-    """管理待播位置、自动推进和临时单句，不依赖 Qt、Pygame 或 OpenGL。"""
+    """管理单句与自动播放共享的待播位置，不依赖 Qt、Pygame 或 OpenGL。"""
 
     def __init__(self, stage, performance, music, start_sentence, reset_round, send,
                  occupied=lambda: False, show_hint=lambda: None, clock=None):
@@ -34,8 +34,6 @@ class MultiCharPlayback:
         self.reservation = None
         self.single = False
         self.load_failed = False
-        self._single_return = None
-        self._restore_scene = None
         self._fresh_start = True
         self._last_report = None
 
@@ -107,8 +105,6 @@ class MultiCharPlayback:
         self.auto = False
         self.reservation = None
         self.single = False
-        self._single_return = None
-        self._restore_scene = None
         self._fresh_start = True
         self.load_failed = True
         reasons = command.get("blocked_reasons")
@@ -139,7 +135,6 @@ class MultiCharPlayback:
                 self.blocks = {reason for reason in command.get("blocked_reasons", self.blocks)
                                if reason in ("generation", "audio", "audio_fill")}
                 self._fresh_start = True
-                self._restore_scene = None
                 self.load_failed = False
                 if not command.get("preserve_scene", False):
                     self.stage.new_playback()
@@ -159,7 +154,6 @@ class MultiCharPlayback:
                     self._begin_single(index)
                 else:
                     self.auto = True
-                    self._restore_scene = None
                     self._start(index, first=True, skip_transition=True)
             elif action == "block":
                 reason = command.get("reason")
@@ -230,16 +224,10 @@ class MultiCharPlayback:
 
     def _continue(self):
         if self.phase == "ended" or self.pending_index >= len(self.messages):
-            self._restore_scene = None
             self._start(0, first=True)
             return
-        if self._restore_scene is not None:
-            state, base = self._restore_scene
-            self.stage.base_background = base
-            self.stage.show(state)
-            self.reset_round()
-            self._restore_scene = None
-        self._start(self.pending_index, first=self._fresh_start)
+        self._start(self.pending_index, first=self._fresh_start,
+                    skip_transition=self._fresh_start and self.current_index is not None)
 
     def _start(self, index, first=False, skip_transition=False):
         self._hint_due = None
@@ -268,17 +256,16 @@ class MultiCharPlayback:
         self.start_sentence(self.messages[index])
 
     def _begin_single(self, index):
-        # 连续临时回放仍须保留最初的正式舞台，不能把上次临时画面当起点。
-        scene = self._restore_scene or (deepcopy(self.stage.state), self.stage.base_background)
-        self._single_return = (self.phase, self.current_index, self.pending_index, self._fresh_start, scene)
         self.single = True
         self.auto = False
         self._start(index, first=True, skip_transition=True)
 
     def _finish_single(self):
         self.single = False
-        self.phase, self.current_index, self.pending_index, self._fresh_start, self._restore_scene = self._single_return
-        self._single_return = None
+        self.phase = "ready"
+        self.pending_index = self.current_index
+        # 单句结束后仍定位在本句，下次启动从此句重新播放。
+        self._fresh_start = True
         self.auto = False
 
     def tick(self):

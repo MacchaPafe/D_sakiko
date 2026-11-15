@@ -129,9 +129,9 @@ def test_busy_requests_are_rejected_and_never_run_later(player, at, action):
     assert [text for _, text in player.started()] == ["甲", "乙"]
 
 
-def test_single_preserves_progress_and_restores_formal_scene_on_continue(player):
+def test_single_sets_shared_position_and_auto_starts_from_that_sentence(player):
     load(player, [line("甲", scene_before={"background": "morning.png"}), line("乙"),
-                  line("丙", scene_before={"background": "night.png", "visible_characters": []})])
+                  line("丙", scene_before={"background": "night.png", "visible_characters": []}), line("丁")])
     player.controller.click()
     player.step(600)
     assert command(player, "single", index=2)
@@ -141,26 +141,71 @@ def test_single_preserves_progress_and_restores_formal_scene_on_continue(player)
     assert not command(player, "single", index=1)
     player.step(1200)
     assert player.controller.phase == "ready"
-    assert (player.controller.current_index, player.controller.pending_index) == (0, 1)
+    assert (player.controller.current_index, player.controller.pending_index) == (2, 2)
     assert player.stage.state["background"] == "night.png"
-    # 再次临时回放也不能把临时夜景变成正式场景基准。
-    assert command(player, "single", index=2)
+    assert player.controller.toggle_auto()
+    assert player.started()[-1] == (1200, "丙")
     player.step(1800)
-    assert player.controller.click()
-    assert player.stage.state == {"visible_characters": ["A", "B"], "background": "morning.png"}
     player.step(2301)
-    assert player.started() == [(0, "甲"), (600, "丙"), (1200, "丙"), (2301, "乙")]
+    assert player.stage.state == {"visible_characters": [], "background": "night.png"}
+    assert player.started() == [(0, "甲"), (600, "丙"), (1200, "丙"), (2301, "丁")]
+    player.step(2901)
+    assert player.controller.phase == "ended"
 
 
-def test_single_at_end_returns_to_end_instead_of_replacing_restart_origin(player):
+def test_single_after_script_end_sets_last_sentence_as_auto_start(player):
     load(player, [line("甲"), line("乙")])
     command(player, "auto_from", index=1)
     player.step(600)
     command(player, "single", index=1)
     player.step(1200)
-    assert player.controller.phase == "ended" and player.controller.pending_index == 2
-    player.controller.click()
-    assert player.started()[-1] == (1200, "甲")
+    assert player.controller.phase == "ready" and player.controller.pending_index == 1
+    assert player.controller.toggle_auto()
+    assert player.started()[-1] == (1200, "乙")
+    player.step(1800)
+    assert player.controller.phase == "ended"
+
+
+def test_repeated_sentence_selection_keeps_only_latest_position(player):
+    load(player, [line("甲"), line("乙"), line("丙")])
+    assert command(player, "single", index=2)
+    player.step(600)
+    assert command(player, "single", index=1)
+    player.step(1200)
+    assert (player.controller.current_index, player.controller.pending_index) == (1, 1)
+    assert player.controller.toggle_auto()
+    assert player.started()[-1] == (1200, "乙")
+
+
+@pytest.mark.parametrize("interruption", ["stop", "block"])
+def test_interrupted_single_keeps_selected_position(player, interruption):
+    load(player, [line("甲"), line("乙"), line("丙")])
+    assert command(player, "single", index=2)
+    player.step(300)
+    if interruption == "block":
+        assert command(player, "block", reason="audio")
+        assert command(player, "unblock", reason="audio")
+    else:
+        player.controller.stop()
+    assert (player.controller.current_index, player.controller.pending_index) == (2, 2)
+    assert player.controller.toggle_auto()
+    assert player.started()[-1] == (300, "丙")
+
+
+def test_auto_after_single_keeps_selected_transition_skip_and_runs_next_transition(player):
+    black = {"transition": transition_from_total(), "background": "night.png",
+             "capsule": {"enabled": True, "text": "中间场景", "hold_ms": 500}}
+    load(player, [line("旧"), line("起", scene_before=black),
+                  line("后", scene_before={"transition": transition_from_total()})])
+    assert command(player, "single", index=1)
+    player.step(600)
+    assert player.controller.toggle_auto()
+    assert player.started() == [(0, "起"), (600, "起")]
+    assert not player.stage.busy
+    player.step(1200)
+    assert player.controller.phase == "transition"
+    player.step(3200)
+    assert player.started()[-1] == (3200, "后")
 
 
 def test_auto_from_skips_selected_transition_but_runs_following_transition(player):
@@ -427,7 +472,7 @@ def test_auto_end_hint_waits_ten_seconds_from_final_sentence_end_and_runs_once(p
 
 @pytest.mark.parametrize("mode", ["manual", "single", "auto_disabled_on_last"])
 def test_manual_or_single_end_never_schedules_end_hint(player, mode):
-    """手动播完、临时单句与末句关闭自动均继续保留台词，不启动十秒提醒。"""
+    """手动播完、指定句单播与末句关闭自动均继续保留台词，不启动十秒提醒。"""
     load(player, [line("末句")])
     if mode == "single":
         assert command(player, "single", index=0)
