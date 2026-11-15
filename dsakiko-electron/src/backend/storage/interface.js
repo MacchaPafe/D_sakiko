@@ -1,4 +1,5 @@
 import { extractAssetReferences } from '../resources/references.js'
+import { lastDialogue } from '../../shared/chat-history.js'
 import { historicalCharacterNames } from '../conversation/participants.js'
 import path from 'node:path'
 import { readFile, copyFile, readdir, unlink } from 'node:fs/promises'
@@ -75,6 +76,7 @@ export class ChatStore {
     return {
       id: chat.id,
       title: chat.title,
+      lastReply: lastDialogue(chat)?.text ?? null,
       revision: chat.revision,
       characterIds: copy(chat.characterIds),
       characterNames: historicalCharacterNames(chat),
@@ -97,10 +99,23 @@ export class ChatStore {
    * @returns {Promise<import('../../shared/contracts/conversation.js').ChatSummary[]>} 对话摘要列表。
    */
   async list() {
-    return (await this.index()).entries.map((entry) => {
-      const result = copy(entry)
-      delete result.reminderIds
-      return result
+    return this.queue.run('index', async () => {
+      const index = await this.index()
+      let changed = false
+      for (const entry of index.entries) {
+        if (Object.hasOwn(entry, 'lastReply')) continue
+        const loaded = await this.loadCurrent(entry.id)
+        if (loaded.status !== 'loaded') continue
+        entry.lastReply = lastDialogue(loaded.chat)?.text ?? null
+        changed = true
+      }
+      // 旧索引只补齐一次，侧栏刷新不再读取全部历史；修复摘要不改变聊天 revision。
+      if (changed) await writeJson(this.manifest, index)
+      return index.entries.map((entry) => {
+        const result = copy(entry)
+        delete result.reminderIds
+        return result
+      })
     })
   }
 

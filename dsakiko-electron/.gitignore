@@ -15,6 +15,7 @@ __pycache__/
 .local/
 .runtime-build/
 /resources/builtin-connection.json
+.figwright/
 
 python/vendor/**/__pycache__/
 !LICENSE

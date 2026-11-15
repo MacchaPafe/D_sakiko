@@ -100,9 +100,17 @@ export function reasoningOptions(connection, reasoning) {
   const value = normalizeConnection(connection)
   const { enabled, effort, budgetTokens } = reasoning
   if (enabled) {
-    requireValue(value.capabilities?.reasoning?.status === 'supported', 'unsupported_reasoning')
+    requireValue(
+      value.capabilities?.reasoning?.status === 'supported',
+      'unsupported_reasoning',
+      '当前连接未声明该模型支持思考模式。'
+    )
     if (effort)
-      requireValue(value.capabilities.reasoningEfforts?.includes(effort), 'unsupported_reasoning')
+      requireValue(
+        value.capabilities.reasoningEfforts?.includes(effort),
+        'unsupported_reasoning',
+        '当前模型不支持所选的思考强度。'
+      )
   }
   requireValue(
     !budgetTokens || (enabled && !effort && Number.isInteger(budgetTokens) && budgetTokens >= 1024),

@@ -34,6 +34,7 @@ mac:
   icon: build/macos-icon/Icon.icns
   extendInfo:
     CFBundleIconName: Icon
+    NSMicrophoneUsageDescription: 数字小祥使用麦克风将录音转换为聊天草稿。
   extraResources:
     - from: build/macos-icon/Assets.car
       to: Assets.car

@@ -4,15 +4,19 @@
  * @property {string} name 显示名称。
  * @property {'chat-completions' | 'responses' | 'anthropic-messages' | 'google-generative-ai'} protocol 通信协议。
  * @property {string} baseUrl 默认服务地址；空值表示必须自行填写。
+ * @property {string} [keyPage] 宿主允许打开的厂商密钥管理页。
+ * @property {string} [exampleModel] 可编辑的模型建议。
  */
 
-/** @type {ProviderPreset[]} 常用厂商共享协议实现，模型能力由连接中的显式声明决定。 */
+/** @type {ProviderPreset[]} 常用厂商共享协议实现；模型能力在解析连接时确定。 */
 export const providerPresets = [
   {
     id: 'deepseek',
     name: 'DeepSeek',
     protocol: 'chat-completions',
-    baseUrl: 'https://api.deepseek.com/v1'
+    baseUrl: 'https://api.deepseek.com/v1',
+    keyPage: 'https://platform.deepseek.com/api_keys',
+    exampleModel: 'deepseek-flash'
   },
   {
     id: 'volcengine',
@@ -30,19 +34,25 @@ export const providerPresets = [
     id: 'openai',
     name: 'OpenAI',
     protocol: 'chat-completions',
-    baseUrl: 'https://api.openai.com/v1'
+    baseUrl: 'https://api.openai.com/v1',
+    keyPage: 'https://platform.openai.com/api-keys',
+    exampleModel: 'gpt-5.5'
   },
   {
     id: 'anthropic',
     name: 'Anthropic',
     protocol: 'anthropic-messages',
-    baseUrl: 'https://api.anthropic.com/v1'
+    baseUrl: 'https://api.anthropic.com/v1',
+    keyPage: 'https://platform.claude.com/settings/keys',
+    exampleModel: 'claude-sonnet-5-5'
   },
   {
     id: 'gemini',
     name: 'Google Gemini',
     protocol: 'google-generative-ai',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta'
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    keyPage: 'https://aistudio.google.com/apikey',
+    exampleModel: 'gemini-3-pro-preview'
   },
   {
     id: 'openrouter',
@@ -58,6 +68,12 @@ export const providerPresets = [
     baseUrl: 'http://localhost:11434/v1'
   },
   { id: 'xai', name: 'Grok', protocol: 'chat-completions', baseUrl: 'https://api.x.ai/v1' },
+  {
+    id: 'dashscope',
+    name: '阿里云百炼',
+    protocol: 'chat-completions',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+  },
   {
     id: 'modelscope',
     name: '魔搭社区',

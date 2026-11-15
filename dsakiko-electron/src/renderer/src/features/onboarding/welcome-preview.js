@@ -65,11 +65,6 @@ export class WelcomePreview {
     }
   }
 
-  /** @param {number} width 当前页面的设计参考宽度。 @returns {void} 调整构图而不重新加载模型。 */
-  setReferenceWidth(width) {
-    this.surface?.setReferenceWidth(width)
-  }
-
   /** @param {'sakiko'|'anon'|'soyo'} characterId 仅影响引导预览。 @returns {Promise<void>} 最新选择完成或进入可重试失败态。 */
   async select(characterId) {
     if (!this.mounted) return

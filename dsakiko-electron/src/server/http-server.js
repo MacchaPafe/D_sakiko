@@ -136,6 +136,12 @@ export async function startHttpServer(
       requireValue(args.length === (['prepare', 'getState'].includes(method) ? 0 : 1))
       return backend.recognition[method](...args)
     }
+    if (namespace === 'settings') {
+      if (method === 'listConnections')
+        return (await backend.settings.listConnections()).filter((item) => item.id !== 'builtin-up')
+      if (method === 'saveConnection' || method === 'deleteConnection')
+        requireValue((args[0]?.id ?? args[0]) !== 'builtin-up', 'invalid_connection')
+    }
     if (namespace === 'assets' && method === 'upload') {
       const [source] = args
       requireValue(
@@ -187,14 +193,20 @@ export async function startHttpServer(
     }
     if (namespace === 'assets' && method === 'access') {
       const [asset] = args
-      await backend.assets.inspect(asset)
+      const info = await backend.assets.inspect(asset)
+      const entry = info.kind === 'directory' ? await backend.assets.packageEntry(asset) : null
       const ticket = randomBytes(24).toString('base64url')
       const expiresAt = Date.now() + 5 * 60 * 1000
       const owner = await backend.assets.createTemporaryOwner('access', [asset], 5 * 60 * 1000)
       grants.set(ticket, { asset, expiresAt, owner })
       return {
         leaseId: ticket,
-        url: baseUrl + '/api/v1/assets/' + ticket,
+        // 入口保留包内路径，使 Live2D 的纹理、动作等相对请求仍落在同一短期授权下。
+        url:
+          baseUrl +
+          '/api/v1/assets/' +
+          ticket +
+          (entry ? '/' + entry.split('/').map(encodeURIComponent).join('/') : ''),
         expiresAt: new Date(expiresAt).toISOString()
       }
     }
@@ -256,15 +268,18 @@ export async function startHttpServer(
       }
       // 浏览器 Audio 无法附加 Bearer 请求头；资源 URL 只授予一个资源的短期读取权。
       if (request.method === 'GET' && url.pathname.startsWith('/api/v1/assets/')) {
-        const grant = grants.get(url.pathname.slice('/api/v1/assets/'.length))
+        const [ticket, ...segments] = url.pathname.slice('/api/v1/assets/'.length).split('/')
+        const grant = grants.get(ticket)
         requireValue(grant && grant.expiresAt > Date.now(), 'asset_access_expired')
         const info = await backend.assets.inspect(grant.asset)
-        const bytes = await backend.assets.read(
-          grant.asset,
-          url.searchParams.get('file') ?? undefined
-        )
+        const member =
+          url.searchParams.get('file') ??
+          (segments.length ? segments.map(decodeURIComponent).join('/') : undefined)
+        const bytes = await backend.assets.read(grant.asset, member)
         const headers = {
-          'Content-Type': info.mediaType,
+          'Content-Type': member
+            ? (previewContentTypes[extname(member).toLowerCase()] ?? 'application/octet-stream')
+            : info.mediaType,
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',
           'Accept-Ranges': 'bytes'

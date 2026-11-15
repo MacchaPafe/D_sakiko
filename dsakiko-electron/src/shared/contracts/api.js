@@ -11,6 +11,7 @@ export const API_METHODS = {
     getState: false,
     getBuiltinPreview: false,
     begin: true,
+    returnToWelcome: true,
     skipLegacyImport: true,
     prepareOptionalResources: true,
     finish: true
@@ -24,7 +25,10 @@ export const API_METHODS = {
     start: true,
     getJob: false,
     listJobs: false,
-    controlJob: true
+    controlJob: true,
+    selectVoice: true,
+    previewVoiceRemoval: false,
+    removeVoice: true
   },
   recognition: { prepare: false, transcribe: false, getState: false, cancel: false },
   conversations: {
@@ -58,6 +62,7 @@ export const API_METHODS = {
     setWorldbookInfo: true,
     setCharacterSelection: true,
     setGenerationOptions: true,
+    patchSettings: true,
     setSpeechOptions: true,
     setPresentation: true,
     removeReminder: true,
@@ -75,7 +80,9 @@ export const API_METHODS = {
     listProviderPresets: false,
     saveConnection: true,
     deleteConnection: true,
-    checkConnection: false
+    checkConnection: false,
+    checkConnectionDraft: false,
+    connectionAvailability: false
   },
   characters: {
     delete: true,
@@ -116,6 +123,7 @@ export const API_METHODS = {
  * @typedef {object} DesktopHost Electron 专有能力，WebUI 使用自己的授权入口。
  * @property {() => Promise<BackendConnection>} getBackendConnection 获取本次运行的业务连接，不把令牌写入日志或持久 URL。
  * @property {() => Promise<{platform: string, appVersion: string}>} getRuntimeInfo 宿主平台与应用版本。
+ * @property {(provider: string) => Promise<void>} openProviderKeyPage 在默认浏览器打开受支持的密钥管理页。
  * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string, draftId?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
  * @property {() => Promise<{sourceId: string, name: string} | null>} selectLegacyDirectory 只授权扫描旧版目录，不复制整个目录。
  * @property {() => Promise<'tray' | 'quit' | null>} getWindowCloseBehavior 读取 Windows 关闭窗口偏好。

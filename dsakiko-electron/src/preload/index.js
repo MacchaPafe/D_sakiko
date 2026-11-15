@@ -5,6 +5,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 const host = {
   getBackendConnection: () => ipcRenderer.invoke('host:backend-connection'),
   getRuntimeInfo: () => ipcRenderer.invoke('host:runtime-info'),
+  openProviderKeyPage: (provider) => ipcRenderer.invoke('host:open-provider-key-page', provider),
   importFiles: (options) => ipcRenderer.invoke('host:import-files', options),
   selectLegacyDirectory: () => ipcRenderer.invoke('host:select-legacy-directory'),
   getWindowCloseBehavior: () => ipcRenderer.invoke('host:get-window-close-behavior'),

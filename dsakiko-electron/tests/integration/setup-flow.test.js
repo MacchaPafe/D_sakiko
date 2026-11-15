@@ -28,7 +28,8 @@ function fixture({ onboarding = { stage: 'welcome' }, jobs = [] } = {}) {
   const client = {
     onboarding: {
       getState: vi.fn(async () => onboarding),
-      begin: vi.fn(async () => ({ stage: 'optional-resources' }))
+      begin: vi.fn(async () => ({ stage: 'optional-resources', path: 'quick' })),
+      returnToWelcome: vi.fn(async () => ({ stage: 'welcome', path: null, preparationId: null }))
     },
     setup: {
       listJobs: vi.fn(async () => jobs),
@@ -64,7 +65,7 @@ async function selection(flow) {
   await vi.waitFor(() => expect(flow.getSnapshot().catalogLoading).toBe(false))
 }
 
-test('快速开始不依赖舞台，重复点击只受理一次，返回不回滚后端状态', async () => {
+test('快速开始不依赖舞台，重复点击只受理一次，返回等待后端撤回确认', async () => {
   const { flow, client } = fixture()
   const begin = deferred()
   client.onboarding.begin.mockReturnValue(begin.promise)
@@ -72,14 +73,20 @@ test('快速开始不依赖舞台，重复点击只受理一次，返回不回�
   const first = flow.quickStart()
   await flow.quickStart()
   expect(client.onboarding.begin).toHaveBeenCalledTimes(1)
-  begin.resolve({ stage: 'optional-resources', initialized: false })
+  begin.resolve({ stage: 'optional-resources', path: 'quick', initialized: false })
   await first
   expect(flow.getSnapshot()).toMatchObject({
     view: 'resources',
     onboarding: { initialized: false }
   })
+  const returning = deferred()
+  client.onboarding.returnToWelcome.mockReturnValueOnce(returning.promise)
   flow.back()
-  expect(flow.getSnapshot().view).toBe('welcome')
+  expect(flow.getSnapshot().view).toBe('resources')
+  returning.resolve({ stage: 'welcome', path: null })
+  await vi.waitFor(() => expect(flow.getSnapshot().view).toBe('welcome'))
+  flow.openLegacy()
+  expect(flow.getSnapshot().view).toBe('legacy')
   expect(client.call).not.toHaveBeenCalled()
   flow.dispose()
 })
@@ -220,4 +227,81 @@ test('重新选择先确认取消旧任务；取消失败不丢失原任务或�
   expect(client.setup.controlJob).toHaveBeenLastCalledWith('job', 'cancel')
   expect(flow.getSnapshot()).toMatchObject({ view: 'resources', job: null, selection: [] })
   flow.dispose()
+})
+
+test('撤回失败保留页面和任务；恢复时忽略属于旧准备身份的下载', async () => {
+  const { flow, client } = fixture({
+    onboarding: { stage: 'optional-resources', path: 'quick', preparationId: 'new' },
+    jobs: [{ ...job('paused'), preparationId: 'old' }]
+  })
+  await flow.mount()
+  expect(flow.getSnapshot()).toMatchObject({ view: 'resources', job: null })
+  client.onboarding.returnToWelcome.mockRejectedValueOnce(new Error('连接中断'))
+  await flow.returnQuick()
+  expect(flow.getSnapshot()).toMatchObject({ view: 'resources', problem: '连接中断' })
+  await flow.returnQuick()
+  expect(flow.getSnapshot()).toMatchObject({ view: 'welcome', job: null, selection: [] })
+  flow.dispose()
+})
+
+test.each(['running', 'paused', 'failed'])(
+  '进入主页只恢复点击前正在运行的下载：%s',
+  async (status) => {
+    const { flow, client } = fixture({
+      onboarding: { stage: 'optional-resources', path: 'quick' },
+      jobs: [job(status)]
+    })
+    client.onboarding.finish = vi.fn(async () => ({
+      stage: 'completed',
+      initialized: true,
+      path: 'quick'
+    }))
+    client.setup.getJob = vi.fn(async () => job('paused'))
+    client.setup.start = vi.fn(async () => job('running'))
+    await flow.mount()
+    await flow.finish()
+    expect(flow.state.view).toBe('home')
+    expect(client.setup.start).toHaveBeenCalledTimes(status === 'running' ? 1 : 0)
+    flow.dispose()
+  }
+)
+
+test('设置资源目录在重复进入时复用快照，失效后后台检查并响应本地变更', async () => {
+  const { flow, client, catalog } = fixture({
+    onboarding: { stage: 'complete', initialized: true }
+  })
+  const time = vi.spyOn(Date, 'now').mockReturnValue(10000)
+  try {
+    await flow.mount()
+    const first = flow.refreshManagedCatalog()
+    expect(flow.refreshManagedCatalog()).toBe(first)
+    await first
+    expect(client.setup.getCatalog.mock.calls).toEqual([
+      [{ managed: true }],
+      [{ managed: true, refresh: true }]
+    ])
+    expect(flow.getSnapshot().managedCatalog).toBe(catalog)
+    await flow.refreshManagedCatalog()
+    expect(client.setup.getCatalog).toHaveBeenCalledTimes(2)
+
+    time.mockReturnValue(611000)
+    const remote = deferred()
+    client.setup.getCatalog.mockReturnValueOnce(remote.promise)
+    const stale = flow.refreshManagedCatalog()
+    expect(flow.getSnapshot().managedCatalog).toBe(catalog)
+    await vi.waitFor(() =>
+      expect(client.setup.getCatalog).toHaveBeenLastCalledWith({ managed: true, refresh: true })
+    )
+    const newer = { ...catalog, selectionDownloadBytes: 0 }
+    client.setup.getCatalog.mockResolvedValueOnce(newer)
+    await flow.refreshManagedCatalog({ localChanged: true })
+    remote.resolve(catalog)
+    await stale
+    expect(flow.getSnapshot().managedCatalog).toBe(newer)
+    await flow.refreshManagedCatalog({ force: true })
+    expect(client.setup.getCatalog).toHaveBeenLastCalledWith({ managed: true, refresh: true })
+  } finally {
+    time.mockRestore()
+    flow.dispose()
+  }
 })

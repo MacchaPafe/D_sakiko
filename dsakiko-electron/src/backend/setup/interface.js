@@ -13,18 +13,40 @@ import {
   SerialQueue,
   copy
 } from '../core/support.js'
+import { createLegacySource } from './legacy-source.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { processUsesResources } from '../resources/process.js'
 import { SetupCatalog, setupGroups } from './catalog.js'
 import { scanLegacyDirectory, validateLegacySource } from './legacy.js'
 import { checkSpace, copyNew, sourcePath, stamp, walk } from './files.js'
 import { downloadFile } from './download.js'
+import { VoiceReuse, voiceDefinition } from './voice-reuse.js'
+import { collectDownloadCache } from './cache.js'
 import { extractArchive, prepareRuntime } from './installers.js'
 import { bindGsv, characterDefinition, importConnections, legacyConnections } from './bindings.js'
 import { selectGptSovitsFiles } from '../../shared/contracts/speech-resources.js'
 import { pythonChatId } from '../storage/python-import-interface.js'
 
+function componentContentId(component) {
+  return fingerprint(
+    component.files
+      .map(({ path, sha256 }) => [path, sha256])
+      .sort((a, b) => a[0].localeCompare(b[0]))
+  )
+}
+
 const legacyGroups = ['characters', 'chats', 'connections', 'gsv']
+
+async function directoryBytes(directory) {
+  let bytes = 0
+  const entries = await readdir(directory, { withFileTypes: true })
+  for (const entry of entries) {
+    const location = path.join(directory, entry.name)
+    if (entry.isDirectory()) bytes += await directoryBytes(location)
+    else if (entry.isFile()) bytes += (await stat(location)).size
+  }
+  return bytes
+}
 
 function downloadFiles(components) {
   return [
@@ -44,6 +66,11 @@ function legacySummary(scan, builtinConnection) {
     pendingConnections: pending.length + Number(useBuiltin && !builtinConnection),
     gsv: Object.values(scan.gsv).filter(Boolean).length
   }
+}
+
+// 待配置连接也能保留原始配置，不能因为当前无法启用而禁用整类导入。
+function legacyCategoryAvailable(summary, key) {
+  return summary[key] > 0 || (key === 'connections' && summary.pendingConnections > 0)
 }
 
 function legacyPersonaId(persona) {
@@ -81,19 +108,24 @@ export class ResourceSetup {
       characters,
       store,
       transport,
+      catalogDirectory,
       builtinConnection,
       importChats
     })
+    this.legacyExcludedRoots = [appDataRoot, resourceLibraryRoot, cacheRoot]
     this.directory = path.join(appDataRoot, 'setup')
     this.library = resourceLibraryRoot
     this.cache = path.join(cacheRoot, 'setup')
     this.catalog =
       catalog ?? new SetupCatalog({ directory: catalogDirectory, fetch: transport, ...options })
+    this.voiceReuse = new VoiceReuse(assets, transport)
+    this.directorySizes = new Map()
     this.bus = new SnapshotBus()
     this.queue = new SerialQueue()
     this.sources = new Map()
     this.running = new Map()
     this.closed = false
+    this.readOnboardingContext = async () => ({ initialized: true, candidates: [] })
     assets.registerOwnerReader('setup', async (id) => (await this.readJob(id))?.refs ?? {})
     assets.registerOwnerReader(
       'installation',
@@ -131,6 +163,23 @@ export class ResourceSetup {
         await this.enablePreparedVoices(job)
     }
     await this.maintainRuntimes()
+    await this.cleanDownloadCache()
+  }
+
+  async legacyExclusions() {
+    return Promise.all(
+      this.legacyExcludedRoots.map(async (directory) => {
+        await mkdir(directory, { recursive: true })
+        return realpath(directory)
+      })
+    )
+  }
+
+  async legacySource(scan) {
+    return createLegacySource(scan.root, [
+      ...(scan.excludedRoots ?? []),
+      ...(await this.legacyExclusions())
+    ])
   }
 
   /** 仅可信宿主可调用，HTTP 方法表不暴露该方法。 */
@@ -138,22 +187,7 @@ export class ResourceSetup {
     requireValue(path.isAbsolute(directory))
     const root = await realpath(directory)
     requireValue((await stat(root)).isDirectory(), 'legacy_directory_invalid')
-    const overlaps = (a, b) => {
-      const relative = path.relative(a, b)
-      return (
-        relative === '' ||
-        (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))
-      )
-    }
-    for (const directory of [this.library, this.directory, this.cache]) {
-      await mkdir(directory, { recursive: true })
-      const other = await realpath(directory)
-      requireValue(
-        !overlaps(root, other) && !overlaps(other, root),
-        'legacy_directory_overlaps_data',
-        '旧版来源不能包含新版数据目录。'
-      )
-    }
+    await createLegacySource(root, await this.legacyExclusions())
     const sourceId = uuid()
     this.sources.set(sourceId, root)
     return { sourceId, name: path.basename(root) }
@@ -166,7 +200,11 @@ export class ResourceSetup {
   async scanLegacy(sourceId) {
     const root = this.sources.get(sourceId)
     requireValue(root, 'legacy_source_not_authorized', '请通过目录选择器重新选择旧版本文件夹。')
-    const scan = await scanLegacyDirectory(root)
+    const scan = await scanLegacyDirectory(
+      root,
+      await this.legacyExclusions(),
+      await readJson(path.join(this.catalogDirectory, 'gsv-files.json'))
+    )
     const summary = legacySummary(scan, this.builtinConnection)
     const scanId = uuid()
     await writeJson(path.join(this.directory, 'scans', scanId + '.json'), scan)
@@ -184,8 +222,10 @@ export class ResourceSetup {
       pendingConnectionCount: summary.pendingConnections,
       gsvFileCount: summary.gsv,
       personaCount: scan.personas.length,
-      availableCategories: Object.fromEntries(legacyGroups.map((key) => [key, summary[key] > 0])),
-      canImport: legacyGroups.some((key) => summary[key] > 0),
+      availableCategories: Object.fromEntries(
+        legacyGroups.map((key) => [key, legacyCategoryAvailable(summary, key)])
+      ),
+      canImport: legacyGroups.some((key) => legacyCategoryAvailable(summary, key)),
       warnings: scan.warnings,
       logicalBytes: Object.values(scan.files).reduce((sum, file) => sum + file.sizeBytes, 0)
     }
@@ -198,10 +238,19 @@ export class ResourceSetup {
         const usable = await Promise.all(role.forms.map((form) => this.voiceReady(form.voice)))
         if (usable.every(Boolean)) return true
       }
-      return false
     }
+    return this.installedReady(component, installed)
+  }
+
+  /** 校验资源包本身；角色已有有效语音不能替代缓存文件的完整性检查。 */
+  async installedReady(component, installed) {
     const item = installed[component.id]
-    if (!item || item.status !== 'ready' || (component.target && item.target !== component.target))
+    if (
+      !item ||
+      item.status !== 'ready' ||
+      (component.kind === 'voice' && !item.voiceDefinition) ||
+      (component.target && item.target !== component.target)
+    )
       return false
     try {
       for (const ref of extractAssetReferences(item.refs ?? {})) await this.assets.localPath(ref)
@@ -213,31 +262,58 @@ export class ResourceSetup {
   }
 
   /** 返回三个产品分组及整体可选性，不暴露内部组件开关。
-   * @param {{refresh?: boolean, accelerator?: 'cpu'|'cuda', selection?: import('../../shared/contracts/setup.js').ResourceChoice[]}} options 清单刷新、加速方式和用于估算的选择。
+   * @param {{refresh?: boolean, managed?: boolean, accelerator?: 'cpu'|'cuda', selection?: import('../../shared/contracts/setup.js').ResourceChoice[]}} options 设置页读取安装版本和使用状态；引导只读可用性与估算。
    * @returns {Promise<object>} 三组资源的可用性、已准备状态和空间提示。
    */
   async getCatalog(options = {}) {
+    const context = await this.readOnboardingContext()
     const components = await this.catalog.components(options)
     if (options.selection !== undefined)
-      await this.catalog.select(options.selection, { ...options, refresh: false })
-    const installed = await this.installations()
+      await this.catalog.select(options.selection, { ...options, refresh: false }, components)
+    let installed = await this.installations()
+    if (options.managed) {
+      await this.reconcileVoicePackages(components, installed)
+      installed = await this.installations()
+    }
     const groups = copy(setupGroups)
     const selectedForEstimate = []
     let selectionAvailable = true
     for (const group of groups)
       for (const option of group.options) {
-        const selected = await this.catalog.select([option.id], { ...options, refresh: false })
+        const selected = await this.catalog.select(
+          [option.id],
+          { ...options, refresh: false },
+          components
+        )
         const voice = selected.find((component) => component.kind === 'voice')
         const target = voice ? await this.voiceTarget(voice.characterId) : null
+        const candidate =
+          voice && context.deferred && context.candidates.includes(voice.characterId)
         const missing = []
-        for (const component of selected)
-          if (!(await this.componentReady(component, installed))) {
-            if (component.id === 'gsv.models')
+        for (const component of selected) {
+          const ready =
+            options.managed && component.kind === 'voice'
+              ? (await this.installedReady(component, installed)) &&
+                installed[component.id]?.complete !== false
+              : await this.componentReady(component, installed)
+          if (!ready || (options.managed && this.componentUpdate(component, installed))) {
+            if (component.id === 'gsv.models' && !this.componentUpdate(component, installed))
               await this.reuseGsv(component, installed['gsv.models'])
+            if (options.managed && component.kind === 'voice' && target) {
+              const materials = target.forms.flatMap((form) => [form.voice, form.customVoice])
+              const reused = await this.voiceReuse.matchingFiles(
+                component,
+                materials,
+                installed[component.id]?.refs
+              )
+              component.files = component.files.filter((file) => !reused[file.path])
+            }
             missing.push(component)
           }
+        }
         option.ready = missing.length === 0
-        option.available = (!voice || !!target) && missing.every((item) => item.available)
+        option.available =
+          (!voice || !!target || candidate) && missing.every((item) => item.available)
         option.sizeKnown = option.available
         option.unavailableReason =
           missing.find((item) => !item.available)?.unavailableReason ?? null
@@ -249,12 +325,42 @@ export class ResourceSetup {
         )
         if (voice) {
           option.characterId = target?.id ?? null
-          if (!target) option.unavailableReason = '角色不存在，无法安装这份语音。'
+          if (!target && !candidate) option.unavailableReason = '角色不存在，无法安装这份语音。'
           option.requiresSelection = missing.some((item) => item.id.startsWith('gsv.'))
             ? 'gsv'
             : null
         }
-        if (options.selection?.includes(option.id)) {
+        if (options.managed) {
+          const records = selected.map((item) => installed[item.id]).filter(Boolean)
+          const own = voice ? records.filter((item) => item.id === voice.id) : records
+          option.installedBytes = await this.installedBytes(own)
+          option.installed = selected.every((item) => installed[item.id]?.status === 'ready')
+          if (voice) option.installed = Boolean(installed[voice.id]?.voiceDefinition)
+          option.version =
+            own
+              .map((item) => item.version)
+              .filter(Boolean)
+              .join(' / ') || null
+          option.updateAvailable = selected.some((item) => this.componentUpdate(item, installed))
+          if (!voice) option.waiting = Boolean(this.runtimeWaiting?.(option.id))
+          if (voice && target) option.forms = await this.voiceOptions(target, installed[voice.id])
+          if (
+            option.id === 'asr' &&
+            this.localRecognition &&
+            (await this.getFeatureState()).asrReady
+          ) {
+            option.installed = true
+            option.ready = true
+            option.version = '本地开发模型'
+            option.updateAvailable = false
+            option.downloadBytes = 0
+            option.installedBytes = await this.cachedDirectoryBytes(
+              'local-asr',
+              this.localRecognition
+            ).catch(() => 0)
+          }
+        }
+        if (options.selection?.includes(option.id) && !option.ready) {
           selectedForEstimate.push(...missing)
           selectionAvailable &&= option.available
         }
@@ -274,6 +380,257 @@ export class ResourceSetup {
     }
   }
 
+  componentUpdate(component, installed) {
+    const record = installed[component.id]
+    if (!record || !component.available || record.status !== 'ready') return false
+    if (record.target && record.target !== (component.target ?? null)) return false
+    return record.contentId
+      ? componentContentId(component) !== record.contentId
+      : Boolean(
+          component.version && record.version !== component.version && record.version !== 'legacy'
+        )
+  }
+
+  async assetBytes(values) {
+    const unique = new Map(extractAssetReferences(values).map((ref) => [ref.id, ref]))
+    const sizes = await Promise.all(
+      [...unique.values()].map(async (ref) => {
+        try {
+          return (await this.assets.inspect(ref)).sizeBytes
+        } catch {
+          return 0
+        }
+      })
+    )
+    return sizes.reduce((total, size) => total + size, 0)
+  }
+
+  async installedBytes(records) {
+    let bytes = await this.assetBytes(records.map((item) => item.refs))
+    for (const record of records) {
+      if (!record.runtime || !record.directory) continue
+      try {
+        bytes += await this.cachedDirectoryBytes(record.id, record.directory)
+      } catch {
+        // 环境目录缺失时不把发布清单的估计值冒充已用空间。
+      }
+    }
+    return bytes
+  }
+
+  /** 运行包使用独立目录；根目录时间变化时重新计量已清理的安装材料。 */
+  async cachedDirectoryBytes(id, directory) {
+    const { mtimeMs } = await stat(directory)
+    const cached = this.directorySizes.get(id)
+    if (cached?.directory === directory && cached.mtimeMs === mtimeMs) return cached.bytes
+    const bytes = await directoryBytes(directory)
+    this.directorySizes.set(id, { directory, mtimeMs, bytes })
+    return bytes
+  }
+
+  async voiceOptions(role, record) {
+    const formNames = { black: '黑祥', white: '白祥' }
+    return Promise.all(
+      role.forms.map(async (form) => {
+        const packageVoice =
+          record?.voiceDefinition?.forms[form.id] ?? record?.voiceDefinition?.forms.default
+        const active =
+          form.voice &&
+          record &&
+          (form.voicePackageId === record.id ||
+            (packageVoice && fingerprint(form.voice) === fingerprint(packageVoice)))
+            ? 'package'
+            : form.voice
+              ? 'custom'
+              : 'none'
+        const custom = active === 'custom' ? form.voice : form.customVoice
+        return {
+          id: form.id,
+          name: (role.name === '祥子' && formNames[form.id]) || form.displayName || role.name,
+          active,
+          packageAvailable: Boolean(packageVoice),
+          customAvailable: Boolean(custom),
+          customBytes: await this.assetBytes(custom)
+        }
+      })
+    )
+  }
+
+  /** 先比较本地权重，再按需读取小型发布定义。完全匹配的形态直接登记原有文件。 */
+  async reconcileVoicePackages(components, installed) {
+    await this.queue.run('voice-changes', async () => {
+      for (const component of components.filter((item) => item.kind === 'voice')) {
+        if (installed[component.id] || (await this.installations())[component.id]) continue
+        const role = await this.voiceTarget(component.characterId)
+        if (!role?.forms.some((form) => form.voice)) continue
+        try {
+          const forms = {}
+          const refs = {}
+          let metadata
+          for (const form of role.forms) {
+            if (!form.voice) continue
+            const matched = await this.voiceReuse.matchingFiles(component, form.voice)
+            if (Object.keys(matched).length < 3) continue
+            metadata ??= await this.voiceReuse.definition(component)
+            if (!metadata) break
+            const definition = voiceDefinition(component, matched, metadata)
+            const expected = definition.forms[form.id] ?? definition.forms.default
+            if (!expected || fingerprint(expected) !== fingerprint(form.voice)) continue
+            Object.assign(refs, matched)
+            forms[form.id] = expected
+            form.voicePackageId = component.id
+          }
+          if (!Object.keys(forms).length) continue
+          await this.characters.save(role)
+          await this.activate({
+            id: component.id,
+            status: 'ready',
+            version: component.version,
+            contentId: componentContentId(component),
+            target: null,
+            refs,
+            characterId: role.id,
+            complete: Object.keys(forms).length === role.forms.length,
+            voiceDefinition: { architecture: metadata.architecture, forms }
+          })
+        } catch (error) {
+          this.assets.reportMaintenance(error)
+        }
+      }
+    })
+  }
+
+  async reuseVoicePackage(component, previous, job) {
+    const role = await this.characters.get(component.targetCharacterId)
+    const voices = (role?.forms ?? []).flatMap((form) => [form.voice, form.customVoice])
+    component.reused = await this.voiceReuse.matchingFiles(component, voices, previous?.refs)
+    component.files = component.files.filter((file) => !component.reused[file.path])
+    const entries = Object.entries(component.reused)
+    if (!entries.length) return
+    await this.assets.addReferences(
+      'setup:' + job.id,
+      entries.map(([, ref]) => ref)
+    )
+    for (const [name, ref] of entries) job.refs[component.id + ':' + name] = ref
+  }
+
+  /** 切换形态的在用语音，未选的自定义资源继续随角色保存。 */
+  async selectVoice(id, formId, choice) {
+    return this.queue.run('voice-changes', async () => {
+      requireValue(['package', 'custom', 'none'].includes(choice), 'invalid_voice_selection')
+      const { role, record } = await this.managedVoice(id)
+      const form = role.forms.find((item) => item.id === formId)
+      requireValue(form, 'character_form_missing')
+      const packageVoice =
+        record?.voiceDefinition?.forms[formId] ?? record?.voiceDefinition?.forms.default
+      const usesPackage =
+        form.voicePackageId === id ||
+        (packageVoice && fingerprint(form.voice) === fingerprint(packageVoice))
+      const custom = usesPackage ? form.customVoice : (form.voice ?? form.customVoice)
+      if (choice === 'package') {
+        requireValue(
+          await this.voiceReady(packageVoice),
+          'resource_not_installed',
+          '请先安装这套语音。'
+        )
+        form.voice = copy(packageVoice)
+        form.voicePackageId = id
+      } else {
+        if (choice === 'custom')
+          requireValue(
+            await this.voiceReady(custom),
+            'resource_not_installed',
+            '自定义语音不可用。'
+          )
+        form.voice = choice === 'custom' ? copy(custom) : null
+        delete form.voicePackageId
+      }
+      if (custom && choice !== 'custom') form.customVoice = copy(custom)
+      else delete form.customVoice
+      form.voiceExplicit = true
+      await this.characters.save(role)
+    })
+  }
+
+  /** 只估算本包独占且无其他硬链接的文件大小。 */
+  async previewVoiceRemoval(id) {
+    const { record } = await this.managedVoice(id)
+    const refs = new Map(extractAssetReferences(record).map((ref) => [ref.id, ref]))
+    const job = record?.jobId ? await this.readJob(record.jobId) : null
+    const retained = new Set(
+      extractAssetReferences(
+        Object.entries(job?.refs ?? {})
+          .filter(([key]) => !key.startsWith(id + ':'))
+          .map(([, ref]) => ref)
+      ).map((ref) => ref.id)
+    )
+    const { owners } = await this.assets.state()
+    let bytes = 0
+    for (const [assetId, ref] of refs) {
+      const stillUsed = Object.entries(owners).some(([owner, ids]) => {
+        if (owner === 'installation:' + id) return false
+        if (job?.status === 'succeeded' && owner === 'setup:' + job.id && !retained.has(assetId))
+          return false
+        return ids.includes(assetId)
+      })
+      if (stillUsed) continue
+      try {
+        const file = await stat(await this.assets.localPath(ref))
+        if (file.nlink === 1) bytes += file.size
+      } catch {
+        // 离线资源没有可确认的释放空间。
+      }
+    }
+    return { bytes }
+  }
+
+  /** 仅释放安装包持有的引用，运行轮次和其他语音仍可持有相同素材。 */
+  async removeVoice(id) {
+    return this.queue.run('voice-changes', async () => {
+      const { role, record } = await this.managedVoice(id)
+      requireValue(record?.voiceDefinition, 'resource_not_installed')
+      const forms = await this.voiceOptions(role, record)
+      requireValue(
+        forms.every((form) => form.active !== 'package'),
+        'resource_in_use',
+        '请先切换或停用正在使用这套语音的形态。'
+      )
+      await this.queue.run('installations', async () => {
+        const installed = await this.installations()
+        requireValue(installed[id]?.contentId === record.contentId, 'revision_conflict')
+        delete installed[id]
+        await this.assets.commitReferences('installation:' + id, null, () =>
+          writeJson(path.join(this.directory, 'installations.json'), installed)
+        )
+      })
+      const resources = extractAssetReferences(record)
+      if (record.jobId) {
+        const job = await this.readJob(record.jobId)
+        if (job?.status === 'succeeded') {
+          job.refs = Object.fromEntries(
+            Object.entries(job.refs).filter(([key]) => !key.startsWith(id + ':'))
+          )
+          await this.save(job)
+          await this.assets.replaceReferences('setup:' + job.id, extractAssetReferences(job.refs))
+        }
+      }
+      if (resources.length) await this.assets.collectUnused({ resources })
+    })
+  }
+
+  async managedVoice(id) {
+    requireValue(
+      setupGroups.find((group) => group.id === 'voices').options.some((option) => option.id === id),
+      'invalid_resource_selection'
+    )
+    const record = (await this.installations())[id]
+    const role = record?.characterId
+      ? await this.characters.get(record.characterId)
+      : await this.voiceTarget(id.slice('voice.'.length))
+    requireValue(role, 'character_missing')
+    return { record, role }
+  }
+
   /** 生成计划时真正保留候选链接，因此确认页空间估计不依赖同盘猜测。
    * @param {import('../../shared/contracts/setup.js').SetupPlanRequest} options 旧版导入范围或产品资源选择。
    * @returns {Promise<import('../../shared/contracts/setup.js').SetupSnapshot>} 可以确认和执行的计划快照。
@@ -285,8 +642,19 @@ export class ResourceSetup {
   async createPlanUnlocked(options) {
     requireValue(['legacy', 'download'].includes(options?.kind), 'invalid_setup_plan')
     requireValue(!this.closed, 'setup_closed')
+    const context = await this.readOnboardingContext()
+    if (options.kind === 'download') {
+      requireValue(!['returning', 'committing'].includes(context.stage), 'onboarding_busy')
+      if (options.preparationId != null)
+        requireValue(
+          options.preparationId === context.preparationId,
+          'setup_preparation_changed',
+          '初始化方式已改变，请重新选择资源。'
+        )
+    }
     const job = {
       id: uuid(),
+      preparationId: options.kind === 'download' && context.deferred ? context.preparationId : null,
       kind: options.kind,
       status: 'planned',
       phase: 'planning',
@@ -309,7 +677,7 @@ export class ResourceSetup {
           path.join(this.directory, 'scans', safeId(options.scanId) + '.json')
         )
         requireValue(scan, 'legacy_scan_missing')
-        await validateLegacySource(scan)
+        await validateLegacySource(scan, await this.legacyExclusions())
         job.scan = scan
         const reused = await readJson(
           path.join(this.directory, 'sources', scan.identity + '.json'),
@@ -329,7 +697,7 @@ export class ResourceSetup {
         )
         const summary = legacySummary(scan, this.builtinConnection)
         requireValue(
-          legacyGroups.some((key) => selection[key] && summary[key] > 0),
+          legacyGroups.some((key) => selection[key] && legacyCategoryAvailable(summary, key)),
           'legacy_nothing_to_import',
           '所选类别中没有可导入的资料。'
         )
@@ -385,7 +753,7 @@ export class ResourceSetup {
             const destination = this.modelDestination(job.id, key, file.name)
             await mkdir(path.dirname(destination), { recursive: true })
             try {
-              await link(await sourcePath(scan.root, file.name), destination)
+              await link(await (await this.legacySource(scan)).path(file.name), destination)
               file.mode = 'hardlink'
             } catch (error) {
               if (
@@ -403,6 +771,7 @@ export class ResourceSetup {
       } else {
         const installed = await this.installations()
         job.options.selection = copy(options.selection)
+        job.options.managed = options.managed === true
         job.voicePreferenceRevision = (await this.settings.voicePreference()).revision
         job.voiceTargets = {}
         for (const component of await this.catalog.select(options.selection, {
@@ -410,17 +779,30 @@ export class ResourceSetup {
         })) {
           if (component.kind === 'voice') {
             const target = await this.voiceTarget(component.characterId)
-            requireValue(target, 'character_missing', '请先完成角色初始化，再下载角色语音。')
-            component.targetCharacterId = target.id
-            job.voiceTargets[component.id] = target.id
+            requireValue(
+              target || (context.deferred && context.candidates.includes(component.characterId)),
+              'character_missing',
+              '请先选择初始化方式，再下载角色语音。'
+            )
+            component.targetCharacterId = target?.id ?? component.characterId
+            job.voiceTargets[component.id] = component.targetCharacterId
           }
-          if (await this.componentReady(component, installed)) continue
+          const ready =
+            job.options.managed && component.kind === 'voice'
+              ? (await this.installedReady(component, installed)) &&
+                installed[component.id]?.complete !== false
+              : await this.componentReady(component, installed)
+          const updating = job.options.managed && this.componentUpdate(component, installed)
+          if (ready && !updating) continue
           requireValue(
             component.available,
             'runtime_not_published',
             component.unavailableReason ?? '所需资源尚未发布。'
           )
-          if (component.id === 'gsv.models')
+          component.contentId = componentContentId(component)
+          if (component.kind === 'voice' && job.options.managed)
+            await this.reuseVoicePackage(component, installed[component.id], job)
+          if (component.id === 'gsv.models' && !updating)
             await this.reuseGsv(component, installed['gsv.models'], job)
           job.selected.push(component)
           for (const file of component.files) {
@@ -496,6 +878,7 @@ export class ResourceSetup {
       job.status === 'running' && job.phase === 'downloading' ? (job.downloadRate ?? null) : null
     return {
       id: job.id,
+      preparationId: job.preparationId ?? null,
       kind: job.kind,
       status: job.status,
       phase: job.phase,
@@ -555,6 +938,7 @@ export class ResourceSetup {
         result.push(this.snapshot(await readJson(path.join(this.directory, 'jobs', name))))
     return result.sort((a, b) => b.expiresAt - a.expiresAt)
   }
+
   async observe(id, listener) {
     return this.bus.subscribe(id, listener, await this.getJob(id))
   }
@@ -570,6 +954,15 @@ export class ResourceSetup {
       requireValue(this.running.size === 0, 'setup_busy', '已有资源准备任务正在执行。')
       const job = await this.readJob(id)
       requireValue(job, 'setup_job_missing')
+      if (job.preparationId) {
+        const context = await this.readOnboardingContext()
+        requireValue(
+          context.preparationId === job.preparationId &&
+            !['returning', 'committing'].includes(context.stage),
+          'setup_preparation_changed',
+          '初始化方式已改变，请重新选择资源。'
+        )
+      }
       if (job.status === 'succeeded') return this.snapshot(job)
       requireValue(['planned', 'paused', 'failed'].includes(job.status), 'setup_job_not_resumable')
       requireValue(job.phase !== 'planning', 'setup_plan_incomplete')
@@ -609,7 +1002,11 @@ export class ResourceSetup {
           this.bus.emit(job.id, this.snapshot(job))
           this.assets.reportMaintenance(error)
         })
-        .finally(() => this.running.delete(id))
+        .finally(() => {
+          this.running.delete(id)
+          // controlJob 持有 admission 等待 done，不能在此反向等待同一把锁。
+          void this.queue.run('admission', () => this.cleanDownloadCache())
+        })
       return this.snapshot(job)
     })
   }
@@ -716,6 +1113,7 @@ export class ResourceSetup {
     await this.assets.releaseWhenPossible('setup:' + job.id)
     if (planning)
       await rm(path.join(this.library, 'models', 'setup', job.id), { recursive: true, force: true })
+    await this.cleanDownloadCache()
   }
 
   async execute(job, signal) {
@@ -739,25 +1137,35 @@ export class ResourceSetup {
       }
       for (const component of job.selected) {
         signal.throwIfAborted()
-        if (job.completed.includes(component.id)) continue
-        await this.installComponent(job, component, signal)
-        job.completed.push(component.id)
-        await this.enablePreparedVoices(job)
+        if (job.completed.includes(component.id) || job.pendingRuntime?.[component.id]) continue
+        if (await this.installComponent(job, component, signal)) {
+          job.completed.push(component.id)
+          await this.enablePreparedVoices(job)
+        }
         await this.save(job)
+        await this.cleanRuntimeMaterials(job)
       }
+      signal.throwIfAborted()
+      if (job.pendingRuntime) await this.commitRuntimeUpdate(job)
+      if (await this.canBind(job)) await this.bindInstalledResources()
       await this.enablePreparedVoices(job)
     }
     signal.throwIfAborted()
     job.status = 'succeeded'
     job.phase = 'complete'
     job.progress = null
+    if (job.kind === 'download' && job.options.managed) job.refs = {}
     await this.save(job)
+    if (job.kind === 'download' && job.options.managed)
+      await this.assets
+        .releaseWhenPossible('setup:' + job.id)
+        .catch((error) => this.assets.reportMaintenance(error))
   }
 
   async importFile(job, key, signal) {
     if (job.refs[key]) return job.refs[key]
     const file = job.files[key]
-    const source = await sourcePath(job.scan.root, file.name)
+    const source = await (await this.legacySource(job.scan)).path(file.name, Boolean(file.entry))
     let asset
     if (file.purpose === 'model' && !file.entry) {
       const destination = this.modelDestination(job.id, key, file.name)
@@ -808,7 +1216,7 @@ export class ResourceSetup {
   async importLegacy(job, signal) {
     job.phase = 'validating'
     await this.save(job)
-    await validateLegacySource(job.scan)
+    await validateLegacySource(job.scan, await this.legacyExclusions())
     let completed = 0
     for (const key of Object.keys(job.files)) {
       signal.throwIfAborted()
@@ -817,7 +1225,7 @@ export class ResourceSetup {
       await this.importFile(job, key, signal)
       completed += 1
     }
-    await validateLegacySource(job.scan)
+    await validateLegacySource(job.scan, await this.legacyExclusions())
     job.phase = 'committing'
     await this.save(job)
     job.items ??= Object.fromEntries(
@@ -927,11 +1335,9 @@ export class ResourceSetup {
     if (job.options.include.characters) {
       await this.updateLegacyItem(job, 'characters', 'committing', job.items.characters.completed)
       const names = job.scan.config?.character_setting?.character_order?.character_names ?? []
+      const availableRoleIds = new Set((await this.characters.list()).map((item) => item.id))
       const order = [
-        ...new Set([
-          ...names.map((name) => mapping[name]).filter(Boolean),
-          ...(await this.characters.list()).map((item) => item.id)
-        ])
+        ...new Set([...names.map((name) => mapping[name]).filter(Boolean), ...availableRoleIds])
       ]
       if (order.length) await this.characters.setOrder(order)
       for (const persona of job.scan.personas ?? []) {
@@ -946,8 +1352,10 @@ export class ResourceSetup {
           )
           continue
         }
-        const roleId =
-          persona.user_as_character_folder_name || mapping[persona.user_as_character_name]
+        const folderId = persona.user_as_character_folder_name
+        const roleId = availableRoleIds.has(folderId)
+          ? folderId
+          : mapping[persona.user_as_character_name]
         const role = roleId ? await this.characters.get(roleId) : null
         const source = role
           ? { kind: 'character', characterId: role.id, formId: role.defaultFormId }
@@ -994,8 +1402,85 @@ export class ResourceSetup {
     await this.save(job)
   }
 
+  /** 读取持久初始化身份，不依赖前端是否仍停留在下载页。 */
+  async canBind(job) {
+    if (!job.preparationId) return true
+    const context = await this.readOnboardingContext()
+    return context.initialized && context.preparationId === job.preparationId
+  }
+
+  /** 调用方持有 admission；先等待执行函数退出，才能切换引导身份或提交绑定。 */
+  async stopPreparation(preparationId, action) {
+    if (!preparationId) return
+    for (const snapshot of await this.listJobs()) {
+      if (snapshot.preparationId !== preparationId || snapshot.kind !== 'download') continue
+      const active = this.running.get(snapshot.id)
+      if (active) {
+        active.action = action
+        active.controller.abort()
+        await active.done
+      }
+      const job = await this.readJob(snapshot.id)
+      if (action === 'cancel' && !['succeeded', 'cancelled'].includes(job.status))
+        await this.cancel(job)
+    }
+  }
+
+  /** @param {string} preparationId 被撤回的准备身份。 @returns {Promise<void>} 完整安装资源由独立 owner 保留，剩余计划取消。 */
+  async withdrawPreparation(preparationId) {
+    await this.queue.run('admission', () => this.stopPreparation(preparationId, 'cancel'))
+  }
+
+  /** @param {string|null} preparationId 本次初始化身份。 @param {() => Promise<void>} prepare 正式角色和连接的幂等提交。 @returns {Promise<void>} 与下载受理互斥地绑定资源，未完成下载留待手动继续。 */
+  async commitPreparation(preparationId, prepare) {
+    await this.queue.run('admission', async () => {
+      await this.stopPreparation(preparationId, 'pause')
+      await prepare()
+      await this.bindInstalledResources()
+      for (const snapshot of await this.listJobs()) {
+        if (
+          snapshot.kind !== 'download' ||
+          snapshot.preparationId !== preparationId ||
+          snapshot.status === 'cancelled'
+        )
+          continue
+        await this.enablePreparedVoices(await this.readJob(snapshot.id), true)
+      }
+    })
+  }
+
+  /** 复用已登记资源时仍需绑定；旧版有效语音由 bindVoice 保留。 */
+  async bindInstalledResources() {
+    const installed = await this.installations()
+    for (const record of Object.values(installed)) {
+      if (record.status !== 'ready') continue
+      const component = {
+        id: record.id,
+        characterId: record.id.startsWith('voice.') ? record.id.slice(6) : null,
+        kind: record.id.startsWith('voice.') ? 'voice' : 'gsv'
+      }
+      if (!(await this.installedReady(component, installed))) continue
+      if (record.id === 'gsv.models') await bindGsv(this.settings, record.refs)
+      if (record.voiceDefinition)
+        await this.queue.run('voice-changes', async () => {
+          const current = (await this.installations())[record.id]
+          if (!current?.voiceDefinition) return
+          const characterId = current.id.slice('voice.'.length)
+          const role = await this.voiceTarget(characterId)
+          if (!role) return
+          const bound = await this.bindVoice(
+            { id: current.id, characterId, targetCharacterId: role.id },
+            current.voiceDefinition
+          )
+          if (current.characterId !== bound.characterId)
+            await this.activate({ ...current, ...bound })
+        })
+    }
+  }
+
   /** 当前安装记录与角色形态同时可用时才接受自动启用意图。 */
-  async enablePreparedVoices(job) {
+  async enablePreparedVoices(job, committing = false) {
+    if (!committing && !(await this.canBind(job))) return
     if (job.voicePreferenceRevision === undefined) return
     const installed = await this.installations()
     let changed = false
@@ -1228,21 +1713,40 @@ export class ResourceSetup {
       for (const name of Object.keys(prepared))
         if (/\.(wav|mp3)$/i.test(name)) await rm(path.join(destination, name), { force: true })
     }
-    if (component.kind === 'gsv') await bindGsv(this.settings, prepared)
-    const voice =
-      component.kind === 'voice' ? await this.bindVoice(component, prepared, destination) : null
+    const bind = await this.canBind(job)
+    let voice = null
+    if (component.kind === 'voice') {
+      const definition = await this.readVoiceDefinition(component, prepared, destination)
+      voice = {
+        characterId: component.characterId,
+        architecture: definition.architecture,
+        voiceDefinition: definition
+      }
+    }
     const record = {
       id: component.id,
       jobId: job.id,
       status: 'ready',
       version: component.version ?? '1',
+      contentId: component.contentId ?? componentContentId(component),
       target: component.target ?? null,
       refs: prepared,
       directory: destination,
       runtime: job.prepared[component.id].runtime,
       ...voice
     }
-    await this.activate(record)
+    if (job.options.managed && !voice) {
+      job.pendingRuntime ??= {}
+      job.pendingRuntime[record.id] = record
+      return false
+    }
+    if (bind && component.kind === 'gsv') await bindGsv(this.settings, prepared)
+    if (voice) {
+      await this.queue.run('voice-changes', async () => {
+        if (bind) Object.assign(record, await this.bindVoice(component, voice.voiceDefinition))
+        await this.activate(record)
+      })
+    } else await this.activate(record)
     if (component.id === 'gsv.runtime')
       await this.settings.update({
         speechStartup: {
@@ -1252,25 +1756,62 @@ export class ResourceSetup {
           }
         }
       })
+    if (['asr', 'gsv', 'runtime'].includes(component.kind))
+      await this.onRuntimeChanged?.(component.id.split('.')[0])
     job.results.push({ kind: 'component', id: component.id, status: 'installed' })
+    return true
   }
 
-  async activate(record) {
+  /** 基础模型与运行环境均准备完成后才切换安装记录。 */
+  async commitRuntimeUpdate(job) {
+    const records = Object.values(job.pendingRuntime)
+    const models = job.pendingRuntime['gsv.models']
+    const runtime = job.pendingRuntime['gsv.runtime']
+    if (models) await bindGsv(this.settings, models.refs)
+    if (runtime)
+      await this.settings.update({
+        speechStartup: {
+          gptSovits: {
+            device: runtime.target.endsWith('-cuda') ? 'cuda' : 'cpu',
+            precision: 'float32'
+          }
+        }
+      })
+    await this.activateRecords(records)
+    for (const record of records) {
+      job.completed.push(record.id)
+      job.results.push({ kind: 'component', id: record.id, status: 'installed' })
+    }
+    delete job.pendingRuntime
+    await this.save(job)
+    for (const kind of new Set(records.map((record) => record.id.split('.')[0])))
+      await this.onRuntimeChanged?.(kind)
+    await this.cleanRuntimeMaterials(job)
+  }
+
+  activate(record) {
+    return this.activateRecords([record])
+  }
+
+  async activateRecords(records) {
     await this.queue.run('installations', async () => {
       const installed = await this.installations()
-      const previous = installed[record.id]
-      if (record.runtime && previous?.directory && previous.directory !== record.directory) {
-        const file = path.join(this.directory, 'retired-runtimes.json')
-        const retired = await readJson(file, [])
-        if (!retired.includes(previous.directory)) {
-          retired.push(previous.directory)
-          await writeJson(file, retired)
-        }
+      const file = path.join(this.directory, 'retired-runtimes.json')
+      const retired = new Set(await readJson(file, []))
+      for (const record of records) {
+        const previous = installed[record.id]
+        if (record.runtime && previous?.directory && previous.directory !== record.directory)
+          retired.add(previous.directory)
+        installed[record.id] = record
       }
-      installed[record.id] = record
-      await this.assets.commitReferences('installation:' + record.id, record, () =>
-        writeJson(path.join(this.directory, 'installations.json'), installed)
-      )
+      await writeJson(file, [...retired])
+      let commit = () => writeJson(path.join(this.directory, 'installations.json'), installed)
+      // 每条安装记录先进入引用提交日志，所有版本由同一次写盘启用。
+      for (const record of records) {
+        const next = commit
+        commit = () => this.assets.commitReferences('installation:' + record.id, record, next)
+      }
+      await commit()
     })
   }
 
@@ -1314,46 +1855,44 @@ export class ResourceSetup {
     }
   }
 
-  async bindVoice(component, refs, directory) {
+  /** 先校验语音包中的引用，资源准备完成不要求正式角色存在。 */
+  async readVoiceDefinition(component, refs, directory) {
     const voice = await readJson(path.join(directory, component.characterId, 'voice.json'))
+    const result = voiceDefinition(component, refs, voice)
     requireValue(
-      voice?.schemaVersion === 1 &&
-        voice.characterId === component.characterId &&
-        ['v4', 'v2ProPlus'].includes(voice.architecture),
+      Object.keys(result.forms).length === Object.keys(voice.forms).length &&
+        Object.keys(result.forms).length,
       'voice_manifest_invalid'
     )
+    return result
+  }
+
+  /** 绑定只补缺失或失效形态，不能覆盖旧版导入后仍有效的角色语音。 */
+  async bindVoice(component, voice) {
     const role = component.targetCharacterId
       ? await this.characters.get(component.targetCharacterId)
       : await this.voiceTarget(component.characterId)
-    requireValue(role, 'character_missing', '请先完成角色初始化，再下载角色语音。')
-    const prefix = component.characterId + '/'
-    function asset(name) {
-      requireValue(
-        typeof name === 'string' && Object.hasOwn(refs, prefix + name),
-        'voice_manifest_invalid'
-      )
-      return refs[prefix + name]
-    }
-    function reference(value) {
-      requireValue(
-        typeof value?.text === 'string' && typeof value.language === 'string',
-        'voice_manifest_invalid'
-      )
-      return { ...value, audio: asset(value.audio) }
-    }
+    requireValue(role, 'character_missing', '请先完成角色初始化，再绑定角色语音。')
+    let changed = false
     for (const form of role.forms) {
       const definition = voice.forms[form.id] ?? voice.forms.default
-      if (!definition || (await this.voiceReady(form.voice))) continue
-      form.voice = {
-        gptWeights: asset(voice.weights.gpt),
-        sovitsWeights: asset(voice.weights.sovits),
-        defaultReference: reference(definition.defaultReference),
-        emotions: Object.fromEntries(
-          Object.entries(definition.emotions ?? {}).map(([name, value]) => [name, reference(value)])
-        )
-      }
+      if (!definition || (form.voiceExplicit && !form.voicePackageId)) continue
+      const oldVoice = (await this.installations())[component.id]?.voiceDefinition?.forms
+      const prior = oldVoice?.[form.id] ?? oldVoice?.default
+      const tracked =
+        form.voicePackageId === component.id ||
+        (prior && fingerprint(prior) === fingerprint(form.voice))
+      if (!tracked && (await this.voiceReady(form.voice))) continue
+      if (
+        form.voicePackageId === component.id &&
+        fingerprint(form.voice) === fingerprint(definition)
+      )
+        continue
+      form.voice = copy(definition)
+      form.voicePackageId = component.id ?? 'voice.' + component.characterId
+      changed = true
     }
-    await this.characters.save(role)
+    if (changed) await this.characters.save(role)
     return { characterId: role.id, architecture: voice.architecture }
   }
 
@@ -1492,11 +2031,55 @@ export class ResourceSetup {
     })
   }
 
+  /** @returns {Promise<void>} 调用方持有 admission 或处于启动恢复；清理失败留待维护重试，不改写任务结果。 */
+  async cleanRuntimeMaterials(job) {
+    if (job.kind !== 'download') return
+    try {
+      const installed = (await this.installations())['gsv.runtime']
+      const committed =
+        installed?.jobId === job.id &&
+        installed.status === 'ready' &&
+        job.completed?.includes('gsv.runtime')
+      const cancelled = job.status === 'cancelled' && !this.running.has(job.id)
+      if (!committed && !cancelled) return
+      const relative = `runtimes/${safeId(job.id)}/gsv.runtime`
+      const directory = await sourcePath(this.library, relative)
+      if (committed)
+        requireValue(
+          (await realpath(installed.directory)) === directory,
+          'runtime_directory_mismatch'
+        )
+      for (const name of ['wheelhouse', '.uv-cache'])
+        await rm(path.join(directory, name), { recursive: true, force: true })
+    } catch (error) {
+      // 安装结果已提交；清理失败不应让语音不可用，后续维护根据持久任务补做。
+      if (error.code !== 'ENOENT') this.assets.reportMaintenance(error)
+    }
+  }
+
+  /** @returns {Promise<void>} 回收终态下载与安装材料；活跃安装的材料留给执行函数处理。 */
+  async cleanDownloadCache() {
+    try {
+      const jobs = []
+      for (const name of await readdir(path.join(this.directory, 'jobs'))) {
+        if (!/^[a-zA-Z0-9-]+\.json$/.test(name)) continue
+        const job = await this.readJob(name.slice(0, -5))
+        requireValue(job, 'setup_job_missing')
+        jobs.push(job)
+        if (!this.running.has(job.id)) await this.cleanRuntimeMaterials(job)
+      }
+      await collectDownloadCache(this.cache, jobs, new Set(this.running.keys()))
+    } catch (error) {
+      this.assets.reportMaintenance(error)
+    }
+  }
+
   async maintain() {
     await this.queue.run('admission', async () => {
       for (const snapshot of await this.listJobs())
         if (snapshot.status === 'planned' && snapshot.expiresAt < Date.now())
           await this.cancel(await this.readJob(snapshot.id))
+      await this.cleanDownloadCache()
     })
     await this.maintainRuntimes()
   }
@@ -1506,6 +2089,7 @@ export class ResourceSetup {
     await this.queue.run('admission', async () => {})
     for (const active of this.running.values()) active.controller.abort()
     await Promise.all([...this.running.values()].map((active) => active.done))
+    await this.queue.run('admission', async () => {})
     this.bus.clear()
   }
 }

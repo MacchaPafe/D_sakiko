@@ -2,12 +2,20 @@ import { fingerprint, safeId } from '../core/support.js'
 import { chatSettings, defaultSettings } from '../core/defaults.js'
 import wavefile from 'wavefile'
 import { legacyRelative } from '../setup/legacy.js'
+import {
+  importTimeline,
+  isTimelineChat,
+  legacyScenario,
+  validatePythonChat
+} from './python-format.js'
+import { normalizeImportedPythonChat } from './python-normalization.js'
 
-/** 旧版聊天重试沿用原有的存档身份。 */
+/** @param {object} original Python 源存档。 @returns {string} 不随标题和消息变化的导入身份。 */
 export function pythonChatId(original) {
-  return (
-    'python-' + fingerprint(`python-chat:${original.chat_id ?? fingerprint(original)}`).slice(0, 32)
-  )
+  const identity = isTimelineChat(original)
+    ? original.id
+    : (original.chat_id ?? fingerprint(original))
+  return 'python-' + fingerprint(`python-chat:${identity}`).slice(0, 32)
 }
 
 function modelFolder(root, value) {
@@ -53,12 +61,62 @@ export class PythonChatImporter {
     Object.assign(this, { assets, store, characters })
   }
 
-  /** 使用来源及旧 chat_id 固定身份，提交后崩溃再导入仍只有一份存档。 */
-  async read(scan, refs, mapping, signal) {
+  /**
+   * @param {object} scan 私有扫描快照。
+   * @param {object} refs 已迁移资源引用。
+   * @param {object} mapping 旧格式的角色名映射。
+   * @param {AbortSignal|null} signal 取消信号。
+   * @param {{repairEmpty?: boolean}} options 仅离线维护显式启用空占位修复；普通导入不覆盖已有聊天。
+   * @returns {Promise<{chats: object[], warnings: object[]}>} 待保存草稿，调用方通过 ChatStore 提交并保护资源。
+   */
+  async read(scan, refs, mapping, signal, { repairEmpty = false } = {}) {
     const chats = []
     const warnings = []
+    const imported = new Map()
+    for (const summary of await this.store.list()) {
+      const loaded = await this.store.load(summary.id)
+      const provenance = loaded.chat?.meta.extensions?.pythonImport
+      if (provenance?.source === scan.identity && provenance.chatId)
+        imported.set(provenance.chatId, loaded.chat)
+    }
     for (const [index, original] of scan.chats.entries()) {
       signal?.throwIfAborted()
+      validatePythonChat(original)
+      const sourcePosition = (scan.chatIndexes?.[index] ?? index) + 1
+      if (isTimelineChat(original)) {
+        const canonicalId = pythonChatId(original)
+        if (imported.has(original.id)) continue
+        if ((await this.store.load(canonicalId)).status !== 'missing') continue
+        // 初版导入器把整个新格式对象当作身份；仅显式修复完全匹配的空占位，保留原聊天 ID。
+        const brokenId =
+          'python-' + fingerprint(`python-chat:${fingerprint(original)}`).slice(0, 32)
+        const previous = await this.store.load(brokenId)
+        const empty = previous.chat
+        if (previous.status !== 'missing') {
+          const provenance = empty?.meta.extensions?.pythonImport
+          const repairable =
+            repairEmpty &&
+            empty?.revision === 1 &&
+            empty.title === '旧版对话 ' + sourcePosition &&
+            !empty.characterIds.length &&
+            !empty.turns.length &&
+            provenance?.source === scan.identity &&
+            provenance.chatId === null
+          if (!repairable) continue
+        }
+        const chat = importTimeline(original, {
+          id: empty?.id ?? canonicalId,
+          revision: empty?.revision ?? 0,
+          scan,
+          refs,
+          warnings
+        })
+        const normalized = await normalizeImportedPythonChat(chat, scan, this.characters)
+        warnings.push(...normalized.warnings)
+        chats.push(chat)
+        imported.set(original.id, chat)
+        continue
+      }
       const identity = `python-chat:${original.chat_id ?? fingerprint(original)}`
       const id = pythonChatId(original)
       if ((await this.store.load(id)).status !== 'missing') continue
@@ -68,7 +126,7 @@ export class PythonChatImporter {
       const chat = {
         id,
         revision: 0,
-        title: original.name ?? '旧版对话 ' + (index + 1),
+        title: original.name ?? '旧版对话 ' + sourcePosition,
         characterIds: roleIds,
         mode: original.type === 2 ? 'scripted-dialogue' : 'single-character',
         userPersona: null,
@@ -116,21 +174,12 @@ export class PythonChatImporter {
           chat.meta.settings.characters[roleId] = { formId, modelOverrides: overrides }
         }
       }
-      if (original.type === 2) {
-        const theater = original.meta?.theater ?? {}
-        chat.meta.settings.scenario = {
-          situation: theater.situation ?? original.start_message ?? '',
-          characters: Object.fromEntries(
-            roleIds.map((roleId, position) => [
-              roleId,
-              {
-                speakingStyle: theater['character_' + position]?.talk_style ?? '',
-                interaction: theater['character_' + position]?.interaction_details ?? ''
-              }
-            ])
-          )
-        }
-      }
+      if (original.type === 2)
+        chat.meta.settings.scenario = legacyScenario(
+          original.meta?.theater,
+          roleIds,
+          original.start_message
+        )
       if (persona && typeof persona === 'object')
         chat.userPersona = {
           personaId: persona.persona_id ?? stable('persona'),

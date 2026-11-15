@@ -22,7 +22,7 @@ export class Speech {
    * @param {() => Promise<import('./python-transport.js').SpeechConnection>} options.connect 获取 Python 语音服务连接的函数。
    * @param {import('../resources/interface.js').MediaAssets} options.assets 媒体资源管理器，用于解析参考音频/模型权重路径并导入合成后的音频文件。
    */
-  constructor({ connect, assets }) {
+  constructor({ connect, assets, restart = null }) {
     this.waiting = new Map()
     this.assets = assets
     /** @type {Map<string, SpeechTaskOwnership>} */
@@ -36,6 +36,8 @@ export class Speech {
     this.operations = new Set()
     this.closing = null
     this.connect = connect
+    this.restart = restart
+    this.runtimeWaiting = false
     this.transport = new PythonSpeechTransport(connect, {
       localPath: async (asset) => {
         await assets.inspect(asset)
@@ -57,7 +59,26 @@ export class Speech {
    * @returns {Promise<SpeechTaskId>} Python 语音服务分配的任务 ID。
    */
   async submit(request) {
-    return this.trackOperation(() => this.submitRequest(request))
+    return this.trackOperation(() =>
+      this.lifecycle.run('admission', async () => {
+        if (this.runtimeWaiting && ![...this.tasks.values()].some((task) => !task.terminal)) {
+          this.runtimeWaiting = false
+          const previousPid = await this.restart()
+          if (previousPid) {
+            for (const owner of this.residentOwners)
+              await this.releaseProcessOwner(owner, previousPid)
+            this.residentOwners.clear()
+          }
+          this.residentModels.clear()
+        }
+        return this.submitRequest(request)
+      })
+    )
+  }
+
+  /** 已受理的推理保留旧环境，下一次可受理的合成负责切换。 */
+  markRuntimeChanged() {
+    this.runtimeWaiting = Boolean(this.runId && this.restart)
   }
 
   /** 从受理到建立任务归属均属于在途操作，退出时必须等待。 */
@@ -141,9 +162,11 @@ export class Speech {
   async readTask(taskId) {
     requireValue(!this.retired.has(taskId), 'task_unavailable')
     const task = this.tasks.get(taskId)
+    if (task?.terminalSnapshot) return task.terminalSnapshot
     try {
       const result = await this.transport.getTask(taskId, () => !task?.released)
       if (['succeeded', 'failed', 'cancelled'].includes(result.status) && task) {
+        task.terminalSnapshot = result
         task.terminal = true
         // cancelled 仅表示用户可见终态，Python worker 可能仍在读取输入。
         if (result.status === 'cancelled') this.residentOwners.add(task.inputOwner)

@@ -19,7 +19,7 @@ class FakeAudio extends EventTarget {
   pause() {}
 }
 
-function fixture(access) {
+function fixture(access, onSpeechAudio) {
   FakeAudio.instances = []
   const client = {
     assets: {
@@ -27,7 +27,7 @@ function fixture(access) {
       releaseAccess: vi.fn(async () => {})
     }
   }
-  const output = createAudioOutput(client, { Audio: FakeAudio })
+  const output = createAudioOutput(client, { Audio: FakeAudio, onSpeechAudio })
   outputs.push(output)
   return { client, output }
 }
@@ -60,6 +60,49 @@ test('停止发生在访问请求返回之前，迟到租约立即释放且不�
   await pending
   expect(FakeAudio.instances).toHaveLength(0)
   expect(client.assets.releaseAccess).toHaveBeenCalledWith('late-lease')
+})
+
+test('历史语音共用实时音轨，停止时通知按钮且不驱动舞台口型', async () => {
+  const onSpeechAudio = vi.fn()
+  const { output, client } = fixture(undefined, onSpeechAudio)
+  const request = new AbortController()
+  const onStop = vi.fn()
+  await output.playPreview(guide.audio, { volume: 0.5, signal: request.signal, onStop })
+  const preview = FakeAudio.instances[0]
+  expect(preview.volume).toBe(0.5)
+  expect(onSpeechAudio).not.toHaveBeenCalledWith(preview)
+  await output.play(guide, {})
+  expect(preview.src).toBe('')
+  expect(onStop).toHaveBeenCalledTimes(1)
+  expect(client.assets.releaseAccess).toHaveBeenCalledExactlyOnceWith('lease')
+  const live = FakeAudio.instances[1]
+  expect(onSpeechAudio).toHaveBeenLastCalledWith(live)
+  request.abort()
+  expect(live.src).toBe('audio')
+})
+
+test('关闭记录时取消待加载的历史语音，读取失败时反馈给对应按钮', async () => {
+  let resolveAccess
+  const { output, client } = fixture(
+    () =>
+      new Promise((resolve) => {
+        resolveAccess = resolve
+      })
+  )
+  const request = new AbortController()
+  const onStop = vi.fn()
+  const pending = output.playPreview(guide.audio, { volume: 1, signal: request.signal, onStop })
+  request.abort()
+  resolveAccess({ url: 'late', leaseId: 'late-lease' })
+  await pending
+  expect(FakeAudio.instances).toHaveLength(0)
+  expect(onStop).toHaveBeenCalledTimes(1)
+  expect(client.assets.releaseAccess).toHaveBeenCalledWith('late-lease')
+
+  const error = Error('音频文件缺失')
+  client.assets.access.mockRejectedValueOnce(error)
+  await output.playPreview(guide.audio, { volume: 1, signal: new AbortController().signal, onStop })
+  expect(onStop).toHaveBeenLastCalledWith(error)
 })
 
 test('正式客户端续期活动访问与草稿，关闭后释放且停止续期', async () => {

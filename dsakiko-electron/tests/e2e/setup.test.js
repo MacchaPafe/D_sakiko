@@ -209,14 +209,23 @@ test.skipIf(!existsSync(join(root, 'resources/builtin-characters/manifest.json')
       await page.getByRole('button', { name: '重试', exact: true }).click()
       await page.getByRole('heading', { name: '资源准备完成', exact: true }).waitFor()
       expect(await page.getByRole('button', { name: '开始使用', exact: true }).isDisabled()).toBe(
-        true
+        false
       )
       expect((await backend.setup.getJob(id)).download.bytes).toBe(512 * 1024)
       expect((await backend.onboarding.getState()).initialized).toBe(false)
-      expect(await backend.characters.list()).toHaveLength(3)
+      expect(await backend.characters.list()).toHaveLength(0)
       await page.screenshot({ path: join(output, 'complete.png') })
       await page.getByRole('button', { name: '返回资源选择' }).click()
       await page.getByRole('heading', { name: '添加语音功能' }).waitFor()
+      await page.getByRole('button', { name: '上一步', exact: true }).click()
+      await page.getByRole('button', { name: '从旧版本导入数据', exact: true }).waitFor()
+      expect((await backend.onboarding.getState()).path).toBeNull()
+      const requestCount = source.control.requests
+      await page.getByRole('button', { name: '快速开始', exact: true }).click()
+      await page.getByRole('heading', { name: '添加语音功能' }).waitFor()
+      expect(await page.getByRole('heading', { name: '资源准备完成', exact: true }).count()).toBe(0)
+      expect(source.control.requests).toBe(requestCount)
+      expect(await backend.characters.list()).toHaveLength(0)
     } catch (error) {
       console.log('失败时任务快照', await backend?.setup.listJobs())
       console.log(

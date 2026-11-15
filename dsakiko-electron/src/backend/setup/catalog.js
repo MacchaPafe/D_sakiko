@@ -126,7 +126,7 @@ export class SetupCatalog {
     this.releases = null
   }
 
-  async components({ refresh = false, accelerator = 'cpu' } = {}) {
+  async components({ refresh = false, accelerator = 'cpu', managed = false } = {}) {
     requireValue(['cpu', 'cuda'].includes(accelerator), 'unsupported_accelerator')
     const target = `${this.platform}-${this.arch}`
     requireValue(
@@ -160,6 +160,22 @@ export class SetupCatalog {
         requireValue(response.ok, 'resource_catalog_unavailable')
         this.runtimes = runtimePackages(await response.json())
       } else await response.body?.cancel()
+      if (managed) {
+        // 共享权重随应用发布的清单是离线基线；发布端可提供更高版本的独立清单。
+        const models = await resourceFetch('runtimes', 'gsv-models.json', {
+          fetch: this.transport,
+          signal: AbortSignal.timeout(15000)
+        })
+        if (models.status === 404) await models.body?.cancel()
+        else {
+          requireValue(models.ok, 'resource_catalog_unavailable')
+          const json = await models.text()
+          requireValue(json.length <= 2 * 1024 * 1024, 'resource_manifest_invalid')
+          const release = validateRelease(JSON.parse(json))
+          requireValue(release.packageId === 'gsv.models', 'resource_manifest_invalid')
+          this.gsvModels = release
+        }
+      }
       this.releases = releases
     }
     for (const release of Object.values(releases)) validateRelease(release)
@@ -187,10 +203,12 @@ export class SetupCatalog {
       {
         id: 'gsv.models',
         kind: 'gsv',
-        version: '2026-11-01',
+        version: this.gsvModels?.version ?? '2026-11-01',
         available: true,
         requires: [],
-        files: await readJson(path.join(this.directory, 'gsv-files.json'))
+        files:
+          this.gsvModels?.files.map((file) => ({ ...file, source: 'gsv' })) ??
+          (await readJson(path.join(this.directory, 'gsv-files.json')))
       }
     ]
     for (const id of ['anon', 'soyo', 'sakiko'])
@@ -198,7 +216,9 @@ export class SetupCatalog {
         id: 'voice.' + id,
         kind: 'voice',
         characterId: id,
-        version: releases.voices.version,
+        version:
+          releases.voices.components?.find((component) => component.id === 'voice.' + id)
+            ?.version ?? releases.voices.version,
         available: true,
         requires: ['gsv.models', 'gsv.runtime'],
         files: releases.voices.files
@@ -208,7 +228,7 @@ export class SetupCatalog {
     return result
   }
 
-  async select(selection, options = {}) {
+  async select(selection, options = {}, availableComponents) {
     requireValue(
       Array.isArray(selection) &&
         selection.every((id) =>
@@ -216,7 +236,9 @@ export class SetupCatalog {
         ),
       'invalid_resource_selection'
     )
-    const components = await this.components(options)
+    const components = availableComponents
+      ? copy(availableComponents)
+      : await this.components(options)
     const ids = new Set()
     function add(id) {
       if (ids.has(id)) return

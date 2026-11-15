@@ -6,6 +6,7 @@
  * @typedef {object} PlaybackOutput 音频/模型输出由宿主注入，可只实现支持的能力。
  * @property {(guide: import('../../../shared/contracts/presentation.js').Guide, options: PlayOptions) => void | Promise<void>} [play] 从给定偏移播放，不回报后端进度。
  * @property {() => void} [stop] 停止当前普通播放。
+ * @property {(visible: boolean) => void} [setVisible] 隐藏时暂停本客户端全部音轨。
  * @property {(options: PlaybackOptions) => void} [setVolume] 更新本地总音量。
  * @property {(settings: import('../../../shared/contracts/presentation.js').BgmSettings, options: {volume: number}) => void | Promise<void>} [setBgm] 独立背景音轨。
  * @property {(volume: number) => void} [setBgmVolume] 已乘总音量的背景音量。
@@ -71,9 +72,11 @@ export class Performance {
     this.anchor = null
     this.stopObserving = null
     this.replayTimer = null
+    this.replayEnded = null
     this.closed = false
     this.playingId = null
     this.playEpoch = 0
+    this.visible = true
     this.storageListener = (event) => {
       if (event.key === PREFERENCES_KEY || event.key === null) {
         this.options = preferences(this.storage)
@@ -128,7 +131,12 @@ export class Performance {
    */
   follow(sequenceId) {
     this.stopObserving?.()
+    this.sequenceId = sequenceId
+    this.latest = null
+    this.resumeLive()
+    if (!sequenceId) return
     this.stopObserving = this.client.performance.observe(sequenceId, (update) => {
+      if (this.closed || this.sequenceId !== sequenceId) return
       const progress = update.snapshot ?? update
       this.latest = { progress, receivedAt: this.now() }
       if (this.mode === 'live') this.adopt(this.latest)
@@ -138,6 +146,10 @@ export class Performance {
   /** 相同 guide 的新锚点只校准字幕，不重复启动音频；其他客户端的播放状态不参与判断。 */
   adopt(latest) {
     this.anchor = latest
+    if (!this.visible) {
+      this.publish()
+      return
+    }
     const current = latest.progress.current ?? latest.progress.transition
     const id = current?.guideId ?? null
     if (this.playingId !== id) {
@@ -162,6 +174,17 @@ export class Performance {
         })
     }
     this.publish()
+  }
+  /** @param {boolean} visible 窗口可见状态。 @returns {void} 隐藏时保持最新锚点，恢复从当前进度播放。 */
+  setVisible(visible) {
+    if (this.visible === visible) return
+    this.visible = visible
+    this.playEpoch += 1
+    this.playingId = null
+    this.output?.stop?.()
+    this.output?.setVisible?.(visible)
+    if (!visible && this.mode === 'replay') this.resumeLive()
+    else if (visible && this.latest) this.adopt(this.latest)
   }
   /**
    * 按时间锚点推算当前本地播放与字幕位置。
@@ -216,12 +239,13 @@ export class Performance {
   /**
    * 用历史材料启动本地回放；继续接收实时快照但不自动打断回放。
    * @param {import('../../../shared/contracts/presentation.js').ReplayMaterials} materials 已保存的材料，不隐式重合成。
-   * @param {{silent?: boolean}} [options] 是否静音，仅影响本地。
+   * @param {{silent?: boolean, onEnd?: () => void}} [options] 本地静音与结束通知。
    * @returns {void} 回放计时与后端 Turn 生命周期独立。
    */
-  replay(materials, { silent = false } = {}) {
+  replay(materials, { silent = false, onEnd = null } = {}) {
+    if (this.mode === 'replay') this.resumeLive()
     this.mode = 'replay'
-    clearTimeout(this.replayTimer)
+    this.replayEnded = onEnd
     this.output?.stop?.()
     this.playingId = null
     const guides = structuredClone(materials.guides)
@@ -230,41 +254,47 @@ export class Performance {
       if (this.closed || this.mode !== 'replay') return
       const guide = guides[index]
       if (!guide) {
-        this.playingId = null
-        this.output?.stop?.()
-        this.anchor = null
-        this.publish()
+        this.resumeLive()
         return
       }
-      const durationMs =
-        guide.audio?.durationMs ?? Math.max(800, Array.from(guide.text ?? '').length * 80)
+      const readingMs = Math.max(800, Array.from(guide.text ?? '').length * 80)
       const guideId = 'replay:' + index
       index += 1
-      this.anchor = {
-        receivedAt: this.now(),
-        progress: {
-          scene: materials.scene,
-          current: { guideId, guide, durationMs, elapsedMs: 0, recurring: false },
-          transition: null
-        }
-      }
       this.playingId = guideId
-      this.playEpoch += 1
-      const epoch = this.playEpoch
-      Promise.resolve(
-        this.output?.play?.(guide, {
-          offsetMs: 0,
-          volume: this.options.volume,
-          silent,
-          recurring: false
-        })
-      ).catch((error) => {
-        if (epoch !== this.playEpoch) return
-        this.localProblem = { code: 'playback_failed', message: error.message }
+      const epoch = ++this.playEpoch
+      const show = (audioMs) => {
+        if (this.closed || epoch !== this.playEpoch) return
+        const durationMs = Math.max(audioMs ?? readingMs, guide.motionDurationMs ?? 0)
+        this.anchor = {
+          receivedAt: this.now(),
+          progress: {
+            scene: materials.scene,
+            current: { guideId, guide, durationMs, elapsedMs: 0, recurring: false },
+            transition: null
+          }
+        }
+        this.replayTimer = setTimeout(() => {
+          if (this.closed || epoch !== this.playEpoch) return
+          this.output?.stop?.()
+          const pause = guides[index]?.pauseBeforeMs ?? 0
+          if (pause > 0) this.replayTimer = setTimeout(next, pause)
+          else next()
+        }, durationMs)
         this.publish()
-      })
-      this.publish()
-      this.replayTimer = setTimeout(next, durationMs)
+      }
+      // 等音频开始再启动本句计时，加载资源的时间不能挤占台词播放。
+      if (guide.audio && !silent && this.output?.play)
+        Promise.resolve(
+          this.output.play(guide, {
+            offsetMs: 0,
+            volume: this.options.volume,
+            recurring: false
+          })
+        ).then(
+          () => show(guide.audio.durationMs),
+          () => show(null)
+        )
+      else show(guide.audio?.durationMs)
     }
     next()
   }
@@ -273,6 +303,8 @@ export class Performance {
    * @returns {void} 丢弃本地回放锚点。
    */
   resumeLive() {
+    const onEnd = this.replayEnded
+    this.replayEnded = null
     this.mode = 'live'
     clearTimeout(this.replayTimer)
     this.playEpoch += 1
@@ -283,6 +315,7 @@ export class Performance {
       this.anchor = null
       this.publish()
     }
+    onEnd?.()
   }
   /**
    * 手动发送仅在后端确认受理后退出本地回放；失败保留当前回放。

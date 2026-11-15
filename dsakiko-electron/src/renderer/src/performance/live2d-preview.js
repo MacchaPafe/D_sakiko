@@ -1,6 +1,7 @@
 import { Application, RenderTexture } from 'pixi.js'
 import { Live2DModel } from 'pixi-live2d-display'
 import { createRuntimeAdapter } from './live2d-adapter.js'
+import { defaultStageLayout } from './stage-layout.js'
 
 /** @typedef {{left: number, top: number, width: number, height: number}} ModelBounds 模型局部坐标中的不透明范围，避免透明画布改变构图。 */
 
@@ -50,13 +51,29 @@ function measureModel(app, model) {
 
 /** 引导流程共用的真实模型画布；不创建聊天、不调度语音。 */
 export class Live2DPreview {
-  /** @param {HTMLElement} element 画布容器。 @param {{tracking?: boolean, referenceWidth?: number}} options 鼠标追踪与舞台参考宽度。 */
-  constructor(element, { tracking = true, referenceWidth = 864 } = {}) {
+  /**
+   * @param {HTMLElement} element 决定画布缓冲区大小的容器。
+   * @param {{tracking?: boolean, referenceWidth?: number, stage?: boolean, framingElement?: HTMLElement, getReferenceWidth?: () => number}} options 舞台构图及追踪。分栏动画可单独指定可见区域和当前参考宽度。
+   */
+  constructor(
+    element,
+    {
+      tracking = true,
+      referenceWidth = 864,
+      stage = false,
+      framingElement = element,
+      getReferenceWidth = () => referenceWidth
+    } = {}
+  ) {
     this.element = element
+    this.framingElement = framingElement
+    this.getReferenceWidth = getReferenceWidth
     this.destroyed = false
     this.visible = true
     this.tracking = tracking
-    this.referenceWidth = referenceWidth
+    this.stage = stage
+    this.zoom = 1
+    this.stageLayout = null
     this.app = new Application({
       backgroundAlpha: 0,
       antialias: true,
@@ -69,6 +86,7 @@ export class Live2DPreview {
     element.appendChild(this.app.view)
     this.resize = new ResizeObserver(() => this.fit())
     this.resize.observe(element)
+    if (framingElement !== element) this.resize.observe(framingElement)
     this.app.ticker.add(() => this.model?.update(Math.min(this.app.ticker.deltaMS, 50)))
     this.pointer = (event) => this.lookAt(event.clientX, event.clientY)
     this.leave = (event) => {
@@ -97,8 +115,11 @@ export class Live2DPreview {
       .find((motion) => /idle.*_C\.(motion3\.json|mtn)$/i.test(motion.File ?? motion.file ?? ''))
     // 原始包把所有表情动作放在 Default 中；预览只能循环正面待机，不能随机抽到生气或说话动作。
     const idleGroup = 'WelcomeIdle'
-    if (json.FileReferences) json.FileReferences.Motions = { [idleGroup]: idle ? [idle] : [] }
-    else json.motions = { [idleGroup]: idle ? [idle] : [] }
+    const available = this.stage ? { ...motions } : {}
+    available[idleGroup] = idle ? [idle] : []
+    if (json.FileReferences) json.FileReferences.Motions = available
+    else json.motions = available
+    this.motionGroups = available
     const loading = Live2DModel.from(
       { ...json, url },
       {
@@ -145,6 +166,7 @@ export class Live2DPreview {
       this.bounds = measureModel(this.app, model)
       this.model = model
       this.adapter = adapter
+      if (this.stage) this.stageLayout = defaultStageLayout(version)
       this.app.stage.addChild(model)
       this.fit()
       this.syncVisibility()
@@ -158,35 +180,38 @@ export class Live2DPreview {
     }
   }
 
-  /** @param {number} width 当前布局的设计参考宽度。 @returns {void} 保留模型和渲染器，仅更新缩放与位置。 */
-  setReferenceWidth(width) {
-    this.referenceWidth = width
-    this.fit()
-  }
-
   fit() {
     if (this.destroyed) return
-    const width = Math.max(1, this.element.clientWidth)
-    const height = Math.max(1, this.element.clientHeight)
-    this.app.renderer.resize(width, height)
+    const bufferWidth = Math.max(1, this.element.clientWidth)
+    const bufferHeight = Math.max(1, this.element.clientHeight)
+    // 引导分栏变宽时沿用已分配的画布，避免逐帧重设高分屏的渲染缓冲区。
+    if (this.app.screen.width !== bufferWidth || this.app.screen.height !== bufferHeight)
+      this.app.renderer.resize(bufferWidth, bufferHeight)
     if (!this.model || !this.bounds) return
-    // 两种引导布局的人物高度与顶端一致，仅舞台参考宽度不同。
-    const layoutScale = Math.min(width / this.referenceWidth, height / 1024)
-    const scale = (1472 * layoutScale) / this.bounds.height
+    const width =
+      this.framingElement === this.element
+        ? bufferWidth
+        : this.framingElement.getBoundingClientRect().width
+    const layoutScale = Math.min(Math.max(1, width) / this.getReferenceWidth(), bufferHeight / 1024)
+    this.layoutScale = layoutScale
+    const modelHeight = this.stage ? 1024 * (this.stageLayout?.scale ?? 1) : 1472
+    const modelTop = this.stage ? (this.stageLayout?.offsetY ?? 64) : 144
+    const scale = (modelHeight * layoutScale * this.zoom) / this.bounds.height
     this.model.scale.set(scale)
     this.model.position.set(
-      width / 2 - (this.bounds.left + this.bounds.width / 2) * scale,
-      144 * layoutScale - this.bounds.top * scale
+      width / 2 +
+        (this.stage ? (this.stageLayout?.offsetX ?? 0) * layoutScale : 0) -
+        (this.bounds.left + this.bounds.width / 2) * scale,
+      modelTop * layoutScale - this.bounds.top * scale
     )
   }
 
   /** @param {number} x 窗口内鼠标横坐标。 @param {number} y 窗口内鼠标纵坐标。 @returns {void} 轻微头部、视线与身体跟随，SDK 负责平滑插值。 */
   lookAt(x, y) {
     if (!this.tracking || !this.model || !this.visible || document.hidden) return
-    const rect = this.element.getBoundingClientRect()
-    const layoutScale = Math.min(rect.width / this.referenceWidth, rect.height / 1024)
+    const rect = this.framingElement.getBoundingClientRect()
     const eyeX = rect.left + rect.width / 2
-    const eyeY = rect.top + 300 * layoutScale
+    const eyeY = rect.top + 300 * this.layoutScale
     const horizontal = Math.max(-0.55, Math.min(0.55, (x - eyeX) / (rect.width * 0.9)))
     const vertical = Math.max(-0.4, Math.min(0.4, (eyeY - y) / (rect.height * 0.8)))
     // model.focus 会把小位移归一化成满幅转头；直接给 FocusController 保留距离感。

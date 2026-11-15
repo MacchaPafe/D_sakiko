@@ -3,18 +3,18 @@
 来源：D_Sakiko Design / Designs / Welcome `5046:2048`，2026-11-14。
 按变量语义核对欢迎页实际渲染；Figma 的强调色对应 shadcn 的主操作色，不使用模糊名称匹配得到的浅色 hover 背景。原 demo 的色值已随欢迎页替换，首版仅浅色。
 
-| FigmaName | ref |
-| --- | --- |
-| color/sidebar | var(--card) |
-| color/stage | var(--muted) |
-| color/surface | var(--background) |
-| color/text | var(--foreground) |
-| color/muted | var(--muted-foreground) |
-| color/accent | var(--primary) |
-| color/selected | var(--secondary) |
-| color/border | var(--border) |
-| color/glass-toolbar | var(--glass-toolbar) |
-| color/glass-highlight | var(--glass-highlight) |
+| FigmaName             | ref                     |
+| --------------------- | ----------------------- |
+| color/sidebar         | var(--card)             |
+| color/stage           | var(--muted)            |
+| color/surface         | var(--background)       |
+| color/text            | var(--foreground)       |
+| color/muted           | var(--muted-foreground) |
+| color/accent          | var(--primary)          |
+| color/selected        | var(--secondary)        |
+| color/border          | var(--border)           |
+| color/glass-toolbar   | var(--glass-toolbar)    |
+| color/glass-highlight | var(--glass-highlight)  |
 
 欢迎背景来自画板 IMAGE fill，保存为 `src/renderer/src/assets/welcome/background.png`；图标和文字标识分别来自 `5054:968`／`5054:960` 的 SVG 导出，同目录下命名为 `logo.svg`／`wordmark.svg`。角色主体始终由后端短期 URL 加载 Live2D，不使用截图替代。
 
@@ -27,3 +27,18 @@
 通高内容区按 Figma 使用 40/48 px 内边距、32 px 区块间隔；在小窗口压缩为 24 px，中间滚动而底部操作固定。下载视图按实际任务显示选中项目，不照搬示例中的已就绪 ASR 和示例百分比。角色语音的单项容量只显示自身待下载文件，不包含单列展示的公共引擎；底部总下载量包含所选项目及依赖，始终使用后端去重值。
 
 底部容量固定标签与 112 px 数值区域，数值右对齐、使用等宽数字和两位小数；更新标记预留 14 px，仅核对超过 300 ms 后显示。核对期间保留上次结果，不以加载文案替换整行；失败时数值显示“核对失败”，并禁止按旧估计开始下载，刷新成功后恢复。
+
+主页 `5005:38511`、历史 `5012:3160`、通知 `5086:2319` 已结合原始树与 Electron 截图核对。以下名称曾未匹配或误匹配为 ring／toolbar，现按用途分开；首版使用暖色模式。
+
+| FigmaName            | ref                   |
+| -------------------- | --------------------- |
+| color/role           | var(--role-surface)   |
+| color/subtitle       | var(--subtitle)       |
+| color/speaker        | var(--speaker)        |
+| color/subtitle-rule  | var(--subtitle-rule)  |
+| color/shadow-text    | var(--shadow-text)    |
+| color/shadow-card    | var(--shadow-card)    |
+| color/glass-composer | var(--glass-composer) |
+| color/glass-history  | var(--glass-history)  |
+
+主页字幕的未读态是本轮确认的交互扩展，以 subtitle 色 49% 混合透明形成；Figma 未提供该状态的独立变量。主页、历史、后台下载和语音就绪根的 Motion 覆盖均完整、无动画轨道。当前 design_diff 的服务调用超时，未保存本轮基线。

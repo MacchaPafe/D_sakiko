@@ -1,6 +1,13 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readJson, writeJson, requireValue, SerialQueue, SnapshotBus } from '../core/support.js'
+import {
+  readJson,
+  writeJson,
+  requireValue,
+  SerialQueue,
+  SnapshotBus,
+  uuid
+} from '../core/support.js'
 import { installBuiltinConnection } from '../setup/bindings.js'
 import { BuiltinResources } from './builtin-resources.js'
 
@@ -61,6 +68,7 @@ export class Onboarding {
       path: null,
       stage: 'welcome',
       jobId: null,
+      preparationId: null,
       initialized: false,
       completedAt: null
     })
@@ -69,19 +77,23 @@ export class Onboarding {
   async getState() {
     const state = await this.state()
     const { generation } = await this.settings.get()
-    const connection = (await this.settings.listConnections()).find(
-      (item) => item.id === generation.connectionId
-    )
+    const connections = await this.settings.listConnections()
+    const connection = connections.find((item) => item.id === generation.connectionId)
     const requiresCredential =
       connection && !['openai-compatible', 'ollama', 'vllm'].includes(connection.provider)
     const configured =
       !!connection?.models.some((model) => model.id === generation.modelId) &&
       (!requiresCredential || connection.credentialConfigured)
-    const connectionState = configured
-      ? connection.id === 'builtin-up'
-        ? 'builtin'
-        : 'configured'
-      : 'missing'
+    const customConfigured = connections.some(
+      (item) => item.id !== 'builtin-up' && item.models.length
+    )
+    const connectionState = customConfigured
+      ? 'configured'
+      : configured
+        ? connection.id === 'builtin-up'
+          ? 'builtin'
+          : 'configured'
+        : 'missing'
     // 未发布原型的确认字段不再参与公开契约或后续写入。
     delete state.noticeAcknowledged
     return { ...state, connectionState }
@@ -158,6 +170,8 @@ export class Onboarding {
       requireValue(['quick', 'legacy'].includes(options?.path), 'invalid_onboarding_path')
       requireValue(!state.path || state.path === options.path, 'onboarding_already_started')
       if (state.stage === 'optional-resources') return this.getState()
+      requireValue(!['committing', 'returning'].includes(state.stage), 'onboarding_busy')
+      state.preparationId ??= uuid()
       state.path = options.path
       if (options.path === 'legacy') {
         const job = await this.setup.getJob(options.planId)
@@ -177,17 +191,52 @@ export class Onboarding {
   }
 
   async prepareQuick(state) {
+    await this.readBuiltins()
     state.path = 'quick'
-    state.stage = 'preparing'
+    state.stage = 'optional-resources'
+    state.preparationId ??= uuid()
     state.jobId = null
     await this.save(state)
-    await this.ensureBuiltins()
-    if (this.builtinConnection)
-      await this.settings.update({
-        generation: await installBuiltinConnection(this.settings, this.builtinConnection)
-      })
-    state.stage = 'optional-resources'
-    await this.save(state)
+  }
+
+  /** @returns {Promise<void>} 启动恢复只完成已受理的撤回，不自动提交正式初始化。 */
+  async initialize() {
+    if ((await this.state()).stage === 'returning') await this.returnToWelcome()
+  }
+
+  /** @returns {Promise<object>} 供资源模块判定准备身份和候选角色，不向前端暴露磁盘路径。 */
+  async resourceContext() {
+    const state = await this.state()
+    const deferred = !state.initialized && !!state.preparationId
+    const candidates = deferred ? (await this.readBuiltins()).characters.map((role) => role.id) : []
+    return { ...state, deferred, candidates }
+  }
+
+  /** @returns {Promise<import('../../shared/contracts/setup.js').OnboardingState>} 撤回快速开始；停止旧计划，保留独立登记的完整资源。 */
+  async returnToWelcome() {
+    return this.queue.run('state', async () => {
+      requireValue(!this.closed, 'onboarding_closed')
+      const state = await this.state()
+      if (state.stage === 'welcome' && !state.path) return this.getState()
+      requireValue(
+        state.path === 'quick' &&
+          !state.initialized &&
+          !!state.preparationId &&
+          ['optional-resources', 'returning'].includes(state.stage),
+        'onboarding_not_reversible',
+        '当前初始化已经提交，无法返回重新选择。'
+      )
+      // 先持久关闭受理入口；进程中断后继续撤回，旧请求不能趁清理时新建任务。
+      state.stage = 'returning'
+      await this.save(state)
+      await this.setup.withdrawPreparation(state.preparationId)
+      state.path = null
+      state.preparationId = null
+      state.jobId = null
+      state.stage = 'welcome'
+      await this.save(state)
+      return this.getState()
+    })
   }
 
   /** 导入异常页确认保留已有内容并继续。 */
@@ -195,7 +244,8 @@ export class Onboarding {
     return this.queue.run('state', async () => {
       requireValue(!this.closed, 'onboarding_closed')
       const state = await this.state()
-      if (state.initialized || state.stage === 'optional-resources') return this.getState()
+      if (state.initialized || ['optional-resources', 'committing'].includes(state.stage))
+        return this.getState()
       if (state.path === 'quick' && state.stage === 'preparing') {
         await this.prepareQuick(state)
       } else {
@@ -273,7 +323,8 @@ export class Onboarding {
     return this.queue.run('state', async () => {
       requireValue(!this.closed, 'onboarding_closed')
       const state = await this.state()
-      if (state.initialized || state.stage === 'optional-resources') return this.getState()
+      if (state.initialized || ['optional-resources', 'committing'].includes(state.stage))
+        return this.getState()
       requireValue(state.path, 'onboarding_not_started')
       if (state.path === 'quick') {
         await this.prepareQuick(state)
@@ -292,12 +343,26 @@ export class Onboarding {
     })
   }
 
-  /** 完成或跳过可选下载后进入主页，只记录初始化完成，不伪造语音就绪。 */
+  /** 最后提交正式角色、连接和资源绑定；失败保留 committing，重试不重复创建。 */
   async finish() {
     await this.prepareOptionalResources()
     return this.queue.run('state', async () => {
       requireValue(!this.closed, 'onboarding_closed')
       const state = await this.state()
+      if (state.initialized) return this.getState()
+      requireValue(
+        state.path && ['optional-resources', 'committing'].includes(state.stage),
+        'onboarding_not_ready'
+      )
+      state.stage = 'committing'
+      await this.save(state)
+      await this.setup.commitPreparation(state.preparationId, async () => {
+        await this.ensureBuiltins()
+        if (state.path === 'quick' && this.builtinConnection)
+          await this.settings.update({
+            generation: await installBuiltinConnection(this.settings, this.builtinConnection)
+          })
+      })
       state.stage = 'complete'
       state.initialized = true
       state.completedAt ??= Date.now()
@@ -305,6 +370,7 @@ export class Onboarding {
       return this.getState()
     })
   }
+
   async observe(listener) {
     return this.bus.subscribe('state', listener, await this.getState())
   }

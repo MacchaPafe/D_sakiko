@@ -1,17 +1,18 @@
 import { installSingleInstance } from './single-instance.js'
-import { app, dialog, ipcMain, Menu, Tray } from 'electron'
+import { app, dialog, ipcMain, Menu, shell, Tray } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { readJson } from '../backend/core/support.js'
 import { join, dirname } from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { resolveDataDirectories, validateDataDirectories } from './data-directories.js'
 import { IMPORT_PURPOSES } from '../shared/contracts/assets.js'
+import { providerPresets } from '../shared/contracts/llm-providers.js'
 import { createCoreBackend } from '../backend/create-core-backend.js'
 import { startHttpServer } from '../server/http-server.js'
 import { SpeechProcess } from './processes/speech-process.js'
 import { createMainWindow } from './windows/main-window.js'
-import { installWindowCloseBehavior } from './windows/close-behavior.js'
+import { installWindowCloseBehavior, publishWindowVisibility } from './windows/close-behavior.js'
 import { requireValue } from '../backend/core/support.js'
 
 let mainWindow = null
@@ -20,7 +21,7 @@ let transport = null
 let speechProcess = null
 let quitting = false
 let directories
-const instance = installSingleInstance(app, () => mainWindow)
+const instance = installSingleInstance(app, () => mainWindow, publishWindowVisibility)
 
 /** IPC 是宿主权限入口，只信任当前主窗口顶层页面，不能接受子 frame 借用权限。 */
 function checkSender(event) {
@@ -42,6 +43,7 @@ async function startApplication() {
   const pythonRoot = join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'python')
   const resourcesRoot = join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'resources')
   const builtinConnection = await readJson(join(resourcesRoot, 'builtin-connection.json'))
+  const developmentAsr = join(app.getAppPath(), '.local/models/whisper-small')
   speechProcess = new SpeechProcess(pythonRoot, directories.cacheRoot, async () => {
     const runtime =
       process.env.DSAKIKO_PYTHON && !app.isPackaged
@@ -83,7 +85,10 @@ async function startApplication() {
     builtinConnection,
     recognitionModelDirectory: app.isPackaged
       ? undefined
-      : process.env.DSAKIKO_ASR_MODEL || join(app.getAppPath(), '.local/models/whisper-small'),
+      : process.env.DSAKIKO_ASR_MODEL ||
+        (existsSync(join(developmentAsr, 'onnx/encoder_model_quantized.onnx'))
+          ? developmentAsr
+          : undefined),
     recognitionDependencyEntry: app.isPackaged
       ? undefined
       : createRequire(import.meta.url)
@@ -91,6 +96,7 @@ async function startApplication() {
           .replace(/\.cjs$/, '.mjs'),
     recognitionWorkerPath: join(app.getAppPath(), 'out/main/recognition-worker.js'),
     connectSpeech: () => speechProcess.connect(),
+    restartSpeech: () => speechProcess.restart(),
     templateDirectory: join(app.getAppPath(), 'out/main/prompts')
   })
   // Electron 的 file 页面 fetch 来源为 null，跨域 Image 纹理来源为 file://。
@@ -144,6 +150,12 @@ async function startApplication() {
     return imported
   })
   mainWindow = createMainWindow()
+  ipcMain.handle('host:open-provider-key-page', (event, provider) => {
+    checkSender(event)
+    const page = providerPresets.find((preset) => preset.id === provider)?.keyPage
+    requireValue(page, 'unsupported_provider')
+    return shell.openExternal(page)
+  })
   const closeBehavior = installWindowCloseBehavior({
     app,
     window: mainWindow,
@@ -178,9 +190,12 @@ async function startApplication() {
 }
 // 语音先拒绝新任务并完成音频交接；此时保留心跳，避免 Python 抢先清理输出。
 app.on('before-quit', (event) => {
-  if (quitting || !instance.primary) return
+  if (!instance.primary) return
   event.preventDefault()
+  if (quitting) return
   quitting = true
+  // 退出时先结束渲染进程，避免页面把随后关闭的 WebSocket 当成意外断线。
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
   Promise.resolve()
     .then(() => backend?.speech.close?.())
     .catch((error) => console.error('语音交接失败', error))
@@ -227,7 +242,6 @@ if (instance.primary) {
     .then(startApplication)
     .catch((error) => {
       console.error('启动失败', error)
-      quitting = true
       app.quit()
     })
 }

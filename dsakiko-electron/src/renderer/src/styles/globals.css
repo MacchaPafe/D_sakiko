@@ -47,10 +47,21 @@
   --selected-border: #d1b4bd;
   --success: #4a7859;
   --success-background: #e7efe8;
+  --warning: #9a6732;
+  --warning-background: #f5ece0;
+  --warning-border: #dec4a4;
   --popover: #fffdfa;
   --glass-toolbar: #fffdfadb;
   --glass-highlight: #fffdfaa6;
   --shadow-ink: #241c192e;
+  --role-surface: #eae4dc;
+  --subtitle: #fff9f1;
+  --speaker: #f3cfd5;
+  --subtitle-rule: #fff9f13d;
+  --shadow-text: #100d0c8c;
+  --shadow-card: #403b3614;
+  --glass-composer: #fffdfae5;
+  --glass-history: #f4f1ebf5;
   --radius: 0.75rem;
   color-scheme: light;
   font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
@@ -81,12 +92,28 @@ body,
   overflow: hidden;
 }
 
-.welcome-page {
+@property --onboarding-preparation {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+.onboarding-shell {
+  --onboarding-preparation: 0;
+  --onboarding-welcome-panel: 40vw;
+  --onboarding-setup-panel: max(520px, 46.666667vw);
+  --onboarding-control-duration: 140ms;
   display: grid;
-  grid-template-columns: 3fr 2fr;
+  grid-template-columns: minmax(0, 1fr) calc(
+      (1 - var(--onboarding-preparation)) * var(--onboarding-welcome-panel) +
+        var(--onboarding-preparation) * var(--onboarding-setup-panel)
+    );
   width: 100%;
   height: 100%;
   background: url('../assets/welcome/background.png') center / cover;
+  transition: --onboarding-preparation 280ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.onboarding-shell.setup-page {
+  --onboarding-preparation: 1;
 }
 .welcome-stage {
   position: relative;
@@ -96,7 +123,8 @@ body,
 }
 .welcome-canvas {
   position: absolute;
-  inset: 0;
+  inset: 0 auto 0 0;
+  width: calc(100vw - min(var(--onboarding-welcome-panel), var(--onboarding-setup-panel)));
 }
 .welcome-canvas canvas {
   display: block;
@@ -207,6 +235,9 @@ body,
   font-size: 16px;
   line-height: 24px;
 }
+.onboarding-shell [data-slot='button']:active:not(:disabled) {
+  filter: brightness(0.96);
+}
 .welcome-status {
   position: absolute;
   top: 40%;
@@ -242,8 +273,8 @@ body,
   }
 }
 @media (max-width: 1100px) {
-  .welcome-page {
-    grid-template-columns: minmax(0, 1fr) 408px;
+  .onboarding-shell {
+    --onboarding-welcome-panel: 408px;
   }
   .welcome-entry {
     padding: 24px;
@@ -253,8 +284,8 @@ body,
   }
 }
 @media (max-width: 760px) {
-  .welcome-page {
-    grid-template-columns: minmax(0, 1fr) 328px;
+  .onboarding-shell {
+    --onboarding-welcome-panel: 328px;
   }
   .welcome-card {
     padding: 24px;
@@ -274,16 +305,12 @@ body,
   .welcome-spinner {
     animation: none;
   }
+  .onboarding-shell {
+    --onboarding-control-duration: 0ms;
+    transition: none;
+  }
 }
 
-/* 可选资源与下载页共用 Figma 的 768:672 分栏；小窗口优先保证表单和底部操作可达。 */
-.setup-page {
-  display: grid;
-  grid-template-columns: minmax(0, 8fr) minmax(520px, 7fr);
-  width: 100%;
-  height: 100%;
-  background: url('../assets/welcome/background.png') center / cover;
-}
 .setup-panel {
   min-width: 0;
   min-height: 0;
@@ -291,7 +318,11 @@ body,
   flex-direction: column;
   gap: 32px;
   padding: 40px 48px;
-  background: var(--card);
+  background: color-mix(
+    in srgb,
+    var(--card) calc(var(--onboarding-preparation) * 100%),
+    transparent
+  );
 }
 .setup-brand {
   display: flex;
@@ -318,6 +349,7 @@ body,
   min-width: 0;
   font-size: 14px;
   line-height: 20px;
+  transition: color var(--onboarding-control-duration) ease-out;
 }
 .setup-steps li > span {
   display: flex;
@@ -333,6 +365,7 @@ body,
   height: 2px;
   border-radius: 1px;
   background: var(--selected-border);
+  transition: background-color var(--onboarding-control-duration) ease-out;
 }
 .setup-steps li[aria-current] {
   color: var(--primary);
@@ -341,14 +374,37 @@ body,
   background: var(--primary);
 }
 .setup-scroll {
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
   outline-offset: 4px;
+}
+.setup-view-content {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .welcome-card,
+  .setup-view-content {
+    animation: onboarding-content-enter 160ms ease-out;
+  }
+  @starting-style {
+    .setup-steps li[aria-current='step'] {
+      color: var(--muted-foreground);
+    }
+    .setup-steps li[aria-current='step'] > div {
+      background-color: var(--selected-border);
+    }
+  }
+}
+@keyframes onboarding-content-enter {
+  from {
+    opacity: 0;
+    translate: 6px 0;
+  }
 }
 .setup-heading {
   display: flex;
@@ -423,6 +479,22 @@ body,
   gap: 16px;
   min-width: 0;
 }
+.resource-choice > .resource-choice-line {
+  border-radius: 8px;
+  transition: background-color var(--onboarding-control-duration) ease-out;
+}
+.resource-choice[data-disabled='false'] > .resource-choice-line:is(:hover, :focus-within) {
+  background-color: color-mix(in srgb, var(--role-surface) 55%, transparent);
+}
+.resource-choice[data-selected='true'][data-disabled='false'] > .resource-choice-line {
+  background-color: color-mix(in srgb, var(--secondary) 60%, transparent);
+}
+.onboarding-shell [data-slot='checkbox'] {
+  transition:
+    background-color var(--onboarding-control-duration) ease-out,
+    border-color var(--onboarding-control-duration) ease-out,
+    box-shadow var(--onboarding-control-duration) ease-out;
+}
 .resource-voices .resource-choice-line {
   gap: 12px;
   padding: 10px 0;
@@ -475,6 +547,11 @@ body,
 }
 .resource-badge[data-tone='failed'] {
   color: var(--destructive);
+}
+.setup-panel .resource-badge {
+  transition:
+    background-color var(--onboarding-control-duration) ease-out,
+    color var(--onboarding-control-duration) ease-out;
 }
 .catalog-refresh {
   align-self: flex-start;
@@ -575,9 +652,15 @@ body,
   line-height: 20px;
   color: var(--muted-foreground);
 }
-.resource-task-row > svg {
+.resource-task-icon {
   flex: none;
   color: var(--muted-foreground);
+}
+.setup-panel .resource-task-icon {
+  transition: color var(--onboarding-control-duration) ease-out;
+}
+.setup-panel .resource-task-row[data-status='ready'] .resource-task-icon {
+  color: var(--success);
 }
 .setup-problem {
   margin: 0;
@@ -616,7 +699,7 @@ body,
     padding: 24px;
     gap: 24px;
   }
-  .setup-scroll {
+  .setup-view-content {
     gap: 24px;
   }
   .setup-heading h1 {
@@ -626,4 +709,214 @@ body,
   .setup-secondary {
     flex-basis: 128px;
   }
+}
+
+/* 导入页沿用 Figma 的 20 px 内容间隔和 16/20 px 卡片内边距。 */
+.legacy-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.legacy-directory,
+.legacy-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+}
+.legacy-directory-frame {
+  overflow: clip;
+}
+.legacy-directory {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+}
+.legacy-directory > svg {
+  flex: none;
+  color: var(--primary);
+}
+.legacy-directory .resource-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.legacy-directory-empty {
+  flex-direction: column;
+  padding: 40px 24px;
+  gap: 24px;
+  text-align: center;
+}
+.legacy-directory-empty .resource-label {
+  flex: none;
+  gap: 12px;
+}
+.legacy-scan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 14px;
+}
+.legacy-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.legacy-scan-results {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.legacy-scan-results > div {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 0;
+  overflow: clip;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .legacy-scan-results {
+    animation: legacy-results-enter 210ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+}
+@keyframes legacy-results-enter {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+.legacy-options h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.legacy-card {
+  overflow: hidden;
+  transition:
+    background-color var(--onboarding-control-duration) ease-out,
+    border-color var(--onboarding-control-duration) ease-out;
+}
+.legacy-card[data-selected='true'] {
+  border-color: var(--selected-border);
+}
+.legacy-card[data-interactive='true']:is(:hover, :focus-within) {
+  background-color: color-mix(in srgb, var(--secondary) 40%, var(--popover));
+}
+.legacy-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+}
+.legacy-row > svg {
+  flex: none;
+}
+.legacy-row .resource-name {
+  font-size: 16px;
+  line-height: 24px;
+}
+.legacy-row .resource-description {
+  font-size: 14px;
+  line-height: 20px;
+}
+.legacy-row .resource-badge {
+  max-width: 150px;
+  white-space: normal;
+  text-align: right;
+}
+.legacy-note {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--muted-foreground);
+}
+.legacy-roles {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding: 12px 20px;
+  background: var(--resource-inset);
+  font-size: 14px;
+  color: var(--muted-foreground);
+}
+.legacy-roles > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.legacy-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--popover);
+  padding: 4px 10px 4px 6px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--foreground);
+}
+.legacy-role img {
+  border-radius: 50%;
+  object-fit: cover;
+}
+.legacy-warnings {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.legacy-warnings summary {
+  cursor: pointer;
+}
+.legacy-warnings ul {
+  padding-left: 20px;
+}
+.legacy-warnings li + li {
+  margin-top: 8px;
+}
+.legacy-confirm {
+  width: min(420px, calc(100vw - 48px));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  background: var(--card);
+  color: var(--foreground);
+}
+.legacy-confirm::backdrop {
+  background: rgb(0 0 0 / 30%);
+}
+.legacy-confirm h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+.legacy-confirm p {
+  color: var(--muted-foreground);
+}
+.legacy-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+.setup-steps li[aria-current='step'] ~ li {
+  color: var(--muted-foreground);
+}
+.setup-steps li[aria-current='step'] ~ li > div {
+  background: var(--border);
+}
+
+.legacy-card[data-status='partial'] {
+  border-color: var(--warning-border);
+}
+.legacy-card[data-status='partial'] .resource-badge {
+  color: var(--warning);
+  background: var(--warning-background);
+}
+.legacy-card[data-status='partial'] .legacy-row > svg {
+  color: var(--warning);
 }

@@ -34,6 +34,7 @@ import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '.
  * @property {string[]} queue 普通台词演出计划项 ID 队列（包含当前正在演出的项）。
  * @property {string[]} transitions 过渡动作计划项 ID 队列（当普通台词演出就绪时会被自动清空）。
  * @property {string | null} current 当前正在演出的普通计划项 ID。
+ * @property {number | null} lastLineEndedAt 最近完成的普通计划项的结束时标，用于安排后续台词间隔。
  * @property {string | null} transition 当前正在演出的过渡计划项 ID。
  * @property {number} revision 状态快照递增版本号。
  * @property {boolean} closed 序列是否已关闭。
@@ -141,6 +142,7 @@ export class Performance {
       queue: [],
       transitions: [],
       current: null,
+      lastLineEndedAt: null,
       transition: null,
       revision: 0,
       closed: false,
@@ -228,10 +230,13 @@ export class Performance {
         typeof guide.performance.motion === 'string' &&
         typeof guide.performance.expression === 'string'
     )
-    if (!transition)
+    if (!transition) {
       requireValue(
         typeof guide.ready === 'boolean' && (guide.text === null || typeof guide.text === 'string')
       )
+      const pause = guide.pauseBeforeMs ?? 0
+      requireValue(Number.isFinite(pause) && pause >= 0 && pause <= 60000)
+    }
     const material = transition
       ? { text: null, translation: null, emotion: null, audio: null, ready: true, ...guide }
       : guide
@@ -600,19 +605,26 @@ export class Performance {
     if (sequence.timer) this.clearTimer(sequence.timer)
     sequence.timer = null
     let anchor = this.now()
+    let nextWakeAt = Infinity
     while (true) {
       const current = this.guides.get(sequence.current)
       if (current) {
         if (this.now() < current.endsAt) break
         anchor = current.endsAt
+        sequence.lastLineEndedAt = anchor
         this.finish(sequence, current, 'completed')
       }
       const next = this.guides.get(sequence.queue[0])
       if (!next?.guide.ready) break
+      const pauseUntil = (sequence.lastLineEndedAt ?? -Infinity) + (next.guide.pauseBeforeMs ?? 0)
+      if (pauseUntil > this.now()) {
+        nextWakeAt = pauseUntil
+        break
+      }
       this.clearTransitions(sequence)
       // 为什么取 anchor、readyAt 和 createdAt 的最大值作为开始时间：
-      // 若 Node.js 事件循环定时器略有延迟，已就绪的后续句可紧接上一句结束时间（anchor）补算推进，避免累计延迟；但绝不能早于该句实际创建或音频就绪的时刻开始。
-      next.startedAt = Math.max(anchor, next.readyAt, next.createdAt)
+      // 补算时可沿上一句的结束时标推进，但不能早于句间停顿、计划创建或音频就绪的时刻。
+      next.startedAt = Math.max(anchor, next.readyAt, next.createdAt, pauseUntil)
       next.endsAt = next.startedAt + next.durationMs
       this.startEffects(sequence, next)
       sequence.current = next.id
@@ -635,13 +647,14 @@ export class Performance {
       }
     }
     const timed = this.guides.get(sequence.current) ?? this.guides.get(sequence.transition)
-    if (timed && !timed.recurring) {
+    if (timed && !timed.recurring) nextWakeAt = Math.min(nextWakeAt, timed.endsAt)
+    if (Number.isFinite(nextWakeAt)) {
       sequence.timer = this.setTimer(
         () => {
           this.advance(sequence)
           this.publish(sequence)
         },
-        Math.max(1, timed.endsAt - this.now())
+        Math.max(1, nextWakeAt - this.now())
       )
       sequence.timer?.unref?.()
     }

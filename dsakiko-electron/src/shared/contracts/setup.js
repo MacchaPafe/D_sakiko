@@ -1,7 +1,7 @@
 /**
  * @typedef {'asr'|'gsv'|'voice.anon'|'voice.soyo'|'voice.sakiko'} ResourceChoice
  * @typedef {{characters?: boolean, connections?: boolean, chats?: boolean, gsv?: boolean}} LegacySelection
- * @typedef {{kind: 'legacy', scanId: string, include?: LegacySelection} | {kind: 'download', selection: ResourceChoice[], accelerator?: 'cpu'|'cuda'}} SetupPlanRequest
+ * @typedef {{kind: 'legacy', scanId: string, include?: LegacySelection} | {kind: 'download', selection: ResourceChoice[], preparationId?: string|null, accelerator?: 'cpu'|'cuda', managed?: boolean}} SetupPlanRequest
  */
 
 /**
@@ -9,6 +9,7 @@
  * @property {string} id 计划和任务共用的持久身份。
  * @property {'legacy'|'download'} kind 资料导入或附加资源下载。
  * @property {'planned'|'running'|'paused'|'failed'|'cancelled'|'succeeded'} status 当前任务状态。
+ * @property {string|null} preparationId 所属初始化准备身份；普通后台下载为空。
  * @property {string} phase 当前阶段，重连以整个快照为准。
  * @property {number} expiresAt 尚未执行的计划有效期；暂停任务不按此字段删除。
  * @property {{logical: number, added: number, download: number, cache: number}} space 逻辑大小、预计新增资源占用、下载量和缓存占用。
@@ -26,8 +27,9 @@
  * @typedef {object} OnboardingState
  * @property {1} version 初始化状态版本。
  * @property {'quick'|'legacy'|null} path 初始化路径。
- * @property {'welcome'|'preparing'|'importing'|'optional-resources'|'complete'} stage 当前阶段。
+ * @property {'welcome'|'preparing'|'importing'|'optional-resources'|'returning'|'committing'|'complete'} stage 当前阶段。
  * @property {string|null} jobId 旧版导入任务。
+ * @property {string|null} preparationId 可撤回准备的持久身份；旧任务不能跨身份自动执行。
  * @property {boolean} initialized 是否已允许进入主页。
  * @property {number|null} completedAt 首次完成初始化的时间；旧内部数据可能尚无该字段。
  * @property {'builtin'|'configured'|'missing'} connectionState 当前选中连接及模型的本地配置状态。

@@ -11,6 +11,19 @@ async function connectBackend() {
   return createBackendClient(await desktopHost().getBackendConnection())
 }
 
+function createSurface(element) {
+  const framingElement = element.parentElement
+  return new Live2DPreview(element, {
+    framingElement,
+    getReferenceWidth() {
+      // 分栏和人物参考宽度共用 CSS 的进度，窗口缩放或反向切换时也不会错拍。
+      const style = getComputedStyle(framingElement)
+      const progress = Number(style.getPropertyValue('--onboarding-preparation'))
+      return 864 - 96 * progress
+    }
+  })
+}
+
 function CharacterChoice({ character, selected, onSelect }) {
   function handleSelect() {
     onSelect(character.id)
@@ -29,14 +42,14 @@ function CharacterChoice({ character, selected, onSelect }) {
   )
 }
 
-/** @param {{showCharacterPicker?: boolean, referenceWidth?: number}} props 角色选择器与舞台构图；整段引导保留当前角色和追踪。 @returns {import('react').ReactElement} 引导共用的只读舞台。 */
-export function CharacterPreview({ showCharacterPicker = false, referenceWidth = 864 }) {
+/** @param {{showCharacterPicker?: boolean}} props 是否展示角色选择器。 @returns {import('react').ReactElement} 引导共用的舞台，保留当前角色和追踪。 */
+export function CharacterPreview({ showCharacterPicker = false }) {
   const canvasHost = useRef(null)
   const [preview] = useState(
     () =>
       new WelcomePreview({
         connect: connectBackend,
-        createSurface: (element) => new Live2DPreview(element),
+        createSurface,
         host: desktopHost
       })
   )
@@ -47,10 +60,6 @@ export function CharacterPreview({ showCharacterPicker = false, referenceWidth =
     preview.mount(canvasHost.current)
     return () => preview.dispose()
   }, [preview])
-
-  useEffect(() => {
-    preview.setReferenceWidth(referenceWidth)
-  }, [preview, referenceWidth])
 
   function handleSelect(characterId) {
     void preview.select(characterId)
@@ -68,7 +77,7 @@ export function CharacterPreview({ showCharacterPicker = false, referenceWidth =
       {state.phase === 'loading' && (
         <div className="welcome-status" role="status">
           <LoaderCircle className="welcome-spinner" size={16} aria-hidden="true" />
-          正在加载{name}…
+          正在加载…
         </div>
       )}
       {state.phase === 'error' && (

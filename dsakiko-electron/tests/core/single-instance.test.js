@@ -48,9 +48,15 @@ test('macOS 关窗隐藏，Windows 首次选择持久化并允许改为退出', 
     const app = { name: '数字小祥', quit: vi.fn() }
     const dialog = { showMessageBox: vi.fn(async () => ({ response: 0 })) }
     const window = new EventEmitter()
+    let visible = true
     Object.assign(window, {
       isDestroyed: () => false,
-      hide: vi.fn()
+      isVisible: () => visible,
+      isMinimized: () => false,
+      webContents: { isDestroyed: () => false, send: vi.fn() },
+      hide: vi.fn(() => {
+        visible = false
+      })
     })
     const file = join(directory, 'preferences.json')
     const event = { preventDefault: vi.fn() }
@@ -59,10 +65,16 @@ test('macOS 关窗隐藏，Windows 首次选择持久化并允许改为退出', 
     installWindowCloseBehavior({ ...common, platform: 'darwin' })
     window.emit('close', event)
     expect(window.hide).toHaveBeenCalledOnce()
+    expect(window.webContents.send).toHaveBeenLastCalledWith('host:window-visibility', false)
     expect(app.quit).not.toHaveBeenCalled()
     window.removeAllListeners()
     let restore
-    Object.assign(window, { isMinimized: () => false, show: vi.fn(), focus: vi.fn() })
+    Object.assign(window, {
+      show: vi.fn(() => {
+        visible = true
+      }),
+      focus: vi.fn()
+    })
     class Tray {
       setToolTip() {}
       setContextMenu() {}
@@ -77,6 +89,7 @@ test('macOS 关窗隐藏，Windows 首次选择持久化并允许改为退出', 
     expect(await behavior.getBehavior()).toBe('tray')
     restore()
     expect(window.show).toHaveBeenCalledOnce()
+    expect(window.webContents.send).toHaveBeenLastCalledWith('host:window-visibility', true)
     await behavior.setBehavior('quit')
     window.emit('close', event)
     await expect.poll(() => app.quit.mock.calls.length).toBe(1)

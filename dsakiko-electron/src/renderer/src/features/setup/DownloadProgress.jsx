@@ -19,12 +19,10 @@ function ResourceStatus({ row }) {
   else if (row.status === 'failed') Icon = CircleAlert
   const character = previewCharacters.find((item) => 'voice.' + item.id === row.id)
   return (
-    <div className="resource-choice-line resource-task-row">
-      <Icon
-        size={20}
-        aria-hidden="true"
-        className={Icon === LoaderCircle ? 'welcome-spinner' : undefined}
-      />
+    <div className="resource-choice-line resource-task-row" data-status={row.status}>
+      <span className="resource-task-icon" aria-hidden="true">
+        <Icon size={20} className={Icon === LoaderCircle ? 'welcome-spinner' : undefined} />
+      </span>
       {character && (
         <img className="resource-avatar" src={character.avatar} alt="" width="28" height="28" />
       )}
@@ -40,7 +38,7 @@ function ResourceStatus({ row }) {
 }
 
 /** @param {{state: import('./setup-flow.js').SetupFlowState}} props 真实任务及功能快照。 @returns {import('react').ReactElement} 字节进度与安装就绪分开表达的下载详情。 */
-export function DownloadProgress({ state }) {
+export function DownloadProgress({ state, compact = false }) {
   const job = state.job
   const rows = taskRows(job)
   const engine = rows.filter((row) => !row.id.startsWith('voice.'))
@@ -62,6 +60,33 @@ export function DownloadProgress({ state }) {
       state.features?.characters.some((item) => item.characterId === character.id && item.ready)
     )
     .map((character) => character.name)
+  if (compact)
+    return (
+      <div className="compact-download">
+        <h2>{title}</h2>
+        <div className="download-summary-line">
+          <span>{statusLabel(phase)}</span>
+          <span>{percent == null ? '无需下载' : `${percent}%`}</span>
+        </div>
+        <Progress value={percent} aria-label="资源下载字节进度" />
+        <div className="download-details">
+          <span>
+            {formatBytes(bytes)} / {formatBytes(total)}
+          </span>
+          <span>{speed != null && `${formatBytes(speed)}/s`}</span>
+        </div>
+        <div className="compact-download-rows">
+          {rows.map((row) => (
+            <ResourceStatus key={row.id} row={row} />
+          ))}
+        </div>
+        {job.problem && (
+          <p className="setup-problem" role="alert">
+            {job.problem.message}
+          </p>
+        )}
+      </div>
+    )
   return (
     <>
       <header className="setup-heading">

@@ -102,13 +102,16 @@ async function done(setup, id) {
   throw Error('资源任务未结束')
 }
 
-test('快速初始化幂等释放三个角色，语音保持可选，UP 凭据不进入公开状态', async () => {
+test('快速开始延迟到最终提交才幂等释放三个角色，语音保持可选，UP 凭据不进入公开状态', async () => {
   const { backend } = await fixture({ builtinConnection: { secret: 'builtin-test-secret' } })
   await backend.onboarding.getState()
   expect(await backend.characters.list()).toEqual([])
   expect(Object.keys((await backend.assets.state()).assets)).toHaveLength(0)
   const initial = await backend.onboarding.begin({ path: 'quick' })
   expect(initial.stage).toBe('optional-resources')
+  expect(await backend.characters.list()).toEqual([])
+  expect(await backend.settings.listConnections()).toEqual([])
+  await backend.onboarding.finish()
   expect(await backend.characters.list()).toHaveLength(3)
   expect((await backend.characters.get('sakiko')).forms.map((form) => form.id)).toEqual([
     'black',
@@ -183,6 +186,7 @@ test('内置形态元数据不依赖排序，旧清单仍沿用首形态和共�
   )
   backend.onboarding.builtinDirectory = directory
   await backend.onboarding.begin({ path: 'quick' })
+  await backend.onboarding.finish()
   const character = await backend.characters.get('forms')
   expect(character.defaultFormId).toBe('black')
   expect(character.forms[0]).toMatchObject({ displayName: '白祥', description: '白祥语气' })
@@ -333,7 +337,7 @@ test.each([false, true])('跳过失败导入按落盘数据继续，已保存聊
 test('计划实际保留硬链接、空间扣除大权重，取消不更改源权限或内容', async () => {
   const { root, backend } = await fixture()
   const source = await legacy(root)
-  const file = await put(source, 'GPT_SoVITS/pretrained_models/large.pth', '')
+  const file = await put(source, 'GPT_SoVITS/pretrained_models/gsv-v4-pretrained/s2Gv4.pth', '')
   const handle = await open(file, 'r+')
   await handle.truncate(32 * 1024 * 1024)
   await handle.close()
@@ -518,6 +522,7 @@ test('GSV 环境只使用固定离线命令和最终路径，不使用系统 Pyt
   expect(commands[1].args).toContain('--require-hashes')
   expect(commands[1].args).toContain('--no-index')
   expect(commands[1].options.env.UV_OFFLINE).toBe('1')
+  expect(commands[1].options.env.UV_CACHE_DIR).toBe(path.join(directory, '.uv-cache'))
 })
 
 test('下载暂停跨重启继续，提交中断再次执行不删除已登记文件', async () => {
@@ -573,6 +578,8 @@ test('下载暂停跨重启继续，提交中断再次执行不删除已登记�
   }
   await next.setup.controlJob(plan.id, 'resume')
   expect((await done(next.setup, plan.id)).status).toBe('failed')
+  const cached = path.join(roots.cacheRoot, 'setup', sha256)
+  expect(await readFile(cached)).toEqual(payload)
   const prepared = await next.setup.readJob(plan.id)
   const modelRef = prepared.prepared['asr.models'].refs['config.json']
   const modelPath = await next.assets.localPath(modelRef)
@@ -582,25 +589,34 @@ test('下载暂停跨重启继续，提交中断再次执行不删除已登记�
   expect(await next.assets.localPath(modelRef)).toBe(modelPath)
   expect(await readFile(modelPath)).toEqual(payload)
   expect(downloads).toBe(1)
+  await vi.waitFor(async () => {
+    await expect(stat(cached)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
   const job = await next.setup.readJob(plan.id)
   job.status = 'running'
   await writeJson(next.setup.jobFile(job.id), job)
   await next.close()
+  await writeFile(cached, payload)
   const restored = await createCoreBackend({
     ...roots,
     scanReminders: false,
     setupOptions: { catalog }
   })
   cleanups.push(() => restored.close())
+  // 中断任务仍可恢复，启动回收不能误删它的下载材料。
+  expect(await readFile(cached)).toEqual(payload)
   expect((await restored.setup.getJob(job.id)).status).toBe('paused')
   await restored.setup.start(job.id)
   expect((await done(restored.setup, job.id)).status).toBe('succeeded')
+  await vi.waitFor(async () => {
+    await expect(stat(cached)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 })
 
 test('跨卷硬链接失败在计划阶段降级为复制，执行后保持源文件权限', async () => {
   const { root, backend } = await fixture()
   const source = await legacy(root)
-  const file = await put(source, 'GPT_SoVITS/pretrained_models/large.pth', '')
+  const file = await put(source, 'GPT_SoVITS/pretrained_models/gsv-v4-pretrained/s2Gv4.pth', '')
   const handle = await open(file, 'r+')
   await handle.truncate(32 * 1024 * 1024)
   await handle.close()
@@ -749,4 +765,268 @@ test('tar 字典包支持普通目录，拒绝链接时返回任务错误而不�
   await expect(
     extractArchive(bad, path.join(root, 'rejected'), 'tar.gz', 100)
   ).rejects.toMatchObject({ problem: { code: 'archive_link_denied' } })
+})
+
+test('只有待配置连接的旧目录仍可选择导入并保留告警', async () => {
+  const { root, backend } = await fixture()
+  const source = path.join(root, 'pending-connections')
+  await put(
+    source,
+    'd_sakiko_config.json',
+    JSON.stringify({
+      llm_setting: {
+        llm_api_provider: 'unknown-provider',
+        llm_api_model: 'unknown-model',
+        llm_api_key: 'private-pending-secret'
+      }
+    })
+  )
+  const scan = await backend.setup.scanLegacy(
+    (await backend.setup.grantLegacySource(source)).sourceId
+  )
+  expect(scan).toMatchObject({
+    canImport: true,
+    connectionCount: 0,
+    pendingConnectionCount: 1,
+    availableCategories: { connections: true }
+  })
+  expect(JSON.stringify(scan)).not.toContain('private-pending-secret')
+  const plan = await backend.setup.createPlan({
+    kind: 'legacy',
+    scanId: scan.scanId,
+    include: { connections: true }
+  })
+  await backend.setup.start(plan.id)
+  const result = await done(backend.setup, plan.id)
+  expect(result).toMatchObject({
+    status: 'succeeded',
+    items: { connections: { status: 'partial' } },
+    warnings: expect.arrayContaining([{ code: 'legacy_connections_pending', count: 1 }])
+  })
+  expect(JSON.stringify(result)).not.toContain('private-pending-secret')
+})
+
+test('整套语音一致时复用导入资源；只匹配权重时计划跳过相同权重', async () => {
+  const voice = (id) => {
+    const definition = {
+      schemaVersion: 1,
+      characterId: id,
+      architecture: 'v2ProPlus',
+      weights: { gpt: 'a.ckpt', sovits: 'b.pth' },
+      forms: { default: { defaultReference: { audio: 'c.wav', text: '参考台词', language: 'ja' } } }
+    }
+    const contents = {
+      'a.ckpt': Buffer.from('gpt'),
+      'b.pth': Buffer.from('sovits'),
+      'c.wav': Buffer.from('published voice'),
+      'voice.json': Buffer.from(JSON.stringify(definition))
+    }
+    return {
+      id: 'voice.' + id,
+      characterId: id,
+      kind: 'voice',
+      version: '1',
+      available: true,
+      contents,
+      files: Object.entries(contents).map(([name, bytes]) => ({
+        path: id + '/' + name,
+        source: 'voices',
+        sizeBytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex')
+      }))
+    }
+  }
+  const components = [voice('anon'), voice('soyo')]
+  const catalog = {
+    platform: 'darwin',
+    arch: 'arm64',
+    components: async () => structuredClone(components),
+    select: async (choices) =>
+      structuredClone(components.filter((item) => choices.includes(item.id)))
+  }
+  const transport = async (url) => {
+    const item = components.find((component) => url.endsWith(component.characterId + '/voice.json'))
+    return item ? new Response(item.contents['voice.json']) : new Response(null, { status: 404 })
+  }
+  const { root, backend } = await fixture({ setupOptions: { catalog }, fetch: transport })
+  for (const item of components) {
+    const refs = {}
+    const id = item.characterId
+    const owner = await backend.assets.createTemporaryOwner('draft')
+    for (const name of ['a.ckpt', 'b.pth', 'c.wav']) {
+      const bytes = id === 'soyo' && name === 'c.wav' ? 'custom sound' : item.contents[name]
+      const file = await put(root, id + '/' + name, bytes)
+      refs[name] = (
+        await backend.assets.importAsset(
+          { kind: 'local-file', path: file },
+          owner,
+          name.endsWith('.wav') ? 'audio' : 'model'
+        )
+      ).asset
+    }
+    await backend.characters.save({
+      id,
+      name: id,
+      revision: 0,
+      defaultFormId: 'default',
+      knowledgeMappings: [],
+      extensions: {},
+      forms: [
+        {
+          id: 'default',
+          displayName: id,
+          description: '',
+          avatar: null,
+          themeColor: null,
+          models: [],
+          defaultModelId: null,
+          voice: {
+            gptWeights: refs['a.ckpt'],
+            sovitsWeights: refs['b.pth'],
+            defaultReference: { audio: refs['c.wav'], text: '参考台词', language: 'ja' },
+            emotions: {}
+          }
+        }
+      ]
+    })
+    await backend.assets.releaseOwner(owner)
+  }
+  const catalogResult = await backend.setup.getCatalog({ managed: true })
+  const options = catalogResult.groups.flatMap((group) => group.options)
+  expect(options.find((item) => item.id === 'voice.anon')).toMatchObject({
+    installed: true,
+    ready: true,
+    downloadBytes: 0,
+    updateAvailable: false,
+    forms: [{ active: 'package', customAvailable: false }]
+  })
+  expect(options.find((item) => item.id === 'voice.soyo')).toMatchObject({
+    installed: false,
+    ready: false,
+    forms: [{ active: 'custom', customAvailable: true }]
+  })
+  const plan = await backend.setup.createPlan({
+    kind: 'download',
+    managed: true,
+    selection: ['voice.soyo']
+  })
+  const job = await backend.setup.readJob(plan.id)
+  expect(job.selected[0].files.map((file) => file.path)).toEqual(['soyo/c.wav', 'soyo/voice.json'])
+  expect(Object.keys(job.selected[0].reused)).toEqual(['soyo/a.ckpt', 'soyo/b.pth'])
+  await backend.setup.selectVoice('voice.anon', 'default', 'none')
+  await backend.setup.removeVoice('voice.anon')
+  expect((await backend.setup.installations())['voice.anon']).toBeUndefined()
+})
+
+test('已安装的识别资源收到新版报价，校验失败时保留安装版本', async () => {
+  const names = [
+    'config.json',
+    'tokenizer.json',
+    'tokenizer_config.json',
+    'preprocessor_config.json',
+    'generation_config.json',
+    'onnx/encoder_model_quantized.onnx',
+    'onnx/decoder_model_merged_quantized.onnx'
+  ]
+  let version = 'first'
+  let corrupt = false
+  function asr() {
+    const material = Buffer.from(version)
+    return {
+      id: 'asr.models',
+      kind: 'asr',
+      available: true,
+      version,
+      files: names.map((name) => ({
+        path: name,
+        source: 'asr',
+        sizeBytes: material.length,
+        sha256: createHash('sha256').update(material).digest('hex')
+      }))
+    }
+  }
+  const catalog = {
+    platform: 'darwin',
+    arch: 'arm64',
+    components: async () => [asr()],
+    select: async (choices) => (choices.includes('asr') ? [asr()] : [])
+  }
+  const { backend } = await fixture({
+    setupOptions: { catalog },
+    fetch: async () => new Response(corrupt ? 'broken' : version)
+  })
+  const plan = await backend.setup.createPlan({
+    kind: 'download',
+    selection: ['asr'],
+    managed: true
+  })
+  await backend.setup.start(plan.id)
+  expect((await done(backend.setup, plan.id)).status).toBe('succeeded')
+  version = 'second'
+  const latest = await backend.setup.getCatalog({ managed: true })
+  expect(latest.groups[0].options[0]).toMatchObject({ installed: true, updateAvailable: true })
+  const update = await backend.setup.createPlan({
+    kind: 'download',
+    selection: ['asr'],
+    managed: true
+  })
+  corrupt = true
+  await backend.setup.start(update.id)
+  expect((await done(backend.setup, update.id)).status).toBe('failed')
+  expect((await backend.setup.installations())['asr.models'].version).toBe('first')
+  corrupt = false
+  await backend.setup.controlJob(update.id, 'resume')
+  expect((await done(backend.setup, update.id)).status).toBe('succeeded')
+  expect((await backend.setup.installations())['asr.models'].version).toBe('second')
+})
+
+test('正常初始化导入 Python 厂商字典中的连接和所选模型', async () => {
+  const { root, backend } = await fixture()
+  const config = {
+    llm_setting: {
+      llm_api_provider: 'deepseek',
+      llm_api_model: {
+        deepseek: 'deepseek/existing',
+        modelscope: 'deepseek-ai/fixture',
+        gemini: 'gemini/fixture',
+        dashscope: 'dashscope/qwen-fixture',
+        openai: 'example'
+      },
+      llm_api_key: {
+        deepseek: 'fixture-deepseek',
+        modelscope: 'fixture-modelscope',
+        gemini: 'fixture-gemini',
+        dashscope: 'fixture-dashscope'
+      },
+      llm_api_base_url: { modelscope: 'https://api-inference.modelscope.cn/v1' }
+    }
+  }
+  const directory = await legacy(root)
+  await put(directory, 'd_sakiko_config.json', JSON.stringify(config))
+  const grant = await backend.setup.grantLegacySource(directory)
+  const scan = await backend.setup.scanLegacy(grant.sourceId)
+  expect(scan).toMatchObject({ connectionCount: 4, pendingConnectionCount: 0 })
+  expect(JSON.stringify(scan)).not.toContain('fixture-deepseek')
+  const plan = await backend.setup.createPlan({
+    kind: 'legacy',
+    scanId: scan.scanId,
+    include: { connections: true }
+  })
+  await backend.onboarding.begin({ path: 'legacy', planId: plan.id })
+  expect(await done(backend.setup, plan.id)).toMatchObject({
+    status: 'succeeded',
+    items: { connections: { status: 'ready', completed: 4 } }
+  })
+
+  const connections = await backend.settings.listConnections()
+  expect(connections).toMatchObject([
+    { provider: 'deepseek', models: [{ id: 'existing' }], credentialConfigured: true },
+    { provider: 'modelscope', models: [{ id: 'deepseek-ai/fixture' }], credentialConfigured: true },
+    { provider: 'gemini', models: [{ id: 'fixture' }], credentialConfigured: true },
+    { provider: 'dashscope', models: [{ id: 'qwen-fixture' }], credentialConfigured: true }
+  ])
+  expect((await backend.settings.get()).generation).toMatchObject({
+    connectionId: connections[0].id,
+    modelId: 'existing'
+  })
 })

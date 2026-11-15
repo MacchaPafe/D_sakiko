@@ -6,7 +6,7 @@ import { formatBytes } from './presentation.js'
 
 function SizeBadge({ option }) {
   let label = '大小待确认'
-  if (option.ready) label = '已就绪'
+  if (option.ready) label = '已准备'
   else if (!option.available) label = '不可用'
   else if (option.sizeKnown) {
     label = formatBytes(option.downloadBytes)
@@ -20,17 +20,18 @@ function SizeBadge({ option }) {
 
 function ResourceChoice({ option, title, description, avatar, selection, locked, onToggle }) {
   const disabled = locked || !option.available || option.ready
+  const selected = option.ready || selection.includes(option.id)
   const id = 'resource-' + option.id
   function handleChange() {
     onToggle(option.id)
   }
   return (
-    <div className="resource-choice" data-disabled={Boolean(disabled)}>
+    <div className="resource-choice" data-disabled={Boolean(disabled)} data-selected={selected}>
       <div className="resource-choice-line">
         <Checkbox
           id={id}
           aria-label={title}
-          checked={option.ready || selection.includes(option.id)}
+          checked={selected}
           disabled={Boolean(disabled)}
           onCheckedChange={handleChange}
         />
@@ -77,7 +78,7 @@ export function ResourceSelection({ state, flow }) {
               <ResourceChoice
                 option={asr}
                 title="语音转文字"
-                description="直接用麦克风说话，自动转换成文字发送"
+                description="使用麦克风，将录音转换为可编辑的文字"
                 selection={state.selection}
                 locked
                 onToggle={flow.toggle}

@@ -44,15 +44,21 @@ export async function sourcePath(root, name) {
   return file
 }
 
-/** 扫描目录中的普通文件，不跟随链接，不读取平台生成的元数据。 */
-export async function walk(root, prefix = '') {
+/**
+ * @param {string} root 待扫描目录。
+ * @param {string} prefix 内部递归的相对前缀。
+ * @param {(absolute: string) => boolean} exclude 进入目录或读取文件前排除受保护的位置。
+ * @returns {Promise<string[]>} 普通文件列表，不跟随链接，不读取平台生成的元数据。
+ */
+export async function walk(root, prefix = '', exclude = () => false) {
   const result = []
   for (const entry of await readdir(path.join(root, prefix), { withFileTypes: true })) {
     if (entry.name.startsWith('.') || entry.name === '__pycache__') continue
     const name = prefix ? prefix + '/' + entry.name : entry.name
+    if (exclude(path.join(root, name))) continue
     relativeFile(name)
     requireValue(!entry.isSymbolicLink(), 'source_symlink', '来源包含符号链接。')
-    if (entry.isDirectory()) result.push(...(await walk(root, name)))
+    if (entry.isDirectory()) result.push(...(await walk(root, name, exclude)))
     else if (entry.isFile()) result.push(name)
   }
   return result.sort()

@@ -18,6 +18,8 @@ import {
 import { chatSettings } from '../core/defaults.js'
 import { randomInt } from 'node:crypto'
 
+const REPLY_LINE_PAUSE_MS = 300
+
 /** @typedef {import('../../shared/contracts/conversation.js').UserSubmission} UserSubmission */
 /** @typedef {import('../../shared/contracts/conversation.js').LineRef} LineRef */
 /** @typedef {import('../../shared/contracts/settings.js').TurnOptions} TurnOptions */
@@ -214,6 +216,8 @@ export class Conversations {
         this.performance.createSequence(scene)
       )
       // 重启后只恢复存档记录，不自动续跑中断前的生成任务；若有缺少结果的工具调用，直接补记为已中断。
+      // 兼容选择在下一次正常保存时一同落盘，读取聊天无需单独触发一次写盘。
+      if (!initialChat) await this.migrateModelSelection(state.chat)
       if (this.interruptMissing(state.chat)) await this.persist(state)
       if (!initialChat) this.states.set(chatId, state)
       return state
@@ -222,6 +226,29 @@ export class Conversations {
       await this.assets.releaseWhenPossible(resourceOwner)
       throw error
     }
+  }
+
+  /** 将旧对话继承的有效自有连接固定到对话，避免后续设置或导入改变原模型。 */
+  async migrateModelSelection(chat) {
+    const local = chat.meta.settings.generation
+    if (
+      chat.meta.extensions.modelSelectionVersion ||
+      local.connectionId ||
+      local.modelId ||
+      !this.settings.assertUserSelection
+    )
+      return
+    const { generation: global } = await this.settings.get()
+    if (!global?.connectionId || !global.modelId || global.connectionId === 'builtin-up') return
+    const selected = { connectionId: global.connectionId, modelId: global.modelId }
+    try {
+      await this.settings.assertUserSelection(selected)
+    } catch (error) {
+      if (error.problem?.code === 'model_unavailable') return
+      throw error
+    }
+    Object.assign(local, selected)
+    chat.meta.extensions.modelSelectionVersion = 1
   }
 
   /**
@@ -570,7 +597,11 @@ export class Conversations {
       const speech = merge(global.speech, chat.meta.settings.speech, options.speech)
       generationOptions(generation)
       speechOptions(speech)
-      const connection = await this.settings.resolveConnection(generation)
+      const connection = await this.settings.resolveConnection(generation, { allowBuiltin: true })
+      if (connection.connectionId && connection.modelId) {
+        generation.connectionId = connection.connectionId
+        generation.modelId = connection.modelId
+      }
       const capabilities = await this.capabilities(chat, resourceOwner)
       const override = options.speech?.enabled ?? chat.meta.settings.speech.enabled
       const voicePreference =
@@ -587,7 +618,25 @@ export class Conversations {
         'worldbook_adapter_required',
         '世界书查询尚需装配检索适配器。'
       )
-      const tools = await this.tools.resolve(chat.id, chat.meta.settings.tools, this.access, null)
+      const excluded = new Set(options.excludedTools ?? [])
+      const definitions = await this.tools.list()
+      // 临时排除也关闭依赖它的工具，保存的聊天工具选择不变。
+      for (let changed = true; changed;) {
+        changed = false
+        for (const definition of definitions)
+          if (
+            !excluded.has(definition.name) &&
+            definition.dependencies.some((name) => excluded.has(name))
+          ) {
+            excluded.add(definition.name)
+            changed = true
+          }
+      }
+      const selection = {
+        ...chat.meta.settings.tools,
+        enabled: chat.meta.settings.tools.enabled.filter((name) => !excluded.has(name))
+      }
+      const tools = await this.tools.resolve(chat.id, selection, this.access, null)
       const resolvedOptions = copy(generation)
       delete resolvedOptions.connectionId
       delete resolvedOptions.modelId
@@ -632,7 +681,7 @@ export class Conversations {
               ]
             : [],
         tools,
-        toolDefinitions: await this.tools.list()
+        toolDefinitions: definitions.filter((definition) => !excluded.has(definition.name))
       }
 
       const inspection = await this.agent.inspectContext(request)
@@ -665,7 +714,13 @@ export class Conversations {
     options,
     { replaceId = null, automatic = false, delivery = null, lotteryDelivery = null } = {}
   ) {
-    fields(options, ['requestId', 'generation', 'speech'])
+    fields(options, ['requestId', 'generation', 'speech', 'excludedTools'])
+    requireValue(
+      options.excludedTools === undefined ||
+        (Array.isArray(options.excludedTools) &&
+          options.excludedTools.every((name) => typeof name === 'string')),
+      'invalid_tool_exclusions'
+    )
     requireValue(
       typeof options.requestId === 'string' &&
         options.requestId.length > 0 &&
@@ -865,12 +920,14 @@ export class Conversations {
       await this.queue.run(state.chat.id, async () => {
         run.activity = 'presenting'
         await this.performance.setActivity(state.sequenceId, 'idle')
-        run.execution.phase = 'speech'
+        run.execution.phase = run.pending.length ? 'speech' : 'presentation'
         this.publish(state)
       })
-      await Promise.all(run.pending)
-      run.execution.phase = 'presentation'
-      this.publish(state)
+      if (run.pending.length) {
+        await Promise.all(run.pending)
+        run.execution.phase = 'presentation'
+        this.publish(state)
+      }
       // 等的是后端计划终态；客户端关闭、卡顿或静音都不参与完成条件。
       await Promise.all(run.guides.map((id) => this.performance.waitForGuideFinish(id)))
     } catch (error) {
@@ -953,9 +1010,8 @@ export class Conversations {
         line.extensions = {}
         const ref = { turnId: turn.id, messageId: message.id, partId: part.id, lineId: line.id }
         const voiced = run.prepared.voicedCharacters.has(line.speakerId)
-        const [guideId] = await this.performance.appendGuides(state.sequenceId, [
-          this.guide(line, !voiced)
-        ])
+        const guide = this.guide(line, !voiced, run.guides.length > 0)
+        const [guideId] = await this.performance.appendGuides(state.sequenceId, [guide])
         run.guides.push(guideId)
         state.guides.set(line.id, { line: ref, guideId })
         if (voiced) run.pending.push(this.synthesize(state, ref, run.prepared, run, guideId))
@@ -968,9 +1024,10 @@ export class Conversations {
    * 将对话台词对象转换为供演出模块使用的演出计划项（Guide）。
    * @param {import('../../shared/contracts/conversation.js').DialogueLine} line 对话台词对象。
    * @param {boolean} [ready] 该台词是否已无需等待语音合成即可直接播放，默认 true。
+   * @param {boolean} [pauseBefore] 本轮后续台词是否需要在舞台上留出换句停顿。
    * @returns {import('../../shared/contracts/presentation.js').Guide} 演出计划项对象。
    */
-  guide(line, ready = true) {
+  guide(line, ready = true, pauseBefore = false) {
     return {
       slotId: line.speakerId,
       text: line.text,
@@ -978,6 +1035,7 @@ export class Conversations {
       emotion: line.emotion,
       performance: copy(line.performance),
       audio: copy(line.audio),
+      ...(pauseBefore ? { pauseBeforeMs: REPLY_LINE_PAUSE_MS } : {}),
       ready
     }
   }
@@ -1799,7 +1857,7 @@ export class Conversations {
       scene,
       guides: await this.performance.resolveGuides(
         scene,
-        lines.map((line) => this.guide(line))
+        lines.map((line, index) => this.guide(line, true, index > 0))
       )
     }
   }
@@ -2163,6 +2221,70 @@ export class Conversations {
   async setGenerationOptions(chatId, options) {
     generationOptions(options)
     return this.setting(chatId, 'generation', options)
+  }
+
+  /**
+   * 部分更新对话配置，数组整体替换，连接和模型以一组校验并写入。
+   * @param {string} chatId 对话 ID。
+   * @param {import('../../shared/contracts/settings.js').ChatSettingsPatch} patch 要修改的已知配置组。
+   * @returns {Promise<void>} 保存后更新对话快照和受影响的舞台。
+   */
+  async patchSettings(chatId, patch) {
+    const defaults = chatSettings()
+    fields(patch, Object.keys(defaults))
+    const changes = copy(patch)
+    const selected = changes.generation
+    for (const key of ['speech', 'generation', 'tools', 'worldbook', 'presentation', 'characters'])
+      if (Object.hasOwn(changes, key))
+        requireValue(
+          changes[key] && typeof changes[key] === 'object' && !Array.isArray(changes[key]),
+          'invalid_settings'
+        )
+    const selectsModel =
+      selected && (Object.hasOwn(selected, 'connectionId') || Object.hasOwn(selected, 'modelId'))
+    const resetsModel = selectsModel && selected.connectionId === null && selected.modelId === null
+    if (selectsModel && !resetsModel)
+      requireValue(
+        Boolean(selected.connectionId && selected.modelId),
+        'invalid_settings',
+        '连接和模型必须一起选择。'
+      )
+    await this.update(chatId, async (chat) => {
+      const next = merge(chat.meta.settings, changes)
+      if (resetsModel) {
+        delete next.generation.connectionId
+        delete next.generation.modelId
+      }
+      generationOptions(next.generation)
+      speechOptions(next.speech)
+      if (selectsModel && !resetsModel) await this.settings.assertUserSelection(next.generation)
+      if (selectsModel) chat.meta.extensions.modelSelectionVersion = 1
+      if (changes.tools) {
+        fields(changes.tools, Object.keys(defaults.tools))
+        await this.tools.resolve(chatId, next.tools, this.access, null)
+      }
+      if (changes.worldbook) fields(changes.worldbook, Object.keys(defaults.worldbook))
+      if (changes.scenario != null) fields(changes.scenario, ['situation', 'characters'])
+      if (changes.presentation) presentationOptions(next.presentation, chat.characterIds)
+      if (changes.characters) {
+        fields(changes.characters, chat.characterIds)
+        for (const id of Object.keys(changes.characters)) {
+          fields(changes.characters[id], ['formId', 'modelOverrides'])
+          const entry = next.characters[id]
+          await this.characters.resolveCapabilities(id, {
+            formId: entry.formId,
+            modelId: entry.modelOverrides?.[entry.formId]
+          })
+        }
+      }
+      chat.meta.settings = next
+    })
+    if (changes.presentation || changes.characters) {
+      const state = await this.state(chatId)
+      await this.withScene(state.chat, (scene) =>
+        this.performance.setScene(state.sequenceId, scene)
+      )
+    }
   }
 
   /**

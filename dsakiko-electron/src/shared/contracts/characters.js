@@ -25,6 +25,9 @@
  * @property {CharacterModel[]} models 本形态的模型配置，允许为空；同一角色内模型 ID 唯一。
  * @property {string | null} defaultModelId 必须指向本形态 models 中的一项；无模型时为 null。
  * @property {FormVoice | null} voice 可选声音配置，失效引用仍保留。
+ * @property {FormVoice} [customVoice] 当前未选中的自定义语音，由角色继续持有引用。
+ * @property {string} [voicePackageId] 当前语音所属的可更新安装包。
+ * @property {boolean} [voiceExplicit] 用户明确选择来源或停用，安装时保留其决定。
  */
 
 /**

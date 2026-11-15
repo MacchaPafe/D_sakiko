@@ -1,9 +1,9 @@
-import { Check, LoaderCircle } from 'lucide-react'
+import { LoaderCircle } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { ResourceSelection } from './ResourceSelection.jsx'
 import { DownloadProgress } from './DownloadProgress.jsx'
 import { formatBytes, taskRows } from './presentation.js'
-import logo from '../../assets/welcome/logo.svg'
+import { SetupLayout } from './SetupLayout.jsx'
 import wordmark from '../../assets/welcome/wordmark.svg'
 
 function SetupFooter({ state, flow }) {
@@ -16,10 +16,10 @@ function SetupFooter({ state, flow }) {
   const estimateFailed = state.view === 'resources' && Boolean(state.catalogProblem)
   let primary = '跳过，直接开始'
   let secondary = '上一步'
-  let primaryDisabled = true
+  let primaryDisabled = busy
   let secondaryDisabled = busy
   let secondaryAction = flow.back
-  let primaryAction
+  let primaryAction = flow.finish
   if (state.view === 'resources') {
     if (state.selection.length) {
       summary = `已选择 ${state.selection.length} 项`
@@ -51,6 +51,7 @@ function SetupFooter({ state, flow }) {
   if (state.pending === 'pause') secondary = '正在暂停…'
   if (state.pending === 'resume') secondary = '正在继续…'
   if (state.pending === 'download') primary = '正在准备下载…'
+  if (state.pending === 'finish') primary = '正在进入…'
   function handlePause() {
     void flow.control('pause')
   }
@@ -76,18 +77,25 @@ function SetupFooter({ state, flow }) {
         </span>
       </div>
       <div className="setup-footer-actions">
-        <Button
-          variant="outline"
-          className="setup-secondary"
-          onClick={secondaryAction}
-          disabled={secondaryDisabled}
-        >
-          {secondary}
-        </Button>
+        {!(state.view === 'resources' && state.onboarding?.path === 'legacy') && (
+          <Button
+            variant="outline"
+            className="setup-secondary"
+            onClick={secondaryAction}
+            disabled={secondaryDisabled}
+          >
+            {secondary}
+          </Button>
+        )}
         <Button className="setup-primary" onClick={primaryAction} disabled={primaryDisabled}>
           {primary}
         </Button>
       </div>
+      {state.view === 'download' && state.onboarding?.path === 'quick' && (
+        <Button variant="ghost" onClick={flow.returnQuick} disabled={busy}>
+          返回欢迎页
+        </Button>
+      )}
     </footer>
   )
 }
@@ -95,55 +103,37 @@ function SetupFooter({ state, flow }) {
 /** @param {{state: import('./setup-flow.js').SetupFlowState, flow: import('./setup-flow.js').SetupFlow}} props 应用级任务容器。 @returns {import('react').ReactElement} 两阶段暖纸引导，共用舞台和固定底部。 */
 export function SetupPage({ state, flow }) {
   return (
-    <section className="setup-panel">
-      <header className="setup-brand">
-        <img className="setup-logo" src={logo} alt="" />
-        <img src={wordmark} alt="数字小祥" width="132" height="38" />
-      </header>
-      <ol className="setup-steps" aria-label="初始化阶段">
-        <li>
-          <span>
-            <Check size={16} aria-hidden="true" />
-            准备内置角色
-          </span>
-          <div />
-        </li>
-        <li aria-current="step">
-          <span>
-            <span className="setup-step-number">2</span>添加语音（可选）
-          </span>
-          <div />
-        </li>
-      </ol>
-      <div className="setup-scroll" tabIndex={0} aria-label="资源详情">
-        {state.connectionProblem && (
-          <p className="setup-problem" role="status">
-            连接已断开，正在重连…
-          </p>
-        )}
-        {state.view === 'download' ? (
-          <DownloadProgress state={state} />
-        ) : (
-          <ResourceSelection state={state} flow={flow} />
-        )}
-        {state.problem && (
-          <p className="setup-problem" role="alert">
-            {state.problem}
-          </p>
-        )}
-        {state.job && ['planned', 'paused', 'failed'].includes(state.job.status) && (
-          <Button
-            variant="ghost"
-            className="catalog-refresh"
-            onClick={flow.reselect}
-            disabled={Boolean(state.pending)}
-          >
-            重新选择资源
-          </Button>
-        )}
-      </div>
-      <SetupFooter state={state} flow={flow} />
-    </section>
+    <SetupLayout
+      firstStage={state.onboarding?.path === 'legacy' ? '导入旧版数据' : '快速开始'}
+      view={state.view}
+      footer={<SetupFooter state={state} flow={flow} />}
+    >
+      {state.connectionProblem && (
+        <p className="setup-problem" role="status">
+          连接已断开，正在重连…
+        </p>
+      )}
+      {state.view === 'download' ? (
+        <DownloadProgress state={state} />
+      ) : (
+        <ResourceSelection state={state} flow={flow} />
+      )}
+      {state.problem && (
+        <p className="setup-problem" role="alert">
+          {state.problem}
+        </p>
+      )}
+      {state.job && ['planned', 'paused', 'failed'].includes(state.job.status) && (
+        <Button
+          variant="ghost"
+          className="catalog-refresh"
+          onClick={flow.reselect}
+          disabled={Boolean(state.pending)}
+        >
+          重新选择资源
+        </Button>
+      )}
+    </SetupLayout>
   )
 }
 

@@ -60,6 +60,36 @@ test('取消一个等待不取消演出或其他等待者', async () => {
   expect((await completed).outcome).toBe('completed')
   await planner.close()
 })
+test('相邻台词按下限停顿；合成等待已经超过停顿时间时立即播放', async () => {
+  vi.useFakeTimers()
+  const planner = new Performance({
+    now: () => Date.now(),
+    minimumReadingMs: 100,
+    readingMsPerCharacter: 10
+  })
+  const sequenceId = await planner.createSequence(scene)
+  const [first, second, third] = await planner.appendGuides(sequenceId, [
+    { ...guide, pauseBeforeMs: 300 },
+    { ...guide, pauseBeforeMs: 300 },
+    { ...guide, pauseBeforeMs: 300, ready: false }
+  ])
+  let observed
+  const stop = planner.observe(sequenceId, (update) => {
+    observed = update.snapshot
+  })
+  expect(observed.current.guideId).toBe(first)
+  await vi.advanceTimersByTimeAsync(399)
+  expect(observed.current).toBeNull()
+  expect(observed.waitingFor).toBe(second)
+  await vi.advanceTimersByTimeAsync(1)
+  expect(observed.current.guideId).toBe(second)
+  await vi.advanceTimersByTimeAsync(500)
+  expect(observed.waitingFor).toBe(third)
+  await planner.resolveGuide(third, { audio: null })
+  expect(observed.current.guideId).toBe(third)
+  stop()
+  await planner.close()
+})
 test('本地音量、回放和逐字计算不向后端上报；其他端新内容不打断回放', async () => {
   vi.useFakeTimers()
   let listener
@@ -113,6 +143,49 @@ test('本地音量、回放和逐字计算不向后端上报；其他端新内�
     volume: 0.2,
     bgmVolume: 0.5
   })
+  playback.close()
+})
+test('整轮回放等待声音启动，保留换句停顿并在播完后恢复实时快照', async () => {
+  vi.useFakeTimers()
+  const started = Promise.withResolvers()
+  const output = { play: vi.fn(() => started.promise), stop: vi.fn() }
+  const playback = new Playback({
+    client: {
+      performance: {
+        observe: (_id, listener) => {
+          listener({ snapshot: { scene, current: null, transition: null } })
+          return () => {}
+        }
+      }
+    },
+    events: null,
+    now: () => Date.now(),
+    output
+  })
+  const onEnd = vi.fn()
+  const audio = { asset: { id: 'saved-audio' }, durationMs: 100 }
+  playback.follow('live')
+  playback.replay(
+    {
+      scene,
+      guides: [
+        { ...guide, audio },
+        { ...guide, pauseBeforeMs: 300 }
+      ]
+    },
+    { onEnd }
+  )
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(playback.getSnapshot().progress.current).toBeNull()
+  started.resolve()
+  await vi.advanceTimersByTimeAsync(399)
+  expect(playback.getSnapshot().progress.current.guideId).toBe('replay:0')
+  await vi.advanceTimersByTimeAsync(1)
+  expect(playback.getSnapshot().progress.current.guideId).toBe('replay:1')
+  expect(output.play).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(800)
+  expect(playback.getSnapshot()).toMatchObject({ mode: 'live', progress: { current: null } })
+  expect(onEnd).toHaveBeenCalledTimes(1)
   playback.close()
 })
 test('模型目标状态重复请求幂等；相反目标顺序执行，抢占后不伪称已达到目标', async () => {
@@ -175,5 +248,43 @@ test('清除本地偏好后恢复 100%，BGM 使用总音量乘以相对音量',
   entries.clear()
   onStorage({ key: null })
   expect(playback.getPlaybackOptions()).toEqual({ volume: 1, bgmVolume: 1 })
+  playback.close()
+})
+
+test('隐藏时保持最新演出锚点但不播放，恢复跳到当前时间，切换后拒绝旧回调', () => {
+  const listeners = new Map()
+  let now = 0
+  const output = { play: vi.fn(), stop: vi.fn(), setVisible: vi.fn() }
+  const playback = new Playback({
+    client: {
+      performance: {
+        observe: (id, listener) => {
+          listeners.set(id, listener)
+          return () => {}
+        }
+      }
+    },
+    storage: null,
+    events: null,
+    now: () => now,
+    output
+  })
+  const snapshot = (id, elapsedMs) => ({
+    scene,
+    current: { guideId: id, guide, durationMs: 1000, elapsedMs, recurring: false },
+    transition: null
+  })
+  playback.follow('a')
+  listeners.get('a')(snapshot('one', 100))
+  expect(output.play).toHaveBeenCalledTimes(1)
+  playback.setVisible(false)
+  listeners.get('a')(snapshot('two', 400))
+  expect(output.play).toHaveBeenCalledTimes(1)
+  now = 200
+  playback.setVisible(true)
+  expect(output.play).toHaveBeenLastCalledWith(guide, expect.objectContaining({ offsetMs: 600 }))
+  playback.follow('b')
+  listeners.get('a')(snapshot('late', 0))
+  expect(playback.getSnapshot().progress).toBeNull()
   playback.close()
 })

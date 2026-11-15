@@ -2,7 +2,7 @@
 
 正式后端已按接口设计实现首批能力：对话与存档、角色与设置、Agent、工具交互、后端演出计划、Python 语音及 HTTP/WebSocket 传输。具体完成范围与限制见 [实现说明](docs/backend-implementation.md)，设计依据见 [核心接口](docs/core-interfaces.md)。
 
-**当前已接通欢迎页 → 快速开始 → 可选资源 → 下载与准备。** 启动恢复后端阶段和下载任务；支持选择依赖、实时进度、暂停、重启后手动继续、失败重试和重新选择。欢迎页保留三角色预览与鼠标追踪，后续页面为白祥待机。旧版导入、ASR 下载与进入主页的按钮仍禁用，不提前完成引导。正式前端封装位于 `src/renderer/src/backend/client.js`，不依赖 React。范围与交互见[前端设计](docs/frontend-design.md)。
+**当前已接通欢迎页 → 快速开始／旧版导入 → 可选资源 → 正式主页。** 快速开始在最终进入主页时才提交正式角色、连接和资源绑定；此前仍可返回并改选导入。主页支持角色与聊天导航、文字发送／停止、新建／删除、悬浮记录、Live2D、整句字幕进度、口型、通知堆叠和后台资源任务。引导共用所选角色并保留鼠标追踪，主页关闭追踪。设置、附件、录音、历史回放、服装与全窗口舞台入口仍禁用。正式通信封装位于 `src/renderer/src/backend/client.js`，范围与交互见[前端设计](docs/frontend-design.md)。
 
 ## 本机开发
 
@@ -19,6 +19,17 @@ pnpm dev
 
 `DSAKIKO_DATA_DIR`、`DSAKIKO_RESOURCE_LIBRARY_DIR`、`DSAKIKO_CACHE_DIR` 分别覆盖三个根目录，均使用绝对路径且不能重叠。`DSAKIKO_PYTHON` 指定解释器。旧 `DSAKIKO_RESOURCE_ROOT` 已停用，仍配置该变量时启动会明确报错；更新配置需同时准备新资源库，程序不搬运原文件。具体依赖与限制见 [Python 运行时](python/README.md)。不要把 API 密钥放入 `.env.local` 或日志；模型连接通过正式 Settings 接口配置。
 
+### 调试首次引导
+
+```sh
+pnpm dev fresh         # 每次创建一个空档案，直接进入欢迎页
+pnpm dev fresh 验证导入  # 首次创建命名档案，再次运行可继续上次的进度
+```
+
+调试档案保存在 `.local/dev-fresh/`，启动时会打印目录。每套档案有独立的应用数据、资源库、缓存和 Electron 用户目录。`fresh` 模式优先使用这三个独立数据根目录，可以和现有客户端并行启动。匿名档案退出后保留，方便查看日志或导入结果。
+
+依赖已安装时，也可以用 `npm run dev -- fresh [名称]` 启动。
+
 ## 代码入口
 
 - `src/backend/create-core-backend.js` 装配正式后端；业务实现位于各模块的 `interface.js`。
@@ -33,12 +44,12 @@ pnpm dev
 
 ## 检查命令
 
-| 命令                              | 内容                                                                       |
-| --------------------------------- | -------------------------------------------------------------------------- |
-| `pnpm test`                       | 正式接口、HTTP/WS、前端封装及保留显示层的回归；不调用外部模型服务          |
-| `pnpm lint` / `pnpm format:check` | 代码与格式检查                                                             |
-| `pnpm build`                      | 构建 main、preload 和 renderer                                             |
-| `pnpm test:python`                | 无需真实权重的 Python 调度与 HTTP 协议测试                                 |
+| 命令                              | 内容                                                                                                  |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `pnpm test`                       | 正式接口、HTTP/WS、前端封装及保留显示层的回归；不调用外部模型服务                                     |
+| `pnpm lint` / `pnpm format:check` | 代码与格式检查                                                                                        |
+| `pnpm build`                      | 构建 main、preload 和 renderer                                                                        |
+| `pnpm test:python`                | 无需真实权重的 Python 调度与 HTTP 协议测试                                                            |
 | `pnpm test:smoke`                 | 构建并启动真实 Electron，验证宿主、通信与退出；内置资源存在时同时验证欢迎页模型、追踪、切换和失败恢复 |
 
 `scripts/demos/` 是独立的技术验证材料，按各自说明运行，不是原型业务后端的运行依赖。构建脚本保留 Windows/macOS 打包入口，安装包和真实设备推理仍须单独验证。

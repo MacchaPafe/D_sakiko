@@ -26,7 +26,7 @@ const labels = {
   installing: '安装与检查中',
   validating: '校验中',
   committing: '正在启用',
-  ready: '已就绪',
+  ready: '已准备',
   paused: '已暂停',
   failed: '准备失败',
   cancelled: '已取消',

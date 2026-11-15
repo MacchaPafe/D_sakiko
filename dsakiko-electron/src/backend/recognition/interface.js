@@ -89,6 +89,10 @@ export class Recognition {
   /** 确认本地模型存在后才启动工作进程。 */
   async startChild(signal) {
     await this.stopping
+    if (this.runtimeWaiting) {
+      this.runtimeWaiting = false
+      await this.stopChild()
+    }
     if (this.child) return
     await this.runtime?.releaseResources?.()
     this.runtime = null
@@ -124,6 +128,11 @@ export class Recognition {
       if (this.child === child) this.child = null
     })
     this.state = 'loading'
+  }
+
+  /** 识别任务保留当前进程，新请求才轮换运行包。 */
+  markRuntimeChanged() {
+    this.runtimeWaiting = Boolean(this.child || this.active)
   }
 
   /** 向工作进程请求一次操作，响应身份不匹配时忽略迟到消息。 */

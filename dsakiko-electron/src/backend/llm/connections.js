@@ -44,6 +44,22 @@ export function normalizeConnection(connection) {
   }
 }
 
+/** @param {object} connection 已规范化的连接定义。 @param {string} modelId 实际请求的模型名。 @returns {Partial<import('../../shared/contracts/models.js').ModelCapabilities>} 官方文档明确支持的请求能力。 */
+export function officialModelCapabilities(connection, modelId) {
+  // 导入和手动添加的模型可能没有声明；同名模型在第三方端点上的能力仍由连接配置决定。
+  if (
+    connection.provider !== 'deepseek' ||
+    connection.protocol !== 'chat-completions' ||
+    !['https://api.deepseek.com', 'https://api.deepseek.com/v1'].includes(connection.baseUrl) ||
+    !['deepseek-flash', 'deepseek-v4-pro'].includes(modelId)
+  )
+    return {}
+  return {
+    reasoning: { status: 'supported', source: 'deepseek-official' },
+    reasoningEfforts: ['low', 'high', 'max']
+  }
+}
+
 /** 判断是否启用 Claude 官方行为；自定义代理需显式选择，不能靠模型名或 signature 猜测。
  * @param {object} connection 模型连接。
  * @returns {boolean} 是否采用官方规则。

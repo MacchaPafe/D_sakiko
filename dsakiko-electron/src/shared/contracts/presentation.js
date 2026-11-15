@@ -121,6 +121,7 @@
  * @property {ResolvedPerformance} [resolvedPerformance] 后端输出的实际资源计划；忽略历史选择时不改写 performance。
  * @property {AudioMaterial | null} audio 没有语音或尚未提供语音时为 null。
  * @property {number} [motionDurationMs] 可选的动作计划时长。
+ * @property {number} [pauseBeforeMs] 与上一条已完成普通演出之间保留的最短停顿；可与等待音频就绪重叠。
  * @property {boolean} ready 是否允许开始；不携带尚未就绪的原因。
  */
 

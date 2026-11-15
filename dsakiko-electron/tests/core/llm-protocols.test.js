@@ -1,5 +1,7 @@
 import { expect, test, vi } from 'vitest'
+import { tmpdir } from 'node:os'
 import { Agent } from '../../src/backend/llm/interface.js'
+import { Settings } from '../../src/backend/settings/interface.js'
 import { characterContext } from '../../src/backend/llm/context.js'
 import {
   normalizeConnection,
@@ -10,6 +12,63 @@ import { defaultSettings } from '../../src/backend/core/defaults.js'
 const answer = JSON.stringify({
   lines: [{ speaker: '角色', text: '测试完成', translation: null, emotion: 'happiness' }]
 })
+
+test.each(['https://api.deepseek.com', 'https://api.deepseek.com/v1'])(
+  '旧版导入的官方 DeepSeek 连接使用默认思考设置发出聊天请求：%s',
+  async (baseUrl) => {
+    const settings = new Settings({ directory: tmpdir(), assets: { registerOwnerReader() {} } })
+    const saved = {
+      id: 'legacy-deepseek',
+      provider: 'deepseek',
+      protocol: 'chat-completions',
+      baseUrl,
+      models: [{ id: 'deepseek-flash', declared: {}, overrides: {} }]
+    }
+    const request = requestFor(saved.provider, saved.protocol, 'deepseek-flash')
+    request.connection = await settings.resolveDefinition(
+      saved,
+      request.connection.modelId,
+      'fixture'
+    )
+    const transport = vi.fn(async () => json(completion({ content: answer })))
+    const agent = new Agent({ credential: () => 'fixture', assets: {}, fetch: transport })
+    const { turn, observer } = recorder(request)
+    await expect(agent.run(request, observer)).resolves.toMatchObject({ status: 'completed' })
+    expect(transport).toHaveBeenCalledTimes(1)
+    const [url, init] = transport.mock.calls[0]
+    expect(String(url)).toBe(baseUrl + '/chat/completions')
+    expect(JSON.parse(init.body)).toMatchObject({
+      model: 'deepseek-flash',
+      thinking: { type: 'enabled' }
+    })
+    expect(turn.messages.at(-1).parts.at(-1).lines[0].text).toBe('测试完成')
+
+    saved.models[0].overrides = { reasoning: { status: 'unsupported', source: 'manual-override' } }
+    request.connection = await settings.resolveDefinition(
+      saved,
+      request.connection.modelId,
+      'fixture'
+    )
+    await expect(agent.run(request, observer)).rejects.toHaveProperty(
+      'problem.code',
+      'unsupported_reasoning'
+    )
+    expect(transport).toHaveBeenCalledTimes(1)
+
+    saved.models[0].overrides = {}
+    saved.baseUrl = 'https://fixture.invalid/v1'
+    request.connection = await settings.resolveDefinition(
+      saved,
+      request.connection.modelId,
+      'fixture'
+    )
+    await expect(agent.run(request, observer)).rejects.toHaveProperty(
+      'problem.code',
+      'unsupported_reasoning'
+    )
+    expect(transport).toHaveBeenCalledTimes(1)
+  }
+)
 
 test('禁用后工具报文不变，调用被拒绝且无副作用，并交付匹配的失败结果继续回答', async () => {
   const requests = []

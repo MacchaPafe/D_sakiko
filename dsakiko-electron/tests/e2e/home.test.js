@@ -1,0 +1,648 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { expect, test, vi } from 'vitest'
+import { _electron as electron } from 'playwright-core'
+import { createServer as createViteServer } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import wavefile from 'wavefile'
+import { createCoreBackend } from '../../src/backend/create-core-backend.js'
+import { startHttpServer } from '../../src/server/http-server.js'
+import { problemError } from '../../src/shared/problems.js'
+const root = fileURLToPath(new URL('../../', import.meta.url))
+
+async function verifySidebar(page, application, backend, selected) {
+  const { chat } = await backend.store.load(selected)
+  const sampleReplies = [
+    'あの曲を初めて聴いたとき、窓の外はすっかり暗くなっていました。',
+    '大家说下次也要一起练习，等演出结束再去吃点好吃的。',
+    'そうですね。少しだけ考えさせてください。',
+    '那就约在周六下午吧，我会带上新的谱子。',
+    '帰り道、風が気持ちよかったです。',
+    '如果明天放晴，我们就去庭院走走吧。'
+  ]
+  const sampleIds = []
+  for (const [index, text] of sampleReplies.entries()) {
+    const copy = structuredClone(chat)
+    copy.title = `侧栏测试 ${index + 1}`
+    copy.turns[0].messages[1].parts[0].lines[0].text = text
+    sampleIds.push(await backend.conversations.saveCopy(copy))
+  }
+  const anonId = await backend.conversations.createChat({
+    title: '爱音侧栏测试',
+    characterIds: ['anon'],
+    mode: 'single-character'
+  })
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.reload()
+  const sakiko = page.getByRole('button', { name: '祥子', exact: true })
+  const anon = page.getByRole('button', { name: '爱音', exact: true })
+  const preview = page.getByRole('button', { name: '今天也辛苦了，先休息一会儿吧。' })
+  const draft = page.getByRole('textbox', { name: '消息' })
+  const subtitle = page.locator('.subtitle-text')
+  await preview.click()
+  await expect.poll(() => subtitle.innerText()).toBe('今天也辛苦了，先休息一会儿吧。')
+  await draft.fill('折叠和切换都保留这段草稿')
+
+  const group = page.locator('.home-role-group').filter({ has: sakiko })
+  const disclosure = group.locator('.home-role-disclosure')
+  await sakiko.press('Enter')
+  expect(await sakiko.getAttribute('aria-expanded')).toBe('false')
+  expect(await sakiko.getAttribute('aria-current')).toBe('true')
+  expect(await disclosure.evaluate((element) => element.inert)).toBe(true)
+  await page.keyboard.press('Tab')
+  expect(await page.evaluate(() => document.activeElement.textContent)).toBe('爱音')
+  await expect.poll(() => disclosure.evaluate((element) => element.offsetHeight)).toBe(0)
+  expect(await draft.inputValue()).toBe('折叠和切换都保留这段草稿')
+  expect(await subtitle.innerText()).toBe('今天也辛苦了，先休息一会儿吧。')
+  await sakiko.click()
+  expect(await preview.getAttribute('aria-current')).toBe('page')
+
+  const row = group.locator('.home-chat-row').filter({ hasText: sampleReplies[0] })
+  const deleteButton = row.locator('.home-chat-delete')
+  const background = () => row.evaluate((element) => getComputedStyle(element).backgroundColor)
+  const rest = await background()
+  await row.hover()
+  await expect.poll(background).not.toBe(rest)
+  await expect
+    .poll(() => deleteButton.evaluate((element) => getComputedStyle(element).opacity))
+    .toBe('1')
+  const geometry = await row.evaluate((element) => {
+    const [text, remove] = element.children
+    const [red, green, blue] = getComputedStyle(remove).color.match(/\d+/g).map(Number)
+    return {
+      left: parseFloat(getComputedStyle(text).paddingLeft),
+      right: element.getBoundingClientRect().right - remove.getBoundingClientRect().right,
+      redIcon: red > green && red > blue
+    }
+  })
+  expect(geometry.left).toBeGreaterThanOrEqual(12)
+  expect(geometry.right).toBeGreaterThanOrEqual(8)
+  expect(geometry.redIcon).toBe(true)
+  const navigation = page.locator('.home-navigation')
+  const hasOverflow = () =>
+    navigation.evaluate((element) => element.scrollWidth > element.clientWidth)
+  expect(await hasOverflow()).toBe(false)
+  await page.screenshot({
+    path: '/tmp/sakiko-sidebar-wide.png',
+    scale: 'css',
+    animations: 'disabled'
+  })
+
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setContentSize(1024, 640)
+  })
+  await row.hover()
+  expect(await hasOverflow()).toBe(false)
+  await page.screenshot({
+    path: '/tmp/sakiko-sidebar-narrow.png',
+    scale: 'css',
+    animations: 'disabled'
+  })
+  await page.evaluate(() => {
+    window.roleTransitions = []
+    document.querySelector('.home-navigation').addEventListener('transitionrun', (event) => {
+      if (event.propertyName === 'grid-template-rows')
+        window.roleTransitions.push(event.target.dataset.expanded)
+    })
+  })
+  await page.getByRole('button', { name: '展开聊天记录' }).click()
+  const history = page.getByRole('complementary', { name: '聊天记录' })
+  const originalReply = history.getByText('今天也辛苦了，先休息一会儿吧。', { exact: true })
+  await originalReply.waitFor()
+  await anon.scrollIntoViewIfNeeded()
+  const oldScroll = await navigation.evaluate((element) => element.scrollTop)
+  expect(oldScroll).toBeGreaterThan(0)
+  await anon.click()
+  expect(await sakiko.getAttribute('aria-expanded')).toBe('false')
+  expect(await anon.getAttribute('aria-expanded')).toBe('true')
+  await expect
+    .poll(() => page.evaluate(() => window.roleTransitions.sort()))
+    .toEqual(['false', 'true'])
+  expect(await sakiko.getAttribute('aria-current')).toBe('true')
+  expect(await anon.getAttribute('aria-current')).toBeNull()
+  expect(await draft.inputValue()).toBe('折叠和切换都保留这段草稿')
+  expect(await subtitle.innerText()).toBe('今天也辛苦了，先休息一会儿吧。')
+  expect(await originalReply.isVisible()).toBe(true)
+  await expect
+    .poll(() => navigation.evaluate((element) => element.scrollTop))
+    .toBeLessThan(oldScroll)
+  const anonGroup = page.locator('.home-role-group').filter({ has: anon })
+  await expect
+    .poll(() =>
+      anonGroup.evaluate((element) => {
+        const viewport = element.closest('.home-navigation').getBoundingClientRect()
+        const header = element.querySelector('.home-role').getBoundingClientRect()
+        const action = element.querySelector('.home-new-chat').getBoundingClientRect()
+        return header.top >= viewport.top - 1 && action.bottom <= viewport.bottom + 1
+      })
+    )
+    .toBe(true)
+
+  const anonPreview = page.getByRole('button', { name: '暂无回复', exact: true })
+  await anonPreview.click()
+  expect(await anon.getAttribute('aria-current')).toBe('true')
+  expect(await anonPreview.getAttribute('aria-current')).toBe('page')
+  await originalReply.waitFor({ state: 'hidden' })
+  await sakiko.click()
+  expect(await anon.getAttribute('aria-current')).toBe('true')
+  expect(await preview.getAttribute('aria-current')).toBeNull()
+  await preview.click()
+  expect(await preview.getAttribute('aria-current')).toBe('page')
+  expect(await draft.inputValue()).toBe('折叠和切换都保留这段草稿')
+
+  const soyo = page.getByRole('button', { name: '素世', exact: true })
+  await soyo.click()
+  expect(await sakiko.getAttribute('aria-current')).toBe('true')
+  const soyoList = page.locator('.home-role-group').filter({ has: soyo })
+  expect(await soyoList.locator('.home-chat-row').count()).toBe(0)
+  await soyoList.getByRole('button', { name: '新对话', exact: true }).click()
+  expect(await soyo.getAttribute('aria-current')).toBe('true')
+  expect(await draft.inputValue()).toBe('')
+  expect(await backend.conversations.listChats()).toHaveLength(sampleIds.length + 2)
+
+  await sakiko.click()
+  await preview.click()
+  await anon.click()
+  expect(await anonPreview.getAttribute('aria-current')).toBeNull()
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await anon.click()
+  const anonList = anonGroup.locator('.home-role-disclosure')
+  expect(await anonList.evaluate((element) => getComputedStyle(element).transitionDuration)).toBe(
+    '0s, 0s'
+  )
+  expect(await anonList.evaluate((element) => element.offsetHeight)).toBe(0)
+  await page.getByRole('button', { name: '收起聊天记录' }).click()
+  await page.getByRole('button', { name: '展开聊天记录' }).click()
+  expect(
+    await page
+      .locator('.history-panel')
+      .evaluate((element) => getComputedStyle(element).animationName)
+  ).toBe('none')
+  await anon.click()
+  expect(await anon.getAttribute('aria-expanded')).toBe('true')
+
+  for (const id of [...sampleIds, anonId]) await backend.conversations.deleteChat(id)
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setSize(1440, 1024)
+  })
+  await page.reload()
+  await expect.poll(() => preview.getAttribute('aria-current')).toBe('page')
+  expect(await sakiko.getAttribute('aria-expanded')).toBe('true')
+  expect(await anon.getAttribute('aria-expanded')).toBe('false')
+}
+
+async function verifyHistory(page, application, backend, selected) {
+  const wav = new wavefile.WaveFile()
+  wav.fromScratch(1, 16000, '16', new Int16Array(48000))
+  const { asset } = await backend.assets.importAsset(
+    { kind: 'bytes', name: 'history.wav', mediaType: 'audio/wav', bytes: wav.toBuffer() },
+    'test:history',
+    'audio'
+  )
+  const { chat } = await backend.store.load(selected)
+  const [question, reply] = chat.turns[0].messages
+  question.content.text =
+    '祥子，你还记得当初在排练室里第一次听到那首曲子时是什么感觉吗？后来你们又做了哪些改动？'
+  const lines = reply.parts[0].lines
+  const last = { ...lines[0] }
+  Object.assign(lines[0], {
+    text: 'あの曲を初めて聴いたとき、窓の外はもうすっかり暗くなっていました。でも、誰も帰ろうとしなかったんです。',
+    translation: '第一次听到那首曲子的时候，窗外已经完全黑了，但谁也没有打算回家。',
+    audio: { asset, durationMs: 3000 }
+  })
+  lines.push({ ...lines[0], id: 'another-voiced-line', text: 'そうですね。', translation: null })
+  lines.push({ ...last, id: 'last-unvoiced-line' })
+  const copyId = await backend.conversations.saveCopy(chat)
+  await backend.assets.releaseOwner('test:history')
+  await page.reload()
+  const chats = page.locator('.home-chat-row > button:first-child')
+  await expect.poll(() => chats.count()).toBe(2)
+  await page.locator('.home-chat-row > button:first-child:not([aria-current])').click()
+  await page.getByRole('button', { name: '展开聊天记录' }).click()
+  const longUser = page.locator('.history-user .history-bubble')
+  const replies = page.locator('.history-assistant')
+  await replies.nth(2).waitFor()
+  const longReply = replies.first().locator('.history-bubble')
+  const shortReply = replies.nth(1).locator('.history-bubble')
+  const resize = page.getByRole('button', { name: '调整记录框宽度' })
+  const panel = page.locator('.history-panel')
+  const narrowUser = await longUser.boundingBox()
+  const narrowReply = await longReply.boundingBox()
+  const narrowShort = await shortReply.boundingBox()
+  for (let i = 0; i < 14; i += 1) await resize.press('ArrowLeft')
+  expect((await longUser.boundingBox()).width).toBeGreaterThan(narrowUser.width + 90)
+  expect((await longReply.boundingBox()).width).toBeGreaterThan(narrowReply.width + 90)
+  expect((await longReply.boundingBox()).height).toBeLessThan(narrowReply.height)
+  expect((await shortReply.boundingBox()).width).toBeCloseTo(narrowShort.width, 0)
+  expect(await longReply.locator(':scope > .message-text').innerText()).toBe(lines[0].text)
+  expect(await longReply.locator('.history-translation').innerText()).toBe(lines[0].translation)
+  expect(await replies.nth(2).locator('.history-translation').count()).toBe(0)
+  expect(await panel.getByRole('button', { name: '播放语音' }).count()).toBe(2)
+  expect(await replies.nth(2).getByRole('button', { name: '播放语音' }).count()).toBe(0)
+
+  await page.evaluate(() => {
+    window.historyAudio = []
+    const play = HTMLAudioElement.prototype.play
+    HTMLAudioElement.prototype.play = async function () {
+      await play.call(this)
+      window.historyAudio.push(this)
+    }
+  })
+  const subtitle = page.locator('.subtitle-text')
+  await expect.poll(() => subtitle.innerText()).toBe(last.text)
+  await replies.first().getByRole('button', { name: '播放语音' }).click()
+  await expect.poll(() => page.evaluate(() => window.historyAudio.length)).toBe(1)
+  expect(await subtitle.innerText()).toBe(last.text)
+  await replies.nth(1).getByRole('button', { name: '播放语音' }).click()
+  await expect.poll(() => page.evaluate(() => window.historyAudio.length)).toBe(2)
+  expect(await page.evaluate(() => window.historyAudio[0].paused)).toBe(true)
+  await panel.getByRole('button', { name: '停止语音' }).click()
+  expect(await page.evaluate(() => window.historyAudio[1].paused)).toBe(true)
+  await replies.first().getByRole('button', { name: '播放语音' }).click()
+  await expect.poll(() => page.evaluate(() => window.historyAudio.length)).toBe(3)
+  await expect
+    .poll(() => panel.getByRole('button', { name: '播放语音' }).count(), { timeout: 6000 })
+    .toBe(2)
+  expect(await subtitle.innerText()).toBe(last.text)
+
+  const wide = await panel.boundingBox()
+  await replies.first().getByRole('button', { name: '播放语音' }).click()
+  await expect.poll(() => page.evaluate(() => window.historyAudio.length)).toBe(4)
+  await page.getByRole('button', { name: '收起聊天记录' }).click()
+  await expect.poll(() => page.evaluate(() => window.historyAudio[3].paused)).toBe(true)
+  await page.getByRole('button', { name: '展开聊天记录' }).click()
+  const replay = panel.getByRole('button', { name: '回放本轮回复' })
+  await replay.click()
+  await expect.poll(() => page.evaluate(() => window.historyAudio.length)).toBe(5)
+  await expect.poll(() => subtitle.innerText()).toBe(lines[0].text)
+  await expect
+    .poll(() => page.evaluate(() => window.historyAudio.length), { timeout: 6000 })
+    .toBe(6)
+  await expect.poll(() => subtitle.innerText()).toBe(lines[1].text)
+  await page.getByRole('button', { name: '收起聊天记录' }).click()
+  const stageStop = page.getByRole('button', { name: '停止回放' })
+  await stageStop.waitFor()
+  expect(await page.evaluate(() => window.historyAudio[5].paused)).toBe(false)
+  await expect.poll(() => subtitle.innerText(), { timeout: 6000 }).toBe(last.text)
+  await stageStop.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: '展开聊天记录' }).click()
+  await replay.waitFor()
+  expect(await page.evaluate(() => window.historyAudio.length)).toBe(6)
+  await page.mouse.move(1, 1)
+  await panel.locator('.history-scroll').evaluate((scroll) => {
+    scroll.scrollTop = 0
+  })
+  await page.screenshot({ path: '/tmp/sakiko-history-wide.png', scale: 'css' })
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setContentSize(1024, 640)
+  })
+  for (let i = 0; i < 16; i += 1) await resize.press('ArrowRight')
+  await resize.blur()
+  await panel.locator('.history-scroll').evaluate((scroll) => {
+    scroll.scrollTop = 0
+  })
+  await page.screenshot({ path: '/tmp/sakiko-history-narrow.png', scale: 'css' })
+  for (let i = 0; i < 8; i += 1) await resize.press('ArrowRight')
+  expect((await panel.boundingBox()).width).toBeLessThan(wide.width - 200)
+  expect((await longUser.boundingBox()).width).toBeLessThan(narrowUser.width)
+  expect((await longReply.boundingBox()).width).toBeLessThan(narrowReply.width)
+  expect((await shortReply.boundingBox()).width).toBeCloseTo(narrowShort.width, 0)
+  expect(
+    await panel
+      .locator('.history-scroll')
+      .evaluate((scroll) => scroll.scrollWidth <= scroll.clientWidth)
+  ).toBe(true)
+  await backend.conversations.deleteChat(copyId)
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setSize(1440, 1024)
+  })
+  await page.reload()
+  await expect.poll(() => page.locator('.home-chat-row').count()).toBe(1)
+}
+
+test.each(['production', 'development'])(
+  '%s：引导进入主页、交互、真实模型与 HTTP/WS 聊天及恢复',
+  async (mode) => {
+    const directory = await mkdtemp(join(tmpdir(), 'sakiko-home-ui-'))
+    let backend, server, application, vite
+    let role
+    const agent = {
+      inspectContext: async () => ({ fit: 'fits' }),
+      run: vi.fn(async (request, observer) => {
+        await observer.onResponse({
+          responseId: 'response-' + request.turnId,
+          protocol: {},
+          appendParts: [
+            {
+              id: 'p-' + request.turnId,
+              kind: 'dialogue',
+              lines: [
+                {
+                  id: 'line-' + request.turnId,
+                  speakerId: 'sakiko',
+                  formId: role.defaultFormId,
+                  text: '今天也辛苦了，先休息一会儿吧。',
+                  translation: null,
+                  emotion: null,
+                  performance: { motion: 'auto', expression: 'auto' }
+                }
+              ]
+            }
+          ]
+        })
+        return { status: 'completed', usage: null }
+      })
+    }
+    try {
+      backend = await createCoreBackend({
+        appDataRoot: join(directory, 'app'),
+        resourceLibraryRoot: join(directory, 'library'),
+        cacheRoot: join(directory, 'cache'),
+        builtinDirectory: join(root, 'resources/builtin-characters'),
+        scanReminders: false,
+        agent
+      })
+      let rendererUrl = ''
+      if (mode === 'development') {
+        vite = await createViteServer({
+          configFile: false,
+          root: join(root, 'src/renderer'),
+          resolve: { alias: { '@': join(root, 'src/renderer/src') } },
+          plugins: [react(), tailwindcss()],
+          server: { host: '127.0.0.1', port: 0 }
+        })
+        await vite.listen()
+        rendererUrl = 'http://127.0.0.1:' + vite.httpServer.address().port
+      }
+      server = await startHttpServer(backend, {
+        origins: ['null', 'file://', ...(rendererUrl ? [rendererUrl] : [])]
+      })
+      const hostFile = join(directory, 'host.cjs')
+      await writeFile(
+        hostFile,
+        `const {app,BrowserWindow,ipcMain}=require('electron');app.whenReady().then(async()=>{ipcMain.handle('host:backend-connection',()=>JSON.parse(process.env.HOME_TEST_CONNECTION));ipcMain.handle('host:get-window-visibility',()=>true);const w=new BrowserWindow({width:1440,height:1024,webPreferences:{preload:process.env.HOME_TEST_PRELOAD,contextIsolation:true,nodeIntegration:false,sandbox:true}});if(process.env.HOME_TEST_RENDERER_URL)await w.loadURL(process.env.HOME_TEST_RENDERER_URL);else await w.loadFile(process.env.HOME_TEST_RENDERER);app.show?.();w.show();});app.on('window-all-closed',()=>app.quit());`
+      )
+      const env = {
+        ...process.env,
+        HOME_TEST_CONNECTION: JSON.stringify({ baseUrl: server.baseUrl, token: server.token }),
+        HOME_TEST_RENDERER_URL: rendererUrl,
+        HOME_TEST_PRELOAD: join(root, 'out/preload/index.cjs'),
+        HOME_TEST_RENDERER: join(root, 'out/renderer/index.html')
+      }
+      delete env.ELECTRON_RUN_AS_NODE
+      application = await electron.launch({
+        args: [
+          hostFile,
+          '--user-data-dir=' + join(directory, 'desktop'),
+          '--use-fake-device-for-media-stream',
+          '--use-fake-ui-for-media-stream'
+        ],
+        env
+      })
+      const page = await application.firstWindow()
+      page.setDefaultTimeout(15000)
+      const errors = []
+      page.on('pageerror', (error) => errors.push(error.message))
+      await page.getByRole('button', { name: '快速开始', exact: true }).click()
+      await page.getByRole('heading', { name: '添加语音功能' }).waitFor()
+      await page.getByRole('button', { name: '跳过，直接开始', exact: true }).click()
+      await page.getByRole('main', { name: '数字小祥主页' }).waitFor()
+      expect((await backend.onboarding.getState()).initialized).toBe(true)
+      await page.getByRole('tab', { name: '小剧场', exact: true }).click()
+      await expect
+        .poll(() =>
+          page.getByRole('tab', { name: '小剧场', exact: true }).getAttribute('aria-selected')
+        )
+        .toBe('true')
+      await page.getByRole('tab', { name: '对话', exact: true }).click()
+      role = await backend.characters.get('sakiko')
+      await backend.settings.saveConnection(
+        {
+          id: 'test',
+          revision: 0,
+          name: '测试连接',
+          provider: 'openai-compatible',
+          protocol: 'chat',
+          baseUrl: 'http://127.0.0.1:9999/v1',
+          attachmentTransport: 'inline',
+          models: [{ id: 'test', declared: { contextTokens: 10000 }, overrides: {} }]
+        },
+        { kind: 'replace', secret: 'test' }
+      )
+      await backend.settings.update({ generation: { connectionId: 'test', modelId: 'test' } })
+      // 重载验证正式初始化恢复；只使用隔离目录和可控 Agent，不发送外部请求。
+      await page.reload()
+      await page.getByRole('main', { name: '数字小祥主页' }).waitFor()
+      await expect
+        .poll(() => page.locator('.home-canvas').getAttribute('data-stage-state'))
+        .toBe('ready')
+      await expect.poll(() => page.locator('.home-stage-status[role=alert]').count()).toBe(0)
+      const readCatalog = backend.setup.getCatalog.bind(backend.setup)
+      backend.setup.getCatalog = (options) => readCatalog({ ...options, refresh: false })
+      await page.keyboard.press('ControlOrMeta+,')
+      const settings = page.getByRole('dialog', { name: '设置' })
+      await settings.getByRole('heading', { name: '已配置的连接' }).waitFor()
+      if (mode === 'production')
+        await page.screenshot({ path: '/tmp/sakiko-settings-connections.png' })
+      await settings.getByRole('button', { name: '编辑', exact: true }).click()
+      expect(await settings.getByRole('textbox', { name: '连接名称' }).inputValue()).toBe(
+        '测试连接'
+      )
+      expect(await settings.getByLabel('API Key', { exact: true }).inputValue()).toBe('')
+      await page.keyboard.press('Escape')
+      await settings.waitFor({ state: 'hidden' })
+      await page.getByRole('button', { name: '语音输入', exact: true }).click()
+      await page
+        .getByRole('dialog', { name: '启用语音输入' })
+        .getByRole('button', { name: '前往下载' })
+        .click()
+      await settings.getByRole('heading', { name: '附加资源下载' }).waitFor()
+      await settings.getByRole('heading', { name: '语音识别模型' }).waitFor()
+      expect(
+        await settings.evaluate((element) => {
+          const close = element.querySelector('.settings-dismiss').getBoundingClientRect()
+          const scroll = element.querySelector('.settings-content').getBoundingClientRect()
+          return close.bottom <= scroll.top
+        })
+      ).toBe(true)
+      if (mode === 'production')
+        await page.screenshot({ path: '/tmp/sakiko-settings-resources.png' })
+      await settings.getByRole('button', { name: '关闭设置' }).click()
+      const actualFeatureState = backend.setup.getFeatureState.bind(backend.setup)
+      backend.setup.getFeatureState = async () => ({
+        ...(await actualFeatureState()),
+        asrReady: true
+      })
+      const transcribe = vi
+        .spyOn(backend.recognition, 'transcribe')
+        .mockImplementation(async (request) => {
+          expect(request).toMatchObject({ sampleRateHz: 16000, language: null })
+          const wave = await readFile(await backend.assets.localPath(request.audio))
+          expect(wave.subarray(0, 4).toString()).toBe('RIFF')
+          return { status: 'succeeded', text: '识别到的文字' }
+        })
+      await page.reload()
+      const composer = page.getByRole('textbox', { name: '消息' })
+      await composer.fill('保留原草稿')
+      await page.getByRole('button', { name: '语音输入', exact: true }).click()
+      const finishRecording = page.getByRole('button', { name: '结束录音并识别' })
+      await finishRecording.waitFor()
+      await page.waitForTimeout(400)
+      await finishRecording.click()
+      await expect.poll(() => composer.inputValue()).toBe('保留原草稿\n识别到的文字')
+      expect(transcribe).toHaveBeenCalledOnce()
+      transcribe.mockRestore()
+      backend.setup.getFeatureState = actualFeatureState
+      const picker = page.getByRole('combobox', { name: '对话模型' })
+      expect(await picker.inputValue()).toBe(
+        JSON.stringify({ connectionId: 'test', modelId: 'test' })
+      )
+      await picker.selectOption(JSON.stringify({ connectionId: 'test', modelId: 'test' }))
+      await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
+      await page
+        .getByRole('textbox', { name: '消息' })
+        .dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true })
+      expect(agent.run).not.toHaveBeenCalled()
+      await page.getByRole('textbox', { name: '消息' }).press('Shift+Enter')
+      expect(await page.getByRole('textbox', { name: '消息' }).inputValue()).toContain('\n')
+      await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
+      await page.getByRole('button', { name: '发送消息' }).click()
+      await page.locator('.subtitle-text').filter({ hasText: '今天也辛苦了' }).waitFor()
+      expect(await page.locator('.subtitle-text').innerText()).toBe(
+        '今天也辛苦了，先休息一会儿吧。'
+      )
+      await page.evaluate(() => {
+        window.homeCanvas = document.querySelector('.home-canvas canvas')
+      })
+      await page.getByRole('button', { name: '展开聊天记录' }).click()
+      await page.getByRole('complementary', { name: '聊天记录' }).waitFor()
+      await page.locator('.history-panel').evaluate(async (element) => {
+        await Promise.all(element.getAnimations().map((animation) => animation.finished))
+      })
+      await expect.poll(() => page.locator('.history-bubble').count()).toBe(2)
+      const replay = page.getByRole('button', { name: '回放本轮回复' })
+      await replay.waitFor()
+      const replayBounds = await replay.boundingBox()
+      const userBounds = await page.locator('.history-user .history-bubble').boundingBox()
+      expect(replayBounds.x + replayBounds.width).toBeLessThan(userBounds.x)
+      await replay.click()
+      await page.getByRole('button', { name: '停止回放' }).click()
+      await replay.waitFor()
+      await replay.click()
+      await page.getByRole('button', { name: '停止回放' }).waitFor()
+      await replay.waitFor()
+      await replay.click()
+      await page.getByRole('button', { name: '停止回放' }).waitFor()
+      await page.getByRole('button', { name: '收起聊天记录' }).click()
+      await page.getByRole('button', { name: '停止回放' }).click()
+      await page.getByRole('button', { name: '展开聊天记录' }).click()
+      await replay.waitFor()
+      expect(
+        await page.evaluate(
+          () => window.homeCanvas === document.querySelector('.home-canvas canvas')
+        )
+      ).toBe(true)
+      expect(await page.locator('.history-bubble strong').innerText()).toBe('祥子')
+      expect(agent.run.mock.calls[0][0].toolDefinitions.map((tool) => tool.name)).not.toContain(
+        'ask_user'
+      )
+      const initialSize = await page.locator('.history-panel').boundingBox()
+      const shortUser = page.locator('.history-user .history-bubble')
+      const shortUserWidth = (await shortUser.boundingBox()).width
+      const resizeHandle = page.getByRole('button', { name: '调整记录框大小', exact: true })
+      await resizeHandle.hover()
+      const handle = await resizeHandle.boundingBox()
+      await page.mouse.down()
+      await page.mouse.move(handle.x - 91, handle.y + 49, { steps: 5 })
+      await page.mouse.up()
+      await expect
+        .poll(async () => (await page.locator('.history-panel').boundingBox()).width)
+        .toBeCloseTo(initialSize.width + 100, 0)
+      const resized = await page.locator('.history-panel').boundingBox()
+      expect(resized.height).toBeCloseTo(initialSize.height + 40, 0)
+      expect((await shortUser.boundingBox()).width).toBeCloseTo(shortUserWidth, 0)
+      await page.screenshot({ path: '/tmp/sakiko-home-1440.png' })
+      await application.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].setSize(1147, 745)
+      )
+      await page.waitForTimeout(300)
+      const stageBounds = await page.locator('.home-stage').boundingBox()
+      const inputBounds = await page.locator('.home-composer').boundingBox()
+      expect(inputBounds.x).toBeGreaterThan(stageBounds.x)
+      expect(inputBounds.y + inputBounds.height).toBeLessThanOrEqual(745)
+      await page.screenshot({ path: '/tmp/sakiko-home-1147.png' })
+      await application.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].setContentSize(1024, 640)
+      )
+      await page.screenshot({ path: '/tmp/sakiko-home-1024.png', scale: 'css' })
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth === window.innerWidth)
+      ).toBe(true)
+      const selected = (await backend.conversations.listChats())[0].id
+      await page.reload()
+      await page.getByRole('main', { name: '数字小祥主页' }).waitFor()
+      await expect.poll(() => page.locator('.home-chat-row.selected').count()).toBe(1)
+      expect(await page.locator('.home-chat-row.selected').innerText()).toContain('今天也辛苦了')
+      await expect
+        .poll(() => page.locator('.subtitle-text').innerText())
+        .toBe('今天也辛苦了，先休息一会儿吧。')
+      expect(agent.run).toHaveBeenCalledTimes(1)
+      await page.getByRole('button', { name: '展开聊天记录' }).click()
+      expect(
+        (await page.getByRole('complementary', { name: '聊天记录' }).boundingBox()).width
+      ).toBeCloseTo(resized.width, 0)
+      await application.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].setSize(1440, 1024)
+      )
+      await expect
+        .poll(async () => Math.round((await page.locator('.history-panel').boundingBox()).height))
+        .toBe(Math.round(resized.height))
+      if (mode === 'production') {
+        await verifyHistory(page, application, backend, selected)
+        await verifySidebar(page, application, backend, selected)
+      }
+      await page.getByRole('button', { name: '新对话', exact: true }).click()
+      expect((await backend.conversations.listChats()).map((chat) => chat.id)).toEqual([selected])
+      const remove = page.getByRole('button', { name: '删除对话：你好，**祥子**！', exact: true })
+      await remove.press('Enter')
+      await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click()
+      expect(await backend.conversations.listChats()).toHaveLength(1)
+      expect(await remove.evaluate((element) => document.activeElement === element)).toBe(true)
+      await remove.click()
+      await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click()
+      await expect.poll(async () => (await backend.conversations.listChats()).length).toBe(0)
+      await page.getByRole('dialog').waitFor({ state: 'hidden' })
+      await page.getByRole('button', { name: '新对话', exact: true }).click()
+      const generation = Promise.withResolvers()
+      agent.run.mockImplementationOnce(async () => {
+        await generation.promise
+        throw problemError('provider_unavailable', '模型服务暂时不可用。', true)
+      })
+      const composerGroup = page.locator('.home-composer-group')
+      try {
+        await page.getByRole('textbox', { name: '消息' }).fill('验证发送失败提示')
+        await page.getByRole('button', { name: '发送消息' }).click()
+        await composerGroup.getByRole('status').getByText('正在生成回复…').waitFor()
+      } finally {
+        generation.resolve()
+      }
+      await composerGroup.getByRole('alert').getByText('模型服务暂时不可用。').waitFor()
+      await composerGroup.getByRole('status').waitFor({ state: 'hidden' })
+      const [failedChat] = await backend.conversations.listChats()
+      const { chat } = await backend.store.load(failedChat.id)
+      expect(chat.turns[0].messages.map(({ kind }) => kind)).toEqual(['user'])
+      expect(errors).toEqual([])
+    } finally {
+      await application?.close()
+      await server?.close()
+      await backend?.close()
+      await vite?.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  },
+  120000
+)

@@ -35,6 +35,18 @@ export function createMainWindow() {
     window.show()
   })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.session.setPermissionRequestHandler(
+    (contents, permission, callback, details) => {
+      callback(
+        contents === window.webContents &&
+          permission === 'media' &&
+          details.isMainFrame &&
+          details.requestingUrl === contents.getURL() &&
+          details.mediaTypes?.length === 1 &&
+          details.mediaTypes[0] === 'audio'
+      )
+    }
+  )
   window.webContents.on('will-navigate', function preventNavigation(event) {
     event.preventDefault()
   })

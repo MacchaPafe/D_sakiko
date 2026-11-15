@@ -77,6 +77,7 @@ export async function createCoreBackend({
   recognitionModelDirectory,
   recognitionWorkerPath,
   recognitionDependencyEntry,
+  restartSpeech,
   setupOptions = {},
   builtinDirectory,
   builtinConnection,
@@ -140,6 +141,7 @@ export async function createCoreBackend({
     builtinDirectory,
     builtinConnection
   })
+  setup.readOnboardingContext = () => onboarding.resourceContext()
   recognition.acquireRuntime = recognitionModelDirectory
     ? async () => ({
         modelDirectory: recognitionModelDirectory,
@@ -149,6 +151,7 @@ export async function createCoreBackend({
     : () => setup.acquireRuntime('asr')
   await assets.initialize()
   await setup.initialize()
+  await onboarding.initialize()
   const notices = new Notices({
     appDataRoot,
     readSources: () => readNoticeSources({ onboarding, setup, settings, characters })
@@ -180,7 +183,14 @@ export async function createCoreBackend({
   await remoteFiles.initialize()
   const performance = injectedPerformance ?? new Performance({ resolveModel, assets })
   performance.assets ??= assets
-  const speech = injectedSpeech ?? new Speech({ connect: connectSpeech, assets })
+  const speech =
+    injectedSpeech ?? new Speech({ connect: connectSpeech, assets, restart: restartSpeech })
+  setup.onRuntimeChanged = (kind) => {
+    if (kind === 'asr' && !recognitionModelDirectory) recognition.markRuntimeChanged()
+    if (kind === 'gsv') speech.markRuntimeChanged?.()
+  }
+  setup.runtimeWaiting = (kind) =>
+    kind === 'asr' ? recognition.runtimeWaiting : speech.runtimeWaiting
   const agent =
     injectedAgent ??
     new Agent({

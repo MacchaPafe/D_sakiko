@@ -94,6 +94,8 @@ test('初始化从压缩包导入全部模型，预览文件使用期间保留�
   const backend = await f.backend()
   const preview = await backend.onboarding.prepareStartupPreview()
   await backend.onboarding.begin({ path: 'quick' })
+  expect(await backend.characters.list()).toHaveLength(0)
+  await backend.onboarding.finish()
   expect(await backend.characters.list()).toHaveLength(3)
   expect((await backend.characters.get('sakiko')).defaultFormId).toBe('black')
   for (const role of f.manifest.characters) {

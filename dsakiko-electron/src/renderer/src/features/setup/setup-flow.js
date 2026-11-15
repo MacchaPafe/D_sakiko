@@ -3,9 +3,17 @@
  * @typedef {{id: string, name: string, ready: boolean, available: boolean, sizeKnown: boolean, downloadBytes: number, requiresSelection?: string|null, unavailableReason: string|null}} ResourceOption
  * @typedef {{groups: Array<{id: string, options: ResourceOption[]}>, selectionDownloadBytes: number|null}} ResourceCatalog
  * @typedef {object} SetupFlowState
- * @property {'loading'|'welcome'|'resources'|'download'|'error'} view 当前页面；返回欢迎只改变展示，不回滚正式角色。
+ * @property {'loading'|'welcome'|'legacy'|'import'|'resources'|'download'|'home'|'error'} view 当前页面；快速开始返回前需确认后端撤回准备身份。
+ * @property {{sourceId: string, name: string}|null} legacySource 宿主授权的旧版目录。
+ * @property {object|null} legacyScan 扫描摘要，不包含来源文件内容或凭据。
+ * @property {Record<string, boolean>} legacyInclude 整类导入选择。
+ * @property {boolean} scanning 正在扫描，允许更换目录使旧结果失效。
+ * @property {boolean} picking 正在等待系统选择器。
  * @property {import('../../../../shared/contracts/setup.js').OnboardingState|null} onboarding 后端初始化状态。
  * @property {ResourceCatalog|null} catalog 后端资源目录与去重估计。
+ * @property {ResourceCatalog|null} managedCatalog 设置页上次可用的资源快照。
+ * @property {boolean} managedCatalogChecking 设置页正在读取本地或远端状态。
+ * @property {string|null} managedCatalogProblem 上次资源核对失败原因。
  * @property {string[]} selection 本次选择，默认空。
  * @property {SetupSnapshot|null} job 当前持久任务。
  * @property {object|null} features 真实功能就绪状态。
@@ -18,22 +26,33 @@
  * @property {string|null} catalogProblem 目录读取失败原因。
  */
 
+const managedRefreshIntervalMs = 10 * 60 * 1000
+
 /** 应用级初始化与下载会话；React 卸载只断开观察，不撤销后端任务。 */
 export class SetupFlow {
-  /** @param {{connect: () => Promise<import('../../backend/client.js').BackendClient>, randomId?: () => string}} options 传输连接及可验证的命令身份。 */
-  constructor({ connect, randomId = () => crypto.randomUUID() }) {
+  /** @param {{connect: () => Promise<import('../../backend/client.js').BackendClient>, selectLegacyDirectory?: () => Promise<{sourceId: string, name: string}|null>, randomId?: () => string}} options 传输连接及可验证的命令身份。 */
+  constructor({ connect, selectLegacyDirectory, randomId = () => crypto.randomUUID() }) {
     this.connect = connect
     this.randomId = randomId
+    this.selectLegacyDirectory = selectLegacyDirectory
+    this.scanRevision = 0
+    this.pickerRevision = 0
     this.listeners = new Set()
     this.generation = 0
     this.catalogRevision = 0
     this.jobRevision = 0
     this.featureRevision = 0
+    this.managedRevision = 0
+    this.managedCheckedAt = null
+    this.managedRequest = null
     /** @type {SetupFlowState} */
     this.state = {
       view: 'loading',
       onboarding: null,
       catalog: null,
+      managedCatalog: null,
+      managedCatalogChecking: false,
+      managedCatalogProblem: null,
       selection: [],
       job: null,
       features: null,
@@ -43,7 +62,12 @@ export class SetupFlow {
       connected: true,
       connectionProblem: null,
       problem: null,
-      catalogProblem: null
+      catalogProblem: null,
+      legacySource: null,
+      legacyScan: null,
+      legacyInclude: {},
+      scanning: false,
+      picking: false
     }
   }
   getSnapshot = () => this.state
@@ -71,13 +95,21 @@ export class SetupFlow {
         return
       }
       this.client = client
-      const [onboarding, jobs] = await Promise.all([
+      let [onboarding, jobs] = await Promise.all([
         client.onboarding.getState(),
         client.setup.listJobs()
       ])
       if (!this.current(generation)) return
-      if (onboarding.stage === 'importing')
-        throw new Error('当前有未完成的旧版导入，请先完成该导入流程。')
+      if (onboarding.stage === 'returning') onboarding = await client.onboarding.returnToWelcome()
+      if (!this.current(generation)) return
+      if (onboarding.stage === 'committing') {
+        this.update({
+          onboarding,
+          view: 'error',
+          problem: '初始化提交未完成，请重试以继续准备正式数据。'
+        })
+        return
+      }
       this.update({
         onboarding,
         view:
@@ -88,6 +120,7 @@ export class SetupFlow {
       const downloads = jobs.filter(
         (job) =>
           job.kind === 'download' &&
+          (job.preparationId ?? null) === (onboarding.preparationId ?? null) &&
           job.status !== 'cancelled' &&
           (job.status !== 'planned' || job.expiresAt > Date.now())
       )
@@ -95,26 +128,35 @@ export class SetupFlow {
         downloads.find((item) => item.status === 'running') ??
         downloads.find((item) => item.status !== 'succeeded') ??
         downloads[0]
-      if (job && onboarding.stage !== 'welcome') this.watchJob(job)
+      if (onboarding.stage === 'importing') {
+        const imported = jobs.find((item) => item.id === onboarding.jobId)
+        if (!imported) throw new Error('未找到旧版导入任务，请重试。')
+        this.watchJob(imported)
+      } else if (job && onboarding.stage !== 'welcome') this.watchJob(job)
       let wasConnected = false
       this.stopConnection = client.observeConnection(({ connected, problem }) => {
         if (!this.current(generation)) return
         this.update({ connected, connectionProblem: problem?.message ?? null })
-        if (connected && wasConnected) void this.refreshFeatures()
+        if (connected && wasConnected) {
+          void this.refreshFeatures()
+          if (this.state.managedCatalog) void this.refreshManagedCatalog({ localChanged: true })
+        }
         wasConnected ||= connected
       })
       this.stopOnboarding = client.observe('onboarding', null, (snapshot) => {
         if (!this.current(generation)) return
         this.update({ onboarding: snapshot })
       })
-      if (onboarding.stage === 'preparing') await this.quickStart()
+      if (onboarding.initialized) this.update({ view: 'home' })
+      else if (onboarding.stage === 'preparing') await this.quickStart()
+      else if (this.state.view === 'import') await this.advanceLegacyIfComplete()
       else if (this.state.view !== 'welcome') await this.loadResources()
     } catch (error) {
       if (this.current(generation)) this.update({ view: 'error', problem: error.message })
     }
   }
 
-  /** @returns {Promise<void>} 幂等准备三位角色与默认连接；无论预览是否成功都可执行。 */
+  /** @returns {Promise<void>} 记录可撤回的快速开始选择，不创建正式角色或连接。 */
   quickStart = async () => {
     if (this.state.pending || !this.client) return
     const generation = this.generation
@@ -172,6 +214,45 @@ export class SetupFlow {
     }
   }
 
+  /** @param {{force?: boolean, localChanged?: boolean}} [options] 手动检查远端或刷新已发生的本地变更。 @returns {Promise<void>} 保留最后一次成功快照，避免重进设置时出现空白。 */
+  refreshManagedCatalog = ({ force = false, localChanged = false } = {}) => {
+    if (!this.active || !this.client) return Promise.resolve()
+    if (this.managedRequest && !localChanged) return this.managedRequest
+    const readLocal = localChanged || !this.state.managedCatalog
+    const checkOnline =
+      force ||
+      (!localChanged &&
+        (this.managedCheckedAt === null ||
+          Date.now() - this.managedCheckedAt >= managedRefreshIntervalMs))
+    if (!readLocal && !checkOnline) return Promise.resolve()
+    const generation = this.generation
+    const revision = ++this.managedRevision
+    const isCurrent = () => this.current(generation) && this.managedRevision === revision
+    this.update({ managedCatalogChecking: true, managedCatalogProblem: null })
+    const load = async () => {
+      try {
+        if (readLocal) {
+          const value = await this.client.setup.getCatalog({ managed: true })
+          if (isCurrent()) this.update({ managedCatalog: value })
+        }
+        if (isCurrent() && checkOnline) {
+          this.managedCheckedAt = Date.now()
+          const value = await this.client.setup.getCatalog({ managed: true, refresh: true })
+          if (isCurrent()) this.update({ managedCatalog: value })
+        }
+      } catch (error) {
+        if (isCurrent()) this.update({ managedCatalogProblem: error.message })
+      } finally {
+        if (isCurrent()) {
+          this.managedRequest = null
+          this.update({ managedCatalogChecking: false })
+        }
+      }
+    }
+    this.managedRequest = Promise.resolve().then(load)
+    return this.managedRequest
+  }
+
   /** @param {string} id 产品选项。 @returns {void} 勾选角色时自动选上所需引擎；取消引擎同时清除依赖它的语音选择。 */
   toggle = (id) => {
     if (
@@ -199,7 +280,10 @@ export class SetupFlow {
 
   watchJob(job) {
     this.stopJob?.()
-    this.update({ job, view: 'download' })
+    let view = 'download'
+    if (job.kind === 'legacy') view = 'import'
+    if (this.state.onboarding?.initialized) view = 'home'
+    this.update({ job, view })
     const generation = this.generation
     this.stopJob = this.client.observe('setup', job.id, (snapshot) => {
       if (!this.current(generation) || this.state.job?.id !== snapshot.id) return
@@ -209,7 +293,15 @@ export class SetupFlow {
         this.state.job.download?.components.filter((item) => item.status === 'ready').length !==
           snapshot.download?.components.filter((item) => item.status === 'ready').length
       this.update({ job: snapshot })
-      if (changed) void this.refreshFeatures()
+      if (snapshot.kind === 'legacy') void this.advanceLegacyIfComplete()
+      else if (changed) {
+        void this.refreshFeatures()
+        if (
+          this.state.managedCatalog &&
+          ['succeeded', 'failed', 'cancelled'].includes(snapshot.status)
+        )
+          void this.refreshManagedCatalog({ localChanged: true })
+      }
     })
   }
 
@@ -233,8 +325,9 @@ export class SetupFlow {
       if (!this.current(generation)) return
       const existing = jobs.find(
         (job) =>
-          job.status === 'running' ||
-          (job.kind === 'download' && ['paused', 'failed'].includes(job.status))
+          (job.preparationId ?? null) === (this.state.onboarding?.preparationId ?? null) &&
+          (job.status === 'running' ||
+            (job.kind === 'download' && ['paused', 'failed'].includes(job.status)))
       )
       if (existing) {
         if (existing.kind !== 'download') throw new Error('已有资源准备任务正在执行。')
@@ -245,7 +338,13 @@ export class SetupFlow {
       const job = await this.client.call(
         'setup',
         'createPlan',
-        [{ kind: 'download', selection: this.planRequest.selection }],
+        [
+          {
+            kind: 'download',
+            selection: this.planRequest.selection,
+            preparationId: this.state.onboarding?.preparationId ?? null
+          }
+        ],
         { requestId: this.planRequest.requestId }
       )
       if (!this.current(generation)) return
@@ -260,6 +359,36 @@ export class SetupFlow {
     }
   }
 
+  /**
+   * @param {string} selection 设置页选中的资源。
+   * @param {(id: string) => void} onJob 受理后跟随同一任务。
+   * @returns {Promise<void>} 安装任务在页面关闭后仍继续。
+   */
+  async downloadManaged(selection, onJob) {
+    if (this.state.pending) throw new Error('资源任务正在处理，请稍后再试。')
+    const generation = this.generation
+    this.update({ pending: 'download', problem: null })
+    try {
+      const jobs = await this.client.setup.listJobs()
+      if (!this.current(generation)) return
+      const existing = jobs.find((job) => job.status === 'running')
+      if (existing && existing.kind !== 'download') throw new Error('已有资源准备任务正在执行。')
+      const job =
+        existing ??
+        (await this.client.setup.createPlan({
+          kind: 'download',
+          managed: true,
+          selection: [selection]
+        }))
+      if (!this.current(generation)) return
+      this.watchJob(job)
+      onJob(job.id)
+      if (!existing) await this.sendJobCommand('start', [job.id])
+    } finally {
+      if (this.current(generation)) this.update({ pending: null })
+    }
+  }
+
   async sendJobCommand(method, args) {
     const generation = this.generation
     const revision = this.jobRevision
@@ -268,7 +397,7 @@ export class SetupFlow {
     if (this.current(generation) && revision === this.jobRevision) this.update({ job })
   }
 
-  /** @param {'pause'|'resume'} action 显式暂停或继续，同一身份支持失败重试。 @returns {Promise<void>} 等待后端安全节点。 */
+  /** @param {'pause'|'resume'|'cancel'} action 显式暂停或继续，同一身份支持失败重试。 @returns {Promise<void>} 等待后端安全节点。 */
   control = async (action) => {
     if (this.state.pending || !this.state.job) return
     const generation = this.generation
@@ -280,10 +409,15 @@ export class SetupFlow {
     } finally {
       if (this.current(generation)) this.update({ pending: null })
     }
+    await this.advanceLegacyIfComplete()
   }
   back = () => {
     if (this.state.pending) return
-    if (this.state.view === 'resources') this.update({ view: 'welcome', problem: null })
+    if (this.state.view === 'legacy' && !this.state.onboarding?.path) {
+      this.scanRevision += 1
+      this.update({ view: 'welcome', scanning: false, picking: false, problem: null })
+    } else if (this.state.view === 'resources' && this.state.onboarding?.path !== 'legacy')
+      void this.returnQuick()
     else if (this.state.job?.status === 'succeeded' || this.state.job?.status === 'cancelled') {
       this.stopJob?.()
       this.stopJob = null
@@ -291,6 +425,38 @@ export class SetupFlow {
       void this.loadResources()
     }
   }
+  /** @returns {Promise<void>} 后端确认撤回后才释放页面绑定，失败时保留原任务供重试。 */
+  returnQuick = async () => {
+    if (this.state.pending || this.state.onboarding?.path !== 'quick') return
+    const generation = this.generation
+    this.update({ pending: 'return', problem: null })
+    try {
+      const onboarding = await this.client.onboarding.returnToWelcome()
+      if (!this.current(generation)) return
+      this.stopJob?.()
+      this.stopJob = null
+      this.jobRevision += 1
+      this.catalogRevision += 1
+      this.featureRevision += 1
+      this.planRequest = null
+      this.update({
+        onboarding,
+        view: 'welcome',
+        job: null,
+        selection: [],
+        catalog: null,
+        features: null,
+        catalogLoading: false,
+        refreshing: false,
+        catalogProblem: null
+      })
+    } catch (error) {
+      if (this.current(generation)) this.update({ problem: error.message })
+    } finally {
+      if (this.current(generation)) this.update({ pending: null })
+    }
+  }
+
   /** @returns {Promise<void>} 用户重新选择时先确认旧任务取消，再释放页面绑定；失败保留原任务供重试。 */
   reselect = async () => {
     if (this.state.pending || !this.state.job || this.state.job.status === 'running') return
@@ -309,7 +475,241 @@ export class SetupFlow {
       if (this.current(generation)) this.update({ pending: null })
     }
   }
-  retry = () => {
+  /** @returns {void} 进入目录选择，不提前绑定初始化路径。 */
+  openLegacy = () => {
+    if (this.state.pending || this.state.onboarding?.path) return
+    this.update({ view: 'legacy', problem: null })
+  }
+
+  /** @returns {Promise<void>} 取消系统选择器保留现有扫描；新目录使旧请求失效。 */
+  chooseLegacy = async () => {
+    if (this.state.pending || this.state.picking || this.state.view !== 'legacy') return
+    const generation = this.generation
+    const revision = this.scanRevision
+    const pickerRevision = ++this.pickerRevision
+    this.update({ picking: true })
+    try {
+      const source = await this.selectLegacyDirectory()
+      if (
+        !this.current(generation) ||
+        revision !== this.scanRevision ||
+        this.state.view !== 'legacy'
+      )
+        return
+      if (source) await this.scanLegacy(source)
+    } catch (error) {
+      if (this.current(generation) && revision === this.scanRevision)
+        this.update({ problem: error.message })
+    } finally {
+      if (this.current(generation) && pickerRevision === this.pickerRevision)
+        this.update({ picking: false })
+    }
+  }
+
+  /** @param {{sourceId: string, name: string}} source 授权目录。 @returns {Promise<void>} 扫描成功后默认选择有内容的类别。 */
+  scanLegacy = async (source = this.state.legacySource) => {
+    if (!source || this.state.pending) return
+    const revision = ++this.scanRevision
+    const generation = this.generation
+    this.legacyPlan = null
+    this.update({
+      legacySource: source,
+      legacyScan: null,
+      legacyInclude: {},
+      scanning: true,
+      picking: false,
+      problem: null
+    })
+    try {
+      const scan = await this.client.setup.scanLegacy(source.sourceId)
+      if (!this.current(generation) || revision !== this.scanRevision) return
+      this.update({ legacyScan: scan, legacyInclude: { ...scan.availableCategories } })
+    } catch (error) {
+      if (this.current(generation) && revision === this.scanRevision)
+        this.update({ problem: error.message })
+    } finally {
+      if (this.current(generation) && revision === this.scanRevision)
+        this.update({ scanning: false })
+    }
+  }
+
+  /** @param {string} key 整类选择。 @returns {void} 选择变化后重新生成计划。 */
+  toggleLegacy = (key) => {
+    if (
+      this.state.pending ||
+      this.state.scanning ||
+      !this.state.legacyScan?.availableCategories[key]
+    )
+      return
+    this.legacyPlan = null
+    this.update({
+      legacyInclude: { ...this.state.legacyInclude, [key]: !this.state.legacyInclude[key] },
+      problem: null
+    })
+  }
+
+  /** @returns {Promise<void>} 创建计划和开始导入分别可重试，丢失响应也沿用同一身份。 */
+  importLegacy = async () => {
+    if (
+      this.state.pending ||
+      this.state.scanning ||
+      this.state.picking ||
+      !this.state.legacyScan?.canImport ||
+      !Object.values(this.state.legacyInclude).some(Boolean)
+    )
+      return
+    const generation = this.generation
+    this.update({ pending: 'import', problem: null })
+    try {
+      this.legacyPlan ??= { requestId: this.randomId(), job: null }
+      if (!this.legacyPlan.job)
+        this.legacyPlan.job = await this.client.call(
+          'setup',
+          'createPlan',
+          [
+            {
+              kind: 'legacy',
+              scanId: this.state.legacyScan.scanId,
+              include: this.state.legacyInclude
+            }
+          ],
+          { requestId: this.legacyPlan.requestId }
+        )
+      if (!this.current(generation)) return
+      const job = this.legacyPlan.job
+      const onboarding = await this.client.onboarding.begin({ path: 'legacy', planId: job.id })
+      if (!this.current(generation)) return
+      this.update({ onboarding })
+      const snapshot = await this.client.setup.getJob(job.id)
+      if (this.current(generation)) this.watchJob(snapshot)
+    } catch (error) {
+      if (this.current(generation)) {
+        this.update({ problem: error.message })
+        // begin 可能已经持久绑定任务；网络响应丢失不能让界面误以为仍可换来源。
+        try {
+          const onboarding = await this.client.onboarding.getState()
+          if (onboarding.stage === 'importing' && onboarding.jobId) {
+            const snapshot = await this.client.setup.getJob(onboarding.jobId)
+            if (this.current(generation)) {
+              this.update({ onboarding })
+              this.watchJob(snapshot)
+            }
+          } else if (error.code) this.legacyPlan = null
+        } catch {
+          /* 保留计划身份，重试沿用同一任务。 */
+        }
+      }
+    } finally {
+      if (this.current(generation)) this.update({ pending: null })
+    }
+    await this.advanceLegacyIfComplete()
+  }
+
+  /** @returns {Promise<void>} 仅无告警、无部分失败的完整成功自动进入附加资源。 */
+  advanceLegacyIfComplete = async () => {
+    const job = this.state.job
+    if (
+      this.state.view !== 'import' ||
+      job?.status !== 'succeeded' ||
+      job.warnings?.length ||
+      Object.values(job.items ?? {}).some((item) => ['partial', 'failed'].includes(item.status))
+    )
+      return
+    if (!this.state.pending) await this.continueLegacy()
+  }
+
+  /** @returns {Promise<void>} 保留真实已提交结果；零提交时由后端补齐快速开始。 */
+  continueLegacy = async () => {
+    if (
+      this.state.pending ||
+      this.state.job?.kind !== 'legacy' ||
+      this.state.job.status === 'running'
+    )
+      return
+    const generation = this.generation
+    this.update({ pending: 'continue', problem: null })
+    try {
+      const onboarding =
+        this.state.job.status === 'succeeded'
+          ? await this.client.onboarding.prepareOptionalResources()
+          : await this.client.onboarding.skipLegacyImport()
+      if (!this.current(generation)) return
+      this.stopJob?.()
+      this.stopJob = null
+      this.jobRevision += 1
+      this.update({ onboarding, job: null, view: 'resources', selection: [] })
+      await this.loadResources()
+    } catch (error) {
+      if (this.current(generation)) this.update({ problem: error.message })
+    } finally {
+      if (this.current(generation)) this.update({ pending: null })
+    }
+  }
+
+  /** @returns {Promise<void>} 停止旧任务后重新扫描，已提交内容不回滚。 */
+  reselectLegacy = async () => {
+    if (this.state.pending || this.state.job?.status === 'running') return
+    await this.control('cancel')
+    if (!this.active || this.state.job?.status !== 'cancelled') return
+    this.stopJob?.()
+    this.stopJob = null
+    this.jobRevision += 1
+    this.legacyPlan = null
+    this.update({ view: 'legacy', job: null, legacyScan: null, legacyInclude: {}, problem: null })
+    if (this.state.legacySource) await this.scanLegacy()
+  }
+
+  /** @returns {Promise<void>} 重新选择期间仍可回看已保留的导入结果。 */
+  returnToLegacyResult = async () => {
+    if (this.state.pending || !this.state.onboarding?.jobId) return
+    const generation = this.generation
+    this.scanRevision += 1
+    this.update({ pending: 'result', scanning: false, problem: null })
+    try {
+      const job = await this.client.setup.getJob(this.state.onboarding.jobId)
+      if (this.current(generation)) this.watchJob(job)
+    } catch (error) {
+      if (this.current(generation)) this.update({ problem: error.message })
+    } finally {
+      if (this.current(generation)) this.update({ pending: null })
+    }
+  }
+
+  /** @returns {Promise<void>} 最终提交后进入主页，仅恢复本次点击前正在运行的下载。 */
+  finish = async () => {
+    if (this.state.pending) return
+    const generation = this.generation
+    if (this.state.job?.kind === 'download' && this.state.job.status === 'running')
+      this.finishResumeId = this.state.job.id
+    const resumeId = this.finishResumeId
+    this.update({ pending: 'finish', problem: null })
+    try {
+      const onboarding = await this.client.onboarding.finish()
+      if (!this.current(generation)) return
+      this.update({ onboarding, view: 'home' })
+      if (resumeId) {
+        const job = await this.client.setup.getJob(resumeId)
+        if (job.status === 'paused') await this.client.setup.start(resumeId)
+      }
+      this.finishResumeId = null
+    } catch (error) {
+      if (this.current(generation)) this.update({ problem: error.message })
+    } finally {
+      if (this.current(generation)) this.update({ pending: null })
+    }
+  }
+
+  retry = async () => {
+    const generation = this.generation
+    if (this.state.onboarding?.stage === 'committing' && this.client) {
+      try {
+        await this.client.onboarding.finish()
+        if (!this.current(generation)) return
+      } catch (error) {
+        this.update({ problem: error.message })
+        return
+      }
+    }
     this.dispose()
     return this.mount()
   }
@@ -317,11 +717,20 @@ export class SetupFlow {
   dispose() {
     this.active = false
     this.generation += 1
+    this.scanRevision += 1
     this.stopJob?.()
     this.stopOnboarding?.()
     this.stopConnection?.()
     this.client?.close()
     this.client = null
     this.remoteChecked = false
+    this.managedRevision += 1
+    this.managedRequest = null
+    this.managedCheckedAt = null
+    this.update({
+      managedCatalog: null,
+      managedCatalogChecking: false,
+      managedCatalogProblem: null
+    })
   }
 }

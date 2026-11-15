@@ -681,3 +681,31 @@ test('系统取消不产生回答，失效问题不能通过跳过重新进入�
   await idle(backend, chatId)
   expect(agent.run).toHaveBeenCalledTimes(3)
 })
+
+test('临时排除只影响当前轮的工具定义和执行集合，保存的开关与下一轮不变', async () => {
+  const { backend, chatId, agent } = await fixture()
+  const enabled = ['ask_user', 'start_lottery', 'get_current_datetime']
+  await backend.conversations.setTools(chatId, { enabled })
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '当前客户端', attachments: [] },
+    { requestId: 'temporary-exclusions', excludedTools: ['ask_user', 'start_lottery'] }
+  )
+  await idle(backend, chatId)
+  const request = agent.run.mock.calls.at(-1)[0]
+  expect(request.tools.map((tool) => tool.name)).toEqual(['get_current_datetime'])
+  expect(request.toolDefinitions.map((tool) => tool.name)).not.toContain('ask_user')
+  expect(request.toolDefinitions.map((tool) => tool.name)).not.toContain('start_lottery')
+  expect(
+    (await backend.conversations.getSnapshot(chatId)).chat.meta.settings.tools.enabled
+  ).toEqual(enabled)
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '其他客户端', attachments: [] },
+    { requestId: 'without-exclusions' }
+  )
+  await idle(backend, chatId)
+  expect(agent.run.mock.calls.at(-1)[0].tools.map((tool) => tool.name)).toEqual(
+    expect.arrayContaining(enabled)
+  )
+})

@@ -170,6 +170,8 @@ export async function prepareRuntime(component, directory, signal, run = runRunt
   // 中断后只重建尚未启用的候选环境，已启用版本从不原地修改。
   await rm(environment, { recursive: true, force: true })
   const env = {
+    // 每次候选安装拥有独立缓存，绝不借用或清理其他项目的用户级 uv 缓存。
+    UV_CACHE_DIR: path.join(directory, '.uv-cache'),
     UV_OFFLINE: '1',
     UV_PYTHON_DOWNLOADS: 'never',
     PIP_NO_INDEX: '1',

@@ -1,14 +1,18 @@
 /**
  * 创建无页面依赖的浏览器音频输出；模型绘制可由未来舞台组合适配器完成。
  * @param {Pick<import('../backend/client.js').BackendClient, 'assets'>} client 仅使用 assets.access 获取短期音频地址。
- * @param {{ Audio?: typeof Audio }} [options] 浏览器 Audio 构造器，可替换用于测试。
- * @returns {import('./interface.js').PlaybackOutput} 可传给前端 Performance 的输出适配器。
+ * @param {{ Audio?: typeof Audio, onSpeechAudio?: (audio: HTMLAudioElement|null) => void }} [options] 浏览器构造器及口型分析入口，null 表示停止。
+ * @returns {import('./interface.js').PlaybackOutput & {playPreview: (material: import('../../../shared/contracts/presentation.js').AudioMaterial, options: {volume: number, signal: AbortSignal, onStop: (error?: Error) => void}) => Promise<void>}} 舞台和历史共用的音频输出。
  */
-export function createAudioOutput(client, { Audio: AudioConstructor = globalThis.Audio } = {}) {
+export function createAudioOutput(
+  client,
+  { Audio: AudioConstructor = globalThis.Audio, onSpeechAudio = () => {} } = {}
+) {
   let speech = null
   let bgm = null
   let speechLease = null
   let bgmLease = null
+  let stopPreview = null
   function releaseAccess(id) {
     if (id) void client.assets.releaseAccess(id).catch(() => {})
   }
@@ -19,13 +23,18 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
   let volume = 1
   let bgmVolume = 1
   let bgmKey = null
-  function stop() {
+  let visible = true
+  function stop(error) {
     speechEpoch += 1
     speech?.pause()
+    onSpeechAudio(null)
     if (speech) speech.src = ''
     speech = null
     releaseAccess(speechLease)
     speechLease = null
+    const notify = stopPreview
+    stopPreview = null
+    notify?.(error)
   }
   /**
    * 读取短期地址并从指定偏移播放；浏览器拒绝自动播放时交给调用方处理。
@@ -34,42 +43,74 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
    * @returns {Promise<void>} 音频已尝试启动，不代表整句播放完成。
    */
   async function play(guide, options) {
+    await playAudio(guide.audio, options)
+  }
+  async function playPreview(material, { volume, signal, onStop }) {
+    await playAudio(material, { volume }, { signal, onStop })
+  }
+  async function playAudio(material, options, preview = null) {
+    if (preview?.signal.aborted) return
     stop()
-    const epoch = speechEpoch
-    if (!guide.audio) return
-    speechMuted = options.silent === true
-    const access = await client.assets.access(guide.audio.asset)
-    if (epoch !== speechEpoch) {
-      releaseAccess(access.leaseId)
+    if (!material || (preview && !visible)) {
+      preview?.onStop()
       return
     }
-    speechLease = access.leaseId
-    const audio = new AudioConstructor(access.url)
-    speech = audio
-    function finishSpeech() {
-      if (speech === audio) stop()
+    const epoch = speechEpoch
+    function abortPreview() {
+      stop()
     }
-    audio.addEventListener('ended', finishSpeech, { once: true })
-    audio.addEventListener('error', finishSpeech, { once: true })
-    audio.volume = speechMuted ? 0 : (options.volume ?? volume)
-    audio.addEventListener(
-      'loadedmetadata',
-      () => {
-        if (speech === audio)
-          audio.currentTime = Math.min(
-            (options.offsetMs ?? 0) / 1000,
-            Math.max(0, audio.duration - 0.01)
-          )
-      },
-      { once: true }
-    )
+    if (preview) {
+      preview.signal.addEventListener('abort', abortPreview, { once: true })
+      stopPreview = (error) => {
+        preview.signal.removeEventListener('abort', abortPreview)
+        preview.onStop(error)
+      }
+    }
+    speechMuted = options.silent === true
     try {
-      await audio.play()
+      const access = await client.assets.access(material.asset)
+      if (epoch !== speechEpoch) {
+        releaseAccess(access.leaseId)
+        return
+      }
+      speechLease = access.leaseId
+      const audio = new AudioConstructor(access.url)
+      audio.crossOrigin = 'anonymous'
+      speech = audio
+      // 历史语音沿用同一条音轨，只有实时台词需要驱动舞台口型。
+      if (!preview) onSpeechAudio(audio)
+      audio.addEventListener(
+        'ended',
+        () => {
+          if (speech === audio) stop()
+        },
+        { once: true }
+      )
+      audio.addEventListener(
+        'error',
+        () => {
+          if (speech === audio) stop(new Error('音频无法解码或读取。'))
+        },
+        { once: true }
+      )
+      audio.volume = speechMuted ? 0 : (options.volume ?? volume)
+      audio.addEventListener(
+        'loadedmetadata',
+        () => {
+          if (speech === audio)
+            audio.currentTime = Math.min(
+              (options.offsetMs ?? 0) / 1000,
+              Math.max(0, audio.duration - 0.01)
+            )
+        },
+        { once: true }
+      )
+      if (visible) await audio.play()
+      if (epoch !== speechEpoch) audio.pause()
     } catch (error) {
-      finishSpeech()
-      throw error
+      if (epoch === speechEpoch) stop(error)
+      if (!preview) throw error
     }
-    if (epoch !== speechEpoch) audio.pause()
   }
   /**
    * 曲目不变时只调整音量，避免每次设置快照到达都从头播放。
@@ -113,7 +154,7 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
     audio.volume = bgmVolume
     audio.loop = settings.loop
     try {
-      await audio.play()
+      if (visible) await audio.play()
     } catch (error) {
       finishBgm()
       throw error
@@ -122,8 +163,16 @@ export function createAudioOutput(client, { Audio: AudioConstructor = globalThis
   }
   return {
     play,
+    playPreview,
     stop,
     setBgm,
+    setVisible(value) {
+      visible = value
+      if (!visible) {
+        stop()
+        bgm?.pause()
+      } else if (bgm) void bgm.play().catch(() => {})
+    },
     setVolume(options) {
       volume = options.volume
       if (speech) speech.volume = speechMuted ? 0 : volume

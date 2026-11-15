@@ -257,6 +257,7 @@
  * @typedef {object} ChatSummary
  * @property {string} id 对话身份。
  * @property {string} title 标题。
+ * @property {string|null} lastReply 最后一条角色台词；无回复时为空。
  * @property {string[]} characterIds 参与角色。
  * @property {Record<string, string | null>} [characterNames] 存档中的角色名称。
  * @property {ParticipantIssue | null} [participantIssue] 当前目录下的历史阅读状态。

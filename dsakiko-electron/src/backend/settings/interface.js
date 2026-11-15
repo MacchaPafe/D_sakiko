@@ -23,7 +23,7 @@ import {
 } from '../core/config.js'
 import { settingsDefinition, createDefaultSettings } from './definition.js'
 import { providerPresets } from '../../shared/contracts/llm-providers.js'
-import { normalizeConnection } from '../llm/connections.js'
+import { normalizeConnection, officialModelCapabilities } from '../llm/connections.js'
 
 const revisionItem = config.number({ integer: true, min: 0, max: Number.MAX_SAFE_INTEGER })
 
@@ -308,62 +308,16 @@ export class Settings {
     credential = copy(credential)
     return this.queue.run('settings', async () => {
       const state = await this.state()
-      fields(definition, [
-        'id',
-        'revision',
-        'name',
-        'provider',
-        'baseUrl',
-        'protocol',
-        'behavior',
-        'credentialConfigured',
-        'attachmentTransport',
-        'models'
-      ])
-      requireValue(
-        typeof definition.id === 'string' &&
-          /^[a-zA-Z0-9_-]{1,100}$/.test(definition.id) &&
-          !['__proto__', 'constructor', 'prototype'].includes(definition.id)
-      )
-      definition.attachmentTransport ??= 'auto'
-      requireValue(['auto', 'inline', 'file-api'].includes(definition.attachmentTransport))
+      definition = this.validateConnectionDraft(definition, credential)
       const previous = state.connections[definition.id]
       requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
-      definition = normalizeConnection(definition)
-      requireValue(
-        Array.isArray(definition.models) &&
-          new Set(definition.models.map((model) => model.id)).size === definition.models.length
-      )
-      for (const model of definition.models) {
-        if (model.catalogMapping != null) {
-          fields(model.catalogMapping, ['provider', 'model'])
-          requireValue(
-            ['provider', 'model'].every(
-              (key) =>
-                typeof model.catalogMapping[key] === 'string' && model.catalogMapping[key].trim()
-            ),
-            'invalid_connection'
-          )
-        }
+      if (credential.kind === 'keep' && previous && state.secrets[definition.id])
         requireValue(
-          typeof model.id === 'string' && model.id.trim().length > 0,
-          'invalid_connection'
+          new URL(previous.baseUrl).origin === new URL(definition.baseUrl).origin,
+          'invalid_connection',
+          '更改服务域名时，请重新填写或清除原 API Key。'
         )
-        for (const capabilities of [model.declared, model.overrides]) {
-          requireValue(isConfigObject(capabilities), 'invalid_connection')
-          for (const key of ['contextTokens', 'inputTokens', 'outputTokens'])
-            requireValue(
-              capabilities[key] == null ||
-                (Number.isSafeInteger(capabilities[key]) && capabilities[key] > 0),
-              'invalid_connection'
-            )
-          const binding = capabilities.requiresStablePrefixForThinking
-          requireValue(binding === undefined || typeof binding === 'boolean', 'invalid_connection')
-        }
-      }
-      requireValue(['keep', 'replace', 'remove'].includes(credential.kind))
       if (credential.kind === 'replace') {
-        requireValue(typeof credential.secret === 'string' && credential.secret.length > 0)
         state.secrets[definition.id] = credential.secret
       }
       if (credential.kind === 'remove') delete state.secrets[definition.id]
@@ -374,8 +328,87 @@ export class Settings {
       }
       state.connections[definition.id] = next
       await writeJson(this.file, state)
+      this.bus.emit('settings', state.settings)
       return copy(next)
     })
+  }
+
+  /** 保存和测试共用校验；编辑草稿只能从当前版本读取原密钥。 */
+  validateConnectionDraft(definition, credential) {
+    fields(definition, [
+      'id',
+      'revision',
+      'name',
+      'provider',
+      'baseUrl',
+      'protocol',
+      'behavior',
+      'credentialConfigured',
+      'attachmentTransport',
+      'models'
+    ])
+    requireValue(
+      typeof definition.id === 'string' &&
+        /^[a-zA-Z0-9_-]{1,100}$/.test(definition.id) &&
+        !['__proto__', 'constructor', 'prototype'].includes(definition.id)
+    )
+    definition.attachmentTransport ??= 'auto'
+    requireValue(['auto', 'inline', 'file-api'].includes(definition.attachmentTransport))
+    definition = normalizeConnection(definition)
+    requireValue(
+      Array.isArray(definition.models) &&
+        new Set(definition.models.map((model) => model.id)).size === definition.models.length
+    )
+    for (const model of definition.models) {
+      if (model.catalogMapping != null) {
+        fields(model.catalogMapping, ['provider', 'model'])
+        requireValue(
+          ['provider', 'model'].every(
+            (key) =>
+              typeof model.catalogMapping[key] === 'string' && model.catalogMapping[key].trim()
+          ),
+          'invalid_connection'
+        )
+      }
+      requireValue(typeof model.id === 'string' && model.id.trim().length > 0, 'invalid_connection')
+      for (const capabilities of [model.declared, model.overrides]) {
+        requireValue(isConfigObject(capabilities), 'invalid_connection')
+        for (const key of ['contextTokens', 'inputTokens', 'outputTokens'])
+          requireValue(
+            capabilities[key] == null ||
+              (Number.isSafeInteger(capabilities[key]) && capabilities[key] > 0),
+            'invalid_connection'
+          )
+        const binding = capabilities.requiresStablePrefixForThinking
+        requireValue(binding === undefined || typeof binding === 'boolean', 'invalid_connection')
+      }
+    }
+    fields(credential, ['kind', 'secret'])
+    requireValue(['keep', 'replace', 'remove'].includes(credential.kind))
+    if (credential.kind === 'replace')
+      requireValue(typeof credential.secret === 'string' && credential.secret.length > 0)
+
+    return definition
+  }
+
+  async connectionAvailability() {
+    const { connections, secrets } = await this.state()
+    return {
+      builtin:
+        Boolean(secrets['builtin-up'] && connections['builtin-up']?.models.length) &&
+        !Object.keys(connections).some((id) => id !== 'builtin-up')
+    }
+  }
+
+  async assertUserSelection(selection) {
+    const { connections } = await this.state()
+    const item = connections[selection.connectionId]
+    requireValue(
+      selection.connectionId !== 'builtin-up' &&
+        item?.models.some((model) => model.id === selection.modelId),
+      'model_unavailable',
+      '所选连接或模型已不可用，请重新选择。'
+    )
   }
 
   /**
@@ -394,6 +427,7 @@ export class Settings {
       delete state.connections[connectionId]
       delete state.secrets[connectionId]
       await writeJson(this.file, state)
+      this.bus.emit('settings', state.settings)
     })
   }
 
@@ -402,15 +436,37 @@ export class Settings {
    * @param {{ connectionId: string, modelId: string }} selection 目标连接 ID 与模型 ID。
    * @returns {Promise<import('../../shared/contracts/models.js').ResolvedModelConnection>} 解析后的模型连接快照。
    */
-  async resolveConnection(selection) {
-    const state = await this.state()
-    const saved = state.connections[selection.connectionId]
-    requireValue(saved, 'model_unavailable', '模型连接不存在。')
+  async resolveConnection(selection, { allowBuiltin = false } = {}) {
+    const { connections, secrets } = await this.state()
+    const hasUserConnection = Object.keys(connections).some((id) => id !== 'builtin-up')
+    if (
+      allowBuiltin &&
+      !hasUserConnection &&
+      secrets['builtin-up'] &&
+      connections['builtin-up']?.models.length
+    )
+      selection = { connectionId: 'builtin-up', modelId: connections['builtin-up'].models[0].id }
+    requireValue(
+      selection.connectionId !== 'builtin-up' || (allowBuiltin && !hasUserConnection),
+      'model_unavailable',
+      '请为当前对话选择大模型。'
+    )
+    const saved = connections[selection.connectionId]
+    requireValue(saved, 'model_unavailable', '请为当前对话选择大模型。')
+    return this.resolveDefinition(saved, selection.modelId, secrets[saved.id])
+  }
+
+  async resolveDefinition(saved, modelId, secret) {
     const connection = normalizeConnection(saved)
-    const model = connection?.models.find((item) => item.id === selection.modelId)
+    const model = connection.models.find((item) => item.id === modelId)
     requireValue(model, 'model_unavailable', '模型连接或模型不存在。')
     const catalog = (await this.modelCatalog?.lookup(connection, model)) ?? {}
-    const capabilities = merge(catalog, model.declared, model.overrides)
+    const capabilities = merge(
+      officialModelCapabilities(connection, modelId),
+      catalog,
+      model.declared,
+      model.overrides
+    )
     // 空的旧声明不应遮住目录中已知的数值；明确的正整数覆盖则始终优先。
     for (const key of ['contextTokens', 'inputTokens', 'outputTokens'])
       capabilities[key] = model.overrides[key] ?? model.declared[key] ?? catalog[key] ?? null
@@ -421,7 +477,7 @@ export class Settings {
     // 为什么分配临时的 credentialScope 而不是直接返回密钥或按 connectionId 实时查密钥：
     // 一方面避免密钥明文出现在请求配置对象中，另一方面将本次请求使用的密钥冻结在独立作用域内，防止请求进行中用户修改连接密钥导致前后不一致。
     const credentialScope = uuid()
-    this.scopes.set(credentialScope, state.secrets[connection.id] ?? '')
+    this.scopes.set(credentialScope, secret ?? '')
     return {
       connectionId: connection.id,
       revision: connection.revision,
@@ -443,12 +499,48 @@ export class Settings {
    * @returns {Promise<{ reachable: boolean, problems: import('../../shared/contracts/common.js').Problem[] }>} 连通性检查结果及错误信息。
    */
   async checkConnection(selection, signal) {
+    return this.runConnectionProbe(() => this.resolveConnection(selection), signal)
+  }
+
+  /** 用临时凭据测试草稿，结束后立即释放作用域。 */
+  async checkConnectionDraft(definition, credential, modelId, signal) {
+    return this.runConnectionProbe(async () => {
+      definition = this.validateConnectionDraft(copy(definition), credential)
+      requireValue(definition.id !== 'builtin-up', 'invalid_connection')
+      const { connections, secrets } = await this.state()
+      const previous = connections[definition.id]
+      requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
+      const secret = credential.kind === 'replace' ? credential.secret : secrets[definition.id]
+      if (credential.kind === 'keep' && secret && previous)
+        requireValue(
+          new URL(previous.baseUrl).origin === new URL(definition.baseUrl).origin,
+          'invalid_connection',
+          '更改服务域名时，请重新填写 API Key。'
+        )
+      return this.resolveDefinition(definition, modelId, credential.kind === 'remove' ? '' : secret)
+    }, signal)
+  }
+
+  async runConnectionProbe(resolve, signal) {
+    let connection
     try {
       requireValue(this.probe, 'adapter_unavailable', '未装配连接探测能力。')
-      await this.probe(await this.resolveConnection(selection), signal)
+      connection = await resolve()
+      await this.probe(connection, signal)
       return { reachable: true, problems: [] }
     } catch (error) {
+      if (connection && !error.problem) {
+        let message = '请求测试模型失败，请核对服务地址、模型 ID 和网络。'
+        if ([401, 403].includes(error.statusCode)) message = '认证失败，请检查 API Key 和模型权限。'
+        if (error.statusCode === 429) message = '服务暂时限流，请稍后重试。'
+        return {
+          reachable: false,
+          problems: [{ code: 'connection_test_failed', message, retryable: true }]
+        }
+      }
       return { reachable: false, problems: [problem(error)] }
+    } finally {
+      if (connection) this.scopes.delete(connection.credentialScope)
     }
   }
 }

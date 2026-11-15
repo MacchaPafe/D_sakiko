@@ -1,5 +1,12 @@
 import { readJson, requireValue, SerialQueue, writeJson } from '../../backend/core/support.js'
 
+/** @param {import('electron').BrowserWindow} window 主窗口。 @returns {void} 发布读取到的实际可见状态。 */
+export function publishWindowVisibility(window) {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return
+  const visible = window.isVisible() && !window.isMinimized()
+  window.webContents.send('host:window-visibility', visible)
+}
+
 /**
  * 单主窗口的关闭偏好独立于对话设置。显式退出由应用入口统一收尾。
  * @param {object} options 宿主、窗口和偏好存储。
@@ -36,6 +43,7 @@ export function installWindowCloseBehavior({
     if (window.isMinimized()) window.restore()
     window.show()
     window.focus()
+    publishWindowVisibility(window)
   }
 
   function hideToTray() {
@@ -57,6 +65,7 @@ export function installWindowCloseBehavior({
       }
     }
     window.hide()
+    publishWindowVisibility(window)
   }
 
   async function closeOnWindows() {
@@ -65,7 +74,7 @@ export function installWindowCloseBehavior({
       const { response } = await dialog.showMessageBox(window, {
         type: 'question',
         message: '关闭窗口时怎么处理？',
-        detail: '缩小到托盘后，导入和下载可以继续。你可以稍后在设置中更改此选择。',
+        detail: '缩小到托盘后，导入和下载可以继续。可在设置的「应用」中修改此偏好。',
         buttons: ['缩小到托盘', '退出程序', '取消'],
         defaultId: 0,
         cancelId: 2,
@@ -84,6 +93,7 @@ export function installWindowCloseBehavior({
     event.preventDefault()
     if (platform === 'darwin') {
       window.hide()
+      publishWindowVisibility(window)
     } else if (platform !== 'win32') {
       app.quit()
     } else if (!pendingClose) {
@@ -93,7 +103,7 @@ export function installWindowCloseBehavior({
         .catch((error) => {
           console.error('关闭窗口失败', error)
           if (!isQuitting() && !window.isDestroyed())
-            dialog.showErrorBox('无法关闭窗口', '请重试，或在设置中修改关闭窗口的行为。')
+            dialog.showErrorBox('无法关闭窗口', '请重试。')
         })
         .finally(() => {
           pendingClose = false
@@ -102,9 +112,7 @@ export function installWindowCloseBehavior({
   })
 
   function publishVisibility() {
-    if (window.isDestroyed() || window.webContents.isDestroyed()) return
-    const visible = window.isVisible() && !window.isMinimized()
-    window.webContents.send('host:window-visibility', visible)
+    publishWindowVisibility(window)
   }
   for (const event of ['show', 'hide', 'minimize', 'restore']) window.on(event, publishVisibility)
   window.on('closed', () => tray?.destroy())

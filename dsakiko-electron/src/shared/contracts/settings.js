@@ -78,6 +78,7 @@
 
 /**
  * @typedef {object} TurnOptions
+ * @property {string[]} [excludedTools] 当前客户端本轮不支持的工具，不修改聊天配置或工具定义正文。
  * @property {string} requestId 一次操作的稳定去重身份；相同 ID 不允许更换输入或覆盖值。
  * @property {GenerationOptions} [generation] 仅本次覆盖，不自动复制到下一次重生成。
  * @property {SpeechOptions} [speech] 仅本次覆盖；其他 Chat 配置通过对应业务方法修改。
@@ -120,6 +121,8 @@
  * 全局生成配置的部分更新对象（嵌套分组内只需传入要修改的字段）。
  * @typedef {Partial<Omit<GenerationOptions, 'reasoning' | 'compression' | 'limits'>> & {reasoning?: Partial<GenerationOptions['reasoning']>, compression?: Partial<GenerationOptions['compression']>, limits?: Partial<GenerationOptions['limits']>}} GenerationUpdate
  */
+
+/** @typedef {Partial<Omit<ChatSettings, 'generation' | 'speech' | 'presentation' | 'worldbook'>> & {generation?: GenerationUpdate | (Omit<GenerationUpdate, 'connectionId' | 'modelId'> & {connectionId: null, modelId: null}), speech?: Partial<SpeechOptions>, presentation?: Partial<ChatPresentationSettings>, worldbook?: Partial<ChatSettings['worldbook']>}} ChatSettingsPatch 已声明的配置字段，连接和模型同时为 null 时恢复继承。 */
 
 /**
  * 批量更新全局设置时传入的部分配置对象。

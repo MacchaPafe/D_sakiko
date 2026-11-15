@@ -215,6 +215,15 @@ export class SpeechProcess {
     }
   }
 
+  /** 当前业务任务已完成时重启进程，下一次连接按新安装记录装配。 */
+  async restart() {
+    await this.starting?.catch(() => {})
+    const child = this.child
+    if (!child) return null
+    await this.stop()
+    return this.treeStopped(child) ? child.pid : null
+  }
+
   /** POSIX 继续查询整个进程组；Windows 以主进程退出为资源生命周期终点。 */
   treeStopped(child) {
     if (!child.pid) return true

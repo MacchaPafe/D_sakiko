@@ -355,3 +355,34 @@ test('Python 可执行文件缺失时释放启动资源，关闭不等待不存�
   await speech.close()
   expect(released).toBe(true)
 })
+
+test('模型访问授权保留入口路径，同包相对纹理可读，越界、符号链接和已释放租约被拒绝', async () => {
+  const { assets, directory } = await fixture()
+  const model = path.join(directory, '角色模型')
+  await mkdir(path.join(model, 'textures'), { recursive: true })
+  await writeFile(path.join(model, 'model3.json'), '{}')
+  await writeFile(path.join(model, 'textures', '角色.png'), 'texture')
+  const info = await assets.importAsset(
+    { kind: 'local-directory', path: model, entry: 'model3.json' },
+    'test',
+    'live2d'
+  )
+  const server = await startHttpServer({ assets })
+  cleanups.push(() => server.close())
+  const client = createBackendClient(server)
+  cleanups.push(() => client.close())
+  const access = await client.assets.access(info.asset)
+  expect(access.url.endsWith('/model3.json')).toBe(true)
+  const textureUrl = new URL('textures/' + encodeURIComponent('角色.png'), access.url)
+  const response = await fetch(textureUrl)
+  expect(response.headers.get('content-type')).toBe('image/png')
+  expect(await response.text()).toBe('texture')
+  const outside = path.join(directory, 'outside.txt')
+  await writeFile(outside, 'outside')
+  const importedDirectory = path.dirname(await assets.localPath(info.asset))
+  await symlink(outside, path.join(importedDirectory, 'escape.txt'))
+  expect((await fetch(new URL('escape.txt', access.url))).ok).toBe(false)
+  expect((await fetch(access.url + '?file=' + encodeURIComponent('../outside.txt'))).ok).toBe(false)
+  await client.assets.releaseAccess(access.leaseId)
+  expect((await fetch(textureUrl)).ok).toBe(false)
+})

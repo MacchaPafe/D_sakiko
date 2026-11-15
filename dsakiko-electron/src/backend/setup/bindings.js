@@ -90,18 +90,61 @@ export function characterDefinition(role, refs, name = role.name, source = null)
   }
 }
 
-/** 仅转换明确的当前配置字段；未支持项留在后端导入记录，不将密钥发给调用者。 */
+const providerAliases = { google: 'gemini', doubao: 'volcengine', custom: 'openai-compatible' }
+
+function dictionary(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+}
+
+function legacyProviderCandidates(legacy) {
+  const modelMap = dictionary(legacy.llm_api_model)
+  const keyMap = dictionary(legacy.llm_api_key)
+  const urlMap = dictionary(legacy.llm_api_base_url)
+  const active = legacy.llm_api_provider
+  const selected = !legacy.use_default_deepseek_api && !legacy.enable_custom_llm_api_provider
+  if (!modelMap && !keyMap && !urlMap)
+    return [
+      {
+        name: '旧版连接',
+        provider: active,
+        model: legacy.llm_api_model,
+        baseUrl: legacy.llm_api_base_url,
+        secret: legacy.llm_api_key,
+        selected
+      }
+    ]
+
+  const providers = new Set([
+    ...Object.keys(modelMap ?? {}),
+    ...Object.keys(keyMap ?? {}),
+    ...Object.keys(urlMap ?? {})
+  ])
+  if (typeof active === 'string') providers.add(active)
+  function value(map, scalar, id) {
+    if (map) return Object.hasOwn(map, id) ? map[id] : undefined
+    return id === active ? scalar : undefined
+  }
+  return [...providers]
+    .map((id) => ({
+      provider: id,
+      model: value(modelMap, legacy.llm_api_model, id),
+      secret: value(keyMap, legacy.llm_api_key, id),
+      baseUrl: value(urlMap, legacy.llm_api_base_url, id),
+      selected: selected && id === active
+    }))
+    .filter(
+      (item) =>
+        item.secret ||
+        (item.selected && item.baseUrl) ||
+        (item.model && ['ollama', 'vllm', 'openai-compatible'].includes(item.provider))
+    )
+}
+
+/** 转换旧版单连接及每厂商字典；未支持项留在私有记录，密钥不进入摘要。 */
 export function legacyConnections(config) {
   const legacy = config?.llm_setting ?? {}
   const candidates = [
-    {
-      name: '旧版连接',
-      provider: legacy.llm_api_provider,
-      model: legacy.llm_api_model,
-      baseUrl: legacy.llm_api_base_url,
-      secret: legacy.llm_api_key,
-      selected: !legacy.use_default_deepseek_api && !legacy.enable_custom_llm_api_provider
-    },
+    ...legacyProviderCandidates(legacy),
     {
       name: '旧版自定义连接',
       provider: 'openai-compatible',
@@ -115,28 +158,29 @@ export function legacyConnections(config) {
   const definitions = []
   for (const item of candidates) {
     if (!item.model && !item.secret && !item.baseUrl) continue
-    let model = String(item.model ?? '')
-    let provider = item.provider
+    let model = typeof item.model === 'string' ? item.model.trim() : ''
+    let provider = providerAliases[item.provider] ?? item.provider
     const prefix = model.split('/')[0]
-    const aliases = {
-      google: 'gemini',
-      gemini: 'gemini',
-      doubao: 'volcengine',
-      custom: 'openai-compatible',
-      deepseek: 'deepseek',
-      openai: 'openai',
-      anthropic: 'anthropic',
-      moonshot: 'moonshot',
-      openrouter: 'openrouter',
-      volcengine: 'volcengine'
-    }
-    provider = aliases[provider] ?? provider
-    if (model.includes('/') && Object.hasOwn(aliases, prefix)) {
+    const prefixed = providerAliases[prefix] ?? prefix
+    const knownPrefix = providerPresets.some((item) => item.id === prefixed)
+    // OpenRouter 和魔搭的模型 ID 可能本来就以厂商名开头，只移除本连接的 LiteLLM 路由前缀。
+    if (
+      model.includes('/') &&
+      knownPrefix &&
+      (!provider ||
+        provider === prefixed ||
+        (provider === 'openai-compatible' && prefix === 'openai'))
+    ) {
       model = model.slice(prefix.length + 1)
-      provider ??= aliases[prefix]
+      provider ??= prefixed
     }
     const preset = providerPresets.find((value) => value.id === provider)
-    if (!preset || !model.trim() || (item.baseUrl && typeof item.baseUrl !== 'string')) {
+    if (
+      !preset ||
+      !model.trim() ||
+      (item.baseUrl && typeof item.baseUrl !== 'string') ||
+      (item.secret && typeof item.secret !== 'string')
+    ) {
       pending.push(item)
       continue
     }
@@ -145,7 +189,7 @@ export function legacyConnections(config) {
       const definition = normalizeConnection({
         id,
         revision: 0,
-        name: item.name,
+        name: item.name ?? preset.name,
         provider,
         protocol: preset.protocol,
         baseUrl: item.baseUrl || preset.baseUrl,
@@ -166,7 +210,8 @@ export async function importConnections(settings, config, builtinConnection, onS
   const { definitions, pending, useBuiltin } = legacyConnections(config)
   let selected = null
   for (const { definition, secret, selected: use } of definitions) {
-    const { id, models } = definition
+    const { id } = definition
+    const [model] = definition.models
     try {
       const existing = (await settings.listConnections()).find((connection) => connection.id === id)
       if (!existing)
@@ -180,7 +225,7 @@ export async function importConnections(settings, config, builtinConnection, onS
       continue
     }
     await onSaved(id)
-    if (use) selected = { connectionId: id, modelId: models[0].id }
+    if (use) selected = { connectionId: id, modelId: model.id }
   }
   if (useBuiltin && builtinConnection) {
     selected = await installBuiltinConnection(settings, builtinConnection)

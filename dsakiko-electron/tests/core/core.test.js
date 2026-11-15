@@ -452,16 +452,25 @@ test('音频失败按无声放行，不终止轮次组', async () => {
   const { backend, chatId } = await fixture()
   backend.characters.resolveVoice = async () => ({ voice: {}, selected: 'default', problems: [] })
   backend.speech.submit = async () => 'fake-task'
-  backend.speech.waitForResult = async () => ({
-    status: 'failed',
-    problem: { code: 'tts_failed', message: 'failed', retryable: false }
-  })
+  const synthesis = Promise.withResolvers()
+  backend.speech.waitForResult = () => synthesis.promise
   await backend.conversations.setSpeechOptions(chatId, { enabled: true })
   await backend.conversations.createTurn(
     chatId,
     { text: 'hi', attachments: [] },
     { requestId: 'tts' }
   )
+  try {
+    await until(
+      async () =>
+        (await backend.conversations.getSnapshot(chatId)).executions[0]?.phase === 'speech'
+    )
+  } finally {
+    synthesis.resolve({
+      status: 'failed',
+      problem: { code: 'tts_failed', message: 'failed', retryable: false }
+    })
+  }
   await until(async () => !(await backend.conversations.getSnapshot(chatId)).activeTurnId)
   const snapshot = await backend.conversations.getSnapshot(chatId)
   expect(snapshot.executions[0].state).toBe('finished')
@@ -572,4 +581,68 @@ test('角色名跨形态保持稳定，添加和修改均拒绝重名', async ()
     problem: { code: 'duplicate_character_name' }
   })
   expect((await backend.characters.get('other')).name).toBe('爱音')
+})
+
+test('连接草稿测试不持久化，部分保存保留对话的其他设置', async () => {
+  const { backend, chatId } = await fixture()
+  const [saved] = await backend.settings.listConnections()
+  const probe = vi.fn(async (connection) => {
+    expect(backend.settings.credential(connection.credentialScope)).toBe('new-draft-key')
+    expect(connection.modelId).toBe('draft-model')
+  })
+  backend.settings.probe = probe
+  const draft = { ...saved, models: [{ id: 'draft-model', declared: {}, overrides: {} }] }
+  expect(
+    await backend.settings.checkConnectionDraft(
+      draft,
+      {
+        kind: 'replace',
+        secret: 'new-draft-key'
+      },
+      'draft-model'
+    )
+  ).toEqual({ reachable: true, problems: [] })
+  expect(probe).toHaveBeenCalledOnce()
+  expect(backend.settings.scopes.size).toBe(0)
+  expect(await backend.settings.listConnections()).toEqual([saved])
+
+  await backend.conversations.patchSettings(chatId, { generation: { translationLanguage: null } })
+  await backend.conversations.patchSettings(chatId, { generation: { temperature: 0.5 } })
+  await backend.conversations.patchSettings(chatId, {
+    generation: { connectionId: 'local', modelId: 'test' }
+  })
+  await expect(
+    backend.conversations.patchSettings(chatId, { generation: { connectionId: 'local' } })
+  ).rejects.toMatchObject({ problem: { code: 'invalid_settings' } })
+  const { chat } = await backend.store.load(chatId)
+  expect(chat.meta.settings.generation).toMatchObject({
+    translationLanguage: null,
+    temperature: 0.5,
+    connectionId: 'local',
+    modelId: 'test'
+  })
+})
+
+test('自有连接存在时禁止使用 UP，删除最后一个自有连接后恢复兜底', async () => {
+  const { backend } = await fixture()
+  const [local] = await backend.settings.listConnections()
+  await backend.settings.saveConnection(
+    { ...local, id: 'builtin-up', revision: 0 },
+    { kind: 'replace', secret: 'fixture-up-key' }
+  )
+  expect(await backend.settings.connectionAvailability()).toEqual({ builtin: false })
+  await expect(
+    backend.settings.resolveConnection(
+      { connectionId: 'builtin-up', modelId: 'test' },
+      { allowBuiltin: true }
+    )
+  ).rejects.toMatchObject({ problem: { code: 'model_unavailable' } })
+  await backend.settings.deleteConnection(local.id, local.revision)
+  expect(await backend.settings.connectionAvailability()).toEqual({ builtin: true })
+  expect(
+    await backend.settings.resolveConnection(
+      { connectionId: 'old-deleted-id' },
+      { allowBuiltin: true }
+    )
+  ).toMatchObject({ connectionId: 'builtin-up', modelId: 'test' })
 })

@@ -15,7 +15,8 @@
     "source": "gsv",
     "path": "pretrained_models/chinese-hubert-base/pytorch_model.bin",
     "sizeBytes": 188811417,
-    "sha256": "24164f129c66499d1346e2aa55f183250c223161ec2770c0da3d3b08cf432d3c"
+    "sha256": "24164f129c66499d1346e2aa55f183250c223161ec2770c0da3d3b08cf432d3c",
+    "readOnlyWeight": true
   },
   {
     "source": "gsv",
@@ -27,7 +28,8 @@
     "source": "gsv",
     "path": "pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin",
     "sizeBytes": 651225145,
-    "sha256": "e53a693acc59ace251d143d068096ae0d7b79e4b1b503fa84c9dcf576448c1d8"
+    "sha256": "e53a693acc59ace251d143d068096ae0d7b79e4b1b503fa84c9dcf576448c1d8",
+    "readOnlyWeight": true
   },
   {
     "source": "gsv",
@@ -39,31 +41,36 @@
     "source": "gsv",
     "path": "pretrained_models/fast_langdetect/lid.176.bin",
     "sizeBytes": 131266198,
-    "sha256": "7e69ec5451bc261cc7844e49e4792a85d7f09c06789ec800fc4a44aec362764e"
+    "sha256": "7e69ec5451bc261cc7844e49e4792a85d7f09c06789ec800fc4a44aec362764e",
+    "readOnlyWeight": true
   },
   {
     "source": "gsv",
     "path": "pretrained_models/gsv-v4-pretrained/s2Gv4.pth",
     "sizeBytes": 769025545,
-    "sha256": "906fe22f48c3e037a389df291d4d32a9414e15dbb8f9628643e83aaced109ea4"
+    "sha256": "906fe22f48c3e037a389df291d4d32a9414e15dbb8f9628643e83aaced109ea4",
+    "readOnlyWeight": true
   },
   {
     "source": "gsv",
     "path": "pretrained_models/gsv-v4-pretrained/vocoder.pth",
     "sizeBytes": 57781109,
-    "sha256": "4d611913df7b12d49e8976c944558d2d096816365edfc6c35a9e85b67dd14ed9"
+    "sha256": "4d611913df7b12d49e8976c944558d2d096816365edfc6c35a9e85b67dd14ed9",
+    "readOnlyWeight": true
   },
   {
     "source": "gsv",
     "path": "pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt",
     "sizeBytes": 107528697,
-    "sha256": "4f5a0bf73c61eb41b174e1bb54e7ee3c83233892be8e0af1f187024e8e581a35"
+    "sha256": "4f5a0bf73c61eb41b174e1bb54e7ee3c83233892be8e0af1f187024e8e581a35",
+    "readOnlyWeight": true
   },
   {
     "source": "gsv",
     "path": "pretrained_models/v2Pro/s2Gv2ProPlus.pth",
     "sizeBytes": 200125741,
-    "sha256": "d42a22bbbf65fb2bbdd45ad6a66841156977db45c7aabe0a6992ff378d9c7d3b"
+    "sha256": "d42a22bbbf65fb2bbdd45ad6a66841156977db45c7aabe0a6992ff378d9c7d3b",
+    "readOnlyWeight": true
   },
   {
     "source": "gsv",
@@ -79,7 +86,8 @@
       },
       {
         "path": "G2PWModel/g2pW.onnx",
-        "sizeBytes": 635212732
+        "sizeBytes": 635212732,
+        "readOnlyWeight": true
       },
       {
         "path": "G2PWModel/char_bopomofo_dict.json",

@@ -3,8 +3,14 @@ import { Button } from '../../components/ui/button.jsx'
 import logo from '../../assets/welcome/logo.svg'
 import wordmark from '../../assets/welcome/wordmark.svg'
 
-/** @param {{onQuick: () => void, busy?: boolean, problem?: string|null}} props 快速开始操作与后端受理状态。 @returns {import('react').ReactElement} 欢迎入口，预览失败不阻止初始化。 */
-export function WelcomePage({ onQuick, busy = false, problem = null }) {
+/** @param {{onQuick: () => void, onLegacy: () => void, legacyDisabled?: boolean, busy?: boolean, problem?: string|null}} props 初始化入口与后端受理状态。 @returns {import('react').ReactElement} 欢迎入口，预览失败不阻止初始化。 */
+export function WelcomePage({
+  onQuick,
+  onLegacy,
+  legacyDisabled = false,
+  busy = false,
+  problem = null
+}) {
   return (
     <section className="welcome-entry" aria-label="开始使用">
       <div className="welcome-card">
@@ -26,7 +32,12 @@ export function WelcomePage({ onQuick, busy = false, problem = null }) {
             )}
             {busy ? '正在准备内置角色…' : '快速开始'}
           </Button>
-          <Button className="welcome-action" variant="outline" disabled>
+          <Button
+            className="welcome-action"
+            variant="outline"
+            onClick={onLegacy}
+            disabled={busy || legacyDisabled}
+          >
             <FolderInput aria-hidden="true" />
             从旧版本导入数据
           </Button>
