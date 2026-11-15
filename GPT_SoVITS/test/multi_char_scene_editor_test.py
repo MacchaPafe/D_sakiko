@@ -16,6 +16,69 @@ from ui_small_theater.multi_char_editor import MultiCharEditor
 from ui_small_theater.multi_char_insert_dialog import MultiCharInsertDialog
 
 
+def test_music_mode_duration_visibility_and_saved_values(editor, monkeypatch, tmp_path):
+    import ui_small_theater.multi_char_editor as module
+    from qconfig import d_sakiko_config
+    config_set = Mock()
+    monkeypatch.setattr(d_sakiko_config, "set", config_set)
+    dialog = Mock(selected_path=str(tmp_path / "test.wav"))
+    dialog.exec_.return_value = QDialog.Accepted
+    create = Mock(return_value=dialog)
+    monkeypatch.setattr(module, "CustomBGMDialog", create)
+    editor.scene_toggle.setChecked(True)
+    assert editor.bgm_file.isHidden()
+    assert all(row.isHidden() for row, _, _ in editor.bgm_durations.values())
+    editor.bgm_mode.setCurrentIndex(1)
+    assert create.call_args.kwargs["selection_only"]
+    assert editor.message.scene_before["bgm"] == {
+        "action": "play", "file": "test.wav", "fade_out_ms": 500, "fade_in_ms": 500}
+    assert not editor.bgm_file.isHidden()
+    assert all(not row.isHidden() for row, _, _ in editor.bgm_durations.values())
+    slider = editor.bgm_durations["fade_out_ms"][1]
+    assert (slider.minimum(), slider.maximum(), slider.singleStep()) == (0, 3000, 100)
+    saves = editor.owner.saved
+    slider.setSliderDown(True)
+    slider.setValue(1200)
+    slider.setValue(1500)
+    assert editor.owner.saved == saves
+    slider.setSliderDown(False)
+    assert editor.owner.saved == saves + 1
+    assert editor.message.scene_before["bgm"]["fade_out_ms"] == 1500
+    assert "音乐：test.wav" in editor.scene_summary.toolTip()
+    restored = Message.from_dict(editor.message.as_dict())
+    assert restored.scene_before["bgm"] == editor.message.scene_before["bgm"]
+    editor.bgm_mode.setCurrentIndex(2)
+    assert editor.message.scene_before["bgm"] == {"action": "stop", "fade_out_ms": 1500}
+    assert editor.bgm_file.isHidden()
+    assert not editor.bgm_durations["fade_out_ms"][0].isHidden()
+    assert editor.bgm_durations["fade_in_ms"][0].isHidden()
+    editor.bgm_mode.setCurrentIndex(0)
+    assert editor.message.scene_before is None
+    config_set.assert_not_called()
+
+
+def test_cancel_music_selection_keeps_original_scene(editor, monkeypatch):
+    import ui_small_theater.multi_char_editor as module
+    dialog = Mock(selected_path=None)
+    dialog.exec_.return_value = QDialog.Rejected
+    monkeypatch.setattr(module, "CustomBGMDialog", Mock(return_value=dialog))
+    saves = editor.owner.saved
+    editor.bgm_mode.setCurrentIndex(1)
+    assert editor.message.scene_before is None and editor.owner.saved == saves
+    assert editor.bgm_mode.currentData() is None
+    assert [call.args[0] for call in editor.owner.bgm_player.setMuted.call_args_list] == [True, False]
+
+
+def test_scene_preview_is_in_header_and_available_on_first_sentence(editor, app):
+    from PyQt5.QtTest import QTest
+    assert editor.scene_body.isHidden()
+    assert editor.transition_preview.isVisible() and editor.transition_preview.isEnabled()
+    assert not editor.scene_body.isAncestorOf(editor.transition_preview)
+    last_command(editor)
+    QTest.mouseClick(editor.transition_preview, Qt.LeftButton)
+    assert last_command(editor)["action"] == "transition"
+
+
 def last_command(editor):
     """清空测试队列并返回最后一个预览命令。"""
     result = None
@@ -79,7 +142,7 @@ def test_old_message_scene_remains_absent(editor):
     assert "scene_before" not in editor.message.as_dict()
     assert all(check.isChecked() for check in editor.visible_checks.values())
     assert not editor.black_check.isEnabled()
-    assert not editor.transition_preview.isEnabled()
+    assert editor.transition_preview.isEnabled()
     command = last_command(editor)
     assert command["action"] == "enter"
     assert command["scene_context"]["index"] == 0

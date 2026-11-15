@@ -260,6 +260,29 @@ def line(text, **changes):
     return value
 
 
+def test_combined_preview_reports_inherited_music_without_entry_shortcut(playback):
+    config = {"action": "play", "file": "a.wav", "fade_out_ms": 900, "fade_in_ms": 700}
+    messages = [line("甲", scene_before={"bgm": config}), line("乙")]
+    playback.controller.command({"action": "load", "session": "script", "revision": 0,
+                                 "messages": messages})
+    playback.performance.preview = True
+    playback.performance.session = "editor"
+    playback.context["show_preview_scene"]({"action": "transition",
+                                             "scene_context": {"messages": messages, "index": 1}})
+    report = next(value for _, value in playback.sent if value.get("type") == "multi_char_bgm")
+    assert report == {"type": "multi_char_bgm", "session": "script", "revision": 0,
+                      "preview_session": "editor", "config": config, "entry": False}
+    assert playback.started() == []
+
+
+@pytest.mark.parametrize("action", ["enter", "scene", "play", "seek", "resource", "stop"])
+def test_plain_editor_actions_do_not_change_music(playback, action):
+    messages = [line("甲", scene_before={"bgm": {"action": "stop", "fade_out_ms": 500}})]
+    playback.context["show_preview_scene"]({"action": action,
+                                             "scene_context": {"messages": messages, "index": 0}})
+    assert not any(value.get("type") == "multi_char_bgm" for _, value in playback.sent)
+
+
 def make_audio(tmp_path, duration_ms):
     """生成指定长度的临时真实 WAV，让被测时长读取使用 soundfile 实现。"""
     import soundfile as sf

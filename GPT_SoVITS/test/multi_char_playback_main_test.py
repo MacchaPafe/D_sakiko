@@ -53,6 +53,7 @@ def host():
         }),
         _prepare_live2d_model_for_switch=Mock(return_value=True),
         _refresh_open_settings_dialog=Mock(),
+        update_bgm_controls=Mock(),
         setEnabled=Mock(), raise_=Mock(),
         refresh_chat_display=Mock(), refresh_chat_list=Mock(),
         _save_chat=Mock(return_value=True),

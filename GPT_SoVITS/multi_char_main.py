@@ -14,7 +14,7 @@ if __name__ == "__main__":
     from maintenance.bootstrap import recover_before_startup
     recover_before_startup(Path(__file__).resolve().parents[1])
 
-from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal, QUrl, Qt, QSize, QVariantAnimation
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaPlaylist, QMediaContent
 
 from qconfig import DEFAULT_MULTI_CHAR_BGM_PATH, d_sakiko_config
@@ -1102,11 +1102,11 @@ class SettingsDialog(QDialog):
         layout.addWidget(more_function_group)
 
         bgm_volume_layout=QHBoxLayout()
-        self.bgm_volume_label=QLabel(f"BGM音量调节：30")
+        self.bgm_volume_label=QLabel(f"BGM音量调节：{self.parent_gui._bgm_volume}")
         self.bgm_volume_slider=QSlider(Qt.Horizontal)
         self.bgm_volume_slider.valueChanged.connect(self.change_bgm_volume)
         self.bgm_volume_slider.setRange(0,100)
-        self.bgm_volume_slider.setValue(30)
+        self.bgm_volume_slider.setValue(self.parent_gui._bgm_volume)
         bgm_volume_layout.addWidget(self.bgm_volume_label)
         bgm_volume_layout.addWidget(self.bgm_volume_slider)
         bgm_volume_layout.addWidget(self.btn_set_bgm)
@@ -1172,7 +1172,7 @@ class SettingsDialog(QDialog):
 
     def change_bgm_volume(self):
         value=self.bgm_volume_slider.value()
-        self.parent_gui.bgm_player.setVolume(value)
+        self.parent_gui.set_bgm_volume(value)
         self.bgm_volume_label.setText(f"BGM音量调节：{value}")
 
     def change_subtitle_mode(self, _index):
@@ -1454,6 +1454,15 @@ class ViewerGUI(QWidget):
         self.bgm_playlist.setPlaybackMode(QMediaPlaylist.CurrentItemInLoop)
         self.bgm_player.setPlaylist(self.bgm_playlist)
         self.bgm_player.setVolume(30)  # 音量 0-100 (Pygame是0.0-1.0，注意区别)
+        self._bgm_volume = 30
+        self._bgm_factor = 1.0
+        self._bgm_phase = ""
+        self._bgm_target = None
+        self._bgm_scene_controlled = False
+        self.bgm_fade = QVariantAnimation(self)
+        self.bgm_fade.valueChanged.connect(self._set_bgm_factor)
+        self.bgm_fade.finished.connect(self._finish_bgm_fade)
+        self.bgm_player.stateChanged.connect(self._try_bgm_fade_in)
         self.bgm_player.error.connect(self._handle_bgm_error)
         self.bgm_player.mediaStatusChanged.connect(self._handle_bgm_media_status)
         self._current_bgm_path: Optional[str] = None
@@ -2071,6 +2080,7 @@ class ViewerGUI(QWidget):
         if result.get("auto", False) != self._playback_status.get("auto", False):
             self.message_queue.put("自动播放已开启" if result.get("auto") else "自动播放已关闭")
         self._playback_status = result
+        self.update_bgm_controls()
         highlight = getattr(self, "_playback_highlight", None)
         if highlight is not None:
             highlight.update_state(result)
@@ -2099,6 +2109,7 @@ class ViewerGUI(QWidget):
         """关闭编辑器后重建最新剧本，恢复的舞台保持到用户正式启动为止。"""
         if self.current_chat is chat:
             self.load_playback_script(preserve_scene=True)
+        self.update_bgm_controls()
 
     def _on_live2d_model_changed(
         self,
@@ -2188,6 +2199,7 @@ class ViewerGUI(QWidget):
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()
             self.settings_dialog.refresh_motion_facing_button()
+            self.update_bgm_controls()
             return
 
         if self.current_chat is None:
@@ -2197,6 +2209,7 @@ class ViewerGUI(QWidget):
         self.settings_dialog = SettingsDialog(self, character_names, self.screen, self.audio_gen_module)
         self.settings_dialog.finished.connect(self._on_settings_dialog_finished)
         self.settings_dialog.show()
+        self.update_bgm_controls()
 
     def _on_settings_dialog_finished(self, _result: int) -> None:
         """在设置面板关闭后清理窗口引用。"""
@@ -2204,10 +2217,117 @@ class ViewerGUI(QWidget):
 
     def toggle_bgm(self) -> None:
         """切换背景音乐的播放和暂停状态。"""
+        if not self.bgm_controls_available():
+            return
         if self.bgm_player.state()==QMediaPlayer.PlayingState:
             self.bgm_player.pause()
         else:
             self.bgm_player.play()
+
+    def bgm_controls_available(self) -> bool:
+        playing = self._playback_stage_available and (
+            self._playback_status.get("auto") or self._playback_status.get("phase") in ("transition", "playing"))
+        return not (self._bgm_phase or self._playback_pending or self.performance_editor
+                    or playing)
+
+    def update_bgm_controls(self) -> None:
+        enabled = self.bgm_controls_available()
+        self.play_bgm_btn.setEnabled(enabled)
+        if self.settings_dialog is not None:
+            self.settings_dialog.btn_set_bgm.setEnabled(enabled)
+
+    def set_bgm_volume(self, value: int) -> None:
+        self._bgm_volume = value
+        self._set_bgm_factor(self._bgm_factor)
+
+    def _set_bgm_factor(self, value) -> None:
+        self._bgm_factor = float(value)
+        self.bgm_player.setVolume(round(self._bgm_volume * self._bgm_factor))
+
+    def apply_scene_bgm(self, config: dict, entry: bool = False) -> None:
+        """起点同曲续播；其余切换按顺序淡出、换曲、淡入，不阻塞舞台。"""
+        same = (config["action"] == "play" and self.bgm_player.state() == QMediaPlayer.PlayingState
+                and os.path.abspath(str(BGM_DIRECTORY / config["file"])) == self._current_bgm_path)
+        self._bgm_scene_controlled = True
+        if entry and same and self._bgm_phase == "in":
+            return
+        self.bgm_fade.stop()
+        self._bgm_target = dict(config)
+        if entry:
+            self._bgm_target.update(fade_out_ms=200, fade_in_ms=200)
+            if same:
+                self._bgm_target = None
+                if self._bgm_factor < 1.0:
+                    self._fade_bgm_to(1.0, 200, "in")
+                else:
+                    self._bgm_phase = ""
+                    self.update_bgm_controls()
+                return
+        if self.bgm_player.state() == QMediaPlayer.PlayingState and self._bgm_factor > 0:
+            self._fade_bgm_to(0.0, self._bgm_target.get("fade_out_ms", 500), "out")
+        else:
+            self._switch_scene_bgm()
+
+    def _fade_bgm_to(self, factor: float, milliseconds: int, phase: str) -> None:
+        self._bgm_phase = phase
+        self.update_bgm_controls()
+        if milliseconds == 0:
+            self._set_bgm_factor(factor)
+            self._finish_bgm_fade()
+            return
+        self.bgm_fade.blockSignals(True)
+        self.bgm_fade.setDuration(milliseconds)
+        self.bgm_fade.setStartValue(self._bgm_factor)
+        self.bgm_fade.setEndValue(factor)
+        self.bgm_fade.setCurrentTime(0)
+        self.bgm_fade.blockSignals(False)
+        self.bgm_fade.start()
+
+    def _finish_bgm_fade(self) -> None:
+        if self._bgm_phase == "out":
+            self._switch_scene_bgm()
+        else:
+            self._bgm_target = None
+            self._bgm_phase = ""
+            self.update_bgm_controls()
+
+    def _switch_scene_bgm(self) -> None:
+        config = self._bgm_target
+        if config["action"] == "stop":
+            self.bgm_player.stop()
+            self._bgm_phase = ""
+            self._bgm_target = None
+            self._set_bgm_factor(1.0)
+            self.update_bgm_controls()
+            return
+        self._bgm_phase = "loading"
+        self._set_bgm_factor(0.0)
+        self.update_bgm_controls()
+        if not self._load_bgm(str(BGM_DIRECTORY / config["file"])):
+            self._fail_scene_bgm("文件不存在或无法载入")
+            return
+        if self._bgm_target is not None:
+            self.bgm_player.play()
+            self._try_bgm_fade_in()
+
+    def _try_bgm_fade_in(self, *_args) -> None:
+        if (self._bgm_phase == "loading" and self.bgm_player.state() == QMediaPlayer.PlayingState
+                and self.bgm_player.mediaStatus() in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia)):
+            self._fade_bgm_to(1.0, self._bgm_target.get("fade_in_ms", 500), "in")
+
+    def _fail_scene_bgm(self, reason: str) -> None:
+        if self._bgm_target is None and self._current_bgm_path is None:
+            return
+        filename = (self._bgm_target or {}).get("file") or os.path.basename(self._current_bgm_path or "")
+        self.bgm_fade.stop()
+        self._bgm_target = None
+        self._bgm_phase = ""
+        self._current_bgm_path = None
+        self.bgm_player.stop()
+        self.bgm_playlist.clear()
+        self._set_bgm_factor(1.0)
+        self.update_bgm_controls()
+        self.message_queue.put(f"背景音乐 {filename} 播放失败：{reason}")
 
 
     def handle_messages(self,msg):
@@ -2228,6 +2348,9 @@ class ViewerGUI(QWidget):
             return
 
         message = self.bgm_player.errorString() or f"错误代码 {error}"
+        if self._bgm_scene_controlled:
+            self._fail_scene_bgm(message)
+            return
         logger.error(
             "背景音乐播放失败：error=%s, message=%s",
             error,
@@ -2244,9 +2367,13 @@ class ViewerGUI(QWidget):
     ) -> None:
         """处理 Qt 异步报告的无效背景音乐状态。"""
         if status != QMediaPlayer.InvalidMedia:
+            self._try_bgm_fade_in()
             return
 
         message = self.bgm_player.errorString() or "媒体无效或无法解码"
+        if self._bgm_scene_controlled:
+            self._fail_scene_bgm(message)
+            return
         logger.error("背景音乐媒体无效：%s", message)
         failed_path = (
             self._current_bgm_path
@@ -2382,14 +2509,21 @@ class ViewerGUI(QWidget):
 
     def set_bgm(self) -> None:
         """打开背景音乐选择窗口，并在关闭后应用新的音乐。"""
-        old_bgm = d_sakiko_config.multi_char_background_music_path.value
+        if not self.bgm_controls_available():
+            return
+        old_bgm = self._current_bgm_path or d_sakiko_config.multi_char_background_music_path.value
         was_playing = self.bgm_player.state() == QMediaPlayer.PlayingState
         if was_playing:
             self.bgm_player.pause()
 
-        dialog = CustomBGMDialog(parent=self)
+        dialog = CustomBGMDialog(parent=self, current_path=old_bgm)
         dialog.exec_()
-        new_bgm = d_sakiko_config.multi_char_background_music_path.value
+        new_bgm = dialog.selected_path
+        if new_bgm is None:
+            if was_playing:
+                self.bgm_player.play()
+            return
+        self._bgm_scene_controlled = False
 
         if new_bgm != old_bgm:
             loaded = self._load_bgm(new_bgm)
@@ -2780,6 +2914,14 @@ class ViewerGUI(QWidget):
 
     def display_this_turn_text(self,this_turn_elements):
         """分发舞台状态和预览回执，正式回放不再通过回执追加存档。"""
+        if this_turn_elements.get("type") == "multi_char_bgm":
+            if (this_turn_elements.get("session") == self._playback_session
+                    and this_turn_elements.get("revision") == self._playback_revision):
+                preview = this_turn_elements.get("preview_session")
+                if preview is None or (self.performance_editor is not None
+                                       and preview == self.performance_editor.session_id):
+                    self.apply_scene_bgm(this_turn_elements["config"], this_turn_elements.get("entry", False))
+            return
         if this_turn_elements.get("type") == "multi_char_playback":
             self.receive_playback_state(this_turn_elements)
             return
@@ -2830,6 +2972,7 @@ class ViewerGUI(QWidget):
         self._playback_stage_available = False
         self._playback_pending.clear()
         self._editor_request = None
+        self.update_bgm_controls()
         if self.performance_editor is not None:
             self.performance_editor.stage_closed()
 

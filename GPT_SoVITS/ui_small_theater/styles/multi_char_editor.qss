@@ -634,7 +634,7 @@ QCheckBox#multiCharBackground::indicator:disabled, QCheckBox#multiCharBlack::ind
 }
 
 /* multiCharInsertSpeaker：添加台词表单的两名角色及“无”下拉选择。 */
-QComboBox#multiCharInsertSpeaker {
+QComboBox#multiCharInsertSpeaker, QComboBox#multiCharBgmMode {
     color: #364763;
     background-color: #FFFFFF;
     border: 1px solid #D4E0F0;
@@ -644,24 +644,24 @@ QComboBox#multiCharInsertSpeaker {
 
 /* multiCharBlackDuration：横向调节黑场总时长的细轨滑块，蓝色填充显示当前值。
    multiCharBlackDurationLabel：滑块右侧实时秒数，拖动松开时才保存配置。 */
-QSlider#multiCharBlackDuration, QSlider#multiCharCapsuleDuration {
+QSlider#multiCharBlackDuration, QSlider#multiCharCapsuleDuration, QSlider#multiCharBgmDuration {
     background: transparent;
     min-height: 22px;
 }
 
-QSlider#multiCharBlackDuration::groove:horizontal, QSlider#multiCharCapsuleDuration::groove:horizontal {
+QSlider#multiCharBlackDuration::groove:horizontal, QSlider#multiCharCapsuleDuration::groove:horizontal, QSlider#multiCharBgmDuration::groove:horizontal {
     height: 4px;
     background-color: #DCE5F2;
     border: none;
     border-radius: 2px;
 }
 
-QSlider#multiCharBlackDuration::sub-page:horizontal, QSlider#multiCharCapsuleDuration::sub-page:horizontal {
+QSlider#multiCharBlackDuration::sub-page:horizontal, QSlider#multiCharCapsuleDuration::sub-page:horizontal, QSlider#multiCharBgmDuration::sub-page:horizontal {
     background-color: #7295F2;
     border-radius: 2px;
 }
 
-QSlider#multiCharBlackDuration::handle:horizontal, QSlider#multiCharCapsuleDuration::handle:horizontal {
+QSlider#multiCharBlackDuration::handle:horizontal, QSlider#multiCharCapsuleDuration::handle:horizontal, QSlider#multiCharBgmDuration::handle:horizontal {
     width: 12px;
     height: 12px;
     margin: -5px 0;
@@ -670,26 +670,26 @@ QSlider#multiCharBlackDuration::handle:horizontal, QSlider#multiCharCapsuleDurat
     border-radius: 7px;
 }
 
-QSlider#multiCharBlackDuration::handle:horizontal:hover, QSlider#multiCharCapsuleDuration::handle:horizontal:hover {
+QSlider#multiCharBlackDuration::handle:horizontal:hover, QSlider#multiCharCapsuleDuration::handle:horizontal:hover, QSlider#multiCharBgmDuration::handle:horizontal:hover {
     background-color: #F0F5FF;
     border-color: #4368D6;
 }
 
-QSlider#multiCharBlackDuration::sub-page:horizontal:disabled, QSlider#multiCharCapsuleDuration::sub-page:horizontal:disabled {
+QSlider#multiCharBlackDuration::sub-page:horizontal:disabled, QSlider#multiCharCapsuleDuration::sub-page:horizontal:disabled, QSlider#multiCharBgmDuration::sub-page:horizontal:disabled {
     background-color: #C8D5E8;
 }
 
-QSlider#multiCharBlackDuration::handle:horizontal:disabled, QSlider#multiCharCapsuleDuration::handle:horizontal:disabled {
+QSlider#multiCharBlackDuration::handle:horizontal:disabled, QSlider#multiCharCapsuleDuration::handle:horizontal:disabled, QSlider#multiCharBgmDuration::handle:horizontal:disabled {
     background-color: #EDF1F7;
     border-color: #BDCBE1;
 }
 
-QLabel#multiCharBlackDurationLabel, QLabel#multiCharCapsuleDurationLabel {
+QLabel#multiCharBlackDurationLabel, QLabel#multiCharCapsuleDurationLabel, QLabel#multiCharBgmDurationLabel {
     color: #536C9C;
     background: transparent;
 }
 
-QLabel#multiCharBlackDurationLabel:disabled, QLabel#multiCharCapsuleDurationLabel:disabled {
+QLabel#multiCharBlackDurationLabel:disabled, QLabel#multiCharCapsuleDurationLabel:disabled, QLabel#multiCharBgmDurationLabel:disabled {
     color: #A6B3C7;
 }
 
@@ -699,7 +699,7 @@ QLabel#multiCharBlackDurationLabel:disabled, QLabel#multiCharCapsuleDurationLabe
    multiCharBackgroundFile：当前背景文件名，点击重新选择图片。 */
 QToolButton#multiCharRefresh, QToolButton#multiCharCustomExpression,
 QToolButton#multiCharTransitionPreview,
-QToolButton#multiCharBackgroundFile {
+QToolButton#multiCharBackgroundFile, QToolButton#multiCharBgmFile {
     color: #536C9C;
     background-color: #FFFFFF;
     border: 1px solid #D4E0F0;
@@ -709,7 +709,7 @@ QToolButton#multiCharBackgroundFile {
 
 QToolButton#multiCharRefresh:hover, QToolButton#multiCharCustomExpression:hover,
 QToolButton#multiCharTransitionPreview:hover,
-QToolButton#multiCharBackgroundFile:hover {
+QToolButton#multiCharBackgroundFile:hover, QToolButton#multiCharBgmFile:hover {
     color: #254EDB;
     background-color: #F4F8FE;
     border-color: #B4C7E6;

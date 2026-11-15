@@ -27,7 +27,8 @@ class Owner(QWidget):
         # 与真实 ViewerGUI 一致：旧属性遮蔽了 QWidget.screen 方法。
         self.screen = QApplication.primaryScreen().geometry()
         self.to_live2d_change_character_queue = Queue()
-        self.bgm_player = Mock()
+        self.bgm_player = Mock(isMuted=Mock(return_value=False))
+        self._current_bgm_path = None
         self.performance_editor = None
         self.saved = 0
         self.fail = False

@@ -12,7 +12,7 @@ from PyQt5.QtGui import QColor, QDrag, QFont, QIcon, QImageReader
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedLayout, QFrame, QLabel, QTabBar,
                              QLineEdit, QPlainTextEdit, QListWidget, QListWidgetItem, QListView, QPushButton,
                              QMessageBox, QDoubleSpinBox, QSlider, QApplication, QStyle, QSizePolicy,
-                             QCheckBox, QFileDialog, QMenu, QToolButton, QToolTip, QDialog)
+                             QCheckBox, QFileDialog, QMenu, QToolButton, QToolTip, QDialog, QComboBox)
 
 from chat.chat import Message
 from performance_types import trim_timeline, sort_timeline_events, timeline_tracks, valid_timeline_events
@@ -27,6 +27,7 @@ from ui_small_theater.multi_char_menu import fit_menu_to_contents
 from ui_small_theater.multi_char_style import editor_stylesheet
 from ui_small_theater.multi_char_timeline import MultiCharTimeline, MIME, _character_pill_color
 from ui_small_theater.multi_char_windows import MultiCharWindowLayout
+from ui_qt.components.custom_bgm_dialog import BGM_DIRECTORY, CustomBGMDialog
 from ui_constants import char_info_json
 
 
@@ -651,7 +652,7 @@ class MultiCharEditor(QObject):
         self.search.textChanged.connect(self.refresh_resources)
 
     def build_scene_settings(self):
-        """建立默认折叠的场景卡；展开后三行控件按固定标签列对齐。"""
+        """建立默认折叠的场景卡，共用标题栏的组合预览入口。"""
         card = QFrame()
         card.setObjectName("multiCharSceneCard")
         root = QVBoxLayout(card)
@@ -673,6 +674,14 @@ class MultiCharEditor(QObject):
         self.scene_summary.setTextFormat(Qt.PlainText)
         self.scene_summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         header.addWidget(self.scene_summary, 1)
+        self.transition_preview = QToolButton()
+        self.transition_preview.setObjectName("multiCharTransitionPreview")
+        self.transition_preview.setText("预览")
+        self.transition_preview.setToolTip("预览整体场景效果")
+        set_button_icon(self.transition_preview, "play", self.resource_window)
+        self.transition_preview.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.transition_preview.clicked.connect(self.preview_transition)
+        header.addWidget(self.transition_preview)
         root.addLayout(header)
         self.scene_body = QWidget()
         self.scene_body.setObjectName("multiCharSceneBody")
@@ -682,12 +691,14 @@ class MultiCharEditor(QObject):
         grid.setVerticalSpacing(pad)
         grid.setColumnStretch(1, 1)
         for row, (text, icon) in enumerate((
-                ("出场角色", "actors"), ("切换背景", "background"), ("句前转场", "transition"))):
+                ("出场角色", "actors"), ("切换背景", "background"),
+                ("背景音乐", "music"), ("句前转场", "transition"))):
             label_row = QHBoxLayout()
             image = QLabel()
             image.setObjectName("multiCharSceneIcon")
             icon_size = round(self.resource_window.fontMetrics().height() * 0.85)
-            image.setPixmap(multi_char_icon(icon).pixmap(icon_size, icon_size))
+            scene_icon = QIcon(str(Path(__file__).parents[1] / "icons" / "music.png")) if icon == "music" else multi_char_icon(icon)
+            image.setPixmap(scene_icon.pixmap(icon_size, icon_size))
             label = QLabel(text)
             label.setObjectName("multiCharSceneLabel")
             label_row.addWidget(image)
@@ -716,7 +727,7 @@ class MultiCharEditor(QObject):
         self.visibility_help.setIconSize(QSize(icon_size, icon_size))
         self.visibility_help.setToolTip(
             "本句的出场角色设置会延续到后面的所有台词，直到后面的某句再次设置。\n"
-            "但本句之前的台词不会受影响。"
+            "但本句之前的台词不会受影响。\n下面的“切换背景”、“切换BGM”遵循相同的设定逻辑。"
         )
         self.visibility_help.clicked.connect(self.show_visibility_help)
         visible_row.addWidget(self.visibility_help)
@@ -738,6 +749,47 @@ class MultiCharEditor(QObject):
         self.background_file.clicked.connect(self.choose_background)
         background_row.addWidget(self.background_file, 1)
         grid.addLayout(background_row, 1, 1)
+
+        music_column = QVBoxLayout()
+        music_column.setSpacing(pad)
+        music_row = QHBoxLayout()
+        self.bgm_mode = QComboBox()
+        self.bgm_mode.setObjectName("multiCharBgmMode")
+        for text, action in (("沿用之前", None), ("切换音乐", "play"), ("停止音乐", "stop")):
+            self.bgm_mode.addItem(text, action)
+        self.bgm_mode.currentIndexChanged.connect(self.change_bgm_mode)
+        music_row.addWidget(self.bgm_mode)
+        self.bgm_file = QToolButton()
+        self.bgm_file.setObjectName("multiCharBgmFile")
+        self.bgm_file.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.bgm_file.clicked.connect(self.choose_bgm)
+        music_row.addWidget(self.bgm_file, 1)
+        music_row.addStretch()
+        music_column.addLayout(music_row)
+        duration_controls = QHBoxLayout()
+        duration_controls.setSpacing(pad * 2)
+        self.bgm_durations = {}
+        for key, text in (("fade_out_ms", "淡出"), ("fade_in_ms", "淡入")):
+            row_widget = QWidget()
+            duration_row = QHBoxLayout(row_widget)
+            duration_row.setContentsMargins(0, 0, 0, 0)
+            duration_row.addWidget(QLabel(text))
+            slider = QSlider(Qt.Horizontal)
+            slider.setObjectName("multiCharBgmDuration")
+            slider.setRange(0, 3000)
+            slider.setSingleStep(100)
+            slider.setPageStep(500)
+            slider.setValue(500)
+            label = QLabel("0.5 秒")
+            label.setObjectName("multiCharBgmDurationLabel")
+            self.bgm_durations[key] = (row_widget, slider, label)
+            slider.valueChanged.connect(lambda value, name=key: self.update_bgm_duration(name, value))
+            slider.sliderReleased.connect(self.save_bgm)
+            duration_row.addWidget(slider, 1)
+            duration_row.addWidget(label)
+            duration_controls.addWidget(row_widget, 1)
+        music_column.addLayout(duration_controls)
+        grid.addLayout(music_column, 2, 1)
 
         transition_row = QHBoxLayout()
         transition_row.setSpacing(pad * 2)
@@ -761,15 +813,7 @@ class MultiCharEditor(QObject):
         self.black_duration_label.setMinimumWidth(round(self.resource_window.font().pixelSize() * 3.5))
         transition_row.addWidget(self.black_duration_label)
         transition_row.addStretch(1)
-        self.transition_preview = QToolButton()
-        self.transition_preview.setObjectName("multiCharTransitionPreview")
-        self.transition_preview.setText("预览")
-        self.transition_preview.setToolTip("预览整体效果")
-        set_button_icon(self.transition_preview, "play", self.resource_window)
-        self.transition_preview.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.transition_preview.clicked.connect(self.preview_transition)
-        transition_row.addWidget(self.transition_preview)
-        grid.addLayout(transition_row, 2, 1)
+        grid.addLayout(transition_row, 3, 1)
         capsule_row = QVBoxLayout()
         self.capsule_check = QCheckBox("胶囊转场")
         self.capsule_check.setObjectName("multiCharCapsule")
@@ -789,7 +833,7 @@ class MultiCharEditor(QObject):
         self.capsule_save.clicked.connect(self.save_capsule)
         capsule_text_line.addWidget(self.capsule_save)
         capsule_row.addLayout(capsule_text_line)
-        grid.addLayout(capsule_row, 3, 1)
+        grid.addLayout(capsule_row, 4, 1)
         self.capsule_duration_row = QWidget()
         capsule_duration_layout = QHBoxLayout(self.capsule_duration_row)
         capsule_duration_layout.setSpacing(24)
@@ -808,7 +852,7 @@ class MultiCharEditor(QObject):
         self.capsule_duration_label = QLabel("2.5 秒")
         self.capsule_duration_label.setObjectName("multiCharCapsuleDurationLabel")
         capsule_duration_layout.addWidget(self.capsule_duration_label)
-        grid.addWidget(self.capsule_duration_row, 4, 1)
+        grid.addWidget(self.capsule_duration_row, 5, 1)
         root.addWidget(self.scene_body)
         self.scene_body.hide()
         self.sync_scene_controls()
@@ -845,6 +889,21 @@ class MultiCharEditor(QObject):
         self.background_file.setText(filename)
         self.background_file.setToolTip(f"重新选择背景图片\n{filename}" if filename else "重新选择背景图片")
         self.background_file.setVisible(bool(filename))
+        bgm = scene.get("bgm") or {}
+        action = bgm.get("action")
+        self.bgm_mode.blockSignals(True)
+        self.bgm_mode.setCurrentIndex(self.bgm_mode.findData(action))
+        self.bgm_mode.blockSignals(False)
+        music_file = bgm.get("file", "")
+        self.bgm_file.setText(music_file or "选择音乐…")
+        self.bgm_file.setToolTip(music_file or "选择背景音乐")
+        self.bgm_file.setVisible(action == "play")
+        for key, (row, slider, label) in self.bgm_durations.items():
+            slider.blockSignals(True)
+            slider.setValue(bgm.get(key, 500))
+            slider.blockSignals(False)
+            label.setText(f"{slider.value() / 1000:.1f} 秒")
+            row.setVisible(action == "play" or (action == "stop" and key == "fade_out_ms"))
         transition = scene.get("transition")
         transition = transition if isinstance(transition, dict) else {}
         enabled = transition.get("type") == "black"
@@ -877,7 +936,7 @@ class MultiCharEditor(QObject):
         self.capsule_duration.blockSignals(False)
         self.capsule_duration_label.setText(f"{self.capsule_duration.value() / 1000:.1f} 秒")
         self.capsule_duration_row.setVisible(capsule_enabled)
-        self.transition_preview.setEnabled((not first or capsule_enabled) and self.stage_available)
+        self.transition_preview.setEnabled(self.stage_available and not self.audio_busy)
         self.regenerate_button.setEnabled(not self.audio_busy and bool(self.message.character_name))
         self.regenerate_button.setToolTip("本句是无角色消息，未指定语音角色" if not self.message.character_name else "")
         visible_names = "、".join(effective["visible_characters"]) or "无"
@@ -888,7 +947,51 @@ class MultiCharEditor(QObject):
         if capsule_enabled:
             caption = self.capsule_text.text()
             black = (black + " → " if enabled and not first else "") + f"胶囊「{caption}」停留 {self.capsule_duration.value() / 1000:.1f}s"
-        self.scene_summary.set_summary(f"出场：{visible_names} ｜ 背景图片：{background} ｜ 转场：{black}")
+        music = music_file if action == "play" else "停止" if action == "stop" else "沿用"
+        self.scene_summary.set_summary(f"出场：{visible_names} ｜ 背景图片：{background} ｜ 音乐：{music} ｜ 转场：{black}")
+
+    def change_bgm_mode(self, *_):
+        action = self.bgm_mode.currentData()
+        if action == "play" and not ((self.message.scene_before or {}).get("bgm") or {}).get("file"):
+            self.choose_bgm()
+        else:
+            self.save_bgm()
+
+    def choose_bgm(self):
+        """复用音乐管理与试听窗口，只把选择结果保存到本句。"""
+        bgm = (self.message.scene_before or {}).get("bgm") or {}
+        current = str(BGM_DIRECTORY / bgm["file"]) if bgm.get("file") else self.owner._current_bgm_path
+        dialog = CustomBGMDialog(self.resource_window, current_path=current, selection_only=True)
+        muted = self.owner.bgm_player.isMuted()
+        self.owner.bgm_player.setMuted(True)
+        result = dialog.exec_()
+        self.owner.bgm_player.setMuted(muted)
+        if result != QDialog.Accepted:
+            self.sync_scene_controls()
+            return
+        value = {"action": "play", "file": Path(dialog.selected_path).name}
+        value.update({key: round(slider.value() / 100) * 100
+                      for key, (_, slider, _) in self.bgm_durations.items()})
+        self.save_scene_value("bgm", value)
+
+    def save_bgm(self):
+        action = self.bgm_mode.currentData()
+        value = None
+        if action:
+            value = {"action": action}
+            if action == "play":
+                value["file"] = (self.message.scene_before or {})["bgm"]["file"]
+            value.update({key: round(slider.value() / 100) * 100
+                          for key, (_, slider, _) in self.bgm_durations.items()
+                          if key == "fade_out_ms" or action == "play"})
+        if (self.message.scene_before or {}).get("bgm") != value:
+            self.save_scene_value("bgm", value)
+
+    def update_bgm_duration(self, key, milliseconds):
+        _, slider, label = self.bgm_durations[key]
+        label.setText(f"{milliseconds / 1000:.1f} 秒")
+        if not slider.isSliderDown():
+            self.save_bgm()
 
     def save_scene_value(self, key, value):
         """立即保存单项场景覆盖，失败回滚该次写入，不触碰时间轴草稿。"""
@@ -1005,7 +1108,7 @@ class MultiCharEditor(QObject):
 
     def preview_transition(self):
         """只演示上一句场景到本句的句前阶段，结束后不启动本句语音。"""
-        if self.audio_busy or not self.stage_available or (self.message_index() == 0 and not self.capsule_check.isChecked()):
+        if self.audio_busy or not self.stage_available:
             return
         self.playing = False
         self.can_resume = False

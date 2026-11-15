@@ -7,7 +7,7 @@ from pathlib import Path
 
 from av.error import FFmpegError
 from PyQt5.QtCore import Qt, QUrl
-from PyQt5.QtGui import QCloseEvent, QIcon
+from PyQt5.QtGui import QIcon
 from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer, QMediaPlaylist
 from PyQt5.QtWidgets import (
     QDialog,
@@ -86,13 +86,17 @@ def validate_bgm_media_file(bgm_path: Path) -> str | None:
 class CustomBGMDialog(QDialog):
     """管理、试听并选择小剧场背景音乐。"""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, current_path=None, selection_only=False) -> None:
         super().__init__(parent)
+        self.current_path = str(current_path or d_sakiko_config.multi_char_background_music_path.value)
+        self.selection_only = selection_only
+        self.selected_path = None
 
         self.setWindowTitle("更改小剧场背景音乐")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
 
         self.audio_player = QMediaPlayer(self)
+        self.finished.connect(self.audio_player.stop)
         self.audio_playlist = QMediaPlaylist(self)
         self.audio_player.setPlaylist(self.audio_playlist)
         self.audio_player.error.connect(self._handle_audio_error)
@@ -102,9 +106,7 @@ class CustomBGMDialog(QDialog):
 
         layout = QVBoxLayout()
         current_bgm_layout = QHBoxLayout()
-        current_bgm_name = Path(
-            d_sakiko_config.multi_char_background_music_path.value
-        ).name
+        current_bgm_name = Path(self.current_path).name
 
         self.current_bgm_label = QLabel(f"当前背景音乐: {current_bgm_name}")
         self.play_current_bgm_button = QToolButton()
@@ -170,9 +172,7 @@ class CustomBGMDialog(QDialog):
             all_bgm_files = []
 
         self._remove_all_widgets(self.select_new_bgm_layout)
-        current_bgm_path = Path(
-            d_sakiko_config.multi_char_background_music_path.value
-        ).resolve()
+        current_bgm_path = Path(self.current_path).resolve()
 
         for bgm_path in all_bgm_files:
             single_bgm_layout = QHBoxLayout()
@@ -231,14 +231,7 @@ class CustomBGMDialog(QDialog):
 
     def toggle_current_bgm(self) -> None:
         """播放或停止当前选中的背景音乐。"""
-        self.toggle_bgm(
-            Path(d_sakiko_config.multi_char_background_music_path.value)
-        )
-
-    def closeEvent(self, event: QCloseEvent) -> None:
-        """关闭窗口时停止试听。"""
-        self.audio_player.stop()
-        super().closeEvent(event)
+        self.toggle_bgm(Path(self.current_path))
 
     def toggle_bgm(self, bgm_path: Path) -> None:
         """试听指定背景音乐，再次点击同一首音乐时停止。"""
@@ -280,6 +273,11 @@ class CustomBGMDialog(QDialog):
             self.set_error_message(f"更改背景音乐失败：{validation_error}")
             return
 
+        self.selected_path = str(absolute_path)
+        if self.selection_only:
+            self.accept()
+            return
+        self.current_path = self.selected_path
         d_sakiko_config.set(
             d_sakiko_config.multi_char_background_music_path,
             str(absolute_path),
@@ -323,9 +321,7 @@ class CustomBGMDialog(QDialog):
     def delete_bgm(self, bgm_file: Path) -> None:
         """删除非当前选中的背景音乐。"""
         absolute_path = bgm_file.resolve()
-        current_path = Path(
-            d_sakiko_config.multi_char_background_music_path.value
-        ).resolve()
+        current_path = Path(self.current_path).resolve()
         if absolute_path == current_path:
             self.set_error_message("不能删除当前正在使用的背景音乐")
             return

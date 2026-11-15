@@ -1284,6 +1284,13 @@ class Live2DModule:
             action = command.get("action")
             transition_preview = False
             if action == "transition":
+                from live2d_support.multi_char_scene import resolve_bgm
+                bgm = resolve_bgm(messages, index)
+                if bgm:
+                    tell_qt_this_turn_finish_queue.put({
+                        "type": "multi_char_bgm", "session": playback.session, "revision": playback.revision,
+                        "preview_session": performance.session, "config": bgm, "entry": False,
+                    })
                 stage.show(stage.resolve(messages, index - 1))
                 target = stage.resolve(messages, index)
                 stage.begin(target, messages[index].get("scene_before"), first=index == 0)

@@ -44,6 +44,16 @@ def _scene_from_message(message: object) -> dict:
     return scene if isinstance(scene, dict) else {}
 
 
+def resolve_bgm(messages: Sequence[object], index: int):
+    """只取截至目标句最后一次音乐设置，不补播历史换曲。"""
+    result = None
+    for message in messages[:max(0, index + 1)]:
+        bgm = _scene_from_message(message).get("bgm")
+        if isinstance(bgm, dict) and bgm.get("action") in ("play", "stop"):
+            result = bgm
+    return result
+
+
 def resolve_scene(
         messages: Sequence[object],
         index: int,

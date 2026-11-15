@@ -4,6 +4,8 @@ from __future__ import annotations
 from copy import deepcopy
 import time
 
+from live2d_support.multi_char_scene import resolve_bgm
+
 
 PLAYBACK_HELP_TEXT = "按空格键自动播放，鼠标单击播放本句"
 
@@ -243,6 +245,10 @@ class MultiCharPlayback:
         scene_index = context.get("index", index)
         target = self.stage.resolve(messages, scene_index)
         self.phase = "transition"
+        bgm = resolve_bgm(messages, scene_index) if first else (turn.get("scene_before") or {}).get("bgm")
+        if bgm:
+            self.send({"type": "multi_char_bgm", "session": self.session, "revision": self.revision,
+                       "config": bgm, "entry": first})
         # 首句胶囊是开场标题，指定句播放也保留；中间句仍跳过句前阶段。
         self.stage.begin(target, None if skip_transition and scene_index > 0 else turn.get("scene_before"), first=first)
         if not self.stage.busy:

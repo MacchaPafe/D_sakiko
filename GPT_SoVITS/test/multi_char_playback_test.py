@@ -223,6 +223,35 @@ def test_auto_from_skips_selected_transition_but_runs_following_transition(playe
     assert player.started() == [(0, "起"), (2600, "后")]
 
 
+def test_music_is_started_only_by_playback_and_does_not_delay_sentence(player):
+    music = {"action": "play", "file": "a.wav", "fade_out_ms": 3000, "fade_in_ms": 3000}
+    load(player, [line("甲", scene_before={"bgm": music}), line("乙"),
+                  line("丙", scene_before={"bgm": music})])
+    reports = lambda: [value for _, value in player.sent if value.get("type") == "multi_char_bgm"]
+    assert reports() == []
+    assert player.controller.toggle_auto()
+    assert player.started() == [(0, "甲")]
+    assert reports()[-1] == {"type": "multi_char_bgm", "session": "theater",
+                             "revision": 0, "config": music, "entry": True}
+    player.step(600)
+    player.step(1100)
+    assert len(reports()) == 1
+    player.step(1700)
+    assert [report["entry"] for report in reports()] == [True, False]
+    assert reports()[-1]["config"] == music
+
+
+@pytest.mark.parametrize("action", ["single", "auto_from"])
+def test_selected_sentence_uses_latest_inherited_music_as_entry(player, action):
+    old = {"action": "play", "file": "a.wav", "fade_out_ms": 500, "fade_in_ms": 500}
+    current = {"action": "stop", "fade_out_ms": 1500}
+    load(player, [line("甲", scene_before={"bgm": old}),
+                  line("乙", scene_before={"bgm": current}), line("丙")])
+    assert command(player, action, index=2)
+    report = next(value for _, value in player.sent if value.get("type") == "multi_char_bgm")
+    assert report["config"] == current and report["entry"]
+
+
 def test_editor_reload_keeps_restored_scene_until_first_input_and_uses_new_snapshot(player):
     load(player, [line("旧", scene_before={"background": "night.png", "visible_characters": []})])
     player.controller.click()

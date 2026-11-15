@@ -135,8 +135,8 @@ class CustomBGMHandlingTestCase(unittest.TestCase):
 
     def test_runtime_bgm_failure_falls_back_to_playable_candidate(self) -> None:
         """当前 BGM 运行时失效后应回退到可用候选并更新配置。"""
-        failed_path = "/tmp/broken-bgm.mp3"
-        fallback_path = "/tmp/fallback-bgm.mp3"
+        failed_path = str(Path("/tmp/broken-bgm.mp3"))
+        fallback_path = str(Path("/tmp/fallback-bgm.mp3"))
         set_calls: list[str] = []
         messages: list[str] = []
         loaded_paths: list[str] = []
