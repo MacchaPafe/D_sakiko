@@ -3,7 +3,40 @@ import { Live2DModel } from 'pixi-live2d-display'
 import { createRuntimeAdapter } from './live2d-adapter.js'
 import { defaultStageLayout } from './stage-layout.js'
 
-/** @typedef {{left: number, top: number, width: number, height: number}} ModelBounds 模型局部坐标中的不透明范围，避免透明画布改变构图。 */
+/** @typedef {import('../../../shared/contracts/presentation.js').ModelBounds} ModelBounds */
+const boundsStorageKey = 'dsakiko.live2d-bounds.v1'
+const boundsCache = readBoundsCache()
+
+function readBoundsCache() {
+  try {
+    return new Map(JSON.parse(localStorage.getItem(boundsStorageKey) ?? '[]'))
+  } catch {
+    return new Map()
+  }
+}
+
+function validBounds(bounds) {
+  return (
+    bounds &&
+    Number.isFinite(bounds.left) &&
+    Number.isFinite(bounds.top) &&
+    Number.isFinite(bounds.width) &&
+    Number.isFinite(bounds.height) &&
+    bounds.width > 0 &&
+    bounds.height > 0
+  )
+}
+
+function rememberBounds(key, bounds) {
+  boundsCache.delete(key)
+  boundsCache.set(key, bounds)
+  if (boundsCache.size > 64) boundsCache.delete(boundsCache.keys().next().value)
+  try {
+    localStorage.setItem(boundsStorageKey, JSON.stringify([...boundsCache]))
+  } catch {
+    // 禁用存储时仍可在本次运行中复用实测结果。
+  }
+}
 
 /**
  * 在小离屏画布上测量实际人物范围，只在模型加载后执行一次。
@@ -102,12 +135,18 @@ export class Live2DPreview {
     this.syncVisibility()
   }
 
-  /** @param {string} url 受控预览 URL。 @param {() => boolean} current 是否仍属于当前选择。 @param {AbortSignal} signal 页面取消信号。 @returns {Promise<void>} 模型与纹理就绪后才返回。 */
-  async show(url, current, signal) {
+  /**
+   * @param {string} url 受控模型 URL。
+   * @param {() => boolean} current 是否仍属于当前选择。
+   * @param {AbortSignal} signal 页面取消信号。
+   * @param {{cacheKey?: string, bounds?: ModelBounds, getLayout?: (version: string) => object}} [options] 已测构图与新实例的舞台视角。
+   * @returns {Promise<boolean>} 候选首帧绘制成功并接管画布时返回 true。
+   */
+  async show(url, current, signal, { cacheKey, bounds, getLayout = defaultStageLayout } = {}) {
     const response = await fetch(url, { signal })
     if (!response.ok) throw new Error('无法读取预览模型，请重试。')
     const json = await response.json()
-    if (!current()) return
+    if (!current()) return false
     const version = json.FileReferences ? 'v3' : 'v2'
     const motions = json.FileReferences?.Motions ?? json.motions ?? {}
     const idle = Object.values(motions)
@@ -119,7 +158,6 @@ export class Live2DPreview {
     available[idleGroup] = idle ? [idle] : []
     if (json.FileReferences) json.FileReferences.Motions = available
     else json.motions = available
-    this.motionGroups = available
     const loading = Live2DModel.from(
       { ...json, url },
       {
@@ -155,21 +193,33 @@ export class Live2DPreview {
     let adapter
     try {
       model = await Promise.race([loading, interrupted])
-      if (!current() || this.destroyed) return
+      if (!current() || this.destroyed) {
+        if (!model.destroyed) model.destroy({ texture: true, baseTexture: true })
+        return false
+      }
       adapter = createRuntimeAdapter(model, version)
       adapter.setSpeechActive(false)
-      if (idle) await model.motion(idleGroup, 0, 1)
+      // 待机动作可选；动作文件损坏时仍应能显示模型的默认姿态。
+      if (idle) await Promise.race([model.motion(idleGroup, 0, 1).catch(() => false), interrupted])
       if (!current() || this.destroyed) {
         adapter.destroy()
-        return
+        return false
       }
-      this.bounds = measureModel(this.app, model)
-      this.model = model
-      this.adapter = adapter
-      if (this.stage) this.stageLayout = defaultStageLayout(version)
-      this.app.stage.addChild(model)
-      this.fit()
+      const cached = boundsCache.get(cacheKey)
+      let measured = validBounds(bounds) ? bounds : cached
+      if (!validBounds(measured)) {
+        measured = measureModel(this.app, model)
+        if (cacheKey) rememberBounds(cacheKey, measured)
+      }
+      this.replaceModel({
+        model,
+        adapter,
+        bounds: measured,
+        motionGroups: available,
+        stageLayout: this.stage ? getLayout(version) : null
+      })
       this.syncVisibility()
+      return true
     } catch (error) {
       if (adapter) adapter.destroy()
       else if (model && !model.destroyed) model.destroy({ texture: true, baseTexture: true })
@@ -178,6 +228,30 @@ export class Live2DPreview {
       clearTimeout(timeout)
       signal.removeEventListener('abort', cancel)
     }
+  }
+
+  replaceModel(next) {
+    const previous = {
+      model: this.model,
+      adapter: this.adapter,
+      bounds: this.bounds,
+      motionGroups: this.motionGroups,
+      stageLayout: this.stageLayout
+    }
+    // 同一帧内试画候选；绘制失败时恢复旧实例和它的视角。
+    if (previous.model) previous.model.visible = false
+    Object.assign(this, next)
+    try {
+      this.app.stage.addChild(next.model)
+      this.fit()
+      next.model.update(1000 / 60)
+      this.app.render()
+    } catch (error) {
+      Object.assign(this, previous)
+      if (previous.model) previous.model.visible = true
+      throw error
+    }
+    previous.adapter?.destroy()
   }
 
   fit() {
@@ -243,6 +317,7 @@ export class Live2DPreview {
     this.adapter = null
     this.model = null
     this.bounds = null
+    this.motionGroups = null
   }
 
   /** @returns {void} 销毁画布和全部窗口监听。 */

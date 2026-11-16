@@ -1,3 +1,5 @@
+import { isReplayableDialogue } from '../../../../shared/chat-history.js'
+
 /** @typedef {{id: string, toolName: string, arguments: object, outcome: object|null, display: string|null}} ToolHistoryItem 调用与结果配对后的展示材料，不执行工具。 */
 /** @typedef {import('../../../../shared/contracts/presentation.js').AudioMaterial} AudioMaterial */
 /**
@@ -77,7 +79,7 @@ export function historyRows(snapshot) {
                 kind: 'assistant'
               }
               rows.push(row)
-              firstLine ??= row
+              if (isReplayableDialogue(line)) firstLine ??= row
             }
           } else if (part.kind === 'tool-call') {
             const result = results.find(

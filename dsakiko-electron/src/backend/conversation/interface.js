@@ -17,6 +17,7 @@ import {
 } from '../core/support.js'
 import { chatSettings } from '../core/defaults.js'
 import { randomInt } from 'node:crypto'
+import { isReplayableDialogue, lastDialogue } from '../../shared/chat-history.js'
 
 const REPLY_LINE_PAUSE_MS = 300
 
@@ -288,6 +289,31 @@ export class Conversations {
       : this.characters.resolveCapabilities(id, options)
   }
 
+  characterPresentation(owner, id, selection) {
+    const options = {
+      formId: selection.formId,
+      modelId: selection.modelOverrides?.[selection.formId]
+    }
+    return owner
+      ? this.characters.acquirePresentation(owner, id, options)
+      : this.characters.getPresentation(id, options)
+  }
+
+  /**
+   * @param {string} chatId 已保存的对话。
+   * @returns {Promise<import('../../shared/contracts/presentation.js').ModelPresentation | null>} 序列就绪前可用于首帧的模型。
+   */
+  async getStagePresentation(chatId) {
+    const chat = this.states.get(chatId)?.chat ?? (await this.store.load(chatId)).chat
+    requireValue(chat, 'chat_unavailable', '对话不存在或需要恢复存档。')
+    const speakerId = lastDialogue(chat)?.speakerId
+    const characterId = chat.characterIds.includes(speakerId) ? speakerId : chat.characterIds[0]
+    if (!characterId) return null
+    const selection = chat.meta.settings.characters[characterId] ?? {}
+    const role = await this.characterPresentation(null, characterId, selection)
+    return role.presentation
+  }
+
   /**
    * 解析对话当前的演出场景配置，并在场景资源受保护的期间执行指定操作。
    * @template T
@@ -316,7 +342,7 @@ export class Conversations {
         const selection = chat.meta.settings.characters[id] ?? {}
         capability =
           capabilities?.find((item) => item.id === id) ??
-          (await this.characterCapability(owner, id, selection))
+          (await this.characterPresentation(owner, id, selection))
       } catch (error) {
         if (strict) throw error
         capability = {
@@ -1852,6 +1878,7 @@ export class Conversations {
         .filter((part) => part.kind === 'dialogue')
         .flatMap((part) => part.lines)
     }
+    lines = lines.filter(isReplayableDialogue)
     const scene = await this.scene(state.chat, false)
     return {
       scene,
@@ -1965,6 +1992,8 @@ export class Conversations {
             line.audio = null
           }
           line.translation = edit.translation
+          if (isReplayableDialogue(line) && line.extensions?.pythonToolPlaceholder)
+            delete line.extensions.pythonToolPlaceholder
         }
         // 清除被编辑轮次及其后续轮次中的压缩摘要，避免摘要与修改后的原文不一致。
         for (const turn of chat.turns.slice(index))

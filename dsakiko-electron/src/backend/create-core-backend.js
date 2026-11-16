@@ -3,7 +3,10 @@ import { ResourceSetup } from './setup/interface.js'
 import { Onboarding } from './onboarding/interface.js'
 import { Notices } from './notices/interface.js'
 import { readNoticeSources } from './notices/sources.js'
-import { PythonChatImporter } from './storage/python-import-interface.js'
+import {
+  markPythonToolPlaceholders,
+  PythonChatImporter
+} from './storage/python-import-interface.js'
 import { ResourceImports } from './resources/imports.js'
 import { RemoteFiles } from './remote-files/interface.js'
 import { createFileAdapter } from './remote-files/adapter.js'
@@ -125,6 +128,12 @@ export async function createCoreBackend({
         signal.throwIfAborted()
         await store.save(chat)
         await onSaved(chat)
+      }
+      for (const { chatId, lineIds } of drafts.replayUpdates) {
+        signal.throwIfAborted()
+        await conversations.update(chatId, (chat) => {
+          markPythonToolPlaceholders(chat, lineIds)
+        })
       }
       return drafts
     }

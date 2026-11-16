@@ -54,7 +54,8 @@ export function CharacterPreview({ showCharacterPicker = false }) {
       })
   )
   const state = useSyncExternalStore(preview.subscribe, preview.getSnapshot)
-  const name = previewCharacters.find((character) => character.id === state.characterId).name
+  const displayedId = state.displayedCharacterId ?? state.characterId
+  const name = previewCharacters.find((character) => character.id === displayedId).name
 
   useEffect(() => {
     preview.mount(canvasHost.current)
@@ -74,7 +75,7 @@ export function CharacterPreview({ showCharacterPicker = false }) {
         data-character={state.characterId}
         aria-busy={state.phase === 'loading'}
       />
-      {state.phase === 'loading' && (
+      {state.phase === 'loading' && !state.displayedCharacterId && (
         <div className="welcome-status" role="status">
           <LoaderCircle className="welcome-spinner" size={16} aria-hidden="true" />
           正在加载…

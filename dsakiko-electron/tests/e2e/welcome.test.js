@@ -166,11 +166,36 @@ test.skipIf(!existsSync(join(root, 'resources/builtin-characters/manifest.json')
       expect(await page.evaluate(() => innerHeight)).toBe(640)
       await page.screenshot({ path: join(output, 'welcome-small.png'), scale: 'css' })
 
-      await page.route('**/api/v1/previews/**', (route) =>
-        route.fulfill({ status: 503, body: 'unavailable' })
-      )
+      // 请求失败前，旧角色继续绘制，同一个画布保持可见。
+      await page.evaluate(() => {
+        window.previousPreviewModel = window.previewModel
+        window.previousPreviewFrames = window.previewFrames
+      })
+      let completeRequest
+      const releaseRequest = new Promise((resolve) => {
+        completeRequest = resolve
+      })
+      await page.route('**/api/v1/previews/**', async (route) => {
+        await releaseRequest
+        return route.fulfill({ status: 503, body: 'unavailable' })
+      })
       await page.getByRole('button', { name: '预览爱音', exact: true }).click()
+      try {
+        await page.waitForSelector('[data-preview-state="loading"]')
+        expect(await page.getByText('正在加载…', { exact: true }).isVisible()).toBe(false)
+        await expect
+          .poll(() => page.evaluate(() => window.previewFrames - window.previousPreviewFrames))
+          .toBeGreaterThan(0)
+        expect(await page.evaluate(() => window.previewModel === window.previousPreviewModel)).toBe(
+          true
+        )
+      } finally {
+        completeRequest()
+      }
       await page.waitForSelector('[data-preview-state="error"]')
+      expect(await page.evaluate(() => window.previewModel === window.previousPreviewModel)).toBe(
+        true
+      )
       await page.unroute('**/api/v1/previews/**')
       await page.getByRole('button', { name: '重试', exact: true }).click()
       await page.waitForSelector('[data-character="anon"][data-preview-state="ready"]')
@@ -258,9 +283,13 @@ test.skipIf(!existsSync(join(root, 'resources/builtin-characters/manifest.json')
         await page.evaluate(() => document.querySelector('canvas') === window.retainedPreviewCanvas)
       ).toBe(true)
       expect(previewRequests).toEqual([])
-      expect(
-        await page.getByRole('checkbox', { name: '语音转文字', exact: true }).isDisabled()
-      ).toBe(true)
+      const target = `${process.platform}-${process.arch}`
+      if (['win32-x64', 'darwin-arm64'].includes(target))
+        expect(
+          await page.getByRole('checkbox', { name: '语音转文字', exact: true }).isDisabled()
+        ).toBe(true)
+      else
+        await page.getByRole('alert').getByText('当前仅支持 Windows x64 和 macOS arm64。').waitFor()
       await expect
         .poll(() => page.getByRole('button', { name: '跳过，直接开始', exact: true }).isEnabled())
         .toBe(true)

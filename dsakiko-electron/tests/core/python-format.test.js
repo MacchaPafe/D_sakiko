@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createCoreBackend } from '../../src/backend/create-core-backend.js'
 import {
+  markPythonToolPlaceholders,
   PythonChatImporter,
   pythonChatId
 } from '../../src/backend/storage/python-import-interface.js'
@@ -234,4 +235,65 @@ test('单条损坏聊天不阻断其余记录，并从 Python 目录还原图片
   const { chat: flatChat } = await backend.store.load(pythonChatId(flat))
   expect(flatChat.title).toBe('旧版对话 3')
   expect(flatChat.turns[0].messages[0].content.attachments[0].asset).toEqual(image.asset)
+})
+
+test('旧版工具占位保留在历史中，只从回放中跳过；重复导入可补标', async () => {
+  const { backend } = await fixture()
+  const placeholder = {
+    character_name: '爱音',
+    text: '...',
+    translation: '',
+    audio_path: 'NO_AUDIO'
+  }
+  const original = {
+    chat_id: 'tool-placeholder',
+    name: '过渡台词',
+    type: 1,
+    prompt_config: { character_name: '爱音' },
+    message_list: [
+      { character_name: 'User', text: '请查一下' },
+      placeholder,
+      { ...placeholder, text: '…' },
+      { ...placeholder, translation: '请等一下' },
+      { ...placeholder, audio_path: '' },
+      placeholder,
+      { ...placeholder, text: '查到了。' }
+    ],
+    meta: {
+      tool_call_records: [1, 2, 3, 4].map((message_index) => ({ message_index }))
+    }
+  }
+  const importer = new PythonChatImporter(backend)
+  const scan = { identity: 'legacy-backup', roles: [], media: {}, chats: [original] }
+  const {
+    chats: [draft]
+  } = await importer.read(scan, {}, {})
+  const turn = draft.turns[0]
+  const lines = turn.messages.flatMap((message) => message.parts?.[0].lines ?? [])
+  expect(lines.map((line) => Boolean(line.extensions.pythonToolPlaceholder))).toEqual([
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+  ])
+
+  // 模拟之前已导入且原始关联尚未迁移的存档。
+  delete lines[0].extensions.pythonToolPlaceholder
+  const saved = await backend.store.save(draft)
+  const { replayUpdates } = await importer.read(scan, {}, {})
+  expect(replayUpdates).toHaveLength(1)
+  await backend.conversations.update(saved.id, (chat) =>
+    markPythonToolPlaceholders(chat, replayUpdates[0].lineIds)
+  )
+  expect((await importer.read(scan, {}, {})).replayUpdates).toEqual([])
+
+  const target = { kind: 'turn', turnId: turn.id }
+  const { guides } = await backend.conversations.getReplayMaterials(saved.id, target)
+  expect(guides.map((guide) => guide.text)).toEqual(['…', '...', '...', '...', '查到了。'])
+  expect(guides[0].pauseBeforeMs).toBeUndefined()
+  expect(guides[1].pauseBeforeMs).toBeGreaterThan(0)
+  const stored = (await backend.store.load(saved.id)).chat
+  expect(stored.turns[0].messages[1].parts[0].lines[0].text).toBe('...')
 })

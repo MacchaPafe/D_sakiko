@@ -101,3 +101,30 @@ test('迟到的可见性查询不能覆盖更新的隐藏事件', async () => {
   preview.dispose()
   if (requests[0]) requests[0].resolve({ url: 'unused' })
 })
+
+test('切换失败时保留已显示角色，选回当前角色时取消待显示请求', async () => {
+  const { preview, requests, surface } = fixture()
+  await vi.waitFor(() => expect(requests).toHaveLength(1))
+  requests[0].resolve({ url: 'sakiko' })
+  await vi.waitFor(() =>
+    expect(preview.getSnapshot()).toMatchObject({ phase: 'ready', displayedCharacterId: 'sakiko' })
+  )
+
+  const failed = preview.select('anon')
+  await vi.waitFor(() => expect(requests).toHaveLength(2))
+  requests[1].reject(new Error('资源不可读'))
+  await failed
+  expect(preview.getSnapshot()).toMatchObject({ phase: 'error', displayedCharacterId: 'sakiko' })
+  expect(surface.clear).not.toHaveBeenCalled()
+
+  const cancelled = preview.select('soyo')
+  await vi.waitFor(() => expect(requests).toHaveLength(3))
+  await preview.select('sakiko')
+  expect(requests[2].options.signal.aborted).toBe(true)
+  requests[2].resolve({ url: 'soyo' })
+  await cancelled
+  await preview.select('sakiko')
+  expect(surface.show).toHaveBeenCalledTimes(1)
+  expect(requests).toHaveLength(3)
+  preview.dispose()
+})

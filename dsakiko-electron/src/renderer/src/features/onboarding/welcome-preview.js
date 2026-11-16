@@ -1,6 +1,7 @@
 /**
  * @typedef {object} WelcomePreviewState
  * @property {'sakiko'|'anon'|'soyo'} characterId 当前选择，与正式角色配置无关。
+ * @property {'sakiko'|'anon'|'soyo'|null} displayedCharacterId 已完成绘制的角色。
  * @property {'loading'|'ready'|'error'} phase 当前预览状态。
  * @property {string|null} problem 可读的失败原因。
  */
@@ -18,7 +19,12 @@ export class WelcomePreview {
     this.generation = 0
     this.mounted = false
     /** @type {WelcomePreviewState} */
-    this.state = { characterId: 'sakiko', phase: 'loading', problem: null }
+    this.state = {
+      characterId: 'sakiko',
+      displayedCharacterId: null,
+      phase: 'loading',
+      problem: null
+    }
   }
 
   getSnapshot = () => this.state
@@ -37,6 +43,7 @@ export class WelcomePreview {
     this.mounted = true
     try {
       this.surface = this.createSurface(element)
+      this.update({ displayedCharacterId: null })
       const surface = this.surface
       const host = this.host()
       // 订阅后的事件优先于启动查询，避免迟到的可见状态重新启动隐藏窗口。
@@ -68,24 +75,31 @@ export class WelcomePreview {
   /** @param {'sakiko'|'anon'|'soyo'} characterId 仅影响引导预览。 @returns {Promise<void>} 最新选择完成或进入可重试失败态。 */
   async select(characterId) {
     if (!this.mounted) return
+    if (characterId === this.state.characterId && this.state.phase === 'ready') return
     const generation = ++this.generation
     const surface = this.surface
     this.abort?.abort()
+    if (characterId === this.state.displayedCharacterId) {
+      this.update({ characterId, phase: 'ready', problem: null })
+      return
+    }
     const abort = new AbortController()
     this.abort = abort
     this.update({ characterId, phase: 'loading', problem: null })
     const current = () => this.mounted && generation === this.generation
     try {
       if (!surface || !this.connection) throw new Error('预览初始化失败，请重新打开程序。')
-      surface.clear()
       const client = await this.connection
       if (!current()) return
       const preview = await client.call('onboarding', 'getBuiltinPreview', [characterId], {
         signal: abort.signal
       })
       if (!current()) return
-      await surface.show(preview.url, current, abort.signal)
-      if (current()) this.update({ phase: 'ready' })
+      const cacheKey = preview.contentVersion
+        ? JSON.stringify(['preview', preview.contentVersion, characterId, preview.formId])
+        : undefined
+      await surface.show(preview.url, current, abort.signal, { cacheKey, bounds: preview.bounds })
+      if (current()) this.update({ phase: 'ready', displayedCharacterId: characterId })
     } catch (error) {
       if (current()) this.update({ phase: 'error', problem: error.message || '角色预览加载失败。' })
     }

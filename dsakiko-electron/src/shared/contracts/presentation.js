@@ -84,9 +84,12 @@
  * @property {{ value: boolean, guideId: GuideId } | null} pending 最近一个尚未结算的目标请求；不表示已经达到目标。
  */
 
+/** @typedef {{left: number, top: number, width: number, height: number}} ModelBounds 模型坐标中的可见包围盒。 */
+
 /**
  * @typedef {object} ModelPresentation
  * @property {AssetRef} model 模型资源入口，由演出模块内部选择 V2/V3 加载方式。
+ * @property {ModelBounds} [bounds] 与模型资源一同导入的实测构图。
  * @property {AssetRef | null} mapping 可直接引用既有 performance.json，兼容字符串描述及 description 对象；null 自动读取同包同名标注与 performance.shared.json。
  */
 

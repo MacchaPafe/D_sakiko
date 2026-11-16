@@ -191,13 +191,8 @@ export class CharacterCatalog {
     })
   }
 
-  /**
-   * 解析指定角色在特定形态和模型下的可用能力（包括人设信息、可用动作/表情/状态列表以及语音配置）。
-   * @param {string} characterId 角色 ID。
-   * @param {{ formId?: string, modelId?: string | null }} options 解析选项。省略 formId 时使用角色的默认形态；省略 modelId 或为 null 时使用该形态的默认模型。
-   * @returns {Promise<CharacterCapabilities>} 角色能力快照及解析过程中发现的问题列表。
-   */
-  async resolveCapabilities(characterId, options) {
+  /** 形态和模型的选择规则由首帧和完整能力共同使用。 */
+  async modelSelection(characterId, options) {
     const character = await this.get(characterId)
     requireValue(character, 'character_missing')
     const form = character.forms.find(
@@ -207,6 +202,36 @@ export class CharacterCatalog {
     const modelId = options.modelId ?? form.defaultModelId
     const model = form.models.find((item) => item.id === modelId)
     requireValue(modelId === null || model, 'model_missing')
+    return { character, form, modelId, model }
+  }
+
+  /**
+   * @param {string} characterId 角色 ID。
+   * @param {{formId?: string, modelId?: string | null}} options 当前会话选择。
+   * @returns {Promise<{displayName: string, presentation: import('../../shared/contracts/presentation.js').ModelPresentation | null}>} 只读首帧材料。
+   */
+  async getPresentation(characterId, options = {}) {
+    const { form, model } = await this.modelSelection(characterId, options)
+    return { displayName: form.displayName, presentation: model?.presentation ?? null }
+  }
+
+  /** 在释放目录锁前交接模型引用，避免清理与场景切换交错。 */
+  async acquirePresentation(owner, characterId, options) {
+    return this.queue.run('catalog', async () => {
+      const value = await this.getPresentation(characterId, options)
+      await this.assets.addReferences(owner, extractAssetReferences(value))
+      return value
+    })
+  }
+
+  /**
+   * 解析指定角色在特定形态和模型下的可用能力（包括人设信息、可用动作/表情/状态列表以及语音配置）。
+   * @param {string} characterId 角色 ID。
+   * @param {{ formId?: string, modelId?: string | null }} options 解析选项。省略 formId 时使用角色的默认形态；省略 modelId 或为 null 时使用该形态的默认模型。
+   * @returns {Promise<CharacterCapabilities>} 角色能力快照及解析过程中发现的问题列表。
+   */
+  async resolveCapabilities(characterId, options) {
+    const { character, form, modelId, model } = await this.modelSelection(characterId, options)
     const problems = []
     let mapping = { motions: {}, expressions: {}, states: {} }
     if (model) {

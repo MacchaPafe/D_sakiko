@@ -515,7 +515,9 @@ export function HomePage({ client, setup, setupState }) {
     name: '',
     revealed: 0,
     problem: null,
-    loading: false
+    loading: false,
+    hasModel: false,
+    canRetryModel: false
   })
   const canvas = useRef(null)
   const stage = useRef(null)
@@ -580,11 +582,14 @@ export function HomePage({ client, setup, setupState }) {
     }
   }, [client])
   useEffect(() => {
-    void stage.current?.select(state.target.characterId, sequenceId)
+    void stage.current?.select(state.target.characterId, state.target.chatId, sequenceId)
   }, [state.target.characterId, state.target.chatId, sequenceId])
   useEffect(() => {
     stage.current?.setHistory(state.snapshot)
   }, [state.snapshot, state.target.chatId])
+  function retryStageModel() {
+    stage.current?.retryModel()
+  }
   function zoomModel(factor) {
     stage.current?.zoom(factor)
   }
@@ -754,7 +759,7 @@ export function HomePage({ client, setup, setupState }) {
             data-stage-state={stageState.loading ? 'loading' : 'ready'}
           />
           <div className={stageState.text ? 'stage-scrim active' : 'stage-scrim'} />
-          {stageState.loading && (
+          {stageState.loading && !stageState.hasModel && (
             <div className="home-stage-status" role="status">
               正在加载…
             </div>
@@ -762,6 +767,11 @@ export function HomePage({ client, setup, setupState }) {
           {stageState.problem && (
             <div className="home-stage-status" role="alert">
               {stageState.problem}
+              {stageState.canRetryModel && (
+                <Button size="sm" variant="ghost" onClick={retryStageModel}>
+                  重试
+                </Button>
+              )}
             </div>
           )}
           {setupState.connectionProblem && (

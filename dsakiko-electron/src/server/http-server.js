@@ -128,6 +128,8 @@ export async function startHttpServer(
       return {
         characterId: preview.characterId,
         formId: preview.formId,
+        contentVersion: preview.contentVersion,
+        bounds: preview.bounds,
         url: baseUrl + '/api/v1/previews/' + ticket + '/' + entry,
         expiresAt: new Date(expiresAt).toISOString()
       }

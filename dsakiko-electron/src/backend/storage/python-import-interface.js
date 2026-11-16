@@ -55,6 +55,56 @@ function resolveParticipants(original, scan, mapping) {
   })
 }
 
+function pythonToolPlaceholderLines(original, stable) {
+  const positions = new Set()
+  const records = original.meta?.tool_call_records
+  if (Array.isArray(records))
+    for (const record of records)
+      if (Number.isInteger(record?.message_index)) positions.add(record.message_index)
+  const matches = new Set()
+  for (const position of positions) {
+    const message = original.message_list[position]
+    if (
+      message?.text === '...' &&
+      message.audio_path === 'NO_AUDIO' &&
+      (message.translation == null ||
+        (typeof message.translation === 'string' && !message.translation.trim()))
+    )
+      matches.add(stable('line:' + position))
+  }
+  return matches
+}
+
+/**
+ * @param {import('../../shared/contracts/conversation.js').Chat} chat 待保存的旧版导入聊天。
+ * @param {Set<string>} lineIds 由原始存档四项证据确认的稳定台词 ID。
+ * @returns {boolean} 是否找到仍符合条件且需要补标的历史台词。
+ */
+export function markPythonToolPlaceholders(chat, lineIds) {
+  let changed = false
+  for (const turn of chat.turns)
+    for (const message of turn.messages) {
+      if (message.kind !== 'assistant') continue
+      for (const part of message.parts) {
+        if (part.kind !== 'dialogue') continue
+        for (const line of part.lines) {
+          if (
+            !lineIds.has(line.id) ||
+            line.text !== '...' ||
+            line.translation?.trim() ||
+            line.audio ||
+            line.extensions?.pythonToolPlaceholder
+          )
+            continue
+          line.extensions ??= {}
+          line.extensions.pythonToolPlaceholder = true
+          changed = true
+        }
+      }
+    }
+  return changed
+}
+
 /** 当前 Python chat_list 的一次性转换器；不执行工具，不恢复提醒和进行中的轮次。 */
 export class PythonChatImporter {
   constructor({ assets, store, characters }) {
@@ -67,11 +117,12 @@ export class PythonChatImporter {
    * @param {object} mapping 旧格式的角色名映射。
    * @param {AbortSignal|null} signal 取消信号。
    * @param {{repairEmpty?: boolean}} options 仅离线维护显式启用空占位修复；普通导入不覆盖已有聊天。
-   * @returns {Promise<{chats: object[], warnings: object[]}>} 待保存草稿，调用方通过 ChatStore 提交并保护资源。
+   * @returns {Promise<{chats: object[], replayUpdates: {chatId: string, lineIds: Set<string>}[], warnings: object[]}>} 待保存草稿与已导入聊天的已核实回放标记。
    */
   async read(scan, refs, mapping, signal, { repairEmpty = false } = {}) {
     const chats = []
     const warnings = []
+    const replayUpdates = []
     const imported = new Map()
     for (const summary of await this.store.list()) {
       const loaded = await this.store.load(summary.id)
@@ -119,8 +170,18 @@ export class PythonChatImporter {
       }
       const identity = `python-chat:${original.chat_id ?? fingerprint(original)}`
       const id = pythonChatId(original)
-      if ((await this.store.load(id)).status !== 'missing') continue
       const stable = (suffix) => fingerprint(identity + ':' + suffix).slice(0, 32)
+      const placeholders = pythonToolPlaceholderLines(original, stable)
+      const previous = await this.store.load(id)
+      if (previous.status !== 'missing') {
+        if (
+          placeholders.size &&
+          previous.chat?.meta.extensions?.pythonImport?.source === scan.identity &&
+          markPythonToolPlaceholders(previous.chat, placeholders)
+        )
+          replayUpdates.push({ chatId: id, lineIds: placeholders })
+        continue
+      }
       const participants = resolveParticipants(original, scan, mapping)
       const roleIds = participants.map((role) => role.id)
       const chat = {
@@ -328,8 +389,9 @@ export class PythonChatImporter {
           warnings.push({ code: 'legacy_summary_boundary_unmapped', chatId: id })
         }
       }
+      if (placeholders.size) markPythonToolPlaceholders(chat, placeholders)
       chats.push(chat)
     }
-    return { chats, warnings }
+    return { chats, replayUpdates, warnings }
   }
 }

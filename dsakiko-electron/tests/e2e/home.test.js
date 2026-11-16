@@ -494,7 +494,10 @@ app.on('window-all-closed', () => app.quit())`
         .getByRole('button', { name: '前往下载' })
         .click()
       await settings.getByRole('heading', { name: '附加资源下载' }).waitFor()
-      await settings.getByRole('heading', { name: '语音识别模型' }).waitFor()
+      const target = `${process.platform}-${process.arch}`
+      if (['win32-x64', 'darwin-arm64'].includes(target))
+        await settings.getByRole('heading', { name: '语音识别模型' }).waitFor()
+      else await settings.getByText('当前仅支持 Windows x64 和 macOS arm64。').waitFor()
       expect(
         await settings.evaluate((element) => {
           const close = element.querySelector('.settings-dismiss').getBoundingClientRect()
@@ -591,6 +594,17 @@ app.on('window-all-closed', () => app.quit())`
       expect(agent.run.mock.calls[0][0].toolDefinitions.map((tool) => tool.name)).not.toContain(
         'ask_user'
       )
+      // 端到端窗口可能受宿主显示器高度限制，先固定设计尺寸再验证双轴拖动。
+      const viewport = await page.context().newCDPSession(page)
+      await viewport.send('Emulation.setDeviceMetricsOverride', {
+        width: 1440,
+        height: 1024,
+        deviceScaleFactor: 1,
+        mobile: false
+      })
+      await expect
+        .poll(async () => (await page.locator('.history-panel').boundingBox()).height)
+        .toBe(671)
       const initialSize = await page.locator('.history-panel').boundingBox()
       const shortUser = page.locator('.history-user .history-bubble')
       const shortUserWidth = (await shortUser.boundingBox()).width
@@ -607,6 +621,7 @@ app.on('window-all-closed', () => app.quit())`
       expect(resized.height).toBeCloseTo(initialSize.height + 40, 0)
       expect((await shortUser.boundingBox()).width).toBeCloseTo(shortUserWidth, 0)
       await page.screenshot({ path: '/tmp/sakiko-home-1440.png' })
+      await viewport.send('Emulation.clearDeviceMetricsOverride')
       await application.evaluate(({ BrowserWindow }) =>
         BrowserWindow.getAllWindows()[0].setSize(1147, 745)
       )
@@ -636,12 +651,17 @@ app.on('window-all-closed', () => app.quit())`
       expect(
         (await page.getByRole('complementary', { name: '聊天记录' }).boundingBox()).width
       ).toBeCloseTo(resized.width, 0)
-      await application.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows()[0].setSize(1440, 1024)
-      )
+      await viewport.send('Emulation.setDeviceMetricsOverride', {
+        width: 1440,
+        height: 1024,
+        deviceScaleFactor: 1,
+        mobile: false
+      })
       await expect
         .poll(async () => Math.round((await page.locator('.history-panel').boundingBox()).height))
         .toBe(Math.round(resized.height))
+      await viewport.send('Emulation.clearDeviceMetricsOverride')
+      await viewport.detach()
       if (mode === 'production') {
         await verifyHistory(page, application, backend, selected)
         await verifySidebar(page, application, backend, selected)

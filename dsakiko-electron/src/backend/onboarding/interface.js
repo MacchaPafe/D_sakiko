@@ -10,6 +10,7 @@ import {
 } from '../core/support.js'
 import { installBuiltinConnection } from '../setup/bindings.js'
 import { BuiltinResources } from './builtin-resources.js'
+import { builtinModelBounds } from '../bundled-characters/bounds.js'
 
 /**
  * @typedef {object} BuiltinForm
@@ -118,7 +119,7 @@ export class Onboarding {
 
   /**
    * 宿主在窗口创建后异步预热白祥；完成初始化的日常启动只清理遗留缓存。
-   * @returns {Promise<{characterId: string, formId: string, directory: string, entry: string} | null>} 后端内部的预览来源，不能作为磁盘路径接口向页面开放。
+   * @returns {Promise<{characterId: string, formId: string, contentVersion?: string, bounds?: import('../../shared/contracts/presentation.js').ModelBounds, directory: string, entry: string} | null>} 后端内部的预览来源，不能作为磁盘路径接口向页面开放。
    */
   async prepareStartupPreview() {
     return this.queue.run('state', async () => {
@@ -134,7 +135,7 @@ export class Onboarding {
   /**
    * 按需准备欢迎页角色，调用者可等待启动预热中的同一缓存；不影响正式默认形态。
    * @param {string} [characterId] 预览角色，默认祥子。
-   * @returns {Promise<{characterId: string, formId: string, directory: string, entry: string}>} 本机内部预览来源，文件保留到后端关闭。
+   * @returns {Promise<{characterId: string, formId: string, contentVersion?: string, bounds?: import('../../shared/contracts/presentation.js').ModelBounds, directory: string, entry: string}>} 本机内部预览来源，文件保留到后端关闭。
    */
   async prepareBuiltinPreview(characterId = 'sakiko') {
     requireValue(!this.closed, 'onboarding_closed')
@@ -151,6 +152,8 @@ export class Onboarding {
       async (directory) => ({
         characterId: role.id,
         formId: form.id,
+        contentVersion: manifest.contentVersion,
+        bounds: builtinModelBounds(manifest.contentVersion, role.id, form.id),
         directory,
         entry: form.entry
       }),
@@ -287,6 +290,7 @@ export class Onboarding {
                 'live2d'
               )
           )
+          const bounds = builtinModelBounds(manifest.contentVersion, role.id, form.id)
           forms.push({
             id: form.id,
             displayName: form.displayName ?? role.name,
@@ -297,7 +301,7 @@ export class Onboarding {
               {
                 id: form.id + '-model',
                 name: form.modelName ?? '默认',
-                presentation: { model: imported.asset }
+                presentation: { model: imported.asset, ...(bounds && { bounds }) }
               }
             ],
             defaultModelId: form.id + '-model',

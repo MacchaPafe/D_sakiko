@@ -4,14 +4,13 @@ import { createAudioOutput } from '../../performance/audio-output.js'
 import { StageLayouts } from '../../performance/stage-layout.js'
 import { lastDialogue } from '../../../../shared/chat-history.js'
 
-/** @typedef {{text: string, name: string, revealed: number, translation: string|null, problem: string|null, loading: boolean}} StageState 本地字幕和模型状态，不替代后端历史。 */
+/** @typedef {{text: string, name: string, revealed: number, translation: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean}} StageState 本地字幕和模型状态，不替代后端历史。 */
 /** 正式舞台的资源与输出边界：共享预览加载器，跟随后端计划，实例不随面板开关重建。 */
 export class StageController {
   /** @param {import('../../backend/client.js').BackendClient} client 业务连接。 @param {(state: StageState) => void} publish 展示快照。 */
   constructor(client, publish) {
     Object.assign(this, { client, publish })
     this.epoch = 0
-    this.modelEpoch = 0
     this.visible = true
     this.layouts = new StageLayouts()
     this.state = {
@@ -20,7 +19,9 @@ export class StageController {
       translation: null,
       revealed: 0,
       problem: null,
-      loading: false
+      loading: false,
+      hasModel: false,
+      canRetryModel: false
     }
     this.output = createAudioOutput(client, { onSpeechAudio: (audio) => this.analyse(audio) })
     this.player = new Performance({ client, output: this.output })
@@ -60,65 +61,132 @@ export class StageController {
     this.state = { ...this.state, ...patch }
     if (!this.closed) this.publish(this.state)
   }
-  /** @param {string|null} characterId 正式角色身份。 @param {string|null} sequenceId 活跃聊天的演出计划。 @returns {Promise<void>} 切换不影响后台生成。 */
-  async select(characterId, sequenceId) {
+  /**
+   * @param {string|null} characterId 当前角色。
+   * @param {string|null} chatId 已保存的对话，草稿时为空。
+   * @param {string|null} sequenceId 活跃对话的演出计划。
+   * @returns {Promise<void>} 跟随实时演出，序列就绪前可先显示模型。
+   */
+  async select(characterId, chatId, sequenceId) {
     const epoch = ++this.epoch
+    const selectionKey = JSON.stringify([characterId, chatId])
+    if (this.selectionKey !== selectionKey) {
+      this.selectionKey = selectionKey
+      this.cancelModelLoad()
+      this.failedModel = null
+      this.suspendModel()
+      this.update({ loading: false, problem: null, canRetryModel: false })
+    }
     this.history = null
     this.player.follow(null)
     this.stopReplay()
     this.guideId = null
     this.planKey = null
-    this.update({ text: '', name: '', revealed: 0, problem: null })
+    this.update({ text: '', name: '', revealed: 0 })
     if (sequenceId) {
       this.player.follow(sequenceId)
       return
     }
     try {
-      if (!characterId) {
-        await this.showModel(null)
-        return
-      }
-      const role = await this.client.characters.resolveCapabilities(characterId, {})
+      let presentation = null
+      if (chatId) presentation = await this.client.conversations.getStagePresentation(chatId)
+      else if (characterId)
+        presentation = (await this.client.characters.getPresentation(characterId)).presentation
       if (epoch !== this.epoch || this.closed) return
-      await this.showModel(role.presentation?.model ?? null)
+      await this.showModel(presentation)
     } catch (error) {
       if (epoch === this.epoch) this.update({ problem: error.message })
     }
   }
-  async showModel(asset) {
-    const key = JSON.stringify(asset)
-    if (key === this.modelKey) return this.loading
-    this.modelKey = key
-    const epoch = ++this.modelEpoch
-    this.abort?.abort()
-    this.abort = new AbortController()
-    this.surface?.clear()
-    this.release(this.lease)
-    this.lease = null
-    this.update({ loading: Boolean(asset), problem: null })
-    if (!asset) return
-    const current = () => !this.closed && epoch === this.modelEpoch
-    this.loading = (async () => {
+
+  suspendModel() {
+    this.awaitingModel = true
+    const adapter = this.surface?.adapter
+    adapter?.setMouthOpen(0)
+    adapter?.setSpeechActive(false)
+  }
+
+  cancelModelLoad() {
+    this.pendingModel?.abort.abort()
+    this.pendingModel = null
+  }
+
+  async showModel(presentation) {
+    const asset = presentation?.model ?? null
+    const key = asset ? JSON.stringify(asset) : null
+    if (this.pendingModel?.key === key) return this.pendingModel.promise
+    if (asset && this.failedModel?.model.id === asset.id) return false
+    this.cancelModelLoad()
+    if (key === this.modelKey && this.surface.model) {
+      this.awaitingModel = false
+      this.failedModel = null
+      if (this.state.loading || this.state.canRetryModel)
+        this.update({ loading: false, problem: null, canRetryModel: false })
+      return true
+    }
+    this.failedModel = null
+    if (!asset) {
+      if (this.surface.model) this.surface.clear()
+      this.release(this.lease)
+      this.lease = null
+      this.modelKey = null
+      this.update({ loading: false, hasModel: false, problem: null, canRetryModel: false })
+      return false
+    }
+    this.suspendModel()
+    this.update({ loading: true, problem: null, canRetryModel: false })
+    const pending = { key, abort: new AbortController() }
+    const current = () => !this.closed && this.pendingModel === pending
+    this.pendingModel = pending
+    pending.promise = (async () => {
+      let lease
       try {
         const access = await this.client.assets.access(asset)
-        if (!current()) {
-          this.release(access.leaseId)
-          return
-        }
-        this.lease = access.leaseId
-        await this.surface.show(access.url, current, this.abort.signal)
-        if (current()) this.applyLayout(this.layout())
+        lease = access.leaseId
+        if (!current()) return false
+        const replaced = await this.surface.show(access.url, current, pending.abort.signal, {
+          cacheKey: JSON.stringify(['asset', asset.id]),
+          bounds: presentation.bounds,
+          getLayout: (version) => this.layouts.get(key, version)
+        })
+        if (!replaced || !current()) return false
+        this.release(this.lease)
+        this.lease = lease
+        lease = null
+        this.modelKey = key
+        this.awaitingModel = false
+        this.update({ hasModel: true })
+        return true
       } catch (error) {
         if (current()) {
-          this.modelKey = null
-          this.update({ problem: '角色模型加载失败：' + error.message })
+          this.failedModel = presentation
+          this.update({
+            problem: '角色模型加载失败：' + error.message,
+            canRetryModel: true
+          })
         }
+        return false
       } finally {
-        if (current()) this.update({ loading: false })
+        this.release(lease)
+        if (current()) {
+          this.pendingModel = null
+          this.update({ loading: false })
+        }
       }
     })()
-    return this.loading
+    return pending.promise
   }
+
+  retryModel() {
+    const failed = this.failedModel
+    if (!failed) return
+    this.failedModel = null
+    this.planKey = null
+    void this.showModel(failed).then((shown) => {
+      if (shown) this.progress(this.player.getSnapshot())
+    })
+  }
+
   release(id) {
     if (id) void this.client.assets.releaseAccess(id).catch(() => {})
   }
@@ -208,8 +276,9 @@ export class StageController {
       progress.defaultPerformances?.find((item) => item.slotId === slot?.id)?.resolvedPerformance
     const planKey = JSON.stringify([current?.guideId, plan, slot?.presentation])
     this.desiredPlanKey = planKey
-    void this.showModel(slot?.presentation?.model ?? null).then(() => {
+    void this.showModel(slot?.presentation ?? null).then((shown) => {
       if (
+        !shown ||
         epoch !== this.epoch ||
         this.closed ||
         this.desiredPlanKey !== planKey ||
@@ -218,10 +287,7 @@ export class StageController {
       )
         return
       this.planKey = planKey
-      void this.applyPlan(plan, epoch, planKey).catch((error) => {
-        if (epoch === this.epoch && this.desiredPlanKey === planKey)
-          this.update({ problem: error.message })
-      })
+      void this.applyPlan(plan, epoch, planKey)
     })
     if (current?.guide.text) {
       this.guideId = current.guideId
@@ -243,17 +309,34 @@ export class StageController {
       this.visible &&
       epoch === this.epoch &&
       this.desiredPlanKey === planKey &&
+      !this.awaitingModel &&
       adapter === this.surface.adapter
     const motion = plan.motion
-    if (motion) {
-      for (const [group, entries] of Object.entries(this.surface.motionGroups ?? {})) {
-        const index = entries.findIndex((entry) => (entry.File ?? entry.file) === motion.member)
-        if (index < 0) continue
-        await adapter.startMotion(group, index, 3, 150, true, current)
-        break
+    try {
+      if (motion) {
+        for (const [group, entries] of Object.entries(this.surface.motionGroups ?? {})) {
+          const index = entries.findIndex((entry) => (entry.File ?? entry.file) === motion.member)
+          if (index < 0) continue
+          await adapter.startMotion(group, index, 3, 150, true, current)
+          break
+        }
+      }
+    } catch (error) {
+      if (current()) {
+        adapter.stopMotions()
+        this.update({ problem: error.message })
       }
     }
-    if (current()) await adapter.setExpression(plan.expression?.id ?? null, current)
+    if (!current()) return
+    try {
+      const applied = await adapter.setExpression(plan.expression?.id ?? null, current)
+      if (!applied && plan.expression && current()) adapter.resetExpression()
+    } catch (error) {
+      if (current()) {
+        adapter.resetExpression()
+        this.update({ problem: error.message })
+      }
+    }
   }
   analyse(audio) {
     this.audio = audio
@@ -262,8 +345,10 @@ export class StageController {
     this.source = null
     this.analyser = null
     this.mouth = 0
-    this.surface?.adapter?.setSpeechActive(true)
-    this.surface?.adapter?.setMouthOpen(0)
+    if (!this.awaitingModel) {
+      this.surface?.adapter?.setSpeechActive(true)
+      this.surface?.adapter?.setMouthOpen(0)
+    }
     if (!audio) return
     try {
       this.context ??= new AudioContext()
@@ -288,8 +373,10 @@ export class StageController {
       if (rms > 0.008) target = Math.min(1, rms * 1.4)
     }
     this.mouth = (this.mouth ?? 0) + (target - (this.mouth ?? 0)) * 0.35
-    this.surface.adapter?.setSpeechActive(true)
-    this.surface.adapter?.setMouthOpen(this.mouth)
+    if (!this.awaitingModel) {
+      this.surface.adapter?.setSpeechActive(true)
+      this.surface.adapter?.setMouthOpen(this.mouth)
+    }
     const snapshot = this.player.getSnapshot()
     const current = snapshot.progress?.current
     if (current?.guideId === this.guideId && this.state.revealed !== snapshot.revealedCharacters)
@@ -326,8 +413,7 @@ export class StageController {
     this.closed = true
     this.stopReplay()
     this.epoch += 1
-    this.modelEpoch += 1
-    this.abort?.abort()
+    this.cancelModelLoad()
     this.element?.removeEventListener('pointerdown', this.dragStart)
     this.element?.removeEventListener('pointermove', this.dragMove)
     this.element?.removeEventListener('pointerup', this.dragEnd)
