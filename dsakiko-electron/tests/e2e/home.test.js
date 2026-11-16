@@ -384,7 +384,23 @@ test.each(['production', 'development'])(
       const hostFile = join(directory, 'host.cjs')
       await writeFile(
         hostFile,
-        `const {app,BrowserWindow,ipcMain}=require('electron');app.whenReady().then(async()=>{ipcMain.handle('host:backend-connection',()=>JSON.parse(process.env.HOME_TEST_CONNECTION));ipcMain.handle('host:get-window-visibility',()=>true);const w=new BrowserWindow({width:1440,height:1024,webPreferences:{preload:process.env.HOME_TEST_PRELOAD,contextIsolation:true,nodeIntegration:false,sandbox:true}});if(process.env.HOME_TEST_RENDERER_URL)await w.loadURL(process.env.HOME_TEST_RENDERER_URL);else await w.loadFile(process.env.HOME_TEST_RENDERER);app.show?.();w.show();});app.on('window-all-closed',()=>app.quit());`
+        `const { app, BrowserWindow, ipcMain } = require('electron')
+app.whenReady().then(async () => {
+  ipcMain.handle('host:backend-connection', () => JSON.parse(process.env.HOME_TEST_CONNECTION))
+  ipcMain.handle('host:get-window-visibility', () => true)
+  const window = new BrowserWindow({
+    width: 1440, height: 1024,
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', titleBarOverlay: true } : {}),
+    webPreferences: {
+      preload: process.env.HOME_TEST_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true
+    }
+  })
+  if (process.env.HOME_TEST_RENDERER_URL) await window.loadURL(process.env.HOME_TEST_RENDERER_URL)
+  else await window.loadFile(process.env.HOME_TEST_RENDERER)
+  app.show?.()
+  window.show()
+})
+app.on('window-all-closed', () => app.quit())`
       )
       const env = {
         ...process.env,
@@ -412,6 +428,23 @@ test.each(['production', 'development'])(
       await page.getByRole('button', { name: '跳过，直接开始', exact: true }).click()
       await page.getByRole('main', { name: '数字小祥主页' }).waitFor()
       expect((await backend.onboarding.getState()).initialized).toBe(true)
+      if (process.platform === 'darwin') {
+        const regions = await page.locator('.app-window').evaluate((windowElement) =>
+          Array.from(windowElement.querySelectorAll('*'))
+            .filter(
+              (element) => getComputedStyle(element).getPropertyValue('app-region') === 'drag'
+            )
+            .map((element) => element.getBoundingClientRect().toJSON())
+        )
+        expect(regions).toHaveLength(1)
+        const [strip] = regions
+        const brand = await page.locator('.home-brand').boundingBox()
+        const stage = await page.locator('.home-stage').boundingBox()
+        expect(strip.height).toBeGreaterThan(0)
+        expect(strip.bottom).toBeLessThanOrEqual(brand.y)
+        expect(strip.x).toBeLessThan(stage.x)
+        expect(strip.right).toBe(stage.x + stage.width)
+      }
       await page.getByRole('tab', { name: '小剧场', exact: true }).click()
       await expect
         .poll(() =>
@@ -523,6 +556,14 @@ test.each(['production', 'development'])(
       await page.locator('.history-panel').evaluate(async (element) => {
         await Promise.all(element.getAnimations().map((animation) => animation.finished))
       })
+      if (process.platform === 'darwin') {
+        const history = page.getByRole('complementary', { name: '聊天记录' })
+        expect(
+          await history.evaluate((element) =>
+            getComputedStyle(element).getPropertyValue('app-region')
+          )
+        ).toBe('no-drag')
+      }
       await expect.poll(() => page.locator('.history-bubble').count()).toBe(2)
       const replay = page.getByRole('button', { name: '回放本轮回复' })
       await replay.waitFor()

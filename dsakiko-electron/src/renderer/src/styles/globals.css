@@ -62,6 +62,7 @@
   --shadow-card: #403b3614;
   --glass-composer: #fffdfae5;
   --glass-history: #f4f1ebf5;
+  --window-titlebar-height: env(titlebar-area-height, 0px);
   --radius: 0.75rem;
   color-scheme: light;
   font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
@@ -90,6 +91,25 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+.app-window {
+  position: relative;
+  height: 100%;
+}
+.window-drag-region {
+  display: none;
+}
+[data-window-controls-overlay] .window-drag-region {
+  display: block;
+  position: absolute;
+  inset: 0 0 auto calc(env(titlebar-area-x, 0px) + 8px);
+  /* 侧栏与舞台共用原生标题栏的高度，给下方的角色留出操作空间。 */
+  height: var(--window-titlebar-height);
+  app-region: drag;
+  user-select: none;
+}
+[data-window-controls-overlay] :is(dialog, .settings-download-sheet) {
+  app-region: no-drag;
 }
 
 @property --onboarding-preparation {
@@ -317,7 +337,7 @@ body,
   display: flex;
   flex-direction: column;
   gap: 32px;
-  padding: 40px 48px;
+  padding: max(40px, var(--window-titlebar-height)) 48px 40px;
   background: color-mix(
     in srgb,
     var(--card) calc(var(--onboarding-preparation) * 100%),
@@ -696,7 +716,7 @@ body,
 }
 @media (max-width: 1200px), (max-height: 760px) {
   .setup-panel {
-    padding: 24px;
+    padding: max(24px, var(--window-titlebar-height)) 24px 24px;
     gap: 24px;
   }
   .setup-view-content {

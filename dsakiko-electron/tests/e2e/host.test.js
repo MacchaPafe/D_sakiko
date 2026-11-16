@@ -83,6 +83,19 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
 
   // 旧页面仍可能报告缺少原型桥；此测试只验收真实 preload、IPC 和业务传输，不冒充页面验收。
   await page.waitForFunction(() => Boolean(window.dsakikoHost))
+  const dragRegion = page.locator('.window-drag-region')
+  if (process.platform === 'darwin') {
+    await dragRegion.waitFor()
+    const region = await dragRegion.boundingBox()
+    const controls = await page.evaluate(() =>
+      navigator.windowControlsOverlay.getTitlebarAreaRect().toJSON()
+    )
+    expect(controls.x).toBeGreaterThan(0)
+    expect(region.x).toBeGreaterThanOrEqual(controls.x)
+    expect(region.height).toBe(controls.height)
+  } else {
+    await dragRegion.waitFor({ state: 'hidden' })
+  }
   const bootstrap = await page.evaluate(async () => ({
     connection: await window.dsakikoHost.getBackendConnection(),
     runtime: await window.dsakikoHost.getRuntimeInfo(),

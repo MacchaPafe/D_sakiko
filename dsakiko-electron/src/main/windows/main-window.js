@@ -11,6 +11,10 @@ export function createMainWindow() {
   const workArea = screen.getPrimaryDisplay().workAreaSize
   const window = new BrowserWindow({
     title: '数字小祥',
+    // 保留原生窗口按钮，并把按钮占用的区域交给页面布局避让。
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', titleBarOverlay: true }
+      : {}),
     // macOS 的应用图标由打包资源管理，避免覆盖后续的系统外观变体。
     icon: process.platform === 'darwin' ? undefined : join(resourceRoot, 'resources', 'icon.png'),
     width: Math.min(1360, workArea.width),

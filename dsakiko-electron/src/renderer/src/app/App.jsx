@@ -12,8 +12,28 @@ async function connectBackend() {
   return createBackendClient(await desktopHost().getBackendConnection())
 }
 
-/** @returns {import('react').ReactElement} 按持久初始化状态恢复引导或正式主页。 */
+function observeWindowControls(onChange) {
+  const overlay = navigator.windowControlsOverlay
+  overlay?.addEventListener('geometrychange', onChange)
+  return () => overlay?.removeEventListener('geometrychange', onChange)
+}
+
+function windowControlsVisible() {
+  return navigator.windowControlsOverlay?.visible ?? false
+}
+
+/** @returns {import('react').ReactElement} 在所有应用页面提供窗口拖动区，随原生全屏状态调整。 */
 export function App() {
+  const controlsVisible = useSyncExternalStore(observeWindowControls, windowControlsVisible)
+  return (
+    <div className="app-window" data-window-controls-overlay={controlsVisible || undefined}>
+      <div className="window-drag-region" aria-hidden="true" />
+      <AppContent />
+    </div>
+  )
+}
+
+function AppContent() {
   const [flow] = useState(
     () =>
       new SetupFlow({
