@@ -57,6 +57,7 @@ import { failure, uuid } from './core/support.js'
  * @param {() => Promise<import('./speech/python-transport.js').SpeechConnection>} [options.connectSpeech] 获取 Python 语音服务连接的函数，在首次合成语音时调用。
  * @param {Agent} [options.agent] 自定义的 Agent 实例（通常用于测试替换）。
  * @param {Performance} [options.performance] 自定义的演出管理实例（通常用于测试替换）。
+ * @param {boolean} [options.repeatLongDialogueMotion] 单人长句是否自动补播一个动作，默认开启。
  * @param {Speech} [options.speech] 自定义的语音管理实例（通常用于测试替换）。
  * @param {boolean} [options.scanReminders] 是否启动后台扫描到期提醒与待交付抽签结果，默认开启。
  * @param {string} [options.templateDirectory] 自定义的提示词模板目录路径。
@@ -74,6 +75,7 @@ export async function createCoreBackend({
   },
   agent: injectedAgent,
   performance: injectedPerformance,
+  repeatLongDialogueMotion = true,
   speech: injectedSpeech,
   scanReminders = true,
   templateDirectory,
@@ -103,7 +105,9 @@ export async function createCoreBackend({
   const speechResources = new SpeechResources({ assets, settings })
   // mapping 可直接引用 Python 的 performance.json（如 motions.nod = "点头赞同"）。
   // 模型入口提供真实资源，标注只补充语义；角色能力与演出共用同一个解析器。
-  const resolveModel = (presentation) => resolveModelCatalog(assets, presentation)
+  const motionDurations = new Map()
+  const resolveModel = (presentation, timedDialogue = false) =>
+    resolveModelCatalog(assets, presentation, timedDialogue ? motionDurations : null)
   const characters = new CharacterCatalog({
     directory: appDataRoot,
     resolveModel,
@@ -196,7 +200,8 @@ export async function createCoreBackend({
     }
   })
   await remoteFiles.initialize()
-  const performance = injectedPerformance ?? new Performance({ resolveModel, assets })
+  const performance =
+    injectedPerformance ?? new Performance({ resolveModel, assets, repeatLongDialogueMotion })
   performance.assets ??= assets
   const speech =
     injectedSpeech ?? new Speech({ connect: connectSpeech, assets, restart: restartSpeech })

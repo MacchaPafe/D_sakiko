@@ -1,10 +1,12 @@
 import { extractAssetReferences } from '../resources/references.js'
-import { resolvePerformance } from './selection.js'
+import { resolveFollowUpMotion, resolvePerformance } from './selection.js'
 import { performance as clock } from 'node:perf_hooks'
 import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/presentation.js').Guide} Guide */
 /** @typedef {import('../../shared/contracts/presentation.js').Scene} Scene */
+const longDialogueThresholdMs = 7000
+const followUpDelayMs = 3000
 
 /**
  * 后端演出计划项记录。
@@ -24,6 +26,8 @@ import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '.
  * @property {import('../../shared/contracts/presentation.js').ModelStateTarget | null} target 显式指定的模型状态切换目标。
  * @property {import('../../shared/contracts/presentation.js').ModelStateEffect[]} [effects] 演出开始时锁定的模型状态变更效果。
  * @property {string} [effectsModel] 演出开始时角色模型配置的指纹，用于防止中途换装后旧动作错误修改新模型的状态。
+ * @property {Scene | null} [playbackScene] 单人台词在开播时固定的场景。
+ * @property {string} [playbackSceneOwner] 换装期间保留开播时场景的资源。
  */
 
 /**
@@ -31,6 +35,7 @@ import { uuid, copy, requireValue, SnapshotBus, abortable, fingerprint } from '.
  * @typedef {object} SequenceState
  * @property {string} id 演出序列唯一 ID。
  * @property {Scene} scene 当前场景与演员位置快照。
+ * @property {boolean} timedDialogue 普通台词按单人对话策略计划动作时长。
  * @property {string[]} queue 普通台词演出计划项 ID 队列（包含当前正在演出的项）。
  * @property {string[]} transitions 过渡动作计划项 ID 队列（当普通台词演出就绪时会被自动清空）。
  * @property {string | null} current 当前正在演出的普通计划项 ID。
@@ -64,9 +69,10 @@ export class Performance {
    * @param {() => number} [options.now] 获取当前单调时钟毫秒数的函数（默认使用 perf_hooks.performance.now）。
    * @param {typeof setTimeout} [options.setTimer] 设置定时器的函数（测试时可替换为虚拟时钟）。
    * @param {typeof clearTimeout} [options.clearTimer] 清除定时器的函数。
-   * @param {(presentation: import('../../shared/contracts/presentation.js').ModelPresentation) => Promise<object>} [options.resolveModel] 自定义函数，根据模型信息解析动作、表情与状态定义。
+   * @param {(presentation: import('../../shared/contracts/presentation.js').ModelPresentation, timedDialogue?: boolean) => Promise<object>} [options.resolveModel] 解析动作、表情与状态定义；单人演出还需要动作时长。
    * @param {number} [options.readingMsPerCharacter] 无语音时，按文本字数估算阅读时长的单字毫秒数，默认 80ms。
    * @param {number} [options.minimumReadingMs] 无语音时，单句非空台词的最短持续毫秒数，默认 800ms。
+   * @param {boolean} [options.repeatLongDialogueMotion] 单人长句是否在句内追加一次动作，默认开启。
    */
   constructor({
     assets = null,
@@ -75,7 +81,8 @@ export class Performance {
     clearTimer = clearTimeout,
     resolveModel = async () => ({}),
     readingMsPerCharacter = 80,
-    minimumReadingMs = 800
+    minimumReadingMs = 800,
+    repeatLongDialogueMotion = true
   } = {}) {
     Object.assign(this, {
       assets,
@@ -84,7 +91,8 @@ export class Performance {
       clearTimer,
       resolveModel,
       readingMsPerCharacter,
-      minimumReadingMs
+      minimumReadingMs,
+      repeatLongDialogueMotion
     })
   }
 
@@ -106,39 +114,49 @@ export class Performance {
     for (const slot of scene.slots) requireValue(typeof slot.id === 'string' && slot.id.length > 0)
   }
 
-  /**
-   * 计算单条演出计划项的持续时长（优先采用音频时长，无音频时按字符数估算，并与动作时长取较大值）。
-   */
-  duration(guide) {
+  /** 字幕按音频或阅读时长推进，动作收尾不影响逐字速度。 */
+  subtitleDuration(guide) {
     const audioMs = guide.audio?.durationMs
     if (audioMs != null)
       requireValue(Number.isFinite(audioMs) && audioMs >= 0 && audioMs <= 86400000)
-    const textMs = guide.text
-      ? Math.max(this.minimumReadingMs, Array.from(guide.text).length * this.readingMsPerCharacter)
-      : 0
+    return (
+      audioMs ??
+      (guide.text
+        ? Math.max(
+            this.minimumReadingMs,
+            Array.from(guide.text).length * this.readingMsPerCharacter
+          )
+        : 0)
+    )
+  }
+
+  /** 句末相对时刻取文字、语音和动作各自的结束点。 */
+  duration(guide) {
     const motionMs = guide.motionDurationMs ?? 0
     requireValue(Number.isFinite(motionMs) && motionMs >= 0 && motionMs <= 86400000)
-    return Math.max(audioMs ?? textMs, motionMs)
+    return Math.max(this.subtitleDuration(guide), motionMs)
   }
 
   /**
    * 创建一个新的演出序列。
    * @param {Scene} scene 初始场景与演员位置配置。
+   * @param {{timedDialogue?: boolean}} [options] 单人台词使用动作时间表。
    * @returns {Promise<string>} 新创建的演出序列 ID。
    */
-  async createSequence(scene) {
+  async createSequence(scene, { timedDialogue = false } = {}) {
     requireValue(!this.closed, 'backend_closed', '后端已关闭。')
     this.validateScene(scene)
     const resourceOwner = await this.assets?.createTemporaryOwner(
       'scene',
       extractAssetReferences(scene)
     )
-    const mappings = await this.mappings(scene)
+    const mappings = await this.mappings(scene, timedDialogue)
     const id = uuid()
     this.sequences.set(id, {
       id,
       resourceOwner,
       scene: copy(scene),
+      timedDialogue,
       queue: [],
       transitions: [],
       current: null,
@@ -158,13 +176,13 @@ export class Performance {
   /**
    * 解析场景中各演员位置的模型映射配置（若某个模型资源缺失则降级为空对象，不阻断字幕与音频演出）。
    */
-  async mappings(scene) {
+  async mappings(scene, timedDialogue = false) {
     const mappings = new Map()
     for (const slot of scene.slots) {
       try {
         mappings.set(
           slot.id,
-          slot.presentation ? await this.resolveModel(copy(slot.presentation)) : {}
+          slot.presentation ? await this.resolveModel(copy(slot.presentation), timedDialogue) : {}
         )
       } catch {
         mappings.set(slot.id, {})
@@ -178,12 +196,10 @@ export class Performance {
    */
   effects(sequence, record) {
     const mapping = sequence.mappings.get(record.guide.slotId) ?? {}
-    const resolved = this.resolvedGuide(
-      sequence.scene,
-      sequence.mappings,
-      record.guide,
-      record.target
-    ).resolvedPerformance
+    const resolved =
+      record.guide.resolvedPerformance ??
+      this.resolvedGuide(sequence.scene, sequence.mappings, record.guide, record.target)
+        .resolvedPerformance
     const selection = mapping.version
       ? { motion: resolved.motion?.id, expression: resolved.expression?.id }
       : record.guide.performance
@@ -411,6 +427,7 @@ export class Performance {
       if (record.resourceOwner) await this.assets.releaseWhenPossible(record.resourceOwner)
       return false
     }
+    if (record.guide.ready) return false
     record.durationMs = duration
     record.guide = guide
     record.readyAt = this.now()
@@ -497,16 +514,20 @@ export class Performance {
       'scene',
       extractAssetReferences(scene)
     )
-    const mappings = await this.mappings(scene)
+    const mappings = await this.mappings(scene, sequence.timedDialogue)
     if (sequence.closed) {
       if (resourceOwner) await this.assets.releaseWhenPossible(resourceOwner)
       requireValue(false, 'sequence_unavailable')
     }
     const previousOwner = sequence.resourceOwner
+    const active = this.guides.get(sequence.current)
+    // 当前句仍引用开播时的场景。第一次替换时把资源持有者交给当前句，结算后再释放。
+    const retainPreviousOwner = active?.playbackScene === sequence.scene
+    if (retainPreviousOwner) active.playbackSceneOwner = previousOwner
     sequence.resourceOwner = resourceOwner
     sequence.mappings = mappings
     sequence.scene = copy(scene)
-    if (previousOwner) await this.assets.releaseWhenPossible(previousOwner)
+    if (previousOwner && !retainPreviousOwner) await this.assets.releaseWhenPossible(previousOwner)
     this.publish(sequence)
   }
 
@@ -550,15 +571,48 @@ export class Performance {
     return { ...copy(guide), resolvedPerformance: resolved }
   }
 
+  /** 给已解析的单人台词添加句内时标，实时与回放共用，时钟推进不需要读取文件。 */
+  planDialogue(scene, mappings, material) {
+    const guide = this.resolvedGuide(scene, mappings, material)
+    const subtitleDurationMs = this.subtitleDuration(guide)
+    guide.subtitleDurationMs = subtitleDurationMs
+    const plan = guide.resolvedPerformance
+    const durationMs = plan.motion?.durationMs
+    if (!durationMs) return guide
+    plan.motionCues = [{ atMs: 0, durationMs, motion: plan.motion }]
+    let motionEnd = durationMs
+    const atMs = durationMs + followUpDelayMs
+    if (
+      this.repeatLongDialogueMotion &&
+      subtitleDurationMs > longDialogueThresholdMs &&
+      atMs < subtitleDurationMs
+    ) {
+      const catalog = mappings.get(guide.slotId)
+      const slot = scene.slots.find((item) => item.id === guide.slotId)
+      const followUp = resolveFollowUpMotion(catalog, plan, slot?.layout?.direction ?? 'C')
+      if (followUp?.durationMs && atMs + followUp.durationMs <= 86400000) {
+        plan.motionCues.push({ atMs, durationMs: followUp.durationMs, motion: followUp })
+        motionEnd = atMs + followUp.durationMs
+      }
+    }
+    guide.motionDurationMs = Math.max(guide.motionDurationMs ?? 0, motionEnd)
+    return guide
+  }
+
   /**
    * 为回放解析实际场景的资源，不创建序列或修改台词历史。
    * @param {Scene} scene 当前回放场景。
    * @param {Guide[]} guides 原始台词材料。
+   * @param {{timedDialogue?: boolean}} [options] 与相同对话的实时计划采用同一时长策略。
    * @returns {Promise<Guide[]>} 附带实际资源选择的回放材料。
    */
-  async resolveGuides(scene, guides) {
-    const mappings = await this.mappings(scene)
-    return guides.map((guide) => this.resolvedGuide(scene, mappings, guide))
+  async resolveGuides(scene, guides, { timedDialogue = false } = {}) {
+    const mappings = await this.mappings(scene, timedDialogue)
+    return guides.map((guide) =>
+      timedDialogue
+        ? this.planDialogue(scene, mappings, guide)
+        : this.resolvedGuide(scene, mappings, guide)
+    )
   }
 
   /**
@@ -593,7 +647,9 @@ export class Performance {
     for (const resolve of record.waiters) resolve(copy(record.finish))
     record.waiters.clear()
     record.guide = null
+    record.playbackScene = null
     if (record.resourceOwner) void this.assets.releaseWhenPossible(record.resourceOwner)
+    if (record.playbackSceneOwner) void this.assets.releaseWhenPossible(record.playbackSceneOwner)
     this.publish(sequence, [record.finish])
   }
 
@@ -622,6 +678,11 @@ export class Performance {
         break
       }
       this.clearTransitions(sequence)
+      if (sequence.timedDialogue) {
+        next.guide = this.planDialogue(sequence.scene, sequence.mappings, next.guide)
+        next.durationMs = this.duration(next.guide)
+        next.playbackScene = sequence.scene
+      }
       // 为什么取 anchor、readyAt 和 createdAt 的最大值作为开始时间：
       // 补算时可沿上一句的结束时标推进，但不能早于句间停顿、计划创建或音频就绪的时刻。
       next.startedAt = Math.max(anchor, next.readyAt, next.createdAt, pauseUntil)
@@ -672,7 +733,9 @@ export class Performance {
       return {
         guideId: id,
         slotId: record.guide.slotId,
-        guide: this.resolvedGuide(sequence.scene, sequence.mappings, record.guide, record.target),
+        guide: record.playbackScene
+          ? copy(record.guide)
+          : this.resolvedGuide(sequence.scene, sequence.mappings, record.guide, record.target),
         startedAtMs: record.startedAt,
         durationMs: record.durationMs,
         elapsedMs: Math.min(record.durationMs, Math.max(0, now - record.startedAt)),
@@ -688,7 +751,7 @@ export class Performance {
       sequenceId: sequence.id,
       revision: sequence.revision,
       serverTimeMs: now,
-      scene: copy(sequence.scene),
+      scene: copy(this.guides.get(sequence.current)?.playbackScene ?? sequence.scene),
       state,
       current: progress(sequence.current),
       transition: progress(sequence.transition),

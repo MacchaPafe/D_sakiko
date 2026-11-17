@@ -77,6 +77,7 @@ async function startApplication() {
   })
   backend = await createCoreBackend({
     ...directories,
+    repeatLongDialogueMotion: process.env.DSAKIKO_REPEAT_LONG_DIALOGUE_MOTION !== '0',
     setupOptions: {
       catalogDirectory: join(resourcesRoot, 'setup'),
       managedSpeech: app.isPackaged || !process.env.DSAKIKO_PYTHON

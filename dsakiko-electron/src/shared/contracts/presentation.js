@@ -7,13 +7,16 @@
 /** @typedef {string} SequenceId */
 /** @typedef {string} GuideId */
 /** @typedef {'stage' | 'desktop-pet'} PresentationMode 普通演出或桌宠展示；作用于整个演出模块，不属于某条 sequence。 */
+/** @typedef {{id: string, member: string, entry: object, durationMs?: number}} ResolvedMotion 动作资源与单次播放的计划时长。 */
+/** @typedef {{atMs: number, durationMs: number, motion: ResolvedMotion}} MotionCue 动作在本句内的开始时间与有效区间。 */
 
 /**
  * 基于当前实际模型的演出计划。member 相对于 SceneSlot.presentation.model 资源包，不是本地绝对路径。
  * @typedef {object} ResolvedPerformance
  * @property {'v2' | 'v3' | null} version 目标格式。
  * @property {string} group 使用的情绪或活动动作组。
- * @property {{id: string, member: string, entry: object} | null} motion 实际方向动作及原始播放元数据。
+ * @property {ResolvedMotion | null} motion 实际方向动作及原始播放元数据。
+ * @property {MotionCue[]} [motionCues] 后端安排的句内动作，按开始时刻排序。
  * @property {{id: string, member: string} | null} expression v2 始终为 null，保留动作原有面部表现。
  * @property {string[]} fallbackReasons 显式选择不可用的通道。
  */
@@ -123,6 +126,7 @@
  * @property {PerformanceSelection} performance 动作和表情选择；均允许 'auto'。
  * @property {ResolvedPerformance} [resolvedPerformance] 后端输出的实际资源计划；忽略历史选择时不改写 performance。
  * @property {AudioMaterial | null} audio 没有语音或尚未提供语音时为 null。
+ * @property {number} [subtitleDurationMs] 字幕逐字推进时长，动作收尾期间保持全文。
  * @property {number} [motionDurationMs] 可选的动作计划时长。
  * @property {number} [pauseBeforeMs] 与上一条已完成普通演出之间保留的最短停顿；可与等待音频就绪重叠。
  * @property {boolean} ready 是否允许开始；不携带尚未就绪的原因。

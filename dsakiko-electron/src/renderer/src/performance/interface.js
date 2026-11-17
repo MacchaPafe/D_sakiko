@@ -1,7 +1,7 @@
 /** @typedef {import('./playback-contracts.js').PlaybackOptions} PlaybackOptions */
 /** @typedef {import('../../../shared/contracts/presentation.js').SequenceSnapshot} SequenceSnapshot */
 /** @typedef {import('../../../shared/contracts/presentation.js').GuideProgress} GuideProgress */
-/** @typedef {{offsetMs: number, volume: number, recurring: boolean, silent?: boolean}} PlayOptions 本次播放偏移与本地音量。 */
+/** @typedef {{offsetMs: number, volume: number, recurring: boolean, silent?: boolean, getOffsetMs?: () => number}} PlayOptions 本次播放偏移与本地音量。 */
 /**
  * @typedef {object} PlaybackOutput 音频/模型输出由宿主注入，可只实现支持的能力。
  * @property {(guide: import('../../../shared/contracts/presentation.js').Guide, options: PlayOptions) => void | Promise<void>} [play] 从给定偏移播放，不回报后端进度。
@@ -157,13 +157,13 @@ export class Performance {
       this.playEpoch += 1
       const epoch = this.playEpoch
       this.output?.stop?.()
-      if (current)
+      const offsetMs = this.getSnapshot().elapsedMs
+      if (current && (!current.guide.audio || offsetMs < current.guide.audio.durationMs))
         Promise.resolve(
           this.output?.play?.(current.guide, {
-            offsetMs: Math.min(
-              current.durationMs,
-              current.elapsedMs + this.now() - latest.receivedAt
-            ),
+            offsetMs,
+            // 资源加载本身可能跨过语音终点，播放前按同一个句内时钟重新取偏移。
+            getOffsetMs: () => this.getSnapshot().elapsedMs,
             volume: this.options.volume,
             recurring: current.recurring
           })
@@ -201,9 +201,10 @@ export class Performance {
         Math.max(0, current.elapsedMs + this.now() - this.anchor.receivedAt)
       )
       const total = Array.from(current.guide.text ?? '').length
+      const subtitleDurationMs = current.guide.subtitleDurationMs ?? current.durationMs
       revealedCharacters =
-        current.durationMs > 0
-          ? Math.min(total, Math.floor((total * elapsedMs) / current.durationMs))
+        subtitleDurationMs > 0
+          ? Math.min(total, Math.floor((total * elapsedMs) / subtitleDurationMs))
           : total
     }
     return {
@@ -248,6 +249,10 @@ export class Performance {
     this.replayEnded = onEnd
     this.output?.stop?.()
     this.playingId = null
+    this.anchor = {
+      receivedAt: this.now(),
+      progress: { scene: materials.scene, current: null, transition: null }
+    }
     const guides = structuredClone(materials.guides)
     let index = 0
     const next = () => {
@@ -264,7 +269,10 @@ export class Performance {
       const epoch = ++this.playEpoch
       const show = (audioMs) => {
         if (this.closed || epoch !== this.playEpoch) return
-        const durationMs = Math.max(audioMs ?? readingMs, guide.motionDurationMs ?? 0)
+        const durationMs = Math.max(
+          guide.subtitleDurationMs ?? audioMs ?? readingMs,
+          guide.motionDurationMs ?? 0
+        )
         this.anchor = {
           receivedAt: this.now(),
           progress: {

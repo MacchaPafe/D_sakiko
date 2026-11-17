@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { copy, problem, requireValue } from '../core/support.js'
 import { validModelFilePath } from '../resources/files.js'
 
@@ -35,7 +35,7 @@ const expressionLabels = {
  * 模型目录同时保留完整资源与提示词描述；无描述的资源仍能用于动作组回退。
  * @typedef {object} ModelCatalog
  * @property {'v2' | 'v3'} version 模型格式。
- * @property {Object<string, {description: string, variants: Object<string, {member: string, entry: object}>}>} motions 逻辑动作及方向变体。
+ * @property {Object<string, {description: string, variants: Object<string, {member: string, entry: object, durationMs?: number}>}>} motions 逻辑动作及方向变体。
  * @property {Object<string, {description: string, member: string}>} expressions 表情资源。
  * @property {Object<string, string[]>} groups 模型原有动作组。
  * @property {object[]} presets 有效的动作和表情组合。
@@ -46,6 +46,36 @@ const expressionLabels = {
 
 function object(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
+/** @param {string} source 动作文件文本。 @param {boolean} v3 是否使用新版动作格式。 @returns {number|null} 单次动作时长，无法解析时为空。 */
+export function readMotionDurationMs(source, v3) {
+  const text = source.replace(/^\uFEFF/u, '')
+  let milliseconds
+  if (v3) {
+    try {
+      const seconds = JSON.parse(text)?.Meta?.Duration
+      if (typeof seconds !== 'number') return null
+      milliseconds = Math.round(seconds * 1000)
+    } catch {
+      return null
+    }
+  } else {
+    const declared = Number(text.match(/^\$fps\s*=\s*([^\s,]+)/mu)?.[1])
+    const fps = declared > 5 && declared < 121 ? declared : 30
+    let frames = 0
+    // 与 Cubism 2 Web 一致，取所有曲线（含可见性和布局）的最长采样数。
+    for (const track of text.matchAll(/^[A-Za-z_][^=\r\n]*=([^\r\n]*)/gmu)) {
+      const samples = track[1]
+        .split(/[\t ,]+/u)
+        .filter((value) => value && Number.isFinite(Number(value)))
+      frames = Math.max(frames, samples.length)
+    }
+    milliseconds = Math.trunc((frames * 1000) / fps)
+  }
+  return Number.isFinite(milliseconds) && milliseconds > 0 && milliseconds <= 86400000
+    ? milliseconds
+    : null
 }
 
 function compareFiles([left], [right]) {
@@ -161,9 +191,10 @@ export async function buildModelCatalog(data, config, shared, locate) {
  * 从受管理资源包读取模型、同名标注与共享标注；显式 mapping 可使用原有 performance.json。
  * @param {import('../resources/interface.js').MediaAssets} assets 资源管理器。
  * @param {import('../../shared/contracts/presentation.js').ModelPresentation} presentation 模型材料。
+ * @param {Map<string, {stamp: string, durationMs: number|null}> | null} [motionDurations] 单人演出使用的动作时长缓存。为空时只解析资源索引。
  * @returns {Promise<ModelCatalog>} 解析后的模型目录。
  */
-export async function resolveModelCatalog(assets, presentation) {
+export async function resolveModelCatalog(assets, presentation, motionDurations = null) {
   const entry = await assets.packageEntry(presentation.model)
   const data = JSON.parse(Buffer.from(await assets.read(presentation.model)).toString('utf8'))
   requireValue(data && typeof data === 'object', 'invalid_model')
@@ -193,19 +224,43 @@ export async function resolveModelCatalog(assets, presentation) {
   const shared = entry
     ? await optional(path.posix.join(sharedDirectory, 'performance.shared.json'))
     : {}
+  const durationsByMember = new Map()
   async function locate(file) {
     // 包外路径不能绕过资源管理；仅导入入口单文件时不猜测磁盘旁的资源。
     if (!entry || !validModelFilePath(file)) return null
     const member = path.posix.join(directory, file)
     try {
       const target = await assets.localPath(presentation.model, member)
-      return (await stat(target)).isFile() ? member : null
+      const info = await stat(target)
+      if (!info.isFile()) return null
+      if (motionDurations && /(?:\.motion3\.json|\.mtn)$/iu.test(member)) {
+        const stamp = [info.ino, info.size, info.mtimeMs, info.ctimeMs].join('/')
+        let cached = motionDurations.get(target)
+        if (cached?.stamp !== stamp) {
+          const source = await readFile(target, 'utf8').catch(() => null)
+          if (source !== null) {
+            cached = {
+              stamp,
+              durationMs: readMotionDurationMs(source, /\.motion3\.json$/iu.test(member))
+            }
+            motionDurations.set(target, cached)
+          }
+        }
+        if (cached?.stamp === stamp && cached.durationMs !== null)
+          durationsByMember.set(member, cached.durationMs)
+      }
+      return member
     } catch (error) {
       problems.push({ ...problem(error), message: '模型成员不可用：' + member })
       return null
     }
   }
   const catalog = await buildModelCatalog(data, object(config), object(shared), locate)
+  for (const { variants } of Object.values(catalog.motions))
+    for (const variant of Object.values(variants)) {
+      const durationMs = durationsByMember.get(variant.member)
+      if (durationMs !== undefined) variant.durationMs = durationMs
+    }
   catalog.problems.push(...problems)
   return catalog
 }

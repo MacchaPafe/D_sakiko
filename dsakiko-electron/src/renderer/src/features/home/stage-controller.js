@@ -2,9 +2,10 @@ import { Live2DPreview } from '../../performance/live2d-preview.js'
 import { Performance } from '../../performance/interface.js'
 import { createAudioOutput } from '../../performance/audio-output.js'
 import { StageLayouts, stageModelKey } from '../../performance/stage-layout.js'
-import { lastDialogue } from '../../../../shared/chat-history.js'
+import { isReplayableDialogue, lastDialogueEntry } from '../../../../shared/chat-history.js'
 
-/** @typedef {{text: string, name: string, revealed: number, translation: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
+/** @typedef {import('../../../../shared/contracts/presentation.js').ReplayMaterials} ReplayMaterials */
+/** @typedef {{text: string, name: string, revealed: number, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
 /** 正式舞台的资源与输出边界：共享预览加载器，跟随后端计划，实例不随面板开关重建。 */
 export class StageController {
   /** @param {import('../../backend/client.js').BackendClient} client 业务连接。 @param {(state: StageState) => void} publish 展示快照。 */
@@ -18,6 +19,9 @@ export class StageController {
       name: '',
       translation: null,
       revealed: 0,
+      canReplayLine: false,
+      replayingLine: false,
+      lineReplayError: null,
       problem: null,
       loading: false,
       hasModel: false,
@@ -72,6 +76,7 @@ export class StageController {
    */
   async select(characterId, chatId, sequenceId, draftPresentation) {
     const epoch = ++this.epoch
+    this.clearTimedMotion()
     const selectionKey = JSON.stringify([characterId, chatId, stageModelKey(draftPresentation)])
     if (this.selectionKey !== selectionKey) {
       this.selectionKey = selectionKey
@@ -81,11 +86,12 @@ export class StageController {
       this.update({ loading: false, problem: null, canRetryModel: false, failedOutfitKey: null })
     }
     this.history = null
+    this.lineReplaySource = null
     this.player.follow(null)
     this.stopReplay()
     this.guideId = null
     this.planKey = null
-    this.update({ text: '', name: '', revealed: 0 })
+    this.update({ text: '', name: '', revealed: 0, canReplayLine: false, lineReplayError: null })
     if (sequenceId) {
       this.player.follow(sequenceId)
       return
@@ -222,25 +228,69 @@ export class StageController {
    * @param {(error?: Error) => void} onStop 结束、取消或加载失败。
    * @returns {Promise<void>} 仅请求已保存的演出材料，计时由当前窗口负责。
    */
-  async replayTurn(chatId, turnId, onStop) {
+  replayTurn(chatId, turnId, onStop) {
+    return this.replay(
+      chatId,
+      'turn',
+      () => this.client.conversations.getReplayMaterials(chatId, { kind: 'turn', turnId }),
+      onStop
+    )
+  }
+  /**
+   * @param {string|null} chatId 当前对话。
+   * @returns {Promise<void>} 从头重播舞台上的这一句，或停止当前单句／整轮回放。
+   */
+  async replayLine(chatId) {
+    if (!chatId) return
+    if (this.replayRequest) {
+      this.stopReplay(chatId)
+      return
+    }
+    const source = this.lineReplaySource
+    if (!source) return
+    // 正在播放的 Guide 已有解析结果；静态字幕只有历史定位，需要读取保存的材料。
+    await this.replay(
+      chatId,
+      'line',
+      () =>
+        source.materials ??
+        this.client.conversations.getReplayMaterials(chatId, { kind: 'line', line: source.line }),
+      (error) => this.update({ replayingLine: false, lineReplayError: error?.message ?? null })
+    )
+  }
+  /**
+   * @param {string} chatId 来源对话。
+   * @param {'line'|'turn'} kind 回放范围。
+   * @param {() => ReplayMaterials | Promise<ReplayMaterials>} getMaterials 可直接使用或异步读取的演出材料。
+   * @param {(error?: Error) => void} onStop 结束、取消或加载失败。
+   * @returns {Promise<void>} 当前窗口独占回放。
+   */
+  async replay(chatId, kind, getMaterials, onStop) {
     this.stopReplay()
-    const request = { chatId, finish }
+    const request = { chatId, kind, finish }
     const controller = this
     function finish(error) {
       if (controller.replayRequest !== request) return
       controller.replayRequest = null
-      if (controller.player.mode === 'replay') controller.player.resumeLive()
+      if (controller.player.mode === 'replay') {
+        if (kind === 'line') {
+          controller.desiredPlanKey = null
+          controller.surface?.adapter?.stopMotions()
+        }
+        controller.player.resumeLive()
+      }
       onStop(error)
     }
     this.replayRequest = request
+    if (kind === 'line') this.update({ replayingLine: true, lineReplayError: null })
     try {
-      const materials = await this.client.conversations.getReplayMaterials(chatId, {
-        kind: 'turn',
-        turnId
-      })
+      const materials = await getMaterials()
       if (this.replayRequest !== request) return
       if (!this.visible) return finish()
-      if (!materials.guides.length) throw new Error('本轮暂无可回放的台词。')
+      if (!materials.guides.length) throw new Error('没有可回放的台词。')
+      this.clearTimedMotion()
+      this.planKey = null
+      this.desiredPlanKey = null
       this.player.replay(materials, { onEnd: finish })
     } catch (error) {
       finish(error)
@@ -253,11 +303,13 @@ export class StageController {
   }
   /** @param {object|null} snapshot 当前聊天的正式快照。 @returns {void} 恢复静态末句，不创建回放、不触发历史音频。 */
   setHistory(snapshot) {
-    const line = lastDialogue(snapshot?.chat)
-    this.history = line
+    const entry = lastDialogueEntry(snapshot?.chat)
+    this.history = entry
       ? {
-          ...line,
-          name: snapshot.chat.meta.extensions?.characterNames?.[line.speakerId] ?? line.speakerId
+          ...entry,
+          name:
+            snapshot.chat.meta.extensions?.characterNames?.[entry.line.speakerId] ??
+            entry.line.speakerId
         }
       : null
     this.historyAllowed = !snapshot?.activeTurnId && (!snapshot || snapshot.activity === 'idle')
@@ -265,14 +317,16 @@ export class StageController {
   }
   showHistory(scene) {
     if (!this.historyAllowed) return
-    const line = this.history
+    const line = this.history?.line
     const slot = scene?.slots.find((item) => item.id === line?.speakerId)
     this.guideId = null
+    this.lineReplaySource = line && isReplayableDialogue(line) ? { line: this.history.ref } : null
     this.update({
       text: line?.text ?? '',
       translation: line?.translation ?? null,
-      name: slot?.displayName ?? line?.name ?? '',
-      revealed: Array.from(line?.text ?? '').length
+      name: slot?.displayName ?? this.history?.name ?? '',
+      revealed: Array.from(line?.text ?? '').length,
+      canReplayLine: Boolean(this.lineReplaySource)
     })
   }
   progress(snapshot) {
@@ -281,9 +335,11 @@ export class StageController {
     const current = progress?.current ?? progress?.transition
     const slot =
       progress?.scene.slots.find((item) => item.id === current?.guide.slotId) ??
-      progress?.scene.slots.find((item) => item.id === this.history?.speakerId) ??
+      progress?.scene.slots.find((item) => item.id === this.history?.line.speakerId) ??
       progress?.scene.slots[0]
     if (!progress) {
+      this.clearTimedMotion()
+      this.desiredPlanKey = null
       this.showHistory(null)
       return
     }
@@ -292,6 +348,9 @@ export class StageController {
       current?.guide.resolvedPerformance ??
       progress.defaultPerformances?.find((item) => item.slotId === slot?.id)?.resolvedPerformance
     const planKey = JSON.stringify([current?.guideId, plan, slot?.presentation])
+    if (this.timedMotion?.key !== planKey) this.clearTimedMotion()
+    const restartMotion =
+      snapshot.mode === 'replay' && this.replayRequest?.kind === 'line' && Boolean(progress.current)
     this.desiredPlanKey = planKey
     void this.showModel(slot?.presentation ?? null).then((shown) => {
       if (
@@ -304,21 +363,74 @@ export class StageController {
       )
         return
       this.planKey = planKey
-      void this.applyPlan(plan, epoch, planKey)
+      if (plan?.motionCues) {
+        this.timedMotion = {
+          plan,
+          epoch,
+          key: planKey,
+          adapter: this.surface.adapter,
+          index: -1,
+          cue: null,
+          applied: false
+        }
+        this.advanceTimedMotion(this.player.getSnapshot().elapsedMs)
+      } else void this.applyPlan(plan, epoch, planKey, restartMotion)
     })
     if (current?.guide.text) {
+      const lineReplayError = this.guideId === current.guideId ? this.state.lineReplayError : null
       this.guideId = current.guideId
+      this.lineReplaySource = progress.current
+        ? { materials: { scene: progress.scene, guides: [current.guide] } }
+        : null
       this.update({
         text: current.guide.text,
         translation: current.guide.translation,
         name: slot?.displayName ?? '',
-        revealed: snapshot.revealedCharacters
+        revealed: snapshot.revealedCharacters,
+        canReplayLine: Boolean(this.lineReplaySource),
+        lineReplayError
       })
     } else if (this.historyAllowed) this.showHistory(progress.scene)
     else if (this.state.text) this.update({ revealed: Array.from(this.state.text).length })
     if (snapshot.problem) this.update({ problem: snapshot.problem.message })
   }
-  async applyPlan(plan, epoch, planKey) {
+  clearTimedMotion() {
+    const timed = this.timedMotion
+    this.timedMotion = null
+    if (timed?.cue) timed.adapter?.stopMotions()
+  }
+
+  advanceTimedMotion(elapsedMs) {
+    const timed = this.timedMotion
+    if (!timed) return
+    const cues = timed.plan.motionCues
+    const index = cues.findLastIndex((cue) => cue.atMs <= elapsedMs)
+    const previous = timed.cue
+    if (index > timed.index) {
+      timed.index = index
+      const candidate = cues[index]
+      timed.cue = elapsedMs < candidate.atMs + candidate.durationMs ? candidate : null
+    } else if (previous && elapsedMs >= previous.atMs + previous.durationMs) {
+      timed.cue = null
+    } else if (timed.applied) return
+    const cue = timed.cue
+    if (previous && !cue) timed.adapter?.stopMotions()
+    timed.applied = true
+    // 恢复窗口时只消费当前有效区间；异步加载完的旧动作也不能越过计划终点启动。
+    const current = () =>
+      this.timedMotion === timed &&
+      timed.cue === cue &&
+      (!cue || this.player.getSnapshot().elapsedMs < cue.atMs + cue.durationMs)
+    void this.applyPlan(
+      { ...timed.plan, motion: cue?.motion ?? null },
+      timed.epoch,
+      timed.key,
+      Boolean(cue),
+      current
+    )
+  }
+
+  async applyPlan(plan, epoch, planKey, restartMotion, isCueCurrent = () => true) {
     const adapter = this.surface.adapter
     if (!adapter || !plan) return
     const current = () =>
@@ -327,13 +439,18 @@ export class StageController {
       epoch === this.epoch &&
       this.desiredPlanKey === planKey &&
       !this.awaitingModel &&
-      adapter === this.surface.adapter
+      adapter === this.surface.adapter &&
+      isCueCurrent()
+    if (!current()) return
     const motion = plan.motion
     try {
       if (motion) {
+        const file = motion.entry?.File ?? motion.entry?.file ?? motion.member
         for (const [group, entries] of Object.entries(this.surface.motionGroups ?? {})) {
-          const index = entries.findIndex((entry) => (entry.File ?? entry.file) === motion.member)
+          const index = entries.findIndex((entry) => (entry.File ?? entry.file) === file)
           if (index < 0) continue
+          // 同一个动作还在播放时，SDK 会拒绝重新申请该组和编号。
+          if (restartMotion) adapter.stopMotions()
           await adapter.startMotion(group, index, 3, 150, true, current)
           break
         }
@@ -395,6 +512,7 @@ export class StageController {
       this.surface.adapter?.setMouthOpen(this.mouth)
     }
     const snapshot = this.player.getSnapshot()
+    this.advanceTimedMotion(snapshot.elapsedMs)
     const current = snapshot.progress?.current
     if (current?.guideId === this.guideId && this.state.revealed !== snapshot.revealedCharacters)
       this.update({ revealed: snapshot.revealedCharacters })
@@ -404,6 +522,7 @@ export class StageController {
     this.surface?.setVisible(visible)
     this.player.setVisible(visible)
     if (!visible) {
+      this.clearTimedMotion()
       this.stopReplay()
       this.analyse(null)
     } else {
@@ -428,6 +547,7 @@ export class StageController {
   }
   dispose() {
     this.closed = true
+    this.clearTimedMotion()
     this.stopReplay()
     this.epoch += 1
     this.cancelModelLoad()

@@ -8,7 +8,8 @@ import {
   Plus,
   Settings,
   Square,
-  Trash2
+  Trash2,
+  Volume2
 } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import logo from '../../assets/welcome/logo.svg'
@@ -215,12 +216,30 @@ function CharacterGroups({ state, flow, client, onDelete }) {
     />
   ))
 }
-function Subtitle({ state }) {
-  if (!state.text) return <div className="home-subtitle" />
+function Subtitle({ state, replayingTurn, onToggleReplay }) {
+  const replaying = state.replayingLine || replayingTurn
+  if (!state.text && !replaying) return <div className="home-subtitle" />
   const characters = Array.from(state.text)
+  let replayLabel = '回放当句对话'
+  if (replayingTurn) replayLabel = '停止本轮回放'
+  else if (state.replayingLine) replayLabel = '停止当句回放'
   return (
     <section className="home-subtitle" aria-label="当前台词">
-      <div className="subtitle-name">{state.name}</div>
+      <div className="subtitle-name">
+        <span>{state.name}</span>
+        {(state.canReplayLine || replaying) && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="subtitle-replay"
+            aria-label={replayLabel}
+            onClick={onToggleReplay}
+          >
+            {replaying ? <Square /> : <Volume2 />}
+          </Button>
+        )}
+      </div>
       <div className="subtitle-body">
         <div className="subtitle-text" aria-label={state.text}>
           {characters.map((character, index) => (
@@ -233,7 +252,14 @@ function Subtitle({ state }) {
             </span>
           ))}
         </div>
-        {state.translation && <div className="subtitle-translation">{state.translation}</div>}
+        {state.text && state.translation && (
+          <div className="subtitle-translation">{state.translation}</div>
+        )}
+        {state.lineReplayError && (
+          <div className="subtitle-replay-error" role="alert">
+            {state.lineReplayError}
+          </div>
+        )}
       </div>
     </section>
   )
@@ -281,7 +307,7 @@ const replyPhaseLabels = {
   presentation: '正在播放回复…'
 }
 
-function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend, onStopReplay }) {
+function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }) {
   const configured = hasConnection(state)
   const readonly =
     state.target.tab === 'scripted-dialogue' ||
@@ -392,11 +418,6 @@ function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend, 
             <Button variant="ghost" size="icon-sm" disabled aria-label="添加附件">
               <Plus />
             </Button>
-            {onStopReplay && (
-              <Button size="sm" variant="ghost" className="home-stop-replay" onClick={onStopReplay}>
-                <Square /> 停止回放
-              </Button>
-            )}
             {status && (
               <span className="composer-status" role="status">
                 {status}
@@ -434,6 +455,9 @@ export function HomePage({ client, setup, setupState }) {
     text: '',
     name: '',
     revealed: 0,
+    canReplayLine: false,
+    replayingLine: false,
+    lineReplayError: null,
     problem: null,
     loading: false,
     hasModel: false,
@@ -540,8 +564,8 @@ export function HomePage({ client, setup, setupState }) {
     controller.stopReplay()
     controller.playHistoryAudio(audio, signal, onStop)
   }
-  function stopHistoryTurn() {
-    stage.current?.stopReplay()
+  function toggleStageReplay() {
+    void stage.current?.replayLine(state.target.chatId)
   }
   function playHistoryTurn(turnId) {
     const chatId = state.target.chatId
@@ -740,7 +764,11 @@ export function HomePage({ client, setup, setupState }) {
             onReset={resetModel}
           />
           <div className="home-bottom">
-            <Subtitle state={stageState} />
+            <Subtitle
+              state={stageState}
+              replayingTurn={Boolean(currentReplay && !currentReplay.error)}
+              onToggleReplay={toggleStageReplay}
+            />
             <Composer
               state={state}
               flow={flow}
@@ -748,9 +776,6 @@ export function HomePage({ client, setup, setupState }) {
               onVoiceInstall={() => setVoiceInstall(true)}
               onConfigure={() => openSettings()}
               onSend={sendMessage}
-              onStopReplay={
-                !historyOpen && currentReplay && !currentReplay.error ? stopHistoryTurn : null
-              }
             />
           </div>
           {historyOpen ? (

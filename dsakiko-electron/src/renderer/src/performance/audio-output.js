@@ -69,7 +69,7 @@ export function createAudioOutput(
     speechMuted = options.silent === true
     try {
       const access = await client.assets.access(material.asset)
-      if (epoch !== speechEpoch) {
+      if (epoch !== speechEpoch || options.getOffsetMs?.() >= material.durationMs) {
         releaseAccess(access.leaseId)
         return
       }
@@ -97,19 +97,23 @@ export function createAudioOutput(
       audio.addEventListener(
         'loadedmetadata',
         () => {
-          if (speech === audio)
-            audio.currentTime = Math.min(
-              (options.offsetMs ?? 0) / 1000,
-              Math.max(0, audio.duration - 0.01)
-            )
+          if (speech !== audio) return
+          const offsetMs = options.getOffsetMs?.() ?? options.offsetMs ?? 0
+          if (options.getOffsetMs && offsetMs >= material.durationMs) {
+            stop()
+            return
+          }
+          audio.currentTime = Math.min(offsetMs / 1000, Math.max(0, audio.duration - 0.01))
         },
         { once: true }
       )
       if (visible) await audio.play()
       if (epoch !== speechEpoch) audio.pause()
     } catch (error) {
-      if (epoch === speechEpoch) stop(error)
-      if (!preview) throw error
+      if (epoch === speechEpoch) {
+        stop(error)
+        if (!preview) throw error
+      }
     }
   }
   /**

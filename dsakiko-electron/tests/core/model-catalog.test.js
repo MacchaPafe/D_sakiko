@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, expect, test } from 'vitest'
 import {
   buildModelCatalog,
+  readMotionDurationMs,
   resolveModelCatalog
 } from '../../src/backend/characters/model-catalog.js'
 import { resolvePerformance } from '../../src/backend/performance/selection.js'
@@ -190,6 +191,18 @@ test('实时、换模型和回放使用同一解析规则，不改写原始材�
   ).toBe('text_generating')
 })
 
+test('V2 时长按最长曲线与帧率计算，控制行不计入动作', () => {
+  expect(
+    readMotionDurationMs(
+      '# motion\r\n$fps=20\r\n$fadein=1000\r\nPARAM_X=0,1,2\r\nVISIBLE:Y=0 1 0 1',
+      false
+    )
+  ).toBe(200)
+  expect(readMotionDurationMs('PARAM_X=0,1', false)).toBe(66)
+  expect(readMotionDurationMs('$fps=30', false)).toBeNull()
+  expect(readMotionDurationMs('invalid JSON', true)).toBeNull()
+})
+
 test('真实资源包自动发现相邻及角色共享标注，阻止越界成员', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'model-catalog-'))
   cleanups.push(() => rm(directory, { recursive: true, force: true }))
@@ -207,7 +220,7 @@ test('真实资源包自动发现相邻及角色共享标注，阻止越界成�
       series: 'sample',
       motions: { mtn_nod: '原文件标注' }
     },
-    'live2D_model/mtn_nod_C.motion3.json': {},
+    'live2D_model/mtn_nod_C.motion3.json': { Meta: { Duration: 2.967, Loop: true } },
     'live2D_model/mtn_nod_L.motion3.json': {},
     'live2D_model/mtn_secret_C.motion3.json': {},
     'live2D_model/smile.exp3.json': {},
@@ -230,4 +243,9 @@ test('真实资源包自动发现相邻及角色共享标注，阻止越界成�
   expect(result.expressions.exp_smile01.description).toBe('共享微笑')
   expect(result.motions.mtn_nod.variants.C.member).toBe('live2D_model/mtn_nod_C.motion3.json')
   expect(result.motions).not.toHaveProperty('outside')
+  const cache = new Map()
+  const timed = await resolveModelCatalog(assets, { model: imported.asset, mapping: null }, cache)
+  expect(timed.motions.mtn_nod.variants.C.durationMs).toBe(2967)
+  expect(timed.motions.mtn_nod.variants.L.durationMs).toBeUndefined()
+  expect(cache.size).toBe(3)
 })

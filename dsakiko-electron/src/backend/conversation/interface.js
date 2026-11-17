@@ -224,7 +224,9 @@ export class Conversations {
         compressing: false
       }
       state.sequenceId = await this.withScene(state.chat, (scene) =>
-        this.performance.createSequence(scene)
+        this.performance.createSequence(scene, {
+          timedDialogue: state.chat.mode === 'single-character'
+        })
       )
       // 重启后只恢复存档记录，不自动续跑中断前的生成任务；若有缺少结果的工具调用，直接补记为已中断。
       const migrated = !initialChat && (await this.migrateModelSelection(state.chat))
@@ -1903,7 +1905,8 @@ export class Conversations {
       scene,
       guides: await this.performance.resolveGuides(
         scene,
-        lines.map((line, index) => this.guide(line, true, index > 0))
+        lines.map((line, index) => this.guide(line, true, index > 0)),
+        { timedDialogue: state.chat.mode === 'single-character' }
       )
     }
   }

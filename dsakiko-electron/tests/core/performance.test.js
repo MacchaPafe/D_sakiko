@@ -22,6 +22,175 @@ const guide = {
   audio: null,
   ready: true
 }
+
+function timedFixture({ assets = null, repeatLongDialogueMotion } = {}) {
+  const solo = structuredClone(scene)
+  solo.slots[0].presentation = { model: { id: 'original' }, mapping: null }
+  const planner = new Performance({
+    assets,
+    now: () => Date.now(),
+    repeatLongDialogueMotion,
+    resolveModel: async (presentation) => ({
+      version: 'v2',
+      groups: { happiness: ['primary', 'state', 'follow-up'] },
+      states: { mask: { on: { motion: 'state' } } },
+      motions: {
+        primary: {
+          variants: {
+            C: {
+              member: 'primary.mtn',
+              durationMs: presentation.model.id === 'original' ? 6000 : 1200
+            }
+          }
+        },
+        state: { variants: { C: { member: 'state.mtn', durationMs: 4000 } } },
+        'follow-up': { variants: { C: { member: 'second.mtn', durationMs: 4000 } } }
+      }
+    })
+  })
+  return { planner, solo }
+}
+
+test('单人台词按后端动作时间表结算，换装只影响后续台词', async () => {
+  vi.useFakeTimers()
+  let ownerCount = 0
+  const releaseWhenPossible = vi.fn(async () => {})
+  const assets = {
+    createTemporaryOwner: async (kind) => kind + ++ownerCount,
+    addReferences: async () => {},
+    releaseWhenPossible
+  }
+  const { planner, solo } = timedFixture({ assets })
+  const sequenceId = await planner.createSequence(solo, { timedDialogue: true })
+  try {
+    const [first, second] = await planner.appendGuides(sequenceId, [
+      { ...guide, ready: false },
+      { ...guide, pauseBeforeMs: 300 }
+    ])
+    const audio = { asset: { id: 'voice' }, durationMs: 10000 }
+    await planner.resolveGuide(first, { audio })
+    const started = (await planner.getProgress(sequenceId)).current
+    expect(started).toMatchObject({
+      durationMs: 13000,
+      guide: {
+        subtitleDurationMs: 10000,
+        motionDurationMs: 13000,
+        resolvedPerformance: {
+          motionCues: [
+            { atMs: 0, durationMs: 6000, motion: { id: 'primary' } },
+            { atMs: 9000, durationMs: 4000, motion: { id: 'follow-up' } }
+          ]
+        }
+      }
+    })
+    const [replay] = await planner.resolveGuides(solo, [{ ...guide, audio }], {
+      timedDialogue: true
+    })
+    expect(replay).toEqual(started.guide)
+    await vi.advanceTimersByTimeAsync(10000)
+    const replacement = structuredClone(solo)
+    replacement.slots[0].presentation.model.id = 'replacement'
+    await planner.setScene(sequenceId, replacement)
+    const tail = await planner.getProgress(sequenceId)
+    expect(tail.scene.slots[0].presentation.model.id).toBe('original')
+    expect(tail.current).toMatchObject({ guideId: first, elapsedMs: 10000, durationMs: 13000 })
+    expect(tail.current.guide).toEqual(started.guide)
+    expect(releaseWhenPossible).not.toHaveBeenCalledWith('scene1')
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(releaseWhenPossible).toHaveBeenCalledWith('scene1')
+    expect((await planner.getProgress(sequenceId)).waitingFor).toBe(second)
+    await vi.advanceTimersByTimeAsync(300)
+    const next = await planner.getProgress(sequenceId)
+    expect(next.scene.slots[0].presentation.model.id).toBe('replacement')
+    expect(next.current).toMatchObject({ guideId: second, durationMs: 1200 })
+  } finally {
+    await planner.close()
+  }
+})
+
+test('长句按语音或阅读时长补播，关闭补播仍等单个长动作', async () => {
+  const { planner, solo } = timedFixture({ repeatLongDialogueMotion: false })
+  const audio = (durationMs) => ({ durationMs, asset: { id: 'voice' } })
+  const textOnly = { ...guide, text: '字'.repeat(113) }
+  const timed = { timedDialogue: true }
+  try {
+    const [one] = await planner.resolveGuides(solo, [{ ...textOnly, audio: audio(1000) }], timed)
+    expect(one).toMatchObject({ subtitleDurationMs: 1000, motionDurationMs: 6000 })
+    const off = await planner.resolveGuides(
+      solo,
+      [{ ...guide, audio: audio(10000) }, textOnly],
+      timed
+    )
+    expect(off.map((item) => item.resolvedPerformance.motionCues.length)).toEqual([1, 1])
+    const enabled = timedFixture({ repeatLongDialogueMotion: true }).planner
+    try {
+      const eligible = [7000, 9000, 9001].map((durationMs) => ({
+        ...guide,
+        audio: audio(durationMs)
+      }))
+      const plans = await enabled.resolveGuides(solo, eligible, timed)
+      expect(plans.map((plan) => plan.resolvedPerformance.motionCues.length)).toEqual([1, 1, 2])
+      const [short, long, voiced] = await enabled.resolveGuides(
+        solo,
+        [{ ...guide, text: '字'.repeat(112) }, textOnly, { ...textOnly, audio: audio(1000) }],
+        timed
+      )
+      expect(short).toMatchObject({ subtitleDurationMs: 8960, motionDurationMs: 6000 })
+      expect(long).toMatchObject({ subtitleDurationMs: 9040, motionDurationMs: 13000 })
+      expect(long.resolvedPerformance.motionCues[1].atMs).toBe(9000)
+      expect(voiced.resolvedPerformance.motionCues).toHaveLength(1)
+      const theatre = await enabled.resolveGuides(solo, eligible)
+      expect(theatre.every((item) => item.resolvedPerformance.motionCues === undefined)).toBe(true)
+    } finally {
+      await enabled.close()
+    }
+  } finally {
+    await planner.close()
+  }
+})
+
+test('字幕在语音结束时全部点亮，恢复到动作收尾时不重播音频', async () => {
+  vi.useFakeTimers()
+  let report
+  const output = { play: vi.fn(), stop: vi.fn() }
+  const playback = new Playback({
+    client: {
+      performance: {
+        observe(_id, listener) {
+          report = listener
+          return () => {}
+        }
+      }
+    },
+    now: () => Date.now(),
+    output
+  })
+  const line = {
+    ...guide,
+    audio: { asset: { id: 'voice' }, durationMs: 1000 },
+    subtitleDurationMs: 1000,
+    motionDurationMs: 2500
+  }
+  try {
+    playback.follow('sequence')
+    report({ scene, current: { guideId: 'line', durationMs: 2500, elapsedMs: 500, guide: line } })
+    expect(playback.getSnapshot().revealedCharacters).toBe(1)
+    expect(output.play).toHaveBeenCalledOnce()
+    playback.setVisible(false)
+    await vi.advanceTimersByTimeAsync(500)
+    playback.setVisible(true)
+    expect(playback.getSnapshot()).toMatchObject({ elapsedMs: 1000, revealedCharacters: 2 })
+    expect(output.play).toHaveBeenCalledOnce()
+    playback.replay({ scene, guides: [line] })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.getSnapshot()).toMatchObject({ mode: 'replay', revealedCharacters: 2 })
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(playback.getSnapshot().mode).toBe('live')
+  } finally {
+    playback.close()
+  }
+})
+
 test('两个 sequence 独立推进；未 ready 不跳过；停止只保留当前句', async () => {
   vi.useFakeTimers()
   const planner = new Performance({

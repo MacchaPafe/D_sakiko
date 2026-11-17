@@ -57,6 +57,33 @@ const activityGroups = {
   'voice-input': 'talking_motion'
 }
 
+function variant(catalog, id, direction) {
+  const variants = catalog.motions?.[id]?.variants
+  return variants?.[direction] ?? variants?.[''] ?? variants?.C
+}
+
+/** @param {import('../characters/model-catalog.js').ModelCatalog} catalog 模型目录。 @param {import('../../shared/contracts/presentation.js').ResolvedPerformance} plan 首个动作的解析结果。 @param {string} direction 当前方向。 @returns {import('../../shared/contracts/presentation.js').ResolvedMotion|null} 可安全重复的动作。 */
+export function resolveFollowUpMotion(catalog, plan, direction) {
+  const primary = plan.motion
+  const stateMotions = new Set(
+    Object.values(catalog.states ?? {}).flatMap((state) => [state.on?.motion, state.off?.motion])
+  )
+  // 状态动作只走自己的计划与结算；补播动作不应再次触发面具等状态变更。
+  const canRepeat = (id) => !stateMotions.has(id) && !catalog.stateEffects?.motions?.[id]?.length
+  if (plan.version === 'v2') {
+    const ids = [
+      ...(catalog.groups?.[plan.group + '_' + direction] ?? []),
+      ...(catalog.groups?.[plan.group] ?? [])
+    ]
+    for (const id of ids) {
+      if (!canRepeat(id)) continue
+      const candidate = variant(catalog, id, direction)
+      if (candidate?.durationMs && candidate.member !== primary?.member) return { id, ...candidate }
+    }
+  }
+  return primary && canRepeat(primary.id) ? primary : null
+}
+
 /**
  * 按实际目标模型解析演出，两个通道独立回退，不覆盖历史选择。
  * @param {import('../characters/model-catalog.js').ModelCatalog | object} catalog 实际目标模型目录。
@@ -85,13 +112,9 @@ export function resolvePerformance(
     expression: null,
     fallbackReasons: []
   }
-  function variant(id) {
-    const variants = catalog.motions?.[id]?.variants
-    return variants?.[direction] ?? variants?.[''] ?? variants?.C
-  }
   // v2 动作自带面部曲线，普通台词忽略历史 v3 的两项显式选择。
   const explicit = catalog.version === 'v3' && !activity
-  let motion = explicit && variant(selection?.motion) ? selection.motion : null
+  let motion = explicit && variant(catalog, selection?.motion, direction) ? selection.motion : null
   if (!motion) {
     if (explicit && selection?.motion && selection.motion !== 'auto')
       result.fallbackReasons.push('motion_unavailable')
@@ -106,11 +129,11 @@ export function resolvePerformance(
       Object.keys(catalog.motions ?? {})
     ]
     for (const pool of pools) {
-      motion = pool?.find((id) => !stateMotions.has(id) && variant(id))
+      motion = pool?.find((id) => !stateMotions.has(id) && variant(catalog, id, direction))
       if (motion) break
     }
   }
-  if (motion) result.motion = { id: motion, ...variant(motion) }
+  if (motion) result.motion = { id: motion, ...variant(catalog, motion, direction) }
   if (catalog.version === 'v3') {
     let expression =
       explicit && catalog.expressions?.[selection?.expression] ? selection.expression : null

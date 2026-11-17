@@ -62,6 +62,23 @@ test('停止发生在访问请求返回之前，迟到租约立即释放且不�
   expect(client.assets.releaseAccess).toHaveBeenCalledWith('late-lease')
 })
 
+test('音频资源返回时已经进入动作收尾，则释放租约且不启动语音', async () => {
+  let resolveAccess
+  let elapsed = 50
+  const { output, client } = fixture(
+    () =>
+      new Promise((resolve) => {
+        resolveAccess = resolve
+      })
+  )
+  const pending = output.play(guide, { offsetMs: elapsed, getOffsetMs: () => elapsed })
+  elapsed = 100
+  resolveAccess({ url: 'late', leaseId: 'late-lease' })
+  await pending
+  expect(FakeAudio.instances).toHaveLength(0)
+  expect(client.assets.releaseAccess).toHaveBeenCalledExactlyOnceWith('late-lease')
+})
+
 test('历史语音共用实时音轨，停止时通知按钮且不驱动舞台口型', async () => {
   const onSpeechAudio = vi.fn()
   const { output, client } = fixture(undefined, onSpeechAudio)

@@ -1,12 +1,14 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { displayMessage } from '../../src/renderer/src/features/chat/message-display.js'
+import { stageModelKey } from '../../src/renderer/src/performance/stage-layout.js'
 
-vi.mock('pixi.js', () => ({ Application: class {}, Ticker: {} }))
+vi.mock('pixi.js', () => ({ Application: class {}, RenderTexture: {}, Ticker: {} }))
 vi.mock('pixi-live2d-display', () => ({
   Live2DModel: { registerTicker() {} },
   MotionPriority: { FORCE: 3 }
 }))
 const { StageSurface } = await import('../../src/renderer/src/performance/surface.js')
+const { StageController } = await import('../../src/renderer/src/features/home/stage-controller.js')
 
 const surfaces = []
 afterEach(() => {
@@ -54,6 +56,129 @@ test('等待状态和零进度没有消息占位，台词与翻译逐字显示�
   })
   expect(displayMessage(entry, { mode: 'full', revealedCharacters: 0 }).text).toBe(entry.text)
   expect(displayMessage(entry).translation).toBe(entry.translation)
+})
+
+function dialogueStage() {
+  let listener
+  const getReplayMaterials = vi.fn()
+  const stage = new StageController(
+    {
+      performance: {
+        observe(_id, callback) {
+          listener = callback
+          return () => {}
+        }
+      },
+      conversations: { getReplayMaterials }
+    },
+    () => {}
+  )
+  const modelPresentation = { model: { id: 'model' } }
+  const adapter = {
+    setMouthOpen() {},
+    setSpeechActive() {},
+    startMotion: vi.fn().mockResolvedValue(true),
+    stopMotions: vi.fn(),
+    setExpression: vi.fn().mockResolvedValue(true)
+  }
+  stage.surface = {
+    model: {},
+    motionGroups: { dialogue: [{ File: 'talk.motion3.json' }, { File: 'next.motion3.json' }] },
+    adapter,
+    destroy() {}
+  }
+  stage.state.shownOutfitKey = stageModelKey(modelPresentation)
+  const scene = { slots: [{ id: 'role', displayName: '祥子', presentation: modelPresentation }] }
+  stage.player.follow('sequence')
+  return {
+    stage,
+    report: (progress) => listener({ scene, ...progress }),
+    adapter,
+    getReplayMaterials
+  }
+}
+
+test('回放正在展示的台词时，从头播放同一动作和表情', async () => {
+  vi.useFakeTimers()
+  const { stage, report, adapter, getReplayMaterials } = dialogueStage()
+  const guide = {
+    slotId: 'role',
+    text: 'またね。',
+    audio: null,
+    resolvedPerformance: {
+      motion: { member: 'talk.motion3.json' },
+      expression: { id: 'smile' }
+    }
+  }
+  try {
+    report({ current: { guideId: 'live', guide, elapsedMs: 500, durationMs: 800 } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(adapter.startMotion).toHaveBeenCalledOnce()
+    await stage.replayLine('chat')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(stage.state).toMatchObject({ text: guide.text, revealed: 0, replayingLine: true })
+    expect(getReplayMaterials).not.toHaveBeenCalled()
+    expect(adapter.stopMotions).toHaveBeenCalledOnce()
+    expect(adapter.startMotion).toHaveBeenCalledTimes(2)
+    expect(adapter.startMotion).toHaveBeenLastCalledWith(
+      'dialogue',
+      0,
+      3,
+      150,
+      true,
+      expect.any(Function)
+    )
+    expect(adapter.setExpression).toHaveBeenCalledTimes(2)
+    expect(adapter.setExpression).toHaveBeenLastCalledWith('smile', expect.any(Function))
+  } finally {
+    stage.dispose()
+  }
+})
+
+test('舞台按 Guide 相对时标启动补播，跳过过期动作且换句立即清理', async () => {
+  vi.useFakeTimers()
+  const { stage, report, adapter } = dialogueStage()
+  let now = 0
+  stage.player.now = () => now
+  const first = { member: 'nested/talk.motion3.json', entry: { File: 'talk.motion3.json' } }
+  const second = { member: 'nested/next.motion3.json', entry: { File: 'next.motion3.json' } }
+  const guide = {
+    slotId: 'role',
+    text: '本句较长',
+    audio: null,
+    subtitleDurationMs: 10000,
+    resolvedPerformance: {
+      motion: first,
+      motionCues: [
+        { atMs: 0, durationMs: 6000, motion: first },
+        { atMs: 9000, durationMs: 4000, motion: second }
+      ],
+      expression: null
+    }
+  }
+  const motionIndices = () => adapter.startMotion.mock.calls.map(([, index]) => index)
+  try {
+    report({ current: { guideId: 'reconnected', guide, elapsedMs: 7000, durationMs: 13000 } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(motionIndices()).toEqual([])
+    now += 1999
+    stage.tick()
+    expect(motionIndices()).toEqual([])
+    now += 1
+    stage.tick()
+    stage.tick()
+    expect(motionIndices()).toEqual([1])
+    const [, , , , , current] = adapter.startMotion.mock.lastCall
+    expect(current()).toBe(true)
+    report({ current: null })
+    expect(current()).toBe(false)
+    expect(adapter.stopMotions).toHaveBeenCalledTimes(2)
+    report({ current: { guideId: 'ended', guide, elapsedMs: 13000, durationMs: 13000 } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(motionIndices()).toEqual([1])
+  } finally {
+    stage.dispose()
+  }
 })
 
 test.each(['declined', 'rejected'])(

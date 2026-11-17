@@ -375,6 +375,9 @@ section.home-subtitle::before {
   );
 }
 .subtitle-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 16px;
   font-weight: 600;
   color: var(--speaker);
@@ -387,6 +390,9 @@ section.home-subtitle::before {
       transparent
     )
     1;
+}
+.subtitle-replay {
+  color: inherit;
 }
 .subtitle-text {
   font-size: 20px;
@@ -401,7 +407,8 @@ section.home-subtitle::before {
 .subtitle-text span.spoken {
   color: var(--subtitle);
 }
-.subtitle-translation {
+.subtitle-translation,
+.subtitle-replay-error {
   margin-top: 8px;
   font-size: 14px;
   line-height: 22px;
@@ -477,9 +484,6 @@ section.home-subtitle::before {
   width: 32px;
   height: 32px;
   flex: none;
-}
-.home-composer-leading .home-stop-replay {
-  width: auto;
 }
 .composer-problem {
   display: flex;
