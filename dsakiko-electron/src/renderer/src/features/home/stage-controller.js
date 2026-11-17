@@ -1,10 +1,10 @@
 import { Live2DPreview } from '../../performance/live2d-preview.js'
 import { Performance } from '../../performance/interface.js'
 import { createAudioOutput } from '../../performance/audio-output.js'
-import { StageLayouts } from '../../performance/stage-layout.js'
+import { StageLayouts, stageModelKey } from '../../performance/stage-layout.js'
 import { lastDialogue } from '../../../../shared/chat-history.js'
 
-/** @typedef {{text: string, name: string, revealed: number, translation: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean}} StageState 本地字幕和模型状态，不替代后端历史。 */
+/** @typedef {{text: string, name: string, revealed: number, translation: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
 /** 正式舞台的资源与输出边界：共享预览加载器，跟随后端计划，实例不随面板开关重建。 */
 export class StageController {
   /** @param {import('../../backend/client.js').BackendClient} client 业务连接。 @param {(state: StageState) => void} publish 展示快照。 */
@@ -21,7 +21,9 @@ export class StageController {
       problem: null,
       loading: false,
       hasModel: false,
-      canRetryModel: false
+      canRetryModel: false,
+      shownOutfitKey: null,
+      failedOutfitKey: null
     }
     this.output = createAudioOutput(client, { onSpeechAudio: (audio) => this.analyse(audio) })
     this.player = new Performance({ client, output: this.output })
@@ -65,17 +67,18 @@ export class StageController {
    * @param {string|null} characterId 当前角色。
    * @param {string|null} chatId 已保存的对话，草稿时为空。
    * @param {string|null} sequenceId 活跃对话的演出计划。
+   * @param {import('../../../../shared/contracts/presentation.js').ModelPresentation} [draftPresentation] 空白对话临时选中的服装。
    * @returns {Promise<void>} 跟随实时演出，序列就绪前可先显示模型。
    */
-  async select(characterId, chatId, sequenceId) {
+  async select(characterId, chatId, sequenceId, draftPresentation) {
     const epoch = ++this.epoch
-    const selectionKey = JSON.stringify([characterId, chatId])
+    const selectionKey = JSON.stringify([characterId, chatId, stageModelKey(draftPresentation)])
     if (this.selectionKey !== selectionKey) {
       this.selectionKey = selectionKey
       this.cancelModelLoad()
       this.failedModel = null
       this.suspendModel()
-      this.update({ loading: false, problem: null, canRetryModel: false })
+      this.update({ loading: false, problem: null, canRetryModel: false, failedOutfitKey: null })
     }
     this.history = null
     this.player.follow(null)
@@ -90,8 +93,11 @@ export class StageController {
     try {
       let presentation = null
       if (chatId) presentation = await this.client.conversations.getStagePresentation(chatId)
-      else if (characterId)
-        presentation = (await this.client.characters.getPresentation(characterId)).presentation
+      else if (characterId) {
+        presentation =
+          draftPresentation ??
+          (await this.client.characters.getPresentation(characterId)).presentation
+      }
       if (epoch !== this.epoch || this.closed) return
       await this.showModel(presentation)
     } catch (error) {
@@ -113,15 +119,15 @@ export class StageController {
 
   async showModel(presentation) {
     const asset = presentation?.model ?? null
-    const key = asset ? JSON.stringify(asset) : null
+    const key = stageModelKey(presentation)
     if (this.pendingModel?.key === key) return this.pendingModel.promise
-    if (asset && this.failedModel?.model.id === asset.id) return false
+    if (key && this.state.failedOutfitKey === key) return false
     this.cancelModelLoad()
-    if (key === this.modelKey && this.surface.model) {
+    if (key === this.state.shownOutfitKey && this.surface.model) {
       this.awaitingModel = false
       this.failedModel = null
       if (this.state.loading || this.state.canRetryModel)
-        this.update({ loading: false, problem: null, canRetryModel: false })
+        this.update({ loading: false, problem: null, canRetryModel: false, failedOutfitKey: null })
       return true
     }
     this.failedModel = null
@@ -130,11 +136,19 @@ export class StageController {
       this.release(this.lease)
       this.lease = null
       this.modelKey = null
-      this.update({ loading: false, hasModel: false, problem: null, canRetryModel: false })
+      this.update({
+        loading: false,
+        hasModel: false,
+        problem: null,
+        canRetryModel: false,
+        shownOutfitKey: null,
+        failedOutfitKey: null
+      })
       return false
     }
     this.suspendModel()
-    this.update({ loading: true, problem: null, canRetryModel: false })
+    this.update({ loading: true, problem: null, canRetryModel: false, failedOutfitKey: null })
+    const layoutKey = asset.id
     const pending = { key, abort: new AbortController() }
     const current = () => !this.closed && this.pendingModel === pending
     this.pendingModel = pending
@@ -147,22 +161,24 @@ export class StageController {
         const replaced = await this.surface.show(access.url, current, pending.abort.signal, {
           cacheKey: JSON.stringify(['asset', asset.id]),
           bounds: presentation.bounds,
-          getLayout: (version) => this.layouts.get(key, version)
+          getLayout: (version) => this.layouts.get(layoutKey, version)
         })
         if (!replaced || !current()) return false
         this.release(this.lease)
         this.lease = lease
         lease = null
-        this.modelKey = key
+        this.modelKey = layoutKey
         this.awaitingModel = false
-        this.update({ hasModel: true })
+        this.update({ hasModel: true, shownOutfitKey: key })
         return true
       } catch (error) {
         if (current()) {
           this.failedModel = presentation
+          this.awaitingModel = !this.surface.model
           this.update({
             problem: '角色模型加载失败：' + error.message,
-            canRetryModel: true
+            canRetryModel: true,
+            failedOutfitKey: key
           })
         }
         return false
@@ -181,6 +197,7 @@ export class StageController {
     const failed = this.failedModel
     if (!failed) return
     this.failedModel = null
+    this.update({ failedOutfitKey: null })
     this.planKey = null
     void this.showModel(failed).then((shown) => {
       if (shown) this.progress(this.player.getSnapshot())

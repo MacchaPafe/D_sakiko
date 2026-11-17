@@ -4,6 +4,17 @@ const defaults = {
   v3: { scale: 1.875, offsetX: 0, offsetY: 64 }
 }
 
+/**
+ * @param {import('../../../shared/contracts/presentation.js').ModelPresentation|null} presentation 舞台展示配置。
+ * @returns {string|null} 展示身份。同一资源可注册为采用不同构图或映射的服装。
+ */
+export function stageModelKey(presentation) {
+  if (!presentation?.model) return null
+  const { model, mapping, bounds } = presentation
+  const frame = bounds ? [bounds.left, bounds.top, bounds.width, bounds.height] : null
+  return JSON.stringify([model.id, mapping?.id ?? null, frame])
+}
+
 /** @param {string} version SDK 版本。 @returns {ModelLayout} 独立默认值；V2 半身模型不套用 V3 全身高度。 */
 export function defaultStageLayout(version) {
   return { ...(defaults[version] ?? defaults.v3) }

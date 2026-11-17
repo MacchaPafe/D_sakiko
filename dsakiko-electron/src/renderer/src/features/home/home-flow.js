@@ -1,6 +1,7 @@
 /** @typedef {{characterId: string|null, chatId: string|null, tab: 'single-character'|'scripted-dialogue'}} HomeTarget 稳定导航身份，与尚未创建的聊天草稿分离。 */
 /** @typedef {{connectionId: string, modelId: string}} ModelSelection 可持久化的自有模型选择。 */
-/** @typedef {{text: string, pending: boolean, intent: object|null, chatId?: string, model?: ModelSelection|null}} InputSession 单次应用内的草稿和可重试发送意图。 */
+/** @typedef {{formId: string, model: import('../../../../shared/contracts/characters.js').CharacterModel}} DraftOutfit 尚未建立对话时选中的舞台服装。 */
+/** @typedef {{text: string, pending: boolean, intent: object|null, chatId?: string, model?: ModelSelection|null, outfit?: DraftOutfit|null}} InputSession 单次应用内的草稿和可重试发送意图。 */
 /**
  * @typedef {object} HomeState 页面只读快照；草稿不写入导航存储。
  * @property {boolean} loading 初次读取尚未完成。
@@ -12,6 +13,7 @@
  * @property {import('../../../../shared/contracts/models.js').ConnectionDefinition[]} connections 不含凭据的连接目录。
  * @property {import('../../../../shared/contracts/notices.js').Notice[]} notices 按持久顺序排列的通知。
  * @property {string} draft 当前输入会话文本。
+ * @property {DraftOutfit|null} draftOutfit 新对话暂选的服装，首轮受理时交给正式对话。
  * @property {boolean} sending 正在等待本次发送的受理结果。
  * @property {string|null} problem 可展示的命令错误。
  */
@@ -50,6 +52,7 @@ export class HomeFlow {
       draftModel: null,
       notices: [],
       draft: '',
+      draftOutfit: null,
       sending: false,
       problem: null
     }
@@ -141,6 +144,7 @@ export class HomeFlow {
       target,
       snapshot: null,
       draft: input.text,
+      draftOutfit: target.chatId ? null : (input.outfit ?? null),
       draftModel: input.model ?? null,
       sending: input.pending,
       problem: null
@@ -158,8 +162,12 @@ export class HomeFlow {
   }
   selectChat = (chat) =>
     this.select({ characterId: chat.characterIds[0] ?? null, chatId: chat.id, tab: chat.mode })
-  newChat = (characterId = this.state.target.characterId) =>
-    this.select({ characterId, chatId: null, tab: 'single-character' })
+  newChat = (characterId = this.state.target.characterId) => {
+    const target = { characterId, chatId: null, tab: 'single-character' }
+    const input = this.input(target)
+    if (!input.pending) input.outfit = null
+    this.select(target)
+  }
   setTab = (tab) => this.select({ ...this.state.target, chatId: null, tab })
   setDraft = (text) => {
     this.input().text = text
@@ -200,6 +208,33 @@ export class HomeFlow {
     }
   }
 
+  /**
+   * @param {string} formId 当前角色形态。
+   * @param {import('../../../../shared/contracts/characters.js').CharacterModel} model 选中的服装。
+   * @param {string|null} defaultModelId 该形态的默认服装身份。
+   * @returns {Promise<void>} 正式对话只覆盖当前形态的服装，草稿保留到首轮提交。
+   */
+  chooseOutfit = async (formId, model, defaultModelId) => {
+    const { characterId, chatId, tab } = this.state.target
+    if (!characterId || tab !== 'single-character') return
+    if (chatId) {
+      // 部分更新在后端与最新配置合并，保留其他形态的服装覆盖。
+      await this.client.conversations.patchSettings(chatId, {
+        characters: {
+          [characterId]: {
+            formId,
+            modelOverrides: { [formId]: model.id === defaultModelId ? null : model.id }
+          }
+        }
+      })
+    } else {
+      const input = this.input()
+      if (input.pending) return
+      input.outfit = model.id === defaultModelId ? null : { formId, model }
+      this.update({ draftOutfit: input.outfit })
+    }
+  }
+
   /** @param {InputSession} input 录音开始时绑定的草稿。 @param {string} text 识别结果。 */
   appendRecognition(input, text) {
     if (![...this.inputs.values()].includes(input)) return
@@ -223,8 +258,15 @@ export class HomeFlow {
     const draftModel = chatId ? null : validUserSelection(this.state.connections, input.model)
     const model = draftModel ?? selectedModel(this.state)
     const modelKey = JSON.stringify(model)
-    if (!input.intent || input.intent.text !== text || input.intent.modelKey !== modelKey)
-      input.intent = { text, model, modelKey, requestId: this.randomId() }
+    const outfit = chatId ? null : input.outfit
+    const outfitKey = outfit ? JSON.stringify([outfit.formId, outfit.model.id]) : null
+    if (
+      !input.intent ||
+      input.intent.text !== text ||
+      input.intent.modelKey !== modelKey ||
+      input.intent.outfitKey !== outfitKey
+    )
+      input.intent = { text, model, modelKey, outfit, outfitKey, requestId: this.randomId() }
     const intent = input.intent
     input.pending = true
     this.update({ sending: true, problem: null })
@@ -240,12 +282,20 @@ export class HomeFlow {
             : options
         await this.client.conversations.createTurn(chatId, submission, turnOptions)
       } else {
+        const settings = {}
+        if (intent.model) settings.generation = intent.model
+        if (intent.outfit) {
+          const { formId, model } = intent.outfit
+          settings.characters = {
+            [target.characterId]: { formId, modelOverrides: { [formId]: model.id } }
+          }
+        }
         const result = await this.client.conversations.createChatWithTurn(
           {
             title: text.trim().slice(0, 40),
             characterIds: [target.characterId],
             mode: 'single-character',
-            ...(intent.model ? { settings: { generation: intent.model } } : {})
+            ...(Object.keys(settings).length ? { settings } : {})
           },
           submission,
           options
@@ -254,6 +304,7 @@ export class HomeFlow {
       }
       input.chatId = chatId
       input.model = null
+      input.outfit = null
       if (input.text === text) input.text = ''
       input.intent = null
       input.pending = false
@@ -375,8 +426,9 @@ export function selectedModel(state) {
     )
   }
   const chat = state.snapshot?.chat
-  if (!chat) return firstAvailableModel(state.connections)
+  if (!chat) return null
   const generation = chat.meta.settings.generation
+  if (chat.meta.extensions?.pythonImport) return validUserSelection(state.connections, generation)
   const selection = generation.connectionId ? generation : state.settings?.generation
   return validUserSelection(state.connections, selection) ?? firstAvailableModel(state.connections)
 }

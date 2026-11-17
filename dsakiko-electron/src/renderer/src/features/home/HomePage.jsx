@@ -4,17 +4,11 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  GripHorizontal,
-  Maximize,
   MessageCircle,
   Plus,
-  RotateCcw,
   Settings,
-  Shirt,
   Square,
-  Trash2,
-  ZoomIn,
-  ZoomOut
+  Trash2
 } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import logo from '../../assets/welcome/logo.svg'
@@ -23,6 +17,7 @@ import { previewCharacters } from '../onboarding/characters.js'
 import { desktopHost } from '../../host/desktop.js'
 import { HomeFlow, hasConnection, selectedModel } from './home-flow.js'
 import { StageController } from './stage-controller.js'
+import { StageToolbar } from './StageToolbar.jsx'
 import { HistoryPanel } from './HistoryPanel.jsx'
 import { NoticeStack } from './NoticeStack.jsx'
 import { DeleteDialog } from './DeleteDialog.jsx'
@@ -219,81 +214,6 @@ function CharacterGroups({ state, flow, client, onDelete }) {
       onDelete={onDelete}
     />
   ))
-}
-function Toolbar({ onZoom, onReset }) {
-  const [position, setPosition] = useState(null)
-  const drag = useRef(null)
-  function start(event) {
-    const rect = event.currentTarget.parentElement.getBoundingClientRect()
-    const parent = event.currentTarget.parentElement.parentElement.getBoundingClientRect()
-    drag.current = {
-      x: event.clientX,
-      y: event.clientY,
-      left: rect.left - parent.left,
-      top: rect.top - parent.top,
-      width: parent.width,
-      height: parent.height,
-      toolbarHeight: rect.height
-    }
-    event.currentTarget.setPointerCapture(event.pointerId)
-  }
-  function move(event) {
-    const origin = drag.current
-    if (!origin) return
-    setPosition({
-      left: Math.max(8, Math.min(origin.width - 56, origin.left + event.clientX - origin.x)),
-      top: Math.max(
-        8,
-        Math.min(origin.height - origin.toolbarHeight - 8, origin.top + event.clientY - origin.y)
-      )
-    })
-  }
-  function end() {
-    drag.current = null
-  }
-  function increase() {
-    onZoom(1.1)
-  }
-  function decrease() {
-    onZoom(1 / 1.1)
-  }
-  function reset() {
-    onReset()
-  }
-  return (
-    <div
-      className="stage-toolbar"
-      style={position ? { ...position, bottom: 'auto' } : undefined}
-      aria-label="舞台工具"
-    >
-      <button
-        className="toolbar-grip"
-        aria-label="拖动舞台工具栏"
-        onPointerDown={start}
-        onPointerMove={move}
-        onPointerUp={end}
-        onLostPointerCapture={end}
-      >
-        <GripHorizontal size={16} />
-      </button>
-      <Button variant="ghost" size="icon" aria-label="放大角色" onClick={increase}>
-        <ZoomIn />
-      </Button>
-      <Button variant="ghost" size="icon" aria-label="缩小角色" onClick={decrease}>
-        <ZoomOut />
-      </Button>
-      <Button variant="ghost" size="icon" aria-label="重置角色视图" onClick={reset}>
-        <RotateCcw />
-      </Button>
-      <hr />
-      <Button variant="ghost" size="icon" aria-label="切换服装" disabled>
-        <Shirt />
-      </Button>
-      <Button variant="ghost" size="icon" aria-label="全窗口舞台" disabled>
-        <Maximize />
-      </Button>
-    </div>
-  )
 }
 function Subtitle({ state }) {
   if (!state.text) return <div className="home-subtitle" />
@@ -517,13 +437,16 @@ export function HomePage({ client, setup, setupState }) {
     problem: null,
     loading: false,
     hasModel: false,
-    canRetryModel: false
+    canRetryModel: false,
+    shownOutfitKey: null,
+    failedOutfitKey: null
   })
   const canvas = useRef(null)
   const stage = useRef(null)
   const hostVisibility = useRef(true)
   const downloadPageOpen = useRef(false)
   const sequenceId = state.snapshot?.presentation.sequenceId ?? null
+  const draftPresentation = state.draftOutfit?.model.presentation
   const currentReplay = turnReplay?.chatId === state.target.chatId ? turnReplay : null
   useEffect(() => {
     void flow.mount()
@@ -582,13 +505,22 @@ export function HomePage({ client, setup, setupState }) {
     }
   }, [client])
   useEffect(() => {
-    void stage.current?.select(state.target.characterId, state.target.chatId, sequenceId)
-  }, [state.target.characterId, state.target.chatId, sequenceId])
+    void stage.current?.select(
+      state.target.characterId,
+      state.target.chatId,
+      sequenceId,
+      draftPresentation
+    )
+  }, [state.target.characterId, state.target.chatId, sequenceId, draftPresentation])
   useEffect(() => {
     stage.current?.setHistory(state.snapshot)
   }, [state.snapshot, state.target.chatId])
   function retryStageModel() {
     stage.current?.retryModel()
+  }
+  function chooseStageOutfit(formId, model, defaultModelId) {
+    stage.current?.stopReplay()
+    return flow.chooseOutfit(formId, model, defaultModelId)
   }
   function zoomModel(factor) {
     stage.current?.zoom(factor)
@@ -670,6 +602,28 @@ export function HomePage({ client, setup, setupState }) {
     if (done) setDeleting(null)
     return done
   }
+  const role = state.characters.find((item) => item.id === state.target.characterId)
+  const canChooseOutfit =
+    role &&
+    state.target.tab === 'single-character' &&
+    (!state.target.chatId || (state.snapshot?.chat && !state.snapshot.participantIssue)) &&
+    !historyOpen &&
+    !settings &&
+    !resource &&
+    !voiceInstall &&
+    !deleting
+  const wardrobe = canChooseOutfit
+    ? {
+        role,
+        client,
+        chatSelection: state.snapshot?.chat.meta.settings.characters[role.id],
+        draftOutfit: state.draftOutfit,
+        stageState,
+        savingDraft: !state.target.chatId && state.sending,
+        onChoose: chooseStageOutfit,
+        onRetryModel: retryStageModel
+      }
+    : null
   const missing = state.chats.filter(
     (chat) => chat.mode === state.target.tab && chat.participantIssue
   )
@@ -779,7 +733,12 @@ export function HomePage({ client, setup, setupState }) {
               {setupState.connectionProblem}
             </div>
           )}
-          <Toolbar onZoom={zoomModel} onReset={resetModel} />
+          <StageToolbar
+            target={state.target}
+            wardrobe={wardrobe}
+            onZoom={zoomModel}
+            onReset={resetModel}
+          />
           <div className="home-bottom">
             <Subtitle state={stageState} />
             <Composer

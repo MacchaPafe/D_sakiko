@@ -13,6 +13,128 @@ import { startHttpServer } from '../../src/server/http-server.js'
 import { problemError } from '../../src/shared/problems.js'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
+async function dragStageTools(page, dx, dy, orientation) {
+  const handle = page.getByRole('button', { name: '拖动舞台工具栏' })
+  const toolbar = page.getByRole('group', { name: '舞台工具' })
+  const grip = await handle.boundingBox()
+  const x = grip.x + grip.width / 2
+  const y = grip.y + grip.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  let preview
+  try {
+    await page.mouse.move(x + dx, y + dy, { steps: 8 })
+    await expect.poll(() => toolbar.getAttribute('data-orientation')).toBe(orientation)
+    preview = await handle.boundingBox()
+  } finally {
+    await page.mouse.up()
+  }
+  expect(await handle.boundingBox()).toEqual(preview)
+  return preview
+}
+
+async function dragStageToolsOver(page, surface) {
+  const handle = page.getByRole('button', { name: '拖动舞台工具栏' })
+  const grip = await handle.boundingBox()
+  const area = await surface.boundingBox()
+  const point = { x: area.x + 32, y: area.y + area.height / 2 }
+  await dragStageTools(
+    page,
+    point.x - grip.x - grip.width / 2,
+    point.y - grip.y - grip.height / 2,
+    'horizontal'
+  )
+  expect(
+    await handle.evaluate(
+      (element, { x, y }) => element.contains(document.elementFromPoint(x, y)),
+      point
+    )
+  ).toBe(true)
+}
+
+async function verifyDraftOutfit(page, backend, defaultName) {
+  const trigger = page.getByRole('button', { name: '切换服装' })
+  const wardrobe = page.getByRole('dialog', { name: '服装' })
+  const toolbar = page.getByRole('group', { name: '舞台工具' })
+  const defaults = wardrobe.getByRole('button', { name: defaultName + ' 当前', exact: true })
+  const alternate = wardrobe.getByRole('button', { name: '备用服装', exact: true })
+  await trigger.click()
+  await defaults.waitFor()
+  expect(await wardrobe.getByRole('button', { name: /获取更多服装/ }).isDisabled()).toBe(true)
+  const stage = await page.locator('.home-stage').boundingBox()
+  const bar = await toolbar.boundingBox()
+  const bottomGap = stage.y + stage.height - bar.y - bar.height
+  await dragStageTools(page, 0, bottomGap - 8 + 12, 'vertical')
+  const stopped = await toolbar.boundingBox()
+  expect(stage.y + stage.height - stopped.y - stopped.height).toBeCloseTo(8, 0)
+  const horizontal = await dragStageTools(page, 0, 104, 'horizontal')
+  const up = await dragStageTools(page, 0, -48, 'horizontal')
+  const down = await dragStageTools(page, 0, 24, 'horizontal')
+  expect(up.y).toBeLessThan(horizontal.y)
+  expect(down.y).toBeGreaterThan(up.y)
+  const spacing = await toolbar.evaluate((bar) => {
+    const centers = Array.from(bar.querySelectorAll(':scope > button'), (button) => {
+      const { x, width } = button.getBoundingClientRect()
+      return x + width / 2
+    })
+    return {
+      rotate: getComputedStyle(bar.querySelector('.toolbar-grip svg')).rotate,
+      gaps: centers.slice(1).map((center, index) => center - centers[index])
+    }
+  })
+  expect(spacing).toEqual({ rotate: '90deg', gaps: [48, 48, 48, 48, 48] })
+  await toolbar.screenshot({ path: '/tmp/sakiko-stage-toolbar-horizontal.png' })
+  await dragStageToolsOver(page, page.getByRole('textbox', { name: '消息' }))
+  const grip = await page.getByRole('button', { name: '拖动舞台工具栏' }).boundingBox()
+  await dragStageTools(page, stage.x + stage.width - grip.x - grip.width / 2 - 10, -85, 'vertical')
+  const wardrobeBox = await wardrobe.boundingBox()
+  const composerBox = await page.locator('.home-composer').boundingBox()
+  expect(wardrobeBox.x).toBeLessThan((await toolbar.boundingBox()).x)
+  const overlapX = Math.max(wardrobeBox.x, composerBox.x)
+  const overlapY = Math.max(wardrobeBox.y, composerBox.y)
+  const overlapRight = Math.min(
+    wardrobeBox.x + wardrobeBox.width,
+    composerBox.x + composerBox.width
+  )
+  const overlapBottom = Math.min(
+    wardrobeBox.y + wardrobeBox.height,
+    composerBox.y + composerBox.height
+  )
+  expect(overlapX).toBeLessThan(overlapRight)
+  expect(overlapY).toBeLessThan(overlapBottom)
+  expect(
+    await wardrobe.evaluate(
+      (element, { x, y }) => element.contains(document.elementFromPoint(x, y)),
+      {
+        x: (overlapX + overlapRight) / 2,
+        y: (overlapY + overlapBottom) / 2
+      }
+    )
+  ).toBe(true)
+  const modelEntry = '**/api/v1/assets/**/*.model3.json'
+  const failModelLoad = (route) => route.abort()
+  await page.route(modelEntry, failModelLoad)
+  try {
+    await alternate.click()
+    await wardrobe.getByText('服装加载失败', { exact: true }).waitFor()
+    await defaults.waitFor()
+  } finally {
+    await page.unroute(modelEntry, failModelLoad)
+  }
+  await wardrobe.getByRole('button', { name: '备用服装 重试', exact: true }).click()
+  await wardrobe.getByRole('button', { name: '备用服装 当前', exact: true }).waitFor()
+  await page.locator('.home-stage').screenshot({ path: '/tmp/sakiko-stage-wardrobe.png' })
+  expect(await backend.conversations.listChats()).toHaveLength(0)
+  await page.keyboard.press('Escape')
+  await wardrobe.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: '新对话', exact: true }).click()
+  await trigger.click()
+  await defaults.waitFor()
+  await alternate.click()
+  await wardrobe.getByRole('button', { name: '备用服装 当前', exact: true }).waitFor()
+  await page.keyboard.press('Escape')
+}
+
 async function verifySidebar(page, application, backend, selected) {
   const { chat } = await backend.store.load(selected)
   const sampleReplies = [
@@ -453,6 +575,11 @@ app.on('window-all-closed', () => app.quit())`
         .toBe('true')
       await page.getByRole('tab', { name: '对话', exact: true }).click()
       role = await backend.characters.get('sakiko')
+      const form = role.forms.find((item) => item.id === role.defaultFormId)
+      const defaultName = form.models.find((item) => item.id === form.defaultModelId).name
+      const alternate = role.forms.find((item) => item !== form).models[0]
+      form.models.push({ ...alternate, id: 'home-test-outfit', name: '备用服装' })
+      role = await backend.characters.save(role)
       await backend.settings.saveConnection(
         {
           id: 'test',
@@ -545,12 +672,28 @@ app.on('window-all-closed', () => app.quit())`
       expect(agent.run).not.toHaveBeenCalled()
       await page.getByRole('textbox', { name: '消息' }).press('Shift+Enter')
       expect(await page.getByRole('textbox', { name: '消息' }).inputValue()).toContain('\n')
+      await verifyDraftOutfit(page, backend, defaultName)
       await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
       await page.getByRole('button', { name: '发送消息' }).click()
       await page.locator('.subtitle-text').filter({ hasText: '今天也辛苦了' }).waitFor()
       expect(await page.locator('.subtitle-text').innerText()).toBe(
         '今天也辛苦了，先休息一会儿吧。'
       )
+      await dragStageToolsOver(page, composer)
+      await dragStageToolsOver(page, page.getByRole('region', { name: '当前台词' }))
+      const [outfitChat] = await backend.conversations.listChats()
+      const savedOutfit = async () => {
+        const { chat } = await backend.store.load(outfitChat.id)
+        return chat.meta.settings.characters.sakiko.modelOverrides[role.defaultFormId]
+      }
+      expect(await savedOutfit()).toBe('home-test-outfit')
+      await page.getByRole('button', { name: '切换服装' }).click()
+      const wardrobe = page.getByRole('dialog', { name: '服装' })
+      await wardrobe.getByRole('button', { name: '备用服装 当前', exact: true }).waitFor()
+      await wardrobe.getByRole('button', { name: defaultName, exact: true }).click()
+      await wardrobe.getByRole('button', { name: defaultName + ' 当前', exact: true }).waitFor()
+      expect(await savedOutfit()).toBeNull()
+      await page.keyboard.press('Escape')
       await page.evaluate(() => {
         window.homeCanvas = document.querySelector('.home-canvas canvas')
       })

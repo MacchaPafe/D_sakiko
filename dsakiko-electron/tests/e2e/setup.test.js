@@ -20,7 +20,7 @@ function resourceFixture() {
     sizeBytes: payload.length,
     sha256: createHash('sha256').update(payload).digest('hex')
   }
-  const component = {
+  const gsv = {
     id: 'gsv.models',
     kind: 'gsv',
     version: 'test',
@@ -28,23 +28,39 @@ function resourceFixture() {
     requires: [],
     files: [file]
   }
+  const asr = {
+    id: 'asr.models',
+    kind: 'asr',
+    version: 'test',
+    available: true,
+    requires: [],
+    files: [
+      'config.json',
+      'tokenizer.json',
+      'tokenizer_config.json',
+      'preprocessor_config.json',
+      'generation_config.json',
+      'onnx/encoder_model_quantized.onnx',
+      'onnx/decoder_model_merged_quantized.onnx'
+    ].map((path) => ({ ...file, source: 'asr', path }))
+  }
+  const components = { gsv, asr }
   const control = { fail: false, requests: 0 }
   const catalog = {
     platform: 'darwin',
     arch: 'arm64',
-    components: async () => [component],
+    components: async () => Object.values(components),
     select: async (selection) =>
-      selection.includes('gsv')
-        ? [component]
-        : [
-            {
-              id: 'test.unavailable',
-              kind: 'runtime',
-              available: false,
-              files: [],
-              unavailableReason: '测试源未提供该资源'
-            }
-          ]
+      selection.map(
+        (id) =>
+          components[id] ?? {
+            id: 'test.unavailable',
+            kind: 'runtime',
+            available: false,
+            files: [],
+            unavailableReason: '测试源未提供该资源'
+          }
+      )
   }
   async function fetchResource(_url, { signal, headers }) {
     control.requests += 1
@@ -173,6 +189,9 @@ test.skipIf(!existsSync(join(root, 'resources/builtin-characters/manifest.json')
       estimateMode = 'pass'
       await page.getByRole('button', { name: '检查资源更新' }).click()
       await expect.poll(() => value.innerText()).toBe('524.29 KB')
+      const recognition = page.getByRole('checkbox', { name: '语音转文字', exact: true })
+      expect(await recognition.isChecked()).toBe(false)
+      await recognition.check()
       await page.getByRole('button', { name: '下载并继续' }).click()
       await expect
         .poll(
@@ -211,7 +230,11 @@ test.skipIf(!existsSync(join(root, 'resources/builtin-characters/manifest.json')
       expect(await page.getByRole('button', { name: '开始使用', exact: true }).isDisabled()).toBe(
         false
       )
-      expect((await backend.setup.getJob(id)).download.bytes).toBe(512 * 1024)
+      const completed = await backend.setup.getJob(id)
+      expect(completed.download.bytes).toBe(512 * 1024)
+      expect(completed.download.components).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'asr.models', status: 'ready' })])
+      )
       expect((await backend.onboarding.getState()).initialized).toBe(false)
       expect(await backend.characters.list()).toHaveLength(0)
       await page.screenshot({ path: join(output, 'complete.png') })

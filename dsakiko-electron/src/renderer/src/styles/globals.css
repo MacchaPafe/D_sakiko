@@ -499,16 +499,6 @@ body,
   gap: 16px;
   min-width: 0;
 }
-.resource-choice > .resource-choice-line {
-  border-radius: 8px;
-  transition: background-color var(--onboarding-control-duration) ease-out;
-}
-.resource-choice[data-disabled='false'] > .resource-choice-line:is(:hover, :focus-within) {
-  background-color: color-mix(in srgb, var(--role-surface) 55%, transparent);
-}
-.resource-choice[data-selected='true'][data-disabled='false'] > .resource-choice-line {
-  background-color: color-mix(in srgb, var(--secondary) 60%, transparent);
-}
 .onboarding-shell [data-slot='checkbox'] {
   transition:
     background-color var(--onboarding-control-duration) ease-out,

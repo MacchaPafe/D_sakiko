@@ -36,6 +36,37 @@ test('丢失首轮响应后重试同一意图，双击不重复发送，清空�
   flow.newChat('sakiko')
   expect(flow.input().chatId).toBeUndefined()
 })
+
+test('新对话临时服装随首轮提交，重开时恢复默认，正式对话只更新当前形态的覆盖', async () => {
+  const { flow, client } = fixture()
+  const outfit = { id: 'stage', name: '演出服', presentation: { model: { id: 'asset' } } }
+  await flow.chooseOutfit('form', outfit, 'default')
+  expect(flow.state.draftOutfit).toEqual({ formId: 'form', model: outfit })
+  flow.newChat('sakiko')
+  expect(flow.state.draftOutfit).toBeNull()
+
+  await flow.chooseOutfit('form', outfit, 'default')
+  flow.setDraft('使用当前服装')
+  client.conversations.createChatWithTurn
+    .mockRejectedValueOnce(Error('连接中断'))
+    .mockResolvedValue({ chatId: 'first' })
+  await flow.send()
+  await flow.send()
+  const [first, retry] = client.conversations.createChatWithTurn.mock.calls
+  expect(first).toEqual(retry)
+  expect(first[0].settings.characters).toEqual({
+    sakiko: { formId: 'form', modelOverrides: { form: 'stage' } }
+  })
+  expect(flow.state.draftOutfit).toBeNull()
+
+  client.conversations.patchSettings = vi.fn()
+  await flow.chooseOutfit('form', { id: 'default' }, 'default')
+  expect(client.conversations.patchSettings).toHaveBeenCalledWith('first', {
+    characters: { sakiko: { formId: 'form', modelOverrides: { form: null } } }
+  })
+  flow.newChat('sakiko')
+  expect(flow.state.draftOutfit).toBeNull()
+})
 test('切换角色和继续编辑时，迟到受理只交接原草稿，不覆盖当前输入', async () => {
   const { flow, client } = fixture()
   let finish

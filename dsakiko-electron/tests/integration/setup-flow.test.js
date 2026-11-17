@@ -57,11 +57,11 @@ function job(status = 'planned') {
     download: { totalBytes: 100, bytes: 0, components: [{ id: 'gsv.models', status: 'waiting' }] }
   }
 }
-async function selection(flow) {
+async function selection(flow, id = 'gsv') {
   await flow.mount()
   await flow.quickStart()
   await vi.waitFor(() => expect(flow.getSnapshot().catalogLoading).toBe(false))
-  flow.toggle('gsv')
+  flow.toggle(id)
   await vi.waitFor(() => expect(flow.getSnapshot().catalogLoading).toBe(false))
 }
 
@@ -91,9 +91,11 @@ test('快速开始不依赖舞台，重复点击只受理一次，返回等待�
   flow.dispose()
 })
 
-test('资源依赖与迟到容量估计隔离；ASR 不接受选择', async () => {
+test('ASR 可独立选择；资源依赖与迟到容量估计隔离', async () => {
   const { flow, client } = fixture()
-  await selection(flow)
+  await selection(flow, 'asr')
+  expect(flow.getSnapshot().selection).toEqual(['asr'])
+  flow.toggle('gsv')
   flow.toggle('asr')
   expect(flow.getSnapshot().selection).toEqual(['gsv'])
   const old = deferred()

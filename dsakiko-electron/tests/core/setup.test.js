@@ -22,6 +22,7 @@ import { validateRelease } from '../../src/backend/setup/catalog.js'
 import { scanLegacyDirectory } from '../../src/backend/setup/legacy.js'
 import { prepareRuntime, extractArchive } from '../../src/backend/setup/installers.js'
 import { writeJson } from '../../src/backend/core/support.js'
+import { chatSettings } from '../../src/backend/core/defaults.js'
 import { startHttpServer } from '../../src/server/http-server.js'
 import { createBackendClient } from '../../src/renderer/src/backend/client.js'
 
@@ -244,6 +245,99 @@ test('旧版扫描、导入、重启重试不重复角色和聊天，密钥只�
   expect(await resumed.store.list()).toHaveLength(1)
   expect((await resumed.characters.get('anon')).revision).toBe(1)
 }, 15000)
+
+test('按旧版来源固定导入对话的 LLM，补填仅接受有任务记录且未选择的聊天', async () => {
+  const { root, roots, backend } = await fixture()
+  const source = await legacy(root)
+  const file = 'reference_audio/all_conversation.json'
+  const {
+    chat_list: [original]
+  } = JSON.parse(await readFile(path.join(source, file), 'utf8'))
+  const ids = ['legacy-unset', 'explicit', 'reset', 'retargeted']
+  await put(
+    source,
+    file,
+    JSON.stringify({
+      chat_list: [
+        ...ids.map((id) => ({ ...original, chat_id: id, name: id })),
+        {
+          id: 'timeline',
+          title: 'timeline',
+          mode: 'single-character',
+          characterIds: ['anon'],
+          userPersona: null,
+          meta: { settings: chatSettings(), extensions: {} },
+          turns: []
+        }
+      ]
+    })
+  )
+  const manual = await backend.settings.saveConnection(
+    {
+      id: 'manual',
+      revision: 0,
+      name: '同名模型的另一连接',
+      provider: 'deepseek',
+      protocol: 'chat-completions',
+      baseUrl: 'http://localhost:9999/v1',
+      models: [{ id: 'deepseek-chat', declared: {}, overrides: {} }]
+    },
+    { kind: 'replace', secret: 'fixture' }
+  )
+  const scan = await backend.setup.scanLegacy(
+    (await backend.setup.grantLegacySource(source)).sourceId
+  )
+  const plan = await backend.setup.createPlan({ kind: 'legacy', scanId: scan.scanId })
+  await backend.setup.start(plan.id)
+  expect(await done(backend.setup, plan.id)).toMatchObject({ status: 'succeeded' })
+  const saved = await backend.settings.listConnections()
+  const migrated = saved.find((item) => item.id.startsWith('legacy-'))
+  const selection = { connectionId: migrated.id, modelId: 'deepseek-chat' }
+  const other = { connectionId: manual.id, modelId: selection.modelId }
+  const chats = Object.fromEntries(
+    (await backend.store.list()).map((item) => [item.title, item.id])
+  )
+  for (const id of Object.values(chats)) {
+    const { chat } = await backend.store.load(id)
+    expect(chat.meta.settings.generation).toEqual(selection)
+    expect(chat.meta.extensions.modelSelectionVersion).toBe(1)
+  }
+
+  // 模拟旧版 Electron 已导入、只继承全局设置的存档。
+  for (const title of ids) {
+    const { chat } = await backend.store.load(chats[title])
+    chat.meta.settings.generation = title === 'explicit' ? other : {}
+    if (title !== 'reset') delete chat.meta.extensions.modelSelectionVersion
+    await backend.store.save(chat)
+    if (title === 'legacy-unset')
+      await backend.store.save({ ...chat, id: 'without-import-receipt', revision: 0 })
+  }
+  await backend.settings.update({ generation: other })
+  await backend.close()
+  const resumed = await createCoreBackend({ ...roots, scanReminders: false })
+  cleanups.push(() => resumed.close())
+  const readSelection = async (id) =>
+    (await resumed.conversations.getSnapshot(id)).chat.meta.settings.generation
+  expect(await readSelection(chats['legacy-unset'])).toEqual(selection)
+  expect((await resumed.store.load(chats['legacy-unset'])).chat.meta.settings.generation).toEqual(
+    selection
+  )
+  expect(await readSelection(chats.explicit)).toEqual(other)
+  expect(await readSelection(chats.reset)).toEqual({})
+  expect(await readSelection('without-import-receipt')).toEqual({})
+  await expect(
+    resumed.conversations.createTurn(
+      'without-import-receipt',
+      { text: '继续', attachments: [] },
+      { requestId: 'no-import-model' }
+    )
+  ).rejects.toHaveProperty('problem.code', 'model_unavailable')
+  await resumed.settings.saveConnection(
+    { ...migrated, baseUrl: 'http://localhost:8888/v1' },
+    { kind: 'remove' }
+  )
+  expect(await readSelection(chats.retargeted)).toEqual({})
+})
 
 test('同名角色分别保留身份，旧聊天优先使用存档中的目录身份', async () => {
   const { root, backend } = await fixture()

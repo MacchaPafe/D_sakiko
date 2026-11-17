@@ -205,6 +205,17 @@ export function legacyConnections(config) {
   return { definitions, pending, useBuiltin: legacy.use_default_deepseek_api === true }
 }
 
+/**
+ * @param {object} config 旧版导入时保存的设置。
+ * @returns {import('../../shared/contracts/models.js').ConnectionDefinition|null} 可唯一定位的旧版选中连接，不含凭据。
+ */
+export function selectedLegacyConnection(config) {
+  const { definitions, useBuiltin } = legacyConnections(config)
+  if (useBuiltin) return null
+  const selected = definitions.filter((item) => item.selected)
+  return selected.length === 1 ? selected[0].definition : null
+}
+
 /** 连接配置写入私有设置后才计为已迁移。 */
 export async function importConnections(settings, config, builtinConnection, onSaved) {
   const { definitions, pending, useBuiltin } = legacyConnections(config)

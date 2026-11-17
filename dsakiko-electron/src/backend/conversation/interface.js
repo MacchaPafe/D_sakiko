@@ -21,6 +21,16 @@ import { isReplayableDialogue, lastDialogue } from '../../shared/chat-history.js
 
 const REPLY_LINE_PAUSE_MS = 300
 
+function generationForChat(global, chat, overrides) {
+  const defaults = { ...global }
+  if (chat.meta.extensions.pythonImport) {
+    // 仍继承温度等全局参数，连接身份只取导入映射或显式选择。
+    delete defaults.connectionId
+    delete defaults.modelId
+  }
+  return merge(defaults, chat.meta.settings.generation, overrides)
+}
+
 /** @typedef {import('../../shared/contracts/conversation.js').UserSubmission} UserSubmission */
 /** @typedef {import('../../shared/contracts/conversation.js').LineRef} LineRef */
 /** @typedef {import('../../shared/contracts/settings.js').TurnOptions} TurnOptions */
@@ -217,9 +227,13 @@ export class Conversations {
         this.performance.createSequence(scene)
       )
       // 重启后只恢复存档记录，不自动续跑中断前的生成任务；若有缺少结果的工具调用，直接补记为已中断。
-      // 兼容选择在下一次正常保存时一同落盘，读取聊天无需单独触发一次写盘。
-      if (!initialChat) await this.migrateModelSelection(state.chat)
-      if (this.interruptMissing(state.chat)) await this.persist(state)
+      const migrated = !initialChat && (await this.migrateModelSelection(state.chat))
+      // 可核实来源的旧版导入选择在补填时落盘，其他旧聊天保留原来的惰性保存策略。
+      if (
+        this.interruptMissing(state.chat) ||
+        (migrated && state.chat.meta.extensions.pythonImport)
+      )
+        await this.persist(state)
       if (!initialChat) this.states.set(chatId, state)
       return state
     } catch (error) {
@@ -229,7 +243,7 @@ export class Conversations {
     }
   }
 
-  /** 将旧对话继承的有效自有连接固定到对话，避免后续设置或导入改变原模型。 */
+  /** @param {import('../../shared/contracts/conversation.js').Chat} chat 待恢复对话。 @returns {Promise<boolean>} 是否补上了对话级模型选择。 */
   async migrateModelSelection(chat) {
     const local = chat.meta.settings.generation
     if (
@@ -238,18 +252,23 @@ export class Conversations {
       local.modelId ||
       !this.settings.assertUserSelection
     )
-      return
-    const { generation: global } = await this.settings.get()
-    if (!global?.connectionId || !global.modelId || global.connectionId === 'builtin-up') return
-    const selected = { connectionId: global.connectionId, modelId: global.modelId }
+      return false
+    const provenance = chat.meta.extensions.pythonImport
+    const candidate = provenance
+      ? await this.setup?.legacyChatModel?.(provenance.source, chat.id)
+      : (await this.settings.get()).generation
+    if (!candidate?.connectionId || !candidate.modelId || candidate.connectionId === 'builtin-up')
+      return false
+    const selected = { connectionId: candidate.connectionId, modelId: candidate.modelId }
     try {
       await this.settings.assertUserSelection(selected)
     } catch (error) {
-      if (error.problem?.code === 'model_unavailable') return
+      if (error.problem?.code === 'model_unavailable') return false
       throw error
     }
     Object.assign(local, selected)
     chat.meta.extensions.modelSelectionVersion = 1
+    return true
   }
 
   /**
@@ -617,7 +636,7 @@ export class Conversations {
     try {
       await this.prepareWorkFiles(chat, input, resourceOwner, preview)
       const global = await this.settings.get()
-      const generation = merge(global.generation, chat.meta.settings.generation, options.generation)
+      const generation = generationForChat(global.generation, chat, options.generation)
       if (generation.compression.thresholdTokens === 258000)
         generation.compression.thresholdTokens = 270000
       const speech = merge(global.speech, chat.meta.settings.speech, options.speech)
@@ -2122,10 +2141,7 @@ export class Conversations {
     await this.queue.run(chatId, async () => {
       this.assertIdle(state)
       requireParticipants(await this.checkParticipants(state.chat))
-      const generation = merge(
-        (await this.settings.get()).generation,
-        state.chat.meta.settings.generation
-      )
+      const generation = generationForChat((await this.settings.get()).generation, state.chat)
       // 至少保留最后一轮完整对话不被压缩。
       const count = state.chat.turns.length - Math.max(1, generation.compression.retainedTurns)
       requireValue(count > 0, 'nothing_to_compress')

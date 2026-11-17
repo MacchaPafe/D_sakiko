@@ -122,10 +122,16 @@ export async function createCoreBackend({
     fetch: transport,
     builtinConnection,
     ...setupOptions,
-    importChats: async (scan, refs, mapping, signal, onSaved) => {
+    importChats: async (scan, refs, mapping, signal, onSaved, model) => {
       const drafts = await pythonImporter.read(scan, refs, mapping, signal)
       for (const chat of drafts.chats) {
         signal.throwIfAborted()
+        if (model) {
+          chat.meta.settings ??= {}
+          chat.meta.settings.generation ??= {}
+          Object.assign(chat.meta.settings.generation, model)
+          chat.meta.extensions.modelSelectionVersion = 1
+        }
         await store.save(chat)
         await onSaved(chat)
       }

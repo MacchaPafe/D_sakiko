@@ -303,7 +303,7 @@
 /* 记录面板和可移动的舞台工具栏都可能盖住拖动区，需保留鼠标事件。 */
 [data-window-controls-overlay]
   .home-stage
-  :is(.history-panel, .read-history, .stage-toolbar, .home-bottom) {
+  :is(.history-panel, .read-history, .stage-toolbar, .stage-wardrobe, .home-bottom) {
   app-region: no-drag;
 }
 .stage-scrim {
@@ -496,6 +496,7 @@ section.home-subtitle::before {
   display: flex;
   flex-direction: column;
   position: absolute;
+  z-index: 1;
   bottom: 55px;
   left: 6%;
   width: 48px;
@@ -511,6 +512,17 @@ section.home-subtitle::before {
   width: 40px;
   height: 40px;
   border-radius: 10px;
+}
+.stage-toolbar[data-orientation='horizontal'] {
+  flex-direction: row;
+  width: max-content;
+  height: 48px;
+}
+.stage-toolbar[data-orientation='horizontal'] .toolbar-grip {
+  height: 40px;
+}
+.stage-toolbar[data-orientation='horizontal'] .toolbar-grip svg {
+  rotate: 90deg;
 }
 .stage-toolbar svg {
   width: 20px;
@@ -528,11 +540,135 @@ section.home-subtitle::before {
 }
 .stage-toolbar hr {
   width: 24px;
-  border-color: var(--muted-foreground);
+  height: 1px;
+  border: 0;
+  background: var(--muted-foreground);
   opacity: 0.45;
+}
+.stage-toolbar[data-orientation='horizontal'] hr {
+  display: none;
+}
+.stage-toolbar[data-orientation='horizontal'] .toolbar-reset {
+  position: relative;
+}
+/* 将分隔线画在现有间隙内，保持各按钮的中心等距。 */
+.stage-toolbar[data-orientation='horizontal'] .toolbar-reset::after {
+  position: absolute;
+  right: -4px;
+  width: 1px;
+  height: 24px;
+  background: var(--muted-foreground);
+  opacity: 0.45;
+  pointer-events: none;
+  content: '';
+}
+.stage-toolbar > button[aria-expanded='true'] {
+  color: var(--primary);
+  background: var(--accent);
+}
+.stage-wardrobe {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  width: min(272px, calc(100% - 16px));
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--glass-composer);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 12px 27.2px var(--shadow-ink);
+  overflow: hidden;
+}
+.stage-wardrobe-heading {
+  display: flex;
+  flex: none;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 2px 2px 8px 4px;
+}
+.stage-wardrobe-heading h2 {
+  font-size: 15px;
+  font-weight: 500;
+}
+.stage-wardrobe-heading p,
+.stage-wardrobe-list > p,
+.stage-wardrobe footer span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.stage-wardrobe-heading button {
+  width: 32px;
+  height: 32px;
+}
+.stage-wardrobe-list {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-height: 0;
+  padding: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.stage-wardrobe-list > p {
+  padding: 6px;
+  overflow-wrap: anywhere;
+}
+.stage-wardrobe .home-inline-problem {
+  padding: 2px 8px;
+  color: var(--destructive);
+  overflow-wrap: anywhere;
+}
+.stage-outfit-option {
+  justify-content: space-between;
+  width: 100%;
+  min-height: 36px;
+  height: auto;
+  padding: 6px 8px;
+  white-space: normal;
+  text-align: left;
+}
+.stage-outfit-option > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stage-outfit-option[aria-pressed='true'] {
+  color: var(--primary);
+  background: var(--accent);
+  opacity: 1;
+}
+.stage-outfit-option[aria-disabled='true']:not([aria-pressed='true']) {
+  color: var(--muted-foreground);
+  background: transparent;
+}
+.stage-outfit-current,
+.stage-outfit-status {
+  flex: none;
+  font-size: 12px;
+}
+.stage-outfit-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.stage-outfit-status {
+  color: var(--muted-foreground);
+}
+.stage-wardrobe footer {
+  flex: none;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.stage-wardrobe footer button {
+  justify-content: space-between;
+  width: 100%;
+  opacity: 1;
+  color: var(--muted-foreground);
 }
 .history-handle {
   position: absolute;
+  z-index: 2;
   right: 16px;
   top: 34%;
   width: 32px;
@@ -545,6 +681,7 @@ section.home-subtitle::before {
 }
 .history-panel {
   position: absolute;
+  z-index: 2;
   right: 64px;
   top: 38px;
   width: 360px;
@@ -687,6 +824,7 @@ section.home-subtitle::before {
 }
 .read-history {
   position: absolute;
+  z-index: 2;
   top: 24px;
   right: 24px;
 }

@@ -23,7 +23,13 @@ import { downloadFile } from './download.js'
 import { VoiceReuse, voiceDefinition } from './voice-reuse.js'
 import { collectDownloadCache } from './cache.js'
 import { extractArchive, prepareRuntime } from './installers.js'
-import { bindGsv, characterDefinition, importConnections, legacyConnections } from './bindings.js'
+import {
+  bindGsv,
+  characterDefinition,
+  importConnections,
+  legacyConnections,
+  selectedLegacyConnection
+} from './bindings.js'
 import { selectGptSovitsFiles } from '../../shared/contracts/speech-resources.js'
 import { pythonChatId } from '../storage/python-import-interface.js'
 
@@ -123,6 +129,7 @@ export class ResourceSetup {
     this.bus = new SnapshotBus()
     this.queue = new SerialQueue()
     this.sources = new Map()
+    this.legacyChatConnections = new Map()
     this.running = new Map()
     this.closed = false
     this.readOnboardingContext = async () => ({ initialized: true, candidates: [] })
@@ -149,6 +156,7 @@ export class ResourceSetup {
     for (const name of await readdir(path.join(this.directory, 'jobs'))) {
       if (!/^[a-zA-Z0-9-]+\.json$/.test(name)) continue
       const job = await readJson(path.join(this.directory, 'jobs', name))
+      this.rememberLegacyChatConnections(job)
       if (job.status === 'running') {
         job.status = 'paused'
         job.phase = 'interrupted'
@@ -164,6 +172,45 @@ export class ResourceSetup {
     }
     await this.maintainRuntimes()
     await this.cleanDownloadCache()
+  }
+
+  rememberLegacyChatConnections(job) {
+    if (job.kind !== 'legacy' || !job.options?.include?.chats || !job.scan?.identity) return
+    const connection = selectedLegacyConnection(job.scan.config)
+    for (const result of job.results ?? []) {
+      if (result.kind !== 'chat' || result.status !== 'imported') continue
+      const key = JSON.stringify([job.scan.identity, result.id])
+      if (!this.legacyChatConnections.has(key)) this.legacyChatConnections.set(key, connection)
+      else if (this.legacyChatConnections.get(key)?.id !== connection?.id)
+        this.legacyChatConnections.set(key, null)
+    }
+  }
+
+  async matchLegacyChatConnection(expected) {
+    if (!expected) return null
+    const modelId = expected.models[0].id
+    const saved = (await this.settings.listConnections()).find((item) => item.id === expected.id)
+    // 厂商、地址和协议也要匹配，同名模型或已被改成其他端点的连接不能用来补填。
+    if (
+      !saved ||
+      saved.provider !== expected.provider ||
+      saved.baseUrl !== expected.baseUrl ||
+      saved.protocol !== expected.protocol ||
+      !saved.models.some((item) => item.id === modelId)
+    )
+      return null
+    return { connectionId: saved.id, modelId }
+  }
+
+  /**
+   * @param {string} source 存档记录中的旧版来源。
+   * @param {string} chatId 该来源导入任务保存过的正式聊天 ID。
+   * @returns {Promise<{connectionId: string, modelId: string}|null>} 与导入任务记录和当前目录匹配的模型选择。
+   */
+  legacyChatModel(source, chatId) {
+    return this.matchLegacyChatConnection(
+      this.legacyChatConnections.get(JSON.stringify([source, chatId]))
+    )
   }
 
   async legacyExclusions() {
@@ -1382,10 +1429,19 @@ export class ResourceSetup {
     }
     if (job.options.include.chats) {
       await this.updateLegacyItem(job, 'chats', 'committing', 0)
-      const imported = await this.importChats(job.scan, job.refs, mapping, signal, async (chat) => {
-        job.results.push({ kind: 'chat', id: chat.id, status: 'imported' })
-        await this.updateLegacyItem(job, 'chats', 'committing', job.items.chats.completed + 1)
-      })
+      const model = await this.matchLegacyChatConnection(selectedLegacyConnection(job.scan.config))
+      const imported = await this.importChats(
+        job.scan,
+        job.refs,
+        mapping,
+        signal,
+        async (chat) => {
+          job.results.push({ kind: 'chat', id: chat.id, status: 'imported' })
+          await this.updateLegacyItem(job, 'chats', 'committing', job.items.chats.completed + 1)
+        },
+        model
+      )
+      this.rememberLegacyChatConnections(job)
       job.warnings.push(...imported.warnings)
       await this.updateLegacyItem(
         job,

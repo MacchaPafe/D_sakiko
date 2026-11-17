@@ -255,13 +255,7 @@ export class SetupFlow {
 
   /** @param {string} id 产品选项。 @returns {void} 勾选角色时自动选上所需引擎；取消引擎同时清除依赖它的语音选择。 */
   toggle = (id) => {
-    if (
-      this.state.pending ||
-      this.state.refreshing ||
-      this.state.view !== 'resources' ||
-      id === 'asr'
-    )
-      return
+    if (this.state.pending || this.state.refreshing || this.state.view !== 'resources') return
     const options = this.state.catalog?.groups.flatMap((group) => group.options) ?? []
     const option = options.find((item) => item.id === id)
     if (!option?.available || option.ready) return

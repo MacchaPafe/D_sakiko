@@ -139,8 +139,9 @@ export function importTimeline(original, { id, revision = 0, scan, refs, warning
     chat.meta.settings ??= {}
     chat.meta.settings.scenario = legacyScenario(theater, chat.characterIds)
   }
-  // Python 的连接和资源设置不属于新后端目录；历史快照仍完整保留，下一轮继承本地配置。
+  // Python 的连接 ID 不属于新目录；新对话设置使用导入时匹配到的连接，历史快照仍完整保留。
   for (const key of ['connectionId', 'modelId']) delete chat.meta.settings?.generation?.[key]
+  delete extensions.modelSelectionVersion
   for (const turn of chat.turns) {
     turn.meta.requestId = null
     if (turn.meta.extensions) delete turn.meta.extensions.requestFingerprint

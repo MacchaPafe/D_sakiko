@@ -26,7 +26,7 @@ function ResourceChoice({ option, title, description, avatar, selection, locked,
     onToggle(option.id)
   }
   return (
-    <div className="resource-choice" data-disabled={Boolean(disabled)} data-selected={selected}>
+    <div className="resource-choice" data-disabled={Boolean(disabled)}>
       <div className="resource-choice-line">
         <Checkbox
           id={id}
@@ -62,7 +62,7 @@ export function ResourceSelection({ state, flow }) {
     <>
       <header className="setup-heading">
         <h1>添加语音功能</h1>
-        <p>让交流不止于文字。按需选择语音合成引擎和角色声音。</p>
+        <p>按需选择语音输入、语音合成引擎和角色声音。</p>
       </header>
       {state.catalogProblem && (
         <div className="setup-problem" role="alert">
@@ -80,7 +80,7 @@ export function ResourceSelection({ state, flow }) {
                 title="语音转文字"
                 description="使用麦克风，将录音转换为可编辑的文字"
                 selection={state.selection}
-                locked
+                locked={locked}
                 onToggle={flow.toggle}
               />
             </div>
