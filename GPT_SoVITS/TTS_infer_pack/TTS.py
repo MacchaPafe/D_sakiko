@@ -1436,8 +1436,17 @@ class TTS:
         ###### text preprocessing ########
         t1 = time.perf_counter()
         data: list = None
+        batch_texts = inputs.get("batch_texts")
         if not (return_fragment or streaming_mode):
-            data = self.text_preprocessor.preprocess(text, text_lang, text_split_method, self.configs.version)
+            if batch_texts is None:
+                data = self.text_preprocessor.preprocess(text, text_lang, text_split_method, self.configs.version)
+            else:
+                data = []
+                for line in batch_texts:
+                    items = self.text_preprocessor.preprocess(line, text_lang, "cut0", self.configs.version)
+                    if len(items) != 1:
+                        raise ValueError("批量合成需要每条台词对应一个推理片段")
+                    data.extend(items)
             if len(data) == 0:
                 yield 16000, np.zeros(int(16000), dtype=np.int16)
                 return
@@ -1826,6 +1835,14 @@ class TTS:
                 print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t_34, t_45))
                 if len(audio) == 0:
                     yield output_sr, np.zeros(int(output_sr), dtype=np.int16)
+                    return
+                if batch_texts is not None:
+                    # 调用方需要为每条台词保存独立的 WAV，并保持原始下标。
+                    for batch in audio:
+                        for fragment in batch:
+                            yield self.audio_postprocess(
+                                [[fragment]], output_sr, None, speed_factor, False, fragment_interval,
+                            )
                     return
                 yield self.audio_postprocess(
                     audio,

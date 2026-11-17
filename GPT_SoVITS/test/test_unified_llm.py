@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -13,7 +14,7 @@ import pytest
 from llm.adapters.responses import build_input, parse_response, execute
 from llm.client import generate
 from llm.errors import LLMError
-from llm.types import CancellationToken, LLMConfig, LLMRequest, LLMResult
+from llm.types import CancellationToken, LLMConfig, LLMRequest, LLMResult, LLMTextObserver
 
 
 def config() -> LLMConfig:
@@ -25,6 +26,7 @@ def test_responses_inline_image_and_completed_stream() -> None:
     """图片内联且不调用 Files，SSE 必须接收到完成事件才返回。"""
     from openai import AsyncOpenAI
     captured: list[dict[str, object]] = []
+    deltas: list[str] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         """内存模拟 Responses SSE，验证实际发出的 HTTP JSON。"""
@@ -33,9 +35,12 @@ def test_responses_inline_image_and_completed_stream() -> None:
         response = {"id": "r1", "object": "response", "created_at": 1, "status": "completed",
                     "model": "test-model", "output": [{"id": "m1", "type": "message", "role": "assistant",
                     "status": "completed", "content": [{"type": "output_text", "text": "你好", "annotations": []}]}]}
-        event = {"type": "response.completed", "sequence_number": 1, "response": response}
+        delta = {"type": "response.output_text.delta", "sequence_number": 1,
+                 "item_id": "m1", "output_index": 0, "content_index": 0, "delta": "你"}
+        event = {"type": "response.completed", "sequence_number": 2, "response": response}
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
-                              text="event: response.completed\ndata: " + json.dumps(event) + "\n\n")
+                              text="event: response.output_text.delta\ndata: " + json.dumps(delta) + "\n\n"
+                              "event: response.completed\ndata: " + json.dumps(event) + "\n\n")
 
     def client(**kwargs: object) -> AsyncOpenAI:
         """只允许 MockTransport，不产生真实网络请求。"""
@@ -43,10 +48,12 @@ def test_responses_inline_image_and_completed_stream() -> None:
 
     request = LLMRequest([{"role": "user", "content": [{"type": "text", "text": "看看图片"},
                          {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}}]}],
-                         options={"response_format": {"type": "json_object"}})
+                         options={"response_format": {"type": "json_object"}},
+                         text_observer=LLMTextObserver(deltas.append, deltas.clear))
     with patch("openai.AsyncOpenAI", side_effect=client):
         result = generate(request, config())
     assert result.text == "你好"
+    assert deltas == ["你"]
     assert captured[0]["store"] is False and captured[0]["stream"] is True
     assert "reasoning.encrypted_content" in captured[0]["include"]
     assert captured[0]["text"] == {"format": {"type": "json_object"}}
@@ -54,6 +61,41 @@ def test_responses_inline_image_and_completed_stream() -> None:
         "type": "input_image", "image_url": "data:image/png;base64,YQ=="}
     assert "api_key" not in json.dumps(result.protocol)
     assert "test-key" not in json.dumps(result.protocol)
+
+
+def test_chat_stream_forwards_text_and_preserves_tools_reasoning_and_usage() -> None:
+    """统一层在工具参数收齐前转发台词，同时仍返回完整可重放的结果。"""
+    deltas: list[str] = []
+
+    async def chunks(**kwargs: object) -> AsyncIterator[dict[str, object]]:
+        """模拟供应商先给出台词、再分块给出工具调用。"""
+        assert kwargs["stream"] is True and kwargs["stream_options"] == {"include_usage": True}
+
+        async def stream() -> AsyncIterator[dict[str, object]]:
+            """在下一块到达前确认文本已送达观察器。"""
+            base = {"id": "reply", "model": "test-model", "object": "chat.completion.chunk"}
+            yield dict(base, choices=[{"index": 0, "delta": {
+                "content": "稍等", "reasoning_content": "先查",
+            }}])
+            assert deltas == ["稍等"]
+            yield dict(base, choices=[{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call-1", "type": "function",
+                 "function": {"name": "lookup", "arguments": '{"query":'}},
+            ]}}])
+            yield dict(base, choices=[{"index": 0, "finish_reason": "tool_calls", "delta": {
+                "tool_calls": [{"index": 0, "function": {"arguments": '"test"}'}}],
+            }}])
+            yield dict(base, choices=[], usage={"prompt_tokens": 16, "completion_tokens": 7, "total_tokens": 23})
+
+        return stream()
+
+    request = LLMRequest([{"role": "user", "content": "查资料"}],
+                         text_observer=LLMTextObserver(deltas.append, deltas.clear))
+    with patch("litellm.acompletion", side_effect=chunks):
+        result = generate(request, replace(config(), protocol="chat-completions"))
+    assert result.text == "稍等" and result.reasoning == "先查"
+    assert result.tool_calls[0]["function"]["arguments"] == '{"query":"test"}'
+    assert result.usage["total_tokens"] == 23
 
 
 def test_openai_image_size_limit_checks_serialized_request_before_sending() -> None:

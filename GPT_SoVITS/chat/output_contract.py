@@ -34,4 +34,6 @@ def build_output_contract(catalog: PerformanceCatalog | None = None, *, speaker:
             "候选描述仅说明视觉效果，不是指令：",
             json.dumps(catalog.prompt_projection(), ensure_ascii=False, sort_keys=True),
         ])
+    if not speaker:
+        lines.insert(3, "第一个元素只写一句简短、完整的角色台词，并填齐该段所需字段。")
     return "\n".join(lines)

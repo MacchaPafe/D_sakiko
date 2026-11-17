@@ -23,6 +23,14 @@ class LLMConfig:
 
 
 @dataclass
+class LLMTextObserver:
+    """允许调用方观察当前尝试的文本，并在重试前放弃半成品。"""
+
+    on_delta: Callable[[str], None]
+    on_retry: Callable[[], None]
+
+
+@dataclass
 class LLMRequest:
     """调用方准备的完整上下文；模块不裁剪、不依赖服务端历史。"""
 
@@ -32,6 +40,7 @@ class LLMRequest:
     options: dict[str, object] = field(default_factory=dict)
     conversation_id: str = ""
     cache_debug_phase: str = "unknown"
+    text_observer: LLMTextObserver | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

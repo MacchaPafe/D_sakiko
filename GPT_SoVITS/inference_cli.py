@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import os
-import queue
 import signal
 import sys
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
+from multiprocessing.connection import Connection
 from typing import TYPE_CHECKING, cast, Optional
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -620,6 +621,20 @@ class CharacterVoiceRuntime:
         progress_callback=None,
     ) -> tuple[int, np.ndarray]:
         """执行一次语音合成并返回采样率与音频数据。"""
+        return self.synthesize_audio(payload, tts_manager, dict_language_v2, i18n_translator, progress_callback)[0]
+
+    def synthesize_audio(
+        self,
+        payload: PayloadDict,
+        tts_manager: SharedTTSManager,
+        dict_language_v2: dict[str, str],
+        i18n_translator: Callable[[str], str],
+        progress_callback: Callable[[int, int, str], None] | None = None,
+        on_chunk: Callable[[int, bytes], None] | None = None,
+    ) -> list[tuple[int, np.ndarray]]:
+        """分块解码首段，或按台词顺序返回同参考条件的多条音频。"""
+        import numpy as np
+
         self.apply_payload(payload)
         tts = tts_manager.get_tts_for_runtime(self)
 
@@ -653,11 +668,38 @@ class CharacterVoiceRuntime:
         }
         if progress_callback is not None:
             input_diction["progress_callback"] = progress_callback
+        batch_texts = payload.get("batch_texts")
+        streaming = on_chunk is not None and not tts.configs.use_vocoder
+        if isinstance(batch_texts, list):
+            input_diction.update(
+                batch_texts=batch_texts, batch_size=len(batch_texts), parallel_infer=True, split_bucket=False,
+            )
+        elif streaming:
+            input_diction.update(streaming_mode=True, fixed_length_chunk=True, min_chunk_length=16)
         with open(os.devnull, "w", encoding="utf-8") as null:
             with contextlib.redirect_stdout(null):
                 generator = tts.run(input_diction)
                 try:
-                    return next(generator)
+                    if streaming:
+                        assert on_chunk is not None
+                        chunks = []
+                        sample_rate = tts.configs.sampling_rate
+                        for rate, pcm in generator:
+                            if not pcm.size:
+                                continue
+                            if rate != sample_rate:
+                                raise RuntimeError("流式解码返回了无效的采样率")
+                            chunks.append(pcm)
+                            on_chunk(rate, pcm.astype("<i2", copy=False).tobytes())
+                        if not chunks:
+                            raise StopIteration
+                        return [(sample_rate, np.concatenate(chunks))]
+                    if isinstance(batch_texts, list):
+                        outputs = list(generator)
+                        if len(outputs) != len(batch_texts) or any(not pcm.size for _, pcm in outputs):
+                            raise RuntimeError("批量合成返回的音频数量与台词不一致")
+                        return outputs
+                    return [next(generator)]
                 finally:
                     generator.close()
                     tts_manager.save_runtime_prompt_cache(self)
@@ -704,9 +746,9 @@ def build_language_mapping(i18n_translator) -> dict[str, str]:
     }
 
 
-def put_ack(result_queue, command: str, character_name: str, ok: bool, request_id: str = '') -> None:
+def put_ack(connection: Connection, command: str, character_name: str, ok: bool, request_id: str = '') -> None:
     """向主进程返回一条命令确认结果。"""
-    result_queue.put(
+    connection.send(
         {
             "type": "ack",
             "command": command,
@@ -717,9 +759,9 @@ def put_ack(result_queue, command: str, character_name: str, ok: bool, request_i
     )
 
 
-def put_error(result_queue, command: str, character_name: str, message: str, request_id: str = '') -> None:
+def put_error(connection: Connection, command: str, character_name: str, message: str, request_id: str = '') -> None:
     """向主进程返回一条错误结果。"""
-    result_queue.put(
+    connection.send(
         {
             "type": "error",
             "command": command,
@@ -768,9 +810,9 @@ def build_status_result(
     }
 
 
-def send_progress(progress_queue, message: str, request_id: str = '') -> None:
+def send_progress(connection: Connection, message: str, request_id: str = '') -> None:
     """向主进程发送一条进度消息。"""
-    progress_queue.put(
+    connection.send(
         {
             "type": "progress",
             "request_id": request_id,
@@ -808,8 +850,13 @@ def build_audio_progress_message(
     return f"{prefix} {message}"
 
 
-def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, log_queue=None) -> None:
-    """作为独立 worker 进程处理 GPT-SoVITS 语音生成命令。"""
+def synthesize(
+    connection: Connection, parent_connection: Connection | None = None, log_queue: object | None = None
+) -> None:
+    """通过同一条连接接收命令并按顺序发送进度和结果。"""
+    if parent_connection is not None:
+        # fork 也可能继承父端，关闭副本后才能在主进程退出时收到 EOF。
+        parent_connection.close()
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     if log_queue is not None:
         setup_worker_logging(log_queue)
@@ -825,31 +872,17 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
     )
 
     while True:
-        queue_shut_down = False
-        command: CommandDict | None = None
-        while True:
-            try:
-                raw_command = to_gptsovits_queue.get(block=False)
-            except queue.Empty:
-                time.sleep(0.2)
-                continue
-            except ValueError:
-                queue_shut_down = True
-                break
-            else:
-                if raw_command == 'bye':
-                    command = {"type": "shutdown"}
-                elif isinstance(raw_command, dict):
-                    command = raw_command
-                else:
-                    command = None
-                break
-
-        if queue_shut_down:
-            logger.warning("主程序似乎崩溃了，正在退出语音合成模块。")
+        try:
+            raw_command = connection.recv()
+        except (EOFError, OSError):
+            logger.warning("主进程连接已关闭，正在退出语音合成模块。")
             tts_manager.unload_all()
             break
-        if command is None:
+        if raw_command == "bye":
+            command: CommandDict = {"type": "shutdown"}
+        elif isinstance(raw_command, dict):
+            command = raw_command
+        else:
             continue
 
         command_type = cast(str, command.get("type", ""))
@@ -876,10 +909,10 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
                         torch_module.cuda.empty_cache()
                     if torch_module.backends.mps.is_available():
                         torch_module.mps.empty_cache()
-                put_ack(from_gptsovits_queue, "unload_all", "", True, request_id)
+                put_ack(connection, "unload_all", "", True, request_id)
             except Exception as exc:
                 logger.exception("全部语音模型卸载失败")
-                put_error(from_gptsovits_queue, "unload_all", "", str(exc), request_id)
+                put_error(connection, "unload_all", "", str(exc), request_id)
             continue
 
         if command_type == "load_model":
@@ -894,7 +927,7 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
                 #     silent,
                 # )
                 if not silent:
-                    send_progress(from_gptsovits_queue2, "正在加载语音模型", request_id)
+                    send_progress(connection, "正在加载语音模型", request_id)
                 runtime.load_now(tts_manager)
                 # logger.info(
                 #     "预加载语音模型完成 character=%s request_id=%s elapsed=%.3fs silent=%s",
@@ -903,10 +936,10 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
                 #     time.perf_counter() - started_at,
                 #     silent,
                 # )
-                put_ack(from_gptsovits_queue, "load_model", character_name, True, request_id)
+                put_ack(connection, "load_model", character_name, True, request_id)
             except Exception as exc:
                 logger.exception("语音模型加载错误")
-                put_error(from_gptsovits_queue, "load_model", character_name, str(exc), request_id)
+                put_error(connection, "load_model", character_name, str(exc), request_id)
             continue
 
         if command_type == "unload_model":
@@ -915,7 +948,7 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
                 runtime.unload_now(tts_manager)
             else:
                 tts_manager.unload_character(character_name)
-            put_ack(from_gptsovits_queue, "unload_model", character_name, True, request_id)
+            put_ack(connection, "unload_model", character_name, True, request_id)
             continue
 
         if command_type == "set_device":
@@ -923,15 +956,15 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
                 runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
                 device = cast(str, command.get("device", DEFAULT_DEVICE_POLICY))
                 runtime.set_device_policy(device, tts_manager=tts_manager, apply_now=True)
-                put_ack(from_gptsovits_queue, "set_device", character_name, True, request_id)
+                put_ack(connection, "set_device", character_name, True, request_id)
             except Exception as exc:
                 logger.exception("语音设备切换错误")
-                put_error(from_gptsovits_queue, "set_device", character_name, str(exc), request_id)
+                put_error(connection, "set_device", character_name, str(exc), request_id)
             continue
 
         if command_type == "get_status":
             runtime = get_or_create_runtime(runtime_registry, character_name, runtime_character, payload)
-            from_gptsovits_queue.put(build_status_result(runtime, tts_manager, request_id))
+            connection.send(build_status_result(runtime, tts_manager, request_id))
             continue
 
         if command_type != "synthesize" or payload is None:
@@ -944,47 +977,59 @@ def synthesize(to_gptsovits_queue, from_gptsovits_queue, from_gptsovits_queue2, 
             runtime_status = tts_manager.get_status(runtime)
             if not bool(runtime_status.get("is_loaded", False)):
                 send_progress(
-                    from_gptsovits_queue2,
+                    connection,
                     build_audio_progress_message(payload, "正在加载语音模型"),
                     request_id,
                 )
 
             def report_tts_progress(stage_index: int, stage_total: int, stage_name: str) -> None:
                 send_progress(
-                    from_gptsovits_queue2,
+                    connection,
                     build_audio_progress_message(payload, stage_name, stage_index, stage_total),
                     request_id,
                 )
 
-            last_sampling_rate, last_audio_data = runtime.synthesize(
+            def send_audio_chunk(sample_rate: int, pcm: bytes) -> None:
+                """把首段 PCM 提前发送，最终仍由 worker 保存完整 WAV。"""
+                connection.send({
+                    "type": "audio_chunk", "request_id": request_id, "sample_rate": sample_rate, "pcm": pcm,
+                })
+
+            outputs = runtime.synthesize_audio(
                 payload,
                 tts_manager,
                 dict_language_v2,
                 i18n_translator,
                 progress_callback=report_tts_progress,
+                on_chunk=send_audio_chunk if payload.get("stream_first") else None,
             )
             output_dir = cast(str, payload.get("output_dir", "../reference_audio/generated_audios_temp"))
-            output_wav_path = allocate_output_wav_path(output_dir)
+            output_paths: list[str] = []
             try:
-                sf.write(output_wav_path, last_audio_data, last_sampling_rate)
+                for sample_rate, pcm in outputs:
+                    path = allocate_output_wav_path(output_dir)
+                    output_paths.append(path)
+                    sf.write(path, pcm, sample_rate)
             except BaseException:
-                os.unlink(output_wav_path)
+                for path in output_paths:
+                    os.unlink(path)
                 raise
-            from_gptsovits_queue.put(
+            connection.send(
                 {
                     "type": "synthesize_result",
                     "request_id": request_id,
                     "character_name": character_name,
-                    "output_wav_path": output_wav_path,
+                    "output_wav_path": output_paths[0],
+                    "output_wav_paths": output_paths,
                 }
             )
         except StopIteration:
             logger.error("语音合成没有输出音频")
-            put_error(from_gptsovits_queue, "synthesize", character_name, "语音合成没有输出音频", request_id)
+            put_error(connection, "synthesize", character_name, "语音合成没有输出音频", request_id)
         except Exception as exc:
             logger.exception("语音合成失败")
             
             runtime = runtime_registry.get(character_name)
             if runtime is not None:
                 runtime.last_error = str(exc)
-            put_error(from_gptsovits_queue, "synthesize", character_name, str(exc), request_id)
+            put_error(connection, "synthesize", character_name, str(exc), request_id)

@@ -10,6 +10,7 @@ from live2d.utils.lipsync import WavHandler
 from live2d_support.motion_semantics import motion_group_for_emotion
 from live2d_support.runtime_adapter import Live2DModelProtocol
 from log import get_logger
+from runtime.segment_pcm import SegmentPCM
 
 
 def has_voice_audio(path: object) -> bool:
@@ -128,8 +129,15 @@ class SingleCharacterPerformance:
                 return True
         return False
 
-    @staticmethod
-    def audio_busy():
+    def _active_pcm(self) -> SegmentPCM | None:
+        """读取当前演出独占的首段 PCM 播放器。"""
+        return self.active_segment.get("pcm_player") if self.active_segment is not None else None
+
+    def audio_busy(self) -> bool:
+        """统一计算流式首段与完整 WAV 的播放状态。"""
+        pcm = self._active_pcm()
+        if pcm is not None:
+            return pcm.busy()
         return bool(pygame.mixer.get_init() and pygame.mixer.music.get_busy())
 
     @property
@@ -154,7 +162,29 @@ class SingleCharacterPerformance:
         if kind == "play_segment":
             self.structured_mode = True
             if key not in self.cancelled_turns:
-                self.pending.append(dict(command))
+                segment = dict(command)
+                if segment.get("stream_audio"):
+                    segment["pcm_player"] = SegmentPCM()
+                self.pending.append(segment)
+            return True
+        if kind in {"segment_pcm", "segment_pcm_end"}:
+            segments = [self.active_segment, *self.pending]
+            for segment in segments:
+                if (
+                    segment is not None
+                    and key == (segment.get("chat_id"), segment.get("turn_id"))
+                    and command.get("segment_id") == segment.get("segment_id")
+                ):
+                    player = segment.get("pcm_player")
+                    if isinstance(player, SegmentPCM):
+                        if kind == "segment_pcm_end":
+                            player.finish(bool(command.get("audio_error")))
+                            segment["audio_path"] = command.get("audio_path")
+                        else:
+                            sample_rate, pcm = command.get("sample_rate"), command.get("pcm")
+                            if isinstance(sample_rate, int) and isinstance(pcm, bytes):
+                                player.add(sample_rate, pcm)
+                    break
             return True
         if kind == "thinking":
             self.structured_mode = True
@@ -183,6 +213,9 @@ class SingleCharacterPerformance:
                 )
                 == key
             ):
+                pcm = self._active_pcm()
+                if pcm is not None:
+                    pcm.stop()
                 if pygame.mixer.get_init():
                     pygame.mixer.music.stop()
                 self.active_segment = None
@@ -218,7 +251,9 @@ class SingleCharacterPerformance:
         self.audio_started = True
         self.text_segment_deadline = time.monotonic() + self.subtitle_read_seconds
         path = segment.get("audio_path")
-        if has_voice_audio(path):
+        if self._active_pcm() is not None:
+            self._pump_pcm()
+        elif has_voice_audio(path):
             self.onStartCallback_emotion_version(path)
             self.audio_failed = not self.audio_busy()
         if self.segment_motion_complete:
@@ -226,7 +261,26 @@ class SingleCharacterPerformance:
         text = str(segment.get("text") or "")
         translation = str(segment.get("translation") or "")
         self.on_subtitle(text + ("\n" + translation if translation else ""))
-        self.on_event(dict(segment, type="playback_started"))
+        self._emit_playback_event(segment, "playback_started")
+
+    def _pump_pcm(self) -> None:
+        """播放失败时释放通道，让文字与演出按正常回执收尾。"""
+        pcm = self._active_pcm()
+        if pcm is not None:
+            try:
+                pcm.pump()
+            except pygame.error:
+                get_logger(__name__).exception("首段流式音频播放失败")
+                pcm.stop()
+                pcm.finish(error=True)
+            self.audio_failed = pcm.failed
+
+    def _emit_playback_event(
+        self, segment: dict[str, object], event_type: str, **fields: object,
+    ) -> None:
+        """仅向主进程发送可序列化的段落资料和演出回执。"""
+        event = {key: value for key, value in segment.items() if key != "pcm_player"}
+        self.on_event(dict(event, type=event_type, **fields))
 
     def _segment_motion_callbacks(self, segment):
         """动作回调绑定本段和本次动作，取消、换模型及后续重播后旧回调失效。"""
@@ -322,8 +376,10 @@ class SingleCharacterPerformance:
         if segment is not None:
             if not self.audio_started and time.monotonic() >= self.start_deadline:
                 self._start_segment_audio(segment)
+            if self.audio_started:
+                self._pump_pcm()
             self._update_segment_motion(model)
-            text_only = not has_voice_audio(segment.get("audio_path"))
+            text_only = self._active_pcm() is None and not has_voice_audio(segment.get("audio_path"))
             if self.audio_started and not self.audio_busy() and self.segment_motion_complete and self.segment_text_complete and (
                 not (text_only or self.audio_failed)
                 or time.monotonic() >= self.text_segment_deadline
@@ -333,18 +389,14 @@ class SingleCharacterPerformance:
                 self.idle_recover_timer = now
                 self._reset_long_audio_motion_loop()
                 if self.subtitle_hide_delay is not None:
-                    has_audio = has_voice_audio(segment.get("audio_path"))
+                    has_audio = not text_only
                     # 无声音段落已在演出阶段保留阅读时间，结束后直接收起。
                     delay = self.subtitle_hide_delay if has_audio and not self.audio_failed else 0.0
                     self.subtitle_deadline = time.monotonic() + delay
-                self.on_event(
-                    dict(
-                        segment,
-                        type="playback_failed"
-                        if self.audio_failed or self.segment_error
-                        else "playback_complete",
-                        error=self.segment_error or ("音频播放失败，已保留文字。" if self.audio_failed else ""),
-                    )
+                self._emit_playback_event(
+                    segment,
+                    "playback_failed" if self.audio_failed or self.segment_error else "playback_complete",
+                    error=self.segment_error or ("音频播放失败，已保留文字。" if self.audio_failed else ""),
                 )
         if (
             self.subtitle_deadline is not None
@@ -381,7 +433,10 @@ class SingleCharacterPerformance:
         if not self.independent_performance:
             self._update_eye_open_transition(model)
         mouth = 0.0
-        if self.audio_busy() and self.wavHandler.Update():
+        pcm = self._active_pcm()
+        if pcm is not None:
+            mouth = pcm.rms() * self.lipSyncN
+        elif self.audio_busy() and self.wavHandler.Update():
             if self.mouth_update_count % self.mouth_update_interval == 0:
                 self.mouth_keep_open_value = self.wavHandler.GetRms() * self.lipSyncN
                 if not __import__("math").isfinite(self.mouth_keep_open_value):
@@ -406,6 +461,9 @@ class SingleCharacterPerformance:
         self._reset_visual_performance()
         self.generation_open = False
         self.pending.clear()
+        pcm = self._active_pcm()
+        if pcm is not None:
+            pcm.stop()
         self.active_segment = None
         self.segment_motion_token = None
         self.thinking = False

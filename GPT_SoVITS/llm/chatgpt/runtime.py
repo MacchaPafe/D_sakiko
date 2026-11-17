@@ -42,6 +42,8 @@ async def execute(request: LLMRequest, config: LLMConfig) -> LLMResult:
             error = normalize_error(exc)
             if error.status_code != 401 or error.provider_code not in {"invalid_token", "expired_token", "token_expired"}:
                 raise error from None
+            if request.text_observer is not None:
+                request.text_observer.on_retry()
             account, refreshed = await session.access(config.account_id, rejected_token=tokens.access_token)
             secrets.extend((refreshed.access_token, refreshed.refresh_token, refreshed.id_token))
             headers = {**headers, "x-client-request-id": str(uuid.uuid4())}

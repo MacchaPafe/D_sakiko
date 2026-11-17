@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from multiprocessing import Pipe
 from pathlib import Path
 from queue import Queue
 from tempfile import TemporaryDirectory
@@ -188,19 +189,12 @@ class VoiceDispatchTests(TestCase):
         from GPT_SoVITS.tools import i18n as i18n_package
         from GPT_SoVITS.tools.i18n import i18n as i18n_module
 
-        commands: Queue[dict[str, object]] = Queue()
-        results: Queue[dict[str, object]] = Queue()
-        progress: Queue[dict[str, object]] = Queue()
-        for command in (
-            {"type": "load_model", "request_id": "1", "character_name": "角色"},
-            {"type": "unload_all", "request_id": "2"},
-            {"type": "load_model", "request_id": "3", "character_name": "角色"},
-            {"type": "shutdown"},
-        ):
-            commands.put(command)
+        parent, worker = Pipe()
         runtime = Mock()
         manager = Mock()
         with (
+            parent,
+            worker,
             patch("inference_cli.SharedTTSManager", return_value=manager),
             patch("inference_cli.get_or_create_runtime", return_value=runtime),
             patch("inference_cli.signal.signal"),
@@ -210,9 +204,41 @@ class VoiceDispatchTests(TestCase):
                 "tools.i18n.i18n": i18n_module,
             }),
         ):
-            synthesize(commands, results, progress)
-        self.assertEqual(
-            [results.get_nowait()["request_id"] for _ in range(3)], ["1", "2", "3"]
-        )
+            for command in (
+                {"type": "load_model", "request_id": "1", "character_name": "角色"},
+                {"type": "unload_all", "request_id": "2"},
+                {"type": "load_model", "request_id": "3", "character_name": "角色"},
+                {"type": "shutdown"},
+            ):
+                parent.send(command)
+            synthesize(worker)
+            received = []
+            for _ in range(5):
+                self.assertTrue(parent.poll(1))
+                event = parent.recv()
+                received.append((event["type"], event["request_id"]))
+            self.assertEqual(received, [
+                ("progress", "1"), ("ack", "1"), ("ack", "2"),
+                ("progress", "3"), ("ack", "3"),
+            ])
         self.assertEqual(runtime.load_now.call_count, 2)
         self.assertEqual(manager.unload_all.call_count, 2)
+
+    def test_worker_disconnect_wakes_active_and_queued_requests(self) -> None:
+        """worker 断开时结算等待请求，并让断开后的请求立即失败。"""
+        audio = AudioGenerate()
+        audio.gptsovits_process = Mock()
+        audio.message_queue = Queue()
+        with audio._worker_process_connection as worker:
+            audio._ensure_worker_dispatch_thread()
+            active = audio.submit_voice_task({"type": "synthesize"})
+            self.assertTrue(worker.poll(1))
+            self.assertEqual(worker.recv()["request_id"], active.request_id)
+            queued = audio.submit_voice_task({"type": "get_status", "request_id": active.request_id})
+            worker.send({"type": "progress", "request_id": active.request_id, "message": "合成中"})
+            self.assertEqual(audio.message_queue.get(timeout=1), "合成中")
+
+        for handle in (active, queued, audio.submit_voice_task({"type": "get_status"})):
+            self.assertTrue(handle.done_event.wait(1))
+            self.assertEqual(audio.wait_for_task(handle)["type"], "error")
+        self.assertEqual(audio.command_handles, {})

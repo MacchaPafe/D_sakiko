@@ -6,7 +6,12 @@ from copy import copy, deepcopy
 from collections import deque
 import re
 import threading
+from typing import TYPE_CHECKING, cast
 import uuid
+
+if TYPE_CHECKING:
+    from audio_generator import VoiceTaskHandle, WorkerCommand
+    from character import CharacterAttributes
 
 
 def clean_text_for_audio(text: str) -> str:
@@ -74,6 +79,9 @@ class ConversationRuntime:
         self._started_segments = set()
         self._display_start = None
         self._displayed_indices = set()
+        self._preview: tuple[WorkerCommand, VoiceTaskHandle] | None = None
+        self._streaming_first: VoiceTaskHandle | None = None
+        self._refresh_audio_on_complete = False
 
     def queue_internal(self, chat_id, text):
         with self._lock:
@@ -148,6 +156,7 @@ class ConversationRuntime:
             self._pending.clear()
             self._generation_done = False
             self._status = "ok"
+            self._refresh_audio_on_complete = False
             self._sequence = 0
             self._message_indices = set()
             self._segments.clear()
@@ -189,6 +198,10 @@ class ConversationRuntime:
                 return
             chat_id, turn_id = self.active
             self.engine.request_cancel_turn(chat_id, turn_id)
+            self._discard_preview()
+            if self._streaming_first is not None:
+                self.audio.discard_preview(self._streaming_first)
+                self._streaming_first = None
             chat = self.chat_manager.get_chat_by_id(chat_id)
             if chat is not None:
                 for index in getattr(self, "_message_indices", set()):
@@ -290,6 +303,7 @@ class ConversationRuntime:
         if self.active is None or not self._generation_done or self._pending:
             return
         chat_id, turn_id = self.active
+        self._discard_preview()
         status = self._status
         try:
             self.chat_manager.save()
@@ -314,8 +328,211 @@ class ConversationRuntime:
                 chat_id=chat_id,
                 turn_id=turn_id,
                 status=status,
+                refresh_audio=self._refresh_audio_on_complete,
             )
         )
+        self._refresh_audio_on_complete = False
+
+    def _discard_preview(self) -> None:
+        """释放本轮未被正式回复采用的首段语音。"""
+        if self._preview is not None:
+            self.audio.discard_preview(self._preview[1])
+            self._preview = None
+
+    def discard_first_audio(self, payload: dict[str, object]) -> None:
+        """清除工具过渡请求产生的候选首段。"""
+        with self._lock:
+            if self.matches(payload):
+                self._discard_preview()
+
+    def _prepare_speech(
+        self, payload: dict[str, object], character: CharacterAttributes,
+        segment: dict[str, object], index: int, total: int, options: dict[str, float],
+    ) -> WorkerCommand | None:
+        """为单段解析实际合成条件，预合成与批量分组使用相同规则。"""
+        if not payload.get("if_generate_audio", self.engine.if_generate_audio) or segment.get("force_no_audio"):
+            return None
+        return self.audio.prepare_character_synthesis(
+            clean_text_for_audio(str(segment.get("text") or "")),
+            character,
+            bool(payload.get("sakiko_state", self.engine.sakiko_state)),
+            str(payload.get("audio_language_choice") or self.engine.audio_language_choice),
+            segment_index=index + 1,
+            segment_total=total,
+            emotion=str(segment.get("emotion") or "LABEL_0"),
+            pronunciation_overrides=segment.get("pronunciation_overrides") or payload.get("pronunciation_overrides"),
+            generation_options=options,
+        )
+
+    def prepare_first_audio(self, payload: dict[str, object]) -> None:
+        """提交已校验的候选首段，直到整轮确认前仅缓存 PCM。"""
+        with self._lock:
+            if not self.matches(payload) or self._preview is not None:
+                return
+            character = self.characters.get(str(payload.get("character_name") or ""))
+            segments = payload.get("segments")
+            if character is None or not isinstance(segments, list) or not segments or not isinstance(segments[0], dict):
+                return
+            command = self._prepare_speech(payload, character, segments[0], 0, 1, self._voice_options)
+            if command is not None:
+                request = cast(dict[str, object], command["payload"])
+                request["stream_first"] = True
+                self._preview = command, self.audio.submit_voice_task(command)
+
+    @staticmethod
+    def _speech_condition(command: WorkerCommand, *, same_text: bool = False) -> dict[str, object]:
+        """比较语音模型、参考条件和合成设置，排除纯进度字段。"""
+        ignored = {"segment_index", "segment_total", "stream_first"}
+        if not same_text:
+            ignored.add("text")
+        return {key: value for key, value in cast(dict[str, object], command["payload"]).items() if key not in ignored}
+
+    def _play_first_audio(
+        self, payload: dict[str, object], segment: dict[str, object], command: WorkerCommand,
+    ) -> bool:
+        """复用通过确认的首段，边接收 PCM 边交给演出宿主。"""
+        with self._lock:
+            if not self.matches(payload):
+                return True
+            preview = self._preview
+            condition = self._speech_condition(command, same_text=True)
+            if preview is not None and self._speech_condition(preview[0], same_text=True) == condition:
+                self._preview = None
+                handle = preview[1]
+            else:
+                self._discard_preview()
+                cast(dict[str, object], command["payload"])["stream_first"] = True
+                handle = self.audio.submit_voice_task(command)
+            self._streaming_first = handle
+
+        event = None
+        chunks = handle.pcm
+        try:
+            while chunks is not None:
+                chunk = chunks.get()
+                with self._lock:
+                    if not self.matches(payload):
+                        return True
+                    if chunk is None:
+                        break
+                    if event is None:
+                        event = self._queue_segment_playback(payload, segment, "", stream_audio=True)
+                    sample_rate, pcm = chunk
+                    self.presentation.put(dict(event, type="segment_pcm", sample_rate=sample_rate, pcm=pcm))
+            result = self.audio.wait_for_task(handle)
+            with self._lock:
+                if not self.matches(payload):
+                    return True
+                path = result.get("output_wav_path")
+                valid_path = isinstance(path, str) and bool(path)
+                if event is None:
+                    if not valid_path:
+                        return False
+                    self._queue_segment_playback(payload, segment, cast(str, path))
+                else:
+                    self._store_segment_audio(payload, event, cast(str, path) if valid_path else "NO_AUDIO")
+                    self.presentation.put(dict(event, type="segment_pcm_end", audio_error=not valid_path))
+                    self._refresh_audio_on_complete = valid_path
+                # WAV 已归本轮记录所有，取消不能再按候选文件清理。
+                self._streaming_first = None
+                return True
+        finally:
+            with self._lock:
+                if self._streaming_first is handle:
+                    self._streaming_first = None
+
+    def _batch_after_first(
+        self, payload: dict[str, object], character: CharacterAttributes,
+        segments: list[object], start: int, options: dict[str, float],
+    ) -> tuple[dict[int, str], int]:
+        """合成下一组连续且条件相同的台词，失败时由逐段合成接手。"""
+        first = segments[start]
+        if not isinstance(first, dict):
+            return {}, start + 1
+        command = self._prepare_speech(payload, character, first, start, len(segments), options)
+        if command is None:
+            return {}, start + 1
+        condition = self._speech_condition(command)
+        request = cast(dict[str, object], command["payload"])
+        texts = [cast(str, request["text"])]
+        end = start + 1
+        # 保持原顺序，并限制一批的显存开销和下一段等待时间。
+        for index in range(start + 1, min(start + 4, len(segments))):
+            segment = segments[index]
+            if not isinstance(segment, dict):
+                break
+            following = self._prepare_speech(payload, character, segment, index, len(segments), options)
+            if following is None or self._speech_condition(following) != condition:
+                break
+            texts.append(cast(str, cast(dict[str, object], following["payload"])["text"]))
+            end = index + 1
+        if len(texts) == 1 or not self.matches(payload):
+            return {}, end
+        request["batch_texts"] = texts
+        handle = self.audio.submit_voice_task(command)
+        result = self.audio.wait_for_task(handle)
+        if not self.matches(payload):
+            self.audio.discard_preview(handle)
+            return {}, end
+        paths = result.get("output_wav_paths")
+        if not isinstance(paths, list) or len(paths) != len(texts) or not all(isinstance(path, str) for path in paths):
+            return {}, end
+        return dict(zip(range(start, end), paths)), end
+
+    def _store_segment_audio(
+        self, payload: dict[str, object], event: dict[str, object], audio_path: str,
+    ) -> None:
+        """保存最终 WAV 到当前台词，供播放结束后回放和导出。"""
+        chat = self.chat_manager.get_chat_by_id(payload["chat_id"])
+        message_index = self._resolve_message_index(chat, event)
+        if chat is not None and 0 <= message_index < len(chat.message_list):
+            chat.message_list[message_index].audio_path = audio_path
+            chat.message_list[message_index].translation = event["translation"]
+        event["audio_path"] = audio_path
+
+    @staticmethod
+    def _resolve_message_index(chat: object, event: dict[str, object]) -> int:
+        """支持以稳定台词 ID 匹配消息的对话记录。"""
+        messages = getattr(chat, "message_list", None)
+        line_id = event.get("line_id")
+        if messages is not None and isinstance(line_id, str) and line_id:
+            return next(
+                (index for index, message in enumerate(messages) if getattr(message, "id", "") == line_id),
+                -1,
+            )
+        index = event.get("message_index")
+        return index if isinstance(index, int) else -1
+
+    def _queue_segment_playback(
+        self, payload: dict[str, object], segment: dict[str, object], audio_path: str, *,
+        stream_audio: bool = False,
+    ) -> dict[str, object]:
+        """在当前轮内登记演出，声音流与完成回执共用段落编号。"""
+        self._sequence += 1
+        event = dict(
+            type="assistant_segment_ready",
+            chat_id=payload["chat_id"],
+            turn_id=payload["turn_id"],
+            segment_id=self._sequence,
+            character_name=payload["character_name"],
+            message_index=segment.get("message_index", -1),
+            text=str(segment.get("text") or ""),
+            translation=str(segment.get("translation") or ""),
+            emotion=str(segment.get("emotion") or "LABEL_0"),
+            audio_path=audio_path,
+            performance=segment.get("performance"),
+        )
+        if segment.get("line_id"):
+            event["line_id"] = segment["line_id"]
+            event["message_index"] = self._resolve_message_index(self.chat_manager.get_chat_by_id(payload["chat_id"]), event)
+        if stream_audio:
+            event["stream_audio"] = True
+        if not stream_audio:
+            self._store_segment_audio(payload, event, audio_path)
+        self._pending.add(self._sequence)
+        self._segments[self._sequence] = event
+        self.presentation.put(dict(event, type="play_segment", wait_for_text=True))
+        return event
 
     def process_response(self, payload):
         """在 TTS 工作线程中逐段处理，返回路径与轮次绑定，不依赖共享 audio_file_path。"""
@@ -352,11 +569,20 @@ class ConversationRuntime:
                 )
             )
             voice_options = dict(self._voice_options)
+        optimized = payload.get("optimize_voice") is True
+        batched: dict[int, str] = {}
+        next_batch = 1
         for index, segment in enumerate(segments):
             if not isinstance(segment, dict) or not self.matches(payload):
                 continue
-            audio_path = "NO_AUDIO"
-            if payload.get(
+            if optimized and index == 0:
+                command = self._prepare_speech(payload, character, segment, index, len(segments), voice_options)
+                if command is not None and self._play_first_audio(payload, segment, command):
+                    continue
+            if optimized and index == next_batch:
+                batched, next_batch = self._batch_after_first(payload, character, segments, index, voice_options)
+            audio_path = batched.get(index, "NO_AUDIO")
+            if index not in batched and payload.get(
                 "if_generate_audio", self.engine.if_generate_audio
             ) and not segment.get("force_no_audio"):
                 for attempt in range(2):
@@ -392,37 +618,7 @@ class ConversationRuntime:
             with self._lock:
                 if not self.matches(payload):
                     return
-                self._sequence += 1
-                event = dict(
-                    type="assistant_segment_ready",
-                    chat_id=payload["chat_id"],
-                    turn_id=payload["turn_id"],
-                    segment_id=self._sequence,
-                    character_name=payload["character_name"],
-                    message_index=segment.get("message_index", -1),
-                    line_id=segment.get("line_id"),
-                    text=str(segment.get("text") or ""),
-                    translation=str(segment.get("translation") or ""),
-                    emotion=str(segment.get("emotion") or "LABEL_0"),
-                    audio_path=audio_path or "NO_AUDIO",
-                    performance=segment.get("performance"),
-                )
-                chat = self.chat_manager.get_chat_by_id(payload["chat_id"])
-                message_index = event["message_index"]
-                if chat is not None and event.get("line_id"):
-                    message_index = next((index for index, message in enumerate(chat.message_list)
-                                          if getattr(message, "id", "") == event["line_id"]), -1)
-                    event["message_index"] = message_index
-                if (
-                    chat is not None
-                    and isinstance(message_index, int)
-                    and 0 <= message_index < len(chat.message_list)
-                ):
-                    chat.message_list[message_index].audio_path = event["audio_path"]
-                    chat.message_list[message_index].translation = event["translation"]
-                self._pending.add(self._sequence)
-                self._segments[self._sequence] = event
-                self.presentation.put(dict(event, type="play_segment", wait_for_text=True))
+                self._queue_segment_playback(payload, segment, audio_path or "NO_AUDIO")
         if payload.get("turn_complete", True):
             self.accept_event(
                 dict(payload, type="assistant_turn_complete", status="ok")
@@ -444,6 +640,7 @@ class ConversationRuntime:
             self._pending = {1}
             self._generation_done = True
             self._status = "ok"
+            self._refresh_audio_on_complete = False
             self._segments.clear()
             self._started_segments.clear()
             self._display_start = None

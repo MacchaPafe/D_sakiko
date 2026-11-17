@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from multiprocessing import Process, Queue
+from multiprocessing import Pipe, Process
 from queue import Empty
 from collections.abc import Mapping
 from typing import cast, TYPE_CHECKING, Optional
@@ -51,6 +51,8 @@ class VoiceTaskHandle:
     command_type: str
     done_event: threading.Event = field(default_factory=threading.Event)
     result: WorkerResult | None = None
+    pcm: threading_queue.Queue[tuple[int, bytes] | None] | None = None
+    discarded: bool = False
 
 
 class AudioGenerate:
@@ -83,8 +85,7 @@ class AudioGenerate:
         self.pause_second: float = 0.5
         # 生成出的音频文件的路径。默认为一个空白的 wav 文件（用作生成失败时的占位符）
         self.audio_file_path: str = SILENCE_WAV_PATH
-        # 当前切换角色过程是否完成了
-        self.is_change_complete: bool = False
+        self._ready = threading.Event()
         # 待生成文本的语言类型，一般从“中文”、“日英混合“、”中英混合“中选择。
         self.audio_language_choice: str = "中文"
         # 当前正在生成音频的角色是否是祥子
@@ -167,17 +168,14 @@ class AudioGenerate:
         # 主进程日志队列。正式 GUI 入口会传入；测试或独立脚本可保持 None。
         self.log_queue = log_queue
 
-        # 和子进程通信的几条管道
-        self.to_gptsovits_com_queue: Queue = Queue()
-        self.from_gptsovits_com_queue: Queue = Queue()
-        self.from_gptsovits_com_queue2: Queue = Queue()
+        # 命令、进度和结果共用一个连接，既保留消息顺序，也在 worker 退出时唤醒接收方。
+        self.worker_connection, self._worker_process_connection = Pipe()
         # 实际执行音频生成的子进程
         self.gptsovits_process: Process = Process(
             target=synthesize,
             args=(
-                self.to_gptsovits_com_queue,
-                self.from_gptsovits_com_queue,
-                self.from_gptsovits_com_queue2,
+                self._worker_process_connection,
+                self.worker_connection,
                 self.log_queue,
             ),
             daemon=True
@@ -193,9 +191,10 @@ class AudioGenerate:
             threading_queue.Queue()
         )
         # 已提交命令的等待句柄表
-        self.command_handles: dict[str, VoiceTaskHandle] = {}
+        self.command_handles: dict[int, VoiceTaskHandle] = {}
         self.command_handles_lock = threading.Lock()
         self.worker_dispatch_thread: threading.Thread | None = None
+        self.worker_dispatch_stopped = False
         # 语音模型调度状态：正式合成任务走 pending_worker_commands，预加载目标只保留最新一个。
         self.voice_schedule_lock = threading.Lock()
         self.voice_residency = VoiceResidencyPolicy(time.monotonic())
@@ -241,12 +240,18 @@ class AudioGenerate:
         """初始化语音生成模块并启动 worker 进程。"""
         self.character_list = character_list
         self.message_queue = message_queue
-        if not self.gptsovits_process.is_alive():
+        if self.gptsovits_process.pid is None:
             self.gptsovits_process.start()
+            # 保留两端会掩盖 worker 崩溃时的 EOF。
+            self._worker_process_connection.close()
         self._ensure_worker_dispatch_thread()
-        self.is_change_complete = True
+        self._ready.set()
         if self.character_list:
             self.request_preload_character(self.character_list[0])
+
+    def wait_until_ready(self) -> None:
+        """等待语音模块建立 worker 通信。"""
+        self._ready.wait()
 
     def _resolve_reference_materials(self, character: CharacterAttributes,
                                      sakiko_state: bool | None = None,
@@ -519,28 +524,23 @@ class AudioGenerate:
 
     def _ensure_worker_dispatch_thread(self) -> None:
         """确保主线程侧的 worker 调度线程已经启动。"""
-        if self.worker_dispatch_thread is not None and self.worker_dispatch_thread.is_alive():
-            return
-        self.worker_dispatch_thread = threading.Thread(
-            target=self._dispatch_worker_commands,
-            daemon=True,
-            name="AudioGenerateWorkerDispatch",
-        )
-        self.worker_dispatch_thread.start()
+        with self.command_handles_lock:
+            if self.worker_dispatch_thread is not None:
+                return
+            self.worker_dispatch_thread = threading.Thread(
+                target=self._dispatch_worker_commands,
+                daemon=True,
+                name="AudioGenerateWorkerDispatch",
+            )
+            self.worker_dispatch_thread.start()
 
     def _register_command_handle(self, handle: VoiceTaskHandle) -> None:
         """登记一条待完成命令的等待句柄。"""
         with self.command_handles_lock:
-            self.command_handles[handle.request_id] = handle
-
-    def _pop_command_handle(self, request_id: str) -> None:
-        """从等待句柄表中移除一条已经完成的句柄。"""
-        with self.command_handles_lock:
-            self.command_handles.pop(request_id, None)
+            self.command_handles[id(handle)] = handle
 
     def _submit_worker_command_via_dispatch(self, command: WorkerCommand) -> VoiceTaskHandle:
         """将命令提交到主线程侧调度队列，并返回等待句柄。"""
-        self._ensure_worker_dispatch_thread()
         queued_command = dict(command)
 
         request_id = cast(Optional[str], command.get("request_id"))
@@ -553,53 +553,72 @@ class AudioGenerate:
             request_id=request_id,
             command_type=cast(str, queued_command.get("type", "")),
         )
-        self._register_command_handle(handle)
-        self.pending_worker_commands.put((queued_command, handle))
+        payload = queued_command.get("payload")
+        if isinstance(payload, dict) and payload.get("stream_first"):
+            handle.pcm = threading_queue.Queue()
+        with self.command_handles_lock:
+            if self.worker_dispatch_thread is None or self.worker_dispatch_stopped:
+                self._complete_handle_locked(handle, self._worker_stopped_result(handle))
+            else:
+                # 请求编号由调用方提供时可能重复，句柄仍须独立结算。
+                self.command_handles[id(handle)] = handle
+                self.pending_worker_commands.put((queued_command, handle))
         return handle
 
-    def _send_worker_command(self, command: WorkerCommand) -> None:
-        """
-        向 worker 进程发送一条命令。
-
-        :raises ValueError: 如果管道已经关闭（即子进程已经退出）
-        """
-        self.to_gptsovits_com_queue.put(command)
-
-    def _drain_progress_messages(self) -> None:
-        """转发 worker 侧的进度消息到主界面。"""
+    def _receive_worker_result(self, handle: VoiceTaskHandle) -> WorkerResult:
+        """按顺序转发本次请求的进度，阻塞等待最终结果或连接关闭。"""
         while True:
-            try:
-                progress_message = self.from_gptsovits_com_queue2.get(block=False)
-            except Empty:
-                break
-            else:
-                message = ''
-                if isinstance(progress_message, dict):
-                    if cast(str, progress_message.get("type", "")) == "progress":
-                        message = cast(str, progress_message.get("message", ""))
-                elif isinstance(progress_message, str):
-                    message = progress_message
-
-                if message and self.message_queue is not None:
-                    self.message_queue.put(message)
-
-    def _try_get_worker_result(self) -> WorkerResult | None:
-        """
-        尝试读取一条 worker 返回结果。
-
-        :raises ValueError: 如果管道已经关闭（即子进程已经退出）
-        """
-        try:
-            result = self.from_gptsovits_com_queue.get(block=False)
-        except Empty:
-            return None
-        return result
+            result = cast(WorkerResult, self.worker_connection.recv())
+            if not self._matches_request_id(result, handle.request_id):
+                continue
+            if result.get("type") == "audio_chunk":
+                with self.command_handles_lock:
+                    if handle.pcm is not None and not handle.discarded:
+                        handle.pcm.put((cast(int, result["sample_rate"]), cast(bytes, result["pcm"])))
+                continue
+            if result.get("type") != "progress":
+                return result
+            message = result.get("message")
+            if isinstance(message, str) and message and self.message_queue is not None:
+                self.message_queue.put(message)
 
     def _set_handle_result(self, handle: VoiceTaskHandle, result: WorkerResult) -> None:
         """写入一条等待句柄的最终结果。"""
+        with self.command_handles_lock:
+            self._complete_handle_locked(handle, result)
+
+    def _complete_handle_locked(self, handle: VoiceTaskHandle, result: WorkerResult) -> None:
+        """先结算结果，再唤醒普通请求与 PCM 消费方。"""
+        self.command_handles.pop(id(handle), None)
         handle.result = result
+        if handle.discarded:
+            self._remove_discarded_wav(handle)
         handle.done_event.set()
-        self._pop_command_handle(handle.request_id)
+        if handle.pcm is not None:
+            handle.pcm.put(None)
+
+    @staticmethod
+    def _remove_discarded_wav(handle: VoiceTaskHandle) -> None:
+        """清理预合成已生成、但未进入对话记录的 WAV。"""
+        result = handle.result or {}
+        paths = result.get("output_wav_paths")
+        if not isinstance(paths, list):
+            paths = [result.get("output_wav_path")]
+        for path in paths:
+            if not isinstance(path, str):
+                continue
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def discard_preview(self, handle: VoiceTaskHandle) -> None:
+        """放弃未确认的首段，停止积累 PCM 并在 worker 返回后清理 WAV。"""
+        with self.command_handles_lock:
+            handle.discarded = True
+            if handle.pcm is not None:
+                handle.pcm.put(None)
+            self._remove_discarded_wav(handle)
 
     @staticmethod
     def _matches_request_id(result: WorkerResult, request_id: str) -> bool:
@@ -610,96 +629,73 @@ class AudioGenerate:
         return True
 
     def _dispatch_worker_commands(self) -> None:
-        """持续从调度队列中取出命令，并串行发送给 worker。"""
-        while True:
+        """串行处理命令，并在连接或调度结束时唤醒所有等待者。"""
+        try:
+            self._run_worker_commands()
+        except (EOFError, OSError):
+            # 子进程退出会关闭管道，正在执行和排队的命令都不能再完成。
+            pass
+        finally:
+            self.worker_connection.close()
+            with self.command_handles_lock:
+                self.worker_dispatch_stopped = True
+                handles = list(self.command_handles.values())
+                for handle in handles:
+                    self._complete_handle_locked(handle, self._worker_stopped_result(handle))
+
+    def _run_worker_commands(self) -> None:
+        """有任务立即发送，空闲时才检查预加载与卸载时机。"""
+        while self.gptsovits_process.is_alive():
             try:
+                # 超时只用于后台驻留维护，正式命令入队会立即唤醒调度线程。
                 command, handle = self.pending_worker_commands.get(timeout=0.1)
             except Empty:
-                preload_item = (
-                    self._take_idle_unload_command() or self._take_pending_preload_command()
-                )
+                preload_item = self._take_idle_unload_command() or self._take_pending_preload_command()
                 if preload_item is None:
-                    self._drain_progress_messages()
                     continue
                 command, handle = preload_item
 
             command_type = cast(str, command.get("type", ""))
-            if command_type == '':
-                self._set_handle_result(
-                    handle,
-                    {
-                        "type": "error",
-                        "command": "",
-                        "request_id": handle.request_id,
-                        "character_name": cast(str, command.get("character_name", "")),
-                        "message": "无效的 worker 命令类型",
-                    },
-                )
+            if not command_type:
+                self._set_handle_result(handle, {
+                    "type": "error",
+                    "command": "",
+                    "request_id": handle.request_id,
+                    "character_name": cast(str, command.get("character_name", "")),
+                    "message": "无效的 worker 命令类型",
+                })
                 continue
 
             self._mark_worker_command_started(command)
-            try:
-                self._send_worker_command(command)
-            except ValueError:
-                error_result = {
-                    "type": "error",
-                    "command": command_type,
-                    "request_id": handle.request_id,
-                    "character_name": cast(str, command.get("character_name", "")),
-                    "message": "语音合成模块已经退出（崩溃）",
-                }
-                self._mark_worker_command_finished(command, error_result)
-                self._set_handle_result(handle, error_result)
-                if command_type == "shutdown":
-                    break
-                continue
-
+            self.worker_connection.send(command)
             if command_type == "shutdown":
                 self.gptsovits_process.join()
-                self._set_handle_result(
-                    handle,
-                    {
+                if self.gptsovits_process.exitcode == 0:
+                    self._set_handle_result(handle, {
                         "type": "ack",
                         "command": "shutdown",
                         "request_id": handle.request_id,
-                        "character_name": cast(str, command.get("character_name", "")),
                         "ok": True,
-                    },
-                )
-                break
+                    })
+                return
+            result = self._receive_worker_result(handle)
+            self._mark_worker_command_finished(command, result)
+            self._set_handle_result(handle, result)
 
-            while True:
-                self._drain_progress_messages()
-                result = self._try_get_worker_result()
-                if result is None:
-                    time.sleep(0.1)
-                    continue
-                if self._matches_request_id(result, handle.request_id):
-                    self._mark_worker_command_finished(command, result)
-                    self._set_handle_result(handle, result)
-                    break
+    @staticmethod
+    def _worker_stopped_result(handle: VoiceTaskHandle) -> WorkerResult:
+        """为无法完成的请求返回与正常 worker 错误一致的结果。"""
+        return {
+            "type": "error",
+            "command": handle.command_type,
+            "request_id": handle.request_id,
+            "message": "语音合成 worker 未启动或已经退出",
+        }
 
     def _wait_for_handle_result(self, handle: VoiceTaskHandle) -> WorkerResult:
         """等待某条命令句柄完成，并返回 worker 结果。"""
-        while True:
-            if handle.done_event.wait(0.1):
-                if handle.result is not None:
-                    return handle.result
-                return {
-                    "type": "error",
-                    "command": handle.command_type,
-                    "request_id": handle.request_id,
-                    "character_name": "",
-                    "message": "worker 没有返回结果",
-                }
-            if self.worker_dispatch_thread is not None and not self.worker_dispatch_thread.is_alive():
-                return {
-                    "type": "error",
-                    "command": handle.command_type,
-                    "request_id": handle.request_id,
-                    "character_name": "",
-                    "message": "worker 调度线程已退出",
-                }
+        handle.done_event.wait()
+        return cast(WorkerResult, handle.result)
 
     def _wait_for_ack(self, handle: VoiceTaskHandle, command_name: str) -> bool:
         """等待某个管理命令的确认结果。"""
@@ -833,6 +829,47 @@ class AudioGenerate:
         handle = self.submit_voice_task({"type": "shutdown"})
         self._wait_for_ack(handle, "shutdown")
 
+    def prepare_character_synthesis(
+        self,
+        text: str,
+        character: CharacterAttributes,
+        sakiko_state: bool,
+        audio_lan_choice: str,
+        segment_index: int | None = None,
+        segment_total: int | None = None,
+        emotion: str | None = None,
+        pronunciation_overrides: Mapping[str, str] | None = None,
+        generation_options: Mapping[str, float] | None = None,
+    ) -> WorkerCommand | None:
+        """在提交前解析台词和实际参考条件，供合成、预合成及批处理共用。"""
+        if not character.has_valid_voice_model():
+            return None
+
+        normalized_text, is_valid_text = self._normalize_text_for_generation(
+            text,
+            audio_lan_choice,
+            character,
+            pronunciation_overrides=pronunciation_overrides,
+        )
+        if not is_valid_text:
+            return None
+
+        command = self._build_synthesize_command(
+            normalized_text,
+            audio_lan_choice,
+            character,
+            sakiko_state,
+            segment_index=segment_index,
+            segment_total=segment_total,
+            emotion=emotion,
+        )
+        payload = cast(dict[str, object], command["payload"])
+        if generation_options:
+            for key in ('speed_factor', 'fragment_interval'):
+                if key in generation_options:
+                    payload[key] = float(generation_options[key])
+        return command
+
     def generate_audio_for_character_sync(
         self,
         text: str,
@@ -846,33 +883,13 @@ class AudioGenerate:
         generation_options: Mapping[str, float] | None = None,
     ) -> str:
         """按显式给定角色配置同步生成语音。"""
-        if not character.has_valid_voice_model():
-            self.audio_file_path = SILENCE_WAV_PATH
-            return SILENCE_WAV_PATH
-
-        normalized_text, is_valid_text = self._normalize_text_for_generation(
-            text,
-            audio_lan_choice,
-            character,
-            pronunciation_overrides=pronunciation_overrides,
+        command = self.prepare_character_synthesis(
+            text, character, sakiko_state, audio_lan_choice, segment_index, segment_total,
+            emotion, pronunciation_overrides, generation_options,
         )
-        if not is_valid_text:
+        if command is None:
             self.audio_file_path = SILENCE_WAV_PATH
-            return SILENCE_WAV_PATH
-
-        command = self._build_synthesize_command(
-            normalized_text,
-            audio_lan_choice,
-            character,
-            sakiko_state,
-            segment_index=segment_index,
-            segment_total=segment_total,
-            emotion=emotion,
-        )
-        if generation_options:
-            for key in ('speed_factor', 'fragment_interval'):
-                if key in generation_options:
-                    command['payload'][key] = float(generation_options[key])
+            return self.audio_file_path
         handle = self.submit_voice_task(command)
         self.audio_file_path = self._wait_for_synthesize_result(handle)
         return self.audio_file_path

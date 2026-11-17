@@ -54,6 +54,8 @@ async def _run(request: LLMRequest, config: LLMConfig, cancel: CancellationToken
                 if kind != ModelScopeRateLimitKind.TEMPORARY_RATE_LIMIT:
                     raise ModelScopeQuotaExceededError(kind, quota, exc) from exc
                 if attempt < 2:
+                    if request.text_observer is not None:
+                        request.text_observer.on_retry()
                     delay = min(5.0, max(0.0, parse_retry_after_seconds(headers) or float(2 ** attempt)))
                     attempt += 1
                     deadline = asyncio.get_running_loop().time() + delay

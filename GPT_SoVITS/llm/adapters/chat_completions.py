@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterable, Awaitable, Callable
+from inspect import isawaitable
 from ..replay import compatible, make_replay
 from ..types import LLMConfig, LLMRequest, LLMResult
 from .responses import mapping
-from ..errors import LLMError
+from ..errors import LLMError, normalize_error
 
 
 def build_messages(request: LLMRequest, config: LLMConfig) -> list[dict[str, object]]:
@@ -73,6 +75,76 @@ def parse_response(response: object, request: LLMRequest, config: LLMConfig) -> 
                      finish_reason=finish, protocol=make_replay(config, request.messages, blocks, provider_options))
 
 
+async def _collect_stream(
+    stream: AsyncIterable[object], request: LLMRequest, messages: list[dict[str, object]],
+) -> object:
+    """逐步转发台词，结束时按原格式重组工具、推理和用量。"""
+    import litellm
+
+    chunks: list[object] = []
+    finish_reason = ""
+    observer = request.text_observer
+    try:
+        async for chunk in stream:
+            # SDK 增量没有 LiteLLM 的字典接口，需要统一成重组器可直接使用的结构。
+            chunks.append(chunk if isinstance(chunk, litellm.ModelResponseStream)
+                          else litellm.ModelResponseStream(**mapping(chunk)))
+            choices = mapping(chunk).get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = mapping(choices[0])
+            delta = mapping(choice.get("delta")).get("content")
+            if observer is not None and isinstance(delta, str) and delta:
+                observer.on_delta(delta)
+            if choice.get("finish_reason"):
+                finish_reason = str(choice["finish_reason"])
+    finally:
+        close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+        if callable(close):
+            result = close()
+            if isawaitable(result):
+                await result
+    if not finish_reason:
+        raise LLMError("incomplete", "聊天流在模型确认结束前中断。")
+    return litellm.stream_chunk_builder(chunks, messages=messages)
+
+
+def _stream_option_rejected(error: Exception, parameter: str) -> bool:
+    """明确拒绝流式参数时才尝试更保守的请求。"""
+    normalized = normalize_error(error)
+    message = str(normalized).lower()
+    return (
+        normalized.status_code in {400, 422, 501}
+        and parameter in message
+        and any(marker in message for marker in ("unsupported", "not supported", "not support", "unrecognized"))
+    )
+
+
+async def _complete_chat(
+    call: Callable[..., Awaitable[object]], request: LLMRequest, messages: list[dict[str, object]],
+    options: dict[str, object],
+) -> object:
+    """仅在有人消费增量时开启流式，保留不兼容接口的完整响应路径。"""
+    fallback = {key: value for key, value in options.items() if key != "stream_options"}
+    if request.text_observer is None:
+        return await call(stream=False, **fallback)
+    stream_options = options.get("stream_options") or {"include_usage": True}
+    try:
+        try:
+            response = await call(stream=True, stream_options=stream_options, **fallback)
+        except Exception as error:
+            if not _stream_option_rejected(error, "stream_options"):
+                raise
+            response = await call(stream=True, **fallback)
+    except Exception as error:
+        if not _stream_option_rejected(error, "stream"):
+            raise
+        return await call(stream=False, **fallback)
+    if isinstance(response, AsyncIterable):
+        return await _collect_stream(response, request, messages)
+    return response
+
+
 async def execute(request: LLMRequest, config: LLMConfig) -> LLMResult:
     """执行可取消的完整请求，供应商特殊参数留在本模块内部。"""
     options = dict(request.options)
@@ -94,17 +166,18 @@ async def execute(request: LLMRequest, config: LLMConfig) -> LLMResult:
             options["extra_body"] = body
     if request.tools:
         options.update(tools=request.tools, tool_choice=request.tool_choice)
+    messages = build_messages(request, config)
     if config.sdk_chat:
         from openai import AsyncOpenAI
         async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url,
                                timeout=config.timeout, max_retries=0) as client:
-            response = await client.chat.completions.create(
-                model=config.model.removeprefix("openai/").removeprefix("deepseek/"),
-                messages=build_messages(request, config), stream=False, **options)
+            sdk_options = dict(options, messages=messages, model=config.model.removeprefix("openai/").removeprefix("deepseek/"))
+            response = await _complete_chat(client.chat.completions.create, request, messages, sdk_options)
     else:
         import litellm
-        response = await litellm.acompletion(
-            model=config.model, messages=build_messages(request, config), api_key=config.api_key,
-            **({"base_url": config.base_url} if config.base_url else {}),
-            timeout=config.timeout, stream=False, max_retries=0, drop_params=False, **options)
+        litellm_options = dict(options, model=config.model, messages=messages, api_key=config.api_key,
+                              timeout=config.timeout, max_retries=0, drop_params=False)
+        if config.base_url:
+            litellm_options["base_url"] = config.base_url
+        response = await _complete_chat(litellm.acompletion, request, messages, litellm_options)
     return parse_response(response, request, config)

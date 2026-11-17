@@ -259,6 +259,10 @@ async def execute(request: LLMRequest, config: LLMConfig, *,
         try:
             async for event in stream:
                 kind = getattr(event, "type", "")
+                if kind == "response.output_text.delta" and request.text_observer is not None:
+                    delta = getattr(event, "delta", None)
+                    if isinstance(delta, str) and delta:
+                        request.text_observer.on_delta(delta)
                 if kind == "response.completed":
                     result = parse_response(event.response, request, config)
                     result.diagnostics.extend(diagnostics)

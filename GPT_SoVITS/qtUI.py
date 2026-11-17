@@ -5022,6 +5022,8 @@ class ChatGUI(QWidget):
                 self._clear_active_turn()
                 if status == "ok":
                     if str(payload.get("chat_id") or "") == self.current_chat_id:
+                        if payload.get("refresh_audio"):
+                            self.refresh_current_chat_display()
                         self.chat_display.complete_feedback_turn()
                     self._set_message_box_idle()
                 else:
@@ -5050,7 +5052,9 @@ class ChatGUI(QWidget):
         message_index = raw_message_index if isinstance(raw_message_index, int) else -1
         if 0 <= message_index < len(chat.message_list):
             msg = chat.message_list[message_index]
-            msg.audio_path = str(payload.get("audio_path") or "NO_AUDIO")
+            # 首段已经开播时，WAV 可能稍后才由 worker 回写。
+            if not payload.get("stream_audio") or payload.get("audio_path"):
+                msg.audio_path = str(payload.get("audio_path") or "NO_AUDIO")
             msg.translation = str(payload.get("translation") or msg.translation)
         if chat_id != self.current_chat_id:
             if event_type == "assistant_segment_started" and runtime is not None:

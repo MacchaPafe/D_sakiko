@@ -159,105 +159,111 @@ def parse_llm_response(response_text):
     return [(response_text.strip(), '', None)]
 
 
-def main_thread():
-
+def main_thread() -> None:
+    """等待回复或退出消息，并按顺序交给对话运行时。"""
     while True:
-        time.sleep(1)   #防GIL
-        if not text_queue.empty():
+        this_turn_response = text_queue.get()
+        if isinstance(this_turn_response, dict):
+            response_type = str(this_turn_response.get("type") or "")
+            if response_type == "prepare_first_audio":
+                try:
+                    conversation_runtime.prepare_first_audio(this_turn_response)
+                except Exception:
+                    main_logger.exception("首段预合成启动失败")
+                continue
+            if response_type == "discard_first_audio":
+                conversation_runtime.discard_first_audio(this_turn_response)
+                continue
+            if response_type == "model_response":
+                handle_model_response_payload(this_turn_response)
+                continue
+            if response_type == "exit":
+                this_turn_response = "bye"
 
-            this_turn_response=text_queue.get()
-            if isinstance(this_turn_response, dict):
-                response_type = str(this_turn_response.get("type") or "")
-                if response_type == "model_response":
-                    handle_model_response_payload(this_turn_response)
-                    continue
-                if response_type == "exit":
-                    this_turn_response = "bye"
+        if this_turn_response=='bye':
+            # 由 GUI 控制器统一等待告别回执，保持桌宠的 Qt 绘制循环运行。
+            QT_message_queue.put('bye')
+            break
 
-            if this_turn_response=='bye':
-                # 由 GUI 控制器统一等待告别回执，保持桌宠的 Qt 绘制循环运行。
-                QT_message_queue.put('bye')
+        if isinstance(this_turn_response, str) and this_turn_response.startswith(NO_AUDIO_TEXT_EVENT_PREFIX):
+            no_audio_text = this_turn_response[len(NO_AUDIO_TEXT_EVENT_PREFIX):]
+            dp2qt_queue.put(no_audio_text)
+            is_audio_play_complete.put('yes')
+            is_text_generating_queue.get()  # 让模型停止思考动作
+            continue
+
+        audio_gen.audio_language_choice = dp_chat.audio_language_choice
+        QT_message_queue.put("整理语言...")
+
+        # --- 解析 LLM 回复为多个段落 ---
+        segments = parse_llm_response(this_turn_response)
+
+        # --- 逐段处理：流水线式语音合成 + 播放 ---
+        for i, (text, translation, emotion_label) in enumerate(segments):
+            QT_message_queue.put(f"正在合成语音...{i+1}/{len(segments)}")
+            cleaned_text = clean_text_for_audio(text)
+
+            # 语音合成
+            audio_generate_count = 1
+            if not dp_chat.if_generate_audio:
+                audio_generate_count = 99
+
+            while audio_generate_count <= 2:
+                try:
+                    current_character = dp_chat.get_current_character()
+                    audio_gen.audio_file_path = audio_gen.generate_audio_for_character_sync(
+                        cleaned_text,
+                        current_character,
+                        dp_chat.sakiko_state,
+                        dp_chat.audio_language_choice,
+                        segment_index=i + 1,
+                        segment_total=len(segments),
+                        emotion=emotion_label or "LABEL_0",
+                    )
+                    break
+                except Exception as e:
+                    QT_message_queue.put("语音合成出错，重试中")
+                    audio_generate_count += 1
+                    main_logger.exception("语音合成错误")
+                    time.sleep(1)
+
+            if audio_generate_count != 1:
+                # 语音合成失败或未启用，让模型停止思考动作
+                if i == 0:
+                    is_text_generating_queue.get()
+
+                # 将全部剩余文本和翻译逐段传给 qtUI 展示，必须逐段传以保证和 message_list 数量一一对应消耗
+                for rem_text, rem_trans, rem_emotion in segments[i:]:
+                    audio_file_path_queue.put('../reference_audio/silent_audio/silence.wav')
+                    if rem_trans:
+                        dp2qt_queue.put(rem_text + '\n[翻译]' + rem_trans + '[翻译结束]')
+                    else:
+                        dp2qt_queue.put(rem_text)
+                    emotion_queue.put(rem_emotion)
+                    time.sleep(0.05)  # 稍微让出排队时间
                 break
 
-            if isinstance(this_turn_response, str) and this_turn_response.startswith(NO_AUDIO_TEXT_EVENT_PREFIX):
-                no_audio_text = this_turn_response[len(NO_AUDIO_TEXT_EVENT_PREFIX):]
-                dp2qt_queue.put(no_audio_text)
-                is_audio_play_complete.put('yes')
-                is_text_generating_queue.get()  # 让模型停止思考动作
-                continue
+            # 语音合成成功 —— 等待上一段播放完毕（避免打断）
+            while not motion_complete_value.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
+                time.sleep(0.2)
 
-            audio_gen.audio_language_choice = dp_chat.audio_language_choice
-            QT_message_queue.put("整理语言...")
+            audio_file_path_queue.put(audio_gen.audio_file_path)
 
-            # --- 解析 LLM 回复为多个段落 ---
-            segments = parse_llm_response(this_turn_response)
+            if i == 0:
+                is_text_generating_queue.get()  # 第一段合成完后让模型停止思考动作
 
-            # --- 逐段处理：流水线式语音合成 + 播放 ---
-            for i, (text, translation, emotion_label) in enumerate(segments):
-                QT_message_queue.put(f"正在合成语音...{i+1}/{len(segments)}")
-                cleaned_text = clean_text_for_audio(text)
+            # 等待当前播放完毕后再送文本到 qtUI（保持顺序）
+            while not motion_complete_value.value:
+                time.sleep(0.5)
 
-                # 语音合成
-                audio_generate_count = 1
-                if not dp_chat.if_generate_audio:
-                    audio_generate_count = 99
+            # 将本段文本和翻译传给 qtUI 显示
+            if translation:
+                dp2qt_queue.put(text + '\n[翻译]' + translation + '[翻译结束]')
+            else:
+                dp2qt_queue.put(text)
+            emotion_queue.put(emotion_label)
 
-                while audio_generate_count <= 2:
-                    try:
-                        current_character = dp_chat.get_current_character()
-                        audio_gen.audio_file_path = audio_gen.generate_audio_for_character_sync(
-                            cleaned_text,
-                            current_character,
-                            dp_chat.sakiko_state,
-                            dp_chat.audio_language_choice,
-                            segment_index=i + 1,
-                            segment_total=len(segments),
-                            emotion=emotion_label or "LABEL_0",
-                        )
-                        break
-                    except Exception as e:
-                        QT_message_queue.put("语音合成出错，重试中")
-                        audio_generate_count += 1
-                        main_logger.exception("语音合成错误")
-                        time.sleep(1)
-
-                if audio_generate_count != 1:
-                    # 语音合成失败或未启用，让模型停止思考动作
-                    if i == 0:
-                        is_text_generating_queue.get()  
-
-                    # 将全部剩余文本和翻译逐段传给 qtUI 展示，必须逐段传以保证和 message_list 数量一一对应消耗
-                    for rem_text, rem_trans, rem_emotion in segments[i:]:
-                        audio_file_path_queue.put('../reference_audio/silent_audio/silence.wav')
-                        if rem_trans:
-                            dp2qt_queue.put(rem_text + '\n[翻译]' + rem_trans + '[翻译结束]')
-                        else:
-                            dp2qt_queue.put(rem_text)
-                        emotion_queue.put(rem_emotion)
-                        time.sleep(0.05)  # 稍微让出排队时间
-                    break
-
-                # 语音合成成功 —— 等待上一段播放完毕（避免打断）
-                while not motion_complete_value.value:      #为了等待这句话说完，以免下一句先生成完了导致直接打断
-                    time.sleep(0.2)
-
-                audio_file_path_queue.put(audio_gen.audio_file_path)
-
-                if i == 0:
-                    is_text_generating_queue.get()  # 第一段合成完后让模型停止思考动作
-
-                # 等待当前播放完毕后再送文本到 qtUI（保持顺序）
-                while not motion_complete_value.value:
-                    time.sleep(0.5)
-
-                # 将本段文本和翻译传给 qtUI 显示
-                if translation:
-                    dp2qt_queue.put(text + '\n[翻译]' + translation + '[翻译结束]')
-                else:
-                    dp2qt_queue.put(text)
-                emotion_queue.put(emotion_label)
-
-            is_audio_play_complete.put('yes')  # 本轮全部段落处理完毕
+        is_audio_play_complete.put('yes')  # 本轮全部段落处理完毕
 
 
 if __name__=='__main__':

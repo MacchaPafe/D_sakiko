@@ -156,6 +156,49 @@ class ConversationTests(unittest.TestCase):
         self.assertFalse(self.runtime.busy)
         self.manager.save.assert_called_once()
 
+    def test_preview_plays_only_after_confirmation_and_batches_matching_tail(self) -> None:
+        """首段 PCM 等待回复确认，后续同参考台词一次提交并保持顺序。"""
+        turn = self.runtime.submit("a", "message")
+        self.presentation.get_nowait()
+        response = self.payload(turn, 4)
+        response["optimize_voice"] = True
+        self.chat.message_list = [SimpleNamespace(audio_path="", translation="") for _ in range(4)]
+        for index, segment in enumerate(response["segments"]):
+            segment["message_index"] = index
+        response["segments"][-1]["emotion"] = "LABEL_1"
+
+        def prepare(text: str, *_: object, emotion: str, **options: object) -> dict[str, object]:
+            """模拟只有最后一段使用另一条情绪参考。"""
+            return {"type": "synthesize", "payload": {
+                "text": text, "ref_audio_path": emotion, "segment_index": options["segment_index"],
+                "segment_total": options["segment_total"],
+            }}
+
+        def submit(command: dict[str, dict[str, object]]) -> SimpleNamespace:
+            """为首段提供 PCM，批量请求则返回两个独立 WAV。"""
+            request = command["payload"]
+            if request.get("stream_first"):
+                pcm: Queue[tuple[int, bytes] | None] = Queue()
+                pcm.put((32000, b"\x01\x01"))
+                pcm.put(None)
+                return SimpleNamespace(pcm=pcm, result={"output_wav_path": "first.wav"})
+            self.assertEqual(request["batch_texts"], ["回复 1", "回复 2"])
+            return SimpleNamespace(result={"output_wav_paths": ["second.wav", "third.wav"]})
+
+        self.audio.prepare_character_synthesis.side_effect = prepare
+        self.audio.submit_voice_task.side_effect = submit
+        self.audio.wait_for_task.side_effect = lambda handle: handle.result
+        self.runtime.prepare_first_audio(dict(response, segments=response["segments"][:1]))
+        self.assertTrue(self.presentation.empty())
+        self.runtime.process_response(response)
+        events = [self.presentation.get_nowait() for _ in range(6)]
+        self.assertEqual([event["type"] for event in events], [
+            "play_segment", "segment_pcm", "segment_pcm_end", "play_segment", "play_segment", "play_segment",
+        ])
+        self.assertEqual([message.audio_path for message in self.chat.message_list],
+                         ["first.wav", "second.wav", "third.wav", "voice.wav"])
+        self.assertEqual(self.audio.submit_voice_task.call_count, 2)
+
     def test_cancel_discards_late_tts_and_acknowledgement(self):
         turn = self.runtime.submit("a", "first")
         entered, resume = threading.Event(), threading.Event()

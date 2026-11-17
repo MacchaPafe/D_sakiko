@@ -8,7 +8,8 @@ import textwrap
 from pathlib import Path
 
 import json
-from queue import Empty
+from collections.abc import Callable
+from queue import Empty, Queue
 from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -62,6 +63,8 @@ from chat.tool_calling import AgentRunResult, ToolCallingAgentRuntime
 from emotion_enum import EmotionEnum
 from performance_types import PerformanceSelection, performance_payload
 from chat.output_contract import build_output_contract
+from chat.dialogue_stream import FirstDialogueSegment
+from llm.types import CancellationToken, LLMTextObserver
 from live2d_support.performance_catalog import PerformanceCatalog
 from rag.worldbook.runtime.models import DirectWorldbookContext, WorldbookTurnSnapshot
 from rag.worldbook.runtime import (
@@ -119,7 +122,7 @@ class _TextGeneratingQueue(Protocol):
 def completion(**kwargs: object) -> object:
     """兼容现有调用点，把显式请求转换为统一 LLM 接口。"""
     from llm.client import generate
-    from llm.types import CancellationToken, LLMConfig, LLMRequest
+    from llm.types import LLMConfig, LLMRequest
     phase = str(kwargs.pop(CACHE_DEBUG_PHASE_KEY, "unknown"))
     provider = str(kwargs.pop("_provider_id", "custom"))
     protocol = str(kwargs.pop("_protocol", "chat-completions"))
@@ -132,9 +135,11 @@ def completion(**kwargs: object) -> object:
     messages = kwargs.pop("messages", [])
     tools = kwargs.pop("tools", None)
     choice = kwargs.pop("tool_choice", "auto")
+    observer = kwargs.pop("_text_observer", None)
     request = LLMRequest(
         messages, tools or [], choice, dict(kwargs),
         conversation_id=conversation_id, cache_debug_phase=phase,
+        text_observer=observer if isinstance(observer, LLMTextObserver) else None,
     )
     result = generate(request, config, cancel if isinstance(cancel, CancellationToken) else None)
     log_prompt_cache_usage(result, {"model": config.model, CACHE_DEBUG_PHASE_KEY: phase}, logger)
@@ -1105,6 +1110,9 @@ class DSLocalAndVoiceGen:
                 return self._openai_deepseek_chat_completion(request_kwargs, service)
             except Exception as exc:
                 if attempt == 0 and self._is_invalid_deepseek_file_error(exc):
+                    observer = request_kwargs.get("_text_observer")
+                    if isinstance(observer, LLMTextObserver):
+                        observer.on_retry()
                     repaired_messages = self._repair_deepseek_file_references(messages, service)
                     request_kwargs["messages"] = repaired_messages
                     messages = repaired_messages
@@ -1223,11 +1231,14 @@ class DSLocalAndVoiceGen:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
         tool_choice: object = "auto",
+        *,
+        on_first_segment: Callable[[dict[str, object]], None] | None = None,
+        discard_first_segment: Callable[[], None] | None = None,
         **kwargs: object,
     ) -> object:
         """把回合的配置快照转换为统一请求；不接管工具循环。"""
         from llm.configuration import resolve_config, setting
-        from llm.types import CancellationToken, LLMResult
+        from llm.types import LLMResult
         manager = getattr(self, "chat_manager", None)
         if manager is not None and manager.storage_error:
             raise LLMError("storage_failed", manager.storage_error)
@@ -1254,6 +1265,11 @@ class DSLocalAndVoiceGen:
                               api_key=connection.api_key, stream=False, timeout=timeout,
                               _protocol=connection.protocol, _cancel=cancel, _route=connection.route,
                               _account_id=connection.account_id, _conversation_id=str(chat_id))
+        observer = self._observe_first_segment(on_first_segment, discard_first_segment, cancel) if (
+            on_first_segment is not None and discard_first_segment is not None
+        ) else None
+        if observer is not None:
+            request_kwargs["_text_observer"] = observer
         if connection.route == "chatgpt-subscription" and turn_id and getattr(self, "_chatgpt_lease_turn", None) != turn_id:
             old_lease = getattr(self, "_chatgpt_turn_lease", None)
             if old_lease is not None:
@@ -1267,10 +1283,15 @@ class DSLocalAndVoiceGen:
             request_kwargs.update(tools=tools, tool_choice=tool_choice)
         request_kwargs[CACHE_DEBUG_PHASE_KEY] = phase
         service = self._current_deepseek_file_service() if connection.protocol == "chat-completions" else None
-        if service is not None and Chat.messages_contain_image_content(messages):
-            result = self._execute_deepseek_multimodal_completion(request_kwargs, service)
-        else:
-            result = self._execute_completion_with_provider_policy(connection.provider, request_kwargs)
+        try:
+            if service is not None and Chat.messages_contain_image_content(messages):
+                result = self._execute_deepseek_multimodal_completion(request_kwargs, service)
+            else:
+                result = self._execute_completion_with_provider_policy(connection.provider, request_kwargs)
+        except Exception:
+            if observer is not None:
+                observer.on_retry()
+            raise
         if isinstance(result, LLMResult) and model != "rolling-summary":
             # 旧模型可能把调用写在 JSON 正文中；先固定其调用身份，再交给原有业务循环。
             if not result.tool_calls:
@@ -1283,6 +1304,8 @@ class DSLocalAndVoiceGen:
                     result.protocol["invalidated"] = True
                 if result.tool_calls:
                     result.diagnostics.append("工具调用来自旧版 JSON 正文协议，按本地统一结构回传。")
+            if result.tool_calls and observer is not None:
+                observer.on_retry()
             if turn_id and self.current_chat.turns:
                 self.current_chat.turns[-1]["id"] = turn_id
             self.current_chat.remember_runtime_controls(messages)
@@ -1296,10 +1319,44 @@ class DSLocalAndVoiceGen:
             self.chat_manager.save()
         return result
 
+    def _observe_first_segment(
+        self, prepare: Callable[[dict[str, object]], None],
+        discard: Callable[[], None], cancel: CancellationToken,
+    ) -> LLMTextObserver:
+        """逐段校验候选台词，保留统一适配器对完整回复的持久化。"""
+        parser = FirstDialogueSegment()
+        prepared = False
+
+        def on_delta(delta: str) -> None:
+            """在首段闭合时启动预合成，取消后忽略迟到的增量。"""
+            nonlocal prepared
+            if cancel.cancelled:
+                return
+            candidate = parser.feed(delta)
+            if candidate is None:
+                return
+            try:
+                segment, = self._parse_model_segments_payload(candidate)
+            except ValueError:
+                return
+            prepare(segment)
+            prepared = True
+
+        def reset() -> None:
+            """丢弃上一请求的候选首段，重试必须从新的 JSON 开始。"""
+            nonlocal parser, prepared
+            if prepared:
+                discard()
+            parser = FirstDialogueSegment()
+            prepared = False
+
+        return LLMTextObserver(on_delta, reset)
+
     @staticmethod
-    def _wait_audio_turn_complete(is_audio_play_complete):
+    def _wait_audio_turn_complete(is_audio_play_complete: Queue[str | None]) -> None:
+        """等待音频编排线程确认已接手本次回复。"""
         while is_audio_play_complete.get() is None:
-            time.sleep(0.3)
+            continue
 
     @staticmethod
     def _clear_text_generating_flag_if_needed(is_text_generating_queue: _TextGeneratingQueue) -> None:
@@ -1646,6 +1703,7 @@ class DSLocalAndVoiceGen:
         self,
         messages: list[dict[str, object]],
         reasoning_kwargs: dict[str, object],
+        preview_options: dict[str, object] | None = None,
     ) -> AgentRunResult:
         """
         执行不带工具 schema 的普通模型补全，并包装为统一的本轮结果。
@@ -1658,6 +1716,7 @@ class DSLocalAndVoiceGen:
             tool_choice="none",
             stream=False,
             **reasoning_kwargs,
+            **(preview_options or {}),
         )
         return AgentRunResult(
             final_content=self._extract_response_content(response).strip(),
@@ -2352,17 +2411,9 @@ class DSLocalAndVoiceGen:
         )
         # ---------------------------------
 
+        AudioGenerator.wait_until_ready()
         while True:
-            #user_input = input(">>>输入bye退出聊天，输入“lan”更改语音语言，输入“model”更改LLM\n"
-                               #+ f">>>当前模型：{self.model_choice}  语音语言：{self.audio_language_choice}\n>>>")
-            while not AudioGenerator.is_change_complete:
-                time.sleep(0.4)
-
-            while True:
-                if not qt2dp_queue.empty():
-                    user_input=qt2dp_queue.get()
-                    break
-                time.sleep(1)
+            user_input = qt2dp_queue.get()
             # --------------------前面的一些判断逻辑
 
             command = self._normalize_input_command(user_input)
@@ -2603,7 +2654,20 @@ class DSLocalAndVoiceGen:
                 except Exception:
                     logger.exception("创建本轮世界书工具失败，已静默降级")
             worldbook_tools_enabled = worldbook_tool_session is not None
-            # --------------------------
+            def prepare_first_segment(segment: dict[str, object]) -> None:
+                """在整轮确认前把首段交给语音 worker。"""
+                payload = self._build_model_response_payload(
+                    turn_id, character_name, [segment], turn_complete=False,
+                )
+                text_queue.put(dict(payload, type="prepare_first_audio"))
+
+            def discard_first_segment() -> None:
+                """撤回失败尝试或工具过渡阶段产生的候选语音。"""
+                text_queue.put(dict(type="discard_first_audio", chat_id=active_chat_id, turn_id=turn_id))
+
+            preview_options: dict[str, object] = {}
+            if self.if_generate_audio:
+                preview_options.update(on_first_segment=prepare_first_segment, discard_first_segment=discard_first_segment)
             try:
                 if tool_calling_enabled or worldbook_tools_enabled:
                     # 构造 interim_callback（期间文本回调），用于接收大模型在决定调用工具前输出的“过渡台词”（如：“请稍等，我查一下天气”）
@@ -2625,6 +2689,7 @@ class DSLocalAndVoiceGen:
                         llm_kwargs={
                             "stream": False,
                             **reasoning_kwargs_snapshot,
+                            **preview_options,
                         },
                         on_interim_message=interim_callback,
                         tool_overlay=(
@@ -2639,6 +2704,7 @@ class DSLocalAndVoiceGen:
                     runtime_result = self._run_plain_completion_turn(
                         messages=to_llm_msg,
                         reasoning_kwargs=reasoning_kwargs_snapshot,
+                        preview_options=preview_options,
                     )
 
                 # 在 AI 生成结束后，如果我们发现这轮对话在过程中被标记为取消了（可能用户在等待过程中点了取消按钮），就不处理结果了，直接进入下一轮循环等待新输入。
@@ -2862,10 +2928,12 @@ class DSLocalAndVoiceGen:
                 worldbook_diagnostic.set_final_response(
                     "\n".join(str(segment.get("text") or "") for segment in segments)
                 )
-            text_queue.put(self._build_model_response_payload(turn_id, character_name, segments))
+            text_queue.put(dict(
+                self._build_model_response_payload(turn_id, character_name, segments),
+                optimize_voice=isinstance(model_segments, list),
+            ))
 
-            while is_audio_play_complete.get() is None:
-                time.sleep(0.5)		#不加就无法正常运行
+            self._wait_audio_turn_complete(is_audio_play_complete)
             self._finish_worldbook_diagnostic(
                 active_chat_id,
                 turn_id,

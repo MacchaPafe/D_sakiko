@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import dp_local2
+from llm.types import CancellationToken
 
 
 class FakeChat:
@@ -22,6 +24,7 @@ class FakeChat:
         perspective: str,
         is_simplify: bool = False,
         include_translation: bool = True,
+        attachment_context: dp_local2.AttachmentSerializationContext | None = None,
     ) -> list[dict[str, object]]:
         """返回一段包含 system 和 user 的固定请求历史。"""
         return [
@@ -61,7 +64,10 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
         """请求构造应追加独立 runtime controls，而不是替换最后一条 user。"""
         subject = self._build_subject()
 
-        messages = subject._build_llm_messages_for_chat_turn("祥子")
+        with patch.object(subject, "_current_deepseek_file_service", return_value=None), patch.object(
+            subject, "_rolling_summary_enabled", return_value=False,
+        ):
+            messages = subject._build_llm_messages_for_chat_turn("祥子")
 
         self.assertEqual(messages[1]["content"], "[User]: 你好呀")
         self.assertEqual(messages[-1]["role"], "user")
@@ -126,6 +132,26 @@ class DpLocal2JsonOutputTestCase(unittest.TestCase):
         segments = subject._parse_model_segments_payload('{"text":"你好。","emotion":"happiness"}')
 
         self.assertEqual(segments, [{"text": "你好。", "emotion": "happiness"}])
+
+    def test_first_segment_observer_validates_and_resets_for_retry(self) -> None:
+        """单段通过原有校验后立刻提交，重试及取消不会沿用候选。"""
+        subject = self._build_subject()
+        prepared: list[dict[str, object]] = []
+        discarded: list[bool] = []
+        cancel = CancellationToken()
+        observer = subject._observe_first_segment(prepared.append, lambda: discarded.append(True), cancel)
+        observer.on_delta('[{"text":"こんにちは。","emotion":"happiness",')
+        self.assertEqual(prepared, [])
+        observer.on_delta('"translation":"你好。","performance":{"motion":"auto"}}')
+        self.assertEqual(prepared[0]["text"], "こんにちは。")
+        observer.on_retry()
+        self.assertEqual(discarded, [True])
+        observer.on_delta('[{"text":"またね。","emotion":"like"}')
+        self.assertEqual(len(prepared), 1)
+        observer.on_retry()
+        cancel.cancel()
+        observer.on_delta('[{"text":"またね。","emotion":"like","translation":"回见。"}')
+        self.assertEqual(len(prepared), 1)
 
     def test_parse_rejects_neutral_emotion(self) -> None:
         """EmotionEnum 没有 neutral，机器协议也不应接受 neutral。"""
