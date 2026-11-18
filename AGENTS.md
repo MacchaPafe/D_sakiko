@@ -35,3 +35,7 @@ This repo currently uses a single-context domain documentation layout. See `docs
    - 为设计中“为什么不这样做“的选择编写注释，为代码中存在的巧妙或不易察觉的地方编写注释。
    - 杜绝复述代码字面行为的无效注释。
    - 所有注释用中文编写。
+
+### 界面与交互设计
+
+新增或修改界面时，遵循[界面与交互设计约定](docs/design/ui-interaction-guidelines.md)。其中包括选择控件、Electron 单层模态、操作文案和后台任务反馈。
