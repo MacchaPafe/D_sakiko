@@ -176,6 +176,11 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
     trigger.current?.focus()
   }
 
+  function manage(formId) {
+    close()
+    wardrobe.onManage(formId)
+  }
+
   function increase() {
     onZoom(1.1)
   }
@@ -238,6 +243,7 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
           open={open}
           panelRef={panel}
           id={id}
+          onManage={manage}
           onClose={close}
         />
       )}

@@ -15,6 +15,7 @@ import { Settings } from './settings/interface.js'
 import { ChatStore } from './storage/interface.js'
 import { CharacterCatalog } from './characters/interface.js'
 import { resolveModelCatalog } from './characters/model-catalog.js'
+import { pinOutfit } from './characters/outfit-selection.js'
 import { MediaAssets } from './resources/interface.js'
 import { Agent } from './llm/interface.js'
 import { ModelCatalog } from './llm/model-catalog.js'
@@ -25,6 +26,7 @@ import { Conversations } from './conversation/interface.js'
 import { ToolCatalog, Interactions, ReminderWriter } from './tools/interface.js'
 import { createBuiltinTools, interactionKinds } from './tools/builtins.js'
 import { failure, uuid } from './core/support.js'
+import { Outfits } from './live2d-import/outfits.js'
 
 /**
  * @typedef {object} CoreBackend
@@ -35,6 +37,7 @@ import { failure, uuid } from './core/support.js'
  * @property {SpeechResources} speechResources GPT-SoVITS 显式文件路径与运行引用。
  * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
  * @property {ResourceSetup} setup 附加资源计划、持久任务、旧版导入与独立运行环境。
+ * @property {Outfits} outfits 角色服装管理和在线下载。
  * @property {Onboarding} onboarding 初始化路径、内置角色释放和主页提示状态。
  * @property {Notices} notices 持久通知、来源去重与关闭确认。
  * @property {ChatStore} store 对话存档管理。
@@ -130,6 +133,11 @@ export async function createCoreBackend({
       const drafts = await pythonImporter.read(scan, refs, mapping, signal)
       for (const chat of drafts.chats) {
         signal.throwIfAborted()
+        for (const id of chat.characterIds) {
+          const role = await characters.get(id)
+          if (role)
+            chat.meta.settings.characters[id] = pinOutfit(role, chat.meta.settings.characters[id])
+        }
         if (model) {
           chat.meta.settings ??= {}
           chat.meta.settings.generation ??= {}
@@ -278,6 +286,15 @@ export async function createCoreBackend({
     }
   })
   conversations.interactions = interactions
+  const outfits = new Outfits({
+    appDataRoot,
+    cacheRoot,
+    assets,
+    characters,
+    conversations,
+    fetch: transport
+  })
+  await outfits.initialize()
   // 上一轮扫描尚未完成时直接跳过本次定时器回调，防止慢操作导致并发扫描叠加。
   let scanning = false
   const scan = async () => {
@@ -305,6 +322,7 @@ export async function createCoreBackend({
       try {
         await assets.maintain()
         await setup.maintain()
+        await outfits.maintain()
         await remoteFiles.collectUnused()
         await refreshNotices()
       } catch (error) {
@@ -319,6 +337,7 @@ export async function createCoreBackend({
   maintenance.unref()
   return {
     setup,
+    outfits,
     onboarding,
     notices,
     recognition,
@@ -344,6 +363,7 @@ export async function createCoreBackend({
       clearInterval(maintenance)
       stopNoticeSettings()
       stopNoticeCharacters()
+      await outfits.close()
       await setup.close()
       await onboarding.close()
       await conversations.close()

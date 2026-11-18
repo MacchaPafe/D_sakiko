@@ -19,18 +19,6 @@ export const providerPresets = [
     exampleModel: 'deepseek-flash'
   },
   {
-    id: 'volcengine',
-    name: '火山引擎',
-    protocol: 'chat-completions',
-    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3'
-  },
-  {
-    id: 'moonshot',
-    name: 'Kimi',
-    protocol: 'chat-completions',
-    baseUrl: 'https://api.moonshot.cn/v1'
-  },
-  {
     id: 'openai',
     name: 'OpenAI',
     protocol: 'chat-completions',
@@ -54,20 +42,25 @@ export const providerPresets = [
     keyPage: 'https://aistudio.google.com/apikey',
     exampleModel: 'gemini-3-pro-preview'
   },
+  { id: 'xai', name: 'Grok', protocol: 'chat-completions', baseUrl: 'https://api.x.ai/v1' },
   {
     id: 'openrouter',
     name: 'OpenRouter',
     protocol: 'chat-completions',
     baseUrl: 'https://openrouter.ai/api/v1'
   },
-  { id: 'vllm', name: 'vLLM', protocol: 'chat-completions', baseUrl: 'http://localhost:8000/v1' },
   {
-    id: 'ollama',
-    name: 'Ollama',
+    id: 'volcengine',
+    name: '火山引擎',
     protocol: 'chat-completions',
-    baseUrl: 'http://localhost:11434/v1'
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3'
   },
-  { id: 'xai', name: 'Grok', protocol: 'chat-completions', baseUrl: 'https://api.x.ai/v1' },
+  {
+    id: 'moonshot',
+    name: 'Kimi',
+    protocol: 'chat-completions',
+    baseUrl: 'https://api.moonshot.cn/v1'
+  },
   {
     id: 'dashscope',
     name: '阿里云百炼',
@@ -79,6 +72,13 @@ export const providerPresets = [
     name: '魔搭社区',
     protocol: 'chat-completions',
     baseUrl: 'https://api-inference.modelscope.cn/v1'
+  },
+  { id: 'vllm', name: 'vLLM', protocol: 'chat-completions', baseUrl: 'http://localhost:8000/v1' },
+  {
+    id: 'ollama',
+    name: 'Ollama',
+    protocol: 'chat-completions',
+    baseUrl: 'http://localhost:11434/v1'
   },
   { id: 'azure', name: 'Azure（兼容端点）', protocol: 'chat-completions', baseUrl: '' },
   {

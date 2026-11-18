@@ -36,6 +36,7 @@ export class HomeFlow {
     Object.assign(this, { client, storage, randomId })
     this.listeners = new Set()
     this.inputs = new Map()
+    this.tabChats = new Map()
     this.epoch = 0
     this.refreshEpoch = 0
     this.mountEpoch = 0
@@ -138,6 +139,9 @@ export class HomeFlow {
   }
   select(target) {
     this.stopChat?.()
+    if (target?.tab) {
+      this.tabChats.set(target.tab, target.chatId ?? null)
+    }
     const epoch = ++this.epoch
     const input = this.input(target)
     this.update({
@@ -168,7 +172,16 @@ export class HomeFlow {
     if (!input.pending) input.outfit = null
     this.select(target)
   }
-  setTab = (tab) => this.select({ ...this.state.target, chatId: null, tab })
+  setTab = (tab) => {
+    const rememberedId = this.tabChats.get(tab) ?? null
+    const chat = rememberedId
+      ? this.state.chats.find((item) => item.id === rememberedId && item.mode === tab)
+      : null
+    const characterId = chat
+      ? (chat.characterIds[0] ?? this.state.target.characterId)
+      : this.state.target.characterId
+    this.select({ ...this.state.target, characterId, chatId: chat?.id ?? null, tab })
+  }
   setDraft = (text) => {
     this.input().text = text
     this.update({ draft: text })
@@ -211,10 +224,9 @@ export class HomeFlow {
   /**
    * @param {string} formId 当前角色形态。
    * @param {import('../../../../shared/contracts/characters.js').CharacterModel} model 选中的服装。
-   * @param {string|null} defaultModelId 该形态的默认服装身份。
    * @returns {Promise<void>} 正式对话只覆盖当前形态的服装，草稿保留到首轮提交。
    */
-  chooseOutfit = async (formId, model, defaultModelId) => {
+  chooseOutfit = async (formId, model) => {
     const { characterId, chatId, tab } = this.state.target
     if (!characterId || tab !== 'single-character') return
     if (chatId) {
@@ -223,16 +235,29 @@ export class HomeFlow {
         characters: {
           [characterId]: {
             formId,
-            modelOverrides: { [formId]: model.id === defaultModelId ? null : model.id }
+            modelOverrides: { [formId]: model.id }
           }
         }
       })
     } else {
       const input = this.input()
       if (input.pending) return
-      input.outfit = model.id === defaultModelId ? null : { formId, model }
+      input.outfit = { formId, model }
       this.update({ draftOutfit: input.outfit })
     }
+  }
+
+  /**
+   * @param {string} characterId 删除服装的角色。
+   * @param {string} formId 删除服装的形态。
+   * @param {string} modelId 被删除的模型。
+   */
+  invalidateDraftOutfit(characterId, formId, modelId) {
+    const draft = this.inputs.get(inputKey({ characterId, chatId: null }))
+    if (draft?.outfit?.formId !== formId || draft.outfit.model.id !== modelId) return
+    draft.outfit = null
+    if (!this.state.target.chatId && this.state.target.characterId === characterId)
+      this.update({ draftOutfit: null })
   }
 
   /** @param {InputSession} input 录音开始时绑定的草稿。 @param {string} text 识别结果。 */
@@ -334,6 +359,9 @@ export class HomeFlow {
     try {
       await this.client.conversations.deleteChat(chat.id)
       this.inputs.delete('chat:' + chat.id)
+      if (this.tabChats.get(chat.mode) === chat.id) {
+        this.tabChats.set(chat.mode, null)
+      }
       if (this.state.target.chatId === chat.id) this.select({ ...this.state.target, chatId: null })
       await this.refresh()
       return true

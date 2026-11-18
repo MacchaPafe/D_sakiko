@@ -257,6 +257,37 @@ export class ChatStore {
   }
 
   /**
+   * 批量交接对话的服装选择。选择只有角色目录 ID，媒体引用和历史保持原存档版本的语义。
+   * @param {Array<{id: string, revision: number, characters: import('../../shared/contracts/settings.js').ChatSettings['characters']}>} changes 以当前存档版本为基准的服装选择。
+   * @returns {Promise<Chat[]>} 已一起提交的存档。
+   */
+  async saveOutfitSelections(changes) {
+    if (!changes.length) return []
+    return this.queue.run('index', async () => {
+      const index = await this.index()
+      const entries = new Map(index.entries.map((entry, position) => [entry.id, position]))
+      const saved = []
+      for (const { id, revision, characters } of changes) {
+        const position = entries.get(id)
+        requireValue(index.entries[position]?.revision === revision, 'revision_conflict')
+        const loaded = await this.loadCurrent(id)
+        requireValue(loaded.status === 'loaded', 'chat_unavailable', '请先恢复受影响的对话存档。')
+        const next = loaded.chat
+        next.meta.settings.characters = copy(characters)
+        next.revision += 1
+        const summary = this.summary(next)
+        await writeJson(this.versionFile(summary), { version: 1, chat: next })
+        index.entries[position] = summary
+        saved.push(next)
+      }
+      // 索引一次替换；读取者要么看到整组旧选择，要么看到整组新选择。
+      await writeJson(this.manifest, index)
+      await this.cleanupVersionsUnlocked()
+      return saved
+    })
+  }
+
+  /**
    * 删除指定的对话存档及其索引记录。
    * @param {string} chatId 要删除的对话 ID。
    * @param {number} expectedRevision 当前所基于的版本号，用于防止误删已被更新的存档。

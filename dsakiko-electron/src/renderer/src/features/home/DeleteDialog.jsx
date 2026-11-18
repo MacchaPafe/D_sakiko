@@ -37,7 +37,7 @@ export function DeleteDialog({ chat, onCancel, onConfirm }) {
         <Button autoFocus variant="outline" disabled={pending} onClick={cancel}>
           取消
         </Button>
-        <Button disabled={pending} onClick={confirm}>
+        <Button variant="destructive" disabled={pending} onClick={confirm}>
           {pending ? '正在删除…' : '删除'}
         </Button>
       </div>

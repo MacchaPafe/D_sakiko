@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { X, FolderOpen, UserRound, Check, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/fields'
+import { SelectField } from '@/components/ui/SelectField'
 import { selectPersonaCharacter } from '../features/personas/source.js'
 
 /**
@@ -97,14 +98,19 @@ export function NewChatForm({ characters, personas, onCreate, onClose, Avatar })
       )}
       <label className="field-label">
         我在对话中的身份
-        <select value={persona} onChange={(event) => setPersona(event.target.value)}>
-          <option value="">默认身份</option>
-          {personas.map((item) => (
-            <option key={item.id} value={item.id} disabled={Boolean(item.problem)}>
-              {item.displayName || '来源角色不可用'}
-            </option>
-          ))}
-        </select>
+        <SelectField
+          label="我在对话中的身份"
+          value={persona}
+          onChange={setPersona}
+          options={[
+            { value: '', label: '默认身份' },
+            ...personas.map((item) => ({
+              value: item.id,
+              label: item.displayName || '来源角色不可用',
+              disabled: Boolean(item.problem)
+            }))
+          ]}
+        />
       </label>
       {error && (
         <p role="alert" className="inline-error">
@@ -136,8 +142,7 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
   })
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
-  async function choose(event) {
-    const id = event.target.value
+  async function choose(id) {
     try {
       setDefinition(
         id
@@ -168,8 +173,8 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
       source: { ...definition.source, [event.target.name]: event.target.value }
     })
   }
-  function changeCharacter(event) {
-    const character = characters.find((item) => item.id === event.target.value)
+  function changeCharacter(id) {
+    const character = characters.find((item) => item.id === id)
     setDefinition((previous) => ({
       ...previous,
       source: selectPersonaCharacter(previous.source, character)
@@ -194,14 +199,18 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
     <form className="form-stack" onSubmit={save}>
       <label className="field-label">
         编辑人格
-        <select value={definition.id || ''} onChange={choose}>
-          <option value="">新建人格</option>
-          {personas.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.displayName || '来源角色不可用'}
-            </option>
-          ))}
-        </select>
+        <SelectField
+          label="编辑人格"
+          value={definition.id || ''}
+          onChange={choose}
+          options={[
+            { value: '', label: '新建人格' },
+            ...personas.map((item) => ({
+              value: item.id,
+              label: item.displayName || '来源角色不可用'
+            }))
+          ]}
+        />
       </label>
       <div className="segmented">
         <label>
@@ -250,13 +259,16 @@ export function PersonaForm({ personas, characters, client, onSaved }) {
       ) : (
         <label className="field-label">
           角色
-          <select name="characterId" value={source.characterId} onChange={changeCharacter}>
-            {characters.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.displayName}
-              </option>
-            ))}
-          </select>
+          <SelectField
+            label="角色"
+            value={source.characterId}
+            onChange={changeCharacter}
+            options={characters.map((item) => ({
+              value: item.id,
+              label: item.displayName,
+              keywords: [item.id]
+            }))}
+          />
         </label>
       )}
       <p className="form-hint">保存只影响之后新建的聊天。已有聊天会保留创建时的身份。</p>

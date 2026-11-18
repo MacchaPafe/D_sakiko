@@ -17,6 +17,19 @@ export const API_METHODS = {
     finish: true
   },
   notices: { list: false, dismiss: true },
+  outfits: {
+    listCharacters: false,
+    setCharacter: true,
+    catalog: false,
+    getThumbnail: false,
+    rename: true,
+    setDefault: true,
+    previewRemoval: false,
+    remove: true,
+    listJobs: false,
+    start: true,
+    control: true
+  },
   setup: {
     getCatalog: false,
     getFeatureState: false,
@@ -128,6 +141,7 @@ export const API_METHODS = {
  * @property {(provider: string) => Promise<void>} openProviderKeyPage 在默认浏览器打开受支持的密钥管理页。
  * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string, draftId?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
  * @property {() => Promise<{sourceId: string, name: string} | null>} selectLegacyDirectory 只授权扫描旧版目录，不复制整个目录。
+ * @property {(target: import('../../backend/live2d-import/outfits.js').OutfitTarget) => Promise<{result?: {modelId: string, alreadyInstalled: boolean}, problem?: ApiProblem} | null>} importOutfitDirectory 选择并安装一个本地模型文件夹。
  * @property {() => Promise<'tray' | 'quit' | null>} getWindowCloseBehavior 读取 Windows 关闭窗口偏好。
  * @property {(behavior: 'tray' | 'quit') => Promise<'tray' | 'quit'>} setWindowCloseBehavior 保存 Windows 关闭窗口偏好。
  * @property {() => Promise<boolean>} getWindowVisibility 读取主窗口是否可见且未最小化。

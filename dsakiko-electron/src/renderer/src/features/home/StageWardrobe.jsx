@@ -1,7 +1,18 @@
 import { useEffect, useState } from 'react'
-import { Check, X } from 'lucide-react'
+import { Check, ChevronRight, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { stageModelKey } from '../../performance/stage-layout.js'
+
+function wardrobeSubtitle(definition, role, form) {
+  const characterName = definition?.name || role.displayName
+  if (!definition || definition.forms.length <= 1 || !form) return characterName
+  let formLabel = form.displayName
+  if (definition.bangDreamId === 'sakiko') {
+    if (form.id === 'black') formLabel = '黑祥'
+    else if (form.id === 'white') formLabel = '白祥'
+  }
+  return `${characterName} · ${formLabel}`
+}
 
 /**
  * @param {object} props 当前角色、对话选择及舞台加载状态。
@@ -18,6 +29,7 @@ export function StageWardrobe({
   stageState,
   savingDraft,
   onChoose,
+  onManage,
   onRetryModel,
   onClose
 }) {
@@ -31,10 +43,10 @@ export function StageWardrobe({
     let current = true
     void client.characters.get(role.id).then(
       (definition) => {
-        if (current) setCatalog({ role, retry, definition })
+        if (current) setCatalog({ roleId: role.id, retry, definition })
       },
       (error) => {
-        if (current) setCatalog({ role, retry, error: error.message })
+        if (current) setCatalog({ roleId: role.id, retry, error: error.message })
       }
     )
     return () => {
@@ -43,7 +55,7 @@ export function StageWardrobe({
   }, [open, client, role, retry])
 
   if (!open) return null
-  const result = catalog?.role === role && catalog.retry === retry ? catalog : null
+  const result = catalog?.roleId === role.id && catalog.retry === retry ? catalog : null
   const definition = result?.definition
   const formId = chatSelection?.formId ?? draftOutfit?.formId ?? definition?.defaultFormId
   const form = definition?.forms.find((item) => item.id === formId)
@@ -66,7 +78,7 @@ export function StageWardrobe({
     }
     setSavingId(model.id)
     try {
-      await onChoose(form.id, model, form.defaultModelId)
+      await onChoose(form.id, model)
     } catch (error) {
       setSaveError({ id: model.id, message: error.message })
     } finally {
@@ -76,6 +88,10 @@ export function StageWardrobe({
 
   function retryCatalog() {
     setRetry((value) => value + 1)
+  }
+
+  function manage() {
+    onManage(formId ?? role.defaultFormId)
   }
 
   function renderModel(model) {
@@ -132,7 +148,7 @@ export function StageWardrobe({
       <header className="stage-wardrobe-heading">
         <div>
           <h2 id={id + '-title'}>服装</h2>
-          <p>{definition?.name || role.displayName}</p>
+          <p>{wardrobeSubtitle(definition, role, form)}</p>
         </div>
         <Button variant="ghost" size="icon" aria-label="收起服装" onClick={onClose}>
           <X size={17} />
@@ -154,8 +170,9 @@ export function StageWardrobe({
         {models.map(renderModel)}
       </div>
       <footer>
-        <Button variant="ghost" size="sm" disabled>
-          获取更多服装 <span>即将开放</span>
+        <Button variant="ghost" size="sm" onClick={manage}>
+          管理服装
+          <ChevronRight size={14} aria-hidden="true" />
         </Button>
       </footer>
     </section>

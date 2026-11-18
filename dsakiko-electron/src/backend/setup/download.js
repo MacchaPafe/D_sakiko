@@ -11,7 +11,9 @@ const sources = {
     'https://www.modelscope.cn/datasets/Jerry4787/custom-gsv-model/resolve/master/character-voices/',
   asr: 'https://www.modelscope.cn/datasets/Jerry4787/custom-gsv-model/resolve/master/asr-whisper-small-q8/',
   gsv: 'https://www.modelscope.cn/models/XXXXRT/GPT-SoVITS-Pretrained/resolve/master/',
-  runtimes: 'https://www.modelscope.cn/datasets/Jerry4787/custom-gsv-model/resolve/master/runtimes/'
+  runtimes:
+    'https://www.modelscope.cn/datasets/Jerry4787/custom-gsv-model/resolve/master/runtimes/',
+  live2d: 'https://www.modelscope.cn/datasets/Jerry4787/dsakiko-live2d/resolve/master/'
 }
 
 /** 资源地址只由已编译的来源和相对路径构造，不接受客户端或清单提供任意 URL。 */

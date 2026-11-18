@@ -69,7 +69,11 @@ export function ResourceSelection({ state, flow }) {
           {state.catalogProblem}
         </div>
       )}
-      {!state.catalog && state.catalogLoading && <p role="status">正在读取资源目录…</p>}
+      {!state.catalog && state.catalogLoading && (
+        <p className="setup-status-delayed" role="status">
+          正在读取资源目录…
+        </p>
+      )}
       <div className="resource-groups">
         {asr && (
           <section className="resource-group" aria-label="语音输入">

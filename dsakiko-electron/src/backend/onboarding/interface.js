@@ -11,6 +11,7 @@ import {
 import { installBuiltinConnection } from '../setup/bindings.js'
 import { BuiltinResources } from './builtin-resources.js'
 import { builtinModelBounds } from '../bundled-characters/bounds.js'
+import { bangDreamCharacters } from '../characters/bang-dream.js'
 
 /**
  * @typedef {object} BuiltinForm
@@ -271,7 +272,7 @@ export class Onboarding {
     for (const role of manifest.characters) {
       if (
         (await this.characters.list()).some(
-          (item) => item.id === role.id || item.name === role.name
+          (item) => item.bangDreamId === role.id || item.id === role.id || item.name === role.name
         )
       )
         continue
@@ -311,6 +312,7 @@ export class Onboarding {
         await this.characters.save({
           id: role.id,
           name: role.name,
+          ...(bangDreamCharacters.has(role.id) && { bangDreamId: role.id }),
           revision: 0,
           // 预览形态只属于欢迎页；正式默认形态不随清单排序或预览选择改变。
           defaultFormId: role.defaultFormId ?? forms[0].id,

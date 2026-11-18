@@ -34,6 +34,9 @@
  * @typedef {object} CharacterModel
  * @property {string} id 角色内唯一的稳定模型身份，所属形态由包含它的 CharacterForm 确定。
  * @property {string} name 展示名。
+ * @property {{kind: 'bestdori' | 'modelscope' | 'local', id: string}} [source] 用于识别重复安装的来源。
+ * @property {string} [thumbnail] 模型包内缩略图路径。
+ * @property {string[]} [legacyIds] 旧版导入中指向同一模型内容的持久身份。
  * @property {import('./presentation.js').ModelPresentation} presentation 入口及逻辑映射；不同模型配置可引用同一底层资源包。
  */
 
@@ -43,6 +46,7 @@
  * @typedef {object} CharacterDefinition
  * @property {string} id 稳定角色身份，不随显示名变化。
  * @property {string} name 唯一角色名，所有形态共用；旧调用省略时从默认形态初始化。
+ * @property {string|null} [bangDreamId] 邦角色目录身份；缺省待确认，null 表示其他角色。
  * @property {number} revision 本次基于的版本，0 为新建。
  * @property {string} defaultFormId 必须指向 forms 中一项。
  * @property {CharacterForm[]} forms 非空且 ID 唯一，不限制为两项。

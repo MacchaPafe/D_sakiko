@@ -2,7 +2,7 @@ import { installSingleInstance } from './single-instance.js'
 import { app, dialog, ipcMain, Menu, shell, Tray } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { readJson } from '../backend/core/support.js'
+import { problem, readJson, requireValue } from '../backend/core/support.js'
 import { join, dirname } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { resolveDataDirectories, validateDataDirectories } from './data-directories.js'
@@ -13,7 +13,6 @@ import { startHttpServer } from '../server/http-server.js'
 import { SpeechProcess } from './processes/speech-process.js'
 import { createMainWindow } from './windows/main-window.js'
 import { installWindowCloseBehavior, publishWindowVisibility } from './windows/close-behavior.js'
-import { requireValue } from '../backend/core/support.js'
 
 let mainWindow = null
 let backend = null
@@ -118,6 +117,20 @@ async function startApplication() {
     })
     if (result.canceled || !result.filePaths[0]) return null
     return backend.setup.grantLegacySource(result.filePaths[0])
+  })
+  ipcMain.handle('host:import-outfit-directory', async (event, target) => {
+    checkSender(event)
+    try {
+      await backend.outfits.target(target)
+      const selection = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory'],
+        title: '选择包含一个 Live2D 模型入口的文件夹'
+      })
+      if (selection.canceled || !selection.filePaths[0]) return null
+      return { result: await backend.outfits.importDirectory(target, selection.filePaths[0]) }
+    } catch (error) {
+      return { problem: problem(error) }
+    }
   })
   ipcMain.handle('host:runtime-info', (event) => {
     checkSender(event)

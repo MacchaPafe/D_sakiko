@@ -62,7 +62,7 @@ test('新对话临时服装随首轮提交，重开时恢复默认，正式对�
   client.conversations.patchSettings = vi.fn()
   await flow.chooseOutfit('form', { id: 'default' }, 'default')
   expect(client.conversations.patchSettings).toHaveBeenCalledWith('first', {
-    characters: { sakiko: { formId: 'form', modelOverrides: { form: null } } }
+    characters: { sakiko: { formId: 'form', modelOverrides: { form: 'default' } } }
   })
   flow.newChat('sakiko')
   expect(flow.state.draftOutfit).toBeNull()
@@ -189,5 +189,47 @@ test('配置连接后未显式选择模型时默认选中第一个可用模型�
     { text: '使用默认模型发送', attachments: [] },
     expect.objectContaining({ requestId: 'stable-intent' })
   )
+  flow.dispose()
+})
+
+test('在对话与小剧场页签之间切换时恢复各页签上次选中的对话', async () => {
+  const { flow, client } = fixture()
+  const chats = [
+    { id: 'chat-sakiko', characterIds: ['sakiko'], mode: 'single-character' },
+    { id: 'chat-theatre', characterIds: ['sakiko', 'anon'], mode: 'scripted-dialogue' }
+  ]
+  client.conversations.listChats = async () => chats
+  client.settings.observe = vi.fn(() => vi.fn())
+  client.notices = { observe: vi.fn(() => vi.fn()) }
+  client.observe = vi.fn(() => vi.fn())
+
+  await flow.mount()
+  flow.selectChat(chats[0])
+  expect(flow.state.target).toEqual({
+    characterId: 'sakiko',
+    chatId: 'chat-sakiko',
+    tab: 'single-character'
+  })
+
+  flow.setTab('scripted-dialogue')
+  expect(flow.state.target).toEqual({
+    characterId: 'sakiko',
+    chatId: null,
+    tab: 'scripted-dialogue'
+  })
+
+  flow.setTab('single-character')
+  expect(flow.state.target).toEqual({
+    characterId: 'sakiko',
+    chatId: 'chat-sakiko',
+    tab: 'single-character'
+  })
+
+  flow.setTab('scripted-dialogue')
+  flow.selectChat(chats[1])
+  flow.setTab('single-character')
+  expect(flow.state.target.chatId).toBe('chat-sakiko')
+  flow.setTab('scripted-dialogue')
+  expect(flow.state.target.chatId).toBe('chat-theatre')
   flow.dispose()
 })

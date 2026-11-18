@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Download } from 'lucide-react'
+import { Download } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
-import { DownloadProgress } from '../setup/DownloadProgress.jsx'
 import { formatBytes } from '../setup/presentation.js'
 
 function VoiceChoices({ option, pending, onSelect }) {
@@ -101,6 +100,9 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
       setPending(false)
     }
   }
+  function download() {
+    onDownload(option.id, option.updateAvailable ? '更新附加资源' : '安装附加资源')
+  }
   function confirmRemoval() {
     setReleaseBytes(null)
     setError(null)
@@ -120,7 +122,7 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
         </div>
         <div className="settings-row-actions">
           {!option.ready && option.available && (
-            <Button size="sm" variant="outline" onClick={() => onDownload(option.id)}>
+            <Button size="sm" variant="outline" onClick={download}>
               <Download />
               {option.updateAvailable ? '更新' : '安装'}
               {isVoice && '应用语音包'}
@@ -168,7 +170,7 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
 const headings = ['speech', 'voices', 'asr']
 
 /** @param {object} props 设置目录、共享任务和导航。 @returns {import('react').ReactElement} 资源状态与管理动作。 */
-export function Resources({ client, target, onDownload, setupState, setup }) {
+export function Resources({ client, target, onDownload, setupState, setup, onShowDownloads }) {
   const catalog = setupState.managedCatalog
   const problem = setupState.managedCatalogProblem
   const hasCatalog = Boolean(catalog)
@@ -188,28 +190,21 @@ export function Resources({ client, target, onDownload, setupState, setup }) {
 
   return (
     <>
-      {!catalog && setupState.managedCatalogChecking && <p role="status">正在读取资源…</p>}
+      {!catalog && setupState.managedCatalogChecking && (
+        <p className="settings-status-delayed" role="status">
+          正在读取资源…
+        </p>
+      )}
       {problem && (
         <p className="settings-error" role="alert">
           {problem}
         </p>
       )}
-      {job && ['running', 'paused', 'failed', 'planned'].includes(job.status) && (
-        <section>
-          <h3>后台下载</h3>
-          <div className="settings-card">
-            <DownloadProgress state={setupState} compact />
-            <div className="settings-row-actions">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void setup.control(job.status === 'running' ? 'pause' : 'resume')}
-              >
-                {job.status === 'running' ? '暂停' : job.status === 'failed' ? '重试' : '继续'}
-              </Button>
-            </div>
-          </div>
-        </section>
+      {job && ['running', 'paused', 'failed'].includes(job.status) && (
+        <Button variant="outline" size="sm" onClick={onShowDownloads}>
+          <Download size={16} />
+          查看下载任务
+        </Button>
       )}
       {headings.map((id) => {
         const group = catalog?.groups.find((item) => item.id === id)
@@ -240,13 +235,11 @@ export function Resources({ client, target, onDownload, setupState, setup }) {
   )
 }
 
-/** @param {object} props 复用引导下载进度和应用任务容器。 @returns {import('react').ReactElement} 安装前确认与可返回的独立页。 */
-export function ResourceDownloadPage({ target, client, setup, state, onBack, onReturn }) {
+/** @param {object} props 资源目标、应用任务容器与下载受理后的导航。 @returns {import('react').ReactElement} 设置中的下载大小与安装确认。 */
+export function ResourceDownloadConfirmation({ title, target, client, setup, onClose, onStarted }) {
   const [detail, setDetail] = useState(null)
-  const [jobId, setJobId] = useState(null)
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState(null)
-  const job = state.job?.id === jobId ? state.job : null
   useEffect(() => {
     let current = true
     void client.setup
@@ -271,60 +264,52 @@ export function ResourceDownloadPage({ target, client, setup, state, onBack, onR
     setPending(true)
     setProblem(null)
     try {
-      await setup.downloadManaged(target, setJobId)
+      await setup.downloadManaged(target)
+      onStarted()
     } catch (error) {
       setProblem(error.message)
     } finally {
       setPending(false)
     }
   }
+  function close() {
+    if (!pending) onClose()
+  }
   return (
-    <main className="settings-download-page" aria-label="安装附加资源">
-      <div className="settings-download-sheet">
-        <Button variant="ghost" onClick={onBack}>
-          <ArrowLeft /> 返回附加资源
-        </Button>
-        <header>
-          <h1>{detail?.item?.updateAvailable ? '更新附加资源' : '安装附加资源'}</h1>
-          {detail && (
-            <p>
-              {detail.item?.name} · 预计下载 {formatBytes(detail.bytes)}
-            </p>
-          )}
-        </header>
-        {job && <DownloadProgress state={{ ...state, job }} />}
-        {problem && (
-          <p className="settings-error" role="alert">
-            {problem}
+    <div className="settings-resource-download-content" data-dialog-busy={pending || undefined}>
+      <header>
+        <h2 tabIndex={-1} data-dialog-focus>
+          {title}
+        </h2>
+        {detail?.item && detail.bytes != null && (
+          <p role="status">
+            {detail.item?.name} · 预计下载 {formatBytes(detail.bytes)}
           </p>
         )}
-        <footer className="settings-row-actions">
-          {job ? (
-            <>
-              {['running', 'paused', 'failed', 'planned'].includes(job.status) && (
-                <Button
-                  variant="outline"
-                  disabled={pending || Boolean(state.pending)}
-                  onClick={() => void setup.control(job.status === 'running' ? 'pause' : 'resume')}
-                >
-                  {job.status === 'running'
-                    ? '暂停下载'
-                    : job.status === 'failed'
-                      ? '重试下载'
-                      : '继续下载'}
-                </Button>
-              )}
-              <Button onClick={onReturn}>
-                {job.status === 'running' ? '后台下载并返回聊天' : '返回聊天'}
-              </Button>
-            </>
-          ) : (
-            <Button onClick={start} disabled={pending || !detail || detail.bytes == null}>
-              {pending ? '正在准备…' : '开始下载'}
-            </Button>
-          )}
-        </footer>
-      </div>
-    </main>
+      </header>
+      {!detail && !problem && (
+        <p className="settings-status-delayed" role="status">
+          正在检查下载大小…
+        </p>
+      )}
+      {detail && (!detail.item || detail.bytes == null) && (
+        <p className="settings-error" role="alert">
+          暂时无法确认下载大小。请返回附加资源并重试。
+        </p>
+      )}
+      {problem && (
+        <p className="settings-error" role="alert">
+          {problem}
+        </p>
+      )}
+      <footer className="settings-row-actions">
+        <Button variant="outline" onClick={close} disabled={pending}>
+          取消
+        </Button>
+        <Button onClick={start} disabled={pending || !detail?.item || detail.bytes == null}>
+          {pending ? '正在准备…' : '开始下载'}
+        </Button>
+      </footer>
+    </div>
   )
 }

@@ -196,7 +196,11 @@ export async function buildModelCatalog(data, config, shared, locate) {
  */
 export async function resolveModelCatalog(assets, presentation, motionDurations = null) {
   const entry = await assets.packageEntry(presentation.model)
-  const data = JSON.parse(Buffer.from(await assets.read(presentation.model)).toString('utf8'))
+  const data = JSON.parse(
+    Buffer.from(await assets.read(presentation.model))
+      .toString('utf8')
+      .replace(/^\uFEFF/u, '')
+  )
   requireValue(data && typeof data === 'object', 'invalid_model')
   const problems = []
   async function optional(member) {
@@ -227,8 +231,15 @@ export async function resolveModelCatalog(assets, presentation, motionDurations 
   const durationsByMember = new Map()
   async function locate(file) {
     // 包外路径不能绕过资源管理；仅导入入口单文件时不猜测磁盘旁的资源。
-    if (!entry || !validModelFilePath(file)) return null
+    if (
+      !entry ||
+      typeof file !== 'string' ||
+      path.posix.isAbsolute(file) ||
+      /[\\:#?%\0]/u.test(file)
+    )
+      return null
     const member = path.posix.join(directory, file)
+    if (!validModelFilePath(member)) return null
     try {
       const target = await assets.localPath(presentation.model, member)
       const info = await stat(target)

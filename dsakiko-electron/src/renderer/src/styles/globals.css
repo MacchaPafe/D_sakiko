@@ -108,7 +108,7 @@ body,
   app-region: drag;
   user-select: none;
 }
-[data-window-controls-overlay] :is(dialog, .settings-download-sheet) {
+[data-window-controls-overlay] dialog {
   app-region: no-drag;
 }
 
@@ -324,6 +324,10 @@ body,
 @media (prefers-reduced-motion: reduce) {
   .welcome-spinner {
     animation: none;
+  }
+  .setup-loading:not([data-problem='true']) > div,
+  .setup-status-delayed {
+    animation-duration: 0s;
   }
   .onboarding-shell {
     --onboarding-control-duration: 0ms;
@@ -698,6 +702,17 @@ body,
   gap: 24px;
   max-width: 480px;
   padding: 32px;
+}
+.setup-loading:not([data-problem='true']) > div,
+.setup-status-delayed {
+  /* 快速读取初始化或本地状态时保持暖纸背景静默过渡，超过 150ms 才渐显。 */
+  opacity: 0;
+  animation: status-delayed-reveal 140ms 150ms forwards;
+}
+@keyframes status-delayed-reveal {
+  to {
+    opacity: 1;
+  }
 }
 .setup-loading p {
   display: flex;

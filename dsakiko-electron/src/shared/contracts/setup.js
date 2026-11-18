@@ -12,6 +12,7 @@
  * @property {string|null} preparationId 所属初始化准备身份；普通后台下载为空。
  * @property {string} phase 当前阶段，重连以整个快照为准。
  * @property {number} expiresAt 尚未执行的计划有效期；暂停任务不按此字段删除。
+ * @property {number|null} completedAt 完成时间，用于下载中心展示最近完成的任务。
  * @property {{logical: number, added: number, download: number, cache: number}} space 逻辑大小、预计新增资源占用、下载量和缓存占用。
  * @property {Array<{requiredBytes: number, availableBytes: number}>} volumes 按实际卷合并的执行空间检查。
  * @property {{hardlinkFiles: number, copyFiles: number, reusedFiles: number}} transfer 已验证的传输方式统计。

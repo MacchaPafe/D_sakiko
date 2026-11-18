@@ -23,6 +23,8 @@ import { downloadFile } from './download.js'
 import { VoiceReuse, voiceDefinition } from './voice-reuse.js'
 import { collectDownloadCache } from './cache.js'
 import { extractArchive, prepareRuntime } from './installers.js'
+import { matchBangDreamCharacters } from '../characters/bang-dream.js'
+import { mergeLegacyOutfits } from '../characters/legacy-outfits.js'
 import {
   bindGsv,
   characterDefinition,
@@ -930,6 +932,7 @@ export class ResourceSetup {
       status: job.status,
       phase: job.phase,
       expiresAt: job.expiresAt,
+      completedAt: job.completedAt ?? null,
       progress: job.progress,
       space: job.planBytes,
       volumes: job.volumes,
@@ -1199,6 +1202,7 @@ export class ResourceSetup {
     }
     signal.throwIfAborted()
     job.status = 'succeeded'
+    job.completedAt = Date.now()
     job.phase = 'complete'
     job.progress = null
     if (job.kind === 'download' && job.options.managed) job.refs = {}
@@ -1286,12 +1290,23 @@ export class ResourceSetup {
       ])
     )
     const mapping = Object.create(null)
-    const namesInUse = new Set((await this.characters.list()).map((item) => item.name.trim()))
+    const existingRoles = await this.characters.list()
+    const namesInUse = new Set(existingRoles.map((item) => item.name.trim()))
+    const affiliations = matchBangDreamCharacters(job.scan.roles, existingRoles)
     if (job.options.include.characters) {
       await this.updateLegacyItem(job, 'characters', 'committing', 0)
       for (const role of job.scan.roles) {
         signal.throwIfAborted()
-        if (await this.characters.get(role.id)) {
+        const existing = await this.characters.get(role.id)
+        if (existing) {
+          const affiliation = existing.bangDreamId ?? affiliations.get(role.id)
+          if (affiliation === role.id) {
+            const imported = characterDefinition(role, job.refs, existing.name, job.scan.identity)
+            const changed = existing.bangDreamId === undefined
+            existing.bangDreamId ??= affiliation
+            const outfitsChanged = await mergeLegacyOutfits(existing, imported, this.assets, signal)
+            if (changed || outfitsChanged) await this.characters.save(existing)
+          }
           await this.updateLegacyItem(
             job,
             'characters',
@@ -1303,7 +1318,10 @@ export class ResourceSetup {
         const original = role.name.trim()
         let name = original
         for (let number = 1; namesInUse.has(name); number += 1) name = `${original}_${number}`
-        await this.characters.save(characterDefinition(role, job.refs, name, job.scan.identity))
+        const definition = characterDefinition(role, job.refs, name, job.scan.identity)
+        const affiliation = affiliations.get(role.id)
+        if (affiliation) definition.bangDreamId = affiliation
+        await this.characters.save(definition)
         namesInUse.add(name)
         job.results.push({ kind: 'character', id: role.id, status: 'imported' })
         await this.updateLegacyItem(

@@ -2,8 +2,16 @@ import { useRef, useState } from 'react'
 import { ArrowLeft, ArrowUpRight, Cable, Plus, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Input } from '../../components/ui/fields.jsx'
+import { SelectField } from '../../components/ui/SelectField.jsx'
 import { desktopHost } from '../../host/desktop.js'
 import { providerPresets } from '../../../../shared/contracts/llm-providers.js'
+
+const providerOptions = providerPresets.map((item) => ({
+  value: item.id,
+  label: item.name,
+  group: item.id.endsWith('-compatible') ? '自定义协议' : '厂商预设',
+  keywords: [item.id]
+}))
 
 function makeDraft(connection) {
   return (
@@ -52,8 +60,8 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
     setDraft((current) => ({ ...current, [field]: value }))
     setResult(null)
   }
-  function selectProvider(event) {
-    const provider = providerPresets.find((item) => item.id === event.target.value)
+  function selectProvider(id) {
+    const provider = providerPresets.find((item) => item.id === id)
     setDraft((current) => ({
       ...current,
       provider: provider.id,
@@ -69,6 +77,10 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
     ) {
       editModel(0, provider.exampleModel ?? '')
     }
+  }
+
+  function selectTestModel(value) {
+    setTestIndex(Number(value))
   }
   function editModel(index, id) {
     setRows((current) =>
@@ -166,26 +178,13 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
           </label>
           <label>
             服务商
-            <select className="field-input" value={draft.provider} onChange={selectProvider}>
-              <optgroup label="厂商预设">
-                {providerPresets
-                  .filter((item) => !item.id.endsWith('-compatible'))
-                  .map((item) => (
-                    <option value={item.id} key={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label="自定义协议">
-                {providerPresets
-                  .filter((item) => item.id.endsWith('-compatible'))
-                  .map((item) => (
-                    <option value={item.id} key={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-              </optgroup>
-            </select>
+            <SelectField
+              label="服务商"
+              value={draft.provider}
+              onChange={selectProvider}
+              options={providerOptions}
+              disabled={Boolean(pending)}
+            />
           </label>
           {!fixed && (
             <label>
@@ -265,18 +264,15 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
         </fieldset>
         <div className="settings-form-footer">
           {rows.length > 1 && (
-            <select
-              aria-label="测试模型"
-              className="field-input"
-              value={testIndex}
-              onChange={(event) => setTestIndex(Number(event.target.value))}
-            >
-              {models.map((model, index) => (
-                <option key={rows[index].key} value={index}>
-                  {model || '模型 ' + (index + 1)}
-                </option>
-              ))}
-            </select>
+            <SelectField
+              label="测试模型"
+              value={String(testIndex)}
+              onChange={selectTestModel}
+              options={models.map((model, index) => ({
+                value: String(index),
+                label: model || '模型 ' + (index + 1)
+              }))}
+            />
           )}
           <Button
             type="button"

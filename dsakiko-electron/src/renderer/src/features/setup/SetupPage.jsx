@@ -137,24 +137,19 @@ export function SetupPage({ state, flow }) {
   )
 }
 
-/** @param {{problem?: string|null, onRetry?: () => void}} props 启动错误与重试。 @returns {import('react').ReactElement} 启动期间的真实加载或错误状态。 */
+/** @param {{problem?: string|null, onRetry?: () => void}} props 启动错误与重试。 @returns {import('react').ReactElement} 启动期间的标志页或错误状态。 */
 export function SetupLoading({ problem, onRetry }) {
   return (
-    <main className="setup-loading">
+    <main className="setup-loading" data-problem={problem ? 'true' : undefined}>
       <div>
         <img src={wordmark} alt="数字小祥" width="205" height="58" />
-        {problem ? (
+        {problem && (
           <>
             <p role="alert">{problem}</p>
             <Button variant="outline" onClick={onRetry}>
               重试
             </Button>
           </>
-        ) : (
-          <p role="status">
-            <LoaderCircle className="welcome-spinner" size={18} aria-hidden="true" />
-            正在读取初始化状态…
-          </p>
         )}
       </div>
     </main>

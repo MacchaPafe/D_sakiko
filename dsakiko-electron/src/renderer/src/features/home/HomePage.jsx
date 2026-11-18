@@ -1,10 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import {
   ArrowUp,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Download,
   MessageCircle,
+  Pencil,
   Plus,
   Settings,
   Square,
@@ -12,6 +13,9 @@ import {
   Volume2
 } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
+import { DialogNavigator } from '../../components/ui/DialogNavigator.jsx'
+import { SelectField } from '../../components/ui/SelectField.jsx'
+import { useDialogNavigation } from '../../components/ui/use-dialog-navigation.js'
 import logo from '../../assets/welcome/logo.svg'
 import wordmark from '../../assets/welcome/wordmark.svg'
 import { previewCharacters } from '../onboarding/characters.js'
@@ -21,11 +25,21 @@ import { StageController } from './stage-controller.js'
 import { StageToolbar } from './StageToolbar.jsx'
 import { HistoryPanel } from './HistoryPanel.jsx'
 import { NoticeStack } from './NoticeStack.jsx'
+import { DownloadCenter } from './DownloadCenter.jsx'
+import { pendingDownloads, useDownloadJobs } from './download-jobs.js'
 import { DeleteDialog } from './DeleteDialog.jsx'
+import { CharacterAffiliationForm, OutfitManager } from './OutfitManager.jsx'
 import { VoiceInput, VoiceInstallDialog } from './VoiceInput.jsx'
 import { SettingsPanel } from '../settings/SettingsPanel.jsx'
-import { ResourceDownloadPage } from '../settings/Resources.jsx'
+import { ResourceDownloadConfirmation } from '../settings/Resources.jsx'
 import './home.css'
+
+/** @typedef {{kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string}} | {kind: 'downloads', category: 'all'|'resources'|'outfits'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
+/** @typedef {HomeDialogContent & import('../../components/ui/use-dialog-navigation.js').DialogPage} HomeDialogPage */
+
+function downloadPage(category) {
+  return { kind: 'downloads', title: '下载中心', layout: 'download-center', category }
+}
 
 function Avatar({ role, client }) {
   const [url, setUrl] = useState(null)
@@ -78,9 +92,19 @@ function ChatItem({ chat, selected, flow, onDelete }) {
     </div>
   )
 }
-function CharacterGroup({ role, state, flow, client, expanded, onToggle, onDelete }) {
+function CharacterGroup({
+  role,
+  state,
+  flow,
+  client,
+  expanded,
+  onToggle,
+  onDelete,
+  onAffiliation
+}) {
   const active = state.target.characterId === role.id
   const listId = useId()
+  const unconfirmed = role.bangDreamId === undefined
   const chats = state.chats.filter(
     (chat) =>
       chat.mode === 'single-character' && !chat.participantIssue && chat.characterIds[0] === role.id
@@ -91,19 +115,39 @@ function CharacterGroup({ role, state, flow, client, expanded, onToggle, onDelet
   function create() {
     flow.newChat(role.id)
   }
+  function affiliation() {
+    onAffiliation(role)
+  }
   return (
     <section className="home-role-group">
-      <button
-        className={'home-role' + (active ? ' selected' : '')}
-        aria-current={active ? 'true' : undefined}
-        aria-expanded={expanded}
-        aria-controls={listId}
-        onClick={toggle}
-      >
-        <Avatar role={role} client={client} />
-        <span className="home-role-name">{role.displayName ?? role.name}</span>
-        <ChevronRight className="home-role-chevron" size={16} aria-hidden="true" />
-      </button>
+      <div className="home-role-header">
+        <button
+          className={'home-role' + (expanded ? ' selected' : '')}
+          aria-current={active ? 'true' : undefined}
+          aria-expanded={expanded}
+          aria-controls={listId}
+          onClick={toggle}
+        >
+          <Avatar role={role} client={client} />
+          <span className="home-role-name">{role.displayName ?? role.name}</span>
+          <ChevronRight className="home-role-chevron" size={16} aria-hidden="true" />
+        </button>
+        <Button
+          className="home-role-affiliation"
+          variant="ghost"
+          size="icon-xs"
+          data-unconfirmed={unconfirmed || undefined}
+          aria-label={(unconfirmed ? '确认角色归属：' : '编辑角色归属：') + role.displayName}
+          title={unconfirmed ? '确认角色归属' : '编辑角色归属'}
+          onClick={affiliation}
+        >
+          {unconfirmed ? (
+            <span className="home-role-unconfirmed-badge">待关联</span>
+          ) : (
+            <Pencil size={14} />
+          )}
+        </Button>
+      </div>
       {/* 收起时保留列表布局供过渡使用，并立即移除内部控件的焦点与交互。 */}
       <div
         className="home-role-disclosure"
@@ -178,9 +222,15 @@ function keepRoleInView({ button, list, nav, offset }) {
   return stop
 }
 
-function CharacterGroups({ state, flow, client, onDelete }) {
-  // 初次展开恢复的角色，之后折叠状态只由侧栏操作决定。
-  const [expandedRoleId, setExpandedRoleId] = useState(state.target.characterId)
+function CharacterGroups({
+  state,
+  flow,
+  client,
+  expandedRoleId,
+  onExpandChange,
+  onDelete,
+  onAffiliation
+}) {
   const scrollAnchor = useRef(null)
   useLayoutEffect(() => {
     const anchor = scrollAnchor.current
@@ -200,7 +250,10 @@ function CharacterGroups({ state, flow, client, onDelete }) {
           offset: button.getBoundingClientRect().top - nav.getBoundingClientRect().top
         }
       : null
-    setExpandedRoleId((current) => (current === roleId ? null : roleId))
+    onExpandChange((current) => {
+      const resolved = current === undefined ? state.target.characterId : current
+      return resolved === roleId ? null : roleId
+    })
   }
 
   return state.characters.map((role) => (
@@ -213,6 +266,7 @@ function CharacterGroups({ state, flow, client, onDelete }) {
       expanded={expandedRoleId === role.id}
       onToggle={toggleRole}
       onDelete={onDelete}
+      onAffiliation={onAffiliation}
     />
   ))
 }
@@ -267,36 +321,25 @@ function Subtitle({ state, replayingTurn, onToggleReplay }) {
 function ModelPicker({ state, flow }) {
   if (!state.connections.some((item) => item.models.length)) return null
   const selection = selectedModel(state)
-  function change(event) {
-    if (event.target.value) void flow.chooseModel(JSON.parse(event.target.value))
+  function change(value) {
+    if (value) void flow.chooseModel(JSON.parse(value))
   }
+  const options = state.connections.flatMap((connection) =>
+    connection.models.map((model) => ({
+      value: JSON.stringify({ connectionId: connection.id, modelId: model.id }),
+      label: model.id,
+      group: connection.name
+    }))
+  )
   return (
     <label className="home-model-picker">
-      <select
-        aria-label="对话模型"
-        className="field-input"
+      <SelectField
+        label="对话模型"
+        options={options}
+        placeholder="选择模型"
         value={hasConnection(state) && selection ? JSON.stringify(selection) : ''}
         onChange={change}
-      >
-        <option value="" disabled>
-          选择模型
-        </option>
-        {state.connections
-          .filter((item) => item.models.length)
-          .map((item) => (
-            <optgroup key={item.id} label={item.name}>
-              {item.models.map((model) => {
-                const value = JSON.stringify({ connectionId: item.id, modelId: model.id })
-                return (
-                  <option value={value} key={model.id}>
-                    {model.id}
-                  </option>
-                )
-              })}
-            </optgroup>
-          ))}
-      </select>
-      <ChevronDown className="home-model-picker-chevron" size={14} aria-hidden="true" />
+      />
     </label>
   )
 }
@@ -446,10 +489,13 @@ export function HomePage({ client, setup, setupState }) {
   const [flow] = useState(() => new HomeFlow(client))
   const state = useSyncExternalStore(flow.subscribe, flow.getSnapshot)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [expandedRoleId, setExpandedRoleId] = useState(undefined)
   const [turnReplay, setTurnReplay] = useState(null)
   const [deleting, setDeleting] = useState(null)
-  const [settings, setSettings] = useState(null)
-  const [resource, setResource] = useState(null)
+  /** @type {ReturnType<typeof useDialogNavigation<HomeDialogPage>>} */
+  const { frames, open, push, replace, dismiss } = useDialogNavigation()
+  const rootDialog = frames[0]?.page.kind
+  const activeDialog = frames.at(-1)?.page.kind
   const [voiceInstall, setVoiceInstall] = useState(false)
   const [stageState, setStageState] = useState({
     text: '',
@@ -467,17 +513,22 @@ export function HomePage({ client, setup, setupState }) {
   })
   const canvas = useRef(null)
   const stage = useRef(null)
-  const hostVisibility = useRef(true)
-  const downloadPageOpen = useRef(false)
   const sequenceId = state.snapshot?.presentation.sequenceId ?? null
   const draftPresentation = state.draftOutfit?.model.presentation
   const currentReplay = turnReplay?.chatId === state.target.chatId ? turnReplay : null
+  const downloads = useDownloadJobs(
+    client,
+    rootDialog === 'outfits' || activeDialog === 'downloads'
+  )
+  const downloadCount =
+    pendingDownloads(downloads.outfits.items).length +
+    pendingDownloads(downloads.resources.items).length
   useEffect(() => {
     void flow.mount()
     return () => flow.dispose()
   }, [flow])
   useEffect(() => {
-    if (deleting || resource || voiceInstall) return
+    if (deleting || voiceInstall || rootDialog) return
     const platform = navigator.userAgentData?.platform ?? navigator.platform
     const isMac = platform.toLowerCase().startsWith('mac')
     function handleSettingsShortcut(event) {
@@ -492,11 +543,17 @@ export function HomePage({ client, setup, setupState }) {
       )
         return
       event.preventDefault()
-      if (!event.repeat) setSettings((current) => current ?? { section: 'connections' })
+      if (!event.repeat)
+        open({
+          kind: 'settings',
+          title: '设置',
+          layout: 'settings-dialog',
+          entry: { section: 'connections' }
+        })
     }
     window.addEventListener('keydown', handleSettingsShortcut)
     return () => window.removeEventListener('keydown', handleSettingsShortcut)
-  }, [deleting, resource, voiceInstall])
+  }, [deleting, voiceInstall, rootDialog, open])
   useEffect(() => {
     const controller = new StageController(client, setStageState)
     stage.current = controller
@@ -505,8 +562,7 @@ export function HomePage({ client, setup, setupState }) {
     let active = true
     let visible = true
     function sync() {
-      hostVisibility.current = visible
-      if (active) controller.setVisible(visible && !document.hidden && !downloadPageOpen.current)
+      if (active) controller.setVisible(visible && !document.hidden)
     }
     const stop = host.onWindowVisibility((value) => {
       visible = value
@@ -542,9 +598,9 @@ export function HomePage({ client, setup, setupState }) {
   function retryStageModel() {
     stage.current?.retryModel()
   }
-  function chooseStageOutfit(formId, model, defaultModelId) {
+  function chooseStageOutfit(formId, model) {
     stage.current?.stopReplay()
-    return flow.chooseOutfit(formId, model, defaultModelId)
+    return flow.chooseOutfit(formId, model)
   }
   function zoomModel(factor) {
     stage.current?.zoom(factor)
@@ -597,29 +653,76 @@ export function HomePage({ client, setup, setupState }) {
     setDeleting(null)
   }
   function openSettings(section = 'connections', target) {
-    setSettings({ section, target })
-  }
-  function closeSettings() {
-    setSettings(null)
+    open({ kind: 'settings', title: '设置', layout: 'settings-dialog', entry: { section, target } })
   }
   function goToAsr() {
     setVoiceInstall(false)
     openSettings('resources', 'asr')
   }
-  function openDownload(id) {
-    closeSettings()
-    downloadPageOpen.current = true
-    stage.current?.setVisible(false)
-    setResource(id)
+  function openDownload(target, title) {
+    push({ kind: 'resource', target, title, layout: 'outfit-detail-dialog' })
   }
-  function closeDownload() {
-    downloadPageOpen.current = false
-    setResource(null)
-    stage.current?.setVisible(hostVisibility.current && !document.hidden)
+  function resourceDownloadStarted(id) {
+    downloads.refresh()
+    replace(id, downloadPage('resources'))
   }
-  function backToResources() {
-    closeDownload()
-    openSettings('resources', resource)
+  function showOutfits(target) {
+    open({ kind: 'outfits', title: '服装管理', layout: 'outfit-manager', target })
+  }
+  function openOutfits(formId) {
+    showOutfits({ characterId: state.target.characterId, formId })
+  }
+  function showOutfitDetail(title, render) {
+    push({ kind: 'outfit-detail', title, layout: 'outfit-detail-dialog', render })
+  }
+  function refreshStageOutfit() {
+    const current = flow.getSnapshot()
+    if (!current.target.chatId && !current.draftOutfit)
+      void stage.current?.select(current.target.characterId, null, null)
+  }
+  function dismissDialog(id) {
+    if (frames.length === 1 && frames[0].id === id && rootDialog === 'outfits') refreshStageOutfit()
+    dismiss(id)
+  }
+  function showDownloads() {
+    open(downloadPage('all'))
+  }
+  function showOutfitDownloads() {
+    push(downloadPage('outfits'))
+  }
+  function showResourceDownloads() {
+    push(downloadPage('resources'))
+  }
+  function viewInstalledOutfit(target) {
+    showOutfits({ ...target, tab: 'installed' })
+  }
+  function viewInstalledResource(target) {
+    if (rootDialog === 'outfits') refreshStageOutfit()
+    openSettings('resources', target)
+  }
+  async function tryManagedOutfit(characterId, formId, model, onClose) {
+    if (characterId !== state.target.characterId) return
+    await chooseStageOutfit(formId, model)
+    onClose()
+  }
+  function removeDraftOutfit(target, modelId) {
+    flow.invalidateDraftOutfit(target.characterId, target.formId, modelId)
+  }
+  function refreshAffiliation() {
+    void flow.refresh().catch(() => {})
+  }
+  function openAffiliation(role) {
+    function render(onClose) {
+      return (
+        <CharacterAffiliationForm
+          client={client}
+          role={role}
+          onClose={onClose}
+          onSaved={refreshAffiliation}
+        />
+      )
+    }
+    open({ kind: 'outfit-detail', title: '编辑角色归属', layout: 'outfit-detail-dialog', render })
   }
   async function confirmDelete() {
     const done = await flow.deleteChat(deleting)
@@ -627,24 +730,29 @@ export function HomePage({ client, setup, setupState }) {
     return done
   }
   const role = state.characters.find((item) => item.id === state.target.characterId)
+  // 初次展开恢复的角色，之后折叠状态只由侧栏操作决定，切换页签不重置。
+  const activeExpandedRoleId =
+    expandedRoleId === undefined ? state.target.characterId : expandedRoleId
+  const selection = role && state.snapshot?.chat.meta.settings.characters[role.id]
+  const activeForm = selection?.formId ?? state.draftOutfit?.formId ?? role?.defaultFormId
   const canChooseOutfit =
     role &&
     state.target.tab === 'single-character' &&
     (!state.target.chatId || (state.snapshot?.chat && !state.snapshot.participantIssue)) &&
     !historyOpen &&
-    !settings &&
-    !resource &&
+    (!rootDialog || rootDialog === 'outfits') &&
     !voiceInstall &&
     !deleting
   const wardrobe = canChooseOutfit
     ? {
         role,
         client,
-        chatSelection: state.snapshot?.chat.meta.settings.characters[role.id],
+        chatSelection: selection,
         draftOutfit: state.draftOutfit,
         stageState,
         savingDraft: !state.target.chatId && state.sending,
         onChoose: chooseStageOutfit,
+        onManage: openOutfits,
         onRetryModel: retryStageModel
       }
     : null
@@ -654,9 +762,80 @@ export function HomePage({ client, setup, setupState }) {
   const theatre = state.chats.filter(
     (chat) => chat.mode === 'scripted-dialogue' && !chat.participantIssue
   )
+  function renderDialogPage(page, { id, onDismiss, returnTo }) {
+    switch (page.kind) {
+      case 'settings':
+        return (
+          <SettingsPanel
+            entry={page.entry}
+            client={client}
+            flow={flow}
+            state={state}
+            setup={setup}
+            setupState={setupState}
+            onClose={onDismiss}
+            onDownload={openDownload}
+            onShowDownloads={showResourceDownloads}
+          />
+        )
+      case 'outfits':
+        return (
+          <OutfitManager
+            client={client}
+            roles={state.characters}
+            initial={page.target}
+            currentChat={
+              role && {
+                characterId: role.id,
+                formId: activeForm,
+                modelId:
+                  selection?.modelOverrides?.[activeForm] ?? state.draftOutfit?.model.id ?? null
+              }
+            }
+            onClose={onDismiss}
+            onTry={(characterId, formId, model) =>
+              tryManagedOutfit(characterId, formId, model, onDismiss)
+            }
+            onDeleted={removeDraftOutfit}
+            jobs={downloads.outfits.items}
+            onShowDownloads={showOutfitDownloads}
+            onDownloadStarted={downloads.refresh}
+            onShowDetail={showOutfitDetail}
+            onAffiliationSaved={refreshAffiliation}
+          />
+        )
+      case 'downloads':
+        return (
+          <DownloadCenter
+            client={client}
+            setup={setup}
+            downloads={downloads}
+            initial={page.category}
+            returnTo={returnTo}
+            roles={state.characters}
+            onClose={onDismiss}
+            onOutfit={viewInstalledOutfit}
+            onResource={viewInstalledResource}
+          />
+        )
+      case 'resource':
+        return (
+          <ResourceDownloadConfirmation
+            title={page.title}
+            target={page.target}
+            client={client}
+            setup={setup}
+            onClose={onDismiss}
+            onStarted={() => resourceDownloadStarted(id)}
+          />
+        )
+      case 'outfit-detail':
+        return page.render(onDismiss)
+    }
+  }
   return (
     <>
-      <main className="home-page" aria-label="数字小祥主页" inert={Boolean(resource)}>
+      <main className="home-page" aria-label="数字小祥主页">
         <aside className="home-sidebar">
           <div className="home-brand">
             <img src={logo} alt="" width="40" height="40" />
@@ -679,9 +858,21 @@ export function HomePage({ client, setup, setupState }) {
             </button>
           </div>
           <nav className="home-navigation" aria-label="角色与对话">
-            {state.loading && <p className="home-empty">正在读取对话…</p>}
+            {state.loading && (
+              <p className="home-empty" role="status">
+                正在读取对话…
+              </p>
+            )}
             {state.target.tab === 'single-character' && !state.loading && (
-              <CharacterGroups state={state} flow={flow} client={client} onDelete={setDeleting} />
+              <CharacterGroups
+                state={state}
+                flow={flow}
+                client={client}
+                expandedRoleId={activeExpandedRoleId}
+                onExpandChange={setExpandedRoleId}
+                onDelete={setDeleting}
+                onAffiliation={openAffiliation}
+              />
             )}
             {state.target.tab === 'scripted-dialogue' && (
               <>
@@ -721,13 +912,30 @@ export function HomePage({ client, setup, setupState }) {
               notices={state.notices}
               onDismiss={flow.dismiss}
               onSettings={openSettings}
-              setup={setup}
-              setupState={setupState}
             />
-            <Button variant="ghost" className="home-settings" onClick={() => openSettings()}>
-              <Settings size={16} />
-              设置
-            </Button>
+            <div className="home-sidebar-actions">
+              <Button variant="ghost" className="home-settings" onClick={() => openSettings()}>
+                <Settings size={16} />
+                设置
+              </Button>
+              {downloadCount > 0 && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="home-downloads"
+                  aria-label="下载中心"
+                  title={'下载中心（' + downloadCount + ' 个待处理任务）'}
+                  aria-haspopup="dialog"
+                  aria-description={downloadCount + ' 个待处理任务'}
+                  onClick={showDownloads}
+                >
+                  <Download size={16} />
+                  <span className="home-download-count" aria-hidden="true">
+                    {downloadCount}
+                  </span>
+                </Button>
+              )}
+            </div>
           </div>
         </aside>
         <section className="home-stage" aria-label="角色舞台">
@@ -811,30 +1019,8 @@ export function HomePage({ client, setup, setupState }) {
         {voiceInstall && (
           <VoiceInstallDialog onCancel={() => setVoiceInstall(false)} onConfirm={goToAsr} />
         )}
-        {settings && (
-          <SettingsPanel
-            entry={settings}
-            client={client}
-            flow={flow}
-            state={state}
-            setup={setup}
-            setupState={setupState}
-            onClose={closeSettings}
-            onDownload={openDownload}
-          />
-        )}
       </main>
-      {resource && (
-        <ResourceDownloadPage
-          key={resource}
-          target={resource}
-          client={client}
-          setup={setup}
-          state={setupState}
-          onBack={backToResources}
-          onReturn={closeDownload}
-        />
-      )}
+      <DialogNavigator frames={frames} dismiss={dismissDialog} renderPage={renderDialogPage} />
     </>
   )
 }

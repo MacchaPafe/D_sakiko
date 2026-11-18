@@ -1,5 +1,6 @@
 import { characterContext } from '../llm/context.js'
 import { historicalCharacterNames, participantIssue, requireParticipants } from './participants.js'
+import { pinOutfit } from '../characters/outfit-selection.js'
 import { contextBudget, trimHistory } from '../llm/context-budget.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { generationOptions, speechOptions, presentationOptions } from '../core/validation.js'
@@ -880,8 +881,10 @@ export class Conversations {
         candidate.meta.lotteries.find((item) => item.id === lotteryDelivery).deliveredTurnId =
           turnId
       // 这是受理点：保存成功之前不替换内存 Chat、消费自动输入或启动 Agent。
-      const saved = await this.characters.withExistingCharacters(candidate.characterIds, () =>
-        this.store.save(candidate)
+      const saved = await this.characters.withExistingCharacters(
+        candidate.characterIds,
+        () => this.store.save(candidate),
+        candidate.meta.settings.characters
       )
       state.chat = saved
       await this.assets
@@ -1726,7 +1729,11 @@ export class Conversations {
   async createChat(options) {
     return this.assets.using(options, async (owner) => {
       const chat = await this.newChat(options, uuid(), owner)
-      await this.characters.withExistingCharacters(chat.characterIds, () => this.store.save(chat))
+      await this.characters.withExistingCharacters(
+        chat.characterIds,
+        () => this.store.save(chat),
+        chat.meta.settings.characters
+      )
       return chat.id
     })
   }
@@ -1759,6 +1766,16 @@ export class Conversations {
     speechOptions(chat.meta.settings.speech)
     presentationOptions(chat.meta.settings.presentation, chat.characterIds)
     const capabilities = await this.capabilities(chat, owner)
+    for (const capability of capabilities) {
+      const selection = chat.meta.settings.characters[capability.id]
+      chat.meta.settings.characters[capability.id] = {
+        formId: capability.formId,
+        modelOverrides: {
+          ...selection?.modelOverrides,
+          [capability.formId]: capability.modelId
+        }
+      }
+    }
     chat.meta.extensions.characterNames = Object.fromEntries(
       capabilities.map((role) => [role.id, role.name])
     )
@@ -2254,10 +2271,81 @@ export class Conversations {
         formId: options.formId,
         modelId: options.modelOverrides?.[options.formId]
       })
-      chat.meta.settings.characters[characterId] = copy(options)
+      chat.meta.settings.characters[characterId] = pinOutfit(
+        await this.characters.get(characterId),
+        options
+      )
     })
     const state = await this.state(chatId)
     await this.withScene(state.chat, (scene) => this.performance.setScene(state.sequenceId, scene))
+  }
+
+  /**
+   * 为受影响的对话预览或批量固定另一个服装，避免在一轮进行时删除它使用的模型。
+   * @param {{characterId: string, formId: string, previousId: string|null, modelId: string, dryRun?: boolean}} options 需要替换的模型及目标。
+   * @param {() => Promise<void>} [commit] 对话切换成功后、释放对话锁之前提交角色目录。
+   * @returns {Promise<{count: number, busy: boolean}>} 受影响的对话数及是否占用。
+   */
+  async reassignOutfit({ characterId, formId, previousId, modelId, dryRun }, commit) {
+    await Promise.allSettled(this.loading.values())
+    const role = await this.characters.get(characterId)
+    const form = role?.forms.find((item) => item.id === formId)
+    requireValue(form, 'form_missing', '找不到目标角色形态。')
+    const ids = (await this.store.list())
+      .filter((summary) => summary.characterIds.includes(characterId))
+      .map(({ id }) => id)
+      .sort()
+    const change = async () => {
+      let busy = false
+      const changes = []
+      for (const id of ids) {
+        const state = this.states.get(id)
+        if (state?.deleted) continue
+        const loaded = await this.store.load(id)
+        const chat = state?.chat ?? loaded.chat
+        if (!chat) continue
+        const selections = chat.meta.settings.characters
+        const selected = selections[characterId]
+        const selectedForm = selected?.formId ?? role.defaultFormId
+        const saved = selected?.modelOverrides?.[formId]
+        const wasUsing =
+          state?.active &&
+          ((selectedForm === formId && saved === previousId) ||
+            state.active.prepared.capabilities.some(
+              (item) =>
+                item.id === characterId && item.formId === formId && item.modelId === previousId
+            ))
+        if (previousId !== null && wasUsing) busy = true
+        const affected =
+          previousId === null ? saved == null && selectedForm === formId : saved === previousId
+        if (!affected) continue
+        if (state?.persistence.state === 'failed' && !dryRun)
+          requireValue(false, 'save_failed', '请先重试保存受影响的对话。')
+        const characters = copy(selections)
+        characters[characterId] = {
+          formId: selectedForm,
+          modelOverrides: { ...selected?.modelOverrides, [formId]: modelId }
+        }
+        changes.push({ id, revision: chat.revision, characters })
+      }
+      if (dryRun) return { count: changes.length, busy }
+      requireValue(!busy, 'outfit_in_use', '有对话正在使用这套服装，请在本轮结束后删除。')
+      const saved = await this.store.saveOutfitSelections(changes)
+      for (const chat of saved) {
+        const state = this.states.get(chat.id)
+        if (!state) continue
+        state.chat = chat
+        await this.withScene(chat, (scene) =>
+          this.performance.setScene(state.sequenceId, scene)
+        ).catch((error) => this.assets.reportMaintenance(error))
+        this.publish(state)
+      }
+      await commit?.()
+      return { count: saved.length, busy }
+    }
+    // 所有批量服装写入统一按对话 ID 取锁，等待中的普通轮次可以在释放后重新解析选择。
+    const operation = ids.reduceRight((next, id) => () => this.queue.run(id, next), change)
+    return operation()
   }
 
   /**
@@ -2323,6 +2411,7 @@ export class Conversations {
             formId: entry.formId,
             modelId: entry.modelOverrides?.[entry.formId]
           })
+          next.characters[id] = pinOutfit(await this.characters.get(id), entry)
         }
       }
       chat.meta.settings = next
@@ -2521,6 +2610,12 @@ export class Conversations {
     const chat = remap(copy(original))
     chat.id = uuid()
     chat.revision = 0
+    for (const id of chat.characterIds) {
+      const role = await this.characters.get(id)
+      if (role) {
+        chat.meta.settings.characters[id] = pinOutfit(role, chat.meta.settings.characters[id])
+      }
+    }
     chat.meta.reminders.forEach((reminder) => {
       reminder.state = 'disabled'
     })

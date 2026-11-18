@@ -430,7 +430,7 @@ export async function startHttpServer(
         if (command.topic === 'conversation')
           dispose = await backend.conversations.observe(command.key, listener)
         else if (command.topic === 'characters')
-          dispose = backend.characters.observeMembership(listener)
+          dispose = backend.characters.observeChanges(listener)
         else if (command.topic === 'performance')
           dispose = await backend.performance.observe(command.key, listener)
         else if (command.topic === 'settings') dispose = await backend.settings.observe(listener)

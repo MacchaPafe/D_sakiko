@@ -284,11 +284,14 @@ test.skipIf(!existsSync(join(root, 'resources/builtin-characters/manifest.json')
       ).toBe(true)
       expect(previewRequests).toEqual([])
       const target = `${process.platform}-${process.arch}`
-      if (['win32-x64', 'darwin-arm64'].includes(target))
-        expect(
-          await page.getByRole('checkbox', { name: '语音转文字', exact: true }).isDisabled()
-        ).toBe(true)
-      else
+      if (['win32-x64', 'darwin-arm64'].includes(target)) {
+        const asr = page.getByRole('checkbox', { name: '语音转文字', exact: true })
+        await expect.poll(() => asr.isEnabled()).toBe(true)
+        await asr.click()
+        await expect.poll(() => asr.isChecked()).toBe(true)
+        await asr.click()
+        await expect.poll(() => asr.isChecked()).toBe(false)
+      } else
         await page.getByRole('alert').getByText('当前仅支持 Windows x64 和 macOS arm64。').waitFor()
       await expect
         .poll(() => page.getByRole('button', { name: '跳过，直接开始', exact: true }).isEnabled())

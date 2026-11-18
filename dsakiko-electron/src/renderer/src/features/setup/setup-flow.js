@@ -110,12 +110,13 @@ export class SetupFlow {
         })
         return
       }
+      let initialView = 'resources'
+      if (onboarding.initialized) initialView = 'home'
+      else if (onboarding.stage === 'welcome' || onboarding.stage === 'preparing')
+        initialView = 'welcome'
       this.update({
         onboarding,
-        view:
-          onboarding.stage === 'welcome' || onboarding.stage === 'preparing'
-            ? 'welcome'
-            : 'resources'
+        view: initialView
       })
       const downloads = jobs.filter(
         (job) =>
@@ -355,10 +356,9 @@ export class SetupFlow {
 
   /**
    * @param {string} selection 设置页选中的资源。
-   * @param {(id: string) => void} onJob 受理后跟随同一任务。
    * @returns {Promise<void>} 安装任务在页面关闭后仍继续。
    */
-  async downloadManaged(selection, onJob) {
+  async downloadManaged(selection) {
     if (this.state.pending) throw new Error('资源任务正在处理，请稍后再试。')
     const generation = this.generation
     this.update({ pending: 'download', problem: null })
@@ -376,7 +376,6 @@ export class SetupFlow {
         }))
       if (!this.current(generation)) return
       this.watchJob(job)
-      onJob(job.id)
       if (!existing) await this.sendJobCommand('start', [job.id])
     } finally {
       if (this.current(generation)) this.update({ pending: null })
@@ -389,6 +388,22 @@ export class SetupFlow {
     const job = await this.client.call('setup', method, args)
     // WS 可能先于命令响应交付完成态，迟到的 running 响应不能覆盖它。
     if (this.current(generation) && revision === this.jobRevision) this.update({ job })
+  }
+
+  /**
+   * @param {string} id 下载中心所选资源任务。
+   * @param {'pause'|'resume'|'cancel'} action 下载操作。
+   * @returns {Promise<void>} 继续其它任务时同步恢复就绪状态的订阅。
+   */
+  async controlDownload(id, action) {
+    if (this.state.pending) throw new Error('资源任务正在处理，请稍后再试。')
+    const generation = this.generation
+    if (this.state.job?.id === id) {
+      await this.sendJobCommand('controlJob', [id, action])
+    } else {
+      const job = await this.client.setup.controlJob(id, action)
+      if (action === 'resume' && this.current(generation)) this.watchJob(job)
+    }
   }
 
   /** @param {'pause'|'resume'|'cancel'} action 显式暂停或继续，同一身份支持失败重试。 @returns {Promise<void>} 等待后端安全节点。 */

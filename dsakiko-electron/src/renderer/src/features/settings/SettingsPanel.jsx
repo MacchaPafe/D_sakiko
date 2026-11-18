@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Cable, Download, Monitor, RefreshCw, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { desktopHost } from '../../host/desktop.js'
@@ -49,7 +49,7 @@ function Application() {
   return (
     <>
       <h3>窗口行为</h3>
-      <div className="settings-card">
+      <div className="settings-card settings-window-card">
         {state?.platform === 'win32' ? (
           <label className="settings-platform-row">
             <span>关闭窗口时</span>
@@ -80,7 +80,11 @@ function Application() {
             </div>
           )
         )}
-        {!state && !problem && <p role="status">正在读取窗口偏好…</p>}
+        {!state && !problem && (
+          <p className="settings-status-delayed" role="status">
+            正在读取窗口偏好…
+          </p>
+        )}
         {problem && (
           <p className="settings-error" role="alert">
             {problem}
@@ -91,7 +95,7 @@ function Application() {
   )
 }
 
-/** @param {object} props 设置入口、主页业务和后台任务。 @returns {import('react').ReactElement} 单层原生模态面板。 */
+/** @param {object} props 设置入口、主页业务和后台任务。 @returns {import('react').ReactElement} 共享浮窗中的设置视图。 */
 export function SettingsPanel({
   entry,
   client,
@@ -100,95 +104,82 @@ export function SettingsPanel({
   setup,
   setupState,
   onClose,
-  onDownload
+  onDownload,
+  onShowDownloads
 }) {
-  const element = useRef(null)
   const [section, setSection] = useState(entry.section)
   const title = sections.find((item) => item.id === section)?.name
-  useEffect(() => {
-    const dialog = element.current
-    dialog.showModal()
-    return () => dialog.close()
-  }, [])
   useEffect(() => {
     if (section === 'resources') void setup.refreshManagedCatalog()
   }, [section, setup])
   function checkUpdates() {
     void setup.refreshManagedCatalog({ force: true })
   }
-  function escape(event) {
-    event.preventDefault()
-    onClose()
-  }
   return (
-    <dialog
-      className="settings-dialog"
-      aria-labelledby="settings-title"
-      ref={element}
-      onCancel={escape}
-    >
-      <div className="settings-layout">
-        <aside className="settings-sidebar">
-          <h1 id="settings-title">设置</h1>
-          <nav aria-label="设置分类">
-            {sections.map(({ id, name, Icon }) => (
-              <button
-                type="button"
-                key={id}
-                aria-current={section === id ? 'page' : undefined}
-                onClick={() => setSection(id)}
-              >
-                <Icon size={17} />
-                {name}
-              </button>
-            ))}
-          </nav>
-        </aside>
-        <section className="settings-main" aria-label={title}>
-          <header className="settings-topbar">
-            <h2>{title}</h2>
-            {section === 'resources' && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={setupState.managedCatalogChecking}
-                onClick={checkUpdates}
-              >
-                <RefreshCw size={14} />
-                {setupState.managedCatalogChecking ? '正在检查…' : '检查更新'}
-              </Button>
-            )}
-            <Button
-              className="settings-dismiss"
-              size="icon"
-              variant="ghost"
-              onClick={onClose}
-              aria-label="关闭设置"
+    <div className="settings-layout">
+      <aside className="settings-sidebar">
+        <h1 tabIndex={-1} data-dialog-focus>
+          设置
+        </h1>
+        <nav aria-label="设置分类">
+          {sections.map(({ id, name, Icon }) => (
+            <button
+              type="button"
+              key={id}
+              aria-current={section === id ? 'page' : undefined}
+              onClick={() => setSection(id)}
             >
-              <X />
+              <Icon size={17} />
+              {name}
+            </button>
+          ))}
+        </nav>
+      </aside>
+      <section className="settings-main" aria-label={title}>
+        <header className="settings-topbar">
+          <h2>{title}</h2>
+          {section === 'resources' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={setupState.managedCatalogChecking}
+              onClick={checkUpdates}
+            >
+              <RefreshCw size={14} />
+              {setupState.managedCatalogChecking ? '正在检查…' : '检查更新'}
             </Button>
-          </header>
-          <div className="settings-content" key={section}>
-            {section === 'connections' && (
-              <Connections
-                client={client}
-                connections={state.connections}
-                refresh={() => flow.refresh()}
-              />
-            )}
-            {section === 'resources' && (
-              <Resources
-                client={client}
-                target={entry.target}
-                onDownload={onDownload}
-                setupState={setupState}
-                setup={setup}
-              />
-            )}
-            {section === 'application' && <Application />}
-          </div>
-        </section>
-      </div>
-    </dialog>
+          )}
+          <Button
+            className="settings-dismiss"
+            size="icon"
+            variant="ghost"
+            onClick={onClose}
+            aria-label="关闭设置"
+          >
+            <X />
+          </Button>
+        </header>
+        <div className="settings-content" key={section}>
+          {section === 'connections' && (
+            <Connections
+              client={client}
+              connections={state.connections}
+              refresh={() => flow.refresh()}
+            />
+          )}
+          {section === 'resources' && (
+            <Resources
+              client={client}
+              target={entry.target}
+              onDownload={onDownload}
+              setupState={setupState}
+              setup={setup}
+              onShowDownloads={onShowDownloads}
+            />
+          )}
+          {section === 'application' && <Application />}
+        </div>
+      </section>
+    </div>
   )
 }

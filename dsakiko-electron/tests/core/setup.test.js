@@ -25,6 +25,8 @@ import { writeJson } from '../../src/backend/core/support.js'
 import { chatSettings } from '../../src/backend/core/defaults.js'
 import { startHttpServer } from '../../src/server/http-server.js'
 import { createBackendClient } from '../../src/renderer/src/backend/client.js'
+import { matchBangDreamCharacters } from '../../src/backend/characters/bang-dream.js'
+import { OutfitSources } from '../../src/backend/live2d-import/sources.js'
 
 const cleanups = []
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -820,6 +822,310 @@ function zipFixture(entries) {
   end.writeUInt32LE(offset, 16)
   return Buffer.concat([...bodies, directory, end])
 }
+
+test('邦角色匹配优先精确 ID，别名只接受唯一候选并保留手动归属', () => {
+  const roles = [
+    { id: 'sakiko', name: '改过名字' },
+    { id: 'extra-sakiko', name: '豊川祥子' },
+    { id: 'custom-soyo', name: '長崎そよ' },
+    { id: 'first-anon', name: '千早爱音' },
+    { id: 'second-anon', name: '愛音' },
+    { id: 'uika', name: '初华', bangDreamId: null }
+  ]
+  expect([...matchBangDreamCharacters(roles)]).toEqual([
+    ['sakiko', 'sakiko'],
+    ['custom-soyo', 'soyo']
+  ])
+})
+
+test('同 ID 的旧版内置角色追加服装并保留 Electron 默认与已有配置', async () => {
+  const { root, backend } = await fixture()
+  await backend.onboarding.begin({ path: 'quick' })
+  await backend.onboarding.finish()
+  const before = await backend.characters.get('anon')
+  const source = await legacy(root)
+  const scan = await backend.setup.scanLegacy(
+    (await backend.setup.grantLegacySource(source)).sourceId
+  )
+  const plan = await backend.setup.createPlan({ kind: 'legacy', scanId: scan.scanId })
+  await backend.setup.start(plan.id)
+  expect(await done(backend.setup, plan.id)).toMatchObject({ status: 'succeeded' })
+  const roles = await backend.characters.list()
+  expect(roles.filter((role) => role.bangDreamId === 'anon')).toHaveLength(1)
+  const after = await backend.characters.get('anon')
+  expect(after.forms[0].defaultModelId).toBe(before.forms[0].defaultModelId)
+  expect(after.forms[0].description).toBe(before.forms[0].description)
+  expect(after.forms[0].models).toHaveLength(before.forms[0].models.length + 1)
+  expect((await backend.conversations.listChats())[0].characterIds).toEqual(['anon'])
+})
+
+async function outfitRole(backend) {
+  await backend.characters.save({
+    id: 'local-sakiko',
+    name: '测试祥子',
+    revision: 0,
+    defaultFormId: 'stage',
+    forms: [
+      {
+        id: 'stage',
+        displayName: '舞台',
+        description: '测试人设',
+        avatar: null,
+        voice: null,
+        models: [],
+        defaultModelId: null
+      }
+    ],
+    knowledgeMappings: [],
+    extensions: {}
+  })
+  await backend.outfits.setCharacter('local-sakiko', 'sakiko')
+  return { characterId: 'local-sakiko', formId: 'stage' }
+}
+
+test('文件夹安装、默认固定和删除交接在正式对话存档中生效', async () => {
+  const { root, backend } = await fixture()
+  const target = await outfitRole(backend)
+  const options = { title: '对话', characterIds: [target.characterId], mode: 'single-character' }
+  const first = await backend.conversations.createChat(options)
+  const inactive = await backend.conversations.createChat(options)
+  const firstFolder = path.join(root, 'first-model')
+  await put(
+    firstFolder,
+    'model.json',
+    JSON.stringify({ model: 'body.moc', textures: ['body.png'] })
+  )
+  await put(firstFolder, 'body.moc', 'first model')
+  await put(firstFolder, 'body.png', 'test texture')
+  const { modelId: firstId } = await backend.outfits.importDirectory(target, firstFolder)
+  const read = async (id) => {
+    const { chat } = await backend.store.load(id)
+    return chat.meta.settings.characters[target.characterId].modelOverrides.stage
+  }
+  expect(await read(first)).toBe(firstId)
+  expect(await read(inactive)).toBe(firstId)
+  expect(await backend.outfits.importDirectory(target, firstFolder)).toEqual({
+    modelId: firstId,
+    alreadyInstalled: true
+  })
+  await expect(backend.outfits.previewRemoval(target, firstId)).rejects.toMatchObject({
+    problem: { code: 'default_outfit_in_use' }
+  })
+
+  const secondFolder = path.join(root, 'second-model')
+  await put(
+    secondFolder,
+    'nested/test.model3.json',
+    '\uFEFF' +
+      JSON.stringify({
+        FileReferences: {
+          Moc: 'body.moc3',
+          Textures: ['../body.png'],
+          Motions: { idle: [{ File: '../idle.motion3.json' }] }
+        }
+      })
+  )
+  await put(secondFolder, 'nested/body.moc3', 'second model')
+  await put(secondFolder, 'body.png', 'test texture')
+  await put(secondFolder, 'idle.motion3.json', '{"Meta":{"Duration":1},"Curves":[]}')
+  const { modelId: secondId } = await backend.outfits.importDirectory(target, secondFolder)
+  expect(
+    (
+      await backend.characters.resolveCapabilities(target.characterId, {
+        formId: target.formId,
+        modelId: secondId
+      })
+    ).modelVersion
+  ).toBe('v3')
+  await put(secondFolder, 'another.model.json', '{}')
+  await expect(backend.outfits.importDirectory(target, secondFolder)).rejects.toMatchObject({
+    problem: {
+      code: 'live2d_multiple_entries',
+      message: expect.stringContaining('another.model.json')
+    }
+  })
+  await backend.outfits.rename(target, secondId, '晚礼服')
+  await backend.outfits.setDefault(target, secondId)
+  await backend.conversations.getSnapshot(first)
+  expect(await read(first)).toBe(firstId)
+  expect(await read(await backend.conversations.createChat(options))).toBe(secondId)
+  expect(await backend.outfits.previewRemoval(target, firstId)).toMatchObject({
+    count: 2,
+    busy: false,
+    defaultName: '晚礼服'
+  })
+  await backend.outfits.remove(target, firstId, secondId)
+  const live = await backend.conversations.getSnapshot(first)
+  expect(live.chat.meta.settings.characters[target.characterId].modelOverrides.stage).toBe(secondId)
+  expect(await read(inactive)).toBe(secondId)
+  expect((await backend.characters.get(target.characterId)).forms[0].models).toHaveLength(1)
+})
+
+test('Bestdori 服装优先展示目录名称，并按已知资源编号补足缺失的显示名', async () => {
+  const sources = new OutfitSources(async (url) => {
+    if (url.endsWith('/_info.json'))
+      return Response.json({
+        live2d: {
+          chara: {
+            '036_casual-2023': 1,
+            '036_school_summer-2023': 1,
+            '036_collabo_d_3_ur': 1,
+            '036_live_default': 1,
+            '036_unknown': 1
+          }
+        }
+      })
+    return Response.json({
+      1786: {
+        assetBundleName: '036_live_default',
+        description: ['一生を、はじめよう', null, null, '开始吧，一辈子的约定']
+      },
+      1871: {
+        assetBundleName: '036_collabo_d_3_ur',
+        description: ['のんびりダイアログ', null, null, null]
+      }
+    })
+  })
+  const items = await sources.v2({ id: 'tomori', bestdoriId: 36 })
+  expect(Object.fromEntries(items.map(({ id, name }) => [id, name]))).toEqual({
+    '036_casual-2023': '常服（2023）',
+    '036_school_summer-2023': '夏季校服（2023）',
+    '036_collabo_d_3_ur': 'のんびりダイアログ',
+    '036_live_default': '开始吧，一辈子的约定',
+    '036_unknown': '036_unknown'
+  })
+})
+
+test('Bestdori 与 ModelScope 的小样本经真实任务、校验和入库流程安装', async () => {
+  const archive = zipFixture([
+    {
+      name: 'outfit.model3.json',
+      text: JSON.stringify({ FileReferences: { Moc: 'body.moc3', Textures: ['body.png'] } })
+    },
+    { name: 'body.moc3' },
+    { name: 'body.png' }
+  ])
+  const row = {
+    id: 'stage-test',
+    characterId: 'sakiko',
+    name: '现代舞台服',
+    path: 'models/sakiko/stage-test.zip',
+    sizeBytes: archive.length,
+    sha256: createHash('sha256').update(archive).digest('hex')
+  }
+  const { backend } = await fixture({
+    fetch: async (url) => {
+      const pathname = new URL(url).pathname
+      if (pathname.endsWith('/catalog.json'))
+        return Response.json({ schemaVersion: 1, items: [row] })
+      if (pathname.endsWith('/' + row.path)) return new Response(archive)
+      if (pathname.endsWith('/_info.json'))
+        return Response.json({
+          live2d: { chara: { '341_test': 1, '341_general': 1, '037_test': 1 } }
+        })
+      if (pathname.endsWith('/all.5.json'))
+        return Response.json({
+          1: { assetBundleName: '341_test', description: ['日本語', null, null, '旧版舞台服'] }
+        })
+      if (pathname.endsWith('/buildData.asset')) {
+        const bundleName = 'live2d/chara/341_test'
+        return Response.json({
+          Base: {
+            model: { fileName: 'body.moc.bytes', bundleName },
+            physics: { fileName: 'missing.physics.json', bundleName },
+            textures: [{ fileName: 'body', bundleName }],
+            motions: [],
+            expressions: []
+          }
+        })
+      }
+      if (/\/(body\.moc|body\.png)$/u.test(pathname)) return new Response('fixture')
+      return new Response(null, { status: 404 })
+    }
+  })
+  const target = await outfitRole(backend)
+  const catalog = await backend.outfits.catalog(target)
+  expect(catalog.problems).toEqual([])
+  expect(catalog.items.map(({ id, name }) => [id, name])).toEqual([
+    ['341_test', '旧版舞台服'],
+    ['stage-test', '现代舞台服']
+  ])
+  for (const item of catalog.items) {
+    const job = await backend.outfits.start(target, item.source, item.id)
+    await vi.waitFor(() =>
+      expect(backend.outfits.listJobs(target).find(({ id }) => id === job.id)?.status).toBe(
+        'succeeded'
+      )
+    )
+  }
+  expect(backend.outfits.listJobs()).toEqual(backend.outfits.listJobs(target))
+  expect(backend.outfits.listJobs({ ...target, formId: 'another-form' })).toEqual([])
+  expect(backend.outfits.listJobs().every((job) => job.completedAt > 0)).toBe(true)
+  const { models } = (await backend.characters.get(target.characterId)).forms[0]
+  expect(models.map(({ source }) => source.kind)).toEqual(['bestdori', 'modelscope'])
+  const old = JSON.parse(
+    Buffer.from(await backend.assets.read(models[0].presentation.model)).toString('utf8')
+  )
+  expect(old).toMatchObject({ model: 'body.moc', textures: ['textures/body.png'] })
+  expect(old).not.toHaveProperty('physics')
+  expect((await backend.outfits.catalog(target)).items.every(({ installed }) => installed)).toBe(
+    true
+  )
+})
+
+test('ModelScope 分片在进程重启后保留，手动继续使用 Range', async () => {
+  const archive = zipFixture([
+    {
+      name: 'model3.json',
+      text: JSON.stringify({ FileReferences: { Moc: 'test.moc3', Textures: ['test.png'] } })
+    },
+    { name: 'test.moc3' },
+    { name: 'test.png' }
+  ])
+  const item = {
+    id: 'continuity',
+    characterId: 'sakiko',
+    name: '续传服装',
+    path: 'sakiko/continuity.zip',
+    sizeBytes: archive.length,
+    sha256: createHash('sha256').update(archive).digest('hex')
+  }
+  const offset = 64
+  const transport = vi.fn(async (url, options) => {
+    if (url.endsWith('/catalog.json')) return Response.json({ schemaVersion: 1, items: [item] })
+    if (options.headers.Range) {
+      expect(options.headers.Range).toBe('bytes=64-')
+      return new Response(archive.subarray(offset), {
+        status: 206,
+        headers: {
+          'Content-Range': `bytes ${offset}-${archive.length - 1}/${archive.length}`
+        }
+      })
+    }
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(archive.subarray(0, offset))
+        }
+      })
+    )
+  })
+  const { backend, roots } = await fixture({ fetch: transport })
+  const target = await outfitRole(backend)
+  const job = await backend.outfits.start(target, 'modelscope', item.id)
+  const partial = path.join(roots.cacheRoot, 'outfit-downloads', job.id, item.sha256 + '.part')
+  await vi.waitFor(async () => expect((await stat(partial)).size).toBe(offset))
+  await backend.outfits.close()
+  expect(backend.outfits.listJobs(target)[0].status).toBe('interrupted')
+  const restarted = await createCoreBackend({ ...roots, scanReminders: false, fetch: transport })
+  cleanups.push(() => restarted.close())
+  expect(restarted.outfits.listJobs(target)[0].status).toBe('interrupted')
+  await restarted.outfits.control(job.id, 'resume')
+  await vi.waitFor(() => expect(restarted.outfits.listJobs(target)[0].status).toBe('succeeded'))
+  expect(transport.mock.calls.some(([, options]) => options.headers.Range === 'bytes=64-')).toBe(
+    true
+  )
+})
 
 test('ZIP 解包保留目录结构并拒绝越界、符号链接和超额内容', async () => {
   const { root } = await fixture()

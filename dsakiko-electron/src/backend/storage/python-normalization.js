@@ -1,4 +1,5 @@
 import { legacyRelative } from '../setup/legacy.js'
+import { importedOutfitId } from '../characters/legacy-outfits.js'
 
 /** @param {object} chat 导入聊天。 @param {object[]} warnings 迁移诊断。 @returns {number} 已整理的调用数量；只调整可确认边界的旧重建消息。 */
 export function normalizePythonToolOrder(chat, warnings) {
@@ -108,13 +109,12 @@ export async function normalizeImportedPythonChat(chat, scan, characters) {
       } catch {
         /* 无效来源路径不能用文件名猜测另一份模型。 */
       }
-      if (
-        model &&
-        actual.forms.some(
-          (item) => item.id === form.id && item.models.some((entry) => entry.id === model.id)
-        )
-      ) {
-        overrides[form.id] = model.id
+      const mapped = importedOutfitId(
+        actual.forms.find((item) => item.id === form.id),
+        model?.id
+      )
+      if (mapped) {
+        overrides[form.id] = mapped
         result.models += 1
       } else
         result.warnings.push({

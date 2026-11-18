@@ -8,6 +8,7 @@ const host = {
   openProviderKeyPage: (provider) => ipcRenderer.invoke('host:open-provider-key-page', provider),
   importFiles: (options) => ipcRenderer.invoke('host:import-files', options),
   selectLegacyDirectory: () => ipcRenderer.invoke('host:select-legacy-directory'),
+  importOutfitDirectory: (target) => ipcRenderer.invoke('host:import-outfit-directory', target),
   getWindowCloseBehavior: () => ipcRenderer.invoke('host:get-window-close-behavior'),
   setWindowCloseBehavior: (behavior) =>
     ipcRenderer.invoke('host:set-window-close-behavior', behavior),

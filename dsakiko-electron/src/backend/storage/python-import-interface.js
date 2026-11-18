@@ -9,6 +9,7 @@ import {
   validatePythonChat
 } from './python-format.js'
 import { normalizeImportedPythonChat } from './python-normalization.js'
+import { importedOutfitId } from '../characters/legacy-outfits.js'
 
 /** @param {object} original Python 源存档。 @returns {string} 不随标题和消息变化的导入身份。 */
 export function pythonChatId(original) {
@@ -216,14 +217,11 @@ export class PythonChatImporter {
           try {
             const relative = legacyRelative(scan.root, configured)
             const model = option.models.find((item) => item.file === relative)
-            if (
-              model &&
-              actual?.forms.some(
-                (form) =>
-                  form.id === option.id && form.models.some((entry) => entry.id === model.id)
-              )
+            const mapped = importedOutfitId(
+              actual?.forms.find((item) => item.id === option.id),
+              model?.id
             )
-              overrides[option.id] = model.id
+            if (mapped) overrides[option.id] = mapped
           } catch {
             warnings.push({ code: 'legacy_chat_model_unavailable', chatId: id })
           }

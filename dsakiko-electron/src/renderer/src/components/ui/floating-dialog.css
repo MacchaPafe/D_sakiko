@@ -1,0 +1,41 @@
+.floating-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 0;
+  width: min(var(--dialog-width, 920px), calc(100vw - 64px));
+  max-height: min(690px, calc(100dvh - 56px));
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--background);
+  color: var(--foreground);
+  box-shadow: 0 20px 80px var(--shadow-ink);
+  overflow: hidden;
+}
+
+.floating-dialog::backdrop {
+  background: #241c1959;
+}
+
+.floating-dialog-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: inherit;
+  outline: none;
+}
+
+.floating-dialog-page[hidden] {
+  display: none;
+}
+
+[data-dialog-focus][tabindex='-1']:focus {
+  outline: none;
+}
+
+@media (max-width: 640px) {
+  .floating-dialog {
+    width: calc(100vw - 32px);
+    max-height: calc(100dvh - 36px);
+  }
+}

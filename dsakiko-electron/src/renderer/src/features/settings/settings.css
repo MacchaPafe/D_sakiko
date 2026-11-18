@@ -1,19 +1,5 @@
 .settings-dialog {
-  position: fixed;
-  inset: 0;
-  margin: auto;
-  padding: 0;
-  width: min(920px, calc(100vw - 64px));
   height: min(690px, calc(100dvh - 56px));
-  border: 1px solid var(--border);
-  border-radius: 22px;
-  background: var(--background);
-  color: var(--foreground);
-  box-shadow: 0 20px 80px var(--shadow-ink);
-  overflow: hidden;
-}
-.settings-dialog::backdrop {
-  background: #241c1959;
 }
 .settings-layout {
   position: relative;
@@ -131,6 +117,13 @@
 .settings-card[data-highlighted] {
   border-color: var(--primary);
 }
+.settings-window-card {
+  min-height: 74px;
+}
+.settings-status-delayed {
+  opacity: 0;
+  animation: status-delayed-reveal 120ms 150ms forwards;
+}
 .settings-empty {
   display: flex;
   gap: 12px;
@@ -247,37 +240,32 @@
 .settings-content .settings-ok {
   color: var(--success);
 }
-.settings-download-page {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
+.settings-resource-download-content {
   display: grid;
-  place-items: center;
-  overflow: auto;
-  padding: 26px;
-  background: var(--muted);
-}
-.settings-download-sheet {
-  width: min(680px, 100%);
-  border: 1px solid var(--border);
-  border-radius: 17px;
+  gap: 14px;
+  width: min(100%, 480px);
+  margin-inline: auto;
   padding: 24px;
-  background: var(--background);
+  overflow: auto;
 }
-.settings-download-sheet header {
-  margin: 15px 0;
+.settings-resource-download-content h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 650;
 }
-.settings-download-sheet h1 {
-  font-size: 24px;
-  font-weight: 700;
+.settings-resource-download-content p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
 }
-.settings-download-sheet footer {
-  margin: 16px 0 0;
+.settings-resource-download-content .settings-error {
+  color: var(--destructive);
 }
 @media (max-width: 730px) {
   .settings-dialog {
     width: calc(100vw - 24px);
     height: calc(100dvh - 24px);
+    max-height: none;
   }
   .settings-layout {
     grid-template-columns: 150px minmax(0, 1fr);
@@ -290,5 +278,10 @@
   }
   .settings-content {
     padding: 0 20px 27px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-status-delayed {
+    animation-duration: 0s;
   }
 }

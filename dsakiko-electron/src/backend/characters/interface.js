@@ -1,5 +1,6 @@
 import { extractAssetReferences } from '../resources/references.js'
 import path from 'node:path'
+import { bangDreamCharacters } from './bang-dream.js'
 import {
   copy,
   requireValue,
@@ -39,6 +40,7 @@ export class CharacterCatalog {
     this.changes = new SnapshotBus()
     this.resolveModel = resolveModel
     this.assets = assets
+    this.removingOutfits = new Set()
     assets.registerOwnerReader('character', (id) => this.get(id))
     assets.registerOwnerReader('persona', (id) => this.getPersona(id))
   }
@@ -72,7 +74,8 @@ export class CharacterCatalog {
         defaultFormId: form.id,
         name: character.name ?? form.displayName,
         displayName: form.displayName,
-        avatar: copy(form.avatar)
+        avatar: copy(form.avatar),
+        ...(character.bangDreamId !== undefined && { bangDreamId: character.bangDreamId })
       }
     })
   }
@@ -98,7 +101,7 @@ export class CharacterCatalog {
   }
 
   /** 将新轮次的保存与角色删除串行化。 */
-  async withExistingCharacters(ids, operation) {
+  async withExistingCharacters(ids, operation, selections = {}) {
     return this.queue.run('catalog', async () => {
       const { characters } = await this.state()
       requireValue(
@@ -106,8 +109,42 @@ export class CharacterCatalog {
         'character_missing',
         '对话关联的角色已不存在。'
       )
+      for (const id of ids) {
+        const selection = selections[id]
+        if (!selection) continue
+        const form = characters[id].forms.find(({ id: formId }) => formId === selection.formId)
+        const modelId = selection.modelOverrides?.[selection.formId]
+        if (modelId != null) this.assertOutfitAvailable(id, form, modelId)
+      }
       return operation()
     })
+  }
+
+  assertOutfitAvailable(characterId, form, modelId) {
+    requireValue(
+      form?.models.some((model) => model.id === modelId) &&
+        !this.removingOutfits.has(JSON.stringify([characterId, form.id, modelId])),
+      'model_missing',
+      '服装已不可用，请重新选择。'
+    )
+  }
+
+  /**
+   * 禁止在删除跨存档引用期间承诺新的服装选择；现有演出资源仍由各自持有者保护。
+   * @template T
+   * @param {{characterId: string, formId: string}} target 所属角色形态。
+   * @param {string} modelId 待删服装。
+   * @param {() => Promise<T>} operation 持有角色业务锁的删除作业。
+   * @returns {Promise<T>} 删除作业的结果。
+   */
+  async withRemovingOutfit(target, modelId, operation) {
+    const key = JSON.stringify([target.characterId, target.formId, modelId])
+    await this.queue.run('catalog', () => this.removingOutfits.add(key))
+    try {
+      return await operation()
+    } finally {
+      this.removingOutfits.delete(key)
+    }
   }
 
   /**
@@ -140,6 +177,13 @@ export class CharacterCatalog {
         )
       await this.assets.assertPersistent(definition)
       const next = copy(definition)
+      requireValue(
+        next.bangDreamId === undefined ||
+          next.bangDreamId === null ||
+          bangDreamCharacters.has(next.bangDreamId),
+        'invalid_bang_dream_character',
+        '请选择目录中的 BanG Dream! 角色。'
+      )
       const defaultForm = next.forms.find((form) => form.id === next.defaultFormId)
       requireValue(
         next.name === undefined || typeof next.name === 'string',
@@ -201,7 +245,7 @@ export class CharacterCatalog {
     requireValue(form, 'form_missing')
     const modelId = options.modelId ?? form.defaultModelId
     const model = form.models.find((item) => item.id === modelId)
-    requireValue(modelId === null || model, 'model_missing')
+    if (modelId !== null) this.assertOutfitAvailable(characterId, form, modelId)
     return { character, form, modelId, model }
   }
 

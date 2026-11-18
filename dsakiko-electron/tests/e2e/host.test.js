@@ -108,6 +108,7 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
     'getWindowCloseBehavior',
     'getWindowVisibility',
     'importFiles',
+    'importOutfitDirectory',
     'onWindowVisibility',
     'openProviderKeyPage',
     'selectLegacyDirectory',

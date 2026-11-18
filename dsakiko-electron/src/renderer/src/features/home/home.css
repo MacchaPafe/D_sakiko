@@ -55,6 +55,7 @@
 .home-new-chat,
 .home-chat-row,
 .home-settings,
+.home-downloads,
 .history-handle {
   transition:
     background-color var(--home-control-duration) ease-out,
@@ -81,6 +82,9 @@
 }
 .home-role-group {
   flex: none;
+}
+.home-role-header {
+  position: relative;
 }
 .home-role {
   display: flex;
@@ -114,6 +118,10 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-right: 24px;
+}
+.home-role-header:has(.home-role-affiliation[data-unconfirmed]) .home-role-name {
+  margin-right: 56px;
 }
 .home-role-chevron {
   flex: none;
@@ -123,19 +131,57 @@
 .home-role[aria-expanded='true'] .home-role-chevron {
   transform: rotate(90deg);
 }
-.home-role.selected {
-  background: var(--background);
+.home-role[aria-current='true'] {
   border-color: var(--selected-border);
   color: var(--primary);
 }
-.home-role.selected .home-role-chevron {
+.home-role[aria-current='true'] .home-role-chevron {
   color: var(--primary);
+}
+.home-role.selected {
+  background: var(--background);
+  border-color: var(--selected-border);
 }
 .home-role:hover {
   background: var(--home-row-hover);
 }
 .home-role.selected:hover {
   background: color-mix(in srgb, var(--background) 72%, var(--secondary));
+}
+.home-role-affiliation {
+  position: absolute;
+  right: 35px;
+  top: 50%;
+  translate: 0 -50%;
+  opacity: 0;
+  pointer-events: none;
+  color: var(--muted-foreground);
+  transition: opacity var(--home-control-duration) ease-out;
+}
+.home-role-affiliation::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+.home-role-affiliation[data-unconfirmed] {
+  width: auto;
+  height: 22px;
+  padding-inline: 7px;
+  border-radius: 999px;
+  background: var(--warning-background);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+  font-size: 11px;
+  font-weight: 500;
+}
+.home-role-affiliation[data-unconfirmed]:hover {
+  filter: brightness(0.96);
+}
+.home-role-header:hover .home-role-affiliation,
+.home-role-affiliation:focus-visible,
+.home-role-affiliation[data-unconfirmed] {
+  opacity: 1;
+  pointer-events: auto;
 }
 .home-role-disclosure {
   display: grid;
@@ -188,7 +234,7 @@
   flex: none;
 }
 .home-chat-row:hover,
-.home-chat-row:focus-within {
+.home-chat-row:has(> :focus-visible) {
   background: var(--home-row-hover);
   border-color: var(--selected-border);
 }
@@ -197,7 +243,7 @@
   border-color: var(--selected-border);
 }
 .home-chat-row.selected:hover,
-.home-chat-row.selected:focus-within {
+.home-chat-row.selected:has(> :focus-visible) {
   background: color-mix(in srgb, var(--secondary) 91%, var(--primary));
   border-color: var(--primary);
 }
@@ -223,14 +269,26 @@
   outline: 2px solid var(--ring);
   outline-offset: -2px;
 }
+.home-chat-row.selected > button:first-child {
+  color: var(--primary);
+  font-weight: 600;
+}
 .home-chat-delete {
   color: var(--destructive);
   transition:
     opacity var(--home-control-duration) ease-out,
+    color var(--home-control-duration) ease-out,
     background-color var(--home-control-duration) ease-out;
 }
+/* 未选中行的删除按钮用低饱和暗红色，选中行常驻亮红色以形成视觉对比。 */
+.home-chat-row:not(.selected) .home-chat-delete {
+  color: #9b6066;
+}
 .home-chat-delete:hover,
-.home-chat-delete:focus-visible {
+.home-chat-delete:focus-visible,
+.home-chat-row:not(.selected) .home-chat-delete:hover,
+.home-chat-row:not(.selected) .home-chat-delete:focus-visible {
+  color: var(--destructive);
   background: color-mix(in srgb, var(--destructive) 10%, var(--background));
 }
 .home-chat-delete:active {
@@ -241,8 +299,9 @@
     opacity: 0;
     pointer-events: none;
   }
+  .home-chat-row.selected .home-chat-delete,
   .home-chat-row:hover .home-chat-delete,
-  .home-chat-row:focus-within .home-chat-delete {
+  .home-chat-row:has(> :focus-visible) .home-chat-delete {
     opacity: 1;
     pointer-events: auto;
   }
@@ -255,9 +314,14 @@
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
+.home-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .home-settings {
-  flex: none;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 40px;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -266,9 +330,38 @@
   font-size: 13px;
   background: var(--resource-inset);
 }
-.home-settings:hover {
+.home-downloads {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--resource-inset);
+  color: var(--primary);
+}
+.home-settings:hover,
+.home-downloads:hover {
   background: var(--home-row-hover);
   border-color: var(--selected-border);
+}
+.home-download-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding-inline: 4px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: 2px solid var(--card);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 .home-empty,
 .missing-chats h2 {
@@ -609,10 +702,16 @@ section.home-subtitle::before {
   display: grid;
   align-content: start;
   gap: 4px;
-  min-height: 0;
+  min-height: 42px;
   padding: 3px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+.home-empty[role='status'],
+.stage-wardrobe-list > p[role='status'] {
+  /* 本地角色与服装列表通常数毫秒内返回，延迟渐显避免启动或展开时闪现文字。 */
+  opacity: 0;
+  animation: status-delayed-reveal 120ms 150ms forwards;
 }
 .stage-wardrobe-list > p {
   padding: 6px;
@@ -916,53 +1015,6 @@ section.home-subtitle::before {
   height: 22px;
   color: var(--muted-foreground);
 }
-.download-entry {
-  height: 40px;
-  width: 100%;
-  justify-content: flex-start;
-  font-size: 12px;
-  background: var(--resource-inset);
-}
-.download-entry-row {
-  display: flex;
-  align-items: center;
-  border-radius: 10px;
-  background: var(--resource-inset);
-}
-.download-entry-row .download-entry {
-  flex: 1;
-  min-width: 0;
-  width: auto;
-}
-.download-entry span:last-child {
-  margin-left: auto;
-  color: var(--muted-foreground);
-}
-.home-download-panel {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  max-height: min(480px, 60dvh);
-  overflow: auto;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--background);
-  box-shadow: 0 12px 27px var(--shadow-ink);
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.home-download-panel .setup-heading h1 {
-  font-size: 20px;
-  padding-right: 24px;
-}
-.home-download-panel .download-close {
-  position: absolute;
-  right: 12px;
-  top: 12px;
-}
 .home-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1037,6 +1089,10 @@ section.home-subtitle::before {
   .subtitle-text span,
   .stage-scrim::after {
     transition: none;
+  }
+  .home-empty[role='status'],
+  .stage-wardrobe-list > p[role='status'] {
+    animation-duration: 0s;
   }
 }
 .home-delete {
@@ -1173,12 +1229,11 @@ section.home-subtitle::before {
   min-width: 0;
   max-width: 100%;
 }
-.home-model-picker select {
-  appearance: none;
+.home-model-picker :is(select, input) {
   height: 32px;
   width: auto;
   max-width: min(260px, 38vw);
-  padding: 0 26px 0 10px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background-color: color-mix(in srgb, var(--resource-inset) 80%, transparent);
@@ -1190,15 +1245,13 @@ section.home-subtitle::before {
     background-color var(--home-control-duration) ease-out,
     border-color var(--home-control-duration) ease-out;
 }
-.home-model-picker select:hover {
+.home-model-picker input {
+  width: min(220px, 38vw);
+  padding-right: 27px;
+}
+.home-model-picker :is(select, input):hover {
   background-color: var(--resource-inset);
   border-color: var(--selected-border);
-}
-.home-model-picker-chevron {
-  position: absolute;
-  right: 8px;
-  pointer-events: none;
-  color: var(--muted-foreground);
 }
 .home-model-configure {
   height: 32px;
