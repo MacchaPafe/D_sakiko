@@ -11,6 +11,7 @@
 }
 
 .outfit-page-heading,
+.outfit-download-toolbar,
 .outfit-panel-content {
   padding-inline: clamp(16px, 4vw, 28px);
 }
@@ -175,6 +176,12 @@ span.outfit-role-avatar {
   color: var(--primary);
   font-weight: 600;
   box-shadow: 0 1px 3px var(--shadow-ink);
+}
+
+.outfit-affiliation-character [role='group'] + [role='group'] {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
 }
 
 .outfit-manager-body {
@@ -445,11 +452,16 @@ span.outfit-role-avatar {
 
 .outfit-download-toolbar {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 12px;
+  padding-block: 16px 12px;
+}
+
+.outfit-download-toolbar + .outfit-panel-content {
+  padding-top: 0;
 }
 
 .outfit-versions {

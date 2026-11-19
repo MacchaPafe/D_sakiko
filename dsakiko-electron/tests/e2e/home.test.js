@@ -13,6 +13,45 @@ import { startHttpServer } from '../../src/server/http-server.js'
 import { problemError } from '../../src/shared/problems.js'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
+async function verifySearchSelectScrollbar(page, input) {
+  const style = await page.addStyleTag({
+    // 让滚动条的点击区不受系统是否自动隐藏滚动条的设置影响。
+    content: `
+      .search-select-popover::-webkit-scrollbar { width: 16px; }
+      .search-select-popover::-webkit-scrollbar-thumb { background: gray; }
+    `
+  })
+  try {
+    const popover = page.locator('.search-select-popover:popover-open')
+    const selection = popover.getByRole('option', { selected: true })
+    const before = await selection.allTextContents()
+    const { x, y, scrollbarWidth } = await popover.evaluate((element) => {
+      element.scrollTop = 0
+      const box = element.getBoundingClientRect()
+      const scrollbarWidth = element.offsetWidth - element.clientWidth - element.clientLeft * 2
+      return {
+        x: box.left + element.clientLeft + element.clientWidth + scrollbarWidth / 2,
+        y: box.top + element.clientTop + 8,
+        scrollbarWidth
+      }
+    })
+    expect(scrollbarWidth).toBeGreaterThan(0)
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    try {
+      await page.mouse.move(x, y + 60, { steps: 5 })
+    } finally {
+      await page.mouse.up()
+    }
+    expect(await input.getAttribute('aria-expanded')).toBe('true')
+    expect(await input.evaluate((element) => document.activeElement === element)).toBe(true)
+    await expect.poll(() => popover.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    expect(await selection.allTextContents()).toEqual(before)
+  } finally {
+    await style.evaluate((element) => element.remove())
+  }
+}
+
 async function dragStageTools(page, dx, dy, orientation) {
   const handle = page.getByRole('button', { name: '拖动舞台工具栏' })
   const toolbar = page.getByRole('group', { name: '舞台工具' })
@@ -166,11 +205,14 @@ async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
       await manager.getByRole('button', { name: 'V2', exact: true }).getAttribute('aria-pressed')
     ).toBe('true')
     const list = manager.locator('.outfit-panel-content')
+    const toolbar = manager.locator('.outfit-download-toolbar')
+    const toolbarBeforeScroll = await toolbar.boundingBox()
     const scrollTop = await list.evaluate((element) => {
       element.scrollTop = 140
       return element.scrollTop
     })
     expect(scrollTop).toBeGreaterThan(0)
+    expect(await toolbar.boundingBox()).toEqual(toolbarBeforeScroll)
     const showDownloads = manager.getByRole('button', { name: '下载任务', exact: true })
     await showDownloads.press('Enter')
     await expectSharedDialog(page, center, shell)
@@ -820,7 +862,14 @@ app.on('window-all-closed', () => app.quit())`
           protocol: 'chat',
           baseUrl: 'http://127.0.0.1:9999/v1',
           attachmentTransport: 'inline',
-          models: [{ id: 'test', declared: { contextTokens: 10000 }, overrides: {} }]
+          models: [
+            { id: 'test', declared: { contextTokens: 10000 }, overrides: {} },
+            ...Array.from({ length: 11 }, (_, index) => ({
+              id: 'model-' + index,
+              declared: {},
+              overrides: {}
+            }))
+          ]
         },
         { kind: 'replace', secret: 'test' }
       )
@@ -844,6 +893,11 @@ app.on('window-all-closed', () => app.quit())`
         '测试连接'
       )
       expect(await settings.getByLabel('API Key', { exact: true }).inputValue()).toBe('')
+      const provider = settings.getByRole('combobox', { name: '服务商' })
+      await provider.click()
+      await verifySearchSelectScrollbar(page, provider)
+      await settings.getByRole('textbox', { name: '连接名称' }).click()
+      expect(await provider.getAttribute('aria-expanded')).toBe('false')
       await page.keyboard.press('Escape')
       await settings.waitFor({ state: 'hidden' })
       await page.getByRole('button', { name: '语音输入', exact: true }).click()
@@ -893,10 +947,10 @@ app.on('window-all-closed', () => app.quit())`
       transcribe.mockRestore()
       backend.setup.getFeatureState = actualFeatureState
       const picker = page.getByRole('combobox', { name: '对话模型' })
-      expect(await picker.inputValue()).toBe(
-        JSON.stringify({ connectionId: 'test', modelId: 'test' })
-      )
-      await picker.selectOption(JSON.stringify({ connectionId: 'test', modelId: 'test' }))
+      expect(await picker.inputValue()).toBe('test')
+      await picker.click()
+      await verifySearchSelectScrollbar(page, picker)
+      await page.getByRole('option', { name: 'test', exact: true }).click()
       await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
       await page
         .getByRole('textbox', { name: '消息' })
@@ -1006,6 +1060,24 @@ app.on('window-all-closed', () => app.quit())`
       await editRole.click()
       const affiliation = page.getByRole('dialog', { name: '编辑角色归属' })
       const search = affiliation.getByRole('combobox', { name: '对应角色' })
+      await search.click()
+      await verifySearchSelectScrollbar(page, search)
+      await search.press('Tab')
+      expect(await search.getAttribute('aria-expanded')).toBe('false')
+      await search.click()
+      const groups = affiliation.getByRole('listbox', { name: '对应角色' }).getByRole('group')
+      expect(await groups.count()).toBe(13)
+      expect(await groups.nth(0).getAttribute('aria-label')).toBe('Poppin’Party')
+      const afterglow = groups.nth(1)
+      expect(await afterglow.getAttribute('aria-label')).toBe('Afterglow')
+      expect(await afterglow.evaluate((element) => getComputedStyle(element).borderTopWidth)).toBe(
+        '1px'
+      )
+      expect(await groups.last().getAttribute('aria-label')).toBe('其他 BanG Dream! 角色')
+      await search.fill('MyGO')
+      expect(await groups.count()).toBe(1)
+      expect(await groups.first().getAttribute('aria-label')).toBe('MyGO!!!!!')
+      expect(await groups.first().getByRole('option').count()).toBe(5)
       await search.fill('戶山香澄')
       await affiliation.getByText('没有匹配的选项').waitFor()
       await search.fill('kasumi')
@@ -1016,6 +1088,14 @@ app.on('window-all-closed', () => app.quit())`
       await affiliation.getByRole('option', { name: '薇欧拉', exact: true }).waitFor()
       await page.keyboard.press('Enter')
       expect(await search.inputValue()).toBe('薇欧拉')
+      await search.fill('若葉睦')
+      await affiliation.getByRole('option', { name: '若叶睦', exact: true }).waitFor()
+      await page.keyboard.press('Enter')
+      expect(await search.inputValue()).toBe('若叶睦')
+      await search.fill('珠手知由（chu2）')
+      await affiliation.getByRole('option', { name: '珠手知由（chu2）', exact: true }).waitFor()
+      await page.keyboard.press('Enter')
+      expect(await search.inputValue()).toBe('珠手知由（chu2）')
       await affiliation.getByRole('button', { name: '取消', exact: true }).click()
       expect(await roleHeader.locator('.home-role').getAttribute('aria-expanded')).toBe(expanded)
       expect(await savedOutfit()).toBe(form.defaultModelId)

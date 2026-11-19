@@ -2,396 +2,528 @@
   {
     "id": "kasumi",
     "name": "香澄",
+    "displayName": "户山香澄",
+    "band": "Poppin’Party",
     "aliases": ["户山香澄", "戸山香澄"],
     "bestdoriId": 1
   },
   {
     "id": "tae",
     "name": "多惠",
+    "displayName": "花园多惠",
+    "band": "Poppin’Party",
     "aliases": ["花园多惠", "花園たえ"],
     "bestdoriId": 2
   },
   {
     "id": "rimi",
     "name": "里美",
+    "displayName": "牛込里美",
+    "band": "Poppin’Party",
     "aliases": ["牛込里美", "牛込りみ"],
     "bestdoriId": 3
   },
   {
     "id": "saaya",
     "name": "沙绫",
+    "displayName": "山吹沙绫",
+    "band": "Poppin’Party",
     "aliases": ["山吹沙绫", "山吹沙綾"],
     "bestdoriId": 4
   },
   {
     "id": "arisa",
     "name": "有咲",
+    "displayName": "市谷有咲",
+    "band": "Poppin’Party",
     "aliases": ["市谷有咲", "市ヶ谷有咲"],
     "bestdoriId": 5
   },
   {
     "id": "ran",
     "name": "美竹兰",
+    "displayName": "美竹兰",
+    "band": "Afterglow",
     "aliases": ["美竹蘭"],
     "bestdoriId": 6
   },
   {
     "id": "moca",
     "name": "摩卡",
+    "displayName": "青叶摩卡",
+    "band": "Afterglow",
     "aliases": ["青叶摩卡", "青葉モカ"],
     "bestdoriId": 7
   },
   {
     "id": "himari",
     "name": "绯玛丽",
+    "displayName": "上原绯玛丽",
+    "band": "Afterglow",
     "aliases": ["上原绯玛丽", "上原ひまり"],
     "bestdoriId": 8
   },
   {
     "id": "tomoe",
     "name": "巴",
+    "displayName": "宇田川巴",
+    "band": "Afterglow",
     "aliases": ["宇田川巴"],
     "bestdoriId": 9
   },
   {
     "id": "tsugumi",
     "name": "羽泽鸫",
+    "displayName": "羽泽鸫",
+    "band": "Afterglow",
     "aliases": ["羽沢つぐみ"],
     "bestdoriId": 10
   },
   {
     "id": "kokoro",
     "name": "弦卷心",
+    "displayName": "弦卷心",
+    "band": "Hello, Happy World!",
     "aliases": ["弦巻こころ"],
     "bestdoriId": 11
   },
   {
     "id": "kaoru",
     "name": "濑田薰",
+    "displayName": "濑田薰",
+    "band": "Hello, Happy World!",
     "aliases": ["瀬田薫"],
     "bestdoriId": 12
   },
   {
     "id": "hagumi",
     "name": "育美",
+    "displayName": "北泽育美",
+    "band": "Hello, Happy World!",
     "aliases": ["北泽育美", "北沢はぐみ"],
     "bestdoriId": 13
   },
   {
     "id": "kanon",
     "name": "花音",
+    "displayName": "松原花音",
+    "band": "Hello, Happy World!",
     "aliases": ["松原花音"],
     "bestdoriId": 14
   },
   {
     "id": "misaki",
     "name": "美咲",
+    "displayName": "奥泽美咲",
+    "band": "Hello, Happy World!",
     "aliases": ["奥泽美咲", "奥沢美咲"],
     "bestdoriId": 15
   },
   {
     "id": "aya",
     "name": "丸山彩",
+    "displayName": "丸山彩",
+    "band": "Pastel＊Palettes",
     "aliases": [],
     "bestdoriId": 16
   },
   {
     "id": "hina",
     "name": "日菜",
+    "displayName": "冰川日菜",
+    "band": "Pastel＊Palettes",
     "aliases": ["冰川日菜", "氷川日菜"],
     "bestdoriId": 17
   },
   {
     "id": "chisato",
     "name": "千圣",
+    "displayName": "白鹭千圣",
+    "band": "Pastel＊Palettes",
     "aliases": ["白鹭千圣", "白鷺千聖"],
     "bestdoriId": 18
   },
   {
     "id": "mami",
     "name": "麻弥",
+    "displayName": "大和麻弥",
+    "band": "Pastel＊Palettes",
     "aliases": ["大和麻弥"],
     "bestdoriId": 19
   },
   {
     "id": "eve",
     "name": "伊芙",
+    "displayName": "若宫伊芙",
+    "band": "Pastel＊Palettes",
     "aliases": ["若宫伊芙", "若宮イヴ"],
     "bestdoriId": 20
   },
   {
     "id": "yukina",
     "name": "友希那",
+    "displayName": "凑友希那",
+    "band": "Roselia",
     "aliases": ["凑友希那", "湊友希那"],
     "bestdoriId": 21
   },
   {
     "id": "sayo",
     "name": "纱夜",
+    "displayName": "冰川纱夜",
+    "band": "Roselia",
     "aliases": ["冰川纱夜", "氷川紗夜"],
     "bestdoriId": 22
   },
   {
     "id": "lisa",
     "name": "莉莎",
+    "displayName": "今井莉莎",
+    "band": "Roselia",
     "aliases": ["今井莉莎", "今井リサ"],
     "bestdoriId": 23
   },
   {
     "id": "ako",
     "name": "亚子",
+    "displayName": "宇田川亚子",
+    "band": "Roselia",
     "aliases": ["宇田川亚子", "宇田川あこ"],
     "bestdoriId": 24
   },
   {
     "id": "rinko",
     "name": "燐子",
+    "displayName": "白金燐子",
+    "band": "Roselia",
     "aliases": ["白金燐子"],
     "bestdoriId": 25
   },
   {
     "id": "mashiro",
     "name": "真白",
+    "displayName": "仓田真白",
+    "band": "Morfonica",
     "aliases": ["仓田真白", "倉田ましろ"],
     "bestdoriId": 26
   },
   {
     "id": "toko",
     "name": "透子",
+    "displayName": "桐谷透子",
+    "band": "Morfonica",
     "aliases": ["桐谷透子", "桐ヶ谷透子"],
     "bestdoriId": 27
   },
   {
     "id": "nanami",
     "name": "七深",
+    "displayName": "广町七深",
+    "band": "Morfonica",
     "aliases": ["广町七深", "広町七深"],
     "bestdoriId": 28
   },
   {
     "id": "tsukushi",
     "name": "筑紫",
+    "displayName": "二叶筑紫",
+    "band": "Morfonica",
     "aliases": ["二叶筑紫", "二葉つくし"],
     "bestdoriId": 29
   },
   {
     "id": "rui",
     "name": "瑠唯",
+    "displayName": "八潮瑠唯",
+    "band": "Morfonica",
     "aliases": ["八潮瑠唯"],
     "bestdoriId": 30
   },
   {
     "id": "layer",
     "name": "layer",
+    "displayName": "和奏瑞依（layer）",
+    "band": "RAISE A SUILEN",
     "aliases": ["和奏瑞依"],
     "bestdoriId": 31
   },
   {
     "id": "lock",
     "name": "六花",
+    "displayName": "朝日六花（lock）",
+    "band": "RAISE A SUILEN",
     "aliases": ["朝日六花", "lock"],
     "bestdoriId": 32
   },
   {
     "id": "masking",
     "name": "msk",
+    "displayName": "佐藤益木（msk）",
+    "band": "RAISE A SUILEN",
     "aliases": ["佐藤益木", "masking"],
     "bestdoriId": 33
   },
   {
     "id": "pareo",
     "name": "pareo",
+    "displayName": "鳰原令王那（pareo）",
+    "band": "RAISE A SUILEN",
     "aliases": ["鳰原令王那"],
     "bestdoriId": 34
   },
   {
     "id": "chuchu",
     "name": "chu2",
+    "displayName": "珠手知由（chu2）",
+    "band": "RAISE A SUILEN",
     "aliases": ["珠手知由", "chu²"],
     "bestdoriId": 35
   },
   {
     "id": "tomori",
     "name": "灯",
+    "displayName": "高松灯",
+    "band": "MyGO!!!!!",
     "aliases": ["高松灯", "高松燈", "燈"],
     "bestdoriId": 36
   },
   {
     "id": "anon",
     "name": "爱音",
+    "displayName": "千早爱音",
+    "band": "MyGO!!!!!",
     "aliases": ["千早爱音", "千早愛音", "愛音"],
     "bestdoriId": 37
   },
   {
     "id": "rana",
     "name": "乐奈",
+    "displayName": "要乐奈",
+    "band": "MyGO!!!!!",
     "aliases": ["要乐奈", "要楽奈", "樂奈"],
     "bestdoriId": 38
   },
   {
     "id": "soyo",
     "name": "素世",
+    "displayName": "长崎素世",
+    "band": "MyGO!!!!!",
     "aliases": ["长崎素世", "長崎そよ", "爽世", "长崎爽世", "長崎爽世"],
     "bestdoriId": 39
   },
   {
     "id": "taki",
     "name": "立希",
+    "displayName": "椎名立希",
+    "band": "MyGO!!!!!",
     "aliases": ["椎名立希"],
     "bestdoriId": 40
   },
   {
     "id": "uika",
     "name": "初华",
+    "displayName": "三角初华",
+    "band": "Ave Mujica",
     "aliases": ["三角初华", "三角初華", "初華", "初音", "三角初音"],
     "bestdoriId": 337
   },
   {
     "id": "mutsumi",
     "name": "若叶睦",
+    "displayName": "若叶睦",
+    "band": "Ave Mujica",
     "aliases": ["若葉睦", "睦"],
     "bestdoriId": 338
   },
   {
     "id": "umiri",
     "name": "海铃",
+    "displayName": "八幡海铃",
+    "band": "Ave Mujica",
     "aliases": ["八幡海铃", "八幡海鈴"],
     "bestdoriId": 339
   },
   {
     "id": "nyamu",
     "name": "喵梦",
+    "displayName": "祐天寺喵梦",
+    "band": "Ave Mujica",
     "aliases": ["祐天寺喵梦", "祐天寺にゃむ", "若麦", "祐天寺若麦"],
     "bestdoriId": 340
   },
   {
     "id": "sakiko",
     "name": "祥子",
+    "displayName": "丰川祥子",
+    "band": "Ave Mujica",
     "aliases": ["丰川祥子", "豊川祥子"],
     "bestdoriId": 341
   },
   {
     "id": "arale",
     "name": "阿拉蕾",
+    "displayName": "仲町阿拉蕾",
+    "band": "夢限大MewType",
     "aliases": ["仲町阿拉蕾", "仲町あられ"],
     "bestdoriId": null
   },
   {
     "id": "nonoka",
     "name": "野乃花",
+    "displayName": "宫永野乃花",
+    "band": "夢限大MewType",
     "aliases": ["宫永野乃花", "宮永ののか"],
     "bestdoriId": null
   },
   {
     "id": "ritsu",
     "name": "律",
+    "displayName": "峰月律",
+    "band": "夢限大MewType",
     "aliases": ["峰月律"],
     "bestdoriId": null
   },
   {
     "id": "miyako",
     "name": "都子",
+    "displayName": "藤都子",
+    "band": "夢限大MewType",
     "aliases": ["藤都子"],
     "bestdoriId": null
   },
   {
     "id": "yuno",
     "name": "由乃",
+    "displayName": "千石由乃",
+    "band": "夢限大MewType",
     "aliases": ["千石由乃", "千石ユノ"],
     "bestdoriId": null
   },
   {
     "id": "hotaru",
     "name": "萤",
+    "displayName": "汐见萤",
+    "band": "millsage",
     "aliases": ["汐见萤", "汐見蛍"],
     "bestdoriId": null
   },
   {
     "id": "natsume",
     "name": "枣",
+    "displayName": "伊泽枣",
+    "band": "millsage",
     "aliases": ["伊泽枣", "伊沢なつめ"],
     "bestdoriId": null
   },
   {
     "id": "nagi",
     "name": "凪",
+    "displayName": "琴平凪",
+    "band": "millsage",
     "aliases": ["琴平凪"],
     "bestdoriId": null
   },
   {
     "id": "mahoro",
     "name": "茉幌",
+    "displayName": "滨崎茉幌",
+    "band": "millsage",
     "aliases": ["滨崎茉幌", "浜崎まほろ"],
     "bestdoriId": null
   },
   {
     "id": "houka",
     "name": "朋花",
+    "displayName": "和泉朋花",
+    "band": "millsage",
     "aliases": ["和泉朋花"],
     "bestdoriId": null
   },
   {
     "id": "raika",
     "name": "蕾叶",
+    "displayName": "须贺蕾叶",
+    "band": "一家Dumb Rock!",
     "aliases": ["须贺蕾叶", "須賀蕾叶"],
     "bestdoriId": null
   },
   {
     "id": "miku",
     "name": "心玖",
+    "displayName": "马桥心玖",
+    "band": "一家Dumb Rock!",
     "aliases": ["马桥心玖", "馬橋心玖"],
     "bestdoriId": null
   },
   {
     "id": "yomogi",
     "name": "蓬咲",
+    "displayName": "矢仓蓬咲",
+    "band": "一家Dumb Rock!",
     "aliases": ["矢仓蓬咲", "矢倉蓬咲"],
     "bestdoriId": null
   },
   {
     "id": "chieri",
     "name": "千樱梨",
+    "displayName": "梅里千樱梨",
+    "band": "一家Dumb Rock!",
     "aliases": ["梅里千樱梨", "梅里ちえり"],
     "bestdoriId": null
   },
   {
     "id": "shizuku",
     "name": "宁月",
+    "displayName": "四宫宁月",
+    "band": "一家Dumb Rock!",
     "aliases": ["四宫宁月", "四宮寧月"],
     "bestdoriId": null
   },
   {
     "id": "mortis",
     "name": "Mortis",
+    "displayName": "Mortis",
+    "band": null,
     "aliases": ["モーティス"],
     "bestdoriId": null
   },
   {
     "id": "mana",
     "name": "真奈",
+    "displayName": "真奈",
+    "band": null,
     "aliases": [],
     "bestdoriId": null
   },
   {
     "id": "viola",
     "name": "薇欧拉",
+    "displayName": "薇欧拉",
+    "band": null,
     "aliases": ["ビオラ"],
     "bestdoriId": null
   },
   {
     "id": "bell",
     "name": "Bell",
+    "displayName": "Bell",
+    "band": null,
     "aliases": ["ベル"],
     "bestdoriId": null
   },
   {
     "id": "popo",
     "name": "Popo",
+    "displayName": "Popo",
+    "band": null,
     "aliases": ["ポポ"],
     "bestdoriId": null
   },
   {
     "id": "yumemita_manager",
     "name": "梦限大经纪人",
+    "displayName": "梦限大经纪人",
+    "band": null,
     "aliases": ["マネージャー"],
     "bestdoriId": null
   }

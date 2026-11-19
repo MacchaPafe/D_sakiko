@@ -838,6 +838,17 @@ test('邦角色匹配优先精确 ID，别名只接受唯一候选并保留手�
   ])
 })
 
+test.each([
+  ['若叶睦', 'mutsumi'],
+  ['若葉睦', 'mutsumi'],
+  ['珠手知由（chu2）', 'chuchu'],
+  ['chu²', 'chuchu']
+])('邦角色可按显示名、名称或别名 %s 匹配', (name, id) => {
+  expect([...matchBangDreamCharacters([{ id: 'custom-role', name }])]).toEqual([
+    ['custom-role', id]
+  ])
+})
+
 test('同 ID 的旧版内置角色追加服装并保留 Electron 默认与已有配置', async () => {
   const { root, backend } = await fixture()
   await backend.onboarding.begin({ path: 'quick' })

@@ -1,6 +1,6 @@
 import entries from './bang-dream.json' with { type: 'json' }
 
-/** @typedef {{id: string, name: string, aliases: string[], bestdoriId: number | null}} BangDreamCharacter 邦角色目录身份及资源索引。 */
+/** @typedef {{id: string, name: string, displayName: string, band: string | null, aliases: string[], bestdoriId: number | null}} BangDreamCharacter 邦角色目录身份、显示名、乐队分组及资源索引。 */
 /** @type {Map<string, BangDreamCharacter>} */
 export const bangDreamCharacters = new Map(entries.map((entry) => [entry.id, entry]))
 
@@ -10,7 +10,8 @@ function normalize(name) {
 
 const names = new Map()
 for (const entry of entries) {
-  for (const name of new Set([entry.id, entry.name, ...entry.aliases].map(normalize))) {
+  const candidates = [entry.id, entry.name, entry.displayName, ...entry.aliases]
+  for (const name of new Set(candidates.map(normalize))) {
     if (!names.has(name)) names.set(name, new Set())
     names.get(name).add(entry.id)
   }

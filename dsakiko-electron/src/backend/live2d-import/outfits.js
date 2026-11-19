@@ -109,11 +109,13 @@ export class Outfits {
     return { role, form }
   }
 
-  /** @returns {Array<{id: string, name: string, aliases: string[]}>} 可确认的邦角色目录。 */
+  /** @returns {Array<{id: string, name: string, displayName: string, band: string | null, aliases: string[]}>} 可确认的邦角色目录。 */
   listCharacters() {
-    return [...bangDreamCharacters.values()].map(({ id, name, aliases }) => ({
+    return [...bangDreamCharacters.values()].map(({ id, name, displayName, band, aliases }) => ({
       id,
       name,
+      displayName,
+      band,
       aliases: [...aliases]
     }))
   }

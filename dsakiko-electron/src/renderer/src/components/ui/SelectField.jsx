@@ -115,6 +115,7 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
     }
   }
   function keepFocus(event) {
+    // 滚动条和分组标题也会让输入框失焦，需在整个弹层内保留搜索焦点。
     event.preventDefault()
   }
   function renderOption(option) {
@@ -132,7 +133,6 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
         aria-disabled={option.disabled || undefined}
         data-highlighted={option === active || undefined}
         className="search-select-option"
-        onMouseDown={keepFocus}
         onClick={pick}
       >
         <span>{option.label}</span>
@@ -169,7 +169,7 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
         ref={input}
       />
       <ChevronsUpDown className="search-select-icon" size={15} aria-hidden="true" />
-      <div className="search-select-popover" popover="manual" ref={list}>
+      <div className="search-select-popover" popover="manual" ref={list} onMouseDown={keepFocus}>
         <div id={id} role="listbox" aria-label={label ?? '选项'}>
           {groups.map(([group, items]) =>
             group ? (
