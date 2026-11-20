@@ -137,7 +137,12 @@ export class Performance {
     if (!sequenceId) return
     this.stopObserving = this.client.performance.observe(sequenceId, (update) => {
       if (this.closed || this.sequenceId !== sequenceId) return
-      const progress = update.snapshot ?? update
+      let progress = update.snapshot ?? update
+      if (
+        this.suppressScript &&
+        progress.scene?.slots?.some((slot) => slot.supportsInward !== undefined)
+      )
+        progress = { ...progress, current: null, transition: null }
       this.latest = { progress, receivedAt: this.now() }
       if (this.mode === 'live') this.adopt(this.latest)
       else this.publish()
@@ -251,11 +256,29 @@ export class Performance {
     this.playingId = null
     this.anchor = {
       receivedAt: this.now(),
-      progress: { scene: materials.scene, current: null, transition: null }
+      progress: {
+        scene: materials.scene,
+        defaultPerformances: materials.defaultPerformances,
+        current: null,
+        transition: null
+      }
     }
-    const guides = structuredClone(materials.guides)
+    let guides = structuredClone(materials.guides)
     let index = 0
-    const next = () => {
+    const session = { refresh: null }
+    this.replaySession = session
+    const next = async () => {
+      while (session.refresh) {
+        const pending = session.refresh
+        const replacement = await pending
+        if (this.replaySession !== session) return
+        if (pending !== session.refresh) continue
+        session.refresh = null
+        if (replacement) {
+          materials = replacement
+          guides = replacement.guides
+        }
+      }
       if (this.closed || this.mode !== 'replay') return
       const guide = guides[index]
       if (!guide) {
@@ -277,6 +300,7 @@ export class Performance {
           receivedAt: this.now(),
           progress: {
             scene: materials.scene,
+            defaultPerformances: materials.defaultPerformances,
             current: { guideId, guide, durationMs, elapsedMs: 0, recurring: false },
             transition: null
           }
@@ -306,6 +330,18 @@ export class Performance {
     }
     next()
   }
+  /** 当前句沿用已开播材料，下一句开始前采用新朝向。 */
+  refreshReplay(load) {
+    if (this.replaySession)
+      this.replaySession.refresh = Promise.resolve()
+        .then(load)
+        .catch((error) => {
+          this.localProblem = { code: 'replay_refresh_failed', message: error.message }
+          this.publish()
+          return null
+        })
+  }
+
   /**
    * 回到最新后端计划；不重启或修改后端 sequence。
    * @returns {void} 丢弃本地回放锚点。
@@ -313,6 +349,7 @@ export class Performance {
   resumeLive() {
     const onEnd = this.replayEnded
     this.replayEnded = null
+    this.replaySession = null
     this.mode = 'live'
     clearTimeout(this.replayTimer)
     this.playEpoch += 1

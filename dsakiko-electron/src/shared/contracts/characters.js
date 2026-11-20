@@ -66,6 +66,7 @@
  * @property {import('./common.js').AssetRef | null} avatar 头像。
  * @property {string | null} themeColor 主题色。
  * @property {string | null} modelId 本次采用的模型。
+ * @property {Record<string,string[]>} motionDirections 普通逻辑动作对应的真实文件方向，空字符串表示无后缀。
  * @property {'v2' | 'v3' | null} modelVersion 实际解析格式；无可用模型为 null。
  * @property {import('./presentation.js').ModelPresentation | null} presentation 经元数据检查的可选材料，不代表已成功加载。
  * @property {import('./presentation.js').PerformanceCatalog} performances 本次逻辑演出目录。

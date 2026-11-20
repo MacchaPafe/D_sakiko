@@ -1,5 +1,5 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
-import { GripHorizontal, Maximize, RotateCcw, Shirt, ZoomIn, ZoomOut } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { GripHorizontal, Move, X, Maximize, RotateCcw, Shirt, ZoomIn, ZoomOut } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { StageWardrobe } from './StageWardrobe.jsx'
 import { placeToolbar, placeWardrobe } from './stage-toolbar-layout.js'
@@ -26,11 +26,18 @@ function measureToolbar(bar, grip) {
 }
 
 /**
- * @param {object} props 舞台视角操作和当前对话的换装入口。
+ * 舞台工具栏与剧场舞台调整／换装浮窗。
+ * @param {object} props 组件属性。
+ * @param {{characterId: string|null, chatId: string|null, tab: string}} props.target 当前激活的对话目标。
+ * @param {object|null} props.wardrobe 换装浮窗配置，不可用时为 null。
+ * @param {(factor: number) => void} props.onZoom 舞台角色缩放回调。
+ * @param {() => void} props.onReset 舞台视角或选中演员位置重置回调。
+ * @param {{actors: Array<{id: string, displayName: string}>, panel: 'position'|'orientation'|null, selected: number|null|undefined, setPanel: (panel: 'position'|'orientation'|null) => void, face: (orientation: 'screen'|'face-to-face') => void, canFace: boolean, inward: boolean, degradedNote: string}|null} props.theatre 小剧场舞台调整配置。
  * @returns {import('react').ReactElement} 拖动中按舞台空间调整朝向的工具栏。
  */
-export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
+export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
   const [openFor, setOpenFor] = useState(null)
+  const adjust = useRef(null)
   const toolbar = useRef(null)
   const grip = useRef(null)
   const trigger = useRef(null)
@@ -86,11 +93,14 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
         const box = relativeRect(popup, origin)
         const list = popup.querySelector('.stage-wardrobe-list')
         // 列表已滚动时，仍用内容原高比较可用方向，避免误以为被压缩的面板能完整显示。
-        const height = Math.min(356, box.height + list.scrollHeight - list.clientHeight)
+        const height = Math.min(
+          356,
+          box.height + (list ? list.scrollHeight - list.clientHeight : 0)
+        )
         const position = placeWardrobe(
           stageBox,
           barBox,
-          relativeRect(trigger.current, origin),
+          relativeRect(theatre?.panel ? adjust.current : trigger.current, origin),
           { width: box.width, height },
           orientation === 'horizontal'
         )
@@ -107,7 +117,7 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
     observer.observe(stage)
     if (panel.current) observer.observe(panel.current)
     return () => observer.disconnect()
-  }, [open])
+  }, [open, theatre?.panel, theatre?.selected, theatre?.canFace, theatre?.degradedNote])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -131,6 +141,20 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
       document.removeEventListener('keydown', dismissOnEscape)
     }
   }, [open])
+
+  const activeTheatrePanel = Boolean(theatre?.panel)
+  const closeTheatrePanel = theatre?.setPanel
+  useEffect(() => {
+    if (!activeTheatrePanel) return
+    function dismissPanelOnEscape(event) {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      closeTheatrePanel?.(null)
+      adjust.current?.focus()
+    }
+    document.addEventListener('keydown', dismissPanelOnEscape)
+    return () => document.removeEventListener('keydown', dismissPanelOnEscape)
+  }, [activeTheatrePanel, closeTheatrePanel])
 
   function start(event) {
     if (event.button !== 0 || drag.current) return
@@ -168,6 +192,7 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
   }
 
   function toggle() {
+    theatre?.setPanel(null)
     setOpenFor(open ? null : target)
   }
 
@@ -179,6 +204,11 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
   function manage(formId) {
     close()
     wardrobe.onManage(formId)
+  }
+
+  function toggleStagePanel() {
+    setOpenFor(null)
+    theatre.setPanel(theatre.panel ? null : 'position')
   }
 
   function increase() {
@@ -203,21 +233,39 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
         >
           <GripHorizontal size={16} />
         </button>
-        <Button variant="ghost" size="icon" aria-label="放大角色" onClick={increase}>
-          <ZoomIn />
-        </Button>
-        <Button variant="ghost" size="icon" aria-label="缩小角色" onClick={decrease}>
-          <ZoomOut />
-        </Button>
-        <Button
-          className="toolbar-reset"
-          variant="ghost"
-          size="icon"
-          aria-label="重置角色视图"
-          onClick={onReset}
-        >
-          <RotateCcw />
-        </Button>
+        {theatre && (
+          <Button
+            ref={adjust}
+            className="toolbar-section-end"
+            variant="ghost"
+            size="icon"
+            aria-label="调整舞台"
+            aria-expanded={Boolean(theatre.panel)}
+            disabled={!theatre.actors.length}
+            onClick={toggleStagePanel}
+          >
+            <Move size={16} />
+          </Button>
+        )}
+        {!theatre && (
+          <>
+            <Button variant="ghost" size="icon" aria-label="放大角色" onClick={increase}>
+              <ZoomIn />
+            </Button>
+            <Button variant="ghost" size="icon" aria-label="缩小角色" onClick={decrease}>
+              <ZoomOut />
+            </Button>
+            <Button
+              className="toolbar-reset toolbar-section-end"
+              variant="ghost"
+              size="icon"
+              aria-label="重置角色视图"
+              onClick={onReset}
+            >
+              <RotateCcw />
+            </Button>
+          </>
+        )}
         <hr />
         <Button
           ref={trigger}
@@ -236,6 +284,116 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset }) {
           <Maximize />
         </Button>
       </div>
+      {theatre?.panel && (
+        <section
+          className="stage-wardrobe theatre-stage-panel"
+          ref={panel}
+          role="dialog"
+          aria-label="调整舞台"
+        >
+          <header className="theatre-stage-header">
+            {theatre.canFace ? (
+              <div className="theatre-panel-tabs" role="group" aria-label="舞台设置">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={theatre.panel === 'position'}
+                  onClick={() => theatre.setPanel('position')}
+                >
+                  站位
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={theatre.panel === 'orientation'}
+                  onClick={() => theatre.setPanel('orientation')}
+                >
+                  朝向
+                </Button>
+              </div>
+            ) : (
+              <h2 className="theatre-stage-title">调整站位</h2>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="theatre-stage-close"
+              aria-label="完成舞台调整"
+              onClick={() => theatre.setPanel(null)}
+            >
+              <X size={16} />
+            </Button>
+          </header>
+          {theatre.panel === 'position' && (
+            <>
+              {theatre.selected == null ? (
+                <p className="theatre-panel-hint">点击或拖动画面中的角色</p>
+              ) : (
+                <div className="theatre-position-body">
+                  <div className="theatre-position-actor">
+                    <strong>{theatre.actors[theatre.selected]?.displayName}</strong>
+                    <span>拖动画面调整位置</span>
+                  </div>
+                  <div className="theatre-position-controls">
+                    <div className="theatre-zoom-group" role="group" aria-label="缩放演员">
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        aria-label="放大选中演员"
+                        onClick={increase}
+                      >
+                        <ZoomIn size={16} />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        aria-label="缩小选中演员"
+                        onClick={decrease}
+                      >
+                        <ZoomOut size={16} />
+                      </Button>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="theatre-position-reset"
+                      onClick={onReset}
+                    >
+                      <RotateCcw size={14} aria-hidden="true" />
+                      重置位置
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {theatre.degradedNote && (
+                <p className="theatre-panel-note theatre-degraded-note">{theatre.degradedNote}</p>
+              )}
+            </>
+          )}
+          {theatre.canFace && theatre.panel === 'orientation' && (
+            <div className="theatre-orientation-body">
+              <div className="theatre-segmented" role="group" aria-label="角色朝向">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={!theatre.inward}
+                  onClick={() => theatre.face('screen')}
+                >
+                  面向屏幕
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={theatre.inward}
+                  onClick={() => theatre.face('face-to-face')}
+                >
+                  面对面
+                </Button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
       {wardrobe && (
         <StageWardrobe
           key={JSON.stringify([target.characterId, target.chatId])}

@@ -9,6 +9,8 @@ vi.mock('pixi-live2d-display', () => ({
 }))
 const { StageSurface } = await import('../../src/renderer/src/performance/surface.js')
 const { StageController } = await import('../../src/renderer/src/features/home/stage-controller.js')
+const { createRuntimeAdapter } =
+  await import('../../src/renderer/src/performance/live2d-adapter.js')
 
 const surfaces = []
 afterEach(() => {
@@ -81,13 +83,13 @@ function dialogueStage() {
     stopMotions: vi.fn(),
     setExpression: vi.fn().mockResolvedValue(true)
   }
-  stage.surface = {
+  stage.actors[0].surface = {
     model: {},
     motionGroups: { dialogue: [{ File: 'talk.motion3.json' }, { File: 'next.motion3.json' }] },
     adapter,
     destroy() {}
   }
-  stage.state.shownOutfitKey = stageModelKey(modelPresentation)
+  stage.actors[0].state.shownOutfitKey = stageModelKey(modelPresentation)
   const scene = { slots: [{ id: 'role', displayName: '祥子', presentation: modelPresentation }] }
   stage.player.follow('sequence')
   return {
@@ -130,6 +132,44 @@ test('回放正在展示的台词时，从头播放同一动作和表情', async
     )
     expect(adapter.setExpression).toHaveBeenCalledTimes(2)
     expect(adapter.setExpression).toHaveBeenLastCalledWith('smile', expect.any(Function))
+  } finally {
+    stage.dispose()
+  }
+})
+
+test('离开后回到小剧场保持静音，主动回放时新朝向从下一句生效', async () => {
+  vi.useFakeTimers()
+  const { stage, report } = dialogueStage()
+  const slots = [
+    {
+      id: 'role',
+      presentation: { model: { id: 'model' } },
+      supportsInward: true,
+      layout: { direction: 'C' }
+    }
+  ]
+  const guides = ['第一句', '第二句'].map((text) => ({
+    slotId: 'role',
+    text,
+    audio: null,
+    subtitleDurationMs: 100
+  }))
+  try {
+    stage.player.suppressScript = true
+    report({
+      scene: { slots },
+      current: { guideId: 'background', guide: guides[0], durationMs: 100 }
+    })
+    expect(stage.player.getSnapshot().progress.current).toBeNull()
+    stage.player.replay({ scene: { slots }, guides })
+    const before = () => stage.player.getSnapshot().progress
+    expect(before().current.guide.text).toBe('第一句')
+    const turned = [{ ...slots[0], layout: { direction: 'L' } }]
+    stage.player.refreshReplay(async () => ({ scene: { slots: turned }, guides }))
+    expect(before().scene.slots[0].layout.direction).toBe('C')
+    await vi.advanceTimersByTimeAsync(101)
+    expect(before().current.guide.text).toBe('第二句')
+    expect(before().scene.slots[0].layout.direction).toBe('L')
   } finally {
     stage.dispose()
   }
@@ -242,4 +282,152 @@ test('停止旧播放后可立刻回放，新播放不受旧动作的迟到结�
   await second
   expect(unsubscribe).toHaveBeenCalledTimes(2)
   expect(vi.getTimerCount()).toBe(0)
+})
+
+test('V3 适配器切换不同动作时保留旧条目交叉淡出并对齐时长，同动作实例重放先去重', () => {
+  const queue = {
+    _motions: [],
+    stopAllMotions: vi.fn(),
+    startMotion: vi.fn((motion) => {
+      for (const existing of queue._motions) {
+        existing._fadeOutSeconds = existing._motion.getFadeOutTime()
+        existing._triggered = true
+      }
+      const entry = {
+        _motion: motion,
+        _fadeOutSeconds: 0,
+        _triggered: false,
+        release: vi.fn(),
+        isTriggeredFadeOut: () => entry._triggered,
+        setFadeOut: vi.fn((seconds) => {
+          entry._fadeOutSeconds = seconds
+          entry._triggered = true
+        })
+      }
+      queue._motions.push(entry)
+      return entry
+    })
+  }
+  const motionManager = { queueManager: queue, _startMotion: vi.fn() }
+  const model = {
+    internalModel: { on: vi.fn(), off: vi.fn(), motionManager },
+    destroy: vi.fn()
+  }
+  createRuntimeAdapter(model, 'v3')
+
+  const makeMotion = (fadeIn, fadeOut) => ({
+    _fadeIn: fadeIn,
+    _fadeOut: fadeOut,
+    setFinishedMotionHandler: vi.fn(),
+    getFadeInTime: () => fadeIn,
+    getFadeOutTime: () => fadeOut,
+    setFadeOutTime: vi.fn((seconds) => {
+      fadeOut = seconds
+    })
+  })
+
+  const idleMotion = makeMotion(2.0, 2.0)
+  const turnMotion = makeMotion(0.8, 0.8)
+
+  const idleEntry = motionManager._startMotion(idleMotion)
+  motionManager._startMotion(turnMotion)
+
+  expect(queue.stopAllMotions).not.toHaveBeenCalled()
+  expect(queue._motions).toHaveLength(2)
+  expect(idleEntry.setFadeOut).toHaveBeenCalledWith(0.8)
+  expect(idleMotion.setFadeOutTime).toHaveBeenCalledWith(0.8)
+
+  const firstTurnEntry = queue._motions[1]
+  motionManager._startMotion(turnMotion)
+  expect(firstTurnEntry.release).toHaveBeenCalledOnce()
+  expect(queue._motions.filter((entry) => entry._motion === turnMotion)).toHaveLength(1)
+})
+
+test('小剧场切换朝向时使用 800ms 过渡，同向台词保持 150ms', async () => {
+  const { stage, adapter } = dialogueStage()
+  const actor = stage.actors[0]
+  actor.layoutScope = 'theatre-scope'
+  actor.surface.motionGroups = {
+    dialogue: [
+      { File: 'talk.motion3.json' },
+      { File: 'mtn_idle01_C.motion3.json' },
+      { File: 'mtn_idle01_L.motion3.json' }
+    ]
+  }
+  const presentation = { model: { id: 'model' } }
+  const slotC = { id: 'role', presentation, layout: { direction: 'C' } }
+  const slotL = { id: 'role', presentation, layout: { direction: 'L' } }
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  try {
+    actor.present(
+      slotC,
+      { motion: { entry: { File: 'talk.motion3.json' } }, expression: null },
+      'g1',
+      false,
+      null
+    )
+    await flush()
+    expect(adapter.startMotion).toHaveBeenLastCalledWith(
+      'dialogue',
+      0,
+      3,
+      150,
+      true,
+      expect.any(Function)
+    )
+
+    actor.present(
+      slotL,
+      { motion: { entry: { File: 'mtn_idle01_L.motion3.json' } }, expression: null },
+      'g2',
+      false,
+      null
+    )
+    await flush()
+    expect(adapter.startMotion).toHaveBeenLastCalledWith(
+      'dialogue',
+      2,
+      3,
+      800,
+      true,
+      expect.any(Function)
+    )
+
+    actor.present(
+      slotL,
+      { motion: { entry: { File: 'talk.motion3.json' } }, expression: null },
+      'g3',
+      false,
+      null
+    )
+    await flush()
+    expect(adapter.startMotion).toHaveBeenLastCalledWith(
+      'dialogue',
+      0,
+      3,
+      150,
+      true,
+      expect.any(Function)
+    )
+
+    actor.present(
+      slotL,
+      { motion: { entry: { File: 'mtn_idle01_L.motion3.json' } }, expression: null },
+      null,
+      false,
+      null
+    )
+    await flush()
+    expect(adapter.startMotion).toHaveBeenLastCalledWith(
+      'dialogue',
+      2,
+      3,
+      800,
+      true,
+      expect.any(Function)
+    )
+  } finally {
+    stage.dispose()
+  }
 })

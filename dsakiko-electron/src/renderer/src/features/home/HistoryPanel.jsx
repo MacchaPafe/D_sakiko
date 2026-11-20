@@ -69,7 +69,7 @@ function ToolDetails({ tool }) {
     </section>
   )
 }
-function HistoryMessage({ row, characters, playback, turnReplay, onPlay, onReplayTurn }) {
+function HistoryMessage({ theatre, row, characters, playback, turnReplay, onPlay, onReplayTurn }) {
   if (row.kind === 'tools') {
     const pending = row.tools.some((tool) => !tool.outcome || tool.outcome.status === 'accepted')
     const failed = row.tools.some((tool) =>
@@ -94,7 +94,8 @@ function HistoryMessage({ row, characters, playback, turnReplay, onPlay, onRepla
   const playing = linePlayback && !linePlayback.error
   const replaying = turnPlayback && !turnPlayback.error
   const playbackLabel = playing ? '停止语音' : '播放语音'
-  const replayLabel = replaying ? '停止回放' : '回放本轮回复'
+  let replayLabel = theatre ? '回放整场' : '回放本轮回复'
+  if (replaying) replayLabel = '停止回放'
   function toggleAudio() {
     onPlay(row.id, audio)
   }
@@ -295,10 +296,11 @@ export function HistoryPanel({
     scroll.current.scrollTop = scroll.current.scrollHeight
     setUnread(false)
   }
+  const theatre = snapshot?.chat.mode === 'scripted-dialogue'
   return (
     <aside className="history-panel" aria-label="聊天记录" ref={panel} style={size}>
       <header>
-        <span>聊天记录</span>
+        <span>{theatre ? '小剧场记录' : '聊天记录'}</span>
         <Button variant="ghost" size="icon" aria-label="收起聊天记录" onClick={onClose}>
           <ChevronRight />
         </Button>
@@ -318,6 +320,7 @@ export function HistoryPanel({
         )}
         {rows.map((row) => (
           <HistoryMessage
+            theatre={snapshot?.chat.mode === 'scripted-dialogue'}
             key={row.id}
             row={row}
             characters={characters}

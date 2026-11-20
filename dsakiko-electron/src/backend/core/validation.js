@@ -27,7 +27,25 @@ export function speechOptions(value) {
  * @returns {void}
  */
 export function presentationOptions(value, characterIds) {
-  fields(value, ['background', 'characters'])
+  fields(value, ['background', 'characters', 'orientation', 'frames'])
+  if (value.orientation !== undefined)
+    requireValue(['screen', 'face-to-face'].includes(value.orientation))
+  if (value.frames) {
+    fields(value.frames, characterIds)
+    for (const outfits of Object.values(value.frames)) {
+      requireValue(outfits && typeof outfits === 'object' && !Array.isArray(outfits))
+      for (const frame of Object.values(outfits)) {
+        fields(frame, ['scale', 'offsetX', 'offsetY'])
+        requireValue(
+          Number.isFinite(frame.scale) &&
+            frame.scale >= 0.2 &&
+            frame.scale <= 5 &&
+            Number.isFinite(frame.offsetX) &&
+            Number.isFinite(frame.offsetY)
+        )
+      }
+    }
+  }
   // 限制只能为当前对话已有的角色配置布局，防止通过设置接口越界塞入不属于该对话的角色。
   fields(value.characters, characterIds)
   for (const layout of Object.values(value.characters)) {

@@ -1,17 +1,15 @@
+import { characterFormName } from './character-form.js'
 import { useEffect, useState } from 'react'
 import { Check, ChevronRight, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { stageModelKey } from '../../performance/stage-layout.js'
 
-function wardrobeSubtitle(definition, role, form) {
+function wardrobeSubtitle(definition, role, form, theatreMode) {
   const characterName = definition?.name || role.displayName
-  if (!definition || definition.forms.length <= 1 || !form) return characterName
-  let formLabel = form.displayName
-  if (definition.bangDreamId === 'sakiko') {
-    if (form.id === 'black') formLabel = '黑祥'
-    else if (form.id === 'white') formLabel = '白祥'
-  }
-  return `${characterName} · ${formLabel}`
+  const hasMultipleForms = Boolean(definition && definition.forms.length > 1 && form)
+  if (theatreMode) return hasMultipleForms ? characterFormName(definition, form) : null
+  if (!hasMultipleForms) return characterName
+  return characterName + ' · ' + characterFormName(definition, form)
 }
 
 /**
@@ -28,6 +26,8 @@ export function StageWardrobe({
   draftOutfit,
   stageState,
   savingDraft,
+  participants,
+  onActor,
   onChoose,
   onManage,
   onRetryModel,
@@ -137,6 +137,8 @@ export function StageWardrobe({
     )
   }
 
+  const subtitle = wardrobeSubtitle(definition, role, form, Boolean(participants))
+
   return (
     <section
       className="stage-wardrobe"
@@ -148,12 +150,27 @@ export function StageWardrobe({
       <header className="stage-wardrobe-heading">
         <div>
           <h2 id={id + '-title'}>服装</h2>
-          <p>{wardrobeSubtitle(definition, role, form)}</p>
+          {subtitle && <p>{subtitle}</p>}
         </div>
         <Button variant="ghost" size="icon" aria-label="收起服装" onClick={onClose}>
           <X size={17} />
         </Button>
       </header>
+      {participants && (
+        <div className="theatre-actor-tabs" role="group" aria-label="选择换装演员">
+          {participants.map((actor) => (
+            <Button
+              variant="ghost"
+              size="sm"
+              key={actor.id}
+              aria-pressed={actor.id === role.id}
+              onClick={() => onActor(actor.id)}
+            >
+              {actor.name ?? actor.displayName}
+            </Button>
+          ))}
+        </div>
+      )}
       <div className="stage-wardrobe-list">
         {!result && <p role="status">正在读取服装…</p>}
         {result?.error && (

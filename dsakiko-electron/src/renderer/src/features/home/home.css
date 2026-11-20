@@ -247,11 +247,26 @@
   background: color-mix(in srgb, var(--secondary) 91%, var(--primary));
   border-color: var(--primary);
 }
-.home-role:active,
-.home-role.selected:active,
-.home-new-chat:active,
-.home-chat-row:has(> button:first-child:active) {
-  background: color-mix(in srgb, var(--secondary) 85%, var(--primary));
+.home-role:not(.selected):active {
+  background: color-mix(in srgb, var(--role-surface) 86%, var(--background));
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--selected-border));
+}
+.home-role.selected:active {
+  background: var(--secondary);
+  border-color: var(--primary);
+}
+.home-new-chat:active {
+  background: color-mix(in srgb, var(--role-surface) 86%, var(--background));
+}
+.home-chat-row:not(.selected):has(> button:first-child:active) {
+  background: color-mix(in srgb, var(--role-surface) 86%, var(--background));
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--selected-border));
+  box-shadow: none;
+}
+.home-chat-row.selected:has(> button:first-child:active) {
+  background: color-mix(in srgb, var(--secondary) 92%, var(--primary));
+  border-color: var(--primary);
+  box-shadow: none;
 }
 .home-chat-row > button:first-child {
   flex: 1;
@@ -393,10 +408,10 @@
   height: 100%;
   display: block;
 }
-/* 记录面板和可移动的舞台工具栏都可能盖住拖动区，需保留鼠标事件。 */
+/* 记录面板、空态引导和可移动的舞台工具栏都可能盖住拖动区，需保留鼠标事件。 */
 [data-window-controls-overlay]
   .home-stage
-  :is(.history-panel, .read-history, .stage-toolbar, .stage-wardrobe, .home-bottom) {
+  :is(.history-panel, .theatre-empty-card, .stage-toolbar, .stage-wardrobe, .home-bottom) {
   app-region: no-drag;
 }
 .stage-scrim {
@@ -645,11 +660,11 @@ section.home-subtitle::before {
 .stage-toolbar[data-orientation='horizontal'] hr {
   display: none;
 }
-.stage-toolbar[data-orientation='horizontal'] .toolbar-reset {
+.stage-toolbar[data-orientation='horizontal'] .toolbar-section-end {
   position: relative;
 }
 /* 将分隔线画在现有间隙内，保持各按钮的中心等距。 */
-.stage-toolbar[data-orientation='horizontal'] .toolbar-reset::after {
+.stage-toolbar[data-orientation='horizontal'] .toolbar-section-end::after {
   position: absolute;
   right: -4px;
   width: 1px;
@@ -694,9 +709,10 @@ section.home-subtitle::before {
   color: var(--muted-foreground);
   font-size: 12px;
 }
-.stage-wardrobe-heading button {
+.stage-wardrobe-heading > button {
   width: 32px;
   height: 32px;
+  flex: none;
 }
 .stage-wardrobe-list {
   display: grid;
@@ -706,6 +722,18 @@ section.home-subtitle::before {
   padding: 3px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent) transparent;
+}
+.stage-wardrobe-list::-webkit-scrollbar {
+  width: 5px;
+}
+.stage-wardrobe-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.stage-wardrobe-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  border-radius: 9999px;
 }
 .home-empty[role='status'],
 .stage-wardrobe-list > p[role='status'] {
@@ -925,12 +953,6 @@ section.home-subtitle::before {
 .home-connection {
   top: 60px;
 }
-.read-history {
-  position: absolute;
-  z-index: 2;
-  top: 24px;
-  right: 24px;
-}
 .notice-area {
   flex: none;
   position: relative;
@@ -1087,8 +1109,14 @@ section.home-subtitle::before {
     --home-list-duration: 0ms;
   }
   .subtitle-text span,
-  .stage-scrim::after {
+  .stage-scrim::after,
+  .theatre-half-frame,
+  .theatre-details-chevron {
     transition: none;
+  }
+  .theatre-half:hover .theatre-half-frame,
+  .theatre-half:focus-visible .theatre-half-frame {
+    transform: none;
   }
   .home-empty[role='status'],
   .stage-wardrobe-list > p[role='status'] {
@@ -1281,4 +1309,694 @@ section.home-subtitle::before {
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 13px;
+}
+
+.home-new-theatre {
+  width: 100%;
+  height: 40px;
+  flex: none;
+  justify-content: center;
+  gap: 6px;
+  border: 1px dashed var(--selected-border);
+  border-radius: 12px;
+  background: var(--resource-inset);
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 500;
+  transition:
+    background-color var(--home-control-duration) ease-out,
+    border-color var(--home-control-duration) ease-out;
+}
+.home-new-theatre:hover {
+  background: var(--home-row-hover);
+  border-color: var(--primary);
+  border-style: solid;
+  color: var(--primary);
+}
+.home-new-theatre:active {
+  background: var(--secondary);
+  border-color: var(--primary);
+  border-style: solid;
+}
+.theatre-chat-row > button:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px 8px 10px;
+}
+.theatre-chat-avatars {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.theatre-chat-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--resource-inset);
+  background: var(--secondary);
+  flex: none;
+}
+.theatre-chat-row.selected .theatre-chat-avatar {
+  border-color: var(--secondary);
+}
+.theatre-chat-avatar + .theatre-chat-avatar {
+  margin-left: -8px;
+}
+.theatre-chat-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.theatre-chat-title,
+.theatre-chat-preview {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.theatre-chat-preview {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 15px;
+  color: var(--muted-foreground);
+}
+.theatre-chat-row.selected .theatre-chat-preview {
+  color: color-mix(in srgb, var(--primary) 65%, var(--muted-foreground));
+}
+
+.theatre-empty-card {
+  position: absolute;
+  z-index: 2;
+  top: 48%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(360px, calc(100% - 48px));
+  padding: 28px 24px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  border: 1px solid var(--glass-highlight);
+  border-radius: 20px;
+  background: var(--glass-composer);
+  backdrop-filter: blur(16px);
+  box-shadow:
+    0 4px 12px var(--shadow-card),
+    0 18px 40px var(--shadow-ink);
+}
+.theatre-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--secondary);
+  color: var(--primary);
+}
+.theatre-empty-card h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.theatre-empty-card p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+
+.home-canvas {
+  display: flex;
+}
+.stage-actor {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.two-actors .stage-actor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.two-actors canvas {
+  cursor: default;
+}
+.theatre-halves {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  app-region: no-drag;
+}
+.theatre-half {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  touch-action: none;
+  cursor: pointer;
+  transition:
+    background-color var(--home-control-duration) ease-out,
+    box-shadow var(--home-control-duration) ease-out;
+}
+.theatre-half:first-child::after {
+  content: '';
+  position: absolute;
+  top: 12%;
+  bottom: 18%;
+  right: 0;
+  width: 1px;
+  border-right: 1px dashed color-mix(in srgb, var(--subtitle) 40%, transparent);
+  pointer-events: none;
+}
+.theatre-half:hover,
+.theatre-half:focus-visible {
+  background: color-mix(in srgb, var(--background) 14%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--subtitle) 65%, transparent);
+  outline: none;
+}
+.theatre-halves[data-has-selection='true'] .theatre-half[aria-pressed='false'] {
+  background: rgba(24, 18, 16, 0.24);
+}
+.theatre-halves[data-has-selection='true'] .theatre-half[aria-pressed='false']:hover,
+.theatre-halves[data-has-selection='true'] .theatre-half[aria-pressed='false']:focus-visible {
+  background: rgba(24, 18, 16, 0.12);
+}
+.theatre-half[aria-pressed='true'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--primary) 82%, white);
+  cursor: grab;
+}
+.theatre-half[data-dragging='true'] {
+  cursor: grabbing;
+}
+.theatre-half-frame {
+  position: absolute;
+  inset: max(56px, calc(var(--window-titlebar-height) + 18px)) 28px 136px;
+  border-radius: 12px;
+  pointer-events: none;
+  opacity: 0;
+  --frame-color: color-mix(in srgb, var(--subtitle) 90%, transparent);
+  background:
+    linear-gradient(var(--frame-color), var(--frame-color)) top left / 22px 2.5px no-repeat,
+    linear-gradient(var(--frame-color), var(--frame-color)) top left / 2.5px 22px no-repeat,
+    linear-gradient(var(--frame-color), var(--frame-color)) top right / 22px 2.5px no-repeat,
+    linear-gradient(var(--frame-color), var(--frame-color)) top right / 2.5px 22px no-repeat,
+    linear-gradient(var(--frame-color), var(--frame-color)) bottom left / 22px 2.5px no-repeat,
+    linear-gradient(var(--frame-color), var(--frame-color)) bottom left / 2.5px 22px no-repeat,
+    linear-gradient(var(--frame-color), var(--frame-color)) bottom right / 22px 2.5px no-repeat,
+    linear-gradient(var(--frame-color), var(--frame-color)) bottom right / 2.5px 22px no-repeat;
+  filter: drop-shadow(0 1px 4px rgba(16, 13, 12, 0.45));
+  transition:
+    opacity var(--home-control-duration) ease-out,
+    transform var(--home-control-duration) ease-out;
+}
+.theatre-halves:not([data-has-selection='true']) .theatre-half .theatre-half-frame {
+  opacity: 0.28;
+}
+.theatre-half:hover .theatre-half-frame,
+.theatre-half:focus-visible .theatre-half-frame {
+  opacity: 0.88;
+  transform: scale(1.006);
+}
+.theatre-half[aria-pressed='true'] .theatre-half-frame {
+  --frame-color: #fff6f2;
+  opacity: 1;
+  transform: none;
+}
+
+.theatre-stage-panel {
+  padding: 12px;
+  gap: 10px;
+}
+.theatre-stage-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.theatre-stage-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding-left: 4px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.theatre-stage-close {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+.theatre-panel-tabs,
+.theatre-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--role-surface);
+}
+.theatre-panel-tabs {
+  flex: 1;
+  min-width: 0;
+}
+.theatre-panel-tabs button,
+.theatre-segmented button {
+  width: 100%;
+  height: 30px;
+  padding-inline: 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.theatre-panel-tabs button:hover:not([aria-pressed='true']),
+.theatre-segmented button:hover:not([aria-pressed='true']) {
+  background: color-mix(in srgb, var(--background) 55%, transparent);
+  color: var(--foreground);
+}
+.theatre-panel-tabs button[aria-pressed='true'],
+.theatre-segmented button[aria-pressed='true'] {
+  background: var(--background);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px var(--shadow-ink);
+}
+.theatre-panel-hint,
+.theatre-panel-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.theatre-panel-hint {
+  padding: 4px 2px;
+}
+.theatre-degraded-note {
+  padding: 8px 2px 0;
+  border-top: 1px solid var(--border);
+}
+.theatre-position-body,
+.theatre-orientation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.theatre-position-actor {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-inline: 2px;
+}
+.theatre-position-actor strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.theatre-position-actor span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.theatre-position-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.theatre-zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.theatre-position-reset {
+  color: var(--muted-foreground);
+}
+
+.theatre-actor-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  margin: 0 0 10px;
+  border-radius: 10px;
+  background: var(--role-surface);
+  flex: none;
+}
+.theatre-actor-tabs button {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding-inline: 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.theatre-actor-tabs button:hover:not([aria-pressed='true']) {
+  background: color-mix(in srgb, var(--background) 55%, transparent);
+  color: var(--foreground);
+}
+.theatre-actor-tabs button[aria-pressed='true'] {
+  background: var(--background);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px var(--shadow-ink);
+}
+
+.theatre-actions-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.theatre-confirm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--warning-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warning-background) 92%, var(--background));
+  color: var(--foreground);
+  font-size: 13px;
+  box-shadow: 0 4px 14px var(--shadow-ink);
+}
+.theatre-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.theatre-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-highlight);
+  border-radius: 16px;
+  background: var(--glass-composer);
+  backdrop-filter: blur(13.76px);
+  box-shadow:
+    0 2px 3.4px var(--shadow-card),
+    0 12px 27.2px var(--shadow-ink),
+    inset 0 1px 0.85px var(--glass-highlight);
+}
+.theatre-actions-leading,
+.theatre-actions-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.theatre-actions-trailing {
+  margin-left: auto;
+}
+.theatre-action-btn {
+  color: var(--foreground);
+}
+.theatre-action-btn:hover {
+  color: var(--primary);
+}
+.theatre-status-text {
+  padding-inline: 4px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.theatre-actions .home-model-picker :is(select, input) {
+  max-width: min(190px, 32vw);
+}
+
+.theatre-settings-dialog {
+  --dialog-width: 580px;
+}
+.theatre-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: inherit;
+}
+.theatre-form-header {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 20px 14px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.theatre-form-heading h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.theatre-form-subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.theatre-form-close {
+  flex: none;
+  margin: -2px -4px 0 0;
+}
+.theatre-form-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent) transparent;
+  scrollbar-gutter: stable both-edges;
+}
+.theatre-form-body > * {
+  flex: none;
+}
+.theatre-form-body::-webkit-scrollbar {
+  width: 6px;
+}
+.theatre-form-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.theatre-form-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  border-radius: 9999px;
+}
+.theatre-cast-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.theatre-actor-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--resource-inset);
+}
+.theatre-actor-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.theatre-actor-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.theatre-actor-title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.theatre-side-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.theatre-actor-name {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.theatre-field {
+  display: grid;
+  gap: 6px;
+}
+.theatre-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.theatre-form .field-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+.theatre-form .search-select > input {
+  padding-right: 30px;
+}
+.theatre-form .field-textarea {
+  min-height: 68px;
+  resize: vertical;
+}
+.theatre-form .field-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+.theatre-choice-static {
+  font-size: 14px;
+  font-weight: 600;
+}
+.theatre-choice-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--role-surface);
+}
+.theatre-choice-group button {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding-inline: 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.theatre-choice-group button:hover:not([aria-pressed='true']) {
+  background: color-mix(in srgb, var(--background) 55%, transparent);
+  color: var(--foreground);
+}
+.theatre-choice-group button[aria-pressed='true'] {
+  background: var(--background);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px var(--shadow-ink);
+}
+.theatre-details-section {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--resource-inset);
+  overflow: hidden;
+}
+.theatre-details-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 13px;
+  transition: background-color var(--home-control-duration) ease-out;
+}
+.theatre-details-toggle:hover {
+  background: color-mix(in srgb, var(--role-surface) 45%, transparent);
+}
+.theatre-details-chevron {
+  flex: none;
+  color: var(--muted-foreground);
+  transition: transform 160ms ease-out;
+}
+.theatre-details-toggle[aria-expanded='true'] .theatre-details-chevron {
+  transform: rotate(90deg);
+}
+.theatre-details-title {
+  font-weight: 600;
+}
+.theatre-details-summary {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.theatre-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid var(--border);
+}
+.theatre-detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.theatre-detail-actor {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.theatre-detail-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.theatre-form-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--destructive);
+}
+.theatre-form-alert {
+  padding: 0 24px 10px;
+}
+.theatre-form-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 24px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--background);
+}
+@media (max-width: 560px) {
+  .theatre-cast-grid,
+  .theatre-details-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

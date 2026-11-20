@@ -112,6 +112,25 @@ test('逻辑 ID 冲突与方向回退；不存在的成员不会成为候选', a
   })
 })
 
+test('面对面回放缺方向的历史动作时，依次采用同情绪、待机或空动作', async () => {
+  const base = await catalog()
+  const other = { variants: { R: { member: 'smile_R.motion3.json' } } }
+  const idle = { variants: { R: { member: 'idle_R.motion3.json' } } }
+  base.motions.smile = other
+  base.motions.idle = idle
+  base.groups.happiness.push('smile')
+  base.groups.idle_motion = ['idle']
+  const selection = { motion: 'mtn_nod', expression: 'exp_idle01' }
+  const resolve = () =>
+    resolvePerformance(base, selection, 'happiness', { direction: 'R', theatre: true })
+  expect(resolve().motion.member).toBe('smile_R.motion3.json')
+  delete base.motions.smile
+  expect(resolve().motion.member).toBe('idle_R.motion3.json')
+  delete base.motions.idle
+  expect(resolve()).toMatchObject({ motion: null, expression: { id: 'exp_idle01' } })
+  expect(selection.motion).toBe('mtn_nod')
+})
+
 test('v2 忽略显式 v3 选择；v3 接受旧 v2 情绪；活动使用动作组', async () => {
   const v2 = await buildModelCatalog(
     {

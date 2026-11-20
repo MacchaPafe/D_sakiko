@@ -1,3 +1,4 @@
+import { characterFormName } from './character-form.js'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Download, FolderOpen, MoreHorizontal, RefreshCw, Shirt, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
@@ -935,16 +936,6 @@ export function OutfitManager({
   async function tryOutfit(selected, model) {
     await onTry(characterId, selected, model)
   }
-  function formName(item) {
-    if (definition.bangDreamId === 'sakiko') {
-      if (item.id === 'black') return '黑祥'
-      if (item.id === 'white') return '白祥'
-    }
-    const duplicate = definition.forms.some(
-      (candidate) => candidate.id !== item.id && candidate.displayName === item.displayName
-    )
-    return duplicate ? item.displayName + ' · ' + item.id : item.displayName
-  }
   return (
     <div className="outfit-manager-layout">
       <header className="outfit-page-heading">
@@ -993,7 +984,7 @@ export function OutfitManager({
                 onChange={setFormId}
                 options={definition.forms.map((item) => ({
                   value: item.id,
-                  label: formName(item),
+                  label: characterFormName(definition, item),
                   keywords: [item.id]
                 }))}
               />

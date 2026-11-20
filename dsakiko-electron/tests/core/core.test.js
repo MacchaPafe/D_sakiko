@@ -646,3 +646,100 @@ test('自有连接存在时禁止使用 UP，删除最后一个自有连接后�
     )
   ).toMatchObject({ connectionId: 'builtin-up', modelId: 'test' })
 })
+
+test('小剧场允许空情境；新剧本提交前失败或取消均保留已保存的整场', async () => {
+  const { backend, agent } = await fixture()
+  const partner = await backend.characters.get('sakiko')
+  partner.id = 'anon'
+  partner.name = '爱音'
+  partner.revision = 0
+  partner.forms[0].displayName = '爱音'
+  await backend.characters.save(partner)
+  const chats = backend.conversations
+  const id = await chats.createChat({
+    mode: 'scripted-dialogue',
+    characterIds: ['sakiko', 'anon'],
+    title: '排练'
+  })
+  const capabilities = backend.characters.acquireCapabilities.bind(backend.characters)
+  vi.spyOn(backend.characters, 'acquireCapabilities').mockImplementation(async (...args) => {
+    const role = await capabilities(...args)
+    const motionDirections = { nod: ['C'], smile: ['C', 'L'], wave: ['R'] }
+    const motions = Object.keys(motionDirections).map((id) => ({ id, description: id }))
+    return {
+      ...role,
+      modelVersion: 'v3',
+      motionDirections,
+      performances: {
+        ...role.performances,
+        motions,
+        presets: motions.map(({ id }) => ({ motion: id, expression: 'auto' }))
+      }
+    }
+  })
+  await chats.patchSettings(id, { presentation: { orientation: 'face-to-face' } })
+  const first = await chats.generateScenario(id, { requestId: 'first-script' }, null)
+  const completed = () => until(async () => !(await chats.getSnapshot(id)).activeTurnId)
+  await completed()
+  const participants = agent.run.mock.calls[0][0].characters
+  expect(participants.map((role) => role.performances.motions.map(({ id }) => id))).toEqual([
+    ['smile'],
+    ['wave']
+  ])
+  expect(participants.map((role) => role.performances.presets.map(({ motion }) => motion))).toEqual(
+    [['smile'], ['wave']]
+  )
+  // 导入的剧场可以包含多轮；整场回放和整场替换覆盖所有轮次。
+  const last = await chats.generateScenario(id, { requestId: 'older-second-turn' })
+  await completed()
+  const original = (await backend.store.load(id)).chat.turns
+  expect(original.map((turn) => turn.id)).toEqual([first, last])
+  expect((await chats.getReplayMaterials(id, { kind: 'script' })).guides).toHaveLength(2)
+  await expect(
+    chats.generateScenario(id, { requestId: 'stale-first' }, null)
+  ).rejects.toHaveProperty('problem.code', 'script_exists')
+  agent.run.mockImplementationOnce(async (request, observer) => {
+    await observer.onResponse(response(request.turnId))
+    throw Error('生成中断')
+  })
+  await chats.generateScenario(id, { requestId: 'failure' }, last)
+  await completed()
+  expect((await backend.store.load(id)).chat.turns).toEqual(original)
+  agent.run.mockImplementationOnce(async (request, observer) => {
+    const invalid = response(request.turnId)
+    invalid.appendParts[0].lines[0].speakerId = 'unknown'
+    await observer.onResponse(invalid)
+    return { status: 'completed' }
+  })
+  await chats.generateScenario(id, { requestId: 'invalid-speaker' }, last)
+  await completed()
+  expect((await backend.store.load(id)).chat.turns).toEqual(original)
+  const save = backend.store.save.bind(backend.store)
+  const failingSave = vi.spyOn(backend.store, 'save').mockImplementation((chat) => {
+    if (chat.turns.at(-1)?.meta.requestId === 'disk-failure') throw Error('保存失败')
+    return save(chat)
+  })
+  await chats.generateScenario(id, { requestId: 'disk-failure' }, last)
+  await completed()
+  failingSave.mockRestore()
+  expect((await backend.store.load(id)).chat.turns).toEqual(original)
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  agent.run.mockImplementationOnce(async () => {
+    entered.resolve()
+    await release.promise
+    return { status: 'completed' }
+  })
+  const cancelled = await chats.generateScenario(id, { requestId: 'cancel' }, last)
+  await entered.promise
+  await chats.stopTurn(id, cancelled)
+  release.resolve()
+  await completed()
+  expect((await backend.store.load(id)).chat.turns).toEqual(original)
+  const next = await chats.generateScenario(id, { requestId: 'success' }, last)
+  await completed()
+  expect((await backend.store.load(id)).chat.turns.map((turn) => turn.id)).toEqual([next])
+  const replay = await chats.getReplayMaterials(id, { kind: 'turn', turnId: next })
+  expect(replay.scene.slots.map((slot) => slot.id)).toEqual(['sakiko', 'anon'])
+  expect(replay.defaultPerformances).toHaveLength(2)
+})

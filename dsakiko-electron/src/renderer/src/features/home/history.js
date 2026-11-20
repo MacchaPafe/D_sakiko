@@ -48,6 +48,8 @@ function toolRow(rows, id, tool) {
 /** @param {object|null} snapshot 正式聊天快照。 @returns {HistoryRow[]} 直接遵循正式消息顺序，前端不解释 Python 位置索引。 */
 export function historyRows(snapshot) {
   const rows = []
+  let scriptAnchor = null
+  const theatre = snapshot?.chat.mode === 'scripted-dialogue'
   for (const turn of snapshot?.chat.turns ?? []) {
     let userRow
     let firstLine
@@ -108,8 +110,10 @@ export function historyRows(snapshot) {
       }
     }
     if (firstLine && snapshot.activeTurnId !== turn.id) {
-      const anchor = userRow ?? (snapshot.chat.mode === 'scripted-dialogue' ? firstLine : null)
-      if (anchor) anchor.replayTurnId = turn.id
+      if (theatre && !scriptAnchor && !snapshot.activeTurnId) {
+        scriptAnchor = firstLine
+        scriptAnchor.replayTurnId = turn.id
+      } else if (!theatre && userRow) userRow.replayTurnId = turn.id
     }
     if (turn.problem)
       rows.push({

@@ -561,7 +561,10 @@ export class Performance {
     const slot = scene.slots.find((item) => item.id === guide.slotId)
     const catalog = mappings.get(guide.slotId) ?? {}
     const direction = slot?.layout?.direction ?? 'C'
-    const resolved = resolvePerformance(catalog, guide.performance, guide.emotion, { direction })
+    const resolved = resolvePerformance(catalog, guide.performance, guide.emotion, {
+      direction,
+      theatre: slot?.supportsInward !== undefined
+    })
     if (target) {
       // 状态接口是宿主的显式请求，v2 忽略历史台词选择的规则不应吞掉它。
       const variants = catalog.motions?.[guide.performance.motion]?.variants
@@ -569,6 +572,25 @@ export class Performance {
       if (motion) resolved.motion = { id: guide.performance.motion, ...motion }
     }
     return { ...copy(guide), resolvedPerformance: resolved }
+  }
+
+  defaultPlans(
+    scene,
+    mappings,
+    selection = { motion: 'auto', expression: 'auto' },
+    activity = 'idle'
+  ) {
+    return scene.slots.map((slot) => ({
+      slotId: slot.id,
+      resolvedPerformance: resolvePerformance(mappings.get(slot.id) ?? {}, selection, null, {
+        direction: slot.layout?.direction ?? 'C',
+        theatre: slot.supportsInward !== undefined,
+        activity:
+          activity === 'idle' && (selection.motion !== 'auto' || selection.expression !== 'auto')
+            ? null
+            : activity
+      })
+    }))
   }
 
   /** 给已解析的单人台词添加句内时标，实时与回放共用，时钟推进不需要读取文件。 */
@@ -607,12 +629,22 @@ export class Performance {
    * @returns {Promise<Guide[]>} 附带实际资源选择的回放材料。
    */
   async resolveGuides(scene, guides, { timedDialogue = false } = {}) {
+    return (await this.resolveReplay(scene, guides, timedDialogue)).guides
+  }
+
+  /** 复用同一份场景目录解析整场台词和听者待机。 */
+  async resolveReplay(scene, guides, timedDialogue) {
     const mappings = await this.mappings(scene, timedDialogue)
-    return guides.map((guide) =>
-      timedDialogue
-        ? this.planDialogue(scene, mappings, guide)
-        : this.resolvedGuide(scene, mappings, guide)
-    )
+    const materials = {
+      scene,
+      guides: guides.map((guide) =>
+        timedDialogue
+          ? this.planDialogue(scene, mappings, guide)
+          : this.resolvedGuide(scene, mappings, guide)
+      )
+    }
+    if (!timedDialogue) materials.defaultPerformances = this.defaultPlans(scene, mappings)
+    return materials
   }
 
   /**
@@ -647,6 +679,7 @@ export class Performance {
     for (const resolve of record.waiters) resolve(copy(record.finish))
     record.waiters.clear()
     record.guide = null
+    record.listenerPlans = null
     record.playbackScene = null
     if (record.resourceOwner) void this.assets.releaseWhenPossible(record.resourceOwner)
     if (record.playbackSceneOwner) void this.assets.releaseWhenPossible(record.playbackSceneOwner)
@@ -682,6 +715,10 @@ export class Performance {
         next.guide = this.planDialogue(sequence.scene, sequence.mappings, next.guide)
         next.durationMs = this.duration(next.guide)
         next.playbackScene = sequence.scene
+      } else if (sequence.scene.slots.some((slot) => slot.supportsInward !== undefined)) {
+        next.guide = this.resolvedGuide(sequence.scene, sequence.mappings, next.guide)
+        next.playbackScene = sequence.scene
+        next.listenerPlans = this.defaultPlans(sequence.scene, sequence.mappings)
       }
       // 为什么取 anchor、readyAt 和 createdAt 的最大值作为开始时间：
       // 补算时可沿上一句的结束时标推进，但不能早于句间停顿、计划创建或音频就绪的时刻。
@@ -758,23 +795,14 @@ export class Performance {
       waitingFor: state === 'waiting' ? sequence.queue[0] : null,
       defaultPresentation: copy(sequence.defaultPresentation),
       activity: sequence.activity,
-      defaultPerformances: sequence.scene.slots.map((slot) => ({
-        slotId: slot.id,
-        resolvedPerformance: resolvePerformance(
-          sequence.mappings.get(slot.id) ?? {},
+      defaultPerformances:
+        this.guides.get(sequence.current)?.listenerPlans ??
+        this.defaultPlans(
+          sequence.scene,
+          sequence.mappings,
           sequence.defaultPresentation,
-          null,
-          {
-            direction: slot.layout?.direction ?? 'C',
-            activity:
-              sequence.activity === 'idle' &&
-              (sequence.defaultPresentation.motion !== 'auto' ||
-                sequence.defaultPresentation.expression !== 'auto')
-                ? null
-                : sequence.activity
-          }
-        )
-      })),
+          sequence.activity
+        ),
       modelStates: copy([...sequence.modelStates.values()])
     }
   }

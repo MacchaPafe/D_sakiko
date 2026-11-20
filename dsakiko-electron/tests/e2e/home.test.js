@@ -719,6 +719,214 @@ async function verifyHistory(page, application, backend, selected) {
   await expect.poll(() => page.locator('.home-chat-row').count()).toBe(1)
 }
 
+/** 使用隔离配置与本地测试 Agent，验证正式舞台、角色选择和成场回放。 */
+async function verifyTheatre(page, backend, agent) {
+  await page.getByRole('tab', { name: '小剧场', exact: true }).click()
+  await page.locator('.theatre-empty-card').waitFor()
+  await page.getByRole('button', { name: '新建小剧场' }).click()
+  const setup = page.getByRole('dialog', { name: '新建小剧场' })
+  const detailToggle = setup.getByRole('button', { name: /角色细节/ })
+  expect(await detailToggle.getAttribute('aria-expanded')).toBe('false')
+  await detailToggle.click()
+  expect(await detailToggle.getAttribute('aria-expanded')).toBe('true')
+  const detailGrid = setup.locator('.theatre-details-grid')
+  await detailGrid.waitFor()
+  expect((await detailGrid.boundingBox()).height).toBeGreaterThan(80)
+  await setup
+    .locator('.theatre-details-chevron')
+    .evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)))
+  const symmetry = await setup.evaluate((dialog) => {
+    const form = dialog.querySelector('.theatre-form').getBoundingClientRect()
+    const cards = Array.from(dialog.querySelectorAll('.theatre-actor-card'), (el) =>
+      el.getBoundingClientRect()
+    )
+    return {
+      leftGap: cards[0].left - form.left,
+      rightGap: form.right - cards[1].right,
+      sameRow: Math.abs(cards[0].top - cards[1].top) < 2
+    }
+  })
+  expect(symmetry.sameRow).toBe(true)
+  expect(Math.abs(symmetry.leftGap - symmetry.rightGap)).toBeLessThan(3)
+  await page.screenshot({ path: '/tmp/sakiko-theatre-setup.png' })
+  await setup.getByLabel('情境（可选）').fill('排练结束后一起回家')
+  await setup.getByRole('button', { name: '创建小剧场' }).click()
+  const generate = page.getByRole('button', { name: '生成本场', exact: true })
+  await generate.waitFor()
+  expect(await page.locator('.read-history').count()).toBe(0)
+  await page
+    .locator('.theatre-actions')
+    .getByRole('button', { name: '剧场设定', exact: true })
+    .click()
+  const editSetup = page.getByRole('dialog', { name: '剧场设定' })
+  await editSetup.waitFor()
+  await editSetup.getByRole('button', { name: '取消', exact: true }).click()
+  await editSetup.waitFor({ state: 'hidden' })
+  const chat = (await backend.conversations.listChats()).find(
+    (item) => item.mode === 'scripted-dialogue'
+  )
+  expect(chat.characterIds).toHaveLength(2)
+  await expect.poll(() => page.locator('.two-actors .stage-actor').count()).toBe(2)
+  await page.getByRole('button', { name: '调整舞台' }).click()
+  await page.getByRole('button', { name: '朝向', exact: true }).waitFor()
+  const stageTabWidths = await page
+    .locator('.theatre-panel-tabs button')
+    .evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().width))
+  expect(stageTabWidths).toHaveLength(2)
+  expect(stageTabWidths.every((width) => width > 40)).toBe(true)
+  await page.getByRole('button', { name: '朝向', exact: true }).click()
+  await page.getByRole('button', { name: '面对面', exact: true }).click()
+  const snapshot = () => backend.conversations.getSnapshot(chat.id)
+  await expect
+    .poll(async () => (await snapshot()).chat.meta.settings.presentation.orientation)
+    .toBe('face-to-face')
+  await page.getByRole('button', { name: '站位', exact: true }).click()
+  expect(
+    await page
+      .locator('.theatre-halves button')
+      .evaluateAll((buttons) => buttons.every((button) => button.textContent === ''))
+  ).toBe(true)
+  await page.locator('.theatre-halves button').last().click()
+  await page.getByRole('button', { name: '缩小选中演员' }).click()
+  await page.screenshot({ path: '/tmp/sakiko-theatre-adjust.png' })
+  await expect
+    .poll(async () => Object.keys((await snapshot()).chat.meta.settings.presentation.frames ?? {}))
+    .toEqual([chat.characterIds[1]])
+  await page.keyboard.press('Escape')
+  await page.getByRole('dialog', { name: '调整舞台' }).waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: '切换服装' }).click()
+  const wardrobe = page.getByRole('dialog', { name: '服装', exact: true })
+  const actorTabs = wardrobe.locator('.theatre-actor-tabs button')
+  const tabTexts = await actorTabs.allTextContents()
+  expect(tabTexts.every((text) => !text.includes('左 ·') && !text.includes('右 ·'))).toBe(true)
+  const wardrobeMetrics = await wardrobe.evaluate((panel) => {
+    const tabs = panel.querySelector('.theatre-actor-tabs').getBoundingClientRect()
+    const [first, second] = Array.from(
+      panel.querySelectorAll('.theatre-actor-tabs button'),
+      (button) => button.getBoundingClientRect()
+    )
+    const list = panel.querySelector('.stage-wardrobe-list').getBoundingClientRect()
+    return {
+      widthDiff: Math.abs(first.width - second.width),
+      gapBelowTabs: list.top - tabs.bottom
+    }
+  })
+  expect(wardrobeMetrics.widthDiff).toBeLessThan(2)
+  expect(wardrobeMetrics.gapBelowTabs).toBeGreaterThanOrEqual(8)
+  await page.screenshot({ path: '/tmp/sakiko-theatre-wardrobe.png' })
+  const savedCharacters = (await snapshot()).chat.meta.settings.characters
+  await actorTabs.first().click()
+  await wardrobe.getByRole('button', { name: '备用演出服', exact: true }).click()
+  await wardrobe.getByRole('button', { name: '备用演出服 当前', exact: true }).waitFor()
+  const updated = (await snapshot()).chat.meta.settings.characters
+  expect(updated[chat.characterIds[1]]).toEqual(savedCharacters[chat.characterIds[1]])
+  expect(updated.sakiko.modelOverrides[updated.sakiko.formId]).toBe('home-test-outfit')
+  await actorTabs.last().click()
+  await wardrobe.getByRole('button', { name: '管理服装' }).click()
+  const manager = page.getByRole('dialog', { name: '服装管理' })
+  await manager.waitFor()
+  expect(await manager.getByLabel('角色', { exact: true }).inputValue()).toBe(chat.characterIds[1])
+  await page.keyboard.press('Escape')
+  await manager.waitFor({ state: 'hidden' })
+  agent.run.mockImplementationOnce(async (request, observer) => {
+    await observer.onResponse({
+      responseId: 'script-message',
+      protocol: {},
+      appendParts: [
+        {
+          id: 'script-part',
+          kind: 'dialogue',
+          lines: request.characters.map((role, index) => ({
+            id: 'script-line-' + index,
+            speakerId: role.id,
+            formId: role.formId,
+            text: index ? '一起走吧。' : '排练结束了。',
+            emotion: 'happiness',
+            translation: null,
+            performance: { motion: 'auto', expression: 'auto' }
+          }))
+        }
+      ]
+    })
+    return { status: 'completed', usage: null }
+  })
+  await generate.click()
+  await expect.poll(async () => (await snapshot()).chat.turns.length).toBe(1)
+  await expect.poll(async () => (await snapshot()).activeTurnId, { timeout: 15000 }).toBeNull()
+  const bothVisible = () =>
+    page.locator('.two-actors canvas').evaluate(
+      (canvas) =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => {
+            // 只取舞台透明画布的非透明像素，避免把背景图或空画布算作演员。
+            const sample = document.createElement('canvas')
+            sample.width = 160
+            sample.height = 100
+            const context = sample.getContext('2d')
+            context.drawImage(canvas, 0, 0, 160, 100)
+            const { data } = context.getImageData(0, 0, 160, 100)
+            const counts = [0, 0]
+            for (let pixel = 0; pixel < 16000; pixel++) {
+              if (data[pixel * 4 + 3] > 128) counts[Number(pixel % 160 >= 80)]++
+            }
+            resolve(counts)
+          })
+        )
+    )
+  await expect
+    .poll(bothVisible, { timeout: 8000 })
+    .toEqual([expect.toSatisfy((count) => count > 1000), expect.toSatisfy((count) => count > 1000)])
+  await page.screenshot({ path: '/tmp/sakiko-theatre-stage.png' })
+  await page
+    .locator('.theatre-actions')
+    .getByRole('button', { name: '回放本场', exact: true })
+    .click()
+  await page
+    .locator('.theatre-actions')
+    .getByRole('button', { name: '停止回放', exact: true })
+    .click()
+  await page.getByRole('button', { name: '展开聊天记录' }).click()
+  await page.getByRole('button', { name: '回放整场' }).click()
+  await page.getByRole('button', { name: '收起聊天记录' }).click()
+  const stop = page.locator('.home-subtitle').getByRole('button', { name: /停止.*回放/ })
+  await stop.click()
+  expect((await snapshot()).chat.turns).toHaveLength(1)
+  // 验证无法面对面时隐藏「朝向」页签，并按是否曾开启面对面决定是否展示降级说明。
+  await page.getByRole('button', { name: '调整舞台' }).click()
+  await page.getByRole('button', { name: '朝向', exact: true }).click()
+  const originalResolve = backend.characters.resolveCapabilities.bind(backend.characters)
+  const resolveSpy = vi
+    .spyOn(backend.characters, 'resolveCapabilities')
+    .mockImplementation(async (characterId, options) => {
+      const capability = await originalResolve(characterId, options)
+      return characterId === 'sakiko' ? { ...capability, modelVersion: 'v2' } : capability
+    })
+  try {
+    await backend.conversations.patchSettings(chat.id, {
+      presentation: { orientation: 'face-to-face' }
+    })
+    await page.locator('.theatre-stage-title').waitFor()
+    expect(await page.locator('.theatre-stage-title').innerText()).toBe('调整站位')
+    expect(await page.getByRole('button', { name: '朝向', exact: true }).count()).toBe(0)
+    await page.locator('.theatre-halves').waitFor()
+    await page.locator('.theatre-degraded-note').waitFor()
+    expect(await page.locator('.theatre-degraded-note').innerText()).toBe(
+      '祥子的服装不支持面对面，已暂改为面向屏幕'
+    )
+    await page.screenshot({ path: '/tmp/sakiko-theatre-adjust-degraded.png' })
+    await backend.conversations.patchSettings(chat.id, {
+      presentation: { orientation: 'screen' }
+    })
+    await page.locator('.theatre-degraded-note').waitFor({ state: 'hidden' })
+    expect(await page.locator('.theatre-stage-title').innerText()).toBe('调整站位')
+    expect(await page.getByRole('button', { name: '朝向', exact: true }).count()).toBe(0)
+  } finally {
+    resolveSpy.mockRestore()
+  }
+  await page.keyboard.press('Escape')
+  await page.getByRole('dialog', { name: '调整舞台' }).waitFor({ state: 'hidden' })
+}
+
 test.each(['production', 'development'])(
   '%s：引导进入主页、交互、真实模型与 HTTP/WS 聊天及恢复',
   async (mode) => {
@@ -1261,6 +1469,7 @@ app.on('window-all-closed', () => app.quit())`
       const [failedChat] = await backend.conversations.listChats()
       const { chat } = await backend.store.load(failedChat.id)
       expect(chat.turns[0].messages.map(({ kind }) => kind)).toEqual(['user'])
+      await verifyTheatre(page, backend, agent)
       expect(errors).toEqual([])
     } finally {
       await application?.close()

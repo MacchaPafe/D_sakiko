@@ -1,11 +1,11 @@
-import { Live2DPreview } from '../../performance/live2d-preview.js'
+import { StageActor } from './stage-actor.js'
 import { Performance } from '../../performance/interface.js'
 import { createAudioOutput } from '../../performance/audio-output.js'
-import { StageLayouts, stageModelKey } from '../../performance/stage-layout.js'
+import { stageModelKey } from '../../performance/stage-layout.js'
 import { isReplayableDialogue, lastDialogueEntry } from '../../../../shared/chat-history.js'
 
 /** @typedef {import('../../../../shared/contracts/presentation.js').ReplayMaterials} ReplayMaterials */
-/** @typedef {{text: string, name: string, revealed: number, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
+/** @typedef {{text: string, name: string, revealed: number, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null, sides: boolean[]|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
 /** 正式舞台的资源与输出边界：共享预览加载器，跟随后端计划，实例不随面板开关重建。 */
 export class StageController {
   /** @param {import('../../backend/client.js').BackendClient} client 业务连接。 @param {(state: StageState) => void} publish 展示快照。 */
@@ -13,7 +13,7 @@ export class StageController {
     Object.assign(this, { client, publish })
     this.epoch = 0
     this.visible = true
-    this.layouts = new StageLayouts()
+    this.actors = []
     this.state = {
       text: '',
       name: '',
@@ -27,28 +27,52 @@ export class StageController {
       hasModel: false,
       canRetryModel: false,
       shownOutfitKey: null,
-      failedOutfitKey: null
+      failedOutfitKey: null,
+      sides: null
     }
     this.output = createAudioOutput(client, { onSpeechAudio: (audio) => this.analyse(audio) })
     this.player = new Performance({ client, output: this.output })
+    this.actors.push(this.createActor())
     this.stopPlayer = this.player.observe((snapshot) => this.progress(snapshot))
   }
-  mount(element) {
-    this.surface = new Live2DPreview(element, {
-      tracking: false,
-      referenceWidth: 1120,
-      stage: true
+  createActor() {
+    const actor = new StageActor(this.client, () => this.publishActors(), this.player)
+    actor.refresh = () => this.progress(this.player.getSnapshot())
+    return actor
+  }
+
+  publishActors() {
+    const states = this.actors.map((actor) => actor.state)
+    const failure = states.find((actor) => actor.problem)
+    this.update({
+      ...states[0],
+      loading: states.some((item) => item.loading),
+      hasModel: states.some((item) => item.hasModel),
+      problem: failure?.problem ?? null,
+      canRetryModel: Boolean(failure?.canRetryModel),
+      actors: states.map((item) => ({ ...item }))
     })
-    this.surface.app.ticker.add(() => this.tick())
+  }
+
+  mount(element) {
+    this.element = element
+    this.mountActor(this.actors[0])
+    this.actors[0].surface.app.ticker.add(() => this.tick())
     this.dragStart = (event) => {
-      if (event.button !== 0 || !this.surface.model || this.state.loading) return
-      this.drag = { x: event.clientX, y: event.clientY, key: this.modelKey, layout: this.layout() }
+      if (event.button !== 0 || this.dual || !this.actors[0].surface.model || this.state.loading)
+        return
+      this.drag = {
+        x: event.clientX,
+        y: event.clientY,
+        key: this.actors[0].modelKey,
+        layout: this.actors[0].layout()
+      }
       element.setPointerCapture(event.pointerId)
     }
     this.dragMove = (event) => {
-      if (!this.drag || this.drag.key !== this.modelKey) return
+      if (!this.drag || this.drag.key !== this.actors[0].modelKey) return
       const ratio = Math.min(element.clientWidth / 1120, element.clientHeight / 1024)
-      this.applyLayout({
+      this.actors[0].applyLayout({
         ...this.drag.layout,
         offsetX: this.drag.layout.offsetX + (event.clientX - this.drag.x) / ratio,
         offsetY: this.drag.layout.offsetY + (event.clientY - this.drag.y) / ratio
@@ -63,6 +87,43 @@ export class StageController {
     element.addEventListener('lostpointercapture', this.dragEnd)
     this.element = element
   }
+  mountActor(actor, sharedApp) {
+    const element = document.createElement('div')
+    element.className = 'stage-actor'
+    this.element.appendChild(element)
+    actor.mount(element, () => 1120, sharedApp)
+  }
+
+  configureStage(dual, chatId) {
+    if (this.dual === dual && this.chatId === chatId) return
+    if (!dual && !this.dual) {
+      this.chatId = chatId
+      return
+    }
+    this.dual = dual
+    this.chatId = chatId
+    this.element?.classList.toggle('two-actors', dual)
+    if (dual && this.actors.length === 1) {
+      const actor = this.createActor()
+      this.actors.push(actor)
+      // 两个 Cubism 模型共用 WebGL 上下文，遮罩和纹理会在同一帧按舞台顺序绘制。
+      this.mountActor(actor, this.actors[0].surface.app)
+      actor.surface.setVisible(this.visible)
+    } else if (!dual && this.actors.length === 2) {
+      const actor = this.actors.pop()
+      actor.dispose()
+      actor.element.remove()
+    }
+    this.actors.forEach((actor, index) => {
+      actor.surface.stageSlot = dual ? (index === 0 ? -1 : 1) : 0
+      actor.surface.stageCenter = 0.5
+      actor.frame(null, null)
+      actor.reset()
+      void actor.showModel(null)
+      actor.surface?.fit?.()
+    })
+  }
+
   update(patch) {
     this.state = { ...this.state, ...patch }
     if (!this.closed) this.publish(this.state)
@@ -72,25 +133,30 @@ export class StageController {
    * @param {string|null} chatId 已保存的对话，草稿时为空。
    * @param {string|null} sequenceId 活跃对话的演出计划。
    * @param {import('../../../../shared/contracts/presentation.js').ModelPresentation} [draftPresentation] 空白对话临时选中的服装。
+   * @param {boolean} [theatre] 是否使用双人舞台。
    * @returns {Promise<void>} 跟随实时演出，序列就绪前可先显示模型。
    */
-  async select(characterId, chatId, sequenceId, draftPresentation) {
+  async select(characterId, chatId, sequenceId, draftPresentation, theatre = false) {
+    this.configureStage(theatre && Boolean(chatId), chatId)
     const epoch = ++this.epoch
-    this.clearTimedMotion()
+    this.actors.forEach((actor) => actor.clearTimedMotion())
     const selectionKey = JSON.stringify([characterId, chatId, stageModelKey(draftPresentation)])
     if (this.selectionKey !== selectionKey) {
       this.selectionKey = selectionKey
-      this.cancelModelLoad()
-      this.failedModel = null
-      this.suspendModel()
-      this.update({ loading: false, problem: null, canRetryModel: false, failedOutfitKey: null })
+      this.actors.forEach((actor) => actor.reset())
+      this.update({
+        loading: false,
+        problem: null,
+        canRetryModel: false,
+        failedOutfitKey: null,
+        sides: null
+      })
     }
     this.history = null
     this.lineReplaySource = null
     this.player.follow(null)
     this.stopReplay()
     this.guideId = null
-    this.planKey = null
     this.update({ text: '', name: '', revealed: 0, canReplayLine: false, lineReplayError: null })
     if (sequenceId) {
       this.player.follow(sequenceId)
@@ -98,6 +164,11 @@ export class StageController {
     }
     try {
       let presentation = null
+      // 双人首帧等正式场景，避免短暂展示末句说话人的单人构图。
+      if (theatre) {
+        if (!chatId) await this.actors[0].showModel(null)
+        return
+      }
       if (chatId) presentation = await this.client.conversations.getStagePresentation(chatId)
       else if (characterId) {
         presentation =
@@ -105,114 +176,12 @@ export class StageController {
           (await this.client.characters.getPresentation(characterId)).presentation
       }
       if (epoch !== this.epoch || this.closed) return
-      await this.showModel(presentation)
+      await this.actors[0].showModel(presentation)
     } catch (error) {
       if (epoch === this.epoch) this.update({ problem: error.message })
     }
   }
 
-  suspendModel() {
-    this.awaitingModel = true
-    const adapter = this.surface?.adapter
-    adapter?.setMouthOpen(0)
-    adapter?.setSpeechActive(false)
-  }
-
-  cancelModelLoad() {
-    this.pendingModel?.abort.abort()
-    this.pendingModel = null
-  }
-
-  async showModel(presentation) {
-    const asset = presentation?.model ?? null
-    const key = stageModelKey(presentation)
-    if (this.pendingModel?.key === key) return this.pendingModel.promise
-    if (key && this.state.failedOutfitKey === key) return false
-    this.cancelModelLoad()
-    if (key === this.state.shownOutfitKey && this.surface.model) {
-      this.awaitingModel = false
-      this.failedModel = null
-      if (this.state.loading || this.state.canRetryModel)
-        this.update({ loading: false, problem: null, canRetryModel: false, failedOutfitKey: null })
-      return true
-    }
-    this.failedModel = null
-    if (!asset) {
-      if (this.surface.model) this.surface.clear()
-      this.release(this.lease)
-      this.lease = null
-      this.modelKey = null
-      this.update({
-        loading: false,
-        hasModel: false,
-        problem: null,
-        canRetryModel: false,
-        shownOutfitKey: null,
-        failedOutfitKey: null
-      })
-      return false
-    }
-    this.suspendModel()
-    this.update({ loading: true, problem: null, canRetryModel: false, failedOutfitKey: null })
-    const layoutKey = asset.id
-    const pending = { key, abort: new AbortController() }
-    const current = () => !this.closed && this.pendingModel === pending
-    this.pendingModel = pending
-    pending.promise = (async () => {
-      let lease
-      try {
-        const access = await this.client.assets.access(asset)
-        lease = access.leaseId
-        if (!current()) return false
-        const replaced = await this.surface.show(access.url, current, pending.abort.signal, {
-          cacheKey: JSON.stringify(['asset', asset.id]),
-          bounds: presentation.bounds,
-          getLayout: (version) => this.layouts.get(layoutKey, version)
-        })
-        if (!replaced || !current()) return false
-        this.release(this.lease)
-        this.lease = lease
-        lease = null
-        this.modelKey = layoutKey
-        this.awaitingModel = false
-        this.update({ hasModel: true, shownOutfitKey: key })
-        return true
-      } catch (error) {
-        if (current()) {
-          this.failedModel = presentation
-          this.awaitingModel = !this.surface.model
-          this.update({
-            problem: '角色模型加载失败：' + error.message,
-            canRetryModel: true,
-            failedOutfitKey: key
-          })
-        }
-        return false
-      } finally {
-        this.release(lease)
-        if (current()) {
-          this.pendingModel = null
-          this.update({ loading: false })
-        }
-      }
-    })()
-    return pending.promise
-  }
-
-  retryModel() {
-    const failed = this.failedModel
-    if (!failed) return
-    this.failedModel = null
-    this.update({ failedOutfitKey: null })
-    this.planKey = null
-    void this.showModel(failed).then((shown) => {
-      if (shown) this.progress(this.player.getSnapshot())
-    })
-  }
-
-  release(id) {
-    if (id) void this.client.assets.releaseAccess(id).catch(() => {})
-  }
   /**
    * @param {import('../../../../shared/contracts/presentation.js').AudioMaterial} audio 已保存的单句音频。
    * @param {AbortSignal} signal 记录面板取消回放时撤销音频输出。
@@ -232,7 +201,11 @@ export class StageController {
     return this.replay(
       chatId,
       'turn',
-      () => this.client.conversations.getReplayMaterials(chatId, { kind: 'turn', turnId }),
+      () =>
+        this.client.conversations.getReplayMaterials(
+          chatId,
+          this.dual ? { kind: 'script' } : { kind: 'turn', turnId }
+        ),
       onStop
     )
   }
@@ -267,15 +240,17 @@ export class StageController {
    */
   async replay(chatId, kind, getMaterials, onStop) {
     this.stopReplay()
-    const request = { chatId, kind, finish }
+    const request = { chatId, kind, finish, getMaterials }
     const controller = this
     function finish(error) {
       if (controller.replayRequest !== request) return
       controller.replayRequest = null
       if (controller.player.mode === 'replay') {
         if (kind === 'line') {
-          controller.desiredPlanKey = null
-          controller.surface?.adapter?.stopMotions()
+          for (const actor of controller.actors) {
+            actor.desiredPlanKey = null
+            actor.surface?.adapter?.stopMotions()
+          }
         }
         controller.player.resumeLive()
       }
@@ -288,9 +263,11 @@ export class StageController {
       if (this.replayRequest !== request) return
       if (!this.visible) return finish()
       if (!materials.guides.length) throw new Error('没有可回放的台词。')
-      this.clearTimedMotion()
-      this.planKey = null
-      this.desiredPlanKey = null
+      this.actors.forEach((actor) => actor.clearTimedMotion())
+      this.actors.forEach((actor) => {
+        actor.planKey = null
+        actor.desiredPlanKey = null
+      })
       this.player.replay(materials, { onEnd: finish })
     } catch (error) {
       finish(error)
@@ -303,6 +280,11 @@ export class StageController {
   }
   /** @param {object|null} snapshot 当前聊天的正式快照。 @returns {void} 恢复静态末句，不创建回放、不触发历史音频。 */
   setHistory(snapshot) {
+    const presentation = snapshot?.chat.meta.settings?.presentation
+    if (this.replayRequest && this.orientation !== presentation?.orientation)
+      this.player.refreshReplay(this.replayRequest.getMaterials)
+    this.orientation = presentation?.orientation
+    this.frames = presentation?.frames
     const entry = lastDialogueEntry(snapshot?.chat)
     this.history = entry
       ? {
@@ -330,7 +312,7 @@ export class StageController {
     })
   }
   progress(snapshot) {
-    if (!this.surface || this.closed) return
+    if (!this.actors[0]?.surface || this.closed) return
     const progress = snapshot.progress
     const current = progress?.current ?? progress?.transition
     const slot =
@@ -338,44 +320,38 @@ export class StageController {
       progress?.scene.slots.find((item) => item.id === this.history?.line.speakerId) ??
       progress?.scene.slots[0]
     if (!progress) {
-      this.clearTimedMotion()
-      this.desiredPlanKey = null
+      this.actors.forEach((actor) => actor.clearTimedMotion())
+      for (const actor of this.actors) actor.desiredPlanKey = null
       this.showHistory(null)
       return
     }
-    const epoch = this.epoch
-    const plan =
-      current?.guide.resolvedPerformance ??
-      progress.defaultPerformances?.find((item) => item.slotId === slot?.id)?.resolvedPerformance
-    const planKey = JSON.stringify([current?.guideId, plan, slot?.presentation])
-    if (this.timedMotion?.key !== planKey) this.clearTimedMotion()
-    const restartMotion =
-      snapshot.mode === 'replay' && this.replayRequest?.kind === 'line' && Boolean(progress.current)
-    this.desiredPlanKey = planKey
-    void this.showModel(slot?.presentation ?? null).then((shown) => {
-      if (
-        !shown ||
-        epoch !== this.epoch ||
-        this.closed ||
-        this.desiredPlanKey !== planKey ||
-        this.planKey === planKey ||
-        !this.visible
+    this.slots = progress.scene.slots
+    for (const [index, actor] of this.actors.entries()) {
+      const target = this.dual ? this.slots[index] : slot
+      const speaking = Boolean(current && target?.id === current.guide.slotId)
+      const idle = progress.defaultPerformances?.find(
+        (entry) => entry.slotId === target?.id
+      )?.resolvedPerformance
+      actor.frame(
+        this.dual ? JSON.stringify([this.chatId, target?.id, target?.outfitKey]) : null,
+        this.frames?.[target?.id]?.[target?.outfitKey]
       )
-        return
-      this.planKey = planKey
-      if (plan?.motionCues) {
-        this.timedMotion = {
-          plan,
-          epoch,
-          key: planKey,
-          adapter: this.surface.adapter,
-          index: -1,
-          cue: null,
-          applied: false
-        }
-        this.advanceTimedMotion(this.player.getSnapshot().elapsedMs)
-      } else void this.applyPlan(plan, epoch, planKey, restartMotion)
-    })
+      if (!speaking && actor.speaking) {
+        actor.surface.adapter?.setMouthOpen(0)
+        actor.surface.adapter?.setSpeechActive(false)
+      }
+      actor.speaking = speaking
+      actor.present(
+        target,
+        speaking ? current.guide.resolvedPerformance : idle,
+        speaking ? current.guideId : null,
+        snapshot.mode === 'replay' && this.replayRequest?.kind === 'line' && speaking,
+        idle
+      )
+    }
+    const sides = this.slots.map((item) => item.supportsInward)
+    if (this.dual && JSON.stringify(sides) !== JSON.stringify(this.state.sides))
+      this.update({ sides })
     if (current?.guide.text) {
       const lineReplayError = this.guideId === current.guideId ? this.state.lineReplayError : null
       this.guideId = current.guideId
@@ -394,84 +370,6 @@ export class StageController {
     else if (this.state.text) this.update({ revealed: Array.from(this.state.text).length })
     if (snapshot.problem) this.update({ problem: snapshot.problem.message })
   }
-  clearTimedMotion() {
-    const timed = this.timedMotion
-    this.timedMotion = null
-    if (timed?.cue) timed.adapter?.stopMotions()
-  }
-
-  advanceTimedMotion(elapsedMs) {
-    const timed = this.timedMotion
-    if (!timed) return
-    const cues = timed.plan.motionCues
-    const index = cues.findLastIndex((cue) => cue.atMs <= elapsedMs)
-    const previous = timed.cue
-    if (index > timed.index) {
-      timed.index = index
-      const candidate = cues[index]
-      timed.cue = elapsedMs < candidate.atMs + candidate.durationMs ? candidate : null
-    } else if (previous && elapsedMs >= previous.atMs + previous.durationMs) {
-      timed.cue = null
-    } else if (timed.applied) return
-    const cue = timed.cue
-    if (previous && !cue) timed.adapter?.stopMotions()
-    timed.applied = true
-    // 恢复窗口时只消费当前有效区间；异步加载完的旧动作也不能越过计划终点启动。
-    const current = () =>
-      this.timedMotion === timed &&
-      timed.cue === cue &&
-      (!cue || this.player.getSnapshot().elapsedMs < cue.atMs + cue.durationMs)
-    void this.applyPlan(
-      { ...timed.plan, motion: cue?.motion ?? null },
-      timed.epoch,
-      timed.key,
-      Boolean(cue),
-      current
-    )
-  }
-
-  async applyPlan(plan, epoch, planKey, restartMotion, isCueCurrent = () => true) {
-    const adapter = this.surface.adapter
-    if (!adapter || !plan) return
-    const current = () =>
-      !this.closed &&
-      this.visible &&
-      epoch === this.epoch &&
-      this.desiredPlanKey === planKey &&
-      !this.awaitingModel &&
-      adapter === this.surface.adapter &&
-      isCueCurrent()
-    if (!current()) return
-    const motion = plan.motion
-    try {
-      if (motion) {
-        const file = motion.entry?.File ?? motion.entry?.file ?? motion.member
-        for (const [group, entries] of Object.entries(this.surface.motionGroups ?? {})) {
-          const index = entries.findIndex((entry) => (entry.File ?? entry.file) === file)
-          if (index < 0) continue
-          // 同一个动作还在播放时，SDK 会拒绝重新申请该组和编号。
-          if (restartMotion) adapter.stopMotions()
-          await adapter.startMotion(group, index, 3, 150, true, current)
-          break
-        }
-      }
-    } catch (error) {
-      if (current()) {
-        adapter.stopMotions()
-        this.update({ problem: error.message })
-      }
-    }
-    if (!current()) return
-    try {
-      const applied = await adapter.setExpression(plan.expression?.id ?? null, current)
-      if (!applied && plan.expression && current()) adapter.resetExpression()
-    } catch (error) {
-      if (current()) {
-        adapter.resetExpression()
-        this.update({ problem: error.message })
-      }
-    }
-  }
   analyse(audio) {
     this.audio = audio
     this.source?.disconnect()
@@ -479,10 +377,6 @@ export class StageController {
     this.source = null
     this.analyser = null
     this.mouth = 0
-    if (!this.awaitingModel) {
-      this.surface?.adapter?.setSpeechActive(true)
-      this.surface?.adapter?.setMouthOpen(0)
-    }
     if (!audio) return
     try {
       this.context ??= new AudioContext()
@@ -507,58 +401,84 @@ export class StageController {
       if (rms > 0.008) target = Math.min(1, rms * 1.4)
     }
     this.mouth = (this.mouth ?? 0) + (target - (this.mouth ?? 0)) * 0.35
-    if (!this.awaitingModel) {
-      this.surface.adapter?.setSpeechActive(true)
-      this.surface.adapter?.setMouthOpen(this.mouth)
-    }
     const snapshot = this.player.getSnapshot()
-    this.advanceTimedMotion(snapshot.elapsedMs)
+    for (const actor of this.actors) {
+      if (!actor.awaitingModel && (actor.speaking || !this.dual)) {
+        actor.surface.adapter?.setSpeechActive(true)
+        actor.surface.adapter?.setMouthOpen(this.mouth)
+      }
+      actor.advanceTimedMotion(snapshot.elapsedMs)
+    }
     const current = snapshot.progress?.current
     if (current?.guideId === this.guideId && this.state.revealed !== snapshot.revealedCharacters)
       this.update({ revealed: snapshot.revealedCharacters })
   }
   setVisible(visible) {
     this.visible = visible
-    this.surface?.setVisible(visible)
+    for (const actor of this.actors) {
+      actor.visible = visible
+      actor.surface?.setVisible(visible)
+      actor.planKey = null
+    }
     this.player.setVisible(visible)
     if (!visible) {
-      this.clearTimedMotion()
+      this.actors.forEach((actor) => actor.clearTimedMotion())
       this.stopReplay()
       this.analyse(null)
     } else {
-      this.planKey = null
       this.progress(this.player.getSnapshot())
     }
   }
-  layout() {
-    return this.layouts.get(this.modelKey, this.surface?.adapter?.version)
+  moveActor(index, dx, dy, original) {
+    const actor = this.actors[index]
+    if (!actor?.surface?.model) return
+    const ratio = actor.surface.layoutScale || 1
+    actor.applyLayout({
+      ...original,
+      offsetX: original.offsetX + dx / ratio,
+      offsetY: original.offsetY + dy / ratio
+    })
   }
-  applyLayout(value) {
-    if (!this.surface?.model || !this.modelKey) return
-    this.surface.stageLayout = this.layouts.set(this.modelKey, value)
-    this.surface.fit()
+  async saveFrame(index) {
+    const actor = this.actors[index]
+    const slot = this.slots?.[index]
+    if (!this.dual || !actor?.modelKey || !slot || actor.awaitingModel) return
+    const key = stageModelKey(slot.presentation)
+    if (!slot.outfitKey || key !== actor.state.shownOutfitKey) return
+    await this.client.conversations.patchSettings(this.chatId, {
+      presentation: {
+        frames: {
+          [slot.id]: { [slot.outfitKey]: actor.layout() }
+        }
+      }
+    })
   }
-  zoom(factor) {
-    const layout = this.layout()
-    this.applyLayout({ ...layout, scale: layout.scale * factor })
+  retryModel(index) {
+    const actor = index == null ? this.actors.find((item) => item.failedModel) : this.actors[index]
+    actor?.retryModel()
   }
-  resetLayout() {
-    this.applyLayout(this.layouts.reset(this.modelKey, this.surface?.adapter?.version))
+  zoom(factor, index = 0) {
+    this.actors[index]?.zoom(factor)
+  }
+  resetLayout(index = 0) {
+    this.actors[index]?.resetLayout()
   }
   dispose() {
     this.closed = true
-    this.clearTimedMotion()
+    this.actors.forEach((actor) => actor.clearTimedMotion())
     this.stopReplay()
     this.epoch += 1
-    this.cancelModelLoad()
+    this.actors
+      .slice()
+      .reverse()
+      .forEach((actor) => actor.dispose())
+    for (const actor of this.actors) actor.element?.remove()
     this.element?.removeEventListener('pointerdown', this.dragStart)
     this.element?.removeEventListener('pointermove', this.dragMove)
     this.element?.removeEventListener('pointerup', this.dragEnd)
     this.element?.removeEventListener('lostpointercapture', this.dragEnd)
     this.stopPlayer()
     this.player.close()
-    this.surface?.destroy()
-    this.release(this.lease)
     void this.context?.close()
   }
 }

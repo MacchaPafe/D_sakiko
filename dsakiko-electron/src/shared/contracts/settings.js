@@ -44,7 +44,7 @@
 
 /**
  * @typedef {object} ScenarioSettings
- * @property {string} situation 情境，主动情景生成时必须非空。
+ * @property {string} situation 情境，可留空由演员设定生成。
  * @property {Object<string, { speakingStyle: string, interaction: string }>} characters 按参与角色 ID 保存，不可引用陌生角色。
  */
 
@@ -56,6 +56,8 @@
 
 /**
  * @typedef {object} ChatPresentationSettings
+ * @property {'screen'|'face-to-face'} [orientation] 双人舞台偏好，模型不支持时只降级实际方向。
+ * @property {Object<string,Object<string,{scale:number,offsetX:number,offsetY:number}>>} [frames] 按演员及服装保存的剧场构图。
  * @property {import('./common.js').AssetRef | null} background 背景资源。
  * @property {Object<string, { x: number, y: number, scale: number, facing: 'left' | 'right' }>} characters 按角色 ID 保存位置、正缩放及朝向。
  */

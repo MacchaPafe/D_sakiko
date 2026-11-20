@@ -182,6 +182,36 @@ export class HomeFlow {
       : this.state.target.characterId
     this.select({ ...this.state.target, characterId, chatId: chat?.id ?? null, tab })
   }
+  async createTheatre(characterIds, settings, title) {
+    const id = await this.client.conversations.createChat({
+      mode: 'scripted-dialogue',
+      characterIds,
+      settings,
+      title
+    })
+    await this.refresh()
+    this.select({ chatId: id, characterId: characterIds[0], tab: 'scripted-dialogue' })
+  }
+
+  async generateTheatre() {
+    const { target, snapshot } = this.state
+    const input = this.input()
+    if (!snapshot?.admission.canGenerate || input.pending) return
+    input.pending = true
+    this.liveTheatre = target
+    this.update({ sending: true, problem: null })
+    const options = { requestId: this.randomId(), excludedTools: EXCLUDED_TOOLS }
+    try {
+      const turn = snapshot.chat.turns.at(-1)
+      await this.client.conversations.generateScenario(target.chatId, options, turn?.id ?? null)
+    } catch (error) {
+      if (this.state.target === target) this.update({ problem: error.message })
+    } finally {
+      input.pending = false
+      if (this.input() === input) this.update({ sending: false })
+    }
+  }
+
   setDraft = (text) => {
     this.input().text = text
     this.update({ draft: text })
@@ -226,9 +256,10 @@ export class HomeFlow {
    * @param {import('../../../../shared/contracts/characters.js').CharacterModel} model 选中的服装。
    * @returns {Promise<void>} 正式对话只覆盖当前形态的服装，草稿保留到首轮提交。
    */
-  chooseOutfit = async (formId, model) => {
-    const { characterId, chatId, tab } = this.state.target
-    if (!characterId || tab !== 'single-character') return
+  chooseOutfit = async (formId, model, actorId) => {
+    const { chatId, tab } = this.state.target
+    const characterId = tab === 'scripted-dialogue' ? actorId : this.state.target.characterId
+    if (!characterId || (!chatId && tab !== 'single-character')) return
     if (chatId) {
       // 部分更新在后端与最新配置合并，保留其他形态的服装覆盖。
       await this.client.conversations.patchSettings(chatId, {

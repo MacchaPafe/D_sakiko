@@ -330,6 +330,11 @@ export class CharacterCatalog {
       themeColor: form.themeColor,
       modelId,
       modelVersion: mapping.version ?? null,
+      motionDirections: Object.fromEntries(
+        Object.entries(mapping.motions)
+          .filter(([id]) => !excluded.has(id))
+          .map(([id, motion]) => [id, Object.keys(motion.variants ?? {})])
+      ),
       presentation: copy(model?.presentation ?? null),
       performances: {
         motions: descriptions(mapping.motions),

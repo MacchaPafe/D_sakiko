@@ -70,6 +70,9 @@ function generationForChat(global, chat, overrides) {
  * @property {string[]} guides 本轮已登记的演出计划项 ID 列表；所有计划项结算后本轮才算完全结束。
  * @property {string[]} speechTasks 本轮已提交的底层语音合成任务 ID 列表。
  * @property {Promise<void>[]} pending 正在进行中的单句语音合成与演出交接任务列表。
+ * @property {import('../../shared/contracts/conversation.js').Turn | null} scriptDraft 提交前与既有历史隔离的完整剧本草稿。
+ * @property {boolean} wholeScript 是否以新剧本替换小剧场的全部历史轮次。
+ * @property {string | null} replaceId 重新生成时要替换的轮次。
  * @property {PreparedTurn} prepared 本轮启动时固定的上下文与配置快照。
  * @property {Promise<void>} [done] 整轮执行的收尾 Promise，供后端关闭时等待任务退出。
  * @property {import('../llm/interface.js').TokenUsage | null} [usage] 模型返回的 Token 消耗统计。
@@ -358,13 +361,17 @@ export class Conversations {
   async scene(chat, strict = true, owner = null, capabilities = null) {
     const slots = []
     const names = historicalCharacterNames(chat)
+    const theatre = chat.mode === 'scripted-dialogue'
+    const directional = []
     for (const id of new Set(chat.characterIds)) {
       let capability
       try {
         const selection = chat.meta.settings.characters[id] ?? {}
         capability =
           capabilities?.find((item) => item.id === id) ??
-          (await this.characterPresentation(owner, id, selection))
+          (theatre
+            ? await this.characterCapability(owner, id, selection)
+            : await this.characterPresentation(owner, id, selection))
       } catch (error) {
         if (strict) throw error
         capability = {
@@ -372,10 +379,22 @@ export class Conversations {
           presentation: null
         }
       }
+      if (theatre) {
+        const side = slots.length === 0 ? 'L' : 'R'
+        directional.push(
+          capability.modelVersion === 'v3' &&
+            Object.values(capability.motionDirections ?? {}).some((directions) =>
+              directions.includes(side)
+            )
+        )
+      }
       slots.push({
         id,
         displayName: capability.displayName,
         presentation: capability.presentation,
+        ...(theatre && {
+          outfitKey: JSON.stringify([capability.formId ?? null, capability.modelId ?? null])
+        }),
         layout: chat.meta.settings.presentation.characters[id] ?? {
           x: 0.5,
           y: 0.5,
@@ -383,6 +402,16 @@ export class Conversations {
           facing: 'right'
         }
       })
+    }
+    if (theatre) {
+      const canFace = directional.length === 2 && directional.every(Boolean)
+      for (const [index, slot] of slots.entries()) {
+        const side = index === 0 ? 'L' : 'R'
+        const direction =
+          canFace && chat.meta.settings.presentation.orientation === 'face-to-face' ? side : 'C'
+        slot.layout = { ...slot.layout, direction }
+        slot.supportsInward = directional[index]
+      }
     }
     return { background: chat.meta.settings.presentation.background, slots }
   }
@@ -651,6 +680,23 @@ export class Conversations {
         generation.modelId = connection.modelId
       }
       const capabilities = await this.capabilities(chat, resourceOwner)
+      if (chat.mode === 'scripted-dialogue') {
+        const scene = await this.scene(chat, true, resourceOwner, capabilities)
+        for (const [index, role] of capabilities.entries()) {
+          if (role.modelVersion !== 'v3') continue
+          const direction = scene.slots[index].layout.direction
+          const motions = role.performances.motions.filter(({ id }) => {
+            const variants = role.motionDirections?.[id] ?? []
+            return variants.includes(direction) || (direction === 'C' && variants.includes(''))
+          })
+          const ids = new Set(motions.map(({ id }) => id))
+          role.performances = {
+            ...role.performances,
+            motions,
+            presets: role.performances.presets.filter((item) => ids.has(item.motion))
+          }
+        }
+      }
       const override = options.speech?.enabled ?? chat.meta.settings.speech.enabled
       const voicePreference =
         override === undefined && !speech.enabled ? await this.settings.voicePreference() : null
@@ -753,14 +799,20 @@ export class Conversations {
    * @param {ConversationState} state 对话的运行时状态（调用方需已持有该对话的串行队列锁）。
    * @param {import('../../shared/contracts/conversation.js').UserMessage | null} input 本轮的用户输入消息；情景生成时为 null。
    * @param {TurnOptions} options 本轮的请求 ID 与覆盖配置。
-   * @param {{ replaceId?: string | null, automatic?: boolean, delivery?: string | null }} [flags] 受理附加标志：replaceId 指定要替换的最后一轮 ID，automatic 标记是否为工具/提醒触发的自动轮次，delivery 指定本次投递的提醒 ID。
+   * @param {{ replaceId?: string | null, wholeScript?: boolean, automatic?: boolean, delivery?: string | null }} [flags] 受理附加标志：replaceId 指定要替换的最后一轮 ID，automatic 标记是否为工具/提醒触发的自动轮次，delivery 指定本次投递的提醒 ID。
    * @returns {Promise<string>} 已受理并持久化的新轮次 ID（TurnId）。
    */
   async admit(
     state,
     input,
     options,
-    { replaceId = null, automatic = false, delivery = null, lotteryDelivery = null } = {}
+    {
+      replaceId = null,
+      wholeScript = false,
+      automatic = false,
+      delivery = null,
+      lotteryDelivery = null
+    } = {}
   ) {
     fields(options, ['requestId', 'generation', 'speech', 'excludedTools'])
     requireValue(
@@ -780,7 +832,8 @@ export class Conversations {
     const material = fingerprint({
       input: input ? { ...input, id: null } : null,
       options,
-      replaceId
+      replaceId,
+      ...(wholeScript && { wholeScript })
     })
     // 独立受理账本不随历史截断消失；否则重试旧 requestId 会重新执行已发生的副作用。
     const receipt = state.chat.meta.extensions.acceptedRequests?.[options.requestId]
@@ -798,7 +851,8 @@ export class Conversations {
     if (!automatic) for (const lottery of candidate.meta.lotteries ?? []) lottery.cancelled = true
     if (replaceId) {
       requireValue(candidate.turns.at(-1)?.id === replaceId, 'not_last_turn')
-      candidate.turns.pop()
+      if (wholeScript) candidate.turns = []
+      else candidate.turns.pop()
     }
     const prepared = await this.prepare(candidate, input, options)
     let accepted = false
@@ -865,7 +919,10 @@ export class Conversations {
         },
         messages: input ? [copy(input)] : []
       }
-      candidate.turns.push(turn)
+      // 剧本生成期间只持久化请求回执。旧剧本与音频继续受存档保护，进程退出也能直接恢复。
+      const scriptDraft = !input && candidate.mode === 'scripted-dialogue'
+      if (scriptDraft) candidate.turns = copy(state.chat.turns)
+      else candidate.turns.push(turn)
       candidate.meta.extensions.acceptedRequests ??= {}
       candidate.meta.extensions.acceptedRequests[options.requestId] = {
         material,
@@ -899,6 +956,9 @@ export class Conversations {
       /** @type {TurnRun} */
       const run = {
         turnId,
+        scriptDraft: scriptDraft ? turn : null,
+        wholeScript,
+        replaceId,
         group: state.group,
         execution,
         activity: 'generating',
@@ -949,7 +1009,8 @@ export class Conversations {
             onToolResult: (result) =>
               this.queue.run(state.chat.id, async () => {
                 signal.throwIfAborted()
-                const turn = state.chat.turns.find((item) => item.id === run.turnId)
+                const turn =
+                  run.scriptDraft ?? state.chat.turns.find((item) => item.id === run.turnId)
                 requireValue(
                   turn &&
                     !turn.messages.some(
@@ -959,7 +1020,7 @@ export class Conversations {
                   'duplicate_tool_result'
                 )
                 turn.messages.push(copy(result))
-                await this.persist(state)
+                if (!run.scriptDraft) await this.persist(state)
               })
           },
           signal
@@ -968,6 +1029,11 @@ export class Conversations {
       )
       run.usage = result.usage
       await this.queue.run(state.chat.id, async () => {
+        signal.throwIfAborted()
+        if (run.scriptDraft) {
+          requireValue(result.status !== 'cancelled', 'cancelled', '剧本生成已取消。')
+          await this.commitScript(state, run)
+        }
         run.activity = 'presenting'
         await this.performance.setActivity(state.sequenceId, 'idle')
         run.execution.phase = run.pending.length ? 'speech' : 'presentation'
@@ -1032,7 +1098,7 @@ export class Conversations {
    */
   async acceptResponse(state, run, update) {
     run.controller.signal.throwIfAborted()
-    const turn = state.chat.turns.find((item) => item.id === run.turnId)
+    const turn = run.scriptDraft ?? state.chat.turns.find((item) => item.id === run.turnId)
     requireValue(turn, 'execution_expired')
     let message = turn.messages.find((item) => item.id === update.responseId)
     if (!message) {
@@ -1059,15 +1125,64 @@ export class Conversations {
         line.audio = null
         line.extensions = {}
         const ref = { turnId: turn.id, messageId: message.id, partId: part.id, lineId: line.id }
-        const voiced = run.prepared.voicedCharacters.has(line.speakerId)
-        const guide = this.guide(line, !voiced, run.guides.length > 0)
-        const [guideId] = await this.performance.appendGuides(state.sequenceId, [guide])
-        run.guides.push(guideId)
-        state.guides.set(line.id, { line: ref, guideId })
-        if (voiced) run.pending.push(this.synthesize(state, ref, run.prepared, run, guideId))
+        if (!run.scriptDraft) await this.enqueueLine(state, run, line, ref)
       }
     }
-    await this.persist(state)
+    if (!run.scriptDraft) await this.persist(state)
+  }
+
+  /** 完整剧本落盘后才发布台词和开始配音；提交前取消或崩溃仍可读取旧剧本。 */
+  async commitScript(state, run) {
+    const draft = run.scriptDraft
+    const lines = []
+    for (const message of draft.messages) {
+      for (const part of message.parts ?? []) {
+        if (part.kind !== 'dialogue') continue
+        for (const line of part.lines) {
+          requireValue(
+            line.text?.trim() && state.chat.characterIds.includes(line.speakerId),
+            'invalid_output',
+            '剧本中有空台词或无法识别的说话人。'
+          )
+          lines.push({
+            line,
+            ref: { turnId: draft.id, messageId: message.id, partId: part.id, lineId: line.id }
+          })
+        }
+      }
+    }
+    requireValue(lines.length > 0, 'invalid_output', '没有生成可播放的台词。')
+    const next = copy(state.chat)
+    if (run.replaceId) {
+      requireValue(next.turns.at(-1)?.id === run.replaceId, 'not_last_turn')
+      if (run.wholeScript) next.turns = []
+      else next.turns.pop()
+    }
+    next.turns.push(draft)
+    state.chat = await this.store.save(next)
+    await this.assets
+      .replaceReferences(state.resourceOwner, extractAssetReferences(state.chat))
+      .catch((error) => this.assets.reportMaintenance(error))
+    if (run.replaceId) {
+      const retained = new Set(next.turns.map((turn) => turn.id))
+      for (const [id, entry] of state.guides) {
+        if (retained.has(entry.line.turnId)) continue
+        state.guides.delete(id)
+        state.audioTokens.delete(id)
+      }
+      state.audioProblems = state.audioProblems.filter((entry) => retained.has(entry.line.turnId))
+    }
+    run.scriptDraft = null
+    for (const { line, ref } of lines) await this.enqueueLine(state, run, line, ref)
+  }
+
+  async enqueueLine(state, run, line, ref) {
+    const voiced = run.prepared.voicedCharacters.has(line.speakerId)
+    const guide = this.guide(line, !voiced, run.guides.length > 0)
+    const [guideId] = await this.performance.appendGuides(state.sequenceId, [guide])
+    run.guides.push(guideId)
+    state.guides.set(line.id, { line: ref, guideId })
+    if (voiced) run.pending.push(this.synthesize(state, ref, run.prepared, run, guideId))
   }
 
   /**
@@ -1842,16 +1957,25 @@ export class Conversations {
    * 按当前对话配置的情景开始生成双人小剧场对话（仅在 scripted-dialogue 模式下可用）。
    * @param {string} chatId 目标对话 ID。
    * @param {TurnOptions} options 请求标识与本轮临时覆盖的生成选项。
+   * @param {string|null} [expectedLastTurnId] 首页用 null 首次生成，用确认时的末轮 ID 整场替换；省略时沿用原接口。
    * @returns {Promise<string>} 新创建的轮次 ID。
    */
-  async generateScenario(chatId, options) {
+  async generateScenario(chatId, options, expectedLastTurnId) {
     return this.queue.run(chatId, async () => {
       const state = await this.state(chatId)
-      requireValue(
-        state.chat.mode === 'scripted-dialogue' &&
-          state.chat.meta.settings.scenario?.situation?.trim(),
-        'scenario_required'
+      requireValue(state.chat.mode === 'scripted-dialogue', 'scenario_required')
+      if (
+        expectedLastTurnId === null &&
+        !state.chat.meta.extensions.acceptedRequests?.[options.requestId]
       )
+        requireValue(!state.chat.turns.length, 'script_exists', '本场已有剧本，请确认后重新生成。')
+      if (expectedLastTurnId != null) {
+        requireValue(typeof expectedLastTurnId === 'string' && expectedLastTurnId.length > 0)
+        return this.admit(state, null, options, {
+          replaceId: expectedLastTurnId,
+          wholeScript: true
+        })
+      }
       return this.admit(state, null, options)
     })
   }
@@ -1896,7 +2020,7 @@ export class Conversations {
   /**
    * 获取指定单句或整轮已保存的台词与场景资源，供前端独立回放。
    * @param {string} chatId 来源对话 ID。
-   * @param {{ kind: 'line', line: LineRef } | { kind: 'turn', turnId: string }} target 要回放的单句定位或整轮 ID。
+   * @param {{ kind: 'line', line: LineRef } | { kind: 'turn', turnId: string } | { kind: 'script' }} target 要回放的单句定位或整轮 ID。
    * @returns {Promise<import('../../shared/contracts/presentation.js').ReplayMaterials>} 组装好的回放场景与演出计划项列表。
    */
   async getReplayMaterials(chatId, target) {
@@ -1907,10 +2031,14 @@ export class Conversations {
       requireValue(line, 'line_missing')
       lines = [line]
     } else {
-      requireValue(target.kind === 'turn')
-      const turn = state.chat.turns.find((item) => item.id === target.turnId)
-      requireValue(turn, 'turn_missing')
-      lines = turn.messages
+      let turns = state.chat.turns
+      if (target.kind !== 'script') {
+        requireValue(target.kind === 'turn')
+        turns = turns.filter((item) => item.id === target.turnId)
+        requireValue(turns.length === 1, 'turn_missing')
+      } else requireValue(state.chat.mode === 'scripted-dialogue', 'scenario_required')
+      lines = turns
+        .flatMap((turn) => turn.messages)
         .filter((message) => message.kind === 'assistant')
         .flatMap((message) => message.parts)
         .filter((part) => part.kind === 'dialogue')
@@ -1918,14 +2046,11 @@ export class Conversations {
     }
     lines = lines.filter(isReplayableDialogue)
     const scene = await this.scene(state.chat, false)
-    return {
+    return this.performance.resolveReplay(
       scene,
-      guides: await this.performance.resolveGuides(
-        scene,
-        lines.map((line, index) => this.guide(line, true, index > 0)),
-        { timedDialogue: state.chat.mode === 'single-character' }
-      )
-    }
+      lines.map((line, index) => this.guide(line, true, index > 0)),
+      state.chat.mode === 'single-character'
+    )
   }
 
   /**
@@ -2416,7 +2541,9 @@ export class Conversations {
       }
       chat.meta.settings = next
     })
-    if (changes.presentation || changes.characters) {
+    // 服装构图只影响客户端画布；保存一次拖动不需要重新解析两套动作目录。
+    const sceneChanged = Object.keys(changes.presentation ?? {}).some((key) => key !== 'frames')
+    if (sceneChanged || changes.characters) {
       const state = await this.state(chatId)
       await this.withScene(state.chat, (scene) =>
         this.performance.setScene(state.sequenceId, scene)

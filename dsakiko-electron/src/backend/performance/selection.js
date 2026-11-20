@@ -57,6 +57,18 @@ const activityGroups = {
   'voice-input': 'talking_motion'
 }
 
+// 原始包可能只有 Default 组；沿用 Python 标准情绪组的主要动作词。
+const theatreMotionNames = {
+  happiness: ['smile', 'kime', 'wink'],
+  like: ['smile', 'kime', 'wink'],
+  anger: ['angry'],
+  sadness: ['sad', 'cry'],
+  disgust: ['denial', 'confrict'],
+  surprise: ['surprised', 'question'],
+  fear: ['nervous'],
+  text_generating: ['thinking', 'check']
+}
+
 function variant(catalog, id, direction) {
   const variants = catalog.motions?.[id]?.variants
   return variants?.[direction] ?? variants?.[''] ?? variants?.C
@@ -89,14 +101,14 @@ export function resolveFollowUpMotion(catalog, plan, direction) {
  * @param {import('../characters/model-catalog.js').ModelCatalog | object} catalog 实际目标模型目录。
  * @param {import('../../shared/contracts/presentation.js').PerformanceSelection | null} selection 原始选择。
  * @param {string | null} emotion 台词情绪。
- * @param {{direction?: 'C' | 'L' | 'R', activity?: 'idle' | 'thinking' | 'voice-input' | null}} options 宿主方向和运行状态。
+ * @param {{direction?: 'C' | 'L' | 'R', theatre?: boolean, activity?: 'idle' | 'thinking' | 'voice-input' | null}} options 宿主方向和运行状态。
  * @returns {import('../../shared/contracts/presentation.js').ResolvedPerformance} 可执行的包内资源与回退说明。
  */
 export function resolvePerformance(
   catalog,
   selection,
   emotion,
-  { direction = 'C', activity = null } = {}
+  { direction = 'C', activity = null, theatre = false } = {}
 ) {
   const normalized = String(emotion ?? '')
     .trim()
@@ -114,26 +126,42 @@ export function resolvePerformance(
   }
   // v2 动作自带面部曲线，普通台词忽略历史 v3 的两项显式选择。
   const explicit = catalog.version === 'v3' && !activity
-  let motion = explicit && variant(catalog, selection?.motion, direction) ? selection.motion : null
+  const inward = theatre && direction !== 'C'
+  function playable(id) {
+    if (inward) return catalog.motions?.[id]?.variants?.[direction]
+    return variant(catalog, id, direction)
+  }
+  let motion = explicit && playable(selection?.motion) ? selection.motion : null
   if (!motion) {
     if (explicit && selection?.motion && selection.motion !== 'auto')
       result.fallbackReasons.push('motion_unavailable')
     const stateMotions = new Set(
       Object.values(catalog.states ?? {}).flatMap((state) => [state.on?.motion, state.off?.motion])
     )
+    const ids = Object.keys(catalog.motions ?? {})
     const pools = [
       catalog.groups?.[group + '_' + direction],
       catalog.groups?.[group],
+      theatre &&
+        catalog.groups?.Default &&
+        ids.filter((id) => {
+          const words = id.toLowerCase().split(/[^a-z]+/u)
+          return theatreMotionNames[group]?.some((word) => words.includes(word))
+        }),
+      catalog.groups?.['idle_motion_' + direction],
       catalog.groups?.idle_motion,
-      catalog.groups?.IDLE,
-      Object.keys(catalog.motions ?? {})
+      catalog.groups?.IDLE
     ]
+    // 原始 V3 包常把所有文件放在 Default；用逻辑名识别基础待机。
+    if (theatre) pools.push(ids.filter((id) => /(?:^|_)idle[0-9]*(?:_|$)/iu.test(id)))
+    if (!theatre || (catalog.version === 'v2' && activity !== 'idle')) pools.push(ids)
     for (const pool of pools) {
-      motion = pool?.find((id) => !stateMotions.has(id) && variant(catalog, id, direction))
+      if (!pool) continue
+      motion = pool.find((id) => !stateMotions.has(id) && playable(id))
       if (motion) break
     }
   }
-  if (motion) result.motion = { id: motion, ...variant(catalog, motion, direction) }
+  if (motion) result.motion = { id: motion, ...playable(motion) }
   if (catalog.version === 'v3') {
     let expression =
       explicit && catalog.expressions?.[selection?.expression] ? selection.expression : null

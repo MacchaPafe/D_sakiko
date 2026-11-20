@@ -7,7 +7,44 @@ export class Live2DRuntimeAdapter {
     this.eyeOpenOverride = null
     this.beforeModelUpdate = () => this.applyParameterOverrides()
     this.model.internalModel?.on?.('beforeModelUpdate', this.beforeModelUpdate)
-    if (version === 'v3') this.enableParameterOnlyAutoBreath()
+    if (version === 'v3') {
+      this.enableParameterOnlyAutoBreath()
+      this.enableSmoothCrossFade()
+    }
+  }
+
+  enableSmoothCrossFade() {
+    const manager = this.model.internalModel?.motionManager
+    const queue = manager?.queueManager
+    if (!manager || !queue || typeof queue.startMotion !== 'function') return
+    // pixi-live2d-display 默认在 _startMotion 中调用 stopAllMotions 清空旧动作，
+    // 这会使每帧 saveParameters 在无旧动作权重托底时指数加速叠加新动作，导致淡入变成瞬切；
+    // 这里改回 Cubism 原生队列交叉淡入淡出，并把待淡出旧动作时长对齐新动作的淡入时长。
+    manager._startMotion = (motion, onFinish) => {
+      motion?.setFinishedMotionHandler?.(onFinish)
+      const list = Array.isArray(queue._motions) ? queue._motions : []
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i]?._motion === motion) {
+          list[i].release?.()
+          list.splice(i, 1)
+        }
+      }
+      const existing = list.filter((entry) => entry && !entry.isTriggeredFadeOut?.())
+      const handle = queue.startMotion(motion, false, performance.now())
+      const incomingFade = motion?.getFadeInTime?.()
+      if (Number.isFinite(incomingFade) && incomingFade > 0) {
+        for (const entry of existing) {
+          const currentFade = entry._motion?.getFadeOutTime?.()
+          const targetFade =
+            Number.isFinite(currentFade) && currentFade > 0
+              ? Math.min(currentFade, incomingFade)
+              : incomingFade
+          entry.setFadeOut?.(targetFade)
+          entry._motion?.setFadeOutTime?.(targetFade)
+        }
+      }
+      return handle
+    }
   }
 
   enableParameterOnlyAutoBreath() {
@@ -30,8 +67,15 @@ export class Live2DRuntimeAdapter {
       const motion = await this.model.internalModel?.motionManager?.loadMotion?.(group, index)
       if (!isCurrent()) return false
       if (single && this.version === 'v3') motion?.setIsLoop?.(false)
-      if (this.version === 'v3') motion?.setFadeInTime?.(fadeInMs / 1000)
-      else motion?.setFadeIn?.(fadeInMs)
+      if (fadeInMs > 0) {
+        if (this.version === 'v3') {
+          const seconds = fadeInMs / 1000
+          motion?.setFadeInTime?.(seconds)
+          motion?.setFadeOutTime?.(seconds)
+        } else {
+          motion?.setFadeIn?.(fadeInMs)
+        }
+      }
     }
     return this.model.motion(group, index, priority)
   }

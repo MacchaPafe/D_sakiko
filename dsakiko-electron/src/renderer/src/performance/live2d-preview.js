@@ -86,7 +86,7 @@ function measureModel(app, model) {
 export class Live2DPreview {
   /**
    * @param {HTMLElement} element 决定画布缓冲区大小的容器。
-   * @param {{tracking?: boolean, referenceWidth?: number, stage?: boolean, framingElement?: HTMLElement, getReferenceWidth?: () => number}} options 舞台构图及追踪。分栏动画可单独指定可见区域和当前参考宽度。
+   * @param {{tracking?: boolean, referenceWidth?: number, stage?: boolean, sharedApp?: Application, framingElement?: HTMLElement, getReferenceWidth?: () => number}} options 舞台构图及追踪。分栏动画可单独指定可见区域和当前参考宽度。
    */
   constructor(
     element,
@@ -94,6 +94,7 @@ export class Live2DPreview {
       tracking = true,
       referenceWidth = 864,
       stage = false,
+      sharedApp = null,
       framingElement = element,
       getReferenceWidth = () => referenceWidth
     } = {}
@@ -107,20 +108,26 @@ export class Live2DPreview {
     this.stage = stage
     this.zoom = 1
     this.stageLayout = null
-    this.app = new Application({
-      backgroundAlpha: 0,
-      antialias: true,
-      autoDensity: true,
-      resolution: Math.min(window.devicePixelRatio || 1, 2),
-      autoStart: false
-    })
-    this.app.ticker.maxFPS = 60
-    this.app.view.setAttribute('aria-label', 'Live2D 角色预览')
-    element.appendChild(this.app.view)
+    this.ownsApp = !sharedApp
+    this.app =
+      sharedApp ??
+      new Application({
+        backgroundAlpha: 0,
+        antialias: true,
+        autoDensity: true,
+        resolution: Math.min(window.devicePixelRatio || 1, 2),
+        autoStart: false
+      })
+    if (this.ownsApp) {
+      this.app.ticker.maxFPS = 60
+      this.app.view.setAttribute('aria-label', 'Live2D 角色预览')
+      element.appendChild(this.app.view)
+    }
     this.resize = new ResizeObserver(() => this.fit())
     this.resize.observe(element)
     if (framingElement !== element) this.resize.observe(framingElement)
-    this.app.ticker.add(() => this.model?.update(Math.min(this.app.ticker.deltaMS, 50)))
+    this.updateModel = () => this.model?.update(Math.min(this.app.ticker.deltaMS, 50))
+    this.app.ticker.add(this.updateModel)
     this.pointer = (event) => this.lookAt(event.clientX, event.clientY)
     this.leave = (event) => {
       if (!event.relatedTarget) this.center()
@@ -142,7 +149,12 @@ export class Live2DPreview {
    * @param {{cacheKey?: string, bounds?: ModelBounds, getLayout?: (version: string) => object}} [options] 已测构图与新实例的舞台视角。
    * @returns {Promise<boolean>} 候选首帧绘制成功并接管画布时返回 true。
    */
-  async show(url, current, signal, { cacheKey, bounds, getLayout = defaultStageLayout } = {}) {
+  async show(
+    url,
+    current,
+    signal,
+    { cacheKey, bounds, stageDirection, getLayout = defaultStageLayout } = {}
+  ) {
     const response = await fetch(url, { signal })
     if (!response.ok) throw new Error('无法读取预览模型，请重试。')
     const json = await response.json()
@@ -156,15 +168,33 @@ export class Live2DPreview {
     const idleGroup = 'WelcomeIdle'
     const available = this.stage ? { ...motions } : {}
     available[idleGroup] = idle ? [idle] : []
+    if (this.stage) {
+      // 部分 Python 模型只在完整索引中声明动作；SDK 仍需通过组和下标播放。
+      const indexed = json.DSakiko?.MotionAssets
+      if (Array.isArray(indexed)) available.StageIndexed = indexed
+      available.StageSilentIdle = []
+      for (const direction of ['L', 'R', 'C']) {
+        const ending = '_' + direction.toLowerCase() + '.motion3.json'
+        const entry = Object.values(motions)
+          .flat()
+          .concat(indexed ?? [])
+          .find((item) => {
+            const file = (item.File ?? '').toLowerCase()
+            return file.includes('idle') && file.endsWith(ending)
+          })
+        available['StageIdle' + direction] = entry ? [entry] : []
+      }
+    }
     if (json.FileReferences) json.FileReferences.Motions = available
     else json.motions = available
+    const initialIdle = stageDirection ? 'StageIdle' + stageDirection : idleGroup
     const loading = Live2DModel.from(
       { ...json, url },
       {
         autoInteract: false,
         autoUpdate: false,
         motionPreload: 'NONE',
-        idleMotionGroup: idleGroup
+        idleMotionGroup: initialIdle
       }
     )
     let expired = false
@@ -200,7 +230,8 @@ export class Live2DPreview {
       adapter = createRuntimeAdapter(model, version)
       adapter.setSpeechActive(false)
       // 待机动作可选；动作文件损坏时仍应能显示模型的默认姿态。
-      if (idle) await Promise.race([model.motion(idleGroup, 0, 1).catch(() => false), interrupted])
+      if (available[initialIdle]?.length)
+        await Promise.race([model.motion(initialIdle, 0, 1).catch(() => false), interrupted])
       if (!current() || this.destroyed) {
         adapter.destroy()
         return false
@@ -254,6 +285,20 @@ export class Live2DPreview {
     previous.adapter?.destroy()
   }
 
+  setStageIdle(motion, direction) {
+    const manager = this.model?.internalModel.motionManager
+    if (!manager) return
+    let group = 'StageIdle' + direction
+    const file = motion?.entry?.File ?? motion?.entry?.file
+    if (file) {
+      const found = Object.entries(this.motionGroups).find(
+        ([, entries]) => entries.length === 1 && (entries[0].File ?? entries[0].file) === file
+      )
+      if (found) group = found[0]
+    }
+    manager.groups.idle = this.motionGroups[group]?.length ? group : 'StageSilentIdle'
+  }
+
   fit() {
     if (this.destroyed) return
     const bufferWidth = Math.max(1, this.element.clientWidth)
@@ -271,9 +316,13 @@ export class Live2DPreview {
     const modelHeight = this.stage ? 1024 * (this.stageLayout?.scale ?? 1) : 1472
     const modelTop = this.stage ? (this.stageLayout?.offsetY ?? 64) : 144
     const scale = (modelHeight * layoutScale * this.zoom) / this.bounds.height
+    // 双人舞台以中线为基准限制最大横向间距，避免宽屏下角色被拉到画布两端。
+    const baseX = this.stageSlot
+      ? width * 0.5 + this.stageSlot * Math.min(width * 0.225, 240 * layoutScale)
+      : width * (this.stageCenter ?? 0.5)
     this.model.scale.set(scale)
     this.model.position.set(
-      width / 2 +
+      baseX +
         (this.stage ? (this.stageLayout?.offsetX ?? 0) * layoutScale : 0) -
         (this.bounds.left + this.bounds.width / 2) * scale,
       modelTop * layoutScale - this.bounds.top * scale
@@ -304,6 +353,7 @@ export class Live2DPreview {
 
   syncVisibility() {
     if (this.destroyed) return
+    if (!this.ownsApp) return
     if (this.visible && !document.hidden) this.app.start()
     else {
       this.center()
@@ -329,6 +379,7 @@ export class Live2DPreview {
     window.removeEventListener('blur', this.blur)
     document.removeEventListener('visibilitychange', this.visibility)
     this.clear()
-    this.app.destroy(true)
+    this.app.ticker.remove(this.updateModel)
+    if (this.ownsApp) this.app.destroy(true)
   }
 }

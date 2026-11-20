@@ -4,11 +4,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  MessageCircle,
   Pencil,
   Plus,
   Settings,
   Square,
+  Theater,
   Trash2,
   Volume2
 } from 'lucide-react'
@@ -16,12 +16,16 @@ import { Button } from '../../components/ui/button.jsx'
 import { DialogNavigator } from '../../components/ui/DialogNavigator.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { useDialogNavigation } from '../../components/ui/use-dialog-navigation.js'
+import { isReplayableDialogue, lastDialogue } from '../../../../shared/chat-history.js'
 import logo from '../../assets/welcome/logo.svg'
 import wordmark from '../../assets/welcome/wordmark.svg'
-import { previewCharacters } from '../onboarding/characters.js'
 import { desktopHost } from '../../host/desktop.js'
+import { CharacterAvatar } from './CharacterAvatar.jsx'
 import { HomeFlow, hasConnection, selectedModel } from './home-flow.js'
 import { StageController } from './stage-controller.js'
+import { resolveTheatreStageState } from './theatre-stage.js'
+import { TheatreActions, TheatreSetup } from './TheatreSetup.jsx'
+import { TheatrePositions } from './TheatrePositions.jsx'
 import { StageToolbar } from './StageToolbar.jsx'
 import { HistoryPanel } from './HistoryPanel.jsx'
 import { NoticeStack } from './NoticeStack.jsx'
@@ -34,51 +38,58 @@ import { SettingsPanel } from '../settings/SettingsPanel.jsx'
 import { ResourceDownloadConfirmation } from '../settings/Resources.jsx'
 import './home.css'
 
-/** @typedef {{kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string}} | {kind: 'downloads', category: 'all'|'resources'|'outfits'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
+/** @typedef {{kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
 /** @typedef {HomeDialogContent & import('../../components/ui/use-dialog-navigation.js').DialogPage} HomeDialogPage */
 
 function downloadPage(category) {
   return { kind: 'downloads', title: '下载中心', layout: 'download-center', category }
 }
 
-function Avatar({ role, client }) {
-  const [url, setUrl] = useState(null)
-  useEffect(() => {
-    let current = true
-    let lease
-    if (role.avatar)
-      void client.assets
-        .access(role.avatar)
-        .then((access) => {
-          lease = access.leaseId
-          if (current) setUrl(access.url)
-          else void client.assets.releaseAccess(lease).catch(() => {})
-        })
-        .catch(() => {})
-    return () => {
-      current = false
-      if (lease) void client.assets.releaseAccess(lease).catch(() => {})
-    }
-  }, [client, role.avatar])
-  const fallback = previewCharacters.find((item) => item.id === role.id)?.avatar
-  if (url || fallback) return <img src={url ?? fallback} alt="" width="40" height="40" />
-  return (
-    <span className="avatar-placeholder">
-      {(role.displayName ?? role.name ?? '角').slice(0, 1)}
-    </span>
-  )
-}
-function ChatItem({ chat, selected, flow, onDelete }) {
+function ChatItem({ chat, selected, flow, onDelete, roles, client, liveReply }) {
   function select() {
     flow.selectChat(chat)
   }
   function remove() {
     onDelete(chat)
   }
+  const theatre = chat.mode === 'scripted-dialogue'
+  const actors = theatre
+    ? (chat.characterIds ?? []).map(
+        (id) =>
+          roles?.find((item) => item.id === id) ?? {
+            id,
+            displayName: chat.characterNames?.[id] ?? id
+          }
+      )
+    : []
+  const rowClass =
+    'home-chat-row' + (theatre ? ' theatre-chat-row' : '') + (selected ? ' selected' : '')
   return (
-    <div className={'home-chat-row' + (selected ? ' selected' : '')}>
+    <div className={rowClass}>
       <button onClick={select} aria-current={selected ? 'page' : undefined}>
-        {chat.lastReply || '暂无回复'}
+        {theatre ? (
+          <>
+            <span className="theatre-chat-avatars" aria-hidden="true">
+              {actors.slice(0, 2).map((actor) => (
+                <CharacterAvatar
+                  key={actor.id}
+                  role={actor}
+                  client={client}
+                  size={26}
+                  className="theatre-chat-avatar"
+                />
+              ))}
+            </span>
+            <span className="theatre-chat-meta">
+              <span className="theatre-chat-title">{chat.title}</span>
+              <span className="theatre-chat-preview">
+                {liveReply || chat.lastReply || '尚未生成剧本'}
+              </span>
+            </span>
+          </>
+        ) : (
+          chat.lastReply || '暂无回复'
+        )}
       </button>
       <Button
         className="home-chat-delete"
@@ -128,7 +139,7 @@ function CharacterGroup({
           aria-controls={listId}
           onClick={toggle}
         >
-          <Avatar role={role} client={client} />
+          <CharacterAvatar role={role} client={client} />
           <span className="home-role-name">{role.displayName ?? role.name}</span>
           <ChevronRight className="home-role-chevron" size={16} aria-hidden="true" />
         </button>
@@ -270,12 +281,12 @@ function CharacterGroups({
     />
   ))
 }
-function Subtitle({ state, replayingTurn, onToggleReplay }) {
+function Subtitle({ state, replayingTurn, onToggleReplay, theatre }) {
   const replaying = state.replayingLine || replayingTurn
   if (!state.text && !replaying) return <div className="home-subtitle" />
   const characters = Array.from(state.text)
   let replayLabel = '回放当句对话'
-  if (replayingTurn) replayLabel = '停止本轮回放'
+  if (replayingTurn) replayLabel = theatre ? '停止整场回放' : '停止本轮回放'
   else if (state.replayingLine) replayLabel = '停止当句回放'
   return (
     <section className="home-subtitle" aria-label="当前台词">
@@ -344,6 +355,38 @@ function ModelPicker({ state, flow }) {
   )
 }
 
+function buildModelControl(state, flow, onConfigure) {
+  const hasAvailableModels = state.connections.some((item) => item.models.length > 0)
+  if (hasAvailableModels) return <ModelPicker state={state} flow={flow} />
+  if (!hasConnection(state)) {
+    return (
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="home-model-configure"
+        onClick={onConfigure}
+      >
+        前往配置模型
+      </Button>
+    )
+  }
+  return null
+}
+
+function findTheatreReplayTurnId(snapshot) {
+  if (!snapshot || snapshot.activeTurnId || snapshot.chat.mode !== 'scripted-dialogue') return null
+  for (const turn of snapshot.chat.turns ?? []) {
+    for (const message of turn.messages ?? []) {
+      if (message.kind !== 'assistant') continue
+      for (const part of message.parts ?? []) {
+        if (part.kind === 'dialogue' && part.lines.some(isReplayableDialogue)) return turn.id
+      }
+    }
+  }
+  return null
+}
+
 const replyPhaseLabels = {
   generation: '正在生成回复…',
   speech: '正在合成语音…',
@@ -401,23 +444,7 @@ function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }
     turnProblem
   const replyStatus = execution?.state === 'running' ? replyPhaseLabels[execution.phase] : null
   const status = state.sending ? '正在发送…' : replyStatus
-  const hasAvailableModels = state.connections.some((item) => item.models.length > 0)
-  let modelControl = null
-  if (!readonly) {
-    if (hasAvailableModels) modelControl = <ModelPicker state={state} flow={flow} />
-    else if (!configured)
-      modelControl = (
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="home-model-configure"
-          onClick={onConfigure}
-        >
-          前往配置模型
-        </Button>
-      )
-  }
+  const modelControl = readonly ? null : buildModelControl(state, flow, onConfigure)
   const submitButton = active ? (
     <Button size="icon-sm" className="home-composer-send" aria-label="停止生成" onClick={flow.stop}>
       <Square size={16} />
@@ -497,6 +524,15 @@ export function HomePage({ client, setup, setupState }) {
   const rootDialog = frames[0]?.page.kind
   const activeDialog = frames.at(-1)?.page.kind
   const [voiceInstall, setVoiceInstall] = useState(false)
+  const [wardrobeActor, setWardrobeActor] = useState(null)
+  const [stageEditor, setStageEditor] = useState(null)
+  const [replaceTarget, setReplaceTarget] = useState(null)
+  const isTheatre = state.target.tab === 'scripted-dialogue'
+  const theatreChat = isTheatre && !state.snapshot?.participantIssue ? state.snapshot?.chat : null
+  const editor = theatreChat && stageEditor?.target === state.target ? stageEditor : null
+  const theatreRoles = (theatreChat?.characterIds ?? [])
+    .map((id) => state.characters.find((item) => item.id === id))
+    .filter(Boolean)
   const [stageState, setStageState] = useState({
     text: '',
     name: '',
@@ -509,8 +545,17 @@ export function HomePage({ client, setup, setupState }) {
     hasModel: false,
     canRetryModel: false,
     shownOutfitKey: null,
-    failedOutfitKey: null
+    failedOutfitKey: null,
+    sides: null
   })
+  const theatreStage = isTheatre
+    ? resolveTheatreStageState({
+        actors: theatreRoles,
+        sides: stageState.sides,
+        orientation: theatreChat?.meta.settings.presentation.orientation,
+        requestedPanel: editor?.panel ?? null
+      })
+    : null
   const canvas = useRef(null)
   const stage = useRef(null)
   const sequenceId = state.snapshot?.presentation.sequenceId ?? null
@@ -585,30 +630,83 @@ export function HomePage({ client, setup, setupState }) {
     }
   }, [client])
   useEffect(() => {
+    if (stage.current)
+      stage.current.player.suppressScript = isTheatre && flow.liveTheatre !== state.target
     void stage.current?.select(
       state.target.characterId,
       state.target.chatId,
       sequenceId,
-      draftPresentation
+      draftPresentation,
+      isTheatre
     )
-  }, [state.target.characterId, state.target.chatId, sequenceId, draftPresentation])
+  }, [state.target, flow, sequenceId, draftPresentation, isTheatre])
   useEffect(() => {
     stage.current?.setHistory(state.snapshot)
-  }, [state.snapshot, state.target.chatId])
+  }, [state.snapshot])
   function retryStageModel() {
-    stage.current?.retryModel()
+    stage.current?.retryModel(
+      isTheatre ? theatreRoles.findIndex((item) => item.id === role?.id) : undefined
+    )
   }
-  function chooseStageOutfit(formId, model) {
+  function chooseStageOutfit(formId, model, characterId = role?.id) {
     stage.current?.stopReplay()
-    return flow.chooseOutfit(formId, model)
+    return flow.chooseOutfit(formId, model, characterId)
   }
   function zoomModel(factor) {
-    stage.current?.zoom(factor)
+    const index = editor?.selected ?? 0
+    stage.current?.zoom(factor, index)
+    if (isTheatre) saveFrame(index)
   }
   function resetModel() {
-    stage.current?.resetLayout()
+    const index = editor?.selected ?? 0
+    stage.current?.resetLayout(index)
+    if (isTheatre) saveFrame(index)
+  }
+  function report(error) {
+    if (flow.getSnapshot().target === state.target) flow.update({ problem: error.message })
+  }
+  function saveFrame(index) {
+    void stage.current?.saveFrame(index).catch(report)
+  }
+  function setPanel(panel) {
+    if (panel) setHistoryOpen(false)
+    // 当前服装不支持面对面时不允许停留在「朝向」页签，统一落回站位面板。
+    const nextPanel = panel === 'orientation' && !theatreStage?.canFace ? 'position' : panel
+    setStageEditor(
+      nextPanel
+        ? { target: state.target, panel: nextPanel, selected: editor?.selected ?? null }
+        : null
+    )
+  }
+  function chooseSide(selected) {
+    setStageEditor({ target: state.target, panel: 'position', selected })
+  }
+  function face(orientation) {
+    void client.conversations
+      .patchSettings(state.target.chatId, { presentation: { orientation } })
+      .catch(report)
+  }
+  function setupTheatre(chat) {
+    setReplaceTarget(null)
+    open({
+      kind: 'theatre',
+      title: chat ? '剧场设定' : '新建小剧场',
+      layout: 'theatre-settings-dialog',
+      chat
+    })
+  }
+  function generateTheatre() {
+    if (theatreChat.turns.length && replaceTarget !== state.target) {
+      setReplaceTarget(state.target)
+      return
+    }
+    setReplaceTarget(null)
+    stage.current?.stopReplay()
+    if (stage.current) stage.current.player.suppressScript = false
+    void flow.generateTheatre()
   }
   function showHistory() {
+    setStageEditor(null)
     setHistoryOpen(true)
   }
   function hideHistory() {
@@ -670,7 +768,7 @@ export function HomePage({ client, setup, setupState }) {
     open({ kind: 'outfits', title: '服装管理', layout: 'outfit-manager', target })
   }
   function openOutfits(formId) {
-    showOutfits({ characterId: state.target.characterId, formId })
+    showOutfits({ characterId: role.id, formId })
   }
   function showOutfitDetail(title, render) {
     push({ kind: 'outfit-detail', title, layout: 'outfit-detail-dialog', render })
@@ -701,8 +799,8 @@ export function HomePage({ client, setup, setupState }) {
     openSettings('resources', target)
   }
   async function tryManagedOutfit(characterId, formId, model, onClose) {
-    if (characterId !== state.target.characterId) return
-    await chooseStageOutfit(formId, model)
+    if (characterId !== role?.id) return
+    await chooseStageOutfit(formId, model, characterId)
     onClose()
   }
   function removeDraftOutfit(target, modelId) {
@@ -729,7 +827,11 @@ export function HomePage({ client, setup, setupState }) {
     if (done) setDeleting(null)
     return done
   }
-  const role = state.characters.find((item) => item.id === state.target.characterId)
+  const role = isTheatre
+    ? (theatreRoles.find(
+        (item) => wardrobeActor?.target === state.target && item.id === wardrobeActor.id
+      ) ?? theatreRoles[0])
+    : state.characters.find((item) => item.id === state.target.characterId)
   // 初次展开恢复的角色，之后折叠状态只由侧栏操作决定，切换页签不重置。
   const activeExpandedRoleId =
     expandedRoleId === undefined ? state.target.characterId : expandedRoleId
@@ -737,7 +839,7 @@ export function HomePage({ client, setup, setupState }) {
   const activeForm = selection?.formId ?? state.draftOutfit?.formId ?? role?.defaultFormId
   const canChooseOutfit =
     role &&
-    state.target.tab === 'single-character' &&
+    (!isTheatre || theatreRoles.length === 2) &&
     (!state.target.chatId || (state.snapshot?.chat && !state.snapshot.participantIssue)) &&
     !historyOpen &&
     (!rootDialog || rootDialog === 'outfits') &&
@@ -749,12 +851,33 @@ export function HomePage({ client, setup, setupState }) {
         client,
         chatSelection: selection,
         draftOutfit: state.draftOutfit,
-        stageState,
+        participants: isTheatre ? theatreRoles : null,
+        onActor: (id) => setWardrobeActor({ target: state.target, id }),
+        stageState: isTheatre
+          ? (stageState.actors?.[theatreRoles.indexOf(role)] ?? {})
+          : stageState,
         savingDraft: !state.target.chatId && state.sending,
         onChoose: chooseStageOutfit,
         onManage: openOutfits,
         onRetryModel: retryStageModel
       }
+    : null
+  const stageTools = isTheatre
+    ? {
+        actors: theatreRoles,
+        panel: theatreStage.panel,
+        selected: editor?.selected,
+        setPanel,
+        face,
+        canFace: theatreStage.canFace,
+        inward: theatreStage.inward,
+        degradedNote: theatreStage.degradedNote
+      }
+    : null
+  const theatreReplayTurnId = findTheatreReplayTurnId(state.snapshot)
+  const liveTheatreReply = isTheatre ? (lastDialogue(state.snapshot?.chat)?.text ?? null) : null
+  const theatreModelControl = theatreChat
+    ? buildModelControl(state, flow, () => openSettings())
     : null
   const missing = state.chats.filter(
     (chat) => chat.mode === state.target.tab && chat.participantIssue
@@ -764,6 +887,16 @@ export function HomePage({ client, setup, setupState }) {
   )
   function renderDialogPage(page, { id, onDismiss, returnTo }) {
     switch (page.kind) {
+      case 'theatre':
+        return (
+          <TheatreSetup
+            client={client}
+            flow={flow}
+            roles={state.characters}
+            chat={page.chat}
+            close={onDismiss}
+          />
+        )
       case 'settings':
         return (
           <SettingsPanel
@@ -874,10 +1007,14 @@ export function HomePage({ client, setup, setupState }) {
                 onAffiliation={openAffiliation}
               />
             )}
-            {state.target.tab === 'scripted-dialogue' && (
+            {state.target.tab === 'scripted-dialogue' && !state.loading && (
               <>
-                <Button variant="ghost" disabled>
-                  <Plus size={14} />
+                <Button
+                  variant="ghost"
+                  className="home-new-theatre"
+                  onClick={() => setupTheatre(null)}
+                >
+                  <Plus size={15} aria-hidden="true" />
                   新建小剧场
                 </Button>
                 {theatre.map((chat) => (
@@ -887,6 +1024,9 @@ export function HomePage({ client, setup, setupState }) {
                     selected={state.target.chatId === chat.id}
                     flow={flow}
                     onDelete={setDeleting}
+                    roles={state.characters}
+                    client={client}
+                    liveReply={state.snapshot?.chat.id === chat.id ? liveTheatreReply : null}
                   />
                 ))}
                 {!theatre.length && <p className="home-empty">还没有小剧场记录</p>}
@@ -902,6 +1042,8 @@ export function HomePage({ client, setup, setupState }) {
                     selected={state.target.chatId === chat.id}
                     flow={flow}
                     onDelete={setDeleting}
+                    roles={state.characters}
+                    client={client}
                   />
                 ))}
               </section>
@@ -954,7 +1096,7 @@ export function HomePage({ client, setup, setupState }) {
             <div className="home-stage-status" role="alert">
               {stageState.problem}
               {stageState.canRetryModel && (
-                <Button size="sm" variant="ghost" onClick={retryStageModel}>
+                <Button size="sm" variant="ghost" onClick={() => stage.current?.retryModel()}>
                   重试
                 </Button>
               )}
@@ -965,26 +1107,73 @@ export function HomePage({ client, setup, setupState }) {
               {setupState.connectionProblem}
             </div>
           )}
+          {isTheatre && !state.loading && !state.target.chatId && (
+            <section className="theatre-empty-card" aria-label="小剧场引导">
+              <div className="theatre-empty-icon" aria-hidden="true">
+                <Theater size={24} />
+              </div>
+              <h2>双人小剧场</h2>
+              <p>
+                {theatre.length
+                  ? '从左侧选择一场记录，或新建一场双人对话。'
+                  : '挑选两位角色与相处情境，自动生成并演绎整场对话。'}
+              </p>
+              <Button onClick={() => setupTheatre(null)}>
+                <Plus size={16} aria-hidden="true" />
+                {theatre.length ? '创建新小剧场' : '创建第一场小剧场'}
+              </Button>
+            </section>
+          )}
+          {theatreStage?.panel === 'position' && (
+            <TheatrePositions
+              actors={theatreRoles}
+              selected={editor.selected}
+              choose={chooseSide}
+              stage={stage}
+              save={saveFrame}
+            />
+          )}
           <StageToolbar
             target={state.target}
             wardrobe={wardrobe}
+            theatre={stageTools}
             onZoom={zoomModel}
             onReset={resetModel}
           />
           <div className="home-bottom">
             <Subtitle
               state={stageState}
+              theatre={isTheatre}
               replayingTurn={Boolean(currentReplay && !currentReplay.error)}
               onToggleReplay={toggleStageReplay}
             />
-            <Composer
-              state={state}
-              flow={flow}
-              asrReady={Boolean(setupState.features?.asrReady)}
-              onVoiceInstall={() => setVoiceInstall(true)}
-              onConfigure={() => openSettings()}
-              onSend={sendMessage}
-            />
+            {theatreChat && (
+              <TheatreActions
+                snapshot={state.snapshot}
+                sending={state.sending}
+                problem={state.problem ?? currentReplay?.error}
+                confirming={replaceTarget === state.target}
+                canReplay={Boolean(theatreReplayTurnId)}
+                replaying={Boolean(currentReplay && !currentReplay.error)}
+                canGenerate={hasConnection(state) && state.snapshot.admission.canGenerate}
+                modelControl={theatreModelControl}
+                cancel={() => setReplaceTarget(null)}
+                configure={() => setupTheatre(theatreChat)}
+                replay={() => playHistoryTurn(theatreReplayTurnId)}
+                stop={flow.stop}
+                generate={generateTheatre}
+              />
+            )}
+            {!isTheatre && (
+              <Composer
+                state={state}
+                flow={flow}
+                asrReady={Boolean(setupState.features?.asrReady)}
+                onVoiceInstall={() => setVoiceInstall(true)}
+                onConfigure={() => openSettings()}
+                onSend={sendMessage}
+              />
+            )}
           </div>
           {historyOpen ? (
             <HistoryPanel
@@ -1004,12 +1193,6 @@ export function HomePage({ client, setup, setupState }) {
               onClick={showHistory}
             >
               <ChevronLeft />
-            </Button>
-          )}
-          {state.target.tab === 'scripted-dialogue' && !historyOpen && state.target.chatId && (
-            <Button className="read-history" onClick={showHistory}>
-              <MessageCircle />
-              查看小剧场记录
             </Button>
           )}
         </section>
