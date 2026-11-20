@@ -15,6 +15,7 @@ import {
 import { Button } from '../../components/ui/button.jsx'
 import { DialogNavigator } from '../../components/ui/DialogNavigator.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
+import { Tabs, TabList, Tab, TabPanel } from '../../components/ui/segmented-tabs.jsx'
 import { useDialogNavigation } from '../../components/ui/use-dialog-navigation.js'
 import { isReplayableDialogue, lastDialogue } from '../../../../shared/chat-history.js'
 import logo from '../../assets/welcome/logo.svg'
@@ -741,12 +742,6 @@ export function HomePage({ client, setup, setupState }) {
   function sendMessage() {
     return flow.send((chatId) => stage.current?.stopReplay(chatId))
   }
-  function dialogueTab() {
-    flow.setTab('single-character')
-  }
-  function theatreTab() {
-    flow.setTab('scripted-dialogue')
-  }
   function cancelDelete() {
     setDeleting(null)
   }
@@ -969,117 +964,111 @@ export function HomePage({ client, setup, setupState }) {
   return (
     <>
       <main className="home-page" aria-label="数字小祥主页">
-        <aside className="home-sidebar">
-          <div className="home-brand">
-            <img src={logo} alt="" width="40" height="40" />
-            <img src={wordmark} alt="数字小祥" width="132" height="38" />
-          </div>
-          <div className="home-tabs" role="tablist" aria-label="对话类型">
-            <button
-              role="tab"
-              aria-selected={state.target.tab === 'single-character'}
-              onClick={dialogueTab}
-            >
-              对话
-            </button>
-            <button
-              role="tab"
-              aria-selected={state.target.tab === 'scripted-dialogue'}
-              onClick={theatreTab}
-            >
-              小剧场
-            </button>
-          </div>
-          <nav className="home-navigation" aria-label="角色与对话">
-            {state.loading && (
-              <p className="home-empty" role="status">
-                正在读取对话…
-              </p>
-            )}
-            {state.target.tab === 'single-character' && !state.loading && (
-              <CharacterGroups
-                state={state}
-                flow={flow}
-                client={client}
-                expandedRoleId={activeExpandedRoleId}
-                onExpandChange={setExpandedRoleId}
-                onDelete={setDeleting}
-                onAffiliation={openAffiliation}
-              />
-            )}
-            {state.target.tab === 'scripted-dialogue' && !state.loading && (
-              <>
-                <Button
-                  variant="ghost"
-                  className="home-new-theatre"
-                  onClick={() => setupTheatre(null)}
-                >
-                  <Plus size={15} aria-hidden="true" />
-                  新建小剧场
-                </Button>
-                {theatre.map((chat) => (
-                  <ChatItem
-                    key={chat.id}
-                    chat={chat}
-                    selected={state.target.chatId === chat.id}
-                    flow={flow}
-                    onDelete={setDeleting}
-                    roles={state.characters}
-                    client={client}
-                    liveReply={state.snapshot?.chat.id === chat.id ? liveTheatreReply : null}
-                  />
-                ))}
-                {!theatre.length && <p className="home-empty">还没有小剧场记录</p>}
-              </>
-            )}
-            {missing.length > 0 && (
-              <section className="missing-chats">
-                <h2>角色缺失的对话</h2>
-                {missing.map((chat) => (
-                  <ChatItem
-                    key={chat.id}
-                    chat={chat}
-                    selected={state.target.chatId === chat.id}
-                    flow={flow}
-                    onDelete={setDeleting}
-                    roles={state.characters}
-                    client={client}
-                  />
-                ))}
-              </section>
-            )}
-          </nav>
-          <div className="home-sidebar-footer">
-            <NoticeStack
-              notices={state.notices}
-              onDismiss={flow.dismiss}
-              onSettings={openSettings}
-            />
-            <div className="home-sidebar-actions">
-              <Button variant="ghost" className="home-settings" onClick={() => openSettings()}>
-                <Settings size={16} />
-                设置
-              </Button>
-              {downloadCount > 0 && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="home-downloads"
-                  aria-label="下载中心"
-                  title={'下载中心（' + downloadCount + ' 个待处理任务）'}
-                  aria-haspopup="dialog"
-                  aria-description={downloadCount + ' 个待处理任务'}
-                  onClick={showDownloads}
-                >
-                  <Download size={16} />
-                  <span className="home-download-count" aria-hidden="true">
-                    {downloadCount}
-                  </span>
-                </Button>
-              )}
+        <Tabs value={state.target.tab} onValueChange={flow.setTab} activationMode="manual" asChild>
+          <aside className="home-sidebar">
+            <div className="home-brand">
+              <img src={logo} alt="" width="40" height="40" />
+              <img src={wordmark} alt="数字小祥" width="132" height="38" />
             </div>
-          </div>
-        </aside>
+            <TabList className="home-tabs" aria-label="对话类型">
+              <Tab value="single-character">对话</Tab>
+              <Tab value="scripted-dialogue">小剧场</Tab>
+            </TabList>
+            <nav className="home-navigation" aria-label="角色与对话">
+              {state.loading && (
+                <p className="home-empty" role="status">
+                  正在读取对话…
+                </p>
+              )}
+              <TabPanel className="home-tab-panel" value="single-character">
+                {!state.loading && (
+                  <CharacterGroups
+                    state={state}
+                    flow={flow}
+                    client={client}
+                    expandedRoleId={activeExpandedRoleId}
+                    onExpandChange={setExpandedRoleId}
+                    onDelete={setDeleting}
+                    onAffiliation={openAffiliation}
+                  />
+                )}
+              </TabPanel>
+              <TabPanel className="home-tab-panel" value="scripted-dialogue">
+                {!state.loading && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      className="home-new-theatre"
+                      onClick={() => setupTheatre(null)}
+                    >
+                      <Plus size={15} aria-hidden="true" />
+                      新建小剧场
+                    </Button>
+                    {theatre.map((chat) => (
+                      <ChatItem
+                        key={chat.id}
+                        chat={chat}
+                        selected={state.target.chatId === chat.id}
+                        flow={flow}
+                        onDelete={setDeleting}
+                        roles={state.characters}
+                        client={client}
+                        liveReply={state.snapshot?.chat.id === chat.id ? liveTheatreReply : null}
+                      />
+                    ))}
+                    {!theatre.length && <p className="home-empty">还没有小剧场记录</p>}
+                  </>
+                )}
+              </TabPanel>
+              {missing.length > 0 && (
+                <section className="missing-chats">
+                  <h2>角色缺失的对话</h2>
+                  {missing.map((chat) => (
+                    <ChatItem
+                      key={chat.id}
+                      chat={chat}
+                      selected={state.target.chatId === chat.id}
+                      flow={flow}
+                      onDelete={setDeleting}
+                      roles={state.characters}
+                      client={client}
+                    />
+                  ))}
+                </section>
+              )}
+            </nav>
+            <div className="home-sidebar-footer">
+              <NoticeStack
+                notices={state.notices}
+                onDismiss={flow.dismiss}
+                onSettings={openSettings}
+              />
+              <div className="home-sidebar-actions">
+                <Button variant="ghost" className="home-settings" onClick={() => openSettings()}>
+                  <Settings size={16} />
+                  设置
+                </Button>
+                {downloadCount > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="home-downloads"
+                    aria-label="下载中心"
+                    title={'下载中心（' + downloadCount + ' 个待处理任务）'}
+                    aria-haspopup="dialog"
+                    aria-description={downloadCount + ' 个待处理任务'}
+                    onClick={showDownloads}
+                  >
+                    <Download size={16} />
+                    <span className="home-download-count" aria-hidden="true">
+                      {downloadCount}
+                    </span>
+                  </Button>
+                )}
+              </div>
+            </div>
+          </aside>
+        </Tabs>
         <section className="home-stage" aria-label="角色舞台">
           <div
             className="home-canvas"

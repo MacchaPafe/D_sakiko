@@ -27,30 +27,15 @@
   padding-top: 8px;
 }
 .home-tabs {
-  display: flex;
-  flex: none;
-  padding: 4px;
-  gap: 4px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--role-surface);
+  --tabs-padding: 4px;
+  --tabs-radius: 12px;
+  --tab-height: 32px;
+  --tab-radius: 8px;
+  --tab-font-size: 14px;
 }
-.home-tabs button {
+.home-tabs > button {
   flex: 1;
-  border-radius: 8px;
-  font-size: 14px;
-  color: var(--muted-foreground);
 }
-.home-tabs button[aria-selected='true'] {
-  background: var(--background);
-  color: var(--foreground);
-  box-shadow: 0 1px 3px #403b360a;
-}
-.home-tabs button[aria-selected='false']:hover {
-  background: var(--home-row-hover);
-  color: var(--foreground);
-}
-.home-tabs button,
 .home-role,
 .home-new-chat,
 .home-chat-row,
@@ -62,7 +47,6 @@
     border-color var(--home-control-duration) ease-out,
     color var(--home-control-duration) ease-out;
 }
-.home-tabs button:focus-visible,
 .home-role:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -2px;
@@ -79,6 +63,16 @@
   scrollbar-width: thin;
   scrollbar-gutter: stable;
   scrollbar-color: color-mix(in srgb, var(--muted-foreground) 72%, var(--border)) transparent;
+}
+.home-tab-panel:not([hidden]) {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 12px;
+}
+.home-tab-panel:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 .home-role-group {
   flex: none;
@@ -99,18 +93,18 @@
   font-weight: 600;
   text-align: left;
 }
-.home-role img,
-.avatar-placeholder {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  object-fit: cover;
-  flex: none;
-}
-.avatar-placeholder {
+.character-avatar {
   display: grid;
   place-items: center;
+  flex: none;
+  overflow: hidden;
+  border-radius: 50%;
   background: var(--secondary);
+}
+.character-avatar > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .home-role-name {
   flex: 1;
@@ -142,10 +136,11 @@
   background: var(--background);
   border-color: var(--selected-border);
 }
-.home-role:hover {
+.home-role:is(:hover, :focus-visible) {
   background: var(--home-row-hover);
+  border-color: var(--selected-border);
 }
-.home-role.selected:hover {
+.home-role.selected:is(:hover, :focus-visible) {
   background: color-mix(in srgb, var(--background) 72%, var(--secondary));
 }
 .home-role-affiliation {
@@ -1350,13 +1345,7 @@ section.home-subtitle::before {
   flex: none;
 }
 .theatre-chat-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  object-fit: cover;
   border: 2px solid var(--resource-inset);
-  background: var(--secondary);
-  flex: none;
 }
 .theatre-chat-row.selected .theatre-chat-avatar {
   border-color: var(--secondary);
@@ -1818,13 +1807,6 @@ section.home-subtitle::before {
   gap: 10px;
   min-width: 0;
 }
-.theatre-actor-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  object-fit: cover;
-  flex: none;
-}
 .theatre-actor-title {
   display: flex;
   flex-direction: column;
@@ -1968,13 +1950,6 @@ section.home-subtitle::before {
   gap: 7px;
   font-size: 13px;
   font-weight: 600;
-}
-.theatre-detail-avatar {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  object-fit: cover;
-  flex: none;
 }
 .theatre-form-error {
   margin: 0;

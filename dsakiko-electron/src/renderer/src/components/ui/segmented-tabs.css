@@ -1,0 +1,42 @@
+.segmented-tabs {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: var(--tabs-padding, 3px);
+  padding: var(--tabs-padding, 3px);
+  border-radius: var(--tabs-radius, 10px);
+  background: var(--role-surface);
+}
+
+.segmented-tabs > button {
+  min-height: var(--tab-height, 28px);
+  padding-inline: var(--tab-padding, 14px);
+  border-radius: var(--tab-radius, 7px);
+  color: var(--muted-foreground);
+  font-size: var(--tab-font-size, 13px);
+  transition:
+    background-color 140ms ease-out,
+    color 140ms ease-out;
+}
+
+.segmented-tabs > button[data-state='active'] {
+  background: var(--background);
+  color: var(--primary);
+  box-shadow: 0 1px 3px var(--shadow-ink);
+}
+
+.segmented-tabs > button[data-state='inactive']:not(:disabled):hover {
+  background: color-mix(in srgb, var(--role-surface) 45%, var(--background));
+  color: var(--foreground);
+}
+
+.segmented-tabs > button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .segmented-tabs > button {
+    transition: none;
+  }
+}

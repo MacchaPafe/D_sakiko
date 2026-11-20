@@ -72,19 +72,7 @@
 }
 
 .outfit-role-avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  object-fit: cover;
-  flex: none;
-}
-
-span.outfit-role-avatar {
-  display: grid;
-  place-items: center;
-  background: var(--secondary);
   color: var(--primary);
-  font-size: 14px;
   font-weight: 600;
 }
 
@@ -184,11 +172,17 @@ span.outfit-role-avatar {
   border-top: 1px solid var(--border);
 }
 
-.outfit-manager-body {
+.outfit-manager-body:not([hidden]) {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+}
+
+.outfit-manager-body:focus-visible,
+.outfit-body-status:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 
 .outfit-panel-content {
@@ -225,31 +219,7 @@ span.outfit-role-avatar {
 }
 
 .outfit-tabs {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px;
-  gap: 3px;
-  border-radius: 10px;
-  background: var(--role-surface);
   margin-left: auto;
-}
-
-.outfit-tabs button {
-  height: 28px;
-  padding-inline: 14px;
-  border-radius: 7px;
-  font-size: 13px;
-  color: var(--muted-foreground);
-  transition:
-    background-color 140ms ease-out,
-    color 140ms ease-out;
-}
-
-.outfit-tabs button[aria-pressed='true'] {
-  background: var(--background);
-  color: var(--primary);
-  font-weight: 600;
-  box-shadow: 0 1px 3px var(--shadow-ink);
 }
 
 .outfit-installed,
@@ -272,6 +242,21 @@ span.outfit-role-avatar {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--background);
+}
+
+.outfit-installed-row,
+.outfit-card {
+  transition: border-color 140ms ease-out;
+}
+
+.outfit-installed-row:is(:hover, :focus-within),
+.outfit-card:has(button:enabled):is(:hover, :focus-within) {
+  border-color: var(--selected-border);
+}
+
+:is(.outfit-installed-row, .outfit-card) button:enabled:is(:hover, :focus-visible) {
+  border-color: var(--selected-border);
+  background: var(--secondary);
 }
 
 .outfit-row-text {
@@ -353,62 +338,45 @@ span.outfit-role-avatar {
   inset: -10px -6px;
 }
 
-.outfit-installed-row:has(.outfit-menu:popover-open) .outfit-menu-trigger {
+.outfit-menu-trigger[data-state='open'] {
   background: var(--secondary);
 }
 
 .outfit-menu {
-  /* 菜单锚在触发按钮旁，并由浏览器避让窗口边缘和列表滚动裁切。 */
-  position: fixed;
-  inset: auto;
-  position-area: left;
-  position-try-fallbacks: --outfit-menu-below, --outfit-menu-above;
-  position-visibility: anchors-visible;
-  margin: 0 6px 0 0;
+  display: grid;
   width: max-content;
-  max-height: calc(100dvh - 12px);
+  max-height: var(--radix-dropdown-menu-content-available-height);
   overflow: auto;
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--background);
   box-shadow: 0 8px 18px var(--shadow-ink);
+  outline: none;
 }
 
-.outfit-menu:popover-open {
-  display: grid;
-}
-
-@position-try --outfit-menu-below {
-  position-area: bottom span-right;
-  margin: 6px 0 0;
-}
-
-@position-try --outfit-menu-above {
-  position-area: top span-right;
-  margin: 0 0 6px;
-}
-
-.outfit-menu button {
+.outfit-menu [role='menuitem'] {
   padding: 6px 10px;
   text-align: left;
   font-size: 13px;
   border-radius: 5px;
+  outline: none;
+  cursor: default;
 }
 
-.outfit-menu button:hover:not(:disabled) {
+.outfit-menu [data-highlighted] {
   background: var(--secondary);
 }
 
-.outfit-menu button[value='delete']:not(:disabled) {
+.outfit-menu-delete:not([data-disabled]) {
   color: var(--destructive);
 }
 
-.outfit-menu button[value='delete']:hover:not(:disabled) {
+.outfit-menu-delete[data-highlighted] {
   background: color-mix(in srgb, var(--destructive) 10%, var(--background));
 }
 
-.outfit-menu button:disabled {
+.outfit-menu [data-disabled] {
   color: var(--muted-foreground);
   opacity: 0.6;
 }
@@ -578,7 +546,7 @@ span.outfit-role-avatar {
 }
 
 .outfit-manager-layout > .outfit-message,
-.outfit-manager-layout > .outfit-empty {
+.outfit-body-status {
   margin-inline: clamp(16px, 4vw, 28px);
 }
 
@@ -611,6 +579,11 @@ div.outfit-empty p {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .outfit-installed-row,
+  .outfit-card {
+    transition: none;
+  }
+
   p.outfit-empty[role='status'],
   .outfit-detail-status[data-loading='true'] {
     animation-duration: 0s;

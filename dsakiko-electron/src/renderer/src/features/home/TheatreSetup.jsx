@@ -160,12 +160,7 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
     return (
       <article className="theatre-actor-card" key={index}>
         <div className="theatre-actor-identity">
-          <CharacterAvatar
-            role={definition ?? role}
-            client={client}
-            size={36}
-            className="theatre-actor-avatar"
-          />
+          <CharacterAvatar role={role ?? definition} client={client} size={36} />
           <div className="theatre-actor-title">
             <span className="theatre-side-badge">{sideBadge}</span>
             <strong className="theatre-actor-name">{actorName}</strong>
@@ -206,12 +201,7 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
     return (
       <div key={index} className="theatre-detail-card">
         <div className="theatre-detail-actor">
-          <CharacterAvatar
-            role={definition ?? role}
-            client={client}
-            size={22}
-            className="theatre-detail-avatar"
-          />
+          <CharacterAvatar role={role ?? definition} client={client} size={22} />
           <span>{actorName}</span>
         </div>
         <label className="theatre-field">

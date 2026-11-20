@@ -1,13 +1,15 @@
 import { characterFormName } from './character-form.js'
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Download, FolderOpen, MoreHorizontal, RefreshCw, Shirt, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Input } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
+import { Tabs, TabList, Tab, TabPanel } from '../../components/ui/segmented-tabs.jsx'
 import { desktopHost } from '../../host/desktop.js'
-import { previewCharacters } from '../onboarding/characters.js'
 import { formatBytes } from '../setup/presentation.js'
 import { pendingDownloads } from './download-jobs.js'
+import { CharacterAvatar } from './CharacterAvatar.jsx'
 import './outfit-manager.css'
 
 const pageSize = 24
@@ -131,8 +133,8 @@ export function CharacterAffiliationForm({ client, role, onClose, onSaved }) {
     >
       <p className="outfit-detail-description">
         {mode === 'bang-dream'
-          ? `为「${roleName}」关联 BanG Dream! 角色后，可在线浏览和下载对应 Live2D 服装。`
-          : `「${roleName}」设为其他角色时，仍可通过导入本地模型文件夹添加服装。`}
+          ? `为「${roleName}」关联 BanG Dream! 角色后，可在线浏览和下载对应 Live2D 服装并显示头像。`
+          : `「${roleName}」设为其他角色时，可通过导入本地模型添加服装。`}
       </p>
       <fieldset className="outfit-field outfit-form-picker outfit-affiliation-picker">
         <legend>角色归属</legend>
@@ -183,38 +185,6 @@ export function CharacterAffiliationForm({ client, role, onClose, onSaved }) {
   )
 }
 
-function RoleAvatar({ role, client }) {
-  const [url, setUrl] = useState(null)
-  useEffect(() => {
-    let current = true
-    let lease
-    if (role?.avatar)
-      void client.assets
-        .access(role.avatar)
-        .then((access) => {
-          lease = access.leaseId
-          if (current) setUrl(access.url)
-          else void client.assets.releaseAccess(lease).catch(() => {})
-        })
-        .catch(() => {})
-    return () => {
-      current = false
-      if (lease) void client.assets.releaseAccess(lease).catch(() => {})
-    }
-  }, [client, role?.avatar])
-  const fallback = previewCharacters.find((item) => item.id === role?.id)?.avatar
-  if (url || fallback) {
-    return (
-      <img className="outfit-role-avatar" src={url ?? fallback} alt="" width="34" height="34" />
-    )
-  }
-  return (
-    <span className="outfit-role-avatar" aria-hidden="true">
-      {(role?.displayName ?? role?.name ?? '角').slice(0, 1)}
-    </span>
-  )
-}
-
 function Thumbnail({ load, className }) {
   const image = useRef(null)
   const [url, setUrl] = useState(null)
@@ -251,9 +221,7 @@ function Thumbnail({ load, className }) {
   )
 }
 
-function InstalledOutfit({ client, model, isDefault, current, canTry, onAction }) {
-  const menuId = useId()
-  const menu = useRef(null)
+function InstalledOutfit({ client, model, isDefault, current, canTry, onAction, menuContainer }) {
   const trigger = useRef(null)
   const [load] = useState(() =>
     model.thumbnail
@@ -268,13 +236,10 @@ function InstalledOutfit({ client, model, isDefault, current, canTry, onAction }
         }
       : null
   )
-  function action(event) {
-    const value = event.currentTarget.value
-    if (menu.current.matches(':popover-open')) {
-      menu.current.hidePopover()
-      trigger.current.focus({ preventScroll: true })
-    }
-    onAction(value, model)
+  function selectAction(action) {
+    // 切到详情前先把焦点记在触发按钮上，返回列表时菜单项已卸载。
+    trigger.current?.focus({ preventScroll: true })
+    onAction(action, model)
   }
   return (
     <li className="outfit-installed-row">
@@ -287,37 +252,47 @@ function InstalledOutfit({ client, model, isDefault, current, canTry, onAction }
         </div>
       </div>
       {canTry && !current && (
-        <Button variant="outline" size="sm" value="try" onClick={action}>
+        <Button variant="outline" size="sm" onClick={() => onAction('try', model)}>
           换上
         </Button>
       )}
-      <Button
-        ref={trigger}
-        className="outfit-menu-trigger"
-        variant="ghost"
-        size="icon-sm"
-        aria-label={'管理 ' + model.name}
-        popoverTarget={menuId}
-      >
-        <MoreHorizontal size={18} />
-      </Button>
-      <div id={menuId} ref={menu} className="outfit-menu" popover="auto">
-        <button type="button" value="rename" onClick={action}>
-          重命名
-        </button>
-        <button type="button" value="default" onClick={action} disabled={isDefault}>
-          设为新对话默认
-        </button>
-        <button
-          type="button"
-          value="delete"
-          onClick={action}
-          disabled={isDefault}
-          title={isDefault ? '请先另设默认服装' : undefined}
-        >
-          删除
-        </button>
-      </div>
+      <DropdownMenu.Root modal={false}>
+        <DropdownMenu.Trigger asChild>
+          <Button
+            ref={trigger}
+            className="outfit-menu-trigger"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={'管理 ' + model.name}
+          >
+            <MoreHorizontal size={18} />
+          </Button>
+        </DropdownMenu.Trigger>
+        {/* 原生模态框外的节点不可交互，菜单须挂在当前浮窗的视图内。 */}
+        <DropdownMenu.Portal container={menuContainer}>
+          <DropdownMenu.Content
+            className="outfit-menu"
+            side="left"
+            sideOffset={6}
+            collisionBoundary={menuContainer}
+            collisionPadding={8}
+            hideWhenDetached
+          >
+            <DropdownMenu.Item onSelect={() => selectAction('rename')}>重命名</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => selectAction('default')} disabled={isDefault}>
+              设为新对话默认
+            </DropdownMenu.Item>
+            <DropdownMenu.Item
+              className="outfit-menu-delete"
+              onSelect={() => selectAction('delete')}
+              disabled={isDefault}
+              title={isDefault ? '请先另设默认服装' : undefined}
+            >
+              删除
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
     </li>
   )
 }
@@ -494,6 +469,7 @@ function OutfitForm({
   client,
   definition,
   form,
+  menuContainer,
   currentChat,
   tab,
   version,
@@ -685,168 +661,174 @@ function OutfitForm({
 
   const activeError = error?.tab === tab ? error.message : null
   const activeNotice = notice?.tab === tab ? notice.message : null
+  const feedback = (
+    <>
+      {activeError && (
+        <p className="outfit-error outfit-message" role="alert">
+          {activeError}
+        </p>
+      )}
+      {activeNotice && (
+        <p className="outfit-message" role="status">
+          {activeNotice}
+        </p>
+      )}
+    </>
+  )
 
   return (
-    <div className="outfit-manager-body">
-      {tab === 'download' && definition.bangDreamId && (
-        <div className="outfit-download-toolbar">
-          <div className="outfit-versions" role="group" aria-label="模型版本">
+    <>
+      <TabPanel className="outfit-manager-body" value="installed">
+        <div className="outfit-panel-content">
+          {feedback}
+          <div className="outfit-installed-toolbar">
+            <span className="outfit-installed-count">
+              {form.models.length ? `共 ${form.models.length} 套服装` : '尚未安装服装'}
+            </span>
             <Button
-              size="sm"
               variant="ghost"
-              value="v2"
-              aria-pressed={version === 'v2'}
-              onClick={changeVersion}
-            >
-              V2
-              {online && !v2Failed && (
-                <span className="outfit-version-count" aria-hidden="true">
-                  {v2Items.length}
-                </span>
-              )}
-            </Button>
-            <Button
               size="sm"
-              variant="ghost"
-              value="v3"
-              aria-pressed={version === 'v3'}
-              onClick={changeVersion}
+              className="outfit-import-button"
+              onClick={importFolder}
+              disabled={busy}
             >
-              V3
-              {online && !v3Failed && (
-                <span className="outfit-version-count" aria-hidden="true">
-                  {v3Items.length}
-                </span>
-              )}
+              <FolderOpen size={16} />
+              导入模型
             </Button>
           </div>
-          <div className="outfit-download-actions">
-            {versionItems.length > 12 && (
-              <Input
-                className="outfit-search"
-                type="search"
-                aria-label="搜索服装"
-                placeholder="搜索服装名称…"
-                value={searchQuery}
-                onChange={changeSearch}
-              />
-            )}
-            {!catalogFailed && (
-              <Button variant="ghost" size="sm" disabled={!catalog} onClick={refreshCatalog}>
-                <RefreshCw size={14} />
-                刷新服装
-              </Button>
-            )}
-          </div>
+          {form.models.length ? (
+            <ul className="outfit-installed">
+              {form.models.map((model) => (
+                <InstalledOutfit
+                  key={model.id}
+                  client={client}
+                  model={model}
+                  isDefault={form.defaultModelId === model.id}
+                  current={selectedId === model.id}
+                  canTry={Boolean(currentChat)}
+                  onAction={installedAction}
+                  menuContainer={menuContainer}
+                />
+              ))}
+            </ul>
+          ) : (
+            <div className="outfit-empty">
+              <Shirt size={24} aria-hidden="true" />
+              <p>这个形态还没有服装。</p>
+            </div>
+          )}
         </div>
-      )}
-      <div className="outfit-panel-content">
-        {activeError && (
-          <p className="outfit-error outfit-message" role="alert">
-            {activeError}
-          </p>
-        )}
-        {activeNotice && (
-          <p className="outfit-message" role="status">
-            {activeNotice}
-          </p>
-        )}
-        {tab === 'installed' ? (
-          <>
-            <div className="outfit-installed-toolbar">
-              <span className="outfit-installed-count">
-                {form.models.length ? `共 ${form.models.length} 套服装` : '尚未安装服装'}
-              </span>
+      </TabPanel>
+      <TabPanel className="outfit-manager-body" value="download">
+        {definition.bangDreamId && (
+          <div className="outfit-download-toolbar">
+            <div className="outfit-versions" role="group" aria-label="模型版本">
               <Button
-                variant="ghost"
                 size="sm"
-                className="outfit-import-button"
-                onClick={importFolder}
-                disabled={busy}
+                variant="ghost"
+                value="v2"
+                aria-pressed={version === 'v2'}
+                onClick={changeVersion}
               >
-                <FolderOpen size={16} />
-                导入模型文件夹
+                V2
+                {online && !v2Failed && (
+                  <span className="outfit-version-count" aria-hidden="true">
+                    {v2Items.length}
+                  </span>
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                value="v3"
+                aria-pressed={version === 'v3'}
+                onClick={changeVersion}
+              >
+                V3
+                {online && !v3Failed && (
+                  <span className="outfit-version-count" aria-hidden="true">
+                    {v3Items.length}
+                  </span>
+                )}
               </Button>
             </div>
-            {form.models.length ? (
-              <ul className="outfit-installed">
-                {form.models.map((model) => (
-                  <InstalledOutfit
-                    key={model.id}
-                    client={client}
-                    model={model}
-                    isDefault={form.defaultModelId === model.id}
-                    current={selectedId === model.id}
-                    canTry={Boolean(currentChat)}
-                    onAction={installedAction}
-                  />
-                ))}
-              </ul>
-            ) : (
-              <div className="outfit-empty">
-                <Shirt size={24} aria-hidden="true" />
-                <p>这个形态还没有服装。</p>
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            {!definition.bangDreamId && (
-              <div className="outfit-empty">
-                <p>
-                  {definition.bangDreamId === null
-                    ? '这个角色可以通过模型文件夹导入服装。'
-                    : '确认角色的 BanG Dream! 归属后可查看在线服装。'}
-                </p>
-                <Button variant="outline" size="sm" onClick={editAffiliation}>
-                  编辑角色归属
+            <div className="outfit-download-actions">
+              {versionItems.length > 12 && (
+                <Input
+                  className="outfit-search"
+                  type="search"
+                  aria-label="搜索服装"
+                  placeholder="搜索服装名称…"
+                  value={searchQuery}
+                  onChange={changeSearch}
+                />
+              )}
+              {!catalogFailed && (
+                <Button variant="ghost" size="sm" disabled={!catalog} onClick={refreshCatalog}>
+                  <RefreshCw size={14} />
+                  刷新服装
                 </Button>
-              </div>
-            )}
-            {definition.bangDreamId && !catalog && (
-              <p className="outfit-empty" role="status">
-                正在获取服装…
-              </p>
-            )}
-            {catalogFailed && (
-              <div className="outfit-empty" role="status">
-                <p>{version.toUpperCase()} 服装加载失败</p>
-                <Button variant="outline" size="sm" onClick={refreshCatalog}>
-                  重试
-                </Button>
-              </div>
-            )}
-            {online && !catalogFailed && !versionItems.length && otherItems.length > 0 && (
-              <div className="outfit-empty">
-                <p>
-                  暂无 {version.toUpperCase()} 服装，{otherVersion.toUpperCase()} 有{' '}
-                  {otherItems.length} 套可用服装。
-                </p>
-                <Button variant="outline" size="sm" value={otherVersion} onClick={changeVersion}>
-                  查看 {otherVersion.toUpperCase()} 服装
-                </Button>
-              </div>
-            )}
-            {online && !catalogFailed && !versionItems.length && otherItems.length === 0 && (
-              <p className="outfit-empty">暂无在线服装。</p>
-            )}
-            {online && !catalogFailed && versionItems.length > 0 && !cards.length && (
-              <p className="outfit-empty">没有匹配的服装。</p>
-            )}
-            {cards.length > 0 && (
-              <ul className="outfit-grid">{cards.slice(0, visible).map(renderCard)}</ul>
-            )}
-            {cards.length > visible && (
-              <div className="outfit-more-wrap">
-                <Button className="outfit-more" variant="outline" onClick={more}>
-                  加载更多
-                </Button>
-              </div>
-            )}
-          </>
+              )}
+            </div>
+          </div>
         )}
-      </div>
-    </div>
+        <div className="outfit-panel-content">
+          {feedback}
+          {!definition.bangDreamId && (
+            <div className="outfit-empty">
+              <p>
+                {definition.bangDreamId === null
+                  ? '这个角色可以通过模型文件夹导入服装。'
+                  : '确认角色的 BanG Dream! 归属后可查看在线服装。'}
+              </p>
+              <Button variant="outline" size="sm" onClick={editAffiliation}>
+                编辑角色归属
+              </Button>
+            </div>
+          )}
+          {definition.bangDreamId && !catalog && (
+            <p className="outfit-empty" role="status">
+              正在获取服装…
+            </p>
+          )}
+          {catalogFailed && (
+            <div className="outfit-empty" role="status">
+              <p>{version.toUpperCase()} 服装加载失败</p>
+              <Button variant="outline" size="sm" onClick={refreshCatalog}>
+                重试
+              </Button>
+            </div>
+          )}
+          {online && !catalogFailed && !versionItems.length && otherItems.length > 0 && (
+            <div className="outfit-empty">
+              <p>
+                暂无 {version.toUpperCase()} 服装，{otherVersion.toUpperCase()} 有{' '}
+                {otherItems.length} 套可用服装。
+              </p>
+              <Button variant="outline" size="sm" value={otherVersion} onClick={changeVersion}>
+                查看 {otherVersion.toUpperCase()} 服装
+              </Button>
+            </div>
+          )}
+          {online && !catalogFailed && !versionItems.length && otherItems.length === 0 && (
+            <p className="outfit-empty">暂无在线服装。</p>
+          )}
+          {online && !catalogFailed && versionItems.length > 0 && !cards.length && (
+            <p className="outfit-empty">没有匹配的服装。</p>
+          )}
+          {cards.length > 0 && (
+            <ul className="outfit-grid">{cards.slice(0, visible).map(renderCard)}</ul>
+          )}
+          {cards.length > visible && (
+            <div className="outfit-more-wrap">
+              <Button className="outfit-more" variant="outline" onClick={more}>
+                加载更多
+              </Button>
+            </div>
+          )}
+        </div>
+      </TabPanel>
+    </>
   )
 }
 
@@ -874,6 +856,7 @@ export function OutfitManager({
   const [version, setVersion] = useState(savedVersion)
   const [snapshot, setSnapshot] = useState(null)
   const [error, setError] = useState(null)
+  const [menuContainer, setMenuContainer] = useState(null)
   const request = useRef(0)
   const refreshRef = useRef(null)
   useEffect(() => {
@@ -898,9 +881,9 @@ export function OutfitManager({
     setCharacterId(id)
     setFormId(null)
   }
-  function changeTab(event) {
+  function changeTab(value) {
     setError(null)
-    setTab(event.currentTarget.value)
+    setTab(value)
   }
   function versionChanged(next) {
     setVersion(next)
@@ -936,8 +919,24 @@ export function OutfitManager({
   async function tryOutfit(selected, model) {
     await onTry(characterId, selected, model)
   }
+  const bodyStatus = error ? (
+    <p className="outfit-message outfit-error" role="alert">
+      {error}
+    </p>
+  ) : (
+    <p className="outfit-empty" role="status">
+      {definition ? '这个角色没有可管理服装的形态。' : '正在读取角色服装…'}
+    </p>
+  )
+
   return (
-    <div className="outfit-manager-layout">
+    <Tabs
+      className="outfit-manager-layout"
+      value={tab}
+      onValueChange={changeTab}
+      activationMode="manual"
+      ref={setMenuContainer}
+    >
       <header className="outfit-page-heading">
         <div className="outfit-title-row">
           <h2 tabIndex={-1} data-dialog-focus>
@@ -964,7 +963,12 @@ export function OutfitManager({
         <div className="outfit-nav-bar">
           <div className="outfit-target">
             {selectedRole && (
-              <RoleAvatar key={selectedRole.id} role={selectedRole} client={client} />
+              <CharacterAvatar
+                role={selectedRole}
+                client={client}
+                size={34}
+                className="outfit-role-avatar"
+              />
             )}
             <div className="outfit-target-character">
               <SelectField
@@ -990,56 +994,44 @@ export function OutfitManager({
               />
             )}
           </div>
-          <div className="outfit-tabs" aria-label="服装列表">
-            <button
-              type="button"
-              value="installed"
-              aria-pressed={tab === 'installed'}
-              onClick={changeTab}
-            >
-              已安装
-            </button>
-            <button
-              type="button"
-              value="download"
-              aria-pressed={tab === 'download'}
-              onClick={changeTab}
-            >
-              下载
-            </button>
-          </div>
+          <TabList className="outfit-tabs" aria-label="服装列表">
+            <Tab value="installed">已安装</Tab>
+            <Tab value="download">下载</Tab>
+          </TabList>
         </div>
       </header>
-      {error && (
-        <p className="outfit-message outfit-error" role="alert">
-          {error}
-        </p>
+      {definition && form ? (
+        <>
+          {error && bodyStatus}
+          <OutfitForm
+            key={characterId + ':' + form.id}
+            client={client}
+            definition={definition}
+            form={form}
+            menuContainer={menuContainer}
+            currentChat={activeChat}
+            tab={tab}
+            version={version}
+            jobs={targetJobs}
+            onTry={tryOutfit}
+            onDeleted={onDeleted}
+            onRefresh={refresh}
+            onDownloadStarted={onDownloadStarted}
+            onVersionChange={versionChanged}
+            onAffiliation={editAffiliation}
+            onShowDetail={onShowDetail}
+          />
+        </>
+      ) : (
+        <>
+          <TabPanel value="installed" className="outfit-body-status">
+            {bodyStatus}
+          </TabPanel>
+          <TabPanel value="download" className="outfit-body-status">
+            {bodyStatus}
+          </TabPanel>
+        </>
       )}
-      {!error && !definition && (
-        <p role="status" className="outfit-empty">
-          正在读取角色服装…
-        </p>
-      )}
-      {definition && !form && <p className="outfit-empty">这个角色没有可管理服装的形态。</p>}
-      {definition && form && (
-        <OutfitForm
-          key={characterId + ':' + form.id}
-          client={client}
-          definition={definition}
-          form={form}
-          currentChat={activeChat}
-          tab={tab}
-          version={version}
-          jobs={targetJobs}
-          onTry={tryOutfit}
-          onDeleted={onDeleted}
-          onRefresh={refresh}
-          onDownloadStarted={onDownloadStarted}
-          onVersionChange={versionChanged}
-          onAffiliation={editAffiliation}
-          onShowDetail={onShowDetail}
-        />
-      )}
-    </div>
+    </Tabs>
   )
 }

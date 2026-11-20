@@ -199,7 +199,7 @@ async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
   ])
   const center = page.getByRole('dialog', { name: '下载中心' })
   try {
-    await manager.getByRole('button', { name: '下载', exact: true }).click()
+    await manager.getByRole('tab', { name: '下载', exact: true }).click()
     await manager.getByText(item.name, { exact: true }).waitFor()
     expect(
       await manager.getByRole('button', { name: 'V2', exact: true }).getAttribute('aria-pressed')
@@ -250,7 +250,7 @@ async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
     ).toBe('true')
     expect(await selectedForm.getAttribute('value')).toBe(form.id)
 
-    await manager.getByRole('button', { name: '已安装', exact: true }).click()
+    await manager.getByRole('tab', { name: '已安装', exact: true }).click()
     await manager.getByRole('button', { name: '下载任务', exact: true }).click()
     await row.getByRole('button', { name: '取消', exact: true }).click()
     await row.waitFor({ state: 'hidden' })
@@ -1048,13 +1048,50 @@ app.on('window-all-closed', () => app.quit())`
         expect(strip.x).toBeLessThan(stage.x)
         expect(strip.right).toBe(stage.x + stage.width)
       }
-      await page.getByRole('tab', { name: '小剧场', exact: true }).click()
-      await expect
-        .poll(() =>
-          page.getByRole('tab', { name: '小剧场', exact: true }).getAttribute('aria-selected')
+      const dialogueTab = page.getByRole('tab', { name: '对话', exact: true })
+      const theatreTab = page.getByRole('tab', { name: '小剧场', exact: true })
+      const tabBackground = () =>
+        theatreTab.evaluate((element) => getComputedStyle(element).backgroundColor)
+      const restingTabBackground = await tabBackground()
+      await theatreTab.hover()
+      await expect.poll(tabBackground).not.toBe(restingTabBackground)
+      await dialogueTab.press('ArrowRight')
+      expect(await theatreTab.evaluate((element) => document.activeElement === element)).toBe(true)
+      expect(await dialogueTab.getAttribute('aria-selected')).toBe('true')
+      await theatreTab.press('Enter')
+      expect(await theatreTab.getAttribute('aria-selected')).toBe('true')
+      await page.getByRole('tabpanel', { name: '小剧场' }).waitFor()
+      await dialogueTab.click()
+      await backend.assets.using({}, async (owner) => {
+        const { asset } = await backend.assets.importAsset(
+          {
+            kind: 'bytes',
+            name: 'broken.png',
+            mediaType: 'image/png',
+            bytes: Buffer.from('broken')
+          },
+          owner,
+          'avatar'
         )
-        .toBe('true')
-      await page.getByRole('tab', { name: '对话', exact: true }).click()
+        await backend.characters.save({
+          id: 'local-actor',
+          name: '测试演员',
+          revision: 0,
+          bangDreamId: 'tomori',
+          defaultFormId: 'default',
+          forms: [
+            {
+              id: 'default',
+              displayName: '测试演员',
+              description: '头像回退验证',
+              avatar: asset,
+              models: [],
+              defaultModelId: null,
+              voice: null
+            }
+          ]
+        })
+      })
       role = await backend.characters.get('sakiko')
       const form = role.forms.find((item) => item.id === role.defaultFormId)
       const defaultName = form.models.find((item) => item.id === form.defaultModelId).name
@@ -1082,9 +1119,28 @@ app.on('window-all-closed', () => app.quit())`
         { kind: 'replace', secret: 'test' }
       )
       await backend.settings.update({ generation: { connectionId: 'test', modelId: 'test' } })
+      const brokenPortrait = page.waitForResponse((response) => {
+        const url = new URL(response.url())
+        return (
+          url.origin === server.baseUrl &&
+          /^\/api\/v1\/assets\/[^/]+$/.test(url.pathname) &&
+          response.headers()['content-type'] === 'image/png'
+        )
+      })
       // 重载验证正式初始化恢复；只使用隔离目录和可控 Agent，不发送外部请求。
       await page.reload()
       await page.getByRole('main', { name: '数字小祥主页' }).waitFor()
+      await brokenPortrait
+      const fallbackPortrait = page
+        .getByRole('button', { name: '测试演员', exact: true })
+        .locator('img')
+      await expect
+        .poll(() =>
+          fallbackPortrait.evaluate((image) =>
+            image.naturalWidth ? new URL(image.src).pathname : ''
+          )
+        )
+        .toMatch(/\/tomori(?:-[^/]+)?\.webp$/)
       await expect
         .poll(() => page.locator('.home-canvas').getAttribute('data-stage-state'))
         .toBe('ready')
@@ -1193,39 +1249,48 @@ app.on('window-all-closed', () => app.quit())`
       const outfit = manager.getByRole('listitem').filter({ hasText: '备用服装' })
       const defaultMenu = manager.getByRole('button', { name: '管理 ' + defaultName, exact: true })
       const altMenu = outfit.getByRole('button', { name: '管理 备用服装', exact: true })
-      const openMenu = manager.locator('.outfit-menu:popover-open')
+      const openMenu = manager.getByRole('menu')
       await defaultMenu.click()
       await openMenu.waitFor()
       await altMenu.click()
       expect(await openMenu.count()).toBe(1)
-      expect(await outfit.locator('.outfit-menu:popover-open').count()).toBe(1)
+      expect(await altMenu.getAttribute('aria-expanded')).toBe('true')
       const menuBounds = await openMenu.boundingBox()
       const triggerBounds = await altMenu.boundingBox()
       expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(triggerBounds.x)
       await page.keyboard.press('Escape')
       await openMenu.waitFor({ state: 'hidden' })
       await manager.waitFor()
-      // 缩小触发按钮左侧的可用空间，验证菜单可以改从下方打开。
-      await altMenu.evaluate((element) => {
-        Object.assign(element.style, { position: 'fixed', left: '12px', top: '120px' })
-      })
+      expect(await altMenu.evaluate((element) => document.activeElement === element)).toBe(true)
+      // 缩小触发按钮左侧的可用空间，验证菜单仍完整显示在浮窗内。
+      const managerBounds = await manager.boundingBox()
+      await altMenu.evaluate((element, left) => {
+        Object.assign(element.style, { position: 'fixed', left: `${left}px` })
+      }, managerBounds.x + 16)
       await altMenu.press('Enter')
       await openMenu.waitFor()
-      const belowBounds = await openMenu.boundingBox()
-      const nearLeft = await altMenu.boundingBox()
-      expect(belowBounds.y).toBeGreaterThanOrEqual(nearLeft.y + nearLeft.height)
-      expect(belowBounds.x).toBeGreaterThanOrEqual(0)
+      const movedMenuBounds = await openMenu.boundingBox()
+      expect(await openMenu.getAttribute('data-side')).not.toBe('left')
+      expect(movedMenuBounds.x).toBeGreaterThanOrEqual(managerBounds.x)
+      expect(movedMenuBounds.x + movedMenuBounds.width).toBeLessThanOrEqual(
+        managerBounds.x + managerBounds.width
+      )
       await page.keyboard.press('Escape')
       await openMenu.waitFor({ state: 'hidden' })
       await altMenu.evaluate((element) => element.removeAttribute('style'))
       await altMenu.click()
-      await outfit.getByRole('button', { name: '重命名' }).click()
+      await openMenu.getByRole('menuitem', { name: '重命名' }).click()
       const rename = page.getByRole('dialog', { name: '重命名服装' })
       await expectSharedDialog(page, rename, managerShell)
       await rename.getByLabel('服装名称').fill('备用演出服')
       await rename.getByRole('button', { name: '保存名称' }).click()
       await manager.getByText('备用演出服', { exact: true }).waitFor()
       await expectSharedDialog(page, manager, managerShell)
+      expect(
+        await manager
+          .getByRole('button', { name: '管理 备用演出服', exact: true })
+          .evaluate((element) => document.activeElement === element)
+      ).toBe(true)
       if (mode === 'production')
         await manager.screenshot({ path: '/tmp/sakiko-outfit-manager.png' })
       await verifyOutfitDownloads(page, backend, manager, role, form, mode)
