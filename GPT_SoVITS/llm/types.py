@@ -56,6 +56,7 @@ class LLMResult:
     finish_reason: str = "stop"
     protocol: dict[str, object] = field(default_factory=dict)
     diagnostics: list[str] = field(default_factory=list)
+    title: str = ""
 
 
 class CancellationToken:

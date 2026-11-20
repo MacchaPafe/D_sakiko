@@ -642,6 +642,9 @@ class Timeline:
 
     def sync_tool_display(self, raw: dict[str, object]) -> None:
         """将旧调用者的展示更新附着到权威工具记录，必要时标明历史重建。"""
+        if raw.get("tool_name") in {"deepseek_web_search", "deepseek_read_url", "deepseek_citations"}:
+            # 服务端操作从响应协议派生；伪造本地函数配对会污染后续对话。
+            return
         index = raw.get("message_index", -1)
         entries = self.entries()
         if not isinstance(index, int) or not 0 <= index < len(entries):
@@ -676,7 +679,13 @@ class Timeline:
         output = []
         entries = self.entries()
         hidden = {"search_worldbook_lore", "search_character_memory", "query_character_relation"}
+        from llm.deepseek_chat import web_displays
         for turn in self.turns:
+            indices = [index for index, entry in enumerate(entries) if entry[0] is turn]
+            for message in records(turn["messages"]):
+                options = object_dict(object_dict(message.get("protocol")).get("providerOptions"))
+                for display in web_displays(str(message["id"]), options):
+                    output.append(dict(display, message_index=indices[0] if indices else -1))
             calls = {part.get("callId"): part for message in records(turn["messages"])
                      for part in records(message.get("parts")) if part.get("kind") == "tool-call"}
             for message in records(turn["messages"]):

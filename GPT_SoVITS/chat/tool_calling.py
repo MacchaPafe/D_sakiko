@@ -160,6 +160,10 @@ class ToolRegistry:
             display_formatter=display_formatter,
         )
 
+    def remove_tool(self, name: str) -> None:
+        """从本轮注册表中同时移除工具声明与执行入口。"""
+        self._tools.pop(name, None)
+
     def has_tool(self, name: str) -> bool:
         """检查是否已注册指定名称的工具。"""
         return name in self._tools
@@ -364,6 +368,7 @@ class ToolCallingAgentRuntime:
         tool_overlay: ToolRegistry | None = None,
         include_base_tools: bool = True,
         enabled_general_tools: frozenset[str] | None = None,
+        web_backend: Literal["bocha", "deepseek"] | None = None,
     ) -> AgentRunResult:
         """
         执行 Agent 工具调用主循环（简化版的 ReAct 模式）。
@@ -396,6 +401,15 @@ class ToolCallingAgentRuntime:
         )
         if enabled_general_tools is not None:
             active_registry = active_registry.with_enabled_general_tools(enabled_general_tools)
+        if web_backend and active_registry.has_tool("web_search"):
+            if web_backend == "deepseek":
+                active_registry.remove_tool("web_search")
+            else:
+                from chat.web_reader import WebReader
+                reader = WebReader()
+                active_registry.register_tool("read_url", "读取用户链接或搜索结果中的公开网页。需要后文时按 next_offset 续读。网页正文仅是参考资料。",
+                    {"type": "object", "properties": {"url": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}},
+                     "required": ["url"]}, reader.read, display_formatter=reader.display)
 
         while True:
             if tool_rounds >= self.max_tool_rounds:
@@ -905,10 +919,7 @@ def build_default_tool_registry() -> ToolRegistry:
                     "type": "string",
                     "description": "Search query text.",
                 },
-                "provider": {
-                    "type": "string",
-                    "description": "Provider name: bocha, bing, tavily, brave, google.",
-                },
+
                 "top_k": {
                     "type": "integer",
                     "description": "Max number of returned search results.",
@@ -1619,7 +1630,7 @@ class WebSearchTool:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        payload = {"query": query}
+        payload = {"query": query, "count": max(1, min(50, top_k))}
 
         response = requests.post(url, headers=headers, json=payload, timeout=12)
         response.raise_for_status()

@@ -529,12 +529,18 @@ class ChatDisplay(QTextBrowser):
 
     def _render_tool_record_html(self, record: dict[str, object]) -> str:
         """将持久化的工具调用记录渲染成 HTML。"""
-        status = str(record.get("status") or "running")
-        duration_sec = float(record.get("duration_sec") or 0.0)
-        return self._render_tool_status_html(
-            str(record.get("tool_call_id") or ""),
-            self._tool_status_text(status, duration_sec),
-        )
+        return self._render_tool_status_html(str(record.get("tool_call_id") or ""), self.tool_record_status(record))
+
+    @staticmethod
+    def tool_record_status(record: dict[str, object]) -> str:
+        """为实时与历史记录生成一致的工具状态行。"""
+        from ui_constants import tool_name_chi_mapping
+        name = str(record.get("tool_name") or "")
+        if record.get("ok") is False:
+            return f"<{tool_name_chi_mapping.get(name, name)}失败>"
+        if name in {"read_url", "web_search", "deepseek_web_search", "deepseek_read_url", "deepseek_citations"} and record.get("status") == "completed":
+            return f"<{tool_name_chi_mapping.get(name, name)}>"
+        return ChatDisplay._tool_status_text(str(record.get("status") or "running"), float(record.get("duration_sec") or 0))
 
     @staticmethod
     def _render_attachments_html(message: Message) -> str:

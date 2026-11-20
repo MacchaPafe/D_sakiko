@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterable, Awaitable, Callable
 from inspect import isawaitable
+from ..deepseek_chat import WEB_TOOLS, supports_chat_tools
 from ..replay import compatible, make_replay
 from ..types import LLMConfig, LLMRequest, LLMResult
 from .responses import mapping
@@ -26,10 +27,25 @@ def build_messages(request: LLMRequest, config: LLMConfig) -> list[dict[str, obj
                     message["reasoning_content"] = reasoning
                 provider_options = replay.get("providerOptions", {})
                 if isinstance(provider_options, dict):
+                    native = provider_options.get("deepseek", {})
+                    if supports_chat_tools(config) and isinstance(native, dict) and native.get("server_tool_calls"):
+                        message["server_tool_calls"] = native["server_tool_calls"]
                     details = provider_options.get("openaiCompatible", {})
                     if isinstance(details, dict) and details.get("reasoningDetails"):
                         message["reasoning_details"] = details["reasoningDetails"]
-        messages.append(message)
+        # 读链接只识别最后一条用户消息；把应用附加的本轮要求并入这条消息，
+        # 否则真正带 URL 的提问会被控制消息遮住。指纹仍按项目原始历史计算。
+        control = message.get("content")
+        if (supports_chat_tools(config) and message.get("role") == "user" and isinstance(control, str)
+                and control.startswith(("<runtime_controls>", "<worldbook_context>"))
+                and messages and messages[-1].get("role") == "user"):
+            preceding = messages[-1].get("content")
+            if isinstance(preceding, list):
+                messages[-1]["content"] = [*preceding, {"type": "text", "text": control}]
+            else:
+                messages[-1]["content"] = f"{preceding}\n\n{control}"
+        else:
+            messages.append(message)
         prefix.append(original)
     return messages
 
@@ -70,7 +86,11 @@ def parse_response(response: object, request: LLMRequest, config: LLMConfig) -> 
                     if key in {"type", "format", "index", "id", "text", "data", "signature", "summary"}}
                    for part in message["reasoning_details"]]
         provider_options = {"openaiCompatible": {"reasoningDetails": details}}
-    return LLMResult(text=text, reasoning=reasoning, tool_calls=calls, content=blocks,
+    if supports_chat_tools(config):
+        native = {key: message[key] for key in ("server_tool_calls", "annotations") if message.get(key)}
+        if native:
+            provider_options["deepseek"] = native
+    return LLMResult(text=text, reasoning=reasoning, tool_calls=calls, content=blocks, title=str(message.get("title") or ""),
                      usage=mapping(data.get("usage")), model=str(data.get("model") or config.model),
                      finish_reason=finish, protocol=make_replay(config, request.messages, blocks, provider_options))
 
@@ -83,17 +103,31 @@ async def _collect_stream(
 
     chunks: list[object] = []
     finish_reason = ""
+    extensions: dict[str, object] = {}
+    final_reasoning: list[str] | None = None
     observer = request.text_observer
     try:
         async for chunk in stream:
             # SDK 增量没有 LiteLLM 的字典接口，需要统一成重组器可直接使用的结构。
             chunks.append(chunk if isinstance(chunk, litellm.ModelResponseStream)
                           else litellm.ModelResponseStream(**mapping(chunk)))
-            choices = mapping(chunk).get("choices")
+            raw = mapping(chunk)
+            if raw.get("error"):
+                raise LLMError("incomplete", "聊天流返回错误：" + str(raw["error"]))
+            choices = raw.get("choices")
             if not isinstance(choices, list) or not choices:
                 continue
             choice = mapping(choices[0])
-            delta = mapping(choice.get("delta")).get("content")
+            fields = mapping(choice.get("delta"))
+            if final_reasoning is not None and isinstance(fields.get("reasoning_content"), str):
+                final_reasoning.append(fields["reasoning_content"])
+            if mapping(choice.get("server_tool_event")).get("type") == "step_reasoning_done":
+                # 此前的推理已归入对应的服务端步骤，只回传最后一步的推理。
+                final_reasoning = []
+            for key in ("title", "annotations", "server_tool_calls"):
+                if fields.get(key):
+                    extensions[key] = fields[key]
+            delta = fields.get("content")
             if observer is not None and isinstance(delta, str) and delta:
                 observer.on_delta(delta)
             if choice.get("finish_reason"):
@@ -106,7 +140,12 @@ async def _collect_stream(
                 await result
     if not finish_reason:
         raise LLMError("incomplete", "聊天流在模型确认结束前中断。")
-    return litellm.stream_chunk_builder(chunks, messages=messages)
+    result = mapping(litellm.stream_chunk_builder(chunks, messages=messages))
+    if final_reasoning is not None and result["choices"][0]["message"].get("reasoning_content"):
+        extensions["reasoning_content"] = "".join(final_reasoning)
+    if extensions:
+        result["choices"][0]["message"].update(extensions)
+    return result
 
 
 def _stream_option_rejected(error: Exception, parameter: str) -> bool:
@@ -128,6 +167,9 @@ async def _complete_chat(
     fallback = {key: value for key, value in options.items() if key != "stream_options"}
     if request.text_observer is None:
         return await call(stream=False, **fallback)
+    retry_options = dict(fallback)
+    if "title" in mapping(fallback.get("extra_body")):
+        retry_options["extra_body"] = {key: value for key, value in mapping(fallback["extra_body"]).items() if key != "title"}
     stream_options = options.get("stream_options") or {"include_usage": True}
     try:
         try:
@@ -135,11 +177,11 @@ async def _complete_chat(
         except Exception as error:
             if not _stream_option_rejected(error, "stream_options"):
                 raise
-            response = await call(stream=True, **fallback)
+            response = await call(stream=True, **retry_options)
     except Exception as error:
         if not _stream_option_rejected(error, "stream"):
             raise
-        return await call(stream=False, **fallback)
+        return await call(stream=False, **retry_options)
     if isinstance(response, AsyncIterable):
         return await _collect_stream(response, request, messages)
     return response
@@ -167,9 +209,12 @@ async def execute(request: LLMRequest, config: LLMConfig) -> LLMResult:
     if request.tools:
         options.update(tools=request.tools, tool_choice=request.tool_choice)
     messages = build_messages(request, config)
-    if config.sdk_chat:
+    native_chat = supports_chat_tools(config) and (any(tool.get("type") in WEB_TOOLS for tool in request.tools)
+                  or bool(mapping(options.get("extra_body")).get("title"))
+                  or any(message.get("server_tool_calls") for message in messages))
+    if config.sdk_chat or native_chat:
         from openai import AsyncOpenAI
-        async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url,
+        async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url or "https://api.deepseek.com",
                                timeout=config.timeout, max_retries=0) as client:
             sdk_options = dict(options, messages=messages, model=config.model.removeprefix("openai/").removeprefix("deepseek/"))
             response = await _complete_chat(client.chat.completions.create, request, messages, sdk_options)

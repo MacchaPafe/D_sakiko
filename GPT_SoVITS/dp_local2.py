@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from qconfig import create_d_sakiko_config_snapshot, d_sakiko_config, THIRD_PARTY_OPENAI_COMPAT_PROVIDER_IDS
 from llm.errors import LLMError
+from llm.deepseek_chat import TOOL_CONFLICT, WEB_TOOLS, supports_chat_tools, web_displays
 from llm_model_utils import ensure_openai_compatible_model
 from llm_request_settings import request_timeout
 from character import CharacterAttributes
@@ -1113,6 +1114,8 @@ class DSLocalAndVoiceGen:
                     observer = request_kwargs.get("_text_observer")
                     if isinstance(observer, LLMTextObserver):
                         observer.on_retry()
+                    if isinstance(request_kwargs.get("extra_body"), dict):
+                        request_kwargs["extra_body"] = {key: value for key, value in request_kwargs["extra_body"].items() if key != "title"}
                     repaired_messages = self._repair_deepseek_file_references(messages, service)
                     request_kwargs["messages"] = repaired_messages
                     messages = repaired_messages
@@ -1279,6 +1282,15 @@ class DSLocalAndVoiceGen:
             self._chatgpt_lease_turn = turn_id
         if connection.base_url:
             request_kwargs["base_url"] = connection.base_url
+        main_request = model in {"tool-runtime", "plain-runtime"}
+        if main_request and getattr(self, "_native_web_turn", False):
+            if tools and options.get("thinking") == {"type": "disabled"}:
+                raise LLMError("unsupported_tools", TOOL_CONFLICT)
+            tools = [*(tools or []), *({"type": kind} for kind in WEB_TOOLS)]
+            tool_choice = "auto"
+        if main_request and getattr(self, "_request_title", False):
+            self._request_title = False
+            request_kwargs["extra_body"] = dict(request_kwargs.get("extra_body") or {}, title={"enabled": True})
         if tools is not None:
             request_kwargs.update(tools=tools, tool_choice=tool_choice)
         request_kwargs[CACHE_DEBUG_PHASE_KEY] = phase
@@ -1288,9 +1300,11 @@ class DSLocalAndVoiceGen:
                 result = self._execute_deepseek_multimodal_completion(request_kwargs, service)
             else:
                 result = self._execute_completion_with_provider_policy(connection.provider, request_kwargs)
-        except Exception:
+        except Exception as exc:
             if observer is not None:
                 observer.on_retry()
+            if main_request and "client tools can only be used together" in str(exc).lower():
+                raise LLMError("unsupported_tools", TOOL_CONFLICT) from exc
             raise
         if isinstance(result, LLMResult) and model != "rolling-summary":
             # 旧模型可能把调用写在 JSON 正文中；先固定其调用身份，再交给原有业务循环。
@@ -1314,8 +1328,17 @@ class DSLocalAndVoiceGen:
                 if not meta.get("generation"):
                     meta["generation"] = {"modelId": connection.model, "timeoutMs": int(float(timeout) * 1000),
                                           "temperature": options.get("temperature"), "topP": options.get("top_p")}
-                    meta["tools"] = [str(tool.get("function", tool).get("name", "")) for tool in tools or []]
+                    meta["tools"] = [str(tool.get("function", {}).get("name") or tool.get("type", "")) for tool in tools or []]
             self.current_chat.record_model_response(result)
+            if main_request and turn_id:
+                if result.title and request_kwargs.get("extra_body", {}).get("title"):
+                    self._generated_title = result.title
+                if result.protocol.get("providerOptions", {}).get("deepseek"):
+                    message_id = self.current_chat.response_message_id(result)
+                    for display in web_displays(str(message_id), result.protocol["providerOptions"]):
+                        display["message_index"] = self.current_chat.find_last_real_user_message_index()
+                        self.current_chat.append_tool_call_record(ToolCallRecordMeta.from_dict(display))
+                        self._web_displays.append(display)
             self.chat_manager.save()
         return result
 
@@ -2457,7 +2480,17 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_error(dp2qt_queue, active_chat_id, turn_id, self.chat_manager.storage_error)
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
-            # 在处理用户输入前，先检查这轮对话是否已经被标记为取消了（可能用户在输入后又点了取消按钮）。如果已经取消了，就直接跳过处理，进入下一轮循环等待新输入。
+            first_generation = chat.claim_first_title(turn_id)
+            if first_generation:
+                try:
+                    self.chat_manager.save()
+                except Exception:
+                    self._emit_turn_error(dp2qt_queue, active_chat_id, turn_id, self.chat_manager.storage_error)
+                    self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
+                    continue
+            self._generated_title = ""
+            self._web_displays: list[dict[str, object]] = []
+            # 首次生成的机会在任何取消或业务校验之前消耗。
             # 不过一般人手速没这么快吧（
             if self.is_turn_cancelled(active_chat_id, turn_id):
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
@@ -2471,6 +2504,10 @@ class DSLocalAndVoiceGen:
             # 图片导入前也需要使用本轮锁定的模型配置判断视觉能力。
             self.d_sakiko_config = create_d_sakiko_config_snapshot()
             # 与模型配置一起锁定本轮秒数，所有后续格式修正和摘要使用同一值。
+            from llm.configuration import resolve_config
+            official_flash = supports_chat_tools(resolve_config(self.d_sakiko_config))
+            self._native_web_turn = official_flash and "web_search" in enabled_tools_snapshot
+            self._request_title = official_flash and first_generation
             self._turn_request_timeout = request_timeout(self.d_sakiko_config)
             deepseek_file_service = self._current_deepseek_file_service()
 
@@ -2699,6 +2736,7 @@ class DSLocalAndVoiceGen:
                         ),
                         include_base_tools=tool_calling_enabled,
                         enabled_general_tools=enabled_tools_snapshot,
+                        web_backend="deepseek" if self._native_web_turn else "bocha",
                     )
                 else:
                     runtime_result = self._run_plain_completion_turn(
@@ -2713,6 +2751,9 @@ class DSLocalAndVoiceGen:
                     self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "cancelled")
                     continue
 
+                for display in self._web_displays:
+                    payload = dict(display, chat_id=active_chat_id, turn_id=turn_id)
+                    self._emit_tool_ui_event(dp2qt_queue, TOOL_CALL_UPDATE_EVENT_PREFIX, payload)
                 if tool_calling_enabled:
                     for one_tool_exec in runtime_result.tool_execution_records:
                         self._record_tool_call_completed(dp2qt_queue, one_tool_exec)
@@ -2920,6 +2961,10 @@ class DSLocalAndVoiceGen:
                 self._emit_turn_complete(dp2qt_queue, active_chat_id, turn_id, "error")
                 continue
 
+            if (self._generated_title and not self.is_turn_cancelled(active_chat_id, turn_id)
+                    and chat.apply_first_title(turn_id, self._generated_title)):
+                # 和本轮生成的台词一起保存；标题到达不阻塞已准备好的语音。
+                dp2qt_queue.put(dict(type="chat_title_updated", chat_id=active_chat_id, turn_id=turn_id))
             segments = [
                 self._segment_from_message(index, self.current_chat.message_list[index], not self.if_generate_audio)
                 for index in added_msg_indices

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 import os.path
+from urllib.parse import urlsplit
 import re
 import time
 import json
@@ -445,14 +447,22 @@ class ToolCallInfoDialog(QDialog):
         duration = record.get("duration_sec")
         result_content = str(record.get("result_content") or "工具运行中...")
 
-        status_text = "工具运行中..." if status != "completed" else f"运行完成 {float(duration or 0.0):.2f} 秒"
+        status_text = "工具运行中..."
+        if status == "completed":
+            status_text = "执行失败" if record.get("ok") is False else "运行完成"
+            if duration is not None:
+                status_text += f" {float(duration):.2f} 秒"
 
         layout = QVBoxLayout()
         layout.addWidget(QLabel(f"工具名称: {tool_name}"))
         layout.addWidget(QLabel(f"状态: {status_text}"))
 
         result_box = QTextBrowser()
-        result_box.setPlainText(result_content)
+        if record.get("tool_name") in {"web_search", "read_url", "deepseek_web_search", "deepseek_read_url", "deepseek_citations"}:
+            result_box.setOpenExternalLinks(True)
+            result_box.setHtml(self._web_result_html(result_content))
+        else:
+            result_box.setPlainText(result_content)
         layout.addWidget(result_box)
 
         close_btn = QPushButton("关闭")
@@ -465,6 +475,25 @@ class ToolCallInfoDialog(QDialog):
             self.setStyleSheet(build_character_theme_stylesheet(parent_palette))
         else:
             self.setStyleSheet(dialogWindowDefaultCss)
+
+
+    @staticmethod
+    def _web_result_html(content: str) -> str:
+        """将来源标题与公网链接配对，所有网页文字均按纯文本转义。"""
+        lines: list[str] = []
+        for line in content.splitlines():
+            url = line.strip()
+            if url.startswith(("https://", "http://")):
+                try:
+                    hostname = urlsplit(url).hostname
+                except ValueError:
+                    hostname = None
+                if hostname:
+                    title = lines.pop() if lines and not lines[-1].startswith("<a ") else html.escape(url)
+                    lines.append(f'<a href="{html.escape(url, quote=True)}">{title}</a> · {html.escape(hostname)}')
+                    continue
+            lines.append(html.escape(line))
+        return "<br>".join(lines)
 
 
 class LotteryDialog(QDialog):
@@ -3480,8 +3509,8 @@ class ChatGUI(QWidget):
             return
         self.tool_call_records_cache[tool_call_id] = payload
         tool_name = str(payload.get("tool_name") or "unknown")
-        duration_sec = float(payload.get("duration_sec") or 0.0)
-        self._append_tool_status_line(tool_call_id, f"<工具调用完成 {duration_sec:.2f}秒>", status="completed")
+        text = self.chat_display.tool_record_status(payload)
+        self._append_tool_status_line(tool_call_id, text, status="completed")
         self._update_pet_tool_activity(tool_call_id, tool_name, False)
 
     def _update_pet_tool_activity(self, tool_call_id: str, tool_name: str, running: bool) -> None:
@@ -4960,6 +4989,9 @@ class ChatGUI(QWidget):
                 self.chat_display.append_context_compaction_notice(
                     str(payload.get("message") or "正在整理过往思绪...")
                 )
+            return
+        if event_type == "chat_title_updated":
+            self.refresh_chat_list()
             return
         if event_type == "worldbook_diagnostic":
             chat_id = str(payload.get("chat_id") or "")

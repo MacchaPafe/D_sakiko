@@ -756,7 +756,8 @@ class Chat:
         :param chat_id: 对话的稳定标识。旧存档缺失时会自动生成。
         """
         self.chat_id = chat_id or uuid.uuid4().hex
-        self.name = name
+        self._name = name
+        self._title_turn = ""
         self.type = type_
 
         if prompt_generator is None:
@@ -799,6 +800,35 @@ class Chat:
         
         chat = cls(name=name, prompt_generator=generator, start_message="", message_list=[])
         return chat
+
+    @property
+    def name(self) -> str:
+        """返回当前会话标题。"""
+        return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        """显式命名会永久优先于待返回的服务端标题。"""
+        with self._timeline.lock:
+            self._name = value
+            self._title_turn = ""
+            self.meta.extra.pop("awaiting_first_title", None)
+
+    def claim_first_title(self, turn_id: str) -> bool:
+        """仅新建且未命名的会话可以领取一次机会，失败或重试时也会消耗。"""
+        with self._timeline.lock:
+            if self.meta.extra.pop("awaiting_first_title", False) is not True:
+                return False
+            self._title_turn = turn_id
+            return True
+
+    def apply_first_title(self, turn_id: str, title: str) -> bool:
+        """只接受原始生成轮次的标题，保留等待期间的手动命名。"""
+        with self._timeline.lock:
+            if self._title_turn != turn_id or not turn_id or not title.strip():
+                return False
+            self.name = " ".join(title.split())
+            return True
 
     def get_character_name(self) -> Optional[str]:
         """
@@ -881,12 +911,19 @@ class Chat:
         """保留本轮实际控制信息的位置，避免下一轮改写此前输入前缀。"""
         if not self.turns:
             return
-        controls = [copy.deepcopy(message) for message in messages
-                    if message.get("role") == "user" and "<runtime_controls>" in str(message.get("content", ""))]
+        controls = []
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.startswith(("<worldbook_context>", "<runtime_controls>")):
+                controls.append(copy.deepcopy(message))
+            else:
+                controls.clear()
         if controls:
             meta = object_dict(self.turns[-1].get("meta"))
             extensions = meta.setdefault("extensions", {})
-            extensions["pythonRuntimeControls"] = controls[-1:]
+            extensions.setdefault("pythonRuntimeControls", controls)
         if self.turns:
             meta = object_dict(self.turns[-1].get("meta"))
             extensions = meta.setdefault("extensions", {})
@@ -2122,6 +2159,8 @@ class ChatManager:
             user_character=user_character,
             name=chat_name,
         )
+        if not name or not name.strip():
+            chat.meta.extra["awaiting_first_title"] = True
         self.chat_list.append(chat)
         return chat
 
@@ -2341,7 +2380,9 @@ class ChatManager:
             return existing_chats[0]
         if not characters:
             raise ValueError("无法创建默认普通对话：角色列表为空。")
-        return self.create_single_character_chat(characters[0], name=characters[0].character_name)
+        chat = self.create_single_character_chat(characters[0], name=characters[0].character_name)
+        chat.meta.extra["awaiting_first_title"] = True
+        return chat
 
     def collect_audio_paths_for_chat(self, chat_id: str) -> list[str]:
         """

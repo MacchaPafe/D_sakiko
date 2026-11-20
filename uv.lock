@@ -217,6 +217,19 @@ wheels = [
 ]
 
 [[package]]
+name = "beautifulsoup4"
+version = "4.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "soupsieve" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/65/318323f98dbee45d42dff61d8f047181bc6f2268a9068cfad035a46be5af/beautifulsoup4-4.15.0.tar.gz", hash = "sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7", size = 632571, upload-time = "2026-06-07T16:44:20.453Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl", hash = "sha256:d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9", size = 109924, upload-time = "2026-06-07T16:44:21.566Z" },
+]
+
+[[package]]
 name = "bidict"
 version = "0.24.1"
 source = { registry = "https://pypi.org/simple" }
@@ -479,6 +492,7 @@ version = "4.0.1"
 source = { virtual = "." }
 dependencies = [
     { name = "av" },
+    { name = "beautifulsoup4" },
     { name = "chardet" },
     { name = "cn2an" },
     { name = "coloraide" },
@@ -503,6 +517,7 @@ dependencies = [
     { name = "live2d-py", version = "1.0.0+d.sakiko.1", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v1.0.0%2Bd_sakiko.1/live2d_py-1.0.0%2Bd.sakiko.1-cp38-abi3-macosx_14_0_universal2.whl" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { name = "live2d-py", version = "1.0.0+d.sakiko.1", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v1.0.0%2Bd_sakiko.1/live2d_py-1.0.0%2Bd.sakiko.1-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "sys_platform == 'linux'" },
     { name = "live2d-py", version = "1.0.0+d.sakiko.1", source = { url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v1.0.0%2Bd_sakiko.1/live2d_py-1.0.0%2Bd.sakiko.1-cp38-abi3-win_amd64.whl" }, marker = "sys_platform == 'win32'" },
+    { name = "markdownify" },
     { name = "modelscope" },
     { name = "numba" },
     { name = "numpy" },
@@ -594,6 +609,7 @@ dev = [
 requires-dist = [
     { name = "av", specifier = ">=11" },
     { name = "boto3", marker = "extra == 'release'", specifier = ">=1.40,<2" },
+    { name = "beautifulsoup4", specifier = ">=4.13,<5" },
     { name = "chardet", specifier = ">=5.2.0" },
     { name = "cn2an", specifier = ">=0.5.23" },
     { name = "coloraide", specifier = ">=8.11.1,<9" },
@@ -621,6 +637,7 @@ requires-dist = [
     { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v1.0.0%2Bd_sakiko.1/live2d_py-1.0.0%2Bd.sakiko.1-cp38-abi3-macosx_14_0_universal2.whl" },
     { name = "live2d-py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v1.0.0%2Bd_sakiko.1/live2d_py-1.0.0%2Bd.sakiko.1-cp38-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
     { name = "live2d-py", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/yan-xiaoo/live2d-py/releases/download/v1.0.0%2Bd_sakiko.1/live2d_py-1.0.0%2Bd.sakiko.1-cp38-abi3-win_amd64.whl" },
+    { name = "markdownify", specifier = ">=1.2,<2" },
     { name = "modelscope", specifier = ">=1.32.0" },
     { name = "nicegui", marker = "extra == 'rag'", specifier = ">=2.12.1" },
     { name = "numba", specifier = ">=0.62.1,<0.63" },
@@ -1782,6 +1799,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e4/ae/07d4a5fcaa5509221287d289323d75ac8eda5a5a4ac9de2accf7bbcc2b88/markdown2-2.5.5.tar.gz", hash = "sha256:001547e68f6e7fcf0f1cb83f7e82f48aa7d48b2c6a321f0cd20a853a8a2d1664", size = 157249, upload-time = "2026-03-02T20:46:53.411Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/af/4b3891eb0a49d6cfd5cbf3e9bf514c943afc2b0f13e2c57cc57cd88ecc21/markdown2-2.5.5-py3-none-any.whl", hash = "sha256:be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941", size = 56250, upload-time = "2026-03-02T20:46:52.032Z" },
+]
+
+[[package]]
+name = "markdownify"
+version = "1.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "beautifulsoup4" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/29/5e46d8d7aa6c66c73809c0018a435b3271d01fa0f54f8215d634a6a92051/markdownify-1.2.4.tar.gz", hash = "sha256:3837f5eb4caa627473451f9ebb91e00d0f12120fc64d64246bea23934244bd01", size = 19301, upload-time = "2026-11-18T18:17:09.378Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/df/37/9905803c2df99e10c69df1b0ecaad16a559d51cec20e2929006975d1bedc/markdownify-1.2.4-py3-none-any.whl", hash = "sha256:e0375484fdd2bb007e86779fe34c59673d0011b14f8299953aaf0bf092269220", size = 15852, upload-time = "2026-11-18T18:17:08.216Z" },
 ]
 
 [[package]]
@@ -5902,6 +5931,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/e5/58fd1a8d7b26fc113af244f966ee3aecf03cb9293cb935daaddc1e455e18/soundfile-0.13.1-py2.py3-none-macosx_11_0_arm64.whl", hash = "sha256:743f12c12c4054921e15736c6be09ac26b3b3d603aef6fd69f9dde68748f2593", size = 1101406, upload-time = "2025-01-25T09:16:49.662Z" },
     { url = "https://files.pythonhosted.org/packages/57/5e/70bdd9579b35003a489fc850b5047beeda26328053ebadc1fb60f320f7db/soundfile-0.13.1-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:03267c4e493315294834a0870f31dbb3b28a95561b80b134f0bd3cf2d5f0e618", size = 1313646, upload-time = "2025-01-25T09:16:54.872Z" },
     { url = "https://files.pythonhosted.org/packages/14/e9/6b761de83277f2f02ded7e7ea6f07828ec78e4b229b80e4ca55dd205b9dc/soundfile-0.13.1-py2.py3-none-win_amd64.whl", hash = "sha256:1e70a05a0626524a69e9f0f4dd2ec174b4e9567f4d8b6c11d38b5c289be36ee9", size = 1019162, upload-time = "2025-01-25T09:16:59.573Z" },
+]
+
+[[package]]
+name = "soupsieve"
+version = "2.8.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7b/ae/2d9c981590ed9999a0d91755b47fc74f74de286b0f5cee14c9269041e6c4/soupsieve-2.8.3.tar.gz", hash = "sha256:3267f1eeea4251fb42728b6dfb746edc9acaffc4a45b27e19450b676586e8349", size = 118627, upload-time = "2026-01-20T04:27:02.457Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/2c/1462b1d0a634697ae9e55b3cecdcb64788e8b7d63f54d923fcd0bb140aed/soupsieve-2.8.3-py3-none-any.whl", hash = "sha256:ed64f2ba4eebeab06cc4962affce381647455978ffc1e36bb79a545b91f45a95", size = 37016, upload-time = "2026-01-20T04:27:01.012Z" },
 ]
 
 [[package]]
