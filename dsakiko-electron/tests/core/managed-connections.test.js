@@ -449,6 +449,9 @@ test('订阅退出后已有对话可以改用 Vertex，保留原来的用户消�
     )
     const finished = async () => !(await backend.conversations.getSnapshot(chatId)).activeTurnId
     await expect.poll(finished).toBe(true)
+    const [preview] = await backend.conversations.listChats()
+    expect(preview.lastReply).toBe('测试回复')
+    expect(preview.showTitle).toBeUndefined()
     const before = (await backend.store.load(chatId)).chat.turns
     expect(before[0].messages.length).toBe(2)
     await accounts.logout('profile')

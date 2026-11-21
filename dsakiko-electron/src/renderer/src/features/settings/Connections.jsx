@@ -1,6 +1,17 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUpRight, Cable, GripVertical, Plus, X } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Brain,
+  Cable,
+  Check,
+  ChevronDown,
+  GripVertical,
+  Plus,
+  X
+} from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
+import { Checkbox } from '../../components/ui/checkbox.jsx'
 import { Input } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { desktopHost } from '../../host/desktop.js'
@@ -10,6 +21,19 @@ import { ChatGPTAccountFields, VertexAccountFields } from './ManagedAccountField
 
 const managedProviders = ['vertex', 'chatgpt']
 const emptyVertex = { project: '', email: '', location: 'global' }
+const reasoningStatuses = [
+  { value: 'auto', label: '自动识别' },
+  { value: 'supported', label: '支持思考' },
+  { value: 'unsupported', label: '不支持思考' }
+]
+const reasoningEffortOptions = [
+  { value: 'minimal', label: '最低' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '超高' },
+  { value: 'max', label: '最高' }
+]
 const providerOptions = providerPresets.map((item) => ({
   value: item.id,
   label: item.name,
@@ -39,6 +63,7 @@ function modelRows(connection) {
 }
 
 function ConnectionEditor({ connection, client, onBack, onSaved }) {
+  const clearKeyId = useId()
   const [draft, setDraft] = useState(() => makeDraft(connection))
   const [rows, setRows] = useState(() => modelRows(draft))
   const [key, setKey] = useState('')
@@ -223,6 +248,10 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
     }
   }
 
+  function handleClearKeyChange(checked) {
+    setClearKey(checked === true)
+  }
+
   return (
     <>
       <Button type="button" size="sm" variant="ghost" onClick={onBack} disabled={Boolean(pending)}>
@@ -314,14 +343,14 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
                   </Button>
                 )}
                 {connection?.credentialConfigured && (
-                  <label className="settings-checkbox">
-                    <input
-                      type="checkbox"
+                  <div className="settings-inline-check">
+                    <Checkbox
+                      id={clearKeyId}
                       checked={clearKey}
-                      onChange={(event) => setClearKey(event.target.checked)}
+                      onCheckedChange={handleClearKeyChange}
                     />
-                    清除已保存的 Key
-                  </label>
+                    <label htmlFor={clearKeyId}>清除已保存的 Key</label>
+                  </div>
                 )}
               </div>
             </>
@@ -330,47 +359,18 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
         <fieldset disabled={Boolean(pending)}>
           <legend>模型</legend>
           {rows.map(({ key, model }, index) => (
-            <div className="settings-model-field" key={key}>
-              {isChatGPT ? (
-                <SelectField
-                  label={'模型 ID ' + (index + 1)}
-                  value={model.id}
-                  placeholder={account?.connected ? '选择 GPT 模型' : '登录后可选模型'}
-                  disabled={!account?.connected}
-                  onChange={(value) => editModel(index, value)}
-                  options={(account?.models ?? []).map((item) => ({
-                    value: item.id,
-                    label: item.label,
-                    keywords: [item.id]
-                  }))}
-                />
-              ) : (
-                <Input
-                  required
-                  aria-label={'模型 ID ' + (index + 1)}
-                  placeholder={isVertex ? 'gemini-4-argon' : '模型 ID'}
-                  value={model.id}
-                  onChange={(event) => editModel(index, event.target.value)}
-                />
-              )}
-              {!isChatGPT && (
-                <ReasoningOverrides
-                  model={model}
-                  onChange={(patch) => overrideModel(index, patch)}
-                />
-              )}
-              {rows.length > 1 && (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  aria-label={'移除模型 ' + (index + 1)}
-                  onClick={() => removeModel(index)}
-                >
-                  <X />
-                </Button>
-              )}
-            </div>
+            <ModelRow
+              key={key}
+              index={index}
+              model={model}
+              isChatGPT={isChatGPT}
+              isVertex={isVertex}
+              account={account}
+              canRemove={rows.length > 1}
+              onEditModel={editModel}
+              onOverrideModel={overrideModel}
+              onRemoveModel={removeModel}
+            />
           ))}
           <Button type="button" size="sm" variant="outline" onClick={addModel}>
             <Plus />
@@ -414,56 +414,202 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
   )
 }
 
-function ReasoningOverrides({ model, onChange }) {
+function reasoningSummary(overrides) {
+  const caps = overrides ?? {}
+  const status = caps.reasoning?.status ?? 'auto'
+  if (status === 'unsupported') return '不支持思考'
+  if (status === 'supported') {
+    const count = (caps.reasoningEfforts ?? []).length
+    if (count > 0) return `思考 · ${count} 档`
+    return caps.reasoningToggle ? '支持思考 · 可关' : '支持思考'
+  }
+  return '思考 · 自动'
+}
+
+function ModelRow({
+  index,
+  model,
+  isChatGPT,
+  isVertex,
+  account,
+  canRemove,
+  onEditModel,
+  onOverrideModel,
+  onRemoveModel
+}) {
+  const [reasoningOpen, setReasoningOpen] = useState(false)
+  const toggleId = useId()
+  const panelId = useId()
   const caps = model.overrides ?? {}
   const status = caps.reasoning?.status ?? 'auto'
-  function configure(value) {
-    if (value === 'auto') onChange(null)
-    else
-      onChange({
-        reasoning: { status: value, source: 'manual-override' },
-        reasoningEfforts: [],
-        reasoningToggle: false
-      })
+  const configured = status !== 'auto'
+
+  function handleModelTextChange(event) {
+    onEditModel(index, event.target.value)
   }
-  function toggleLevel(level) {
-    const levels = new Set(caps.reasoningEfforts ?? [])
-    if (levels.has(level)) levels.delete(level)
-    else levels.add(level)
-    onChange({ reasoningEfforts: [...levels] })
+
+  function handleModelSelectChange(value) {
+    onEditModel(index, value)
   }
+
+  function handleTogglePanel() {
+    setReasoningOpen((previous) => !previous)
+  }
+
+  function handleRemove() {
+    onRemoveModel(index)
+  }
+
+  function handleSelectStatus(event) {
+    const value = event.currentTarget.value
+    if (value === 'auto') {
+      onOverrideModel(index, null)
+      return
+    }
+    onOverrideModel(index, {
+      reasoning: { status: value, source: 'manual-override' },
+      reasoningEfforts: [],
+      reasoningToggle: false
+    })
+  }
+
+  function handleToggleEffort(event) {
+    const level = event.currentTarget.value
+    const current = new Set(caps.reasoningEfforts ?? [])
+    if (current.has(level)) current.delete(level)
+    else current.add(level)
+    // 按规范强度顺序输出，避免因点击顺序导致序列不稳定。
+    const ordered = reasoningEffortOptions
+      .map((option) => option.value)
+      .filter((item) => current.has(item))
+    onOverrideModel(index, { reasoningEfforts: ordered })
+  }
+
+  function handleToggleOffSwitch(checked) {
+    onOverrideModel(index, { reasoningToggle: checked === true })
+  }
+
   return (
-    <details className="model-reasoning-settings">
-      <summary>思考能力</summary>
-      <select aria-label="思考能力声明" value={status} onChange={(e) => configure(e.target.value)}>
-        <option value="auto">自动识别</option>
-        <option value="supported">支持思考</option>
-        <option value="unsupported">不支持思考</option>
-      </select>
-      {status === 'supported' && (
-        <div>
-          <label>
-            <input
-              type="checkbox"
-              checked={Boolean(caps.reasoningToggle)}
-              onChange={(e) => onChange({ reasoningToggle: e.target.checked })}
-            />
-            支持关闭思考
-          </label>
-          <div>支持的强度</div>
-          {['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => (
-            <label key={level}>
-              <input
-                type="checkbox"
-                checked={Boolean(caps.reasoningEfforts?.includes(level))}
-                onChange={() => toggleLevel(level)}
-              />
-              {level}
-            </label>
-          ))}
+    <div className="settings-model-item">
+      <div className="settings-model-row">
+        {isChatGPT ? (
+          <SelectField
+            label={'模型 ID ' + (index + 1)}
+            value={model.id}
+            placeholder={account?.connected ? '选择 GPT 模型' : '登录后可选模型'}
+            disabled={!account?.connected}
+            onChange={handleModelSelectChange}
+            options={(account?.models ?? []).map((item) => ({
+              value: item.id,
+              label: item.label,
+              keywords: [item.id]
+            }))}
+          />
+        ) : (
+          <Input
+            required
+            aria-label={'模型 ID ' + (index + 1)}
+            placeholder={isVertex ? 'gemini-4-argon' : '模型 ID'}
+            value={model.id}
+            onChange={handleModelTextChange}
+          />
+        )}
+        {!isChatGPT && (
+          <Button
+            type="button"
+            size="sm"
+            variant={reasoningOpen ? 'secondary' : 'outline'}
+            className="model-reasoning-trigger"
+            data-configured={configured || undefined}
+            aria-expanded={reasoningOpen}
+            aria-controls={panelId}
+            onClick={handleTogglePanel}
+          >
+            <Brain size={14} aria-hidden="true" />
+            <span>{reasoningSummary(model.overrides)}</span>
+            <ChevronDown size={14} className="model-reasoning-chevron" aria-hidden="true" />
+          </Button>
+        )}
+        {canRemove && (
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            aria-label={'移除模型 ' + (index + 1)}
+            onClick={handleRemove}
+          >
+            <X />
+          </Button>
+        )}
+      </div>
+      {!isChatGPT && reasoningOpen && (
+        <div id={panelId} className="model-reasoning-panel">
+          <div className="model-reasoning-section">
+            <div className="model-reasoning-heading">
+              <strong>模型思考能力</strong>
+            </div>
+            <div className="model-reasoning-modes" role="group" aria-label="思考能力声明">
+              {reasoningStatuses.map((option) => (
+                <Button
+                  key={option.value}
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  value={option.value}
+                  aria-pressed={status === option.value}
+                  onClick={handleSelectStatus}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          {status === 'supported' && (
+            <>
+              <div className="model-reasoning-section">
+                <div className="model-reasoning-heading">
+                  <strong>支持的思考强度</strong>
+                  <small>留空则沿用模型思考默认强度。</small>
+                </div>
+                <div className="model-effort-pills" role="group" aria-label="支持的思考强度">
+                  {reasoningEffortOptions.map((option) => {
+                    const selected = Boolean(caps.reasoningEfforts?.includes(option.value))
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="checkbox"
+                        value={option.value}
+                        aria-checked={selected}
+                        className="model-effort-pill"
+                        onClick={handleToggleEffort}
+                      >
+                        <span className="model-effort-check" aria-hidden="true">
+                          {selected && <Check size={11} strokeWidth={2.5} />}
+                        </span>
+                        <span>{option.label}</span>
+                        <code>{option.value}</code>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="model-reasoning-toggle">
+                <div className="settings-inline-check">
+                  <Checkbox
+                    id={toggleId}
+                    checked={Boolean(caps.reasoningToggle)}
+                    onCheckedChange={handleToggleOffSwitch}
+                  />
+                  <label htmlFor={toggleId}>允许在对话中关闭思考</label>
+                </div>
+                <small>启用后，对话栏的思考强度菜单会提供「关闭」选项。</small>
+              </div>
+            </>
+          )}
         </div>
       )}
-    </details>
+    </div>
   )
 }
 
@@ -714,6 +860,7 @@ export function Connections({ client, connections, refresh }) {
         onSaved={saved}
       />
     )
+
   return (
     <>
       <div className="settings-group-title">

@@ -80,6 +80,7 @@ function dialogueStage() {
     setMouthOpen() {},
     setSpeechActive() {},
     startMotion: vi.fn().mockResolvedValue(true),
+    isPlayingMotion: () => false,
     stopMotions: vi.fn(),
     setExpression: vi.fn().mockResolvedValue(true)
   }
@@ -427,6 +428,67 @@ test('小剧场切换朝向时使用 800ms 过渡，同向台词保持 150ms', a
       true,
       expect.any(Function)
     )
+  } finally {
+    stage.dispose()
+  }
+})
+
+test('思考重播同时等待 SDK 播完和启动后十五秒，台词接管后旧回调失效', async () => {
+  vi.useFakeTimers()
+  const { stage, report, adapter } = dialogueStage()
+  const motion = { member: 'talk.motion3.json' }
+  const plan = { motion, thinkingMotions: [motion], idleMotion: null }
+  const waiting = {
+    current: null,
+    defaultPerformances: [{ slotId: 'role', resolvedPerformance: plan }]
+  }
+  stage.actors[0].surface.setSingleIdle = vi.fn()
+  let finish
+  const unsubscribe = vi.fn()
+  adapter.onceMotionFinish = (callback) => {
+    finish = callback
+    return unsubscribe
+  }
+  try {
+    report(waiting)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(adapter.startMotion).toHaveBeenCalledTimes(1)
+    finish()
+    await vi.advanceTimersByTimeAsync(14999)
+    report(waiting)
+    stage.tick()
+    expect(adapter.startMotion).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    stage.tick()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(adapter.startMotion).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(21000)
+    stage.tick()
+    expect(adapter.startMotion).toHaveBeenCalledTimes(2)
+    finish()
+    stage.tick()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(adapter.startMotion).toHaveBeenCalledTimes(3)
+    const oldFinish = finish
+    report({
+      current: {
+        guideId: 'reply',
+        guide: {
+          slotId: 'role',
+          text: '你好',
+          audio: null,
+          resolvedPerformance: { motion: { member: 'next.motion3.json' } }
+        },
+        elapsedMs: 0,
+        durationMs: 20000
+      }
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(unsubscribe).toHaveBeenCalledOnce()
+    oldFinish()
+    await vi.advanceTimersByTimeAsync(16000)
+    stage.tick()
+    expect(adapter.startMotion.mock.calls.map(([, index]) => index)).toEqual([0, 0, 0, 1])
   } finally {
     stage.dispose()
   }

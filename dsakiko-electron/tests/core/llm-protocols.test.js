@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest'
 import { tmpdir } from 'node:os'
 import { configureDeepSeek } from '../../src/backend/llm/deepseek-chat.js'
+import { configureChatGPTSearch } from '../../src/backend/llm/chatgpt-responses.js'
 import { Agent } from '../../src/backend/llm/interface.js'
 import { Settings } from '../../src/backend/settings/interface.js'
 import { characterContext } from '../../src/backend/llm/context.js'
@@ -9,6 +10,7 @@ import {
   requiresStableThinkingPrefix
 } from '../../src/backend/llm/connections.js'
 import { defaultSettings } from '../../src/backend/core/defaults.js'
+import { historyRows } from '../../src/renderer/src/features/home/history.js'
 
 const answer = JSON.stringify({
   lines: [{ speaker: '角色', text: '测试完成', translation: null, emotion: 'happiness' }]
@@ -205,6 +207,11 @@ test('官方联网保留用户链接、日期和网页签名，下一轮无需�
   expect(bodies[0].title).toEqual({ enabled: true })
   expect(updates[0].title).toBe('示例标题')
   expect(updates[0].protocol.providerOptions.deepseek.server_tool_calls).toEqual(signature)
+  expect(updates[0].protocol.serverWeb.calls[0]).toMatchObject({
+    toolName: 'read_url',
+    outcome: { status: 'succeeded' },
+    sources: [{ url: 'https://example.org/article' }]
+  })
   original.turn.reminder = req.deepseek.reminder
   req.history = [original.turn]
   chat.turns = [original.turn]
@@ -220,6 +227,165 @@ test('官方联网保留用户链接、日期和网页签名，下一轮无需�
     signature
   )
   expect(bodies[1].messages.filter((m) => m.role === 'latest_reminder')).toHaveLength(2)
+})
+
+test.each([false, true])('ChatGPT 搜索与本地函数同轮协作（搜索单独返回：%s）', async (split) => {
+  const request = requestFor('chatgpt', 'responses', 'gpt-6.2-sol')
+  request.connection.baseUrl = 'https://api.openai.com/v1'
+  const localSearch = vi.fn()
+  request.tools.push({ ...request.tools[0], name: 'web_search', execute: localSearch })
+  request.tools[0].execute = vi.fn(request.tools[0].execute)
+  configureChatGPTSearch(request)
+
+  const url = 'https://example.org/article'
+  const source = { url, title: '示例网页' }
+  const webCall = {
+    type: 'web_search_call',
+    id: 'ws_1',
+    status: 'completed',
+    action: { type: 'search', query: '测试', sources: [{ type: 'url', url }] }
+  }
+  const functionCall = {
+    type: 'function_call',
+    id: 'fc_1',
+    call_id: 'call_1',
+    name: 'echo',
+    namespace: 'dsakiko',
+    arguments: '{"value":"本地结果"}',
+    status: 'completed'
+  }
+  const finalMessage = {
+    type: 'message',
+    id: 'msg_1',
+    role: 'assistant',
+    status: 'completed',
+    content: [
+      {
+        type: 'output_text',
+        text: answer,
+        annotations: [{ type: 'url_citation', ...source, start_index: 0, end_index: 2 }]
+      }
+    ]
+  }
+  const searches = [webCall, { type: 'web_search_call', id: 'ws_2', status: 'failed' }]
+  const outputs = split
+    ? [searches, [functionCall], [finalMessage]]
+    : [[...searches, functionCall], [finalMessage]]
+  const transport = vi.fn(async () => {
+    const events = outputs.shift().map((item, output_index) => ({
+      type: 'response.output_item.done',
+      output_index,
+      item
+    }))
+    events.push({
+      type: 'response.completed',
+      response: {
+        id: 'resp_1',
+        created_at: 1,
+        model: request.connection.modelId,
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 }
+      }
+    })
+    return new Response(events.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join(''))
+  })
+  const agent = new Agent({ credential: () => async () => 'fixture', assets: {}, fetch: transport })
+  const { turn, observer } = recorder(request)
+  await expect(agent.run(request, observer)).resolves.toMatchObject({ status: 'completed' })
+  expect(transport).toHaveBeenCalledTimes(split ? 3 : 2)
+  const bodies = transport.mock.calls.map(([, options]) => JSON.parse(options.body))
+  const first = bodies[0]
+  const last = bodies.at(-1)
+  expect(first).toMatchObject({
+    store: false,
+    stream: true,
+    tools: [
+      { type: 'namespace', name: 'dsakiko', tools: [{ name: 'echo' }] },
+      { type: 'web_search' }
+    ]
+  })
+  for (const body of bodies.slice(1))
+    expect(body.input.filter((item) => item.type === 'web_search_call')).toEqual([webCall])
+  expect(last.input.filter((item) => item.type === 'function_call_output')).toEqual([
+    {
+      type: 'function_call_output',
+      call_id: 'call_1',
+      output: JSON.stringify({ status: 'succeeded', value: { value: '本地结果' } })
+    }
+  ])
+  expect(last.input.find((item) => item.type === 'function_call')).toMatchObject({
+    namespace: 'dsakiko',
+    name: 'echo',
+    call_id: 'call_1'
+  })
+  expect(request.tools[0].execute).toHaveBeenCalledOnce()
+  expect(localSearch).not.toHaveBeenCalled()
+  const rows = historyRows({ chat: { mode: request.mode, turns: [turn] } })
+  expect(rows.find((row) => row.kind === 'tools').tools).toMatchObject([
+    { toolName: '搜索网页', outcome: { status: 'succeeded' }, sources: [{ url }] },
+    { toolName: '搜索网页', outcome: { status: 'failed' }, display: 'OpenAI 网页搜索失败。' },
+    { toolName: 'echo', outcome: { status: 'succeeded' } }
+  ])
+  expect(rows.find((row) => row.kind === 'sources')?.sources).toEqual([source])
+})
+
+test('ChatGPT 搜索关闭时移除搜索声明，OpenAI API Key 连接保留本地搜索', () => {
+  const subscription = requestFor('chatgpt', 'responses', 'gpt-6.2-sol')
+  const search = { ...subscription.tools[0], name: 'web_search' }
+  subscription.toolDefinitions = [search]
+  configureChatGPTSearch(subscription)
+  expect(subscription.chatgptWebSearch).toBe(false)
+  expect(subscription.toolDefinitions).toEqual([])
+
+  const apiKey = requestFor('openai', 'responses', 'gpt-6.2-sol')
+  apiKey.tools = [search]
+  configureChatGPTSearch(apiKey)
+  expect(apiKey.chatgptWebSearch).toBeUndefined()
+  expect(apiKey.tools).toEqual([search])
+})
+
+test('ChatGPT 拒绝原生搜索时返回具体原因且不切换博查', async () => {
+  const request = requestFor('chatgpt', 'responses', 'gpt-6.2-sol')
+  request.connection.baseUrl = 'https://api.openai.com/v1'
+  const localSearch = vi.fn()
+  request.tools.push({ ...request.tools[0], name: 'web_search', execute: localSearch })
+  configureChatGPTSearch(request)
+  const transport = vi.fn(async () =>
+    Response.json({ error: { code: 'unsupported_value', param: 'tools[1].type' } }, { status: 400 })
+  )
+  const agent = new Agent({ credential: () => async () => 'fixture', assets: {}, fetch: transport })
+  await expect(agent.run(request, recorder(request).observer)).rejects.toHaveProperty('problem', {
+    code: 'web_search_unsupported',
+    message: '当前 ChatGPT 订阅模型不支持原生网页搜索。',
+    retryable: false
+  })
+  expect(transport).toHaveBeenCalledOnce()
+  expect(localSearch).not.toHaveBeenCalled()
+})
+
+test('ChatGPT 流未确认完成时不接受已经收到的原生搜索结果', async () => {
+  const request = requestFor('chatgpt', 'responses', 'gpt-6.2-sol')
+  request.connection.baseUrl = 'https://api.openai.com/v1'
+  request.tools.push({ ...request.tools[0], name: 'web_search' })
+  configureChatGPTSearch(request)
+  const transport = async () =>
+    new Response(
+      'data: ' +
+        JSON.stringify({
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: { type: 'web_search_call', id: 'ws_1', status: 'completed' }
+        }) +
+        '\n\n'
+    )
+  const { turn, observer } = recorder(request)
+  const agent = new Agent({ credential: () => async () => 'fixture', assets: {}, fetch: transport })
+  await expect(agent.run(request, observer)).rejects.toHaveProperty(
+    'problem.code',
+    'incomplete_response'
+  )
+  expect(turn.messages.map((item) => item.kind)).toEqual(['user'])
 })
 
 function requestFor(provider, protocol, modelId) {
@@ -296,6 +462,7 @@ function recorder(request) {
     observer: {
       onResponse: async (update) =>
         turn.messages.push({
+          id: update.responseId,
           kind: 'assistant',
           parts: update.appendParts,
           protocol: update.protocol

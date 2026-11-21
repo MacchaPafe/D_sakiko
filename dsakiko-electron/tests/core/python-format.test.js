@@ -63,7 +63,8 @@ function timeline() {
                     id: 'line',
                     speakerId: 'anon',
                     formId: null,
-                    text: '你好呀',
+                    text: 'こんにちは',
+                    translation: '你好呀',
                     audio: { asset: { id: 'audio' }, durationMs: 1000 }
                   }
                 ]
@@ -128,15 +129,16 @@ test('新格式经过真实扫描和导入保留历史关联，迁移资源并�
   expect(Buffer.from(await backend.assets.read(audio)).toString()).toBe('audio-fixture')
   // 已有索引首次补齐预览，不能为了刷新摘要而增加聊天版本。
   const oldIndex = JSON.parse(await readFile(backend.store.manifest, 'utf8'))
-  oldIndex.entries.forEach((entry) => delete entry.lastReply)
+  oldIndex.entries.forEach((entry) => delete entry.lastReplyTranslation)
   await writeFile(backend.store.manifest, JSON.stringify(oldIndex))
   expect((await backend.store.list())[0]).toMatchObject({
-    lastReply: '你好呀',
+    lastReply: 'こんにちは',
+    lastReplyTranslation: '你好呀',
     revision: saved.revision
   })
-  expect(JSON.parse(await readFile(backend.store.manifest, 'utf8')).entries[0].lastReply).toBe(
-    '你好呀'
-  )
+  expect(
+    JSON.parse(await readFile(backend.store.manifest, 'utf8')).entries[0].lastReplyTranslation
+  ).toBe('你好呀')
   const next = await backend.setup.createPlan({ kind: 'legacy', scanId: scan.scanId })
   await backend.setup.start(next.id)
   await expect.poll(async () => (await backend.setup.getJob(next.id)).status).toBe('succeeded')

@@ -122,6 +122,7 @@ test('快速开始延迟到最终提交才幂等释放三个角色，语音保�
   ])
   expect((await backend.characters.get('anon')).forms[0].voice).toBeNull()
   const sakiko = await backend.characters.get('sakiko')
+  expect(sakiko.forms.map((form) => form.themeColor)).toEqual(['#7799CC', '#7799CC'])
   expect(sakiko.defaultFormId).toBe('black')
   expect(sakiko.forms.find((form) => form.id === 'white').description).toContain('当前形态：白祥')
   expect(sakiko.forms.find((form) => form.id === 'black').description).toContain('当前形态：黑祥')
@@ -894,6 +895,31 @@ async function outfitRole(backend) {
   return { characterId: 'local-sakiko', formId: 'stage' }
 }
 
+test('归属预设色只在关联时覆盖全部形态，新形态可独立配色', async () => {
+  const { backend } = await fixture()
+  const directory = backend.outfits.listCharacters()
+  expect(directory.every((entry) => /^#[0-9a-f]{6}$/iu.test(entry.themeColor))).toBe(true)
+  const { characterId } = await outfitRole(backend)
+  const readRole = () => backend.characters.get(characterId)
+  const linked = await readRole()
+  expect(linked.forms[0].themeColor).toBe('#7799CC')
+  linked.forms[0].themeColor = '#123456'
+  linked.forms.push({ ...linked.forms[0], id: 'extra', themeColor: null })
+  await backend.characters.save(linked)
+  const colors = async () => (await readRole()).forms.map((form) => form.themeColor)
+  expect(await colors()).toEqual(['#123456', '#7799CC'])
+  await backend.outfits.setCharacter(characterId, 'sakiko')
+  await backend.outfits.setCharacter(characterId, null)
+  expect(await colors()).toEqual(['#123456', '#7799CC'])
+  await backend.outfits.setCharacter(characterId, 'soyo')
+  expect(await colors()).toEqual(['#FFDD88', '#FFDD88'])
+  const edited = await readRole()
+  edited.bangDreamId = 'hotaru'
+  edited.forms[0].themeColor = null
+  await backend.characters.save(edited, ['stage'])
+  expect(await colors()).toEqual([null, '#99FF99'])
+})
+
 test('文件夹安装、默认固定和删除交接在正式对话存档中生效', async () => {
   const { root, backend } = await fixture()
   const target = await outfitRole(backend)
@@ -1256,8 +1282,11 @@ test('整套语音一致时复用导入资源；只匹配权重时计划跳过�
       structuredClone(components.filter((item) => choices.includes(item.id)))
   }
   const transport = async (url) => {
-    const item = components.find((component) => url.endsWith(component.characterId + '/voice.json'))
-    return item ? new Response(item.contents['voice.json']) : new Response(null, { status: 404 })
+    for (const item of components) {
+      const file = item.files.find((candidate) => url.endsWith(candidate.path))
+      if (file) return new Response(item.contents[path.basename(file.path)])
+    }
+    return new Response(null, { status: 404 })
   }
   const { root, backend } = await fixture({ setupOptions: { catalog }, fetch: transport })
   for (const item of components) {
@@ -1309,12 +1338,12 @@ test('整套语音一致时复用导入资源；只匹配权重时计划跳过�
     ready: true,
     downloadBytes: 0,
     updateAvailable: false,
-    forms: [{ active: 'package', customAvailable: false }]
+    forms: [{ enabled: true }]
   })
   expect(options.find((item) => item.id === 'voice.soyo')).toMatchObject({
     installed: false,
     ready: false,
-    forms: [{ active: 'custom', customAvailable: true }]
+    forms: [{ enabled: true }]
   })
   const plan = await backend.setup.createPlan({
     kind: 'download',
@@ -1324,7 +1353,33 @@ test('整套语音一致时复用导入资源；只匹配权重时计划跳过�
   const job = await backend.setup.readJob(plan.id)
   expect(job.selected[0].files.map((file) => file.path)).toEqual(['soyo/c.wav', 'soyo/voice.json'])
   expect(Object.keys(job.selected[0].reused)).toEqual(['soyo/a.ckpt', 'soyo/b.pth'])
-  await backend.setup.selectVoice('voice.anon', 'default', 'none')
+  const before = await backend.characters.get('anon')
+  const review = await backend.setup.reviewVoiceUpdate('voice.anon', 'default', true)
+  expect(review.forms[0].changes).toEqual([])
+  await backend.setup.applyVoiceUpdate({ ...review, forms: [{ id: 'default', items: [] }] })
+  expect((await backend.characters.get('anon')).forms[0].voice).toEqual(before.forms[0].voice)
+  const soyoReview = await backend.setup.reviewVoiceUpdate('voice.soyo', 'default')
+  expect(soyoReview.forms[0].changes).toMatchObject([{ key: 'defaultReference', modified: true }])
+  const current = (await backend.characters.get('soyo')).forms[0].voice
+  const checked = await backend.setup.createPlan({
+    kind: 'download',
+    managed: true,
+    selection: ['voice.soyo'],
+    voiceUpdate: { ...soyoReview, forms: [{ id: 'default', items: [] }] }
+  })
+  await backend.setup.start(checked.id)
+  expect(await done(backend.setup, checked.id)).toMatchObject({ status: 'succeeded' })
+  const retained = (await backend.characters.get('soyo')).forms[0]
+  expect(retained.voice).toEqual(current)
+  const local = await backend.setup.reviewVoiceUpdate('voice.soyo', 'default', true)
+  expect(local.forms[0].changes).toMatchObject([{ key: 'defaultReference', modified: true }])
+  await backend.setup.applyVoiceUpdate({
+    ...local,
+    forms: [{ id: 'default', items: local.forms[0].changes }]
+  })
+  const updated = (await backend.characters.get('soyo')).forms[0].voice
+  expect(updated.defaultReference.audio).not.toEqual(current.defaultReference.audio)
+  expect(updated.gptWeights).toEqual(current.gptWeights)
   await backend.setup.removeVoice('voice.anon')
   expect((await backend.setup.installations())['voice.anon']).toBeUndefined()
 })

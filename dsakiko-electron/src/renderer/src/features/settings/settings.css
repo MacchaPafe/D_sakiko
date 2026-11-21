@@ -184,6 +184,15 @@
   display: grid;
   gap: 12px;
 }
+.settings-preview-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  font-weight: 600;
+}
 .settings-speech-header {
   display: flex;
   justify-content: space-between;
@@ -282,13 +291,163 @@
   gap: 4px;
   font-size: 13px;
 }
-.settings-form .settings-checkbox {
+.settings-form .settings-inline-check {
   display: flex;
   align-items: center;
+  gap: 8px;
 }
-.settings-form .settings-model-field {
+.settings-form .settings-inline-check label {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.settings-form .settings-manual-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.settings-form .settings-manual-details > label {
+  margin-top: 9px;
+}
+.settings-model-item {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-model-row {
   display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-model-row > .field-input,
+.settings-model-row > .search-select {
+  flex: 1;
+  min-width: 0;
+}
+.model-reasoning-trigger {
+  flex: none;
+  height: 36px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+  background: var(--background);
+}
+.model-reasoning-trigger[data-configured='true'] {
+  border-color: var(--selected-border);
+  background: color-mix(in srgb, var(--secondary) 55%, var(--background));
+  color: var(--primary);
+}
+.model-reasoning-chevron {
+  transition: transform 140ms ease-out;
+}
+.model-reasoning-trigger[aria-expanded='true'] .model-reasoning-chevron {
+  transform: rotate(180deg);
+}
+.model-reasoning-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--resource-inset);
+}
+.model-reasoning-section {
+  display: grid;
+  gap: 8px;
+}
+.model-reasoning-heading {
+  display: grid;
+  gap: 2px;
+}
+.model-reasoning-heading strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.model-reasoning-modes {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+}
+.model-reasoning-modes button {
+  flex: 1;
+  height: 30px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.model-reasoning-modes button[aria-pressed='true'] {
+  background: var(--background);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 2px var(--shadow-card);
+}
+.model-effort-pills {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+.model-effort-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 12.5px;
+  line-height: 1.4;
+  transition:
+    border-color 140ms ease-out,
+    background-color 140ms ease-out,
+    color 140ms ease-out;
+}
+.model-effort-pill:hover {
+  border-color: var(--selected-border);
+}
+.model-effort-pill[aria-checked='true'] {
+  border-color: var(--primary);
+  background: var(--secondary);
+  color: var(--primary);
+  font-weight: 600;
+}
+.model-effort-check {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--muted-foreground);
+  border-radius: 4px;
+  background: var(--background);
+  color: var(--primary-foreground);
+}
+.model-effort-pill[aria-checked='true'] .model-effort-check {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+.model-effort-pill code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.model-effort-pill[aria-checked='true'] code {
+  color: var(--primary);
+  opacity: 0.82;
+}
+.model-reasoning-toggle {
+  display: grid;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 .settings-form-footer {
   display: flex;
@@ -388,7 +547,9 @@
   .settings-status-delayed {
     animation-duration: 0s;
   }
-  .settings-drag-handle {
+  .settings-drag-handle,
+  .model-reasoning-chevron,
+  .model-effort-pill {
     transition: none;
   }
 }

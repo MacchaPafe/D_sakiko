@@ -358,7 +358,7 @@ export class SetupFlow {
    * @param {string} selection 设置页选中的资源。
    * @returns {Promise<void>} 安装任务在页面关闭后仍继续。
    */
-  async downloadManaged(selection) {
+  async downloadManaged(selection, voiceUpdate) {
     if (this.state.pending) throw new Error('资源任务正在处理，请稍后再试。')
     const generation = this.generation
     this.update({ pending: 'download', problem: null })
@@ -366,13 +366,15 @@ export class SetupFlow {
       const jobs = await this.client.setup.listJobs()
       if (!this.current(generation)) return
       const existing = jobs.find((job) => job.status === 'running')
+      if (existing && voiceUpdate) throw new Error('已有下载正在进行，请稍后再应用语音包。')
       if (existing && existing.kind !== 'download') throw new Error('已有资源准备任务正在执行。')
       const job =
         existing ??
         (await this.client.setup.createPlan({
           kind: 'download',
           managed: true,
-          selection: [selection]
+          selection: [selection],
+          voiceUpdate
         }))
       if (!this.current(generation)) return
       this.watchJob(job)

@@ -299,6 +299,19 @@ export class Live2DPreview {
     manager.groups.idle = this.motionGroups[group]?.length ? group : 'StageSilentIdle'
   }
 
+  setSingleIdle(motion) {
+    const manager = this.model?.internalModel.motionManager
+    if (!manager) return
+    const group = 'StageSingleIdle'
+    // SDK 按组和下标缓存动作。换文件时需同时换定义和缓存，以支持自定义文件名的基础待机。
+    const entry = motion?.entry
+    if (entry && manager.definitions[group]?.[0]?.File !== entry.File) {
+      manager.definitions[group] = [entry]
+      manager.motionGroups[group] = []
+    }
+    manager.groups.idle = entry ? group : 'StageSilentIdle'
+  }
+
   fit() {
     if (this.destroyed) return
     const bufferWidth = Math.max(1, this.element.clientWidth)

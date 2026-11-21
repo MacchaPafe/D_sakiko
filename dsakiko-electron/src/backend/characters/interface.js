@@ -1,10 +1,12 @@
 import { extractAssetReferences } from '../resources/references.js'
 import path from 'node:path'
+import { missingVoiceMaterials } from '../../shared/reply-voice.js'
 import { bangDreamCharacters } from './bang-dream.js'
 import {
   copy,
   requireValue,
   fields,
+  fingerprint,
   readJson,
   writeJson,
   SerialQueue,
@@ -201,9 +203,10 @@ export class CharacterCatalog {
   /**
    * 创建或更新一个角色配置。
    * @param {CharacterDefinition} definition 完整的角色配置。新建角色时 revision 应传 0，更新已有角色时需传入所基于的 revision 版本号以防止并发覆盖。
+   * @param {string[]} [previewedThemeFormIds] 已在编辑器预览过归属配色的形态，提交用户最后选定的颜色（包括清空）。
    * @returns {Promise<CharacterDefinition>} 保存成功并递增版本号后的角色配置副本。
    */
-  async save(definition) {
+  async save(definition, previewedThemeFormIds = []) {
     return this.queue.run('catalog', async () => {
       const state = await this.state()
       safeId(definition.id)
@@ -226,6 +229,20 @@ export class CharacterCatalog {
             ? !form.models.length
             : form.models.some((model) => model.id === form.defaultModelId)
         )
+      for (const form of definition.forms) {
+        if (form.replyVoiceEnabled === undefined) continue
+        requireValue(
+          typeof form.replyVoiceEnabled === 'boolean' &&
+            form.replyVoiceEnabled === Boolean(form.voice),
+          'invalid_voice_configuration'
+        )
+        if (form.replyVoiceEnabled)
+          requireValue(
+            !missingVoiceMaterials(form.voice).length,
+            'invalid_voice_configuration',
+            '启用回复语音前，请先补齐模型、参考录音、文本和语言。'
+          )
+      }
       await this.assets.assertPersistent(definition)
       const next = copy(definition)
       // 派生版本字段只用于界面展示，不写入 characters.json。
@@ -239,6 +256,21 @@ export class CharacterCatalog {
         'invalid_bang_dream_character',
         '请选择目录中的 BanG Dream! 角色。'
       )
+      requireValue(Array.isArray(previewedThemeFormIds))
+      const previous = state.characters[next.id]
+      const preset = bangDreamCharacters.get(next.bangDreamId)
+      if (preset) {
+        const relinked = previous?.bangDreamId !== next.bangDreamId
+        const existingForms = new Set(previous?.forms.map((form) => form.id))
+        for (const form of next.forms) {
+          if (relinked) {
+            // 旧版导入、内置安装和服装页直接关联时，全部形态一次性采用预设色。
+            if (!previewedThemeFormIds.includes(form.id)) form.themeColor = preset.themeColor
+          } else if (!existingForms.has(form.id)) {
+            form.themeColor ??= preset.themeColor
+          }
+        }
+      }
       const defaultForm = next.forms.find((form) => form.id === next.defaultFormId)
       requireValue(
         next.name === undefined || typeof next.name === 'string',
@@ -267,19 +299,71 @@ export class CharacterCatalog {
     })
   }
 
+  /** @param {string} characterId 目标角色。 @returns {Promise<object>} 当前存档、身份及任务的删除影响。 */
+  async previewDeletion(characterId) {
+    const state = await this.state()
+    const role = state.characters[characterId]
+    requireValue(role, 'character_missing')
+    const personas = []
+    for (const id of state.personas) {
+      const persona = await this.getPersona(id)
+      if (persona?.source.kind !== 'character' || persona.source.characterId !== characterId)
+        continue
+      const form = role.forms.find((item) => item.id === persona.source.formId)
+      personas.push({
+        id,
+        revision: persona.revision,
+        name: form?.displayName || role.name,
+        formId: persona.source.formId
+      })
+    }
+    const usage = (await this.deletionUsage?.(characterId)) ?? { chats: [], busy: false }
+    const stamp = fingerprint([role.revision, personas, usage.chats.map((chat) => chat.id).sort()])
+    return { ...usage, personas, stamp }
+  }
+
   /**
    * 删除指定的角色配置。
    * @param {string} characterId 要删除的角色 ID。
    * @param {number} expectedRevision 当前所基于的版本号，用于防止误删已被更新的角色。
    * @returns {Promise<void>}
    */
-  async delete(characterId, expectedRevision) {
+  async delete(characterId, expectedRevision, confirmation) {
     return this.queue.run('catalog', async () => {
       const state = await this.state()
       requireValue(
         state.characters[characterId]?.revision === expectedRevision,
         'revision_conflict'
       )
+      if (confirmation) {
+        const impact = await this.previewDeletion(characterId)
+        requireValue(!impact.busy, 'character_busy', '请先结束该角色的生成、演出或安装任务。')
+        requireValue(
+          impact.stamp === confirmation.stamp,
+          'revision_conflict',
+          '角色使用情况已变化，请重新查看删除影响。'
+        )
+        if (confirmation.keepPersonas) {
+          for (const item of impact.personas) {
+            const form = state.characters[characterId].forms.find(
+              (entry) => entry.id === item.formId
+            )
+            if (!form) continue
+            const persona = await this.getPersona(item.id)
+            persona.source = {
+              kind: 'custom',
+              displayName: form.displayName,
+              description: form.description,
+              avatar: form.avatar
+            }
+            persona.revision += 1
+            // 先交接头像引用并保存独立身份，再释放角色持有的资源。
+            await this.assets.commitReferences('persona:' + item.id, persona, () =>
+              writeJson(this.personaFile(item.id), persona)
+            )
+          }
+        }
+      }
       delete state.characters[characterId]
       state.order = state.order.filter((id) => id !== characterId)
       await this.assets.commitReferences('character:' + characterId, null, () =>
@@ -398,6 +482,7 @@ export class CharacterCatalog {
         states: Object.entries(states).map(([id, description]) => ({ id, description }))
       },
       voice: copy(form.voice),
+      replyVoiceEnabled: form.replyVoiceEnabled,
       problems
     }
   }

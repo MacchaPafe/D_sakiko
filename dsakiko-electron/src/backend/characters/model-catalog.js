@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { copy, problem, requireValue } from '../core/support.js'
 import { validModelFilePath } from '../resources/files.js'
+import { v3MotionGroups } from './v3-motion-groups.js'
 
 const motionLabels = {
   nod: '点头',
@@ -37,7 +38,7 @@ const expressionLabels = {
  * @property {'v2' | 'v3'} version 模型格式。
  * @property {Object<string, {description: string, variants: Object<string, {member: string, entry: object, durationMs?: number}>}>} motions 逻辑动作及方向变体。
  * @property {Object<string, {description: string, member: string}>} expressions 表情资源。
- * @property {Object<string, string[]>} groups 模型原有动作组。
+ * @property {Object<string, string[]>} groups 原有动作组及按文件名补全的标准组。
  * @property {object[]} presets 有效的动作和表情组合。
  * @property {object} states 状态声明。
  * @property {object} stateEffects 动作与表情的状态影响。
@@ -110,9 +111,10 @@ function description(id, local, shared, labels) {
  * @param {object} config 模型专属 performance 标注。
  * @param {object} shared 角色共享标注。
  * @param {(file: string) => Promise<string | null>} locate 校验资源存在并返回包内路径。
+ * @param {string} [cacheRoot] 派生动作分组的缓存目录。
  * @returns {Promise<ModelCatalog>} 可用于提示词和演出的同源目录。
  */
-export async function buildModelCatalog(data, config, shared, locate) {
+export async function buildModelCatalog(data, config, shared, locate, cacheRoot) {
   const version = data.FileReferences ? 'v3' : 'v2'
   const refs = version === 'v3' ? object(data.FileReferences) : data
   const rawGroups = object(version === 'v3' ? refs.Motions : refs.motions)
@@ -173,6 +175,30 @@ export async function buildModelCatalog(data, config, shared, locate) {
     catalog.groups[group] = [
       ...new Set(values.map((entry) => byFile.get(fileOf(entry))).filter(Boolean))
     ]
+  }
+  if (version === 'v3') {
+    const index = await v3MotionGroups(data, cacheRoot)
+    const stateMotions = new Set(
+      Object.values(catalog.states).flatMap((state) => [state.on?.motion, state.off?.motion])
+    )
+    for (const [key, tiers] of Object.entries(index)) {
+      const group = key.slice(0, -2)
+      if (Object.hasOwn(rawGroups, key) || Object.hasOwn(rawGroups, group)) continue
+      for (const tier of tiers) {
+        const ids = tier
+          .map((file) => byFile.get(file))
+          .filter(
+            (id) => id && !stateMotions.has(id) && !catalog.stateEffects.motions?.[id]?.length
+          )
+        if (!ids.length) continue
+        catalog.groups[key] = [...new Set(ids)]
+        break
+      }
+    }
+    for (const key of Object.keys(index)) {
+      if (key.endsWith('_C') && catalog.groups[key])
+        catalog.groups[key.slice(0, -2)] ??= [...catalog.groups[key]]
+    }
   }
   const common = object(shared.series?.[config.series || 'default'])
   for (const [kind, labels] of [
@@ -266,7 +292,13 @@ export async function resolveModelCatalog(assets, presentation, motionDurations 
       return null
     }
   }
-  const catalog = await buildModelCatalog(data, object(config), object(shared), locate)
+  const catalog = await buildModelCatalog(
+    data,
+    object(config),
+    object(shared),
+    locate,
+    assets.roots?.cache
+  )
   for (const { variants } of Object.values(catalog.motions))
     for (const variant of Object.values(variants)) {
       const durationMs = durationsByMember.get(variant.member)

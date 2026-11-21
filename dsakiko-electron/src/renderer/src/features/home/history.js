@@ -1,4 +1,5 @@
 import { isReplayableDialogue } from '../../../../shared/chat-history.js'
+import { deepSeekWebActivity } from '../../../../shared/server-web.js'
 
 /** @typedef {{id: string, toolName: string, arguments: object, outcome: object|null, display: string|null}} ToolHistoryItem 调用与结果配对后的展示材料，不执行工具。 */
 /** @typedef {import('../../../../shared/contracts/presentation.js').AudioMaterial} AudioMaterial */
@@ -88,19 +89,18 @@ export function historyRows(snapshot, now = Date.now()) {
         rows.push(row)
         if (manual && (!userRow || turn.input?.messageId === id)) userRow = row
       } else if (message.kind === 'assistant') {
-        const native = message.protocol?.providerOptions?.deepseek
-        for (const step of native?.server_tool_calls ?? [])
-          for (const call of step.calls ?? []) {
-            const key = id + ':native:' + step.index + ':' + call.index
-            toolRow(rows, key, {
-              id: key,
-              toolName: call.type === 'deepseek_read_url' ? '读取网页' : '搜索网页',
-              arguments: call.action,
-              outcome: { status: call.status === 'completed' ? 'succeeded' : 'failed' },
-              display: call.error?.code ?? '服务端已完成调用',
-              sources: call.page ? [call.page] : call.sources
-            })
-          }
+        const web =
+          message.protocol?.serverWeb ??
+          deepSeekWebActivity(message.protocol?.providerOptions?.deepseek)
+        for (const call of web.calls) {
+          const key = id + ':native:' + call.id
+          toolRow(rows, key, {
+            ...call,
+            id: key,
+            toolName: call.toolName === 'read_url' ? '读取网页' : '搜索网页',
+            display: call.outcome.problem?.message ?? '服务端已完成调用'
+          })
+        }
         for (const [partIndex, part] of (message.parts ?? []).entries()) {
           if (part.kind === 'dialogue') {
             for (const line of part.lines) {
@@ -145,12 +145,12 @@ export function historyRows(snapshot, now = Date.now()) {
             })
           }
         }
-        if (native?.annotations?.length)
+        if (web.citations.length)
           rows.push({
             id: id + ':sources',
             name: '引用来源',
             kind: 'sources',
-            sources: native.annotations.map((ref) => ref.url_citation).filter(Boolean)
+            sources: web.citations
           })
       } else if (message.kind === 'tool-result' && !paired.has(id)) {
         toolRow(rows, id, {

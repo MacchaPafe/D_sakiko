@@ -41,6 +41,7 @@ export class HomeFlow {
     this.tabChats = new Map()
     this.epoch = 0
     this.refreshEpoch = 0
+    this.chatListEpoch = 0
     this.mountEpoch = 0
     /** @type {HomeState} */
     this.state = {
@@ -101,6 +102,11 @@ export class HomeFlow {
         ) ?? (() => {}),
         this.client.notices.observe((snapshot) => this.update({ notices: snapshot.notices })),
         this.client.observe(
+          'chat-previews',
+          null,
+          () => void this.refreshChats().catch((error) => this.update({ problem: error.message }))
+        ),
+        this.client.observe(
           'characters',
           null,
           () => void this.refresh().catch((error) => this.update({ problem: error.message }))
@@ -114,17 +120,16 @@ export class HomeFlow {
   async refresh() {
     const epoch = ++this.refreshEpoch
     const observingSettings = Boolean(this.stops)
-    const [characters, chats, settings, connections, availability] = await Promise.all([
+    const [characters, settings, connections, availability] = await Promise.all([
       this.client.characters.list(),
-      this.client.conversations.listChats(),
       this.client.settings.get(),
       this.client.settings.listConnections(),
-      this.client.settings.connectionAvailability?.()
+      this.client.settings.connectionAvailability?.(),
+      this.refreshChats()
     ])
     if (epoch === this.refreshEpoch) {
       const next = {
         characters,
-        chats,
         connections: connections.filter((item) => item.id !== 'builtin-up'),
         builtinConnection:
           availability?.builtin ?? connections.some((item) => item.id === 'builtin-up')
@@ -134,6 +139,11 @@ export class HomeFlow {
       this.update(next)
       void this.loadReasoningModels(epoch)
     }
+  }
+  async refreshChats() {
+    const epoch = ++this.chatListEpoch
+    const chats = await this.client.conversations.listChats()
+    if (epoch === this.chatListEpoch) this.update({ chats })
   }
   async loadReasoningModels(epoch) {
     if (!this.client.settings.listReasoningModels) return
@@ -553,6 +563,7 @@ export class HomeFlow {
     this.closed = true
     this.mountEpoch += 1
     this.refreshEpoch += 1
+    this.chatListEpoch += 1
     this.epoch += 1
     this.stopChat?.()
     this.stopChat = null

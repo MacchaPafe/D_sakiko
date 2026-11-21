@@ -5,6 +5,7 @@ import { pinOutfit } from '../characters/outfit-selection.js'
 import { contextBudget, trimHistory } from '../llm/context-budget.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { configureDeepSeek } from '../llm/deepseek-chat.js'
+import { configureChatGPTSearch } from '../llm/chatgpt-responses.js'
 import { lotteryDurationMs, defaultToolNames } from '../../shared/tool-options.js'
 import { generationOptions, speechOptions, presentationOptions } from '../core/validation.js'
 import {
@@ -744,7 +745,9 @@ export class Conversations {
         override === undefined && !speech.enabled ? await this.settings.voicePreference() : null
       const voicedCharacters = new Set()
       for (const role of capabilities) {
-        if (speech.enabled || voicePreference?.enabled[role.id] === true) {
+        if (role.replyVoiceEnabled === false) continue
+        const enabledByForm = role.replyVoiceEnabled && override === undefined
+        if (speech.enabled || enabledByForm || voicePreference?.enabled[role.id] === true) {
           if (speech.enabled && !this.setup.managedSpeech) voicedCharacters.add(role.id)
           else if (await this.setup.speechReady(role.id, role.voice)) voicedCharacters.add(role.id)
         }
@@ -826,6 +829,7 @@ export class Conversations {
       }
 
       configureDeepSeek(request, chat)
+      configureChatGPTSearch(request)
       const inspection = await this.agent.inspectContext(request)
       return {
         request,
@@ -1096,6 +1100,7 @@ export class Conversations {
       await Promise.all(run.guides.map((id) => this.performance.waitForGuideFinish(id)))
     } catch (error) {
       await this.queue.run(state.chat.id, async () => {
+        await this.performance.setActivity(state.sequenceId, 'idle')
         run.execution.state = 'terminated'
         run.execution.problem = problem(error)
         if (state.group === run.group) {

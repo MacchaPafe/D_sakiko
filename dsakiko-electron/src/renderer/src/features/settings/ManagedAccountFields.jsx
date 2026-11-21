@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUpRight } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
-import { Input } from '../../components/ui/fields.jsx'
+import { Input, Textarea } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { desktopHost } from '../../host/desktop.js'
 
@@ -54,7 +54,7 @@ export function VertexAccountFields({
           onChange={(event) => field('location', event.target.value)}
         />
       </label>
-      <details>
+      <details className="settings-manual-details">
         <summary>手动编辑服务账号</summary>
         <label>
           项目 ID
@@ -69,7 +69,8 @@ export function VertexAccountFields({
         </label>
         <label>
           服务账号私钥
-          <textarea
+          <Textarea
+            rows={4}
             value={secret}
             autoComplete="off"
             spellCheck={false}

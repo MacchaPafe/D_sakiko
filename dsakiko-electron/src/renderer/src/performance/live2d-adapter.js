@@ -116,6 +116,11 @@ export class Live2DRuntimeAdapter {
     this.model.internalModel?.motionManager?.stopAllMotions?.()
   }
 
+  isPlayingMotion(group, index) {
+    const state = this.model.internalModel?.motionManager?.state
+    return state?.currentGroup === group && state.currentIndex === index
+  }
+
   onceMotionFinish(callback) {
     const motionManager = this.model.internalModel?.motionManager
     if (!motionManager?.once) return () => {}

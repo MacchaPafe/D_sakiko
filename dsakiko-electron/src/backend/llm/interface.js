@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import nunjucks from 'nunjucks'
 import Ajv from 'ajv'
 import { nativeRequest } from './deepseek-chat.js'
+import { chatGPTWebActivity, chatGPTWebSearchTool } from './chatgpt-responses.js'
+import { deepSeekWebActivity } from '../../shared/server-web.js'
 import { generateText, jsonSchema } from 'ai'
 import { createModel, reasoningOptions } from './adapters.js'
 import { AttachmentPreparation } from '../remote-files/preparation.js'
@@ -90,6 +92,7 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * @property {string[]} supplementalContext 额外补充到本轮控制消息中的背景知识列表。
  * @property {import('../../shared/contracts/tools.js').AgentTool[]} tools 本轮允许模型调用的工具列表。
  * @property {import('../../shared/contracts/tools.js').ToolDefinition[]} [toolDefinitions] 固定能力目录；声明存在不代表本轮获准执行。
+ * @property {boolean} [chatgptWebSearch] 本轮选择 ChatGPT 订阅的原生搜索。
  */
 
 /**
@@ -273,10 +276,13 @@ export class Agent {
       translationLanguage: request.options.translationLanguage,
       scenario: request.scenario,
       knowledge: request.supplementalContext,
-      hasTools: Boolean(request.tools.length || request.deepseek?.native.length),
+      hasTools: Boolean(
+        request.tools.length || request.deepseek?.native.length || request.chatgptWebSearch
+      ),
       allowedTools: [
         ...request.tools.map((tool) => tool.name),
-        ...(request.deepseek?.native ?? [])
+        ...(request.deepseek?.native ?? []),
+        ...(request.chatgptWebSearch ? ['web_search'] : [])
       ].sort(),
       example: JSON.stringify({ lines: examples })
     })
@@ -571,6 +577,7 @@ export class Agent {
         { description: tool.description, inputSchema: jsonSchema(tool.parametersSchema) }
       ])
     )
+    if (request.chatgptWebSearch) tools.web_search = chatGPTWebSearchTool
     let repairs = 0
     let usage = null
     const callIds = new Set()
@@ -602,7 +609,7 @@ export class Agent {
           null
       }
       const responseId = uuid()
-      const content = responseContent(response)
+      const content = responseContent(response, request.chatgptWebSearch)
       const messageOptions = responseOptions(response)
       const raw = request.deepseek && response.response?.body?.choices?.[0]?.message
       const title = request.deepseek?.title && raw?.title?.trim()
@@ -615,6 +622,9 @@ export class Agent {
         )
         if (Object.keys(fields).length) messageOptions.deepseek = fields
       }
+      const web = request.chatgptWebSearch
+        ? chatGPTWebActivity(response)
+        : deepSeekWebActivity(messageOptions.deepseek)
       const calls = content.filter((part) => part.type === 'tool-call')
       const text = content
         .filter((part) => part.type === 'text')
@@ -658,7 +668,10 @@ export class Agent {
         responseId,
         title,
         appendParts: parts,
-        protocol: saveReplay(request.connection, content, parts, contextFingerprint, messageOptions)
+        protocol: {
+          ...saveReplay(request.connection, content, parts, contextFingerprint, messageOptions),
+          ...(web.calls.length || web.citations.length ? { serverWeb: web } : {})
+        }
       })
       // 同一响应只回传一次；保留工具前的文字、空推理签名和原始块顺序。
       if (content.length)
@@ -729,6 +742,12 @@ export class Agent {
         })
         continue
       }
+      if (request.chatgptWebSearch && web.calls.length) {
+        // 订阅端点可能先结束搜索响应，接续请求携带已完成的搜索结果。
+        if (content.some((part) => part.type === 'tool-result')) continue
+        const issue = web.calls.find((call) => call.outcome.status === 'failed')?.outcome.problem
+        if (issue) throw failure(issue.code, issue.message, issue.retryable)
+      }
       throw failure('empty_response', '模型返回空响应。')
     }
     throw failure('step_limit', '本轮工具循环达到上限。')
@@ -745,6 +764,7 @@ export class Agent {
       system: this.system(request),
       messages,
       ...(request.deepseek?.native.length ? { nativeTools: request.deepseek.native } : {}),
+      ...(request.chatgptWebSearch ? { nativeTools: ['web_search'] } : {}),
       tools: (request.toolDefinitions ?? request.tools).map((tool) => ({
         name: tool.name,
         description: tool.description,

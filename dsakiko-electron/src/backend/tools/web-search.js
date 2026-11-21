@@ -54,7 +54,12 @@ export function webSearchTool(settings, transport) {
           body: JSON.stringify({ query: input.query, count, summary: true })
         },
         signal,
-        options.timeoutMs
+        options.timeoutMs,
+        {
+          403: (body) => {
+            if (body?.message === 'You do not have enough money') return '博查账户余额不足'
+          }
+        }
       )
       requireValue(
         data.code === undefined || data.code === 200,

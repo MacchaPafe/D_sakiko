@@ -3,31 +3,6 @@ import { Download } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { formatBytes } from '../setup/presentation.js'
 
-function VoiceChoices({ option, pending, onSelect }) {
-  const choices = option.forms?.filter((form) => form.packageAvailable || form.customAvailable)
-  if (!choices?.length) return null
-  const multipleForms = option.forms.length > 1
-  return (
-    <div className="settings-voice-choices">
-      {choices.map((form) => (
-        <label key={form.id}>
-          <span>{multipleForms ? form.name + ' · 回复语音' : '回复语音'}</span>
-          <select
-            aria-label={(multipleForms ? form.name : option.name) + '的回复语音'}
-            value={form.active}
-            disabled={pending}
-            onChange={(event) => onSelect(form.id, event.target.value)}
-          >
-            {form.packageAvailable && <option value="package">应用语音</option>}
-            {form.customAvailable && <option value="custom">自定义语音</option>}
-            <option value="none">不生成语音</option>
-          </select>
-        </label>
-      ))}
-    </div>
-  )
-}
-
 function resourceDetails(option, isVoice) {
   // 版本字段可能同时包含运行环境版本和按日期发布的模型批次。
   const versions = (option.version ?? '')
@@ -36,13 +11,13 @@ function resourceDetails(option, isVoice) {
   const details = [
     option.waiting && '已安装，等待生效',
     option.updateAvailable && '有可用更新',
-    isVoice && option.installed && '应用语音包',
+    isVoice && option.installed && '推荐语音包',
     ...versions,
     option.installedBytes > 0 && formatBytes(option.installedBytes)
   ].filter(Boolean)
   if (isVoice && !option.installed && option.forms?.length === 1) {
     const [form] = option.forms
-    if (form.customBytes > 0) details.push('自定义语音文件', formatBytes(form.customBytes))
+    if (form.materialBytes > 0) details.push('当前语音文件', formatBytes(form.materialBytes))
   }
   return details.join(' · ')
 }
@@ -54,13 +29,8 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
   const [releaseBytes, setReleaseBytes] = useState(null)
   const isVoice = option.id.startsWith('voice.')
   const details = resourceDetails(option, isVoice)
-  const packageUsers = option.forms?.filter((form) => form.active === 'package') ?? []
-  const inUse = packageUsers.length > 0
-  const affectedNames =
-    option.forms?.length > 1 ? packageUsers.map((form) => form.name).join('、') : option.name
-
   useEffect(() => {
-    if (!confirm || inUse) return
+    if (!confirm) return
     let current = true
     void client.setup
       .previewVoiceRemoval(option.id)
@@ -73,20 +43,8 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
     return () => {
       current = false
     }
-  }, [client, confirm, inUse, option.id])
+  }, [client, confirm, option.id])
 
-  async function select(formId, source) {
-    setPending(true)
-    setError(null)
-    try {
-      await client.setup.selectVoice(option.id, formId, source)
-      await refresh()
-    } catch (error) {
-      setError(error.message)
-    } finally {
-      setPending(false)
-    }
-  }
   async function remove() {
     setPending(true)
     setError(null)
@@ -125,35 +83,29 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
             <Button size="sm" variant="outline" onClick={download}>
               <Download />
               {option.updateAvailable ? '更新' : '安装'}
-              {isVoice && '应用语音包'}
+              {isVoice && '推荐语音包'}
             </Button>
           )}
           {isVoice && option.installed && !confirm && (
             <Button size="sm" variant="ghost" onClick={confirmRemoval} disabled={pending}>
-              移除应用语音包
+              移除推荐语音包
             </Button>
           )}
         </div>
       </div>
       {option.unavailableReason && !option.ready && <p>{option.unavailableReason}</p>}
-      <VoiceChoices option={option} pending={pending} onSelect={select} />
+
       {confirm && (
         <div className="settings-confirm">
           <p>
-            {inUse ? (
-              <>{affectedNames}正在使用应用语音。请先在上方切换回复语音。</>
-            ) : (
-              <>
-                移除应用语音包会保留自定义语音及其使用的文件。
-                {releaseBytes === 0 && '预计不释放磁盘空间。'}
-                {releaseBytes > 0 && '预计释放 ' + formatBytes(releaseBytes) + '。'}
-              </>
-            )}
+            移除语音包后，角色仍保留当前配置使用的文件。
+            {releaseBytes === 0 && '预计不释放磁盘空间。'}
+            {releaseBytes > 0 && '预计释放 ' + formatBytes(releaseBytes) + '。'}
           </p>
           <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
             取消
           </Button>
-          <Button size="sm" variant="destructive" onClick={remove} disabled={pending || inUse}>
+          <Button size="sm" variant="destructive" onClick={remove} disabled={pending}>
             确认移除
           </Button>
         </div>
@@ -213,9 +165,7 @@ export function Resources({ client, target, onDownload, setupState, setup, onSho
             <section className="settings-stack" key={id}>
               <h3>{group.name}</h3>
               {id === 'voices' && (
-                <p>
-                  安装应用语音包后，已有的自定义语音仍可选用。选择「不生成语音」会保留语音文件。
-                </p>
+                <p>在角色管理中编辑各形态的回复语音。更新语音包时可以选择要采用的材料。</p>
               )}
               {group.options.map((option) => (
                 <ResourceCard
@@ -236,35 +186,83 @@ export function Resources({ client, target, onDownload, setupState, setup, onSho
 }
 
 /** @param {object} props 资源目标、应用任务容器与下载受理后的导航。 @returns {import('react').ReactElement} 设置中的下载大小与安装确认。 */
-export function ResourceDownloadConfirmation({ title, target, client, setup, onClose, onStarted }) {
+export function ResourceDownloadConfirmation({
+  title,
+  target,
+  formId,
+  client,
+  setup,
+  onClose,
+  onStarted
+}) {
   const [detail, setDetail] = useState(null)
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState(null)
+  const [review, setReview] = useState(null)
+  const [selection, setSelection] = useState({})
   useEffect(() => {
     let current = true
-    void client.setup
-      .getCatalog({ selection: [target], managed: true })
-      .then((catalog) => {
+    async function read() {
+      const catalog = await client.setup.getCatalog({ selection: [target], managed: true })
+      const item = catalog.groups
+        .flatMap((group) => group.options)
+        .find((option) => option.id === target)
+      if (target.startsWith('voice.')) {
+        const value = await client.setup.reviewVoiceUpdate(
+          target,
+          formId ?? null,
+          Boolean(item?.installed && item?.ready)
+        )
         if (!current) return
-        setDetail({
-          item: catalog.groups
-            .flatMap((group) => group.options)
-            .find((option) => option.id === target),
-          bytes: catalog.selectionDownloadBytes
-        })
-      })
-      .catch((error) => {
-        if (current) setProblem(error.message)
-      })
+        const selected = {}
+        for (const form of value.forms)
+          selected[form.id] = Object.fromEntries(
+            form.changes.map((change) => [change.key, !change.modified])
+          )
+        setReview(value)
+        setSelection(selected)
+      }
+      if (current) setDetail({ item, bytes: catalog.selectionDownloadBytes })
+    }
+    read().catch((error) => {
+      if (current) setProblem(error.message)
+    })
     return () => {
       current = false
     }
-  }, [client, target])
+  }, [client, target, formId])
+  function toggle(formId, key) {
+    setSelection((current) => ({
+      ...current,
+      [formId]: { ...current[formId], [key]: !current[formId][key] }
+    }))
+  }
   async function start() {
     setPending(true)
     setProblem(null)
     try {
-      await setup.downloadManaged(target)
+      let voiceUpdate
+      if (review) {
+        voiceUpdate = {
+          id: review.id,
+          characterId: review.characterId,
+          contentId: review.contentId,
+          forms: review.forms.map((form) => ({
+            id: form.id,
+            items: form.changes
+              .filter((change) => selection[form.id][change.key])
+              .map(({ key, before }) => ({ key, before }))
+          }))
+        }
+        if (detail.item.ready) {
+          await client.setup.applyVoiceUpdate(voiceUpdate)
+          await setup.refreshFeatures()
+          void setup.refreshManagedCatalog({ localChanged: true })
+          onClose()
+          return
+        }
+      }
+      await setup.downloadManaged(target, voiceUpdate)
       onStarted()
     } catch (error) {
       setProblem(error.message)
@@ -283,10 +281,40 @@ export function ResourceDownloadConfirmation({ title, target, client, setup, onC
         </h2>
         {detail?.item && detail.bytes != null && (
           <p role="status">
-            {detail.item?.name} · 预计下载 {formatBytes(detail.bytes)}
+            {detail.item?.name}
+            {review?.version && ' · v' + review.version} · 预计下载 {formatBytes(detail.bytes)}
           </p>
         )}
       </header>
+      {review && (
+        <div className="voice-update-items">
+          {review.forms.map((form) => (
+            <fieldset key={form.id} disabled={pending}>
+              <legend>
+                {form.name}
+                {review.forms.length > 1 ? ' · ' + form.id : ''}
+              </legend>
+              {!form.changes.length && <p>当前材料与语音包一致。</p>}
+              {form.changes.map((item) => (
+                <label key={item.key}>
+                  <input
+                    type="checkbox"
+                    checked={!!selection[form.id]?.[item.key]}
+                    onChange={() => toggle(form.id, item.key)}
+                  />
+                  <span>
+                    {item.label}
+                    {item.removed && '（移除）'}
+                    {item.modified && ' · 已自行修改'}
+                    <small>当前 · {item.currentMaterial}</small>
+                    <small>新版 · {item.newMaterial}</small>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          ))}
+        </div>
+      )}
       {!detail && !problem && (
         <p className="settings-status-delayed" role="status">
           正在检查下载大小…
@@ -307,7 +335,13 @@ export function ResourceDownloadConfirmation({ title, target, client, setup, onC
           取消
         </Button>
         <Button onClick={start} disabled={pending || !detail?.item || detail.bytes == null}>
-          {pending ? '正在准备…' : '开始下载'}
+          {pending
+            ? '正在准备…'
+            : review
+              ? detail?.item.ready
+                ? '应用到形态'
+                : '下载并应用'
+              : '开始下载'}
         </Button>
       </footer>
     </div>

@@ -44,6 +44,7 @@ export class Outfits {
     this.jobs = new Map()
     this.tasks = new Map()
     this.removedAssets = new Set()
+    this.localImports = new Set()
     this.queue = new SerialQueue()
     this.saving = new SerialQueue()
     this.closed = false
@@ -109,15 +110,18 @@ export class Outfits {
     return { role, form }
   }
 
-  /** @returns {Array<{id: string, name: string, displayName: string, band: string | null, aliases: string[]}>} 可确认的邦角色目录。 */
+  /** @returns {Array<{id: string, name: string, displayName: string, themeColor: string, band: string | null, aliases: string[]}>} 可确认的邦角色目录及其预设色。 */
   listCharacters() {
-    return [...bangDreamCharacters.values()].map(({ id, name, displayName, band, aliases }) => ({
-      id,
-      name,
-      displayName,
-      band,
-      aliases: [...aliases]
-    }))
+    return [...bangDreamCharacters.values()].map(
+      ({ id, name, displayName, themeColor, band, aliases }) => ({
+        id,
+        name,
+        displayName,
+        themeColor,
+        band,
+        aliases: [...aliases]
+      })
+    )
   }
 
   /**
@@ -224,16 +228,30 @@ export class Outfits {
    * @returns {Promise<{modelId: string, alreadyInstalled: boolean}>} 已入库模型身份。
    */
   async importDirectory(target, directory) {
-    await this.target(target)
-    let duplicate = []
-    const result = await this.assets.using({}, async (owner) => {
-      const model = await this.importer.importDirectory(directory, owner, {})
-      const installed = await this.addModel(target, model)
-      if (installed.alreadyInstalled) duplicate = extractAssetReferences(model.presentation)
-      return installed
-    })
-    if (duplicate.length) await this.reclaim(duplicate)
-    return result
+    const operation = { characterId: target.characterId }
+    this.localImports.add(operation)
+    try {
+      await this.target(target)
+      let duplicate = []
+      const result = await this.assets.using({}, async (owner) => {
+        const model = await this.importer.importDirectory(directory, owner, {})
+        const installed = await this.addModel(target, model)
+        if (installed.alreadyInstalled) duplicate = extractAssetReferences(model.presentation)
+        return installed
+      })
+      if (duplicate.length) await this.reclaim(duplicate)
+      return result
+    } finally {
+      this.localImports.delete(operation)
+    }
+  }
+
+  /** @param {string} characterId 角色身份。 @returns {boolean} 正在为该角色导入或下载安装服装。 */
+  isInstalling(characterId) {
+    return (
+      [...this.localImports].some((operation) => operation.characterId === characterId) ||
+      [...this.jobs.values()].some((job) => job.target.characterId === characterId && active(job))
+    )
   }
 
   async reclaim(refs) {

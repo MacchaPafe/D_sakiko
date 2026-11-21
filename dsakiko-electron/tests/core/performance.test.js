@@ -476,3 +476,33 @@ test('隐藏时保持最新演出锚点但不播放，恢复跳到当前时间�
   expect(playback.getSnapshot().progress).toBeNull()
   playback.close()
 })
+
+test('V3 等待首句就绪时维持思考，首句开演后即使后续仍在生成也自然待机', async () => {
+  vi.useFakeTimers()
+  const solo = structuredClone(scene)
+  solo.slots[0].presentation = { model: { id: 'solo-v3' } }
+  const planner = new Performance({
+    now: () => Date.now(),
+    resolveModel: async () => ({
+      version: 'v3',
+      motions: { thinking: { variants: { C: { member: 'thinking.motion3.json' } } } },
+      groups: { text_generating: ['thinking'] }
+    })
+  })
+  try {
+    const id = await planner.createSequence(solo, { timedDialogue: true })
+    await planner.setActivity(id, 'thinking')
+    const [first] = await planner.appendGuides(id, [{ ...guide, ready: false }])
+    expect((await planner.getProgress(id)).activity).toBe('thinking')
+    await planner.resolveGuide(first, { audio: null })
+    const started = await planner.getProgress(id)
+    expect(started.current.guideId).toBe(first)
+    expect(started.activity).toBe('idle')
+    await vi.advanceTimersByTimeAsync(started.current.durationMs + 16000)
+    const gap = await planner.getProgress(id)
+    expect(gap.current).toBeNull()
+    expect(gap.defaultPerformances[0].resolvedPerformance.thinkingMotions).toBeUndefined()
+  } finally {
+    await planner.close()
+  }
+})

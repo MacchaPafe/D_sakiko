@@ -1,7 +1,9 @@
 /**
  * @typedef {'asr'|'gsv'|'voice.anon'|'voice.soyo'|'voice.sakiko'} ResourceChoice
  * @typedef {{characters?: boolean, connections?: boolean, chats?: boolean, gsv?: boolean}} LegacySelection
- * @typedef {{kind: 'legacy', scanId: string, include?: LegacySelection} | {kind: 'download', selection: ResourceChoice[], preparationId?: string|null, accelerator?: 'cpu'|'cuda', managed?: boolean}} SetupPlanRequest
+ * @typedef {{key:string, before:string}} VoiceUpdateItem 已确认更新的材料及确认时的指纹。
+ * @typedef {{id:string, characterId:string, contentId:string, forms:Array<{id:string, items:VoiceUpdateItem[]}>}} VoiceUpdateSelection 绑定角色、发布版本与形态的语音包更新选择。
+ * @typedef {{kind: 'legacy', scanId: string, include?: LegacySelection} | {kind: 'download', selection: ResourceChoice[], preparationId?: string|null, accelerator?: 'cpu'|'cuda', managed?: boolean, voiceUpdate?: VoiceUpdateSelection}} SetupPlanRequest
  */
 
 /**

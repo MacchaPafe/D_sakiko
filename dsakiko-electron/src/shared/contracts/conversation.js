@@ -103,6 +103,7 @@
  * @property {{ connectionId: string | null, modelId: string, provider: string, protocol: string, endpoint: string }} origin 回传来源；地址仅保存摘要，不含凭据。
  * @property {Array<object>} content 按原顺序保存的 SDK text/reasoning/tool-call 块及允许的 providerOptions。
  * @property {Metadata} providerOptions 消息级协议材料，例如 Completions 的 reasoning_details。
+ * @property {import('../server-web.js').ServerWebActivity} [serverWeb] 对话中展示的服务端网页工具与引用。
  * @property {string} projectionFingerprint 业务片段摘要；编辑台词或调用参数后不复用原始响应。
  * @property {string} contextFingerprint 本轮输入与此前历史摘要；用于检测编辑、压缩和来源变化。
  */
@@ -259,6 +260,7 @@
  * @property {string} id 对话身份。
  * @property {string} title 标题。
  * @property {string|null} lastReply 最后一条角色台词；无回复时为空。
+ * @property {string|null} lastReplyTranslation 同一句台词可用于侧栏预览的中文译文。
  * @property {number} [lastReplyRevealAt] 侧栏可展示末句的时刻。
  * @property {boolean} [showTitle] 已有模型生成或用户指定的标题。
  * @property {string[]} characterIds 参与角色。

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { historyRows } from '../../src/renderer/src/features/home/history.js'
-import { lastDialogue } from '../../src/shared/chat-history.js'
+import { lastDialogue, lastDialogueEntry } from '../../src/shared/chat-history.js'
 import {
   fitHistorySize,
   readHistorySize
@@ -96,6 +96,13 @@ test('缺少语音或只有空白译文的角色台词仍可显示正文', () =>
     snapshot([{ kind: 'assistant', parts: [{ kind: 'dialogue', lines: [line] }] }])
   )
   expect(rows).toMatchObject([{ text: line.text, translation: null, audio: null }])
+})
+
+test('中文原文配有日语译文时，中文预览仍取原文', () => {
+  const line = { text: '下次见。', translation: 'またね。', spoken: { language: 'Chinese' } }
+  const { chat } = snapshot([{ kind: 'assistant', parts: [{ kind: 'dialogue', lines: [line] }] }])
+  chat.turns[0].meta = { generation: { language: 'Chinese', translationLanguage: 'Japanese' } }
+  expect(lastDialogueEntry(chat)).toMatchObject({ line: { text: '下次见。' }, translation: null })
 })
 test('整轮回放对已结束的有台词轮次开放，小剧场使用第一句作为入口', () => {
   const dialogue = {

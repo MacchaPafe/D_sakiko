@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, test } from 'vitest'
@@ -255,9 +255,17 @@ test('真实资源包自动发现相邻及角色共享标注，阻止越界成�
   const imported = await assets.importAsset(
     { kind: 'local-directory', path: folder, entry: 'live2D_model/model.model3.json' },
     'source',
-    'model'
+    'live2d'
   )
+  const indexDir = path.join(directory, 'cache', 'live2d-motion-groups', 'v1')
+  const indices = await readdir(indexDir)
+  expect(indices).toHaveLength(1)
+  const original = JSON.stringify(files['live2D_model/model.model3.json'])
+  expect(await readFile(path.join(folder, 'live2D_model/model.model3.json'), 'utf8')).toBe(original)
+  expect(Buffer.from(await assets.read(imported.asset)).toString()).toBe(original)
+  await rm(path.join(indexDir, indices[0]))
   const result = await resolveModelCatalog(assets, { model: imported.asset, mapping: null })
+  expect(await readdir(indexDir)).toEqual(indices)
   expect(result.motions.mtn_nod.description).toBe('原文件标注')
   expect(result.expressions.exp_smile01.description).toBe('共享微笑')
   expect(result.motions.mtn_nod.variants.C.member).toBe('live2D_model/mtn_nod_C.motion3.json')
@@ -268,3 +276,55 @@ test('真实资源包自动发现相邻及角色共享标注，阻止越界成�
   expect(timed.motions.mtn_nod.variants.L.durationMs).toBeUndefined()
   expect(cache.size).toBe(3)
 })
+
+test('V3 为各朝向补全标准组，按可用成员选择思考动作，保留作者分组与原始索引', async () => {
+  const files = [
+    'angry01_C',
+    'thinking01_C',
+    'thinking02_C',
+    'thinking03_L',
+    'check01_L',
+    'nod01_R',
+    'idle01_C',
+    'custom_C'
+  ]
+  const raw = {
+    FileReferences: {
+      Motions: { Default: files.map((name) => ({ File: 'mtn_' + name + '.motion3.json' })) }
+    }
+  }
+  const original = structuredClone(raw)
+  const config = { stateEffects: { motions: { mtn_thinking03: [{ state: 'mask' }] } } }
+  const locate = async (file) => (file.endsWith('thinking02_C.motion3.json') ? null : file)
+  const auto = await buildModelCatalog(raw, config, {}, locate)
+  const thinking = (catalog, direction) =>
+    resolvePerformance(catalog, null, null, { activity: 'thinking', direction })
+  expect(thinking(auto, 'C').thinkingMotions.map((item) => item.id)).toEqual(['mtn_thinking01'])
+  expect(thinking(auto, 'L').motion.id).toBe('mtn_check01')
+  expect(thinking(auto, 'R').motion.id).toBe('mtn_nod01')
+  expect(auto.groups.anger).toEqual(['mtn_angry01'])
+  expect(auto.groups.Default).toContain('mtn_custom')
+  expect(raw).toEqual(original)
+  raw.FileReferences.Motions.text_generating = [{ File: 'mtn_custom_C.motion3.json' }]
+  const manual = await buildModelCatalog(raw, config, {}, locate)
+  expect(thinking(manual, 'C').motion.id).toBe('mtn_custom')
+  expect(manual.groups).not.toHaveProperty('text_generating_C')
+})
+
+test.each([true, false])(
+  '没有思考候选时生成与待机共用同一份计划，基础待机存在=%s',
+  async (withIdle) => {
+    const names = ['mtn_serious01_C', 'mtn_thinking01_R', 'mtn_maskoff_C']
+    if (withIdle) names.push('mtn_idle01_C')
+    const raw = {
+      FileReferences: {
+        Motions: { Default: names.map((name) => ({ File: name + '.motion3.json' })) }
+      }
+    }
+    const catalog = await buildModelCatalog(raw, {}, {}, async (file) => file)
+    const plan = resolvePerformance(catalog, null, null, { activity: 'thinking' })
+    expect(plan).toEqual(resolvePerformance(catalog, null, null, { activity: 'idle' }))
+    expect(plan.motion?.id ?? null).toBe(withIdle ? 'mtn_idle01' : null)
+    expect(plan.thinkingMotions).toBeUndefined()
+  }
+)

@@ -13,6 +13,36 @@ import { startHttpServer } from '../../src/server/http-server.js'
 import { problemError } from '../../src/shared/problems.js'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
+async function verifyCharacterManager(page, backend) {
+  await page.getByRole('button', { name: '角色管理', exact: true }).click()
+  const manager = page.getByRole('dialog', { name: '角色管理' })
+  await manager.getByRole('button', { name: '新增角色' }).click()
+  await manager.getByLabel('角色名称', { exact: true }).fill('回归测试角色')
+  expect(await manager.getByLabel('介绍提示词').inputValue()).toBe('')
+  expect(await manager.getByRole('button', { name: '创建角色' }).isDisabled()).toBe(true)
+  await manager.getByLabel('介绍提示词').fill('只用文字交谈。')
+  await manager.getByRole('button', { name: '创建角色' }).click()
+  await manager.getByRole('button', { name: '添加 Live2D 服装' }).click()
+  await page.getByRole('button', { name: '关闭服装管理' }).click()
+  await manager.getByRole('button', { name: 'BanG Dream! 角色', exact: true }).click()
+  const affiliation = manager.getByRole('combobox', { name: '对应角色' })
+  await affiliation.fill('soyo')
+  await manager.getByRole('option', { name: '长崎素世' }).click()
+  expect(await manager.getByLabel('形态主题色').inputValue()).toBe('#ffdd88')
+  await manager.getByRole('button', { name: '恢复默认颜色' }).click()
+  await manager.getByLabel('角色名称', { exact: true }).fill('已改名的角色')
+  await manager.getByRole('button', { name: '保存更改' }).click()
+  await manager.getByRole('button', { name: '已改名的角色', exact: true }).waitFor()
+  const role = (await backend.characters.list()).find((entry) => entry.name === '已改名的角色')
+  expect(role.displayName).toBe(role.name)
+  expect(role.bangDreamId).toBe('soyo')
+  expect((await backend.characters.get(role.id)).forms[0].themeColor).toBeNull()
+  await manager.getByRole('button', { name: '删除角色', exact: true }).click()
+  await manager.getByRole('button', { name: '确认删除角色' }).click()
+  await expect.poll(() => backend.characters.get(role.id)).toBeNull()
+  await manager.getByRole('button', { name: '关闭角色管理' }).click()
+}
+
 async function verifySearchSelectScrollbar(page, input) {
   const style = await page.addStyleTag({
     // 让滚动条的点击区不受系统是否自动隐藏滚动条的设置影响。
@@ -367,7 +397,12 @@ async function verifySidebar(page, application, backend, selected) {
   for (const [index, text] of sampleReplies.entries()) {
     const copy = structuredClone(chat)
     copy.title = `侧栏测试 ${index + 1}`
-    copy.turns[0].messages[1].parts[0].lines[0].text = text
+    const line = copy.turns[0].messages[1].parts[0].lines[0]
+    line.text = text
+    if (index === 2) {
+      copy.meta.extensions.generatedTitle = true
+      line.translation = '是啊，请让我再想一想。'
+    }
     sampleIds.push(await backend.conversations.saveCopy(copy))
   }
   const anonId = await backend.conversations.createChat({
@@ -382,6 +417,12 @@ async function verifySidebar(page, application, backend, selected) {
   const preview = page.getByRole('button', { name: '今天也辛苦了，先休息一会儿吧。' })
   const draft = page.getByRole('textbox', { name: '消息' })
   const subtitle = page.locator('.subtitle-text')
+  const bilingual = page.getByRole('button', { name: '是啊，请让我再想一想。', exact: true })
+  await bilingual.waitFor()
+  await backend.settings.update({ display: { preferChinesePreview: false } })
+  await page.getByRole('button', { name: sampleReplies[2], exact: true }).waitFor()
+  await backend.settings.update({ display: { preferChinesePreview: true } })
+  await bilingual.waitFor()
   await preview.click()
   await expect.poll(() => subtitle.innerText()).toBe('今天也辛苦了，先休息一会儿吧。')
   await draft.fill('折叠和切换都保留这段草稿')
@@ -395,7 +436,7 @@ async function verifySidebar(page, application, backend, selected) {
   expect(await disclosure.evaluate((element) => element.inert)).toBe(true)
   await page.keyboard.press('Tab')
   expect(await page.evaluate(() => document.activeElement.getAttribute('aria-label'))).toBe(
-    '编辑角色归属：祥子'
+    '编辑角色：祥子'
   )
   await expect
     .poll(() => page.evaluate(() => getComputedStyle(document.activeElement).opacity))
@@ -468,7 +509,7 @@ async function verifySidebar(page, application, backend, selected) {
   expect(await anon.getAttribute('aria-expanded')).toBe('true')
   expect(await sakiko.evaluate((element) => element.classList.contains('selected'))).toBe(false)
   expect(await anon.evaluate((element) => element.classList.contains('selected'))).toBe(true)
-  const editAnon = page.getByRole('button', { name: '编辑角色归属：爱音' })
+  const editAnon = page.getByRole('button', { name: '编辑角色：爱音' })
   const editOpacity = () => editAnon.evaluate((element) => getComputedStyle(element).opacity)
   await anon.hover()
   await expect.poll(editOpacity).toBe('1')
@@ -720,25 +761,14 @@ async function verifyHistory(page, application, backend, selected) {
 }
 
 async function cancelTheatreFilePicker(page, dialog) {
-  const session = await page.context().newCDPSession(page)
-  try {
-    // 让 Chromium 取消这次系统选取，验证浏览器发出的真实文件输入事件。
-    await session.send('Page.setInterceptFileChooserDialog', { enabled: true, cancel: true })
-    const input = dialog.locator('input[type=file]')
-    await Promise.all([
-      input.evaluate(
-        (element) =>
-          new Promise((resolve) =>
-            element.addEventListener('cancel', () => resolve(true), { once: true })
-          )
-      ),
-      dialog.getByRole('button', { name: '添加参考文件' }).click()
-    ])
-    expect(await dialog.isVisible()).toBe(true)
-    expect(await dialog.locator('.attachment-chip span').innerText()).toBe('参考.txt')
-  } finally {
-    await session.detach()
-  }
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    dialog.getByRole('button', { name: '添加参考文件' }).click()
+  ])
+  // Playwright 拦截系统选取框，在实际触发选取的输入框上模拟取消事件。
+  await chooser.element().dispatchEvent('cancel', { bubbles: true, cancelable: false })
+  expect(await dialog.isVisible()).toBe(true)
+  expect(await dialog.locator('.attachment-chip span').innerText()).toBe('参考.txt')
 }
 
 /** 使用隔离配置与本地测试 Agent，验证正式舞台、角色选择和成场回放。 */
@@ -868,7 +898,10 @@ async function verifyTheatre(page, backend, agent) {
   expect(await manager.getByLabel('角色', { exact: true }).inputValue()).toBe(chat.characterIds[1])
   await page.keyboard.press('Escape')
   await manager.waitFor({ state: 'hidden' })
-  agent.run.mockImplementationOnce(async (request, observer) => {
+  // 抽签的后续单人回复可能晚于打开剧场。按场景交付剧本，避免后台回复抢走一次性测试数据。
+  const singleReply = agent.run.getMockImplementation()
+  agent.run.mockImplementation(async (request, observer, signal) => {
+    if (request.mode !== 'scripted-dialogue') return singleReply(request, observer, signal)
     await observer.onResponse({
       responseId: 'script-message',
       protocol: {},
@@ -880,9 +913,9 @@ async function verifyTheatre(page, backend, agent) {
             id: 'script-line-' + index,
             speakerId: role.id,
             formId: role.formId,
-            text: index ? '一起走吧。' : '排练结束了。',
+            text: index ? '一緒に帰ろう。' : '排练结束了。',
             emotion: 'happiness',
-            translation: null,
+            translation: index ? '一起走吧。' : null,
             performance: { motion: 'auto', expression: 'auto' }
           }))
         }
@@ -893,6 +926,11 @@ async function verifyTheatre(page, backend, agent) {
   await generate.click()
   await expect.poll(async () => (await snapshot()).chat.turns.length).toBe(1)
   await expect.poll(async () => (await snapshot()).activeTurnId, { timeout: 15000 }).toBeNull()
+  const theatrePreview = page.locator('.theatre-chat-row.selected .theatre-chat-preview')
+  await expect.poll(() => theatrePreview.innerText()).toBe('一起走吧。')
+  await backend.settings.update({ display: { preferChinesePreview: false } })
+  await expect.poll(() => theatrePreview.innerText()).toBe('一緒に帰ろう。')
+  await backend.settings.update({ display: { preferChinesePreview: true } })
   const bothVisible = () =>
     page.locator('.two-actors canvas').evaluate(
       (canvas) =>
@@ -986,9 +1024,11 @@ test.each(['production', 'development'])(
     const directory = await mkdtemp(join(tmpdir(), 'sakiko-home-ui-'))
     let backend, server, application, vite
     let role
+    const firstReply = Promise.withResolvers()
     const agent = {
       inspectContext: async () => ({ fit: 'fits' }),
       run: vi.fn(async (request, observer) => {
+        await firstReply.promise
         await observer.onResponse({
           responseId: 'response-' + request.turnId,
           protocol: {},
@@ -1163,7 +1203,16 @@ app.on('window-all-closed', () => app.quit())`
           baseUrl: 'http://127.0.0.1:9999/v1',
           attachmentTransport: 'inline',
           models: [
-            { id: 'test', declared: { contextTokens: 10000 }, overrides: {} },
+            {
+              id: 'test',
+              declared: {
+                contextTokens: 10000,
+                reasoning: { status: 'supported' },
+                reasoningEfforts: ['low', 'high'],
+                reasoningDefault: 'high'
+              },
+              overrides: {}
+            },
             ...Array.from({ length: 11 }, (_, index) => ({
               id: 'model-' + index,
               declared: {},
@@ -1242,6 +1291,12 @@ app.on('window-all-closed', () => app.quit())`
       await settings.getByRole('button', { name: '应用', exact: true }).click()
       const preferences = settings.getByRole('region', { name: '偏好' })
       await preferences.getByRole('heading', { name: '偏好', exact: true }).waitFor()
+      const previewSwitch = preferences.getByRole('switch', { name: '侧边栏预览翻译' })
+      expect(await previewSwitch.isChecked()).toBe(true)
+      await previewSwitch.press('Space')
+      await expect.poll(() => backend.settings.get('display.preferChinesePreview')).toBe(false)
+      await previewSwitch.click()
+      await expect.poll(() => previewSwitch.isChecked()).toBe(true)
       const speedSlider = preferences.getByRole('slider', { name: '回复语速' })
       const pauseSlider = preferences.getByRole('slider', { name: '句间停顿' })
       expect(await speedSlider.getAttribute('aria-valuenow')).toBe('0.88')
@@ -1322,9 +1377,26 @@ app.on('window-all-closed', () => app.quit())`
       backend.setup.getFeatureState = actualFeatureState
       const picker = page.getByRole('combobox', { name: '对话模型' })
       expect(await picker.inputValue()).toBe('test')
+      const shortModelWidth = (await picker.boundingBox()).width
+      expect(shortModelWidth).toBeLessThan(100)
       await picker.click()
       await verifySearchSelectScrollbar(page, picker)
+      expect((await picker.boundingBox()).width).toBe(shortModelWidth)
+      await page.getByRole('option', { name: 'model-10', exact: true }).click()
+      await expect
+        .poll(async () => (await picker.boundingBox()).width)
+        .toBeGreaterThan(shortModelWidth)
+      await picker.click()
       await page.getByRole('option', { name: 'test', exact: true }).click()
+      const thinking = page.getByRole('combobox', { name: '思考强度' })
+      const defaultThinkingWidth = (await thinking.boundingBox()).width
+      await thinking.click()
+      await page.getByRole('option', { name: '低', exact: true }).click()
+      await expect
+        .poll(async () => (await thinking.boundingBox()).width)
+        .toBeLessThan(defaultThinkingWidth)
+      await thinking.click()
+      await page.getByRole('option', { name: '默认（高）', exact: true }).click()
       await picker.click()
       await page.getByRole('button', { name: '管理模型' }).click()
       expect(await picker.getAttribute('aria-expanded')).toBe('false')
@@ -1435,7 +1507,14 @@ app.on('window-all-closed', () => app.quit())`
       await verifyDraftOutfit(page, backend, defaultName)
       await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
       await page.getByRole('button', { name: '发送消息' }).click()
+      const firstPreview = page.locator('.home-chat-row.selected > button:first-child')
+      try {
+        await expect.poll(() => firstPreview.textContent()).toBe('暂无回复')
+      } finally {
+        firstReply.resolve()
+      }
       await page.locator('.subtitle-text').filter({ hasText: '今天也辛苦了' }).waitFor()
+      await expect.poll(() => firstPreview.textContent()).toBe('今天也辛苦了，先休息一会儿吧。')
       expect(await page.locator('.subtitle-text').innerText()).toBe(
         '今天也辛苦了，先休息一会儿吧。'
       )
@@ -1539,13 +1618,15 @@ app.on('window-all-closed', () => app.quit())`
       await page.keyboard.press('Escape')
       await sidebarDownloads.waitFor({ state: 'hidden' })
       await downloadEntry.waitFor({ state: 'hidden' })
-      const editRole = page.getByRole('button', { name: /^编辑角色归属：/ }).first()
+      const editRole = page.getByRole('button', { name: /^编辑角色：/ }).first()
       const roleHeader = editRole.locator('..')
       await roleHeader.hover()
       const expanded = await roleHeader.locator('.home-role').getAttribute('aria-expanded')
       await editRole.click()
-      const affiliation = page.getByRole('dialog', { name: '编辑角色归属' })
+      const affiliation = page.getByRole('dialog', { name: '角色管理' })
       const search = affiliation.getByRole('combobox', { name: '对应角色' })
+      const themePicker = affiliation.getByLabel('形态主题色')
+      const originalColor = await themePicker.inputValue()
       await search.click()
       await verifySearchSelectScrollbar(page, search)
       await search.press('Tab')
@@ -1570,6 +1651,7 @@ app.on('window-all-closed', () => app.quit())`
       await affiliation.getByRole('option', { name: '户山香澄' }).waitFor()
       await page.keyboard.press('Enter')
       expect(await search.inputValue()).toBe('户山香澄')
+      expect(await themePicker.inputValue()).toBe('#ff5522')
       await search.fill('ビオラ')
       await affiliation.getByRole('option', { name: '薇欧拉', exact: true }).waitFor()
       await page.keyboard.press('Enter')
@@ -1582,7 +1664,10 @@ app.on('window-all-closed', () => app.quit())`
       await affiliation.getByRole('option', { name: '珠手知由（chu2）', exact: true }).waitFor()
       await page.keyboard.press('Enter')
       expect(await search.inputValue()).toBe('珠手知由（chu2）')
-      await affiliation.getByRole('button', { name: '取消', exact: true }).click()
+      await affiliation.getByRole('button', { name: '放弃更改' }).click()
+      await expect.poll(() => themePicker.inputValue()).toBe(originalColor)
+      await affiliation.getByRole('button', { name: '关闭角色管理' }).click()
+      await verifyCharacterManager(page, backend)
       expect(await roleHeader.locator('.home-role').getAttribute('aria-expanded')).toBe(expanded)
       expect(await savedOutfit()).toBe(form.defaultModelId)
       await page.evaluate(() => {

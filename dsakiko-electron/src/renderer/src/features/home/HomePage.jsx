@@ -10,6 +10,7 @@ import {
   Square,
   Theater,
   Trash2,
+  Users,
   Volume2
 } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
@@ -17,7 +18,7 @@ import { DialogNavigator } from '../../components/ui/DialogNavigator.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { Tabs, TabList, Tab, TabPanel } from '../../components/ui/segmented-tabs.jsx'
 import { useDialogNavigation } from '../../components/ui/use-dialog-navigation.js'
-import { isReplayableDialogue, lastDialogue } from '../../../../shared/chat-history.js'
+import { isReplayableDialogue, lastDialogueEntry } from '../../../../shared/chat-history.js'
 import logo from '../../assets/welcome/logo.svg'
 import wordmark from '../../assets/welcome/wordmark.svg'
 import { desktopHost } from '../../host/desktop.js'
@@ -37,20 +38,30 @@ import { NoticeStack } from './NoticeStack.jsx'
 import { DownloadCenter } from './DownloadCenter.jsx'
 import { pendingDownloads, useDownloadJobs } from './download-jobs.js'
 import { DeleteDialog } from './DeleteDialog.jsx'
-import { CharacterAffiliationForm, OutfitManager } from './OutfitManager.jsx'
+import { CharacterManager } from '../characters/CharacterManager.jsx'
+import { OutfitManager } from './OutfitManager.jsx'
 import { VoiceInput, VoiceInstallDialog } from './VoiceInput.jsx'
 import { SettingsPanel } from '../settings/SettingsPanel.jsx'
 import { ResourceDownloadConfirmation } from '../settings/Resources.jsx'
 import './home.css'
 
-/** @typedef {{kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
+/** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
 /** @typedef {HomeDialogContent & import('../../components/ui/use-dialog-navigation.js').DialogPage} HomeDialogPage */
 
 function downloadPage(category) {
   return { kind: 'downloads', title: '下载中心', layout: 'download-center', category }
 }
 
-function ChatItem({ chat, selected, flow, onDelete, roles, client, liveReply }) {
+function ChatItem({
+  chat,
+  selected,
+  flow,
+  onDelete,
+  roles,
+  client,
+  liveReply,
+  preferChinese = true
+}) {
   function select() {
     flow.selectChat(chat)
   }
@@ -58,7 +69,10 @@ function ChatItem({ chat, selected, flow, onDelete, roles, client, liveReply }) 
     onDelete(chat)
   }
   const now = useRevealClock(chat.lastReplyRevealAt ? [{ revealAt: chat.lastReplyRevealAt }] : [])
-  const preview = chat.lastReplyRevealAt > now ? '正在抽签' : chat.lastReply
+  const original = liveReply?.line.text ?? chat.lastReply
+  const translation = liveReply ? liveReply.translation : chat.lastReplyTranslation
+  let preview = (preferChinese && translation) || original
+  if (!liveReply && chat.lastReplyRevealAt > now) preview = '正在抽签'
   const theatre = chat.mode === 'scripted-dialogue'
   const actors = theatre
     ? (chat.characterIds ?? []).map(
@@ -89,11 +103,9 @@ function ChatItem({ chat, selected, flow, onDelete, roles, client, liveReply }) 
             </span>
             <span className="theatre-chat-meta">
               <span className="theatre-chat-title">{chat.title}</span>
-              <span className="theatre-chat-preview">{liveReply || preview || '尚未生成剧本'}</span>
+              <span className="theatre-chat-preview">{preview || '尚未生成剧本'}</span>
             </span>
           </>
-        ) : chat.showTitle ? (
-          <span title={preview ?? chat.title}>{chat.title}</span>
         ) : (
           preview || '暂无回复'
         )}
@@ -147,7 +159,7 @@ function CharacterGroup({
           onClick={toggle}
         >
           <CharacterAvatar role={role} client={client} />
-          <span className="home-role-name">{role.displayName ?? role.name}</span>
+          <span className="home-role-name">{role.name ?? role.displayName}</span>
           <ChevronRight className="home-role-chevron" size={16} aria-hidden="true" />
         </button>
         <Button
@@ -155,8 +167,10 @@ function CharacterGroup({
           variant="ghost"
           size="icon-xs"
           data-unconfirmed={unconfirmed || undefined}
-          aria-label={(unconfirmed ? '确认角色归属：' : '编辑角色归属：') + role.displayName}
-          title={unconfirmed ? '确认角色归属' : '编辑角色归属'}
+          aria-label={
+            (unconfirmed ? '确认角色归属：' : '编辑角色：') + (role.name ?? role.displayName)
+          }
+          title={unconfirmed ? '确认角色归属' : '编辑角色'}
           onClick={affiliation}
         >
           {unconfirmed ? (
@@ -184,6 +198,7 @@ function CharacterGroup({
               <ChatItem
                 key={chat.id}
                 chat={chat}
+                preferChinese={state.settings?.display?.preferChinesePreview}
                 selected={state.target.chatId === chat.id}
                 flow={flow}
                 onDelete={onDelete}
@@ -582,7 +597,7 @@ export function HomePage({ client, setup, setupState }) {
   const currentReplay = turnReplay?.chatId === state.target.chatId ? turnReplay : null
   const downloads = useDownloadJobs(
     client,
-    rootDialog === 'outfits' || activeDialog === 'downloads'
+    rootDialog === 'outfits' || rootDialog === 'characters' || activeDialog === 'downloads'
   )
   const downloadCount =
     pendingDownloads(downloads.outfits.items).length +
@@ -773,8 +788,8 @@ export function HomePage({ client, setup, setupState }) {
     setVoiceInstall(false)
     openSettings('resources', 'asr')
   }
-  function openDownload(target, title) {
-    push({ kind: 'resource', target, title, layout: 'outfit-detail-dialog' })
+  function openDownload(target, title, formId) {
+    push({ kind: 'resource', target, title, formId, layout: 'outfit-detail-dialog' })
   }
   function resourceDownloadStarted(id) {
     downloads.refresh()
@@ -795,7 +810,12 @@ export function HomePage({ client, setup, setupState }) {
       void stage.current?.select(current.target.characterId, null, null)
   }
   function dismissDialog(id) {
-    if (frames.length === 1 && frames[0].id === id && rootDialog === 'outfits') refreshStageOutfit()
+    if (
+      frames.length === 1 &&
+      frames[0].id === id &&
+      ['outfits', 'characters'].includes(rootDialog)
+    )
+      refreshStageOutfit()
     dismiss(id)
   }
   function showDownloads() {
@@ -825,18 +845,34 @@ export function HomePage({ client, setup, setupState }) {
   function refreshAffiliation() {
     void flow.refresh().catch(() => {})
   }
+  function openCharacters(selected) {
+    open({
+      kind: 'characters',
+      title: '角色管理',
+      layout: 'character-manager-dialog',
+      initialId: selected?.id ?? state.target.characterId,
+      focusAffiliation: Boolean(selected && selected.bangDreamId === undefined)
+    })
+    void setup.refreshManagedCatalog()
+  }
   function openAffiliation(role) {
-    function render(onClose) {
-      return (
-        <CharacterAffiliationForm
-          client={client}
-          role={role}
-          onClose={onClose}
-          onSaved={refreshAffiliation}
-        />
-      )
-    }
-    open({ kind: 'outfit-detail', title: '编辑角色归属', layout: 'outfit-detail-dialog', render })
+    openCharacters(role)
+  }
+  async function refreshCharacters(deletedId) {
+    await flow.refresh()
+    const current = flow.getSnapshot()
+    if (deletedId && !current.target.chatId && current.target.characterId === deletedId)
+      flow.newChat(current.characters[0]?.id ?? null)
+    void setup.refreshManagedCatalog({ localChanged: true })
+    void setup.refreshFeatures()
+  }
+  function editOutfits(characterId, formId, tab) {
+    push({
+      kind: 'outfits',
+      title: '服装管理',
+      layout: 'outfit-manager',
+      target: { characterId, formId, tab }
+    })
   }
   async function confirmDelete() {
     const done = await flow.deleteChat(deleting)
@@ -891,9 +927,7 @@ export function HomePage({ client, setup, setupState }) {
       }
     : null
   const theatreReplayTurnId = findTheatreReplayTurnId(state.snapshot)
-  const liveTheatreReply = isTheatre
-    ? (lastDialogue(state.snapshot?.chat, now)?.text ?? null)
-    : null
+  const liveTheatreReply = isTheatre ? lastDialogueEntry(state.snapshot?.chat, now) : null
   const theatreModelControl = theatreChat
     ? buildModelControl(state, flow, () => openSettings())
     : null
@@ -905,6 +939,35 @@ export function HomePage({ client, setup, setupState }) {
   )
   function renderDialogPage(page, { id, onDismiss, returnTo }) {
     switch (page.kind) {
+      case 'characters':
+        return (
+          <CharacterManager
+            client={client}
+            roles={state.characters}
+            initialId={page.initialId}
+            focusAffiliation={page.focusAffiliation}
+            active={activeDialog === 'characters'}
+            completedJob={setupState.job?.status === 'succeeded' ? setupState.job.id : null}
+            packages={
+              setupState.managedCatalog?.groups.find((group) => group.id === 'voices')?.options
+            }
+            onRefresh={refreshCharacters}
+            onClose={onDismiss}
+            onOutfits={editOutfits}
+            onChat={(characterId) => {
+              setExpandedRoleId(characterId)
+              flow.newChat(characterId)
+              onDismiss()
+            }}
+            onPackage={(item, formId) =>
+              openDownload(
+                item.id,
+                item.updateAvailable ? '查看语音包更新' : '使用推荐语音包',
+                formId
+              )
+            }
+          />
+        )
       case 'theatre':
         return (
           <TheatreSetup
@@ -974,6 +1037,7 @@ export function HomePage({ client, setup, setupState }) {
           <ResourceDownloadConfirmation
             title={page.title}
             target={page.target}
+            formId={page.formId}
             client={client}
             setup={setup}
             onClose={onDismiss}
@@ -1037,6 +1101,7 @@ export function HomePage({ client, setup, setupState }) {
                         roles={state.characters}
                         client={client}
                         liveReply={state.snapshot?.chat.id === chat.id ? liveTheatreReply : null}
+                        preferChinese={state.settings?.display?.preferChinesePreview}
                       />
                     ))}
                     {!theatre.length && <p className="home-empty">还没有小剧场记录</p>}
@@ -1050,6 +1115,7 @@ export function HomePage({ client, setup, setupState }) {
                     <ChatItem
                       key={chat.id}
                       chat={chat}
+                      preferChinese={state.settings?.display?.preferChinesePreview}
                       selected={state.target.chatId === chat.id}
                       flow={flow}
                       onDelete={setDeleting}
@@ -1067,27 +1133,33 @@ export function HomePage({ client, setup, setupState }) {
                 onSettings={openSettings}
               />
               <div className="home-sidebar-actions">
-                <Button variant="ghost" className="home-settings" onClick={() => openSettings()}>
-                  <Settings size={16} />
-                  设置
+                <Button variant="ghost" className="home-settings" onClick={() => openCharacters()}>
+                  <Users size={16} />
+                  角色管理
                 </Button>
-                {downloadCount > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="home-downloads"
-                    aria-label="下载中心"
-                    title={'下载中心（' + downloadCount + ' 个待处理任务）'}
-                    aria-haspopup="dialog"
-                    aria-description={downloadCount + ' 个待处理任务'}
-                    onClick={showDownloads}
-                  >
-                    <Download size={16} />
-                    <span className="home-download-count" aria-hidden="true">
-                      {downloadCount}
-                    </span>
+                <div className="home-sidebar-action-row">
+                  <Button variant="ghost" className="home-settings" onClick={() => openSettings()}>
+                    <Settings size={16} />
+                    设置
                   </Button>
-                )}
+                  {downloadCount > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="home-downloads"
+                      aria-label="下载中心"
+                      title={'下载中心（' + downloadCount + ' 个待处理任务）'}
+                      aria-haspopup="dialog"
+                      aria-description={downloadCount + ' 个待处理任务'}
+                      onClick={showDownloads}
+                    >
+                      <Download size={16} />
+                      <span className="home-download-count" aria-hidden="true">
+                        {downloadCount}
+                      </span>
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           </aside>

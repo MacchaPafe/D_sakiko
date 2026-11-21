@@ -93,7 +93,51 @@ function SpeechSliderCard({
   )
 }
 
-function SpeechPreferences({ speech, client }) {
+function SidebarPreviewPreference({ display, client }) {
+  const [saving, setSaving] = useState(false)
+  const [problem, setProblem] = useState(null)
+  const checked = display?.preferChinesePreview ?? true
+
+  async function toggle() {
+    setSaving(true)
+    setProblem(null)
+    try {
+      await client.settings.update({ display: { preferChinesePreview: !checked } })
+    } catch (error) {
+      setProblem(error.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <article className="settings-card">
+      <button
+        className="settings-preview-switch"
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-describedby="sidebar-preview-hint"
+        disabled={!display || saving}
+        onClick={toggle}
+      >
+        侧边栏预览翻译
+        <span className="tool-switch" aria-hidden="true" data-state={String(checked)}>
+          <i />
+        </span>
+      </button>
+      <p id="sidebar-preview-hint">开启时优先显示翻译，关闭后显示原文。</p>
+      {problem && (
+        <p className="settings-error" role="alert">
+          {problem}
+        </p>
+      )}
+    </article>
+  )
+}
+
+function Preferences({ settings, client }) {
+  const speech = settings?.speech
   const [speed, setSpeed] = useState(() => speech?.speed ?? DEFAULT_SPEECH_SPEED)
   const [pauseSeconds, setPauseSeconds] = useState(
     () => (speech?.sentencePauseMs ?? DEFAULT_SPEECH_PAUSE_MS) / 1000
@@ -164,6 +208,7 @@ function SpeechPreferences({ speech, client }) {
     <section aria-label="偏好">
       <h3>偏好</h3>
       <div className="settings-stack">
+        <SidebarPreviewPreference display={settings?.display} client={client} />
         <SpeechSliderCard
           title="回复语速"
           description="用于单人对话和小剧场"
@@ -284,7 +329,7 @@ function Application({ settings, client }) {
           )}
         </div>
       </section>
-      <SpeechPreferences speech={settings?.speech} client={client} />
+      <Preferences settings={settings} client={client} />
     </>
   )
 }

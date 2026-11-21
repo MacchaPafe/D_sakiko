@@ -85,6 +85,51 @@
     cursor: default;
   }
 }
+
+@layer components {
+  /* 为全局输入与选择控件提供清晰的编辑边框与焦点反馈，局部样式可按场景覆盖。 */
+  .field-input {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    padding: 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--resource-inset);
+    color: var(--foreground);
+    font-size: 13px;
+    line-height: 1.5;
+    transition:
+      border-color 140ms ease-out,
+      background-color 140ms ease-out,
+      box-shadow 140ms ease-out;
+  }
+  .field-input::placeholder {
+    color: var(--muted-foreground);
+  }
+  .field-input:hover:not(:disabled) {
+    border-color: var(--selected-border);
+  }
+  .field-input:focus-visible {
+    outline: none;
+    border-color: var(--primary);
+    background: var(--background);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 20%, transparent);
+  }
+  .field-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .field-textarea {
+    min-height: 88px;
+    resize: vertical;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .field-input {
+      transition: none;
+    }
+  }
+}
 html,
 body,
 #root {

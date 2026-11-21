@@ -127,12 +127,45 @@ export function resolvePerformance(
   // v2 动作自带面部曲线，普通台词忽略历史 v3 的两项显式选择。
   const explicit = catalog.version === 'v3' && !activity
   const inward = theatre && direction !== 'C'
+  const singleIdle =
+    catalog.version === 'v3' && !theatre && (activity === 'thinking' || activity === 'idle')
   function playable(id) {
     if (inward) return catalog.motions?.[id]?.variants?.[direction]
     return variant(catalog, id, direction)
   }
   let motion = explicit && playable(selection?.motion) ? selection.motion : null
-  if (!motion) {
+  if (singleIdle) {
+    const unsafe = new Set(
+      Object.values(catalog.states ?? {}).flatMap((state) => [state.on?.motion, state.off?.motion])
+    )
+    function candidates(name) {
+      for (const key of [name + '_' + direction, name]) {
+        const pool = []
+        for (const id of catalog.groups?.[key] ?? []) {
+          const variants = catalog.motions?.[id]?.variants
+          const target = variants?.[direction] ?? variants?.['']
+          if (target && !unsafe.has(id) && !catalog.stateEffects?.motions?.[id]?.length)
+            pool.push({ id, ...target })
+        }
+        if (pool.length) return pool
+      }
+      return []
+    }
+    const idle = candidates('idle_motion')
+    result.idleMotion = idle[0] ?? null
+    const basic = new Set(idle.map((item) => item.member))
+    const thinking =
+      activity === 'thinking'
+        ? candidates('text_generating').filter((item) => !basic.has(item.member))
+        : []
+    if (thinking.length) {
+      result.thinkingMotions = thinking
+      result.motion = thinking[0]
+    } else {
+      result.group = 'idle_motion'
+      result.motion = result.idleMotion
+    }
+  } else if (!motion) {
     if (explicit && selection?.motion && selection.motion !== 'auto')
       result.fallbackReasons.push('motion_unavailable')
     const stateMotions = new Set(
@@ -168,7 +201,7 @@ export function resolvePerformance(
     if (!expression) {
       if (explicit && selection?.expression && selection.expression !== 'auto')
         result.fallbackReasons.push('expression_unavailable')
-      expression = [...(expressions[group] ?? []), ...expressions.idle].find(
+      expression = [...(expressions[result.group] ?? []), ...expressions.idle].find(
         (id) => catalog.expressions?.[id]
       )
     }

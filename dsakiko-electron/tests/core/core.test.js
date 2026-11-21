@@ -895,3 +895,31 @@ test('CharacterCatalog.get 从模型入口与来源派生 version，且不持久
     expect(model).not.toHaveProperty('version')
   }
 })
+
+test('删除预览在身份变化后失效，保留身份后历史对话可读', async () => {
+  const { backend, chatId } = await fixture()
+  const role = await backend.characters.get('sakiko')
+  const stale = await backend.characters.previewDeletion(role.id)
+  await backend.characters.savePersona({
+    id: 'player',
+    revision: 0,
+    source: { kind: 'character', characterId: role.id, formId: role.defaultFormId }
+  })
+  await expect(
+    backend.characters.delete(role.id, role.revision, { stamp: stale.stamp, keepPersonas: true })
+  ).rejects.toHaveProperty('problem.code', 'revision_conflict')
+  const impact = await backend.characters.previewDeletion(role.id)
+  expect(impact.chats.map((chat) => chat.id)).toContain(chatId)
+  expect(impact.personas.map((persona) => persona.id)).toEqual(['player'])
+  await backend.characters.delete(role.id, role.revision, {
+    stamp: impact.stamp,
+    keepPersonas: true
+  })
+  expect((await backend.characters.getPersona('player')).source).toMatchObject({
+    kind: 'custom',
+    displayName: '祥子'
+  })
+  expect((await backend.conversations.getSnapshot(chatId)).participantIssue.code).toBe(
+    'missing-characters'
+  )
+})

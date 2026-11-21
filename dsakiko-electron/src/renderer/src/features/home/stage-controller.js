@@ -320,6 +320,7 @@ export class StageController {
       progress?.scene.slots.find((item) => item.id === this.history?.line.speakerId) ??
       progress?.scene.slots[0]
     if (!progress) {
+      this.actors.forEach((actor) => actor.clearThinkingMotion())
       this.actors.forEach((actor) => actor.clearTimedMotion())
       for (const actor of this.actors) actor.desiredPlanKey = null
       this.showHistory(null)
@@ -408,6 +409,7 @@ export class StageController {
         actor.surface.adapter?.setMouthOpen(this.mouth)
       }
       actor.advanceTimedMotion(snapshot.elapsedMs)
+      actor.advanceThinkingMotion()
     }
     const current = snapshot.progress?.current
     if (current?.guideId === this.guideId && this.state.revealed !== snapshot.revealedCharacters)
@@ -422,6 +424,7 @@ export class StageController {
     }
     this.player.setVisible(visible)
     if (!visible) {
+      this.actors.forEach((actor) => actor.clearThinkingMotion())
       this.actors.forEach((actor) => actor.clearTimedMotion())
       this.stopReplay()
       this.analyse(null)

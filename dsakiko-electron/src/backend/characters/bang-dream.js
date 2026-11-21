@@ -1,6 +1,6 @@
 import entries from './bang-dream.json' with { type: 'json' }
 
-/** @typedef {{id: string, name: string, displayName: string, band: string | null, aliases: string[], bestdoriId: number | null}} BangDreamCharacter 邦角色目录身份、显示名、乐队分组及资源索引。 */
+/** @typedef {{id: string, name: string, displayName: string, themeColor: string, band: string | null, aliases: string[], bestdoriId: number | null}} BangDreamCharacter 邦角色目录身份、预设主题色、显示名、乐队分组及资源索引。 */
 /** @type {Map<string, BangDreamCharacter>} */
 export const bangDreamCharacters = new Map(entries.map((entry) => [entry.id, entry]))
 

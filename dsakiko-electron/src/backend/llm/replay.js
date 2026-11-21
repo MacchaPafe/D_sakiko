@@ -129,9 +129,10 @@ function origin(connection) {
 
 /** 从 SDK 完整内容提取有序可回传块；空文本签名也需要保存。
  * @param {object} response SDK 单步响应。
+ * @param {boolean} [chatgptWebSearch] 允许处理 ChatGPT 订阅的原生搜索结果。
  * @returns {object[]} SDK assistant 内容块。
  */
-export function responseContent(response) {
+export function responseContent(response, chatgptWebSearch = false) {
   // 注入式测试或旧调用方可只提供简化字段；生产 SDK 的 content 是权威来源。
   const source = response.content ?? [
     ...(response.reasoningText != null
@@ -140,7 +141,28 @@ export function responseContent(response) {
     ...(response.toolCalls ?? []).map((call) => ({ ...call, type: 'tool-call' })),
     ...(response.text ? [{ type: 'text', text: response.text }] : [])
   ]
-  return source.map((part) => {
+  return source.flatMap((part) => {
+    if (chatgptWebSearch) {
+      if (part.type === 'source' && part.sourceType === 'url') return []
+      if (part.toolName === 'web_search') {
+        if (part.providerExecuted && ['tool-call', 'tool-error'].includes(part.type)) return []
+        if (
+          part.type === 'tool-result' &&
+          (part.providerExecuted || part.output?.type === 'json')
+        ) {
+          // SDK 从 assistant 的结果块重建无存储模式的 web_search_call。
+          // 失败结果只供展示，不能被编码成本地函数的输出。
+          const output = part.providerExecuted ? { type: 'json', value: part.output } : part.output
+          if (!output.value?.action) return []
+          return {
+            type: 'tool-result',
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            output: copy(output)
+          }
+        }
+      }
+    }
     requireValue(
       ['reasoning', 'text', 'tool-call'].includes(part.type) && !part.providerExecuted,
       'unsupported_model_output',
@@ -217,5 +239,5 @@ export function restoreReplay(message, connection, contextFingerprint) {
   const content = requiresStableThinkingPrefix(connection)
     ? saved.content.filter((part) => part.type !== 'reasoning')
     : saved.content
-  return responseContent({ content })
+  return responseContent({ content }, connection.provider === 'chatgpt')
 }

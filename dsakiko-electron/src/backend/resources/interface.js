@@ -1,5 +1,6 @@
 import { processUsesResources } from './process.js'
 import { AssetCollector } from './collector.js'
+import { indexImportedV3Model } from '../characters/v3-motion-groups.js'
 import { extractAssetReferences } from './references.js'
 import path from 'node:path'
 import {
@@ -403,8 +404,13 @@ export class MediaAssets {
       }
       try {
         // 大文件直接复制，避免将完整模型读入 Node.js 内存。
-        if (localDirectory) info.sizeBytes = await copyPackage(localDirectory, destination, signal)
-        else if (localFile) {
+        if (localDirectory) {
+          info.sizeBytes = await copyPackage(localDirectory, destination, signal)
+          if (purpose === 'live2d') {
+            const entry = resourcePath(destination, source.entry)
+            await indexImportedV3Model(entry, this.roots.cache, signal)
+          }
+        } else if (localFile) {
           await copyFile(localFile, destination)
           await chmod(destination, 0o600)
         } else await writeFile(destination, bytes, { flag: 'wx', mode: 0o600, signal })

@@ -16,6 +16,68 @@ afterEach(async () => {
   if (directory) await rm(directory, { recursive: true, force: true })
 })
 
+async function verifyFormVoiceFiles(page, modelFile) {
+  await page.getByRole('button', { name: '快速开始', exact: true }).click()
+  await page.getByRole('button', { name: '跳过，直接开始', exact: true }).click()
+  await page.getByRole('button', { name: '角色管理', exact: true }).click()
+  const manager = page.getByRole('dialog', { name: '角色管理' })
+  await manager.getByRole('button', { name: '新增角色' }).click()
+  await manager.getByLabel('角色名称', { exact: true }).fill('语音文件测试')
+  await manager
+    .locator('input[type=file]')
+    .setInputFiles({
+      name: '介绍.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('逐句选择参考录音。')
+    })
+  await manager.getByRole('button', { name: '创建角色' }).click()
+  const pick = async (label, file) => {
+    await application.evaluate(({ dialog }, selected) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] })
+    }, file)
+    await manager
+      .locator('.role-file')
+      .filter({ has: page.getByText(label, { exact: true }) })
+      .getByRole('button', { name: '选择文件' })
+      .click()
+    await manager.getByText(file.split(/[\\/]/).pop(), { exact: true }).waitFor()
+  }
+  await pick('GPT 模型', modelFile)
+  await manager.getByRole('button', { name: '保存更改' }).click()
+  await manager.getByRole('button', { name: '关闭角色管理' }).click()
+  await page
+    .getByRole('button', { name: '编辑角色：语音文件测试' })
+    .or(page.getByRole('button', { name: '确认角色归属：语音文件测试' }))
+    .click()
+  await manager.getByText('model.ckpt', { exact: true }).waitFor()
+  expect(await manager.getByLabel('启用回复语音').isDisabled()).toBe(true)
+  const weights = join(directory, 'voice.pth'),
+    recording = join(directory, 'reference.wav')
+  await writeFile(weights, 'voice')
+  await writeFile(recording, Buffer.alloc(44))
+  await pick('SoVITS 模型', weights)
+  await pick('默认参考录音', recording)
+  await manager.getByLabel('录音对应文本').fill('你好。')
+  const language = manager.getByRole('combobox', { name: '默认参考语言' })
+  await language.click()
+  await manager.getByRole('option', { name: '中文', exact: true }).click()
+  await manager.getByLabel('启用回复语音').check()
+  await manager.getByRole('button', { name: '保存更改' }).click()
+  const role = (await client.characters.list()).find((item) => item.name === '语音文件测试')
+  await expect
+    .poll(async () => (await client.characters.get(role.id)).forms[0].voice?.defaultReference.text)
+    .toBe('你好。')
+  await manager.getByLabel('启用回复语音').uncheck()
+  await manager.getByRole('button', { name: '保存更改' }).click()
+  await expect
+    .poll(
+      async () =>
+        (await client.characters.get(role.id)).forms[0].inactiveVoice?.defaultReference.language
+    )
+    .toBe('all_zh')
+  await manager.getByRole('button', { name: '关闭角色管理' }).click()
+}
+
 test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原型页面工作', async () => {
   directory = await mkdtemp(join(tmpdir(), 'dsakiko-host-'))
   const env = {
@@ -175,6 +237,7 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
   expect(await readFile(join(directory, 'library/models', imported[0].asset.id), 'utf8')).toBe(
     'model'
   )
+  await verifyFormVoiceFiles(page, modelFile)
   const sessionData = await application.evaluate(({ app }) => app.getPath('sessionData'))
   expect(sessionData).toBe(join(directory, 'cache/chromium'))
   await application.close()

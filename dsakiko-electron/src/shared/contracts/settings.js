@@ -118,7 +118,7 @@
  * @property {SpeechOptions} speech 语音默认值。
  * @property {SpeechStartupSettings} speechStartup 下次启动生效，不能改变在途任务。
  * @property {import('./presentation.js').BgmSettings} bgm 曲目、开关及循环的全局持久偏好；音量由客户端保存，播放位置和错误是运行态。
- * @property {{ frameRate: number, theme: 'system' | 'light' | 'dark', startInPetMode: boolean }} display 正帧率及宿主展示偏好；窗口细节由宿主设计。
+ * @property {{ frameRate: number, theme: 'system' | 'light' | 'dark', startInPetMode: boolean, preferChinesePreview: boolean }} display 帧率、宿主展示及侧边栏预览语言偏好。
  */
 
 /**

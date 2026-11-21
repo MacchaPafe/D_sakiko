@@ -20,6 +20,8 @@ import { SetupCatalog, setupGroups } from './catalog.js'
 import { scanLegacyDirectory, validateLegacySource } from './legacy.js'
 import { checkSpace, copyNew, sourcePath, stamp, walk } from './files.js'
 import { downloadFile } from './download.js'
+import { configuredVoice } from '../../shared/reply-voice.js'
+import { voiceBaseline, voiceChanges, applyVoiceChanges } from './voice-update.js'
 import { VoiceReuse, voiceDefinition } from './voice-reuse.js'
 import { collectDownloadCache } from './cache.js'
 import { extractArchive, prepareRuntime } from './installers.js'
@@ -350,7 +352,7 @@ export class ResourceSetup {
             if (component.id === 'gsv.models' && !this.componentUpdate(component, installed))
               await this.reuseGsv(component, installed['gsv.models'])
             if (options.managed && component.kind === 'voice' && target) {
-              const materials = target.forms.flatMap((form) => [form.voice, form.customVoice])
+              const materials = target.forms.map(configuredVoice)
               const reused = await this.voiceReuse.matchingFiles(
                 component,
                 materials,
@@ -393,7 +395,7 @@ export class ResourceSetup {
               .join(' / ') || null
           option.updateAvailable = selected.some((item) => this.componentUpdate(item, installed))
           if (!voice) option.waiting = Boolean(this.runtimeWaiting?.(option.id))
-          if (voice && target) option.forms = await this.voiceOptions(target, installed[voice.id])
+          if (voice && target) option.forms = await this.voiceOptions(target)
           if (
             option.id === 'asr' &&
             this.localRecognition &&
@@ -478,31 +480,13 @@ export class ResourceSetup {
     return bytes
   }
 
-  async voiceOptions(role, record) {
-    const formNames = { black: '黑祥', white: '白祥' }
+  async voiceOptions(role) {
     return Promise.all(
-      role.forms.map(async (form) => {
-        const packageVoice =
-          record?.voiceDefinition?.forms[form.id] ?? record?.voiceDefinition?.forms.default
-        const active =
-          form.voice &&
-          record &&
-          (form.voicePackageId === record.id ||
-            (packageVoice && fingerprint(form.voice) === fingerprint(packageVoice)))
-            ? 'package'
-            : form.voice
-              ? 'custom'
-              : 'none'
-        const custom = active === 'custom' ? form.voice : form.customVoice
-        return {
-          id: form.id,
-          name: (role.name === '祥子' && formNames[form.id]) || form.displayName || role.name,
-          active,
-          packageAvailable: Boolean(packageVoice),
-          customAvailable: Boolean(custom),
-          customBytes: await this.assetBytes(custom)
-        }
-      })
+      role.forms.map(async (form) => ({
+        id: form.id,
+        enabled: Boolean(form.voice),
+        materialBytes: await this.assetBytes(configuredVoice(form))
+      }))
     )
   }
 
@@ -529,6 +513,7 @@ export class ResourceSetup {
             Object.assign(refs, matched)
             forms[form.id] = expected
             form.voicePackageId = component.id
+            form.voiceBaseline = voiceBaseline(expected)
           }
           if (!Object.keys(forms).length) continue
           await this.characters.save(role)
@@ -552,7 +537,7 @@ export class ResourceSetup {
 
   async reuseVoicePackage(component, previous, job) {
     const role = await this.characters.get(component.targetCharacterId)
-    const voices = (role?.forms ?? []).flatMap((form) => [form.voice, form.customVoice])
+    const voices = (role?.forms ?? []).map(configuredVoice)
     component.reused = await this.voiceReuse.matchingFiles(component, voices, previous?.refs)
     component.files = component.files.filter((file) => !component.reused[file.path])
     const entries = Object.entries(component.reused)
@@ -564,47 +549,103 @@ export class ResourceSetup {
     for (const [name, ref] of entries) job.refs[component.id + ':' + name] = ref
   }
 
-  /** 切换形态的在用语音，未选的自定义资源继续随角色保存。 */
-  async selectVoice(id, formId, choice) {
-    return this.queue.run('voice-changes', async () => {
-      requireValue(['package', 'custom', 'none'].includes(choice), 'invalid_voice_selection')
-      const { role, record } = await this.managedVoice(id)
-      const form = role.forms.find((item) => item.id === formId)
-      requireValue(form, 'character_form_missing')
-      const packageVoice =
-        record?.voiceDefinition?.forms[formId] ?? record?.voiceDefinition?.forms.default
-      const usesPackage =
-        form.voicePackageId === id ||
-        (packageVoice && fingerprint(form.voice) === fingerprint(packageVoice))
-      const custom = usesPackage ? form.customVoice : (form.voice ?? form.customVoice)
-      if (choice === 'package') {
-        requireValue(
-          await this.voiceReady(packageVoice),
-          'resource_not_installed',
-          '请先安装这套语音。'
+  /** 读取本地语音包，或用发布清单预览待下载文件。相同内容优先使用当前资源引用。 */
+  async reviewVoiceUpdate(id, formId = null, installedOnly = false) {
+    const { role, record } = await this.managedVoice(id)
+    const fileNames = new Map()
+    let incoming = record?.voiceDefinition
+    let version = record?.version
+    let contentId = record?.contentId
+    let download = false
+    if (!installedOnly) {
+      const components = await this.catalog.select([id], {})
+      const component = components.find((item) => item.id === id)
+      requireValue(component, 'resource_not_published', '找不到推荐语音包。')
+      contentId = componentContentId(component)
+      if (
+        !incoming ||
+        record.contentId !== contentId ||
+        record.complete === false ||
+        !(await this.installedReady(component, { [id]: record }))
+      ) {
+        const matched = await this.voiceReuse.matchingFiles(
+          component,
+          role.forms.map(configuredVoice),
+          record?.refs
         )
-        form.voice = copy(packageVoice)
-        form.voicePackageId = id
-      } else {
-        if (choice === 'custom')
-          requireValue(
-            await this.voiceReady(custom),
-            'resource_not_installed',
-            '自定义语音不可用。'
-          )
-        form.voice = choice === 'custom' ? copy(custom) : null
-        delete form.voicePackageId
+        const refs = Object.fromEntries(
+          component.files.map((file) => [
+            file.path,
+            matched[file.path] ?? { id: 'download-' + file.sha256 }
+          ])
+        )
+        for (const [name, asset] of Object.entries(refs))
+          fileNames.set(asset.id, path.posix.basename(name))
+        incoming = voiceDefinition(component, refs, await this.voiceReuse.definition(component))
+        version = component.version
+        download = true
       }
-      if (custom && choice !== 'custom') form.customVoice = copy(custom)
-      else delete form.customVoice
-      form.voiceExplicit = true
-      await this.characters.save(role)
+    }
+    requireValue(incoming, 'resource_not_installed', '尚未安装推荐语音包。')
+    const assets = (await this.assets.state()).assets
+    const assetName = (asset) => fileNames.get(asset.id) ?? assets[asset.id]?.name ?? '文件不可用'
+    const forms = []
+    for (const form of role.forms) {
+      if (formId && form.id !== formId) continue
+      const next = incoming.forms[form.id] ?? incoming.forms.default
+      if (!next) continue
+      const previous =
+        record?.voiceDefinition?.forms[form.id] ?? record?.voiceDefinition?.forms.default
+      const baseline =
+        form.voiceBaseline ?? (form.voicePackageId === id ? voiceBaseline(previous) : {})
+      forms.push({
+        id: form.id,
+        name: form.displayName || role.name,
+        changes: voiceChanges(form, next, baseline, assetName)
+      })
+    }
+    requireValue(forms.length, 'form_missing', '语音包中没有这个形态。')
+    return { id, characterId: role.id, contentId, version, download, forms }
+  }
+
+  /** 已在本地的包无需启动下载任务。 */
+  async applyVoiceUpdate(selection) {
+    return this.queue.run('voice-changes', async () => {
+      const { role, record } = await this.managedVoice(selection.id)
+      requireValue(
+        record && record.contentId === selection.contentId,
+        'revision_conflict',
+        '语音包版本已变化，请重新查看更新。'
+      )
+      await this.applyReviewedVoice(role, record, selection)
     })
+  }
+
+  async applyReviewedVoice(role, record, selection) {
+    requireValue(
+      role?.id === selection.characterId &&
+        record.id === selection.id &&
+        record.contentId === selection.contentId,
+      'revision_conflict',
+      '角色或语音包已变化，请重新查看更新。'
+    )
+    const previous = (await this.installations())[record.id]?.voiceDefinition?.forms
+    for (const form of role.forms) {
+      const old = previous?.[form.id] ?? previous?.default
+      if (!form.voiceBaseline && form.voicePackageId === record.id && old)
+        form.voiceBaseline = voiceBaseline(old)
+      const choice = selection.forms.find((entry) => entry.id === form.id)
+      if (!choice) continue
+      const next = record.voiceDefinition.forms[form.id] ?? record.voiceDefinition.forms.default
+      requireValue(next, 'form_missing')
+      applyVoiceChanges(form, next, choice.items, record.id)
+    }
+    await this.characters.save(role)
   }
 
   /** 只估算本包独占且无其他硬链接的文件大小。 */
   async previewVoiceRemoval(id) {
-    const { record } = await this.managedVoice(id)
+    const record = (await this.installations())[id]
     const refs = new Map(extractAssetReferences(record).map((ref) => [ref.id, ref]))
     const job = record?.jobId ? await this.readJob(record.jobId) : null
     const retained = new Set(
@@ -637,14 +678,8 @@ export class ResourceSetup {
   /** 仅释放安装包持有的引用，运行轮次和其他语音仍可持有相同素材。 */
   async removeVoice(id) {
     return this.queue.run('voice-changes', async () => {
-      const { role, record } = await this.managedVoice(id)
+      const record = (await this.installations())[id]
       requireValue(record?.voiceDefinition, 'resource_not_installed')
-      const forms = await this.voiceOptions(role, record)
-      requireValue(
-        forms.every((form) => form.active !== 'package'),
-        'resource_in_use',
-        '请先切换或停用正在使用这套语音的形态。'
-      )
       await this.queue.run('installations', async () => {
         const installed = await this.installations()
         requireValue(installed[id]?.contentId === record.contentId, 'revision_conflict')
@@ -674,9 +709,7 @@ export class ResourceSetup {
       'invalid_resource_selection'
     )
     const record = (await this.installations())[id]
-    const role = record?.characterId
-      ? await this.characters.get(record.characterId)
-      : await this.voiceTarget(id.slice('voice.'.length))
+    const role = await this.voiceTarget(id.slice('voice.'.length))
     requireValue(role, 'character_missing')
     return { record, role }
   }
@@ -822,6 +855,10 @@ export class ResourceSetup {
         const installed = await this.installations()
         job.options.selection = copy(options.selection)
         job.options.managed = options.managed === true
+        if (options.voiceUpdate) {
+          requireValue(job.options.managed && options.selection.includes(options.voiceUpdate.id))
+          job.voiceUpdate = copy(options.voiceUpdate)
+        }
         job.voicePreferenceRevision = (await this.settings.voicePreference()).revision
         job.voiceTargets = {}
         for (const component of await this.catalog.select(options.selection, {
@@ -850,6 +887,13 @@ export class ResourceSetup {
             component.unavailableReason ?? '所需资源尚未发布。'
           )
           component.contentId = componentContentId(component)
+          if (job.voiceUpdate?.id === component.id)
+            requireValue(
+              job.voiceUpdate.characterId === component.targetCharacterId &&
+                job.voiceUpdate.contentId === component.contentId,
+              'revision_conflict',
+              '角色或语音包已变化，请重新查看更新。'
+            )
           if (component.kind === 'voice' && job.options.managed)
             await this.reuseVoicePackage(component, installed[component.id], job)
           if (component.id === 'gsv.models' && !updating)
@@ -1543,7 +1587,7 @@ export class ResourceSetup {
       if (record.voiceDefinition)
         await this.queue.run('voice-changes', async () => {
           const current = (await this.installations())[record.id]
-          if (!current?.voiceDefinition) return
+          if (!current?.voiceDefinition || current.reviewed) return
           const characterId = current.id.slice('voice.'.length)
           const role = await this.voiceTarget(characterId)
           if (!role) return
@@ -1578,6 +1622,16 @@ export class ResourceSetup {
   /** 当前安装记录与角色形态同时可用时才接受自动启用意图。 */
   async enablePreparedVoices(job, committing = false) {
     if (!committing && !(await this.canBind(job))) return
+    // 只有公共引擎需要下载时，包已在本地，仍需兑现本次确认的形态选择。
+    if (
+      job.voiceUpdate &&
+      !job.voiceApplied &&
+      !job.selected.some((item) => item.id === job.voiceUpdate.id)
+    ) {
+      await this.applyVoiceUpdate(job.voiceUpdate)
+      job.voiceApplied = true
+      await this.save(job)
+    }
     if (job.voicePreferenceRevision === undefined) return
     const installed = await this.installations()
     let changed = false
@@ -1640,7 +1694,16 @@ export class ResourceSetup {
     if (installed['gsv.runtime']?.status !== 'ready' || installed['gsv.models']?.status !== 'ready')
       return false
     const resources = await this.settings.get('speechStartup.gptSovits.resources')
-    const versions = voicePackage?.architecture ? [voicePackage.architecture] : ['v4', 'v2ProPlus']
+    const matchesWeights = Object.values(voicePackage?.voiceDefinition?.forms ?? {}).some(
+      (entry) =>
+        voice &&
+        entry.gptWeights?.id === voice.gptWeights?.id &&
+        entry.sovitsWeights?.id === voice.sovitsWeights?.id
+    )
+    const versions =
+      matchesWeights && voicePackage.architecture
+        ? [voicePackage.architecture]
+        : ['v4', 'v2ProPlus']
     if (!versions.some((version) => selectGptSovitsFiles(resources, version).missing.length === 0))
       return false
     try {
@@ -1679,7 +1742,7 @@ export class ResourceSetup {
           characterId: role.id,
           formId: form.id,
           ready,
-          autoEnabled: ready && preference.enabled[role.id] === true
+          autoEnabled: ready && (form.replyVoiceEnabled ?? preference.enabled[role.id]) === true
         })
       }
     }
@@ -1840,7 +1903,16 @@ export class ResourceSetup {
     if (bind && component.kind === 'gsv') await bindGsv(this.settings, prepared)
     if (voice) {
       await this.queue.run('voice-changes', async () => {
-        if (bind) Object.assign(record, await this.bindVoice(component, voice.voiceDefinition))
+        if (bind && job.voiceUpdate?.id === record.id) {
+          record.characterId = component.targetCharacterId
+          record.reviewed = true
+          await this.applyReviewedVoice(
+            await this.characters.get(record.characterId),
+            record,
+            job.voiceUpdate
+          )
+        } else if (bind)
+          Object.assign(record, await this.bindVoice(component, voice.voiceDefinition))
         await this.activate(record)
       })
     } else await this.activate(record)
@@ -1973,7 +2045,12 @@ export class ResourceSetup {
     let changed = false
     for (const form of role.forms) {
       const definition = voice.forms[form.id] ?? voice.forms.default
-      if (!definition || (form.voiceExplicit && !form.voicePackageId)) continue
+      if (
+        !definition ||
+        form.replyVoiceEnabled !== undefined ||
+        (form.voiceExplicit && !form.voicePackageId)
+      )
+        continue
       const oldVoice = (await this.installations())[component.id]?.voiceDefinition?.forms
       const prior = oldVoice?.[form.id] ?? oldVoice?.default
       const tracked =
@@ -1986,6 +2063,7 @@ export class ResourceSetup {
       )
         continue
       form.voice = copy(definition)
+      form.voiceBaseline = voiceBaseline(definition)
       form.voicePackageId = component.id ?? 'voice.' + component.characterId
       changed = true
     }
@@ -1999,7 +2077,12 @@ export class ResourceSetup {
     const displayName = setupGroups
       .find((group) => group.id === 'voices')
       .options.find((option) => option.id === 'voice.' + characterId)?.name
-    const summary = (await this.characters.list()).find((role) => role.name === displayName)
+    const roles = await this.characters.list()
+    const boundId = (await this.installations())['voice.' + characterId]?.characterId
+    const summary =
+      roles.find((role) => role.bangDreamId === characterId) ??
+      roles.find((role) => role.id === boundId) ??
+      roles.find((role) => role.name === displayName)
     return summary ? this.characters.get(summary.id) : null
   }
 

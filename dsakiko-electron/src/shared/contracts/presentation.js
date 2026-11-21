@@ -17,6 +17,8 @@
  * @property {string} group 使用的情绪或活动动作组。
  * @property {ResolvedMotion | null} motion 实际方向动作及原始播放元数据。
  * @property {MotionCue[]} [motionCues] 后端安排的句内动作，按开始时刻排序。
+ * @property {ResolvedMotion[]} [thinkingMotions] 单人 V3 等待回复时可重播的同优先级动作。
+ * @property {ResolvedMotion|null} [idleMotion] 单人 V3 思考动作之间由 SDK 自然播放的基础待机。
  * @property {{id: string, member: string} | null} expression v2 始终为 null，保留动作原有面部表现。
  * @property {string[]} fallbackReasons 显式选择不可用的通道。
  */

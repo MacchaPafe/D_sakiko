@@ -294,6 +294,24 @@ export async function createCoreBackend({
     conversations,
     fetch: transport
   })
+  characters.deletionUsage = async (id) => {
+    const chats = (await store.list()).filter((chat) => chat.characterIds.includes(id))
+    const busyChat = chats.some((chat) => {
+      const state = conversations.states.get(chat.id)
+      return state?.active || state?.compressing
+    })
+    const busyOutfit = outfits.isInstalling(id)
+    let busySetup = false
+    for (const snapshot of await setup.listJobs()) {
+      if (snapshot.status !== 'running') continue
+      const job = await setup.readJob(snapshot.id)
+      if (Object.values(job.voiceTargets ?? {}).includes(id)) busySetup = true
+    }
+    return {
+      chats: chats.map(({ id, mode, title }) => ({ id, mode, title })),
+      busy: Boolean(busyChat || busyOutfit || busySetup)
+    }
+  }
   await outfits.initialize()
   // 上一轮扫描尚未完成时直接跳过本次定时器回调，防止慢操作导致并发扫描叠加。
   let scanning = false

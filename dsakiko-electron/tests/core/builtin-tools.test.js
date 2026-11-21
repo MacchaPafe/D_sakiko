@@ -381,6 +381,24 @@ test('未配置私有凭据时回退内置 Bocha 密钥，私有凭据优先且�
   }
 })
 
+test.each([
+  [JSON.stringify({ code: '403', message: 'You do not have enough money' }), '博查账户余额不足'],
+  [JSON.stringify({ code: '403', message: 'Forbidden' }), '外部查询失败（HTTP 403）。'],
+  ['<html>Forbidden</html>', '外部查询失败（HTTP 403）。']
+])('博查 403 响应 %s 对应提示 %s', async (body, message) => {
+  const { backend } = await fixture()
+  const call = webSearchTool(
+    backend.settings,
+    async () => new Response(body, { status: 403 })
+  ).bind({})
+
+  await expect(call({ query: '测试' })).rejects.toHaveProperty('problem', {
+    code: 'tool_http_error',
+    message,
+    retryable: false
+  })
+})
+
 test('天气默认 IP 只短期缓存位置，显式城市优先，硬件部分失败仍返回其余指标', async () => {
   const { backend } = await fixture()
   const transport = vi.fn(async (url) => {

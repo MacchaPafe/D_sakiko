@@ -161,8 +161,8 @@ function SearchSelect({
     )
   }
 
-  let inputValue = selected ? (formatSelected ? formatSelected(selected) : selected.label) : ''
-  if (searchable && open) inputValue = query
+  const selectedLabel = selected ? (formatSelected ? formatSelected(selected) : selected.label) : ''
+  const inputValue = searchable && open ? query : selectedLabel
 
   let inputPlaceholder = placeholder
   if (searchable && open) {
@@ -170,7 +170,7 @@ function SearchSelect({
   }
 
   return (
-    <span className="search-select">
+    <span className="search-select" data-selected-label={selectedLabel || placeholder}>
       <input
         className="field-input"
         type="text"

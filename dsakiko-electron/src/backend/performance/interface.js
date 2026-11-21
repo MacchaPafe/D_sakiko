@@ -718,6 +718,12 @@ export class Performance {
       }
       this.clearTransitions(sequence)
       if (sequence.timedDialogue) {
+        // 流式回复可能在首句已经开始演出后继续生成；句间不再切回思考动作。
+        if (
+          sequence.activity === 'thinking' &&
+          sequence.mappings.get(next.guide.slotId)?.version === 'v3'
+        )
+          sequence.activity = 'idle'
         next.guide = this.planDialogue(sequence.scene, sequence.mappings, next.guide)
         next.durationMs = this.duration(next.guide)
         next.playbackScene = sequence.scene

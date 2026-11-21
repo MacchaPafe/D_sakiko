@@ -213,7 +213,18 @@ async function startApplication() {
     )
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '导入本地资源',
-      properties: [options.directory ? 'openDirectory' : 'openFile', 'multiSelections']
+      properties: options.single
+        ? ['openFile']
+        : [options.directory ? 'openDirectory' : 'openFile', 'multiSelections'],
+      filters:
+        options.single && Array.isArray(options.extensions)
+          ? [
+              {
+                name: '可选文件',
+                extensions: options.extensions.filter((item) => /^[a-z0-9]+$/.test(item))
+              }
+            ]
+          : undefined
     })
     if (result.canceled) return []
     const imported = []

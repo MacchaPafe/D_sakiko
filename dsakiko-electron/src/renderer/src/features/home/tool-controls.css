@@ -239,10 +239,6 @@
 .thinking-picker .search-select > input {
   height: 32px;
   min-height: 32px;
-  width: auto;
-  field-sizing: content;
-  min-width: 96px;
-  max-width: min(156px, 32vw);
   padding: 0 27px 0 10px;
   border: 1px solid var(--border);
   border-radius: 8px;

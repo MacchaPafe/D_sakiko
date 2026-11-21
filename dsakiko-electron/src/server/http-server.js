@@ -429,6 +429,8 @@ export async function startHttpServer(
         let dispose
         if (command.topic === 'conversation')
           dispose = await backend.conversations.observe(command.key, listener)
+        else if (command.topic === 'chat-previews')
+          dispose = backend.store.observePreviews(listener)
         else if (command.topic === 'characters')
           dispose = backend.characters.observeChanges(listener)
         else if (command.topic === 'performance')

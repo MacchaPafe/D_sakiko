@@ -6,16 +6,49 @@
 
 .search-select > input {
   width: 100%;
-  min-height: 32px;
-  padding: 4px 30px 4px 9px;
+  min-height: 36px;
+  padding: 6px 30px 6px 11px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--resource-inset);
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.5;
   text-overflow: ellipsis;
+  transition:
+    border-color 140ms ease-out,
+    background-color 140ms ease-out,
+    box-shadow 140ms ease-out;
+}
+
+.search-select > input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.search-select > input:hover:not(:disabled) {
+  border-color: var(--selected-border);
+}
+
+.search-select > input:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  background: var(--background);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 20%, transparent);
+}
+
+.search-select > input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .search-select > input[readonly] {
   cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-select > input {
+    transition: none;
+  }
 }
 
 .search-select-icon {

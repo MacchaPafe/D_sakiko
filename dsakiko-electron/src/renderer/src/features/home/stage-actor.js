@@ -30,6 +30,7 @@ export class StageActor {
 
   reset() {
     this.epoch++
+    this.clearThinkingMotion()
     this.clearTimedMotion()
     this.cancelModelLoad()
     this.suspendModel()
@@ -167,6 +168,8 @@ export class StageActor {
     const fadeInMs = directionChanged || (this.layoutScope && !guideId) ? 800 : 150
     const epoch = this.epoch
     const planKey = JSON.stringify([guideId, plan, slot?.presentation, direction])
+    if (this.thinkingMotion && this.thinkingMotion.key !== planKey)
+      this.clearThinkingMotion(!plan?.motion)
     if (this.timedMotion?.key !== planKey) this.clearTimedMotion()
     this.desiredPlanKey = planKey
     void this.showModel(slot?.presentation ?? null).then((shown) => {
@@ -181,6 +184,13 @@ export class StageActor {
         return
       this.planKey = planKey
       if (this.layoutScope) this.surface.setStageIdle?.(idle?.motion, direction)
+      else if (plan && Object.hasOwn(plan, 'idleMotion'))
+        this.surface.setSingleIdle(plan.idleMotion)
+      if (plan?.thinkingMotions?.length) {
+        this.thinkingMotion = { plan, epoch, key: planKey, ready: true, lastStart: -Infinity }
+        this.advanceThinkingMotion()
+        return
+      }
       if (plan?.motionCues) {
         this.timedMotion = {
           plan,
@@ -195,6 +205,41 @@ export class StageActor {
       } else void this.applyPlan(plan, epoch, planKey, restartMotion, undefined, fadeInMs)
     })
   }
+  clearThinkingMotion(stop = true) {
+    if (!this.thinkingMotion) return
+    this.thinkingMotion.unsubscribe?.()
+    if (stop && this.thinkingMotion.playing) this.surface.adapter?.stopMotions()
+    this.thinkingMotion = null
+    this.planKey = null
+  }
+
+  advanceThinkingMotion() {
+    const cycle = this.thinkingMotion
+    if (!cycle?.ready || performance.now() - cycle.lastStart < 15000) return
+    cycle.ready = false
+    const pool = cycle.plan.thinkingMotions
+    const motion = pool[Math.floor(Math.random() * pool.length)]
+    const current = () => this.thinkingMotion === cycle
+    const started = (adapter) => {
+      cycle.lastStart = performance.now()
+      cycle.playing = true
+      // SDK 在最后一帧结算后发出 motionFinish；动作时长或窗口暂停都不会提前放行重播。
+      cycle.unsubscribe = adapter.onceMotionFinish(() => {
+        cycle.playing = false
+        cycle.ready = true
+      })
+    }
+    void this.applyPlan(
+      { ...cycle.plan, motion },
+      cycle.epoch,
+      cycle.key,
+      false,
+      current,
+      150,
+      started
+    )
+  }
+
   clearTimedMotion() {
     const timed = this.timedMotion
     this.timedMotion = null
@@ -231,7 +276,15 @@ export class StageActor {
     )
   }
 
-  async applyPlan(plan, epoch, planKey, restartMotion, isCueCurrent = () => true, fadeInMs = 150) {
+  async applyPlan(
+    plan,
+    epoch,
+    planKey,
+    restartMotion,
+    isCueCurrent = () => true,
+    fadeInMs = 150,
+    onStarted
+  ) {
     const adapter = this.surface.adapter
     if (!adapter || !plan) return
     const current = () =>
@@ -251,8 +304,10 @@ export class StageActor {
           const index = entries.findIndex((entry) => (entry.File ?? entry.file) === file)
           if (index < 0) continue
           // 同一个动作还在播放时，SDK 会拒绝重新申请该组和编号。
-          if (restartMotion) adapter.stopMotions()
-          await adapter.startMotion(group, index, 3, fadeInMs, true, current)
+          if (restartMotion || (onStarted && adapter.isPlayingMotion(group, index)))
+            adapter.stopMotions()
+          const started = await adapter.startMotion(group, index, 3, fadeInMs, true, current)
+          if (started && current()) onStarted?.(adapter)
           break
         }
       }

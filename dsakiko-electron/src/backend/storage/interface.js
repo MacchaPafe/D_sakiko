@@ -1,5 +1,5 @@
 import { extractAssetReferences } from '../resources/references.js'
-import { lastDialogue, lastDialogueEntry } from '../../shared/chat-history.js'
+import { lastDialogueEntry } from '../../shared/chat-history.js'
 import { historicalCharacterNames } from '../conversation/participants.js'
 import path from 'node:path'
 import { readFile, copyFile, readdir, unlink } from 'node:fs/promises'
@@ -11,7 +11,8 @@ import {
   readJson,
   writeJson,
   SerialQueue,
-  safeId
+  safeId,
+  SnapshotBus
 } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/conversation.js').Chat} Chat */
@@ -30,6 +31,7 @@ export class ChatStore {
     this.directory = directory
     this.assets = assets
     this.queue = new SerialQueue()
+    this.previewChanges = new SnapshotBus()
     this.manifest = path.join(directory, 'index.json')
     this.assets.registerOwnerReader('chat', async (id) => {
       const loaded = await this.loadCurrent(id)
@@ -40,6 +42,12 @@ export class ChatStore {
 
   file(id) {
     return path.join(this.directory, safeId(id) + '.json')
+  }
+
+  /** @param {() => void} listener 通知侧栏重新读取已提交的列表。 @returns {() => void} 取消订阅。 */
+  observePreviews(listener) {
+    // 初次订阅及断线重连时也读取列表，补上尚未建立订阅期间的回复。
+    return this.previewChanges.subscribe('index', listener, {})
   }
 
   /**
@@ -84,6 +92,7 @@ export class ChatStore {
         ? { showTitle: true }
         : {}),
       lastReply: entry?.line.text ?? null,
+      lastReplyTranslation: entry?.translation ?? null,
       ...(revealAt > Date.now() ? { lastReplyRevealAt: revealAt } : {}),
       revision: chat.revision,
       characterIds: copy(chat.characterIds),
@@ -111,10 +120,13 @@ export class ChatStore {
       const index = await this.index()
       let changed = false
       for (const entry of index.entries) {
-        if (Object.hasOwn(entry, 'lastReply')) continue
+        if (Object.hasOwn(entry, 'lastReply') && Object.hasOwn(entry, 'lastReplyTranslation'))
+          continue
         const loaded = await this.loadCurrent(entry.id)
         if (loaded.status !== 'loaded') continue
-        entry.lastReply = lastDialogue(loaded.chat)?.text ?? null
+        const reply = lastDialogueEntry(loaded.chat)
+        entry.lastReply = reply?.line.text ?? null
+        entry.lastReplyTranslation = reply?.translation ?? null
         changed = true
       }
       // 旧索引只补齐一次，侧栏刷新不再读取全部历史；修复摘要不改变聊天 revision。
@@ -205,6 +217,7 @@ export class ChatStore {
         await writeJson(this.manifest, index)
       })
       await this.cleanupVersionsUnlocked()
+      this.previewChanges.emit('index', {})
       return { chat: next, backupId }
     })
   }
@@ -224,6 +237,7 @@ export class ChatStore {
       )
       index.entries = chatIds.map((id) => index.entries.find((item) => item.id === id))
       await writeJson(this.manifest, index)
+      this.previewChanges.emit('index', {})
     })
   }
 
@@ -260,6 +274,15 @@ export class ChatStore {
         await writeJson(this.manifest, index)
       })
       await this.cleanupVersionsUnlocked()
+      if (
+        !previous ||
+        previous.lastReply !== entry.lastReply ||
+        previous.lastReplyTranslation !== entry.lastReplyTranslation ||
+        previous.lastReplyRevealAt !== entry.lastReplyRevealAt ||
+        previous.title !== entry.title
+      ) {
+        this.previewChanges.emit('index', {})
+      }
       return copy(next)
     })
   }
@@ -310,6 +333,7 @@ export class ChatStore {
       await this.assets.commitReferences('chat:' + chatId, null, () =>
         writeJson(this.manifest, index)
       )
+      this.previewChanges.emit('index', {})
       await this.cleanupVersionsUnlocked()
     })
   }

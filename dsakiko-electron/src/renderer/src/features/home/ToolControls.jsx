@@ -278,7 +278,9 @@ export function ThinkingPicker({ flow }) {
   const options = [
     {
       value: 'default',
-      label: '默认'
+      label: caps.reasoningDefault
+        ? '默认（' + (labels[caps.reasoningDefault] ?? caps.reasoningDefault) + '）'
+        : '默认'
     }
   ]
   if (caps.reasoningToggle || caps.reasoningEfforts?.includes('none'))
@@ -306,7 +308,7 @@ export function ThinkingPicker({ flow }) {
         value={choice}
         onChange={choose}
         customPopover
-        formatSelected={(option) => '思考：' + option.label}
+        formatSelected={(option) => option.label}
         footer={notice ? { label: notice, onAction: () => setNotice('') } : undefined}
       />
     </div>

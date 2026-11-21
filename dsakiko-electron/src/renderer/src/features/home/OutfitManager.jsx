@@ -133,7 +133,7 @@ export function CharacterAffiliationForm({ client, role, onClose, onSaved }) {
     >
       <p className="outfit-detail-description">
         {mode === 'bang-dream'
-          ? `为「${roleName}」关联 BanG Dream! 角色后，可在线浏览和下载对应 Live2D 服装并显示头像。`
+          ? '关联后可匹配头像、下载 Live2D 服装。首次关联或更换角色会将所有形态设为该角色的预设色，之后可单独调色。'
           : `「${roleName}」设为其他角色时，可通过导入本地模型添加服装。`}
       </p>
       <fieldset className="outfit-field outfit-form-picker outfit-affiliation-picker">
