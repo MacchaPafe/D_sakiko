@@ -77,7 +77,7 @@ test('正式 Speech 接口转换请求，并发查询同一任务只导入一次
     return new Response(JSON.stringify(value))
   })
   const id = await speech.submit({
-    text: '祥子你好',
+    text: '【走近（放慢）】「祥子」你好',
     language: 'Chinese',
     priority: 1,
     speed: 1.2,

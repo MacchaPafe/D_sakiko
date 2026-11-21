@@ -11,7 +11,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union, cast
 
-from .contracts import SpeechRequest, VoiceProfile
+from .contracts import DEFAULT_SPEECH_PAUSE_MS, DEFAULT_SPEECH_SPEED, SpeechRequest, VoiceProfile
 from .gpt_sovits_resources import GptSovitsResources, GptSovitsResourceSet, configure_text_resources
 from .runtime import remove_runtime_path
 
@@ -78,8 +78,8 @@ def worker_main(pipe: Connection, voice: VoiceProfile, resources: Union[GptSovit
                 "text": request.text, "text_lang": request.language,
                 "ref_audio_path": request.voice.reference_audio_path,
                 "prompt_text": request.voice.reference_text, "prompt_lang": request.voice.reference_language,
-                "text_split_method": "cut0", "speed_factor": request.speed or 1.0,
-                "fragment_interval": (request.sentence_pause_ms if request.sentence_pause_ms is not None else 300) / 1000,
+                "text_split_method": "cut0", "speed_factor": request.speed or DEFAULT_SPEECH_SPEED,
+                "fragment_interval": (request.sentence_pause_ms if request.sentence_pause_ms is not None else DEFAULT_SPEECH_PAUSE_MS) / 1000,
                 "top_k": 15, "top_p": 1.0, "temperature": 1.0, "seed": -1,
                 "parallel_infer": False, "use_cuda_graph": False, "sample_steps": 16,
             }

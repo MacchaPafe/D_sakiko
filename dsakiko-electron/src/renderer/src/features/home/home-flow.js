@@ -1,3 +1,6 @@
+import { defaultToolNames, webConflict } from '../../../../shared/tool-options.js'
+import { AttachmentDraft } from './attachments.js'
+
 /** @typedef {{characterId: string|null, chatId: string|null, tab: 'single-character'|'scripted-dialogue'}} HomeTarget 稳定导航身份，与尚未创建的聊天草稿分离。 */
 /** @typedef {{connectionId: string, modelId: string}} ModelSelection 可持久化的自有模型选择。 */
 /** @typedef {{formId: string, model: import('../../../../shared/contracts/characters.js').CharacterModel}} DraftOutfit 尚未建立对话时选中的舞台服装。 */
@@ -19,7 +22,6 @@
  */
 const NAVIGATION_KEY = 'dsakiko.home.navigation.v1'
 const RECENT_MODEL_KEY = 'dsakiko.home.recent-model.v1'
-const EXCLUDED_TOOLS = ['ask_user', 'start_lottery']
 
 /** @param {HomeTarget} target 导航目标。 @returns {string} 草稿身份，不依赖展示名称。 */
 export function inputKey(target) {
@@ -94,6 +96,9 @@ export class HomeFlow {
       this.select(target)
       this.stops = [
         this.client.settings.observe((settings) => this.update({ settings })),
+        this.client.interactions?.observe?.((data) =>
+          this.update({ questions: data.pending ?? [] })
+        ) ?? (() => {}),
         this.client.notices.observe((snapshot) => this.update({ notices: snapshot.notices })),
         this.client.observe(
           'characters',
@@ -127,13 +132,36 @@ export class HomeFlow {
       // 后续列表刷新不以一次 HTTP 查询覆盖已在观察的设置快照。
       if (!observingSettings && !this.stops) next.settings = settings
       this.update(next)
+      void this.loadReasoningModels(epoch)
+    }
+  }
+  async loadReasoningModels(epoch) {
+    if (!this.client.settings.listReasoningModels) return
+    for (const refresh of [false, true]) {
+      try {
+        const reasoningModels = await this.client.settings.listReasoningModels(refresh)
+        if (epoch !== this.refreshEpoch || this.closed) return
+        this.update({ reasoningModels })
+      } catch {
+        return
+      }
     }
   }
   input(target = this.state.target) {
     const key = inputKey(target)
     if (!this.inputs.has(key)) {
       const model = target.chatId ? null : this.recentModel()
-      this.inputs.set(key, { text: '', pending: false, intent: null, model })
+      const input = {
+        text: '',
+        pending: false,
+        intent: null,
+        model,
+        attachments: new AttachmentDraft(this.client)
+      }
+      input.attachments.subscribe(() => {
+        if (this.inputs.get(inputKey(this.state.target)) === input) this.update({})
+      })
+      this.inputs.set(key, input)
     }
     return this.inputs.get(key)
   }
@@ -196,12 +224,13 @@ export class HomeFlow {
   async generateTheatre() {
     const { target, snapshot } = this.state
     const input = this.input()
-    if (!snapshot?.admission.canGenerate || input.pending) return
+    if (!snapshot?.admission.canGenerate || input.pending || this.reasoningState().conflict) return
     input.pending = true
     this.liveTheatre = target
     this.update({ sending: true, problem: null })
-    const options = { requestId: this.randomId(), excludedTools: EXCLUDED_TOOLS }
+    const options = { requestId: this.randomId() }
     try {
+      if (input.savingPreferences) await input.savingPreferences
       const turn = snapshot.chat.turns.at(-1)
       await this.client.conversations.generateScenario(target.chatId, options, turn?.id ?? null)
     } catch (error) {
@@ -212,6 +241,82 @@ export class HomeFlow {
     }
   }
 
+  enabledTools() {
+    return (
+      this.input().tools ??
+      this.state.snapshot?.chat.meta.settings.tools?.enabled ??
+      defaultToolNames(this.state.target.tab)
+    )
+  }
+  /** 连续点击按顺序保存，读取已提交版本后才撤下对应的乐观显示。 */
+  async saveToolPreference(input, id, save, finish) {
+    const task = (input.savingPreferences ?? Promise.resolve()).catch(() => {}).then(save)
+    input.savingPreferences = task
+    try {
+      await task
+      if (this.state.target.chatId === id) {
+        const snapshot = await this.client.conversations.getSnapshot(id)
+        if (
+          this.state.target.chatId === id &&
+          snapshot.revision >= (this.state.snapshot?.revision ?? 0)
+        )
+          this.update({ snapshot })
+      }
+    } catch (error) {
+      if (this.state.target.chatId === id) this.update({ problem: error.message })
+    } finally {
+      if (input.savingPreferences === task) delete input.savingPreferences
+      finish()
+      this.update({})
+    }
+  }
+  async setTools(enabled) {
+    const input = this.input()
+    const id = this.state.target.chatId
+    input.tools = enabled
+    this.update({})
+    if (id)
+      await this.saveToolPreference(
+        input,
+        id,
+        () => this.client.conversations.setTools(id, { enabled }),
+        () => {
+          if (input.tools === enabled) delete input.tools
+        }
+      )
+  }
+  reasoningState() {
+    const state = this.state
+    const selected = selectedModel(state)
+    const model = (state.reasoningModels ?? []).find((m) =>
+      selected
+        ? m.connectionId === selected.connectionId && m.modelId === selected.modelId
+        : state.builtinConnection && m.connectionId === 'builtin-up'
+    )
+    const key = JSON.stringify([model?.connectionId, model?.modelId])
+    const settings = state.snapshot?.chat.meta.settings
+    const value = this.input().reasoningProfiles?.[key] ??
+      settings?.reasoningProfiles?.[key] ??
+      settings?.generation?.reasoning ??
+      state.settings?.generation?.reasoning ?? { enabled: true, effort: null }
+    return { model, key, value, conflict: webConflict(model, this.enabledTools(), value) }
+  }
+  async setReasoning(value) {
+    const { key } = this.reasoningState()
+    const input = this.input()
+    const id = this.state.target.chatId
+    input.reasoningProfiles = { ...input.reasoningProfiles, [key]: value }
+    this.update({})
+    if (id)
+      await this.saveToolPreference(
+        input,
+        id,
+        () => this.client.conversations.patchSettings(id, { reasoningProfiles: { [key]: value } }),
+        () => {
+          if (input.reasoningProfiles?.[key] === value) delete input.reasoningProfiles[key]
+        }
+      )
+  }
   setDraft = (text) => {
     this.input().text = text
     this.update({ draft: text })
@@ -303,12 +408,20 @@ export class HomeFlow {
     const input = this.input(target)
     if (
       input.pending ||
-      !input.text.trim() ||
+      (!input.text.trim() && !input.attachments.items.length) ||
+      input.attachments.items.some((item) => item.state !== 'ready') ||
+      this.reasoningState().conflict ||
       target.tab !== 'single-character' ||
       !target.characterId
     )
       return
     const key = inputKey(target)
+    const files = [...input.attachments.items]
+    const settingsKey = JSON.stringify([
+      files.map((f) => f.id),
+      input.tools,
+      input.reasoningProfiles
+    ])
     const text = input.text
     let chatId = input.chatId ?? target.chatId
     const draftModel = chatId ? null : validUserSelection(this.state.connections, input.model)
@@ -318,17 +431,27 @@ export class HomeFlow {
     const outfitKey = outfit ? JSON.stringify([outfit.formId, outfit.model.id]) : null
     if (
       !input.intent ||
+      input.intent.settingsKey !== settingsKey ||
       input.intent.text !== text ||
       input.intent.modelKey !== modelKey ||
       input.intent.outfitKey !== outfitKey
     )
-      input.intent = { text, model, modelKey, outfit, outfitKey, requestId: this.randomId() }
+      input.intent = {
+        text,
+        model,
+        modelKey,
+        outfit,
+        outfitKey,
+        settingsKey,
+        requestId: this.randomId()
+      }
     const intent = input.intent
     input.pending = true
     this.update({ sending: true, problem: null })
     try {
-      const submission = { text, attachments: [] }
-      const options = { requestId: intent.requestId, excludedTools: EXCLUDED_TOOLS }
+      if (input.savingPreferences) await input.savingPreferences
+      const submission = { text, attachments: files.map((file) => file.attachment) }
+      const options = { requestId: intent.requestId }
       if (chatId) {
         const chatGeneration = this.state.snapshot?.chat?.meta?.settings?.generation
         // 仅当会话自身未指向有效自有模型时随轮次补齐兜底模型，避免覆盖对话已有设置。
@@ -339,6 +462,8 @@ export class HomeFlow {
         await this.client.conversations.createTurn(chatId, submission, turnOptions)
       } else {
         const settings = {}
+        if (input.tools) settings.tools = { enabled: input.tools }
+        if (input.reasoningProfiles) settings.reasoningProfiles = { ...input.reasoningProfiles }
         if (intent.model) settings.generation = intent.model
         if (intent.outfit) {
           const { formId, model } = intent.outfit
@@ -348,7 +473,7 @@ export class HomeFlow {
         }
         const result = await this.client.conversations.createChatWithTurn(
           {
-            title: text.trim().slice(0, 40),
+            title: (text.trim() || files[0]?.name || '新对话').slice(0, 40),
             characterIds: [target.characterId],
             mode: 'single-character',
             ...(Object.keys(settings).length ? { settings } : {})
@@ -357,6 +482,11 @@ export class HomeFlow {
           options
         )
         chatId = result.chatId
+      }
+      for (const file of files) input.attachments.remove(file)
+      if (!target.chatId) {
+        delete input.tools
+        delete input.reasoningProfiles
       }
       input.chatId = chatId
       input.model = null
@@ -389,6 +519,7 @@ export class HomeFlow {
   deleteChat = async (chat) => {
     try {
       await this.client.conversations.deleteChat(chat.id)
+      this.inputs.get('chat:' + chat.id)?.attachments.clear()
       this.inputs.delete('chat:' + chat.id)
       if (this.tabChats.get(chat.mode) === chat.id) {
         this.tabChats.set(chat.mode, null)
@@ -427,6 +558,7 @@ export class HomeFlow {
     this.stopChat = null
     this.stops?.forEach((stop) => stop())
     this.stops = null
+    for (const input of this.inputs.values()) input.attachments.clear()
     this.listeners.clear()
   }
 }

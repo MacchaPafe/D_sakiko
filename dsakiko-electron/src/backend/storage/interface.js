@@ -1,5 +1,5 @@
 import { extractAssetReferences } from '../resources/references.js'
-import { lastDialogue } from '../../shared/chat-history.js'
+import { lastDialogue, lastDialogueEntry } from '../../shared/chat-history.js'
 import { historicalCharacterNames } from '../conversation/participants.js'
 import path from 'node:path'
 import { readFile, copyFile, readdir, unlink } from 'node:fs/promises'
@@ -73,10 +73,18 @@ export class ChatStore {
    * 索引中额外记录 reminderIds 用于保存时快速校验跨对话的提醒 ID 唯一性，对外返回摘要列表时会剔除该内部字段。
    */
   summary(chat) {
+    const entry = lastDialogueEntry(chat)
+    const revealAt = chat.meta.lotteries?.find(
+      (item) => item.deliveredTurnId === entry?.ref.turnId
+    )?.revealAt
     return {
       id: chat.id,
       title: chat.title,
-      lastReply: lastDialogue(chat)?.text ?? null,
+      ...(chat.meta.extensions?.generatedTitle || chat.meta.extensions?.manualTitle
+        ? { showTitle: true }
+        : {}),
+      lastReply: entry?.line.text ?? null,
+      ...(revealAt > Date.now() ? { lastReplyRevealAt: revealAt } : {}),
       revision: chat.revision,
       characterIds: copy(chat.characterIds),
       characterNames: historicalCharacterNames(chat),

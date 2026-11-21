@@ -61,6 +61,28 @@ export function normalizeConnection(connection) {
 
 /** @param {object} connection 已规范化的连接定义。 @param {string} modelId 实际请求的模型名。 @returns {Partial<import('../../shared/contracts/models.js').ModelCapabilities>} 官方文档明确支持的请求能力。 */
 export function officialModelCapabilities(connection, modelId) {
+  if (
+    connection.provider === 'openai' &&
+    connection.baseUrl === 'https://api.openai.com/v1' &&
+    modelId === 'gpt-5.5'
+  )
+    return {
+      reasoning: { status: 'supported', source: 'openai-official' },
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+      reasoningDefault: 'medium',
+      reasoningToggle: true
+    }
+  if (
+    connection.provider === 'anthropic' &&
+    connection.baseUrl === 'https://api.anthropic.com/v1' &&
+    modelId === 'claude-sonnet-5-5'
+  )
+    return {
+      reasoning: { status: 'supported', source: 'anthropic-official' },
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      reasoningToggle: false,
+      reasoningAdaptive: true
+    }
   if (connection.provider === 'vertex' && modelId === 'gemini-4-argon')
     return {
       imageInput: { status: 'supported', source: 'vertex' },
@@ -77,7 +99,13 @@ export function officialModelCapabilities(connection, modelId) {
     return {}
   return {
     reasoning: { status: 'supported', source: 'deepseek-official' },
-    reasoningEfforts: ['low', 'high', 'max']
+    imageInput: {
+      status: modelId === 'deepseek-flash' ? 'supported' : 'unsupported',
+      source: 'deepseek-official'
+    },
+    reasoningEfforts: ['low', 'high', 'max'],
+    reasoningToggle: true,
+    reasoningDefault: 'high'
   }
 }
 

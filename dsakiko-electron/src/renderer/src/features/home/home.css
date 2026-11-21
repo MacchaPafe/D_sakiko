@@ -581,7 +581,7 @@ section.home-subtitle::before {
   color: var(--muted-foreground);
   font-size: 12px;
 }
-.home-composer-leading button,
+.home-composer-leading > button,
 .home-composer-actions .home-voice-input button,
 .home-composer-send {
   width: 32px;
@@ -902,6 +902,9 @@ section.home-subtitle::before {
 }
 .history-user .history-message-body {
   justify-content: flex-end;
+}
+.history-theatre-line .history-play-audio {
+  order: 1;
 }
 .history-bubble {
   padding: 12px;
@@ -1746,6 +1749,15 @@ section.home-subtitle::before {
 }
 .theatre-actions .home-model-picker :is(select, input) {
   max-width: min(190px, 32vw);
+}
+.theatre-actions .thinking-picker .search-select > input {
+  max-width: min(144px, 28vw);
+}
+.theatre-reference-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .theatre-settings-dialog {

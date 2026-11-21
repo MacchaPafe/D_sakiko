@@ -31,6 +31,10 @@ function eventText(message) {
             const winner = item.result?.label ?? item.result?.option ?? item.result?.text
             return winner ? `抽签结果 · ${item.request?.title ?? '抽签'}：${winner}` : '抽签已完成'
           }
+          if (item.toolName === 'ask_user')
+            return item.result?.kind === 'skipped'
+              ? '已跳过 · ' + item.request.question
+              : item.request.question + ' · ' + item.result?.answer
           return '工具结果已送达'
         })
         .join('\n') || '系统事件已触发'
@@ -46,11 +50,23 @@ function toolRow(rows, id, tool) {
 }
 
 /** @param {object|null} snapshot 正式聊天快照。 @returns {HistoryRow[]} 直接遵循正式消息顺序，前端不解释 Python 位置索引。 */
-export function historyRows(snapshot) {
+export function historyRows(snapshot, now = Date.now()) {
   const rows = []
+  const settled = new Map()
+  for (const turn of snapshot?.chat.turns ?? [])
+    for (const msg of turn.messages ?? [])
+      for (const entry of msg.results ?? []) settled.set(entry.requestId, entry)
   let scriptAnchor = null
   const theatre = snapshot?.chat.mode === 'scripted-dialogue'
   for (const turn of snapshot?.chat.turns ?? []) {
+    if (
+      snapshot.chat.meta?.lotteries?.some(
+        (item) => item.deliveredTurnId === turn.id && item.revealAt > now
+      )
+    ) {
+      rows.push({ id: turn.id, kind: 'system', name: '系统', text: '正在抽签' })
+      continue
+    }
     let userRow
     let firstLine
     const paired = new Set()
@@ -64,11 +80,27 @@ export function historyRows(snapshot) {
           id,
           name: manual ? '你' : '系统',
           text: event ?? message.content?.text ?? message.text ?? '',
-          kind: manual ? 'user' : 'system'
+          kind: manual ? 'user' : 'system',
+          ...(message.content?.attachments?.length
+            ? { attachments: message.content.attachments }
+            : {})
         }
         rows.push(row)
         if (manual && (!userRow || turn.input?.messageId === id)) userRow = row
       } else if (message.kind === 'assistant') {
+        const native = message.protocol?.providerOptions?.deepseek
+        for (const step of native?.server_tool_calls ?? [])
+          for (const call of step.calls ?? []) {
+            const key = id + ':native:' + step.index + ':' + call.index
+            toolRow(rows, key, {
+              id: key,
+              toolName: call.type === 'deepseek_read_url' ? '读取网页' : '搜索网页',
+              arguments: call.action,
+              outcome: { status: call.status === 'completed' ? 'succeeded' : 'failed' },
+              display: call.error?.code ?? '服务端已完成调用',
+              sources: call.page ? [call.page] : call.sources
+            })
+          }
         for (const [partIndex, part] of (message.parts ?? []).entries()) {
           if (part.kind === 'dialogue') {
             for (const line of part.lines) {
@@ -90,15 +122,36 @@ export function historyRows(snapshot) {
             )
             if (result) paired.add(result.id)
             const key = `${id}:${part.id ?? partIndex}`
+            let outcome = result?.outcome ?? null
+            if (outcome?.status === 'accepted') {
+              const lottery = snapshot.chat.meta?.lotteries?.find(
+                (item) => item.id === outcome.requestId
+              )
+              const delivered = settled.get(outcome.requestId)
+              if (lottery?.cancelled && !delivered) outcome = { status: 'interrupted' }
+              else if (delivered && !(lottery?.revealAt > now))
+                outcome = { status: 'succeeded', value: delivered.result }
+            }
             toolRow(rows, key, {
               id: key,
               toolName: part.toolName ?? part.name ?? '工具调用',
               arguments: part.arguments ?? {},
-              outcome: result?.outcome ?? null,
+              outcome,
+              ...(part.toolName === 'web_search' ? { sources: outcome?.value?.results } : {}),
+              ...(part.toolName === 'read_url' && outcome?.value?.url
+                ? { sources: [outcome.value] }
+                : {}),
               display: result?.extensions?.pythonDisplay?.result_content ?? null
             })
           }
         }
+        if (native?.annotations?.length)
+          rows.push({
+            id: id + ':sources',
+            name: '引用来源',
+            kind: 'sources',
+            sources: native.annotations.map((ref) => ref.url_citation).filter(Boolean)
+          })
       } else if (message.kind === 'tool-result' && !paired.has(id)) {
         toolRow(rows, id, {
           id,

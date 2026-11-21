@@ -285,7 +285,7 @@ export class StageController {
       this.player.refreshReplay(this.replayRequest.getMaterials)
     this.orientation = presentation?.orientation
     this.frames = presentation?.frames
-    const entry = lastDialogueEntry(snapshot?.chat)
+    const entry = lastDialogueEntry(snapshot?.chat, Date.now())
     this.history = entry
       ? {
           ...entry,

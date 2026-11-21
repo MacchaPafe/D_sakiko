@@ -28,7 +28,8 @@ test('对话工具开关只改变允许集合，目录和声明顺序始终一�
   for (const request of requests)
     expect(request.toolDefinitions).toEqual(requests[0].toolDefinitions)
   const names = requests[0].toolDefinitions.map((tool) => tool.name)
-  expect(names).toHaveLength(13)
+  expect(names).toHaveLength(14)
+  expect(names).toContain('read_url')
   expect(names).toEqual([...names].sort())
   expect(requests[1].tools.map((tool) => tool.name)).toEqual([
     'create_reminder',
@@ -339,16 +340,16 @@ test('抽签创建后重启仍可开始，多客户端重复开始只保存一�
   const final = (await restarted.conversations.getSnapshot(chatId)).chat
   expect(final.turns).toHaveLength(2)
   expect(final.turns[1].messages[0].results[0].result).toEqual(draws[0].result)
+  expect(draws[0].revealAt - Date.parse(draws[0].drawnAt)).toBe(2000)
   await restarted.conversations.drawLottery(chatId, lottery.id)
   await restarted.conversations.deliverLotteries(chatId)
   expect(agent.run).toHaveBeenCalledTimes(2)
 })
 
-test('Bocha 密钥不出现在公开设置，搜索限制结果数，预留厂商配置不会静默回退', async () => {
+test('未配置私有凭据时回退内置 Bocha 密钥，私有凭据优先且不出现在公开设置，预留厂商配置不会静默回退', async () => {
   const { backend } = await fixture()
-  await backend.settings.saveToolCredential('bocha', { kind: 'replace', secret: 'private-bocha' })
-  expect(JSON.stringify(await backend.settings.get())).not.toContain('private-bocha')
-  expect(await backend.settings.getToolCredentialStatus('bocha')).toEqual({ configured: true })
+  const prevEnvKey = process.env.BOCHA_API_KEY
+  delete process.env.BOCHA_API_KEY
   const transport = vi.fn(async () =>
     Response.json({
       code: 200,
@@ -356,15 +357,28 @@ test('Bocha 密钥不出现在公开设置，搜索限制结果数，预留厂�
     })
   )
   const call = webSearchTool(backend.settings, transport).bind({})
-  expect((await call({ query: '测试', top_k: 20 })).value.results[0].title).toBe('标题')
-  expect(JSON.parse(transport.mock.calls[0][1].body).count).toBe(5)
-  expect(transport.mock.calls[0][1].headers.Authorization).toBe('Bearer private-bocha')
-  await backend.settings.update({ tools: { webSearch: { provider: 'deepseek' } } })
-  await expect(call({ query: '测试' })).rejects.toHaveProperty(
-    'problem.code',
-    'search_provider_unavailable'
-  )
-  expect(transport).toHaveBeenCalledTimes(1)
+  try {
+    expect((await call({ query: '默认测试', top_k: 20 })).value.results[0].title).toBe('标题')
+    expect(transport.mock.calls[0][1].headers.Authorization).toMatch(/^Bearer sk-/)
+
+    await backend.settings.saveToolCredential('bocha', {
+      kind: 'replace',
+      secret: 'private-bocha'
+    })
+    expect(JSON.stringify(await backend.settings.get())).not.toContain('private-bocha')
+    expect(await backend.settings.getToolCredentialStatus('bocha')).toEqual({ configured: true })
+    expect((await call({ query: '测试', top_k: 20 })).value.results[0].title).toBe('标题')
+    expect(JSON.parse(transport.mock.calls[1][1].body).count).toBe(5)
+    expect(transport.mock.calls[1][1].headers.Authorization).toBe('Bearer private-bocha')
+    await backend.settings.update({ tools: { webSearch: { provider: 'deepseek' } } })
+    await expect(call({ query: '测试' })).rejects.toHaveProperty(
+      'problem.code',
+      'search_provider_unavailable'
+    )
+    expect(transport).toHaveBeenCalledTimes(2)
+  } finally {
+    if (prevEnvKey !== undefined) process.env.BOCHA_API_KEY = prevEnvKey
+  }
 })
 
 test('天气默认 IP 只短期缓存位置，显式城市优先，硬件部分失败仍返回其余指标', async () => {
@@ -429,7 +443,11 @@ test('工具选择按轮固定并自动加入依赖，停止后的抽签不可�
     return { status: 'completed', usage: null }
   })
   const definitions = await backend.tools.list()
-  expect(definitions).toHaveLength(13)
+  expect(definitions).toHaveLength(14)
+  expect(
+    (await backend.conversations.getSnapshot(chatId)).chat.meta.settings.tools.enabled
+  ).toHaveLength(14)
+  await backend.conversations.setTools(chatId, { enabled: [] })
   await backend.conversations.createTurn(
     chatId,
     { text: '未开启工具', attachments: [] },

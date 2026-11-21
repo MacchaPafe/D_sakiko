@@ -1,4 +1,8 @@
-import { useEffect, useId, useState } from 'react'
+import { defaultToolNames } from '../../../../shared/tool-options.js'
+import { ToolMenu } from './ToolControls.jsx'
+import { AttachmentDraft } from './attachments.js'
+import { AttachmentList, AddAttachments } from './AttachmentList.jsx'
+import { useEffect, useId, useState, useSyncExternalStore } from 'react'
 import { ChevronRight, Play, SlidersHorizontal, Square, X } from 'lucide-react'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { Button } from '../../components/ui/button.jsx'
@@ -71,6 +75,19 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const detailsId = useId()
+  const [tools, setTools] = useState(
+    () => chat?.meta.settings.tools?.enabled ?? defaultToolNames('scripted-dialogue')
+  )
+  const [files] = useState(
+    () => new AttachmentDraft(client, chat?.meta.settings.scenario?.referenceFiles ?? [])
+  )
+  const fileItems = useSyncExternalStore(files.subscribe, files.getSnapshot)
+  useEffect(
+    () => () => {
+      for (const item of [...files.items]) if (item.file) files.remove(item)
+    },
+    [files]
+  )
 
   useEffect(() => {
     let current = true
@@ -121,7 +138,12 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
       }
       const settings = {
         characters: selections,
-        scenario: { situation: situation.trim(), characters: notes }
+        tools: { enabled: tools },
+        scenario: {
+          situation: situation.trim(),
+          characters: notes,
+          referenceFiles: files.items.map((item) => item.attachment)
+        }
       }
       if (chat) await client.conversations.patchSettings(chat.id, settings)
       else
@@ -144,6 +166,13 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
     label: role.name ?? role.displayName,
     keywords: [role.id, role.displayName, role.bangDreamId ?? '']
   }))
+  const reusableFiles = (chat?.meta.workspaceFiles ?? []).filter(
+    (file) => !fileItems.some((item) => item.attachment?.asset.id === file.asset.id)
+  )
+  function reuseFile(id) {
+    const file = reusableFiles.find((entry) => entry.asset.id === id)
+    if (file) files.attachExisting(file)
+  }
   const filledDetailCount = countFilledDetails(ids, details)
 
   function renderActorCard(id, index) {
@@ -263,6 +292,32 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
             placeholder="例如，排练结束后，两人在门口等雨停。"
           />
         </label>
+        <div className="theatre-reference-tools">
+          <AddAttachments draft={files} label="添加参考文件" showLabel disabled={busy} />
+          <ToolMenu enabled={tools} onChange={setTools} disabled={busy} showLabel />
+          {reusableFiles.length > 0 && (
+            <SelectField
+              label="从会话文件选择"
+              placeholder="从会话文件选择"
+              value=""
+              options={reusableFiles.map((file) => ({ value: file.asset.id, label: file.name }))}
+              onChange={reuseFile}
+              disabled={busy}
+            />
+          )}
+          {fileItems.length > 1 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => files.clear()}
+            >
+              清空参考文件
+            </Button>
+          )}
+        </div>
+        <AttachmentList draft={files} disabled={busy} />
         <section className="theatre-details-section">
           <button
             type="button"
@@ -296,7 +351,12 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
         </Button>
         <Button
           type="submit"
-          disabled={busy || ids.length !== 2 || ids.some((id) => !definitions[id])}
+          disabled={
+            busy ||
+            fileItems.some((f) => f.state !== 'ready') ||
+            ids.length !== 2 ||
+            ids.some((id) => !definitions[id])
+          }
         >
           {chat ? '保存设定' : '创建小剧场'}
         </Button>
@@ -326,6 +386,10 @@ export function TheatreActions({
   generate
 }) {
   const active = Boolean(snapshot.activeTurnId)
+  const execution = snapshot.executions.find((item) => item.turnId === snapshot.activeTurnId)
+  let status = '正在演出…'
+  if (snapshot.activity === 'generating') status = '正在生成剧本…'
+  else if (execution?.phase === 'speech') status = '正在生成语音…'
   const hasTurns = snapshot.chat.turns.length > 0
   const issue = problem ?? snapshot.executions.at(-1)?.problem?.message
   const generateLabel = hasTurns ? '重新生成本场' : '生成本场'
@@ -381,7 +445,7 @@ export function TheatreActions({
           )}
           {active && (
             <span className="theatre-status-text" role="status">
-              {snapshot.activity === 'generating' ? '正在生成剧本…' : '正在演出…'}
+              {status}
             </span>
           )}
         </div>

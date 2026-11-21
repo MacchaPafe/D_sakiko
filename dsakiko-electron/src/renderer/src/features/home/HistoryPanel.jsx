@@ -55,6 +55,72 @@ function toolStatus(tool) {
     }[tool.outcome?.status] ?? '调用中'
   )
 }
+function Sources({ items }) {
+  const sources = new Map()
+  for (const source of items ?? []) {
+    try {
+      const url = new URL(source.url)
+      if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password)
+        sources.set(url.href, source.title || url.hostname)
+    } catch {
+      /* 旧存档可能包含无效地址。 */
+    }
+  }
+  function open(event) {
+    if (!window.dsakikoHost?.openWebSource) return
+    event.preventDefault()
+    void window.dsakikoHost.openWebSource(event.currentTarget.href)
+  }
+  return (
+    <ul className="web-sources">
+      {[...sources].map(([url, title]) => (
+        <li key={url}>
+          <a href={url} title={url} target="_blank" rel="noreferrer" onClick={open}>
+            {title}
+          </a>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function FileDownloads({ client, files }) {
+  const [error, setError] = useState('')
+  async function download(file) {
+    let access
+    try {
+      setError('')
+      access = await client.assets.access(file.asset)
+      const response = await fetch(access.url)
+      if (!response.ok) throw new Error('无法读取文件。')
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = file.name
+      link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (failure) {
+      setError(failure.message)
+    } finally {
+      if (access) void client.assets.releaseAccess(access.leaseId).catch(() => {})
+    }
+  }
+  return (
+    <div className="history-files">
+      {files.map((file) => (
+        <button
+          type="button"
+          key={file.asset.id + file.name}
+          title={'下载 ' + file.name}
+          onClick={() => download(file)}
+        >
+          {file.name}
+        </button>
+      ))}
+      {error && <span role="alert">{error}</span>}
+    </div>
+  )
+}
 function ToolDetails({ tool }) {
   const value = tool.display ?? tool.outcome?.value ?? tool.outcome?.problem ?? tool.outcome
   const result = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
@@ -66,10 +132,27 @@ function ToolDetails({ tool }) {
       <pre>{JSON.stringify(tool.arguments, null, 2)}</pre>
       <div>结果</div>
       <pre>{result ?? '等待工具返回结果'}</pre>
+      {tool.sources?.length > 0 && <Sources items={tool.sources} />}
     </section>
   )
 }
-function HistoryMessage({ theatre, row, characters, playback, turnReplay, onPlay, onReplayTurn }) {
+function HistoryMessage({
+  client,
+  theatre,
+  row,
+  characters,
+  playback,
+  turnReplay,
+  onPlay,
+  onReplayTurn
+}) {
+  if (row.kind === 'sources')
+    return (
+      <details className="history-tools">
+        <summary>引用来源</summary>
+        <Sources items={row.sources} />
+      </details>
+    )
   if (row.kind === 'tools') {
     const pending = row.tools.some((tool) => !tool.outcome || tool.outcome.status === 'accepted')
     const failed = row.tools.some((tool) =>
@@ -119,7 +202,9 @@ function HistoryMessage({ theatre, row, characters, playback, turnReplay, onPlay
           </Button>
         )}
       </div>
-      <div className="history-message-body">
+      <div
+        className={theatre ? 'history-message-body history-theatre-line' : 'history-message-body'}
+      >
         {row.replayTurnId && (
           <Button
             variant="ghost"
@@ -134,6 +219,7 @@ function HistoryMessage({ theatre, row, characters, playback, turnReplay, onPlay
         )}
         <div className="history-bubble">
           <MessageText text={row.text} />
+          {row.attachments && <FileDownloads client={client} files={row.attachments} />}
           {row.kind === 'assistant' && row.translation && (
             <div className="history-translation">
               <MessageText text={row.translation} />
@@ -155,6 +241,8 @@ function HistoryMessage({ theatre, row, characters, playback, turnReplay, onPlay
  * @returns {import('react').ReactElement} 独立滚动的悬浮历史，离开底部时不抢占阅读位置。
  */
 export function HistoryPanel({
+  now,
+  client,
   snapshot,
   characters,
   onClose,
@@ -211,7 +299,7 @@ export function HistoryPanel({
     measure()
     return () => observer.disconnect()
   }, [])
-  const rows = historyRows(snapshot)
+  const rows = historyRows(snapshot, now)
   const warnings = snapshot?.chat.meta.extensions?.pythonImport?.normalizationWarnings ?? []
   // 语音和回放按钮可以在轮次结束后出现，记录内容没有变化时不提示新消息。
   const contentKey = JSON.stringify(
@@ -318,8 +406,15 @@ export function HistoryPanel({
         {warnings.some((warning) => warning.code === 'legacy_tool_order_unresolved') && (
           <p className="home-inline-problem">部分旧工具调用的位置无法确认，已保留其原有顺序。</p>
         )}
+        {snapshot?.chat.meta.workspaceFiles?.length > 0 && (
+          <details className="history-tools">
+            <summary>会话文件</summary>
+            <FileDownloads client={client} files={snapshot.chat.meta.workspaceFiles} />
+          </details>
+        )}
         {rows.map((row) => (
           <HistoryMessage
+            client={client}
             theatre={snapshot?.chat.mode === 'scripted-dialogue'}
             key={row.id}
             row={row}

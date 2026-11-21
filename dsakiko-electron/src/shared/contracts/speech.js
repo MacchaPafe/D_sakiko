@@ -1,4 +1,6 @@
 /** @typedef {import('./common.js').AssetRef} AssetRef */
+export const DEFAULT_SPEECH_SPEED = 0.88
+export const DEFAULT_SPEECH_PAUSE_MS = 500
 /** @typedef {string} SpeechTaskId Python 分配的不透明临时编号；结果过期或 Python 重启后失效，不持久化为消息身份。 */
 /** @typedef {number} SpeechPriority 非负整数，越小越优先；0 为最高，1、2 是常用值，也允许其他整数。不抢占已开始的任务。 */
 

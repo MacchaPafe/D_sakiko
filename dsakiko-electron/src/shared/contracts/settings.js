@@ -37,13 +37,14 @@
 /**
  * @typedef {object} SpeechOptions
  * @property {boolean} [enabled] Turn 开始时固定，只控制本轮自动合成。
- * @property {number} [speed] 正的有限倍率。
- * @property {number} [sentencePauseMs] 非负整数毫秒。
+ * @property {number} [speed] 全局朗读语速，轮次保留实际倍率；历史对话中的局部值不再生效。
+ * @property {number} [sentencePauseMs] 全局合成片段停顿，轮次保留实际毫秒数。
  * @property {SpeechSampling} [sampling] 整组覆盖，新任务固定使用。
  */
 
 /**
  * @typedef {object} ScenarioSettings
+ * @property {import('./conversation.js').Attachment[]} [referenceFiles] 本场使用的图片与工作文件。
  * @property {string} situation 情境，可留空由演员设定生成。
  * @property {Object<string, { speakingStyle: string, interaction: string }>} characters 按参与角色 ID 保存，不可引用陌生角色。
  */
@@ -69,6 +70,7 @@
 
 /**
  * @typedef {object} ChatSettings
+ * @property {Record<string,{enabled:boolean,effort:string|null}>} [reasoningProfiles] 按连接与模型保存的思考选择。
  * @property {GenerationOptions} generation 后续执行覆盖。
  * @property {SpeechOptions} speech 后续语音覆盖。
  * @property {ScenarioSettings | null} scenario 对话情景，不是可编辑的 Turn 设置。只在 scripted-dialogue 模式下（小剧场）使用

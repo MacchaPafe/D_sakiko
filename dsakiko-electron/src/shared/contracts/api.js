@@ -89,6 +89,7 @@ export const API_METHODS = {
     set: true,
     update: true,
     listConnections: false,
+    listReasoningModels: false,
     saveToolCredential: true,
     getToolCredentialStatus: false,
     listProviderPresets: false,
@@ -142,6 +143,8 @@ export const API_METHODS = {
  * @property {() => Promise<BackendConnection>} getBackendConnection 获取本次运行的业务连接，不把令牌写入日志或持久 URL。
  * @property {() => Promise<{platform: string, appVersion: string}>} getRuntimeInfo 宿主平台与应用版本。
  * @property {(provider: string) => Promise<void>} openProviderKeyPage 在默认浏览器打开受支持的密钥管理页。
+ * @property {(href:string)=>Promise<void>} openWebSource 打开用户选择的网页来源。
+ * @property {(input:{bytes:Uint8Array,name:string,mediaType:string,draftId:string})=>Promise<object>} importAttachment 导入已选文件到对应草稿。
  * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string, draftId?: string}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
  * @property {() => Promise<{sourceId: string, name: string} | null>} selectLegacyDirectory 只授权扫描旧版目录，不复制整个目录。
  * @property {(target: import('../../backend/live2d-import/outfits.js').OutfitTarget) => Promise<{result?: {modelId: string, alreadyInstalled: boolean}, problem?: ApiProblem} | null>} importOutfitDirectory 选择并安装一个本地模型文件夹。

@@ -1,4 +1,5 @@
 import { SerialQueue } from '../core/files.js'
+import { DEFAULT_SPEECH_SPEED, DEFAULT_SPEECH_PAUSE_MS } from '../../shared/contracts/speech.js'
 import { problemError } from '../../shared/problems.js'
 
 /**
@@ -84,15 +85,12 @@ export class PythonSpeechTransport {
    */
   async submit(request, expectedRun) {
     const voice = request.voice
-    let text = request.text
-    for (const override of request.pronunciationOverrides || [])
-      if (override.text) text = text.split(override.text).join(override.reading)
     const body = {
-      text,
+      text: request.text,
       language: request.language,
       priority: request.priority,
-      speed: request.speed ?? 1,
-      sentence_pause_ms: request.sentencePauseMs ?? 300,
+      speed: request.speed ?? DEFAULT_SPEECH_SPEED,
+      sentence_pause_ms: request.sentencePauseMs ?? DEFAULT_SPEECH_PAUSE_MS,
       voice: {
         gpt_weights_path: await this.assets.localPath(voice.gptWeights),
         sovits_weights_path: await this.assets.localPath(voice.sovitsWeights),

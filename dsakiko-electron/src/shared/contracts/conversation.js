@@ -18,7 +18,7 @@
 
 /**
  * @typedef {object} UserSubmission
- * @property {string} text 输入文本，可为空但必须有有效图片；无文本且无有效附件才是空提交。
+ * @property {string} text 输入文本，附件有效时可单独发送。
  * @property {Attachment[]} attachments 已完成本地导入的附件，不保存厂商文件 ID。
  */
 
@@ -183,6 +183,7 @@
  * @property {import('./tools.js').ToolExecutionContext} source 创建请求的工具调用。
  * @property {string} material 幂等校验材料。
  * @property {{index: number, option: string} | null} result 用户开始后由后端随机确定的结果。
+ * @property {number} [revealAt] 结果允许展示的 Unix 毫秒时刻，旧记录立即展示。
  * @property {string | null} drawnAt 结果确定时间。
  * @property {string | null} deliveredTurnId 后续回复轮次，与受理同时保存。
  * @property {boolean} cancelled 停止或修改历史后不再接受开始、交付。
@@ -258,6 +259,8 @@
  * @property {string} id 对话身份。
  * @property {string} title 标题。
  * @property {string|null} lastReply 最后一条角色台词；无回复时为空。
+ * @property {number} [lastReplyRevealAt] 侧栏可展示末句的时刻。
+ * @property {boolean} [showTitle] 已有模型生成或用户指定的标题。
  * @property {string[]} characterIds 参与角色。
  * @property {Record<string, string | null>} [characterNames] 存档中的角色名称。
  * @property {ParticipantIssue | null} [participantIssue] 当前目录下的历史阅读状态。

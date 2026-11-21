@@ -259,6 +259,9 @@ export class Performance {
     return {
       id: uuid(),
       guide: copy(material),
+      earliestStart: guide.revealAt
+        ? this.now() + Math.max(0, guide.revealAt - Date.now())
+        : -Infinity,
       sequenceId: sequence.id,
       createdAt: this.now(),
       readyAt: material.ready ? this.now() : Infinity,
@@ -705,7 +708,10 @@ export class Performance {
       }
       const next = this.guides.get(sequence.queue[0])
       if (!next?.guide.ready) break
-      const pauseUntil = (sequence.lastLineEndedAt ?? -Infinity) + (next.guide.pauseBeforeMs ?? 0)
+      const pauseUntil = Math.max(
+        next.earliestStart,
+        (sequence.lastLineEndedAt ?? -Infinity) + (next.guide.pauseBeforeMs ?? 0)
+      )
       if (pauseUntil > this.now()) {
         nextWakeAt = pauseUntil
         break

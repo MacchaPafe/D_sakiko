@@ -1,5 +1,6 @@
 import { extractAssetReferences } from '../resources/references.js'
 import { PythonSpeechTransport } from './python-transport.js'
+import { spokenText } from './spoken-text.js'
 import { abortable, requireValue, fingerprint, SerialQueue } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/speech.js').SpeechTaskId} SpeechTaskId */
@@ -85,6 +86,8 @@ export class Speech {
   async submitRequest(request) {
     requireValue(Number.isInteger(request.priority) && request.priority >= 0)
     requireValue(!this.closed, 'backend_closed')
+    const text = spokenText(request.text, request.pronunciationOverrides)
+    requireValue(text, 'empty_speech_text', '台词没有可朗读的内容。')
     const inputOwner = await this.assets.createTemporaryOwner(
       'speech-input',
       extractAssetReferences(request.voice)
@@ -103,6 +106,7 @@ export class Speech {
       const taskId = await this.transport.submit(
         {
           ...request,
+          text,
           language: languages[request.language] ?? request.language,
           voice: {
             ...request.voice,

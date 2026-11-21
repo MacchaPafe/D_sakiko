@@ -25,7 +25,8 @@ import {
 } from '../core/config.js'
 import { settingsDefinition, createDefaultSettings } from './definition.js'
 import { providerPresets } from '../../shared/contracts/llm-providers.js'
-import { normalizeConnection, officialModelCapabilities } from '../llm/connections.js'
+import { ReasoningCatalog } from './reasoning-catalog.js'
+import { normalizeConnection } from '../llm/connections.js'
 
 const revisionItem = config.number({ integer: true, min: 0, max: Number.MAX_SAFE_INTEGER })
 
@@ -41,6 +42,7 @@ const revisionItem = config.number({ integer: true, min: 0, max: Number.MAX_SAFE
  * @property {Record<string, import('../../shared/contracts/models.js').ConnectionDefinition>} connections 已配置的模型连接字典。
  * @property {string[]} [connectionOrder] 已配置连接的展示顺序。
  * @property {Record<string, string>} secrets 各连接对应的 API 密钥（仅保存在后端，不随连接列表对外返回）。
+ * @property {number} [speechDefaultsVersion] 标记旧默认值已迁移，允许用户之后主动选回原数值。
  */
 
 /**
@@ -77,10 +79,11 @@ export class Settings {
    * @param {string} options.directory 设置文件（settings.json）所在的存储目录。
    * @param {((connection: import('../../shared/contracts/models.js').ResolvedModelConnection, signal?: AbortSignal) => Promise<unknown>) | null} [options.probe] 自定义函数，用于发送最小测试请求以检查模型连接是否可用。
    */
-  constructor({ directory, assets, probe = null, modelCatalog = null }) {
+  constructor({ directory, assets, probe = null, modelCatalog = null, transport = fetch }) {
     this.file = path.join(directory, 'settings.json')
     this.queue = new SerialQueue()
     this.scopes = new Map()
+    this.reasoningCatalog = new ReasoningCatalog(directory, transport)
     this.vertexDrafts = new VertexDrafts()
     this.accounts = new ChatGPTAccounts(directory)
     this.bus = new SnapshotBus()
@@ -103,7 +106,14 @@ export class Settings {
       connections: {},
       secrets: {}
     })
-    fields(state, ['settings', 'connections', 'secrets', 'voicePreference', 'connectionOrder'])
+    fields(state, [
+      'settings',
+      'connections',
+      'secrets',
+      'voicePreference',
+      'connectionOrder',
+      'speechDefaultsVersion'
+    ])
     requireValue(
       isConfigObject(state.settings) &&
         isConfigObject(state.connections) &&
@@ -115,6 +125,13 @@ export class Settings {
       '设置文件结构无效'
     )
     const { revision, ...values } = state.settings
+    if (state.speechDefaultsVersion === undefined) {
+      if (values.speech?.speed === 1 && values.speech.sentencePauseMs === 300) {
+        delete values.speech.speed
+        delete values.speech.sentencePauseMs
+      }
+      state.speechDefaultsVersion = 1
+    }
     if (values.generation?.compression?.thresholdTokens === 258000)
       values.generation.compression.thresholdTokens = 270000
     state.settings = {
@@ -135,7 +152,12 @@ export class Settings {
 
   /** 自动语音只适用于仍与下载意图一致的用户偏好版本。 */
   async voicePreference() {
-    return (await this.state()).voicePreference ?? { revision: 0, enabled: {} }
+    const state = await this.state()
+    const preference = state.voicePreference ?? { revision: 0, enabled: {} }
+    // 旧版本允许在全局关闭后通过下载重新登记角色，不能将这些记录当作用户重新开启。
+    if (preference.revision > 0 && !state.settings.speech.enabled)
+      return { revision: preference.revision, enabled: {} }
+    return preference
   }
 
   async enablePreparedVoice(characterId, revision) {
@@ -143,6 +165,7 @@ export class Settings {
       const state = await this.state()
       const preference = state.voicePreference ?? { revision: 0, enabled: {} }
       if (preference.revision !== revision) return false
+      if (revision > 0 && !state.settings.speech.enabled) return false
       if (preference.enabled[characterId] !== true) {
         preference.enabled[characterId] = true
         state.voicePreference = preference
@@ -313,10 +336,42 @@ export class Settings {
     })
   }
 
-  /**
-   * 列出所有已配置的模型连接定义（包含是否已配置密钥的标记，但不包含密钥明文）。
-   * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition[]>} 模型连接定义列表。
-   */
+  /** @param {boolean} refresh 是否更新官方目录。 @returns {Promise<object[]>} 模型与思考能力，不含凭据。 */
+  async listReasoningModels(refresh = false) {
+    const state = await this.state()
+    const profiles = Object.values(state.connections).some((c) => c.provider === 'chatgpt')
+      ? await this.accounts.list()
+      : []
+    const entries = await Promise.all(
+      Object.values(state.connections).map(async (saved) => {
+        const connection = normalizeConnection(saved)
+        if (refresh) await this.reasoningCatalog.refresh(connection, state.secrets[connection.id])
+        return Promise.all(
+          connection.models.map(async (model) => {
+            const capabilities = await this.reasoningCatalog.resolve(connection, model)
+            const entry = profiles
+              .find((p) => p.id === connection.accountId)
+              ?.models?.find((m) => m.id === model.id)
+            if (entry)
+              Object.assign(capabilities, {
+                reasoning: { status: entry.efforts?.length ? 'supported' : 'unknown' },
+                reasoningEfforts: entry.efforts,
+                reasoningToggle: entry.efforts?.includes('none')
+              })
+            return {
+              connectionId: connection.id,
+              modelId: model.id,
+              provider: connection.provider,
+              baseUrl: connection.baseUrl,
+              protocol: connection.protocol,
+              capabilities: merge(capabilities, model.overrides)
+            }
+          })
+        )
+      })
+    )
+    return entries.flat()
+  }
   async listConnections() {
     const state = await this.state()
     const connections = orderedConnectionIds(state).map((id) => copy(state.connections[id]))
@@ -607,12 +662,7 @@ export class Settings {
       connection.provider === 'chatgpt'
         ? {}
         : ((await this.modelCatalog?.lookup(connection, model)) ?? {})
-    const capabilities = merge(
-      officialModelCapabilities(connection, modelId),
-      catalog,
-      model.declared,
-      model.overrides
-    )
+    const capabilities = merge(catalog, await this.reasoningCatalog.resolve(connection, model))
     // 空的旧声明不应遮住目录中已知的数值；明确的正整数覆盖则始终优先。
     for (const key of ['contextTokens', 'inputTokens', 'outputTokens'])
       capabilities[key] = model.overrides[key] ?? model.declared[key] ?? catalog[key] ?? null
@@ -641,6 +691,7 @@ export class Settings {
         status: entry.efforts?.length ? 'supported' : 'unknown',
         source: 'chatgpt'
       }
+      Object.assign(capabilities, merge(capabilities, model.overrides))
       if (entry.contextTokens) {
         capabilities.contextTokens = entry.contextTokens
         capabilities.contextSource = 'chatgpt'

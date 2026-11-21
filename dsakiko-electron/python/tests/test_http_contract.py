@@ -34,6 +34,8 @@ class HttpContractTests(unittest.TestCase):
                 "sampling": {"top_k": 15, "top_p": 0.8, "temperature": 0.9, "seed": -1, "sample_steps": 16},
             }
             request = request_from_json(body, assets)
+            self.assertEqual(request.speed, 0.88)
+            self.assertEqual(request.sentence_pause_ms, 500)
             self.assertIsNotNone(request.sampling)
             assert request.sampling is not None
             self.assertEqual(request.sampling.top_p, 0.8)

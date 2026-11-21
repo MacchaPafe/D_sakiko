@@ -185,6 +185,25 @@ async function startApplication() {
     checkSender(event)
     return { platform: process.platform, appVersion: app.getVersion() }
   })
+  ipcMain.handle('host:import-attachment', async (event, input) => {
+    checkSender(event)
+    requireValue(
+      typeof input.draftId === 'string' &&
+        input.bytes instanceof Uint8Array &&
+        input.bytes.byteLength <= 64 * 1024 * 1024,
+      'unsupported_work_file'
+    )
+    return backend.imports.importAsset(
+      {
+        kind: 'bytes',
+        bytes: Buffer.from(input.bytes),
+        name: input.name,
+        mediaType: input.mediaType
+      },
+      'attachment',
+      input.draftId
+    )
+  })
   ipcMain.handle('host:import-files', async (event, options) => {
     checkSender(event)
     requireValue(options && IMPORT_PURPOSES.includes(options.purpose), 'invalid_asset_purpose')
@@ -213,6 +232,15 @@ async function startApplication() {
     return imported
   })
   mainWindow = createMainWindow()
+  ipcMain.handle('host:open-web-source', (event, href) => {
+    checkSender(event)
+    const url = new URL(href)
+    requireValue(
+      ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password,
+      'invalid_web_url'
+    )
+    return shell.openExternal(url.href)
+  })
   ipcMain.handle('host:open-provider-key-page', (event, provider) => {
     checkSender(event)
     const page = providerPresets.find((preset) => preset.id === provider)?.keyPage

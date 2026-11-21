@@ -16,7 +16,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, cast
 
-from .contracts import SchedulerConfig, SpeechRequest, SpeechSampling, VoiceProfile
+from .contracts import DEFAULT_SPEECH_PAUSE_MS, DEFAULT_SPEECH_SPEED, SchedulerConfig, SpeechRequest, SpeechSampling, VoiceProfile
 from .scheduler import RequestError, Scheduler
 from .worker import ProcessWorker
 from .gpt_sovits_resources import GptSovitsResources, GptSovitsResourceSet
@@ -62,7 +62,7 @@ def request_from_json(body: Dict[str, object], assets_root: Path) -> SpeechReque
     supported = {"zh", "ja", "en", "ko", "yue", "all_zh", "all_ja", "all_ko", "all_yue", "auto", "auto_yue"}
     if language not in supported or reference_language not in supported:
         raise RequestError("invalid_request", "不支持的合成语言")
-    speed_value = body.get("speed", 1.0)
+    speed_value = body.get("speed", DEFAULT_SPEECH_SPEED)
     if isinstance(speed_value, bool) or not isinstance(speed_value, (int, float)) or not math.isfinite(speed_value) or speed_value <= 0:
         raise RequestError("invalid_request", "语速必须为有限正数")
     text = text_value(body.get("text"))
@@ -79,7 +79,7 @@ def request_from_json(body: Dict[str, object], assets_root: Path) -> SpeechReque
         if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not math.isfinite(temperature) or temperature <= 0:
             raise RequestError("invalid_request", "temperature 必须为有限正数")
         sampling = SpeechSampling(integer_value(values.get("top_k"), 1), float(top_p), float(temperature), integer_value(values.get("seed"), -1), integer_value(values.get("sample_steps"), 1))
-    return SpeechRequest(text, language, VoiceProfile(paths[0], paths[1], paths[2], text_value(voice.get("reference_text")), reference_language), integer_value(body.get("priority")), float(speed_value), integer_value(body.get("sentence_pause_ms", 300)), sampling)
+    return SpeechRequest(text, language, VoiceProfile(paths[0], paths[1], paths[2], text_value(voice.get("reference_text")), reference_language), integer_value(body.get("priority")), float(speed_value), integer_value(body.get("sentence_pause_ms", DEFAULT_SPEECH_PAUSE_MS)), sampling)
 
 
 async def serve(args: argparse.Namespace) -> None:

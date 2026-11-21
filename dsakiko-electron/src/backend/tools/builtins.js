@@ -1,3 +1,4 @@
+import { webReaderTool } from './web-reader.js'
 import { datetimeTool } from './datetime.js'
 import { systemTool } from './system.js'
 import { fileTools } from './files.js'
@@ -28,6 +29,7 @@ export function createBuiltinTools({
     questionTool(),
     reminderTool(),
     datetimeTool(),
+    webReaderTool(),
     systemTool(hardware),
     ...fileTools({ settings, assets, write: writeFile }),
     weatherTool(settings, transport),

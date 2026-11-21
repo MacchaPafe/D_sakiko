@@ -15,6 +15,7 @@ export function chatSettings() {
   // 仅记录用户针对该对话显式修改过的项，未修改的项在对话生成时再动态继承最新的全局设置。
   return {
     generation: {},
+    reasoningProfiles: {},
     speech: {},
     scenario: null,
     tools: { enabled: [] },

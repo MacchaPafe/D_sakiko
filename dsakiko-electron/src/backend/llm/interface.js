@@ -3,6 +3,7 @@ import { characterContext, dialogueProjection } from './context.js'
 import { fileURLToPath } from 'node:url'
 import nunjucks from 'nunjucks'
 import Ajv from 'ajv'
+import { nativeRequest } from './deepseek-chat.js'
 import { generateText, jsonSchema } from 'ai'
 import { createModel, reasoningOptions } from './adapters.js'
 import { AttachmentPreparation } from '../remote-files/preparation.js'
@@ -229,12 +230,12 @@ export class Agent {
    * @param {import('../../shared/contracts/models.js').ResolvedModelConnection} connection 已解析的模型连接快照。
    * @returns {import('ai').LanguageModel} AI SDK 语言模型实例。
    */
-  model(connection, reasoning) {
+  model(connection, reasoning, transport = this.transport) {
     return createModel(
       connection,
       this.credential(connection.credentialScope),
       reasoning,
-      this.transport
+      transport
     )
   }
 
@@ -272,8 +273,11 @@ export class Agent {
       translationLanguage: request.options.translationLanguage,
       scenario: request.scenario,
       knowledge: request.supplementalContext,
-      hasTools: request.tools.length > 0,
-      allowedTools: request.tools.map((tool) => tool.name).sort(),
+      hasTools: Boolean(request.tools.length || request.deepseek?.native.length),
+      allowedTools: [
+        ...request.tools.map((tool) => tool.name),
+        ...(request.deepseek?.native ?? [])
+      ].sort(),
       example: JSON.stringify({ lines: examples })
     })
   }
@@ -304,12 +308,21 @@ export class Agent {
         turn.messages.find((message) => message.kind === 'user') ?? null
       )
       appendContext(context)
+      if (request.deepseek && turn.scenario && turn.reminder)
+        messages.push({
+          role: 'user',
+          nativeMetadata: { reminder: turn.reminder },
+          content: await this.scenarioContent(turn.scenario, request, inspect, signal)
+        })
       for (const message of turn.messages) {
         if (message.kind === 'abstract')
           messages.push({ role: 'user', content: '历史累计摘要：' + message.text })
         if (message.kind === 'user')
           messages.push({
             role: 'user',
+            ...(request.deepseek && turn.reminder
+              ? { nativeMetadata: { reminder: turn.reminder } }
+              : {}),
             content: await this.userContent(message, request, inspect, signal)
           })
         if (message.kind === 'assistant') {
@@ -319,6 +332,9 @@ export class Agent {
               messages.push({
                 role: 'assistant',
                 content: replay,
+                ...(request.deepseek
+                  ? { nativeMetadata: message.protocol.providerOptions?.deepseek }
+                  : {}),
                 providerOptions: responseOptions({
                   providerMetadata: {
                     openaiCompatible: {
@@ -375,9 +391,34 @@ export class Agent {
         content: await this.userContent(request.input.message, request, inspect, signal)
       })
     if (request.input?.kind === 'scenario')
-      messages.push({ role: 'user', content: '请按当前情景开始角色对话。' })
-    messages.push({ role: 'user', content: this.controls(request) })
+      messages.push({
+        role: 'user',
+        content: await this.scenarioContent(request.scenario, request, inspect, signal)
+      })
+    if (request.deepseek && request.input && messages.at(-1)?.role === 'user') {
+      const last = messages.at(-1)
+      const controls = this.controls(request)
+      last.content = Array.isArray(last.content)
+        ? [...last.content, { type: 'text', text: controls }]
+        : last.content + '\n\n' + controls
+      if (request.deepseek.reminder) last.nativeMetadata = { reminder: request.deepseek.reminder }
+    } else messages.push({ role: 'user', content: this.controls(request) })
     return messages
+  }
+
+  /** 情景轮次同样是一条用户消息，历史回传取当时的参考图片和情境。 */
+  async scenarioContent(scenario, request, inspect, signal) {
+    const text = ['请按当前情景开始角色对话。', scenario?.situation].filter(Boolean).join('\n')
+    const attachments = (scenario?.referenceFiles ?? []).filter((file) =>
+      file.mediaType?.startsWith('image/')
+    )
+    if (!attachments.length) return text
+    return this.userContent(
+      { kind: 'user', text, attachments, unavailableAttachments: [] },
+      request,
+      inspect,
+      signal
+    )
   }
 
   /**
@@ -390,7 +431,7 @@ export class Agent {
   /**
    * 将请求中的生成选项转换为 AI SDK 调用参数。
    */
-  parameters(request, signal) {
+  parameters(request, signal, transport) {
     const options = request.options
     requireValue(Number.isInteger(options.timeoutMs) && options.timeoutMs > 0)
     const signals = [AbortSignal.timeout(options.timeoutMs)]
@@ -402,7 +443,7 @@ export class Agent {
       (['responses', 'anthropic-messages'].includes(protocol) ||
         ['deepseek', 'openai'].includes(request.connection.provider))
     return {
-      model: this.model(request.connection, options.reasoning),
+      model: this.model(request.connection, options.reasoning, transport),
       providerOptions,
       maxOutputTokens: contextBudget(request).reservedOutputTokens,
       // 原生推理模型自行控制采样，不发送它们明确不接受的采样参数。
@@ -542,10 +583,14 @@ export class Agent {
         'context_over_budget',
         '本轮新增工具结果或修复消息超出上下文预算，已执行记录已保留。'
       )
+      const wire = request.deepseek
+        ? nativeRequest(messages, request.deepseek, this.transport ?? fetch)
+        : { messages }
       const response = await this.generate({
-        ...this.parameters(request, signal),
+        ...this.parameters(request, signal, wire.transport),
         system,
-        messages,
+        messages: wire.messages,
+        ...(request.deepseek ? { include: { responseBody: true } } : {}),
         tools
       })
       usage = {
@@ -559,6 +604,17 @@ export class Agent {
       const responseId = uuid()
       const content = responseContent(response)
       const messageOptions = responseOptions(response)
+      const raw = request.deepseek && response.response?.body?.choices?.[0]?.message
+      const title = request.deepseek?.title && raw?.title?.trim()
+      if (title) request.deepseek.title = false
+      if (raw) {
+        const fields = Object.fromEntries(
+          ['server_tool_calls', 'reasoning_content', 'annotations']
+            .filter((key) => raw[key] != null)
+            .map((key) => [key, raw[key]])
+        )
+        if (Object.keys(fields).length) messageOptions.deepseek = fields
+      }
       const calls = content.filter((part) => part.type === 'tool-call')
       const text = content
         .filter((part) => part.type === 'text')
@@ -600,12 +656,18 @@ export class Agent {
       // 若工具执行中途进程崩溃或被用户取消，对话存档中必须先有对应的 tool-call 记录，后续才能为其补记中断状态并保持历史可追溯。
       await observer.onResponse({
         responseId,
+        title,
         appendParts: parts,
         protocol: saveReplay(request.connection, content, parts, contextFingerprint, messageOptions)
       })
       // 同一响应只回传一次；保留工具前的文字、空推理签名和原始块顺序。
       if (content.length)
-        messages.push({ role: 'assistant', content, providerOptions: messageOptions })
+        messages.push({
+          role: 'assistant',
+          content,
+          providerOptions: messageOptions,
+          nativeMetadata: messageOptions.deepseek
+        })
       if (calls.length) {
         const results = []
         for (const call of calls) {
@@ -682,16 +744,18 @@ export class Agent {
     const material = JSON.stringify({
       system: this.system(request),
       messages,
+      ...(request.deepseek?.native.length ? { nativeTools: request.deepseek.native } : {}),
       tools: (request.toolDefinitions ?? request.tools).map((tool) => ({
         name: tool.name,
         description: tool.description,
         parametersSchema: tool.parametersSchema
       }))
     })
-    const hasAttachments = [
-      ...request.history.flatMap((turn) => turn.messages),
-      request.input?.message
-    ].some((message) => message?.attachments?.length)
+    const hasAttachments =
+      request.scenario?.referenceFiles?.some((file) => file.mediaType?.startsWith('image/')) ||
+      [...request.history.flatMap((turn) => turn.messages), request.input?.message].some(
+        (message) => message?.attachments?.length
+      )
     const hasOpaqueReasoning = messages.some(
       (message) =>
         Array.isArray(message.content) &&
@@ -707,7 +771,9 @@ export class Agent {
     )
     // 签名和密文的字节长度不是模型实际读取的 Token 数，不能据此误报超出预算。
     const hasMessageReasoning = messages.some(
-      (message) => message.providerOptions?.openaiCompatible?.reasoning_details?.length
+      (message) =>
+        message.providerOptions?.openaiCompatible?.reasoning_details?.length ||
+        message.nativeMetadata?.server_tool_calls?.length
     )
     const estimatedInputTokens =
       hasAttachments || hasOpaqueReasoning || hasMessageReasoning

@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Union
 
+DEFAULT_SPEECH_SPEED: float = 0.88
+DEFAULT_SPEECH_PAUSE_MS: int = 500
+
 
 @dataclass(frozen=True)
 class VoiceProfile:

@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest'
 import { tmpdir } from 'node:os'
+import { configureDeepSeek } from '../../src/backend/llm/deepseek-chat.js'
 import { Agent } from '../../src/backend/llm/interface.js'
 import { Settings } from '../../src/backend/settings/interface.js'
 import { characterContext } from '../../src/backend/llm/context.js'
@@ -149,6 +150,76 @@ test('工具结果令本轮超限时不发第二次请求，不重跑工具，�
     kind: 'tool-result',
     outcome: { status: 'succeeded' }
   })
+})
+
+test('官方联网保留用户链接、日期和网页签名，下一轮无需重复索取标题', async () => {
+  const req = requestFor('deepseek', 'chat-completions', 'deepseek-flash')
+  req.connection.baseUrl = 'https://api.deepseek.com/v1'
+  req.input.message.text = '请阅读 https://example.org/article'
+  req.tools = ['web_search', 'read_url', 'get_current_datetime'].map((name) => ({
+    ...req.tools[0],
+    name
+  }))
+  req.toolDefinitions = [...req.tools, { ...req.tools[0], name: 'echo' }]
+  const chat = { mode: req.mode, turns: [], meta: {} }
+  configureDeepSeek(req, chat)
+  const signature = [
+    {
+      index: 0,
+      calls: [
+        {
+          index: 0,
+          type: 'deepseek_read_url',
+          status: 'completed',
+          page: { url: 'https://example.org/article', title: '示例' },
+          signature: 'fixture-signature'
+        }
+      ]
+    }
+  ]
+  const bodies = []
+  const agent = new Agent({
+    credential: () => 'fixture',
+    assets: {},
+    fetch: async (_, init) => {
+      bodies.push(JSON.parse(init.body))
+      return json(completion({ content: answer, title: '示例标题', server_tool_calls: signature }))
+    }
+  })
+  const original = recorder(req)
+  const updates = []
+  const onResponse = async (update) => {
+    updates.push(update)
+    await original.observer.onResponse(update)
+  }
+  await agent.run(req, { ...original.observer, onResponse })
+  expect(bodies[0].tools).toEqual([{ type: 'deepseek_web_search' }, { type: 'deepseek_read_url' }])
+  expect(bodies[0].messages.at(-2)).toMatchObject({
+    role: 'latest_reminder',
+    content: expect.stringMatching(/^\d{4}-\d\d-\d\d,星期.,,App,中文$/)
+  })
+  expect(bodies[0].messages.at(-1)).toMatchObject({
+    role: 'user',
+    content: expect.stringContaining('https://example.org/article')
+  })
+  expect(bodies[0].title).toEqual({ enabled: true })
+  expect(updates[0].title).toBe('示例标题')
+  expect(updates[0].protocol.providerOptions.deepseek.server_tool_calls).toEqual(signature)
+  original.turn.reminder = req.deepseek.reminder
+  req.history = [original.turn]
+  chat.turns = [original.turn]
+  req.tools = ['read_url', 'get_current_datetime'].map((name) => ({
+    ...requestFor('deepseek', 'chat-completions', 'deepseek-flash').tools[0],
+    name
+  }))
+  configureDeepSeek(req, chat)
+  req.input.message = { ...req.input.message, text: '上一页是什么？' }
+  await agent.run(req, recorder(req).observer)
+  expect(bodies[1].title).toBeUndefined()
+  expect(bodies[1].messages.find((m) => m.role === 'assistant').server_tool_calls).toEqual(
+    signature
+  )
+  expect(bodies[1].messages.filter((m) => m.role === 'latest_reminder')).toHaveLength(2)
 })
 
 function requestFor(provider, protocol, modelId) {

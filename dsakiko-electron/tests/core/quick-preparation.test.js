@@ -243,6 +243,15 @@ test('改选旧版导入后保留已有语音，缓存的另一套语音不会�
   await backend.onboarding.finish()
   expect((await backend.characters.get('anon')).forms[0].voice).toEqual(before)
   expect(await readFile(await backend.assets.localPath(before.gptWeights), 'utf8')).toBe('old-gpt')
+  expect((await backend.settings.voicePreference()).enabled).toEqual({ anon: true })
+  // 模拟升级前已导入语音、尚无角色偏好的设置文件。
+  const state = JSON.parse(await readFile(backend.settings.file, 'utf8'))
+  delete state.voicePreference
+  await writeFile(backend.settings.file, JSON.stringify(state))
+  await backend.setup.initialize()
+  expect((await backend.settings.voicePreference()).enabled.anon).toBe(true)
+  await backend.settings.set('speech.enabled', false)
+  await backend.setup.initialize()
   expect((await backend.settings.voicePreference()).enabled).toEqual({})
 })
 

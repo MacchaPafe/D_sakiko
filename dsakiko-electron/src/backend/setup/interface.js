@@ -172,6 +172,7 @@ export class ResourceSetup {
       if (job.kind === 'download' && job.startedAt && job.status !== 'cancelled')
         await this.enablePreparedVoices(job)
     }
+    await this.enableImportedVoices()
     await this.maintainRuntimes()
     await this.cleanDownloadCache()
   }
@@ -1167,8 +1168,10 @@ export class ResourceSetup {
   }
 
   async execute(job, signal) {
-    if (job.kind === 'legacy') await this.importLegacy(job, signal)
-    else {
+    if (job.kind === 'legacy') {
+      await this.importLegacy(job, signal)
+      if (job.options.include.characters) await this.enableImportedVoices()
+    } else {
       job.downloaded = {}
       for (const file of downloadFiles(job.selected)) {
         const destination = path.join(this.cache, file.sha256)
@@ -1551,6 +1554,24 @@ export class ResourceSetup {
           if (current.characterId !== bound.characterId)
             await this.activate({ ...current, ...bound })
         })
+    }
+  }
+
+  /** 已导入的声音随角色启用，语音运行环境另行检查。 */
+  async enableImportedVoices() {
+    const preference = await this.settings.voicePreference()
+    // 初次导入与旧用户升级走同一条路径。用户主动改过开关后，以其选择为准。
+    if (preference.revision !== 0) return
+    for (const { id } of await this.characters.list()) {
+      if (preference.enabled[id] !== undefined) continue
+      const role = await this.characters.readRaw(id)
+      if (!role?.extensions?.pythonImport) continue
+      for (const form of role.forms) {
+        if (await this.voiceReady(form.voice)) {
+          await this.settings.enablePreparedVoice(id, preference.revision)
+          break
+        }
+      }
     }
   }
 

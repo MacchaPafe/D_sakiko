@@ -12,7 +12,10 @@ import { normalizeConnection } from './connections.js'
 function completionFetch(connection, reasoning, transport) {
   return async (url, init) => {
     const body = JSON.parse(init.body)
-    if (connection.provider === 'moonshot' || connection.provider === 'volcengine')
+    if (
+      connection.capabilities?.reasoning?.status === 'supported' &&
+      (connection.provider === 'moonshot' || connection.provider === 'volcengine')
+    )
       body.thinking = { type: reasoning.enabled ? 'enabled' : 'disabled' }
     return transport(url, { ...init, body: JSON.stringify(body) })
   }
@@ -111,8 +114,9 @@ export function reasoningOptions(connection, reasoning) {
   const value = normalizeConnection(connection)
   const { enabled, effort, budgetTokens } = reasoning
   if (!effort && !budgetTokens && value.capabilities?.reasoning?.status !== 'supported') {
-    if (value.provider === 'vertex') return {}
-    if (value.provider === 'chatgpt')
+    if (value.provider === 'vertex' || (reasoning.modelDefault && value.protocol !== 'responses'))
+      return {}
+    if (value.provider === 'chatgpt' || (reasoning.modelDefault && value.protocol === 'responses'))
       return { openai: { store: false, include: ['reasoning.encrypted_content'] } }
   }
   if (enabled) {
@@ -146,6 +150,8 @@ export function reasoningOptions(connection, reasoning) {
   }
   if (value.protocol === 'anthropic-messages') {
     let thinking = { type: 'disabled' }
+    if (enabled && !budgetTokens && value.capabilities?.reasoningAdaptive === false)
+      return { anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } } }
     if (enabled) thinking = budgetTokens ? { type: 'enabled', budgetTokens } : { type: 'adaptive' }
     return { anthropic: { thinking, ...(enabled && effort ? { effort } : {}) } }
   }
@@ -176,5 +182,11 @@ export function reasoningOptions(connection, reasoning) {
       options.reasoningEffort = 'none'
     return { openai: options }
   }
+  if (
+    !enabled &&
+    value.capabilities?.reasoningToggle &&
+    !['moonshot', 'volcengine'].includes(value.provider)
+  )
+    options.reasoningEffort = 'none'
   return { openaiCompatible: options }
 }

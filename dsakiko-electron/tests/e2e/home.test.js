@@ -719,6 +719,28 @@ async function verifyHistory(page, application, backend, selected) {
   await expect.poll(() => page.locator('.home-chat-row').count()).toBe(1)
 }
 
+async function cancelTheatreFilePicker(page, dialog) {
+  const session = await page.context().newCDPSession(page)
+  try {
+    // 让 Chromium 取消这次系统选取，验证浏览器发出的真实文件输入事件。
+    await session.send('Page.setInterceptFileChooserDialog', { enabled: true, cancel: true })
+    const input = dialog.locator('input[type=file]')
+    await Promise.all([
+      input.evaluate(
+        (element) =>
+          new Promise((resolve) =>
+            element.addEventListener('cancel', () => resolve(true), { once: true })
+          )
+      ),
+      dialog.getByRole('button', { name: '添加参考文件' }).click()
+    ])
+    expect(await dialog.isVisible()).toBe(true)
+    expect(await dialog.locator('.attachment-chip span').innerText()).toBe('参考.txt')
+  } finally {
+    await session.detach()
+  }
+}
+
 /** 使用隔离配置与本地测试 Agent，验证正式舞台、角色选择和成场回放。 */
 async function verifyTheatre(page, backend, agent) {
   await page.getByRole('tab', { name: '小剧场', exact: true }).click()
@@ -749,7 +771,13 @@ async function verifyTheatre(page, backend, agent) {
   expect(symmetry.sameRow).toBe(true)
   expect(Math.abs(symmetry.leftGap - symmetry.rightGap)).toBeLessThan(3)
   await page.screenshot({ path: '/tmp/sakiko-theatre-setup.png' })
+  await setup
+    .locator('input[type=file]')
+    .setInputFiles({ name: '参考.txt', mimeType: 'text/plain', buffer: Buffer.from('回家') })
+  await expect.poll(() => setup.locator('.attachment-chip span').innerText()).toBe('参考.txt')
   await setup.getByLabel('情境（可选）').fill('排练结束后一起回家')
+  await cancelTheatreFilePicker(page, setup)
+  expect(await setup.getByLabel('情境（可选）').inputValue()).toBe('排练结束后一起回家')
   await setup.getByRole('button', { name: '创建小剧场' }).click()
   const generate = page.getByRole('button', { name: '生成本场', exact: true })
   await generate.waitFor()
@@ -760,12 +788,24 @@ async function verifyTheatre(page, backend, agent) {
     .click()
   const editSetup = page.getByRole('dialog', { name: '剧场设定' })
   await editSetup.waitFor()
-  await editSetup.getByRole('button', { name: '取消', exact: true }).click()
+  expect(await editSetup.locator('.attachment-chip span').innerText()).toBe('参考.txt')
+  await editSetup.getByLabel('情境（可选）').fill('尚未保存的情境')
+  await cancelTheatreFilePicker(page, editSetup)
+  expect(await editSetup.getByLabel('情境（可选）').inputValue()).toBe('尚未保存的情境')
+  await page.keyboard.press('Escape')
   await editSetup.waitFor({ state: 'hidden' })
   const chat = (await backend.conversations.listChats()).find(
     (item) => item.mode === 'scripted-dialogue'
   )
   expect(chat.characterIds).toHaveLength(2)
+  const savedSetup = (await backend.conversations.getSnapshot(chat.id)).chat.meta
+  expect(savedSetup.settings.scenario.situation).toBe('排练结束后一起回家')
+  expect(savedSetup.settings.tools.enabled).toEqual([
+    'read_file_content',
+    'grep_search_in_file',
+    'read_url'
+  ])
+  expect(savedSetup.workspaceFiles[0].name).toBe('参考.txt')
   await expect.poll(() => page.locator('.two-actors .stage-actor').count()).toBe(2)
   await page.getByRole('button', { name: '调整舞台' }).click()
   await page.getByRole('button', { name: '朝向', exact: true }).waitFor()
@@ -886,7 +926,20 @@ async function verifyTheatre(page, backend, agent) {
     .getByRole('button', { name: '停止回放', exact: true })
     .click()
   await page.getByRole('button', { name: '展开聊天记录' }).click()
-  await page.getByRole('button', { name: '回放整场' }).click()
+  const replayScript = page.getByRole('button', { name: '回放整场' })
+  await replayScript.waitFor()
+  // 面板入场时整体平移，同一帧读取两个气泡和按钮的位置。
+  const alignment = await page.locator('.history-panel').evaluate((panel) => {
+    const [first, second] = panel.querySelectorAll('.history-assistant .history-bubble')
+    const replay = panel.querySelector('[aria-label="回放整场"]')
+    return {
+      leftOffset: second.getBoundingClientRect().left - first.getBoundingClientRect().left,
+      buttonGap: replay.getBoundingClientRect().left - first.getBoundingClientRect().right
+    }
+  })
+  expect(alignment.leftOffset).toBe(0)
+  expect(alignment.buttonGap).toBeGreaterThan(0)
+  await replayScript.click()
   await page.getByRole('button', { name: '收起聊天记录' }).click()
   const stop = page.locator('.home-subtitle').getByRole('button', { name: /停止.*回放/ })
   await stop.click()
@@ -1186,6 +1239,24 @@ app.on('window-all-closed', () => app.quit())`
       ).toBe(true)
       if (mode === 'production')
         await page.screenshot({ path: '/tmp/sakiko-settings-resources.png' })
+      await settings.getByRole('button', { name: '应用', exact: true }).click()
+      const preferences = settings.getByRole('region', { name: '偏好' })
+      await preferences.getByRole('heading', { name: '偏好', exact: true }).waitFor()
+      const speedSlider = preferences.getByRole('slider', { name: '回复语速' })
+      const pauseSlider = preferences.getByRole('slider', { name: '句间停顿' })
+      expect(await speedSlider.getAttribute('aria-valuenow')).toBe('0.88')
+      expect(await pauseSlider.getAttribute('aria-valuenow')).toBe('0.5')
+      await speedSlider.press('ArrowRight')
+      await pauseSlider.press('ArrowRight')
+      await expect.poll(() => backend.settings.get('speech.speed')).toBe(0.9)
+      await expect.poll(() => backend.settings.get('speech.sentencePauseMs')).toBe(550)
+      await preferences.getByRole('button', { name: '恢复默认语速' }).click()
+      await preferences.getByRole('button', { name: '恢复默认句间停顿' }).click()
+      await expect.poll(() => backend.settings.get('speech.speed')).toBe(0.88)
+      await expect.poll(() => backend.settings.get('speech.sentencePauseMs')).toBe(500)
+      expect(await preferences.getByRole('button', { name: '恢复默认语速' }).isDisabled()).toBe(
+        true
+      )
       await settings.getByRole('button', { name: '关闭设置' }).click()
       const actualFeatureState = backend.setup.getFeatureState.bind(backend.setup)
       backend.setup.getFeatureState = async () => ({
@@ -1202,6 +1273,43 @@ app.on('window-all-closed', () => app.quit())`
         })
       await page.reload()
       const composer = page.getByRole('textbox', { name: '消息' })
+      const toolsButton = page.getByRole('button', { name: '工具', exact: true })
+      await toolsButton.click()
+      const toolMenu = page.getByRole('dialog', { name: '工具设置' })
+      const expandFiles = toolMenu.getByRole('button', { name: '文件操作', exact: true })
+      expect(await expandFiles.getAttribute('aria-expanded')).toBe('false')
+      await expandFiles.click()
+      expect(await expandFiles.getAttribute('aria-expanded')).toBe('true')
+      const read = toolMenu.getByRole('checkbox', { name: '读取文件', exact: true })
+      await read.click()
+      const fileGroup = toolMenu.getByRole('checkbox', { name: '文件操作', exact: true })
+      expect(await fileGroup.getAttribute('aria-checked')).toBe('mixed')
+      await fileGroup.click()
+      expect(await fileGroup.getAttribute('aria-checked')).toBe('true')
+      await fileGroup.click()
+      expect(await fileGroup.getAttribute('aria-checked')).toBe('false')
+      await fileGroup.click()
+      expect(await fileGroup.getAttribute('aria-checked')).toBe('true')
+      const searchTools = toolMenu.getByRole('textbox', { name: '搜索工具' })
+      await searchTools.fill('天气')
+      await toolMenu.getByRole('checkbox', { name: '查询天气', exact: true }).waitFor()
+      expect(await fileGroup.count()).toBe(0)
+      await searchTools.fill('')
+      await composer.click()
+      expect(await toolMenu.isVisible()).toBe(false)
+      await page
+        .locator('input[type=file][multiple]')
+        .first()
+        .setInputFiles({
+          name: '场景参考.txt',
+          mimeType: 'text/plain',
+          buffer: Buffer.from('秋日的海边')
+        })
+      await page.getByRole('button', { name: '移除 场景参考.txt' }).waitFor()
+      await expect
+        .poll(() => page.locator('.attachment-chip span').innerText())
+        .toBe('场景参考.txt')
+      await page.getByRole('button', { name: '移除 场景参考.txt' }).click()
       await composer.fill('保留原草稿')
       await page.getByRole('button', { name: '语音输入', exact: true }).click()
       const finishRecording = page.getByRole('button', { name: '结束录音并识别' })
@@ -1251,22 +1359,62 @@ app.on('window-all-closed', () => app.quit())`
         .toEqual(['备用连接', '测试连接'])
       await page.getByRole('button', { name: '管理模型' }).click()
       await settings.getByRole('heading', { name: '已配置的连接' }).waitFor()
-      const testHandleBox = await testHandle.boundingBox()
       const altCard = settings
         .locator('.settings-card')
         .filter({ has: page.getByRole('heading', { name: '备用连接', exact: true }) })
-      const altCardBox = await altCard.boundingBox()
-      await page.mouse.move(
-        testHandleBox.x + testHandleBox.width / 2,
-        testHandleBox.y + testHandleBox.height / 2
-      )
-      await page.mouse.down()
+      let handleX, altCardBox
+      const writeOrder = vi.spyOn(backend.settings, 'reorderConnections')
+      async function previewSwap() {
+        await testHandle.click({ trial: true })
+        const testHandleBox = await testHandle.boundingBox()
+        altCardBox = await altCard.boundingBox()
+        handleX = testHandleBox.x + testHandleBox.width / 2
+        const handleY = testHandleBox.y + testHandleBox.height / 2
+        await page.mouse.move(handleX, handleY)
+        await page.mouse.down()
+        await page.mouse.move(handleX, handleY - 2)
+        expect(await settings.locator('.settings-drop-slot').count()).toBe(0)
+        await page.mouse.move(handleX, altCardBox.y + 8, { steps: 8 })
+        await settings.locator('.settings-drop-slot').waitFor()
+        // 按住并停留超过让位动画时长，列表节点与已保存的顺序应保持稳定。
+        await page.waitForTimeout(350)
+        expect(await settings.locator('.settings-connection-summary h4').allTextContents()).toEqual(
+          ['备用连接', '测试连接']
+        )
+        expect(await settings.locator('article[data-dragging="true"] h4').innerText()).toBe(
+          '测试连接'
+        )
+        expect(writeOrder).not.toHaveBeenCalled()
+      }
       try {
-        await page.mouse.move(testHandleBox.x + testHandleBox.width / 2, altCardBox.y + 8, {
-          steps: 8
+        await previewSwap()
+        await page.keyboard.press('Escape')
+        await page.mouse.up()
+        await settings.locator('.settings-drop-slot').waitFor({ state: 'detached' })
+        await expect
+          .poll(() => testHandle.evaluate((el) => el.closest('article').getAnimations().length))
+          .toBe(0)
+        await previewSwap()
+        await testHandle.evaluate((handle) => {
+          handle.addEventListener(
+            'pointermove',
+            (event) => handle.releasePointerCapture(event.pointerId),
+            { once: true }
+          )
         })
+        await page.mouse.move(handleX, altCardBox.y + 10, { steps: 2 })
+        await page.mouse.up()
+        await settings.locator('.settings-drop-slot').waitFor({ state: 'detached' })
+        expect(writeOrder).not.toHaveBeenCalled()
+        await expect
+          .poll(() => testHandle.evaluate((el) => el.closest('article').getAnimations().length))
+          .toBe(0)
+        await previewSwap()
+        await page.mouse.up()
+        await expect.poll(() => writeOrder.mock.calls.length).toBe(1)
       } finally {
         await page.mouse.up()
+        writeOrder.mockRestore()
       }
       await expect
         .poll(() => settings.locator('.settings-connection-summary h4').allTextContents())
@@ -1324,7 +1472,9 @@ app.on('window-all-closed', () => app.quit())`
       await page.keyboard.press('Escape')
       await openMenu.waitFor({ state: 'hidden' })
       await manager.waitFor()
-      expect(await altMenu.evaluate((element) => document.activeElement === element)).toBe(true)
+      await expect
+        .poll(() => altMenu.evaluate((element) => document.activeElement === element))
+        .toBe(true)
       // 缩小触发按钮左侧的可用空间，验证菜单仍完整显示在浮窗内。
       const managerBounds = await manager.boundingBox()
       await altMenu.evaluate((element, left) => {
@@ -1476,9 +1626,7 @@ app.on('window-all-closed', () => app.quit())`
         )
       ).toBe(true)
       expect(await page.locator('.history-bubble strong').innerText()).toBe('祥子')
-      expect(agent.run.mock.calls[0][0].toolDefinitions.map((tool) => tool.name)).not.toContain(
-        'ask_user'
-      )
+      expect(agent.run.mock.calls[0][0].tools.map((tool) => tool.name)).toContain('ask_user')
       // 端到端窗口可能受宿主显示器高度限制，先固定设计尺寸再验证双轴拖动。
       const viewport = await page.context().newCDPSession(page)
       await viewport.send('Emulation.setDeviceMetricsOverride', {
@@ -1597,6 +1745,57 @@ app.on('window-all-closed', () => app.quit())`
       const [failedChat] = await backend.conversations.listChats()
       const { chat } = await backend.store.load(failedChat.id)
       expect(chat.turns[0].messages.map(({ kind }) => kind)).toEqual(['user'])
+      agent.run.mockImplementationOnce(async (request, observer, signal) => {
+        const responseId = '互动-' + request.turnId
+        for (const [toolName, params] of [
+          ['ask_user', { question: '去哪儿？', choices: ['海边', '山上'] }],
+          ['start_lottery', { title: '选一种饮料', options: ['茶', '果汁', '水'] }]
+        ]) {
+          const callId = toolName
+          await observer.onResponse({
+            responseId,
+            protocol: {},
+            appendParts: [
+              { id: callId, kind: 'tool-call', callId, toolName, arguments: params, protocol: {} }
+            ]
+          })
+          const outcome = await request.tools
+            .find((tool) => tool.name === toolName)
+            .execute(
+              params,
+              { turnId: request.turnId, assistantMessageId: responseId, callId },
+              signal
+            )
+          await observer.onToolResult({
+            id: 'result-' + callId,
+            kind: 'tool-result',
+            assistantMessageId: responseId,
+            callId,
+            origin: 'tool',
+            outcome,
+            extensions: {}
+          })
+        }
+        return { status: 'completed', usage: null }
+      })
+      await page.getByRole('textbox', { name: '消息' }).fill('互动')
+      await page.getByRole('button', { name: '发送消息' }).click()
+      const closeHistory = page.getByRole('button', { name: '收起聊天记录' })
+      if (await closeHistory.isVisible()) await closeHistory.click()
+      const card = page.locator('.interaction-card')
+      await card.getByText('去哪儿？').waitFor()
+      const mountain = card.getByRole('button', { name: /山上/ })
+      await card.locator('strong').first().click()
+      await page.keyboard.press('2')
+      expect(await mountain.evaluate((element) => element === document.activeElement)).toBe(true)
+      await page.keyboard.press('2')
+      await page.emulateMedia({ reducedMotion: mode === 'production' ? 'reduce' : 'no-preference' })
+      await card.getByRole('button', { name: '开始抽签' }).click()
+      if (mode === 'development') {
+        await card.getByText('正在抽签').waitFor()
+        expect(await card.getByText(/^抽中/).count()).toBe(0)
+      }
+      await card.getByText(/^抽中/).waitFor()
       await verifyTheatre(page, backend, agent)
       expect(errors).toEqual([])
     } finally {

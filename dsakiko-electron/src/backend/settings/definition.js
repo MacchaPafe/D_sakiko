@@ -4,6 +4,7 @@ import {
 } from '../../shared/contracts/speech-resources.js'
 import { ConfigItem, config, isConfigObject, parseConfig } from '../core/config.js'
 import path from 'node:path'
+import { DEFAULT_SPEECH_SPEED, DEFAULT_SPEECH_PAUSE_MS } from '../../shared/contracts/speech.js'
 
 /** 模型生成参数的字段定义。连接 ID 与模型 ID 无固定默认值，需由用户显式选择。 */
 export const generationDefinition = {
@@ -52,8 +53,13 @@ const samplingDefinition = {
 /** 语音合成参数的字段定义。其中采样参数（sampling）作为单个可选配置项，提供时必须包含完整的 5 个字段。 */
 export const speechDefinition = {
   enabled: config.boolean({ default: false }),
-  speed: config.number({ default: 1, exclusiveMin: 0, max: 10 }),
-  sentencePauseMs: config.number({ default: 300, integer: true, min: 0, max: 60000 }),
+  speed: config.number({ default: DEFAULT_SPEECH_SPEED, exclusiveMin: 0, max: 10 }),
+  sentencePauseMs: config.number({
+    default: DEFAULT_SPEECH_PAUSE_MS,
+    integer: true,
+    min: 0,
+    max: 60000
+  }),
   sampling: new ConfigItem({
     optional: true,
     validate(value) {

@@ -1,8 +1,11 @@
 import { characterContext } from '../llm/context.js'
+import { spokenText } from '../speech/spoken-text.js'
 import { historicalCharacterNames, participantIssue, requireParticipants } from './participants.js'
 import { pinOutfit } from '../characters/outfit-selection.js'
 import { contextBudget, trimHistory } from '../llm/context-budget.js'
 import { extractAssetReferences } from '../resources/references.js'
+import { configureDeepSeek } from '../llm/deepseek-chat.js'
+import { lotteryDurationMs, defaultToolNames } from '../../shared/tool-options.js'
 import { generationOptions, speechOptions, presentationOptions } from '../core/validation.js'
 import {
   copy,
@@ -21,6 +24,14 @@ import { randomInt } from 'node:crypto'
 import { isReplayableDialogue, lastDialogue } from '../../shared/chat-history.js'
 
 const REPLY_LINE_PAUSE_MS = 300
+
+function speechForChat(global, chat, options) {
+  const speech = merge(global, chat.meta.settings.speech, options)
+  // 旧存档可能携带局部语速和停顿；下次生成统一取当前全局值。
+  speech.speed = global.speed
+  speech.sentencePauseMs = global.sentencePauseMs
+  return speech
+}
 
 function generationForChat(global, chat, overrides) {
   const defaults = { ...global }
@@ -610,11 +621,28 @@ export class Conversations {
       if (messages.length)
         result.push({
           turnId: turn.id,
+          reminder: turn.meta.extensions?.deepseekReminder,
+          ...(turn.input?.kind === 'scenario' &&
+          turn.meta.extensions?.deepseekReminder &&
+          !messages.some((message) => message.kind === 'abstract')
+            ? { scenario: turn.meta.scenario ?? {} }
+            : {}),
           characterContext: copy(turn.meta.characterContext ?? null),
           messages
         })
     }
     return result
+  }
+
+  /** 保存参考文件的工作目录副本，情景后续只引用用户选中的文件。 */
+  async prepareReferenceFiles(chat, scenario, owner) {
+    if (!scenario?.referenceFiles) return
+    requireValue(Array.isArray(scenario.referenceFiles), 'invalid_settings')
+    await this.prepareWorkFiles(
+      chat,
+      { source: { kind: 'manual' }, content: { attachments: scenario.referenceFiles } },
+      owner
+    )
   }
 
   /** 将手动输入中的非图片资源转成可编辑工作文件；只读预览不落盘。 */
@@ -671,13 +699,27 @@ export class Conversations {
       const generation = generationForChat(global.generation, chat, options.generation)
       if (generation.compression.thresholdTokens === 258000)
         generation.compression.thresholdTokens = 270000
-      const speech = merge(global.speech, chat.meta.settings.speech, options.speech)
+      const speech = speechForChat(global.speech, chat, options.speech)
       generationOptions(generation)
       speechOptions(speech)
       const connection = await this.settings.resolveConnection(generation, { allowBuiltin: true })
       if (connection.connectionId && connection.modelId) {
         generation.connectionId = connection.connectionId
         generation.modelId = connection.modelId
+      }
+      const profile =
+        chat.meta.settings.reasoningProfiles?.[
+          JSON.stringify([connection.connectionId, connection.modelId])
+        ]
+      if (profile && !options.generation?.reasoning) {
+        const caps = connection.capabilities
+        generation.reasoning = {
+          enabled: profile.enabled,
+          effort:
+            profile.enabled && caps?.reasoningEfforts?.includes(profile.effort)
+              ? profile.effort
+              : null
+        }
       }
       const capabilities = await this.capabilities(chat, resourceOwner)
       if (chat.mode === 'scripted-dialogue') {
@@ -732,6 +774,11 @@ export class Conversations {
       }
       const tools = await this.tools.resolve(chat.id, selection, this.access, null)
       const resolvedOptions = copy(generation)
+      if (
+        connection.capabilities?.reasoning?.status !== 'supported' &&
+        !options.generation?.reasoning?.effort
+      )
+        resolvedOptions.reasoning = { enabled: false, effort: null, modelDefault: true }
       delete resolvedOptions.connectionId
       delete resolvedOptions.modelId
       const workspaceFiles = (chat.meta.workspaceFiles ?? []).map((file) => file.name)
@@ -778,6 +825,7 @@ export class Conversations {
         toolDefinitions: definitions.filter((definition) => !excluded.has(definition.name))
       }
 
+      configureDeepSeek(request, chat)
       const inspection = await this.agent.inspectContext(request)
       return {
         request,
@@ -913,6 +961,7 @@ export class Conversations {
           worldbook: null,
           worldbookDiagnostics: [],
           extensions: {
+            deepseekReminder: prepared.request.deepseek?.reminder ?? null,
             requestFingerprint: material,
             contextPreparation: { removedTurnIds: trimmed.removedTurnIds, compressionProblem }
           }
@@ -1033,10 +1082,9 @@ export class Conversations {
         if (run.scriptDraft) {
           requireValue(result.status !== 'cancelled', 'cancelled', '剧本生成已取消。')
           await this.commitScript(state, run)
-        }
+        } else run.execution.phase = run.pending.length ? 'speech' : 'presentation'
         run.activity = 'presenting'
         await this.performance.setActivity(state.sequenceId, 'idle')
-        run.execution.phase = run.pending.length ? 'speech' : 'presentation'
         this.publish(state)
       })
       if (run.pending.length) {
@@ -1100,6 +1148,14 @@ export class Conversations {
     run.controller.signal.throwIfAborted()
     const turn = run.scriptDraft ?? state.chat.turns.find((item) => item.id === run.turnId)
     requireValue(turn, 'execution_expired')
+    if (
+      update.title &&
+      !state.chat.meta.extensions.manualTitle &&
+      state.chat.turns[0]?.id === turn.id
+    ) {
+      state.chat.title = update.title
+      state.chat.meta.extensions.generatedTitle = true
+    }
     let message = turn.messages.find((item) => item.id === update.responseId)
     if (!message) {
       message = {
@@ -1118,7 +1174,7 @@ export class Conversations {
       if (part.kind !== 'dialogue') continue
       for (const line of part.lines) {
         line.spoken = {
-          text: line.text,
+          text: spokenText(line.text),
           language: run.prepared.generation.language,
           pronunciationOverrides: []
         }
@@ -1177,8 +1233,14 @@ export class Conversations {
   }
 
   async enqueueLine(state, run, line, ref) {
-    const voiced = run.prepared.voicedCharacters.has(line.speakerId)
+    const voiced = Boolean(line.spoken.text) && run.prepared.voicedCharacters.has(line.speakerId)
+    if (state.chat.mode === 'scripted-dialogue' && !run.guides.length)
+      run.execution.phase = voiced ? 'speech' : 'presentation'
     const guide = this.guide(line, !voiced, run.guides.length > 0)
+    if (!run.guides.length) {
+      const lottery = state.chat.meta.lotteries?.find((item) => item.deliveredTurnId === run.turnId)
+      if (lottery?.revealAt) guide.revealAt = lottery.revealAt
+    }
     const [guideId] = await this.performance.appendGuides(state.sequenceId, [guide])
     run.guides.push(guideId)
     state.guides.set(line.id, { line: ref, guideId })
@@ -1308,7 +1370,12 @@ export class Conversations {
         if (audio) await this.assets.addReferences(state.resourceOwner, [audio.asset])
         line.audio = audio
         if (audioProblem) state.audioProblems.push({ line: ref, problem: audioProblem })
-        if (guideId) await this.performance.resolveGuide(guideId, { audio })
+        if (guideId) {
+          await this.performance.resolveGuide(guideId, { audio })
+          // 首句放行即可开始演出，后续台词可能还在后台合成。
+          if (state.chat.mode === 'scripted-dialogue' && run.guides[0] === guideId)
+            run.execution.phase = 'presentation'
+        }
         await this.persist(state)
       })
     } finally {
@@ -1477,8 +1544,8 @@ export class Conversations {
         run.group !== state.group
       )
         continue
-      const turn = state.chat.turns.find((item) => item.id === run.turnId)
-      const message = turn.messages.find(
+      const turn = run.scriptDraft ?? state.chat.turns.find((item) => item.id === run.turnId)
+      const message = turn?.messages.find(
         (item) => item.id === request.source.assistantMessageId && item.kind === 'assistant'
       )
       const call = message?.parts.find(
@@ -1686,7 +1753,8 @@ export class Conversations {
   }
 
   /** 抽签结果保存成功才返回；重复点击不会重抽或重复触发回复。 */
-  async drawLottery(chatId, lotteryId) {
+  async drawLottery(chatId, lotteryId, reducedMotion = false) {
+    requireValue(typeof reducedMotion === 'boolean', 'invalid_request')
     const result = await this.queue.run(chatId, async () => {
       const state = await this.state(chatId)
       requireValue(state.persistence.state !== 'failed', 'save_failed')
@@ -1696,7 +1764,9 @@ export class Conversations {
       requireValue(!item.cancelled && this.lotterySourceExists(state.chat, item), 'lottery_expired')
       const index = randomInt(item.options.length)
       item.result = { index, option: item.options[index] }
-      item.drawnAt = new Date().toISOString()
+      const now = Date.now()
+      item.drawnAt = new Date(now).toISOString()
+      item.revealAt = now + (reducedMotion ? 0 : lotteryDurationMs)
       requireValue(await this.persist(state), 'save_failed')
       return copy(item)
     })
@@ -1874,9 +1944,17 @@ export class Conversations {
       userPersona: options.userPersonaId
         ? await this.characters.acquirePersona(owner, options.userPersonaId)
         : null,
-      meta: { settings: merge(chatSettings(), options.settings), reminders: [], extensions: {} },
+      meta: {
+        settings: merge(
+          { ...chatSettings(), tools: { enabled: defaultToolNames(options.mode) } },
+          options.settings
+        ),
+        reminders: [],
+        extensions: {}
+      },
       turns: []
     }
+    await this.prepareReferenceFiles(chat, chat.meta.settings.scenario, owner)
     generationOptions(chat.meta.settings.generation)
     speechOptions(chat.meta.settings.speech)
     presentationOptions(chat.meta.settings.presentation, chat.characterIds)
@@ -2152,7 +2230,7 @@ export class Conversations {
           // 台词正文发生变化时同步更新合成文本并清除旧音频；仅修改翻译时保留原音频。
           if (line.text !== edit.text) {
             line.text = edit.text
-            line.spoken.text = edit.text
+            line.spoken.text = spokenText(edit.text)
             line.audio = null
           }
           line.translation = edit.translation
@@ -2233,12 +2311,20 @@ export class Conversations {
       requireParticipants(await this.checkParticipants(state.chat))
       const target = this.locate(state.chat, line)
       requireValue(target?.formId, 'line_missing')
+      // 老存档可能把动作描写存入朗读文本。仅在用户要求重新合成时处理。
+      target.spoken.text = spokenText(target.spoken.text)
+      if (!target.spoken.text) {
+        state.audioTokens.delete(line.lineId)
+        target.audio = null
+        await this.persist(state)
+        return
+      }
       const owner = await this.assets.createTemporaryOwner('speech-preparation')
       try {
         const capability = await this.characters.acquireCapabilities(owner, target.speakerId, {
           formId: target.formId
         })
-        const speech = merge((await this.settings.get()).speech, state.chat.meta.settings.speech)
+        const speech = speechForChat((await this.settings.get()).speech, state.chat)
         this.synthesize(state, line, { speech, capabilities: [capability] })
           .catch((error) => {
             state.problem = problem(error)
@@ -2338,6 +2424,7 @@ export class Conversations {
   async renameChat(chatId, title) {
     requireValue(typeof title === 'string')
     return this.update(chatId, (chat) => {
+      chat.meta.extensions.manualTitle = true
       chat.title = title
     })
   }
@@ -2525,7 +2612,23 @@ export class Conversations {
         await this.tools.resolve(chatId, next.tools, this.access, null)
       }
       if (changes.worldbook) fields(changes.worldbook, Object.keys(defaults.worldbook))
-      if (changes.scenario != null) fields(changes.scenario, ['situation', 'characters'])
+      if (changes.scenario != null) {
+        fields(changes.scenario, ['situation', 'characters', 'referenceFiles'])
+        if (changes.scenario.referenceFiles)
+          await this.prepareReferenceFiles(
+            chat,
+            next.scenario,
+            (await this.state(chatId)).resourceOwner
+          )
+      }
+      if (changes.reasoningProfiles)
+        for (const profile of Object.values(changes.reasoningProfiles)) {
+          requireValue(
+            typeof profile.enabled === 'boolean' &&
+              (profile.effort === null || typeof profile.effort === 'string'),
+            'invalid_settings'
+          )
+        }
       if (changes.presentation) presentationOptions(next.presentation, chat.characterIds)
       if (changes.characters) {
         fields(changes.characters, chat.characterIds)

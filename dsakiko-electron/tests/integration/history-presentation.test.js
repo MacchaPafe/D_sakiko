@@ -29,6 +29,27 @@ test('旧版内部抽签仅转换展示，结构化事件同样显示主题和�
   expect(rows[2]).toMatchObject({ kind: 'user', text: '我们来抽签吧' })
   expect(messages[0].content.text).toBe(internal)
 })
+test('揭晓前隐藏整轮结果、角色台词和摘要，揭晓后立即可见', () => {
+  const turn = snapshot([
+    {
+      kind: 'user',
+      source: { kind: 'async' },
+      results: [{ toolName: 'start_lottery', request: { title: '饮料' }, result: { option: '茶' } }]
+    },
+    {
+      kind: 'assistant',
+      parts: [{ kind: 'dialogue', lines: [{ id: 'l', speakerId: 'actor', text: '我也喜欢茶。' }] }]
+    }
+  ])
+  turn.chat.meta = { lotteries: [{ deliveredTurnId: 't', revealAt: 2000 }] }
+  expect(historyRows(turn, 1999).map((row) => row.text)).toEqual(['正在抽签'])
+  expect(lastDialogue(turn.chat, 1999)).toBeNull()
+  expect(historyRows(turn, 2000).map((row) => row.text)).toEqual([
+    '抽签结果 · 饮料：茶',
+    '我也喜欢茶。'
+  ])
+  expect(lastDialogue(turn.chat, 2000).text).toBe('我也喜欢茶。')
+})
 test('工具成对折叠且不跨台词合并，末句摘要跳过工具和思考', () => {
   const call = (id) => ({
     id,

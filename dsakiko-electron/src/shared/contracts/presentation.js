@@ -130,6 +130,7 @@
  * @property {AudioMaterial | null} audio 没有语音或尚未提供语音时为 null。
  * @property {number} [subtitleDurationMs] 字幕逐字推进时长，动作收尾期间保持全文。
  * @property {number} [motionDurationMs] 可选的动作计划时长。
+ * @property {number} [revealAt] 首句最早可开始的 Unix 毫秒时刻，用于与抽签卡片同步。
  * @property {number} [pauseBeforeMs] 与上一条已完成普通演出之间保留的最短停顿；可与等待音频就绪重叠。
  * @property {boolean} ready 是否允许开始；不携带尚未就绪的原因。
  */

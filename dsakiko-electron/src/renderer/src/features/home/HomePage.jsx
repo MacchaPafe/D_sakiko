@@ -28,6 +28,10 @@ import { resolveTheatreStageState } from './theatre-stage.js'
 import { TheatreActions, TheatreSetup } from './TheatreSetup.jsx'
 import { TheatrePositions } from './TheatrePositions.jsx'
 import { StageToolbar } from './StageToolbar.jsx'
+import { ToolMenu, ThinkingPicker, ThinkingConflict } from './ToolControls.jsx'
+import { InteractionCards } from './InteractionCards.jsx'
+import { useRevealClock } from './use-reveal-clock.js'
+import { AttachmentList, AddAttachments } from './AttachmentList.jsx'
 import { HistoryPanel } from './HistoryPanel.jsx'
 import { NoticeStack } from './NoticeStack.jsx'
 import { DownloadCenter } from './DownloadCenter.jsx'
@@ -53,6 +57,8 @@ function ChatItem({ chat, selected, flow, onDelete, roles, client, liveReply }) 
   function remove() {
     onDelete(chat)
   }
+  const now = useRevealClock(chat.lastReplyRevealAt ? [{ revealAt: chat.lastReplyRevealAt }] : [])
+  const preview = chat.lastReplyRevealAt > now ? '正在抽签' : chat.lastReply
   const theatre = chat.mode === 'scripted-dialogue'
   const actors = theatre
     ? (chat.characterIds ?? []).map(
@@ -83,13 +89,13 @@ function ChatItem({ chat, selected, flow, onDelete, roles, client, liveReply }) 
             </span>
             <span className="theatre-chat-meta">
               <span className="theatre-chat-title">{chat.title}</span>
-              <span className="theatre-chat-preview">
-                {liveReply || chat.lastReply || '尚未生成剧本'}
-              </span>
+              <span className="theatre-chat-preview">{liveReply || preview || '尚未生成剧本'}</span>
             </span>
           </>
+        ) : chat.showTitle ? (
+          <span title={preview ?? chat.title}>{chat.title}</span>
         ) : (
-          chat.lastReply || '暂无回复'
+          preview || '暂无回复'
         )}
       </button>
       <Button
@@ -402,12 +408,16 @@ function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }
     Boolean(state.snapshot?.participantIssue) ||
     !state.target.characterId
   const active = Boolean(state.snapshot?.activeTurnId)
+  const files = flow.input().attachments
+  const conflict = flow.reasoningState().conflict
   const canSend =
     configured &&
     !readonly &&
     !state.sending &&
     !active &&
-    Boolean(state.draft.trim()) &&
+    !conflict &&
+    (Boolean(state.draft.trim()) || files.items.length > 0) &&
+    files.items.every((f) => f.state === 'ready') &&
     (!state.target.chatId || state.snapshot?.admission.canGenerate)
   const textarea = useRef(null)
   useEffect(() => {
@@ -474,6 +484,8 @@ function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }
           )}
         </div>
       )}
+      <ThinkingConflict flow={flow} />
+      <AttachmentList draft={files} disabled={state.sending} />
       <div className="home-composer">
         <textarea
           ref={textarea}
@@ -487,9 +499,13 @@ function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }
         />
         <div className="home-composer-toolbar">
           <div className="home-composer-leading">
-            <Button variant="ghost" size="icon-sm" disabled aria-label="添加附件">
-              <Plus />
-            </Button>
+            <AddAttachments draft={files} disabled={readonly || state.sending} />
+            <ToolMenu
+              enabled={flow.enabledTools()}
+              onChange={(names) => flow.setTools(names)}
+              active={active}
+              disabled={readonly || state.sending}
+            />
             {status && (
               <span className="composer-status" role="status">
                 {status}
@@ -498,6 +514,7 @@ function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }
           </div>
           <div className="home-composer-actions">
             {modelControl}
+            {!readonly && <ThinkingPicker flow={flow} />}
             <VoiceInput
               client={flow.client}
               flow={flow}
@@ -642,9 +659,12 @@ export function HomePage({ client, setup, setupState }) {
       isTheatre
     )
   }, [state.target, flow, sequenceId, draftPresentation, isTheatre])
+  const now = useRevealClock(state.snapshot?.chat.meta.lotteries)
+  const revealPending =
+    state.snapshot?.chat.meta.lotteries?.some((item) => item.revealAt > now) ?? false
   useEffect(() => {
     stage.current?.setHistory(state.snapshot)
-  }, [state.snapshot])
+  }, [state.snapshot, revealPending])
   function retryStageModel() {
     stage.current?.retryModel(
       isTheatre ? theatreRoles.findIndex((item) => item.id === role?.id) : undefined
@@ -871,7 +891,9 @@ export function HomePage({ client, setup, setupState }) {
       }
     : null
   const theatreReplayTurnId = findTheatreReplayTurnId(state.snapshot)
-  const liveTheatreReply = isTheatre ? (lastDialogue(state.snapshot?.chat)?.text ?? null) : null
+  const liveTheatreReply = isTheatre
+    ? (lastDialogue(state.snapshot?.chat, now)?.text ?? null)
+    : null
   const theatreModelControl = theatreChat
     ? buildModelControl(state, flow, () => openSettings())
     : null
@@ -1137,6 +1159,8 @@ export function HomePage({ client, setup, setupState }) {
               replayingTurn={Boolean(currentReplay && !currentReplay.error)}
               onToggleReplay={toggleStageReplay}
             />
+            <InteractionCards state={state} client={client} now={now} />
+            {theatreChat && <ThinkingConflict flow={flow} />}
             {theatreChat && (
               <TheatreActions
                 snapshot={state.snapshot}
@@ -1145,8 +1169,17 @@ export function HomePage({ client, setup, setupState }) {
                 confirming={replaceTarget === state.target}
                 canReplay={Boolean(theatreReplayTurnId)}
                 replaying={Boolean(currentReplay && !currentReplay.error)}
-                canGenerate={hasConnection(state) && state.snapshot.admission.canGenerate}
-                modelControl={theatreModelControl}
+                canGenerate={
+                  hasConnection(state) &&
+                  state.snapshot.admission.canGenerate &&
+                  !flow.reasoningState().conflict
+                }
+                modelControl={
+                  <>
+                    {theatreModelControl}
+                    <ThinkingPicker flow={flow} />
+                  </>
+                }
                 cancel={() => setReplaceTarget(null)}
                 configure={() => setupTheatre(theatreChat)}
                 replay={() => playHistoryTurn(theatreReplayTurnId)}
@@ -1170,6 +1203,8 @@ export function HomePage({ client, setup, setupState }) {
               key={state.target.chatId ?? 'blank'}
               snapshot={state.snapshot}
               characters={state.characters}
+              now={now}
+              client={client}
               onClose={hideHistory}
               onPlayAudio={playHistoryAudio}
               onPlayTurn={playHistoryTurn}

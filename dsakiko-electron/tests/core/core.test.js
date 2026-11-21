@@ -647,6 +647,61 @@ test('自有连接存在时禁止使用 UP，删除最后一个自有连接后�
   ).toMatchObject({ connectionId: 'builtin-up', modelId: 'test' })
 })
 
+test('小剧场首句就绪即进入演出，纯动作台词无声，后续合成使用全局节奏', async () => {
+  const { backend, agent } = await fixture()
+  const partner = await backend.characters.get('sakiko')
+  partner.id = 'tomori'
+  partner.name = '灯'
+  partner.revision = 0
+  await backend.characters.save(partner)
+  agent.run.mockImplementation(async (request, observer) => {
+    const part = response(request.turnId)
+    const first = part.appendParts[0].lines[0]
+    first.text = '（小声【低头】）『我在』'
+    part.appendParts[0].lines.push(
+      { ...first, id: 'action', text: '[抬头]……' },
+      { ...first, id: 'second', speakerId: 'tomori', text: '我想说（等一下' }
+    )
+    await observer.onResponse(part)
+    return { status: 'completed' }
+  })
+  const chats = backend.conversations
+  const id = await chats.createChat({
+    title: '排练',
+    mode: 'scripted-dialogue',
+    characterIds: ['sakiko', 'tomori'],
+    settings: { speech: { enabled: true, speed: 1.2, sentencePauseMs: 300 } }
+  })
+  const gates = [Promise.withResolvers(), Promise.withResolvers()]
+  backend.characters.resolveVoice = async () => ({ voice: {} })
+  const submit = vi.fn(async ({ text }) => text)
+  backend.speech.submit = submit
+  backend.speech.waitForResult = (task) => gates[Number(task !== '我在')].promise
+  const phase = async () => (await chats.getSnapshot(id)).executions.at(-1)?.phase
+  try {
+    await chats.generateScenario(id, { requestId: 'stage-phases' })
+    await until(async () => submit.mock.calls.length === 2 && (await phase()) === 'speech')
+    expect(submit.mock.calls.map(([request]) => request.text).sort()).toEqual(
+      ['我在', '我想说（等一下'].sort()
+    )
+    for (const [request] of submit.mock.calls)
+      expect(request).toMatchObject({ speed: 0.88, sentencePauseMs: 500 })
+    gates[0].resolve({ status: 'cancelled' })
+    await until(async () => (await phase()) === 'presentation')
+    const snapshot = await chats.getSnapshot(id)
+    expect(snapshot.activeTurnId).toBeTruthy()
+    const lines = snapshot.chat.turns[0].messages
+      .flatMap((m) => m.parts ?? [])
+      .flatMap((p) => p.lines ?? [])
+    expect(lines[1]).toMatchObject({ text: '[抬头]……', spoken: { text: '' }, audio: null })
+    expect(snapshot.audioProblems).toEqual([])
+  } finally {
+    for (const gate of gates) gate.resolve({ status: 'cancelled' })
+  }
+  await until(async () => !(await chats.getSnapshot(id)).activeTurnId)
+  expect((await chats.getReplayMaterials(id, { kind: 'script' })).guides).toHaveLength(3)
+})
+
 test('小剧场允许空情境；新剧本提交前失败或取消均保留已保存的整场', async () => {
   const { backend, agent } = await fixture()
   const partner = await backend.characters.get('sakiko')

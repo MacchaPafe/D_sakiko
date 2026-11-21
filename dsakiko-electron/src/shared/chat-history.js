@@ -12,8 +12,13 @@ export function isReplayableDialogue(line) {
  * @param {import('./contracts/conversation.js').Chat|null} chat 聊天存档。
  * @returns {{line: import('./contracts/conversation.js').DialogueLine, ref: import('./contracts/conversation.js').LineRef}|null} 最后一条非空角色台词及其存档位置。
  */
-export function lastDialogueEntry(chat) {
-  for (const turn of [...(chat?.turns ?? [])].reverse())
+export function lastDialogueEntry(chat, now = Infinity) {
+  const hidden = new Set(
+    (chat?.meta?.lotteries ?? [])
+      .filter((item) => item.revealAt > now)
+      .map((item) => item.deliveredTurnId)
+  )
+  for (const turn of [...(chat?.turns ?? [])].reverse().filter((turn) => !hidden.has(turn.id)))
     for (const message of [...turn.messages].reverse())
       if (message.kind === 'assistant')
         for (const part of [...(message.parts ?? [])].reverse())
@@ -28,6 +33,6 @@ export function lastDialogueEntry(chat) {
 }
 
 /** @param {import('./contracts/conversation.js').Chat|null} chat 聊天存档。 @returns {import('./contracts/conversation.js').DialogueLine|null} 最后一条非空角色台词。 */
-export function lastDialogue(chat) {
-  return lastDialogueEntry(chat)?.line ?? null
+export function lastDialogue(chat, now = Infinity) {
+  return lastDialogueEntry(chat, now)?.line ?? null
 }

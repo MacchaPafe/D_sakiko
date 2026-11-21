@@ -14,6 +14,8 @@ export function FloatingDialog({ label, className = '', onClose, children }) {
   }, [])
 
   function cancel(event) {
+    // 文件选择器取消时，input 的 cancel 事件也会冒泡到外层浮窗。
+    if (event.target !== event.currentTarget) return
     event.preventDefault()
     onClose()
   }

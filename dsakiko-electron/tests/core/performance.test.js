@@ -51,6 +51,25 @@ function timedFixture({ assets = null, repeatLongDialogueMotion } = {}) {
   return { planner, solo }
 }
 
+test('抽签首句从揭晓时刻才开始，减少动态效果时立即开始', async () => {
+  vi.useFakeTimers()
+  const planner = new Performance({ now: () => Date.now() - 1700000000000 })
+  try {
+    for (const delay of [2000, 0]) {
+      const id = await planner.createSequence(scene)
+      const [line] = await planner.appendGuides(id, [{ ...guide, revealAt: Date.now() + delay }])
+      if (delay) {
+        await vi.advanceTimersByTimeAsync(delay - 1)
+        expect((await planner.getProgress(id)).current).toBeNull()
+        await vi.advanceTimersByTimeAsync(1)
+      }
+      expect((await planner.getProgress(id)).current.guideId).toBe(line)
+    }
+  } finally {
+    await planner.close()
+  }
+})
+
 test('单人台词按后端动作时间表结算，换装只影响后续台词', async () => {
   vi.useFakeTimers()
   let ownerCount = 0

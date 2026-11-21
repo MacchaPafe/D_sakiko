@@ -2,6 +2,9 @@ import { parameters, syncTool, textParameter } from './definition.js'
 import { fetchJson } from './network.js'
 import { requireValue } from '../core/support.js'
 
+// 迁移自 Python 端内置默认密钥，开箱即用；仍优先采用私有凭据或环境变量覆盖。
+const DEFAULT_BOCHA_API_KEY = 'sk-28078debe6d74828a57e63164fe0f23e'
+
 /**
  * 搜索厂商由后端配置选择，模型不接触凭据或任意接口地址。
  * @param {import('../settings/interface.js').Settings} settings 全局配置与私有凭据。
@@ -37,8 +40,10 @@ export function webSearchTool(settings, transport) {
         'search_provider_unavailable',
         '尚未实现该搜索厂商。'
       )
-      const secret = await settings.toolCredential('bocha')
-      requireValue(secret, 'search_not_configured', '请先配置 Bocha 搜索密钥。')
+      const secret =
+        (await settings.toolCredential('bocha')).trim() ||
+        process.env.BOCHA_API_KEY?.trim() ||
+        DEFAULT_BOCHA_API_KEY
       const count = Math.min(input.top_k ?? options.maxResults, options.maxResults)
       const data = await fetchJson(
         transport,

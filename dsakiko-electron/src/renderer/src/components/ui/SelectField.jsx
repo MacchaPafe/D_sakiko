@@ -5,7 +5,7 @@ import './select-field.css'
 
 /** @typedef {{value: string, label: string, group?: string, keywords?: string[], disabled?: boolean}} SelectOption 可按分组和别名检索的选项。 */
 /** @typedef {{label: string, onAction: () => void}} SelectFooterAction 下拉弹层底部固定操作入口。 */
-/** @typedef {{options: SelectOption[], value: string, onChange: (value: string) => void, placeholder?: string, label?: string, disabled?: boolean, footer?: SelectFooterAction}} SelectFieldProps 选项和已确认的值。 */
+/** @typedef {{options: SelectOption[], value: string, onChange: (value: string) => void, placeholder?: string, label?: string, disabled?: boolean, footer?: SelectFooterAction, customPopover?: boolean, formatSelected?: (option: SelectOption) => string}} SelectFieldProps 选项和已确认的值。 */
 
 function normalize(text) {
   return text.normalize('NFKC').trim().toLowerCase()
@@ -29,7 +29,8 @@ function SearchSelect({
   label,
   disabled,
   searchable = true,
-  footer
+  footer,
+  formatSelected
 }) {
   const id = useId()
   const input = useRef(null)
@@ -160,7 +161,7 @@ function SearchSelect({
     )
   }
 
-  let inputValue = selected?.label ?? ''
+  let inputValue = selected ? (formatSelected ? formatSelected(selected) : selected.label) : ''
   if (searchable && open) inputValue = query
 
   let inputPlaceholder = placeholder
@@ -229,9 +230,19 @@ function SearchSelect({
  * @param {SelectFieldProps} props 下拉选项及选择回调。
  * @returns {import('react').ReactElement} 长列表或带底部操作入口时使用自定义弹层，短列表使用原生选择框。
  */
-export function SelectField({ options, value, onChange, placeholder, label, disabled, footer }) {
+export function SelectField({
+  options,
+  value,
+  onChange,
+  placeholder,
+  label,
+  disabled,
+  footer,
+  customPopover = false,
+  formatSelected
+}) {
   const searchable = options.length > 10
-  if (searchable || footer)
+  if (searchable || footer || customPopover)
     return (
       <SearchSelect
         options={options}
@@ -242,6 +253,7 @@ export function SelectField({ options, value, onChange, placeholder, label, disa
         disabled={disabled}
         searchable={searchable}
         footer={footer}
+        formatSelected={formatSelected}
       />
     )
 

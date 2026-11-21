@@ -61,6 +61,23 @@ test('默认值是独立快照，不共享嵌套对象，也不猜测连接和�
   expect(item.defaultValue.enabled).toBe(true)
 })
 
+test('旧的默认语速和停顿只迁移一次，显式设回旧数值可以持久保存', async () => {
+  const { settings } = await fixture()
+  const legacy = { enabled: false, speed: 1, sentencePauseMs: 300 }
+  await writeJson(settings.file, {
+    settings: { revision: 1, speech: legacy },
+    connections: {},
+    secrets: {}
+  })
+  expect((await settings.get()).speech).toEqual({
+    enabled: false,
+    speed: 0.88,
+    sentencePauseMs: 500
+  })
+  await settings.update({ speech: { speed: 1, sentencePauseMs: 300 } })
+  expect((await settings.get()).speech).toEqual(legacy)
+})
+
 test('set 立即保存嵌套配置，update 批量保存一次并保留未提供的字段', async () => {
   const { settings, roots, assets } = await fixture()
   const notifications = []
@@ -177,6 +194,55 @@ test('相同预期版本只能提交一次，冲突之后队列仍可继续使�
   expect((await settings.set('speech.enabled', true, { expectedRevision: 1 })).revision).toBe(2)
 })
 
+test('思考强度优先取官方目录，重启使用缓存，代理连接与手动覆盖各自独立', async () => {
+  const { assets, roots } = await fixture()
+  const transport = vi.fn(async () =>
+    Response.json({
+      data: [
+        { id: 'deepseek-flash', effort: { supported_levels: ['low', 'max'], default_level: 'low' } }
+      ]
+    })
+  )
+  const settings = new Settings({ directory: roots.appDataRoot, assets, transport })
+  const model = { id: 'deepseek-flash', declared: {}, overrides: {} }
+  const official = await settings.saveConnection(
+    {
+      id: 'official',
+      revision: 0,
+      name: '官方',
+      provider: 'deepseek',
+      protocol: 'chat-completions',
+      baseUrl: 'https://api.deepseek.com/v1',
+      models: [model]
+    },
+    { kind: 'replace', secret: 'fixture-secret' }
+  )
+  await settings.saveConnection(
+    { ...official, id: 'proxy', revision: 0, baseUrl: 'https://fixture.invalid/v1' },
+    { kind: 'replace', secret: 'other-secret' }
+  )
+  const list = await settings.listReasoningModels(true)
+  expect(transport).toHaveBeenCalledTimes(1)
+  expect(list.find((entry) => entry.connectionId === 'official').capabilities).toMatchObject({
+    reasoningEfforts: ['low', 'max'],
+    reasoningDefault: 'low'
+  })
+  expect(
+    list.find((entry) => entry.connectionId === 'proxy').capabilities.reasoningEfforts
+  ).toBeUndefined()
+  const restarted = new Settings({ directory: roots.appDataRoot, assets, transport })
+  const cached = await restarted.resolveConnection({ connectionId: 'official', modelId: model.id })
+  expect(cached.capabilities.reasoningEfforts).toEqual(['low', 'max'])
+  await restarted.saveConnection(
+    { ...official, models: [{ ...model, overrides: { reasoningEfforts: ['low'] } }] },
+    { kind: 'keep' }
+  )
+  expect(
+    (await restarted.listReasoningModels(true)).find((m) => m.connectionId === 'official')
+      .capabilities.reasoningEfforts
+  ).toEqual(['low'])
+  expect(transport).toHaveBeenCalledTimes(1)
+})
 test('设置更新与连接写入共用队列，保留连接和私有凭据', async () => {
   const { settings } = await fixture()
   await Promise.all([

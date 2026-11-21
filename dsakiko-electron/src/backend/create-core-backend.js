@@ -104,7 +104,7 @@ export async function createCoreBackend({
     directory: path.join(cacheRoot, 'model-catalog'),
     fetch: transport
   })
-  const settings = new Settings({ directory: appDataRoot, assets, modelCatalog })
+  const settings = new Settings({ directory: appDataRoot, assets, modelCatalog, transport })
   const speechResources = new SpeechResources({ assets, settings })
   // mapping 可直接引用 Python 的 performance.json（如 motions.nod = "点头赞同"）。
   // 模型入口提供真实资源，标注只补充语义；角色能力与演出共用同一个解析器。

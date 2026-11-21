@@ -3,6 +3,9 @@
 
 [当前情境或话题]
 {{ scenario.situation }}
+{% if scenario.referenceFiles | length %}
+本场指定的参考文件：{% for file in scenario.referenceFiles %}{{ file.name | dump }} {% endfor %}
+{% endif %}
 
 {% for character in characters %}
 [{{ character.name }}的说话风格与互动要求]

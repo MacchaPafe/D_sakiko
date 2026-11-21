@@ -12,6 +12,8 @@
  * @property {CapabilityDeclaration} fileInput 一般文件输入支持，与图片区分。
  * @property {CapabilityDeclaration} fileUpload 上传接口支持，不能从输入能力或 supportedUrls 推测。
  * @property {CapabilityDeclaration} reasoning 推理能力。
+ * @property {boolean} [reasoningToggle] 此模型可显式关闭思考。
+ * @property {string} [reasoningDefault] 省略强度时的官方默认档位。
  * @property {string[]} reasoningEfforts 支持的强度枚举。
  * @property {boolean} [requiresStablePrefixForThinking] Claude 官方规则下的显式前缀绑定能力；兼容服务不据此自动启用官方策略。
  * @property {number | null} contextTokens 已知上下文上限。

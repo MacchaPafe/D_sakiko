@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowUpRight, Cable, GripVertical, Plus, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Input } from '../../components/ui/fields.jsx'
@@ -115,6 +115,19 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
       current.map((row, position) => (position === index ? { ...row, model: { id } } : row))
     )
     setResult(null)
+  }
+  function overrideModel(index, patch) {
+    setRows((current) =>
+      current.map((row, i) => {
+        if (i !== index) return row
+        const overrides = { ...row.model.overrides }
+        if (patch) Object.assign(overrides, patch)
+        else
+          for (const key of ['reasoning', 'reasoningEfforts', 'reasoningToggle'])
+            delete overrides[key]
+        return { ...row, model: { ...row.model, overrides } }
+      })
+    )
   }
   function addModel() {
     setRows((current) => [...current, { key: crypto.randomUUID(), model: { id: '' } }])
@@ -340,6 +353,12 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
                   onChange={(event) => editModel(index, event.target.value)}
                 />
               )}
+              {!isChatGPT && (
+                <ReasoningOverrides
+                  model={model}
+                  onChange={(patch) => overrideModel(index, patch)}
+                />
+              )}
               {rows.length > 1 && (
                 <Button
                   type="button"
@@ -395,6 +414,59 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
   )
 }
 
+function ReasoningOverrides({ model, onChange }) {
+  const caps = model.overrides ?? {}
+  const status = caps.reasoning?.status ?? 'auto'
+  function configure(value) {
+    if (value === 'auto') onChange(null)
+    else
+      onChange({
+        reasoning: { status: value, source: 'manual-override' },
+        reasoningEfforts: [],
+        reasoningToggle: false
+      })
+  }
+  function toggleLevel(level) {
+    const levels = new Set(caps.reasoningEfforts ?? [])
+    if (levels.has(level)) levels.delete(level)
+    else levels.add(level)
+    onChange({ reasoningEfforts: [...levels] })
+  }
+  return (
+    <details className="model-reasoning-settings">
+      <summary>思考能力</summary>
+      <select aria-label="思考能力声明" value={status} onChange={(e) => configure(e.target.value)}>
+        <option value="auto">自动识别</option>
+        <option value="supported">支持思考</option>
+        <option value="unsupported">不支持思考</option>
+      </select>
+      {status === 'supported' && (
+        <div>
+          <label>
+            <input
+              type="checkbox"
+              checked={Boolean(caps.reasoningToggle)}
+              onChange={(e) => onChange({ reasoningToggle: e.target.checked })}
+            />
+            支持关闭思考
+          </label>
+          <div>支持的强度</div>
+          {['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => (
+            <label key={level}>
+              <input
+                type="checkbox"
+                checked={Boolean(caps.reasoningEfforts?.includes(level))}
+                onChange={() => toggleLevel(level)}
+              />
+              {level}
+            </label>
+          ))}
+        </div>
+      )}
+    </details>
+  )
+}
+
 function sameOrder(left, right) {
   return left.length === right.length && left.every((id, index) => id === right[index])
 }
@@ -423,30 +495,29 @@ function reorderByStep(ids, id, step) {
   return next
 }
 
-function reorderByPointer(stack, order, activeId, clientY) {
-  if (!stack) return order
-  const cards = [...stack.querySelectorAll('[data-connection-id]')]
-  const currentIndex = order.indexOf(activeId)
-  if (currentIndex < 0) return order
-  let targetIndex = currentIndex
-  for (const card of cards) {
-    const cardId = card.dataset.connectionId
-    if (!cardId || cardId === activeId) continue
-    const cardIndex = order.indexOf(cardId)
-    if (cardIndex < 0) continue
-    const rect = card.getBoundingClientRect()
-    const midpoint = rect.top + rect.height / 2
-    if (cardIndex < currentIndex && clientY < midpoint) {
-      targetIndex = Math.min(targetIndex, cardIndex)
-    } else if (cardIndex > currentIndex && clientY > midpoint) {
-      targetIndex = Math.max(targetIndex, cardIndex)
-    }
+function dragPreview(active, pointerY) {
+  // 使用按下时的布局判定插入位置，避免让位动画改变命中区域而来回跳动。
+  const others = active.rows.filter((row) => row.id !== active.row.id)
+  const index = others.filter((row) => pointerY > row.top + row.height / 2).length
+  others.splice(index, 0, active.row)
+  let top = 0
+  let slotTop = 0
+  const offsets = new Map()
+  for (const row of others) {
+    if (row === active.row) slotTop = top
+    offsets.set(row.id, top - row.top)
+    top += row.height + active.gap
   }
-  if (targetIndex === currentIndex) return order
-  const next = [...order]
-  const [moved] = next.splice(currentIndex, 1)
-  next.splice(targetIndex, 0, moved)
-  return next
+  const bottom = top - active.gap - active.row.height
+  const liftedTop = Math.max(0, Math.min(bottom, active.row.top + pointerY - active.startY))
+  offsets.set(active.row.id, liftedTop - active.row.top)
+  return {
+    id: active.row.id,
+    order: others.map((row) => row.id),
+    offsets,
+    slotTop,
+    height: active.row.height
+  }
 }
 
 /** @param {object} props 连接快照与刷新入口。 @returns {import('react').ReactElement} 管理连接及同层编辑视图。 */
@@ -459,9 +530,28 @@ export function Connections({ client, connections, refresh }) {
   const [error, setError] = useState(null)
   const stackRef = useRef(null)
   const dragRef = useRef(null)
+  const settleFrom = useRef(null)
   const handleRefs = useRef(new Map())
   const refocusIdRef = useRef(null)
-  const displayConnections = orderConnections(connections, dragState?.order ?? pendingOrder)
+  const displayConnections = orderConnections(connections, pendingOrder)
+
+  useEffect(() => () => dragRef.current?.listeners.abort(), [])
+
+  useLayoutEffect(() => {
+    const previous = settleFrom.current
+    if (!previous) return
+    settleFrom.current = null
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    for (const card of stackRef.current?.querySelectorAll('[data-connection-id]') ?? []) {
+      const offset = previous.get(card.dataset.connectionId) - card.getBoundingClientRect().top
+      if (Number.isFinite(offset) && Math.abs(offset) > 0.5) {
+        card.animate([{ transform: 'translateY(' + offset + 'px)' }, { transform: 'none' }], {
+          duration: 150,
+          easing: 'ease-out'
+        })
+      }
+    }
+  }, [dragState, pendingOrder])
 
   useLayoutEffect(() => {
     const id = refocusIdRef.current
@@ -510,42 +600,98 @@ export function Connections({ client, connections, refresh }) {
   }
   function startDrag(event, connectionId) {
     if (event.button !== 0 || pending || dragRef.current) return
-    const initialOrder = displayConnections.map((item) => item.id)
-    if (initialOrder.length < 2) return
-    event.currentTarget.setPointerCapture(event.pointerId)
-    setRemoving(null)
-    dragRef.current = {
+    const stack = stackRef.current
+    const cards = [...stack.querySelectorAll('[data-connection-id]')]
+    if (cards.length < 2) return
+    const stackTop = stack.getBoundingClientRect().top
+    const rows = cards.map((card) => {
+      for (const animation of card.getAnimations()) animation.cancel()
+      const rect = card.getBoundingClientRect()
+      return { id: card.dataset.connectionId, top: rect.top - stackTop, height: rect.height }
+    })
+    const handle = event.currentTarget
+    const active = {
       pointerId: event.pointerId,
-      id: connectionId,
-      initialOrder,
-      currentOrder: initialOrder
+      row: rows.find((row) => row.id === connectionId),
+      rows,
+      gap: parseFloat(getComputedStyle(stack).rowGap),
+      startY: event.clientY - stackTop,
+      clientY: event.clientY,
+      preview: null,
+      listeners: new AbortController(),
+      handle
     }
-    setDragState({ id: connectionId, order: initialOrder })
+    dragRef.current = active
+    handle.setPointerCapture(event.pointerId)
+    const options = { signal: active.listeners.signal, capture: true }
+    window.addEventListener('blur', cancelDrag, { signal: active.listeners.signal })
+    window.addEventListener(
+      'keydown',
+      (key) => {
+        if (key.key !== 'Escape') return
+        key.preventDefault()
+        key.stopPropagation()
+        cancelDrag()
+      },
+      options
+    )
+    window.addEventListener(
+      'scroll',
+      () => {
+        if (active.preview) previewAt(active, active.clientY)
+      },
+      options
+    )
+  }
+  function previewAt(active, clientY) {
+    active.clientY = clientY
+    const y = clientY - stackRef.current.getBoundingClientRect().top
+    if (!active.preview && Math.abs(y - active.startY) < 5) return
+    active.preview = dragPreview(active, y)
+    setDragState(active.preview)
   }
   function moveDrag(event) {
     const active = dragRef.current
     if (!active || active.pointerId !== event.pointerId) return
-    const nextOrder = reorderByPointer(
-      stackRef.current,
-      active.currentOrder,
-      active.id,
-      event.clientY
-    )
-    if (sameOrder(active.currentOrder, nextOrder)) return
-    active.currentOrder = nextOrder
-    setDragState({ id: active.id, order: nextOrder })
+    previewAt(active, event.clientY)
   }
-  function endDrag(event) {
+  function finishDrag() {
+    const active = dragRef.current
+    if (!active) return
+    if (active.preview) {
+      const cards = [...stackRef.current.querySelectorAll('[data-connection-id]')]
+      settleFrom.current = new Map(
+        cards.map((card) => [card.dataset.connectionId, card.getBoundingClientRect().top])
+      )
+    }
+    dragRef.current = null
+    active.listeners.abort()
+    if (active.handle.hasPointerCapture(active.pointerId))
+      active.handle.releasePointerCapture(active.pointerId)
+    setDragState(null)
+  }
+  function cancelDrag(event) {
+    if (event?.pointerId !== undefined && event.pointerId !== dragRef.current?.pointerId) return
+    finishDrag()
+  }
+  function dropDrag(event) {
     const active = dragRef.current
     if (!active || active.pointerId !== event.pointerId) return
-    dragRef.current = null
-    setDragState(null)
-    if (!sameOrder(active.initialOrder, active.currentOrder)) {
-      void commitOrder(active.currentOrder)
-    }
+    const order =
+      active.preview &&
+      dragPreview(active, event.clientY - stackRef.current.getBoundingClientRect().top).order
+    finishDrag()
+    if (
+      order &&
+      sameOrder(
+        active.rows.map((row) => row.id),
+        connections.map((item) => item.id)
+      )
+    )
+      void commitOrder(order)
   }
   function handleDragKeyDown(event, connectionId) {
-    if (pending || dragState) return
+    if (pending || dragRef.current) return
     let step = 0
     if (event.key === 'ArrowUp') step = -1
     else if (event.key === 'ArrowDown') step = 1
@@ -591,7 +737,18 @@ export function Connections({ client, connections, refresh }) {
           </div>
         </div>
       )}
-      <div ref={stackRef} className="settings-stack" data-dragging={dragState ? 'true' : undefined}>
+      <div
+        ref={stackRef}
+        className="settings-stack settings-connection-stack"
+        data-dragging={dragState ? 'true' : undefined}
+      >
+        {dragState && (
+          <div
+            aria-hidden="true"
+            className="settings-drop-slot"
+            style={{ top: dragState.slotTop, height: dragState.height }}
+          />
+        )}
         {displayConnections.map((item) => {
           const providerDetailName =
             providerPresets.find((preset) => preset.id === item.provider)?.name ?? item.provider
@@ -602,6 +759,11 @@ export function Connections({ client, connections, refresh }) {
               key={item.id}
               data-connection-id={item.id}
               data-dragging={dragState?.id === item.id ? 'true' : undefined}
+              style={
+                dragState
+                  ? { transform: 'translateY(' + (dragState.offsets.get(item.id) ?? 0) + 'px)' }
+                  : undefined
+              }
             >
               <div className="settings-card-title">
                 {displayConnections.length > 1 && (
@@ -614,8 +776,9 @@ export function Connections({ client, connections, refresh }) {
                     aria-disabled={pending || undefined}
                     onPointerDown={(event) => startDrag(event, item.id)}
                     onPointerMove={moveDrag}
-                    onPointerUp={endDrag}
-                    onLostPointerCapture={endDrag}
+                    onPointerUp={dropDrag}
+                    onPointerCancel={cancelDrag}
+                    onLostPointerCapture={cancelDrag}
                     onKeyDown={(event) => handleDragKeyDown(event, item.id)}
                   >
                     <GripVertical size={16} aria-hidden="true" />
