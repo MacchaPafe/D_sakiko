@@ -1,11 +1,15 @@
-import { useRef, useState } from 'react'
-import { ArrowLeft, ArrowUpRight, Cable, Plus, X } from 'lucide-react'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { ArrowLeft, ArrowUpRight, Cable, GripVertical, Plus, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Input } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { desktopHost } from '../../host/desktop.js'
 import { providerPresets } from '../../../../shared/contracts/llm-providers.js'
 
+import { ChatGPTAccountFields, VertexAccountFields } from './ManagedAccountFields.jsx'
+
+const managedProviders = ['vertex', 'chatgpt']
+const emptyVertex = { project: '', email: '', location: 'global' }
 const providerOptions = providerPresets.map((item) => ({
   value: item.id,
   label: item.name,
@@ -39,6 +43,11 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
   const [rows, setRows] = useState(() => modelRows(draft))
   const [key, setKey] = useState('')
   const [clearKey, setClearKey] = useState(false)
+  const [vertex, setVertex] = useState(connection?.vertex ?? emptyVertex)
+  const [ticket, setTicket] = useState(null)
+  const [account, setAccount] = useState(null)
+  const isVertex = draft.provider === 'vertex'
+  const isChatGPT = draft.provider === 'chatgpt'
   const [testIndex, setTestIndex] = useState(0)
   const [pending, setPending] = useState(null)
   const [result, setResult] = useState(null)
@@ -51,7 +60,15 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
       connection.provider !== draft.provider)
   const models = rows.map(({ model }) => model.id.trim())
   const needsKey = Boolean(preset?.baseUrl?.startsWith('https:'))
-  const keyReady = !needsKey || key.trim() || connection?.credentialConfigured
+  let keyReady = !needsKey || key.trim() || connection?.credentialConfigured
+  if (isVertex)
+    keyReady =
+      vertex.project &&
+      vertex.email &&
+      vertex.location &&
+      (ticket || key.trim() || connection?.credentialConfigured)
+  if (isChatGPT)
+    keyReady = account?.connected && models.every((id) => account.models.some((m) => m.id === id))
   const complete = Boolean(
     (fixed || draft.baseUrl.trim()) && models.length && models.every(Boolean) && keyReady
   )
@@ -62,6 +79,15 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
   }
   function selectProvider(id) {
     const provider = providerPresets.find((item) => item.id === id)
+    if (managedProviders.includes(id) || managedProviders.includes(draft.provider)) {
+      setRows(modelRows({ models: [{ id: provider.exampleModel ?? '' }] }))
+      setTestIndex(0)
+      setAccount(null)
+      setTicket(null)
+      setVertex(emptyVertex)
+      setKey('')
+      setClearKey(false)
+    }
     setDraft((current) => ({
       ...current,
       provider: provider.id,
@@ -72,6 +98,8 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
     setResult(null)
     if (
       !connection &&
+      !managedProviders.includes(id) &&
+      !managedProviders.includes(draft.provider) &&
       rows.length === 1 &&
       (!rows[0].model.id || rows[0].model.id === preset.exampleModel)
     ) {
@@ -97,7 +125,28 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
     setTestIndex(0)
     setResult(null)
   }
+  function importVertex(imported) {
+    setVertex(imported.vertex)
+    setTicket(imported.ticket)
+    setKey('')
+    setResult(null)
+  }
+  function updateSecret(value) {
+    setKey(value)
+    if (value) setTicket(null)
+    setResult(null)
+  }
+  function selectAccount(next) {
+    if (account && next?.id !== account.id) {
+      setRows(modelRows({ models: [] }))
+      setTestIndex(0)
+    }
+    setAccount(next)
+    setResult(null)
+  }
   function credentials() {
+    if (isChatGPT) return { kind: 'keep' }
+    if (isVertex && ticket) return { kind: 'vertex-import', ticket }
     if (clearKey) return { kind: 'remove' }
     if (key.trim()) return { kind: 'replace', secret: key.trim() }
     return { kind: 'keep' }
@@ -105,6 +154,8 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
   function definition() {
     return {
       ...draft,
+      ...(isVertex ? { vertex } : {}),
+      ...(isChatGPT ? { accountId: account?.id } : {}),
       name: draft.name.trim() || preset.name,
       baseUrl: fixed ? preset.baseUrl : draft.baseUrl.trim(),
       models: rows.map(({ model }, index) => ({
@@ -182,8 +233,15 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
               label="服务商"
               value={draft.provider}
               onChange={selectProvider}
-              options={providerOptions}
-              disabled={Boolean(pending)}
+              options={
+                connection && !managedProviders.includes(connection.provider)
+                  ? providerOptions.filter((p) => !managedProviders.includes(p.value))
+                  : providerOptions
+              }
+              disabled={
+                Boolean(pending) ||
+                Boolean(connection && managedProviders.includes(connection.provider))
+              }
             />
           </label>
           {!fixed && (
@@ -198,52 +256,90 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
               />
             </label>
           )}
-          <label>
-            API Key
-            <Input
-              type="password"
-              autoComplete="off"
-              value={key}
-              placeholder={
-                connection?.credentialConfigured && !clearKey
-                  ? '已配置，留空可保留'
-                  : '输入 API Key'
-              }
-              onChange={(event) => {
-                setKey(event.target.value)
-                setResult(null)
-              }}
+          {isVertex && (
+            <VertexAccountFields
+              vertex={vertex}
+              onChange={setVertex}
+              secret={key}
+              onSecret={updateSecret}
+              onImport={importVertex}
+              onOpenGuide={openKeyPage}
+              hasKey={Boolean(ticket || connection?.credentialConfigured)}
+              onError={(message) => setResult({ ok: false, message })}
             />
-          </label>
-          <div className="settings-row-actions">
-            {preset.keyPage && (
-              <Button type="button" size="sm" variant="ghost" onClick={openKeyPage}>
-                获取 API Key <ArrowUpRight />
-              </Button>
-            )}
-            {connection?.credentialConfigured && (
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={clearKey}
-                  onChange={(event) => setClearKey(event.target.checked)}
+          )}
+          {isChatGPT && (
+            <ChatGPTAccountFields
+              boundId={connection?.accountId}
+              account={account}
+              onAccount={selectAccount}
+            />
+          )}
+          {!isVertex && !isChatGPT && (
+            <>
+              <label>
+                API Key
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={key}
+                  placeholder={
+                    connection?.credentialConfigured && !clearKey
+                      ? '已配置，留空可保留'
+                      : '输入 API Key'
+                  }
+                  onChange={(event) => {
+                    setKey(event.target.value)
+                    setResult(null)
+                  }}
                 />
-                清除已保存的 Key
               </label>
-            )}
-          </div>
+              <div className="settings-row-actions">
+                {preset.keyPage && (
+                  <Button type="button" size="sm" variant="ghost" onClick={openKeyPage}>
+                    获取 API Key <ArrowUpRight />
+                  </Button>
+                )}
+                {connection?.credentialConfigured && (
+                  <label className="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={clearKey}
+                      onChange={(event) => setClearKey(event.target.checked)}
+                    />
+                    清除已保存的 Key
+                  </label>
+                )}
+              </div>
+            </>
+          )}
         </fieldset>
         <fieldset disabled={Boolean(pending)}>
           <legend>模型</legend>
           {rows.map(({ key, model }, index) => (
             <div className="settings-model-field" key={key}>
-              <Input
-                required
-                aria-label={'模型 ID ' + (index + 1)}
-                placeholder="模型 ID"
-                value={model.id}
-                onChange={(event) => editModel(index, event.target.value)}
-              />
+              {isChatGPT ? (
+                <SelectField
+                  label={'模型 ID ' + (index + 1)}
+                  value={model.id}
+                  placeholder={account?.connected ? '选择 GPT 模型' : '登录后可选模型'}
+                  disabled={!account?.connected}
+                  onChange={(value) => editModel(index, value)}
+                  options={(account?.models ?? []).map((item) => ({
+                    value: item.id,
+                    label: item.label,
+                    keywords: [item.id]
+                  }))}
+                />
+              ) : (
+                <Input
+                  required
+                  aria-label={'模型 ID ' + (index + 1)}
+                  placeholder={isVertex ? 'gemini-4-argon' : '模型 ID'}
+                  value={model.id}
+                  onChange={(event) => editModel(index, event.target.value)}
+                />
+              )}
               {rows.length > 1 && (
                 <Button
                   type="button"
@@ -299,12 +395,86 @@ function ConnectionEditor({ connection, client, onBack, onSaved }) {
   )
 }
 
+function sameOrder(left, right) {
+  return left.length === right.length && left.every((id, index) => id === right[index])
+}
+
+function orderConnections(connections, order) {
+  if (!order) return connections
+  const byId = new Map(connections.map((item) => [item.id, item]))
+  const ordered = []
+  for (const id of order) {
+    const item = byId.get(id)
+    if (!item) continue
+    ordered.push(item)
+    byId.delete(id)
+  }
+  for (const item of byId.values()) ordered.push(item)
+  return ordered
+}
+
+function reorderByStep(ids, id, step) {
+  const index = ids.indexOf(id)
+  const nextIndex = index + step
+  if (index < 0 || nextIndex < 0 || nextIndex >= ids.length) return null
+  const next = [...ids]
+  const [moved] = next.splice(index, 1)
+  next.splice(nextIndex, 0, moved)
+  return next
+}
+
+function reorderByPointer(stack, order, activeId, clientY) {
+  if (!stack) return order
+  const cards = [...stack.querySelectorAll('[data-connection-id]')]
+  const currentIndex = order.indexOf(activeId)
+  if (currentIndex < 0) return order
+  let targetIndex = currentIndex
+  for (const card of cards) {
+    const cardId = card.dataset.connectionId
+    if (!cardId || cardId === activeId) continue
+    const cardIndex = order.indexOf(cardId)
+    if (cardIndex < 0) continue
+    const rect = card.getBoundingClientRect()
+    const midpoint = rect.top + rect.height / 2
+    if (cardIndex < currentIndex && clientY < midpoint) {
+      targetIndex = Math.min(targetIndex, cardIndex)
+    } else if (cardIndex > currentIndex && clientY > midpoint) {
+      targetIndex = Math.max(targetIndex, cardIndex)
+    }
+  }
+  if (targetIndex === currentIndex) return order
+  const next = [...order]
+  const [moved] = next.splice(currentIndex, 1)
+  next.splice(targetIndex, 0, moved)
+  return next
+}
+
 /** @param {object} props 连接快照与刷新入口。 @returns {import('react').ReactElement} 管理连接及同层编辑视图。 */
 export function Connections({ client, connections, refresh }) {
   const [editor, setEditor] = useState(null)
   const [removing, setRemoving] = useState(null)
   const [pending, setPending] = useState(false)
+  const [pendingOrder, setPendingOrder] = useState(null)
+  const [dragState, setDragState] = useState(null)
   const [error, setError] = useState(null)
+  const stackRef = useRef(null)
+  const dragRef = useRef(null)
+  const handleRefs = useRef(new Map())
+  const refocusIdRef = useRef(null)
+  const displayConnections = orderConnections(connections, dragState?.order ?? pendingOrder)
+
+  useLayoutEffect(() => {
+    const id = refocusIdRef.current
+    if (!id) return
+    refocusIdRef.current = null
+    handleRefs.current.get(id)?.focus()
+  }, [displayConnections])
+
+  function bindHandleRef(id, element) {
+    if (element) handleRefs.current.set(id, element)
+    else handleRefs.current.delete(id)
+  }
+
   async function saved() {
     await refresh()
     setEditor(null)
@@ -316,11 +486,77 @@ export function Connections({ client, connections, refresh }) {
       await client.settings.deleteConnection(item.id, item.revision)
       await refresh()
       setRemoving(null)
-    } catch (error) {
-      setError(error.message)
+    } catch (failure) {
+      setError(failure.message)
     } finally {
       setPending(false)
     }
+  }
+  async function commitOrder(nextIds) {
+    const currentIds = connections.map((item) => item.id)
+    if (pending || sameOrder(currentIds, nextIds)) return
+    setPending(true)
+    setPendingOrder(nextIds)
+    setError(null)
+    try {
+      await client.settings.reorderConnections(nextIds)
+      await refresh()
+    } catch (failure) {
+      setError(failure.message)
+    } finally {
+      setPending(false)
+      setPendingOrder(null)
+    }
+  }
+  function startDrag(event, connectionId) {
+    if (event.button !== 0 || pending || dragRef.current) return
+    const initialOrder = displayConnections.map((item) => item.id)
+    if (initialOrder.length < 2) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setRemoving(null)
+    dragRef.current = {
+      pointerId: event.pointerId,
+      id: connectionId,
+      initialOrder,
+      currentOrder: initialOrder
+    }
+    setDragState({ id: connectionId, order: initialOrder })
+  }
+  function moveDrag(event) {
+    const active = dragRef.current
+    if (!active || active.pointerId !== event.pointerId) return
+    const nextOrder = reorderByPointer(
+      stackRef.current,
+      active.currentOrder,
+      active.id,
+      event.clientY
+    )
+    if (sameOrder(active.currentOrder, nextOrder)) return
+    active.currentOrder = nextOrder
+    setDragState({ id: active.id, order: nextOrder })
+  }
+  function endDrag(event) {
+    const active = dragRef.current
+    if (!active || active.pointerId !== event.pointerId) return
+    dragRef.current = null
+    setDragState(null)
+    if (!sameOrder(active.initialOrder, active.currentOrder)) {
+      void commitOrder(active.currentOrder)
+    }
+  }
+  function handleDragKeyDown(event, connectionId) {
+    if (pending || dragState) return
+    let step = 0
+    if (event.key === 'ArrowUp') step = -1
+    else if (event.key === 'ArrowDown') step = 1
+    if (!step) return
+    event.preventDefault()
+    const ids = displayConnections.map((item) => item.id)
+    const nextIds = reorderByStep(ids, connectionId, step)
+    if (!nextIds) return
+    // DOM 节点换位会打断聚焦，提交重排后在同帧布局阶段恢复手柄焦点。
+    refocusIdRef.current = connectionId
+    void commitOrder(nextIds)
   }
   if (editor)
     return (
@@ -346,7 +582,7 @@ export function Connections({ client, connections, refresh }) {
           {error}
         </p>
       )}
-      {connections.length === 0 && (
+      {displayConnections.length === 0 && (
         <div className="settings-card settings-empty">
           <Cable size={22} />
           <div>
@@ -355,14 +591,36 @@ export function Connections({ client, connections, refresh }) {
           </div>
         </div>
       )}
-      <div className="settings-stack">
-        {connections.map((item) => {
+      <div ref={stackRef} className="settings-stack" data-dragging={dragState ? 'true' : undefined}>
+        {displayConnections.map((item) => {
           const providerDetailName =
             providerPresets.find((preset) => preset.id === item.provider)?.name ?? item.provider
 
           return (
-            <article className="settings-card" key={item.id}>
+            <article
+              className="settings-card"
+              key={item.id}
+              data-connection-id={item.id}
+              data-dragging={dragState?.id === item.id ? 'true' : undefined}
+            >
               <div className="settings-card-title">
+                {displayConnections.length > 1 && (
+                  <button
+                    type="button"
+                    ref={(element) => bindHandleRef(item.id, element)}
+                    className="settings-drag-handle"
+                    aria-label={'拖动排序：' + item.name}
+                    title="拖动排序，聚焦后可用上下方向键调整顺序"
+                    aria-disabled={pending || undefined}
+                    onPointerDown={(event) => startDrag(event, item.id)}
+                    onPointerMove={moveDrag}
+                    onPointerUp={endDrag}
+                    onLostPointerCapture={endDrag}
+                    onKeyDown={(event) => handleDragKeyDown(event, item.id)}
+                  >
+                    <GripVertical size={16} aria-hidden="true" />
+                  </button>
+                )}
                 <div className="settings-connection-summary">
                   <h4>{item.name}</h4>
                   {providerDetailName !== item.name && <p>{providerDetailName}</p>}

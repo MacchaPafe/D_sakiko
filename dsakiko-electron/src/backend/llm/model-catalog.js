@@ -108,7 +108,7 @@ export class ModelCatalog {
     let mapping = model.catalogMapping
     if (!mapping) {
       const preset = providerPresets.find((item) => item.id === connection.provider)
-      const ids = { gemini: 'google', moonshot: 'moonshotai' }
+      const ids = { gemini: 'google', vertex: 'google-vertex', moonshot: 'moonshotai' }
       if (
         !preset?.baseUrl ||
         preset.baseUrl !== connection.baseUrl ||

@@ -6,6 +6,7 @@ const metadataFields = {
   anthropic: ['signature', 'redactedData'],
   openai: ['itemId', 'reasoningEncryptedContent', 'phase', 'parallelToolCall'],
   google: ['thoughtSignature'],
+  googleVertex: ['thoughtSignature'],
   openaiCompatible: ['thoughtSignature']
 }
 
@@ -120,7 +121,9 @@ function origin(connection) {
     modelId: value.modelId,
     provider: value.provider,
     protocol: value.protocol,
-    endpoint: fingerprint(value.baseUrl)
+    endpoint: fingerprint(
+      value.vertex ? [value.baseUrl, value.vertex.project, value.vertex.location] : value.baseUrl
+    )
   }
 }
 

@@ -1370,6 +1370,8 @@ export class ResourceSetup {
       )
     }
     if (job.options.include.connections && !job.completed.includes('connections')) {
+      // 旧版账号注册表是可选来源，损坏时仍可完成迁移并在设置里重试。
+      await this.settings.accounts.discover().catch(() => {})
       job.hadBuiltinConnection ??= (await this.settings.listConnections()).some(
         (item) => item.id === 'builtin-up'
       )

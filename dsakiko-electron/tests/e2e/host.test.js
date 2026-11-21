@@ -103,6 +103,7 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
     nodeVisible: typeof window.require !== 'undefined'
   }))
   expect(bootstrap.methods.sort()).toEqual([
+    'chatGPTAccount',
     'getBackendConnection',
     'getRuntimeInfo',
     'getWindowCloseBehavior',
@@ -112,8 +113,12 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
     'onWindowVisibility',
     'openProviderKeyPage',
     'selectLegacyDirectory',
+    'selectVertexAccount',
     'setWindowCloseBehavior'
   ])
+  expect(
+    await page.evaluate(() => window.dsakikoHost.chatGPTAccount('access', 'test'))
+  ).toMatchObject({ problem: { code: 'invalid_input' } })
   expect(bootstrap.nodeVisible).toBe(false)
   expect(bootstrap.runtime.platform).toBe(process.platform)
   expect(bootstrap.connection.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)

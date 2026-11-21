@@ -94,6 +94,7 @@ export const API_METHODS = {
     listProviderPresets: false,
     saveConnection: true,
     deleteConnection: true,
+    reorderConnections: true,
     checkConnection: false,
     checkConnectionDraft: false,
     connectionAvailability: false
@@ -136,6 +137,8 @@ export const API_METHODS = {
 /** @typedef {{ code: string, message: string, retryable: boolean }} ApiProblem */
 /**
  * @typedef {object} DesktopHost Electron 专有能力，WebUI 使用自己的授权入口。
+ * @property {() => Promise<{result?:object,problem?:object}>} selectVertexAccount 通过系统选择器导入服务账号到后端草稿。
+ * @property {(action:string,id?:string) => Promise<{result?:unknown,problem?:object}>} chatGPTAccount 管理订阅账号，返回公开状态。
  * @property {() => Promise<BackendConnection>} getBackendConnection 获取本次运行的业务连接，不把令牌写入日志或持久 URL。
  * @property {() => Promise<{platform: string, appVersion: string}>} getRuntimeInfo 宿主平台与应用版本。
  * @property {(provider: string) => Promise<void>} openProviderKeyPage 在默认浏览器打开受支持的密钥管理页。

@@ -108,14 +108,50 @@
   display: grid;
   gap: 9px;
 }
+.settings-stack[data-dragging='true'] {
+  user-select: none;
+}
 .settings-card {
   border-radius: 12px;
   border: 1px solid var(--border);
   padding: 14px 16px;
   background: var(--resource-inset);
 }
+.settings-card[data-dragging='true'] {
+  border-color: var(--primary);
+  background: var(--background);
+  box-shadow: 0 6px 18px var(--shadow-ink);
+}
 .settings-card[data-highlighted] {
   border-color: var(--primary);
+}
+.settings-drag-handle {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 32px;
+  margin-left: -4px;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  cursor: grab;
+  touch-action: none;
+  transition:
+    background-color 120ms ease-out,
+    color 120ms ease-out;
+}
+.settings-drag-handle:hover:not([aria-disabled='true']),
+.settings-drag-handle:focus-visible {
+  background: var(--secondary);
+  color: var(--primary);
+}
+.settings-drag-handle[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+.settings-card[data-dragging='true'] .settings-drag-handle {
+  color: var(--primary);
+  cursor: grabbing;
 }
 .settings-window-card {
   min-height: 74px;
@@ -283,5 +319,8 @@
 @media (prefers-reduced-motion: reduce) {
   .settings-status-delayed {
     animation-duration: 0s;
+  }
+  .settings-drag-handle {
+    transition: none;
   }
 }

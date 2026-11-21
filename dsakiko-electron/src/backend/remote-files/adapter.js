@@ -32,6 +32,13 @@ export function uploadUnsupported(error) {
  */
 export function createFileAdapter(connection, apiKey, transport = fetch) {
   const value = normalizeConnection(connection)
+  if (['vertex', 'chatgpt'].includes(value.provider))
+    return {
+      scopeId: fingerprint([value.provider, value.connectionId]),
+      provider: value.provider,
+      protocol: value.protocol,
+      canUpload: false
+    }
   const provider = createProvider(value, apiKey, { enabled: false }, transport)
   const api = typeof provider.files === 'function' ? provider.files() : null
   let namespace = 'openai'

@@ -367,6 +367,7 @@ export async function createCoreBackend({
       await setup.close()
       await onboarding.close()
       await conversations.close()
+      await settings.accounts.close()
       await recognition.close()
       await modelCatalog.close()
       await remoteFiles.close()

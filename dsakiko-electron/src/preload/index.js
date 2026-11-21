@@ -5,6 +5,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 const host = {
   getBackendConnection: () => ipcRenderer.invoke('host:backend-connection'),
   getRuntimeInfo: () => ipcRenderer.invoke('host:runtime-info'),
+  selectVertexAccount: () => ipcRenderer.invoke('host:select-vertex-account'),
+  chatGPTAccount: (action, id) => ipcRenderer.invoke('host:chatgpt-account', action, id),
   openProviderKeyPage: (provider) => ipcRenderer.invoke('host:open-provider-key-page', provider),
   importFiles: (options) => ipcRenderer.invoke('host:import-files', options),
   selectLegacyDirectory: () => ipcRenderer.invoke('host:select-legacy-directory'),

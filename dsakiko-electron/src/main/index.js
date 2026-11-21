@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { problem, readJson, requireValue } from '../backend/core/support.js'
 import { join, dirname } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { resolveDataDirectories, validateDataDirectories } from './data-directories.js'
 import { IMPORT_PURPOSES } from '../shared/contracts/assets.js'
 import { providerPresets } from '../shared/contracts/llm-providers.js'
@@ -109,6 +110,54 @@ async function startApplication() {
     checkSender(event)
     return { baseUrl: transport.baseUrl, token: transport.token }
   })
+  const accountActions = {
+    list: () => backend.settings.accounts.list(),
+    discover: () => backend.settings.accounts.discover(),
+    login: (id) => backend.settings.accounts.login(id, (url) => shell.openExternal(url)),
+    cancel: () => backend.settings.accounts.cancel(),
+    models: (id) => backend.settings.accounts.models(id),
+    logout: (id) => backend.settings.accounts.logout(id)
+  }
+  ipcMain.handle('host:chatgpt-account', async (event, action, id) => {
+    checkSender(event)
+    try {
+      requireValue(Object.hasOwn(accountActions, action), 'invalid_input')
+      return { result: await accountActions[action](id) }
+    } catch (error) {
+      return { problem: problem(error) }
+    }
+  })
+  ipcMain.handle('host:select-vertex-account', async (event) => {
+    checkSender(event)
+    try {
+      const choice = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile'],
+        title: '选择服务账号 JSON',
+        filters: [{ name: '服务账号 JSON', extensions: ['json'] }]
+      })
+      if (choice.canceled) return { result: null }
+      const file = await open(choice.filePaths[0], 'r')
+      try {
+        const info = await file.stat()
+        requireValue(
+          info.isFile() && info.size <= 65536,
+          'invalid_vertex_key',
+          '请选择服务账号 JSON 文件。'
+        )
+        let data
+        try {
+          data = JSON.parse(await file.readFile('utf8'))
+        } catch {
+          requireValue(false, 'invalid_vertex_key', '无法读取服务账号 JSON。')
+        }
+        return { result: backend.settings.vertexDrafts.stage(data) }
+      } finally {
+        await file.close()
+      }
+    } catch (error) {
+      return { problem: problem(error) }
+    }
+  })
   ipcMain.handle('host:select-legacy-directory', async (event) => {
     checkSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -208,6 +257,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (quitting) return
   quitting = true
+  backend?.settings.accounts.cancel()
   // 退出时先结束渲染进程，避免页面把随后关闭的 WebSocket 当成意外断线。
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
   Promise.resolve()

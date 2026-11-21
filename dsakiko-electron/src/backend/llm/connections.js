@@ -17,6 +17,21 @@ export function normalizeConnection(connection) {
     'unsupported_protocol'
   )
   const baseUrl = (connection.baseUrl || preset.baseUrl).replace(/\/+$/, '')
+  const managed = preset.id === 'vertex' || preset.id === 'chatgpt'
+  if (managed)
+    requireValue(protocol === preset.protocol && baseUrl === preset.baseUrl, 'invalid_connection')
+  if (preset.id === 'vertex') {
+    const models = connection.models ?? [{ id: connection.modelId }]
+    requireValue(
+      Array.isArray(models) &&
+        models.length > 0 &&
+        models.every(
+          (model) => typeof model.id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(model.id)
+        ),
+      'invalid_connection',
+      '请填写有效的 Vertex 模型 ID。'
+    )
+  }
   let url
   try {
     url = new URL(baseUrl)
@@ -40,12 +55,18 @@ export function normalizeConnection(connection) {
     baseUrl,
     protocol,
     behavior,
-    attachmentTransport: connection.attachmentTransport ?? 'auto'
+    attachmentTransport: managed ? 'inline' : (connection.attachmentTransport ?? 'auto')
   }
 }
 
 /** @param {object} connection 已规范化的连接定义。 @param {string} modelId 实际请求的模型名。 @returns {Partial<import('../../shared/contracts/models.js').ModelCapabilities>} 官方文档明确支持的请求能力。 */
 export function officialModelCapabilities(connection, modelId) {
+  if (connection.provider === 'vertex' && modelId === 'gemini-4-argon')
+    return {
+      imageInput: { status: 'supported', source: 'vertex' },
+      reasoning: { status: 'supported', source: 'vertex' },
+      reasoningEfforts: ['low', 'medium', 'high']
+    }
   // 导入和手动添加的模型可能没有声明；同名模型在第三方端点上的能力仍由连接配置决定。
   if (
     connection.provider !== 'deepseek' ||

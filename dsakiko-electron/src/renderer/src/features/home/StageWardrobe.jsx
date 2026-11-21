@@ -109,7 +109,12 @@ export function StageWardrobe({
           aria-disabled={savingDraft || savingId !== null || (!failed && model === selected)}
           onClick={() => void choose(model)}
         >
-          <span>{model.name || model.id}</span>
+          <span className="stage-outfit-name">
+            <span>{model.name || model.id}</span>
+            {model.version && (
+              <span className="stage-outfit-version">{model.version.toUpperCase()}</span>
+            )}
+          </span>
           {active && (
             <span className="stage-outfit-current">
               <Check size={14} />

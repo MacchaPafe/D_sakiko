@@ -1,9 +1,11 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
-import { Check, ChevronsUpDown } from 'lucide-react'
+import { Check, ChevronRight, ChevronsUpDown } from 'lucide-react'
+import { Button } from './button.jsx'
 import './select-field.css'
 
 /** @typedef {{value: string, label: string, group?: string, keywords?: string[], disabled?: boolean}} SelectOption 可按分组和别名检索的选项。 */
-/** @typedef {{options: SelectOption[], value: string, onChange: (value: string) => void, placeholder?: string, label?: string, disabled?: boolean}} SelectFieldProps 选项和已确认的值。 */
+/** @typedef {{label: string, onAction: () => void}} SelectFooterAction 下拉弹层底部固定操作入口。 */
+/** @typedef {{options: SelectOption[], value: string, onChange: (value: string) => void, placeholder?: string, label?: string, disabled?: boolean, footer?: SelectFooterAction}} SelectFieldProps 选项和已确认的值。 */
 
 function normalize(text) {
   return text.normalize('NFKC').trim().toLowerCase()
@@ -19,7 +21,16 @@ function groupOptions(options) {
   return [...groups]
 }
 
-function SearchSelect({ options, value, onChange, placeholder, label, disabled }) {
+function SearchSelect({
+  options,
+  value,
+  onChange,
+  placeholder,
+  label,
+  disabled,
+  searchable = true,
+  footer
+}) {
   const id = useId()
   const input = useRef(null)
   const list = useRef(null)
@@ -27,12 +38,14 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
   const [query, setQuery] = useState('')
   const [focused, setFocused] = useState(null)
   const selected = options.find((option) => option.value === value)
-  const term = normalize(query)
-  const matches = options.filter((option) =>
-    [option.label, option.group ?? '', ...(option.keywords ?? [])].some((text) =>
-      normalize(text).includes(term)
-    )
-  )
+  const term = searchable ? normalize(query) : ''
+  const matches = searchable
+    ? options.filter((option) =>
+        [option.label, option.group ?? '', ...(option.keywords ?? [])].some((text) =>
+          normalize(text).includes(term)
+        )
+      )
+    : options
   const groups = groupOptions(matches)
   const enabled = groups.flatMap(([, items]) => items.filter((option) => !option.disabled))
   const active =
@@ -85,6 +98,7 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
     setFocused(null)
   }
   function change(event) {
+    if (!searchable) return
     setQuery(event.target.value)
     setFocused(null)
     setOpen(true)
@@ -93,6 +107,11 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
     if (!option || option.disabled) return
     setOpen(false)
     onChange(option.value)
+  }
+  function triggerFooter() {
+    setOpen(false)
+    input.current?.blur()
+    footer?.onAction()
   }
   function handleKey(event) {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return
@@ -141,8 +160,11 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
     )
   }
 
+  let inputValue = selected?.label ?? ''
+  if (searchable && open) inputValue = query
+
   let inputPlaceholder = placeholder
-  if (open) {
+  if (searchable && open) {
     inputPlaceholder = selected ? `${selected.label}（输入以搜索…）` : '输入名称或别名搜索…'
   }
 
@@ -153,12 +175,13 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
         type="text"
         role="combobox"
         aria-label={label}
-        aria-autocomplete="list"
+        aria-autocomplete={searchable ? 'list' : 'none'}
         aria-expanded={open}
         aria-controls={id}
         aria-activedescendant={open ? activeId : undefined}
-        value={open ? query : (selected?.label ?? '')}
+        value={inputValue}
         placeholder={inputPlaceholder}
+        readOnly={!searchable}
         autoComplete="off"
         disabled={disabled}
         onFocus={show}
@@ -183,6 +206,20 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
           )}
         </div>
         {!matches.length && <p role="status">没有匹配的选项</p>}
+        {footer && (
+          <div className="search-select-footer">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="search-select-footer-action"
+              onClick={triggerFooter}
+            >
+              <span>{footer.label}</span>
+              <ChevronRight size={14} aria-hidden="true" />
+            </Button>
+          </div>
+        )}
       </div>
     </span>
   )
@@ -190,10 +227,11 @@ function SearchSelect({ options, value, onChange, placeholder, label, disabled }
 
 /**
  * @param {SelectFieldProps} props 下拉选项及选择回调。
- * @returns {import('react').ReactElement} 长列表提供搜索，短列表使用原生选择框。
+ * @returns {import('react').ReactElement} 长列表或带底部操作入口时使用自定义弹层，短列表使用原生选择框。
  */
-export function SelectField({ options, value, onChange, placeholder, label, disabled }) {
-  if (options.length > 10)
+export function SelectField({ options, value, onChange, placeholder, label, disabled, footer }) {
+  const searchable = options.length > 10
+  if (searchable || footer)
     return (
       <SearchSelect
         options={options}
@@ -202,6 +240,8 @@ export function SelectField({ options, value, onChange, placeholder, label, disa
         placeholder={placeholder}
         label={label}
         disabled={disabled}
+        searchable={searchable}
+        footer={footer}
       />
     )
 

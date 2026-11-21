@@ -34,6 +34,7 @@
  * @typedef {object} CharacterModel
  * @property {string} id 角色内唯一的稳定模型身份，所属形态由包含它的 CharacterForm 确定。
  * @property {string} name 展示名。
+ * @property {'v2' | 'v3'} [version] 派生自模型资源入口的 Live2D 格式版本，不持久化。
  * @property {{kind: 'bestdori' | 'modelscope' | 'local', id: string}} [source] 用于识别重复安装的来源。
  * @property {string} [thumbnail] 模型包内缩略图路径。
  * @property {string[]} [legacyIds] 旧版导入中指向同一模型内容的持久身份。

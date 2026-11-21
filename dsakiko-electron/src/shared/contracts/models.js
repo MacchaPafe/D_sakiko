@@ -35,6 +35,8 @@
  * @property {string} id 稳定连接身份。
  * @property {number} revision 所基于的版本，保存时原子递增。
  * @property {string} name 显示名称。
+ * @property {{project:string,location:string,email:string}} [vertex] Vertex 请求项目、区域与服务账号身份。
+ * @property {string} [accountId] ChatGPT 订阅注册的本机标识。
  * @property {string} provider 供应商适配器名，使用已注册适配器。
  * @property {string} baseUrl 服务地址。
  * @property {string} protocol 协议选择，不能假设所有兼容端点相同。

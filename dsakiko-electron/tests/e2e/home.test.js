@@ -274,8 +274,8 @@ async function verifyDraftOutfit(page, backend, defaultName) {
   const trigger = page.getByRole('button', { name: '切换服装' })
   const wardrobe = page.getByRole('dialog', { name: '服装' })
   const toolbar = page.getByRole('group', { name: '舞台工具' })
-  const defaults = wardrobe.getByRole('button', { name: defaultName + ' 当前', exact: true })
-  const alternate = wardrobe.getByRole('button', { name: '备用服装', exact: true })
+  const defaults = wardrobe.getByRole('button', { name: defaultName + ' V3 当前', exact: true })
+  const alternate = wardrobe.getByRole('button', { name: '备用服装 V3', exact: true })
   await trigger.click()
   await defaults.waitFor()
   expect(await wardrobe.getByRole('button', { name: '管理服装' }).isEnabled()).toBe(true)
@@ -339,8 +339,8 @@ async function verifyDraftOutfit(page, backend, defaultName) {
   } finally {
     await page.unroute(modelEntry, failModelLoad)
   }
-  await wardrobe.getByRole('button', { name: '备用服装 重试', exact: true }).click()
-  await wardrobe.getByRole('button', { name: '备用服装 当前', exact: true }).waitFor()
+  await wardrobe.getByRole('button', { name: '备用服装 V3 重试', exact: true }).click()
+  await wardrobe.getByRole('button', { name: '备用服装 V3 当前', exact: true }).waitFor()
   await page.locator('.home-stage').screenshot({ path: '/tmp/sakiko-stage-wardrobe.png' })
   expect(await backend.conversations.listChats()).toHaveLength(0)
   await page.keyboard.press('Escape')
@@ -349,7 +349,7 @@ async function verifyDraftOutfit(page, backend, defaultName) {
   await trigger.click()
   await defaults.waitFor()
   await alternate.click()
-  await wardrobe.getByRole('button', { name: '备用服装 当前', exact: true }).waitFor()
+  await wardrobe.getByRole('button', { name: '备用服装 V3 当前', exact: true }).waitFor()
   await page.keyboard.press('Escape')
 }
 
@@ -816,8 +816,8 @@ async function verifyTheatre(page, backend, agent) {
   await page.screenshot({ path: '/tmp/sakiko-theatre-wardrobe.png' })
   const savedCharacters = (await snapshot()).chat.meta.settings.characters
   await actorTabs.first().click()
-  await wardrobe.getByRole('button', { name: '备用演出服', exact: true }).click()
-  await wardrobe.getByRole('button', { name: '备用演出服 当前', exact: true }).waitFor()
+  await wardrobe.getByRole('button', { name: '备用演出服 V3', exact: true }).click()
+  await wardrobe.getByRole('button', { name: '备用演出服 V3 当前', exact: true }).waitFor()
   const updated = (await snapshot()).chat.meta.settings.characters
   expect(updated[chat.characterIds[1]]).toEqual(savedCharacters[chat.characterIds[1]])
   expect(updated.sakiko.modelOverrides[updated.sakiko.formId]).toBe('home-test-outfit')
@@ -1056,7 +1056,9 @@ app.on('window-all-closed', () => app.quit())`
       await theatreTab.hover()
       await expect.poll(tabBackground).not.toBe(restingTabBackground)
       await dialogueTab.press('ArrowRight')
-      expect(await theatreTab.evaluate((element) => document.activeElement === element)).toBe(true)
+      await expect
+        .poll(() => theatreTab.evaluate((element) => document.activeElement === element))
+        .toBe(true)
       expect(await dialogueTab.getAttribute('aria-selected')).toBe('true')
       await theatreTab.press('Enter')
       expect(await theatreTab.getAttribute('aria-selected')).toBe('true')
@@ -1215,6 +1217,66 @@ app.on('window-all-closed', () => app.quit())`
       await picker.click()
       await verifySearchSelectScrollbar(page, picker)
       await page.getByRole('option', { name: 'test', exact: true }).click()
+      await picker.click()
+      await page.getByRole('button', { name: '管理模型' }).click()
+      expect(await picker.getAttribute('aria-expanded')).toBe('false')
+      await settings.getByRole('heading', { name: '已配置的连接' }).waitFor()
+      expect(await settings.getByRole('button', { name: /^拖动排序：/ }).count()).toBe(0)
+      await settings.getByRole('button', { name: '新建连接', exact: true }).click()
+      await settings.getByRole('textbox', { name: '连接名称' }).fill('备用连接')
+      await settings.getByLabel('API Key', { exact: true }).fill('dummy-key')
+      await settings.getByLabel('模型 ID 1', { exact: true }).fill('alt-model')
+      await settings.getByRole('button', { name: '保存连接', exact: true }).click()
+      await settings.getByRole('heading', { name: '备用连接', exact: true }).waitFor()
+      const altHandle = settings.getByRole('button', { name: '拖动排序：备用连接', exact: true })
+      const testHandle = settings.getByRole('button', { name: '拖动排序：测试连接', exact: true })
+      await altHandle.waitFor()
+      await testHandle.waitFor()
+      await altHandle.focus()
+      await altHandle.press('ArrowUp')
+      await expect
+        .poll(() => settings.locator('.settings-connection-summary h4').allTextContents())
+        .toEqual(['备用连接', '测试连接'])
+      expect(await altHandle.evaluate((element) => document.activeElement === element)).toBe(true)
+      await settings.getByRole('button', { name: '关闭设置' }).click()
+      await settings.waitFor({ state: 'hidden' })
+      await picker.click()
+      await expect
+        .poll(() =>
+          page
+            .getByRole('listbox', { name: '对话模型' })
+            .getByRole('group')
+            .evaluateAll((groups) => groups.map((group) => group.getAttribute('aria-label')))
+        )
+        .toEqual(['备用连接', '测试连接'])
+      await page.getByRole('button', { name: '管理模型' }).click()
+      await settings.getByRole('heading', { name: '已配置的连接' }).waitFor()
+      const testHandleBox = await testHandle.boundingBox()
+      const altCard = settings
+        .locator('.settings-card')
+        .filter({ has: page.getByRole('heading', { name: '备用连接', exact: true }) })
+      const altCardBox = await altCard.boundingBox()
+      await page.mouse.move(
+        testHandleBox.x + testHandleBox.width / 2,
+        testHandleBox.y + testHandleBox.height / 2
+      )
+      await page.mouse.down()
+      try {
+        await page.mouse.move(testHandleBox.x + testHandleBox.width / 2, altCardBox.y + 8, {
+          steps: 8
+        })
+      } finally {
+        await page.mouse.up()
+      }
+      await expect
+        .poll(() => settings.locator('.settings-connection-summary h4').allTextContents())
+        .toEqual(['测试连接', '备用连接'])
+      await altCard.getByRole('button', { name: '删除', exact: true }).click()
+      await altCard.getByRole('button', { name: '删除连接', exact: true }).click()
+      await altCard.waitFor({ state: 'hidden' })
+      expect(await settings.getByRole('button', { name: /^拖动排序：/ }).count()).toBe(0)
+      await settings.getByRole('button', { name: '关闭设置' }).click()
+      await settings.waitFor({ state: 'hidden' })
       await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
       await page
         .getByRole('textbox', { name: '消息' })
@@ -1239,14 +1301,15 @@ app.on('window-all-closed', () => app.quit())`
       expect(await savedOutfit()).toBe('home-test-outfit')
       await page.getByRole('button', { name: '切换服装' }).click()
       const wardrobe = page.getByRole('dialog', { name: '服装' })
-      await wardrobe.getByRole('button', { name: '备用服装 当前', exact: true }).waitFor()
-      await wardrobe.getByRole('button', { name: defaultName, exact: true }).click()
-      await wardrobe.getByRole('button', { name: defaultName + ' 当前', exact: true }).waitFor()
+      await wardrobe.getByRole('button', { name: '备用服装 V3 当前', exact: true }).waitFor()
+      await wardrobe.getByRole('button', { name: defaultName + ' V3', exact: true }).click()
+      await wardrobe.getByRole('button', { name: defaultName + ' V3 当前', exact: true }).waitFor()
       expect(await savedOutfit()).toBe(form.defaultModelId)
       await wardrobe.getByRole('button', { name: '管理服装' }).click()
       const manager = page.getByRole('dialog', { name: '服装管理' })
       const managerShell = await manager.elementHandle()
       const outfit = manager.getByRole('listitem').filter({ hasText: '备用服装' })
+      await outfit.locator('.outfit-version-badge').getByText('V3', { exact: true }).waitFor()
       const defaultMenu = manager.getByRole('button', { name: '管理 ' + defaultName, exact: true })
       const altMenu = outfit.getByRole('button', { name: '管理 备用服装', exact: true })
       const openMenu = manager.getByRole('menu')

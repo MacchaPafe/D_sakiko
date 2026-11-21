@@ -330,7 +330,7 @@ function Subtitle({ state, replayingTurn, onToggleReplay, theatre }) {
     </section>
   )
 }
-function ModelPicker({ state, flow }) {
+function ModelPicker({ state, flow, onConfigure }) {
   if (!state.connections.some((item) => item.models.length)) return null
   const selection = selectedModel(state)
   function change(value) {
@@ -344,21 +344,22 @@ function ModelPicker({ state, flow }) {
     }))
   )
   return (
-    <label className="home-model-picker">
+    <div className="home-model-picker">
       <SelectField
         label="对话模型"
         options={options}
         placeholder="选择模型"
         value={hasConnection(state) && selection ? JSON.stringify(selection) : ''}
         onChange={change}
+        footer={{ label: '管理模型', onAction: onConfigure }}
       />
-    </label>
+    </div>
   )
 }
 
 function buildModelControl(state, flow, onConfigure) {
   const hasAvailableModels = state.connections.some((item) => item.models.length > 0)
-  if (hasAvailableModels) return <ModelPicker state={state} flow={flow} />
+  if (hasAvailableModels) return <ModelPicker state={state} flow={flow} onConfigure={onConfigure} />
   if (!hasConnection(state)) {
     return (
       <Button

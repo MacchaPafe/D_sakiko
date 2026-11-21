@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, test, vi } from 'vitest'
@@ -742,4 +742,101 @@ test('小剧场允许空情境；新剧本提交前失败或取消均保留已�
   const replay = await chats.getReplayMaterials(id, { kind: 'turn', turnId: next })
   expect(replay.scene.slots.map((slot) => slot.id)).toEqual(['sakiko', 'anon'])
   expect(replay.defaultPerformances).toHaveLength(2)
+})
+
+test('CharacterCatalog.get 从模型入口与来源派生 version，且不持久化到 characters.json', async () => {
+  const { backend, directory } = await fixture()
+  const v2Dir = path.join(directory, 'local-v2')
+  const v3Dir = path.join(directory, 'local-v3')
+  await mkdir(v2Dir, { recursive: true })
+  await mkdir(v3Dir, { recursive: true })
+  await writeFile(path.join(v2Dir, 'model.json'), '{}')
+  await writeFile(path.join(v3Dir, 'custom.model3.json'), '{}')
+
+  const saved = await backend.assets.using({}, async (owner) => {
+    const v2Asset = (
+      await backend.assets.importAsset(
+        { kind: 'local-directory', path: v2Dir, entry: 'model.json' },
+        owner,
+        'live2d'
+      )
+    ).asset
+    const v3Asset = (
+      await backend.assets.importAsset(
+        { kind: 'local-directory', path: v3Dir, entry: 'custom.model3.json' },
+        owner,
+        'live2d'
+      )
+    ).asset
+    const fallbackAsset = (
+      await backend.assets.importAsset(
+        {
+          kind: 'bytes',
+          name: 'archive.bin',
+          mediaType: 'application/octet-stream',
+          bytes: Buffer.from('{}')
+        },
+        owner,
+        'model'
+      )
+    ).asset
+
+    const role = await backend.characters.get('sakiko')
+    role.forms[0].models = [
+      {
+        id: 'local-v2',
+        name: '本地 V2',
+        version: 'v3',
+        source: { kind: 'local', id: 'local-1' },
+        presentation: { model: v2Asset, mapping: null }
+      },
+      {
+        id: 'local-v3',
+        name: '本地 V3',
+        source: { kind: 'local', id: 'local-2' },
+        presentation: { model: v3Asset, mapping: null }
+      },
+      {
+        id: 'online-v2',
+        name: '在线 V2',
+        source: { kind: 'bestdori', id: '1:a' },
+        presentation: { model: fallbackAsset, mapping: null }
+      },
+      {
+        id: 'online-v3',
+        name: '在线 V3',
+        source: { kind: 'modelscope', id: '1:b' },
+        presentation: { model: fallbackAsset, mapping: null }
+      },
+      {
+        id: 'unknown-ver',
+        name: '未知版本',
+        presentation: { model: fallbackAsset, mapping: null }
+      }
+    ]
+    role.forms[0].defaultModelId = 'local-v2'
+    return backend.characters.save(role)
+  })
+
+  expect(saved.forms[0].models.map((item) => item.version)).toEqual([
+    'v2',
+    'v3',
+    'v2',
+    'v3',
+    undefined
+  ])
+
+  const fetched = await backend.characters.get('sakiko')
+  expect(fetched.forms[0].models.map((item) => item.version)).toEqual([
+    'v2',
+    'v3',
+    'v2',
+    'v3',
+    undefined
+  ])
+
+  const persisted = JSON.parse(await readFile(backend.characters.file, 'utf8'))
+  for (const model of persisted.characters.sakiko.forms[0].models) {
+    expect(model).not.toHaveProperty('version')
+  }
 })

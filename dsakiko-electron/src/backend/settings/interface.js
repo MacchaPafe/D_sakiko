@@ -1,6 +1,8 @@
 import { extractAssetReferences } from '../resources/references.js'
 import { selectGptSovitsFiles } from '../../shared/contracts/speech-resources.js'
 import path from 'node:path'
+import { VertexDrafts, vertexFields, vertexPrivateKey } from './vertex.js'
+import { ChatGPTAccounts } from './chatgpt-accounts.js'
 import {
   copy,
   merge,
@@ -37,8 +39,32 @@ const revisionItem = config.number({ integer: true, min: 0, max: Number.MAX_SAFE
  * @typedef {object} SettingsState
  * @property {import('../../shared/contracts/settings.js').GlobalSettings} settings 全局设置。
  * @property {Record<string, import('../../shared/contracts/models.js').ConnectionDefinition>} connections 已配置的模型连接字典。
+ * @property {string[]} [connectionOrder] 已配置连接的展示顺序。
  * @property {Record<string, string>} secrets 各连接对应的 API 密钥（仅保存在后端，不随连接列表对外返回）。
  */
+
+/**
+ * 按持久化顺序过滤有效连接并补齐未登记的新连接，兼容缺少顺序字段的旧版设置。
+ * @param {SettingsState} state 设置状态对象。
+ * @returns {string[]} 排序后的连接 ID 列表。
+ */
+function orderedConnectionIds(state) {
+  const allIds = Object.keys(state.connections)
+  const valid = new Set(allIds)
+  const seen = new Set()
+  const ordered = []
+  if (Array.isArray(state.connectionOrder)) {
+    for (const id of state.connectionOrder) {
+      if (!valid.has(id) || seen.has(id)) continue
+      seen.add(id)
+      ordered.push(id)
+    }
+  }
+  for (const id of allIds) {
+    if (!seen.has(id)) ordered.push(id)
+  }
+  return ordered
+}
 
 /**
  * 全局设置与模型连接管理模块。
@@ -55,6 +81,8 @@ export class Settings {
     this.file = path.join(directory, 'settings.json')
     this.queue = new SerialQueue()
     this.scopes = new Map()
+    this.vertexDrafts = new VertexDrafts()
+    this.accounts = new ChatGPTAccounts(directory)
     this.bus = new SnapshotBus()
     this.probe = probe
     this.assets = assets
@@ -75,11 +103,14 @@ export class Settings {
       connections: {},
       secrets: {}
     })
-    fields(state, ['settings', 'connections', 'secrets', 'voicePreference'])
+    fields(state, ['settings', 'connections', 'secrets', 'voicePreference', 'connectionOrder'])
     requireValue(
       isConfigObject(state.settings) &&
         isConfigObject(state.connections) &&
-        isConfigObject(state.secrets),
+        isConfigObject(state.secrets) &&
+        (state.connectionOrder === undefined ||
+          (Array.isArray(state.connectionOrder) &&
+            state.connectionOrder.every((id) => typeof id === 'string'))),
       'invalid_settings',
       '设置文件结构无效'
     )
@@ -124,7 +155,7 @@ export class Settings {
   /**
    * 根据临时凭据作用域 ID 获取对应的 API 密钥。
    * @param {string} scope 由 resolveConnection 分配的临时作用域 ID。
-   * @returns {string} 对应的 API 密钥字符串（未配置密钥时为空字符串）。
+   * @returns {string | ((rejected?: string) => Promise<string>)} API 密钥、服务账号私钥或订阅令牌获取函数。
    */
   credential(scope) {
     requireValue(this.scopes.has(scope), 'credential_expired')
@@ -287,7 +318,15 @@ export class Settings {
    * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition[]>} 模型连接定义列表。
    */
   async listConnections() {
-    return Object.values((await this.state()).connections).map(copy)
+    const state = await this.state()
+    const connections = orderedConnectionIds(state).map((id) => copy(state.connections[id]))
+    if (connections.some((item) => item.provider === 'chatgpt')) {
+      const profiles = await this.accounts.list()
+      for (const item of connections)
+        if (item.provider === 'chatgpt')
+          item.credentialConfigured = profiles.some((p) => p.id === item.accountId && p.connected)
+    }
+    return connections
   }
 
   /** 列出可用于创建多个独立连接的厂商与协议预设。
@@ -300,7 +339,7 @@ export class Settings {
   /**
    * 创建或更新一个模型连接配置及其 API 密钥。
    * @param {import('../../shared/contracts/models.js').ConnectionDefinition} definition 模型连接配置。新建时 revision 为 0，更新时传入当前版本号。
-   * @param {{ kind: 'keep' } | { kind: 'replace', secret: string } | { kind: 'remove' }} credential 密钥操作指令：keep 保持原密钥不变，replace 替换为新密钥，remove 清除密钥。
+   * @param {{kind:'keep'|'remove'} | {kind:'replace',secret:string} | {kind:'vertex-import',ticket:string}} credential 保留、移除、替换或从本机文件导入凭据。
    * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition>} 保存成功并递增版本号后的连接配置副本。
    */
   async saveConnection(definition, credential) {
@@ -308,14 +347,24 @@ export class Settings {
     credential = copy(credential)
     return this.queue.run('settings', async () => {
       const state = await this.state()
+      const ticket = credential?.kind === 'vertex-import' ? credential.ticket : null
+      credential = this.draftCredential(definition, credential)
       definition = this.validateConnectionDraft(definition, credential)
+      await this.checkAccountBinding(definition, state.connections)
       const previous = state.connections[definition.id]
       requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
+      this.checkCredentialProvider(previous, definition, credential)
       if (credential.kind === 'keep' && previous && state.secrets[definition.id])
         requireValue(
           new URL(previous.baseUrl).origin === new URL(definition.baseUrl).origin,
           'invalid_connection',
           '更改服务域名时，请重新填写或清除原 API Key。'
+        )
+      if (definition.provider === 'vertex')
+        requireValue(
+          credential.kind === 'replace' || state.secrets[definition.id],
+          'invalid_credential',
+          '请提供服务账号私钥。'
         )
       if (credential.kind === 'replace') {
         state.secrets[definition.id] = credential.secret
@@ -324,13 +373,68 @@ export class Settings {
       const next = {
         ...copy(definition),
         revision: definition.revision + 1,
-        credentialConfigured: Boolean(state.secrets[definition.id])
+        credentialConfigured:
+          definition.provider === 'chatgpt' || Boolean(state.secrets[definition.id])
       }
       state.connections[definition.id] = next
+      if (
+        Array.isArray(state.connectionOrder) &&
+        definition.id !== 'builtin-up' &&
+        !state.connectionOrder.includes(definition.id)
+      ) {
+        state.connectionOrder.push(definition.id)
+      }
       await writeJson(this.file, state)
+      if (ticket) this.vertexDrafts.discard(ticket)
       this.bus.emit('settings', state.settings)
       return copy(next)
     })
+  }
+
+  draftCredential(definition, credential) {
+    if (credential?.kind === 'vertex-import') {
+      requireValue(definition.provider === 'vertex', 'invalid_credential')
+      return { kind: 'replace', secret: this.vertexDrafts.get(credential.ticket) }
+    }
+    return credential
+  }
+
+  checkCredentialProvider(previous, definition, credential) {
+    if (
+      previous &&
+      previous.provider !== definition.provider &&
+      [previous.provider, definition.provider].some((p) => p === 'vertex' || p === 'chatgpt')
+    )
+      requireValue(false, 'invalid_connection', '请为不同的认证方式新建连接。')
+    if (definition.provider === 'vertex' && credential.kind === 'replace')
+      vertexPrivateKey(credential.secret)
+    if (definition.provider === 'chatgpt')
+      requireValue(credential.kind === 'keep', 'invalid_credential')
+  }
+
+  async checkAccountBinding(definition, connections) {
+    if (definition.provider !== 'chatgpt') return
+    requireValue(
+      !Object.values(connections).some(
+        (c) => c.id !== definition.id && c.accountId === definition.accountId
+      ),
+      'account_already_connected',
+      '此注册已经有一条连接，请编辑已有连接。'
+    )
+    const previous = connections[definition.id]
+    requireValue(
+      !previous || previous.accountId === definition.accountId,
+      'account_changed',
+      '更换注册请新建连接。'
+    )
+    const account = (await this.accounts.list()).find((p) => p.id === definition.accountId)
+    requireValue(account?.connected, 'login_required', '请先登录 ChatGPT 并授权使用套餐。')
+    requireValue(
+      definition.models.length > 0 &&
+        definition.models.every((m) => account.models.some((entry) => entry.id === m.id)),
+      'model_unavailable',
+      '请选择该账号目录中的模型。'
+    )
   }
 
   /** 保存和测试共用校验；编辑草稿只能从当前版本读取原密钥。 */
@@ -344,6 +448,8 @@ export class Settings {
       'protocol',
       'behavior',
       'credentialConfigured',
+      'vertex',
+      'accountId',
       'attachmentTransport',
       'models'
     ])
@@ -354,6 +460,13 @@ export class Settings {
     )
     definition.attachmentTransport ??= 'auto'
     requireValue(['auto', 'inline', 'file-api'].includes(definition.attachmentTransport))
+    if (definition.provider === 'vertex') {
+      definition.vertex = vertexFields(definition.vertex)
+      requireValue(credential.kind !== 'remove', 'invalid_credential', '请提供服务账号私钥。')
+    } else requireValue(definition.vertex == null, 'invalid_connection')
+    if (definition.provider === 'chatgpt')
+      requireValue(typeof definition.accountId === 'string', 'invalid_connection')
+    else requireValue(definition.accountId == null, 'invalid_connection')
     definition = normalizeConnection(definition)
     requireValue(
       Array.isArray(definition.models) &&
@@ -426,8 +539,38 @@ export class Settings {
       )
       delete state.connections[connectionId]
       delete state.secrets[connectionId]
+      if (Array.isArray(state.connectionOrder)) {
+        state.connectionOrder = state.connectionOrder.filter((id) => id !== connectionId)
+      }
       await writeJson(this.file, state)
       this.bus.emit('settings', state.settings)
+    })
+  }
+
+  /**
+   * 更新已配置自有连接的展示顺序。
+   * @param {string[]} connectionIds 完整且无重复的自有连接 ID 列表。
+   * @returns {Promise<import('../../shared/contracts/models.js').ConnectionDefinition[]>} 重排后的连接列表。
+   */
+  async reorderConnections(connectionIds) {
+    return this.queue.run('settings', async () => {
+      const state = await this.state()
+      const expectedIds = Object.keys(state.connections).filter((id) => id !== 'builtin-up')
+      requireValue(
+        Array.isArray(connectionIds) &&
+          connectionIds.length === expectedIds.length &&
+          connectionIds.every(
+            (id) =>
+              typeof id === 'string' && id !== 'builtin-up' && Object.hasOwn(state.connections, id)
+          ) &&
+          new Set(connectionIds).size === connectionIds.length,
+        'invalid_connection',
+        '连接排序列表无效。'
+      )
+      state.connectionOrder = copy(connectionIds)
+      await writeJson(this.file, state)
+      this.bus.emit('settings', state.settings)
+      return connectionIds.map((id) => copy(state.connections[id]))
     })
   }
 
@@ -460,7 +603,10 @@ export class Settings {
     const connection = normalizeConnection(saved)
     const model = connection.models.find((item) => item.id === modelId)
     requireValue(model, 'model_unavailable', '模型连接或模型不存在。')
-    const catalog = (await this.modelCatalog?.lookup(connection, model)) ?? {}
+    const catalog =
+      connection.provider === 'chatgpt'
+        ? {}
+        : ((await this.modelCatalog?.lookup(connection, model)) ?? {})
     const capabilities = merge(
       officialModelCapabilities(connection, modelId),
       catalog,
@@ -477,7 +623,37 @@ export class Settings {
     // 为什么分配临时的 credentialScope 而不是直接返回密钥或按 connectionId 实时查密钥：
     // 一方面避免密钥明文出现在请求配置对象中，另一方面将本次请求使用的密钥冻结在独立作用域内，防止请求进行中用户修改连接密钥导致前后不一致。
     const credentialScope = uuid()
-    this.scopes.set(credentialScope, secret ?? '')
+    if (saved.provider === 'chatgpt') {
+      const account = (await this.accounts.list()).find((p) => p.id === saved.accountId)
+      requireValue(
+        account?.connected,
+        'login_required',
+        '该连接需要重新登录 ChatGPT，也可以为聊天切换连接。'
+      )
+      requireValue(
+        account.models.some((m) => m.id === modelId),
+        'model_unavailable',
+        '该账号的模型目录已更新，请重新选择模型。'
+      )
+      const entry = account.models.find((m) => m.id === modelId)
+      capabilities.reasoningEfforts = entry.efforts
+      capabilities.reasoning = {
+        status: entry.efforts?.length ? 'supported' : 'unknown',
+        source: 'chatgpt'
+      }
+      if (entry.contextTokens) {
+        capabilities.contextTokens = entry.contextTokens
+        capabilities.contextSource = 'chatgpt'
+      }
+      if (typeof entry.image === 'boolean')
+        capabilities.imageInput = {
+          status: entry.image ? 'supported' : 'unsupported',
+          source: 'chatgpt'
+        }
+      this.scopes.set(credentialScope, (rejected) =>
+        this.accounts.access(saved.accountId, rejected)
+      )
+    } else this.scopes.set(credentialScope, secret ?? '')
     return {
       connectionId: connection.id,
       revision: connection.revision,
@@ -486,6 +662,7 @@ export class Settings {
       baseUrl: connection.baseUrl,
       protocol: connection.protocol,
       behavior: connection.behavior,
+      ...(saved.vertex ? { vertex: saved.vertex } : {}),
       credentialScope,
       attachmentTransport: connection.attachmentTransport,
       capabilities
@@ -505,12 +682,16 @@ export class Settings {
   /** 用临时凭据测试草稿，结束后立即释放作用域。 */
   async checkConnectionDraft(definition, credential, modelId, signal) {
     return this.runConnectionProbe(async () => {
+      credential = this.draftCredential(definition, credential)
       definition = this.validateConnectionDraft(copy(definition), credential)
       requireValue(definition.id !== 'builtin-up', 'invalid_connection')
       const { connections, secrets } = await this.state()
       const previous = connections[definition.id]
       requireValue(definition.revision === (previous?.revision ?? 0), 'revision_conflict')
+      this.checkCredentialProvider(previous, definition, credential)
+      await this.checkAccountBinding(definition, connections)
       const secret = credential.kind === 'replace' ? credential.secret : secrets[definition.id]
+      if (definition.provider === 'vertex') vertexPrivateKey(secret)
       if (credential.kind === 'keep' && secret && previous)
         requireValue(
           new URL(previous.baseUrl).origin === new URL(definition.baseUrl).origin,

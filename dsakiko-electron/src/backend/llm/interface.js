@@ -188,6 +188,16 @@ export class Agent {
           rejected.remoteRejection = remoteRejection
           throw rejected
         }
+        // SDK 会把自定义传输的流中断、订阅额度异常包在 cause 内。
+        if (cause.cause?.problem) throw cause.cause
+        const code = cause.data?.error?.code
+        if (code === 'subscription_sharing_usage_limit_exceeded')
+          throw failure(
+            'quota_exhausted',
+            '此 ChatGPT 注册的可用额度已耗尽，请查看订阅用量或切换连接。'
+          )
+        if (code === 'subscription_sharing_usage_unavailable')
+          throw failure('quota_unavailable', '此 ChatGPT 注册暂时无法使用订阅额度。')
         const status = cause.statusCode
         if (status === 401 || status === 403) throw failure('authentication', '模型连接鉴权失败。')
         if (cause.data?.error?.code === 'insufficient_quota')
@@ -397,7 +407,8 @@ export class Agent {
       maxOutputTokens: contextBudget(request).reservedOutputTokens,
       // 原生推理模型自行控制采样，不发送它们明确不接受的采样参数。
       ...(!fixedSampling ? { temperature: options.temperature, topP: options.topP } : {}),
-      maxRetries: options.limits.maxRequestRetries,
+      // 订阅流可能在计入用量后才报告失败；认证过期的单次恢复由传输层处理。
+      maxRetries: request.connection.provider === 'chatgpt' ? 0 : options.limits.maxRequestRetries,
       abortSignal: AbortSignal.any(signals)
     }
   }

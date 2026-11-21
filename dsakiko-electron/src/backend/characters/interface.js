@@ -19,6 +19,27 @@ import {
 /** @typedef {import('../../shared/contracts/characters.js').CharacterCapabilities} CharacterCapabilities */
 
 /**
+ * 从模型资源入口或来源推断 Live2D 版本，不依赖持久化字段。
+ * @param {import('../../shared/contracts/characters.js').CharacterModel} model 已安装的模型配置。
+ * @param {object | null} assetState 资源库索引状态。
+ * @returns {'v2' | 'v3' | undefined} 模型版本；无法识别时返回 undefined。
+ */
+function inferModelVersion(model, assetState) {
+  const assetId = model?.presentation?.model?.id
+  if (assetId && assetState) {
+    const candidates = [assetState.locations?.[assetId]?.entry, assetState.assets?.[assetId]?.name]
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string') continue
+      if (/model3\.json$/iu.test(candidate)) return 'v3'
+      if (/model\.json$/iu.test(candidate)) return 'v2'
+    }
+  }
+  if (model?.source?.kind === 'modelscope') return 'v3'
+  if (model?.source?.kind === 'bestdori') return 'v2'
+  return undefined
+}
+
+/**
  * 角色与用户对话身份目录，负责管理角色配置、用户身份（Persona）以及解析角色在对话中可用的能力。
  */
 export class CharacterCatalog {
@@ -41,7 +62,7 @@ export class CharacterCatalog {
     this.resolveModel = resolveModel
     this.assets = assets
     this.removingOutfits = new Set()
-    assets.registerOwnerReader('character', (id) => this.get(id))
+    assets.registerOwnerReader('character', (id) => this.readRaw(id))
     assets.registerOwnerReader('persona', (id) => this.getPersona(id))
   }
 
@@ -81,13 +102,43 @@ export class CharacterCatalog {
   }
 
   /**
+   * 读取指定角色的原始持久化配置（不包含派生字段）。
+   * @param {string} characterId 角色 ID。
+   * @returns {Promise<CharacterDefinition | null>} 原始角色配置对象；角色不存在时返回 null。
+   */
+  async readRaw(characterId) {
+    const { characters } = await this.state()
+    return Object.hasOwn(characters, characterId) ? copy(characters[characterId]) : null
+  }
+
+  /**
+   * 为角色各形态的已安装模型附加派生的 Live2D 版本信息。
+   * @param {CharacterDefinition} character 角色配置副本。
+   * @returns {Promise<CharacterDefinition>} 附加版本信息后的角色配置。
+   */
+  async attachModelVersions(character) {
+    const hasModels = character.forms.some((form) => form.models.length > 0)
+    if (!hasModels) return character
+    const assetState =
+      typeof this.assets?.state === 'function' ? await this.assets.state().catch(() => null) : null
+    for (const form of character.forms) {
+      for (const model of form.models) {
+        const version = inferModelVersion(model, assetState)
+        if (version) model.version = version
+        else delete model.version
+      }
+    }
+    return character
+  }
+
+  /**
    * 获取指定角色的完整配置。
    * @param {string} characterId 角色 ID。
    * @returns {Promise<CharacterDefinition | null>} 角色配置对象；角色不存在时返回 null。
    */
   async get(characterId) {
-    const { characters } = await this.state()
-    return Object.hasOwn(characters, characterId) ? copy(characters[characterId]) : null
+    const character = await this.readRaw(characterId)
+    return character ? await this.attachModelVersions(character) : null
   }
 
   /** 在角色增删后通知依赖当前目录的对话状态。 */
@@ -177,6 +228,10 @@ export class CharacterCatalog {
         )
       await this.assets.assertPersistent(definition)
       const next = copy(definition)
+      // 派生版本字段只用于界面展示，不写入 characters.json。
+      for (const form of next.forms) {
+        for (const model of form.models) delete model.version
+      }
       requireValue(
         next.bangDreamId === undefined ||
           next.bangDreamId === null ||
@@ -208,7 +263,7 @@ export class CharacterCatalog {
       )
       if (definition.revision === 0) this.changes.emit('membership', next.id)
       this.changes.emit('definition', next.id)
-      return copy(next)
+      return await this.attachModelVersions(copy(next))
     })
   }
 

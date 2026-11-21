@@ -14,6 +14,10 @@
   text-overflow: ellipsis;
 }
 
+.search-select > input[readonly] {
+  cursor: pointer;
+}
+
 .search-select-icon {
   position: absolute;
   right: 9px;
@@ -64,4 +68,23 @@
 .search-select-option[aria-disabled='true'] {
   color: var(--muted-foreground);
   cursor: default;
+}
+
+.search-select-popover:has(.search-select-footer) {
+  scroll-padding-bottom: 42px;
+}
+
+.search-select-footer {
+  position: sticky;
+  bottom: -4px;
+  margin: 4px -4px -4px;
+  padding: 4px;
+  border-top: 1px solid var(--border);
+  background: var(--popover);
+}
+
+.search-select-footer-action {
+  justify-content: space-between;
+  width: 100%;
+  color: var(--muted-foreground);
 }

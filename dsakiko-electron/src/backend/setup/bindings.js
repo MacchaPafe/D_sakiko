@@ -174,6 +174,7 @@ export function legacyConnections(config) {
       model = model.slice(prefix.length + 1)
       provider ??= prefixed
     }
+    if (provider === 'chatgpt' || provider === 'vertex') continue
     const preset = providerPresets.find((value) => value.id === provider)
     if (
       !preset ||

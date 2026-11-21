@@ -354,3 +354,92 @@ test('下载期间显式关闭语音会使旧的自动启用意图失效', async
   expect(await settings.enablePreparedVoice('anon', revision)).toBe(false)
   expect(await settings.voicePreference()).toEqual({ revision: revision + 1, enabled: {} })
 })
+
+test('reorderConnections 持久化自有连接顺序，兼容 builtin-up 并拒绝无效列表', async () => {
+  const { settings, roots, assets } = await fixture()
+  const makeConnection = (id, name) => ({
+    id,
+    revision: 0,
+    name,
+    provider: 'openai-compatible',
+    protocol: 'chat',
+    baseUrl: 'http://127.0.0.1:9999/v1',
+    attachmentTransport: 'inline',
+    models: [{ id: id + '-model', declared: {}, overrides: {} }]
+  })
+
+  await settings.saveConnection(makeConnection('alpha', '连接 A'), {
+    kind: 'replace',
+    secret: 'key-a'
+  })
+  await settings.saveConnection(makeConnection('beta', '连接 B'), {
+    kind: 'replace',
+    secret: 'key-b'
+  })
+  await settings.saveConnection(makeConnection('builtin-up', '内置连接'), {
+    kind: 'replace',
+    secret: 'key-up'
+  })
+  const gamma = await settings.saveConnection(makeConnection('gamma', '连接 C'), {
+    kind: 'replace',
+    secret: 'key-c'
+  })
+
+  const events = []
+  await settings.observe((snapshot) => events.push(snapshot))
+
+  const reordered = await settings.reorderConnections(['gamma', 'alpha', 'beta'])
+  expect(reordered.map((item) => item.id)).toEqual(['gamma', 'alpha', 'beta'])
+  expect((await settings.listConnections()).map((item) => item.id)).toEqual([
+    'gamma',
+    'alpha',
+    'beta',
+    'builtin-up'
+  ])
+  expect(events).toHaveLength(2)
+
+  // 重启后顺序依然保留。
+  const restarted = new Settings({ directory: roots.appDataRoot, assets })
+  expect((await restarted.listConnections()).map((item) => item.id)).toEqual([
+    'gamma',
+    'alpha',
+    'beta',
+    'builtin-up'
+  ])
+
+  for (const invalid of [
+    'gamma',
+    ['gamma', 'alpha'],
+    ['gamma', 'alpha', 'alpha'],
+    ['gamma', 'alpha', 'beta', 'missing'],
+    ['gamma', 'alpha', 'beta', 'builtin-up']
+  ]) {
+    await expect(restarted.reorderConnections(invalid)).rejects.toHaveProperty(
+      'problem.code',
+      'invalid_connection'
+    )
+  }
+
+  // 新增连接追加到末尾，删除连接后从顺序中移除。
+  await restarted.saveConnection(makeConnection('delta', '连接 D'), {
+    kind: 'replace',
+    secret: 'key-d'
+  })
+  expect((await restarted.listConnections()).map((item) => item.id)).toEqual([
+    'gamma',
+    'alpha',
+    'beta',
+    'delta',
+    'builtin-up'
+  ])
+
+  await restarted.deleteConnection('gamma', gamma.revision)
+  expect((await restarted.listConnections()).map((item) => item.id)).toEqual([
+    'alpha',
+    'beta',
+    'delta',
+    'builtin-up'
+  ])
+  const raw = JSON.parse(await readFile(restarted.file, 'utf8'))
+  expect(raw.connectionOrder).toEqual(['alpha', 'beta', 'delta'])
+})

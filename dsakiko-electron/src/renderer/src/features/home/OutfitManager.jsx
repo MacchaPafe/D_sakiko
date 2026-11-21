@@ -245,11 +245,18 @@ function InstalledOutfit({ client, model, isDefault, current, canTry, onAction, 
     <li className="outfit-installed-row">
       <Thumbnail load={load} className="outfit-thumbnail-small" />
       <div className="outfit-row-text">
-        <strong>{model.name}</strong>
-        <div className="outfit-row-labels">
-          {current && <span className="outfit-badge outfit-badge-current">当前对话在用</span>}
-          {isDefault && <span className="outfit-badge">新对话默认</span>}
+        <div className="outfit-row-title">
+          <strong>{model.name}</strong>
+          {model.version && (
+            <span className="outfit-version-badge">{model.version.toUpperCase()}</span>
+          )}
         </div>
+        {(current || isDefault) && (
+          <div className="outfit-row-labels">
+            {current && <span className="outfit-badge outfit-badge-current">当前对话在用</span>}
+            {isDefault && <span className="outfit-badge">新对话默认</span>}
+          </div>
+        )}
       </div>
       {canTry && !current && (
         <Button variant="outline" size="sm" onClick={() => onAction('try', model)}>

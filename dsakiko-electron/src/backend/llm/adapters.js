@@ -3,6 +3,8 @@ import { createDeepSeek } from '@ai-sdk/deepseek'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
+import { vertexProvider, argonModel } from './vertex-model.js'
+import { subscriptionFetch } from './chatgpt-responses.js'
 import { requireValue } from '../core/support.js'
 import { normalizeConnection } from './connections.js'
 
@@ -26,6 +28,8 @@ function completionFetch(connection, reasoning, transport) {
 export function createModel(connection, apiKey, reasoning = { enabled: false }, transport = fetch) {
   const value = normalizeConnection(connection)
   const provider = createProvider(value, apiKey, reasoning, transport)
+  if (value.provider === 'vertex' && value.modelId === 'gemini-4-argon')
+    return argonModel(provider(value.modelId))
   if (value.protocol === 'responses') return provider.responses(value.modelId)
   if (value.protocol === 'chat-completions' && value.provider === 'openai')
     return provider.chat(value.modelId)
@@ -48,6 +52,13 @@ export function createProvider(
   transport = fetch
 ) {
   const value = normalizeConnection(connection)
+  if (value.provider === 'vertex') return vertexProvider(value, apiKey, transport)
+  if (value.provider === 'chatgpt')
+    return createOpenAI({
+      baseURL: value.baseUrl,
+      apiKey: 'subscription',
+      fetch: subscriptionFetch(apiKey, transport)
+    })
   const options = { apiKey, baseURL: value.baseUrl, fetch: transport }
   if (value.protocol === 'responses') return createOpenAI(options)
   if (value.protocol === 'anthropic-messages') return createAnthropic(options)
@@ -99,6 +110,11 @@ export function createProvider(
 export function reasoningOptions(connection, reasoning) {
   const value = normalizeConnection(connection)
   const { enabled, effort, budgetTokens } = reasoning
+  if (!effort && !budgetTokens && value.capabilities?.reasoning?.status !== 'supported') {
+    if (value.provider === 'vertex') return {}
+    if (value.provider === 'chatgpt')
+      return { openai: { store: false, include: ['reasoning.encrypted_content'] } }
+  }
   if (enabled) {
     requireValue(
       value.capabilities?.reasoning?.status === 'supported',
@@ -120,7 +136,11 @@ export function reasoningOptions(connection, reasoning) {
   if (value.protocol === 'responses') {
     requireValue(!budgetTokens, 'unsupported_reasoning', 'Responses 不支持手动思考 Token 预算。')
     const options = { store: false, include: ['reasoning.encrypted_content'] }
-    if (!enabled) options.reasoningEffort = 'none'
+    if (
+      !enabled &&
+      (value.provider !== 'chatgpt' || value.capabilities.reasoningEfforts?.includes('none'))
+    )
+      options.reasoningEffort = 'none'
     else if (effort) options.reasoningEffort = effort
     return { openai: options }
   }
@@ -130,11 +150,16 @@ export function reasoningOptions(connection, reasoning) {
     return { anthropic: { thinking, ...(enabled && effort ? { effort } : {}) } }
   }
   if (value.protocol === 'google-generative-ai') {
+    if (value.provider === 'vertex' && value.modelId === 'gemini-4-argon') {
+      requireValue(!budgetTokens, 'unsupported_reasoning', '该 Gemini 模型使用思考强度。')
+      if (!enabled) return {}
+    }
     const thinkingConfig = { includeThoughts: true }
     if (!enabled) thinkingConfig.thinkingBudget = 0
     else if (budgetTokens) thinkingConfig.thinkingBudget = budgetTokens
     else if (effort) thinkingConfig.thinkingLevel = effort
-    return { google: { thinkingConfig } }
+    const namespace = value.provider === 'vertex' ? 'googleVertex' : 'google'
+    return { [namespace]: { thinkingConfig } }
   }
   requireValue(!budgetTokens, 'unsupported_reasoning', 'Completions 不支持统一的思考 Token 预算。')
   if (value.provider === 'deepseek')

@@ -42,6 +42,20 @@ export const providerPresets = [
     keyPage: 'https://aistudio.google.com/apikey',
     exampleModel: 'gemini-3-pro-preview'
   },
+  {
+    id: 'vertex',
+    name: 'Google Cloud Vertex AI',
+    protocol: 'google-generative-ai',
+    baseUrl: 'https://aiplatform.googleapis.com',
+    keyPage: 'https://docs.cloud.google.com/iam/docs/keys-create-delete?hl=zh-cn'
+  },
+  {
+    id: 'chatgpt',
+    name: 'ChatGPT 订阅',
+    protocol: 'responses',
+    baseUrl: 'https://api.openai.com/v1',
+    keyPage: 'https://chatgpt.com/settings/usage'
+  },
   { id: 'xai', name: 'Grok', protocol: 'chat-completions', baseUrl: 'https://api.x.ai/v1' },
   {
     id: 'openrouter',
