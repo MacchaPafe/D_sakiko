@@ -15,7 +15,7 @@ from character import CharacterAttributes
 from emotion_enum import EmotionEnum
 from llm.adapters.chat_completions import build_messages, parse_response
 from llm.deepseek_chat import supports_chat_tools
-from llm.types import LLMConfig, LLMRequest
+from llm.types import LLMConfig, LLMRequest, LLMResult
 
 FLASH = LLMConfig("deepseek", "deepseek/deepseek-flash", "test-key")
 
@@ -40,6 +40,37 @@ def test_first_title_is_persisted_once_and_manual_names_win() -> None:
     assert other.apply_first_title("first", "活动报名")
     assert not other.apply_first_title("first", "再次命名")
     assert Chat.from_dict(other.to_dict()).name == "活动报名"
+
+
+@pytest.mark.parametrize("returned_title", ["排练时间查询", ""])
+def test_title_requests_follow_the_first_user_turn(returned_title: str) -> None:
+    """工具接续请求可取标题，拿到标题或进入第二轮后就停止。"""
+    from dp_local2 import DSLocalAndVoiceGen
+
+    engine = DSLocalAndVoiceGen.__new__(DSLocalAndVoiceGen)
+    engine.d_sakiko_config = object()
+    engine.current_chat_id = "chat"
+    engine.chat_manager = Mock(storage_error=None)
+    engine.chat_manager.get_chat_by_id.return_value.turns = []
+    engine._request_turn_id = engine._title_request_turn_id = "first"
+    engine._generated_title = ""
+    tool_call = {"type": "function", "id": "time", "function": {"name": "get_time", "arguments": "{}"}}
+    transport = Mock(side_effect=[
+        LLMResult(tool_calls=[tool_call]), LLMResult(), LLMResult(text="三点", title=returned_title),
+        LLMResult(), LLMResult(),
+    ])
+    with patch.object(engine, "_current_deepseek_file_service", return_value=None), patch.object(
+        engine, "_execute_completion_with_provider_policy", transport
+    ):
+        for phase in ("tool-runtime", "rolling-summary", "tool-runtime", "plain-runtime"):
+            engine._completion_with_current_config(phase, [], _reasoning_snapshot_locked=True)
+        engine._request_turn_id = "second"
+        engine._completion_with_current_config("tool-runtime", [], _reasoning_snapshot_locked=True)
+
+    titles = [call.args[1].get("extra_body", {}).get("title") for call in transport.call_args_list]
+    enabled = {"enabled": True}
+    assert titles == [enabled, None, enabled, None if returned_title else enabled, None]
+    assert engine._generated_title == returned_title
 
 
 def test_non_thinking_conflict_is_actionable_before_sending() -> None:

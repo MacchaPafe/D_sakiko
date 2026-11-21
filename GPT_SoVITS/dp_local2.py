@@ -1114,8 +1114,6 @@ class DSLocalAndVoiceGen:
                     observer = request_kwargs.get("_text_observer")
                     if isinstance(observer, LLMTextObserver):
                         observer.on_retry()
-                    if isinstance(request_kwargs.get("extra_body"), dict):
-                        request_kwargs["extra_body"] = {key: value for key, value in request_kwargs["extra_body"].items() if key != "title"}
                     repaired_messages = self._repair_deepseek_file_references(messages, service)
                     request_kwargs["messages"] = repaired_messages
                     messages = repaired_messages
@@ -1288,8 +1286,8 @@ class DSLocalAndVoiceGen:
                 raise LLMError("unsupported_tools", TOOL_CONFLICT)
             tools = [*(tools or []), *({"type": kind} for kind in WEB_TOOLS)]
             tool_choice = "auto"
-        if main_request and getattr(self, "_request_title", False):
-            self._request_title = False
+        request_title = main_request and bool(turn_id) and turn_id == getattr(self, "_title_request_turn_id", "")
+        if request_title:
             request_kwargs["extra_body"] = dict(request_kwargs.get("extra_body") or {}, title={"enabled": True})
         if tools is not None:
             request_kwargs.update(tools=tools, tool_choice=tool_choice)
@@ -1331,8 +1329,9 @@ class DSLocalAndVoiceGen:
                     meta["tools"] = [str(tool.get("function", {}).get("name") or tool.get("type", "")) for tool in tools or []]
             self.current_chat.record_model_response(result)
             if main_request and turn_id:
-                if result.title and request_kwargs.get("extra_body", {}).get("title"):
+                if request_title and result.title.strip():
                     self._generated_title = result.title
+                    self._title_request_turn_id = ""
                 if result.protocol.get("providerOptions", {}).get("deepseek"):
                     message_id = self.current_chat.response_message_id(result)
                     for display in web_displays(str(message_id), result.protocol["providerOptions"]):
@@ -2507,7 +2506,7 @@ class DSLocalAndVoiceGen:
             from llm.configuration import resolve_config
             official_flash = supports_chat_tools(resolve_config(self.d_sakiko_config))
             self._native_web_turn = official_flash and "web_search" in enabled_tools_snapshot
-            self._request_title = official_flash and first_generation
+            self._title_request_turn_id = turn_id if official_flash and first_generation else ""
             self._turn_request_timeout = request_timeout(self.d_sakiko_config)
             deepseek_file_service = self._current_deepseek_file_service()
 

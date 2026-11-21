@@ -167,9 +167,6 @@ async def _complete_chat(
     fallback = {key: value for key, value in options.items() if key != "stream_options"}
     if request.text_observer is None:
         return await call(stream=False, **fallback)
-    retry_options = dict(fallback)
-    if "title" in mapping(fallback.get("extra_body")):
-        retry_options["extra_body"] = {key: value for key, value in mapping(fallback["extra_body"]).items() if key != "title"}
     stream_options = options.get("stream_options") or {"include_usage": True}
     try:
         try:
@@ -177,11 +174,11 @@ async def _complete_chat(
         except Exception as error:
             if not _stream_option_rejected(error, "stream_options"):
                 raise
-            response = await call(stream=True, **retry_options)
+            response = await call(stream=True, **fallback)
     except Exception as error:
         if not _stream_option_rejected(error, "stream"):
             raise
-        return await call(stream=False, **retry_options)
+        return await call(stream=False, **fallback)
     if isinstance(response, AsyncIterable):
         return await _collect_stream(response, request, messages)
     return response
