@@ -349,7 +349,7 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
           </div>
         </div>
         <p className="role-section-desc">
-          可选配置不同情绪的参考录音；点击标签即可编辑对应情绪，未配置的情绪会回退到默认参考。
+          可选配置不同情绪的参考录音。
         </p>
         <div className="role-emotion-pills" role="group" aria-label="情绪参考音频列表">
           {emotionEntries.map(([key, label]) => {

@@ -33,6 +33,7 @@ import { ToolMenu, ThinkingPicker, ThinkingConflict } from './ToolControls.jsx'
 import { InteractionCards } from './InteractionCards.jsx'
 import { useRevealClock } from './use-reveal-clock.js'
 import { AttachmentList, AddAttachments } from './AttachmentList.jsx'
+import { SubtitleText } from './DialogueMarkdown.jsx'
 import { HistoryPanel } from './HistoryPanel.jsx'
 import { NoticeStack } from './NoticeStack.jsx'
 import { DownloadCenter } from './DownloadCenter.jsx'
@@ -43,6 +44,11 @@ import { OutfitManager } from './OutfitManager.jsx'
 import { VoiceInput, VoiceInstallDialog } from './VoiceInput.jsx'
 import { SettingsPanel } from '../settings/SettingsPanel.jsx'
 import { ResourceDownloadConfirmation } from '../settings/Resources.jsx'
+import {
+  characterSidebarGroupVars,
+  characterStageThemeVars,
+  resolveCharacterThemeColor
+} from '../../styles/character-theme.js'
 import './home.css'
 
 /** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
@@ -124,6 +130,7 @@ function ChatItem({
 }
 function CharacterGroup({
   role,
+  activeFormId,
   state,
   flow,
   client,
@@ -135,6 +142,8 @@ function CharacterGroup({
   const active = state.target.characterId === role.id
   const listId = useId()
   const unconfirmed = role.bangDreamId === undefined
+  const groupThemeColor = resolveCharacterThemeColor(role, active ? activeFormId : null)
+  const groupThemeStyle = characterSidebarGroupVars(groupThemeColor)
   const chats = state.chats.filter(
     (chat) =>
       chat.mode === 'single-character' && !chat.participantIssue && chat.characterIds[0] === role.id
@@ -149,7 +158,11 @@ function CharacterGroup({
     onAffiliation(role)
   }
   return (
-    <section className="home-role-group">
+    <section
+      className="home-role-group"
+      style={groupThemeStyle}
+      data-has-role-theme={groupThemeStyle ? 'true' : undefined}
+    >
       <div className="home-role-header">
         <button
           className={'home-role' + (expanded ? ' selected' : '')}
@@ -257,6 +270,7 @@ function keepRoleInView({ button, list, nav, offset }) {
 
 function CharacterGroups({
   state,
+  activeFormId,
   flow,
   client,
   expandedRoleId,
@@ -293,6 +307,7 @@ function CharacterGroups({
     <CharacterGroup
       key={role.id}
       role={role}
+      activeFormId={activeFormId}
       state={state}
       flow={flow}
       client={client}
@@ -306,7 +321,6 @@ function CharacterGroups({
 function Subtitle({ state, replayingTurn, onToggleReplay, theatre }) {
   const replaying = state.replayingLine || replayingTurn
   if (!state.text && !replaying) return <div className="home-subtitle" />
-  const characters = Array.from(state.text)
   let replayLabel = '回放当句对话'
   if (replayingTurn) replayLabel = theatre ? '停止整场回放' : '停止本轮回放'
   else if (state.replayingLine) replayLabel = '停止当句回放'
@@ -328,19 +342,13 @@ function Subtitle({ state, replayingTurn, onToggleReplay, theatre }) {
         )}
       </div>
       <div className="subtitle-body">
-        <div className="subtitle-text" aria-label={state.text}>
-          {characters.map((character, index) => (
-            <span
-              key={index}
-              aria-hidden="true"
-              className={index < state.revealed ? 'spoken' : undefined}
-            >
-              {character}
-            </span>
-          ))}
+        <div className="subtitle-text">
+          <SubtitleText text={state.text} revealed={state.revealed} />
         </div>
         {state.text && state.translation && (
-          <div className="subtitle-translation">{state.translation}</div>
+          <div className="subtitle-translation">
+            <SubtitleText text={state.translation} />
+          </div>
         )}
         {state.lineReplayError && (
           <div className="subtitle-replay-error" role="alert">
@@ -889,6 +897,9 @@ export function HomePage({ client, setup, setupState }) {
     expandedRoleId === undefined ? state.target.characterId : expandedRoleId
   const selection = role && state.snapshot?.chat.meta.settings.characters[role.id]
   const activeForm = selection?.formId ?? state.draftOutfit?.formId ?? role?.defaultFormId
+  // 仅单人模式随当前角色形态应用主题色；小剧场模式保持应用默认主色，避免双人切换时视觉跳变。
+  const activeThemeColor = isTheatre ? null : resolveCharacterThemeColor(role, activeForm)
+  const stageThemeStyle = characterStageThemeVars(activeThemeColor)
   const canChooseOutfit =
     role &&
     (!isTheatre || theatreRoles.length === 2) &&
@@ -1071,6 +1082,7 @@ export function HomePage({ client, setup, setupState }) {
                 {!state.loading && (
                   <CharacterGroups
                     state={state}
+                    activeFormId={isTheatre ? null : activeForm}
                     flow={flow}
                     client={client}
                     expandedRoleId={activeExpandedRoleId}
@@ -1164,7 +1176,12 @@ export function HomePage({ client, setup, setupState }) {
             </div>
           </aside>
         </Tabs>
-        <section className="home-stage" aria-label="角色舞台">
+        <section
+          className="home-stage"
+          aria-label="角色舞台"
+          style={stageThemeStyle}
+          data-has-role-theme={stageThemeStyle ? 'true' : undefined}
+        >
           <div
             className="home-canvas"
             ref={canvas}

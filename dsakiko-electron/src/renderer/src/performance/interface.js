@@ -1,3 +1,4 @@
+import { dialogueMarkdown } from '../../../shared/dialogue-markdown.js'
 /** @typedef {import('./playback-contracts.js').PlaybackOptions} PlaybackOptions */
 /** @typedef {import('../../../shared/contracts/presentation.js').SequenceSnapshot} SequenceSnapshot */
 /** @typedef {import('../../../shared/contracts/presentation.js').GuideProgress} GuideProgress */
@@ -205,7 +206,7 @@ export class Performance {
         current.durationMs,
         Math.max(0, current.elapsedMs + this.now() - this.anchor.receivedAt)
       )
-      const total = Array.from(current.guide.text ?? '').length
+      const total = dialogueMarkdown(current.guide.text).count
       const subtitleDurationMs = current.guide.subtitleDurationMs ?? current.durationMs
       revealedCharacters =
         subtitleDurationMs > 0
@@ -285,7 +286,7 @@ export class Performance {
         this.resumeLive()
         return
       }
-      const readingMs = Math.max(800, Array.from(guide.text ?? '').length * 80)
+      const readingMs = Math.max(800, dialogueMarkdown(guide.text).visibleCount * 80)
       const guideId = 'replay:' + index
       index += 1
       this.playingId = guideId

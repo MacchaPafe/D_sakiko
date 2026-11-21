@@ -84,20 +84,25 @@ export class CharacterCatalog {
   }
 
   /**
-   * 按目录顺序获取所有角色的摘要列表（使用各角色的默认形态展示名称和头像）。
-   * @returns {Promise<Array<{ id: string, defaultFormId: string, displayName: string, avatar: import('../../shared/contracts/common.js').AssetRef | null }>>} 角色摘要列表，默认形态编号可用于创建明确的身份引用。
+   * 按目录顺序获取所有角色的摘要列表（使用各角色的默认形态展示名称、头像与主题色）。
+   * @returns {Promise<Array<{ id: string, defaultFormId: string, name: string, displayName: string, avatar: import('../../shared/contracts/common.js').AssetRef | null, themeColor: string | null, formThemeColors: Record<string, string | null>, bangDreamId?: string | null }>>} 角色摘要列表，默认形态编号可用于创建明确的身份引用。
    */
   async list() {
     const state = await this.state()
     return state.order.map((id) => {
       const character = state.characters[id]
       const form = character.forms.find((item) => item.id === character.defaultFormId)
+      const formThemeColors = Object.fromEntries(
+        character.forms.map((item) => [item.id, item.themeColor ?? null])
+      )
       return {
         id,
         defaultFormId: form.id,
         name: character.name ?? form.displayName,
         displayName: form.displayName,
         avatar: copy(form.avatar),
+        themeColor: form.themeColor ?? null,
+        formThemeColors,
         ...(character.bangDreamId !== undefined && { bangDreamId: character.bangDreamId })
       }
     })

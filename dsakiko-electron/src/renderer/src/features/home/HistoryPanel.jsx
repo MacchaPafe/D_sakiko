@@ -5,44 +5,8 @@ import { Button } from '../../components/ui/button.jsx'
 import { historyRows } from './history.js'
 import { fitHistorySize, HISTORY_SIZE_KEY, readHistorySize } from './history-size.js'
 
-function inline(text) {
-  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
-    if (part.startsWith('**') && part.endsWith('**'))
-      return <strong key={index}>{part.slice(2, -2)}</strong>
-    if (part.startsWith('`') && part.endsWith('`'))
-      return <code key={index}>{part.slice(1, -1)}</code>
-    return part
-  })
-}
-
-function MarkdownLine({ line }) {
-  if (/^\s*[-*+] /.test(line))
-    return <div className="message-list-item">• {inline(line.replace(/^\s*[-*+] /, ''))}</div>
-  if (/^\s*\d+\. /.test(line)) return <div className="message-list-item">{inline(line)}</div>
-  if (/^#{1,3} /.test(line)) return <strong>{inline(line.replace(/^#{1,3} /, ''))}</strong>
-  if (line.startsWith('> ')) return <blockquote>{inline(line.slice(2))}</blockquote>
-  return <div>{line ? inline(line) : <br />}</div>
-}
-function MarkdownBlock({ block, code }) {
-  if (code)
-    return (
-      <pre>
-        <code>{block}</code>
-      </pre>
-    )
-  return block.split('\n').map((line, index) => <MarkdownLine key={index} line={line} />)
-}
-/** @param {{text: string}} props 消息文本。 @returns {import('react').ReactElement} 基础 Markdown；不执行 HTML 或加载外部媒体。 */
-export function MessageText({ text }) {
-  const blocks = String(text ?? '').split(/```[^\n]*\n([\s\S]*?)```/g)
-  return (
-    <div className="message-text">
-      {blocks.map((block, index) => (
-        <MarkdownBlock key={index} block={block} code={index % 2 === 1} />
-      ))}
-    </div>
-  )
-}
+import { MessageText, WebLink } from './DialogueMarkdown.jsx'
+import { webHref } from '../../../../shared/dialogue-markdown.js'
 
 function toolStatus(tool) {
   return (
@@ -58,26 +22,14 @@ function toolStatus(tool) {
 function Sources({ items }) {
   const sources = new Map()
   for (const source of items ?? []) {
-    try {
-      const url = new URL(source.url)
-      if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password)
-        sources.set(url.href, source.title || url.hostname)
-    } catch {
-      /* 旧存档可能包含无效地址。 */
-    }
-  }
-  function open(event) {
-    if (!window.dsakikoHost?.openWebSource) return
-    event.preventDefault()
-    void window.dsakikoHost.openWebSource(event.currentTarget.href)
+    const href = webHref(source.url)
+    if (href) sources.set(href, source.title || new URL(href).hostname)
   }
   return (
     <ul className="web-sources">
       {[...sources].map(([url, title]) => (
         <li key={url}>
-          <a href={url} title={url} target="_blank" rel="noreferrer" onClick={open}>
-            {title}
-          </a>
+          <WebLink href={url}>{title}</WebLink>
         </li>
       ))}
     </ul>

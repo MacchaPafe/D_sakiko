@@ -7,6 +7,8 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   main: {
     build: {
+      // 域名后缀表的入口是 JSON，打入主进程可避免外部 ESM 导入丢失 JSON 类型。
+      externalizeDeps: { exclude: ['tlds'] },
       rollupOptions: {
         input: {
           index: fileURLToPath(new URL('./src/main/index.js', import.meta.url)),

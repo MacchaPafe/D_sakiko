@@ -1345,6 +1345,7 @@ export class Conversations {
         sentencePauseMs: prepared.speech.sentencePauseMs,
         sampling: prepared.speech.sampling,
         ...original.spoken,
+        textFormat: 'spoken',
         voice: voice.voice,
         priority: 1
       })
@@ -2316,8 +2317,8 @@ export class Conversations {
       requireParticipants(await this.checkParticipants(state.chat))
       const target = this.locate(state.chat, line)
       requireValue(target?.formId, 'line_missing')
-      // 老存档可能把动作描写存入朗读文本。仅在用户要求重新合成时处理。
-      target.spoken.text = spokenText(target.spoken.text)
+      // 老朗读稿可能已丢失链接名称，重新合成时始终从保存的台词派生。
+      target.spoken.text = spokenText(target.text)
       if (!target.spoken.text) {
         state.audioTokens.delete(line.lineId)
         target.audio = null

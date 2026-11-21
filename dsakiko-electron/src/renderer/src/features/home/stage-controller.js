@@ -1,3 +1,4 @@
+import { dialogueMarkdown } from '../../../../shared/dialogue-markdown.js'
 import { StageActor } from './stage-actor.js'
 import { Performance } from '../../performance/interface.js'
 import { createAudioOutput } from '../../performance/audio-output.js'
@@ -307,7 +308,7 @@ export class StageController {
       text: line?.text ?? '',
       translation: line?.translation ?? null,
       name: slot?.displayName ?? this.history?.name ?? '',
-      revealed: Array.from(line?.text ?? '').length,
+      revealed: dialogueMarkdown(line?.text).count,
       canReplayLine: Boolean(this.lineReplaySource)
     })
   }
@@ -368,7 +369,7 @@ export class StageController {
         lineReplayError
       })
     } else if (this.historyAllowed) this.showHistory(progress.scene)
-    else if (this.state.text) this.update({ revealed: Array.from(this.state.text).length })
+    else if (this.state.text) this.update({ revealed: dialogueMarkdown(this.state.text).count })
     if (snapshot.problem) this.update({ problem: snapshot.problem.message })
   }
   analyse(audio) {

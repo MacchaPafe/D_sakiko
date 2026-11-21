@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Plus, Search, Shirt, X } from 'lucide-react'
+import { ArrowUp, Plus, Search, Shirt, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Checkbox } from '../../components/ui/checkbox.jsx'
 import { Input, Textarea } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { desktopHost } from '../../host/desktop.js'
+import { characterPreviewVars, characterSidebarGroupVars } from '../../styles/character-theme.js'
 import { CharacterAvatar } from '../home/CharacterAvatar.jsx'
 import { characterFormName } from '../home/character-form.js'
 import { ReplyVoice } from './ReplyVoice.jsx'
@@ -54,6 +55,7 @@ export function CharacterManager({
   const isNew = !base?.revision
   const locked = dirty || busy
   const form = edited?.forms.find((item) => item.id === formId)
+  const formThemeStyle = characterPreviewVars(form?.themeColor)
   const packageOption = packages?.find((item) => item.characterId === id)
 
   useEffect(() => {
@@ -450,19 +452,24 @@ export function CharacterManager({
             />
           </label>
           <nav aria-label="管理的角色">
-            {matches.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                value={item.id}
-                onClick={selectRole}
-                disabled={locked}
-                aria-current={id === item.id || undefined}
-              >
-                <CharacterAvatar role={item} client={client} size={30} />
-                <span>{item.name || item.displayName}</span>
-              </button>
-            ))}
+            {matches.map((item) => {
+              const itemThemeStyle = characterSidebarGroupVars(item.themeColor)
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  value={item.id}
+                  style={itemThemeStyle}
+                  data-has-role-theme={itemThemeStyle ? 'true' : undefined}
+                  onClick={selectRole}
+                  disabled={locked}
+                  aria-current={id === item.id || undefined}
+                >
+                  <CharacterAvatar role={item} client={client} size={30} />
+                  <span>{item.name || item.displayName}</span>
+                </button>
+              )
+            })}
             {!matches.length && <small>{roles.length ? '没有匹配的角色' : '还没有角色'}</small>}
           </nav>
         </aside>
@@ -470,7 +477,11 @@ export function CharacterManager({
           <div className="role-scroll" key={id}>
             {edited && form && (
               <fieldset disabled={busy} className="role-content">
-                <div className="role-profile">
+                <div
+                  className="role-profile"
+                  style={formThemeStyle}
+                  data-has-role-theme={formThemeStyle ? 'true' : undefined}
+                >
                   <CharacterAvatar
                     role={{ ...edited, avatar: form.avatar }}
                     client={client}
@@ -505,7 +516,7 @@ export function CharacterManager({
                   {!isNew && edited.forms.length > 1 && (
                     <div className="role-field">
                       <span className="role-field-label">形态</span>
-                      <div className="role-forms-row">
+                      <div className="role-forms-row" style={formThemeStyle}>
                         <div className="role-forms" role="group" aria-label="角色形态">
                           {edited.forms.map((item) => (
                             <Button
@@ -564,6 +575,27 @@ export function CharacterManager({
                           恢复默认颜色
                         </Button>
                       </div>
+                      {/* <div
+                        className="role-theme-preview"
+                        style={formThemeStyle}
+                        aria-label="配色预览"
+                      >
+                        <div className="role-theme-preview-stage">
+                          <span className="role-theme-preview-speaker">
+                            {edited.name || form.displayName || '角色名'}
+                          </span>
+                          <span className="role-theme-preview-line">舞台台词预览</span>
+                        </div>
+                        <div className="role-theme-preview-chat">
+                          <span className="role-theme-preview-name">
+                            {edited.name || form.displayName || '角色名'}
+                          </span>
+                          <span className="role-theme-preview-bubble">你好呀</span>
+                          <span className="role-theme-preview-send" aria-hidden="true">
+                            <ArrowUp size={13} />
+                          </span>
+                        </div>
+                      </div> */}
                     </div>
                   )}
 
@@ -693,9 +725,7 @@ export function CharacterManager({
                       <div className="role-row">
                         <div className="role-card-header">
                           <h3>删除角色</h3>
-                          <p className="role-section-desc">
-                            删除后无法撤销，现有对话将只能阅读。
-                          </p>
+                          <p className="role-section-desc">删除后无法撤销，现有对话将只能阅读。</p>
                         </div>
                         <Button
                           type="button"

@@ -1,3 +1,4 @@
+import { dialogueMarkdown } from '../../shared/dialogue-markdown.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { resolveFollowUpMotion, resolvePerformance } from './selection.js'
 import { performance as clock } from 'node:perf_hooks'
@@ -124,7 +125,7 @@ export class Performance {
       (guide.text
         ? Math.max(
             this.minimumReadingMs,
-            Array.from(guide.text).length * this.readingMsPerCharacter
+            dialogueMarkdown(guide.text).visibleCount * this.readingMsPerCharacter
           )
         : 0)
     )

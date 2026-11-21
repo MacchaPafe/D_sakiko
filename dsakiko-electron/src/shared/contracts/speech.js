@@ -17,6 +17,7 @@ export const DEFAULT_SPEECH_PAUSE_MS = 500
 /**
  * @typedef {object} SpeechRequest
  * @property {string} text 实际需要发声的文本，不要求与界面显示文本相同。
+ * @property {'spoken'} [textFormat] 已从原文提取朗读稿时指定，防止再次解释其中的字面符号。
  * @property {string} language 合成语言。
  * @property {VoiceProfile} voice 发音配置快照。
  * @property {SpeechPriority} priority 本次任务的初始优先级。
