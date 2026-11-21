@@ -93,16 +93,16 @@ function SpeechSliderCard({
   )
 }
 
-function SidebarPreviewPreference({ display, client }) {
+function DisplayPreference({ display, client, setting, title, hint }) {
   const [saving, setSaving] = useState(false)
   const [problem, setProblem] = useState(null)
-  const checked = display?.preferChinesePreview ?? true
+  const checked = display?.[setting] ?? true
 
   async function toggle() {
     setSaving(true)
     setProblem(null)
     try {
-      await client.settings.update({ display: { preferChinesePreview: !checked } })
+      await client.settings.update({ display: { [setting]: !checked } })
     } catch (error) {
       setProblem(error.message)
     } finally {
@@ -117,16 +117,16 @@ function SidebarPreviewPreference({ display, client }) {
         type="button"
         role="switch"
         aria-checked={checked}
-        aria-describedby="sidebar-preview-hint"
+        aria-describedby={setting + '-hint'}
         disabled={!display || saving}
         onClick={toggle}
       >
-        侧边栏预览翻译
+        {title}
         <span className="tool-switch" aria-hidden="true" data-state={String(checked)}>
           <i />
         </span>
       </button>
-      <p id="sidebar-preview-hint">开启时优先显示翻译，关闭后显示原文。</p>
+      <p id={setting + '-hint'}>{hint}</p>
       {problem && (
         <p className="settings-error" role="alert">
           {problem}
@@ -208,7 +208,20 @@ function Preferences({ settings, client }) {
     <section aria-label="偏好">
       <h3>偏好</h3>
       <div className="settings-stack">
-        <SidebarPreviewPreference display={settings?.display} client={client} />
+        <DisplayPreference
+          display={settings.display}
+          client={client}
+          setting="preferChinesePreview"
+          title="侧边栏预览翻译"
+          hint="开启时优先显示翻译，关闭后显示原文。"
+        />
+        <DisplayPreference
+          display={settings.display}
+          client={client}
+          setting="showModelThinking"
+          title="显示模型思考内容"
+          hint="在聊天记录中查看模型的思考。"
+        />
         <SpeechSliderCard
           title="回复语速"
           description="用于单人对话和小剧场"

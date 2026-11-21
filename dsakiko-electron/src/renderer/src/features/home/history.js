@@ -1,11 +1,11 @@
 import { isReplayableDialogue } from '../../../../shared/chat-history.js'
-import { deepSeekWebActivity } from '../../../../shared/server-web.js'
+import { deepSeekWebActivity, webCallPositions } from '../../../../shared/server-web.js'
 
 /** @typedef {{id: string, toolName: string, arguments: object, outcome: object|null, display: string|null}} ToolHistoryItem 调用与结果配对后的展示材料，不执行工具。 */
 /** @typedef {import('../../../../shared/contracts/presentation.js').AudioMaterial} AudioMaterial */
 /**
  * @typedef {{id: string, name: string, text: string, replayTurnId?: string} & (
- *   {kind: 'user'|'system'} |
+ *   {kind: 'user'|'system'|'reasoning'} |
  *   {kind: 'assistant', translation: string|null, audio: AudioMaterial|null} |
  *   {kind: 'tools', tools: ToolHistoryItem[]}
  * )} HistoryRow 有序历史投影；相邻工具合并折叠，原始记录不变。
@@ -50,8 +50,28 @@ function toolRow(rows, id, tool) {
   else rows.push({ id, name: '工具', text: '调用了工具', kind: 'tools', tools: [tool] })
 }
 
-/** @param {object|null} snapshot 正式聊天快照。 @returns {HistoryRow[]} 直接遵循正式消息顺序，前端不解释 Python 位置索引。 */
-export function historyRows(snapshot, now = Date.now()) {
+function orderedParts(message, calls) {
+  const parts = message.parts ?? []
+  if (!calls.length) return parts
+  // 旧 ChatGPT 存档在协议块中保留成功搜索的位置；仅有汇总信息时沿用已有的工具顺序。
+  const previousPositions = calls.some((call) => call.beforePartIndex == null)
+    ? webCallPositions(
+        message.protocol?.content ?? [],
+        parts.some((part) => part.kind === 'dialogue')
+      )
+    : new Map()
+  let position = 0
+  const ordered = []
+  for (const call of calls) {
+    const next = call.beforePartIndex ?? previousPositions.get(call.id) ?? position
+    while (position < next && position < parts.length) ordered.push(parts[position++])
+    ordered.push({ kind: 'server-tool', call })
+  }
+  return ordered.concat(parts.slice(position))
+}
+
+/** @param {object|null} snapshot 正式聊天快照。 @param {number} now 当前时间戳。 @param {boolean} showModelThinking 是否显示可读思考片段。 @returns {HistoryRow[]} 直接遵循正式消息顺序，前端不解释 Python 位置索引。 */
+export function historyRows(snapshot, now = Date.now(), showModelThinking = true) {
   const rows = []
   const settled = new Map()
   for (const turn of snapshot?.chat.turns ?? [])
@@ -92,16 +112,35 @@ export function historyRows(snapshot, now = Date.now()) {
         const web =
           message.protocol?.serverWeb ??
           deepSeekWebActivity(message.protocol?.providerOptions?.deepseek)
-        for (const call of web.calls) {
-          const key = id + ':native:' + call.id
-          toolRow(rows, key, {
-            ...call,
-            id: key,
-            toolName: call.toolName === 'read_url' ? '读取网页' : '搜索网页',
-            display: call.outcome.problem?.message ?? '服务端已完成调用'
-          })
-        }
-        for (const [partIndex, part] of (message.parts ?? []).entries()) {
+        let reasoningRow = null
+        for (const [partIndex, part] of orderedParts(message, web.calls).entries()) {
+          if (part.kind === 'reasoning') {
+            if (showModelThinking && typeof part.text === 'string' && part.text.trim()) {
+              if (reasoningRow) reasoningRow.text += '\n\n' + part.text
+              else {
+                reasoningRow = {
+                  id: id + ':reasoning:' + (part.id ?? partIndex),
+                  kind: 'reasoning',
+                  name: '模型',
+                  text: part.text
+                }
+                rows.push(reasoningRow)
+              }
+            }
+            continue
+          }
+          reasoningRow = null
+          if (part.kind === 'server-tool') {
+            const call = part.call
+            const key = id + ':native:' + call.id
+            toolRow(rows, key, {
+              ...call,
+              id: key,
+              toolName: call.toolName === 'read_url' ? '读取网页' : '搜索网页',
+              display: call.outcome.problem?.message ?? '服务端已完成调用'
+            })
+            continue
+          }
           if (part.kind === 'dialogue') {
             for (const line of part.lines) {
               const row = {

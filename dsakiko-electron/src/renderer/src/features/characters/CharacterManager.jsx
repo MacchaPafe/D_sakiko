@@ -647,7 +647,7 @@ export function CharacterManager({
                         <h3>角色归属</h3>
                         <p className="role-section-desc">
                           {affiliationMode === 'bang-dream'
-                            ? '关联后可匹配头像、下载 Live2D 服装。首次关联或更换角色会将所有形态设为该角色的预设色，之后可单独调色。'
+                            ? '关联后可匹配头像、快捷下载 Live2D 服装。'
                             : `「${roleDisplayName}」设为其他角色时，可通过导入本地模型添加服装。`}
                         </p>
                       </div>

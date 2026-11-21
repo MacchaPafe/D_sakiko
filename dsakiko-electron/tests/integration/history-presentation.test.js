@@ -132,3 +132,48 @@ test('记录框偏好可恢复，小窗口约束不覆盖大窗口偏好', () =>
   expect(fitHistorySize(preference, { width: 900, height: 900 })).toEqual(preference)
   expect(readHistorySize({ getItem: () => '{broken' })).toEqual({ width: 360, height: 671 })
 })
+
+test('同一响应的可读思考按顺序合并，工具、不同响应和空签名有明确边界', () => {
+  const thought = (text) => ({ kind: 'reasoning', text })
+  const s = snapshot([
+    {
+      id: 'm1',
+      kind: 'assistant',
+      parts: [
+        thought('先看原文'),
+        thought('再看译文'),
+        { kind: 'tool-call', callId: 'a', toolName: 'lookup' },
+        thought('资料齐了')
+      ]
+    },
+    {
+      id: 'm2',
+      kind: 'assistant',
+      parts: [
+        thought('准备回答'),
+        thought('  '),
+        { kind: 'dialogue', lines: [{ id: 'l', speakerId: 'actor', text: '台词' }] }
+      ]
+    },
+    {
+      id: 'm3',
+      kind: 'assistant',
+      parts: [{ kind: 'reasoning', text: '', protocol: { signature: '密文' } }]
+    }
+  ])
+  const visible = historyRows(s)
+  expect(visible.map((row) => row.kind)).toEqual([
+    'reasoning',
+    'tools',
+    'reasoning',
+    'reasoning',
+    'assistant'
+  ])
+  expect(visible.filter((row) => row.kind === 'reasoning').map((row) => row.text)).toEqual([
+    '先看原文\n\n再看译文',
+    '资料齐了',
+    '准备回答'
+  ])
+  expect(historyRows(s, 0, false).map((row) => row.kind)).toEqual(['tools', 'assistant'])
+  expect(lastDialogue(s.chat).text).toBe('台词')
+})

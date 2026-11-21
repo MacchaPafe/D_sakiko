@@ -7,9 +7,30 @@
  * @property {object} arguments 服务端提供的搜索动作或参数。
  * @property {{status: 'succeeded'} | {status: 'failed', problem: import('./contracts/common.js').Problem}} outcome 已有结果，无需本地执行。
  * @property {WebSource[]} sources 供对话展示的来源。
+ * @property {number} [beforePartIndex] 服务端调用之后第一个业务片段的位置。
  */
 
 /** @typedef {{calls: ServerWebCall[], citations: WebSource[]}} ServerWebActivity 单次响应中的服务端网页工具与引用。 */
+
+/** @param {object[]} content SDK 响应或存档中的有序协议块。
+ * @param {boolean} hasDialogue 本次响应的文本是否被接受为角色台词。
+ * @returns {Map<string, number>} 服务端工具调用在业务片段之间的位置。
+ */
+export function webCallPositions(content, hasDialogue) {
+  const positions = new Map()
+  let index = 0
+  let dialoguePending = hasDialogue
+  for (const part of content) {
+    if (part.toolName === 'web_search' && (part.providerExecuted || part.type === 'tool-result')) {
+      if (!positions.has(part.toolCallId)) positions.set(part.toolCallId, index)
+    } else if (part.type === 'reasoning' || part.type === 'tool-call') index++
+    else if (part.type === 'text' && dialoguePending) {
+      index++
+      dialoguePending = false
+    }
+  }
+  return positions
+}
 
 /**
  * 投影 DeepSeek 的协议材料，现有存档与新响应使用同一份规则。

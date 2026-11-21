@@ -140,6 +140,15 @@ export function reasoningOptions(connection, reasoning) {
   if (value.protocol === 'responses') {
     requireValue(!budgetTokens, 'unsupported_reasoning', 'Responses 不支持手动思考 Token 预算。')
     const options = { store: false, include: ['reasoning.encrypted_content'] }
+    const official =
+      value.provider === 'chatgpt' ||
+      (value.provider === 'openai' && value.baseUrl === 'https://api.openai.com/v1')
+    // 早期 o1、o3-mini 和非推理聊天模型不能仅因启用思考就请求摘要。
+    const supportsSummary =
+      /^(?:gpt-[56](?:[.-]|$)|o3(?:$|-pro|-\d{4})|o4-mini(?:-|$))/.test(value.modelId) &&
+      !value.modelId.includes('-chat')
+    if (enabled && effort !== 'none' && official && supportsSummary)
+      options.reasoningSummary = 'auto'
     if (
       !enabled &&
       (value.provider !== 'chatgpt' || value.capabilities.reasoningEfforts?.includes('none'))

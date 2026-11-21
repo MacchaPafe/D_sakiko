@@ -923,3 +923,27 @@ test('删除预览在身份变化后失效，保留身份后历史对话可读',
     'missing-characters'
   )
 })
+
+test('隐藏思考时新回复仍保存推理，重开后可使用原文', async () => {
+  const reasoning = { id: 'reason', kind: 'reasoning', text: '核对日期', protocol: {} }
+  const { backend, chatId } = await fixture(async (request, observer) => {
+    const update = response(request.turnId)
+    update.appendParts.unshift(reasoning)
+    await observer.onResponse(update)
+    return { status: 'completed', usage: null }
+  })
+  expect(await backend.settings.get('display.showModelThinking')).toBe(true)
+  await backend.settings.update({ display: { showModelThinking: false } })
+  await backend.conversations.createTurn(
+    chatId,
+    { text: '你好', attachments: [] },
+    { requestId: 'hidden' }
+  )
+  await until(async () => (await backend.conversations.getSnapshot(chatId)).activity === 'idle')
+  const saved = await backend.store.load(chatId)
+  expect(saved.chat.turns[0].messages.at(-1).parts[0]).toEqual(reasoning)
+  await backend.settings.update({ display: { showModelThinking: true } })
+  expect(
+    (await backend.conversations.getSnapshot(chatId)).chat.turns[0].messages.at(-1).parts[0]
+  ).toEqual(reasoning)
+})

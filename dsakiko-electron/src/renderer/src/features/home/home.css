@@ -1306,6 +1306,12 @@ section.home-subtitle::before {
   cursor: pointer;
   padding: 6px 0;
 }
+.history-reasoning {
+  padding: 6px 0 10px;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .history-tool-detail {
   margin-top: 8px;
   padding: 10px;

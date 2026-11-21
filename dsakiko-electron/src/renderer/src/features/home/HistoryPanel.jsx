@@ -88,6 +88,23 @@ function ToolDetails({ tool }) {
     </section>
   )
 }
+function ReasoningDetails({ text }) {
+  const [expanded, setExpanded] = useState(false)
+  function toggle(event) {
+    setExpanded(event.currentTarget.open)
+  }
+  return (
+    <details className="history-tools" onToggle={toggle}>
+      <summary>模型思考了</summary>
+      {expanded && (
+        <div className="history-reasoning">
+          <MessageText text={text} />
+        </div>
+      )}
+    </details>
+  )
+}
+
 function HistoryMessage({
   client,
   theatre,
@@ -98,6 +115,7 @@ function HistoryMessage({
   onPlay,
   onReplayTurn
 }) {
+  if (row.kind === 'reasoning') return <ReasoningDetails text={row.text} />
   if (row.kind === 'sources')
     return (
       <details className="history-tools">
@@ -189,10 +207,11 @@ function HistoryMessage({
 }
 
 /**
- * @param {{snapshot: object|null, characters: object[], onClose: () => void, onPlayAudio: (audio: import('./history.js').AudioMaterial, signal: AbortSignal, onStop: (error?: Error) => void) => void, onPlayTurn: (turnId: string) => void, turnReplay: {id: string, error: string|null}|null}} props 对话观察、单句试听与由舞台管理的整轮回放。
+ * @param {{showModelThinking: boolean, snapshot: object|null, characters: object[], onClose: () => void, onPlayAudio: (audio: import('./history.js').AudioMaterial, signal: AbortSignal, onStop: (error?: Error) => void) => void, onPlayTurn: (turnId: string) => void, turnReplay: {id: string, error: string|null}|null}} props 对话观察、单句试听与由舞台管理的整轮回放。
  * @returns {import('react').ReactElement} 独立滚动的悬浮历史，离开底部时不抢占阅读位置。
  */
 export function HistoryPanel({
+  showModelThinking,
   now,
   client,
   snapshot,
@@ -251,7 +270,7 @@ export function HistoryPanel({
     measure()
     return () => observer.disconnect()
   }, [])
-  const rows = historyRows(snapshot, now)
+  const rows = historyRows(snapshot, now, showModelThinking)
   const warnings = snapshot?.chat.meta.extensions?.pythonImport?.normalizationWarnings ?? []
   // 语音和回放按钮可以在轮次结束后出现，记录内容没有变化时不提示新消息。
   const contentKey = JSON.stringify(

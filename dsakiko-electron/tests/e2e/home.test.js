@@ -605,6 +605,7 @@ async function verifyHistory(page, application, backend, selected) {
   question.content.text =
     '祥子，你还记得当初在排练室里第一次听到那首曲子时是什么感觉吗？后来你们又做了哪些改动？'
   const lines = reply.parts[0].lines
+  reply.parts.unshift({ id: 'thinking', kind: 'reasoning', text: '**先核对线索**', protocol: {} })
   const last = { ...lines[0] }
   Object.assign(lines[0], {
     text: 'あの曲を初めて聴いたとき、窓の外はもうすっかり暗くなっていました。でも、誰も帰ろうとしなかったんです。',
@@ -627,6 +628,17 @@ async function verifyHistory(page, application, backend, selected) {
   const shortReply = replies.nth(1).locator('.history-bubble')
   const resize = page.getByRole('button', { name: '调整记录框宽度' })
   const panel = page.locator('.history-panel')
+  const thinking = panel.getByText('模型思考了一会儿', { exact: true })
+  await thinking.waitFor()
+  expect(await panel.locator('.history-reasoning').count()).toBe(0)
+  await thinking.click()
+  await panel.locator('.history-reasoning strong').filter({ hasText: '先核对线索' }).waitFor()
+  await backend.settings.update({ display: { showModelThinking: false } })
+  await thinking.waitFor({ state: 'detached' })
+  expect(await panel.getByText('先核对线索').count()).toBe(0)
+  await backend.settings.update({ display: { showModelThinking: true } })
+  await thinking.waitFor()
+  expect(await panel.locator('.history-reasoning').count()).toBe(0)
   const narrowUser = await longUser.boundingBox()
   const narrowReply = await longReply.boundingBox()
   const narrowShort = await shortReply.boundingBox()
@@ -1291,6 +1303,12 @@ app.on('window-all-closed', () => app.quit())`
       await settings.getByRole('button', { name: '应用', exact: true }).click()
       const preferences = settings.getByRole('region', { name: '偏好' })
       await preferences.getByRole('heading', { name: '偏好', exact: true }).waitFor()
+      const thinkingSwitch = preferences.getByRole('switch', { name: '显示模型思考内容' })
+      expect(await thinkingSwitch.isChecked()).toBe(true)
+      await thinkingSwitch.press('Space')
+      await expect.poll(() => backend.settings.get('display.showModelThinking')).toBe(false)
+      await thinkingSwitch.click()
+      await expect.poll(() => backend.settings.get('display.showModelThinking')).toBe(true)
       const previewSwitch = preferences.getByRole('switch', { name: '侧边栏预览翻译' })
       expect(await previewSwitch.isChecked()).toBe(true)
       await previewSwitch.press('Space')

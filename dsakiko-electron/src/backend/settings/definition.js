@@ -148,6 +148,7 @@ export const settingsDefinition = {
     loop: config.boolean({ default: true })
   },
   display: {
+    showModelThinking: config.boolean({ default: true }),
     preferChinesePreview: config.boolean({ default: true }),
     frameRate: config.number({ default: 60, exclusiveMin: 0 }),
     theme: config.enum({ default: 'system', values: ['system', 'light', 'dark'] }),

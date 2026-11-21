@@ -1289,6 +1289,9 @@ export function HomePage({ client, setup, setupState }) {
           </div>
           {historyOpen ? (
             <HistoryPanel
+              showModelThinking={
+                !!state.settings?.display && state.settings.display.showModelThinking !== false
+              }
               key={state.target.chatId ?? 'blank'}
               snapshot={state.snapshot}
               characters={state.characters}

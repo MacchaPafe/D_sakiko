@@ -622,9 +622,6 @@ export class Agent {
         )
         if (Object.keys(fields).length) messageOptions.deepseek = fields
       }
-      const web = request.chatgptWebSearch
-        ? chatGPTWebActivity(response)
-        : deepSeekWebActivity(messageOptions.deepseek)
       const calls = content.filter((part) => part.type === 'tool-call')
       const text = content
         .filter((part) => part.type === 'text')
@@ -664,6 +661,9 @@ export class Agent {
       }
       // 为什么在真正执行工具前先把 tool-call 记录通知给 observer 保存：
       // 若工具执行中途进程崩溃或被用户取消，对话存档中必须先有对应的 tool-call 记录，后续才能为其补记中断状态并保持历史可追溯。
+      const web = request.chatgptWebSearch
+        ? chatGPTWebActivity(response, dialogueAdded)
+        : deepSeekWebActivity(messageOptions.deepseek)
       await observer.onResponse({
         responseId,
         title,

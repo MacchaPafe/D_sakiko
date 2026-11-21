@@ -2,6 +2,7 @@ import { expect, test, vi } from 'vitest'
 import { tmpdir } from 'node:os'
 import { configureDeepSeek } from '../../src/backend/llm/deepseek-chat.js'
 import { configureChatGPTSearch } from '../../src/backend/llm/chatgpt-responses.js'
+import { reasoningOptions } from '../../src/backend/llm/adapters.js'
 import { Agent } from '../../src/backend/llm/interface.js'
 import { Settings } from '../../src/backend/settings/interface.js'
 import { characterContext } from '../../src/backend/llm/context.js'
@@ -14,6 +15,23 @@ import { historyRows } from '../../src/renderer/src/features/home/history.js'
 
 const answer = JSON.stringify({
   lines: [{ speaker: '角色', text: '测试完成', translation: null, emotion: 'happiness' }]
+})
+
+test('官方 Responses 请求摘要时保留选择的强度，只影响支持的连接和模型', () => {
+  const connection = requestFor('openai', 'responses', 'gpt-6.2-sol').connection
+  connection.baseUrl = 'https://api.openai.com/v1'
+  const enabled = { enabled: true, effort: 'high' }
+  expect(reasoningOptions(connection, enabled).openai).toMatchObject({
+    reasoningSummary: 'auto',
+    reasoningEffort: 'high'
+  })
+  for (const options of [
+    reasoningOptions(connection, { enabled: false }),
+    reasoningOptions({ ...connection, modelId: 'o1-mini' }, enabled),
+    reasoningOptions({ ...connection, baseUrl: 'https://fixture.invalid/v1' }, enabled),
+    reasoningOptions({ ...connection, protocol: 'chat-completions' }, enabled)
+  ])
+    expect(options.openai).not.toHaveProperty('reasoningSummary')
 })
 
 test.each(['https://api.deepseek.com', 'https://api.deepseek.com/v1'])(
@@ -267,7 +285,18 @@ test.each([false, true])('ChatGPT 搜索与本地函数同轮协作（搜索单�
       }
     ]
   }
-  const searches = [webCall, { type: 'web_search_call', id: 'ws_2', status: 'failed' }]
+  const summary = (id, text) => ({
+    type: 'reasoning',
+    id,
+    encrypted_content: 'encrypted-' + id,
+    summary: [{ type: 'summary_text', text }]
+  })
+  const searches = [
+    summary('rs_1', '先查资料'),
+    webCall,
+    { type: 'web_search_call', id: 'ws_2', status: 'failed' },
+    summary('rs_2', '已查完资料')
+  ]
   const outputs = split
     ? [searches, [functionCall], [finalMessage]]
     : [[...searches, functionCall], [finalMessage]]
@@ -296,6 +325,7 @@ test.each([false, true])('ChatGPT 搜索与本地函数同轮协作（搜索单�
   expect(transport).toHaveBeenCalledTimes(split ? 3 : 2)
   const bodies = transport.mock.calls.map(([, options]) => JSON.parse(options.body))
   const first = bodies[0]
+  expect(first.reasoning).toEqual({ summary: 'auto' })
   const last = bodies.at(-1)
   expect(first).toMatchObject({
     store: false,
@@ -322,7 +352,17 @@ test.each([false, true])('ChatGPT 搜索与本地函数同轮协作（搜索单�
   expect(request.tools[0].execute).toHaveBeenCalledOnce()
   expect(localSearch).not.toHaveBeenCalled()
   const rows = historyRows({ chat: { mode: request.mode, turns: [turn] } })
-  expect(rows.find((row) => row.kind === 'tools').tools).toMatchObject([
+  expect(rows.filter((row) => row.kind === 'reasoning').map((row) => row.text)).toEqual([
+    '先查资料',
+    '已查完资料'
+  ])
+  expect(rows.slice(1, 5).map((row) => row.kind)).toEqual([
+    'reasoning',
+    'tools',
+    'reasoning',
+    'tools'
+  ])
+  expect(rows.filter((row) => row.kind === 'tools').flatMap((row) => row.tools)).toMatchObject([
     { toolName: '搜索网页', outcome: { status: 'succeeded' }, sources: [{ url }] },
     { toolName: '搜索网页', outcome: { status: 'failed' }, display: 'OpenAI 网页搜索失败。' },
     { toolName: 'echo', outcome: { status: 'succeeded' } }
@@ -688,7 +728,11 @@ const cases = [
                     thoughtSignature: 'tool-signature'
                   }
                 ]
-              : [{ text: answer }, { text: '', thoughtSignature: 'final-signature' }]
+              : [
+                  { text: '已确认回复要点', thought: true },
+                  { text: answer },
+                  { text: '', thoughtSignature: 'final-signature' }
+                ]
           },
           finishReason: 'STOP'
         }
@@ -748,6 +792,13 @@ for (const scenario of cases)
       expect(original.protocol.content[0].providerOptions.anthropic.signature).toBe('signature-1')
     }
     if (scenario.provider === 'gemini') {
+      const saved = { chat: { mode: 'scripted-dialogue', turns: [restored] } }
+      expect(historyRows(saved).filter((row) => row.kind === 'reasoning')).toMatchObject([
+        { text: '已确认回复要点' }
+      ])
+      expect(historyRows(saved, Date.now(), false).some((row) => row.kind === 'reasoning')).toBe(
+        false
+      )
       expect(
         restored.messages.at(-1).protocol.content.at(-1).providerOptions.google.thoughtSignature
       ).toBe('final-signature')

@@ -321,7 +321,7 @@ export function ThinkingConflict({ flow }) {
   if (!conflict) return null
   return (
     <div className="thinking-conflict" role="status">
-      <span>同时使用 DeepSeek 联网和本地工具需要开启思考。</span>
+      <span>使用 DeepSeek 时，同时使用网页访问工具和本地工具需要开启思考。</span>
       <button type="button" onClick={() => flow.setReasoning({ ...value, enabled: true })}>
         开启思考
       </button>

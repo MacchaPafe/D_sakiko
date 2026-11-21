@@ -2,6 +2,7 @@ import { EventSourceParserStream } from 'eventsource-parser/stream'
 import { openai } from '@ai-sdk/openai'
 import { requireValue, failure } from '../core/support.js'
 import { resource } from '../settings/chatgpt-oauth.js'
+import { webCallPositions } from '../../shared/server-web.js'
 
 /**
  * 按本轮已授权的工具选择替换搜索后端，避免工具目录里的博查声明同时进入请求。
@@ -21,9 +22,10 @@ export const chatGPTWebSearchTool = openai.tools.webSearch()
 /**
  * 提取已执行的搜索与引用供对话展示，SDK 自己负责把成功的搜索结果编码回 Responses。
  * @param {object} response SDK 单步生成结果。
+ * @param {boolean} hasDialogue 本次响应是否产生了台词片段。
  * @returns {import('../../shared/server-web.js').ServerWebActivity} 网页活动记录。
  */
-export function chatGPTWebActivity(response) {
+export function chatGPTWebActivity(response, hasDialogue) {
   const calls = []
   const citations = []
   for (const part of response.content ?? []) {
@@ -64,6 +66,8 @@ export function chatGPTWebActivity(response) {
       })
     }
   }
+  const positions = webCallPositions(response.content ?? [], hasDialogue)
+  for (const call of calls) call.beforePartIndex = positions.get(call.id)
   return { calls, citations }
 }
 
