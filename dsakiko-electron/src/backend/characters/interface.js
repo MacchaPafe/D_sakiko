@@ -1,5 +1,6 @@
 import { extractAssetReferences } from '../resources/references.js'
 import path from 'node:path'
+import { pinOutfit } from './outfit-selection.js'
 import { missingVoiceMaterials } from '../../shared/reply-voice.js'
 import { bangDreamCharacters } from './bang-dream.js'
 import {
@@ -63,6 +64,7 @@ export class CharacterCatalog {
     this.changes = new SnapshotBus()
     this.resolveModel = resolveModel
     this.assets = assets
+    this.removingForms = new Map()
     this.removingOutfits = new Set()
     assets.registerOwnerReader('character', (id) => this.readRaw(id))
     assets.registerOwnerReader('persona', (id) => this.getPersona(id))
@@ -98,6 +100,7 @@ export class CharacterCatalog {
       return {
         id,
         defaultFormId: form.id,
+        forms: character.forms.map(({ id, displayName }) => ({ id, displayName })),
         name: character.name ?? form.displayName,
         displayName: form.displayName,
         avatar: copy(form.avatar),
@@ -171,11 +174,51 @@ export class CharacterCatalog {
         const selection = selections[id]
         if (!selection) continue
         const form = characters[id].forms.find(({ id: formId }) => formId === selection.formId)
-        const modelId = selection.modelOverrides?.[selection.formId]
-        if (modelId != null) this.assertOutfitAvailable(id, form, modelId)
+        this.assertFormAvailable(id, form)
+        for (const [formId, modelId] of Object.entries(selection.modelOverrides ?? {})) {
+          const owner = characters[id].forms.find((item) => item.id === formId)
+          this.assertFormAvailable(id, owner)
+          if (modelId != null) this.assertOutfitAvailable(id, owner, modelId)
+        }
       }
       return operation()
     })
+  }
+
+  /** 导入与分支在入库时固定仍可用的人格和服装，保留已删除角色的只读历史。 */
+  async withRestoredSelections(ids, selections, operation) {
+    return this.queue.run('catalog', async () => {
+      const { characters } = await this.state()
+      const restored = { ...selections }
+      for (const id of ids) {
+        const role = characters[id]
+        if (!role) continue
+        requireValue(!this.removingForms.has(id), 'character_busy', '正在删除人格，请稍后重试。')
+        const selection = selections[id]
+        const overrides = {}
+        for (const form of role.forms) {
+          const modelId = selection?.modelOverrides?.[form.id]
+          if (form.models.some((model) => model.id === modelId)) {
+            this.assertOutfitAvailable(id, form, modelId)
+            overrides[form.id] = modelId
+          }
+        }
+        const selected = role.forms.find((form) => form.id === selection?.formId)
+        restored[id] = pinOutfit(role, { formId: selected?.id, modelOverrides: overrides })
+        const activeForm = role.forms.find((form) => form.id === restored[id].formId)
+        const modelId = restored[id].modelOverrides[activeForm.id]
+        if (modelId != null) this.assertOutfitAvailable(id, activeForm, modelId)
+      }
+      return operation(restored)
+    })
+  }
+
+  assertFormAvailable(id, form) {
+    requireValue(
+      form && this.removingForms.get(id) !== form.id,
+      'form_missing',
+      '该人格已不可用，请重新选择。'
+    )
   }
 
   assertOutfitAvailable(characterId, form, modelId) {
@@ -215,6 +258,11 @@ export class CharacterCatalog {
     return this.queue.run('catalog', async () => {
       const state = await this.state()
       safeId(definition.id)
+      requireValue(
+        !this.removingForms.has(definition.id),
+        'character_busy',
+        '正在删除人格，请稍后重试。'
+      )
       requireValue(!['__proto__', 'constructor', 'prototype'].includes(definition.id))
       // 核对版本号防止并发修改互相覆盖；由后端统一递增 revision，避免调用方自行计算版本号出错。
       requireValue(
@@ -263,6 +311,29 @@ export class CharacterCatalog {
       )
       requireValue(Array.isArray(previewedThemeFormIds))
       const previous = state.characters[next.id]
+      requireValue(
+        ['character', 'form'].includes(next.selfNameMode ?? 'character'),
+        'invalid_self_name_mode'
+      )
+      requireValue(
+        !previous || previous.forms.every((old) => next.forms.some((form) => form.id === old.id)),
+        'form_removal_required',
+        '请使用删除人格操作。'
+      )
+      const formNames = new Set()
+      for (const form of next.forms) {
+        safeId(form.id)
+        requireValue(!['__proto__', 'constructor', 'prototype'].includes(form.id))
+        form.displayName =
+          form.displayName?.trim() ||
+          (next.forms.length === 1 && next.selfNameMode !== 'form' ? next.name?.trim() : '')
+        requireValue(
+          form.displayName && !formNames.has(form.displayName),
+          'invalid_form_name',
+          '人格名称不能为空或重复。'
+        )
+        formNames.add(form.displayName)
+      }
       const preset = bangDreamCharacters.get(next.bangDreamId)
       if (preset) {
         const relinked = previous?.bangDreamId !== next.bangDreamId
@@ -271,7 +342,7 @@ export class CharacterCatalog {
           if (relinked) {
             // 旧版导入、内置安装和服装页直接关联时，全部形态一次性采用预设色。
             if (!previewedThemeFormIds.includes(form.id)) form.themeColor = preset.themeColor
-          } else if (!existingForms.has(form.id)) {
+          } else if (!existingForms.has(form.id) && !previewedThemeFormIds.includes(form.id)) {
             form.themeColor ??= preset.themeColor
           }
         }
@@ -302,6 +373,100 @@ export class CharacterCatalog {
       this.changes.emit('definition', next.id)
       return await this.attachModelVersions(copy(next))
     })
+  }
+
+  formDeletionStamp(role, formId, personas, chats) {
+    return fingerprint([
+      role.id,
+      formId,
+      role.revision,
+      personas.map(({ id, revision }) => [id, revision]),
+      chats.map(({ id }) => id)
+    ])
+  }
+
+  /** @param {string} characterId 来源角色编号。 @param {string} formId 来源人格编号。 @returns {Promise<UserPersonaDefinition[]>} 目录顺序下绑定到该人格的身份。 */
+  async formPersonas(characterId, formId) {
+    const result = []
+    for (const id of (await this.state()).personas) {
+      const persona = await this.getPersona(id)
+      const source = persona?.source
+      if (
+        source?.kind === 'character' &&
+        source.characterId === characterId &&
+        source.formId === formId
+      )
+        result.push(persona)
+    }
+    return result
+  }
+
+  /** @param {string} characterId 角色。 @param {string} formId 待删人格。 @returns {Promise<object>} 需接替的对话及转为独立身份的绑定。 */
+  async previewFormDeletion(characterId, formId) {
+    const role = await this.get(characterId)
+    const form = role?.forms.find((entry) => entry.id === formId)
+    requireValue(form && role.forms.length > 1, 'form_required', '角色至少要保留一个人格。')
+    const personas = await this.formPersonas(characterId, formId)
+    const usage = await this.formUsage({ characterId, formId, dryRun: true })
+    return {
+      ...usage,
+      personas: personas.map(({ id }) => ({ id, name: form.displayName })),
+      stamp: this.formDeletionStamp(role, formId, personas, usage.chats)
+    }
+  }
+
+  /** @param {string} characterId 角色。 @param {string} formId 待删人格。 @param {string} replacementId 接替人格。 @param {string} stamp 确认时的影响摘要。 @returns {Promise<void>} 完成交接并删除人格。 */
+  async deleteForm(characterId, formId, replacementId, stamp) {
+    await this.queue.run('catalog', async () => {
+      const role = await this.readRaw(characterId)
+      requireValue(
+        formId !== replacementId &&
+          role?.forms.some((item) => item.id === formId) &&
+          role.forms.some((item) => item.id === replacementId),
+        'invalid_replacement'
+      )
+      requireValue(!this.removingForms.has(characterId), 'character_busy')
+      this.removingForms.set(characterId, formId)
+    })
+    try {
+      // 先锁住受影响对话，再取目录锁，与首轮提交的锁顺序一致。
+      await this.formUsage({ characterId, formId, replacementId }, async (chats, transfer) => {
+        await this.queue.run('catalog', async () => {
+          const state = await this.state()
+          const role = state.characters[characterId]
+          const form = role.forms.find((item) => item.id === formId)
+          const personas = await this.formPersonas(characterId, formId)
+          requireValue(
+            stamp === this.formDeletionStamp(role, formId, personas, chats),
+            'revision_conflict',
+            '使用情况已变化，请重新确认删除。'
+          )
+          // 先把每个使用方交接到仍然存在的资料，失败重试时始终能解析两侧身份。
+          await transfer()
+          for (const persona of personas) {
+            persona.source = {
+              kind: 'custom',
+              displayName: form.displayName,
+              description: form.description,
+              avatar: form.avatar
+            }
+            persona.revision++
+            await this.assets.commitReferences('persona:' + persona.id, persona, () =>
+              writeJson(this.personaFile(persona.id), persona)
+            )
+          }
+          role.forms = role.forms.filter((item) => item.id !== formId)
+          if (role.defaultFormId === formId) role.defaultFormId = replacementId
+          role.revision++
+          await this.assets.commitReferences('character:' + characterId, role, () =>
+            writeJson(this.file, state)
+          )
+          this.changes.emit('definition', characterId)
+        })
+      })
+    } finally {
+      this.removingForms.delete(characterId)
+    }
   }
 
   /** @param {string} characterId 目标角色。 @returns {Promise<object>} 当前存档、身份及任务的删除影响。 */
@@ -340,6 +505,7 @@ export class CharacterCatalog {
         state.characters[characterId]?.revision === expectedRevision,
         'revision_conflict'
       )
+      requireValue(!this.removingForms.has(characterId), 'character_busy')
       if (confirmation) {
         const impact = await this.previewDeletion(characterId)
         requireValue(!impact.busy, 'character_busy', '请先结束该角色的生成、演出或安装任务。')
@@ -386,7 +552,7 @@ export class CharacterCatalog {
     const form = character.forms.find(
       (item) => item.id === (options.formId ?? character.defaultFormId)
     )
-    requireValue(form, 'form_missing')
+    this.assertFormAvailable(characterId, form)
     const modelId = options.modelId ?? form.defaultModelId
     const model = form.models.find((item) => item.id === modelId)
     if (modelId !== null) this.assertOutfitAvailable(characterId, form, modelId)
@@ -468,6 +634,7 @@ export class CharacterCatalog {
       })),
       revision: character.revision,
       formId: form.id,
+      selfNameMode: character.selfNameMode ?? 'character',
       displayName: form.displayName,
       description: form.description,
       avatar: copy(form.avatar),
@@ -524,7 +691,7 @@ export class CharacterCatalog {
         voice: null,
         selected: 'silent',
         problems: [
-          { code: 'voice_unconfigured', message: '当前形态没有可用参考声音。', retryable: false }
+          { code: 'voice_unconfigured', message: '当前人格没有可用参考声音。', retryable: false }
         ]
       }
     return {
@@ -681,7 +848,7 @@ export class CharacterCatalog {
     const character = await this.get(source.characterId)
     requireValue(character, 'character_missing')
     const form = character.forms.find((item) => item.id === source.formId)
-    requireValue(form, 'form_missing')
+    this.assertFormAvailable(source.characterId, form)
     return form
   }
 }

@@ -13,6 +13,7 @@ import {
   SerialQueue,
   copy
 } from '../core/support.js'
+import { DownloadJobFeed } from '../core/download-job-feed.js'
 import { createLegacySource } from './legacy-source.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { processUsesResources } from '../resources/process.js'
@@ -26,7 +27,7 @@ import { VoiceReuse, voiceDefinition } from './voice-reuse.js'
 import { collectDownloadCache } from './cache.js'
 import { extractArchive, prepareRuntime } from './installers.js'
 import { matchBangDreamCharacters } from '../characters/bang-dream.js'
-import { mergeLegacyOutfits } from '../characters/legacy-outfits.js'
+import { legacyOutfitsToMerge, mergeLegacyOutfits } from '../characters/legacy-outfits.js'
 import {
   bindGsv,
   characterDefinition,
@@ -131,6 +132,7 @@ export class ResourceSetup {
     this.voiceReuse = new VoiceReuse(assets, transport)
     this.directorySizes = new Map()
     this.bus = new SnapshotBus()
+    this.downloadJobs = new DownloadJobFeed()
     this.queue = new SerialQueue()
     this.sources = new Map()
     this.legacyChatConnections = new Map()
@@ -173,6 +175,7 @@ export class ResourceSetup {
       // 安装提交成功但任务检查点尚未写入时，依靠安装来源补齐就绪里程碑。
       if (job.kind === 'download' && job.startedAt && job.status !== 'cancelled')
         await this.enablePreparedVoices(job)
+      if (job.kind === 'download') this.publishDownloadJob(this.snapshot(job))
     }
     await this.enableImportedVoices()
     await this.maintainRuntimes()
@@ -604,7 +607,7 @@ export class ResourceSetup {
         changes: voiceChanges(form, next, baseline, assetName)
       })
     }
-    requireValue(forms.length, 'form_missing', '语音包中没有这个形态。')
+    requireValue(forms.length, 'form_missing', '语音包中没有这个人格。')
     return { id, characterId: role.id, contentId, version, download, forms }
   }
 
@@ -798,23 +801,30 @@ export class ResourceSetup {
         const keys = new Set()
         if (selection.characters) {
           for (const persona of scan.personas ?? []) if (persona.avatar) keys.add(persona.avatar)
-          const existingIds = new Set((await this.characters.list()).map((role) => role.id))
+          const existingRoles = await this.characters.list()
+          const affiliations = matchBangDreamCharacters(scan.roles, existingRoles)
+          const existingIds = new Set(existingRoles.map((role) => role.id))
           for (const role of scan.roles) {
-            if (existingIds.has(role.id)) continue
+            const existing = existingIds.has(role.id) && (await this.characters.readRaw(role.id))
+            if (existing) {
+              if ((existing.bangDreamId ?? affiliations.get(role.id)) === role.id) {
+                for (const models of legacyOutfitsToMerge(existing, role).values())
+                  for (const model of models) keys.add(model.key)
+              }
+              continue
+            }
             for (const form of role.forms) {
               for (const model of form.models) keys.add(model.key)
-            }
-            for (const key of Object.values(role.voiceFiles)) if (key) keys.add(key)
-            if (role.avatar) keys.add(role.avatar)
-          }
-          // 外部引用参考音频也属于角色资料，不要求与角色目录相邻。
-          for (const role of scan.roles.filter((role) => !existingIds.has(role.id)))
-            for (const form of role.forms)
+              // 参考录音也可能在角色目录之外，按形态的引用加入计划。
               if (form.voice) {
                 keys.add(form.voice.defaultReference.audio)
                 for (const reference of Object.values(form.voice.emotions))
                   keys.add(reference.audio)
               }
+            }
+            for (const key of Object.values(role.voiceFiles)) if (key) keys.add(key)
+            if (role.avatar) keys.add(role.avatar)
+          }
         }
         if (selection.gsv) for (const key of Object.values(scan.gsv)) if (key) keys.add(key)
         if (selection.chats) for (const key of Object.values(scan.media)) if (key) keys.add(key)
@@ -1019,7 +1029,14 @@ export class ResourceSetup {
   }
   async save(job) {
     await writeJson(this.jobFile(job.id), job)
-    this.bus.emit(job.id, this.snapshot(job))
+    const snapshot = this.snapshot(job)
+    this.bus.emit(job.id, snapshot)
+    if (job.kind === 'download') this.publishDownloadJob(snapshot)
+  }
+
+  publishDownloadJob(snapshot) {
+    const { id, kind, status, phase, completedAt, expiresAt, download, problem } = snapshot
+    this.downloadJobs.publish({ id, kind, status, phase, completedAt, expiresAt, download, problem })
   }
   async getJob(id) {
     const job = await this.readJob(id)
@@ -1348,10 +1365,15 @@ export class ResourceSetup {
         if (existing) {
           const affiliation = existing.bangDreamId ?? affiliations.get(role.id)
           if (affiliation === role.id) {
-            const imported = characterDefinition(role, job.refs, existing.name, job.scan.identity)
             const changed = existing.bangDreamId === undefined
             existing.bangDreamId ??= affiliation
-            const outfitsChanged = await mergeLegacyOutfits(existing, imported, this.assets, signal)
+            const outfitsChanged = await mergeLegacyOutfits(
+              existing,
+              role,
+              job.refs,
+              this.assets,
+              signal
+            )
             if (changed || outfitsChanged) await this.characters.save(existing)
           }
           await this.updateLegacyItem(
@@ -1792,7 +1814,9 @@ export class ResourceSetup {
               Math.max(0, Math.round(((bytes - sampledBytes) * 1000) / (now - last))) || null
             last = now
             sampledBytes = bytes
-            this.bus.emit(job.id, this.snapshot(job))
+            const snapshot = this.snapshot(job)
+            this.bus.emit(job.id, snapshot)
+            this.downloadJobs.progress(job.id, () => ({ download: snapshot.download }))
           }
         }).catch(async (error) => {
           const partial = await stat(path.join(this.cache, file.sha256 + '.part')).catch(() => null)
@@ -2271,5 +2295,6 @@ export class ResourceSetup {
     await Promise.all([...this.running.values()].map((active) => active.done))
     await this.queue.run('admission', async () => {})
     this.bus.clear()
+    this.downloadJobs.close()
   }
 }

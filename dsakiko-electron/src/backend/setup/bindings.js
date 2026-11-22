@@ -1,6 +1,8 @@
 import { merge, fingerprint } from '../core/support.js'
 import { providerPresets } from '../../shared/contracts/llm-providers.js'
 import { normalizeConnection } from '../llm/connections.js'
+import { legacyOutfitDefinition } from '../characters/legacy-outfits.js'
+import { sakikoFormProfile } from '../bundled-characters/sakiko-forms.js'
 
 const sharedFiles = {
   'chinese-roberta-wwm-ext-large/config.json': ['bert', 'config'],
@@ -66,13 +68,10 @@ export function characterDefinition(role, refs, name = role.name, source = null)
       id: form.id,
       displayName: form.displayName === role.name ? name : form.displayName,
       description: form.description,
+      ...sakikoFormProfile(role.id, form.id),
       avatar: refs[role.avatar] ?? null,
       themeColor: role.themeColor,
-      models: form.models.map((model) => ({
-        id: model.id,
-        name: model.name,
-        presentation: { model: refs[model.key] }
-      })),
+      models: form.models.map((model) => legacyOutfitDefinition(model, refs)),
       defaultModelId: form.defaultModelId,
       voice: form.voice
         ? {

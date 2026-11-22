@@ -2,19 +2,19 @@ import { characterFormName } from './character-form.js'
 import { useEffect, useState } from 'react'
 import { Check, ChevronRight, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
+import { Choice } from '../../components/ui/Choice.jsx'
 import { stageModelKey } from '../../performance/stage-layout.js'
 
 function wardrobeSubtitle(definition, role, form, theatreMode) {
-  const characterName = definition?.name || role.displayName
+  const characterName = definition?.name || role.name || role.displayName
   const hasMultipleForms = Boolean(definition && definition.forms.length > 1 && form)
   if (theatreMode) return hasMultipleForms ? characterFormName(definition, form) : null
-  if (!hasMultipleForms) return characterName
-  return characterName + ' · ' + characterFormName(definition, form)
+  return characterName
 }
 
 /**
  * @param {object} props 当前角色、对话选择及舞台加载状态。
- * @returns {import('react').ReactElement|null} 服装列表，仅展示当前形态的模型。
+ * @returns {import('react').ReactElement|null} 换装与单人对话人格切换浮窗。
  */
 export function StageWardrobe({
   open,
@@ -24,6 +24,9 @@ export function StageWardrobe({
   client,
   chatSelection,
   draftOutfit,
+  hasChat,
+  personaBusy,
+  onChooseForm,
   stageState,
   savingDraft,
   participants,
@@ -37,6 +40,9 @@ export function StageWardrobe({
   const [retry, setRetry] = useState(0)
   const [savingId, setSavingId] = useState(null)
   const [saveError, setSaveError] = useState(null)
+  const [switchingForm, setSwitchingForm] = useState(false)
+  const [formError, setFormError] = useState(null)
+  const [switchHintSeq, setSwitchHintSeq] = useState(0)
 
   useEffect(() => {
     if (!open) return
@@ -54,20 +60,49 @@ export function StageWardrobe({
     }
   }, [open, client, role, retry])
 
+  useEffect(() => {
+    if (!switchHintSeq) return
+    const timer = setTimeout(() => setSwitchHintSeq(0), open ? 4500 : 0)
+    return () => clearTimeout(timer)
+  }, [open, switchHintSeq])
+
+  useEffect(() => {
+    if (open || !formError) return
+    const timer = setTimeout(() => setFormError(null), 0)
+    return () => clearTimeout(timer)
+  }, [open, formError])
+
   if (!open) return null
   const result = catalog?.roleId === role.id && catalog.retry === retry ? catalog : null
   const definition = result?.definition
-  const formId = chatSelection?.formId ?? draftOutfit?.formId ?? definition?.defaultFormId
+  const forms = definition?.forms ?? role?.forms ?? []
+  const hasMultipleForms = Boolean(!participants && forms.length > 1)
+  const formId =
+    chatSelection?.formId ?? draftOutfit?.formId ?? definition?.defaultFormId ?? role?.defaultFormId
   const form = definition?.forms.find((item) => item.id === formId)
   const models = form?.models ?? []
   const selectedId =
-    chatSelection?.modelOverrides?.[formId] ?? draftOutfit?.model.id ?? form?.defaultModelId
+    chatSelection?.modelOverrides?.[formId] ?? draftOutfit?.model?.id ?? form?.defaultModelId
   const selected = models.find((item) => item.id === selectedId)
   const shown = stageState.shownOutfitKey
   const current = shown
     ? (models.find((item) => item === selected && stageModelKey(item.presentation) === shown) ??
       models.find((item) => stageModelKey(item.presentation) === shown))
     : null
+
+  async function handleChooseForm(nextFormId) {
+    if (!onChooseForm || switchingForm || personaBusy || nextFormId === formId) return
+    setFormError(null)
+    setSwitchingForm(true)
+    try {
+      await onChooseForm(nextFormId)
+      if (hasChat) setSwitchHintSeq((value) => value + 1)
+    } catch (error) {
+      setFormError(error.message)
+    } finally {
+      setSwitchingForm(false)
+    }
+  }
 
   async function choose(model) {
     if (savingDraft || savingId !== null) return
@@ -154,7 +189,7 @@ export function StageWardrobe({
     >
       <header className="stage-wardrobe-heading">
         <div>
-          <h2 id={id + '-title'}>服装</h2>
+          <h2 id={id + '-title'}>{hasMultipleForms ? '人格与服装' : '服装'}</h2>
           {subtitle && <p>{subtitle}</p>}
         </div>
         <Button variant="ghost" size="icon" aria-label="收起服装" onClick={onClose}>
@@ -176,6 +211,30 @@ export function StageWardrobe({
           ))}
         </div>
       )}
+      {hasMultipleForms && (
+        <div className="stage-wardrobe-persona">
+          <div className="stage-wardrobe-persona-row">
+            <span className="stage-wardrobe-section-label">当前人格</span>
+            <Choice
+              label="当前人格"
+              value={formId}
+              onChange={handleChooseForm}
+              disabled={Boolean(personaBusy)}
+              options={forms.map((item) => ({ value: item.id, label: item.displayName }))}
+            />
+          </div>
+          {formError && (
+            <p className="home-inline-problem" role="alert">
+              {formError}
+            </p>
+          )}
+          {hasChat && switchHintSeq > 0 && (
+            <p className="stage-wardrobe-hint" role="status">
+              对话中切换人格可能导致身份混淆与缓存率下降
+            </p>
+          )}
+        </div>
+      )}
       <div className="stage-wardrobe-list">
         {!result && <p role="status">正在读取服装…</p>}
         {result?.error && (
@@ -188,7 +247,7 @@ export function StageWardrobe({
             </Button>
           </>
         )}
-        {result && !result.error && !models.length && <p>当前形态暂无服装</p>}
+        {result && !result.error && !models.length && <p>当前人格暂无服装</p>}
         {models.map(renderModel)}
       </div>
       <footer>

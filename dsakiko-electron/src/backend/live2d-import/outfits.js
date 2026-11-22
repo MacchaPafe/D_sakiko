@@ -11,6 +11,7 @@ import {
   writeJson,
   problem
 } from '../core/support.js'
+import { DownloadJobFeed } from '../core/download-job-feed.js'
 import { Live2dImporter } from './interface.js'
 import { OutfitSources } from './sources.js'
 import { extractAssetReferences } from '../resources/references.js'
@@ -42,6 +43,7 @@ export class Outfits {
     this.sources = new OutfitSources(fetch)
     /** @type {Map<string, OutfitJob>} */
     this.jobs = new Map()
+    this.downloadJobs = new DownloadJobFeed()
     this.tasks = new Map()
     this.removedAssets = new Set()
     this.localImports = new Set()
@@ -60,6 +62,7 @@ export class Outfits {
         changed = true
       }
       this.jobs.set(job.id, job)
+      this.downloadJobs.publish(job)
     }
     for (const id of saved.removedAssets ?? []) this.removedAssets.add(safeId(id))
     if (changed) await this.saveJobs()
@@ -72,6 +75,11 @@ export class Outfits {
         removedAssets: [...this.removedAssets]
       })
     )
+  }
+
+  async saveJob(job) {
+    await this.saveJobs()
+    this.downloadJobs.publish(job)
   }
 
   /** 回收服装删除后释放的资源，现有场景及其它使用方仍按媒体库引用管理。 */
@@ -98,6 +106,7 @@ export class Outfits {
     this.closed = true
     for (const task of this.tasks.values()) task.controller.abort()
     await Promise.allSettled([...this.tasks.values()].map((task) => task.done))
+    this.downloadJobs.close()
   }
 
   async target(target) {
@@ -106,7 +115,7 @@ export class Outfits {
     const role = await this.characters.get(characterId)
     requireValue(role, 'character_missing', '角色已不存在。')
     const form = role.forms.find((item) => item.id === formId)
-    requireValue(form, 'form_missing', '角色形态已不存在。')
+    requireValue(form, 'form_missing', '角色人格已不存在。')
     return { role, form }
   }
 
@@ -394,10 +403,10 @@ export class Outfits {
     requireValue(!this.closed, 'backend_closed')
     job.status = 'running'
     delete job.problem
-    await this.saveJobs()
+    await this.saveJob(job)
     if (this.closed) {
       job.status = 'interrupted'
-      await this.saveJobs()
+      await this.saveJob(job)
       return
     }
     const controller = new AbortController()
@@ -410,8 +419,10 @@ export class Outfits {
   async run(job, task) {
     const directory = path.join(this.cache, job.id)
     const { signal } = task.controller
+    const readProgress = () => ({ progress: job.progress })
     const progress = (completed, total) => {
       job.progress = { completed, total }
+      this.downloadJobs.progress(job.id, readProgress)
     }
     const { target, item } = job
     try {
@@ -432,7 +443,7 @@ export class Outfits {
             : await this.sources.downloadArchive(item, directory, signal, progress)
         signal.throwIfAborted()
         job.status = 'installing'
-        await this.saveJobs()
+        await this.saveJob(job)
         const options = { name: item.name, source: identity(item) }
         await this.assets.using({}, async (owner) => {
           const model =
@@ -455,7 +466,7 @@ export class Outfits {
       job.status = signal.aborted ? (task.cancel ? 'cancelled' : 'interrupted') : 'failed'
       if (!signal.aborted) job.problem = problem(error)
     } finally {
-      await this.saveJobs()
+      await this.saveJob(job)
       if (['cancelled', 'succeeded'].includes(job.status))
         await rm(directory, { recursive: true, force: true })
     }
@@ -482,7 +493,7 @@ export class Outfits {
       } else if (!task && action === 'cancel' && ['failed', 'interrupted'].includes(job.status)) {
         job.status = 'cancelled'
         delete job.problem
-        await this.saveJobs()
+        await this.saveJob(job)
         await rm(path.join(this.cache, id), { recursive: true, force: true })
       }
       return copy(job)

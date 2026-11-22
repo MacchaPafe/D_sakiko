@@ -22,7 +22,7 @@ preload 构建为独立 CommonJS 文件，窗口启用 contextIsolation 和 sand
 | backend/core                          | 公共文件工具、快照通知、固定默认值与输入校验      |
 | backend/conversation                  | 对话运行状态、受理、历史、保存、async 结果和提醒  |
 | backend/performance                   | 无客户端也推进的演出计划，不区分前后台            |
-| backend/characters                    | 角色、形态与人格目录                              |
+| backend/characters                    | 角色、角色人格与对话者身份目录                              |
 | backend/llm                           | 固定 Nunjucks 模板、模型请求和工具循环            |
 | backend/settings                      | 共享设置、模型连接及后端私有凭据                  |
 | backend/onboarding、backend/setup      | 初始化、旧版导入、资源计划与持久任务              |

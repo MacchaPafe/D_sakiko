@@ -4,9 +4,13 @@
 {% else %}
 本轮创作小剧场，约 15 条角色发言，允许同一角色连续发言，不强制轮流说话。
 {% endif %}
-[当前形态与能力]
+[当前角色与能力]
 {% for character in characters %}
-角色名：{{ character.name }}；当前形态：{{ character.displayName }}。
+{% if character.selfNameMode == 'form' %}
+角色名：{{ character.name }}；当前自称：{{ character.selfName }}。被问及自己的名字时，以「{{ character.selfName }}」自然回答。台词署名（speaker）：{{ character.speaker }}。
+{% else %}
+角色名：{{ character.name }}。被问及自己的名字时，以「{{ character.selfName }}」自然回答。台词署名（speaker）：{{ character.speaker }}。
+{% endif %}
 {% if character.modelVersion == 'v3' %}
 本轮可独立指定动作和表情，必须包含 performance 内容。
 motions：{{ character.performances.motions | dump }}

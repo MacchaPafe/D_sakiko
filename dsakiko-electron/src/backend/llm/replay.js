@@ -61,14 +61,17 @@ export function semanticParts(parts) {
       }
     return {
       kind: 'dialogue',
-      lines: part.lines.map(({ speakerId, formId, text, translation, emotion, performance }) => ({
-        speakerId,
-        formId,
-        text,
-        translation,
-        emotion,
-        performance
-      }))
+      lines: part.lines.map(
+        ({ speakerId, speakerLabel, formId, text, translation, emotion, performance }) => ({
+          speakerId,
+          ...(speakerLabel && { speakerLabel }),
+          formId,
+          text,
+          translation,
+          emotion,
+          performance
+        })
+      )
     }
   })
 }
@@ -103,7 +106,7 @@ export function semanticHistory(turns) {
 
 /** 本轮输入与此前历史的摘要；临时控制消息另按协议处理，不存入历史。
  * @param {object[]} history 之前的历史。
- * @param {object} context 当前人物资料。
+ * @param {object|null} context 当时可用的人物资料，导入轮次可能缺失。
  * @param {object | null} user 本轮用户输入；小剧场为 null。
  * @returns {string} 编辑检测摘要。
  */

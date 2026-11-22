@@ -10,7 +10,7 @@ export function live2dTools(live2d) {
     syncTool(
       {
         name: 'fetch_all_live2d_models',
-        description: '列出当前对话角色在当前形态下的可用服装（modelId 与名称）及当前选中项。',
+        description: '列出当前对话角色在当前人格下的可用服装（modelId 与名称）及当前选中项。',
         requiredCapabilities: ['live2d'],
         parametersSchema: parameters({
           character: {
@@ -26,7 +26,7 @@ export function live2dTools(live2d) {
       {
         name: 'change_character_live2d',
         description:
-          '为指定角色切换当前形态下的服装（需先调用 fetch_all_live2d_models 获取可用 modelId）。调用成功后即可在台词中按已换装的状态自然表现。切勿提及后端保存或前端加载等技术细节。',
+          '为指定角色切换当前人格下的服装（需先调用 fetch_all_live2d_models 获取可用 modelId）。调用成功后即可在台词中按已换装的状态自然表现。切勿提及后端保存或前端加载等技术细节。',
         dependencies: ['fetch_all_live2d_models'],
         requiredCapabilities: ['live2d'],
         parametersSchema: parameters(

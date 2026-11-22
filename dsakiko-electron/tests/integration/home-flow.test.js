@@ -3,7 +3,7 @@ import { HomeFlow, selectedModel } from '../../src/renderer/src/features/home/ho
 import { historyRows } from '../../src/renderer/src/features/home/history.js'
 function fixture() {
   const client = {
-    characters: { list: async () => [{ id: 'sakiko' }, { id: 'anon' }] },
+    characters: { list: async () => [{ id: 'sakiko' }, { id: 'anon' }], listPersonas: async () => [] },
     conversations: {
       listChats: async () => [],
       observe: vi.fn(() => () => {}),
@@ -37,7 +37,7 @@ test('丢失首轮响应后重试同一意图，双击不重复发送，清空�
   expect(flow.input().chatId).toBeUndefined()
 })
 
-test('新对话临时服装随首轮提交，重开时恢复默认，正式对话只更新当前形态的覆盖', async () => {
+test('新对话临时服装随首轮提交，重开时恢复默认，正式对话只更新当前人格的覆盖', async () => {
   const { flow, client } = fixture()
   const outfit = { id: 'stage', name: '演出服', presentation: { model: { id: 'asset' } } }
   await flow.chooseOutfit('form', outfit, 'default')
@@ -67,6 +67,51 @@ test('新对话临时服装随首轮提交，重开时恢复默认，正式对�
   flow.newChat('sakiko')
   expect(flow.state.draftOutfit).toBeNull()
 })
+test('首轮可以直接选择无模型的人格，草稿保留其他人格试穿过的服装', async () => {
+  const { flow, client } = fixture()
+  await flow.chooseOutfit('black', { id: 'costume' }, 'sakiko')
+  await flow.chooseForm('white')
+  expect(flow.state.draftOutfit).toEqual({ formId: 'white', model: null })
+  await flow.chooseForm('black')
+  expect(flow.state.draftOutfit.model.id).toBe('costume')
+  await flow.chooseForm('white')
+  flow.setDraft('开始')
+  client.conversations.createChatWithTurn.mockResolvedValue({ chatId: 'white-chat' })
+  await flow.send()
+  const [options] = client.conversations.createChatWithTurn.mock.calls[0]
+  expect(options.settings.characters.sakiko).toEqual({
+    formId: 'white',
+    modelOverrides: { black: 'costume' }
+  })
+})
+
+test('每个角色草稿保留选择，删除身份只清选择，首发重试固定身份', async () => {
+  const { flow, client } = fixture()
+  client.characters.listPersonas = async () => [{ id: 'me' }]
+  await flow.refreshPersonas()
+  flow.choosePersona('me')
+  flow.setDraft('在这里等我')
+  flow.newChat('anon')
+  expect(flow.input().userPersonaId).toBeUndefined()
+  flow.choosePersona('deleted')
+  flow.setDraft('另一份草稿')
+  await flow.refreshPersonas()
+  expect(flow.input().userPersonaId).toBeNull()
+  expect(flow.state.draft).toBe('另一份草稿')
+  flow.newChat('sakiko')
+  expect(flow.input().userPersonaId).toBe('me')
+  client.conversations.createChatWithTurn.mockRejectedValueOnce(Error('中断')).mockResolvedValue({ chatId: 'first' })
+  await flow.send()
+  await flow.send()
+  const [first, retry] = client.conversations.createChatWithTurn.mock.calls
+  expect(retry).toEqual(first)
+  expect(first[0].userPersonaId).toBe('me')
+  flow.choosePersona('other')
+  expect(flow.input().userPersonaId).toBeUndefined()
+  flow.newChat('sakiko')
+  expect(flow.input().userPersonaId).toBeUndefined()
+})
+
 test('切换角色和继续编辑时，迟到受理只交接原草稿，不覆盖当前输入', async () => {
   const { flow, client } = fixture()
   let finish

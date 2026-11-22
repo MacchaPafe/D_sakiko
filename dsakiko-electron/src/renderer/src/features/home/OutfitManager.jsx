@@ -1,14 +1,13 @@
 import { characterFormName } from './character-form.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Download, FolderOpen, MoreHorizontal, RefreshCw, Shirt, X } from 'lucide-react'
+import { Download, FolderOpen, MoreHorizontal, RefreshCw, Shirt } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Input } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { Tabs, TabList, Tab, TabPanel } from '../../components/ui/segmented-tabs.jsx'
 import { desktopHost } from '../../host/desktop.js'
 import { formatBytes } from '../setup/presentation.js'
-import { pendingDownloads } from './download-jobs.js'
 import { CharacterAvatar } from './CharacterAvatar.jsx'
 import './outfit-manager.css'
 
@@ -105,7 +104,7 @@ export function CharacterAffiliationForm({ client, role, onClose, onSaved }) {
     await client.outfits.setCharacter(role.id, mode === 'other' ? null : selected)
     onSaved()
   }
-  const roleName = role.displayName ?? role.name
+  const roleName = role.name ?? role.displayName
   let options = []
   if (directory) {
     options = directory.map((item) => {
@@ -309,7 +308,7 @@ function OutfitFormPicker({ options, value, onChange }) {
   if (options.length > 3) {
     return (
       <div className="outfit-target-form">
-        <SelectField label="形态" value={value} onChange={onChange} options={options} />
+        <SelectField label="人格" value={value} onChange={onChange} options={options} />
       </div>
     )
   }
@@ -318,7 +317,7 @@ function OutfitFormPicker({ options, value, onChange }) {
     onChange(event.currentTarget.value)
   }
   return (
-    <div className="outfit-form-choices" role="group" aria-label="形态">
+    <div className="outfit-form-choices" role="group" aria-label="人格">
       {options.map((option) => (
         <Button
           key={option.value}
@@ -484,7 +483,6 @@ function OutfitForm({
   onTry,
   onDeleted,
   onRefresh,
-  onDownloadStarted,
   onVersionChange,
   onAffiliation,
   onShowDetail
@@ -603,7 +601,6 @@ function OutfitForm({
   function download(item) {
     void run(async () => {
       await client.outfits.start(target, item.source, item.id)
-      onDownloadStarted()
     })
   }
   function editAffiliation() {
@@ -721,7 +718,7 @@ function OutfitForm({
           ) : (
             <div className="outfit-empty">
               <Shirt size={24} aria-hidden="true" />
-              <p>这个形态还没有服装。</p>
+              <p>这个人格还没有服装。</p>
             </div>
           )}
         </div>
@@ -849,11 +846,8 @@ export function OutfitManager({
   initial,
   currentChat,
   jobs,
-  onClose,
   onTry,
   onDeleted,
-  onShowDownloads,
-  onDownloadStarted,
   onShowDetail,
   onAffiliationSaved
 }) {
@@ -922,7 +916,6 @@ export function OutfitManager({
     (job) => job.target.characterId === characterId && job.target.formId === form?.id
   )
   const selectedRole = roles.find((item) => item.id === characterId)
-  const pendingJobCount = pendingDownloads(jobs).length
   async function tryOutfit(selected, model) {
     await onTry(characterId, selected, model)
   }
@@ -932,7 +925,7 @@ export function OutfitManager({
     </p>
   ) : (
     <p className="outfit-empty" role="status">
-      {definition ? '这个角色没有可管理服装的形态。' : '正在读取角色服装…'}
+      {definition ? '这个角色没有可管理服装的人格。' : '正在读取角色服装…'}
     </p>
   )
 
@@ -945,28 +938,6 @@ export function OutfitManager({
       ref={setMenuContainer}
     >
       <header className="outfit-page-heading">
-        <div className="outfit-title-row">
-          <h2 tabIndex={-1} data-dialog-focus>
-            服装管理
-          </h2>
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-description={pendingJobCount ? pendingJobCount + ' 个待处理任务' : undefined}
-            onClick={onShowDownloads}
-          >
-            <Download size={16} />
-            下载任务
-            {pendingJobCount > 0 && (
-              <span className="outfit-download-count" aria-hidden="true">
-                {pendingJobCount}
-              </span>
-            )}
-          </Button>
-          <Button variant="ghost" size="icon" aria-label="关闭服装管理" onClick={onClose}>
-            <X size={20} />
-          </Button>
-        </div>
         <div className="outfit-nav-bar">
           <div className="outfit-target">
             {selectedRole && (
@@ -984,7 +955,7 @@ export function OutfitManager({
                 onChange={characterChanged}
                 options={roles.map((role) => ({
                   value: role.id,
-                  label: role.displayName ?? role.name,
+                  label: role.name ?? role.displayName,
                   keywords: [role.id]
                 }))}
               />
@@ -1023,7 +994,6 @@ export function OutfitManager({
             onTry={tryOutfit}
             onDeleted={onDeleted}
             onRefresh={refresh}
-            onDownloadStarted={onDownloadStarted}
             onVersionChange={versionChanged}
             onAffiliation={editAffiliation}
             onShowDetail={onShowDetail}

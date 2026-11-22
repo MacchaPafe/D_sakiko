@@ -281,6 +281,7 @@ export class Performance {
         }
       }
       if (this.closed || this.mode !== 'replay') return
+      const playback = materials.scenes?.findLast((entry) => entry.start <= index) ?? materials
       const guide = guides[index]
       if (!guide) {
         this.resumeLive()
@@ -300,8 +301,8 @@ export class Performance {
         this.anchor = {
           receivedAt: this.now(),
           progress: {
-            scene: materials.scene,
-            defaultPerformances: materials.defaultPerformances,
+            scene: playback.scene,
+            defaultPerformances: playback.defaultPerformances,
             current: { guideId, guide, durationMs, elapsedMs: 0, recurring: false },
             transition: null
           }

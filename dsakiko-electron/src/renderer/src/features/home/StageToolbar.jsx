@@ -1,5 +1,16 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { GripHorizontal, Move, X, Maximize, RotateCcw, Shirt, ZoomIn, ZoomOut } from 'lucide-react'
+import { BackgroundPicker } from './BackgroundGallery.jsx'
+import {
+  Image as Picture,
+  GripHorizontal,
+  Move,
+  X,
+  Maximize,
+  RotateCcw,
+  Shirt,
+  ZoomIn,
+  ZoomOut
+} from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { StageWardrobe } from './StageWardrobe.jsx'
 import { placeToolbar, placeWardrobe } from './stage-toolbar-layout.js'
@@ -35,8 +46,9 @@ function measureToolbar(bar, grip) {
  * @param {{actors: Array<{id: string, displayName: string}>, panel: 'position'|'orientation'|null, selected: number|null|undefined, setPanel: (panel: 'position'|'orientation'|null) => void, face: (orientation: 'screen'|'face-to-face') => void, canFace: boolean, inward: boolean, degradedNote: string}|null} props.theatre 小剧场舞台调整配置。
  * @returns {import('react').ReactElement} 拖动中按舞台空间调整朝向的工具栏。
  */
-export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
+export function StageToolbar({ target, wardrobe, background, onZoom, onReset, theatre }) {
   const [openFor, setOpenFor] = useState(null)
+  const backgroundTrigger = useRef(null)
   const adjust = useRef(null)
   const toolbar = useRef(null)
   const grip = useRef(null)
@@ -46,7 +58,10 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
   const drag = useRef(null)
   const layout = useRef(null)
   const id = useId()
-  const open = Boolean(wardrobe && openFor === target)
+  const backgroundOpen = background.open
+  const closeBackground = background.close
+  const suspended = background.suspended
+  const open = Boolean(!backgroundOpen && wardrobe && openFor === target)
 
   useLayoutEffect(() => {
     const bar = toolbar.current
@@ -100,7 +115,12 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
         const position = placeWardrobe(
           stageBox,
           barBox,
-          relativeRect(theatre?.panel ? adjust.current : trigger.current, origin),
+          relativeRect(
+            (theatre?.panel && adjust.current) ||
+              (backgroundOpen && backgroundTrigger.current) ||
+              trigger.current,
+            origin
+          ),
           { width: box.width, height },
           orientation === 'horizontal'
         )
@@ -117,22 +137,36 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
     observer.observe(stage)
     if (panel.current) observer.observe(panel.current)
     return () => observer.disconnect()
-  }, [open, theatre?.panel, theatre?.selected, theatre?.canFace, theatre?.degradedNote])
+  }, [
+    open,
+    backgroundOpen,
+    theatre?.panel,
+    theatre?.selected,
+    theatre?.canFace,
+    theatre?.degradedNote
+  ])
 
   useLayoutEffect(() => {
-    if (!open) return
+    if ((!open && !backgroundOpen) || suspended) return
     const dialog = panel.current
-    dialog.querySelector('header button')?.focus()
+    if (!dialog.contains(document.activeElement))
+      (
+        dialog.querySelector('input[type="search"]') ?? dialog.querySelector('header button')
+      )?.focus()
 
     function dismissOutside(event) {
-      if (!dialog.contains(event.target) && !toolbar.current.contains(event.target))
+      if (!dialog.contains(event.target) && !toolbar.current.contains(event.target)) {
         setOpenFor(null)
+        closeBackground()
+      }
     }
     function dismissOnEscape(event) {
       if (event.key !== 'Escape' || event.defaultPrevented) return
       event.preventDefault()
       setOpenFor(null)
-      trigger.current?.focus()
+      closeBackground()
+      const button = backgroundOpen ? backgroundTrigger : trigger
+      button.current?.focus()
     }
     document.addEventListener('pointerdown', dismissOutside)
     document.addEventListener('keydown', dismissOnEscape)
@@ -140,7 +174,7 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
       document.removeEventListener('pointerdown', dismissOutside)
       document.removeEventListener('keydown', dismissOnEscape)
     }
-  }, [open])
+  }, [open, backgroundOpen, suspended, closeBackground])
 
   const activeTheatrePanel = Boolean(theatre?.panel)
   const closeTheatrePanel = theatre?.setPanel
@@ -191,7 +225,17 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
     if (origin.moved) anchor.current = origin.position
   }
 
+  function toggleBackground() {
+    theatre?.setPanel(null)
+    setOpenFor(null)
+    background.toggle()
+  }
+  function finishBackground() {
+    closeBackground()
+    backgroundTrigger.current?.focus()
+  }
   function toggle() {
+    closeBackground()
     theatre?.setPanel(null)
     setOpenFor(open ? null : target)
   }
@@ -207,6 +251,7 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
   }
 
   function toggleStagePanel() {
+    closeBackground()
     setOpenFor(null)
     theatre.setPanel(theatre.panel ? null : 'position')
   }
@@ -272,6 +317,11 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
           variant="ghost"
           size="icon"
           aria-label="切换服装"
+          title={
+            !theatre && wardrobe?.role?.forms?.length > 1 && wardrobe.activeFormName
+              ? '人格与服装（当前：' + wardrobe.activeFormName + '）'
+              : '切换服装'
+          }
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? id : undefined}
@@ -280,10 +330,26 @@ export function StageToolbar({ target, wardrobe, onZoom, onReset, theatre }) {
         >
           <Shirt />
         </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          ref={backgroundTrigger}
+          aria-label="切换背景"
+          title="切换背景"
+          aria-haspopup="dialog"
+          aria-expanded={backgroundOpen}
+          disabled={!background.available}
+          onClick={toggleBackground}
+        >
+          <Picture />
+        </Button>
         <Button variant="ghost" size="icon" aria-label="全窗口舞台" disabled>
           <Maximize />
         </Button>
       </div>
+      {backgroundOpen && (
+        <BackgroundPicker {...background} panelRef={panel} onClose={finishBackground} />
+      )}
       {theatre?.panel && (
         <section
           className="stage-wardrobe theatre-stage-panel"

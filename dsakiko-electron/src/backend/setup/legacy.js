@@ -236,8 +236,9 @@ export async function scanLegacyDirectory(root, excludedRoots = [], gsvFiles = n
     }
     const base = 'live2d_related/' + id
     const name = await text(base + '/name.txt')
-    const description = await text(base + '/character_description.txt')
-    if (!name || !description) {
+    const isSakiko = id === 'sakiko'
+    const description = isSakiko ? '' : await text(base + '/character_description.txt')
+    if (!name || (!isSakiko && !description)) {
       warnings.push({ code: 'legacy_character_incomplete', file: base })
       continue
     }
@@ -317,7 +318,7 @@ export async function scanLegacyDirectory(root, excludedRoots = [], gsvFiles = n
       )
       return fallback ? reference('../' + voiceBase + '/' + fallback, prompt) : null
     }
-    const forms = id === 'sakiko' ? ['black', 'white'] : ['default']
+    const forms = isSakiko ? ['black', 'white'] : ['default']
     const formRecords = []
     for (const form of forms) {
       const ref = await formReference(form)

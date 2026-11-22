@@ -1,4 +1,12 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import {
   ArrowUp,
   ChevronLeft,
@@ -28,6 +36,7 @@ import { StageController } from './stage-controller.js'
 import { resolveTheatreStageState } from './theatre-stage.js'
 import { TheatreActions, TheatreSetup } from './TheatreSetup.jsx'
 import { TheatrePositions } from './TheatrePositions.jsx'
+import { StageBackdrop, StageResources } from './BackgroundGallery.jsx'
 import { StageToolbar } from './StageToolbar.jsx'
 import { ToolMenu, ThinkingPicker, ThinkingConflict } from './ToolControls.jsx'
 import { InteractionCards } from './InteractionCards.jsx'
@@ -37,9 +46,10 @@ import { SubtitleText } from './DialogueMarkdown.jsx'
 import { HistoryPanel } from './HistoryPanel.jsx'
 import { NoticeStack } from './NoticeStack.jsx'
 import { DownloadCenter } from './DownloadCenter.jsx'
-import { pendingDownloads, useDownloadJobs } from './download-jobs.js'
+import { useDownloadJobs } from './download-jobs.js'
 import { DeleteDialog } from './DeleteDialog.jsx'
 import { CharacterManager } from '../characters/CharacterManager.jsx'
+import { IdentityButton, PersonaPicker } from '../personas/PersonaPicker.jsx'
 import { OutfitManager } from './OutfitManager.jsx'
 import { VoiceInput, VoiceInstallDialog } from './VoiceInput.jsx'
 import { SettingsPanel } from '../settings/SettingsPanel.jsx'
@@ -51,7 +61,7 @@ import {
 } from '../../styles/character-theme.js'
 import './home.css'
 
-/** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
+/** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string, section?: string, backgroundTab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'|'backgrounds'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
 /** @typedef {HomeDialogContent & import('../../components/ui/use-dialog-navigation.js').DialogPage} HomeDialogPage */
 
 function downloadPage(category) {
@@ -424,7 +434,7 @@ const replyPhaseLabels = {
   presentation: '正在播放回复…'
 }
 
-function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }) {
+function Composer({ identityControl, state, flow, asrReady, onVoiceInstall, onConfigure, onSend }) {
   const configured = hasConnection(state)
   const readonly =
     state.target.tab === 'scripted-dialogue' ||
@@ -529,6 +539,7 @@ function Composer({ state, flow, asrReady, onVoiceInstall, onConfigure, onSend }
               active={active}
               disabled={readonly || state.sending}
             />
+            {identityControl}
             {status && (
               <span className="composer-status" role="status">
                 {status}
@@ -566,6 +577,18 @@ export function HomePage({ client, setup, setupState }) {
   const rootDialog = frames[0]?.page.kind
   const activeDialog = frames.at(-1)?.page.kind
   const [voiceInstall, setVoiceInstall] = useState(false)
+  const [backgroundTarget, setBackgroundTarget] = useState(null)
+  const [previewBackground, setPreviewBackground] = useState(null)
+  const closeBackground = useCallback(() => {
+    setBackgroundTarget(null)
+    setPreviewBackground(null)
+  }, [])
+  const currentBackground = state.target.chatId
+    ? state.snapshot?.chat.meta.settings.presentation.background
+    : state.draftBackground
+  const previewOnStage =
+    activeDialog === 'outfits' || (!rootDialog && backgroundTarget === state.target)
+  const stagePreview = previewOnStage ? previewBackground : null
   const [wardrobeActor, setWardrobeActor] = useState(null)
   const [stageEditor, setStageEditor] = useState(null)
   const [replaceTarget, setReplaceTarget] = useState(null)
@@ -601,15 +624,15 @@ export function HomePage({ client, setup, setupState }) {
   const canvas = useRef(null)
   const stage = useRef(null)
   const sequenceId = state.snapshot?.presentation.sequenceId ?? null
-  const draftPresentation = state.draftOutfit?.model.presentation
+  const draftPresentation = state.draftOutfit?.model?.presentation
   const currentReplay = turnReplay?.chatId === state.target.chatId ? turnReplay : null
-  const downloads = useDownloadJobs(
-    client,
-    rootDialog === 'outfits' || rootDialog === 'characters' || activeDialog === 'downloads'
-  )
-  const downloadCount =
-    pendingDownloads(downloads.outfits.items).length +
-    pendingDownloads(downloads.resources.items).length
+  const downloadsOpen = activeDialog === 'downloads'
+  const downloads = useDownloadJobs(client, {
+    outfits: downloadsOpen || frames.some(({ page }) => page.kind === 'outfits'),
+    backgrounds: downloadsOpen || frames.some(({ page }) => page.kind === 'outfits'),
+    resources: downloadsOpen
+  })
+  const downloadCount = downloads.count
   useEffect(() => {
     void flow.mount()
     return () => flow.dispose()
@@ -679,9 +702,10 @@ export function HomePage({ client, setup, setupState }) {
       state.target.chatId,
       sequenceId,
       draftPresentation,
-      isTheatre
+      isTheatre,
+      state.draftOutfit?.formId
     )
-  }, [state.target, flow, sequenceId, draftPresentation, isTheatre])
+  }, [state.target, flow, sequenceId, draftPresentation, isTheatre, state.draftOutfit?.formId])
   const now = useRevealClock(state.snapshot?.chat.meta.lotteries)
   const revealPending =
     state.snapshot?.chat.meta.lotteries?.some((item) => item.revealAt > now) ?? false
@@ -696,6 +720,19 @@ export function HomePage({ client, setup, setupState }) {
   function chooseStageOutfit(formId, model, characterId = role?.id) {
     stage.current?.stopReplay()
     return flow.chooseOutfit(formId, model, characterId)
+  }
+  async function chooseStageForm(formId) {
+    stage.current?.stopReplay()
+    const current = flow.getSnapshot()
+    if (current.sending) return
+    const { target } = current
+    if (target.chatId) {
+      await client.conversations.patchSettings(target.chatId, {
+        characters: { [target.characterId]: { formId } }
+      })
+      return
+    }
+    await flow.chooseForm(formId)
   }
   function zoomModel(factor) {
     const index = editor?.selected ?? 0
@@ -752,6 +789,7 @@ export function HomePage({ client, setup, setupState }) {
   }
   function showHistory() {
     setStageEditor(null)
+    closeBackground()
     setHistoryOpen(true)
   }
   function hideHistory() {
@@ -800,11 +838,29 @@ export function HomePage({ client, setup, setupState }) {
     push({ kind: 'resource', target, title, formId, layout: 'outfit-detail-dialog' })
   }
   function resourceDownloadStarted(id) {
-    downloads.refresh()
     replace(id, downloadPage('resources'))
   }
   function showOutfits(target) {
-    open({ kind: 'outfits', title: '服装管理', layout: 'outfit-manager', target })
+    open({ kind: 'outfits', title: '舞台资源', layout: 'outfit-manager', target })
+  }
+  function toggleBackgroundPicker() {
+    if (backgroundTarget === state.target) return closeBackground()
+    const selectedActor = theatreRoles[editor?.selected]
+    if (selectedActor) setWardrobeActor({ target: state.target, id: selectedActor.id })
+    setBackgroundTarget(state.target)
+  }
+  function showBackgrounds(backgroundTab = 'online') {
+    const actor = theatreRoles[editor?.selected] ?? role ?? state.characters[0]
+    const formId =
+      state.snapshot?.chat.meta.settings.characters[actor?.id]?.formId ??
+      (isTheatre ? null : state.draftOutfit?.formId) ??
+      actor?.defaultFormId
+    showOutfits({ characterId: actor?.id, formId, section: 'backgrounds', backgroundTab })
+  }
+  async function applyManagedBackground(asset) {
+    await flow.chooseBackground(asset)
+    closeBackground()
+    for (const frame of [...frames].reverse()) dismiss(frame.id)
   }
   function openOutfits(formId) {
     showOutfits({ characterId: role.id, formId })
@@ -829,8 +885,8 @@ export function HomePage({ client, setup, setupState }) {
   function showDownloads() {
     open(downloadPage('all'))
   }
-  function showOutfitDownloads() {
-    push(downloadPage('outfits'))
+  function showStageDownloads(section) {
+    push(downloadPage(section))
   }
   function showResourceDownloads() {
     push(downloadPage('resources'))
@@ -866,6 +922,20 @@ export function HomePage({ client, setup, setupState }) {
   function openAffiliation(role) {
     openCharacters(role)
   }
+  function openIdentity() {
+    if (!state.target.chatId) void flow.refreshPersonas()
+    open({ kind: 'persona-picker', title: '我的身份', layout: 'persona-picker-dialog' })
+  }
+  function manageIdentities() {
+    push({
+      kind: 'characters',
+      title: '角色管理',
+      layout: 'character-manager-dialog',
+      initialTab: 'personas',
+      initialId: state.target.characterId
+    })
+    void setup.refreshManagedCatalog()
+  }
   async function refreshCharacters(deletedId) {
     await flow.refresh()
     const current = flow.getSnapshot()
@@ -877,7 +947,7 @@ export function HomePage({ client, setup, setupState }) {
   function editOutfits(characterId, formId, tab) {
     push({
       kind: 'outfits',
-      title: '服装管理',
+      title: '舞台资源',
       layout: 'outfit-manager',
       target: { characterId, formId, tab }
     })
@@ -908,6 +978,16 @@ export function HomePage({ client, setup, setupState }) {
     (!rootDialog || rootDialog === 'outfits') &&
     !voiceInstall &&
     !deleting
+  const personaBusy = Boolean(
+    isTheatre ||
+    state.snapshot?.participantIssue ||
+    !state.target.characterId ||
+    stageState.replayingLine ||
+    (currentReplay && !currentReplay.error) ||
+    state.snapshot?.activeTurnId ||
+    state.sending ||
+    (state.target.chatId && state.snapshot?.activity !== 'idle')
+  )
   const wardrobe = canChooseOutfit
     ? {
         role,
@@ -915,6 +995,12 @@ export function HomePage({ client, setup, setupState }) {
         chatSelection: selection,
         draftOutfit: state.draftOutfit,
         participants: isTheatre ? theatreRoles : null,
+        ...(!isTheatre && {
+          hasChat: Boolean(state.target.chatId),
+          activeFormName: role.forms?.find((item) => item.id === activeForm)?.displayName ?? null,
+          personaBusy,
+          onChooseForm: chooseStageForm
+        }),
         onActor: (id) => setWardrobeActor({ target: state.target, id }),
         stageState: isTheatre
           ? (stageState.actors?.[theatreRoles.indexOf(role)] ?? {})
@@ -950,12 +1036,25 @@ export function HomePage({ client, setup, setupState }) {
   )
   function renderDialogPage(page, { id, onDismiss, returnTo }) {
     switch (page.kind) {
+      case 'persona-picker':
+        return (
+          <PersonaPicker
+            state={state}
+            flow={flow}
+            onClose={onDismiss}
+            onManage={manageIdentities}
+          />
+        )
       case 'characters':
         return (
           <CharacterManager
             client={client}
             roles={state.characters}
             initialId={page.initialId}
+            initialTab={page.initialTab}
+            personas={state.personas}
+            personaProblem={state.personaProblem}
+            onRefreshPersonas={flow.refreshPersonas}
             focusAffiliation={page.focusAffiliation}
             active={activeDialog === 'characters'}
             completedJob={setupState.job?.status === 'succeeded' ? setupState.job.id : null}
@@ -969,6 +1068,7 @@ export function HomePage({ client, setup, setupState }) {
               setExpandedRoleId(characterId)
               flow.newChat(characterId)
               onDismiss()
+              if (rootDialog === 'persona-picker') dismiss(frames[0].id)
             }}
             onPackage={(item, formId) =>
               openDownload(
@@ -986,6 +1086,12 @@ export function HomePage({ client, setup, setupState }) {
             flow={flow}
             roles={state.characters}
             chat={page.chat}
+            personalityBusy={Boolean(
+              page.chat &&
+              (state.snapshot?.activity !== 'idle' ||
+                stageState.replayingLine ||
+                (currentReplay && !currentReplay.error))
+            )}
             close={onDismiss}
           />
         )
@@ -1005,29 +1111,40 @@ export function HomePage({ client, setup, setupState }) {
         )
       case 'outfits':
         return (
-          <OutfitManager
-            client={client}
-            roles={state.characters}
+          <StageResources
             initial={page.target}
-            currentChat={
-              role && {
-                characterId: role.id,
-                formId: activeForm,
-                modelId:
-                  selection?.modelOverrides?.[activeForm] ?? state.draftOutfit?.model.id ?? null
-              }
-            }
+            client={client}
+            jobs={downloads.backgrounds}
+            outfitJobs={downloads.outfits}
             onClose={onDismiss}
-            onTry={(characterId, formId, model) =>
-              tryManagedOutfit(characterId, formId, model, onDismiss)
-            }
-            onDeleted={removeDraftOutfit}
-            jobs={downloads.outfits.items}
-            onShowDownloads={showOutfitDownloads}
-            onDownloadStarted={downloads.refresh}
-            onShowDetail={showOutfitDetail}
-            onAffiliationSaved={refreshAffiliation}
-          />
+            onDownloads={showStageDownloads}
+            onApply={applyManagedBackground}
+            onPreview={setPreviewBackground}
+            current={currentBackground}
+            active={id === frames.at(-1)?.id}
+          >
+            <OutfitManager
+              client={client}
+              roles={state.characters}
+              initial={page.target}
+              currentChat={
+                role && {
+                  characterId: role.id,
+                  formId: activeForm,
+                  modelId:
+                    selection?.modelOverrides?.[activeForm] ?? state.draftOutfit?.model?.id ?? null
+                }
+              }
+              onClose={onDismiss}
+              onTry={(characterId, formId, model) =>
+                tryManagedOutfit(characterId, formId, model, onDismiss)
+              }
+              onDeleted={removeDraftOutfit}
+              jobs={downloads.outfits}
+              onShowDetail={showOutfitDetail}
+              onAffiliationSaved={refreshAffiliation}
+            />
+          </StageResources>
         )
       case 'downloads':
         return (
@@ -1040,6 +1157,7 @@ export function HomePage({ client, setup, setupState }) {
             roles={state.characters}
             onClose={onDismiss}
             onOutfit={viewInstalledOutfit}
+            onBackground={() => showBackgrounds('installed')}
             onResource={viewInstalledResource}
           />
         )
@@ -1182,6 +1300,8 @@ export function HomePage({ client, setup, setupState }) {
           style={stageThemeStyle}
           data-has-role-theme={stageThemeStyle ? 'true' : undefined}
         >
+          <StageBackdrop client={client} asset={currentBackground} hidden={stagePreview?.builtin} />
+          {stagePreview?.asset && <StageBackdrop client={client} asset={stagePreview.asset} />}
           <div
             className="home-canvas"
             ref={canvas}
@@ -1237,6 +1357,22 @@ export function HomePage({ client, setup, setupState }) {
           <StageToolbar
             target={state.target}
             wardrobe={wardrobe}
+            background={{
+              client,
+              current: currentBackground,
+              available:
+                !historyOpen &&
+                !state.loading &&
+                !state.sending &&
+                (!state.target.chatId || Boolean(state.snapshot)),
+              open: backgroundTarget === state.target,
+              close: closeBackground,
+              suspended: Boolean(rootDialog),
+              toggle: toggleBackgroundPicker,
+              onPreview: setPreviewBackground,
+              onApply: flow.chooseBackground,
+              onManage: () => showBackgrounds()
+            }}
             theatre={stageTools}
             onZoom={zoomModel}
             onReset={resetModel}
@@ -1278,6 +1414,7 @@ export function HomePage({ client, setup, setupState }) {
             )}
             {!isTheatre && (
               <Composer
+                identityControl={<IdentityButton state={state} flow={flow} onOpen={openIdentity} />}
                 state={state}
                 flow={flow}
                 asrReady={Boolean(setupState.features?.asrReady)}

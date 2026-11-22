@@ -22,6 +22,20 @@ export function newCharacter() {
   }
 }
 
+/** @param {object} source 当前人格。 @returns {object} 使用独立身份的新草稿，仅复制头像和配色。 */
+export function newForm(source) {
+  return {
+    id: crypto.randomUUID(),
+    displayName: '',
+    description: '',
+    avatar: source.avatar,
+    themeColor: source.themeColor,
+    models: [],
+    defaultModelId: null,
+    voice: null
+  }
+}
+
 function equal(a, b) {
   return JSON.stringify(a) === JSON.stringify(b)
 }
@@ -41,14 +55,19 @@ export function mergeCharacterEdit(base, edited, current) {
   if (!current) throw new Error('角色已删除，请重新打开角色管理。')
   const next = structuredClone(current)
   next.name ??= next.forms.find((form) => form.id === next.defaultFormId).displayName
-  mergeFields(base, edited, next, ['name', 'defaultFormId', 'bangDreamId'])
+  mergeFields(base, edited, next, ['name', 'defaultFormId', 'bangDreamId', 'selfNameMode'])
   next.name = next.name.trim()
   if (!next.name) throw new Error('请填写角色名称。')
   for (const form of edited.forms) {
     const previous = base.forms.find((item) => item.id === form.id)
     const target = next.forms.find((item) => item.id === form.id)
-    if (!target) throw new Error('角色形态已变更，请重新读取。')
+    if (!previous && !target) {
+      next.forms.push(structuredClone(form))
+      continue
+    }
+    if (!previous || !target) throw new Error('角色人格已变更，请重新读取。')
     mergeFields(previous, form, target, [
+      'displayName',
       'description',
       'avatar',
       'themeColor',
@@ -59,10 +78,20 @@ export function mergeCharacterEdit(base, edited, current) {
     ])
     if (
       (base.name !== next.name || !base.revision) &&
+      form.displayName === previous.displayName &&
       target.displayName === previous.displayName &&
       previous.displayName === base.name
     )
       target.displayName = next.name
+  }
+  const names = new Set()
+  for (const form of next.forms) {
+    form.displayName =
+      form.displayName.trim() ||
+      (next.forms.length === 1 && next.selfNameMode !== 'form' ? next.name : '')
+    if (!form.displayName || names.has(form.displayName))
+      throw new Error('请为每个人格填写不同的名称。')
+    names.add(form.displayName)
   }
   if (!base.revision && !next.forms[0].description.trim()) throw new Error('请填写介绍提示词。')
   return next

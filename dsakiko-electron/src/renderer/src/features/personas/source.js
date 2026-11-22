@@ -13,3 +13,23 @@ export function selectPersonaCharacter(source, character) {
     formId: character?.defaultFormId ?? ''
   }
 }
+
+/** @param {import('../../../../shared/contracts/persona.js').UserPersonaSummary[]} personas 身份目录。 @returns {Array<{value: string, label: string, disabled: boolean}>} 只在选择列表里区分同名身份。 */
+export function personaOptions(personas) {
+  const counts = new Map()
+  return personas.map((item) => {
+    const name = item.displayName || '来源不可用'
+    const count = (counts.get(name) ?? 0) + 1
+    counts.set(name, count)
+    return {
+      value: item.id,
+      label: count === 1 ? name : name + ' (' + count + ')',
+      disabled: Boolean(item.problem)
+    }
+  })
+}
+
+/** @param {import('../../../../shared/contracts/persona.js').UserPersonaDefinition['source']} source 自定义或角色形态来源。 @returns {import('../../../../shared/contracts/persona.js').UserPersonaDefinition} 尚未写入目录的身份。 */
+export function newPersona(source) {
+  return { id: crypto.randomUUID(), revision: 0, source }
+}

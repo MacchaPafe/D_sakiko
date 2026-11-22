@@ -438,7 +438,19 @@ export async function startHttpServer(
         else if (command.topic === 'settings') dispose = await backend.settings.observe(listener)
         else if (command.topic === 'setup')
           dispose = await backend.setup.observe(command.key, listener)
-        else if (command.topic === 'onboarding')
+        else if (command.topic === 'backgrounds') dispose = backend.backgrounds.observe(listener)
+        else if (['outfit-jobs', 'setup-jobs', 'background-jobs'].includes(command.topic)) {
+          requireValue(
+            ['summary', 'details'].includes(command.key),
+            'invalid_download_subscription'
+          )
+          const service = {
+            'outfit-jobs': backend.outfits,
+            'setup-jobs': backend.setup,
+            'background-jobs': backend.backgrounds
+          }[command.topic]
+          dispose = service.downloadJobs.observe(command.key, listener)
+        } else if (command.topic === 'onboarding')
           dispose = await backend.onboarding.observe(listener)
         else if (command.topic === 'notices') {
           requireValue(command.key == null, 'invalid_notice_subscription')

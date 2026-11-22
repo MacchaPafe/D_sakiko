@@ -500,7 +500,7 @@ test('世界书工具注入固定调用来源，不允许模型自报范围或�
   expect(Object.keys(tool.parametersSchema.properties)).not.toContain('origin')
 })
 
-test('人物编辑和形态切换只影响下一轮，资料快照可保存恢复且无临时控制消息', async () => {
+test('人物编辑和人格切换只影响下一轮，资料快照可保存恢复且无临时控制消息', async () => {
   let release
   let entered
   const started = new Promise((resolve) => {
@@ -536,15 +536,15 @@ test('人物编辑和形态切换只影响下一轮，资料快照可保存恢�
   definition = await backend.characters.get('sakiko')
   definition.forms[1].description = '新的白祥设定'
   await backend.characters.save(definition)
-  await backend.conversations.setCharacterSelection(chatId, 'sakiko', {
-    formId: 'white',
-    modelOverrides: {}
-  })
+  await expect(
+    backend.conversations.setCharacterSelection(chatId, 'sakiko', { formId: 'white' })
+  ).rejects.toHaveProperty('problem.code', 'character_busy')
   const frozen = agent.run.mock.calls[0][0]
   expect(frozen.characters[0]).toMatchObject({ name: '祥子', formId: 'default' })
   expect(frozen.characters[0].forms[1].description).toBe('白祥设定')
   release()
   await until(async () => (await backend.conversations.getSnapshot(chatId)).admission.canGenerate)
+  await backend.conversations.setCharacterSelection(chatId, 'sakiko', { formId: 'white' })
   await backend.conversations.createTurn(
     chatId,
     { text: '继续', attachments: [] },
@@ -555,17 +555,38 @@ test('人物编辑和形态切换只影响下一轮，资料快照可保存恢�
   expect(next.characters[0]).toMatchObject({ name: '祥子', formId: 'white' })
   expect(next.characters[0].forms[1].description).toBe('新的白祥设定')
   const chat = (await backend.conversations.getSnapshot(chatId)).chat
-  expect(chat.turns[0].meta.characterContext.characters[0].forms[1].description).toBe('白祥设定')
-  expect(chat.turns[1].meta.characterContext.characters[0].forms[1].description).toBe(
-    '新的白祥设定'
-  )
+  expect(chat.turns[0].meta.characterContext.characters[0].forms).toEqual([
+    { id: 'default', displayName: '黑祥', description: '原来的设定' }
+  ])
+  expect(chat.turns[1].meta.characterContext.characters[0].forms).toEqual([
+    { id: 'white', displayName: '白祥', description: '新的白祥设定' }
+  ])
+  const impact = await backend.characters.previewFormDeletion('sakiko', 'default')
+  await backend.characters.deleteForm('sakiko', 'default', 'white', impact.stamp)
+  const replay = await backend.conversations.getReplayMaterials(chatId, {
+    kind: 'turn',
+    turnId: chat.turns[0].id
+  })
+  expect(replay.scene.slots[0].displayName).toBe('黑祥')
+  const archived = structuredClone(chat)
+  archived.meta.settings.characters.sakiko = {
+    formId: 'default',
+    modelOverrides: { default: null }
+  }
+  const importedId = await backend.conversations.saveCopy(archived)
+  const imported = (await backend.conversations.getSnapshot(importedId)).chat
+  expect(imported.meta.settings.characters.sakiko).toEqual({
+    formId: 'white',
+    modelOverrides: { white: null }
+  })
+  expect(imported.turns[0].meta.replayScene.slots[0].displayName).toBe('黑祥')
   expect(JSON.stringify(chat)).not.toContain('runtime_controls')
   expect(
     backend.conversations.history(JSON.parse(JSON.stringify(chat)))[1].characterContext
   ).toEqual(chat.turns[1].meta.characterContext)
 })
 
-test('角色名跨形态保持稳定，添加和修改均拒绝重名', async () => {
+test('角色名跨人格保持稳定，添加和修改均拒绝重名', async () => {
   const { backend } = await fixture()
   const original = await backend.characters.get('sakiko')
   await expect(

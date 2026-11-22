@@ -57,7 +57,7 @@ async function fixture() {
   return { root, source, output, manifest, roots, backend }
 }
 
-test('三个角色包保留四套形态；启动仅释放白祥，重启复用缓存且预览不写角色', async () => {
+test('三个角色包保留四套人格；启动仅释放白祥，重启复用缓存且预览不写角色', async () => {
   const f = await fixture()
   expect((await readdir(f.output)).sort()).toEqual(['archives', 'manifest.json'])
   expect((await readdir(path.join(f.output, 'archives'))).sort()).toEqual([

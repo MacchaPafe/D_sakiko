@@ -1,4 +1,4 @@
-import { fields, requireValue } from './support.js'
+import { fields, requireValue, safeId } from './support.js'
 import { parseConfig } from './config.js'
 import { generationDefinition, speechDefinition } from '../settings/definition.js'
 
@@ -28,6 +28,10 @@ export function speechOptions(value) {
  */
 export function presentationOptions(value, characterIds) {
   fields(value, ['background', 'characters', 'orientation', 'frames'])
+  if (value.background != null) {
+    fields(value.background, ['id'])
+    safeId(value.background.id)
+  }
   if (value.orientation !== undefined)
     requireValue(['screen', 'face-to-face'].includes(value.orientation))
   if (value.frames) {

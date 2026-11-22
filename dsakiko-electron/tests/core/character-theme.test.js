@@ -74,7 +74,7 @@ describe('character-theme', () => {
     }
   })
 
-  it('按形态优先解析主题色并正确输出舞台与侧栏变量', () => {
+  it('按人格优先解析主题色并正确输出舞台与侧栏变量', () => {
     const role = {
       themeColor: '#7799CC',
       formThemeColors: {

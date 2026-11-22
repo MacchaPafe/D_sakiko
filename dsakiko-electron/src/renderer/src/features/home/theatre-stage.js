@@ -1,4 +1,4 @@
-/** @typedef {{ id: string, displayName: string }} TheatreActor */
+/** @typedef {{ id: string, name?: string, displayName: string }} TheatreActor */
 /** @typedef {{ canFace: boolean, inward: boolean, panel: 'position' | 'orientation' | null, degradedNote: string }} TheatreStageState */
 
 /**
@@ -29,7 +29,7 @@ export function resolveTheatreStageState({ actors, sides, orientation, requested
 
   let degradedNote = ''
   if (!canFace && sidesReady && orientation === 'face-to-face' && unsupportedActors.length > 0) {
-    const names = unsupportedActors.map((actor) => actor.displayName).join('、')
+    const names = unsupportedActors.map((actor) => actor.name ?? actor.displayName).join('、')
     degradedNote = `${names}的服装不支持面对面，已暂改为面向屏幕`
   }
 

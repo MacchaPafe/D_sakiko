@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, AudioLines, ChevronRight, Download, Shirt, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  AudioLines,
+  Image as Picture,
+  ChevronRight,
+  Download,
+  Shirt,
+  X
+} from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Progress } from '../../components/ui/progress.jsx'
 import { formatBytes, statusLabel, taskRows } from '../setup/presentation.js'
@@ -9,12 +17,14 @@ import './download-center.css'
 const categories = [
   { id: 'all', label: '全部' },
   { id: 'outfits', label: 'Live2D 服装' },
+  { id: 'backgrounds', label: '舞台背景' },
   { id: 'resources', label: '附加资源' }
 ]
 
 const outfitStatus = {
   running: '正在下载',
   installing: '正在校验和安装',
+  paused: '已暂停',
   interrupted: '等待继续',
   failed: '下载或安装失败',
   succeeded: '已安装'
@@ -39,20 +49,19 @@ function outfitTargetName(job, roles, definitions) {
   const role = roles.find((item) => item.id === job.target.characterId)
   const definition = definitions.get(job.target.characterId)
   const form = definition?.forms.find((item) => item.id === job.target.formId)
-  let formName = form?.displayName ?? job.target.formId
-  if (role?.bangDreamId === 'sakiko' && job.target.formId === 'black') formName = '黑祥'
-  if (role?.bangDreamId === 'sakiko' && job.target.formId === 'white') formName = '白祥'
-  return [role?.displayName ?? role?.name ?? job.target.characterId, formName]
+
+  const formName = form?.displayName ?? job.target.formId
+  return [role?.name ?? role?.displayName ?? job.target.characterId, formName]
     .filter(Boolean)
     .join(' · ')
 }
 
-function describeProgress(job, outfit) {
-  if (outfit) {
+function describeProgress(job, media) {
+  if (media) {
     if (!job.progress?.total) return null
     const { completed, total } = job.progress
     const description =
-      job.item.version === 'v2'
+      job.item?.version === 'v2'
         ? `${completed} / ${total} 个文件`
         : formatBytes(completed) + ' / ' + formatBytes(total)
     return { completed, total, description }
@@ -68,20 +77,33 @@ function describeProgress(job, outfit) {
 
 function DownloadRow({ job, roles, definitions, pending, error, onControl, onDestination }) {
   const outfit = 'item' in job
-  const Icon = outfit ? Shirt : AudioLines
-  const title = outfit ? job.item.name : resourceDescription(job)
+  const background = job.kind === 'background'
+  const media = outfit || background
+  let Icon = AudioLines
+  let title = media ? '' : resourceDescription(job)
+  if (outfit) {
+    Icon = Shirt
+    title = job.item.name
+  }
+  if (background) {
+    Icon = Picture
+    title = job.source.name
+  }
   const completed = job.status === 'succeeded'
   const installing =
     job.status === 'installing' ||
     (job.status === 'running' && ['validating', 'installing', 'committing'].includes(job.phase))
-  const status = outfit
+  const status = media
     ? outfitStatus[job.status]
     : statusLabel(job.status === 'running' ? job.phase : job.status)
-  const progress = completed ? null : describeProgress(job, outfit)
+  const progress = completed ? null : describeProgress(job, media)
   const pause = job.status === 'running' && !installing
   const resume = ['paused', 'failed', 'interrupted'].includes(job.status)
   const problem = error ?? job.problem?.message
 
+  let destinationLabel = '查看资源'
+  if (outfit) destinationLabel = '查看已安装'
+  if (background) destinationLabel = '查看背景'
   function control(event) {
     void onControl(job, event.currentTarget.value)
   }
@@ -136,7 +158,7 @@ function DownloadRow({ job, roles, definitions, pending, error, onControl, onDes
         )}
         {completed && (
           <Button size="sm" variant="ghost" onClick={destination}>
-            {outfit ? '查看已安装' : '查看资源'}
+            {destinationLabel}
             <ChevronRight size={14} />
           </Button>
         )}
@@ -155,23 +177,22 @@ export function DownloadCenter({
   roles,
   onClose,
   onOutfit,
+  onBackground,
   onResource
 }) {
   const [category, setCategory] = useState(initial)
   const [operations, setOperations] = useState({})
   const [definitions, setDefinitions] = useState(() => new Map())
   const inFlight = useRef(new Set())
-  const selectedQueries =
-    category === 'all' ? [downloads.outfits, downloads.resources] : [downloads[category]]
-  const jobs = selectedQueries.flatMap(({ items }) =>
-    items.filter((job) => !('kind' in job) || job.kind === 'download')
-  )
+  const jobs =
+    category === 'all'
+      ? [...downloads.outfits, ...downloads.backgrounds, ...downloads.resources]
+      : downloads[category]
   const pending = pendingDownloads(jobs)
   const recent = jobs
     .filter((job) => job.status === 'succeeded')
     .sort((a, b) => (b.completedAt ?? b.expiresAt ?? 0) - (a.completedAt ?? a.expiresAt ?? 0))
     .slice(0, 10)
-  const errors = selectedQueries.some((query) => query.error)
   const targetIds = JSON.stringify(
     [
       ...new Set(
@@ -204,18 +225,19 @@ export function DownloadCenter({
     inFlight.current.add(job.id)
     setOperations((previous) => ({ ...previous, [job.id]: { pending: true } }))
     try {
-      if ('item' in job) await client.outfits.control(job.id, action)
+      if (job.kind === 'background') await client.backgrounds.control(job.id, action)
+      else if ('item' in job) await client.outfits.control(job.id, action)
       else await setup.controlDownload(job.id, action)
       setOperations((previous) => ({ ...previous, [job.id]: null }))
     } catch (error) {
       setOperations((previous) => ({ ...previous, [job.id]: { error: error.message } }))
     } finally {
       inFlight.current.delete(job.id)
-      downloads.refresh()
     }
   }
   function destination(job) {
-    if ('item' in job) onOutfit(job.target)
+    if (job.kind === 'background') onBackground()
+    else if ('item' in job) onOutfit(job.target)
     else onResource(resourceTarget(job))
   }
   function changeCategory(event) {
@@ -273,7 +295,7 @@ export function DownloadCenter({
             正在读取下载任务…
           </p>
         )}
-        {errors && (
+        {downloads.error && (
           <div className="download-center-query-error" role="status">
             <span>部分下载任务暂时无法读取。</span>
             <Button size="sm" variant="outline" onClick={downloads.refresh}>
@@ -284,7 +306,7 @@ export function DownloadCenter({
         {!downloads.loading && !pending.length && (
           <div className="download-center-empty">
             <Download size={24} aria-hidden="true" />
-            <p>{errors ? '暂无可显示的任务' : '没有待处理的下载'}</p>
+            <p>{downloads.error ? '暂无可显示的任务' : '没有待处理的下载'}</p>
           </div>
         )}
         {pending.length > 0 && <ul className="download-center-list">{pending.map(renderJob)}</ul>}

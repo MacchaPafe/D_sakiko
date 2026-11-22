@@ -140,6 +140,7 @@
 /**
  * 从已保存历史取得的回放材料；后端只读取材料，客户端独立播放，不创建后端 sequence 或改变 Turn 状态。
  * @typedef {object} ReplayMaterials
+ * @property {Array<{start:number,scene:Scene,defaultPerformances?:object[]}>} [scenes] 多轮回放按台词起始下标切换的历史场景。
  * @property {Scene} scene 回放所需场景。
  * @property {SequenceSnapshot['defaultPerformances']} [defaultPerformances] 双人回放的听者待机计划。
  * @property {Guide[]} guides 按历史顺序排列的台词，全部 ready；缺少已保存音频时 audio 为 null，不隐式合成。

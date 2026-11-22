@@ -97,7 +97,7 @@ async function avatar(backend, text) {
   ).asset
 }
 
-test('对话身份绑定非默认形态，内容更新可见且默认值变化不会改绑', async () => {
+test('对话身份绑定非默认人格，内容更新可见且默认值变化不会改绑', async () => {
   const { backend } = await fixture()
   const catalog = backend.characters
   const saved = await catalog.savePersona(persona())
@@ -127,7 +127,7 @@ test('对话身份绑定非默认形态，内容更新可见且默认值变化�
   ])
 })
 
-test('保存拒绝旧角色引用、错误类型和不存在的形态，失败不更改定义', async () => {
+test('保存拒绝旧角色引用、错误类型和不存在的人格，失败不更改定义', async () => {
   const { backend } = await fixture()
   const saved = await backend.characters.savePersona(persona())
   const sources = [
@@ -151,27 +151,43 @@ test('保存拒绝旧角色引用、错误类型和不存在的形态，失败�
   }
 })
 
-test('来源形态或角色删除后保留失效身份，不自动切换默认形态', async () => {
+test('删除人格交接已保存对话和绑定身份；拒绝过期预览和直接移除', async () => {
   const { backend } = await fixture()
   const catalog = backend.characters
   await catalog.savePersona(persona())
-  let definition = await catalog.get('identity')
-  definition.forms = [definition.forms[0]]
-  definition = await catalog.save(definition)
-  await expect(catalog.resolvePersona('me')).rejects.toHaveProperty('problem.code', 'form_missing')
-  await expect(createChat(backend)).rejects.toHaveProperty('problem.code', 'form_missing')
-  expect(await catalog.listPersonas()).toMatchObject([
-    { id: 'me', displayName: null, avatar: null, problem: { code: 'form_missing' } }
-  ])
-  await catalog.delete('identity', definition.revision)
-  await expect(catalog.resolvePersona('me')).rejects.toHaveProperty(
+  const before = await catalog.get('identity')
+  const preview = await catalog.previewFormDeletion('identity', 'second')
+  const chatId = await backend.conversations.createChat({
+    title: '第二人格对话',
+    mode: 'single-character',
+    characterIds: ['identity'],
+    settings: { characters: { identity: { formId: 'second' } } }
+  })
+  await expect(catalog.save({ ...before, forms: [before.forms[0]] })).rejects.toHaveProperty(
     'problem.code',
-    'character_missing'
+    'form_removal_required'
   )
-  expect(await catalog.listPersonas()).toMatchObject([
-    { id: 'me', problem: { code: 'character_missing' } }
-  ])
-  expect(await catalog.getPersona('me')).not.toBeNull()
+  await expect(
+    catalog.deleteForm('identity', 'second', 'first', preview.stamp)
+  ).rejects.toHaveProperty('problem.code', 'revision_conflict')
+  const confirmed = await catalog.previewFormDeletion('identity', 'second')
+  expect(confirmed.chats.map((chat) => chat.id)).toEqual([chatId])
+  expect(confirmed.personas.map((item) => item.id)).toEqual(['me'])
+  await catalog.deleteForm('identity', 'second', 'first', confirmed.stamp)
+  expect((await catalog.get('identity')).forms.map((item) => item.id)).toEqual(['first'])
+  expect((await backend.store.load(chatId)).chat.meta.settings.characters.identity).toEqual({
+    formId: 'first',
+    modelOverrides: { first: null }
+  })
+  expect(await catalog.resolvePersona('me')).toMatchObject({
+    sourceCharacterId: null,
+    displayName: 'second',
+    description: 'second 的设定'
+  })
+  await expect(catalog.previewFormDeletion('identity', 'first')).rejects.toHaveProperty(
+    'problem.code',
+    'form_required'
+  )
 })
 
 test('自定义身份快照的两个来源编号均为 null', async () => {
@@ -188,7 +204,7 @@ test('自定义身份快照的两个来源编号均为 null', async () => {
   })
 })
 
-test('聊天固定形态与头像，来源变化或删除不影响分支和归档导入', async () => {
+test('聊天固定人格与头像，来源变化或删除不影响分支和归档导入', async () => {
   const { backend } = await fixture()
   const oldAvatar = await avatar(backend, 'old')
   const newAvatar = await avatar(backend, 'new')
@@ -265,7 +281,7 @@ test('继续对话和重生成仍把创建时的人格文本交给模型', async
     expect(request.userPersona).toEqual({ displayName: 'second', description: 'second 的设定' })
 })
 
-test('表单创建或切换角色时填入默认形态，编辑已有身份保留非默认形态', async () => {
+test('表单创建或切换角色时填入默认人格，编辑已有身份保留非默认人格', async () => {
   const { backend } = await fixture()
   const summaries = await backend.characters.list()
   const identity = summaries.find((item) => item.id === 'identity')

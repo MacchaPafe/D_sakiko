@@ -17,6 +17,15 @@ export const API_METHODS = {
     finish: true
   },
   notices: { list: false, dismiss: true },
+  backgrounds: {
+    catalog: false,
+    preview: false,
+    start: true,
+    control: true,
+    importImages: true,
+    rename: true,
+    remove: true
+  },
   outfits: {
     listCharacters: false,
     setCharacter: true,
@@ -103,6 +112,8 @@ export const API_METHODS = {
   },
   characters: {
     previewDeletion: false,
+    previewFormDeletion: false,
+    deleteForm: true,
     delete: true,
     list: false,
     get: false,
@@ -111,6 +122,7 @@ export const API_METHODS = {
     getPresentation: false,
     setOrder: true,
     deletePersona: true,
+    formPersonas: false,
     listPersonas: false,
     getPersona: false,
     savePersona: true,

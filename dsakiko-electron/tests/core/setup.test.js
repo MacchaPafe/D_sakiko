@@ -13,6 +13,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { createHash } from 'node:crypto'
 import { afterEach, expect, test, vi } from 'vitest'
+import { WebSocket } from 'ws'
 import { link } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import * as tar from 'tar'
@@ -124,8 +125,15 @@ test('快速开始延迟到最终提交才幂等释放三个角色，语音保�
   const sakiko = await backend.characters.get('sakiko')
   expect(sakiko.forms.map((form) => form.themeColor)).toEqual(['#7799CC', '#7799CC'])
   expect(sakiko.defaultFormId).toBe('black')
-  expect(sakiko.forms.find((form) => form.id === 'white').description).toContain('当前形态：白祥')
-  expect(sakiko.forms.find((form) => form.id === 'black').description).toContain('当前形态：黑祥')
+  expect(sakiko.forms.map((form) => form.displayName)).toEqual(['黑祥', '白祥'])
+  const whiteDescription = sakiko.forms.find((form) => form.id === 'white').description
+  const blackDescription = sakiko.forms.find((form) => form.id === 'black').description
+  expect(whiteDescription).toContain('月之森女子学园')
+  expect(whiteDescription).toContain('CRYCHIC')
+  expect(whiteDescription).not.toContain('白祥')
+  expect(blackDescription).toContain('羽丘女子学园')
+  expect(blackDescription).toContain('Ave Mujica')
+  expect(blackDescription).not.toContain('黑祥')
   for (const id of ['sakiko', 'anon', 'soyo']) {
     const character = await backend.characters.get(id)
     for (const form of character.forms) {
@@ -149,7 +157,7 @@ test('快速开始延迟到最终提交才幂等释放三个角色，语音保�
   expect((await backend.notices.dismiss(notice.id)).notices).toEqual([])
 }, 15000)
 
-test('内置形态元数据不依赖排序，旧清单仍沿用首形态和共用人设', async () => {
+test('内置人格元数据不依赖排序，旧清单仍沿用首人格和共用人设', async () => {
   const { root, backend } = await fixture()
   const directory = path.join(root, 'builtin')
   await put(directory, 'model/model.model3.json', JSON.stringify({ Version: 3 }))
@@ -162,7 +170,7 @@ test('内置形态元数据不依赖排序，旧清单仍沿用首形态和共�
       characters: [
         {
           id: 'forms',
-          name: '双形态',
+          name: '双人格',
           description: '共用描述',
           themeColor: null,
           defaultFormId: 'black',
@@ -195,7 +203,7 @@ test('内置形态元数据不依赖排序，旧清单仍沿用首形态和共�
   expect(character.defaultFormId).toBe('black')
   expect(character.forms[0]).toMatchObject({ displayName: '白祥', description: '白祥语气' })
   expect(character.forms[0].models[0].name).toBe('常服')
-  expect(character.forms[1]).toMatchObject({ displayName: '双形态', description: '黑祥语气' })
+  expect(character.forms[1]).toMatchObject({ displayName: '双人格', description: '黑祥语气' })
   const old = await backend.characters.get('old')
   expect(old.defaultFormId).toBe('first')
   expect(old.forms[0]).toMatchObject({ displayName: '旧格式', description: '旧人设' })
@@ -653,10 +661,17 @@ test('下载暂停跨重启继续，提交中断再次执行不删除已登记�
     )
   }
   const { roots, backend } = await fixture({ setupOptions: { catalog }, fetch })
+  const updates = vi.fn()
+  cleanups.push(backend.setup.downloadJobs.observe('details', updates))
   const plan = await backend.setup.createPlan({ kind: 'download', selection: ['asr'] })
+  expect(updates.mock.calls).toEqual([[{ kind: 'snapshot', items: [] }]])
   await backend.setup.start(plan.id)
   await started
   expect((await backend.setup.controlJob(plan.id, 'pause')).status).toBe('paused')
+  expect(updates).toHaveBeenLastCalledWith({
+    kind: 'upsert',
+    items: [expect.objectContaining({ id: plan.id, status: 'paused' })]
+  })
   await backend.close()
   let downloads = 0
   const next = await createCoreBackend({
@@ -703,6 +718,12 @@ test('下载暂停跨重启继续，提交中断再次执行不删除已登记�
   // 中断任务仍可恢复，启动回收不能误删它的下载材料。
   expect(await readFile(cached)).toEqual(payload)
   expect((await restored.setup.getJob(job.id)).status).toBe('paused')
+  const restoredUpdates = vi.fn()
+  cleanups.push(restored.setup.downloadJobs.observe('details', restoredUpdates))
+  expect(restoredUpdates).toHaveBeenLastCalledWith({
+    kind: 'snapshot',
+    items: [expect.objectContaining({ id: plan.id, status: 'paused' })]
+  })
   await restored.setup.start(job.id)
   expect((await done(restored.setup, job.id)).status).toBe('succeeded')
   await vi.waitFor(async () => {
@@ -856,6 +877,9 @@ test('同 ID 的旧版内置角色追加服装并保留 Electron 默认与已有
   await backend.onboarding.finish()
   const before = await backend.characters.get('anon')
   const source = await legacy(root)
+  const modelEntry = JSON.stringify({ model: 'model.moc', textures: ['texture.png'] })
+  await put(source, 'live2d_related/anon/live2D_model/3.model.json', modelEntry)
+  await put(source, 'live2d_related/anon/live2D_model/texture.png', 'texture')
   const scan = await backend.setup.scanLegacy(
     (await backend.setup.grantLegacySource(source)).sourceId
   )
@@ -868,7 +892,36 @@ test('同 ID 的旧版内置角色追加服装并保留 Electron 默认与已有
   expect(after.forms[0].defaultModelId).toBe(before.forms[0].defaultModelId)
   expect(after.forms[0].description).toBe(before.forms[0].description)
   expect(after.forms[0].models).toHaveLength(before.forms[0].models.length + 1)
+  const outfit = after.forms[0].models.at(-1)
+  const asset = outfit.presentation.model
+  expect(await readFile(await backend.assets.localPath(asset), 'utf8')).toBe(modelEntry)
+  expect(
+    await backend.characters.resolveCapabilities('anon', { modelId: outfit.id })
+  ).toMatchObject({
+    modelVersion: 'v2',
+    problems: []
+  })
+  expect(await readFile(await backend.assets.localPath(asset, 'model.moc'), 'utf8')).toBe('fixture')
   expect((await backend.conversations.listChats())[0].characterIds).toEqual(['anon'])
+
+  // 模拟旧版曾写入的空引用，验证用户改名和已有的服装选择在修复后仍然有效。
+  outfit.name = '我的演出服'
+  delete outfit.presentation.model
+  after.forms[0].defaultModelId = outfit.id
+  await backend.characters.save(after)
+  const repair = await backend.setup.createPlan({ kind: 'legacy', scanId: scan.scanId })
+  await backend.setup.start(repair.id)
+  expect(await done(backend.setup, repair.id)).toMatchObject({ status: 'succeeded' })
+  const repaired = (await backend.characters.get('anon')).forms[0]
+  expect(repaired.defaultModelId).toBe(outfit.id)
+  expect(repaired.models).toHaveLength(after.forms[0].models.length)
+  const restored = repaired.models.find((model) => model.id === outfit.id)
+  expect(restored.name).toBe('我的演出服')
+  expect(
+    await readFile(await backend.assets.localPath(restored.presentation.model, 'model.moc'), 'utf8')
+  ).toBe('fixture')
+  const repeated = await backend.setup.createPlan({ kind: 'legacy', scanId: scan.scanId })
+  expect(repeated.space.logical).toBe(0)
 })
 
 async function outfitRole(backend) {
@@ -895,7 +948,7 @@ async function outfitRole(backend) {
   return { characterId: 'local-sakiko', formId: 'stage' }
 }
 
-test('归属预设色只在关联时覆盖全部形态，新形态可独立配色', async () => {
+test('归属预设色只在关联时覆盖全部人格，新人格可独立配色', async () => {
   const { backend } = await fixture()
   const directory = backend.outfits.listCharacters()
   expect(directory.every((entry) => /^#[0-9a-f]{6}$/iu.test(entry.themeColor))).toBe(true)
@@ -904,7 +957,7 @@ test('归属预设色只在关联时覆盖全部形态，新形态可独立配�
   const linked = await readRole()
   expect(linked.forms[0].themeColor).toBe('#7799CC')
   linked.forms[0].themeColor = '#123456'
-  linked.forms.push({ ...linked.forms[0], id: 'extra', themeColor: null })
+  linked.forms.push({ ...linked.forms[0], id: 'extra', displayName: '额外人格', themeColor: null })
   await backend.characters.save(linked)
   const colors = async () => (await readRole()).forms.map((form) => form.themeColor)
   expect(await colors()).toEqual(['#123456', '#7799CC'])
@@ -1149,9 +1202,51 @@ test('ModelScope 分片在进程重启后保留，手动继续使用 Range', asy
   })
   const { backend, roots } = await fixture({ fetch: transport })
   const target = await outfitRole(backend)
+  const server = await startHttpServer(backend)
+  cleanups.push(() => server.close())
+  const sockets = []
+  class CapturedSocket extends WebSocket {
+    constructor(url) {
+      super(url)
+      sockets.push(this)
+    }
+  }
+  const client = createBackendClient({ ...server, WebSocket: CapturedSocket })
+  cleanups.push(() => client.close())
+  const details = vi.fn()
+  const summary = vi.fn()
+  cleanups.push(client.observe('outfit-jobs', 'details', details))
+  cleanups.push(client.observe('outfit-jobs', 'summary', summary))
+  await vi.waitFor(() => expect(details).toHaveBeenLastCalledWith({ kind: 'snapshot', items: [] }))
   const job = await backend.outfits.start(target, 'modelscope', item.id)
   const partial = path.join(roots.cacheRoot, 'outfit-downloads', job.id, item.sha256 + '.part')
   await vi.waitFor(async () => expect((await stat(partial)).size).toBe(offset))
+  await vi.waitFor(() => expect(summary).toHaveBeenLastCalledWith({ count: 1 }))
+  await vi.waitFor(
+    () =>
+      expect(details).toHaveBeenLastCalledWith({
+        kind: 'upsert',
+        items: [
+          expect.objectContaining({
+            id: job.id,
+            progress: { completed: offset, total: archive.length }
+          })
+        ]
+      }),
+    { timeout: 2000 }
+  )
+  expect(summary.mock.calls).toEqual([[{ count: 0 }], [{ count: 1 }]])
+  const disconnected = Promise.withResolvers()
+  sockets[0].once('close', disconnected.resolve)
+  sockets[0].terminate()
+  await disconnected.promise
+  expect((await backend.outfits.control(job.id, 'pause')).status).toBe('interrupted')
+  await vi.waitFor(() =>
+    expect(details).toHaveBeenLastCalledWith({
+      kind: 'snapshot',
+      items: [expect.objectContaining({ id: job.id, status: 'interrupted' })]
+    })
+  )
   await backend.outfits.close()
   expect(backend.outfits.listJobs(target)[0].status).toBe('interrupted')
   const restarted = await createCoreBackend({ ...roots, scanReminders: false, fetch: transport })

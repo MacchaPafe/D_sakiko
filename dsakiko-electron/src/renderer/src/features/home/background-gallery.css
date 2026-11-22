@@ -1,0 +1,297 @@
+.stage-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.stage-resources,
+.background-gallery,
+.background-gallery-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.stage-resource-header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 14px clamp(16px, 4vw, 28px);
+  border-bottom: 1px solid var(--border);
+}
+
+.stage-resource-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.stage-resource-header .segmented-tabs {
+  justify-self: center;
+}
+
+.stage-resource-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stage-resource-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.stage-resource-pane[hidden],
+.background-gallery-pane[hidden] {
+  display: none;
+}
+
+.background-gallery {
+  padding: 12px 0 0;
+  gap: 10px;
+}
+
+.background-gallery > .segmented-tabs {
+  align-self: flex-start;
+  margin-inline: clamp(16px, 4vw, 28px);
+}
+
+.background-gallery-pane {
+  flex: 1;
+  gap: 10px;
+}
+
+.background-search-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-inline: clamp(16px, 4vw, 28px);
+}
+
+.background-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.background-search svg {
+  position: absolute;
+  left: 10px;
+  pointer-events: none;
+  color: var(--muted-foreground);
+}
+
+.background-search input,
+.background-card input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.background-search input {
+  padding: 0 10px 0 30px;
+}
+
+.background-card input {
+  padding: 0 9px;
+}
+
+.background-search input::placeholder,
+.background-card input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.background-search input:focus-visible,
+.background-card input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+
+.background-gallery-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 2px clamp(16px, 4vw, 28px) 18px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent) transparent;
+}
+
+.background-gallery-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.background-gallery-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.background-gallery-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  border-radius: 9999px;
+}
+
+.background-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(176px, 100%), 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.background-card,
+.background-tile {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--background);
+  border-radius: 12px;
+}
+
+/* 锁定 16:9 裁剪框，防止图片固有宽高比在 grid 项内撑高缩略图。 */
+.background-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: var(--resource-inset);
+  color: var(--muted-foreground);
+}
+
+.background-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.background-card-info {
+  padding: 9px 10px;
+}
+
+.background-card strong,
+.background-caption {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+
+.background-card-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.background-picker {
+  width: min(312px, calc(100% - 16px));
+}
+
+.background-picker .background-search {
+  flex: none;
+  margin: 0 2px 8px;
+}
+
+.background-picker .background-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.background-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border-radius: 10px;
+  transition:
+    border-color 140ms ease-out,
+    box-shadow 140ms ease-out,
+    background-color 140ms ease-out;
+}
+
+.background-tile:hover:not(:disabled) {
+  border-color: var(--selected-border);
+}
+
+.background-caption {
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: start;
+}
+
+.background-tile[aria-pressed='true'] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+  background: color-mix(in srgb, var(--secondary) 48%, var(--background));
+}
+
+.background-tile[aria-pressed='true'] .background-caption {
+  color: var(--primary);
+  font-weight: 550;
+}
+
+.background-caption svg {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--background);
+  color: var(--primary);
+  box-shadow: 0 1px 4px var(--shadow-ink);
+  pointer-events: none;
+}
+
+.background-tile:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+@media (max-width: 560px) {
+  .stage-resource-header {
+    grid-template-columns: auto auto;
+    row-gap: 10px;
+  }
+
+  .stage-resource-header .segmented-tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .stage-resource-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .background-tile {
+    transition: none;
+  }
+}

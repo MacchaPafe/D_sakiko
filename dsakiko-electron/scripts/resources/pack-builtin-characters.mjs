@@ -7,6 +7,7 @@ import * as tar from 'tar'
 import { resourcePath } from '../../src/backend/resources/files.js'
 import { walk, sourcePath } from '../../src/backend/setup/files.js'
 import { requireValue, safeId } from '../../src/backend/core/support.js'
+import { sakikoFormProfile } from '../../src/backend/bundled-characters/sakiko-forms.js'
 
 const specs = [
   { id: 'sakiko-white', source: 'adv_live2d_sakiko_010_casual_spring_01' },
@@ -145,17 +146,11 @@ export async function packBuiltinCharacters({ modelsRoot, charactersRoot, output
       const formIds = id === 'sakiko' ? ['black', 'white'] : ['default']
       const forms = formIds.map((formId) => {
         const modelId = id + '-' + formId
-        let formDescription = description
-        if (id === 'sakiko')
-          formDescription +=
-            '\n\n当前形态：' +
-            (formId === 'white'
-              ? '白祥。请使用上文的白祥性格与语气。'
-              : '黑祥。请使用上文的黑祥性格与语气。')
         return {
           id: formId,
           displayName: name,
-          description: formDescription,
+          description,
+          ...sakikoFormProfile(id, formId),
           modelName: formId === 'black' ? '演出服' : '春季常服',
           ...models.get(modelId)
         }

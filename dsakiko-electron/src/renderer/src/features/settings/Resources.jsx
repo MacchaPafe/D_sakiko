@@ -165,7 +165,7 @@ export function Resources({ client, target, onDownload, setupState, setup, onSho
             <section className="settings-stack" key={id}>
               <h3>{group.name}</h3>
               {id === 'voices' && (
-                <p>在角色管理中编辑各形态的回复语音。更新语音包时可以选择要采用的材料。</p>
+                <p>在角色管理中编辑各人格的回复语音。更新语音包时可以选择要采用的材料。</p>
               )}
               {group.options.map((option) => (
                 <ResourceCard
@@ -339,7 +339,7 @@ export function ResourceDownloadConfirmation({
             ? '正在准备…'
             : review
               ? detail?.item.ready
-                ? '应用到形态'
+                ? '应用到人格'
                 : '下载并应用'
               : '开始下载'}
         </Button>

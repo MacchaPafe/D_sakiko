@@ -11,6 +11,8 @@ import wavefile from 'wavefile'
 import { createCoreBackend } from '../../src/backend/create-core-backend.js'
 import { startHttpServer } from '../../src/server/http-server.js'
 import { problemError } from '../../src/shared/problems.js'
+import { verifyBackgroundDraft } from './background-flow.js'
+import { verifyPersonaDraft } from './persona-flow.js'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
 async function verifyCharacterManager(page, backend) {
@@ -23,12 +25,12 @@ async function verifyCharacterManager(page, backend) {
   await manager.getByLabel('介绍提示词').fill('只用文字交谈。')
   await manager.getByRole('button', { name: '创建角色' }).click()
   await manager.getByRole('button', { name: '添加 Live2D 服装' }).click()
-  await page.getByRole('button', { name: '关闭服装管理' }).click()
+  await page.getByRole('button', { name: '关闭舞台资源' }).click()
   await manager.getByRole('button', { name: 'BanG Dream! 角色', exact: true }).click()
   const affiliation = manager.getByRole('combobox', { name: '对应角色' })
   await affiliation.fill('soyo')
   await manager.getByRole('option', { name: '长崎素世' }).click()
-  expect(await manager.getByLabel('形态主题色').inputValue()).toBe('#ffdd88')
+  expect(await manager.getByLabel('人格主题色').inputValue()).toBe('#ffdd88')
   await manager.getByRole('button', { name: '恢复默认颜色' }).click()
   await manager.getByLabel('角色名称', { exact: true }).fill('已改名的角色')
   await manager.getByRole('button', { name: '保存更改' }).click()
@@ -37,6 +39,13 @@ async function verifyCharacterManager(page, backend) {
   expect(role.displayName).toBe(role.name)
   expect(role.bangDreamId).toBe('soyo')
   expect((await backend.characters.get(role.id)).forms[0].themeColor).toBeNull()
+  await manager.getByRole('button', { name: '添加人格', exact: true }).click()
+  await manager.getByLabel('人格名称', { exact: true }).fill('雨天')
+  await manager.getByRole('button', { name: '保存更改' }).click()
+  await expect.poll(async () => (await backend.characters.get(role.id)).forms.length).toBe(2)
+  await manager.getByRole('button', { name: '删除人格', exact: true }).click()
+  await manager.getByRole('button', { name: '确认删除人格' }).click()
+  await expect.poll(async () => (await backend.characters.get(role.id)).forms.length).toBe(1)
   await manager.getByRole('button', { name: '删除角色', exact: true }).click()
   await manager.getByRole('button', { name: '确认删除角色' }).click()
   await expect.poll(() => backend.characters.get(role.id)).toBeNull()
@@ -142,6 +151,7 @@ async function verifyResourceDownload(page, backend, settings) {
     vi.spyOn(backend.setup, 'createPlan').mockImplementation(async () => job),
     vi.spyOn(backend.setup, 'start').mockImplementation(async () => {
       job = { ...job, status: 'running', phase: 'downloading' }
+      backend.setup.downloadJobs.publish(job)
       return job
     }),
     vi.spyOn(backend.setup, 'observe').mockImplementation(async (id, listener) => {
@@ -172,13 +182,19 @@ async function verifyResourceDownload(page, backend, settings) {
     await settings.getByRole('heading', { name: '附加资源下载' }).waitFor()
     await expectSharedDialog(page, settings, shell)
   } finally {
+    backend.setup.downloadJobs.remove(jobId)
     for (const handler of handlers) handler.mockRestore()
   }
 }
 
+async function saveTestOutfitJob(backend, job) {
+  backend.outfits.jobs.set(job.id, job)
+  await backend.outfits.saveJob(job)
+}
+
 async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
   const shell = await manager.elementHandle()
-  const selectedForm = manager.getByRole('group', { name: '形态' }).getByRole('button', {
+  const selectedForm = manager.getByRole('group', { name: '人格' }).getByRole('button', {
     pressed: true
   })
   const otherForm = role.forms.find((item) => item.id !== form.id)
@@ -190,14 +206,14 @@ async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
     source: 'bestdori'
   }
   const target = { characterId: role.id, formId: otherForm.id }
-  backend.outfits.jobs.set('home-test-pending', {
+  await saveTestOutfitJob(backend, {
     id: 'home-test-pending',
     target,
     item,
     status: 'interrupted',
     progress: { completed: 2, total: 5 }
   })
-  backend.outfits.jobs.set('home-test-finished', {
+  await saveTestOutfitJob(backend, {
     id: 'home-test-finished',
     target,
     item: { ...item, name: '已下载的演出服' },
@@ -216,17 +232,13 @@ async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
     ],
     problems: [{ source: 'modelscope', message: 'ModelScope 测试失败' }]
   })
-  const listResources = backend.setup.listJobs.bind(backend.setup)
-  const resources = vi.spyOn(backend.setup, 'listJobs').mockImplementation(async () => [
-    {
-      id: 'home-test-voice',
-      kind: 'download',
-      status: 'succeeded',
-      completedAt: Date.now(),
-      download: { components: [{ id: 'voice.sakiko', status: 'ready' }] }
-    },
-    ...(await listResources())
-  ])
+  backend.setup.downloadJobs.publish({
+    id: 'home-test-voice',
+    kind: 'download',
+    status: 'succeeded',
+    completedAt: Date.now(),
+    download: { components: [{ id: 'voice.sakiko', status: 'ready' }] }
+  })
   const center = page.getByRole('dialog', { name: '下载中心' })
   try {
     await manager.getByRole('tab', { name: '下载', exact: true }).click()
@@ -246,7 +258,7 @@ async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
     const showDownloads = manager.getByRole('button', { name: '下载任务', exact: true })
     await showDownloads.press('Enter')
     await expectSharedDialog(page, center, shell)
-    await center.getByRole('button', { name: '返回服装管理' }).click()
+    await center.getByRole('button', { name: '返回舞台资源' }).click()
     await expectSharedDialog(page, manager, shell)
     const restoredScroll = await list.evaluate((element) => element.scrollTop)
     expect(Math.abs(restoredScroll - scrollTop)).toBeLessThan(3)
@@ -296,17 +308,27 @@ async function verifyOutfitDownloads(page, backend, manager, role, form, mode) {
     await expect.poll(() => selectedForm.getAttribute('value')).toBe(otherForm.id)
   } finally {
     catalog.mockRestore()
-    resources.mockRestore()
+    backend.setup.downloadJobs.remove('home-test-voice')
   }
 }
 
 async function verifyDraftOutfit(page, backend, defaultName) {
+  const role = await backend.characters.get('sakiko')
   const trigger = page.getByRole('button', { name: '切换服装' })
-  const wardrobe = page.getByRole('dialog', { name: '服装' })
+  const wardrobe = page.getByRole('dialog', { name: '人格与服装' })
   const toolbar = page.getByRole('group', { name: '舞台工具' })
   const defaults = wardrobe.getByRole('button', { name: defaultName + ' V3 当前', exact: true })
   const alternate = wardrobe.getByRole('button', { name: '备用服装 V3', exact: true })
   await trigger.click()
+  const picker = wardrobe.getByRole('group', { name: '当前人格' })
+  for (const form of [
+    role.forms.find((item) => item.id !== role.defaultFormId),
+    role.forms.find((item) => item.id === role.defaultFormId)
+  ]) {
+    const choice = picker.getByRole('button', { name: form.displayName, exact: true })
+    await choice.click()
+    await expect.poll(() => choice.getAttribute('aria-pressed')).toBe('true')
+  }
   await defaults.waitFor()
   expect(await wardrobe.getByRole('button', { name: '管理服装' }).isEnabled()).toBe(true)
   const stage = await page.locator('.home-stage').boundingBox()
@@ -330,7 +352,7 @@ async function verifyDraftOutfit(page, backend, defaultName) {
       gaps: centers.slice(1).map((center, index) => center - centers[index])
     }
   })
-  expect(spacing).toEqual({ rotate: '90deg', gaps: [48, 48, 48, 48, 48] })
+  expect(spacing).toEqual({ rotate: '90deg', gaps: [48, 48, 48, 48, 48, 48] })
   await toolbar.screenshot({ path: '/tmp/sakiko-stage-toolbar-horizontal.png' })
   await dragStageToolsOver(page, page.getByRole('textbox', { name: '消息' }))
   const grip = await page.getByRole('button', { name: '拖动舞台工具栏' }).boundingBox()
@@ -628,7 +650,7 @@ async function verifyHistory(page, application, backend, selected) {
   const shortReply = replies.nth(1).locator('.history-bubble')
   const resize = page.getByRole('button', { name: '调整记录框宽度' })
   const panel = page.locator('.history-panel')
-  const thinking = panel.getByText('模型思考了一会儿', { exact: true })
+  const thinking = panel.locator('.history-tools summary').filter({ hasText: '模型思考' })
   await thinking.waitFor()
   expect(await panel.locator('.history-reasoning').count()).toBe(0)
   await thinking.click()
@@ -905,7 +927,7 @@ async function verifyTheatre(page, backend, agent) {
   expect(updated.sakiko.modelOverrides[updated.sakiko.formId]).toBe('home-test-outfit')
   await actorTabs.last().click()
   await wardrobe.getByRole('button', { name: '管理服装' }).click()
-  const manager = page.getByRole('dialog', { name: '服装管理' })
+  const manager = page.getByRole('dialog', { name: '舞台资源' })
   await manager.waitFor()
   expect(await manager.getByLabel('角色', { exact: true }).inputValue()).toBe(chat.characterIds[1])
   await page.keyboard.press('Escape')
@@ -1261,6 +1283,18 @@ app.on('window-all-closed', () => app.quit())`
         .poll(() => page.locator('.home-canvas').getAttribute('data-stage-state'))
         .toBe('ready')
       await expect.poll(() => page.locator('.home-stage-status[role=alert]').count()).toBe(0)
+      const jobRequests = []
+      page.on('request', (request) => {
+        const url = new URL(request.url())
+        if (
+          request.method() === 'POST' &&
+          /\/api\/v1\/call\/(outfits|setup)\/listJobs$/.test(url.pathname)
+        )
+          jobRequests.push(url.pathname)
+      })
+      // 超过原首页轮询周期，确认空闲时没有后台列表请求。
+      if (mode === 'production') await page.waitForTimeout(4400)
+      expect(jobRequests).toEqual([])
       const readCatalog = backend.setup.getCatalog.bind(backend.setup)
       backend.setup.getCatalog = (options) => readCatalog({ ...options, refresh: false })
       await page.keyboard.press('ControlOrMeta+,')
@@ -1287,7 +1321,8 @@ app.on('window-all-closed', () => app.quit())`
         .click()
       await settings.getByRole('heading', { name: '附加资源下载' }).waitFor()
       const target = `${process.platform}-${process.arch}`
-      if (['win32-x64', 'darwin-arm64'].includes(target)) {
+      const managedResourceDownload = ['win32-x64', 'darwin-arm64'].includes(target)
+      if (managedResourceDownload) {
         await settings.getByRole('heading', { name: '语音识别模型' }).waitFor()
         await verifyResourceDownload(page, backend, settings)
       } else await settings.getByText('当前仅支持 Windows x64 和 macOS arm64。').waitFor()
@@ -1344,6 +1379,8 @@ app.on('window-all-closed', () => app.quit())`
           expect(wave.subarray(0, 4).toString()).toBe('RIFF')
           return { status: 'succeeded', text: '识别到的文字' }
         })
+      expect(jobRequests).toEqual(managedResourceDownload ? ['/api/v1/call/setup/listJobs'] : [])
+      jobRequests.length = 0
       await page.reload()
       const composer = page.getByRole('textbox', { name: '消息' })
       const toolsButton = page.getByRole('button', { name: '工具', exact: true })
@@ -1522,7 +1559,9 @@ app.on('window-all-closed', () => app.quit())`
       expect(agent.run).not.toHaveBeenCalled()
       await page.getByRole('textbox', { name: '消息' }).press('Shift+Enter')
       expect(await page.getByRole('textbox', { name: '消息' }).inputValue()).toContain('\n')
+      await verifyPersonaDraft(page)
       await verifyDraftOutfit(page, backend, defaultName)
+      const background = await verifyBackgroundDraft(page, backend)
       await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
       await page.getByRole('button', { name: '发送消息' }).click()
       const firstPreview = page.locator('.home-chat-row.selected > button:first-child')
@@ -1539,19 +1578,39 @@ app.on('window-all-closed', () => app.quit())`
       await dragStageToolsOver(page, composer)
       await dragStageToolsOver(page, page.getByRole('region', { name: '当前台词' }))
       const [outfitChat] = await backend.conversations.listChats()
+      const savedChat = (await backend.store.load(outfitChat.id)).chat
+      expect(savedChat.meta.settings.presentation.background).toEqual(background)
+      const replayTarget = { kind: 'turn', turnId: savedChat.turns[0].id }
+      expect(
+        (await backend.conversations.getReplayMaterials(outfitChat.id, replayTarget)).scene
+          .background
+      ).toEqual(background)
+      await backend.conversations.patchSettings(outfitChat.id, {
+        presentation: { background: null }
+      })
+      expect(
+        (await backend.conversations.getReplayMaterials(outfitChat.id, replayTarget)).scene
+          .background
+      ).toBeNull()
+      expect((await backend.store.load(outfitChat.id)).chat.userPersona.displayName).toBe('同桌')
+      await page.getByRole('button', { name: '我的身份 · 同桌' }).click()
+      const identity = page.getByRole('dialog', { name: '我的身份' })
+      await identity.getByText('一起排练的同学').waitFor()
+      expect(await identity.getByText('管理身份').count()).toBe(0)
+      await identity.getByRole('button', { name: '关闭' }).click()
       const savedOutfit = async () => {
         const { chat } = await backend.store.load(outfitChat.id)
         return chat.meta.settings.characters.sakiko.modelOverrides[role.defaultFormId]
       }
       expect(await savedOutfit()).toBe('home-test-outfit')
       await page.getByRole('button', { name: '切换服装' }).click()
-      const wardrobe = page.getByRole('dialog', { name: '服装' })
+      const wardrobe = page.getByRole('dialog', { name: '人格与服装' })
       await wardrobe.getByRole('button', { name: '备用服装 V3 当前', exact: true }).waitFor()
       await wardrobe.getByRole('button', { name: defaultName + ' V3', exact: true }).click()
       await wardrobe.getByRole('button', { name: defaultName + ' V3 当前', exact: true }).waitFor()
       expect(await savedOutfit()).toBe(form.defaultModelId)
       await wardrobe.getByRole('button', { name: '管理服装' }).click()
-      const manager = page.getByRole('dialog', { name: '服装管理' })
+      const manager = page.getByRole('dialog', { name: '舞台资源' })
       const managerShell = await manager.elementHandle()
       const outfit = manager.getByRole('listitem').filter({ hasText: '备用服装' })
       await outfit.locator('.outfit-version-badge').getByText('V3', { exact: true }).waitFor()
@@ -1606,12 +1665,12 @@ app.on('window-all-closed', () => app.quit())`
       await verifyOutfitDownloads(page, backend, manager, role, form, mode)
       await manager.getByLabel('角色', { exact: true }).selectOption('anon')
       await manager.getByText('正在读取角色服装…').waitFor({ state: 'hidden' })
-      expect(await manager.getByText('形态', { exact: true }).count()).toBe(0)
-      await manager.getByRole('button', { name: '关闭服装管理' }).click()
+      expect(await manager.getByText('人格', { exact: true }).count()).toBe(0)
+      await manager.getByRole('button', { name: '关闭舞台资源' }).click()
       await manager.waitFor({ state: 'hidden' })
       const downloadEntry = page.getByRole('button', { name: '下载中心', exact: true })
       expect(await downloadEntry.count()).toBe(0)
-      backend.outfits.jobs.set('home-test-sidebar-entry', {
+      await saveTestOutfitJob(backend, {
         id: 'home-test-sidebar-entry',
         target: { characterId: role.id, formId: form.id },
         item: {
@@ -1636,6 +1695,8 @@ app.on('window-all-closed', () => app.quit())`
       await page.keyboard.press('Escape')
       await sidebarDownloads.waitFor({ state: 'hidden' })
       await downloadEntry.waitFor({ state: 'hidden' })
+      // 页面重载时只读取一次持久任务，打开下载中心和操作服装均不查询列表。
+      expect(jobRequests).toEqual(['/api/v1/call/setup/listJobs'])
       const editRole = page.getByRole('button', { name: /^编辑角色：/ }).first()
       const roleHeader = editRole.locator('..')
       await roleHeader.hover()
@@ -1643,7 +1704,7 @@ app.on('window-all-closed', () => app.quit())`
       await editRole.click()
       const affiliation = page.getByRole('dialog', { name: '角色管理' })
       const search = affiliation.getByRole('combobox', { name: '对应角色' })
-      const themePicker = affiliation.getByLabel('形态主题色')
+      const themePicker = affiliation.getByLabel('人格主题色')
       const originalColor = await themePicker.inputValue()
       await search.click()
       await verifySearchSelectScrollbar(page, search)
@@ -1705,6 +1766,7 @@ app.on('window-all-closed', () => app.quit())`
         ).toBe('no-drag')
       }
       await expect.poll(() => page.locator('.history-bubble').count()).toBe(2)
+      await page.getByText('你（同桌）', { exact: true }).waitFor()
       const replay = page.getByRole('button', { name: '回放本轮回复' })
       const stageStop = page.getByRole('button', { name: '停止本轮回放' })
       await replay.waitFor()

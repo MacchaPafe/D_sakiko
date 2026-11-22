@@ -1,0 +1,55 @@
+import { expect } from 'vitest'
+
+/** @param {import('playwright-core').Page} page 单角色草稿所在的 Electron 窗口。 @returns {Promise<void>} 验证正式页面内的绑定、独立复制和草稿交接。 */
+export async function verifyPersonaDraft(page) {
+  const composer = page.getByRole('textbox', { name: '消息' })
+  await composer.fill('身份选择保留草稿')
+  await page.getByRole('button', { name: '我的身份 · 无身份' }).click()
+  const picker = page.getByRole('dialog', { name: '我的身份' })
+  await picker.getByRole('button', { name: '管理身份' }).click()
+  const manager = page.getByRole('dialog', { name: '角色管理' })
+  expect(await manager.getByRole('tab', { name: '对话身份' }).getAttribute('aria-selected')).toBe(
+    'true'
+  )
+  await manager.getByRole('tab', { name: '角色', exact: true }).click()
+  const name = manager.getByLabel('角色名称', { exact: true })
+  const originalName = await name.inputValue()
+  await name.fill(originalName + ' ')
+  await manager.getByRole('button', { name: '用作对话身份' }).click()
+  await manager.getByRole('button', { name: '取消', exact: true }).click()
+  expect(await name.inputValue()).toBe(originalName + ' ')
+  await manager.getByRole('button', { name: '用作对话身份' }).click()
+  await manager.getByRole('button', { name: '保存角色并继续' }).click()
+  await manager.getByRole('button', { name: '保存身份' }).click()
+  await manager.getByRole('tab', { name: '角色', exact: true }).click()
+  await manager.getByRole('button', { name: '用作对话身份' }).click()
+  await expect
+    .poll(() =>
+      manager.getByRole('navigation', { name: '管理的对话身份' }).getByRole('button').count()
+    )
+    .toBe(1)
+  await manager.getByRole('button', { name: '复制为自定义身份' }).click()
+  await manager.getByLabel('身份名称').fill('同桌')
+  await manager.getByLabel('身份描述').fill('一起排练的同学')
+  await manager.getByRole('button', { name: '保存身份' }).click()
+  await manager.getByRole('button', { name: '关闭角色管理' }).click()
+  await picker.getByRole('button', { name: '同桌', exact: true }).click()
+  await picker.getByText('一起排练的同学').waitFor()
+  await picker.getByRole('button', { name: '确认选择' }).click()
+  await page.getByRole('button', { name: '我的身份 · 同桌' }).waitFor()
+  expect(await composer.inputValue()).toBe('身份选择保留草稿')
+  await page.getByRole('button', { name: '我的身份 · 同桌' }).click()
+  await picker.getByRole('button', { name: '管理身份' }).click()
+  await manager.getByRole('button', { name: '添加身份' }).click()
+  await manager.getByLabel('身份名称').fill('同桌')
+  await manager.getByRole('button', { name: '保存身份' }).click()
+  await manager.getByRole('button', { name: '同桌 (2)', exact: true }).waitFor()
+  await manager.getByRole('button', { name: '删除身份', exact: true }).click()
+  await manager.getByRole('button', { name: '确认删除身份' }).click()
+  await manager.getByRole('button', { name: '同桌 (2)', exact: true }).waitFor({ state: 'hidden' })
+  await manager.getByRole('button', { name: '关闭角色管理' }).click()
+  expect(
+    await picker.getByRole('button', { name: '同桌', exact: true }).getAttribute('aria-pressed')
+  ).toBe('true')
+  await picker.getByRole('button', { name: '确认选择' }).click()
+}

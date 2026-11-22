@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { characterContext, dialogueProjection } from './context.js'
+import { characterContext, dialogueProjection, speakerNames } from './context.js'
 import { fileURLToPath } from 'node:url'
 import nunjucks from 'nunjucks'
 import Ajv from 'ajv'
@@ -27,14 +27,15 @@ import { uuid, copy, requireValue, failure, problem } from '../core/support.js'
  * @property {string} id 角色 ID。
  * @property {string} formId 当前形态 ID。
  * @property {string} name 跨形态角色名。
- * @property {string} displayName 当前形态名。
+ * @property {string} displayName 当前人格名。
+ * @property {'character'|'form'} [selfNameMode] 模型自我介绍时使用的名称。
  * @property {Array<{id: string, displayName: string, description: string}>} forms 全部形态的人物资料。
  * @property {'v2' | 'v3' | null} modelVersion 当前模型格式。
  * @property {string} description 角色人设与语气描述。
  * @property {Pick<import('../../shared/contracts/presentation.js').PerformanceCatalog, 'motions' | 'expressions' | 'presets'>} performances 可供模型选择的普通动作、表情与组合参考。
  */
 
-/** @typedef {Pick<import('../../shared/contracts/conversation.js').CharacterLine, 'id' | 'speakerId' | 'formId' | 'text' | 'translation' | 'emotion' | 'performance'>} ContextLine 用于构建历史上下文的角色台词摘要。 */
+/** @typedef {Pick<import('../../shared/contracts/conversation.js').CharacterLine, 'id' | 'speakerId' | 'speakerLabel' | 'formId' | 'text' | 'translation' | 'emotion' | 'performance'>} ContextLine 用于构建历史上下文的角色台词摘要。 */
 
 /**
  * 用于构建模型提示词的单条上下文消息。
@@ -252,14 +253,11 @@ export class Agent {
   /** 生成控制消息，即向模型说明本轮该如何回复的消息。
    * 控制消息只存在于请求尾部，只会在当前轮次中存在，不会写入历史中。 */
   controls(request) {
-    const characters = request.characters.map((character) => ({
-      ...character,
-      name: character.name ?? character.displayName
-    }))
+    const characters = speakerNames(request.characters)
     const examples = characters.map((character) => {
       const greeting = { Japanese: 'また会えて嬉しい。', Chinese: '很高兴又见到你。' }
       const line = {
-        speaker: character.name,
+        speaker: character.speaker,
         text: greeting[request.options.language] ?? greeting.Chinese,
         translation: request.options.translationLanguage
           ? (greeting[request.options.translationLanguage] ?? greeting.Chinese)
@@ -307,13 +305,14 @@ export class Agent {
       previousContext = context
     }
     for (const [turnIndex, turn] of request.history.entries()) {
-      const context = turn.characterContext ?? previousContext ?? currentContext
+      // Python 导入的开头可能没有人物快照，当前选择只能从本轮输入开始生效。
+      const context = turn.characterContext ?? previousContext
       const contextFingerprint = turnFingerprint(
         request.history.slice(0, turnIndex),
         context,
         turn.messages.find((message) => message.kind === 'user') ?? null
       )
-      appendContext(context)
+      if (turn.characterContext) appendContext(context)
       if (request.deepseek && turn.scenario && turn.reminder)
         messages.push({
           role: 'user',
@@ -364,7 +363,9 @@ export class Agent {
             if (part.kind === 'dialogue')
               content.push({
                 type: 'text',
-                text: JSON.stringify({ lines: dialogueProjection(part.lines, context) })
+                text: JSON.stringify({
+                  lines: dialogueProjection(part.lines, context ?? currentContext)
+                })
               })
             if (part.kind === 'tool-call')
               content.push({
@@ -474,10 +475,9 @@ export class Agent {
       Array.isArray(output.lines) && output.lines.length > 0 && output.lines.length <= 100,
       'invalid_output'
     )
+    const speakers = speakerNames(request.characters)
     return output.lines.map((line) => {
-      const character = request.characters.find(
-        (item) => (item.name ?? item.displayName) === line.speaker
-      )
+      const character = speakers.find((item) => item.speaker === line.speaker)
       requireValue(
         character && typeof line.text === 'string' && line.text.trim().length > 0,
         'invalid_output'
@@ -510,6 +510,7 @@ export class Agent {
       return {
         id: uuid(),
         speakerId: character.id,
+        speakerLabel: character.speaker,
         formId: character.formId,
         text: line.text,
         translation: line.translation,
@@ -832,16 +833,26 @@ export class Agent {
    */
   async compress(request, signal) {
     const system = this.templates.render('summary.njk', {})
-    const prompt = JSON.stringify(
-      semanticHistory(request.history).map((turn) => ({
-        ...turn,
-        messages: turn.messages.map((message) =>
-          message.kind === 'assistant'
-            ? { ...message, parts: message.parts.filter((part) => part.kind !== 'reasoning') }
-            : message
-        )
-      }))
-    )
+    const history = semanticHistory(request.history)
+    let context = null
+    let previousProfile = null
+    for (const turn of history) {
+      context = turn.characterContext ?? context
+      if (turn.characterContext) {
+        // 摘要模型看到的介绍和台词署名应与当时的普通对话一致。
+        const profile = this.templates.render('character-context.njk', context)
+        turn.characterContext = profile === previousProfile ? null : profile
+        previousProfile = profile
+      }
+      for (const message of turn.messages) {
+        if (message.kind !== 'assistant') continue
+        message.parts = message.parts.filter((part) => part.kind !== 'reasoning')
+        for (const part of message.parts) {
+          if (part.kind === 'dialogue') part.lines = dialogueProjection(part.lines, context)
+        }
+      }
+    }
+    const prompt = JSON.stringify(history)
     // 摘要请求也有自己的窗口，已知超限直接交给普通历史裁剪兜底。
     const estimate = Math.ceil(Buffer.byteLength(JSON.stringify({ system, prompt }), 'utf8') / 3)
     requireValue(

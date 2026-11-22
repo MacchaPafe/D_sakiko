@@ -217,7 +217,7 @@ async function startApplication() {
         ? ['openFile']
         : [options.directory ? 'openDirectory' : 'openFile', 'multiSelections'],
       filters:
-        options.single && Array.isArray(options.extensions)
+        !options.directory && Array.isArray(options.extensions)
           ? [
               {
                 name: '可选文件',

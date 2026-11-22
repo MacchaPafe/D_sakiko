@@ -84,11 +84,13 @@ flowchart LR
 
 ## 角色目录与对话身份
 
-角色摘要额外提供 `defaultFormId`。现有 React 原型表单在创建角色来源身份或切换角色时填入默认形态 ID，编辑已有身份时保留明确的 `formId`。该原型尚未完成正式客户端接线，本次只同步表单契约。后续单形态隐藏选择、多形态提供选择 UI；隐藏选择不意味着持久化时省略形态 ID。
+角色摘要提供 `defaultFormId` 和可选人格的名称与 ID。只有一个人格时隐藏选择器。多个人格时可在首轮前选择，也可在对话空闲时切换。编辑器按角色保存草稿，新人格沿用当前头像与主题色，提示词、语音和服装单独设置。
 
-`CharacterDefinition` 使用非空 `forms` 与 `defaultFormId`，每个形态含名称、描述、头像、主题色、声音、`models` 和 `defaultModelId`。产品明确每个模型配置只属于一个形态，因此模型登记在 `CharacterForm.models` 下，不再保留角色级 `models` 或模型的 `formIds`。模型 ID 在同一角色内唯一；默认指针必须指向本形态的一项，无模型时为 null。不同模型配置仍可引用相同底层资源包，配置归属不要求复制资源或改变包内目录。
+删除已保存的人格时，先用 `previewFormDeletion` 查看受影响的对话与绑定身份，再向 `deleteForm` 提交接替人格和预览凭据。对话接替当前选择，被删人格的服装覆盖随之移除。新生成的轮次保存当时的回放场景。
 
-Chat 保存当前 formId 及各形态模型覆盖，覆盖值必须属于对应形态；换装不改变形态或目录默认值，切回形态时沿用该形态的模型覆盖。`Live2dImporter` 只产生尚未登记的模型配置和资源，调用方将其放入目标形态后交目录保存。迁移旧平级配置时按形态归入 models；旧配置被多个形态引用时，拆成各形态独立且 ID 不同的配置，修正默认指针和 Chat 覆盖，底层资源可复用。
+`CharacterDefinition` 使用非空 `forms` 与 `defaultFormId`，每个人格含名称、描述、头像、主题色、声音、`models` 和 `defaultModelId`。产品明确每个模型配置只属于一个人格，因此模型登记在 `CharacterForm.models` 下，不再保留角色级 `models` 或模型的 `formIds`。模型 ID 在同一角色内唯一；默认指针必须指向本人格的一项，无模型时为 null。不同模型配置仍可引用相同底层资源包，配置归属不要求复制资源或改变包内目录。
+
+Chat 保存当前 formId 及各人格模型覆盖，覆盖值必须属于对应人格；换装不改变人格或目录默认值，切回人格时沿用该人格的模型覆盖。`Live2dImporter` 只产生尚未登记的模型配置和资源，调用方将其放入目标人格后交目录保存。迁移旧平级配置时按人格归入 models；旧配置被多个人格引用时，拆成各人格独立且 ID 不同的配置，修正默认指针和 Chat 覆盖，底层资源可复用。
 
 `CharacterDefinition` 保存用户配置，包括当前不可用资源的原引用；`CharacterCapabilities` 是从配置与资源元数据派生的一次能力快照，提供逻辑动作、表情目录和问题说明。解析不会把临时不可用的能力写回配置，也不代表已经实际加载模型。演出与语音模块仍负责实际加载和运行时故障处理。这两个结构都是普通数据对象，转换由目录实现，JSDoc 不会自动裁剪或转换字段。
 
@@ -96,11 +98,11 @@ Node 中的 `CharacterCatalog` 是唯一的权威目录。通过目录保存角�
 
 对话身份定义由同一个目录模块持久化在 `<用户数据目录>/personas/<personaId>.json`，文件名使用稳定 ID，不随名称改变。`listPersonas` 返回当前选择摘要，`getPersona` 返回可编辑的原始定义，`savePersona` 保存定义并递增自身版本，`resolvePersona` 解析当前实际名称、描述和头像。定义的 revision 表示它本身的版本；关联角色更新不递增这个版本，但后续解析必须采用角色的新配置，不能只用 persona 的 revision 缓存解析结果。
 
-`UserPersonaDefinition.source` 有两种互斥形式：`custom` 保存 `displayName`、`description` 与可选 `avatar`；`character` 必须同时保存 `characterId` 与 `formId`，绑定具体角色形态，不在绑定时复制文本或头像。保存时验证角色与形态存在，缺少 `formId` 的旧定义不做兼容。角色或形态删除后仍能读取身份定义以修复，也会出现在带问题说明的选择列表中；解析分别报告 `character_missing` 或 `form_missing`，不使用默认形态代替。修改角色默认形态不会改变已保存的绑定。
+`UserPersonaDefinition.source` 有两种互斥形式：`custom` 保存 `displayName`、`description` 与可选 `avatar`；`character` 必须同时保存 `characterId` 与 `formId`，绑定具体角色人格，不在绑定时复制文本或头像。保存时验证角色与人格存在，缺少 `formId` 的旧定义不做兼容。通过目录删除角色或人格时，相关绑定身份转为自定义身份，保存原来的名称、描述和头像。修改角色默认人格不会改变已保存的绑定。
 
-普通新建通过 `createChat({ ..., userPersonaId })` 选择身份，省略或 null 表示无自定义人格。Conversation 在创建时调用 `resolvePersona`，将实际采用的完整身份快照保存到 `Chat.userPersona`。明确选择的形态在创建时的名称、描述和头像被固定下来，同时记录 `sourceCharacterId` 与 `sourceFormId`；自定义身份的这两个字段为 null。来源角色或形态缺失时创建失败。目录只负责解析数据，不负责何时创建 Chat，也不解析用户身份的模型、语音或动作能力。
+普通新建通过 `createChat({ ..., userPersonaId })` 选择身份，省略或 null 表示无自定义人格。Conversation 在创建时调用 `resolvePersona`，将实际采用的完整身份快照保存到 `Chat.userPersona`。明确选择的人格在创建时的名称、描述和头像被固定下来，同时记录 `sourceCharacterId` 与 `sourceFormId`；自定义身份的这两个字段为 null。来源角色或人格缺失时创建失败。目录只负责解析数据，不负责何时创建 Chat，也不解析用户身份的模型、语音或动作能力。
 
-例如，所选形态描述为 A 时创建的 Chat 保留 A；该形态描述改为 B 后，新建的 Chat 获得 B。继续已有 Chat、重新生成、分支和归档导入都沿用已固定的身份，不重新解析当前目录；自定义人格修改也只影响后续普通新建。身份快照的来源编号只用于记录出处，不要求导入环境存在原始人格或角色。快照头像由 Chat 持有资源引用并随归档携带；旧存档没有任何身份信息时才使用 null，不能从当前目录补造历史身份。
+例如，所选人格描述为 A 时创建的 Chat 保留 A；该人格描述改为 B 后，新建的 Chat 获得 B。继续已有 Chat、重新生成、分支和归档导入都沿用已固定的身份，不重新解析当前目录；自定义人格修改也只影响后续普通新建。身份快照的来源编号只用于记录出处，不要求导入环境存在原始人格或角色。快照头像由 Chat 持有资源引用并随归档携带；旧存档没有任何身份信息时才使用 null，不能从当前目录补造历史身份。
 
 每次 Agent 请求的 `userPersona` 只从 `Chat.userPersona` 提取名称与描述，不传完整定义、头像或来源编号，也不加入 `characters` 中允许 Agent 生成台词的角色。人格定义编辑、选择列表预览和 Chat 身份固定是不同操作，预览不能提前决定之后创建 Chat 时使用哪份文本。
 
@@ -290,9 +292,9 @@ Node 承载业务模块和后端 Performance；Python 承载语音推理与调�
 
 Chat.meta.settings 保存 generation、speech、scenario、tools、worldbook、characters、presentation，通过 Conversation 对应分组操作修改，删除 setDefaults。全局、Chat、本次 options 依次合并，省略表示继承，数组整体替换；执行前必须解析完整材料并校验模型支持，不能猜缺失连接。凭据只由后端受控写入和解析，不进入 Chat/归档。
 
-GenerationOptions 不再包含 prompts。提示词模板是 Agent 内部随应用发布的固定资源，不属于 Settings、Chat 或 TurnOptions，也不用 AssetRef 引用。角色 description、固定用户人格、情景和语言等作为本次渲染数据传入；生成与预览共用渲染规则，压缩使用固定摘要模板。CompressionRequest.options 与普通生成共用 ResolvedGenerationOptions，连接和模型只由 connection 指定。具体模板、加载与错误规则集中在 [Nunjucks 设计说明](nunjucks-prompts.md)，不新增公共模板管理接口。
+GenerationOptions 不再包含 prompts。提示词模板是 Agent 内部随应用发布的固定资源，不属于 Settings、Chat 或 TurnOptions，也不用 AssetRef 引用。角色 description、固定对话者身份、情景和语言等作为本次渲染数据传入；生成与预览共用渲染规则，压缩使用固定摘要模板。CompressionRequest.options 与普通生成共用 ResolvedGenerationOptions，连接和模型只由 connection 指定。具体模板、加载与错误规则集中在 [Nunjucks 设计说明](nunjucks-prompts.md)，不新增公共模板管理接口。
 
-自动语音开关固定整个 Turn，关闭时不提交合成、直接无声 ready；不删除历史音频或隐式补合成。客户端本地 volume 则立即作用于本端播放，不进入后端设置、Turn 快照或 Speech 请求。手动重合成保留原句、形态、情绪、发声语言/读音，采用当前对应声音资源及任务参数。Speech 只接收完整 VoiceProfile；情绪参考不可用先降为同形态默认、再无声。设备、精度、模型结构、并发与驻留预算下次启动生效。
+自动语音开关固定整个 Turn，关闭时不提交合成、直接无声 ready；不删除历史音频或隐式补合成。客户端本地 volume 则立即作用于本端播放，不进入后端设置、Turn 快照或 Speech 请求。手动重合成保留原句、人格、情绪、发声语言/读音，采用当前对应声音资源及任务参数。Speech 只接收完整 VoiceProfile；情绪参考不可用先降为同人格默认、再无声。设备、精度、模型结构、并发与驻留预算下次启动生效。
 
 初始校验和保存完成才受理，之后才清草稿/消费 async 和启动模型工具；发起手动新轮的客户端在确认受理后退出自己的回放。受理前失败保留原材料和旧轮；受理后失败保留新输入和已接受过程。保存故障阻止该 Chat 新生成/历史修改，允许查看/停止/重试保存；已运行任务仍结算到当前内存。retrySave 不重执行模型、工具或合成，revision 冲突不能靠改大版本绕过。
 

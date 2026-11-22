@@ -137,11 +137,16 @@ export class StageController {
    * @param {boolean} [theatre] 是否使用双人舞台。
    * @returns {Promise<void>} 跟随实时演出，序列就绪前可先显示模型。
    */
-  async select(characterId, chatId, sequenceId, draftPresentation, theatre = false) {
+  async select(characterId, chatId, sequenceId, draftPresentation, theatre = false, draftFormId) {
     this.configureStage(theatre && Boolean(chatId), chatId)
     const epoch = ++this.epoch
     this.actors.forEach((actor) => actor.clearTimedMotion())
-    const selectionKey = JSON.stringify([characterId, chatId, stageModelKey(draftPresentation)])
+    const selectionKey = JSON.stringify([
+      characterId,
+      chatId,
+      draftFormId,
+      stageModelKey(draftPresentation)
+    ])
     if (this.selectionKey !== selectionKey) {
       this.selectionKey = selectionKey
       this.actors.forEach((actor) => actor.reset())
@@ -174,7 +179,12 @@ export class StageController {
       else if (characterId) {
         presentation =
           draftPresentation ??
-          (await this.client.characters.getPresentation(characterId)).presentation
+          (
+            await this.client.characters.getPresentation(
+              characterId,
+              draftFormId ? { formId: draftFormId } : {}
+            )
+          ).presentation
       }
       if (epoch !== this.epoch || this.closed) return
       await this.actors[0].showModel(presentation)
@@ -290,6 +300,10 @@ export class StageController {
     this.history = entry
       ? {
           ...entry,
+          personalityName: snapshot.chat.turns
+            .find((turn) => turn.id === entry.ref.turnId)
+            ?.meta?.characterContext?.characters?.find((actor) => actor.id === entry.line.speakerId)
+            ?.forms.find((form) => form.id === entry.line.formId)?.displayName,
           name:
             snapshot.chat.meta.extensions?.characterNames?.[entry.line.speakerId] ??
             entry.line.speakerId
@@ -307,7 +321,7 @@ export class StageController {
     this.update({
       text: line?.text ?? '',
       translation: line?.translation ?? null,
-      name: slot?.displayName ?? this.history?.name ?? '',
+      name: this.history?.personalityName ?? slot?.displayName ?? this.history?.name ?? '',
       revealed: dialogueMarkdown(line?.text).count,
       canReplayLine: Boolean(this.lineReplaySource)
     })

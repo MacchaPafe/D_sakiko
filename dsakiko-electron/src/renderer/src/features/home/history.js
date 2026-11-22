@@ -5,7 +5,8 @@ import { deepSeekWebActivity, webCallPositions } from '../../../../shared/server
 /** @typedef {import('../../../../shared/contracts/presentation.js').AudioMaterial} AudioMaterial */
 /**
  * @typedef {{id: string, name: string, text: string, replayTurnId?: string} & (
- *   {kind: 'user'|'system'|'reasoning'} |
+ *   {kind: 'user', persona?: import('../../../../shared/contracts/persona.js').UserPersonaSnapshot} |
+ *   {kind: 'system'|'reasoning'} |
  *   {kind: 'assistant', translation: string|null, audio: AudioMaterial|null} |
  *   {kind: 'tools', tools: ToolHistoryItem[]}
  * )} HistoryRow 有序历史投影；相邻工具合并折叠，原始记录不变。
@@ -70,9 +71,12 @@ function orderedParts(message, calls) {
   return ordered.concat(parts.slice(position))
 }
 
-/** @param {object|null} snapshot 正式聊天快照。 @param {number} now 当前时间戳。 @param {boolean} showModelThinking 是否显示可读思考片段。 @returns {HistoryRow[]} 直接遵循正式消息顺序，前端不解释 Python 位置索引。 */
-export function historyRows(snapshot, now = Date.now(), showModelThinking = true) {
+/** @param {object|null} snapshot 正式聊天快照。 @param {number} now 当前时间戳。 @param {boolean} showModelThinking 是否显示可读思考片段。 @param {object[]} characters 当前角色目录，用于缺少历史姓名的台词。 @returns {HistoryRow[]} 直接遵循正式消息顺序，前端不解释 Python 位置索引。 */
+export function historyRows(snapshot, now = Date.now(), showModelThinking = true, characters = []) {
+  const names = new Map(characters.map((role) => [role.id, role.name ?? role.displayName]))
   const rows = []
+  const personaName = snapshot?.chat.userPersona?.displayName
+  const userLabel = personaName ? '你（' + personaName + '）' : '你'
   const settled = new Map()
   for (const turn of snapshot?.chat.turns ?? [])
     for (const msg of turn.messages ?? [])
@@ -99,7 +103,8 @@ export function historyRows(snapshot, now = Date.now(), showModelThinking = true
         const manual = message.source?.kind === 'manual' && !event
         const row = {
           id,
-          name: manual ? '你' : '系统',
+          name: manual ? userLabel : '系统',
+          ...(manual && personaName ? { persona: snapshot.chat.userPersona } : {}),
           text: event ?? message.content?.text ?? message.text ?? '',
           kind: manual ? 'user' : 'system',
           ...(message.content?.attachments?.length
@@ -145,7 +150,14 @@ export function historyRows(snapshot, now = Date.now(), showModelThinking = true
             for (const line of part.lines) {
               const row = {
                 id: line.id,
-                name: line.speakerName ?? line.speakerId,
+                name:
+                  turn.meta?.characterContext?.characters?.find(
+                    (actor) => actor.id === line.speakerId
+                  )?.name ??
+                  snapshot.chat.meta?.extensions?.characterNames?.[line.speakerId] ??
+                  line.speakerName ??
+                  names.get(line.speakerId) ??
+                  line.speakerId,
                 text: line.text,
                 translation: line.translation?.trim() ? line.translation : null,
                 audio: line.audio ?? null,

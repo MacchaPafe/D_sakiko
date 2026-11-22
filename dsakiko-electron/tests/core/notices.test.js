@@ -177,7 +177,7 @@ test('初始化完成后生成连接通知，写入失败不回滚完成状态�
   expect((await backend.notices.list()).notices).toEqual([])
 })
 
-test('语音来源按实际形态和当前偏好展示，角色缺失不产生错误就绪承诺', async () => {
+test('语音来源按实际人格和当前偏好展示，角色缺失不产生错误就绪承诺', async () => {
   let available = true
   let enabled = true
   let deleted = false

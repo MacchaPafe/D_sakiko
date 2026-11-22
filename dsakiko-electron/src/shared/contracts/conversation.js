@@ -58,6 +58,7 @@
 
 /**
  * @typedef {object} CharacterLine
+ * @property {string} [speakerLabel] 本轮模型输出的署名，历史重放给模型时使用。
  * @property {string} id 稳定句级身份，用于编辑、回放、合成和展示。
  * @property {string} speakerId 本轮允许发言的角色。
  * @property {string | null} formId 生成时固定的形态；仅资源缺失的导入记录可为 null，修复前不能猜形态合成。
@@ -139,6 +140,7 @@
 /**
  * 只保存脱敏的实际执行材料用于诊断，不据此恢复旧执行或决定重生成配置。
  * @typedef {object} TurnMeta
+ * @property {import('./presentation.js').Scene} [replayScene] 本轮姓名牌、模型与舞台快照，随对话保留资源引用。
  * @property {import('./characters.js').CharacterContext} [characterContext] 该轮全部人物资料快照；恢复历史和压缩后重建使用，不包含临时控制消息。
  * @property {string | null} requestId 受理去重身份；导入的旧记录可为 null。
  * @property {import('./settings.js').GenerationOptions} generation 本次解析后的生成值，不保存凭据。

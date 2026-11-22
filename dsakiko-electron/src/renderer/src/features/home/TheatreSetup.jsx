@@ -5,39 +5,11 @@ import { AttachmentList, AddAttachments } from './AttachmentList.jsx'
 import { useEffect, useId, useState, useSyncExternalStore } from 'react'
 import { ChevronRight, Play, SlidersHorizontal, Square, X } from 'lucide-react'
 import { SelectField } from '../../components/ui/SelectField.jsx'
+import { Choice } from '../../components/ui/Choice.jsx'
 import { Button } from '../../components/ui/button.jsx'
 import { Input, Textarea } from '../../components/ui/fields.jsx'
 import { CharacterAvatar } from './CharacterAvatar.jsx'
 import { characterFormName } from './character-form.js'
-
-function Choice({ options, value, label, disabled, onChange }) {
-  if (options.length === 1 || disabled) {
-    return (
-      <strong className="theatre-choice-static">
-        {options.find((item) => item.value === value)?.label}
-      </strong>
-    )
-  }
-  if (options.length < 4) {
-    return (
-      <div className="theatre-choice-group" role="group" aria-label={label}>
-        {options.map((item) => (
-          <Button
-            key={item.value}
-            variant="ghost"
-            type="button"
-            size="sm"
-            aria-pressed={value === item.value}
-            onClick={() => onChange(item.value)}
-          >
-            {item.label}
-          </Button>
-        ))}
-      </div>
-    )
-  }
-  return <SelectField options={options} value={value} label={label} onChange={onChange} />
-}
 
 function hasAnyCharacterDetail(characterNotes) {
   return Object.values(characterNotes ?? {}).some((entry) =>
@@ -61,7 +33,7 @@ function countFilledDetails(ids, details) {
  * @param {object} props 当前剧场或新建入口及角色目录。
  * @returns {import('react').ReactElement} 三段式固定头尾布局的小剧场设定表单。
  */
-export function TheatreSetup({ client, flow, roles, chat, close }) {
+export function TheatreSetup({ client, flow, roles, chat, personalityBusy, close }) {
   const [ids, setIds] = useState(
     () => chat?.characterIds ?? roles.slice(0, 2).map((role) => role.id)
   )
@@ -209,12 +181,12 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
         )}
         {formOptions.length > 1 && (
           <div className="theatre-field">
-            <span className="theatre-field-label">角色形态</span>
+            <span className="theatre-field-label">角色人格</span>
             <Choice
-              label={sideLabel + '形态'}
+              label={sideLabel + '人格'}
               options={formOptions}
               value={characters[id]?.formId ?? definition.defaultFormId}
-              disabled={busy}
+              disabled={busy || personalityBusy}
               onChange={(formId) => changeForm(id, formId)}
             />
           </div>
@@ -282,6 +254,9 @@ export function TheatreSetup({ client, flow, roles, chat, close }) {
         <section className="theatre-cast-grid" aria-label="参演角色">
           {ids.map(renderActorCard)}
         </section>
+        {chat && ids.some((id) => definitions[id]?.forms.length > 1) && (
+          <small>切换人格可能影响后续剧本的角色表现和提示词缓存命中率。</small>
+        )}
         <label className="theatre-field theatre-situation-field">
           <span className="theatre-field-label">情境（可选）</span>
           <Textarea

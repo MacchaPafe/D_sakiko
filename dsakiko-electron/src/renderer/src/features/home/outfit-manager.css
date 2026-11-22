@@ -18,7 +18,7 @@
 
 .outfit-page-heading {
   flex: none;
-  padding-bottom: 12px;
+  padding-block: 12px;
   border-bottom: 1px solid var(--border);
 }
 

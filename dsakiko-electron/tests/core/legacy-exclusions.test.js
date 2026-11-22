@@ -245,7 +245,7 @@ test('只导入公共清单及角色引用，微小角色权重也硬链接，�
   expect(await readFile(source, 'utf8')).toBe('character-gpt')
 })
 
-test('按 Python 的参考语言编号、权重修改时间和手动指定的形态音频导入', async () => {
+test('按 Python 的参考语言编号、权重修改时间和手动指定的人格音频导入', async () => {
   const { root, backend } = await fixture()
   const entries = {
     'd_sakiko_config.json': JSON.stringify({
@@ -289,13 +289,23 @@ test('按 Python 的参考语言编号、权重修改时间和手动指定的形
   const plan = await backend.setup.createPlan({ kind: 'legacy', scanId: snapshot.scanId })
   await finish(backend, plan.id)
   const { forms } = await backend.characters.get('sakiko')
+  expect(forms.map((form) => form.displayName)).toEqual(['黑祥', '白祥'])
+  for (const form of forms) {
+    const current = await backend.characters.resolveCapabilities('sakiko', { formId: form.id })
+    expect(current.name).toBe('祥子')
+    expect(current.displayName).toBe(form.displayName)
+    expect(current.description).toContain(form.id === 'white' ? 'CRYCHIC' : 'Ave Mujica')
+    expect(current.description).not.toContain(form.displayName)
+    expect(current.description).not.toContain('测试角色')
+  }
   const readAsset = async (ref) => readFile(await backend.assets.localPath(ref), 'utf8')
   expect(forms.map(({ voice }) => voice.defaultReference.language)).toEqual(['all_ja', 'all_ja'])
   expect(await readAsset(forms[0].avatar)).toBe('自定义头像')
   expect(await readAsset(forms[0].voice.gptWeights)).toBe('新权重')
   expect(await readAsset(forms[0].voice.defaultReference.audio)).toBe('自定义音频')
   expect(await readAsset(forms[1].voice.defaultReference.audio)).toBe('默认白祥音频')
-  const { voice } = (await backend.characters.get('anon')).forms[0]
+  const { voice, description } = (await backend.characters.get('anon')).forms[0]
+  expect(description).toBe('保留的旧人设')
   expect(voice.emotions.sadness.language).toBe('en')
   expect(await readAsset(voice.emotions.sadness.audio)).toBe('情绪音频')
   const [persona] = await backend.characters.listPersonas()

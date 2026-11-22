@@ -3,12 +3,14 @@ import { AttachmentDraft } from './attachments.js'
 
 /** @typedef {{characterId: string|null, chatId: string|null, tab: 'single-character'|'scripted-dialogue'}} HomeTarget 稳定导航身份，与尚未创建的聊天草稿分离。 */
 /** @typedef {{connectionId: string, modelId: string}} ModelSelection 可持久化的自有模型选择。 */
-/** @typedef {{formId: string, model: import('../../../../shared/contracts/characters.js').CharacterModel}} DraftOutfit 尚未建立对话时选中的舞台服装。 */
-/** @typedef {{text: string, pending: boolean, intent: object|null, chatId?: string, model?: ModelSelection|null, outfit?: DraftOutfit|null}} InputSession 单次应用内的草稿和可重试发送意图。 */
+/** @typedef {{formId: string, model: import('../../../../shared/contracts/characters.js').CharacterModel | null}} DraftOutfit 尚未建立对话时选中的舞台服装。 */
+/** @typedef {{text: string, pending: boolean, intent: object|null, chatId?: string, model?: ModelSelection|null, outfit?: DraftOutfit|null, userPersonaId?: string|null}} InputSession 单次应用内的草稿和可重试发送意图。 */
 /**
  * @typedef {object} HomeState 页面只读快照；草稿不写入导航存储。
  * @property {boolean} loading 初次读取尚未完成。
  * @property {object[]} characters 正式角色目录摘要。
+ * @property {import('../../../../shared/contracts/persona.js').UserPersonaSummary[]} personas 可供新对话使用的身份。
+ * @property {string|null} personaProblem 最近读取身份目录时发生的问题。
  * @property {import('../../../../shared/contracts/conversation.js').ChatSummary[]} chats 正式对话列表。
  * @property {HomeTarget} target 当前导航身份。
  * @property {import('../../../../shared/contracts/conversation.js').ConversationSnapshot|null} snapshot 当前对话的权威观察快照。
@@ -16,6 +18,7 @@ import { AttachmentDraft } from './attachments.js'
  * @property {import('../../../../shared/contracts/models.js').ConnectionDefinition[]} connections 不含凭据的连接目录。
  * @property {import('../../../../shared/contracts/notices.js').Notice[]} notices 按持久顺序排列的通知。
  * @property {string} draft 当前输入会话文本。
+ * @property {import('../../../../shared/contracts/common.js').AssetRef|null} draftBackground 草稿中选择的背景。
  * @property {DraftOutfit|null} draftOutfit 新对话暂选的服装，首轮受理时交给正式对话。
  * @property {boolean} sending 正在等待本次发送的受理结果。
  * @property {string|null} problem 可展示的命令错误。
@@ -25,7 +28,9 @@ const RECENT_MODEL_KEY = 'dsakiko.home.recent-model.v1'
 
 /** @param {HomeTarget} target 导航目标。 @returns {string} 草稿身份，不依赖展示名称。 */
 export function inputKey(target) {
-  return target.chatId ? 'chat:' + target.chatId : 'new:' + target.characterId
+  if (target.chatId) return 'chat:' + target.chatId
+  if (target.tab === 'scripted-dialogue') return 'new-theatre'
+  return 'new:' + target.characterId
 }
 
 /** 主页业务状态，负责命令身份和迟到结果隔离；不包含 React、模型 SDK 或声音。 */
@@ -41,12 +46,15 @@ export class HomeFlow {
     this.tabChats = new Map()
     this.epoch = 0
     this.refreshEpoch = 0
+    this.personaEpoch = 0
     this.chatListEpoch = 0
     this.mountEpoch = 0
     /** @type {HomeState} */
     this.state = {
       loading: true,
       characters: [],
+      personas: [],
+      personaProblem: null,
       chats: [],
       target: { characterId: null, chatId: null, tab: 'single-character' },
       snapshot: null,
@@ -57,6 +65,7 @@ export class HomeFlow {
       notices: [],
       draft: '',
       draftOutfit: null,
+      draftBackground: null,
       sending: false,
       problem: null
     }
@@ -119,6 +128,7 @@ export class HomeFlow {
   }
   async refresh() {
     const epoch = ++this.refreshEpoch
+    void this.refreshPersonas()
     const observingSettings = Boolean(this.stops)
     const [characters, settings, connections, availability] = await Promise.all([
       this.client.characters.list(),
@@ -136,6 +146,18 @@ export class HomeFlow {
       }
       // 后续列表刷新不以一次 HTTP 查询覆盖已在观察的设置快照。
       if (!observingSettings && !this.stops) next.settings = settings
+      for (const character of characters) {
+        const draft = this.inputs.get('new:' + character.id)
+        if (!draft || !character.forms) continue
+        const ids = new Set(character.forms.map((item) => item.id))
+        for (const id of Object.keys(draft.outfits ?? {}))
+          if (!ids.has(id)) delete draft.outfits[id]
+        if (draft.outfit && !ids.has(draft.outfit.formId)) {
+          draft.outfit = null
+          if (!this.state.target.chatId && this.state.target.characterId === character.id)
+            next.draftOutfit = null
+        }
+      }
       this.update(next)
       void this.loadReasoningModels(epoch)
     }
@@ -144,6 +166,28 @@ export class HomeFlow {
     const epoch = ++this.chatListEpoch
     const chats = await this.client.conversations.listChats()
     if (epoch === this.chatListEpoch) this.update({ chats })
+  }
+  /** 刷新可选身份。只有目录读取成功，才可清除已删除的草稿选择。 */
+  refreshPersonas = async () => {
+    const epoch = ++this.personaEpoch
+    try {
+      const personas = await this.client.characters.listPersonas()
+      if (this.closed || epoch !== this.personaEpoch) return
+      const available = new Set(personas.map((item) => item.id))
+      for (const input of this.inputs.values()) {
+        if (input.userPersonaId && !available.has(input.userPersonaId)) input.userPersonaId = null
+      }
+      this.update({ personas, personaProblem: null })
+    } catch (error) {
+      if (epoch === this.personaEpoch) this.update({ personaProblem: error.message })
+    }
+  }
+
+  /** @param {string|null} id 当前草稿使用的身份，空值表示无身份。 */
+  choosePersona = (id) => {
+    if (this.state.target.chatId || this.input().pending) return
+    this.input().userPersonaId = id
+    this.update({})
   }
   async loadReasoningModels(epoch) {
     if (!this.client.settings.listReasoningModels) return
@@ -186,6 +230,7 @@ export class HomeFlow {
       target,
       snapshot: null,
       draft: input.text,
+      draftBackground: target.chatId ? null : (input.background ?? null),
       draftOutfit: target.chatId ? null : (input.outfit ?? null),
       draftModel: input.model ?? null,
       sending: input.pending,
@@ -207,7 +252,11 @@ export class HomeFlow {
   newChat = (characterId = this.state.target.characterId) => {
     const target = { characterId, chatId: null, tab: 'single-character' }
     const input = this.input(target)
-    if (!input.pending) input.outfit = null
+    if (!input.pending) {
+      input.outfit = null
+      input.outfits = {}
+      this.clearBackground(input)
+    }
     this.select(target)
   }
   setTab = (tab) => {
@@ -221,12 +270,20 @@ export class HomeFlow {
     this.select({ ...this.state.target, characterId, chatId: chat?.id ?? null, tab })
   }
   async createTheatre(characterIds, settings, title) {
+    const draft = this.input({ tab: 'scripted-dialogue', chatId: null })
+    if (draft.background)
+      settings = {
+        ...settings,
+        presentation: { ...settings.presentation, background: draft.background }
+      }
+
     const id = await this.client.conversations.createChat({
       mode: 'scripted-dialogue',
       characterIds,
       settings,
       title
     })
+    this.clearBackground(draft)
     await this.refresh()
     this.select({ chatId: id, characterId: characterIds[0], tab: 'scripted-dialogue' })
   }
@@ -366,6 +423,43 @@ export class HomeFlow {
     }
   }
 
+  /** 释放仅由当前输入草稿持有的背景，正式聊天在保存时接管引用。 */
+  clearBackground(input) {
+    if (input.backgroundDraft)
+      void this.client.assets.discardDraft(input.backgroundDraft).catch(() => {})
+    input.backgroundDraft = null
+    input.background = null
+    input.backgroundRevision = (input.backgroundRevision ?? 0) + 1
+  }
+
+  /** @param {import('../../../../shared/contracts/common.js').AssetRef|null} asset 背景原图，空值恢复内置背景。 */
+  chooseBackground = async (asset) => {
+    const target = this.state.target
+    if (target.chatId) {
+      await this.client.conversations.patchSettings(target.chatId, {
+        presentation: { background: asset }
+      })
+      return
+    }
+    const input = this.input()
+    if (input.pending) throw new Error('请等待对话创建完成。')
+    const revision = (input.backgroundRevision = (input.backgroundRevision ?? 0) + 1)
+    const draft = asset && (await this.client.assets.createDraft([asset]))
+    if (
+      this.closed ||
+      input.pending ||
+      input.backgroundRevision !== revision ||
+      this.state.target !== target
+    ) {
+      if (draft) await this.client.assets.discardDraft(draft.draftId)
+      return
+    }
+    this.clearBackground(input)
+    input.backgroundDraft = draft?.draftId ?? null
+    input.background = asset
+    this.update({ draftBackground: asset })
+  }
+
   /**
    * @param {string} formId 当前角色形态。
    * @param {import('../../../../shared/contracts/characters.js').CharacterModel} model 选中的服装。
@@ -388,6 +482,8 @@ export class HomeFlow {
     } else {
       const input = this.input()
       if (input.pending) return
+      input.outfits ??= {}
+      input.outfits[formId] = model
       input.outfit = { formId, model }
       this.update({ draftOutfit: input.outfit })
     }
@@ -400,10 +496,30 @@ export class HomeFlow {
    */
   invalidateDraftOutfit(characterId, formId, modelId) {
     const draft = this.inputs.get(inputKey({ characterId, chatId: null }))
-    if (draft?.outfit?.formId !== formId || draft.outfit.model.id !== modelId) return
-    draft.outfit = null
+    if (draft?.outfits?.[formId]?.id === modelId) delete draft.outfits[formId]
+    if (draft?.outfit?.formId !== formId || draft.outfit.model?.id !== modelId) return
+    draft.outfit = { formId, model: null }
     if (!this.state.target.chatId && this.state.target.characterId === characterId)
-      this.update({ draftOutfit: null })
+      this.update({ draftOutfit: draft.outfit })
+  }
+
+  /** @param {string} formId 仅切换本次对话的人格，沿用该人格最近选择的服装。 */
+  chooseForm = async (formId) => {
+    const target = this.state.target
+    if (this.state.sending) return
+    if (target.chatId) {
+      try {
+        await this.client.conversations.patchSettings(target.chatId, {
+          characters: { [target.characterId]: { formId } }
+        })
+      } catch (error) {
+        if (this.state.target === target) this.update({ problem: error.message })
+      }
+      return
+    }
+    const input = this.input()
+    input.outfit = { formId, model: input.outfits?.[formId] ?? null }
+    this.update({ draftOutfit: input.outfit })
   }
 
   /** @param {InputSession} input 录音开始时绑定的草稿。 @param {string} text 识别结果。 */
@@ -430,7 +546,9 @@ export class HomeFlow {
     const settingsKey = JSON.stringify([
       files.map((f) => f.id),
       input.tools,
-      input.reasoningProfiles
+      input.reasoningProfiles,
+      input.userPersonaId ?? null,
+      input.background?.id ?? null
     ])
     const text = input.text
     let chatId = input.chatId ?? target.chatId
@@ -438,7 +556,11 @@ export class HomeFlow {
     const model = draftModel ?? selectedModel(this.state)
     const modelKey = JSON.stringify(model)
     const outfit = chatId ? null : input.outfit
-    const outfitKey = outfit ? JSON.stringify([outfit.formId, outfit.model.id]) : null
+    const overrides = Object.fromEntries(
+      Object.entries(input.outfits ?? {}).map(([id, model]) => [id, model.id])
+    )
+    if (outfit?.model) overrides[outfit.formId] = outfit.model.id
+    const outfitKey = outfit ? JSON.stringify([outfit.formId, overrides]) : null
     if (
       !input.intent ||
       input.intent.settingsKey !== settingsKey ||
@@ -448,9 +570,12 @@ export class HomeFlow {
     )
       input.intent = {
         text,
+        userPersonaId: input.userPersonaId,
+        background: input.background,
         model,
         modelKey,
         outfit,
+        overrides,
         outfitKey,
         settingsKey,
         requestId: this.randomId()
@@ -472,13 +597,14 @@ export class HomeFlow {
         await this.client.conversations.createTurn(chatId, submission, turnOptions)
       } else {
         const settings = {}
+        if (intent.background) settings.presentation = { background: intent.background }
         if (input.tools) settings.tools = { enabled: input.tools }
         if (input.reasoningProfiles) settings.reasoningProfiles = { ...input.reasoningProfiles }
         if (intent.model) settings.generation = intent.model
         if (intent.outfit) {
-          const { formId, model } = intent.outfit
+          const { formId } = intent.outfit
           settings.characters = {
-            [target.characterId]: { formId, modelOverrides: { [formId]: model.id } }
+            [target.characterId]: { formId, modelOverrides: intent.overrides }
           }
         }
         const result = await this.client.conversations.createChatWithTurn(
@@ -486,6 +612,7 @@ export class HomeFlow {
             title: (text.trim() || files[0]?.name || '新对话').slice(0, 40),
             characterIds: [target.characterId],
             mode: 'single-character',
+            ...(intent.userPersonaId ? { userPersonaId: intent.userPersonaId } : {}),
             ...(Object.keys(settings).length ? { settings } : {})
           },
           submission,
@@ -495,6 +622,8 @@ export class HomeFlow {
       }
       for (const file of files) input.attachments.remove(file)
       if (!target.chatId) {
+        this.clearBackground(input)
+        delete input.userPersonaId
         delete input.tools
         delete input.reasoningProfiles
       }
@@ -569,7 +698,10 @@ export class HomeFlow {
     this.stopChat = null
     this.stops?.forEach((stop) => stop())
     this.stops = null
-    for (const input of this.inputs.values()) input.attachments.clear()
+    for (const input of this.inputs.values()) {
+      input.attachments.clear()
+      this.clearBackground(input)
+    }
     this.listeners.clear()
   }
 }

@@ -26,6 +26,7 @@ import { Conversations } from './conversation/interface.js'
 import { ToolCatalog, Interactions, ReminderWriter } from './tools/interface.js'
 import { createBuiltinTools, interactionKinds } from './tools/builtins.js'
 import { failure, uuid } from './core/support.js'
+import { Backgrounds } from './backgrounds/interface.js'
 import { Outfits } from './live2d-import/outfits.js'
 
 /**
@@ -37,6 +38,7 @@ import { Outfits } from './live2d-import/outfits.js'
  * @property {SpeechResources} speechResources GPT-SoVITS 显式文件路径与运行引用。
  * @property {ResourceImports} imports 资源草稿与长期资源库导入管理。
  * @property {ResourceSetup} setup 附加资源计划、持久任务、旧版导入与独立运行环境。
+ * @property {Backgrounds} backgrounds 全局背景图库与下载任务。
  * @property {Outfits} outfits 角色服装管理和在线下载。
  * @property {Onboarding} onboarding 初始化路径、内置角色释放和主页提示状态。
  * @property {Notices} notices 持久通知、来源去重与关闭确认。
@@ -176,7 +178,9 @@ export async function createCoreBackend({
         releaseResources: async () => {}
       })
     : () => setup.acquireRuntime('asr')
+  const backgrounds = new Backgrounds({ appDataRoot, assets, fetch: transport })
   await assets.initialize()
+  await backgrounds.initialize()
   await setup.initialize()
   await onboarding.initialize()
   const notices = new Notices({
@@ -294,6 +298,7 @@ export async function createCoreBackend({
     conversations,
     fetch: transport
   })
+  characters.formUsage = (options, commit) => conversations.reassignForm(options, commit)
   characters.deletionUsage = async (id) => {
     const chats = (await store.list()).filter((chat) => chat.characterIds.includes(id))
     const busyChat = chats.some((chat) => {
@@ -341,6 +346,7 @@ export async function createCoreBackend({
         await assets.maintain()
         await setup.maintain()
         await outfits.maintain()
+        await backgrounds.maintain()
         await remoteFiles.collectUnused()
         await refreshNotices()
       } catch (error) {
@@ -356,6 +362,7 @@ export async function createCoreBackend({
   return {
     setup,
     outfits,
+    backgrounds,
     onboarding,
     notices,
     recognition,
@@ -381,6 +388,7 @@ export async function createCoreBackend({
       clearInterval(maintenance)
       stopNoticeSettings()
       stopNoticeCharacters()
+      await backgrounds.close()
       await outfits.close()
       await setup.close()
       await onboarding.close()

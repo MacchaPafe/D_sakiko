@@ -11,6 +11,7 @@ import {
 import { installBuiltinConnection } from '../setup/bindings.js'
 import { BuiltinResources } from './builtin-resources.js'
 import { builtinModelBounds } from '../bundled-characters/bounds.js'
+import { sakikoFormProfile } from '../bundled-characters/sakiko-forms.js'
 import { bangDreamCharacters } from '../characters/bang-dream.js'
 
 /**
@@ -296,6 +297,8 @@ export class Onboarding {
             id: form.id,
             displayName: form.displayName ?? role.name,
             description: form.description ?? role.description,
+            // 已发布的模型归档也使用程序随附的分形态人设。
+            ...sakikoFormProfile(role.id, form.id),
             avatar: null,
             themeColor: role.themeColor,
             models: [

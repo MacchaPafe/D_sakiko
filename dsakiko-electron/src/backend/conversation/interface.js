@@ -600,6 +600,12 @@ export class Conversations {
                 lines: part.lines.map((line) => ({
                   id: line.id,
                   speakerId: line.speakerId,
+                  speakerLabel:
+                    line.speakerLabel ??
+                    line.extensions?.legacySpeakerName ??
+                    (!turn.meta.characterContext
+                      ? chat.meta?.extensions?.characterNames?.[line.speakerId]
+                      : undefined),
                   formId: line.formId,
                   text: line.text,
                   translation: line.translation,
@@ -723,8 +729,8 @@ export class Conversations {
         }
       }
       const capabilities = await this.capabilities(chat, resourceOwner)
+      const scene = await this.scene(chat, true, resourceOwner, capabilities)
       if (chat.mode === 'scripted-dialogue') {
-        const scene = await this.scene(chat, true, resourceOwner, capabilities)
         for (const [index, role] of capabilities.entries()) {
           if (role.modelVersion !== 'v3') continue
           const direction = scene.slots[index].layout.direction
@@ -796,6 +802,7 @@ export class Conversations {
         characters: capabilities.map((character) => ({
           id: character.id,
           name: character.name,
+          selfNameMode: character.selfNameMode,
           forms: copy(character.forms),
           modelVersion: character.modelVersion,
           formId: character.formId,
@@ -837,6 +844,7 @@ export class Conversations {
         generation,
         capabilities,
         voicedCharacters,
+        scene,
         inspection,
         resourceOwner
       }
@@ -961,6 +969,7 @@ export class Conversations {
           scenario: copy(candidate.meta.settings.scenario),
           characters: copy(candidate.meta.settings.characters),
           characterContext: characterContext(prepared.request),
+          replayScene: { ...copy(prepared.scene), background: null },
           tools: prepared.request.tools.map((tool) => tool.name),
           worldbook: null,
           worldbookDiagnostics: [],
@@ -1025,8 +1034,8 @@ export class Conversations {
       state.active = run
       state.problem = null
       state.participantIssue = null
-      await this.scene(state.chat, false, prepared.resourceOwner, prepared.capabilities)
-        .then((scene) => this.performance.setScene(state.sequenceId, scene))
+      await this.performance
+        .setScene(state.sequenceId, prepared.scene)
         .catch((error) => this.assets.reportMaintenance(error))
       this.publish(state)
       accepted = true
@@ -1339,7 +1348,7 @@ export class Conversations {
         (item) => item.id === original.speakerId && item.formId === original.formId
       )
       const voice = await this.characters.resolveVoice(capability, original.emotion)
-      requireValue(voice.voice, 'voice_unavailable', '当前形态没有可用声音。')
+      requireValue(voice.voice, 'voice_unavailable', '当前人格没有可用声音。')
       taskId = await this.speech.submit({
         speed: prepared.speech.speed,
         sentencePauseMs: prepared.speech.sentencePauseMs,
@@ -2109,32 +2118,53 @@ export class Conversations {
    */
   async getReplayMaterials(chatId, target) {
     const state = await this.state(chatId)
-    let lines
-    if (target.kind === 'line') {
-      const line = this.locate(state.chat, target.line)
-      requireValue(line, 'line_missing')
-      lines = [line]
-    } else {
-      let turns = state.chat.turns
-      if (target.kind !== 'script') {
-        requireValue(target.kind === 'turn')
-        turns = turns.filter((item) => item.id === target.turnId)
-        requireValue(turns.length === 1, 'turn_missing')
-      } else requireValue(state.chat.mode === 'scripted-dialogue', 'scenario_required')
-      lines = turns
-        .flatMap((turn) => turn.messages)
-        .filter((message) => message.kind === 'assistant')
-        .flatMap((message) => message.parts)
-        .filter((part) => part.kind === 'dialogue')
-        .flatMap((part) => part.lines)
+    const { chat } = state
+    const script = target.kind === 'script'
+    requireValue(!script || chat.mode === 'scripted-dialogue', 'scenario_required')
+    const turnId = target.kind === 'line' ? target.line.turnId : target.turnId
+    const turns = script ? chat.turns : chat.turns.filter((turn) => turn.id === turnId)
+    if (!script) requireValue(turns.length === 1, 'turn_missing')
+    const guides = []
+    const scenes = []
+    let fallback
+    let first
+    for (const turn of turns) {
+      let lines
+      if (target.kind === 'line') {
+        const line = this.locate(chat, target.line)
+        requireValue(line, 'line_missing')
+        lines = [line]
+      } else {
+        lines = turn.messages
+          .flatMap((message) => message.parts ?? [])
+          .filter((part) => part.kind === 'dialogue')
+          .flatMap((part) => part.lines)
+      }
+      const playable = lines.filter(isReplayableDialogue)
+      if (!playable.length) continue
+      // 回放只还原演员与表演，背景使用该对话当前的舞台设置。
+      const saved = turn.meta?.replayScene ?? (fallback ??= await this.scene(chat, false))
+      const scene = { ...saved, background: chat.meta.settings.presentation.background }
+      const materials = await this.performance.resolveReplay(
+        scene,
+        playable.map((line, index) => this.guide(line, true, guides.length + index > 0)),
+        chat.mode === 'single-character'
+      )
+      first ??= materials
+      scenes.push({
+        start: guides.length,
+        scene,
+        defaultPerformances: materials.defaultPerformances
+      })
+      guides.push(...materials.guides)
     }
-    lines = lines.filter(isReplayableDialogue)
-    const scene = await this.scene(state.chat, false)
-    return this.performance.resolveReplay(
-      scene,
-      lines.map((line, index) => this.guide(line, true, index > 0)),
-      state.chat.mode === 'single-character'
-    )
+    if (!first)
+      return this.performance.resolveReplay(
+        await this.scene(chat, false),
+        [],
+        chat.mode === 'single-character'
+      )
+    return { ...first, guides, ...(scenes.length > 1 && { scenes }) }
   }
 
   /**
@@ -2483,19 +2513,70 @@ export class Conversations {
    * @returns {Promise<void>}
    */
   async setCharacterSelection(chatId, characterId, options) {
-    await this.update(chatId, async (chat) => {
-      requireValue(chat.characterIds.includes(characterId))
-      await this.characters.resolveCapabilities(characterId, {
-        formId: options.formId,
-        modelId: options.modelOverrides?.[options.formId]
+    return this.patchSettings(chatId, { characters: { [characterId]: options } })
+  }
+
+  async withCharacterChats(characterId, operation) {
+    await Promise.allSettled(this.loading.values())
+    const ids = (await this.store.list())
+      .filter((summary) => summary.characterIds.includes(characterId))
+      .map(({ id }) => id)
+      .sort()
+    // 所有跨对话修改按相同顺序取锁，最后再进入角色目录。
+    const locked = ids.reduceRight(
+      (next, id) => () => this.queue.run(id, next),
+      () => operation(ids)
+    )
+    return locked()
+  }
+
+  /** @param {object} options 角色、待删人格及接替人格。 @param {Function} [commit] 在目录锁中验证影响并完成交接。 @returns {Promise<object|void>} 预览影响或提交结果。 */
+  async reassignForm({ characterId, formId, dryRun, replacementId }, commit) {
+    return this.withCharacterChats(characterId, async (ids) => {
+      const role = await this.characters.get(characterId)
+      const chats = []
+      const changes = []
+      let busy = false
+      for (const id of ids) {
+        const state = this.states.get(id)
+        if (state?.deleted) continue
+        const chat = state?.chat ?? (await this.store.load(id)).chat
+        requireValue(chat, 'chat_unavailable', '请先恢复无法读取的对话。')
+        const selected = chat.meta.settings.characters[characterId]
+        const current = selected?.formId ?? role.defaultFormId
+        if (current !== formId && !Object.hasOwn(selected?.modelOverrides ?? {}, formId)) continue
+        chats.push({ id, title: chat.title, mode: chat.mode })
+        busy ||= Boolean(state?.active || state?.compressing)
+        if (dryRun) continue
+        requireValue(state?.persistence.state !== 'failed', 'save_failed', '请先保存受影响的对话。')
+        const overrides = { ...selected?.modelOverrides }
+        delete overrides[formId]
+        const characters = copy(chat.meta.settings.characters)
+        characters[characterId] = pinOutfit(role, {
+          formId: current === formId ? replacementId : current,
+          modelOverrides: overrides
+        })
+        changes.push({ id, revision: chat.revision, characters })
+      }
+      if (dryRun) return { chats, busy }
+      requireValue(!busy, 'character_busy', '请等受影响的对话结束生成和演出。')
+      await commit(chats, async () => {
+        for (const chat of await this.store.saveOutfitSelections(changes)) {
+          const state = this.states.get(chat.id)
+          if (state) {
+            state.chat = chat
+            this.publish(state)
+          }
+        }
       })
-      chat.meta.settings.characters[characterId] = pinOutfit(
-        await this.characters.get(characterId),
-        options
-      )
+      for (const { id } of chats) {
+        const state = this.states.get(id)
+        if (state)
+          await this.withScene(state.chat, (scene) =>
+            this.performance.setScene(state.sequenceId, scene)
+          ).catch((error) => this.assets.reportMaintenance(error))
+      }
     })
-    const state = await this.state(chatId)
-    await this.withScene(state.chat, (scene) => this.performance.setScene(state.sequenceId, scene))
   }
 
   /**
@@ -2505,15 +2586,10 @@ export class Conversations {
    * @returns {Promise<{count: number, busy: boolean}>} 受影响的对话数及是否占用。
    */
   async reassignOutfit({ characterId, formId, previousId, modelId, dryRun }, commit) {
-    await Promise.allSettled(this.loading.values())
     const role = await this.characters.get(characterId)
     const form = role?.forms.find((item) => item.id === formId)
-    requireValue(form, 'form_missing', '找不到目标角色形态。')
-    const ids = (await this.store.list())
-      .filter((summary) => summary.characterIds.includes(characterId))
-      .map(({ id }) => id)
-      .sort()
-    const change = async () => {
+    requireValue(form, 'form_missing', '找不到目标角色人格。')
+    return this.withCharacterChats(characterId, async (ids) => {
       let busy = false
       const changes = []
       for (const id of ids) {
@@ -2560,10 +2636,7 @@ export class Conversations {
       }
       await commit?.()
       return { count: saved.length, busy }
-    }
-    // 所有批量服装写入统一按对话 ID 取锁，等待中的普通轮次可以在释放后重新解析选择。
-    const operation = ids.reduceRight((next, id) => () => this.queue.run(id, next), change)
-    return operation()
+    })
   }
 
   /**
@@ -2641,6 +2714,14 @@ export class Conversations {
         for (const id of Object.keys(changes.characters)) {
           fields(changes.characters[id], ['formId', 'modelOverrides'])
           const entry = next.characters[id]
+          if (chat.meta.settings.characters[id]?.formId !== entry.formId) {
+            const state = this.states.get(chatId)
+            requireValue(
+              !state?.active && !state?.compressing,
+              'character_busy',
+              '请在本轮生成和演出结束后切换人格。'
+            )
+          }
           await this.characters.resolveCapabilities(id, {
             formId: entry.formId,
             modelId: entry.modelOverrides?.[entry.formId]
@@ -2846,12 +2927,6 @@ export class Conversations {
     const chat = remap(copy(original))
     chat.id = uuid()
     chat.revision = 0
-    for (const id of chat.characterIds) {
-      const role = await this.characters.get(id)
-      if (role) {
-        chat.meta.settings.characters[id] = pinOutfit(role, chat.meta.settings.characters[id])
-      }
-    }
     chat.meta.reminders.forEach((reminder) => {
       reminder.state = 'disabled'
     })
@@ -2889,7 +2964,14 @@ export class Conversations {
         }
         return value
       }
-      await this.store.save(remapAssets(chat))
+      await this.characters.withRestoredSelections(
+        chat.characterIds,
+        chat.meta.settings.characters,
+        async (selections) => {
+          chat.meta.settings.characters = selections
+          await this.store.save(remapAssets(chat))
+        }
+      )
     })
     return chat.id
   }

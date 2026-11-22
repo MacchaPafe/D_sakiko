@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, ChevronRight, Play, Square, Volume2 } from 'lucide-react'
+import { ArrowDown, ChevronRight, Play, Square, UserRound, Volume2 } from 'lucide-react'
+import { CharacterAvatar } from './CharacterAvatar.jsx'
 import { Button } from '../../components/ui/button.jsx'
 
 import { historyRows } from './history.js'
@@ -109,7 +110,6 @@ function HistoryMessage({
   client,
   theatre,
   row,
-  characters,
   playback,
   turnReplay,
   onPlay,
@@ -140,7 +140,6 @@ function HistoryMessage({
       </details>
     )
   }
-  const role = characters.find((item) => item.id === row.name)
   const audio = row.kind === 'assistant' ? row.audio : null
   const linePlayback = playback?.id === row.id ? playback : null
   const turnPlayback = turnReplay?.id === row.replayTurnId ? turnReplay : null
@@ -158,7 +157,10 @@ function HistoryMessage({
   return (
     <article className={'history-message history-' + row.kind}>
       <div className="history-message-header">
-        <span className="history-speaker">{role?.displayName ?? role?.name ?? row.name}</span>
+        {row.persona && (row.persona.avatar
+          ? <CharacterAvatar role={row.persona} client={client} size={20} />
+          : <UserRound size={16} aria-hidden="true" />)}
+        <span className="history-speaker">{row.name}</span>
         {audio && (
           <Button
             variant="ghost"
@@ -270,7 +272,7 @@ export function HistoryPanel({
     measure()
     return () => observer.disconnect()
   }, [])
-  const rows = historyRows(snapshot, now, showModelThinking)
+  const rows = historyRows(snapshot, now, showModelThinking, characters)
   const warnings = snapshot?.chat.meta.extensions?.pythonImport?.normalizationWarnings ?? []
   // 语音和回放按钮可以在轮次结束后出现，记录内容没有变化时不提示新消息。
   const contentKey = JSON.stringify(
@@ -389,7 +391,6 @@ export function HistoryPanel({
             theatre={snapshot?.chat.mode === 'scripted-dialogue'}
             key={row.id}
             row={row}
-            characters={characters}
             playback={playback}
             turnReplay={turnReplay}
             onPlay={playAudio}

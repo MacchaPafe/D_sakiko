@@ -21,6 +21,8 @@ src/backend/llm/
   prompts/
     templates/
       system.njk
+      character-context.njk
+      runtime-controls.njk
       scenario.njk
       output.njk
       summary.njk
@@ -29,8 +31,8 @@ src/backend/llm/
 | 文件                  | 用途与输入                                   | 请求中的位置                                       |
 | --------------------- | -------------------------------------------- | -------------------------------------------------- |
 | system.njk            | 固定角色扮演、上下文和输出原则               | 普通生成的 system，内容不随对话变化                |
-| character-context.njk | 角色名、全部形态设定、固定用户人格           | 首次提供或资料变化时追加的 user 内容，可从存档重建 |
-| runtime-controls.njk  | 本轮模式、当前形态、能力目录、知识、工具提示 | 当前请求最后一条 user 消息，不持久化               |
+| character-context.njk | 各参与角色当前人格的介绍、固定对话者身份     | 在使用该份资料的第一轮输入前追加                   |
+| runtime-controls.njk  | 本轮自称与署名、演出能力、知识、工具和输出要求 | 当前请求末尾的 user 内容                           |
 | scenario.njk          | 小剧场情境、风格、互动和篇幅                 | runtime-controls.njk 内包含                        |
 | output.njk            | 语言、翻译、字段约束和本轮合法示例           | runtime-controls.njk 内包含                        |
 | summary.njk           | 累计摘要应保留的信息及压缩要求               | 压缩请求单独使用的固定 system                      |
@@ -43,17 +45,21 @@ src/backend/llm/
 
 小剧场约 15 条角色发言，允许同一角色连续发言。摘要保留 Python 风格的固定小节，并区分历史事实、附件发送记录、工具结果和未完成事项。
 
-LLM 最终输出仍是 lines 数组，每行使用 speaker 角色名、text、translation、emotion。角色名跨形态稳定，目录保存时禁止重名，后端映射为本轮冻结的 speakerId 和 formId。v2 或无模型时不要求 performance；v3 使用 performance.motion 和 performance.expression。v2 忽略额外返回的演出选择。v3 缺省选择按 auto 处理，显式未知 ID 触发格式修复。开启翻译时必须非空，关闭时必须为 null，情绪限定为七个情绪标签。具体示例按当前角色、语言、翻译开关和模型版本生成。
+LLM 输出的 lines 数组逐行包含 speaker、text、translation、emotion。每个角色的「自我认知名称」决定自称及默认 speaker，可以取角色名或当前人格名。若两位演员署名相同，当轮 speaker 使用「角色名（人格名）」消歧。后端将署名映射到当轮的 speakerId 与 formId，并保存原署名供后续历史使用。v2 或无模型时不要求 performance；v3 使用 performance.motion 和 performance.expression。v2 忽略额外返回的演出选择。v3 缺省选择按 auto 处理，显式未知 ID 触发格式修复。开启翻译时必须非空，关闭时必须为 null，情绪限定为七个情绪标签。具体示例按当前角色、语言、翻译开关和模型版本生成。
 
 ## 人物资料与轮次生命周期
 
-Conversation 在受理时冻结人物、模型能力、配置和工具。角色定义编辑、形态切换或换装影响下一轮的请求；正在执行的工具循环继续使用原快照。人物名称和描述只作为模板变量插入，不二次执行模板语法。
+Conversation 在受理时冻结人物、模型能力、配置和工具。角色定义编辑、人格切换或换装影响下一轮的请求；正在执行的工具循环继续使用原快照。人物名称和描述只作为模板变量插入，不二次执行模板语法。
 
-初次人物资料就包含全部形态的描述，但不包含所有模型的演出目录。黑祥、白祥之间反复切换，仅改变当轮 runtime_controls 中的当前形态；不会重复插入人物资料。真正编辑角色名或形态描述时，在历史末尾追加完整的新人物资料，替代旧版本，不改写早期消息。
+新对话只提供各参与角色当前选中人格的介绍。以祥子为例，先用黑祥连续聊两轮，开头只出现一次黑祥的介绍。第三轮切到白祥，白祥的介绍追加在第三轮输入前。第四轮切回黑祥，黑祥的介绍再追加一次。每次更新都从该位置起生效，此前的对话保留当时的资料。
 
-每轮 TurnMeta.characterContext 保存全部人物资料的快照。构造历史时比较这些快照，只在资料有变化时生成 user 上下文。模型选择、语言和临时控制消息不进入该快照。压缩后从保留轮次的快照重建人物资料，不依赖摘要记住所有设定；旧消息和已保存的演出选择仍原样留在存档中。旧存档缺少快照时使用可用的当前人物资料恢复，不伪造历史版本。
+每轮 `TurnMeta.characterContext` 保存各参与角色当时的人格、角色名、自称设置和对话者身份。切换人格、修改当前介绍或自称设置会产生一份更新；只编辑尚未选中的人格，对话会在选用它时才看到新介绍。按角色名自称时，介绍标题只显示角色名；按人格名自称且两者不同时，标题显示「角色名（人格名）」。用户写在介绍正文中的文字会原样发送。
 
-普通请求顺序为：固定 system → 历史中的人物资料及其更新、对话、工具结果 → 必要的最新人物资料 → 本轮输入 → runtime_controls。工具调用循环只追加调用与结果，不重复插入控制消息。下轮重建时不保留上一轮的 runtime_controls。摘要使用独立固定 system，其规则与普通对话的 system 不混合。
+从 Python 导入的历史可能缺少人物快照。这段历史按原来的顺序发送。首次续聊时，所选人格的介绍放在导入历史之后、本轮新输入之前。以后切换人格时，先前的历史前缀保持稳定。
+
+普通请求依次提供固定 system、历史中的人物资料与对话、工具结果、必要的最新人物资料、本轮输入和 runtime_controls。工具调用循环只追加调用与结果，本轮的 runtime_controls 在下一轮重建时移除。
+
+摘要使用独立的 system。压缩输入沿用普通对话的人物介绍模板和当时的台词署名，保留旧摘要、历史发言、附件记录及工具结果。应用内部使用的角色与人格 ID、自称设置字段和模型推理片段不会作为人物资料或台词送入摘要。继续对话时，从保留轮次的快照重建介绍。
 
 run 与 inspectContext 共用渲染规则，预算估算计入人物资料、控制消息、工具和附件。人物资料与模型目录不放进 system。工具 Schema 的变化仍可能影响服务商前缀缓存，这是工具协议自身的变化。
 
@@ -81,19 +87,6 @@ presentation.mapping 可以直接引用原来的 performance.json；为空时自
 | FileSystemLoader | noCache          | false  | 复用已加载和编译的模板                                   |
 
 模板正文的段落换行仍需人工设计并验收；空白控制不保证任意模板都会生成可读排版。不启用实验性的 installJinjaCompat。原 Python 模板中的字符串 `.strip()` 改用 `| trim`，其他 Python 方法或特殊语法逐项迁移，不假定复制 .jinja 文件即可完全兼容。
-
-例如，角色及人格描述可这样组织：
-
-```jinja
-{% for character in characters %}
-[{{ character.displayName }}的人物设定]
-{{ character.description }}
-{% endfor %}
-{% if userPersona and (userPersona.description | trim) %}
-[{{ userPersona.displayName }}的人物设定]
-{{ userPersona.description }}
-{% endif %}
-```
 
 description、情景、知识文本等只作为 context 的值传入。不得把这些值拼到模板源码后编译，也不得对渲染结果再次执行 renderString。即使值中含有 `{{ ... }}` 或 `{% ... %}`，也只作为文字输出。
 
