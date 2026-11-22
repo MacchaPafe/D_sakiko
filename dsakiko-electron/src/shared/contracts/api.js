@@ -160,6 +160,7 @@ export const API_METHODS = {
  * @property {(href:string)=>Promise<void>} openWebSource 打开用户选择的网页来源。
  * @property {(input:{bytes:Uint8Array,name:string,mediaType:string,draftId:string})=>Promise<object>} importAttachment 导入已选文件到对应草稿。
  * @property {(options: {purpose: import('./assets.js').AssetPurpose, directory?: boolean, entry?: string, draftId?: string, single?: boolean, extensions?: string[]}) => Promise<import('../../backend/resources/interface.js').AssetInfo[]>} importFiles 打开原生选择器并导入文件，只返回资源引用和元数据。
+ * @property {(asset: import('./common.js').AssetRef) => Promise<boolean>} saveChatArchive 选择归档保存位置，取消返回 false。
  * @property {() => Promise<{sourceId: string, name: string} | null>} selectLegacyDirectory 只授权扫描旧版目录，不复制整个目录。
  * @property {(target: import('../../backend/live2d-import/outfits.js').OutfitTarget) => Promise<{result?: {modelId: string, alreadyInstalled: boolean}, problem?: ApiProblem} | null>} importOutfitDirectory 选择并安装一个本地模型文件夹。
  * @property {() => Promise<'tray' | 'quit' | null>} getWindowCloseBehavior 读取 Windows 关闭窗口偏好。

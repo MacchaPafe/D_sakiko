@@ -298,9 +298,20 @@ export class Agent {
     }
     const appendContext = (context) => {
       if (sameContext(previousContext, context)) return
+      const switchedIds = []
+      for (const character of context.characters) {
+        const previous = previousContext?.characters.find((item) => item.id === character.id)
+        // 只有两轮都记录了明确的人格，才有依据向模型说明发生了切换。
+        if (
+          previous?.forms.length === 1 &&
+          character.forms.length === 1 &&
+          previous.forms[0].id !== character.forms[0].id
+        )
+          switchedIds.push(character.id)
+      }
       messages.push({
         role: 'user',
-        content: this.templates.render('character-context.njk', context)
+        content: this.templates.render('character-context.njk', { ...context, switchedIds })
       })
       previousContext = context
     }

@@ -2139,3 +2139,323 @@ section.home-subtitle::before {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.history-branch-notice {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--secondary) 65%, var(--background));
+  font-size: 12px;
+  color: var(--foreground);
+}
+.history-branch-notice-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted-foreground);
+}
+.history-branch-notice-label svg {
+  flex: none;
+  color: var(--primary);
+}
+.history-branch-return {
+  color: var(--primary);
+}
+.history-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.history-files button {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--resource-inset);
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  transition:
+    background-color var(--home-control-duration) ease-out,
+    border-color var(--home-control-duration) ease-out;
+}
+.history-files button:hover {
+  background: var(--secondary);
+  border-color: var(--selected-border);
+  color: var(--primary);
+}
+.history-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: none;
+  min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.history-scroll > .history-turn:last-of-type {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.history-turn > .home-inline-problem {
+  margin: 0;
+  padding: 0 8px;
+}
+.history-turn-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 8px;
+}
+.history-turn-action {
+  color: var(--muted-foreground);
+}
+.history-turn-action:hover {
+  color: var(--primary);
+}
+.history-action-trigger {
+  color: var(--muted-foreground);
+}
+.history-action-trigger:hover,
+.history-action-trigger:focus-visible {
+  color: var(--foreground);
+}
+.history-action-trigger[data-state='open'] {
+  background: var(--secondary);
+  color: var(--primary);
+}
+/* 与服装管理页的 .outfit-menu 保持同一套悬浮菜单尺寸、圆角与配色。 */
+.history-action-menu {
+  z-index: 110;
+  display: grid;
+  gap: 2px;
+  min-width: 144px;
+  width: max-content;
+  max-height: var(--radix-dropdown-menu-content-available-height);
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--popover);
+  color: var(--foreground);
+  box-shadow: 0 8px 18px var(--shadow-ink);
+  outline: none;
+}
+.history-action-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  outline: none;
+  cursor: default;
+}
+.history-action-item svg {
+  flex: none;
+  color: var(--muted-foreground);
+}
+.history-action-item[data-highlighted] {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+.history-action-item[data-highlighted] svg {
+  color: var(--primary);
+}
+.history-action-item-danger:not([data-disabled]),
+.history-action-item-danger:not([data-disabled]) svg {
+  color: var(--destructive);
+}
+.history-action-item-danger[data-highlighted] {
+  background: color-mix(in srgb, var(--destructive) 10%, var(--background));
+  color: var(--destructive);
+}
+.history-action-item[data-disabled] {
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+.history-bubble-editing,
+.history-user .history-bubble.history-bubble-editing {
+  width: min(100%, clamp(264px, 92%, 500px));
+  max-width: 100%;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--selected-border);
+  border-radius: 12px;
+  background: var(--background);
+  box-shadow: 0 2px 8px var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition:
+    border-color var(--home-control-duration) ease-out,
+    box-shadow var(--home-control-duration) ease-out;
+}
+.history-bubble-editing:focus-within,
+.history-user .history-bubble.history-bubble-editing:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--selected-border));
+  box-shadow:
+    0 2px 8px var(--shadow-card),
+    0 0 0 2px color-mix(in srgb, var(--selected-border) 42%, transparent);
+}
+.history-edit-input {
+  width: 100%;
+  min-height: 44px;
+  max-height: 220px;
+  field-sizing: content;
+  resize: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  outline: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent) transparent;
+}
+.history-edit-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.history-edit-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--resource-inset);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.history-edit-attachment svg {
+  flex: none;
+}
+.history-edit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+}
+.history-edit-hint {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+.history-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.history-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 8px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.history-confirm-warning {
+  border: 1px solid var(--warning-border);
+  background: color-mix(in srgb, var(--warning-background) 85%, var(--background));
+  color: var(--foreground);
+}
+.history-confirm-warning .history-confirm-icon {
+  color: var(--warning);
+}
+.history-confirm-danger {
+  border: 1px solid color-mix(in srgb, var(--destructive) 28%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 7%, var(--background));
+  color: var(--foreground);
+}
+.history-confirm-danger .history-confirm-icon {
+  color: var(--destructive);
+}
+.history-confirm-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+.history-confirm-icon {
+  flex: none;
+  margin-top: 2px;
+}
+.history-confirm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.history-synthesizing {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.history-audio-problem {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--destructive);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .history-confirm {
+    animation: wardrobe-hint-in 140ms ease-out;
+  }
+}
+@media (hover: hover) {
+  /* 仅视觉隐藏而非禁用指针事件，确保键盘焦点与自动化测试可直接触发。 */
+  .history-message-header [aria-haspopup='menu'] {
+    opacity: 0;
+    transition:
+      opacity var(--home-control-duration) ease-out,
+      background-color var(--home-control-duration) ease-out,
+      color var(--home-control-duration) ease-out;
+  }
+  .history-message:hover [aria-haspopup='menu'],
+  .history-message:focus-within [aria-haspopup='menu'],
+  .history-message-header [aria-expanded='true'] {
+    opacity: 1;
+  }
+  .history-turn-footer:not(.history-turn-footer-latest) {
+    opacity: 0;
+    transition: opacity var(--home-control-duration) ease-out;
+  }
+  .history-turn:hover .history-turn-footer,
+  .history-turn:focus-within .history-turn-footer,
+  .history-turn-footer[data-active='true'],
+  .history-turn-footer:has([aria-expanded='true']) {
+    opacity: 1;
+  }
+}

@@ -40,7 +40,13 @@ export function validatePythonChat(chat) {
     for (const message of turn.messages) {
       identity(message.id)
       check(['user', 'assistant', 'tool-result', 'abstract'].includes(message.kind))
-      if (message.kind === 'user')
+      if (message.kind === 'user' && ['async', 'reminder'].includes(message.source?.kind)) {
+        check(
+          message.source.kind === 'async'
+            ? Array.isArray(message.results)
+            : typeof message.text === 'string'
+        )
+      } else if (message.kind === 'user')
         check(
           typeof message.content?.text === 'string' && Array.isArray(message.content.attachments)
         )

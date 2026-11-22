@@ -8,6 +8,7 @@ import defaultBackgroundUrl from '../../assets/welcome/background.png'
 import './background-gallery.css'
 
 const extensions = ['png', 'jpg', 'jpeg', 'webp']
+const previewDelayMs = 350
 // 对话用 null 表示默认背景。仅在选择器补上内置条目，直接复用舞台底图。
 const builtin = {
   key: 'builtin-default',
@@ -108,7 +109,7 @@ function useBackgroundPreview(onPreview, enabled, current, query) {
   function start(item) {
     cancel()
     if (enabled && item.asset?.id !== current?.id)
-      timer.current = setTimeout(() => onPreview(item), 1500)
+      timer.current = setTimeout(() => onPreview(item), previewDelayMs)
   }
   return { start, cancel }
 }

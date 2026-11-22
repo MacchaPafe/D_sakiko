@@ -10,6 +10,7 @@ export default [
   {
     ignores: [
       'node_modules/**',
+      '.local/**',
       '.runtime-build/**',
       'out/**',
       'dist/**',

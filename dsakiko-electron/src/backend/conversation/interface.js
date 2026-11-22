@@ -58,8 +58,7 @@ function generationForChat(global, chat, overrides) {
  */
 
 /**
- * @typedef {{ kind: 'user', turnId: string, messageId: string, content: UserSubmission }
- *   | { kind: 'line', line: LineRef, text: string, translation: string | null }} HistoryEdit
+ * @typedef {{ kind: 'user', turnId: string, messageId: string, content: UserSubmission, previousContent?: UserSubmission }} HistoryEdit
  */
 
 /**
@@ -453,6 +452,7 @@ export class Conversations {
       participantIssue: copy(state.participantIssue),
       presentation: { sequenceId: state.sequenceId, lines: [...state.guides.values()].map(copy) },
       audioProblems: copy(state.audioProblems),
+      synthesizingLines: [...state.audioTokens.keys()],
       problem: copy(state.problem)
     }
   }
@@ -1338,6 +1338,8 @@ export class Conversations {
   async synthesizeProtected(state, ref, prepared, run, guideId, signal) {
     const token = uuid()
     state.audioTokens.set(ref.lineId, token)
+    state.audioProblems = state.audioProblems.filter((item) => item.line.lineId !== ref.lineId)
+    if (!run) this.publish(state)
     const original = copy(this.locate(state.chat, ref))
     let taskId = null
     let audio = null
@@ -1383,7 +1385,8 @@ export class Conversations {
         )
           return
         if (audio) await this.assets.addReferences(state.resourceOwner, [audio.asset])
-        line.audio = audio
+        state.audioTokens.delete(ref.lineId)
+        if (audio || run) line.audio = audio
         if (audioProblem) state.audioProblems.push({ line: ref, problem: audioProblem })
         if (guideId) {
           await this.performance.resolveGuide(guideId, { audio })
@@ -1394,6 +1397,10 @@ export class Conversations {
         await this.persist(state)
       })
     } finally {
+      if (state.audioTokens.get(ref.lineId) === token) {
+        state.audioTokens.delete(ref.lineId)
+        if (!state.deleted) this.publish(state)
+      }
       if (taskId) await this.speech.releaseTask?.(taskId)
     }
   }
@@ -2144,7 +2151,21 @@ export class Conversations {
       if (!playable.length) continue
       // 回放只还原演员与表演，背景使用该对话当前的舞台设置。
       const saved = turn.meta?.replayScene ?? (fallback ??= await this.scene(chat, false))
-      const scene = { ...saved, background: chat.meta.settings.presentation.background }
+      const scene = copy(saved)
+      scene.background = chat.meta.settings.presentation.background
+      // 归档只携带模型引用。异机回放从本机角色目录解析相应形态，缺失时仍可播放台词。
+      for (const slot of scene.slots) {
+        const modelId = slot.presentation?.model?.externalModel
+        if (!modelId) continue
+        const local = await this.assets.inspect({ id: modelId }).catch(() => null)
+        if (local && ['model', 'live2d'].includes(local.purpose))
+          slot.presentation.model = local.asset
+        else {
+          fallback ??= await this.scene(chat, false)
+          slot.presentation =
+            fallback.slots.find((actor) => actor.id === slot.id)?.presentation ?? null
+        }
+      }
       const materials = await this.performance.resolveReplay(
         scene,
         playable.map((line, index) => this.guide(line, true, guides.length + index > 0)),
@@ -2241,7 +2262,7 @@ export class Conversations {
   }
 
   /**
-   * 原地编辑历史记录中的用户消息或角色台词/翻译，不触发重新生成。
+   * 原地编辑用户手动发送的消息，后续回复保留。
    * @param {string} chatId 目标对话 ID。
    * @param {HistoryEdit} edit 要编辑的目标位置与新内容。
    * @returns {Promise<void>}
@@ -2250,29 +2271,20 @@ export class Conversations {
     return this.update(
       chatId,
       async (chat) => {
-        let index
-        if (edit.kind === 'user') {
-          this.validateSubmission(edit.content)
-          index = chat.turns.findIndex((turn) => turn.id === edit.turnId)
-          const message = chat.turns[index]?.messages.find((item) => item.id === edit.messageId)
-          requireValue(message?.source?.kind === 'manual', 'not_manual_input')
-          message.content = copy(edit.content)
-          await this.prepareWorkFiles(chat, message, (await this.state(chatId)).resourceOwner)
-        } else {
-          requireValue(edit.kind === 'line' && typeof edit.text === 'string')
-          const line = this.locate(chat, edit.line)
-          requireValue(line, 'line_missing')
-          index = chat.turns.findIndex((turn) => turn.id === edit.line.turnId)
-          // 台词正文发生变化时同步更新合成文本并清除旧音频；仅修改翻译时保留原音频。
-          if (line.text !== edit.text) {
-            line.text = edit.text
-            line.spoken.text = spokenText(edit.text)
-            line.audio = null
-          }
-          line.translation = edit.translation
-          if (isReplayableDialogue(line) && line.extensions?.pythonToolPlaceholder)
-            delete line.extensions.pythonToolPlaceholder
-        }
+        requireValue(edit.kind === 'user', 'not_manual_input')
+        this.validateSubmission(edit.content)
+        const index = chat.turns.findIndex((turn) => turn.id === edit.turnId)
+        const message = chat.turns[index]?.messages.find((item) => item.id === edit.messageId)
+        requireValue(message?.source?.kind === 'manual', 'not_manual_input')
+        if (edit.previousContent)
+          requireValue(
+            fingerprint([message.content.text, message.content.attachments ?? []]) ===
+              fingerprint([edit.previousContent.text, edit.previousContent.attachments ?? []]),
+            'revision_conflict',
+            '这条消息已在其他窗口修改，请取消后重新编辑。'
+          )
+        message.content = copy(edit.content)
+        await this.prepareWorkFiles(chat, message, (await this.state(chatId)).resourceOwner)
         // 清除被编辑轮次及其后续轮次中的压缩摘要，避免摘要与修改后的原文不一致。
         for (const turn of chat.turns.slice(index))
           turn.messages = turn.messages.filter((message) => message.kind !== 'abstract')
@@ -2305,13 +2317,18 @@ export class Conversations {
    * @param {string | null} throughTurnId 要保留的最后一轮 ID（包含该轮）；传 null 时清空全部历史轮次。
    * @returns {Promise<void>}
    */
-  async rollback(chatId, throughTurnId) {
+  async rollback(chatId, throughTurnId, expectedRemaining) {
     return this.update(
       chatId,
       (chat) => {
         const index =
           throughTurnId === null ? -1 : chat.turns.findIndex((turn) => turn.id === throughTurnId)
         requireValue(throughTurnId === null || index >= 0, 'turn_missing')
+        requireValue(
+          expectedRemaining == null || expectedRemaining === chat.turns.length - index - 1,
+          'history_changed',
+          '后续轮次已变化，请重新确认。'
+        )
         chat.turns = chat.turns.slice(0, index + 1)
       },
       true
@@ -2877,8 +2894,8 @@ export class Conversations {
    * @param {string[]} chatIds 要导出的对话 ID 列表。
    * @returns {Promise<import('../../shared/contracts/common.js').AssetRef>} 导出的归档文件引用。
    */
-  async exportChats(chatIds) {
-    return this.store.exportArchive(chatIds)
+  async exportChats(chatIds, options) {
+    return this.store.exportArchive(chatIds, options)
   }
 
   /**
@@ -2887,10 +2904,21 @@ export class Conversations {
    * @returns {Promise<import('../../shared/contracts/archive.js').ChatImportResult>} 导入后的新对话 ID 列表与告警信息。
    */
   async importChats(archive) {
-    const drafts = await this.store.readArchive(archive)
+    const drafts = await this.store.readArchive(archive, await this.characters.list())
     const chatIds = []
     try {
-      for (const chat of drafts.chats) chatIds.push(await this.saveCopy(chat))
+      for (const chat of drafts.chats) {
+        try {
+          chatIds.push(await this.saveCopy(chat))
+        } catch (error) {
+          if (drafts.chats.length === 1) throw error
+          drafts.warnings.push({
+            code: 'lossy-import',
+            chatId: chat.id,
+            message: '未导入“' + chat.title + '”：' + problem(error).message
+          })
+        }
+      }
       return { chatIds, warnings: drafts.warnings }
     } finally {
       await this.assets.releaseWhenPossible(drafts.resourceOwner)

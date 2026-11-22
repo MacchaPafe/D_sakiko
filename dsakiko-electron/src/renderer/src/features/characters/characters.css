@@ -106,6 +106,28 @@
 .role-columns nav button[aria-current='true'][data-has-role-theme='true'] .character-avatar {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--role-badge) 88%, transparent);
 }
+.role-columns .role-sort-scroll {
+  display: block;
+}
+.role-sort-stack {
+  --sortable-row-radius: 9px;
+  display: grid;
+  gap: 6px;
+}
+.role-sort-stack > button[data-sortable='true']:not(:disabled) {
+  touch-action: none;
+}
+.role-columns .role-sort-stack > button[data-dragging='true']:not(:disabled) {
+  cursor: grabbing;
+  border-color: var(--primary);
+  background: var(--background);
+  box-shadow: 0 5px 13px var(--shadow-card);
+}
+.role-sort-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--destructive);
+}
 .role-detail {
   display: flex;
   flex-direction: column;

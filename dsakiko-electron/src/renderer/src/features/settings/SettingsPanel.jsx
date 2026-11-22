@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Cable, Download, Monitor, RefreshCw, RotateCcw, X } from 'lucide-react'
+import { Archive, Cable, Download, Monitor, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Slider } from '../../components/ui/slider.jsx'
 import {
@@ -9,12 +9,14 @@ import {
 import { desktopHost } from '../../host/desktop.js'
 import { Connections } from './Connections.jsx'
 import { Resources } from './Resources.jsx'
+import { ChatArchive } from '../home/ChatArchive.jsx'
 import './settings.css'
 
 const sections = [
   { id: 'connections', name: '大模型连接', Icon: Cable },
   { id: 'resources', name: '附加资源下载', Icon: Download },
-  { id: 'application', name: '应用', Icon: Monitor }
+  { id: 'application', name: '应用', Icon: Monitor },
+  { id: 'archive', name: '对话导入 / 导出', Icon: Archive }
 ]
 
 const SPEECH_SPEED_MIN = 0.6
@@ -360,6 +362,7 @@ export function SettingsPanel({
   onShowDownloads
 }) {
   const [section, setSection] = useState(entry.section)
+  const [menuContainer, setMenuContainer] = useState(null)
   const title = sections.find((item) => item.id === section)?.name
   useEffect(() => {
     if (section === 'resources') void setup.refreshManagedCatalog()
@@ -368,7 +371,7 @@ export function SettingsPanel({
     void setup.refreshManagedCatalog({ force: true })
   }
   return (
-    <div className="settings-layout">
+    <div className="settings-layout" ref={setMenuContainer}>
       <aside className="settings-sidebar">
         <h1 tabIndex={-1} data-dialog-focus>
           设置
@@ -427,9 +430,19 @@ export function SettingsPanel({
               setupState={setupState}
               setup={setup}
               onShowDownloads={onShowDownloads}
+              menuContainer={menuContainer}
             />
           )}
           {section === 'application' && <Application settings={state.settings} client={client} />}
+          {section === 'archive' && (
+            <ChatArchive
+              client={client}
+              flow={flow}
+              chats={state.chats}
+              characters={state.characters}
+              currentId={state.target.chatId}
+            />
+          )}
         </div>
       </section>
     </div>

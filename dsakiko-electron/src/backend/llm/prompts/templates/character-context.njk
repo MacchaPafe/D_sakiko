@@ -1,6 +1,9 @@
 [character_context]
 以下为完整有效的人物资料，替代此前版本。
 {% for character in characters %}
+{% if switchedIds and character.id in switchedIds %}
+关于{{ character.name }}：从本轮起，请按以下人物资料回应。先前的台词反映了角色当时的状态。请记住对方说过的话和你们已有的约定，用当前人物资料里的口吻、态度和视角自然接续对话。
+{% endif %}
 {% if character.forms | length == 1 %}
 {% set form = character.forms[0] %}
 {% if (character.selfNameMode | default('character')) == 'form' and form.displayName != character.name %}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Plus, Search, UserRound } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Input, Textarea } from '../../components/ui/fields.jsx'
@@ -6,11 +6,19 @@ import { Choice } from '../../components/ui/Choice.jsx'
 import { desktopHost } from '../../host/desktop.js'
 import { CharacterAvatar } from '../home/CharacterAvatar.jsx'
 import { characterPreviewVars } from '../../styles/character-theme.js'
+import { catalogTextSaveDelay, useCatalogEditor } from '../../hooks/use-catalog-editor.js'
 import { PersonaPreview } from './PersonaPicker.jsx'
 import { newPersona, personaOptions, selectPersonaCharacter } from './source.js'
 
 function customSource() {
   return { kind: 'custom', displayName: '', description: '', avatar: null }
+}
+
+function keepNameInput(saved, submitted) {
+  const source = submitted.source
+  if (source.kind === 'custom' && source.displayName.trim() === saved.source.displayName)
+    return { ...saved, source: { ...saved.source, displayName: source.displayName } }
+  return saved
 }
 
 function SourceChoice({ label, value, options, onChange }) {
@@ -25,8 +33,9 @@ function SourceChoice({ label, value, options, onChange }) {
   return <Choice label={label} value={value} options={options} onChange={onChange} />
 }
 
-/** @param {object} props 身份摘要、角色目录、初始选中项和保存回调。 @returns {import('react').ReactElement} 共用角色管理浮窗的身份页签。 */
+/** @param {object} props 身份摘要、角色目录、保存回调和用于打开定义的初始编号或草稿。 @returns {import('react').ReactElement} 共用角色管理浮窗的身份页签。 */
 export function PersonaManager({
+  ref,
   client,
   roles,
   personas,
@@ -35,19 +44,24 @@ export function PersonaManager({
   onRefresh,
   catalogProblem
 }) {
-  const [base, setBase] = useState(initial?.revision ? initial : null)
-  const [edited, setEdited] = useState(initial)
   const [search, setSearch] = useState('')
   const [pending, setPending] = useState(false)
+  const [composing, setComposing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [problem, setProblem] = useState('')
   const [message, setMessage] = useState('')
   const [loaded, setLoaded] = useState(null)
   const [reload, setReload] = useState(0)
+  const [initialRequest, setInitialRequest] = useState(typeof initial === 'string' ? initial : null)
   const assetDraft = useRef(null)
   const working = useRef(false)
-  const dirty = edited !== base
-  const locked = dirty || pending
+  const editor = useCatalogEditor({
+    initial: typeof initial === 'string' ? null : initial,
+    paused: pending || composing,
+    persist: persistPersona,
+    accept: keepNameInput
+  })
+  const { base, edited, dirty, isNew, saving, select: setDefinition } = editor
   const source = edited?.source
   const roleId = source?.kind === 'character' ? source.characterId : null
   const role = roles.find((item) => item.id === roleId)
@@ -60,9 +74,29 @@ export function PersonaManager({
   )
 
   useEffect(() => {
-    onLock(locked)
+    onLock(pending)
     return () => onLock(false)
-  }, [onLock, locked])
+  }, [onLock, pending])
+  useImperativeHandle(ref, () => ({ flush: editor.flush }))
+  useEffect(() => {
+    if (!initialRequest) return
+    let live = true
+    client.characters.getPersona(initialRequest).then(
+      (value) => {
+        if (!live) return
+        setInitialRequest(null)
+        if (value) setDefinition(value)
+      },
+      (error) => {
+        if (!live) return
+        setInitialRequest(null)
+        setProblem(error.message)
+      }
+    )
+    return () => {
+      live = false
+    }
+  }, [client, initialRequest, setDefinition])
   useEffect(() => {
     let live = true
     if (role)
@@ -85,9 +119,9 @@ export function PersonaManager({
     [client]
   )
   async function releaseAvatar() {
-    if (!assetDraft.current) return
-    await client.assets.discardDraft(assetDraft.current)
+    const previous = assetDraft.current
     assetDraft.current = null
+    if (previous) await client.assets.discardDraft(previous)
   }
   async function perform(action) {
     if (working.current) return
@@ -96,6 +130,7 @@ export function PersonaManager({
     setProblem('')
     setMessage('')
     try {
+      await editor.waitForSave()
       await action()
     } catch (error) {
       setProblem(error.message)
@@ -105,32 +140,50 @@ export function PersonaManager({
     }
   }
   function select(value) {
-    setBase(value)
-    setEdited(value)
+    editor.select(value)
     setDeleting(false)
+    setComposing(false)
   }
+
+  function navigate(action) {
+    return perform(async () => {
+      if (!(await editor.flush())) return
+      if (isNew) await releaseAvatar()
+      await action()
+    })
+  }
+
   function open(event) {
     const id = event.currentTarget.value
-    return perform(async () => {
+    if (id === base?.id) return
+    setInitialRequest(null)
+    return navigate(async () => {
       const value = await client.characters.getPersona(id)
       if (!value) throw new Error('该身份已删除，请刷新目录。')
       select(value)
     })
   }
   function create() {
-    select(null)
-    setEdited(newPersona(customSource()))
-    setProblem('')
-    setMessage('')
+    setInitialRequest(null)
+    return navigate(() => {
+      select(null)
+      editor.change(() => newPersona(customSource()))
+      setSearch('')
+    })
   }
-  function changeSource(next) {
-    setEdited({ ...edited, source: next })
+  function changeSource(next, delay) {
+    editor.change((value) => ({ ...value, source: next }), delay)
     setDeleting(false)
     setMessage('')
   }
   function changeKind(kind) {
     if (source.kind === kind) return
-    changeSource(kind === 'custom' ? customSource() : selectPersonaCharacter(source, roles[0]))
+    // 切换现有自定义身份时，先等用户指定关联对象，再提交新的来源。
+    changeSource(
+      kind === 'custom'
+        ? customSource()
+        : selectPersonaCharacter(source, isNew ? roles[0] : undefined)
+    )
   }
   function chooseRole(id) {
     changeSource(
@@ -144,7 +197,13 @@ export function PersonaManager({
     changeSource({ ...source, formId })
   }
   function editField(event) {
-    changeSource({ ...source, [event.target.name]: event.target.value })
+    const { name, value } = event.currentTarget
+    editor.change(
+      (current) => ({ ...current, source: { ...current.source, [name]: value } }),
+      catalogTextSaveDelay
+    )
+    setDeleting(false)
+    setMessage('')
   }
   function importAvatar() {
     return perform(async () => {
@@ -161,10 +220,10 @@ export function PersonaManager({
     })
   }
   function copyForm() {
-    return perform(async () => {
+    return navigate(async () => {
       if (form.avatar) assetDraft.current = (await client.assets.createDraft([form.avatar])).draftId
-      setBase(null)
-      setEdited(
+      select(null)
+      editor.change(() =>
         newPersona({
           kind: 'custom',
           displayName: form.displayName,
@@ -174,17 +233,31 @@ export function PersonaManager({
       )
     })
   }
-  function save() {
-    return perform(async () => {
-      const next =
-        source.kind === 'custom'
-          ? { ...edited, source: { ...source, displayName: source.displayName.trim() } }
-          : edited
-      select(await client.characters.savePersona(next))
+  async function persistPersona(_previous, submitted) {
+    const source = submitted.source
+    let next = submitted
+    if (source.kind === 'custom') {
+      const displayName = source.displayName.trim()
+      if (!displayName) throw new Error('请填写身份名称。')
+      next = { ...submitted, source: { ...source, displayName } }
+    } else if (!source.characterId || !source.formId) {
+      throw new Error('请选择身份来源角色与人格。')
+    }
+    const saved = await client.characters.savePersona(next)
+    try {
       await releaseAvatar()
-      await onRefresh()
-      setMessage('身份已保存')
-    })
+    } catch (error) {
+      setProblem(error.message)
+    }
+    await onRefresh()
+    setMessage('身份已保存')
+    return saved
+  }
+  function createPersona() {
+    return perform(editor.commit)
+  }
+  function retrySave() {
+    return perform(editor.flush)
   }
   function discard() {
     return perform(async () => {
@@ -223,10 +296,15 @@ export function PersonaManager({
       : `扮演已有角色 · ${roleLabel}`
   }
 
+  let footerStatus = message
+  if (saving) footerStatus = '正在保存…'
+  else if (editor.error) footerStatus = '更改未保存'
+  else if (!isNew && dirty) footerStatus = '等待自动保存'
+
   return (
-    <div className="role-columns persona-columns" data-dialog-busy={locked || undefined}>
+    <div className="role-columns persona-columns" data-dialog-busy={pending || undefined}>
       <aside>
-        <Button variant="outline" className="role-add-button" disabled={locked} onClick={create}>
+        <Button variant="outline" className="role-add-button" disabled={pending} onClick={create}>
           <Plus />
           添加身份
         </Button>
@@ -248,7 +326,7 @@ export function PersonaManager({
                 type="button"
                 key={option.value}
                 value={option.value}
-                disabled={locked}
+                disabled={pending}
                 aria-label={option.label}
                 aria-current={base?.id === option.value || undefined}
                 data-problem={hasProblem || undefined}
@@ -272,7 +350,12 @@ export function PersonaManager({
       </aside>
       <div className="role-detail">
         <div className="role-scroll">
-          {!edited && (
+          {initialRequest && (
+            <div className="role-content" role="status">
+              正在读取身份…
+            </div>
+          )}
+          {!initialRequest && !edited && (
             <div className="persona-empty-state">
               <span
                 className="persona-avatar-fallback persona-avatar-fallback-lg"
@@ -289,7 +372,7 @@ export function PersonaManager({
                 </p>
               </div>
               {!personas.length && (
-                <Button variant="outline" disabled={locked} onClick={create}>
+                <Button variant="outline" disabled={pending} onClick={create}>
                   <Plus size={15} aria-hidden="true" />
                   创建第一个身份
                 </Button>
@@ -301,6 +384,8 @@ export function PersonaManager({
               key={edited.id}
               className="role-content persona-content-enter"
               disabled={pending}
+              onCompositionStart={() => setComposing(true)}
+              onCompositionEnd={() => setComposing(false)}
             >
               <div
                 className="role-profile persona-profile"
@@ -455,7 +540,7 @@ export function PersonaManager({
 
               {preview && (
                 <section
-                  className="role-card persona-preview-card"
+                  className="persona-preview-section"
                   style={profileThemeStyle}
                   data-has-role-theme={profileThemeStyle ? 'true' : undefined}
                 >
@@ -473,12 +558,20 @@ export function PersonaManager({
             </fieldset>
           )}
         </div>
-        {(catalogProblem || problem) && (
+        {(editor.error || catalogProblem || problem) && (
           <p className="role-error" role="alert">
-            {problem || catalogProblem}{' '}
-            <Button variant="ghost" onClick={refresh}>
-              刷新目录
-            </Button>
+            {editor.error || problem || catalogProblem}{' '}
+            {editor.error && !isNew ? (
+              <Button variant="ghost" disabled={pending} onClick={retrySave}>
+                重试保存
+              </Button>
+            ) : (
+              !editor.error && (
+                <Button variant="ghost" onClick={refresh}>
+                  刷新目录
+                </Button>
+              )
+            )}
           </p>
         )}
         {deleting && (
@@ -503,26 +596,26 @@ export function PersonaManager({
         )}
         <footer>
           <small
-            key={message || (dirty ? 'dirty' : 'idle')}
-            className={message ? 'persona-status-message' : undefined}
+            key={footerStatus}
+            className={footerStatus === message && message ? 'persona-status-message' : undefined}
             role="status"
-            data-dirty={dirty || undefined}
+            data-dirty={Boolean(editor.error) || undefined}
           >
-            {dirty ? '有未保存的更改' : message}
+            {footerStatus}
           </small>
           {base && !dirty && !deleting && (
             <Button variant="ghost" disabled={pending} onClick={() => setDeleting(true)}>
               删除身份
             </Button>
           )}
-          {dirty && (
+          {editor.error && !isNew && (
             <Button variant="ghost" disabled={pending} onClick={discard}>
               放弃更改
             </Button>
           )}
-          {edited && (
-            <Button disabled={!valid || !dirty || pending} onClick={save}>
-              保存身份
+          {edited && isNew && (
+            <Button disabled={!valid || pending} onClick={createPersona}>
+              创建身份
             </Button>
           )}
         </footer>

@@ -23,13 +23,11 @@ async function verifyFormVoiceFiles(page, modelFile) {
   const manager = page.getByRole('dialog', { name: '角色管理' })
   await manager.getByRole('button', { name: '新增角色' }).click()
   await manager.getByLabel('角色名称', { exact: true }).fill('语音文件测试')
-  await manager
-    .locator('input[type=file]')
-    .setInputFiles({
-      name: '介绍.txt',
-      mimeType: 'text/plain',
-      buffer: Buffer.from('逐句选择参考录音。')
-    })
+  await manager.locator('input[type=file]').setInputFiles({
+    name: '介绍.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('逐句选择参考录音。')
+  })
   await manager.getByRole('button', { name: '创建角色' }).click()
   const pick = async (label, file) => {
     await application.evaluate(({ dialog }, selected) => {
@@ -43,7 +41,6 @@ async function verifyFormVoiceFiles(page, modelFile) {
     await manager.getByText(file.split(/[\\/]/).pop(), { exact: true }).waitFor()
   }
   await pick('GPT 模型', modelFile)
-  await manager.getByRole('button', { name: '保存更改' }).click()
   await manager.getByRole('button', { name: '关闭角色管理' }).click()
   await page
     .getByRole('button', { name: '编辑角色：语音文件测试' })
@@ -62,13 +59,11 @@ async function verifyFormVoiceFiles(page, modelFile) {
   await language.click()
   await manager.getByRole('option', { name: '中文', exact: true }).click()
   await manager.getByLabel('启用回复语音').check()
-  await manager.getByRole('button', { name: '保存更改' }).click()
   const role = (await client.characters.list()).find((item) => item.name === '语音文件测试')
   await expect
     .poll(async () => (await client.characters.get(role.id)).forms[0].voice?.defaultReference.text)
     .toBe('你好。')
   await manager.getByLabel('启用回复语音').uncheck()
-  await manager.getByRole('button', { name: '保存更改' }).click()
   await expect
     .poll(
       async () =>
@@ -176,6 +171,7 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
     'onWindowVisibility',
     'openProviderKeyPage',
     'openWebSource',
+    'saveChatArchive',
     'selectLegacyDirectory',
     'selectVertexAccount',
     'setWindowCloseBehavior'
@@ -238,6 +234,31 @@ test('构建后的 Electron 提供新宿主接口，HTTP 后端可独立于原�
     'model'
   )
   await verifyFormVoiceFiles(page, modelFile)
+  const archivePath = join(directory, '跨端归档.dsakiko-chat.zip')
+  await application.evaluate(({ dialog }, path) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: path })
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
+  }, archivePath)
+  const sourceId = await client.conversations.createChat({
+    title: '归档验收',
+    characterIds: ['sakiko'],
+    mode: 'single-character'
+  })
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  const settingsDialog = page.getByRole('dialog', { name: '设置' })
+  await settingsDialog.getByRole('button', { name: '对话导入 / 导出', exact: true }).click()
+  await settingsDialog.getByRole('checkbox', { name: '归档验收', exact: true }).check()
+  await settingsDialog.getByRole('button', { name: '导出所选 1 个对话…' }).click()
+  await settingsDialog.getByText('已导出 1 个对话。', { exact: true }).waitFor()
+  expect((await readFile(archivePath)).subarray(0, 2).toString()).toBe('PK')
+  await settingsDialog.getByRole('tab', { name: '导入对话', exact: true }).click()
+  await settingsDialog.getByRole('button', { name: '导入对话…' }).click()
+  await settingsDialog.getByText('已导入 1 个对话。', { exact: true }).waitFor()
+  const copies = (await client.conversations.listChats()).filter(
+    (chat) => chat.title === '归档验收'
+  )
+  expect(copies).toHaveLength(2)
+  expect(copies.find((chat) => chat.id !== sourceId)).toBeDefined()
   const sessionData = await application.evaluate(({ app }) => app.getPath('sessionData'))
   expect(sessionData).toBe(join(directory, 'cache/chromium'))
   await application.close()

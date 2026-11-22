@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, ChevronRight, Play, Square, UserRound, Volume2 } from 'lucide-react'
+import { ArrowDown, ChevronRight, GitBranch, Play, Square, UserRound, Volume2 } from 'lucide-react'
 import { CharacterAvatar } from './CharacterAvatar.jsx'
 import { Button } from '../../components/ui/button.jsx'
 
-import { historyRows } from './history.js'
+import { HistoryTurn } from './HistoryTurn.jsx'
+import { historyGroups } from './history.js'
 import { fitHistorySize, HISTORY_SIZE_KEY, readHistorySize } from './history-size.js'
 
 import { MessageText, WebLink } from './DialogueMarkdown.jsx'
@@ -110,6 +111,8 @@ function HistoryMessage({
   client,
   theatre,
   row,
+  actions,
+  editor,
   playback,
   turnReplay,
   onPlay,
@@ -157,9 +160,12 @@ function HistoryMessage({
   return (
     <article className={'history-message history-' + row.kind}>
       <div className="history-message-header">
-        {row.persona && (row.persona.avatar
-          ? <CharacterAvatar role={row.persona} client={client} size={20} />
-          : <UserRound size={16} aria-hidden="true" />)}
+        {row.persona &&
+          (row.persona.avatar ? (
+            <CharacterAvatar role={row.persona} client={client} size={20} />
+          ) : (
+            <UserRound size={16} aria-hidden="true" />
+          ))}
         <span className="history-speaker">{row.name}</span>
         {audio && (
           <Button
@@ -173,11 +179,12 @@ function HistoryMessage({
             {playing ? <Square /> : <Volume2 />}
           </Button>
         )}
+        {actions}
       </div>
       <div
         className={theatre ? 'history-message-body history-theatre-line' : 'history-message-body'}
       >
-        {row.replayTurnId && (
+        {!editor && row.replayTurnId && (
           <Button
             variant="ghost"
             size="icon-sm"
@@ -189,15 +196,17 @@ function HistoryMessage({
             {replaying ? <Square /> : <Play />}
           </Button>
         )}
-        <div className="history-bubble">
-          <MessageText text={row.text} />
-          {row.attachments && <FileDownloads client={client} files={row.attachments} />}
-          {row.kind === 'assistant' && row.translation && (
-            <div className="history-translation">
-              <MessageText text={row.translation} />
-            </div>
-          )}
-        </div>
+        {editor ?? (
+          <div className="history-bubble">
+            <MessageText text={row.text} />
+            {row.attachments && <FileDownloads client={client} files={row.attachments} />}
+            {row.kind === 'assistant' && row.translation && (
+              <div className="history-translation">
+                <MessageText text={row.translation} />
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {(linePlayback?.error || turnPlayback?.error) && (
         <p className="home-inline-problem" role="status">
@@ -219,6 +228,8 @@ export function HistoryPanel({
   snapshot,
   characters,
   onClose,
+  onBranch,
+  returnFromBranch,
   onPlayAudio,
   onPlayTurn,
   turnReplay
@@ -272,15 +283,17 @@ export function HistoryPanel({
     measure()
     return () => observer.disconnect()
   }, [])
-  const rows = historyRows(snapshot, now, showModelThinking, characters)
+  const groups = historyGroups(snapshot, now, showModelThinking, characters)
   const warnings = snapshot?.chat.meta.extensions?.pythonImport?.normalizationWarnings ?? []
   // 语音和回放按钮可以在轮次结束后出现，记录内容没有变化时不提示新消息。
   const contentKey = JSON.stringify(
-    rows.map((row) => ({
-      ...row,
-      replayTurnId: null,
-      ...(row.kind === 'assistant' ? { audio: null } : {})
-    }))
+    groups
+      .flatMap((group) => group.rows)
+      .map((row) => ({
+        ...row,
+        replayTurnId: null,
+        ...(row.kind === 'assistant' ? { audio: null } : {})
+      }))
   )
   useEffect(() => {
     if (following.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight
@@ -366,11 +379,29 @@ export function HistoryPanel({
           <ChevronRight />
         </Button>
       </header>
+      {returnFromBranch && (
+        <div className="history-branch-notice" role="status">
+          <span className="history-branch-notice-label">
+            <GitBranch size={13} aria-hidden="true" />
+            已创建分支
+          </span>
+          <Button
+            size="xs"
+            variant="ghost"
+            className="history-branch-return"
+            onClick={returnFromBranch}
+          >
+            返回原对话
+          </Button>
+        </div>
+      )}
       <div className="history-scroll" ref={scroll} onScroll={handleScroll}>
         {!snapshot && <p className="home-empty">开始一段新的对话吧。</p>}
         {snapshot?.participantIssue && (
           <p className="home-inline-problem">
-            {snapshot.participantIssue.message ?? '角色缺失，此对话仅供阅读。'}
+            {snapshot.participantIssue.code === 'ambiguous-theater-characters'
+              ? '无法区分原小剧场的两位角色。你仍可阅读台词、播放已有语音。'
+              : '缺少对话角色。你仍可阅读记录、播放已有语音。'}
           </p>
         )}
         {warnings.some((warning) => warning.code === 'legacy_chat_model_unavailable') && (
@@ -385,16 +416,28 @@ export function HistoryPanel({
             <FileDownloads client={client} files={snapshot.chat.meta.workspaceFiles} />
           </details>
         )}
-        {rows.map((row) => (
-          <HistoryMessage
+        {groups.map(({ turn, rows }, index) => (
+          <HistoryTurn
+            key={turn.id}
             client={client}
-            theatre={snapshot?.chat.mode === 'scripted-dialogue'}
-            key={row.id}
-            row={row}
-            playback={playback}
-            turnReplay={turnReplay}
-            onPlay={playAudio}
-            onReplayTurn={replayTurn}
+            snapshot={snapshot}
+            turn={turn}
+            remaining={groups.length - index - 1}
+            rows={rows}
+            onBranch={onBranch}
+            renderRow={(row, actions, editor) => (
+              <HistoryMessage
+                client={client}
+                theatre={theatre}
+                row={row}
+                actions={actions}
+                editor={editor}
+                playback={playback}
+                turnReplay={turnReplay}
+                onPlay={playAudio}
+                onReplayTurn={replayTurn}
+              />
+            )}
           />
         ))}
         {snapshot?.problem && <p className="home-inline-problem">{snapshot.problem.message}</p>}

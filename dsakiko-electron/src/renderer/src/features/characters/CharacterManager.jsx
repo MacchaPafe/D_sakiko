@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Plus, Search, Shirt, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Checkbox } from '../../components/ui/checkbox.jsx'
@@ -12,9 +12,25 @@ import { PersonaManager } from '../personas/PersonaManager.jsx'
 import { newPersona } from '../personas/source.js'
 import { Choice } from '../../components/ui/Choice.jsx'
 import { Switch } from '../../components/ui/switch.jsx'
+import { catalogTextSaveDelay, useCatalogEditor } from '../../hooks/use-catalog-editor.js'
+import { orderItems, sameOrder, useSortableRows } from '../../hooks/use-sortable-rows.js'
 import { ReplyVoice } from './ReplyVoice.jsx'
 import { mergeCharacterEdit, newCharacter, newForm } from './character-edit.js'
+import '../../components/ui/sortable-rows.css'
 import './characters.css'
+
+function preventNativeDrag(event) {
+  event.preventDefault()
+}
+
+function keepNameInput(saved, submitted) {
+  const name = submitted.name.trim() === saved.name ? submitted.name : saved.name
+  const forms = saved.forms.map((form) => {
+    const typed = submitted.forms.find((item) => item.id === form.id)?.displayName
+    return typed?.trim() === form.displayName ? { ...form, displayName: typed } : form
+  })
+  return { ...saved, name, forms }
+}
 
 /** @param {object} props 角色目录、主页导航和资源服务。 @returns {import('react').ReactElement} 单层浮窗中的角色管理页面。 */
 export function CharacterManager({
@@ -23,6 +39,7 @@ export function CharacterManager({
   initialId,
   focusAffiliation,
   initialTab = 'roles',
+  initialPersonaId,
   personas,
   personaProblem,
   onRefreshPersonas,
@@ -43,20 +60,21 @@ export function CharacterManager({
   const themeInputId = useId()
   const keepPersonasId = useId()
   const [tab, setTab] = useState(initialTab)
-  const [personaInitial, setPersonaInitial] = useState(null)
+  const [personaInitial, setPersonaInitial] = useState(initialPersonaId ?? null)
   const [personaLocked, setPersonaLocked] = useState(false)
   const [confirmBinding, setConfirmBinding] = useState(false)
   const [id, setId] = useState(
     () => roles.find((role) => role.id === initialId)?.id ?? roles[0]?.id ?? null
   )
   const [search, setSearch] = useState('')
-  const [base, setBase] = useState(null)
-  const [edited, setEdited] = useState(null)
+  const [pendingOrder, setPendingOrder] = useState(null)
+  const [orderProblem, setOrderProblem] = useState('')
   const [formId, setFormId] = useState(null)
   const [directory, setDirectory] = useState([])
   // 当角色原本为“其他角色”但用户切到 BanG Dream! 选项且尚未选定具体角色时，临时保持下拉框展开。
   const [affiliationOverride, setAffiliationOverride] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [composing, setComposing] = useState(false)
   const [problem, setProblem] = useState('')
   const [message, setMessage] = useState('')
   const [impact, setImpact] = useState(null)
@@ -68,11 +86,19 @@ export function CharacterManager({
   const affiliation = useRef(null)
   const promptFile = useRef(null)
   const busyRef = useRef(false)
-  const dirty = Boolean(edited && base && edited !== base)
-  const isNew = !base?.revision
-  const canSave =
+  const root = useRef(null)
+  const roleList = useRef(null)
+  const roleStack = useRef(null)
+  const ordering = useRef(false)
+  const personaEditor = useRef(null)
+  const editor = useCatalogEditor({
+    paused: busy || composing || !active,
+    persist: persistCharacter,
+    accept: keepNameInput
+  })
+  const { base, edited, dirty, isNew, saving, select } = editor
+  const canCreate =
     dirty && !busy && edited.name.trim() && (!isNew || edited.forms[0]?.description.trim())
-  const locked = dirty || busy
   const form = edited?.forms.find((item) => item.id === formId)
   const formThemeStyle = characterPreviewVars(form?.themeColor)
   const packageOption = packages?.find((item) => item.characterId === id)
@@ -94,10 +120,10 @@ export function CharacterManager({
 
   function clearSelection() {
     setFormImpact(null)
-    setBase(null)
-    setEdited(null)
+    select(null)
     setImpact(null)
     setAffiliationOverride(null)
+    setComposing(false)
     setProblem('')
     setMessage('')
   }
@@ -115,9 +141,7 @@ export function CharacterManager({
       if (!live) return
       if (!value) throw new Error('找不到该角色。')
       value.name ??= value.forms.find((item) => item.id === value.defaultFormId).displayName
-      setBase(value)
-      setEdited(value)
-      setFormId(value.defaultFormId)
+      if (select(value, true)) setFormId(value.defaultFormId)
     }
     void read().catch((error) => {
       if (live) setProblem(error.message)
@@ -125,7 +149,7 @@ export function CharacterManager({
     return () => {
       live = false
     }
-  }, [client, id, reload])
+  }, [client, id, reload, select])
 
   const lastCompletedJob = useRef(completedJob)
   const wasActive = useRef(active)
@@ -138,10 +162,7 @@ export function CharacterManager({
     let live = true
     client.characters.get(id).then(
       (value) => {
-        if (live && value) {
-          setBase(value)
-          setEdited(value)
-        }
+        if (live && value) select(value, true)
       },
       (error) => {
         if (live) setProblem(error.message)
@@ -150,7 +171,7 @@ export function CharacterManager({
     return () => {
       live = false
     }
-  }, [active, dirty, id, client, completedJob])
+  }, [active, dirty, id, client, completedJob, select])
 
   const loadedId = base?.id
   useEffect(() => {
@@ -178,6 +199,7 @@ export function CharacterManager({
     setProblem('')
     setMessage('')
     try {
+      await editor.waitForSave()
       await operation()
     } catch (error) {
       setProblem(error.message)
@@ -187,19 +209,19 @@ export function CharacterManager({
     }
   }
 
-  function change(update) {
+  function change(update, delay) {
     setFormImpact(null)
-    setEdited((previous) => {
+    editor.change((previous) => {
       const value = structuredClone(previous)
       update(value)
       return value
-    })
+    }, delay)
     setMessage('')
     setImpact(null)
   }
 
-  function changeForm(update) {
-    change((value) => update(value.forms.find((item) => item.id === formId)))
+  function changeForm(update, delay) {
+    change((value) => update(value.forms.find((item) => item.id === formId)), delay)
   }
 
   function choose(purpose, extensions, apply) {
@@ -219,26 +241,45 @@ export function CharacterManager({
     })
   }
 
-  function save(continueToIdentity = false) {
-    return perform(async () => {
-      const latest = id ? await client.characters.get(id) : base
-      const next = mergeCharacterEdit(base, edited, latest)
-      const previewedForms =
-        edited.bangDreamId && edited.bangDreamId !== base.bangDreamId
-          ? edited.forms.map((item) => item.id)
-          : edited.forms
-              .filter((item) => !base.forms.some((old) => old.id === item.id))
-              .map((item) => item.id)
-      const saved = await client.characters.save(next, previewedForms)
-      setBase(saved)
-      setEdited(saved)
-      setId(saved.id)
-      setAffiliationOverride(null)
+  async function persistCharacter(previous, submitted) {
+    const latest = previous.revision ? await client.characters.get(previous.id) : previous
+    const normalized = {
+      ...submitted,
+      name: submitted.name.trim(),
+      forms: submitted.forms.map((item) => ({ ...item, displayName: item.displayName.trim() }))
+    }
+    const next = mergeCharacterEdit(previous, normalized, latest)
+    const previewedForms =
+      submitted.bangDreamId && submitted.bangDreamId !== previous.bangDreamId
+        ? submitted.forms.map((item) => item.id)
+        : submitted.forms
+            .filter((item) => !previous.forms.some((old) => old.id === item.id))
+            .map((item) => item.id)
+    const saved = await client.characters.save(next, previewedForms)
+    try {
       await releaseDraft()
+    } catch (error) {
+      setProblem(error.message)
+    }
+    try {
       await onRefresh()
-      setMessage('角色资料已保存')
-      if (continueToIdentity) await openBoundPersona(saved.id, formId)
+    } catch (error) {
+      setProblem(error.message)
+    }
+    setMessage('角色资料已保存')
+    return saved
+  }
+
+  function createRole(continueToIdentity = false) {
+    return perform(async () => {
+      if (!(await editor.commit())) return
+      setId(edited.id)
+      if (continueToIdentity) await openBoundPersona(edited.id, formId)
     })
+  }
+
+  function retrySave() {
+    return perform(editor.flush)
   }
 
   function discard() {
@@ -294,12 +335,54 @@ export function CharacterManager({
     keywords: [entry.name, entry.id, ...entry.aliases]
   }))
 
-  const matches = roles.filter((item) => {
+  const matches = orderItems(roles, pendingOrder).filter((item) => {
     const entry = directory.find((candidate) => candidate.id === item.bangDreamId)
     return [item.name, item.displayName, item.id, ...(entry?.aliases ?? [])].some((name) =>
       name?.toLowerCase().includes(search.trim().toLowerCase())
     )
   })
+  const matchIds = matches.map((item) => item.id)
+  const sorting = useSortableRows({
+    stackRef: roleStack,
+    ids: matchIds,
+    disabled: busy || Boolean(pendingOrder),
+    onReorder: commitRoleOrder,
+    scrollRef: roleList
+  })
+  const { dragState } = sorting
+
+  async function commitRoleOrder(visibleOrder) {
+    if (busyRef.current || ordering.current) return
+    const orderedIds = new Set(visibleOrder)
+    const currentIds = roles.map((role) => role.id)
+    let visibleIndex = 0
+    // 搜索结果只交换可见角色占用的位置，提交给目录的仍是完整顺序。
+    const nextIds = currentIds.map((id) => (orderedIds.has(id) ? visibleOrder[visibleIndex++] : id))
+    if (sameOrder(currentIds, nextIds)) return
+    ordering.current = true
+    setOrderProblem('')
+    setPendingOrder(nextIds)
+    let saved = false
+    try {
+      await client.characters.setOrder(nextIds)
+      saved = true
+      await onRefresh()
+    } catch (error) {
+      setOrderProblem((saved ? '顺序已保存，列表刷新失败。' : '角色顺序未保存。') + error.message)
+      if (!saved) await onRefresh().catch(() => {})
+    } finally {
+      ordering.current = false
+      setPendingOrder(null)
+    }
+  }
+
+  function startRoleDrag(event) {
+    sorting.startDrag(event, event.currentTarget.value)
+  }
+
+  function sortRoleWithKeyboard(event) {
+    sorting.handleSortKeyDown(event, event.currentTarget.value)
+  }
 
   function selectAffiliation(value) {
     setAffiliationOverride(null)
@@ -325,8 +408,11 @@ export function CharacterManager({
   }
 
   function handleNewRole() {
-    setSearch('')
-    selectId(null)
+    if (isNew && !id) return
+    return navigate(() => {
+      setSearch('')
+      selectId(null)
+    })
   }
 
   function handleSearchChange(event) {
@@ -338,7 +424,8 @@ export function CharacterManager({
   }
 
   function selectRole(event) {
-    selectId(event.currentTarget.value)
+    const next = event.currentTarget.value
+    if (next !== id) return navigate(() => selectId(next))
   }
 
   function selectForm(value) {
@@ -353,7 +440,7 @@ export function CharacterManager({
       if (role.forms.length === 1 && !role.forms[0].displayName.trim())
         role.forms[0].displayName = role.name
       role.forms.push(created)
-    })
+    }, catalogTextSaveDelay)
     selectForm(created.id)
   }
 
@@ -361,7 +448,7 @@ export function CharacterManager({
     const { value, name } = event.currentTarget
     change((role) => {
       role.forms.find((item) => item.id === name).displayName = value
-    })
+    }, catalogTextSaveDelay)
   }
 
   function handleSelfNameToggle(checked) {
@@ -394,8 +481,7 @@ export function CharacterManager({
     return perform(async () => {
       await client.characters.deleteForm(id, formId, replacement, formImpact.stamp)
       const saved = await client.characters.get(id)
-      setBase(saved)
-      setEdited(saved)
+      select(saved)
       selectForm(replacement)
       await onRefresh()
       setMessage('人格已删除')
@@ -406,14 +492,14 @@ export function CharacterManager({
     const name = event.target.value
     change((role) => {
       role.name = name
-    })
+    }, catalogTextSaveDelay)
   }
 
   function updateDescription(event) {
     const text = event.target.value
     changeForm((item) => {
       item.description = text
-    })
+    }, catalogTextSaveDelay)
   }
 
   function pickAvatar() {
@@ -434,7 +520,7 @@ export function CharacterManager({
     const color = event.currentTarget.value
     changeForm((item) => {
       item.themeColor = color
-    })
+    }, catalogTextSaveDelay)
   }
 
   function resetTheme() {
@@ -450,11 +536,13 @@ export function CharacterManager({
   }
 
   function openWardrobe() {
-    onOutfits(id, formId, !form.models.length && edited.bangDreamId ? 'download' : 'installed')
+    return navigate(() =>
+      onOutfits(id, formId, !form.models.length && edited.bangDreamId ? 'download' : 'installed')
+    )
   }
 
   function openPackage() {
-    onPackage(packageOption, formId)
+    return navigate(() => onPackage(packageOption, formId))
   }
 
   function handleKeepChange(checked) {
@@ -466,14 +554,48 @@ export function CharacterManager({
   }
 
   function handleStartChat() {
-    onChat(id)
+    return navigate(() => onChat(id))
   }
 
   function switchTab(next) {
-    setPersonaInitial(null)
-    setConfirmBinding(false)
-    setTab(next)
+    if (next === tab) return
+    return navigate(() => {
+      if (tab === 'roles' && isNew && !id) {
+        clearSelection()
+        setReload((value) => value + 1)
+      }
+      setPersonaInitial(null)
+      setConfirmBinding(false)
+      setTab(next)
+    })
   }
+
+  function handleClose() {
+    return navigate(onClose)
+  }
+
+  function navigate(action) {
+    if (personaLocked) return
+    return perform(async () => {
+      if (tab === 'personas') {
+        if (personaEditor.current && !(await personaEditor.current.flush())) return
+      } else {
+        if (!(await editor.flush())) return
+        if (isNew) await releaseDraft()
+      }
+      await action()
+    })
+  }
+
+  useLayoutEffect(() => {
+    const element = root.current
+    function handleEscape(event) {
+      event.preventDefault()
+      void handleClose()
+    }
+    element.addEventListener('dialog-escape', handleEscape)
+    return () => element.removeEventListener('dialog-escape', handleEscape)
+  })
 
   async function openBoundPersona(characterId, selectedForm) {
     const [existing] = await client.characters.formPersonas(characterId, selectedForm)
@@ -485,8 +607,8 @@ export function CharacterManager({
   }
 
   function useAsPersona() {
-    if (dirty) setConfirmBinding(true)
-    else void perform(() => openBoundPersona(id, formId))
+    if (isNew) setConfirmBinding(true)
+    else void navigate(() => openBoundPersona(id, formId))
   }
 
   let packageLabel = null
@@ -522,25 +644,29 @@ export function CharacterManager({
   }
 
   let footerStatus = message
-  if (busy) footerStatus = '正在处理…'
-  else if (!footerStatus && dirty) footerStatus = '有未保存的更改，保存或放弃后可切换角色'
+  if (saving) footerStatus = '正在保存…'
+  else if (busy) footerStatus = '正在处理…'
+  else if (editor.error) footerStatus = '更改未保存'
+  else if (!isNew && dirty) footerStatus = '等待自动保存'
 
   return (
     <Tabs
       className="role-manager"
+      ref={root}
       value={tab}
       onValueChange={switchTab}
-      data-dialog-busy={locked || personaLocked || undefined}
+      data-dialog-escape=""
+      data-dialog-busy={busy || personaLocked || undefined}
     >
       <header>
         <h2 data-dialog-focus tabIndex={-1}>
           角色管理
         </h2>
         <TabList aria-label="管理类别">
-          <Tab value="roles" disabled={personaLocked}>
+          <Tab value="roles" disabled={busy || personaLocked}>
             角色
           </Tab>
-          <Tab value="personas" disabled={locked}>
+          <Tab value="personas" disabled={busy}>
             对话身份
           </Tab>
         </TabList>
@@ -548,8 +674,8 @@ export function CharacterManager({
           type="button"
           variant="ghost"
           size="icon"
-          disabled={locked || personaLocked}
-          onClick={onClose}
+          disabled={busy || personaLocked}
+          onClick={handleClose}
           aria-label="关闭角色管理"
         >
           <X />
@@ -557,6 +683,7 @@ export function CharacterManager({
       </header>
       <TabPanel value="personas" className="persona-management-panel">
         <PersonaManager
+          ref={personaEditor}
           client={client}
           roles={roles}
           personas={personas}
@@ -572,7 +699,7 @@ export function CharacterManager({
             type="button"
             variant="outline"
             className="role-add-button"
-            disabled={locked}
+            disabled={busy}
             onClick={handleNewRole}
           >
             <Plus />
@@ -587,32 +714,74 @@ export function CharacterManager({
               onChange={handleSearchChange}
             />
           </label>
-          <nav aria-label="管理的角色">
-            {matches.map((item) => {
-              const itemThemeStyle = characterSidebarGroupVars(item.themeColor)
-              return (
-                <button
-                  type="button"
-                  key={item.id}
-                  value={item.id}
-                  style={itemThemeStyle}
-                  data-has-role-theme={itemThemeStyle ? 'true' : undefined}
-                  onClick={selectRole}
-                  disabled={locked}
-                  aria-current={id === item.id || undefined}
-                >
-                  <CharacterAvatar role={item} client={client} size={30} />
-                  <span>{item.name || item.displayName}</span>
-                </button>
-              )
-            })}
-            {!matches.length && <small>{roles.length ? '没有匹配的角色' : '还没有角色'}</small>}
+          <nav aria-label="管理的角色" className="role-sort-scroll" ref={roleList}>
+            <div
+              ref={roleStack}
+              className="sortable-rows role-sort-stack"
+              data-dragging={dragState ? 'true' : undefined}
+              onClickCapture={sorting.suppressDragClick}
+              onDragStart={preventNativeDrag}
+            >
+              {dragState && (
+                <div
+                  className="sortable-drop-slot"
+                  aria-hidden="true"
+                  style={{ top: dragState.slotTop, height: dragState.height }}
+                />
+              )}
+              {matches.map((item) => {
+                const style = characterSidebarGroupVars(item.themeColor)
+                return (
+                  <button
+                    type="button"
+                    key={item.id}
+                    value={item.id}
+                    style={{
+                      ...style,
+                      transform: dragState
+                        ? 'translateY(' + (dragState.offsets.get(item.id) ?? 0) + 'px)'
+                        : undefined
+                    }}
+                    data-sort-id={item.id}
+                    data-dragging={dragState?.id === item.id ? 'true' : undefined}
+                    data-has-role-theme={style ? 'true' : undefined}
+                    data-sortable={matches.length > 1 && !pendingOrder ? 'true' : undefined}
+                    title={
+                      matches.length > 1 ? '拖动排序，聚焦后可用上下方向键调整顺序' : undefined
+                    }
+                    aria-keyshortcuts={matches.length > 1 ? 'ArrowUp ArrowDown' : undefined}
+                    onClick={selectRole}
+                    onPointerDown={startRoleDrag}
+                    onPointerMove={sorting.moveDrag}
+                    onPointerUp={sorting.dropDrag}
+                    onPointerCancel={sorting.cancelDrag}
+                    onKeyDown={sortRoleWithKeyboard}
+                    disabled={busy}
+                    aria-current={id === item.id || undefined}
+                  >
+                    <CharacterAvatar role={item} client={client} size={30} />
+                    <span>{item.name || item.displayName}</span>
+                  </button>
+                )
+              })}
+              {!matches.length && <small>{roles.length ? '没有匹配的角色' : '还没有角色'}</small>}
+            </div>
           </nav>
+          {orderProblem && (
+            <p className="role-sort-error" role="alert">
+              {orderProblem}
+            </p>
+          )}
         </aside>
         <div className="role-detail">
           <div className="role-scroll" key={id}>
             {edited && form && (
-              <fieldset disabled={busy} className="role-content">
+              <fieldset
+                disabled={busy}
+                className="role-content"
+                onCompositionStart={() => setComposing(true)}
+                onCompositionEnd={() => setComposing(false)}
+              >
                 <div
                   className="role-profile"
                   style={formThemeStyle}
@@ -792,7 +961,9 @@ export function CharacterManager({
                                 variant="ghost"
                                 size="sm"
                                 className="role-danger"
-                                disabled={dirty && base.forms.some((item) => item.id === formId)}
+                                disabled={
+                                  saving || (dirty && base.forms.some((item) => item.id === formId))
+                                }
                                 onClick={previewFormRemoval}
                               >
                                 删除人格
@@ -966,13 +1137,7 @@ export function CharacterManager({
                                 : '当前人格尚未添加 Live2D 服装。'}
                             </p>
                           </div>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={dirty}
-                            onClick={openWardrobe}
-                          >
+                          <Button type="button" variant="outline" size="sm" onClick={openWardrobe}>
                             <Shirt />
                             {form.models.length ? '管理服装' : '添加 Live2D 服装'}
                           </Button>
@@ -985,7 +1150,7 @@ export function CharacterManager({
                           changeForm={changeForm}
                           choose={choose}
                           packageLabel={packageLabel}
-                          packageAction={dirty ? null : openPackage}
+                          packageAction={openPackage}
                         />
                       </>
                     )}
@@ -1075,17 +1240,19 @@ export function CharacterManager({
               </fieldset>
             )}
           </div>
-          {problem && (
+          {(editor.error || problem) && (
             <div className="role-error" role="alert">
-              {problem}
-              <Button type="button" size="xs" variant="ghost" onClick={discard}>
-                重新读取
-              </Button>
+              {editor.error || problem}
+              {editor.error && !isNew && (
+                <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={retrySave}>
+                  重试保存
+                </Button>
+              )}
             </div>
           )}
           {edited && (
             <footer>
-              <small role="status" data-dirty={(!busy && dirty) || undefined}>
+              <small role="status" data-dirty={Boolean(editor.error) || undefined}>
                 {footerStatus}
               </small>
               {form && (!isNew || dirty) && !confirmBinding && (
@@ -1095,8 +1262,8 @@ export function CharacterManager({
               )}
               {confirmBinding && (
                 <>
-                  <Button type="button" disabled={!canSave} onClick={() => save(true)}>
-                    保存角色并继续
+                  <Button type="button" disabled={!canCreate} onClick={() => createRole(true)}>
+                    创建角色并继续
                   </Button>
                   <Button
                     type="button"
@@ -1108,24 +1275,21 @@ export function CharacterManager({
                   </Button>
                 </>
               )}
-              {dirty && !confirmBinding && (
+              {editor.error && !isNew && (
                 <Button type="button" variant="ghost" disabled={busy} onClick={discard}>
                   放弃更改
                 </Button>
               )}
-              {!isNew && !dirty && (
+              {!isNew && (
                 <Button type="button" variant="outline" disabled={busy} onClick={handleStartChat}>
                   开始对话
                 </Button>
               )}
-              <Button
-                type="button"
-                disabled={!canSave}
-                hidden={confirmBinding}
-                onClick={() => save()}
-              >
-                {isNew ? '创建角色' : '保存更改'}
-              </Button>
+              {isNew && !confirmBinding && (
+                <Button type="button" disabled={!canCreate} onClick={() => createRole()}>
+                  创建角色
+                </Button>
+              )}
             </footer>
           )}
         </div>

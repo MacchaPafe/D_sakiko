@@ -3,9 +3,10 @@ import { app, dialog, ipcMain, Menu, shell, Tray } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { problem, readJson, requireValue } from '../backend/core/support.js'
+import { randomUUID } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
-import { open } from 'node:fs/promises'
+import { open, copyFile, rename, rm } from 'node:fs/promises'
 import { resolveDataDirectories, validateDataDirectories } from './data-directories.js'
 import { IMPORT_PURPOSES } from '../shared/contracts/assets.js'
 import { providerPresets } from '../shared/contracts/llm-providers.js'
@@ -203,6 +204,25 @@ async function startApplication() {
       'attachment',
       input.draftId
     )
+  })
+  ipcMain.handle('host:save-chat-archive', async (event, asset) => {
+    checkSender(event)
+    const info = await backend.assets.inspect(asset)
+    requireValue(info.purpose === 'archive', 'invalid_asset_purpose')
+    const choice = await dialog.showSaveDialog(mainWindow, {
+      title: '导出对话',
+      defaultPath: '对话.dsakiko-chat.zip',
+      filters: [{ name: '对话归档', extensions: ['zip'] }]
+    })
+    if (choice.canceled || !choice.filePath) return false
+    const temporary = join(dirname(choice.filePath), '.dsakiko-' + randomUUID() + '.tmp')
+    try {
+      await copyFile(await backend.assets.localPath(asset), temporary)
+      await rename(temporary, choice.filePath)
+      return true
+    } finally {
+      await rm(temporary, { force: true })
+    }
   })
   ipcMain.handle('host:import-files', async (event, options) => {
     checkSender(event)

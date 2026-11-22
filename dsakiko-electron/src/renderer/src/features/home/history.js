@@ -71,10 +71,15 @@ function orderedParts(message, calls) {
   return ordered.concat(parts.slice(position))
 }
 
-/** @param {object|null} snapshot 正式聊天快照。 @param {number} now 当前时间戳。 @param {boolean} showModelThinking 是否显示可读思考片段。 @param {object[]} characters 当前角色目录，用于缺少历史姓名的台词。 @returns {HistoryRow[]} 直接遵循正式消息顺序，前端不解释 Python 位置索引。 */
-export function historyRows(snapshot, now = Date.now(), showModelThinking = true, characters = []) {
+/** @param {object|null} snapshot 正式聊天快照。 @param {number} now 当前时间戳。 @param {boolean} showModelThinking 是否显示可读思考片段。 @param {object[]} characters 当前角色目录，用于缺少历史姓名的台词。 @returns {{turn: object, rows: HistoryRow[]}[]} 按轮次排列的历史记录，包含尚无可见消息的轮次。 */
+export function historyGroups(
+  snapshot,
+  now = Date.now(),
+  showModelThinking = true,
+  characters = []
+) {
   const names = new Map(characters.map((role) => [role.id, role.name ?? role.displayName]))
-  const rows = []
+  const groups = []
   const personaName = snapshot?.chat.userPersona?.displayName
   const userLabel = personaName ? '你（' + personaName + '）' : '你'
   const settled = new Map()
@@ -84,6 +89,8 @@ export function historyRows(snapshot, now = Date.now(), showModelThinking = true
   let scriptAnchor = null
   const theatre = snapshot?.chat.mode === 'scripted-dialogue'
   for (const turn of snapshot?.chat.turns ?? []) {
+    const rows = []
+    groups.push({ turn, rows })
     if (
       snapshot.chat.meta?.lotteries?.some(
         (item) => item.deliveredTurnId === turn.id && item.revealAt > now
@@ -161,7 +168,9 @@ export function historyRows(snapshot, now = Date.now(), showModelThinking = true
                 text: line.text,
                 translation: line.translation?.trim() ? line.translation : null,
                 audio: line.audio ?? null,
-                kind: 'assistant'
+                kind: 'assistant',
+                line: { turnId: turn.id, messageId: message.id, partId: part.id, lineId: line.id },
+                canSynthesize: Boolean(line.formId && line.text?.trim())
               }
               rows.push(row)
               if (isReplayableDialogue(line)) firstLine ??= row
@@ -227,5 +236,10 @@ export function historyRows(snapshot, now = Date.now(), showModelThinking = true
         kind: 'system'
       })
   }
-  return rows
+  return groups
+}
+
+/** @param {Parameters<typeof historyGroups>} args 与分组投影相同的快照参数。 @returns {HistoryRow[]} 展平的历史记录。 */
+export function historyRows(...args) {
+  return historyGroups(...args).flatMap((group) => group.rows)
 }

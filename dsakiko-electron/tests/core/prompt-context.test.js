@@ -165,6 +165,9 @@ test('固定 system；仅注入当前人格，同人格不重复资料，切换�
   black.history = [...white.history, turn(white, '回去吧')]
   const third = await agent.messages(black)
   expect(contextMessages(third)).toHaveLength(3)
+  expect(
+    contextMessages(third).map(({ content }) => content.includes('先前的台词反映了角色当时的状态'))
+  ).toEqual([false, true, true])
   expect(third.at(-1).content).not.toContain('nod')
   expect(agent.system(black)).toBe(agent.system(white))
   expect(agent.system(white)).not.toContain('祥子')
@@ -175,6 +178,29 @@ test('固定 system；仅注入当前人格，同人格不重复资料，切换�
     )
   ).toHaveLength(1)
   expect(third.slice(0, first.length - 1)).toEqual(first.slice(0, -1))
+})
+
+test('小剧场只提醒切换人格的演员，修改同一人格的介绍或自称不触发提示', async () => {
+  const cast = request()
+  cast.mode = 'scripted-dialogue'
+  cast.characters.push({ ...structuredClone(cast.characters[0]), id: 'anon', name: '爱音' })
+  const updated = structuredClone(cast)
+  updated.characters[1].forms[0].description = '用轻快的语气回应'
+  updated.characters[1].selfNameMode = 'form'
+  updated.history = [turn(cast)]
+  const note = '从本轮起，请按以下人物资料回应。'
+  expect(contextMessages(await agent.messages(updated)).at(-1).content).not.toContain(note)
+
+  const switched = structuredClone(updated)
+  switched.history.push(turn(updated))
+  switched.characters[0] = request('v2', 'white').characters[0]
+  const profiles = contextMessages(await agent.messages(switched))
+  const profile = profiles.at(-1).content
+  expect(profile).toContain('关于祥子：' + note)
+  expect(profile).toContain('请记住对方说过的话和你们已有的约定')
+  expect(profile).not.toContain('关于爱音：' + note)
+  switched.history.push(turn(switched))
+  expect(contextMessages(await agent.messages(switched))).toEqual(profiles)
 })
 
 test('导入历史缺少人物快照时，续聊和切换人格只在对应输入之前追加介绍', async () => {
@@ -199,6 +225,7 @@ test('导入历史缺少人物快照时，续聊和切换人格只在对应输�
   expect(first[0].content).toEqual([{ type: 'text', text: '导入的旧问题' }])
   expect(first[1].content[0].text).toContain('导入的旧台词')
   expect(first[2].content).toContain('黑祥的设定')
+  expect(first[2].content).not.toContain('从本轮起，请按以下人物资料回应。')
   const white = request('v2', 'white')
   white.history = [imported, turn(black)]
   const switched = await agent.messages(white)

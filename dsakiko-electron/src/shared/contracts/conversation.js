@@ -253,6 +253,7 @@
  * @property {string} runtimeId 本次后端运行身份，用于重连时区分快照版本序列。
  * @property {ParticipantIssue | null} participantIssue 历史阅读状态及缺失角色的存档名称。
  * @property {{ sequenceId: string, lines: Array<{ line: LineRef, guideId: string }> }} presentation 句与后端 guide 的关联；逐字进度由各客户端计算，terminated 时客户端全文展示。
+ * @property {string[]} synthesizingLines 正在合成的台词标识，重生成完成后移除。
  * @property {Array<{ line: LineRef, problem: import('./common.js').Problem }>} audioProblems 单句错误不取消整个轮次组。
  * @property {import('./common.js').Problem | null} problem 最近需要处理的问题。
  */

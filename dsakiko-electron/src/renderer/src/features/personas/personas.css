@@ -14,6 +14,20 @@
   font-weight: 650;
 }
 
+.persona-picker-hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.persona-picker-snapshot {
+  max-height: min(48dvh, 320px);
+  overflow: auto;
+  scrollbar-width: thin;
+  border-radius: 12px;
+}
+
 .persona-picker footer,
 .persona-preview {
   display: flex;
@@ -133,22 +147,6 @@
   box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--primary) 65%, transparent);
 }
 
-.persona-trigger[data-active='true']:not(:has(.character-avatar))::after {
-  content: '';
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 0 1.5px var(--background);
-}
-
-.persona-trigger[data-active='true'][data-frozen='true']:not(:has(.character-avatar))::after {
-  opacity: 0.72;
-}
-
 .persona-trigger[data-problem='true'] {
   color: var(--warning);
   background: color-mix(in srgb, var(--warning-background) 80%, transparent);
@@ -218,13 +216,30 @@
   color: var(--muted-foreground);
 }
 
+.persona-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.persona-preview-section h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.persona-preview-section .persona-preview {
+  padding: 16px;
+}
+
 .persona-profile[data-has-role-theme='true'] .character-avatar,
-.persona-preview-card[data-has-role-theme='true'] .character-avatar {
+.persona-preview-section[data-has-role-theme='true'] .character-avatar {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--role-badge) 80%, transparent);
   transition: box-shadow 160ms ease-out;
 }
 
-.persona-preview-card[data-has-role-theme='true'] .persona-preview {
+.persona-preview-section[data-has-role-theme='true'] .persona-preview {
   border-color: var(--selected-border);
   background: color-mix(in srgb, var(--background) 84%, var(--resource-inset));
 }
@@ -284,7 +299,7 @@
   .persona-preview,
   .persona-trigger,
   .persona-profile[data-has-role-theme='true'] .character-avatar,
-  .persona-preview-card[data-has-role-theme='true'] .character-avatar {
+  .persona-preview-section[data-has-role-theme='true'] .character-avatar {
     transition: none;
   }
 

@@ -5,6 +5,7 @@ import { FloatingDialog } from './FloatingDialog.jsx'
 
 /**
  * 视图可用 data-dialog-focus 指定初始焦点，用 data-dialog-busy 暂停 Escape 返回。
+ * 需要在返回前提交编辑的视图可用 data-dialog-escape 接管 Escape。
  * @template {import('./use-dialog-navigation.js').DialogPage} T
  * @param {{frames: Array<import('./use-dialog-navigation.js').DialogFrame<T>>, dismiss: (id: number) => void, renderPage: (page: T, controls: DialogPageControls) => import('react').ReactNode}} props 通用导航状态和业务视图渲染入口。
  * @returns {import('react').ReactElement|null} 一个原生浮窗，保留前一视图的表单、滚动和焦点。
@@ -30,7 +31,10 @@ export function DialogNavigator({ frames, dismiss, renderPage }) {
   if (!active) return null
 
   function cancel() {
-    if (pages.current.get(active.id)?.querySelector('[data-dialog-busy]')) return
+    const pane = pages.current.get(active.id)
+    if (pane?.querySelector('[data-dialog-busy]')) return
+    const receiver = pane?.querySelector('[data-dialog-escape]')
+    if (receiver && !receiver.dispatchEvent(new Event('dialog-escape', { cancelable: true }))) return
     dismiss(active.id)
   }
   function renderFrame(frame, index) {

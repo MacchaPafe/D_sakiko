@@ -61,7 +61,7 @@ import {
 } from '../../styles/character-theme.js'
 import './home.css'
 
-/** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string, section?: string, backgroundTab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'|'backgrounds'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
+/** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean, initialTab?: 'roles'|'personas', initialPersonaId?: string} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string, section?: string, backgroundTab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'|'backgrounds'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
 /** @typedef {HomeDialogContent & import('../../components/ui/use-dialog-navigation.js').DialogPage} HomeDialogPage */
 
 function downloadPage(category) {
@@ -571,6 +571,7 @@ export function HomePage({ client, setup, setupState }) {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [expandedRoleId, setExpandedRoleId] = useState(undefined)
   const [turnReplay, setTurnReplay] = useState(null)
+  const [branchLink, setBranchLink] = useState(null)
   const [deleting, setDeleting] = useState(null)
   /** @type {ReturnType<typeof useDialogNavigation<HomeDialogPage>>} */
   const { frames, open, push, replace, dismiss } = useDialogNavigation()
@@ -926,14 +927,16 @@ export function HomePage({ client, setup, setupState }) {
     if (!state.target.chatId) void flow.refreshPersonas()
     open({ kind: 'persona-picker', title: '我的身份', layout: 'persona-picker-dialog' })
   }
-  function manageIdentities() {
+  function manageIdentities(initialPersonaId) {
     push({
       kind: 'characters',
       title: '角色管理',
       layout: 'character-manager-dialog',
       initialTab: 'personas',
+      initialPersonaId,
       initialId: state.target.characterId
     })
+    if (initialPersonaId) void flow.refreshPersonas()
     void setup.refreshManagedCatalog()
   }
   async function refreshCharacters(deletedId) {
@@ -1034,6 +1037,18 @@ export function HomePage({ client, setup, setupState }) {
   const theatre = state.chats.filter(
     (chat) => chat.mode === 'scripted-dialogue' && !chat.participantIssue
   )
+  async function openBranch(id, original) {
+    await flow.refreshChats()
+    const branch = flow.getSnapshot().chats.find((chat) => chat.id === id)
+    if (!branch || flow.getSnapshot().target.chatId !== original) return
+    setBranchLink({ id, original })
+    flow.selectChat(branch)
+  }
+  function returnFromBranch() {
+    const original = state.chats.find((chat) => chat.id === branchLink?.original)
+    if (original) flow.selectChat(original)
+    setBranchLink(null)
+  }
   function renderDialogPage(page, { id, onDismiss, returnTo }) {
     switch (page.kind) {
       case 'persona-picker':
@@ -1052,6 +1067,7 @@ export function HomePage({ client, setup, setupState }) {
             roles={state.characters}
             initialId={page.initialId}
             initialTab={page.initialTab}
+            initialPersonaId={page.initialPersonaId}
             personas={state.personas}
             personaProblem={state.personaProblem}
             onRefreshPersonas={flow.refreshPersonas}
@@ -1434,6 +1450,8 @@ export function HomePage({ client, setup, setupState }) {
               characters={state.characters}
               now={now}
               client={client}
+              onBranch={openBranch}
+              returnFromBranch={branchLink?.id === state.target.chatId ? returnFromBranch : null}
               onClose={hideHistory}
               onPlayAudio={playHistoryAudio}
               onPlayTurn={playHistoryTurn}

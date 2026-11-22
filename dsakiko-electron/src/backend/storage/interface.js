@@ -1,4 +1,5 @@
 import { extractAssetReferences } from '../resources/references.js'
+import { encodeArchive, decodeArchive } from './portable-archive.js'
 import { lastDialogueEntry } from '../../shared/chat-history.js'
 import { historicalCharacterNames } from '../conversation/participants.js'
 import path from 'node:path'
@@ -343,14 +344,14 @@ export class ChatStore {
    * @param {string[]} chatIds 要导出的对话 ID 列表。
    * @returns {Promise<import('../../shared/contracts/common.js').AssetRef>} 导出的备份文件资源引用。
    */
-  async exportArchive(chatIds) {
-    return this.queue.run('index', () => this.exportCurrent(chatIds))
+  async exportArchive(chatIds, { includeAudio = true } = {}) {
+    return this.queue.run('index', () => this.exportCurrent(chatIds, includeAudio))
   }
 
   /**
    * 在持有存档队列锁的情况下读取对话并打包导出资源（防止导出读取期间对话被并发删除）。
    */
-  async exportCurrent(chatIds) {
+  async exportCurrent(chatIds, includeAudio) {
     const chats = []
     for (const id of chatIds) {
       const loaded = await this.loadCurrent(id)
@@ -358,22 +359,12 @@ export class ChatStore {
       chats.push(loaded.chat)
     }
     return this.assets.using(chats, async () => {
-      const resources = []
-      for (const ref of extractAssetReferences(chats)) {
-        const info = await this.assets.inspect(ref)
-        requireValue(
-          info.kind === 'file',
-          'archive_package_unsupported',
-          '当前聊天归档尚不支持模型目录。'
-        )
-        resources.push({ info, bytes: Buffer.from(await this.assets.read(ref)).toString('base64') })
-      }
-      const bytes = Buffer.from(JSON.stringify({ format: 'dsakiko', version: 2, chats, resources }))
+      const bytes = await encodeArchive(this.assets, chats, includeAudio)
       const owner = await this.assets.createTemporaryOwner('export', [], 10 * 60 * 1000)
       try {
         return (
           await this.assets.importAsset(
-            { kind: 'bytes', name: 'chats.dsakiko.json', mediaType: 'application/json', bytes },
+            { kind: 'bytes', name: 'chats.dsakiko-chat.zip', mediaType: 'application/zip', bytes },
             owner,
             'archive'
           )
@@ -390,53 +381,24 @@ export class ChatStore {
    * @param {import('../../shared/contracts/common.js').AssetRef} archive 已导入到媒体库的备份文件引用。
    * @returns {Promise<import('../../shared/contracts/archive.js').ArchiveDrafts>} 解析出的对话草稿列表、警告信息及临时资源持有者标识。
    */
-  async readArchive(archive) {
-    return this.assets.using(archive, () => this.importArchive(archive))
+  async readArchive(archive, roles = []) {
+    return this.assets.using(archive, () => this.importArchive(archive, roles))
   }
 
   /**
    * 读取备份文件内容并将其中内嵌的媒体资源导入本地资源库。
    */
-  async importArchive(archive) {
-    const envelope = JSON.parse(Buffer.from(await this.assets.read(archive)).toString('utf8'))
-    requireValue(
-      envelope.format === 'dsakiko' && envelope.version === 2 && Array.isArray(envelope.chats),
-      'invalid_archive'
-    )
-    envelope.chats.forEach((chat) => this.validate(chat))
+  async importArchive(archive, roles) {
     const resourceOwner = await this.assets.createTemporaryOwner('import')
-    const replacements = new Map()
     try {
-      for (const resource of envelope.resources ?? []) {
-        requireValue(
-          ['chat-image', 'avatar', 'attachment', 'workspace', 'audio', 'model', 'live2d'].includes(
-            resource.info?.purpose
-          ) && resource.info.kind === 'file',
-          'invalid_archive'
-        )
-        const info = await this.assets.importAsset(
-          {
-            kind: 'bytes',
-            name: resource.info.name,
-            mediaType: resource.info.mediaType,
-            bytes: Buffer.from(resource.bytes, 'base64')
-          },
-          resourceOwner,
-          resource.info.purpose === 'workspace' ? 'attachment' : resource.info.purpose
-        )
-        replacements.set(resource.info.asset.id, info.asset.id)
-      }
-      // 备份中的资源导入本地后会生成全新的资源 ID，需同步替换对话记录中所有的旧 AssetRef。
-      function remap(value) {
-        if (Array.isArray(value)) return value.map(remap)
-        if (value && typeof value === 'object') {
-          if (Object.keys(value).length === 1 && replacements.has(value.id))
-            return { id: replacements.get(value.id) }
-          return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, remap(item)]))
-        }
-        return value
-      }
-      return { chats: remap(envelope.chats), warnings: [], resourceOwner }
+      const result = await decodeArchive(
+        this.assets,
+        await this.assets.read(archive),
+        resourceOwner,
+        roles
+      )
+      for (const chat of result.chats) this.validate(chat)
+      return result
     } catch (error) {
       // 导入中途失败时立即释放已创建的临时资源引用，方便垃圾回收清理残留文件。
       await this.assets.releaseWhenPossible(resourceOwner)

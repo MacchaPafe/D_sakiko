@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { Download } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import { Download, MoreHorizontal } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { formatBytes } from '../setup/presentation.js'
 
@@ -22,35 +23,52 @@ function resourceDetails(option, isVoice) {
   return details.join(' · ')
 }
 
-function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
-  const [confirm, setConfirm] = useState(false)
+function ResourceCard({ option, onDownload, client, refresh, highlighted, menuContainer }) {
+  const [confirmation, setConfirmation] = useState(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState(null)
-  const [releaseBytes, setReleaseBytes] = useState(null)
+  const [estimate, setEstimate] = useState(null)
+  const moreButton = useRef(null)
+  const cancelButton = useRef(null)
   const isVoice = option.id.startsWith('voice.')
+  const confirm = confirmation === option
+  const availableBytes = estimate?.option === option ? estimate.bytes : null
+  const releaseBytes = estimate?.confirm ? availableBytes : null
   const details = resourceDetails(option, isVoice)
+
   useEffect(() => {
-    if (!confirm) return
+    if (!isVoice || !option.installed) return
     let current = true
     void client.setup
       .previewVoiceRemoval(option.id)
       .then(({ bytes }) => {
-        if (current) setReleaseBytes(bytes)
+        if (current) setEstimate({ option, confirm, bytes })
       })
       .catch((error) => {
-        if (current) setError(error.message)
+        if (!current) return
+        setEstimate(null)
+        if (confirm) setError(error.message)
       })
     return () => {
       current = false
     }
-  }, [client, confirm, option.id])
+  }, [client, confirm, isVoice, option])
 
-  async function remove() {
+  useEffect(() => {
+    if (confirm) cancelButton.current?.focus({ preventScroll: true })
+  }, [confirm])
+
+  async function clean() {
     setPending(true)
     setError(null)
     try {
+      // 等待确认期间可能有角色开始使用这些材料，再核对一次当前引用。
+      const { bytes } = await client.setup.previewVoiceRemoval(option.id)
+      setEstimate({ option, confirm: true, bytes })
+      if (bytes <= 0) return
       await client.setup.removeVoice(option.id)
-      setConfirm(false)
+      setEstimate(null)
+      setConfirmation(null)
       await refresh()
     } catch (error) {
       setError(error.message)
@@ -62,9 +80,14 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
     onDownload(option.id, option.updateAvailable ? '更新附加资源' : '安装附加资源')
   }
   function confirmRemoval() {
-    setReleaseBytes(null)
+    setEstimate({ option, confirm: false, bytes: availableBytes })
     setError(null)
-    setConfirm(true)
+    setConfirmation(option)
+  }
+  function cancelRemoval() {
+    setConfirmation(null)
+    setError(null)
+    requestAnimationFrame(() => moreButton.current?.focus({ preventScroll: true }))
   }
   return (
     <article
@@ -80,16 +103,41 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
         </div>
         <div className="settings-row-actions">
           {!option.ready && option.available && (
-            <Button size="sm" variant="outline" onClick={download}>
+            <Button size="sm" variant="outline" onClick={download} disabled={pending}>
               <Download />
               {option.updateAvailable ? '更新' : '安装'}
               {isVoice && '推荐语音包'}
             </Button>
           )}
-          {isVoice && option.installed && !confirm && (
-            <Button size="sm" variant="ghost" onClick={confirmRemoval} disabled={pending}>
-              移除推荐语音包
-            </Button>
+          {isVoice && option.installed && availableBytes > 0 && !confirm && menuContainer && (
+            <DropdownMenu.Root modal={false}>
+              <DropdownMenu.Trigger asChild>
+                <Button
+                  ref={moreButton}
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={option.name + '的更多操作'}
+                  title="更多操作"
+                >
+                  <MoreHorizontal aria-hidden="true" />
+                </Button>
+              </DropdownMenu.Trigger>
+              {/* 将菜单放在原生浮窗内部，同时避开资源列表的滚动裁剪。 */}
+              <DropdownMenu.Portal container={menuContainer}>
+                <DropdownMenu.Content
+                  className="settings-resource-menu"
+                  align="end"
+                  sideOffset={4}
+                  collisionBoundary={menuContainer}
+                  collisionPadding={8}
+                  hideWhenDetached
+                >
+                  <DropdownMenu.Item onSelect={confirmRemoval}>
+                    清理未使用的语音包文件
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
           )}
         </div>
       </div>
@@ -97,17 +145,26 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
 
       {confirm && (
         <div className="settings-confirm">
-          <p>
-            移除语音包后，角色仍保留当前配置使用的文件。
-            {releaseBytes === 0 && '预计不释放磁盘空间。'}
-            {releaseBytes > 0 && '预计释放 ' + formatBytes(releaseBytes) + '。'}
+          <p role="status">
+            {releaseBytes === null && !error && '正在核对可释放空间…'}
+            {releaseBytes === 0 && '当前没有可清理的语音包文件。'}
+            {releaseBytes > 0 &&
+              `预计释放 ${formatBytes(releaseBytes)}。角色配置中使用的文件会保留。`}
           </p>
-          <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
-            取消
+          <Button
+            ref={cancelButton}
+            size="sm"
+            variant="ghost"
+            onClick={cancelRemoval}
+            disabled={pending}
+          >
+            {releaseBytes === 0 ? '关闭' : '取消'}
           </Button>
-          <Button size="sm" variant="destructive" onClick={remove} disabled={pending}>
-            确认移除
-          </Button>
+          {releaseBytes > 0 && (
+            <Button size="sm" variant="destructive" onClick={clean} disabled={pending}>
+              {pending ? '正在清理…' : '确认清理'}
+            </Button>
+          )}
         </div>
       )}
       {error && (
@@ -122,7 +179,15 @@ function ResourceCard({ option, onDownload, client, refresh, highlighted }) {
 const headings = ['speech', 'voices', 'asr']
 
 /** @param {object} props 设置目录、共享任务和导航。 @returns {import('react').ReactElement} 资源状态与管理动作。 */
-export function Resources({ client, target, onDownload, setupState, setup, onShowDownloads }) {
+export function Resources({
+  client,
+  target,
+  onDownload,
+  setupState,
+  setup,
+  onShowDownloads,
+  menuContainer
+}) {
   const catalog = setupState.managedCatalog
   const problem = setupState.managedCatalogProblem
   const hasCatalog = Boolean(catalog)
@@ -175,6 +240,7 @@ export function Resources({ client, target, onDownload, setupState, setup, onSho
                   client={client}
                   refresh={refresh}
                   onDownload={onDownload}
+                  menuContainer={menuContainer}
                 />
               ))}
             </section>

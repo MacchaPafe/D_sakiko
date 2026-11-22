@@ -10,6 +10,7 @@ import './personas.css'
 export function IdentityButton({ state, flow, onOpen }) {
   const { chatId, characterId } = state.target
   if (!chatId && !characterId) return null
+  if (chatId && !state.snapshot?.chat.userPersona) return null
   const persona = chatId
     ? state.snapshot?.chat.userPersona
     : state.personas.find((item) => item.id === flow.input().userPersonaId)
@@ -27,9 +28,8 @@ export function IdentityButton({ state, flow, onOpen }) {
       aria-label={label}
       title={title}
       data-active={active || undefined}
-      data-frozen={Boolean(chatId) || undefined}
       data-problem={problem || undefined}
-      disabled={chatId ? !state.snapshot : state.sending}
+      disabled={!chatId && state.sending}
     >
       {active && persona.avatar ? (
         <CharacterAvatar role={persona} client={flow.client} size={20} />
@@ -111,6 +111,9 @@ export function PersonaPicker({ flow, state, onManage, onClose }) {
     setCandidate(flow.input().userPersonaId ?? '')
     onManage()
   }
+  function viewIdentity() {
+    onManage(preview.personaId)
+  }
   return (
     <section className="persona-picker">
       <h2 data-dialog-focus tabIndex={-1}>
@@ -124,11 +127,16 @@ export function PersonaPicker({ flow, state, onManage, onClose }) {
           选择无身份
         </Button>
       )}
-      {preview || !selected || frozen ? (
-        <PersonaPreview client={client} persona={preview} compact />
-      ) : (
-        !problem && <p role="status">正在读取身份…</p>
+      {frozen && (
+        <div className="persona-picker-snapshot" role="region" aria-label="对话身份详情" tabIndex={0}>
+          <PersonaPreview client={client} persona={preview} />
+        </div>
       )}
+      {!frozen && (preview || !selected) && (
+        <PersonaPreview client={client} persona={preview} compact />
+      )}
+      {!frozen && selected && !preview && !problem && <p role="status">正在读取身份…</p>}
+      {!frozen && <p className="persona-picker-hint">对话开始后，将无法修改自己的身份。</p>}
       {!frozen && preview && otherNames.includes(preview.displayName) && (
         <p role="status">你的身份与对话角色同名，回复中可能混淆双方。</p>
       )}
@@ -141,6 +149,11 @@ export function PersonaPicker({ flow, state, onManage, onClose }) {
         </p>
       )}
       <footer>
+        {frozen && preview && (
+          <Button variant="outline" onClick={viewIdentity}>
+            前往查看
+          </Button>
+        )}
         {!frozen && (
           <Button variant="outline" onClick={manage}>
             管理身份

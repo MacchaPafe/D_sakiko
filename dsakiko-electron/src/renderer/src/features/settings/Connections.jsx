@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -14,6 +14,8 @@ import { Button } from '../../components/ui/button.jsx'
 import { Checkbox } from '../../components/ui/checkbox.jsx'
 import { Input } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
+import { orderItems, sameOrder, useSortableRows } from '../../hooks/use-sortable-rows.js'
+import '../../components/ui/sortable-rows.css'
 import { desktopHost } from '../../host/desktop.js'
 import { providerPresets } from '../../../../shared/contracts/llm-providers.js'
 
@@ -613,103 +615,22 @@ function ModelRow({
   )
 }
 
-function sameOrder(left, right) {
-  return left.length === right.length && left.every((id, index) => id === right[index])
-}
-
-function orderConnections(connections, order) {
-  if (!order) return connections
-  const byId = new Map(connections.map((item) => [item.id, item]))
-  const ordered = []
-  for (const id of order) {
-    const item = byId.get(id)
-    if (!item) continue
-    ordered.push(item)
-    byId.delete(id)
-  }
-  for (const item of byId.values()) ordered.push(item)
-  return ordered
-}
-
-function reorderByStep(ids, id, step) {
-  const index = ids.indexOf(id)
-  const nextIndex = index + step
-  if (index < 0 || nextIndex < 0 || nextIndex >= ids.length) return null
-  const next = [...ids]
-  const [moved] = next.splice(index, 1)
-  next.splice(nextIndex, 0, moved)
-  return next
-}
-
-function dragPreview(active, pointerY) {
-  // 使用按下时的布局判定插入位置，避免让位动画改变命中区域而来回跳动。
-  const others = active.rows.filter((row) => row.id !== active.row.id)
-  const index = others.filter((row) => pointerY > row.top + row.height / 2).length
-  others.splice(index, 0, active.row)
-  let top = 0
-  let slotTop = 0
-  const offsets = new Map()
-  for (const row of others) {
-    if (row === active.row) slotTop = top
-    offsets.set(row.id, top - row.top)
-    top += row.height + active.gap
-  }
-  const bottom = top - active.gap - active.row.height
-  const liftedTop = Math.max(0, Math.min(bottom, active.row.top + pointerY - active.startY))
-  offsets.set(active.row.id, liftedTop - active.row.top)
-  return {
-    id: active.row.id,
-    order: others.map((row) => row.id),
-    offsets,
-    slotTop,
-    height: active.row.height
-  }
-}
-
 /** @param {object} props 连接快照与刷新入口。 @returns {import('react').ReactElement} 管理连接及同层编辑视图。 */
 export function Connections({ client, connections, refresh }) {
   const [editor, setEditor] = useState(null)
   const [removing, setRemoving] = useState(null)
   const [pending, setPending] = useState(false)
   const [pendingOrder, setPendingOrder] = useState(null)
-  const [dragState, setDragState] = useState(null)
   const [error, setError] = useState(null)
   const stackRef = useRef(null)
-  const dragRef = useRef(null)
-  const settleFrom = useRef(null)
-  const handleRefs = useRef(new Map())
-  const refocusIdRef = useRef(null)
-  const displayConnections = orderConnections(connections, pendingOrder)
-
-  useEffect(() => () => dragRef.current?.listeners.abort(), [])
-
-  useLayoutEffect(() => {
-    const previous = settleFrom.current
-    if (!previous) return
-    settleFrom.current = null
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    for (const card of stackRef.current?.querySelectorAll('[data-connection-id]') ?? []) {
-      const offset = previous.get(card.dataset.connectionId) - card.getBoundingClientRect().top
-      if (Number.isFinite(offset) && Math.abs(offset) > 0.5) {
-        card.animate([{ transform: 'translateY(' + offset + 'px)' }, { transform: 'none' }], {
-          duration: 150,
-          easing: 'ease-out'
-        })
-      }
-    }
-  }, [dragState, pendingOrder])
-
-  useLayoutEffect(() => {
-    const id = refocusIdRef.current
-    if (!id) return
-    refocusIdRef.current = null
-    handleRefs.current.get(id)?.focus()
-  }, [displayConnections])
-
-  function bindHandleRef(id, element) {
-    if (element) handleRefs.current.set(id, element)
-    else handleRefs.current.delete(id)
-  }
+  const displayConnections = orderItems(connections, pendingOrder)
+  const sorting = useSortableRows({
+    stackRef,
+    ids: displayConnections.map((item) => item.id),
+    disabled: pending,
+    onReorder: commitOrder
+  })
+  const { dragState } = sorting
 
   async function saved() {
     await refresh()
@@ -743,112 +664,6 @@ export function Connections({ client, connections, refresh }) {
       setPending(false)
       setPendingOrder(null)
     }
-  }
-  function startDrag(event, connectionId) {
-    if (event.button !== 0 || pending || dragRef.current) return
-    const stack = stackRef.current
-    const cards = [...stack.querySelectorAll('[data-connection-id]')]
-    if (cards.length < 2) return
-    const stackTop = stack.getBoundingClientRect().top
-    const rows = cards.map((card) => {
-      for (const animation of card.getAnimations()) animation.cancel()
-      const rect = card.getBoundingClientRect()
-      return { id: card.dataset.connectionId, top: rect.top - stackTop, height: rect.height }
-    })
-    const handle = event.currentTarget
-    const active = {
-      pointerId: event.pointerId,
-      row: rows.find((row) => row.id === connectionId),
-      rows,
-      gap: parseFloat(getComputedStyle(stack).rowGap),
-      startY: event.clientY - stackTop,
-      clientY: event.clientY,
-      preview: null,
-      listeners: new AbortController(),
-      handle
-    }
-    dragRef.current = active
-    handle.setPointerCapture(event.pointerId)
-    const options = { signal: active.listeners.signal, capture: true }
-    window.addEventListener('blur', cancelDrag, { signal: active.listeners.signal })
-    window.addEventListener(
-      'keydown',
-      (key) => {
-        if (key.key !== 'Escape') return
-        key.preventDefault()
-        key.stopPropagation()
-        cancelDrag()
-      },
-      options
-    )
-    window.addEventListener(
-      'scroll',
-      () => {
-        if (active.preview) previewAt(active, active.clientY)
-      },
-      options
-    )
-  }
-  function previewAt(active, clientY) {
-    active.clientY = clientY
-    const y = clientY - stackRef.current.getBoundingClientRect().top
-    if (!active.preview && Math.abs(y - active.startY) < 5) return
-    active.preview = dragPreview(active, y)
-    setDragState(active.preview)
-  }
-  function moveDrag(event) {
-    const active = dragRef.current
-    if (!active || active.pointerId !== event.pointerId) return
-    previewAt(active, event.clientY)
-  }
-  function finishDrag() {
-    const active = dragRef.current
-    if (!active) return
-    if (active.preview) {
-      const cards = [...stackRef.current.querySelectorAll('[data-connection-id]')]
-      settleFrom.current = new Map(
-        cards.map((card) => [card.dataset.connectionId, card.getBoundingClientRect().top])
-      )
-    }
-    dragRef.current = null
-    active.listeners.abort()
-    if (active.handle.hasPointerCapture(active.pointerId))
-      active.handle.releasePointerCapture(active.pointerId)
-    setDragState(null)
-  }
-  function cancelDrag(event) {
-    if (event?.pointerId !== undefined && event.pointerId !== dragRef.current?.pointerId) return
-    finishDrag()
-  }
-  function dropDrag(event) {
-    const active = dragRef.current
-    if (!active || active.pointerId !== event.pointerId) return
-    const order =
-      active.preview &&
-      dragPreview(active, event.clientY - stackRef.current.getBoundingClientRect().top).order
-    finishDrag()
-    if (
-      order &&
-      sameOrder(
-        active.rows.map((row) => row.id),
-        connections.map((item) => item.id)
-      )
-    )
-      void commitOrder(order)
-  }
-  function handleDragKeyDown(event, connectionId) {
-    if (pending || dragRef.current) return
-    let step = 0
-    if (event.key === 'ArrowUp') step = -1
-    else if (event.key === 'ArrowDown') step = 1
-    if (!step) return
-    event.preventDefault()
-    const ids = displayConnections.map((item) => item.id)
-    const nextIds = reorderByStep(ids, connectionId, step)
-    if (!nextIds) return
-    // DOM 节点换位会打断聚焦，提交重排后在同帧布局阶段恢复手柄焦点。
-    refocusIdRef.current = connectionId
-    void commitOrder(nextIds)
   }
   if (editor)
     return (
@@ -886,13 +701,13 @@ export function Connections({ client, connections, refresh }) {
       )}
       <div
         ref={stackRef}
-        className="settings-stack settings-connection-stack"
+        className="settings-stack sortable-rows"
         data-dragging={dragState ? 'true' : undefined}
       >
         {dragState && (
           <div
             aria-hidden="true"
-            className="settings-drop-slot"
+            className="sortable-drop-slot settings-drop-slot"
             style={{ top: dragState.slotTop, height: dragState.height }}
           />
         )}
@@ -904,7 +719,7 @@ export function Connections({ client, connections, refresh }) {
             <article
               className="settings-card"
               key={item.id}
-              data-connection-id={item.id}
+              data-sort-id={item.id}
               data-dragging={dragState?.id === item.id ? 'true' : undefined}
               style={
                 dragState
@@ -916,17 +731,15 @@ export function Connections({ client, connections, refresh }) {
                 {displayConnections.length > 1 && (
                   <button
                     type="button"
-                    ref={(element) => bindHandleRef(item.id, element)}
                     className="settings-drag-handle"
                     aria-label={'拖动排序：' + item.name}
                     title="拖动排序，聚焦后可用上下方向键调整顺序"
                     aria-disabled={pending || undefined}
-                    onPointerDown={(event) => startDrag(event, item.id)}
-                    onPointerMove={moveDrag}
-                    onPointerUp={dropDrag}
-                    onPointerCancel={cancelDrag}
-                    onLostPointerCapture={cancelDrag}
-                    onKeyDown={(event) => handleDragKeyDown(event, item.id)}
+                    onPointerDown={(event) => sorting.startDrag(event, item.id)}
+                    onPointerMove={sorting.moveDrag}
+                    onPointerUp={sorting.dropDrag}
+                    onPointerCancel={sorting.cancelDrag}
+                    onKeyDown={(event) => sorting.handleSortKeyDown(event, item.id)}
                   >
                     <GripVertical size={16} aria-hidden="true" />
                   </button>

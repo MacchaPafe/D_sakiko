@@ -10,6 +10,7 @@ const host = {
   openProviderKeyPage: (provider) => ipcRenderer.invoke('host:open-provider-key-page', provider),
   openWebSource: (href) => ipcRenderer.invoke('host:open-web-source', href),
   importAttachment: (input) => ipcRenderer.invoke('host:import-attachment', input),
+  saveChatArchive: (asset) => ipcRenderer.invoke('host:save-chat-archive', asset),
   importFiles: (options) => ipcRenderer.invoke('host:import-files', options),
   selectLegacyDirectory: () => ipcRenderer.invoke('host:select-legacy-directory'),
   importOutfitDirectory: (target) => ipcRenderer.invoke('host:import-outfit-directory', target),

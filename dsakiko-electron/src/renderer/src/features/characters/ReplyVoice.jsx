@@ -4,6 +4,7 @@ import { Button } from '../../components/ui/button.jsx'
 import { Checkbox } from '../../components/ui/checkbox.jsx'
 import { Textarea } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
+import { catalogTextSaveDelay } from '../../hooks/use-catalog-editor.js'
 import {
   configuredVoice,
   emotionNames,
@@ -155,7 +156,7 @@ function Reference({ value, label, onChange, ...props }) {
   }
 
   function handleTextChange(event) {
-    onChange({ ...reference, text: event.target.value })
+    onChange({ ...reference, text: event.target.value }, catalogTextSaveDelay)
   }
 
   function handleLanguageChange(language) {
@@ -215,15 +216,18 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
   const configuredCount = Object.keys(emotions).length
   const activeReference = activeEmotion ? emotions[activeEmotion] : null
 
-  function write(next, active = enabled) {
-    changeForm((draft) => setReplyVoice(draft, next, active && !missingVoiceMaterials(next).length))
+  function write(next, active = enabled, delay) {
+    changeForm(
+      (draft) => setReplyVoice(draft, next, active && !missingVoiceMaterials(next).length),
+      delay
+    )
   }
 
-  function changeEmotion(key, reference) {
+  function changeEmotion(key, reference, delay) {
     const nextEmotions = { ...emotions }
     if (reference) nextEmotions[key] = reference
     else delete nextEmotions[key]
-    write({ ...voice, emotions: nextEmotions })
+    write({ ...voice, emotions: nextEmotions }, enabled, delay)
   }
 
   function addEmotion(key) {
@@ -242,8 +246,8 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
     write({ ...voice, sovitsWeights })
   }
 
-  function handleDefaultReferenceChange(defaultReference) {
-    write({ ...voice, defaultReference })
+  function handleDefaultReferenceChange(defaultReference, delay) {
+    write({ ...voice, defaultReference }, enabled, delay)
   }
 
   function handleSelectEmotion(event) {
@@ -266,9 +270,9 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
     setActiveEmotion(null)
   }
 
-  function handleUpdateActiveEmotion(nextReference) {
+  function handleUpdateActiveEmotion(nextReference, delay) {
     if (!activeEmotion) return
-    changeEmotion(activeEmotion, nextReference)
+    changeEmotion(activeEmotion, nextReference, delay)
   }
 
   const fileProps = { client, choose }

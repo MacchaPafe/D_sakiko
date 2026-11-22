@@ -11,14 +11,127 @@ import wavefile from 'wavefile'
 import { createCoreBackend } from '../../src/backend/create-core-backend.js'
 import { startHttpServer } from '../../src/server/http-server.js'
 import { problemError } from '../../src/shared/problems.js'
+import { newCharacter } from '../../src/renderer/src/features/characters/character-edit.js'
+import { verifyHistoryActions } from './history-actions.js'
 import { verifyBackgroundDraft } from './background-flow.js'
 import { verifyPersonaDraft } from './persona-flow.js'
 const root = fileURLToPath(new URL('../../', import.meta.url))
+
+async function verifyCharacterOrder(page, manager, backend, selected) {
+  const draft = newCharacter()
+  draft.name = '用于排序的角色'
+  draft.forms[0].displayName = draft.name
+  draft.forms[0].description = '用于验证搜索结果中的排序。'
+  const extra = await backend.characters.save(draft)
+  const nav = manager.getByRole('navigation', { name: '管理的角色' })
+  const list = nav.getByRole('button')
+  const card = (id) => nav.locator('button[data-sort-id="' + id + '"]')
+  const slot = nav.locator('.sortable-drop-slot')
+  const search = manager.getByRole('textbox', { name: '搜索角色' })
+  const storedIds = async () => (await backend.characters.list()).map((item) => item.id)
+  const visibleIds = () => list.evaluateAll((buttons) => buttons.map((button) => button.value))
+  const original = await storedIds()
+  await expect.poll(visibleIds).toEqual(original)
+  const first = card(original[0])
+  const writer = vi.spyOn(backend.characters, 'setOrder')
+
+  async function grabFirst() {
+    await first.click({ trial: true })
+    const { x, y, height } = await first.boundingBox()
+    const point = { x: x + 16, y: y + height / 2 }
+    await page.mouse.move(point.x, point.y)
+    await page.mouse.down()
+    return point
+  }
+
+  async function dragPastSelected() {
+    const point = await grabFirst()
+    // 按下后取目标位置，避免滚动或上一次取消排序的回位动画改变命中点。
+    const target = await card(selected.id).boundingBox()
+    await page.mouse.move(point.x, target.y + (target.height * 3) / 4, { steps: 8 })
+    await slot.waitFor()
+    expect(await first.getAttribute('data-dragging')).toBe('true')
+    expect(await visibleIds()).toEqual(original)
+  }
+
+  try {
+    const click = await grabFirst()
+    await page.mouse.move(click.x, click.y + 2)
+    await page.mouse.up()
+    await expect.poll(() => first.getAttribute('aria-current')).toBe('true')
+    await card(selected.id).click()
+    await expect.poll(() => card(selected.id).getAttribute('aria-current')).toBe('true')
+
+    const sameSlot = await grabFirst()
+    await page.mouse.move(sameSlot.x, sameSlot.y + 8)
+    await slot.waitFor()
+    await page.mouse.up()
+    await slot.waitFor({ state: 'detached' })
+    expect(await card(selected.id).getAttribute('aria-current')).toBe('true')
+
+    await dragPastSelected()
+    await page.keyboard.press('Escape')
+    await page.mouse.up()
+    await slot.waitFor({ state: 'detached' })
+    expect(writer).not.toHaveBeenCalled()
+    expect(await card(selected.id).getAttribute('aria-current')).toBe('true')
+
+    await dragPastSelected()
+    await page.mouse.up()
+    const draggedOrder = [...original.slice(1, -1), original[0], extra.id]
+    await expect.poll(storedIds).toEqual(draggedOrder)
+    await expect.poll(visibleIds).toEqual(draggedOrder)
+    expect(await card(selected.id).getAttribute('aria-current')).toBe('true')
+    expect(writer).toHaveBeenCalledTimes(1)
+
+    await search.fill('的角色')
+    await expect.poll(visibleIds).toEqual([selected.id, extra.id])
+    await expect.poll(() => card(extra.id).getAttribute('data-sortable')).toBe('true')
+    await card(extra.id).press('ArrowUp')
+    const filteredOrder = draggedOrder.map((id) => {
+      if (id === selected.id) return extra.id
+      return id === extra.id ? selected.id : id
+    })
+    await expect.poll(storedIds).toEqual(filteredOrder)
+    expect(await card(extra.id).evaluate((element) => document.activeElement === element)).toBe(
+      true
+    )
+    const names = new Map((await backend.characters.list()).map((item) => [item.id, item.name]))
+    await expect
+      .poll(() => page.locator('.home-role-name').allTextContents())
+      .toEqual(filteredOrder.map((id) => names.get(id)))
+
+    writer.mockRejectedValueOnce(new Error('测试写入失败'))
+    await expect.poll(() => card(extra.id).getAttribute('data-sortable')).toBe('true')
+    await card(extra.id).press('ArrowDown')
+    await manager
+      .getByRole('alert')
+      .getByText(/角色顺序未保存/)
+      .waitFor()
+    await expect.poll(visibleIds).toEqual([extra.id, selected.id])
+    expect(await storedIds()).toEqual(filteredOrder)
+  } finally {
+    writer.mockRestore()
+    await page.mouse.up()
+    await search.fill('')
+    await backend.characters.setOrder(original)
+    const impact = await backend.characters.previewDeletion(extra.id)
+    await backend.characters.delete(extra.id, extra.revision, {
+      stamp: impact.stamp,
+      keepPersonas: true
+    })
+    await card(extra.id).waitFor({ state: 'detached' })
+  }
+}
 
 async function verifyCharacterManager(page, backend) {
   await page.getByRole('button', { name: '角色管理', exact: true }).click()
   const manager = page.getByRole('dialog', { name: '角色管理' })
   await manager.getByRole('button', { name: '新增角色' }).click()
+  await manager.getByLabel('角色名称', { exact: true }).fill('未创建的角色')
+  await manager.getByRole('tab', { name: '对话身份' }).click()
+  await manager.getByRole('tab', { name: '角色', exact: true }).click()
+  await expect.poll(() => manager.getByLabel('角色名称', { exact: true }).inputValue()).toBe('')
   await manager.getByLabel('角色名称', { exact: true }).fill('回归测试角色')
   expect(await manager.getByLabel('介绍提示词').inputValue()).toBe('')
   expect(await manager.getByRole('button', { name: '创建角色' }).isDisabled()).toBe(true)
@@ -33,16 +146,16 @@ async function verifyCharacterManager(page, backend) {
   expect(await manager.getByLabel('人格主题色').inputValue()).toBe('#ffdd88')
   await manager.getByRole('button', { name: '恢复默认颜色' }).click()
   await manager.getByLabel('角色名称', { exact: true }).fill('已改名的角色')
-  await manager.getByRole('button', { name: '保存更改' }).click()
   await manager.getByRole('button', { name: '已改名的角色', exact: true }).waitFor()
   const role = (await backend.characters.list()).find((entry) => entry.name === '已改名的角色')
   expect(role.displayName).toBe(role.name)
   expect(role.bangDreamId).toBe('soyo')
   expect((await backend.characters.get(role.id)).forms[0].themeColor).toBeNull()
+  await verifyCharacterOrder(page, manager, backend, role)
   await manager.getByRole('button', { name: '添加人格', exact: true }).click()
   await manager.getByLabel('人格名称', { exact: true }).fill('雨天')
-  await manager.getByRole('button', { name: '保存更改' }).click()
-  await expect.poll(async () => (await backend.characters.get(role.id)).forms.length).toBe(2)
+  await manager.getByText('角色资料已保存', { exact: true }).waitFor()
+  expect((await backend.characters.get(role.id)).forms.length).toBe(2)
   await manager.getByRole('button', { name: '删除人格', exact: true }).click()
   await manager.getByRole('button', { name: '确认删除人格' }).click()
   await expect.poll(async () => (await backend.characters.get(role.id)).forms.length).toBe(1)
@@ -134,6 +247,70 @@ async function expectSharedDialog(page, view, shell) {
   await view.waitFor()
   expect(await page.locator('dialog:modal').count()).toBe(1)
   expect(await view.evaluate((active, original) => active === original, shell)).toBe(true)
+}
+
+async function verifyVoiceCleanup(backend, settings) {
+  const readCatalog = backend.setup.getCatalog.bind(backend.setup)
+  let installed = true
+  let bytes = 2_000
+  const catalog = vi.spyOn(backend.setup, 'getCatalog').mockImplementation(async (options) => {
+    const value = await readCatalog(options)
+    const voices = value.groups.find((group) => group.id === 'voices').options
+    Object.assign(voices.find((item) => item.id === 'voice.anon'), {
+      installed,
+      ready: false,
+      available: true,
+      updateAvailable: installed
+    })
+    Object.assign(voices.find((item) => item.id === 'voice.soyo'), {
+      installed: true,
+      ready: true,
+      available: true
+    })
+    return value
+  })
+  const preview = vi.spyOn(backend.setup, 'previewVoiceRemoval').mockImplementation(async (id) => ({
+    bytes: id === 'voice.anon' && installed ? bytes : 0
+  }))
+  const clean = vi.spyOn(backend.setup, 'removeVoice').mockImplementation(async () => {
+    installed = false
+  })
+  const anon = settings.locator('[id="settings-resource-voice.anon"]')
+  const soyo = settings.locator('[id="settings-resource-voice.soyo"]')
+  const refresh = settings.getByRole('button', { name: '检查更新', exact: true })
+  const more = anon.getByRole('button', { name: '爱音的更多操作' })
+  const confirm = anon.getByRole('button', { name: '确认清理' })
+
+  async function openConfirmation() {
+    await more.click()
+    await settings.getByRole('menuitem', { name: '清理未使用的语音包文件' }).click()
+    await anon.getByText(/预计释放 2 KB/).waitFor()
+  }
+
+  try {
+    await refresh.click()
+    await anon.getByRole('button', { name: '更新推荐语音包' }).waitFor()
+    await expect.poll(() => preview.mock.calls.some(([id]) => id === 'voice.soyo')).toBe(true)
+    expect(await soyo.getByRole('button', { name: /更多操作/ }).count()).toBe(0)
+    expect(await settings.getByRole('button', { name: '移除推荐语音包' }).count()).toBe(0)
+    await openConfirmation()
+    bytes = 0
+    await confirm.click()
+    await anon.getByText('当前没有可清理的语音包文件。').waitFor()
+    expect(clean).not.toHaveBeenCalled()
+    await anon.getByRole('button', { name: '关闭', exact: true }).click()
+    expect(await more.count()).toBe(0)
+
+    bytes = 2_000
+    await refresh.click()
+    await openConfirmation()
+    await confirm.click()
+    await anon.getByRole('button', { name: '安装推荐语音包' }).waitFor()
+    expect(clean).toHaveBeenCalledExactlyOnceWith('voice.anon')
+    expect(await more.count()).toBe(0)
+  } finally {
+    for (const mock of [catalog, preview, clean]) mock.mockRestore()
+  }
 }
 
 async function verifyResourceDownload(page, backend, settings) {
@@ -786,6 +963,7 @@ async function verifyHistory(page, application, backend, selected) {
   expect(await page.evaluate(() => window.historyAudio[6].paused)).toBe(true)
   expect(await page.evaluate(() => window.historyAudio.length)).toBe(7)
   await replayLine.waitFor()
+  await verifyHistoryActions(page, backend, copyId)
   await backend.conversations.deleteChat(copyId)
   await application.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows()[0].setSize(1440, 1024)
@@ -1320,6 +1498,7 @@ app.on('window-all-closed', () => app.quit())`
         .getByRole('button', { name: '前往下载' })
         .click()
       await settings.getByRole('heading', { name: '附加资源下载' }).waitFor()
+      await verifyVoiceCleanup(backend, settings)
       const target = `${process.platform}-${process.arch}`
       const managedResourceDownload = ['win32-x64', 'darwin-arm64'].includes(target)
       if (managedResourceDownload) {
@@ -1593,10 +1772,30 @@ app.on('window-all-closed', () => app.quit())`
           .background
       ).toBeNull()
       expect((await backend.store.load(outfitChat.id)).chat.userPersona.displayName).toBe('同桌')
-      await page.getByRole('button', { name: '我的身份 · 同桌' }).click()
+      const identityButton = page.getByRole('button', { name: '我的身份 · 同桌' })
+      expect(
+        await identityButton.evaluate((button) => getComputedStyle(button, '::after').content)
+      ).toBe('none')
+      await identityButton.click()
       const identity = page.getByRole('dialog', { name: '我的身份' })
-      await identity.getByText('一起排练的同学').waitFor()
-      expect(await identity.getByText('管理身份').count()).toBe(0)
+      const snapshot = identity.getByRole('region', { name: '对话身份详情' })
+      const description = snapshot.getByText('一起排练的同学')
+      await description.waitFor()
+      expect(
+        await description.evaluate((element) => getComputedStyle(element).webkitLineClamp)
+      ).toBe('none')
+      const viewIdentity = identity.getByRole('button', { name: '前往查看' })
+      await viewIdentity.focus()
+      await viewIdentity.click()
+      const identityManager = page.getByRole('dialog', { name: '角色管理' })
+      const currentIdentity = identityManager
+        .getByRole('navigation', { name: '管理的对话身份' })
+        .getByRole('button', { name: '同桌', exact: true })
+      await expect.poll(() => currentIdentity.getAttribute('aria-current')).toBe('true')
+      expect(await identityManager.getByLabel('身份描述').inputValue()).toBe('一起排练的同学')
+      await page.keyboard.press('Escape')
+      await identity.waitFor()
+      expect(await viewIdentity.evaluate((button) => document.activeElement === button)).toBe(true)
       await identity.getByRole('button', { name: '关闭' }).click()
       const savedOutfit = async () => {
         const { chat } = await backend.store.load(outfitChat.id)
@@ -1706,6 +1905,8 @@ app.on('window-all-closed', () => app.quit())`
       const search = affiliation.getByRole('combobox', { name: '对应角色' })
       const themePicker = affiliation.getByLabel('人格主题色')
       const originalColor = await themePicker.inputValue()
+      const originalRole = await search.inputValue()
+      const originalTheme = (await backend.characters.get(role.id)).forms[0].themeColor
       await search.click()
       await verifySearchSelectScrollbar(page, search)
       await search.press('Tab')
@@ -1743,9 +1944,12 @@ app.on('window-all-closed', () => app.quit())`
       await affiliation.getByRole('option', { name: '珠手知由（chu2）', exact: true }).waitFor()
       await page.keyboard.press('Enter')
       expect(await search.inputValue()).toBe('珠手知由（chu2）')
-      await affiliation.getByRole('button', { name: '放弃更改' }).click()
-      await expect.poll(() => themePicker.inputValue()).toBe(originalColor)
+      await search.fill(originalRole)
+      await affiliation.getByRole('option', { name: originalRole, exact: true }).click()
+      if (originalTheme) await themePicker.fill(originalColor)
+      else await affiliation.getByRole('button', { name: '恢复默认颜色' }).click()
       await affiliation.getByRole('button', { name: '关闭角色管理' }).click()
+      await affiliation.waitFor({ state: 'hidden' })
       await verifyCharacterManager(page, backend)
       expect(await roleHeader.locator('.home-role').getAttribute('aria-expanded')).toBe(expanded)
       expect(await savedOutfit()).toBe(form.defaultModelId)
@@ -1910,6 +2114,8 @@ app.on('window-all-closed', () => app.quit())`
       const [failedChat] = await backend.conversations.listChats()
       const { chat } = await backend.store.load(failedChat.id)
       expect(chat.turns[0].messages.map(({ kind }) => kind)).toEqual(['user'])
+      expect(chat.userPersona).toBeNull()
+      expect(await page.getByRole('button', { name: /^我的身份/ }).count()).toBe(0)
       agent.run.mockImplementationOnce(async (request, observer, signal) => {
         const responseId = '互动-' + request.turnId
         for (const [toolName, params] of [

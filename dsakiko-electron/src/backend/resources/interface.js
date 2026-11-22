@@ -371,7 +371,8 @@ export class MediaAssets {
       }
 
       if (bytes) {
-        requireValue(bytes.byteLength <= 64 * 1024 * 1024, 'asset_too_large')
+        const maxBytes = purpose === 'archive' ? 512 * 1024 * 1024 : 64 * 1024 * 1024
+        requireValue(bytes.byteLength <= maxBytes, 'asset_too_large')
         sizeBytes = bytes.byteLength
       }
       signal?.throwIfAborted()
