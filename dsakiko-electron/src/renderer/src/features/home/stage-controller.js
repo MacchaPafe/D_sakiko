@@ -6,12 +6,28 @@ import { stageModelKey } from '../../performance/stage-layout.js'
 import { isReplayableDialogue, lastDialogueEntry } from '../../../../shared/chat-history.js'
 
 /** @typedef {import('../../../../shared/contracts/presentation.js').ReplayMaterials} ReplayMaterials */
-/** @typedef {{text: string, name: string, revealed: number, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null, sides: boolean[]|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
+/** @typedef {{text: string, name: string, guideId: string|null, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null, sides: boolean[]|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
+/** 逐字进度只通知字幕，避免每个字都重绘整页和侧栏。 */
+export class SubtitleProgress {
+  count = 0
+  listeners = new Set()
+  getSnapshot = () => this.count
+  subscribe = (listener) => {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+  set(count) {
+    if (count === this.count) return
+    this.count = count
+    for (const listener of this.listeners) listener()
+  }
+}
+
 /** 正式舞台的资源与输出边界：共享预览加载器，跟随后端计划，实例不随面板开关重建。 */
 export class StageController {
-  /** @param {import('../../backend/client.js').BackendClient} client 业务连接。 @param {(state: StageState) => void} publish 展示快照。 */
-  constructor(client, publish) {
-    Object.assign(this, { client, publish })
+  /** @param {import('../../backend/client.js').BackendClient} client 业务连接。 @param {(state: StageState) => void} publish 展示快照。 @param {SubtitleProgress} subtitles 字幕订阅源。 */
+  constructor(client, publish, subtitles = new SubtitleProgress()) {
+    Object.assign(this, { client, publish, subtitles })
     this.epoch = 0
     this.visible = true
     this.actors = []
@@ -19,7 +35,7 @@ export class StageController {
       text: '',
       name: '',
       translation: null,
-      revealed: 0,
+      guideId: null,
       canReplayLine: false,
       replayingLine: false,
       lineReplayError: null,
@@ -163,7 +179,8 @@ export class StageController {
     this.player.follow(null)
     this.stopReplay()
     this.guideId = null
-    this.update({ text: '', name: '', revealed: 0, canReplayLine: false, lineReplayError: null })
+    this.subtitles.set(0)
+    this.update({ text: '', name: '', guideId: null, canReplayLine: false, lineReplayError: null })
     if (sequenceId) {
       this.player.follow(sequenceId)
       return
@@ -265,6 +282,7 @@ export class StageController {
         }
         controller.player.resumeLive()
       }
+      if (controller.player.readingLog) controller.syncActorVisibility()
       onStop(error)
     }
     this.replayRequest = request
@@ -280,6 +298,7 @@ export class StageController {
         actor.desiredPlanKey = null
       })
       this.player.replay(materials, { onEnd: finish })
+      if (this.player.readingLog) this.syncActorVisibility()
     } catch (error) {
       finish(error)
     }
@@ -318,16 +337,18 @@ export class StageController {
     const slot = scene?.slots.find((item) => item.id === line?.speakerId)
     this.guideId = null
     this.lineReplaySource = line && isReplayableDialogue(line) ? { line: this.history.ref } : null
+    this.subtitles.set(dialogueMarkdown(line?.text).count)
     this.update({
       text: line?.text ?? '',
       translation: line?.translation ?? null,
       name: this.history?.personalityName ?? slot?.displayName ?? this.history?.name ?? '',
-      revealed: dialogueMarkdown(line?.text).count,
+      guideId: null,
       canReplayLine: Boolean(this.lineReplaySource)
     })
   }
   progress(snapshot) {
     if (!this.actors[0]?.surface || this.closed) return
+    if (this.state.waiting !== snapshot.waiting) this.update({ waiting: snapshot.waiting })
     const progress = snapshot.progress
     const current = progress?.current ?? progress?.transition
     const slot =
@@ -344,7 +365,7 @@ export class StageController {
     this.slots = progress.scene.slots
     for (const [index, actor] of this.actors.entries()) {
       const target = this.dual ? this.slots[index] : slot
-      const speaking = Boolean(current && target?.id === current.guide.slotId)
+      const speaking = Boolean(!snapshot.waiting && current && target?.id === current.guide.slotId)
       const idle = progress.defaultPerformances?.find(
         (entry) => entry.slotId === target?.id
       )?.resolvedPerformance
@@ -374,16 +395,17 @@ export class StageController {
       this.lineReplaySource = progress.current
         ? { materials: { scene: progress.scene, guides: [current.guide] } }
         : null
+      this.subtitles.set(snapshot.revealedCharacters)
       this.update({
         text: current.guide.text,
         translation: current.guide.translation,
         name: slot?.displayName ?? '',
-        revealed: snapshot.revealedCharacters,
+        guideId: current.guideId,
         canReplayLine: Boolean(this.lineReplaySource),
         lineReplayError
       })
     } else if (this.historyAllowed) this.showHistory(progress.scene)
-    else if (this.state.text) this.update({ revealed: dialogueMarkdown(this.state.text).count })
+    else if (this.state.text) this.subtitles.set(dialogueMarkdown(this.state.text).count)
     if (snapshot.problem) this.update({ problem: snapshot.problem.message })
   }
   analyse(audio) {
@@ -426,18 +448,28 @@ export class StageController {
       actor.advanceTimedMotion(snapshot.elapsedMs)
       actor.advanceThinkingMotion()
     }
-    const current = snapshot.progress?.current
-    if (current?.guideId === this.guideId && this.state.revealed !== snapshot.revealedCharacters)
-      this.update({ revealed: snapshot.revealedCharacters })
+    const current = snapshot.progress?.current ?? snapshot.progress?.transition
+    if (current && current.guideId === this.guideId) this.subtitles.set(snapshot.revealedCharacters)
   }
+  /** @param {boolean} open 是否进入剧情记录。 @returns {void} 回放中的模型和句内时钟一起冻结。 */
+  setReadingLog(open) {
+    this.player.setReadingLog(open)
+    this.syncActorVisibility()
+  }
+
+  syncActorVisibility() {
+    const playing = this.visible && !(this.player.readingLog && this.player.mode === 'replay')
+    for (const actor of this.actors) actor.surface?.setVisible(playing)
+  }
+
   setVisible(visible) {
     this.visible = visible
     for (const actor of this.actors) {
       actor.visible = visible
-      actor.surface?.setVisible(visible)
       actor.planKey = null
     }
     this.player.setVisible(visible)
+    this.syncActorVisibility()
     if (!visible) {
       this.actors.forEach((actor) => actor.clearThinkingMotion())
       this.actors.forEach((actor) => actor.clearTimedMotion())

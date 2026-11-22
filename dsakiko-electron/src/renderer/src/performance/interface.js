@@ -15,11 +15,12 @@ import { dialogueMarkdown } from '../../../shared/dialogue-markdown.js'
  */
 /** @typedef {Pick<GuideProgress, 'guideId' | 'guide' | 'durationMs' | 'elapsedMs' | 'recurring'>} LocalGuideProgress 本地回放无需伪造后端时标和运行身份。 */
 /** @typedef {{scene: SequenceSnapshot['scene'], current: LocalGuideProgress | null, transition: LocalGuideProgress | null}} LocalProgress 实时或回放的共同展示材料。 */
-/** @typedef {{progress: LocalProgress, receivedAt: number}} PlaybackAnchor 记录收到快照时的本地单调时标，不要求两台机器时钟同步。 */
+/** @typedef {{progress: LocalProgress, receivedAt: number, frozenAt?: number}} PlaybackAnchor 记录收到快照时的本地单调时标，不要求两台机器时钟同步。 */
 /**
  * @typedef {object} PlaybackSnapshot
  * @property {'live' | 'replay'} mode 本客户端播放模式。
  * @property {LocalProgress | null} progress 实时快照或本地回放材料。
+ * @property {boolean} waiting 手动回放已停在句尾。
  * @property {number} elapsedMs 按本地单调时钟推算的进度，受计划时长限制。
  * @property {number} revealedCharacters 字幕应显示的 Unicode 字符数。
  * @property {PlaybackOptions} playback 本地音量偏好。
@@ -72,6 +73,11 @@ export class Performance {
     /** @type {PlaybackAnchor | null} 当前展示所用锚点，可与 latest 独立。 */
     this.anchor = null
     this.stopObserving = null
+    this.storyCaptions = false
+    this.autoReplay = true
+    this.readingLog = false
+    /** @type {{materials: import('../../../shared/contracts/presentation.js').ReplayMaterials, silent: boolean, index: number, phase: 'selecting'|'loading'|'playing'|'waiting'|'gap', refresh: Promise<object|null>|null, revealed: boolean, offsetMs?: number, deadline?: number, remaining?: number}|null} 句间停顿和句内时钟各自保留剩余时间。 */
+    this.replaySession = null
     this.replayTimer = null
     this.replayEnded = null
     this.closed = false
@@ -91,7 +97,7 @@ export class Performance {
   /** BGM 相对音量叠乘总音量，不改共享曲目设置。 */
   applyVolume() {
     this.output?.setVolume?.(this.options)
-    this.output?.setBgmVolume?.(this.options.volume * this.options.bgmVolume)
+    this.output?.setBgmVolume?.(this.readingLog ? 0 : this.options.volume * this.options.bgmVolume)
   }
   /**
    * 应用共享 BGM 曲目，实际音量只取本地偏好。
@@ -101,7 +107,9 @@ export class Performance {
   setBgm(settings) {
     this.bgm = structuredClone(settings)
     Promise.resolve(
-      this.output?.setBgm?.(settings, { volume: this.options.volume * this.options.bgmVolume })
+      this.output?.setBgm?.(settings, {
+        volume: this.readingLog ? 0 : this.options.volume * this.options.bgmVolume
+      })
     ).catch((error) => {
       this.localProblem = { code: 'bgm_failed', message: error.message }
       this.publish()
@@ -152,7 +160,7 @@ export class Performance {
   /** 相同 guide 的新锚点只校准字幕，不重复启动音频；其他客户端的播放状态不参与判断。 */
   adopt(latest) {
     this.anchor = latest
-    if (!this.visible) {
+    if (!this.visible || this.readingLog) {
       this.publish()
       return
     }
@@ -204,7 +212,10 @@ export class Performance {
     if (current) {
       elapsedMs = Math.min(
         current.durationMs,
-        Math.max(0, current.elapsedMs + this.now() - this.anchor.receivedAt)
+        Math.max(
+          0,
+          current.elapsedMs + (this.anchor.frozenAt ?? this.now()) - this.anchor.receivedAt
+        )
       )
       const total = dialogueMarkdown(current.guide.text).count
       const subtitleDurationMs = current.guide.subtitleDurationMs ?? current.durationMs
@@ -212,8 +223,16 @@ export class Performance {
         subtitleDurationMs > 0
           ? Math.min(total, Math.floor((total * elapsedMs) / subtitleDurationMs))
           : total
+      // 剧情字幕按阅读速度出现，语音、动作和换句仍使用完整的演出时钟。
+      if (this.storyCaptions) {
+        const readingProgress = 1 + Math.floor(elapsedMs / 30)
+        revealedCharacters = Math.min(total, Math.max(revealedCharacters, readingProgress))
+      }
     }
+    if (current && this.replaySession?.revealed)
+      revealedCharacters = dialogueMarkdown(current.guide.text).count
     return {
+      waiting: this.replaySession?.phase === 'waiting',
       mode: this.mode,
       progress,
       elapsedMs,
@@ -253,7 +272,7 @@ export class Performance {
     if (this.mode === 'replay') this.resumeLive()
     this.mode = 'replay'
     this.replayEnded = onEnd
-    this.output?.stop?.()
+    if (!this.readingLog) this.output?.stop?.()
     this.playingId = null
     this.anchor = {
       receivedAt: this.now(),
@@ -264,73 +283,166 @@ export class Performance {
         transition: null
       }
     }
-    let guides = structuredClone(materials.guides)
-    let index = 0
-    const session = { refresh: null }
-    this.replaySession = session
-    const next = async () => {
-      while (session.refresh) {
-        const pending = session.refresh
-        const replacement = await pending
-        if (this.replaySession !== session) return
-        if (pending !== session.refresh) continue
-        session.refresh = null
-        if (replacement) {
-          materials = replacement
-          guides = replacement.guides
-        }
-      }
-      if (this.closed || this.mode !== 'replay') return
-      const playback = materials.scenes?.findLast((entry) => entry.start <= index) ?? materials
-      const guide = guides[index]
-      if (!guide) {
-        this.resumeLive()
-        return
-      }
+    this.replaySession = {
+      materials,
+      silent,
+      index: -1,
+      phase: 'selecting',
+      refresh: null,
+      revealed: false
+    }
+    void this.nextReplayGuide()
+  }
+
+  /** 保留整场统一的位置；重新取朝向材料时只在下一句采用。 */
+  async nextReplayGuide() {
+    const session = this.replaySession
+    if (!session || this.closed) return
+    clearTimeout(this.replayTimer)
+    session.phase = 'selecting'
+    while (session.refresh) {
+      const pending = session.refresh
+      const replacement = await pending
+      if (session !== this.replaySession || this.closed) return
+      if (pending !== session.refresh) continue
+      session.refresh = null
+      if (replacement) session.materials = replacement
+    }
+    session.index += 1
+    if (!session.materials.guides[session.index]) return this.resumeLive()
+    session.revealed = false
+    this.startReplayVoice(0)
+  }
+
+  /** 先等待声音启动，再从指定偏移恢复字幕、口型与句尾计时。 */
+  startReplayVoice(offsetMs) {
+    const session = this.replaySession
+    const { materials, index } = session
+    const guide = materials.guides[index]
+    const epoch = ++this.playEpoch
+    session.phase = 'loading'
+    session.offsetMs = offsetMs
+    if (this.readingLog) return
+    const show = (audioMs) => {
+      if (epoch !== this.playEpoch || this.closed || session !== this.replaySession) return
+      const scene = materials.scenes?.findLast((entry) => entry.start <= index) ?? materials
       const readingMs = Math.max(800, dialogueMarkdown(guide.text).visibleCount * 80)
-      const guideId = 'replay:' + index
-      index += 1
-      this.playingId = guideId
-      const epoch = ++this.playEpoch
-      const show = (audioMs) => {
-        if (this.closed || epoch !== this.playEpoch) return
-        const durationMs = Math.max(
-          guide.subtitleDurationMs ?? audioMs ?? readingMs,
-          guide.motionDurationMs ?? 0
-        )
-        this.anchor = {
-          receivedAt: this.now(),
-          progress: {
-            scene: playback.scene,
-            defaultPerformances: playback.defaultPerformances,
-            current: { guideId, guide, durationMs, elapsedMs: 0, recurring: false },
-            transition: null
+      const durationMs = Math.max(
+        guide.subtitleDurationMs ?? audioMs ?? readingMs,
+        guide.motionDurationMs ?? 0,
+        audioMs ?? 0
+      )
+      this.playingId = 'replay:' + index
+      this.anchor = {
+        receivedAt: this.now(),
+        progress: {
+          scene: scene.scene,
+          defaultPerformances: scene.defaultPerformances,
+          transition: null,
+          current: {
+            guideId: this.playingId,
+            guide,
+            durationMs,
+            elapsedMs: offsetMs,
+            recurring: false
           }
         }
-        this.replayTimer = setTimeout(() => {
-          if (this.closed || epoch !== this.playEpoch) return
-          this.output?.stop?.()
-          const pause = guides[index]?.pauseBeforeMs ?? 0
-          if (pause > 0) this.replayTimer = setTimeout(next, pause)
-          else next()
-        }, durationMs)
-        this.publish()
       }
-      // 等音频开始再启动本句计时，加载资源的时间不能挤占台词播放。
-      if (guide.audio && !silent && this.output?.play)
-        Promise.resolve(
-          this.output.play(guide, {
-            offsetMs: 0,
-            volume: this.options.volume,
-            recurring: false
-          })
-        ).then(
-          () => show(guide.audio.durationMs),
-          () => show(null)
-        )
-      else show(guide.audio?.durationMs)
+      session.phase = 'playing'
+      this.replayTimer = setTimeout(
+        () => this.finishReplayGuide(),
+        Math.max(0, durationMs - offsetMs)
+      )
+      this.publish()
     }
-    next()
+    if (guide.audio && offsetMs < guide.audio.durationMs && !session.silent && this.output?.play) {
+      Promise.resolve(
+        this.output.play(guide, { offsetMs, volume: this.options.volume, recurring: false })
+      ).then(
+        () => show(guide.audio.durationMs),
+        () => show(null)
+      )
+    } else show(guide.audio?.durationMs)
+  }
+
+  finishReplayGuide() {
+    const session = this.replaySession
+    this.output?.stop?.()
+    const next = session.materials.guides[session.index + 1]
+    if (!next) return this.resumeLive()
+    session.revealed = true
+    if (!this.autoReplay) {
+      session.phase = 'waiting'
+      this.publish()
+    } else this.scheduleReplayGap(next.pauseBeforeMs ?? 0)
+  }
+
+  scheduleReplayGap(ms) {
+    if (ms <= 0) return void this.nextReplayGuide()
+    this.replaySession.phase = 'gap'
+    this.replaySession.deadline = this.now() + ms
+    this.replayTimer = setTimeout(() => void this.nextReplayGuide(), ms)
+  }
+
+  /** @param {boolean} enabled 当前布局是否使用剧情字幕。 @returns {void} 切换时沿用同一句的时间位置。 */
+  setStoryCaptions(enabled) {
+    if (this.storyCaptions === enabled) return
+    this.storyCaptions = enabled
+    this.publish()
+  }
+
+  /** @param {boolean} automatic 是否自动推进整轮回放。 @returns {void} 已停在句尾时立即响应。 */
+  setReplayAuto(automatic) {
+    this.autoReplay = automatic
+    if (this.readingLog) return
+    const phase = this.replaySession?.phase
+    if (automatic && phase === 'waiting') void this.nextReplayGuide()
+    if (!automatic && phase === 'gap') {
+      clearTimeout(this.replayTimer)
+      this.replaySession.phase = 'waiting'
+      this.publish()
+    }
+  }
+
+  /** @returns {void} 手动模式先补全字，再按需切断语音并翻句。 */
+  advanceReplay() {
+    const session = this.replaySession
+    if (!session || this.autoReplay || this.readingLog) return
+    if (session.phase === 'waiting') return void this.nextReplayGuide()
+    if (session.phase !== 'playing') return
+    const { progress, revealedCharacters } = this.getSnapshot()
+    if (revealedCharacters < dialogueMarkdown(progress.current.guide.text).count) {
+      session.revealed = true
+      this.publish()
+    } else {
+      this.output?.stop?.()
+      void this.nextReplayGuide()
+    }
+  }
+
+  /** @param {boolean} open 剧情记录是否覆盖舞台。 @returns {void} 本地回放冻结，实时计划继续接收。 */
+  setReadingLog(open) {
+    if (open === this.readingLog) return
+    this.readingLog = open
+    const session = this.replaySession
+    this.output?.setBgmVolume?.(open ? 0 : this.options.volume * this.options.bgmVolume)
+    this.playEpoch += 1
+    this.playingId = null
+    this.output?.stop?.()
+    if (open) {
+      clearTimeout(this.replayTimer)
+      if (session?.phase === 'playing') session.offsetMs = this.getSnapshot().elapsedMs
+      if (session?.phase === 'gap') session.remaining = Math.max(0, session.deadline - this.now())
+      if (session && this.anchor) this.anchor.frozenAt = this.now()
+    } else if (!session) {
+      if (this.latest) this.adopt(this.latest)
+    } else if (session.phase === 'gap') {
+      if (this.autoReplay) this.scheduleReplayGap(session.remaining)
+      else session.phase = 'waiting'
+    } else if (session.phase === 'waiting') {
+      if (this.autoReplay) void this.nextReplayGuide()
+    } else if (session.phase !== 'selecting') this.startReplayVoice(session.offsetMs)
+    this.publish()
   }
   /** 当前句沿用已开播材料，下一句开始前采用新朝向。 */
   refreshReplay(load) {
@@ -356,7 +468,7 @@ export class Performance {
     clearTimeout(this.replayTimer)
     this.playEpoch += 1
     this.playingId = null
-    this.output?.stop?.()
+    if (!this.readingLog) this.output?.stop?.()
     if (this.latest) this.adopt(this.latest)
     else {
       this.anchor = null

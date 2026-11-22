@@ -57,11 +57,59 @@ function usePicture(client, id, onlineKey) {
 }
 
 /** @param {object} props 当前对话或悬停预览的图片。 @returns {import('react').ReactElement|null} 位于透明角色画布下方的背景层。 */
-export function StageBackdrop({ client, asset, hidden = false }) {
+export function StageBackdrop({ client, asset, hidden = false, story = false }) {
   const picture = usePicture(client, asset?.id, null)
-  if (!picture?.url) return null
+  const [failedUrl, setFailedUrl] = useState(null)
+  const failed = picture?.error || (picture?.url && failedUrl === picture.url)
+  let url = picture?.url
+  if (failed || (story && !asset)) url = defaultBackgroundUrl
+  function imageFailed() {
+    if (url && url !== defaultBackgroundUrl) setFailedUrl(url)
+  }
+  if (!url) return null
+  if (story) return <StoryBackdrop key={url} url={url} hidden={hidden} onError={imageFailed} />
   return (
-    <img className="stage-backdrop" hidden={hidden} src={picture.url} alt="" draggable={false} />
+    <img
+      className="stage-backdrop"
+      hidden={hidden}
+      src={url}
+      onError={imageFailed}
+      alt=""
+      draggable={false}
+    />
+  )
+}
+
+function StoryBackdrop({ url, hidden, onError }) {
+  const box = useRef(null)
+  const image = useRef(null)
+  const [framed, setFramed] = useState(false)
+  const measure = useCallback(() => {
+    const { naturalWidth: width, naturalHeight: height } = image.current
+    if (!width || !height || !box.current.clientWidth) return
+    const x = box.current.clientWidth / width
+    const y = box.current.clientHeight / height
+    // 保留至少约七成的构图；过小的原图也避免强行放大铺满高分屏窗口。
+    setFramed(Math.min(x, y) / Math.max(x, y) < 0.7 || Math.max(x, y) * window.devicePixelRatio > 2)
+  }, [])
+  useEffect(() => {
+    const observer = new ResizeObserver(measure)
+    observer.observe(box.current)
+    return () => observer.disconnect()
+  }, [measure])
+  return (
+    <div className="story-backdrop" ref={box} hidden={hidden} data-framed={framed}>
+      {framed && <img className="story-fill" src={url} alt="" draggable={false} />}
+      <img
+        className="story-picture"
+        ref={image}
+        src={url}
+        onLoad={measure}
+        onError={onError}
+        alt=""
+        draggable={false}
+      />
+    </div>
   )
 }
 
@@ -323,7 +371,11 @@ function GalleryCard({ client, item, installed, online, job, onApply, preview })
               size="sm"
               variant="outline"
               data-background-option
-              disabled={pending || (!installed && ['running', 'installing'].includes(job?.status))}
+              disabled={
+                pending ||
+                (installed && !onApply) ||
+                (!installed && ['running', 'installing'].includes(job?.status))
+              }
               onClick={activate}
               onFocus={preview && (() => preview.start(item))}
               onBlur={preview?.cancel}
@@ -361,7 +413,7 @@ function BackgroundManager({ client, initial, jobs, onApply, onPreview, current,
   const local = useLibrary(client)
   const preview = useBackgroundPreview(
     onPreview,
-    active && tab === 'installed',
+    Boolean(onApply) && active && tab === 'installed',
     current,
     queries.installed
   )

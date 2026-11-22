@@ -346,6 +346,7 @@ export function TheatreSetup({ client, flow, roles, chat, personalityBusy, close
  * @returns {import('react').ReactElement} 毛玻璃材质的小剧场底部控制栏。
  */
 export function TheatreActions({
+  story = false,
   snapshot,
   sending,
   problem,
@@ -396,13 +397,14 @@ export function TheatreActions({
             size="sm"
             variant="ghost"
             className="theatre-action-btn"
+            hidden={story}
             disabled={active || sending}
             onClick={configure}
           >
             <SlidersHorizontal size={14} aria-hidden="true" />
             剧场设定
           </Button>
-          {!active && (canReplay || replaying) && (
+          {!story && !active && (canReplay || replaying) && (
             <Button
               size="sm"
               variant="ghost"
@@ -425,7 +427,7 @@ export function TheatreActions({
           )}
         </div>
         <div className="theatre-actions-trailing">
-          {modelControl}
+          {!story && modelControl}
           {active ? (
             <Button size="sm" onClick={stop}>
               <Square size={14} aria-hidden="true" />

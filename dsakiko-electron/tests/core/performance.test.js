@@ -506,3 +506,67 @@ test('V3 等待首句就绪时维持思考，首句开演后即使后续仍在�
     await planner.close()
   }
 })
+
+test('剧情短句立即出字，慢语音保留到句尾，手动翻句使用可见字数', async () => {
+  vi.useFakeTimers()
+  const playback = new Playback({ events: null, now: () => Date.now() })
+  const line = { ...guide, text: '今天辛苦了。', subtitleDurationMs: 4500 }
+  try {
+    playback.setStoryCaptions(true)
+    playback.setReplayAuto(false)
+    playback.replay({ scene, guides: [line, line] })
+    expect(playback.getSnapshot().revealedCharacters).toBe(1)
+    await vi.advanceTimersByTimeAsync(60)
+    expect(playback.getSnapshot().revealedCharacters).toBe(3)
+    playback.setReadingLog(true)
+    await vi.advanceTimersByTimeAsync(900)
+    expect(playback.getSnapshot().revealedCharacters).toBe(3)
+    playback.setReadingLog(false)
+    await vi.advanceTimersByTimeAsync(90)
+    expect(playback.getSnapshot()).toMatchObject({
+      revealedCharacters: 6,
+      waiting: false,
+      progress: { current: { guideId: 'replay:0' } }
+    })
+    playback.advanceReplay()
+    expect(playback.getSnapshot().progress.current.guideId).toBe('replay:1')
+    await vi.advanceTimersByTimeAsync(4499)
+    expect(playback.getSnapshot().mode).toBe('replay')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(playback.getSnapshot().mode).toBe('live')
+  } finally {
+    playback.close()
+  }
+})
+
+test('剧情舞台手动翻句、记录暂停和普通舞台接续共用同一回放', async () => {
+  vi.useFakeTimers()
+  const output = { play: vi.fn(), stop: vi.fn(), setBgmVolume: vi.fn() }
+  const playback = new Playback({ events: null, now: () => Date.now(), output })
+  const audio = { asset: { id: 'voice' }, durationMs: 1000 }
+  const line = { ...guide, audio, subtitleDurationMs: 1000 }
+  playback.setReplayAuto(false)
+  playback.replay({ scene, guides: [line, line, line] })
+  await vi.advanceTimersByTimeAsync(350)
+  playback.advanceReplay()
+  expect(playback.getSnapshot().revealedCharacters).toBe(2)
+  playback.setReadingLog(true)
+  await vi.advanceTimersByTimeAsync(4500)
+  expect(playback.getSnapshot().elapsedMs).toBe(350)
+  playback.setReadingLog(false)
+  expect(output.play).toHaveBeenLastCalledWith(line, expect.objectContaining({ offsetMs: 350 }))
+  await vi.advanceTimersByTimeAsync(650)
+  expect(playback.getSnapshot().waiting).toBe(true)
+  playback.advanceReplay()
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(playback.getSnapshot()).toMatchObject({
+    waiting: true,
+    progress: { current: { guideId: 'replay:1' } }
+  })
+  playback.setReplayAuto(true)
+  await vi.advanceTimersByTimeAsync(0)
+  expect(playback.getSnapshot().progress.current.guideId).toBe('replay:2')
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(playback.getSnapshot().mode).toBe('live')
+  playback.close()
+})

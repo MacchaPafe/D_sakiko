@@ -28,7 +28,7 @@
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--popover, var(--background));
-  color: var(--foreground);
+  color: var(--popover-foreground, var(--foreground));
   box-shadow: 0 8px 32px #211e3026;
   font: inherit;
 }
@@ -168,14 +168,14 @@
   height: 16px;
   padding: 2px;
   border-radius: 12px;
-  background: var(--muted-foreground);
+  background: var(--tool-switch-track, var(--muted-foreground));
 }
 .tool-switch i {
   display: block;
   width: 12px;
   height: 12px;
   border-radius: 100%;
-  background: white;
+  background: var(--tool-switch-thumb, white);
 }
 .tool-switch[data-state='true'] {
   justify-content: flex-end;
@@ -183,7 +183,11 @@
 }
 .tool-switch[data-state='mixed'] {
   justify-content: center;
-  background: linear-gradient(90deg, var(--primary) 50%, var(--muted-foreground) 50%);
+  background: linear-gradient(
+    90deg,
+    var(--primary) 50%,
+    var(--tool-switch-track, var(--muted-foreground)) 50%
+  );
 }
 .interaction-card {
   display: grid;

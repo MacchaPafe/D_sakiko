@@ -12,6 +12,7 @@ import { createCoreBackend } from '../../src/backend/create-core-backend.js'
 import { startHttpServer } from '../../src/server/http-server.js'
 import { problemError } from '../../src/shared/problems.js'
 import { newCharacter } from '../../src/renderer/src/features/characters/character-edit.js'
+import { verifyStoryStage, verifyStoryAudio } from './story-stage.js'
 import { verifyHistoryActions } from './history-actions.js'
 import { verifyBackgroundDraft } from './background-flow.js'
 import { verifyPersonaDraft } from './persona-flow.js'
@@ -256,17 +257,23 @@ async function verifyVoiceCleanup(backend, settings) {
   const catalog = vi.spyOn(backend.setup, 'getCatalog').mockImplementation(async (options) => {
     const value = await readCatalog(options)
     const voices = value.groups.find((group) => group.id === 'voices').options
-    Object.assign(voices.find((item) => item.id === 'voice.anon'), {
-      installed,
-      ready: false,
-      available: true,
-      updateAvailable: installed
-    })
-    Object.assign(voices.find((item) => item.id === 'voice.soyo'), {
-      installed: true,
-      ready: true,
-      available: true
-    })
+    Object.assign(
+      voices.find((item) => item.id === 'voice.anon'),
+      {
+        installed,
+        ready: false,
+        available: true,
+        updateAvailable: installed
+      }
+    )
+    Object.assign(
+      voices.find((item) => item.id === 'voice.soyo'),
+      {
+        installed: true,
+        ready: true,
+        available: true
+      }
+    )
     return value
   })
   const preview = vi.spyOn(backend.setup, 'previewVoiceRemoval').mockImplementation(async (id) => ({
@@ -963,6 +970,7 @@ async function verifyHistory(page, application, backend, selected) {
   expect(await page.evaluate(() => window.historyAudio[6].paused)).toBe(true)
   expect(await page.evaluate(() => window.historyAudio.length)).toBe(7)
   await replayLine.waitFor()
+  await verifyStoryAudio(page, lines[0].text)
   await verifyHistoryActions(page, backend, copyId)
   await backend.conversations.deleteChat(copyId)
   await application.evaluate(({ BrowserWindow }) => {
@@ -1194,6 +1202,10 @@ async function verifyTheatre(page, backend, agent) {
   const stop = page.locator('.home-subtitle').getByRole('button', { name: /停止.*回放/ })
   await stop.click()
   expect((await snapshot()).chat.turns).toHaveLength(1)
+  await page.getByRole('button', { name: '全窗口舞台' }).click()
+  await page.getByRole('navigation', { name: '剧情舞台工具栏' }).waitFor()
+  await page.screenshot({ path: '/tmp/sakiko-story-theatre.png', scale: 'css' })
+  await page.keyboard.press('Escape')
   // 验证无法面对面时隐藏「朝向」页签，并按是否曾开启面对面决定是否展示降级说明。
   await page.getByRole('button', { name: '调整舞台' }).click()
   await page.getByRole('button', { name: '朝向', exact: true }).click()
@@ -1741,10 +1753,20 @@ app.on('window-all-closed', () => app.quit())`
       await verifyPersonaDraft(page)
       await verifyDraftOutfit(page, backend, defaultName)
       const background = await verifyBackgroundDraft(page, backend)
+      await page.getByRole('button', { name: '全窗口舞台' }).click()
+      await page.getByRole('button', { name: '展开工具栏' }).click()
+      const auto = page.getByRole('button', { name: '自动', exact: true })
+      expect(await auto.getAttribute('aria-pressed')).toBe('true')
+      await auto.click()
+      expect(await auto.getAttribute('aria-pressed')).toBe('false')
       await page.getByRole('textbox', { name: '消息' }).fill('你好，**祥子**！')
       await page.getByRole('button', { name: '发送消息' }).click()
       const firstPreview = page.locator('.home-chat-row.selected > button:first-child')
       try {
+        await expect.poll(() => auto.isDisabled()).toBe(true)
+        expect(await auto.getAttribute('aria-pressed')).toBe('true')
+        await page.getByRole('button', { name: '收起工具栏' }).click()
+        await page.keyboard.press('Escape')
         await expect.poll(() => firstPreview.textContent()).toBe('暂无回复')
       } finally {
         firstReply.resolve()
@@ -1754,6 +1776,7 @@ app.on('window-all-closed', () => app.quit())`
       expect(await page.locator('.subtitle-text').innerText()).toBe(
         '今天也辛苦了，先休息一会儿吧。'
       )
+      await verifyStoryStage(page, composer)
       await dragStageToolsOver(page, composer)
       await dragStageToolsOver(page, page.getByRole('region', { name: '当前台词' }))
       const [outfitChat] = await backend.conversations.listChats()

@@ -100,6 +100,21 @@ test('本地多选导入、后台预览、直接应用与移除后保留对话�
     await picker.waitFor({ state: 'hidden' })
     const asset = await saved()
     expect(asset?.id).toBeTruthy()
+    // 从第一帧观察重载，资源加载期间也不应画出内置背景。
+    await page.addInitScript(() => {
+      window.stageBackgrounds = []
+      function sample() {
+        const el = document.querySelector('.home-stage')
+        if (el) window.stageBackgrounds.push(getComputedStyle(el).backgroundImage)
+        if (!el?.querySelector('img.stage-backdrop')?.naturalWidth) requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    })
+    await page.reload()
+    await expect
+      .poll(() => image.evaluateAll((images) => images.some((img) => img.naturalWidth > 0)))
+      .toBe(true)
+    expect(await page.evaluate(() => [...new Set(window.stageBackgrounds)])).toEqual(['none'])
     await trigger.click()
     await image.waitFor({ state: 'visible' })
     await builtinTile.hover()

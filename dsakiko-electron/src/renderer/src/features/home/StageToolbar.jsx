@@ -40,13 +40,29 @@ function measureToolbar(bar, grip) {
  * 舞台工具栏与剧场舞台调整／换装浮窗。
  * @param {object} props 组件属性。
  * @param {{characterId: string|null, chatId: string|null, tab: string}} props.target 当前激活的对话目标。
+ * @param {boolean} [props.story] 是否使用剧情舞台的固定工具位置。
+ * @param {boolean} [props.locked] 回放期间锁定换装和背景。
+ * @param {() => void} [props.onExpand] 打开全窗口舞台。
+ * @param {object} [props.initialAnchor] 普通舞台记住的拖动手柄位置。
  * @param {object|null} props.wardrobe 换装浮窗配置，不可用时为 null。
  * @param {(factor: number) => void} props.onZoom 舞台角色缩放回调。
  * @param {() => void} props.onReset 舞台视角或选中演员位置重置回调。
  * @param {{actors: Array<{id: string, displayName: string}>, panel: 'position'|'orientation'|null, selected: number|null|undefined, setPanel: (panel: 'position'|'orientation'|null) => void, face: (orientation: 'screen'|'face-to-face') => void, canFace: boolean, inward: boolean, degradedNote: string}|null} props.theatre 小剧场舞台调整配置。
  * @returns {import('react').ReactElement} 拖动中按舞台空间调整朝向的工具栏。
  */
-export function StageToolbar({ target, wardrobe, background, onZoom, onReset, theatre }) {
+export function StageToolbar({
+  target,
+  wardrobe,
+  background,
+  onZoom,
+  onReset,
+  theatre,
+  story = false,
+  locked = false,
+  onExpand,
+  initialAnchor,
+  onPlace
+}) {
   const [openFor, setOpenFor] = useState(null)
   const backgroundTrigger = useRef(null)
   const adjust = useRef(null)
@@ -54,7 +70,7 @@ export function StageToolbar({ target, wardrobe, background, onZoom, onReset, th
   const grip = useRef(null)
   const trigger = useRef(null)
   const panel = useRef(null)
-  const anchor = useRef(null)
+  const anchor = useRef(initialAnchor ?? null)
   const drag = useRef(null)
   const layout = useRef(null)
   const id = useId()
@@ -86,7 +102,7 @@ export function StageToolbar({ target, wardrobe, background, onZoom, onReset, th
       let orientation = bar.dataset.orientation
       let size = sizes[orientation]
       let handle = { x: barBox.left + size.gripX, y: barBox.top + size.gripY, orientation }
-      if (anchor.current) {
+      if (anchor.current && !story) {
         const position = placeToolbar(anchor.current, stageBox, sizes)
         const { left, top, x, y } = position
         orientation = position.orientation
@@ -143,7 +159,9 @@ export function StageToolbar({ target, wardrobe, background, onZoom, onReset, th
     theatre?.panel,
     theatre?.selected,
     theatre?.canFace,
-    theatre?.degradedNote
+    theatre?.degradedNote,
+    story,
+    anchor
   ])
 
   useLayoutEffect(() => {
@@ -222,7 +240,10 @@ export function StageToolbar({ target, wardrobe, background, onZoom, onReset, th
     const origin = drag.current
     if (origin?.pointerId !== event.pointerId) return
     drag.current = null
-    if (origin.moved) anchor.current = origin.position
+    if (origin.moved) {
+      anchor.current = origin.position
+      onPlace?.(origin.position)
+    }
   }
 
   function toggleBackground() {
@@ -255,6 +276,15 @@ export function StageToolbar({ target, wardrobe, background, onZoom, onReset, th
     setOpenFor(null)
     theatre.setPanel(theatre.panel ? null : 'position')
   }
+
+  function preserveInputFocus(event) {
+    if (document.activeElement?.matches('textarea')) event.preventDefault()
+  }
+
+  let wardrobeTitle = '切换服装'
+  if (locked) wardrobeTitle = '回放结束后可更换服装'
+  else if (!theatre && wardrobe?.role?.forms?.length > 1 && wardrobe.activeFormName)
+    wardrobeTitle = '人格与服装（当前：' + wardrobe.activeFormName + '）'
 
   function increase() {
     onZoom(1.1)
@@ -317,15 +347,11 @@ export function StageToolbar({ target, wardrobe, background, onZoom, onReset, th
           variant="ghost"
           size="icon"
           aria-label="切换服装"
-          title={
-            !theatre && wardrobe?.role?.forms?.length > 1 && wardrobe.activeFormName
-              ? '人格与服装（当前：' + wardrobe.activeFormName + '）'
-              : '切换服装'
-          }
+          title={wardrobeTitle}
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? id : undefined}
-          disabled={!wardrobe}
+          disabled={!wardrobe || locked}
           onClick={toggle}
         >
           <Shirt />
@@ -335,17 +361,26 @@ export function StageToolbar({ target, wardrobe, background, onZoom, onReset, th
           size="icon"
           ref={backgroundTrigger}
           aria-label="切换背景"
-          title="切换背景"
+          title={locked ? '回放结束后可更换背景' : '切换背景'}
           aria-haspopup="dialog"
           aria-expanded={backgroundOpen}
-          disabled={!background.available}
+          disabled={!background.available || locked}
           onClick={toggleBackground}
         >
           <Picture />
         </Button>
-        <Button variant="ghost" size="icon" aria-label="全窗口舞台" disabled>
-          <Maximize />
-        </Button>
+        {!story && (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="全窗口舞台"
+            title="全窗口舞台"
+            onMouseDown={preserveInputFocus}
+            onClick={onExpand}
+          >
+            <Maximize />
+          </Button>
+        )}
       </div>
       {backgroundOpen && (
         <BackgroundPicker {...background} panelRef={panel} onClose={finishBackground} />

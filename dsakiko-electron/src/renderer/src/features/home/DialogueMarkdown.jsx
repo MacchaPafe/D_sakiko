@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -37,6 +38,14 @@ export function MessageText({ text }) {
       </Markdown>
     </div>
   )
+}
+
+/** @param {{text: string, progress: import('./stage-controller.js').SubtitleProgress}} props 当前台词与本地进度。
+ * @returns {import('react').ReactNode} 独立订阅逐字进度的字幕。
+ */
+export function PlayingSubtitle({ text, progress }) {
+  const revealed = useSyncExternalStore(progress.subscribe, progress.getSnapshot)
+  return <SubtitleText text={text} revealed={revealed} />
 }
 
 /** @param {{text: string, revealed?: number}} props 原文与当前已朗读字数，译文不传进度。

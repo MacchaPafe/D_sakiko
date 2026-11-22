@@ -243,3 +243,29 @@ export function historyGroups(
 export function historyRows(...args) {
   return historyGroups(...args).flatMap((group) => group.rows)
 }
+
+/** @param {object|null} snapshot 对话快照。 @param {number} now 揭晓时钟。 @param {object[]} characters 角色目录。 @returns {HistoryRow[]} 剧情记录只投影发言和用户实际回答的问题。 */
+export function storyHistoryRows(snapshot, now, characters) {
+  return historyGroups(snapshot, now, false, characters).flatMap(({ turn, rows }) => {
+    if (snapshot.chat.mode === 'scripted-dialogue')
+      return rows.filter((row) => row.kind === 'assistant')
+    const answers = new Map()
+    for (const message of turn.messages ?? []) {
+      if (message.source?.kind !== 'async') continue
+      const results = message.results ?? message.content?.results ?? []
+      answers.set(
+        message.id,
+        results.filter((item) => item.toolName === 'ask_user' && item.request?.question)
+      )
+    }
+    return rows.flatMap((row) => {
+      if (row.kind === 'user' || row.kind === 'assistant') return [row]
+      return (answers.get(row.id) ?? []).map((item, index) => ({
+        id: row.id + ':answer:' + index,
+        kind: 'user',
+        name: '问答',
+        text: [item.request.question, item.result?.answer ?? '已跳过'].join('\n')
+      }))
+    })
+  })
+}

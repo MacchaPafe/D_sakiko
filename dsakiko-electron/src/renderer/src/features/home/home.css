@@ -406,7 +406,10 @@
   height: 100%;
   position: relative;
   overflow: hidden;
-  background: url('../../assets/welcome/background.png') center / cover;
+  background: #292939 center / cover;
+}
+.home-stage[data-builtin-background] {
+  background-image: url('../../assets/welcome/background.png');
 }
 .home-canvas {
   position: absolute;

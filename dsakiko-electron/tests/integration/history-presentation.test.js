@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { historyRows } from '../../src/renderer/src/features/home/history.js'
+import { historyRows, storyHistoryRows } from '../../src/renderer/src/features/home/history.js'
 import { lastDialogue, lastDialogueEntry } from '../../src/shared/chat-history.js'
 import {
   fitHistorySize,
@@ -176,4 +176,36 @@ test('同一响应的可读思考按顺序合并，工具、不同响应和空�
   ])
   expect(historyRows(s, 0, false).map((row) => row.kind)).toEqual(['tools', 'assistant'])
   expect(lastDialogue(s.chat).text).toBe('台词')
+})
+
+test('剧情记录只展示发言和可读问答，小剧场只保留演员台词', () => {
+  const chat = snapshot([
+    { id: 'request', kind: 'user', source: { kind: 'manual' }, content: { text: '你好' } },
+    {
+      id: 'event',
+      kind: 'user',
+      source: { kind: 'async' },
+      results: [
+        { toolName: 'ask_user', request: { question: '去哪？' }, result: { answer: '海边' } },
+        { toolName: 'ask_user', request: { question: '几点？' }, result: { answer: '六点' } }
+      ]
+    },
+    {
+      id: 'response',
+      kind: 'assistant',
+      parts: [
+        { kind: 'reasoning', text: '内部思考' },
+        { kind: 'tool-call', toolName: 'lookup' },
+        { kind: 'dialogue', lines: [{ id: 'line', speakerId: 'actor', text: '一会见。' }] }
+      ]
+    }
+  ])
+  expect(storyHistoryRows(chat, 0, []).map((row) => row.text)).toEqual([
+    '你好',
+    '去哪？\n海边',
+    '几点？\n六点',
+    '一会见。'
+  ])
+  chat.chat.mode = 'scripted-dialogue'
+  expect(storyHistoryRows(chat, 0, []).map((row) => row.text)).toEqual(['一会见。'])
 })

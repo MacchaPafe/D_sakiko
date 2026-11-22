@@ -85,25 +85,33 @@ export class HomeFlow {
     this.closed = false
     const epoch = ++this.mountEpoch
     try {
-      await this.refresh()
-      if (this.closed || epoch !== this.mountEpoch) return
       let target
       try {
         target = JSON.parse(this.storage?.getItem(NAVIGATION_KEY) ?? 'null')
       } catch {
         /* 损坏的导航不影响正式数据。 */
       }
+      // 先订阅上次的对话，让背景资源与角色、模型目录并行加载。
+      if (
+        typeof target?.chatId === 'string' &&
+        target.chatId &&
+        ['single-character', 'scripted-dialogue'].includes(target.tab)
+      )
+        this.select(target)
+      const restoredEpoch = this.epoch
+      await this.refresh()
+      if (this.closed || epoch !== this.mountEpoch) return
       const first =
         this.state.characters.find((role) => role.id === 'sakiko') ?? this.state.characters[0]
       if (!target)
         target = { characterId: first?.id ?? null, chatId: null, tab: 'single-character' }
       if (target.chatId && !this.state.chats.some((chat) => chat.id === target.chatId))
-        target.chatId = null
+        target = { ...target, chatId: null }
       if (!target.chatId && !this.state.characters.some((role) => role.id === target.characterId))
         target.characterId = first?.id ?? null
       if (!['single-character', 'scripted-dialogue'].includes(target.tab))
         target.tab = 'single-character'
-      this.select(target)
+      if (this.epoch === restoredEpoch && this.state.target !== target) this.select(target)
       this.stops = [
         this.client.settings.observe((settings) => this.update({ settings })),
         this.client.interactions?.observe?.((data) =>

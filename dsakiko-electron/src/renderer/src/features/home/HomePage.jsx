@@ -3,6 +3,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore
@@ -32,17 +33,18 @@ import wordmark from '../../assets/welcome/wordmark.svg'
 import { desktopHost } from '../../host/desktop.js'
 import { CharacterAvatar } from './CharacterAvatar.jsx'
 import { HomeFlow, hasConnection, selectedModel } from './home-flow.js'
-import { StageController } from './stage-controller.js'
+import { StageController, SubtitleProgress } from './stage-controller.js'
 import { resolveTheatreStageState } from './theatre-stage.js'
 import { TheatreActions, TheatreSetup } from './TheatreSetup.jsx'
 import { TheatrePositions } from './TheatrePositions.jsx'
 import { StageBackdrop, StageResources } from './BackgroundGallery.jsx'
+import { StoryCaption, StoryRail, StoryLog } from './StoryStage.jsx'
 import { StageToolbar } from './StageToolbar.jsx'
 import { ToolMenu, ThinkingPicker, ThinkingConflict } from './ToolControls.jsx'
 import { InteractionCards } from './InteractionCards.jsx'
 import { useRevealClock } from './use-reveal-clock.js'
 import { AttachmentList, AddAttachments } from './AttachmentList.jsx'
-import { SubtitleText } from './DialogueMarkdown.jsx'
+import { PlayingSubtitle, SubtitleText } from './DialogueMarkdown.jsx'
 import { HistoryPanel } from './HistoryPanel.jsx'
 import { NoticeStack } from './NoticeStack.jsx'
 import { DownloadCenter } from './DownloadCenter.jsx'
@@ -60,6 +62,9 @@ import {
   resolveCharacterThemeColor
 } from '../../styles/character-theme.js'
 import './home.css'
+
+const storyControls =
+  'button, a, input, textarea, select, label, summary, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="menu"], [role="dialog"], [popover], .home-composer'
 
 /** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean, initialTab?: 'roles'|'personas', initialPersonaId?: string} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string, section?: string, backgroundTab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'|'backgrounds'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
 /** @typedef {HomeDialogContent & import('../../components/ui/use-dialog-navigation.js').DialogPage} HomeDialogPage */
@@ -328,7 +333,7 @@ function CharacterGroups({
     />
   ))
 }
-function Subtitle({ state, replayingTurn, onToggleReplay, theatre }) {
+function Subtitle({ state, subtitles, replayingTurn, onToggleReplay, theatre }) {
   const replaying = state.replayingLine || replayingTurn
   if (!state.text && !replaying) return <div className="home-subtitle" />
   let replayLabel = '回放当句对话'
@@ -353,7 +358,7 @@ function Subtitle({ state, replayingTurn, onToggleReplay, theatre }) {
       </div>
       <div className="subtitle-body">
         <div className="subtitle-text">
-          <SubtitleText text={state.text} revealed={state.revealed} />
+          <PlayingSubtitle text={state.text} progress={subtitles} />
         </div>
         {state.text && state.translation && (
           <div className="subtitle-translation">
@@ -415,9 +420,11 @@ function buildModelControl(state, flow, onConfigure) {
   return null
 }
 
-function findTheatreReplayTurnId(snapshot) {
-  if (!snapshot || snapshot.activeTurnId || snapshot.chat.mode !== 'scripted-dialogue') return null
-  for (const turn of snapshot.chat.turns ?? []) {
+function findReplayTurnId(snapshot) {
+  if (!snapshot || snapshot.activeTurnId) return null
+  const turns = snapshot.chat.turns ?? []
+  const ordered = snapshot.chat.mode === 'scripted-dialogue' ? turns : [...turns].reverse()
+  for (const turn of ordered) {
     for (const message of turn.messages ?? []) {
       if (message.kind !== 'assistant') continue
       for (const part of message.parts ?? []) {
@@ -434,7 +441,19 @@ const replyPhaseLabels = {
   presentation: '正在播放回复…'
 }
 
-function Composer({ identityControl, state, flow, asrReady, onVoiceInstall, onConfigure, onSend }) {
+function Composer({
+  identityControl,
+  state,
+  flow,
+  asrReady,
+  onVoiceInstall,
+  onConfigure,
+  onSend,
+  compact,
+
+  onFocus
+}) {
+  const textarea = useRef(null)
   const configured = hasConnection(state)
   const readonly =
     state.target.tab === 'scripted-dialogue' ||
@@ -452,13 +471,13 @@ function Composer({ identityControl, state, flow, asrReady, onVoiceInstall, onCo
     (Boolean(state.draft.trim()) || files.items.length > 0) &&
     files.items.every((f) => f.state === 'ready') &&
     (!state.target.chatId || state.snapshot?.admission.canGenerate)
-  const textarea = useRef(null)
+
   useEffect(() => {
     if (!textarea.current) return
     textarea.current.style.height = 'auto'
     textarea.current.style.height =
       Math.min(144, Math.max(28, textarea.current.scrollHeight)) + 'px'
-  }, [state.draft])
+  }, [state.draft, compact, textarea])
   function change(event) {
     flow.setDraft(event.target.value)
   }
@@ -506,7 +525,12 @@ function Composer({ identityControl, state, flow, asrReady, onVoiceInstall, onCo
     </Button>
   )
   return (
-    <div className="home-composer-group">
+    <div className="home-composer-group" data-compact={compact || undefined}>
+      {compact && active && (
+        <button className="story-live-status" onClick={flow.stop} title="停止生成">
+          {status ?? '正在回复…'} <Square size={12} /> 停止
+        </button>
+      )}
       {problem && (
         <div className="composer-problem" role="alert">
           {problem}
@@ -522,6 +546,7 @@ function Composer({ identityControl, state, flow, asrReady, onVoiceInstall, onCo
       <div className="home-composer">
         <textarea
           ref={textarea}
+          onFocus={onFocus}
           aria-label="消息"
           placeholder={placeholder}
           value={state.draft}
@@ -566,8 +591,21 @@ function Composer({ identityControl, state, flow, asrReady, onVoiceInstall, onCo
 
 /** @param {{client: import('../../backend/client.js').BackendClient, setup: object, setupState: object}} props 应用共享连接和后台任务。 @returns {import('react').ReactElement} 正式主页，历史悬浮于稳定舞台之上。 */
 export function HomePage({ client, setup, setupState }) {
+  const [subtitles] = useState(() => new SubtitleProgress())
   const [flow] = useState(() => new HomeFlow(client))
   const state = useSyncExternalStore(flow.subscribe, flow.getSnapshot)
+  const [story, setStory] = useState(false)
+  const [railOpen, setRailOpen] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const [auto, setAuto] = useState(true)
+  const [writing, setWriting] = useState(false)
+  function messageInput() {
+    return stageElement.current?.querySelector('.home-composer textarea')
+  }
+  const stageElement = useRef(null)
+  const previousStageCenter = useRef(null)
+  const stagePress = useRef(null)
+  const [toolAnchor, setToolAnchor] = useState(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [expandedRoleId, setExpandedRoleId] = useState(undefined)
   const [turnReplay, setTurnReplay] = useState(null)
@@ -587,6 +625,7 @@ export function HomePage({ client, setup, setupState }) {
   const currentBackground = state.target.chatId
     ? state.snapshot?.chat.meta.settings.presentation.background
     : state.draftBackground
+  const backgroundKnown = state.target.chatId ? Boolean(state.snapshot) : !state.loading
   const previewOnStage =
     activeDialog === 'outfits' || (!rootDialog && backgroundTarget === state.target)
   const stagePreview = previewOnStage ? previewBackground : null
@@ -602,7 +641,7 @@ export function HomePage({ client, setup, setupState }) {
   const [stageState, setStageState] = useState({
     text: '',
     name: '',
-    revealed: 0,
+    guideId: null,
     canReplayLine: false,
     replayingLine: false,
     lineReplayError: null,
@@ -639,7 +678,7 @@ export function HomePage({ client, setup, setupState }) {
     return () => flow.dispose()
   }, [flow])
   useEffect(() => {
-    if (deleting || voiceInstall || rootDialog) return
+    if (deleting || voiceInstall || rootDialog || (story && historyOpen)) return
     const platform = navigator.userAgentData?.platform ?? navigator.platform
     const isMac = platform.toLowerCase().startsWith('mac')
     function handleSettingsShortcut(event) {
@@ -664,9 +703,9 @@ export function HomePage({ client, setup, setupState }) {
     }
     window.addEventListener('keydown', handleSettingsShortcut)
     return () => window.removeEventListener('keydown', handleSettingsShortcut)
-  }, [deleting, voiceInstall, rootDialog, open])
+  }, [deleting, voiceInstall, rootDialog, open, story, historyOpen])
   useEffect(() => {
-    const controller = new StageController(client, setStageState)
+    const controller = new StageController(client, setStageState, subtitles)
     stage.current = controller
     controller.mount(canvas.current)
     const host = desktopHost()
@@ -694,7 +733,7 @@ export function HomePage({ client, setup, setupState }) {
       controller.dispose()
       stage.current = null
     }
-  }, [client])
+  }, [client, subtitles])
   useEffect(() => {
     if (stage.current)
       stage.current.player.suppressScript = isTheatre && flow.liveTheatre !== state.target
@@ -789,30 +828,44 @@ export function HomePage({ client, setup, setupState }) {
     void flow.generateTheatre()
   }
   function showHistory() {
+    if (story) {
+      setToolsOpen(false)
+      stage.current?.setReadingLog(true)
+    }
     setStageEditor(null)
     closeBackground()
     setHistoryOpen(true)
   }
   function hideHistory() {
+    if (story) stage.current?.setReadingLog(false)
     setHistoryOpen(false)
   }
   function playHistoryAudio(audio, signal, onStop) {
     const controller = stage.current
     if (!controller) return onStop()
-    controller.stopReplay()
+    if (!story) controller.stopReplay()
     controller.playHistoryAudio(audio, signal, onStop)
   }
   function toggleStageReplay() {
     void stage.current?.replayLine(state.target.chatId)
   }
   function playHistoryTurn(turnId) {
+    if (currentReplay?.id === turnId && !currentReplay.error) {
+      stage.current?.stopReplay()
+      return
+    }
+    startHistoryTurn(turnId)
+  }
+  function replayFromStoryLog(turnId) {
+    // 先替换记录页下方暂停的回放，避免关页时旧台词短暂续播。
+    startHistoryTurn(turnId)
+    hideHistory()
+    requestAnimationFrame(() => stageElement.current?.focus())
+  }
+  function startHistoryTurn(turnId) {
     const chatId = state.target.chatId
     const controller = stage.current
     if (!chatId || !controller) return
-    if (currentReplay?.id === turnId && !currentReplay.error) {
-      controller.stopReplay()
-      return
-    }
     const request = { chatId, id: turnId, error: null }
     setTurnReplay(request)
     void controller.replayTurn(chatId, turnId, (error) => {
@@ -823,8 +876,124 @@ export function HomePage({ client, setup, setupState }) {
     })
   }
   function sendMessage() {
-    return flow.send((chatId) => stage.current?.stopReplay(chatId))
+    return flow.send((chatId) => {
+      stage.current?.stopReplay(chatId)
+      if (!flow.input().text) setWriting(false)
+    })
   }
+  function changeStageLayout(expanded) {
+    const rect = stageElement.current.getBoundingClientRect()
+    previousStageCenter.current = rect.left + rect.width / 2
+    setStory(expanded)
+  }
+
+  function enterStory() {
+    setWriting(
+      Boolean(
+        state.draft ||
+        flow.input().attachments.items.length ||
+        document.activeElement === messageInput() ||
+        document.querySelector('.home-voice-input [aria-label="取消语音输入"]')
+      )
+    )
+    setHistoryOpen(false)
+    closeBackground()
+    setStageEditor(null)
+    changeStageLayout(true)
+    if (document.activeElement !== messageInput()) stageElement.current?.focus()
+  }
+
+  function exitStory() {
+    stage.current?.player.setReplayAuto(true)
+    stage.current?.setReadingLog(false)
+    for (const popup of document.querySelectorAll(':popover-open')) popup.hidePopover()
+    changeStageLayout(false)
+    setToolsOpen(false)
+    setHistoryOpen(false)
+    setWriting(false)
+    closeBackground()
+    setStageEditor(null)
+    setVoiceInstall(false)
+    setReplaceTarget(null)
+    for (const frame of [...frames].reverse()) dismiss(frame.id)
+    requestAnimationFrame(() => {
+      if (document.activeElement !== messageInput())
+        stageElement.current?.querySelector('[aria-label="全窗口舞台"]')?.focus()
+    })
+  }
+
+  function toggleRail() {
+    setRailOpen(!railOpen)
+    setToolsOpen(false)
+    closeBackground()
+    setStageEditor(null)
+  }
+
+  function toggleEditor() {
+    setWriting(!editorVisible)
+    if (!editorVisible) requestAnimationFrame(() => messageInput()?.focus())
+  }
+
+  function openStageTools() {
+    setToolsOpen(!toolsOpen)
+    closeBackground()
+    setStageEditor(null)
+  }
+
+  function toggleStoryReplay() {
+    if (replaying) return stage.current?.stopReplay()
+    setToolsOpen(false)
+    closeBackground()
+    setStageEditor(null)
+    if (replayTurnId) playHistoryTurn(replayTurnId)
+  }
+
+  function toggleStoryAuto(event) {
+    setAuto(!auto)
+    // 鼠标切换后让空格继续用于翻句；键盘操作工具栏时保留按钮焦点。
+    if (event.detail) stageElement.current?.focus()
+  }
+
+  function advanceStory() {
+    stage.current?.player.advanceReplay()
+  }
+
+  function startStagePress(event) {
+    stagePress.current = null
+    if (
+      event.button !== 0 ||
+      !event.isPrimary ||
+      event.target.closest(storyControls) ||
+      document.querySelector(':popover-open')
+    )
+      return
+    stagePress.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
+  }
+
+  function trackStagePress(event) {
+    const press = stagePress.current
+    // 画布会捕获指针，拖动结束时也会收到 click；即使拖回原点也不能翻句。
+    if (
+      press?.id === event.pointerId &&
+      Math.hypot(event.clientX - press.x, event.clientY - press.y) > 4
+    )
+      stagePress.current = null
+  }
+
+  function clickStoryStage(event) {
+    const press = stagePress.current
+    stagePress.current = null
+    if (
+      press &&
+      event.button === 0 &&
+      !event.defaultPrevented &&
+      Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 4 &&
+      !event.target.closest(storyControls) &&
+      !window.getSelection()?.toString()
+    )
+      advanceStory()
+  }
+
   function cancelDelete() {
     setDeleting(null)
   }
@@ -973,6 +1142,72 @@ export function HomePage({ client, setup, setupState }) {
   // 仅单人模式随当前角色形态应用主题色；小剧场模式保持应用默认主色，避免双人切换时视觉跳变。
   const activeThemeColor = isTheatre ? null : resolveCharacterThemeColor(role, activeForm)
   const stageThemeStyle = characterStageThemeVars(activeThemeColor)
+  const replayingTurn = Boolean(currentReplay && !currentReplay.error)
+  const manualStage =
+    story && replayingTurn && !auto && !historyOpen && !rootDialog && !voiceInstall && !deleting
+  const replaying = replayingTurn || stageState.replayingLine
+  const liveAuto = !replaying && Boolean(state.sending || state.snapshot?.activeTurnId)
+  const stageLocked = story && replaying
+  const editorVisible = writing || (!stageState.text && !state.snapshot?.activeTurnId)
+  useLayoutEffect(() => {
+    stage.current?.player.setStoryCaptions(story)
+    const previous = previousStageCenter.current
+    previousStageCenter.current = null
+    if (previous === null || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const element = stageElement.current
+    const rect = element.getBoundingClientRect()
+    const offset = previous - (rect.left + rect.width / 2)
+    // 画布一次调整到目标尺寸，仅在合成层平移角色，避免每帧重建 WebGL 缓冲。
+    const timing = { duration: 220, easing: 'cubic-bezier(.2,.7,.25,1)' }
+    const movement = canvas.current.animate(
+      [{ translate: offset + 'px 0' }, { translate: '0 0' }],
+      timing
+    )
+    const fade = element.animate([{ opacity: 0.78 }, { opacity: 1 }], timing)
+    const sidebar = !story && element.parentElement.querySelector('.home-sidebar')
+    const slide =
+      sidebar &&
+      sidebar.animate(
+        [
+          { opacity: 0.3, translate: '-12px 0' },
+          { opacity: 1, translate: '0 0' }
+        ],
+        timing
+      )
+    return () => {
+      movement.cancel()
+      fade.cancel()
+      if (slide) slide.cancel()
+    }
+  }, [story])
+  useLayoutEffect(() => {
+    stage.current?.player.setReplayAuto(!story || stageState.replayingLine || auto)
+  }, [story, auto, stageState.replayingLine])
+
+  useEffect(() => {
+    if (!story) return
+    function shortcut(event) {
+      if (event.isComposing || event.keyCode === 229) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        exitStory()
+      } else if (
+        event.code === 'Space' &&
+        !event.repeat &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        manualStage &&
+        !event.target.closest?.(storyControls)
+      ) {
+        event.preventDefault()
+        advanceStory()
+      }
+    }
+    window.addEventListener('keydown', shortcut, true)
+    return () => window.removeEventListener('keydown', shortcut, true)
+  })
   const canChooseOutfit =
     role &&
     (!isTheatre || theatreRoles.length === 2) &&
@@ -1026,7 +1261,7 @@ export function HomePage({ client, setup, setupState }) {
         degradedNote: theatreStage.degradedNote
       }
     : null
-  const theatreReplayTurnId = findTheatreReplayTurnId(state.snapshot)
+  const replayTurnId = useMemo(() => findReplayTurnId(state.snapshot), [state.snapshot])
   const liveTheatreReply = isTheatre ? lastDialogueEntry(state.snapshot?.chat, now) : null
   const theatreModelControl = theatreChat
     ? buildModelControl(state, flow, () => openSettings())
@@ -1134,7 +1369,7 @@ export function HomePage({ client, setup, setupState }) {
             outfitJobs={downloads.outfits}
             onClose={onDismiss}
             onDownloads={showStageDownloads}
-            onApply={applyManagedBackground}
+            onApply={stageLocked ? null : applyManagedBackground}
             onPreview={setPreviewBackground}
             current={currentBackground}
             active={id === frames.at(-1)?.id}
@@ -1144,6 +1379,7 @@ export function HomePage({ client, setup, setupState }) {
               roles={state.characters}
               initial={page.target}
               currentChat={
+                !stageLocked &&
                 role && {
                   characterId: role.id,
                   formId: activeForm,
@@ -1195,7 +1431,7 @@ export function HomePage({ client, setup, setupState }) {
   }
   return (
     <>
-      <main className="home-page" aria-label="数字小祥主页">
+      <main className="home-page" data-story={story || undefined} aria-label="数字小祥主页">
         <Tabs value={state.target.tab} onValueChange={flow.setTab} activationMode="manual" asChild>
           <aside className="home-sidebar">
             <div className="home-brand">
@@ -1312,12 +1548,33 @@ export function HomePage({ client, setup, setupState }) {
         </Tabs>
         <section
           className="home-stage"
+          onPointerDownCapture={manualStage ? startStagePress : undefined}
+          onPointerMoveCapture={manualStage ? trackStagePress : undefined}
+          onPointerCancelCapture={() => {
+            stagePress.current = null
+          }}
+          onClick={manualStage ? clickStoryStage : undefined}
           aria-label="角色舞台"
-          style={stageThemeStyle}
-          data-has-role-theme={stageThemeStyle ? 'true' : undefined}
+          ref={stageElement}
+          tabIndex={-1}
+          style={story ? undefined : stageThemeStyle}
+          data-builtin-background={
+            (!story && (stagePreview?.builtin || (backgroundKnown && !currentBackground))) ||
+            undefined
+          }
+          data-has-role-theme={!story && stageThemeStyle ? 'true' : undefined}
         >
-          <StageBackdrop client={client} asset={currentBackground} hidden={stagePreview?.builtin} />
-          {stagePreview?.asset && <StageBackdrop client={client} asset={stagePreview.asset} />}
+          {backgroundKnown && (
+            <StageBackdrop
+              story={story}
+              client={client}
+              asset={currentBackground}
+              hidden={stagePreview?.builtin}
+            />
+          )}
+          {(stagePreview?.asset || (story && stagePreview?.builtin)) && (
+            <StageBackdrop story={story} client={client} asset={stagePreview.asset} />
+          )}
           <div
             className="home-canvas"
             ref={canvas}
@@ -1370,45 +1627,102 @@ export function HomePage({ client, setup, setupState }) {
               save={saveFrame}
             />
           )}
-          <StageToolbar
-            target={state.target}
-            wardrobe={wardrobe}
-            background={{
-              client,
-              current: currentBackground,
-              available:
-                !historyOpen &&
-                !state.loading &&
-                !state.sending &&
-                (!state.target.chatId || Boolean(state.snapshot)),
-              open: backgroundTarget === state.target,
-              close: closeBackground,
-              suspended: Boolean(rootDialog),
-              toggle: toggleBackgroundPicker,
-              onPreview: setPreviewBackground,
-              onApply: flow.chooseBackground,
-              onManage: () => showBackgrounds()
-            }}
-            theatre={stageTools}
-            onZoom={zoomModel}
-            onReset={resetModel}
-          />
-          <div className="home-bottom">
-            <Subtitle
-              state={stageState}
+          {story && (
+            <StoryRail
+              expanded={railOpen}
+              onExpand={toggleRail}
+              onExit={exitStory}
+              onLog={showHistory}
+              toolsOpen={toolsOpen}
+              onTools={openStageTools}
+              auto={liveAuto || auto}
+              canToggleAuto={!liveAuto}
+              onAuto={toggleStoryAuto}
               theatre={isTheatre}
-              replayingTurn={Boolean(currentReplay && !currentReplay.error)}
-              onToggleReplay={toggleStageReplay}
+              canReplay={Boolean(replayTurnId)}
+              replaying={replaying}
+              onReplay={toggleStoryReplay}
+              onSetup={
+                theatreChat && !state.snapshot?.activeTurnId
+                  ? () => setupTheatre(theatreChat)
+                  : null
+              }
             />
+          )}
+          {(!story || toolsOpen) && (
+            <StageToolbar
+              key={story ? 'story' : 'normal'}
+              story={story}
+              initialAnchor={story ? null : toolAnchor}
+              onPlace={setToolAnchor}
+              locked={stageLocked}
+              onExpand={enterStory}
+              target={state.target}
+              wardrobe={wardrobe}
+              background={{
+                client,
+                current: currentBackground,
+                available:
+                  !historyOpen &&
+                  !state.loading &&
+                  !state.sending &&
+                  (!state.target.chatId || Boolean(state.snapshot)),
+                open: backgroundTarget === state.target,
+                close: closeBackground,
+                suspended: Boolean(rootDialog),
+                toggle: toggleBackgroundPicker,
+                onPreview: setPreviewBackground,
+                onApply: flow.chooseBackground,
+                onManage: () => showBackgrounds()
+              }}
+              theatre={stageTools}
+              onZoom={zoomModel}
+              onReset={resetModel}
+            />
+          )}
+          <div className="home-bottom">
+            {story ? (
+              <StoryCaption
+                subtitles={subtitles}
+                state={stageState}
+                manual={replayingTurn && !auto}
+                advance={advanceStory}
+                writable={
+                  !isTheatre &&
+                  Boolean(
+                    state.target.characterId && !state.snapshot?.participantIssue && stageState.text
+                  )
+                }
+                editing={editorVisible}
+                toggleEditor={toggleEditor}
+                draft={state.draft}
+                replaying={replaying}
+                stop={() => stage.current?.stopReplay()}
+              />
+            ) : (
+              <Subtitle
+                subtitles={subtitles}
+                state={stageState}
+                theatre={isTheatre}
+                replayingTurn={Boolean(currentReplay && !currentReplay.error)}
+                onToggleReplay={toggleStageReplay}
+              />
+            )}
+            {story && currentReplay?.error && !isTheatre && (
+              <p className="composer-problem" role="alert">
+                {currentReplay.error}
+              </p>
+            )}
             <InteractionCards state={state} client={client} now={now} />
             {theatreChat && <ThinkingConflict flow={flow} />}
             {theatreChat && (
               <TheatreActions
+                story={story}
                 snapshot={state.snapshot}
                 sending={state.sending}
                 problem={state.problem ?? currentReplay?.error}
                 confirming={replaceTarget === state.target}
-                canReplay={Boolean(theatreReplayTurnId)}
+                canReplay={Boolean(replayTurnId)}
                 replaying={Boolean(currentReplay && !currentReplay.error)}
                 canGenerate={
                   hasConnection(state) &&
@@ -1423,13 +1737,15 @@ export function HomePage({ client, setup, setupState }) {
                 }
                 cancel={() => setReplaceTarget(null)}
                 configure={() => setupTheatre(theatreChat)}
-                replay={() => playHistoryTurn(theatreReplayTurnId)}
+                replay={() => playHistoryTurn(replayTurnId)}
                 stop={flow.stop}
                 generate={generateTheatre}
               />
             )}
             {!isTheatre && (
               <Composer
+                compact={story && !editorVisible}
+                onFocus={story ? () => setWriting(true) : undefined}
                 identityControl={<IdentityButton state={state} flow={flow} onOpen={openIdentity} />}
                 state={state}
                 flow={flow}
@@ -1440,33 +1756,44 @@ export function HomePage({ client, setup, setupState }) {
               />
             )}
           </div>
-          {historyOpen ? (
-            <HistoryPanel
-              showModelThinking={
-                !!state.settings?.display && state.settings.display.showModelThinking !== false
-              }
-              key={state.target.chatId ?? 'blank'}
+          {story && historyOpen && (
+            <StoryLog
               snapshot={state.snapshot}
               characters={state.characters}
               now={now}
-              client={client}
-              onBranch={openBranch}
-              returnFromBranch={branchLink?.id === state.target.chatId ? returnFromBranch : null}
               onClose={hideHistory}
-              onPlayAudio={playHistoryAudio}
-              onPlayTurn={playHistoryTurn}
-              turnReplay={currentReplay}
+              play={playHistoryAudio}
+              onReplayTurn={replayFromStoryLog}
             />
-          ) : (
-            <Button
-              className="history-handle"
-              variant="ghost"
-              aria-label="展开聊天记录"
-              onClick={showHistory}
-            >
-              <ChevronLeft />
-            </Button>
           )}
+          {!story &&
+            (historyOpen ? (
+              <HistoryPanel
+                showModelThinking={
+                  !!state.settings?.display && state.settings.display.showModelThinking !== false
+                }
+                key={state.target.chatId ?? 'blank'}
+                snapshot={state.snapshot}
+                characters={state.characters}
+                now={now}
+                client={client}
+                onBranch={openBranch}
+                returnFromBranch={branchLink?.id === state.target.chatId ? returnFromBranch : null}
+                onClose={hideHistory}
+                onPlayAudio={playHistoryAudio}
+                onPlayTurn={playHistoryTurn}
+                turnReplay={currentReplay}
+              />
+            ) : (
+              <Button
+                className="history-handle"
+                variant="ghost"
+                aria-label="展开聊天记录"
+                onClick={showHistory}
+              >
+                <ChevronLeft />
+              </Button>
+            ))}
         </section>
         {deleting && (
           <DeleteDialog chat={deleting} onCancel={cancelDelete} onConfirm={confirmDelete} />
